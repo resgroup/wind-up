@@ -70,4 +70,5 @@ dmypy.json
 
 .venv/
 __pycache__/
-.pyc
+cache/
+output/

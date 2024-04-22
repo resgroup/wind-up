@@ -182,7 +182,7 @@ class WindUpConfig(BaseModel):
     )
     years_offset_for_pre_period: int | None = Field(
         description="How many years to go back in time to begin pre upgrade dataset",
-        ge=1,
+        ge=0,
         examples=[None, 1],
         default=None,
     )
