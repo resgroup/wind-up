@@ -1,11 +1,10 @@
 import math
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.stats import norm, t
 
-from wind_up.constants import PROJECTROOT_DIR, ROWS_PER_HOUR, TIMEBASE_PD_TIMEDELTA
+from wind_up.constants import ROWS_PER_HOUR, TIMEBASE_PD_TIMEDELTA
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.pp_analysis_plots import plot_pp_data_coverage, plot_pre_post_pp_analysis
 

@@ -1,11 +1,9 @@
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy.stats import circmean
 
 from wind_up.constants import (
-    PROJECTROOT_DIR,
     RAW_YAWDIR_COL,
     REANALYSIS_WD_COL,
     ROWS_PER_DAY,

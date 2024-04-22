@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 
 from wind_up.constants import (
-    REANALYSIS_WS_COL,
     ROWS_PER_DAY,
 )
 from wind_up.models import PlotConfig, WindUpConfig
