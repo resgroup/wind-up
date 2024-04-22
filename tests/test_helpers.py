@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from examples.helpers import with_parquet_cache
+from wind_up.caching import with_parquet_cache
 
 
 class TestWithParquetCache:

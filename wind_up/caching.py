@@ -3,6 +3,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
+
+def with_parquet_cache(fp: Path, *, use_cache: bool = True) -> Callable:
+    def wrap(func: Callable[..., pd.DataFrame]) -> Callable[..., pd.DataFrame]:
+        def wrapped_f(*a: Any, **kw: Any) -> pd.DataFrame:  # noqa
+            if not Path(fp).is_file() or not use_cache:
+                func(*a, **kw).to_parquet(fp)
+            return pd.read_parquet(fp)
+
+        return wrapped_f
+
+    return wrap
+
 
 def with_pickle_cache(fp: Path, *, use_cache: bool = True) -> Callable:
     def wrap(func: Callable[..., Any]) -> Callable[..., Any]:
