@@ -1,0 +1,25 @@
+assessment_name: test_BRT_T16_pitch
+test_wtgs:
+    - BRT_T16
+    - BRT_T06
+    - BRT_T07
+    - BRT_T17
+    - BRT_T20
+    - BRT_T23
+ref_wtgs:
+    - BRT_T02
+    - BRT_T03
+    - BRT_T08
+upgrade_first_dt_utc_start: 2022-11-03 15:30:00
+analysis_last_dt_utc_start: 2023-06-08 23:50:00
+years_for_lt_distribution: 3
+years_for_detrend: 3
+ws_bin_width: 1
+reanalysis_method: node_with_best_ws_corr
+toggle:
+    toggle_file_per_turbine: False
+    toggle_filename: test_BRT_T16_pitch_toggle.parquet
+asset: !include asset/BRT.yaml
+exclusion_periods_utc: !include exclusion_periods/BRT_T16_pitch.yaml
+yaw_data_exclusions_utc: !include yaw_data_exclusions/BRT.yaml
+optimize_northing_corrections: true
