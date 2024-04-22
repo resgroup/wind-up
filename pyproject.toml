@@ -1,0 +1,136 @@
+[project]
+name = "wind-up"
+version = "1.2.2"
+description = ""
+authors = [
+    { name = "Alex Clerc", email = "alex.clerc@res-group.com" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    'geographiclib',
+    'matplotlib',
+    'pandas >= 2.0.0',
+    'pyarrow',
+    'pydantic >= 2.0.0',
+    'python-dotenv',
+    'pyyaml',
+    'requests',
+    'ruptures',
+    'scipy',
+    'seaborn',
+    'tabulate',
+    'toml',
+    'utm',
+]
+
+[project.optional-dependencies]
+dev = [
+    'pytest',
+    'coverage',
+    'poethepoet',
+    'types-pyyaml',
+    'types-tabulate',
+    'types-toml',
+    'types-requests',
+    'ruff',
+    'mypy',
+]
+
+[tool.setuptools.packages.find]
+where = ["wind_up"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+show-fixes = true
+extend-exclude = ["tests"]
+
+[tool.ruff.lint]
+select = ["ALL"] # https://beta.ruff.rs/docs/rules/
+ignore = [
+    "ANN101", # `self` doesn't need annotations
+    "ANN102", # `cls` doesn't need annotations
+    "ANN204", # `__init__` doesn't need annotations
+    "S301", # `pickle` and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue
+    "D", # docstring checks
+    "T20", # disallow print
+    "PGH004", # Use specific rule codes when using `noqa`. Seems to give false alarms
+    "COM812", # can conflict with formatter
+    "ISC001", # can conflict with formatter
+    "G004", # logging statement can use f-string
+]
+ignore-init-module-imports = true
+
+[tool.ruff.lint.mccabe]
+max-complexity = 11 # try to bring this down to 10
+
+[tool.ruff.lint.pylint]
+max-branches = 13 # try to bring this down to 12
+max-statements = 66 # try to bring this down to 50
+max-args = 16 # try to bring this down to 5
+
+[tool.ruff.lint.per-file-ignores]
+"wind_up/models.py" = ["N805", "PERF401"] # try to eliminate this
+"tests/**/*.py" = ["S101", "PLR2004"]  # allow `assert` and magic values in tests
+"tests/test_smart_data.py" = ["DTZ001"]  # SMART functions use tz naive datetimes
+"**/__init__.py" = ["F401"]  # ignore unused imports in __init__.py
+
+[tool.mypy]
+plugins = ["pydantic.mypy"]
+python_version = "3.10"
+exclude = "tests|.venv|__ignore__"
+
+[[tool.mypy.overrides]]
+module = [
+    "geographiclib.geodesic",
+    "pandas",
+    "pandas.testing",
+    "ruptures",
+    "scipy.stats",
+    "seaborn",
+    "utm",
+]
+disable_error_code = ["name-defined"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "error",
+    "ignore:Passing unrecognized arguments to super:DeprecationWarning",  # pycharm debugger issue
+    "ignore:Passing a BlockManager to DataFrame is deprecated:DeprecationWarning",
+]
+
+[tool.coverage.report]
+omit = [
+    "wind_up/plots/*.py",
+]
+exclude_lines = ["if __name__ == .__main__.:"]
+
+[tool.poe.tasks]
+[tool.poe.tasks.lint]
+help = "Runs formater and linter"
+sequence = [
+    { cmd = "ruff format ." },
+    { cmd = "ruff check . --fix" },
+    { cmd = "mypy ." }
+]
+
+[tool.poe.tasks.lint-check]
+help = "Checks formatter and linter"
+sequence = [
+    { cmd = "ruff format . --check" },
+    { cmd = "ruff check ." },
+    { cmd = "mypy ." }
+]
+
+[tool.poe.tasks.test]
+help = "Runs unit tests and show coverage"
+sequence = [
+    { cmd = "coverage run --source wind_up -m pytest ./tests" },
+    { cmd = "coverage report -m" },
+]
+
+[tool.poe.tasks.all]
+help = "Run all required pre-push commands"
+sequence = [{ ref = "lint" }, { ref = "test" }]
