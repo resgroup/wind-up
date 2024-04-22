@@ -1,0 +1,32 @@
+assessment_name: test_Marge
+test_wtgs:
+    - MRG_T01
+    - MRG_T06
+    - MRG_T08
+ref_wtgs:
+    - MRG_T02
+    - MRG_T03
+    - MRG_T04
+    - MRG_T05
+    - MRG_T07
+    - MRG_T09
+non_wtg_ref_names:
+    - reanalysis
+    - MRG_MetMast_pri
+upgrade_first_dt_utc_start: 2022-01-01 00:00:00
+analysis_last_dt_utc_start: 2023-10-31 23:50:00
+years_for_lt_distribution: 3
+years_for_detrend: 2
+ws_bin_width: 1
+reanalysis_method: node_with_best_ws_corr
+toggle:
+    toggle_file_per_turbine: False
+    toggle_filename: Marge_noise_mode_toggle.parquet
+    detrend_data_selection: use_toggle_off_data
+    pairing_filter_method: any_within_timedelta
+    pairing_filter_timedelta_seconds: 7200
+asset: !include asset/MRG.yaml
+smart_missing_data_fields:
+    - YawAngleMin
+    - YawAngleMax
+optimize_northing_corrections: true
