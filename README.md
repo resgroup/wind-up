@@ -22,9 +22,6 @@ pip install -r requirement.txt
 
 See `examples` folder for analysis examples
 
-## Running tests
-Use `poe test` or `poe all` to run unit tests (make sure the virtual environment is activated)
-
 ## Contributing
 To start making changes make a new branch from `main`. Note `main` is protected; 
 if a commit fails to push and you want to undo it try `git reset origin/main --hard`
@@ -35,6 +32,9 @@ in editable mode with the dev dependencies:
 # install the package in editable mode with the dev dependencies
 pip install -r dev-requirements.txt -e .
 ```
+
+## Running tests
+Use `poe test` or `poe all` to run unit tests (make sure the virtual environment is activated)
 
 ## Updating and locking dependencies
 To update the main (and dev) dependencies based off the `pyproject.toml` file conditions use:
