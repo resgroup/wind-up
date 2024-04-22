@@ -1,0 +1,25 @@
+name: Lisa Wind Farm
+wtgs:
+    - LSA_T01
+    - LSA_T02
+    - LSA_T03
+    - LSA_T04
+    - LSA_T05
+    - LSA_T06
+    - LSA_T07
+    - LSA_T08
+    - LSA_T09
+    - LSA_T10
+    - LSA_T11
+    - LSA_T12
+    - LSA_T13
+    - LSA_T14
+    - LSA_T15
+    - LSA_T16
+    - LSA_T17
+    - LSA_T18
+    - LSA_T19
+    - LSA_T20
+    - LSA_T21
+turbine_types:
+    - !include turbine_type/D_2p3_82.yaml
