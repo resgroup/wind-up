@@ -1,0 +1,6 @@
+name: MRG_MetMast_pri
+latitude: -53.749558
+longitude: 10.066097
+data_file_name: MRG_MetMast.parquet
+wind_speed_column: Marge_MRG_MetMast_WindSpeedMean
+wind_direction_column: WindDirectionMean
