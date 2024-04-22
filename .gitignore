@@ -69,4 +69,5 @@ dmypy.json
 .coverage
 
 .venv/
+__pycache__/
 .pyc
