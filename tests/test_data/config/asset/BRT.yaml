@@ -1,0 +1,24 @@
+name: Bart Wind Farm
+wtgs:
+    - BRT_T02
+    - BRT_T03
+    - BRT_T04
+    - BRT_T05
+    - BRT_T06
+    - BRT_T07
+    - BRT_T08
+    - BRT_T10
+    - BRT_T12
+    - BRT_T13
+    - BRT_T14
+    - BRT_T16
+    - BRT_T17
+    - BRT_T19
+    - BRT_T20
+    - BRT_T21
+    - BRT_T22
+    - BRT_T23
+    - BRT_T24
+    - BRT_T25
+turbine_types:
+    - !include turbine_type/C_1p3_62.yaml
