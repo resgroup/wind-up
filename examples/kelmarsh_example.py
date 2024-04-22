@@ -8,6 +8,7 @@ from examples.helpers import download_zenodo_data
 from wind_up.caching import with_parquet_cache
 from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
 from wind_up.interface import AssessmentInputs
+from wind_up.main_analysis import run_wind_up_analysis
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.reanalysis_data import ReanalysisDataset
 
@@ -140,6 +141,10 @@ if __name__ == "__main__":
             ("KWF5", pd.Timestamp("2022-01-01 00:00:00+0000"), 11.577139806747734),
             ("KWF6", pd.Timestamp("2022-01-01 00:00:00+0000"), 4.946038818359088),
         ],
+        exclusion_periods_utc=[
+            ("ALL", pd.Timestamp("2022-09-30 14:20:00+0000"), pd.Timestamp("2022-09-30 17:50:00+0000")),
+            ("ALL", pd.Timestamp("2022-10-05 01:10:00+0000"), pd.Timestamp("2022-10-07 14:30:00+0000")),
+        ],
     )
     plot_cfg = PlotConfig(show_plots=False, save_plots=True, plots_dir=cfg.out_dir / "plots")
 
@@ -154,5 +159,6 @@ if __name__ == "__main__":
         metadata_df=metadata_df,
         toggle_df=None,
         reanalysis_datasets=[reanalysis_dataset],
-        cache_dir=None,
+        cache_dir=CACHE_FLD,
     )
+    results_per_test_ref_df = run_wind_up_analysis(assessment_inputs)
