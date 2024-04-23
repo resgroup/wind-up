@@ -17,7 +17,7 @@ python -m venv .venv
 # activate the virtual environment
 source .venv/Scripts/activate  # or .venv/bin/activate on linux
 # install the wind-up package
-pip install -r requirement.txt
+pip install -r requirements.txt
 ```
 
 See `examples` folder for analysis examples
