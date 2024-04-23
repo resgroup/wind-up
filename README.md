@@ -49,5 +49,8 @@ pip install -r dev-requirements.txt
 # or -r requirements.txt if only using main dependencies
 ```
 
+## License
+See `LICENSE.txt`
+
 ## Contact
 Alex.Clerc@res-group.com
