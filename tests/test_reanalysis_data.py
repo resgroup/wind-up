@@ -8,21 +8,8 @@ from wind_up.models import WindUpConfig
 from wind_up.reanalysis_data import (
     ReanalysisDataset,
     add_reanalysis_data,
-    calc_filename_from_dsid_and_dates,
     get_dsid_and_dates_from_filename,
 )
-
-
-def test_calc_filename_from_dsid_and_dates() -> None:
-    assert (
-        calc_filename_from_dsid_and_dates(
-            "ERA5T_47.50N_-3.25E_100m_1hr",
-            pd.Timestamp("1990-01-01"),
-            pd.Timestamp("2023-10-31"),
-        )
-        == "ERA5T_47.50N_-3.25E_100m_1hr_19900101_20231031.parquet"
-    )
-
 
 def test_get_dsid_and_dates_from_filename() -> None:
     assert get_dsid_and_dates_from_filename("ERA5T_47.50N_-3.25E_100m_1hr_19900101_20231031.parquet") == (

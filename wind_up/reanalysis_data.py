@@ -99,10 +99,6 @@ def calc_wf_mean_wind_speed_df(
     return wf_ws_df.dropna()
 
 
-def calc_filename_from_dsid_and_dates(dsid: str, date_from: pd.Timestamp, date_to: pd.Timestamp) -> str:
-    return f"{dsid}_{date_from.strftime('%Y%m%d')}_{date_to.strftime('%Y%m%d')}.parquet"
-
-
 def get_dsid_and_dates_from_filename(filename: str) -> tuple[str, pd.Timestamp, pd.Timestamp]:
     fname = filename.replace(".parquet", "")
     date_to = fname.split("_")[-1]
