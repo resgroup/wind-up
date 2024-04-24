@@ -35,6 +35,7 @@ def plot_lt_ws(
         plt.show()
     if plot_cfg.save_plots:
         if one_turbine:
+            (plot_cfg.plots_dir / turbine_or_wf_name).mkdir(parents=True, exist_ok=True)
             plt.savefig(plot_cfg.plots_dir / turbine_or_wf_name / f"{plot_title}.png")
         else:
             plt.savefig(plot_cfg.plots_dir / f"{plot_title}.png")
