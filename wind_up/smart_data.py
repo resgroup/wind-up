@@ -103,7 +103,7 @@ def calc_month_list_and_time_info(
     if len(md["TimeZone"].unique()) > 1:
         msg = f"more than one TimeZone found in SMART metadata for {asset_name}: {md['TimeZone'].unique()}"
         raise ValueError(msg)
-    if len(md["TimeZone"].unique()) > 1:
+    if len(md["TimeFormat"].unique()) > 1:
         msg = f"more than one TimeFormat found in SMART metadata for {asset_name}: {md['TimeFormat'].unique()}"
         raise ValueError(
             msg,
