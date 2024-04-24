@@ -1,6 +1,5 @@
 import math
 import pprint
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -297,7 +296,6 @@ def calc_test_ref_results(
     cfg: WindUpConfig,
     plot_cfg: PlotConfig,
     random_seed: int,
-    cache_path: Path = Path(PROJECTROOT_DIR / "cache"),
     toggle_df: pd.DataFrame | None = None,
 ) -> dict:
     test_name = test_wtg.name
@@ -389,7 +387,6 @@ def calc_test_ref_results(
         ref_long=ref_long,
     )
 
-    detrend_df.to_parquet(cache_path / f"{cfg.assessment_name}_{test_name}_{ref_name}_detrend_df.parquet")
     plot_detrend_data_cov(
         cfg=cfg,
         test_name=test_name,
@@ -415,9 +412,7 @@ def calc_test_ref_results(
         cfg=cfg,
         plot_cfg=plot_cfg,
     )
-    wsratio_v_dir_scen.to_parquet(
-        cache_path / f"{cfg.assessment_name}_{test_name}_{ref_name}_wsratio_v_dir_scen.parquet",
-    )
+
     pre_df = pre_df.merge(ref_df, how="left", left_index=True, right_index=True)
     post_df = post_df.merge(ref_df, how="left", left_index=True, right_index=True)
 
@@ -511,9 +506,6 @@ def calc_test_ref_results(
             ref_wd_col=ref_wd_col,
         )
 
-    pre_df.to_parquet(cache_path / f"{cfg.assessment_name}_{test_name}_{ref_name}_pre_df.parquet")
-    post_df.to_parquet(cache_path / f"{cfg.assessment_name}_{test_name}_{ref_name}_post_df.parquet")
-
     pp_results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
         cfg=cfg,
         test_name=test_name,
@@ -548,7 +540,6 @@ def calc_test_ref_results(
 def run_wind_up_analysis(
     inputs: AssessmentInputs,
     random_seed: int = RANDOM_SEED,
-    cache_path: Path = Path(PROJECTROOT_DIR / "cache"),
 ) -> pd.DataFrame:
     wf_df = inputs.wf_df
     pc_per_ttype = inputs.pc_per_ttype
@@ -579,14 +570,11 @@ def run_wind_up_analysis(
             pw_col=test_pw_col,
             plot_cfg=plot_cfg,
         )
-        lt_wtg_df_raw.to_parquet(cache_path / f"{cfg.assessment_name}_{test_name}_lt_wtg_df_raw.parquet")
-        lt_wtg_df_filt.to_parquet(cache_path / f"{cfg.assessment_name}_{test_name}_lt_wtg_df_filt.parquet")
 
         test_df.columns = ["test_" + x for x in test_df.columns]
         test_pw_col = "test_" + test_pw_col
         test_ws_col = "test_" + test_ws_col
 
-        test_df.to_parquet(cache_path / f"{cfg.assessment_name}_{test_name}_test_df.parquet")
         test_max_ws_drift, test_max_ws_drift_pp_period = check_windspeed_drift(
             wtg_df=test_df,
             wtg_name=test_name,
@@ -635,7 +623,6 @@ def run_wind_up_analysis(
                 cfg=cfg,
                 plot_cfg=plot_cfg,
                 random_seed=random_seed,
-                cache_path=cache_path,
             )
             test_ref_results = test_ref_results | test_results
             pprint.pprint(test_ref_results)
