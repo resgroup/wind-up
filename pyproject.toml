@@ -38,7 +38,8 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["wind_up"]
+where = ["."]
+include = ["wind_up*"]
 
 [tool.ruff]
 line-length = 120
