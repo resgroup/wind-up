@@ -556,7 +556,7 @@ def run_wind_up_analysis(
     print(f"test turbines: {[x.name for x in cfg.test_wtgs]}")
     print(f"ref list: {ref_name_list}")
     print(f"turbines to test: {[x.name for x in wtgs_to_test]}")
-    for loop_counter, test_wtg in enumerate(wtgs_to_test):
+    for test_wtg_counter, test_wtg in enumerate(wtgs_to_test):
         test_name = test_wtg.name
         test_pw_col = "pw_clipped"
         test_ws_col = "ws_est_from_power_only" if cfg.ignore_turbine_anemometer_data else "ws_est_blend"
@@ -606,7 +606,8 @@ def run_wind_up_analysis(
         }
 
         scada_pc = pc_per_ttype[test_wtg.turbine_type.turbine_type]
-        for ref_name in ref_name_list:
+        for ref_name_counter, ref_name in enumerate(ref_name_list):
+            loop_counter = test_wtg_counter * len(ref_name_list) + ref_name_counter
             print(f"\nanalysing {test_name} {ref_name}, loop_counter={loop_counter}\n")
             test_ref_results = calc_test_ref_results(
                 test_df=test_df,
