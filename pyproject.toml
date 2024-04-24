@@ -1,6 +1,6 @@
 [project]
 name = "wind-up"
-version = "1.2.2"
+version = "0.1.0"
 description = ""
 authors = [
     { name = "Alex Clerc", email = "alex.clerc@res-group.com" }
@@ -38,7 +38,8 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["wind_up"]
+where = ["."]
+include = ["wind_up"]
 
 [tool.ruff]
 line-length = 120
@@ -79,7 +80,8 @@ max-args = 16 # try to bring this down to 5
 [tool.mypy]
 plugins = ["pydantic.mypy"]
 python_version = "3.10"
-exclude = "tests|.venv|__ignore__"
+exclude = "build|tests|venv|.venv|__ignore__"
+disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
 module = [
