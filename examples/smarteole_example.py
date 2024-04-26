@@ -205,6 +205,7 @@ if __name__ == "__main__":
         require_ref_wake_free=True,
         detrend_min_hours=12,
         ref_wd_filter=[197.0, 246.0],
+        filter_all_test_wtgs_together=True,
         out_dir=OUTPUT_DIR / "smarteole_example",
         test_wtgs=[wtg_map["SMV6"], wtg_map["SMV5"]],
         ref_wtgs=[wtg_map["SMV7"]],

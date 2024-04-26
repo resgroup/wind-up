@@ -22,7 +22,7 @@ from wind_up.northing import (
 )
 from wind_up.plots.data_coverage_plots import plot_detrend_data_cov, plot_pre_post_data_cov
 from wind_up.plots.detrend_plots import plot_apply_wsratio_v_wd_scen
-from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post
+from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post, print_filter_stats
 from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
 from wind_up.waking_state import (
     add_waking_scen,
@@ -561,6 +561,24 @@ def run_wind_up_analysis(
         test_pw_col = "pw_clipped"
         test_ws_col = "ws_est_from_power_only" if cfg.ignore_turbine_anemometer_data else "ws_est_blend"
         test_df = wf_df.loc[test_wtg.name].copy()
+
+        if cfg.filter_all_test_wtgs_together:
+            for other_test_wtg in cfg.test_wtgs:
+                if other_test_wtg.name == test_name:
+                    continue
+                pw_na_before = test_df["ActivePowerMean"].isna().sum()
+                other_test_df = wf_df.loc[other_test_wtg.name]
+                timestamps_to_filter = other_test_df[
+                    other_test_df[test_pw_col].isna() | other_test_df[test_ws_col].isna()
+                ].index
+                cols_to_filter = list({test_pw_col, test_ws_col, "ActivePowerMean", "WindSpeedMean"})
+                test_df.loc[timestamps_to_filter, cols_to_filter] = pd.NA
+                pw_na_after = test_df["ActivePowerMean"].isna().sum()
+                print_filter_stats(
+                    filter_name=f"filter_all_test_wtgs_together {other_test_wtg.name}",
+                    na_rows=pw_na_after - pw_na_before,
+                    total_rows=len(test_df),
+                )
 
         lt_wtg_df_raw, lt_wtg_df_filt = calc_turbine_lt_dfs_raw_filt(
             wtg_name=test_name,
