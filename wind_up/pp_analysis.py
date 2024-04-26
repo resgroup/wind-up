@@ -3,6 +3,7 @@ import math
 import numpy as np
 import pandas as pd
 from scipy.stats import norm, t
+from tqdm.auto import tqdm
 
 from wind_up.constants import ROWS_PER_HOUR, TIMEBASE_PD_TIMEDELTA, TIMEBASE_S
 from wind_up.models import PlotConfig, Turbine, WindUpConfig
@@ -414,18 +415,16 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     pre_df_dropna = pre_df.dropna(subset=[ws_col, pw_col, wd_col])
     post_df_dropna = post_df.dropna(subset=[ws_col, pw_col, wd_col])
 
-    n_samples = round(20 * (1 / (1 - confidence_level)))
+    n_samples = round(40 * (1 / (1 - confidence_level)))
     if plot_cfg is not None:
         print(f"Running block bootstrapping uncertainty analysis n_samples = {n_samples}")
     bootstrapped_uplifts = np.empty(n_samples)
     bootstrapped_uplifts[:] = np.nan
     rng = np.random.default_rng(seed=random_seed)
-    for n in range(n_samples):
+    for n in tqdm(range(n_samples)):
         num_blocks = rng.choice([9, 10, 11])
         block_size_pre = math.floor(len(pre_df_dropna) / num_blocks)
         block_size_post = math.floor(len(post_df_dropna) / num_blocks)
-        if (n % (n_samples // 5)) == 0 and plot_cfg is not None:
-            print(f"n = {n}")
         # randomly remove rows to make the dataframes the perfect length
         pre_target_len = num_blocks * block_size_pre
         post_target_len = num_blocks * block_size_post
