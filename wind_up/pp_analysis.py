@@ -1,3 +1,4 @@
+import contextlib
 import math
 
 import numpy as np
@@ -113,14 +114,17 @@ def pre_post_pp_analysis(
     test_df: pd.DataFrame | None = None,
     reverse: bool = False,
 ) -> tuple[dict, pd.DataFrame]:
+    wtg_for_turbine_type = test_wtg
     test_name = test_wtg.name
     if reverse:
+        with contextlib.suppress(StopIteration):
+            wtg_for_turbine_type = next(x for x in cfg.asset.wtgs if x.name == ref_name)
         test_name, ref_name = ref_name, test_name
         pre_df, post_df = post_df, pre_df
         ws_col = ws_col.replace("ref", "test")
         pw_col = pw_col.replace("test", "ref")
-    cutout_ws = test_wtg.turbine_type.cutout_ws_mps
-    rated_power = test_wtg.turbine_type.rated_power_kw
+    cutout_ws = wtg_for_turbine_type.turbine_type.cutout_ws_mps
+    rated_power = wtg_for_turbine_type.turbine_type.rated_power_kw
 
     ws_bin_edges = np.arange(0, cutout_ws + cfg.ws_bin_width, cfg.ws_bin_width)
 
