@@ -9,50 +9,13 @@ from wind_up.models import PlotConfig
 mpl.use("Agg")
 
 
-def plot_pre_post_power_curves(
+def plot_pre_post_binned_power_curves(
     *,
     test_name: str,
     ref_name: str,
     pp_df: pd.DataFrame,
-    pre_df: pd.DataFrame,
-    post_df: pd.DataFrame,
-    ws_col: str,
-    pw_col: str,
     plot_cfg: PlotConfig,
 ) -> None:
-    plt.figure()
-    plt.scatter(pre_df[ws_col], pre_df[pw_col], s=SCATTER_S, alpha=SCATTER_ALPHA, label="pre upgrade")
-    plt.scatter(post_df[ws_col], post_df[pw_col], s=SCATTER_S, alpha=SCATTER_ALPHA, label="post upgrade")
-    plt.legend()
-    plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} power curve data"
-    plt.title(plot_title)
-    plt.ylabel(f"{pw_col} [kW]")
-    plt.xlabel(f"{ws_col} [m/s]")
-    plt.tight_layout()
-    if plot_cfg.show_plots:
-        plt.show()
-    if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
-    plt.close()
-
-    plt.figure()
-    plt.plot(pp_df["bin_mid"], pp_df["hours_pre"] / pp_df["hours_pre"].sum(), marker="s", label="pre")
-    plt.plot(pp_df["bin_mid"], pp_df["hours_post"] / pp_df["hours_post"].sum(), marker="s", label="post")
-    plt.plot(pp_df["bin_mid"], pp_df["f"], marker="s", label="long term")
-    plt.legend()
-    plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} relative frequency"
-    plt.title(plot_title)
-    plt.ylabel("fraction of time [-]")
-    plt.xlabel("bin mid [m/s]")
-    plt.tight_layout()
-    if plot_cfg.show_plots:
-        plt.show()
-    if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
-    plt.close()
-
     plt.figure()
     plt.errorbar(pp_df["ws_mean_pre"], pp_df["pw_mean_pre_raw"], yerr=pp_df["pw_sem_pre"], label="pre raw", marker=".")
     plt.errorbar(
@@ -96,6 +59,86 @@ def plot_pre_post_power_curves(
     if plot_cfg.save_plots:
         plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
     plt.close()
+
+    plt.figure()
+    plt.errorbar(
+        pp_df["bin_mid"],
+        pp_df["pw_at_mid_expected"],
+        yerr=pp_df["pw_sem_at_mid_expected"],
+        label="baseline",
+        marker=".",
+    )
+    plt.errorbar(
+        pp_df["bin_mid"],
+        pp_df["pw_at_mid_post"],
+        yerr=pp_df["pw_sem_at_mid_post"],
+        label="post",
+        marker=".",
+    )
+    plt.legend()
+    plt.grid()
+    plot_title = f"test={test_name} ref={ref_name} power curves for uplift"
+    plt.title(plot_title)
+    plt.ylabel("power at bin mid [kW]")
+    plt.xlabel("wind speed bin mid [m/s]")
+    plt.tight_layout()
+    if plot_cfg.show_plots:
+        plt.show()
+    if plot_cfg.save_plots:
+        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+    plt.close()
+
+
+def plot_pre_post_power_curves(
+    *,
+    test_name: str,
+    ref_name: str,
+    pp_df: pd.DataFrame,
+    pre_df: pd.DataFrame,
+    post_df: pd.DataFrame,
+    ws_col: str,
+    pw_col: str,
+    plot_cfg: PlotConfig,
+) -> None:
+    plt.figure()
+    plt.scatter(pre_df[ws_col], pre_df[pw_col], s=SCATTER_S, alpha=SCATTER_ALPHA, label="pre upgrade")
+    plt.scatter(post_df[ws_col], post_df[pw_col], s=SCATTER_S, alpha=SCATTER_ALPHA, label="post upgrade")
+    plt.legend()
+    plt.grid()
+    plot_title = f"test={test_name} ref={ref_name} power curve data"
+    plt.title(plot_title)
+    plt.ylabel(f"{pw_col} [kW]")
+    plt.xlabel(f"{ws_col} [m/s]")
+    plt.tight_layout()
+    if plot_cfg.show_plots:
+        plt.show()
+    if plot_cfg.save_plots:
+        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+    plt.close()
+
+    plt.figure()
+    plt.plot(pp_df["bin_mid"], pp_df["hours_pre"] / pp_df["hours_pre"].sum(), marker="s", label="pre")
+    plt.plot(pp_df["bin_mid"], pp_df["hours_post"] / pp_df["hours_post"].sum(), marker="s", label="post")
+    plt.plot(pp_df["bin_mid"], pp_df["f"], marker="s", label="distribution used for uplift")
+    plt.legend()
+    plt.grid()
+    plot_title = f"test={test_name} ref={ref_name} relative frequency"
+    plt.title(plot_title)
+    plt.ylabel("fraction of time [-]")
+    plt.xlabel("bin mid [m/s]")
+    plt.tight_layout()
+    if plot_cfg.show_plots:
+        plt.show()
+    if plot_cfg.save_plots:
+        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+    plt.close()
+
+    plot_pre_post_binned_power_curves(
+        test_name=test_name,
+        ref_name=ref_name,
+        pp_df=pp_df,
+        plot_cfg=plot_cfg,
+    )
 
 
 def plot_pre_post_conditions(
@@ -248,19 +291,19 @@ def plot_pre_post_pp_analysis(
     plt.figure()
     plt.plot(
         pp_df["bin_mid"],
-        pp_df["uplift_kw"] * pp_df["hours_per_year"].sum() * pp_df["f"] / 1000,
+        pp_df["uplift_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
         color="b",
         marker="s",
     )
     plt.plot(
         pp_df["bin_mid"],
-        pp_df[f"uplift_p{p_low*100:.0f}_kw"] * pp_df["hours_per_year"].sum() * pp_df["f"] / 1000,
+        pp_df[f"uplift_p{p_low*100:.0f}_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
         color="r",
         ls="--",
     )
     plt.plot(
         pp_df["bin_mid"],
-        pp_df[f"uplift_p{p_high*100:.0f}_kw"] * pp_df["hours_per_year"].sum() * pp_df["f"] / 1000,
+        pp_df[f"uplift_p{p_high*100:.0f}_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
         color="r",
         ls="--",
     )

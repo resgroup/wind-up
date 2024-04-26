@@ -22,7 +22,7 @@ from wind_up.northing import (
 )
 from wind_up.plots.data_coverage_plots import plot_detrend_data_cov, plot_pre_post_data_cov
 from wind_up.plots.detrend_plots import plot_apply_wsratio_v_wd_scen
-from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post
+from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post, print_filter_stats
 from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
 from wind_up.waking_state import (
     add_waking_scen,
@@ -286,7 +286,7 @@ def calc_test_ref_results(
     test_df: pd.DataFrame,
     pre_df: pd.DataFrame,
     post_df: pd.DataFrame,
-    long_term_df: pd.DataFrame,
+    long_term_df: pd.DataFrame | None,
     wf_df: pd.DataFrame,
     test_wtg: Turbine,
     ref_name: str,
@@ -508,7 +508,7 @@ def calc_test_ref_results(
 
     pp_results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
         cfg=cfg,
-        test_name=test_name,
+        test_wtg=test_wtg,
         ref_name=ref_name,
         lt_df=long_term_df,
         pre_df=pre_df,
@@ -532,6 +532,8 @@ def calc_test_ref_results(
         "ref_max_ws_drift_pp_period": ref_max_ws_drift_pp_period,
         "detrend_pre_r2_improvement": detrend_pre_r2_improvement,
         "detrend_post_r2_improvement": detrend_post_r2_improvement,
+        "mean_power_pre": pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
+        "mean_power_post": post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
     }
 
     return other_results | pp_results
@@ -562,14 +564,36 @@ def run_wind_up_analysis(
         test_ws_col = "ws_est_from_power_only" if cfg.ignore_turbine_anemometer_data else "ws_est_blend"
         test_df = wf_df.loc[test_wtg.name].copy()
 
-        lt_wtg_df_raw, lt_wtg_df_filt = calc_turbine_lt_dfs_raw_filt(
-            wtg_name=test_name,
-            cfg=cfg,
-            wtg_df=test_df,
-            ws_col=test_ws_col,
-            pw_col=test_pw_col,
-            plot_cfg=plot_cfg,
-        )
+        if cfg.filter_all_test_wtgs_together:
+            for other_test_wtg in cfg.test_wtgs:
+                if other_test_wtg.name == test_name:
+                    continue
+                pw_na_before = test_df["ActivePowerMean"].isna().sum()
+                other_test_df = wf_df.loc[other_test_wtg.name]
+                timestamps_to_filter = other_test_df[
+                    other_test_df[test_pw_col].isna() | other_test_df[test_ws_col].isna()
+                ].index
+                cols_to_filter = list({test_pw_col, test_ws_col, "ActivePowerMean", "WindSpeedMean"})
+                test_df.loc[timestamps_to_filter, cols_to_filter] = pd.NA
+                pw_na_after = test_df["ActivePowerMean"].isna().sum()
+                print_filter_stats(
+                    filter_name=f"filter_all_test_wtgs_together {other_test_wtg.name}",
+                    na_rows=pw_na_after - pw_na_before,
+                    total_rows=len(test_df),
+                )
+
+        if cfg.use_lt_distribution:
+            lt_wtg_df_raw, lt_wtg_df_filt = calc_turbine_lt_dfs_raw_filt(
+                wtg_name=test_name,
+                cfg=cfg,
+                wtg_df=test_df,
+                ws_col=test_ws_col,
+                pw_col=test_pw_col,
+                plot_cfg=plot_cfg,
+            )
+        else:
+            lt_wtg_df_raw = None
+            lt_wtg_df_filt = None
 
         test_df.columns = ["test_" + x for x in test_df.columns]
         test_pw_col = "test_" + test_pw_col
@@ -599,8 +623,8 @@ def run_wind_up_analysis(
             "wind_up_version": wind_up.__version__,
             "test_wtg": test_name,
             "test_pw_col": test_pw_col,
-            "lt_wtg_hours_raw": lt_wtg_df_raw["observed_hours"].sum(),
-            "lt_wtg_hours_filt": lt_wtg_df_filt["observed_hours"].sum(),
+            "lt_wtg_hours_raw": lt_wtg_df_raw["observed_hours"].sum() if lt_wtg_df_raw is not None else 0,
+            "lt_wtg_hours_filt": lt_wtg_df_filt["observed_hours"].sum() if lt_wtg_df_filt is not None else 0,
             "test_max_ws_drift": test_max_ws_drift,
             "test_max_ws_drift_pp_period": test_max_ws_drift_pp_period,
         }
@@ -635,16 +659,16 @@ def run_wind_up_analysis(
                 "test_pw_col",
                 "ref",
                 "ref_ws_col",
-                "aep_uplift_frc",
-                "aep_unc_one_sigma_frc",
-                "aep_uplift_p95_frc",
-                "aep_uplift_p5_frc",
+                "uplift_frc",
+                "unc_one_sigma_frc",
+                "uplift_p95_frc",
+                "uplift_p5_frc",
                 "pp_data_coverage",
                 "distance_m",
                 "bearing_deg",
-                "aep_unc_one_sigma_noadj_frc",
-                "aep_unc_one_sigma_lowerbound_frc",
-                "aep_unc_one_sigma_bootstrap_frc",
+                "unc_one_sigma_noadj_frc",
+                "unc_one_sigma_lowerbound_frc",
+                "unc_one_sigma_bootstrap_frc",
             ]
             other_columns = [x for x in results_df.columns if x not in first_columns]
             results_df = results_df[first_columns + other_columns]

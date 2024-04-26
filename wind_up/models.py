@@ -148,6 +148,14 @@ class WindUpConfig(BaseModel):
         description="Wind direction filter for reference data",
         examples=[[195, 241]],
     )
+    filter_all_test_wtgs_together: bool = Field(
+        description="If True any row filtered for one test wtg is filtered for all test wtgs. "
+        "Recommended for wake steering analysis.",
+        default=False,
+    )
+    use_lt_distribution: bool = Field(
+        description="If True the long term distribution is calculated and used for uplift calculation", default=True
+    )
     out_dir: Path = Field(description="Directory to save assessment output to")
     test_wtgs: list[Turbine] = Field(description="List of test Turbine ids")
     ref_wtgs: list[Turbine] = Field(default=[], description="List of reference Turbine ids")

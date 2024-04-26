@@ -7,17 +7,17 @@ from wind_up.combine_results import combine_results
 
 
 def calc_expected_combine_results(trdf: pd.DataFrame) -> pd.DataFrame:
-    p50_uplift = (trdf["aep_uplift_frc"] * (1 / trdf["aep_unc_one_sigma_frc"] ** 2)).sum() / (
-        1 / trdf["aep_unc_one_sigma_frc"] ** 2
+    p50_uplift = (trdf["uplift_frc"] * (1 / trdf["unc_one_sigma_frc"] ** 2)).sum() / (
+        1 / trdf["unc_one_sigma_frc"] ** 2
     ).sum()
-    sigma_correlated = (1 / trdf["aep_unc_one_sigma_frc"]).sum() / (1 / trdf["aep_unc_one_sigma_frc"] ** 2).sum()
+    sigma_correlated = (1 / trdf["unc_one_sigma_frc"]).sum() / (1 / trdf["unc_one_sigma_frc"] ** 2).sum()
     sigma_independent = (
         (
             (
-                trdf["aep_unc_one_sigma_frc"]
+                trdf["unc_one_sigma_frc"]
                 * 1
-                / (trdf["aep_unc_one_sigma_frc"] ** 2)
-                / (1 / (trdf["aep_unc_one_sigma_frc"] ** 2)).sum()
+                / (trdf["unc_one_sigma_frc"] ** 2)
+                / (1 / (trdf["unc_one_sigma_frc"] ** 2)).sum()
             )
             ** 2
         ).sum()
@@ -27,7 +27,7 @@ def calc_expected_combine_results(trdf: pd.DataFrame) -> pd.DataFrame:
         data={
             "test_wtg": ["test1"],
             "p50_uplift": [p50_uplift],
-            "sigma_aep": [sigma_test],
+            "sigma": [sigma_test],
             "sigma_test": [sigma_test],
             "sigma_uncorr": [sigma_independent],
             "sigma_corr": [sigma_correlated],
@@ -40,8 +40,8 @@ def test_combine_two_refs() -> None:
         data={
             "test_wtg": ["test1", "test1"],
             "ref": ["ref1", "ref2"],
-            "aep_uplift_frc": [0.02, 0.02],
-            "aep_unc_one_sigma_frc": [0.02, 0.02],
+            "uplift_frc": [0.02, 0.02],
+            "unc_one_sigma_frc": [0.02, 0.02],
         },
     )
     edf = calc_expected_combine_results(trdf)
@@ -55,8 +55,8 @@ def test_combine_three_refs() -> None:
         data={
             "test_wtg": ["test1", "test1", "test1"],
             "ref": ["ref1", "ref2", "ref3"],
-            "aep_uplift_frc": [0.01, 0.02, 0.03],
-            "aep_unc_one_sigma_frc": [0.03, 0.02, 0.01],
+            "uplift_frc": [0.01, 0.02, 0.03],
+            "unc_one_sigma_frc": [0.03, 0.02, 0.01],
         },
     )
     edf = calc_expected_combine_results(trdf)

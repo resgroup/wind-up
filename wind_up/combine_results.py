@@ -22,29 +22,29 @@ def calc_sigma_ref(rdf: pd.DataFrame, ref_list: list[str]) -> float:
 def calc_tdf(trdf: pd.DataFrame, ref_list: list[str], weight_col: str = "unc_weight") -> pd.DataFrame:
     tdf = trdf.groupby("test_wtg").agg(
         p50_uplift=pd.NamedAgg(
-            column="aep_uplift_frc",
+            column="uplift_frc",
             aggfunc=lambda x: (x * trdf.loc[x.index, weight_col]).sum() / trdf.loc[x.index, weight_col].sum(),
         ),
         sigma_uncorr=pd.NamedAgg(
-            column="aep_unc_one_sigma_frc",
+            column="unc_one_sigma_frc",
             aggfunc=lambda x: np.sqrt(
                 ((x * trdf.loc[x.index, weight_col] / trdf.loc[x.index, weight_col].sum()) ** 2).sum(),
             ),
         ),
         sigma_corr=pd.NamedAgg(
-            column="aep_unc_one_sigma_frc",
+            column="unc_one_sigma_frc",
             aggfunc=lambda x: (x * trdf.loc[x.index, weight_col]).sum() / trdf.loc[x.index, weight_col].sum(),
         ),
-        ref_count=pd.NamedAgg(column="aep_uplift_frc", aggfunc=len),
+        ref_count=pd.NamedAgg(column="uplift_frc", aggfunc=len),
         is_ref=pd.NamedAgg(column="test_wtg", aggfunc=lambda x: x.isin(ref_list).any()),
     )
     tdf["sigma_test"] = (tdf["sigma_uncorr"] + tdf["sigma_corr"]) / 2
     tdf = tdf.sort_values(by=["ref_count", "test_wtg"], ascending=[False, True])
     tdf = tdf.reset_index()
     sigma_ref = calc_sigma_ref(tdf, ref_list)
-    tdf["sigma_aep"] = tdf["sigma_test"].clip(lower=sigma_ref)
-    tdf["p95_uplift"] = tdf["p50_uplift"] + norm.ppf(0.05) * tdf["sigma_aep"]
-    tdf["p5_uplift"] = tdf["p50_uplift"] + norm.ppf(0.95) * tdf["sigma_aep"]
+    tdf["sigma"] = tdf["sigma_test"].clip(lower=sigma_ref)
+    tdf["p95_uplift"] = tdf["p50_uplift"] + norm.ppf(0.05) * tdf["sigma"]
+    tdf["p5_uplift"] = tdf["p50_uplift"] + norm.ppf(0.95) * tdf["sigma"]
     return tdf
 
 
@@ -96,12 +96,12 @@ def combine_results(
         trdf = trdf.loc[~trdf["test_wtg"].isin(exclude_refs), :]
         trdf = trdf.loc[~trdf["ref"].isin(exclude_refs), :]
 
-    if (trdf["aep_unc_one_sigma_frc"] <= 0).any() or trdf["aep_unc_one_sigma_frc"].isna().any():
-        msg = "aep_unc_one_sigma_frc must be positive and non-NaN"
+    if (trdf["unc_one_sigma_frc"] <= 0).any() or trdf["unc_one_sigma_frc"].isna().any():
+        msg = "unc_one_sigma_frc must be positive and non-NaN"
         raise ValueError(msg)
 
     weight_col = "unc_weight"
-    trdf[weight_col] = 1 / (trdf["aep_unc_one_sigma_frc"] ** 2)
+    trdf[weight_col] = 1 / (trdf["unc_one_sigma_frc"] ** 2)
 
     ref_list = sorted(trdf["ref"].unique())
 
@@ -121,7 +121,7 @@ def combine_results(
 
     # change column order for readability
     cols = list(tdf.columns)
-    first_cols = ["test_wtg", "p50_uplift", "p95_uplift", "p5_uplift", "sigma_aep"]
+    first_cols = ["test_wtg", "p50_uplift", "p95_uplift", "p5_uplift", "sigma"]
     cols = first_cols + [x for x in cols if x not in first_cols]
     tdf = tdf[cols]
 
