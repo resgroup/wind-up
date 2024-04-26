@@ -206,6 +206,7 @@ if __name__ == "__main__":
         detrend_min_hours=12,
         ref_wd_filter=[197.0, 246.0],
         filter_all_test_wtgs_together=True,
+        use_lt_distribution=False,
         out_dir=OUTPUT_DIR / "smarteole_example",
         test_wtgs=[wtg_map["SMV6"], wtg_map["SMV5"]],
         ref_wtgs=[wtg_map["SMV7"]],
@@ -255,12 +256,13 @@ if __name__ == "__main__":
             [
                 "test_wtg",
                 "ref",
-                "aep_uplift_frc",
-                "aep_unc_one_sigma_frc",
-                "aep_uplift_p95_frc",
-                "aep_uplift_p5_frc",
-                "pp_hours_pre",
-                "pp_hours_post",
+                "uplift_frc",
+                "unc_one_sigma_frc",
+                "uplift_p95_frc",
+                "uplift_p5_frc",
+                "pp_valid_hours_pre",
+                "pp_valid_hours_post",
+                "mean_power_post",
             ]
         ]
 
@@ -277,14 +279,16 @@ if __name__ == "__main__":
             columns={
                 "test_wtg": "turbine",
                 "ref": "reference",
-                "aep_uplift_pct": "energy uplift",
-                "aep_unc_one_sigma_pct": "uplift uncertainty",
-                "aep_uplift_p95_pct": "uplift P95",
-                "aep_uplift_p5_pct": "uplift P5",
-                "pp_hours_pre": "valid hours toggle off",
-                "pp_hours_post": "valid hours toggle on",
+                "uplift_pct": "energy uplift",
+                "unc_one_sigma_pct": "uplift uncertainty",
+                "uplift_p95_pct": "uplift P95",
+                "uplift_p5_pct": "uplift P5",
+                "pp_valid_hours_pre": "valid hours toggle off",
+                "pp_valid_hours_post": "valid hours toggle on",
+                "mean_power_post": "mean power toggle on",
             }
         )
+        print_df["mean power toggle on"] = print_df["mean power toggle on"].round(0).astype("int64")
         results_table = tabulate(
             print_df,
             headers="keys",
@@ -302,11 +306,11 @@ if __name__ == "__main__":
                 "turbine": ["SMV6", "SMV5"],
                 "reference": ["SMV7", "SMV7"],
                 "energy uplift": ["-1.1%", "3.0%"],
-                "uplift uncertainty": ["0.6%", "1.2%"],
-                "uplift P95": ["-2.1%", "1.0%"],
-                "uplift P5": ["-0.2%", "5.1%"],
-                "valid hours toggle off": [137.8, 137.7],
-                "valid hours toggle on": [136.0, 137.2],
+                "uplift uncertainty": ["0.6%", "1.1%"],
+                "uplift P95": ["-2.1%", "1.2%"],
+                "uplift P5": ["-0.2%", "4.9%"],
+                "valid hours toggle off": [137 + 5 / 6, 137 + 4 / 6],
+                "valid hours toggle on": [136.0, 137 + 1 / 6],
                 "mean power toggle on": [1148, 994],
             },
             index=[0, 1],

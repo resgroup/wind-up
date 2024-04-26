@@ -20,8 +20,8 @@ def plot_combine_results(trdf: pd.DataFrame, tdf: pd.DataFrame, plot_cfg: PlotCo
             strict=True,
         )
     ]
-    values = trdf["aep_uplift_frc"] * 100
-    yerrs = trdf["aep_unc_one_sigma_frc"] * 100
+    values = trdf["uplift_frc"] * 100
+    yerrs = trdf["unc_one_sigma_frc"] * 100
     plt.bar(labels, values, yerr=yerrs, capsize=3)
     plt.xlabel("turbine")
     plt.ylabel("uplift [%] and 1-sigma uncertainty")
@@ -38,7 +38,7 @@ def plot_combine_results(trdf: pd.DataFrame, tdf: pd.DataFrame, plot_cfg: PlotCo
     plt.figure()
     labels = tdf["test_wtg"]
     values = tdf["p50_uplift"] * 100
-    yerrs = tdf["sigma_aep"] * 100
+    yerrs = tdf["sigma"] * 100
     plt.bar(labels, values, yerr=yerrs, capsize=3)
     plt.xlabel("turbine")
     plt.ylabel("uplift [%] and 1-sigma uncertainty")

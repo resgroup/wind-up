@@ -286,7 +286,7 @@ def calc_test_ref_results(
     test_df: pd.DataFrame,
     pre_df: pd.DataFrame,
     post_df: pd.DataFrame,
-    long_term_df: pd.DataFrame,
+    long_term_df: pd.DataFrame | None,
     wf_df: pd.DataFrame,
     test_wtg: Turbine,
     ref_name: str,
@@ -508,7 +508,7 @@ def calc_test_ref_results(
 
     pp_results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
         cfg=cfg,
-        test_name=test_name,
+        test_wtg=test_wtg,
         ref_name=ref_name,
         lt_df=long_term_df,
         pre_df=pre_df,
@@ -532,6 +532,8 @@ def calc_test_ref_results(
         "ref_max_ws_drift_pp_period": ref_max_ws_drift_pp_period,
         "detrend_pre_r2_improvement": detrend_pre_r2_improvement,
         "detrend_post_r2_improvement": detrend_post_r2_improvement,
+        "mean_power_pre": pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
+        "mean_power_post": post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
     }
 
     return other_results | pp_results
@@ -580,14 +582,18 @@ def run_wind_up_analysis(
                     total_rows=len(test_df),
                 )
 
-        lt_wtg_df_raw, lt_wtg_df_filt = calc_turbine_lt_dfs_raw_filt(
-            wtg_name=test_name,
-            cfg=cfg,
-            wtg_df=test_df,
-            ws_col=test_ws_col,
-            pw_col=test_pw_col,
-            plot_cfg=plot_cfg,
-        )
+        if cfg.use_lt_distribution:
+            lt_wtg_df_raw, lt_wtg_df_filt = calc_turbine_lt_dfs_raw_filt(
+                wtg_name=test_name,
+                cfg=cfg,
+                wtg_df=test_df,
+                ws_col=test_ws_col,
+                pw_col=test_pw_col,
+                plot_cfg=plot_cfg,
+            )
+        else:
+            lt_wtg_df_raw = None
+            lt_wtg_df_filt = None
 
         test_df.columns = ["test_" + x for x in test_df.columns]
         test_pw_col = "test_" + test_pw_col
@@ -617,8 +623,8 @@ def run_wind_up_analysis(
             "wind_up_version": wind_up.__version__,
             "test_wtg": test_name,
             "test_pw_col": test_pw_col,
-            "lt_wtg_hours_raw": lt_wtg_df_raw["observed_hours"].sum(),
-            "lt_wtg_hours_filt": lt_wtg_df_filt["observed_hours"].sum(),
+            "lt_wtg_hours_raw": lt_wtg_df_raw["observed_hours"].sum() if lt_wtg_df_raw is not None else 0,
+            "lt_wtg_hours_filt": lt_wtg_df_filt["observed_hours"].sum() if lt_wtg_df_filt is not None else 0,
             "test_max_ws_drift": test_max_ws_drift,
             "test_max_ws_drift_pp_period": test_max_ws_drift_pp_period,
         }
@@ -653,16 +659,16 @@ def run_wind_up_analysis(
                 "test_pw_col",
                 "ref",
                 "ref_ws_col",
-                "aep_uplift_frc",
-                "aep_unc_one_sigma_frc",
-                "aep_uplift_p95_frc",
-                "aep_uplift_p5_frc",
+                "uplift_frc",
+                "unc_one_sigma_frc",
+                "uplift_p95_frc",
+                "uplift_p5_frc",
                 "pp_data_coverage",
                 "distance_m",
                 "bearing_deg",
-                "aep_unc_one_sigma_noadj_frc",
-                "aep_unc_one_sigma_lowerbound_frc",
-                "aep_unc_one_sigma_bootstrap_frc",
+                "unc_one_sigma_noadj_frc",
+                "unc_one_sigma_lowerbound_frc",
+                "unc_one_sigma_bootstrap_frc",
             ]
             other_columns = [x for x in results_df.columns if x not in first_columns]
             results_df = results_df[first_columns + other_columns]
