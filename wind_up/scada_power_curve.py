@@ -58,7 +58,7 @@ def calc_pc_and_rated_ws(
         ttype_str = ttype.turbine_type
         original_x_bin_width = x_bin_width
         success = False
-        while x_bin_width < (original_x_bin_width * 2):
+        while x_bin_width < (original_x_bin_width * 3):
             try:
                 pc_per_ttype[ttype_str], rated_ws_per_ttype[ttype_str] = calc_pc_and_rated_ws_one_ttype(
                     df=df_ttype,
