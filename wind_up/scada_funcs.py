@@ -145,6 +145,14 @@ def filter_exclusions(
             ] = pd.NA
     pw_na_after = input_df["ActivePowerMean"].isna().sum()
     print_filter_stats(filter_name="filter_exclusions", na_rows=pw_na_after - pw_na_before, total_rows=len(input_df))
+    # also filter any row where "exclude_row" is True
+    if "exclude_row" in input_df.columns:
+        pw_na_before = input_df["ActivePowerMean"].isna().sum()
+        input_df.loc[input_df["exclude_row"], :] = pd.NA
+        pw_na_after = input_df["ActivePowerMean"].isna().sum()
+        print_filter_stats(
+            filter_name="filter_exclusions exclude_row", na_rows=pw_na_after - pw_na_before, total_rows=len(input_df)
+        )
     return input_df
 
 
