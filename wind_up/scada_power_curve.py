@@ -56,12 +56,24 @@ def calc_pc_and_rated_ws(
         wtgs = cfg.list_turbine_ids_of_type(ttype)
         df_ttype = wf_df.loc[wtgs]
         ttype_str = ttype.turbine_type
-        pc_per_ttype[ttype_str], rated_ws_per_ttype[ttype_str] = calc_pc_and_rated_ws_one_ttype(
-            df=df_ttype,
-            x_col=x_col,
-            y_col=y_col,
-            x_bin_width=x_bin_width,
-        )
+        original_x_bin_width = x_bin_width
+        success = False
+        while x_bin_width < (original_x_bin_width * 2):
+            try:
+                pc_per_ttype[ttype_str], rated_ws_per_ttype[ttype_str] = calc_pc_and_rated_ws_one_ttype(
+                    df=df_ttype,
+                    x_col=x_col,
+                    y_col=y_col,
+                    x_bin_width=x_bin_width,
+                )
+                success = True
+                break
+            except RuntimeError:
+                x_bin_width *= 1.1
+                print(f"power curve calculation failed, trying again with larger bin width {x_bin_width:.2f}")
+        if not success:
+            msg = "power curve calculation failed for all bin widths"
+            raise RuntimeError(msg)
     if plot_cfg is not None:
         plot_pc_per_ttype(cfg=cfg, pc_per_ttype=pc_per_ttype, plot_cfg=plot_cfg)
         plot_removed_data_per_ttype_and_wtg(cfg=cfg, wf_df=wf_df, pc_per_ttype=pc_per_ttype, plot_cfg=plot_cfg)
