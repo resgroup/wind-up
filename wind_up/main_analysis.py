@@ -23,7 +23,7 @@ from wind_up.northing import (
 from wind_up.plots.data_coverage_plots import plot_detrend_data_cov, plot_pre_post_data_cov
 from wind_up.plots.detrend_plots import plot_apply_wsratio_v_wd_scen
 from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post, print_filter_stats
-from wind_up.plots.wake_steering_plots import plot_yaw_direction_pre_post
+from wind_up.plots.yaw_direction_plots import plot_yaw_direction_pre_post
 from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
 from wind_up.waking_state import (
     add_waking_scen,
@@ -516,6 +516,7 @@ def calc_test_ref_results(
             ref_ws_col=ref_ws_col,
             ref_wd_col=ref_wd_col,
             plot_cfg=plot_cfg,
+            toggle_name=cfg.toggle.name if cfg.toggle else None,
         )
 
     pp_results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(

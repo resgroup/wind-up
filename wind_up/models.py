@@ -80,6 +80,7 @@ class Asset(BaseModel):
 
 
 class Toggle(BaseModel):
+    name: str = Field(description="Name of toggle signal to use in plots", min_length=2, default="toggle")
     toggle_file_per_turbine: bool = Field(
         description="Is there one toggle timeseries file per turbine, or one for the asset?",
     )

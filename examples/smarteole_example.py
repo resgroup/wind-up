@@ -229,6 +229,7 @@ if __name__ == "__main__":
         },
         northing_corrections_utc=northing_corrections_utc,
         toggle={
+            "name": "wake steering",
             "toggle_file_per_turbine": False,
             "toggle_filename": "SMV_offset_active_toggle_df.parquet",
             "detrend_data_selection": "use_toggle_off_data",

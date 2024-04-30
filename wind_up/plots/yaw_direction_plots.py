@@ -17,12 +17,14 @@ def plot_yaw_direction_pre_post(
     ref_ws_col: str,
     ref_wd_col: str,
     plot_cfg: PlotConfig,
+    toggle_name: str | None = None,
 ) -> None:
     pre_df = pre_df.copy()
     post_df = post_df.copy()
 
     test_wd_col = "test_YawAngleMean"
-    toggle_name = "wake steering"
+    pre_label = f"{toggle_name} OFF" if toggle_name else "pre upgrade"
+    post_label = f"{toggle_name} ON" if toggle_name else "post upgrade"
 
     pre_df["yaw_offset"] = circ_diff(pre_df[ref_wd_col], pre_df[test_wd_col])
     post_df["yaw_offset"] = circ_diff(post_df[ref_wd_col], post_df[test_wd_col])
@@ -34,14 +36,14 @@ def plot_yaw_direction_pre_post(
         pre_df[test_wd_col],
         s=SCATTER_S,
         alpha=SCATTER_ALPHA,
-        label=f"{toggle_name} OFF",
+        label=pre_label,
     )
     plt.scatter(
         post_df[ref_wd_col],
         post_df[test_wd_col],
         s=SCATTER_S,
         alpha=SCATTER_ALPHA,
-        label=f"{toggle_name} ON",
+        label=post_label,
     )
     plt.xlabel(f"{ref_wd_col} [deg]")
     plt.ylabel(f"{test_wd_col} [deg]")
@@ -54,32 +56,32 @@ def plot_yaw_direction_pre_post(
         pre_df["yaw_offset"],
         s=SCATTER_S,
         alpha=SCATTER_ALPHA,
-        label=f"{toggle_name} OFF",
+        label=pre_label,
     )
     plt.scatter(
         post_df[ref_wd_col],
         post_df["yaw_offset"],
         s=SCATTER_S,
         alpha=SCATTER_ALPHA,
-        label=f"{toggle_name} ON",
+        label=post_label,
     )
     plt.xlabel(f"{ref_wd_col} [deg]")
     plt.ylabel(f"{test_wd_col} - {ref_wd_col} [deg]")
     plt.grid()
 
-    plot_title = f"{ref_name} and {test_name} yaw direction by {toggle_name} toggle"
+    plot_title = f"{ref_name} and {test_name} yaw direction"
     plt.suptitle(plot_title)
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        (plot_cfg.plots_dir / test_name / "wake_steering").mkdir(exist_ok=True)
-        plt.savefig(plot_cfg.plots_dir / test_name / "wake_steering" / f"{plot_title}.png")
+        (plot_cfg.plots_dir / test_name / "yaw_direction").mkdir(exist_ok=True)
+        plt.savefig(plot_cfg.plots_dir / test_name / "yaw_direction" / f"{plot_title}.png")
     plt.close()
 
     ws_bin_width = 2
     wd_bin_width = 5
 
-    ws_bin_edges = np.arange(0, pre_df[ref_ws_col].max() + ws_bin_width, ws_bin_width)
+    ws_bin_edges = np.arange(0, max(pre_df[ref_ws_col].max(), post_df[ref_ws_col].max()) + ws_bin_width, ws_bin_width)
     pre_df["ws_bins"] = pd.cut(pre_df[ref_ws_col], bins=ws_bin_edges, retbins=False)
     pre_df["ws_bin_centre"] = [x.mid for x in pre_df["ws_bins"]]
     post_df["ws_bins"] = pd.cut(post_df[ref_ws_col], bins=ws_bin_edges, retbins=False)
@@ -91,9 +93,8 @@ def plot_yaw_direction_pre_post(
     post_df["wd_bins"] = pd.cut(post_df[ref_wd_col], bins=wd_bin_edges, retbins=False)
     post_df["wd_bin_centre"] = [x.mid for x in post_df["wd_bins"]]
 
-    for tgl in [0, 1]:
-        on_or_off = "OFF" if tgl == 0 else "ON"
-        plot_df = pre_df if tgl == 0 else post_df
+    for i, label in enumerate([pre_label, post_label]):
+        plot_df = pre_df if i == 0 else post_df
         plt.figure(figsize=(8, 8))
         plt.subplot(2, 1, 1)
         sns.heatmap(
@@ -127,12 +128,12 @@ def plot_yaw_direction_pre_post(
         plt.xlabel("wind direction bin centre [deg]")
         plt.ylabel("wind speed bin centre [m/s]")
 
-        plot_title = f"{ref_name} minus {test_name} yaw direction vs ws and wd toggle {on_or_off}"
+        plot_title = f"{ref_name} minus {test_name} yaw direction vs ws and wd {label}"
         plt.suptitle(plot_title)
         plt.tight_layout()
         if plot_cfg.show_plots:
             plt.show()
         if plot_cfg.save_plots:
-            (plot_cfg.plots_dir / test_name / "wake_steering").mkdir(exist_ok=True)
-            plt.savefig(plot_cfg.plots_dir / test_name / "wake_steering" / f"{plot_title}.png")
+            (plot_cfg.plots_dir / test_name / "yaw_direction").mkdir(exist_ok=True)
+            plt.savefig(plot_cfg.plots_dir / test_name / "yaw_direction" / f"{plot_title}.png")
         plt.close()
