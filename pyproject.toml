@@ -59,8 +59,8 @@ ignore = [
     "D", # docstring checks
     "T20", # disallow print
     "PGH004", # Use specific rule codes when using `noqa`. Seems to give false alarms
-    "COM812", # can conflict with formatter
-    "ISC001", # can conflict with formatter
+    "COM812", # can conflict with ruff formatter
+    "ISC001", # can conflict with ruff formatter
     "G004", # logging statement can use f-string
 ]
 ignore-init-module-imports = true
