@@ -1,4 +1,5 @@
 import itertools
+import math
 
 import matplotlib as mpl
 import numpy as np
@@ -129,3 +130,21 @@ def combine_results(
         plot_combine_results(trdf=trdf, tdf=tdf, plot_cfg=plot_config)
 
     return tdf
+
+
+def calc_net_uplift(results_per_test_df: pd.DataFrame, *, confidence: float) -> tuple[float, float, float]:
+    if results_per_test_df.groupby("test_wtg").size().max() > 1:
+        msg = "results_per_test_df must have only one row per test turbine"
+        raise ValueError(msg)
+    net_p50 = (results_per_test_df["uplift_frc"] * results_per_test_df["mean_power_pre"]).sum() / results_per_test_df[
+        "mean_power_pre"
+    ].sum()
+    net_unc = (
+        math.sqrt(((results_per_test_df["unc_one_sigma_frc"] * results_per_test_df["mean_power_pre"]) ** 2).sum())
+        / results_per_test_df["mean_power_pre"].sum()
+    )
+    p_low = (1 - confidence) / 2
+    net_p_low = net_p50 + norm.ppf(p_low) * net_unc
+    p_high = 1 - p_low
+    net_p_high = net_p50 + norm.ppf(p_high) * net_unc
+    return net_p50, net_p_low, net_p_high

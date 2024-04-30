@@ -10,6 +10,7 @@ from tabulate import tabulate
 
 from examples.helpers import download_zenodo_data
 from wind_up.caching import with_parquet_cache
+from wind_up.combine_results import calc_net_uplift
 from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
 from wind_up.interface import AssessmentInputs
 from wind_up.main_analysis import run_wind_up_analysis
@@ -250,6 +251,9 @@ if __name__ == "__main__":
         cache_dir=CACHE_FLD,
     )
     results_per_test_ref_df = run_wind_up_analysis(assessment_inputs)
+
+    net_p50, net_p95, net_p5 = calc_net_uplift(results_per_test_ref_df, confidence=0.9)
+    print(f"net P50: {net_p50:.1%}, net P95: {net_p95:.1%}, net P5: {net_p5:.1%}")
 
     if CHECK_RESULTS:
         # print key results to console
