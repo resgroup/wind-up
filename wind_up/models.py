@@ -205,6 +205,12 @@ class WindUpConfig(BaseModel):
         examples=[1, 2],
     )
     ws_bin_width: float = Field(description="Wind speed bin width in m/s", gt=0, examples=[0.5, 1])
+    bootstrap_runs_override: int | None = Field(
+        description="Number of bootstrap runs to use, if None then calculated",
+        ge=0,
+        examples=[None, 1000],
+        default=None,
+    )
     reanalysis_method: str = Field(
         default="node_with_best_ws_corr",
         description="Method to use for reanalysis (e.g. ERA5) selection",
