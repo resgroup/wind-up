@@ -334,7 +334,7 @@ def calc_test_ref_results(
         keep_only_toggle_off=keep_only_toggle_off,
     )
     if len(ref_df) == 0:
-        print(f"WARNING: ref_df is empty for {ref_name}")
+        result_manager.warning(f"ref_df is empty for {ref_name}")
         return ref_info
     ref_max_northing_error_v_reanalysis = check_wtg_northing(
         ref_df,

@@ -464,7 +464,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
             )
             bootstrapped_uplifts[n] = sample_results["uplift_frc"]
         except RuntimeError:
-            result_manager.warning(f"WARNING: RuntimeError on sample {n}")
+            result_manager.warning(f"RuntimeError on sample {n}")
             bootstrapped_uplifts[n] = np.nan
 
     if np.isnan(bootstrapped_uplifts).sum() < 0.5 * len(bootstrapped_uplifts):
