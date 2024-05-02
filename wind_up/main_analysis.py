@@ -25,6 +25,7 @@ from wind_up.plots.detrend_plots import plot_apply_wsratio_v_wd_scen
 from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post, print_filter_stats
 from wind_up.plots.yaw_direction_plots import plot_yaw_direction_pre_post
 from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
+from wind_up.result_manager import result_manager
 from wind_up.waking_state import (
     add_waking_scen,
     get_distance_and_bearing,
@@ -551,7 +552,9 @@ def calc_test_ref_results(
         "detrend_post_r2_improvement": detrend_post_r2_improvement,
         "mean_power_pre": pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
         "mean_power_post": post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
+        "test_ref_warning_counts": len(result_manager.stored_warnings),
     }
+    result_manager.stored_warnings = []
 
     return other_results | pp_results
 
@@ -560,6 +563,9 @@ def run_wind_up_analysis(
     inputs: AssessmentInputs,
     random_seed: int = RANDOM_SEED,
 ) -> pd.DataFrame:
+    preprocess_warning_counts = len(result_manager.stored_warnings)
+    result_manager.stored_warnings = []
+
     wf_df = inputs.wf_df
     pc_per_ttype = inputs.pc_per_ttype
     cfg = inputs.cfg
@@ -644,7 +650,10 @@ def run_wind_up_analysis(
             "lt_wtg_hours_filt": lt_wtg_df_filt["observed_hours"].sum() if lt_wtg_df_filt is not None else 0,
             "test_max_ws_drift": test_max_ws_drift,
             "test_max_ws_drift_pp_period": test_max_ws_drift_pp_period,
+            "preprocess_warning_counts": preprocess_warning_counts,
+            "test_warning_counts": len(result_manager.stored_warnings),
         }
+        result_manager.stored_warnings = []
 
         scada_pc = pc_per_ttype[test_wtg.turbine_type.turbine_type]
         for ref_name_counter, ref_name in enumerate(ref_name_list):

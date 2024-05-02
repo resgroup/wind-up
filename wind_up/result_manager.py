@@ -4,14 +4,14 @@ logger = logging.getLogger(__name__)
 
 
 class ResultManager:
-    _warnings: list[str]
+    stored_warnings: list[str]
 
     def __init__(self) -> None:
-        self._warnings = []
+        self.stored_warnings = []
 
     def warning(self, msg: str) -> None:
         logger.warning(msg)
-        self._warnings.append(msg)
+        self.stored_warnings.append(msg)
 
 
 result_manager = ResultManager()
