@@ -19,10 +19,10 @@ def plot_yaw_direction_pre_post(
     plot_cfg: PlotConfig,
     toggle_name: str | None = None,
 ) -> None:
-    pre_df = pre_df.copy()
-    post_df = post_df.copy()
-
     test_wd_col = "test_YawAngleMean"
+    pre_df = pre_df.dropna(subset=[test_wd_col, ref_ws_col, ref_wd_col]).copy()
+    post_df = post_df.dropna(subset=[test_wd_col, ref_ws_col, ref_wd_col]).copy()
+
     pre_label = f"{toggle_name} OFF" if toggle_name else "pre upgrade"
     post_label = f"{toggle_name} ON" if toggle_name else "post upgrade"
 
