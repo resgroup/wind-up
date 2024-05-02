@@ -1,9 +1,14 @@
+import logging
+
 import numpy as np
 import pandas as pd
 
 from wind_up.constants import HOURS_PER_YEAR, RAW_POWER_COL, RAW_WINDSPEED_COL
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.long_term_plots import plot_lt_ws, plot_lt_ws_raw_filt
+from wind_up.result_manager import result_manager
+
+logger = logging.getLogger(__name__)
 
 
 def calc_lt_df(
@@ -17,12 +22,11 @@ def calc_lt_df(
 ) -> pd.DataFrame:
     years_of_data = (df_for_lt.index.max() - df_for_lt.index.min()).total_seconds() / 3600 / 24 / 365.25
     if years_of_data < 11.5 / 12:
-        msg = f"WARNING: years_of_data for long term is too small: {years_of_data:.1f}"
-        print(msg)
+        result_manager.warning(f"years_of_data for long term is too small: {years_of_data:.1f}")
     max_years_error = 0.1
     if years_for_lt_distribution - years_of_data > max_years_error:
-        print(
-            "WARNING: years_of_data for long term is small, "
+        result_manager.warning(
+            "years_of_data for long term is small, "
             f"expected {years_for_lt_distribution:.1f} actual {years_of_data:.1f}",
         )
 
@@ -31,10 +35,10 @@ def calc_lt_df(
         raise TypeError(msg)
     counts_by_month = df_for_lt.index.month.value_counts().to_frame()
     if len(counts_by_month) < 12:  # noqa PLR2004
-        print(f"WARNING: only {len(counts_by_month)} months represented in data for long term")
+        result_manager.warning(f"only {len(counts_by_month)} months represented in data for long term")
     counts_by_hour = df_for_lt.index.hour.value_counts().to_frame()
     if len(counts_by_hour) < 24:  # noqa PLR2004
-        print(f"WARNING: only {len(counts_by_hour)} hours represented in data for long term")
+        result_manager.warning(f"only {len(counts_by_hour)} hours represented in data for long term")
 
     ws_bin_edges = np.arange(0, df_for_lt[ws_col].max() + ws_bin_width, ws_bin_width)
 
@@ -63,7 +67,7 @@ def calc_lt_df(
         data_coverage = lt_df["observed_hours"].sum() / (years_for_lt_distribution * HOURS_PER_YEAR) / num_turbines
     else:
         data_coverage = lt_df["observed_hours"].sum() / (years_of_data * HOURS_PER_YEAR) / num_turbines
-        print("WARNING: years_for_lt_distribution is 0, using years_of_data instead to calculate data coverage")
+        result_manager.warning("years_for_lt_distribution is 0, using years_of_data instead to calculate data coverage")
     if data_coverage > 1:
         msg = f"Data coverage for long term ws distribution is >1, {data_coverage:.2f}"
         raise RuntimeError(msg)
@@ -76,8 +80,8 @@ def calc_lt_df(
         msg = "lt_df has missing values"
         raise RuntimeError(msg)
 
-    print(f"long term distribution uses data from {df_for_lt.index.min()} to {df_for_lt.index.max()}")
-    print(f"long term distribution data coverage: {data_coverage*100:.1f}%")
+    logger.info(f"long term distribution uses data from {df_for_lt.index.min()} to {df_for_lt.index.max()}")
+    logger.info(f"long term distribution data coverage: {data_coverage*100:.1f}%")
 
     return lt_df
 

@@ -1,8 +1,12 @@
+import logging
+
 import numpy as np
 import pandas as pd
 
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.scada_power_curve_plots import plot_pc_per_ttype, plot_removed_data_per_ttype_and_wtg
+
+logger = logging.getLogger(__name__)
 
 
 def calc_pc_and_rated_ws_one_ttype(
@@ -20,7 +24,7 @@ def calc_pc_and_rated_ws_one_ttype(
     # this rated_ws calculation is not very robust if we are lacking data
     rated_ws_threshold = 0.995
     rated_ws = pc["x_mean"][pc["y_mean"] / pc["y_mean"].max() > rated_ws_threshold].iloc[0]
-    print(f"estimated rated wind speed = {rated_ws:.1f} m/s")
+    logger.info(f"estimated rated wind speed = {rated_ws:.1f} m/s")
     below_rated = pc["x_mean"].fillna(0) < rated_ws
     low_pw_threshold = 0.005
     low_power = pc["y_mean"] / pc["y_mean"].max() < low_pw_threshold
@@ -28,7 +32,7 @@ def calc_pc_and_rated_ws_one_ttype(
         cutin_ws = pc["x_mean"][below_rated & (pc["y_mean"].fillna(0) / pc["y_mean"].max() < low_pw_threshold)].iloc[-1]
     else:
         cutin_ws = pc["x_mean"].dropna().iloc[0]
-    print(f"estimated cut-in wind speed = {cutin_ws:.1f} m/s")
+    logger.info(f"estimated cut-in wind speed = {cutin_ws:.1f} m/s")
 
     pc[x_col] = pc["x_mean"].fillna(pc["bin_mid"])
     pc[y_col] = pc["y_mean"]
@@ -70,7 +74,7 @@ def calc_pc_and_rated_ws(
                 break
             except RuntimeError:
                 x_bin_width *= 1.1
-                print(f"power curve calculation failed, trying again with larger bin width {x_bin_width:.2f}")
+                logger.info(f"power curve calculation failed, trying again with larger bin width {x_bin_width:.2f}")
         if not success:
             msg = "power curve calculation failed for all bin widths"
             raise RuntimeError(msg)

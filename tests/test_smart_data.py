@@ -114,8 +114,8 @@ def test_check_and_convert_scada_raw() -> None:
     last_datetime_utc_start = pd.Timestamp("2020-02-29 00:10:00", tz="UTC")
     scada_converted = check_and_convert_scada_raw(
         scada_raw,
-        smart_tz=smart_tz,
-        smart_tf=smart_tf,
+        scada_data_timezone=smart_tz,
+        scada_data_time_format=smart_tf,
         first_datetime_utc_start=first_datetime_utc_start,
         last_datetime_utc_start=last_datetime_utc_start,
     )

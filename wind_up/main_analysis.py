@@ -1,5 +1,5 @@
+import logging
 import math
-import pprint
 
 import numpy as np
 import pandas as pd
@@ -32,6 +32,8 @@ from wind_up.waking_state import (
     lat_long_is_valid,
 )
 from wind_up.windspeed_drift import check_windspeed_drift
+
+logger = logging.getLogger(__name__)
 
 
 def get_config_objects(
@@ -101,11 +103,13 @@ def filter_ref_df_for_wake_free(
                     test_wds_to_keep.append(wd)
             ref_df = ref_df[ref_df["rounded_wd"].isin(test_wds_to_keep)]
             if len(test_wds_to_keep) > 0:
-                print(f"{test_wtg.name} wake free directions min={min(test_wds_to_keep)} max={max(test_wds_to_keep)}")
+                logger.info(
+                    f"{test_wtg.name} wake free directions min={min(test_wds_to_keep)} max={max(test_wds_to_keep)}"
+                )
             else:
-                print(f"{test_wtg.name} has no wake free directions with data")
+                logger.info(f"{test_wtg.name} has no wake free directions with data")
         rows_after = len(ref_df)
-        print(
+        logger.info(
             f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
             f"rows from ref_df using require_test_wake_free",
         )
@@ -125,13 +129,13 @@ def filter_ref_df_for_wake_free(
                     ref_wds_to_keep.append(wd)
             ref_df = ref_df[ref_df["rounded_wd"].isin(ref_wds_to_keep)]
             if len(ref_wds_to_keep) > 0:
-                print(
+                logger.info(
                     f"{ref_name} wake free directions with data min={min(ref_wds_to_keep)} max={max(ref_wds_to_keep)}",
                 )
             else:
-                print(f"{ref_name} has no wake free directions with data")
+                logger.info(f"{ref_name} has no wake free directions with data")
         rows_after = len(ref_df)
-        print(
+        logger.info(
             f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
             f"rows from ref_df using require_ref_wake_free",
         )
@@ -191,7 +195,7 @@ def get_ref_df(
         else:
             ref_df = ref_df[(ref_df[ref_wd_col] >= cfg.ref_wd_filter[0]) | (ref_df[ref_wd_col] <= cfg.ref_wd_filter[1])]
         rows_after = len(ref_df)
-        print(
+        logger.info(
             f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
             f"rows from ref_df using ref_wd_filter",
         )
@@ -270,11 +274,11 @@ def toggle_pairing_filter(
         raise ValueError(msg)
     len_pre_after = len(filt_pre_df)
     len_post_after = len(filt_post_df)
-    print(
+    logger.info(
         f"removed {len_pre_before - len_pre_after} [{100 * (len_pre_before - len_pre_after) / len_pre_before:.1f}%] "
         f"rows from pre_df using {pairing_filter_method} pairing filter",
     )
-    print(
+    logger.info(
         f"removed {len_post_before - len_post_after} "
         f"[{100 * (len_post_before - len_post_after) / len_post_before:.1f}%] "
         f"rows from post_df using {pairing_filter_method} pairing filter",
@@ -373,7 +377,7 @@ def calc_test_ref_results(
             (detrend_df.index < first_toggle_on) | (detrend_df["test_toggle_off"].fillna(value=False))
         ]
         rows_after = len(detrend_df)
-        print(
+        logger.info(
             f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
             f"rows from detrend_df where test_toggle_off was not True after the first toggle on time",
         )
@@ -568,9 +572,9 @@ def run_wind_up_analysis(
         wtgs_to_test.extend([x for x in cfg.ref_wtgs if x not in cfg.test_wtgs])
 
     results_per_test_ref = []
-    print(f"test turbines: {[x.name for x in cfg.test_wtgs]}")
-    print(f"ref list: {ref_name_list}")
-    print(f"turbines to test: {[x.name for x in wtgs_to_test]}")
+    logger.info(f"test turbines: {[x.name for x in cfg.test_wtgs]}")
+    logger.info(f"ref list: {ref_name_list}")
+    logger.info(f"turbines to test: {[x.name for x in wtgs_to_test]}")
     for test_wtg_counter, test_wtg in enumerate(wtgs_to_test):
         test_name = test_wtg.name
         test_pw_col = "pw_clipped"
@@ -645,7 +649,7 @@ def run_wind_up_analysis(
         scada_pc = pc_per_ttype[test_wtg.turbine_type.turbine_type]
         for ref_name_counter, ref_name in enumerate(ref_name_list):
             loop_counter = test_wtg_counter * len(ref_name_list) + ref_name_counter
-            print(f"\nanalysing {test_name} {ref_name}, loop_counter={loop_counter}\n")
+            logger.info(f"analysing {test_name} {ref_name}, loop_counter={loop_counter}")
             test_ref_results = calc_test_ref_results(
                 test_df=test_df,
                 pre_df=pre_df,
@@ -663,7 +667,7 @@ def run_wind_up_analysis(
                 random_seed=random_seed,
             )
             test_ref_results = test_ref_results | test_results
-            pprint.pprint(test_ref_results)
+            logger.info(test_ref_results)
             results_df = pd.DataFrame(test_ref_results, index=[loop_counter])
             first_columns = [
                 "wind_up_version",
@@ -688,7 +692,7 @@ def run_wind_up_analysis(
 
             results_per_test_ref.append(results_df)
             pd.concat(results_per_test_ref).to_csv(cfg.out_dir / "results_interim.csv")
-            print(f"\nfinished analysing {test_name} {ref_name}\n")
+            logger.info(f"finished analysing {test_name} {ref_name}\n")
 
     combined_results = pd.concat(results_per_test_ref)
     combined_results.to_csv(

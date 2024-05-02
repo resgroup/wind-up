@@ -1,3 +1,4 @@
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,8 @@ from wind_up.scada_power_curve import calc_pc_and_rated_ws
 from wind_up.smart_data import add_smart_lat_long_to_cfg
 from wind_up.waking_state import add_waking_state
 from wind_up.ws_est import add_ws_est
+
+logger = logging.getLogger(__name__)
 
 
 class PrePostSplitter:
@@ -74,13 +77,13 @@ def add_toggle_signals(
         toggle_on_rows_after = toggle_df["toggle_on"].sum()
         toggle_off_rows_after = toggle_df["toggle_off"].sum()
 
-        print(
+        logger.info(
             f"changed {toggle_on_rows_before - toggle_on_rows_after} "
             f"[{100 * (toggle_on_rows_before - toggle_on_rows_after) / toggle_on_rows_before:.1f}%] "
             f"rows from toggle_on True to False because toggle_change_settling_filter_seconds "
             f"= {cfg.toggle.toggle_change_settling_filter_seconds}",
         )
-        print(
+        logger.info(
             f"changed {toggle_off_rows_before - toggle_off_rows_after} "
             f"[{100 * (toggle_off_rows_before - toggle_off_rows_after) / toggle_off_rows_before:.1f}%] "
             f"rows from toggle_off True to False because toggle_change_settling_filter_seconds "
@@ -185,7 +188,7 @@ def preprocess(
     metadata_df: pd.DataFrame,
     reanalysis_datasets: list[ReanalysisDataset],
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
-    print(f"\nrunning wind_up analysis for {cfg.assessment_name}")
+    logger.info(f"running wind_up analysis for {cfg.assessment_name}")
 
     wf_df, pc_per_ttype, cfg = get_filtered_wf_df_and_cfg_with_latlongs(
         cfg=cfg,

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import matplotlib as mpl
@@ -11,6 +12,7 @@ from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.misc_plots import bubble_plot
 
 mpl.use("Agg")
+logger = logging.getLogger(__name__)
 
 
 def plot_data_coverage_heatmap(df: pd.DataFrame, plot_title: str, plot_cfg: PlotConfig) -> None:
@@ -60,17 +62,15 @@ def print_and_plot_capacity_factor(scada_df: pd.DataFrame, cfg: WindUpConfig, pl
         savefigure=plots_dir / f"{title}.png",
     )
 
-    print(f'\naverage capacity factor: {cf_df["CF"].mean() * 100:.1f}%\n')
-    print("top 3 capacity factor [%]:")
-    print(
-        tabulate(
-            (cf_df.sort_values(by="CF", ascending=False)["CF"][0:3] * 100).to_frame(),
-            tablefmt="fancy_grid",
-            floatfmt=".1f",
-        ),
+    logger.info(f'average capacity factor: {cf_df["CF"].mean() * 100:.1f}%')
+    _table = tabulate(
+        (cf_df.sort_values(by="CF", ascending=False)["CF"][0:3] * 100).to_frame(),
+        tablefmt="pretty",
+        floatfmt=".1f",
     )
-    print("bottom 3 capacity factor [%]:")
-    print(tabulate((cf_df.sort_values(by="CF")["CF"][0:3] * 100).to_frame(), tablefmt="fancy_grid", floatfmt=".1f"))
+    logger.info(f"top 3 capacity factor [%]:\n{_table}")
+    _table = tabulate((cf_df.sort_values(by="CF")["CF"][0:3] * 100).to_frame(), tablefmt="pretty", floatfmt=".1f")
+    logger.info(f"bottom 3 capacity factor [%]:\n{_table}")
 
 
 def plot_ops_curves_per_ttype(cfg: WindUpConfig, df: pd.DataFrame, title_end: str, plot_cfg: PlotConfig) -> None:
@@ -342,6 +342,8 @@ def print_filter_stats(
     if len(reason) > 0:
         reason = f" because of {reason}"
     if just_yaw:
-        print(f"{filter_name} set {na_rows} rows [{100 * na_rows / total_rows:.1f}%] to NA yaw{min_max_str}{reason}")
+        logger.info(
+            f"{filter_name} set {na_rows} rows [{100 * na_rows / total_rows:.1f}%] to NA yaw{min_max_str}{reason}"
+        )
     else:
-        print(f"{filter_name} set {na_rows} rows [{100 * na_rows / total_rows:.1f}%] to NA{reason}")
+        logger.info(f"{filter_name} set {na_rows} rows [{100 * na_rows / total_rows:.1f}%] to NA{reason}")

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import matplotlib as mpl
@@ -9,6 +10,7 @@ import utm
 from wind_up.models import WindUpConfig
 
 mpl.use("Agg")
+logger = logging.getLogger(__name__)
 
 
 def rescale_vector(
@@ -77,7 +79,7 @@ def bubble_plot_calcs(
     # negative numbers in the series
     if any(series < 0):
         # color
-        print("any(series<0)=True, perhaps some the sizes are weird")
+        logger.warning("any(series<0)=True, perhaps some the sizes are weird")
         s = series + abs(series.min())
         sc = 0.1 + 0.8 * s / s.max()
         midtick = (-series.min() * 0.8) / (series.max() - series.min()) + 0.1

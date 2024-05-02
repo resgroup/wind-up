@@ -6,6 +6,7 @@ from wind_up.constants import (
 )
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.windspeed_drift_plots import plot_rolling_windspeed_diff_one_wtg
+from wind_up.result_manager import result_manager
 
 
 def add_rolling_windspeed_diff(wtg_df: pd.DataFrame, ws_col: str, reanalysis_ws_col: str) -> pd.DataFrame:
@@ -32,7 +33,7 @@ def add_rolling_windspeed_diff(wtg_df: pd.DataFrame, ws_col: str, reanalysis_ws_
             .median()
         )
     if len(wtg_df["rolling_windspeed_diff"].dropna()) == 0:
-        print("WARNING: could not calculate rolling windspeed diff")
+        result_manager.warning("could not calculate rolling windspeed diff")
     return wtg_df
 
 
@@ -61,10 +62,10 @@ def check_windspeed_drift(
 
     ws_diff_ul = 0.5
     if max_abs_rel_diff > ws_diff_ul:
-        print(f"WARNING possible wind speed drift of {max_abs_rel_diff:.1f} m/s for {wtg_name}")
+        result_manager.warning(f"possible wind speed drift of {max_abs_rel_diff:.1f} m/s for {wtg_name}")
     if max_abs_rel_diff_pp_period > ws_diff_ul:
-        print(
-            f"WARNING possible wind speed drift of {max_abs_rel_diff_pp_period:.1f} m/s for {wtg_name} "
+        result_manager.warning(
+            f"possible wind speed drift of {max_abs_rel_diff_pp_period:.1f} m/s for {wtg_name} "
             f"DURING POWER PERFORMANCE PERIOD",
         )
 

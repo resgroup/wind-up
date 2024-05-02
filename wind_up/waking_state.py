@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pandas as pd
 from geographiclib.geodesic import Geodesic
@@ -15,6 +17,8 @@ from wind_up.math_funcs import circ_diff
 from wind_up.models import PlotConfig, TurbineType, WindUpConfig
 from wind_up.plots.waking_state_plots import plot_waking_state_one_ttype_or_wtg
 from wind_up.wind_funcs import calc_cp
+
+logger = logging.getLogger(__name__)
 
 
 def add_waking_state_one_ttype(wf_df: pd.DataFrame, ttype: TurbineType, plot_cfg: PlotConfig | None) -> pd.DataFrame:
@@ -55,13 +59,13 @@ def add_waking_state_one_ttype(wf_df: pd.DataFrame, ttype: TurbineType, plot_cfg
 
     if plot_cfg is not None:
         waking_frc = wf_df["waking"].sum() / len(wf_df)
-        print(f"{ttype.turbine_type} {waking_frc * 100:.1f}% of rows are waking")
+        logger.info(f"{ttype.turbine_type} {waking_frc * 100:.1f}% of rows are waking")
         not_waking_frc = wf_df["not_waking"].sum() / len(wf_df)
-        print(
+        logger.info(
             f"{ttype.turbine_type} {not_waking_frc * 100:.1f}% of rows are not waking",
         )
         unknown_waking_frc = wf_df["unknown_waking"].sum() / len(wf_df)
-        print(
+        logger.info(
             f"{ttype.turbine_type} {unknown_waking_frc * 100:.1f}% of rows have unknown or partial waking",
         )
         plot_waking_state_one_ttype_or_wtg(wf_df=wf_df, ttype_or_wtg=ttype.turbine_type, plot_cfg=plot_cfg)
@@ -146,7 +150,7 @@ def calc_iec_upwind_turbines(*, lat: float, long: float, wind_direction: float, 
 
     upwind_turbine_list = list(upwind_df.query("iec_upwind")["wtg_name"].sort_values().values)
     if wind_direction % 90 == 0:
-        print(
+        logger.info(
             f"calc_iec_upwind_turbines lat={lat:.2f} long={long:.2f} "
             f"wind_dir={wind_direction:.0f} {upwind_turbine_list}",
         )
@@ -282,13 +286,12 @@ def add_waking_scen(
         raise RuntimeError(msg)
 
     top_scens = test_ref_df.dropna(subset=ref_wd_col)["waking_scenario"].value_counts()[0:5]
-    print(f"top {len(top_scens)} {test_name} {ref_name} waking scenarios [%]:")
-    print(
-        tabulate(
-            (top_scens / len(test_ref_df.dropna(subset=ref_wd_col)) * 100).to_frame(),
-            tablefmt="double_grid",
-            floatfmt=".1f",
-        ),
+    logger.info(f"top {len(top_scens)} {test_name} {ref_name} waking scenarios [%]:")
+    _table = tabulate(
+        (top_scens / len(test_ref_df.dropna(subset=ref_wd_col)) * 100).to_frame(),
+        tablefmt="pretty",
+        floatfmt=".1f",
     )
+    logger.info(f"\n{_table}")
 
     return test_ref_df.drop(columns=["rounded_wd", "all_turbines_waking"])

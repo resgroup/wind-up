@@ -1,4 +1,5 @@
 import contextlib
+import logging
 import math
 
 import numpy as np
@@ -9,6 +10,9 @@ from tqdm.auto import tqdm
 from wind_up.constants import ROWS_PER_HOUR, TIMEBASE_PD_TIMEDELTA, TIMEBASE_S
 from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.plots.pp_analysis_plots import plot_pp_data_coverage, plot_pre_post_pp_analysis
+from wind_up.result_manager import result_manager
+
+logger = logging.getLogger(__name__)
 
 
 def pp_raw_df(
@@ -362,13 +366,13 @@ def pre_post_pp_analysis_with_reversal(
         )
         reversal_error = reversed_uplift_frc - poweronly_uplift_frc
     if plot_cfg is not None:
-        print(f"\nresults for test={test_wtg.name} ref={ref_name}:\n")
-        print(f"hours pre = {pp_results['pp_valid_hours_pre']:.1f}")
-        print(f"hours post = {pp_results['pp_valid_hours_post']:.1f}")
-        print(f"\nuplift estimate before adjustments = {100*pp_results['uplift_frc']:.1f} %")
+        logger.info(f"\nresults for test={test_wtg.name} ref={ref_name}:\n")
+        logger.info(f"hours pre = {pp_results['pp_valid_hours_pre']:.1f}")
+        logger.info(f"hours post = {pp_results['pp_valid_hours_post']:.1f}")
+        logger.info(f"\nuplift estimate before adjustments = {100*pp_results['uplift_frc']:.1f} %")
 
-        print(f"\npower only uplift estimate = {100 * poweronly_uplift_frc:.1f} %")
-        print(f"reversed (power only) uplift estimate = {100 * reversed_uplift_frc:.1f} %\n")
+        logger.info(f"\npower only uplift estimate = {100 * poweronly_uplift_frc:.1f} %")
+        logger.info(f"reversed (power only) uplift estimate = {100 * reversed_uplift_frc:.1f} %\n")
 
     pp_results["uplift_noadj_frc"] = pp_results["uplift_frc"]
     pp_results["unc_one_sigma_noadj_frc"] = pp_results["unc_one_sigma_frc"]
@@ -421,7 +425,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
 
     n_samples = cfg.bootstrap_runs_override if cfg.bootstrap_runs_override else round(40 * (1 / (1 - confidence_level)))
     if plot_cfg is not None:
-        print(f"Running block bootstrapping uncertainty analysis n_samples = {n_samples}")
+        logger.info(f"Running block bootstrapping uncertainty analysis n_samples = {n_samples}")
     bootstrapped_uplifts = np.empty(n_samples)
     bootstrapped_uplifts[:] = np.nan
     rng = np.random.default_rng(seed=random_seed)
@@ -460,7 +464,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
             )
             bootstrapped_uplifts[n] = sample_results["uplift_frc"]
         except RuntimeError:
-            print(f"WARNING: RuntimeError on sample {n}")
+            result_manager.warning(f"WARNING: RuntimeError on sample {n}")
             bootstrapped_uplifts[n] = np.nan
 
     if np.isnan(bootstrapped_uplifts).sum() < 0.5 * len(bootstrapped_uplifts):
@@ -475,11 +479,14 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         unc_one_sigma = np.nan
 
     if plot_cfg is not None:
-        print(f"\nblock bootstrapping uncertainty analysis results (conf={100*confidence_level:.0f}%):")
-        print(f"  median = {100 * median:.1f} %")
-        print(f"  lower = {100 * lower:.1f} %")
-        print(f"  upper = {100 * upper:.1f} %")
-        print(f"  unc_one_sigma = {100 * unc_one_sigma:.1f} %")
+        msg = (
+            f"block bootstrapping uncertainty analysis results (conf={100*confidence_level:.0f}%):"
+            f"\n  median = {100*median:.1f} %"
+            f"\n  lower = {100*lower:.1f} %"
+            f"\n  upper = {100*upper:.1f} %"
+            f"\n  unc_one_sigma = {100*unc_one_sigma:.1f} %"
+        )
+        logger.info(msg)
 
     pp_results["unc_one_sigma_bootstrap_frc"] = unc_one_sigma
     pp_results["unc_one_sigma_frc"] = max(
@@ -497,17 +504,17 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         "unc_one_sigma_frc"
     ] * norm.ppf((1 + confidence_level) / 2)
     if plot_cfg is not None:
-        print(f"\ncat A 1 sigma unc = {100 * pp_results['unc_one_sigma_noadj_frc']:.1f} %")
+        logger.info(f"\ncat A 1 sigma unc = {100 * pp_results['unc_one_sigma_noadj_frc']:.1f} %")
         if pp_results["unc_one_sigma_lowerbound_frc"] > 0.05 / 100:
-            print(f"abs reversal error / 2 = {100 * pp_results['unc_one_sigma_lowerbound_frc']:.1f} %")
+            logger.info(f"abs reversal error / 2 = {100 * pp_results['unc_one_sigma_lowerbound_frc']:.1f} %")
         else:
-            print(f"abs reversal error / 2 = {100 * pp_results['unc_one_sigma_lowerbound_frc']:.3f} %")
-        print(f"bootstrap 1 sigma unc = {100 * pp_results['unc_one_sigma_bootstrap_frc']:.1f} %")
-        print(f"missing bins scale factor = {pp_results['missing_bins_unc_scale_factor']:.3f}")
-        print(f"final 1 sigma unc = {100 * pp_results['unc_one_sigma_frc']:.1f} %\n")
+            logger.info(f"abs reversal error / 2 = {100 * pp_results['unc_one_sigma_lowerbound_frc']:.3f} %")
+        logger.info(f"bootstrap 1 sigma unc = {100 * pp_results['unc_one_sigma_bootstrap_frc']:.1f} %")
+        logger.info(f"missing bins scale factor = {pp_results['missing_bins_unc_scale_factor']:.3f}")
+        logger.info(f"final 1 sigma unc = {100 * pp_results['unc_one_sigma_frc']:.1f} %\n")
 
-        print(f"final uplift estimate = {100*pp_results['uplift_frc']:.1f} %")
-        print(f"final P95 uplift estimate = {100*pp_results[f'uplift_p{p_high * 100:.0f}_frc']:.1f} %")
-        print(f"final P5 uplift estimate = {100*pp_results[f'uplift_p{p_low * 100:.0f}_frc']:.1f} %")
+        logger.info(f"final uplift estimate = {100*pp_results['uplift_frc']:.1f} %")
+        logger.info(f"final P95 uplift estimate = {100*pp_results[f'uplift_p{p_high * 100:.0f}_frc']:.1f} %")
+        logger.info(f"final P5 uplift estimate = {100*pp_results[f'uplift_p{p_low * 100:.0f}_frc']:.1f} %")
 
     return pp_results, pp_df

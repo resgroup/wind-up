@@ -31,40 +31,16 @@ def plot_yaw_direction_pre_post(
 
     plt.figure(figsize=(12, 8))
     plt.subplot(2, 1, 1)
-    plt.scatter(
-        pre_df[ref_wd_col],
-        pre_df[test_wd_col],
-        s=SCATTER_S,
-        alpha=SCATTER_ALPHA,
-        label=pre_label,
-    )
-    plt.scatter(
-        post_df[ref_wd_col],
-        post_df[test_wd_col],
-        s=SCATTER_S,
-        alpha=SCATTER_ALPHA,
-        label=post_label,
-    )
+    plt.scatter(pre_df[ref_wd_col], pre_df[test_wd_col], s=SCATTER_S, alpha=SCATTER_ALPHA, label=pre_label)
+    plt.scatter(post_df[ref_wd_col], post_df[test_wd_col], s=SCATTER_S, alpha=SCATTER_ALPHA, label=post_label)
     plt.xlabel(f"{ref_wd_col} [deg]")
     plt.ylabel(f"{test_wd_col} [deg]")
     plt.grid()
     plt.legend()
 
     plt.subplot(2, 1, 2)
-    plt.scatter(
-        pre_df[ref_wd_col],
-        pre_df["yaw_offset"],
-        s=SCATTER_S,
-        alpha=SCATTER_ALPHA,
-        label=pre_label,
-    )
-    plt.scatter(
-        post_df[ref_wd_col],
-        post_df["yaw_offset"],
-        s=SCATTER_S,
-        alpha=SCATTER_ALPHA,
-        label=post_label,
-    )
+    plt.scatter(pre_df[ref_wd_col], pre_df["yaw_offset"], s=SCATTER_S, alpha=SCATTER_ALPHA, label=pre_label)
+    plt.scatter(post_df[ref_wd_col], post_df["yaw_offset"], s=SCATTER_S, alpha=SCATTER_ALPHA, label=post_label)
     plt.xlabel(f"{ref_wd_col} [deg]")
     plt.ylabel(f"{test_wd_col} - {ref_wd_col} [deg]")
     plt.grid()
@@ -81,17 +57,22 @@ def plot_yaw_direction_pre_post(
     ws_bin_width = 2
     wd_bin_width = 5
 
+    def _get_mid(x: float | pd.Interval) -> float:
+        if isinstance(x, pd.Interval):
+            return x.mid
+        return x
+
     ws_bin_edges = np.arange(0, max(pre_df[ref_ws_col].max(), post_df[ref_ws_col].max()) + ws_bin_width, ws_bin_width)
     pre_df["ws_bins"] = pd.cut(pre_df[ref_ws_col], bins=ws_bin_edges, retbins=False)
-    pre_df["ws_bin_centre"] = [x.mid for x in pre_df["ws_bins"]]
+    pre_df["ws_bin_centre"] = pre_df["ws_bins"].apply(_get_mid)
     post_df["ws_bins"] = pd.cut(post_df[ref_ws_col], bins=ws_bin_edges, retbins=False)
-    post_df["ws_bin_centre"] = [x.mid for x in post_df["ws_bins"]]
+    post_df["ws_bin_centre"] = post_df["ws_bins"].apply(_get_mid)
 
     wd_bin_edges = np.arange(0, pre_df[ref_wd_col].max() + wd_bin_width, wd_bin_width)
     pre_df["wd_bins"] = pd.cut(pre_df[ref_wd_col], bins=wd_bin_edges, retbins=False)
-    pre_df["wd_bin_centre"] = [x.mid for x in pre_df["wd_bins"]]
+    pre_df["wd_bin_centre"] = pre_df["wd_bins"].apply(_get_mid)
     post_df["wd_bins"] = pd.cut(post_df[ref_wd_col], bins=wd_bin_edges, retbins=False)
-    post_df["wd_bin_centre"] = [x.mid for x in post_df["wd_bins"]]
+    post_df["wd_bin_centre"] = post_df["wd_bins"].apply(_get_mid)
 
     for i, label in enumerate([pre_label, post_label]):
         plot_df = pre_df if i == 0 else post_df
@@ -103,7 +84,8 @@ def plot_yaw_direction_pre_post(
                 columns="wd_bin_centre",
                 values="yaw_offset",
                 aggfunc=lambda x: x.count() / 6,
-            )[::-1],
+                observed=True,
+            ),
             annot=True,
             cmap="gray_r",
             fmt=".1f",
@@ -115,7 +97,7 @@ def plot_yaw_direction_pre_post(
 
         plt.subplot(2, 1, 2)
         sns.heatmap(
-            plot_df.pivot_table(index="ws_bin_centre", columns="wd_bin_centre", values="yaw_offset")[::-1],
+            plot_df.pivot_table(index="ws_bin_centre", columns="wd_bin_centre", values="yaw_offset", observed=True),
             annot=True,
             cmap="YlGnBu",
             fmt=".1f",

@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pandas as pd
 from scipy.stats import circmean
@@ -13,6 +15,8 @@ from wind_up.math_funcs import circ_diff
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.northing_utils import add_ok_yaw_col
 from wind_up.plots.northing_plots import plot_and_print_northing_error, plot_northing_changepoint, plot_northing_error
+
+logger = logging.getLogger(__name__)
 
 
 def add_rolling_northing_error(wf_df: pd.DataFrame, north_ref_wd_col: str) -> pd.DataFrame:
@@ -67,7 +71,7 @@ def apply_northing_corrections(
     len_corrs = len(wf_north_table)
     if len_corrs == 0:
         if plot_cfg is not None:
-            print("no northing corrections to apply")
+            logger.info("no northing corrections to apply")
     else:
         for nc in wf_north_table.sort_values(by=["TurbineName", TIMESTAMP_COL]).itertuples():
             northing_turbine = nc.TurbineName
@@ -91,7 +95,7 @@ def apply_northing_corrections(
                 wf_df.loc[df_idx, "YawAngleMax"] = pd.NA
         wf_df["YawAngleMean"] = wf_df[northed_col]
         if plot_cfg is not None:
-            print(f"applied {len_corrs} northing corrections")
+            logger.info(f"applied {len_corrs} northing corrections")
             plot_and_print_northing_error(
                 add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col),
                 cfg=cfg,

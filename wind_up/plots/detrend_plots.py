@@ -1,3 +1,5 @@
+import logging
+
 import matplotlib as mpl
 import pandas as pd
 from matplotlib import pyplot as plt
@@ -6,6 +8,7 @@ from wind_up.constants import SCATTER_ALPHA, SCATTER_S
 from wind_up.models import PlotConfig
 
 mpl.use("Agg")
+logger = logging.getLogger(__name__)
 
 
 def plot_detrend_ws_scatter(
@@ -302,4 +305,4 @@ def plot_check_applied_detrend(
             plot_cfg=plot_cfg,
         )
     else:
-        print("WARNING: check detrending ratio of mean ws plots cannot be made, not enough data")
+        logger.warning("WARNING: check detrending ratio of mean ws plots cannot be made, not enough data")

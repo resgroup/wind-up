@@ -1,18 +1,15 @@
-import logging
 import zipfile
 from pathlib import Path
 
 import pandas as pd
 
-from examples.helpers import download_zenodo_data
+from examples.helpers import download_zenodo_data, setup_logger
 from wind_up.caching import with_parquet_cache
 from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
 from wind_up.interface import AssessmentInputs
 from wind_up.main_analysis import run_wind_up_analysis
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.reanalysis_data import ReanalysisDataset
-
-logging.basicConfig(level=logging.INFO)
 
 CACHE_FLD = PROJECTROOT_DIR / "cache" / "kelmarsh_example_data"
 TURBINE_METADATA_FILENAME = "Kelmarsh_WT_static.csv"
@@ -74,6 +71,10 @@ def _unpack_metadata() -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+    analysis_output_dir = OUTPUT_DIR / "kelmarsh-example"
+    analysis_output_dir.mkdir(exist_ok=True, parents=True)
+    setup_logger(analysis_output_dir / "analysis.log")
+
     download_zenodo_data(
         record_id="8252025",
         output_dir=CACHE_FLD,
@@ -100,8 +101,8 @@ if __name__ == "__main__":
     metadata_df = _unpack_metadata()
     turbine_comb_df = _unpack_scada()
 
-    pre_first_dt_utc_start = turbine_comb_df.index.min().tz_localize("UTC")
-    post_last_dt_utc_start = turbine_comb_df.index.max().tz_localize("UTC")
+    pre_first_dt_utc_start = turbine_comb_df.index.min()
+    post_last_dt_utc_start = turbine_comb_df.index.max()
     post_first_dt_utc_start = pre_first_dt_utc_start + (post_last_dt_utc_start - pre_first_dt_utc_start) / 2
     pre_last_dt_utc_start = post_first_dt_utc_start - pd.Timedelta(minutes=10)
 
@@ -113,7 +114,7 @@ if __name__ == "__main__":
         },
         test_wtgs=[turbine_map["KWF1"]],
         ref_wtgs=[turbine_map["KWF2"]],
-        out_dir=OUTPUT_DIR / "kelmarsh-example",
+        out_dir=analysis_output_dir,
         analysis_first_dt_utc_start=pre_first_dt_utc_start,
         upgrade_first_dt_utc_start=post_first_dt_utc_start,
         analysis_last_dt_utc_start=post_last_dt_utc_start,
