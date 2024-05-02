@@ -306,6 +306,10 @@ def calc_test_ref_results(
         test_ws_col = "test_WindSpeedMean"
     else:
         ref_ws_col = "ws_est_from_power_only" if cfg.ignore_turbine_anemometer_data else "ws_est_blend"
+    ref_info = {
+        "ref": ref_name,
+        "ref_ws_col": ref_ws_col,
+    }
     ref_wd_col = "YawAngleMean"
     keep_only_toggle_off = False
     if cfg.toggle is not None:
@@ -324,6 +328,9 @@ def calc_test_ref_results(
         toggle_df=toggle_df,
         keep_only_toggle_off=keep_only_toggle_off,
     )
+    if len(ref_df) == 0:
+        print(f"WARNING: ref_df is empty for {ref_name}")
+        return ref_info
     ref_max_northing_error_v_reanalysis = check_wtg_northing(
         ref_df,
         wtg_name=ref_name,
@@ -534,9 +541,7 @@ def calc_test_ref_results(
         random_seed=random_seed,
     )
 
-    other_results = {
-        "ref": ref_name,
-        "ref_ws_col": ref_ws_col,
+    other_results = ref_info | {
         "distance_m": distance_m,
         "bearing_deg": bearing_deg,
         "ref_max_northing_error_v_reanalysis": ref_max_northing_error_v_reanalysis,
@@ -548,6 +553,20 @@ def calc_test_ref_results(
         "mean_power_pre": pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
         "mean_power_post": post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
     }
+    if "test_yaw_error_mean" in pre_df.columns:
+        other_results["test_yaw_error_pre"] = pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
+            "test_yaw_error_mean"
+        ].mean()
+        other_results["test_yaw_error_post"] = post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
+            "test_yaw_error_mean"
+        ].mean()
+    if "ref_yaw_error_mean" in pre_df.columns:
+        other_results["ref_yaw_error_pre"] = pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
+            "ref_yaw_error_mean"
+        ].mean()
+        other_results["ref_yaw_error_post"] = post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
+            "ref_yaw_error_mean"
+        ].mean()
 
     return other_results | pp_results
 
@@ -684,7 +703,7 @@ def run_wind_up_analysis(
                 "unc_one_sigma_bootstrap_frc",
             ]
             other_columns = [x for x in results_df.columns if x not in first_columns]
-            results_df = results_df[first_columns + other_columns]
+            results_df = results_df[[col for col in first_columns + other_columns if col in results_df.columns]]
 
             results_per_test_ref.append(results_df)
             pd.concat(results_per_test_ref).to_csv(cfg.out_dir / "results_interim.csv")

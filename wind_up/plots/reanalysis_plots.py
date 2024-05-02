@@ -73,6 +73,7 @@ def plot_wf_and_reanalysis_sample_timeseries(wf_df: pd.DataFrame, plot_cfg: Plot
     plt.legend(loc="upper left", ncol=max(1, round(len(wtg_names) // 5)), fontsize="small")
     plot_title = "turbine and reanalysis wind speeds"
     plt.title(plot_title)
+    plt.xticks(rotation=90)
     plt.xlabel("datetime")
     plt.ylabel("wind speed [m/s]")
     plt.grid()
@@ -91,6 +92,7 @@ def plot_wf_and_reanalysis_sample_timeseries(wf_df: pd.DataFrame, plot_cfg: Plot
     plt.legend(loc="lower left", ncol=max(1, round(len(wtg_names) // 5)), fontsize="small")
     plot_title = "turbine and reanalysis wind directions"
     plt.title(plot_title)
+    plt.xticks(rotation=90)
     plt.xlabel("datetime")
     plt.ylabel("wind direction [deg]")
     plt.grid()
