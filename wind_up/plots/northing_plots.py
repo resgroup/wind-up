@@ -45,7 +45,7 @@ def plot_northing_error(
 
 def print_northing_error_summary(abs_north_errs: pd.DataFrame, *, wtgs_description: str, title_end: str) -> None:
     title_end = f" {title_end}" if len(title_end) > 0 else ""
-    _table = tabulate((abs_north_errs.sort_values(ascending=False)[0:3]).to_frame(), tablefmt="pretty", floatfmt=".1f")
+    _table = tabulate((abs_north_errs.sort_values(ascending=False)[0:3]).to_frame(), tablefmt="outline", floatfmt=".1f")
     logger.info(f"top 3 {wtgs_description} needing northing correction{title_end}:\n{_table}")
 
 

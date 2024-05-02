@@ -288,10 +288,10 @@ def add_waking_scen(
     top_scens = test_ref_df.dropna(subset=ref_wd_col)["waking_scenario"].value_counts()[0:5]
     logger.info(f"top {len(top_scens)} {test_name} {ref_name} waking scenarios [%]:")
     _table = tabulate(
-        (top_scens / len(test_ref_df.dropna(subset=ref_wd_col)) * 100).to_frame(),
-        tablefmt="pretty",
-        floatfmt=".1f",
-    )
-    logger.info(f"\n{_table}")
+            (top_scens / len(test_ref_df.dropna(subset=ref_wd_col)) * 100).to_frame(),
+            tablefmt="outline",
+            floatfmt=".1f",
+        )
+    logger.info(f"{_table}")
 
     return test_ref_df.drop(columns=["rounded_wd", "all_turbines_waking"])
