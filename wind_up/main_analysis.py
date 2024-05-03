@@ -701,6 +701,9 @@ def run_wind_up_analysis(
             first_columns = [
                 "wind_up_version",
                 "time_calculated",
+                "preprocess_warning_counts",
+                "test_warning_counts",
+                "test_ref_warning_counts",
                 "test_wtg",
                 "test_pw_col",
                 "ref",
@@ -721,6 +724,13 @@ def run_wind_up_analysis(
 
             results_per_test_ref.append(results_df)
             pd.concat(results_per_test_ref).to_csv(cfg.out_dir / "results_interim.csv")
+
+            msg = (
+                f"warning summary: preprocess_warning_counts={results_df['preprocess_warning_counts'].iloc[0]}, "
+                f"test_warning_counts={results_df['test_warning_counts'].iloc[0]}, "
+                f"test_ref_warning_counts={results_df['test_ref_warning_counts'].iloc[0]}"
+            )
+            logger.info(msg)
             logger.info(f"finished analysing {test_name} {ref_name}\n")
 
     combined_results = pd.concat(results_per_test_ref)
