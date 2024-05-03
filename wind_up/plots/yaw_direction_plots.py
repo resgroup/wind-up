@@ -85,7 +85,7 @@ def plot_yaw_direction_pre_post(
                 values="yaw_offset",
                 aggfunc=lambda x: x.count() / 6,
                 observed=True,
-            ),
+            ).iloc[::-1],
             annot=True,
             cmap="gray_r",
             fmt=".1f",
@@ -97,7 +97,7 @@ def plot_yaw_direction_pre_post(
 
         plt.subplot(2, 1, 2)
         sns.heatmap(
-            plot_df.pivot_table(index="ws_bin_centre", columns="wd_bin_centre", values="yaw_offset", observed=True),
+            plot_df.pivot_table(index="ws_bin_centre", columns="wd_bin_centre", values="yaw_offset", observed=True).iloc[::-1],
             annot=True,
             cmap="YlGnBu",
             fmt=".1f",
