@@ -173,7 +173,7 @@ def calc_wsratio_v_wd_scen(
     wsratio_v_dir_scen = pd.DataFrame()
     if len(scens_to_detrend_list) == 0:
         result_manager.warning("no scenarios with enough data to detrend")
-        return wsratio_v_dir_scen
+        return pd.DataFrame(columns=["hours", "ws_rom"])
 
     for scen in scens_to_detrend_list:
         scen_df = detrend_df[detrend_df["waking_scenario"] == scen]
@@ -240,7 +240,12 @@ def apply_wsratio_v_wd_scen(
 
     columns_to_add = ["ws_rom", "ref_ws_detrended"]
 
-    result_df = p_df.merge(all_scens_df[columns_to_add], how="left", left_index=True, right_index=True)
+    try:
+        result_df = p_df.merge(all_scens_df[columns_to_add], how="left", left_index=True, right_index=True)
+    except KeyError:
+        result_manager.warning("no rows in p_df to merge with all_scens_df")
+        result_df = p_df.copy()
+        result_df[columns_to_add] = np.nan
     # print count of distinct scenario - directions
     count_detrend_applied_df = result_df.dropna(subset=[ref_ws_col, ref_wd_col]).copy()
     count_detrend_applied_df["rounded_wd"] = count_detrend_applied_df[ref_wd_col].round(0).mod(360)
