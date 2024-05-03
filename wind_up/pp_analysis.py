@@ -97,7 +97,7 @@ def cook_pp(pp_df: pd.DataFrame, pre_or_post: str, ws_bin_width: float, rated_po
 
     if pp_df[[col for col in pp_df.columns if col is not raw_pw_col]].isna().any().any():
         msg = "pp_df has missing values"
-        raise RuntimeError(msg)
+        result_manager.warning(msg)
 
     return pp_df
 
