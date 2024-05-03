@@ -57,7 +57,6 @@ ignore = [
     "ANN204", # `__init__` doesn't need annotations
     "S301", # `pickle` and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue
     "D", # docstring checks
-    "T20", # disallow print
     "PGH004", # Use specific rule codes when using `noqa`. Seems to give false alarms
     "COM812", # can conflict with ruff formatter
     "ISC001", # can conflict with ruff formatter
@@ -78,6 +77,7 @@ max-args = 16 # try to bring this down to 5
 "tests/**/*.py" = ["S101", "PLR2004"]  # allow `assert` and magic values in tests
 "tests/test_smart_data.py" = ["DTZ001"]  # SMART functions use tz naive datetimes
 "**/__init__.py" = ["F401"]  # ignore unused imports in __init__.py
+"examples/**/*.py" = ["T20"]  # allow print in examples
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]

@@ -8,7 +8,7 @@ from pandas.testing import assert_frame_equal
 from scipy.stats import circmean
 from tabulate import tabulate
 
-from examples.helpers import download_zenodo_data
+from examples.helpers import download_zenodo_data, setup_logger
 from wind_up.caching import with_parquet_cache
 from wind_up.combine_results import calc_net_uplift
 from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
@@ -17,8 +17,6 @@ from wind_up.main_analysis import run_wind_up_analysis
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.reanalysis_data import ReanalysisDataset
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 CACHE_FLD = PROJECTROOT_DIR / "cache" / "smarteole_example_data"
 
 ENSURE_DOWNLOAD = 1
@@ -158,6 +156,11 @@ def _unpack_toggle_data() -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+    analysis_output_dir = OUTPUT_DIR / "smarteole_example"
+    analysis_output_dir.mkdir(exist_ok=True, parents=True)
+    setup_logger(analysis_output_dir / "analysis.log")
+    logger = logging.getLogger(__name__)
+
     logger.info("Downloading example data from Zenodo")
     download_zenodo_data(record_id="7342466", output_dir=CACHE_FLD, filenames={ZIP_FILENAME})
 
@@ -208,7 +211,7 @@ if __name__ == "__main__":
         ref_wd_filter=[197.0, 246.0],
         filter_all_test_wtgs_together=True,
         use_lt_distribution=False,
-        out_dir=OUTPUT_DIR / "smarteole_example",
+        out_dir=analysis_output_dir,
         test_wtgs=[wtg_map["SMV6"], wtg_map["SMV5"]],
         ref_wtgs=[wtg_map["SMV7"]],
         ref_super_wtgs=[],
@@ -297,7 +300,7 @@ if __name__ == "__main__":
         results_table = tabulate(
             print_df,
             headers="keys",
-            tablefmt="fancy_grid",
+            tablefmt="outline",
             floatfmt=".1f",
             numalign="center",
             stralign="center",

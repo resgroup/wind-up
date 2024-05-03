@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 
 import pandas as pd
@@ -11,6 +12,8 @@ from wind_up.constants import (
 )
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.reanalysis_plots import plot_find_best_shift_and_corr, plot_wf_and_reanalysis_sample_timeseries
+
+logger = logging.getLogger(__name__)
 
 
 def reanalysis_upsample(reanalysis_raw_df: pd.DataFrame) -> pd.DataFrame:
@@ -79,7 +82,7 @@ def find_best_shift_and_corr(
             plot_cfg=plot_cfg,
         )
 
-    print(f"{datastream_id} best correlation is {best_corr:.6f} with a shift of {best_s}")
+    logger.info(f"{datastream_id} best correlation is {best_corr:.6f} with a shift of {best_s}")
 
     return best_corr, best_s
 
@@ -170,7 +173,7 @@ def add_reanalysis_data(
         msg = "no best_id found"
         raise RuntimeError(msg)
 
-    print(f"{best_id} has best correlation: {best_corr:.3f} with a shift of {best_s}")
+    logger.info(f"{best_id} has best correlation: {best_corr:.3f} with a shift of {best_s}")
 
     wf_and_reanalysis_df = wf_df.merge(
         best_df.shift(best_s)[[REANALYSIS_WS_COL, REANALYSIS_WD_COL]],

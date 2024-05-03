@@ -1,4 +1,5 @@
 import itertools
+import logging
 import math
 
 import matplotlib as mpl
@@ -8,8 +9,10 @@ from scipy.stats import norm
 
 from wind_up.models import PlotConfig
 from wind_up.plots.combine_results_plots import plot_combine_results
+from wind_up.result_manager import result_manager
 
 mpl.use("Agg")
+logger = logging.getLogger(__name__)
 
 
 def calc_sigma_ref(rdf: pd.DataFrame, ref_list: list[str]) -> float:
@@ -79,9 +82,9 @@ def combine_results(
 ) -> pd.DataFrame:
     if exclude_refs is None:
         exclude_refs = []
-    print("##############################################################################")
-    print("#combine results per test turbine")
-    print("##############################################################################")
+
+    msg = "#" * 78 + "\n# combine results per test turbine\n" + "#" * 78
+    logger.info(msg)
 
     trdf = trdf.copy()
 
@@ -93,7 +96,7 @@ def combine_results(
     trdf = trdf.loc[trdf["test_wtg"] != trdf["ref"], :]
 
     if len(exclude_refs) > 0:
-        print(f"excluding refs {exclude_refs}")
+        logger.info(f"excluding refs {exclude_refs}")
         trdf = trdf.loc[~trdf["test_wtg"].isin(exclude_refs), :]
         trdf = trdf.loc[~trdf["ref"].isin(exclude_refs), :]
 
@@ -115,9 +118,9 @@ def combine_results(
             trdf = trdf.loc[~trdf["ref"].isin(refs_to_remove), :]
             ref_list = sorted(trdf["ref"].unique())
         else:
-            print(f"WARNING: len(ref_list) < {min_refs}, skipping auto_choose_refs")
+            result_manager.warning(f"len(ref_list) < {min_refs}, skipping auto_choose_refs")
 
-    print(f"ref_list = {ref_list}")
+    logger.info(f"ref_list = {ref_list}")
     tdf = calc_tdf(trdf, ref_list, weight_col)
 
     # change column order for readability

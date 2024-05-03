@@ -1,3 +1,4 @@
+import logging
 import math
 from pathlib import Path
 
@@ -29,6 +30,8 @@ from wind_up.plots.optimize_northing_plots import (
     plot_wf_yawdir_and_reanalysis_timeseries,
     plot_yaw_diff_vs_power,
 )
+
+logger = logging.getLogger(__name__)
 
 DECAY_FRACTION = 0.4
 
@@ -360,7 +363,7 @@ def prep_for_optimize_wtg_north_table(
         changepoint_count=0,
         rated_power=rated_power,
     )
-    print(f"\n\nwtg_name={wtg_name}, north_ref_wd_col={north_ref_wd_col}, initial_score={initial_score:.2f}")
+    logger.info(f"\n\nwtg_name={wtg_name}, north_ref_wd_col={north_ref_wd_col}, initial_score={initial_score:.2f}")
 
     if plot_cfg is not None:
         plot_yaw_diff_vs_power(wtg_df, wtg_name=wtg_name, north_ref_wd_col=north_ref_wd_col, plot_cfg=plot_cfg)
@@ -418,7 +421,7 @@ def optimize_wtg_north_table(
         rated_power=rated_power,
     )
     best_score = initial_score
-    print(f"best_score={best_score:.2f} before optimization")
+    logger.info(f"best_score={best_score:.2f} before optimization")
 
     if plot_cfg is not None:
         plot_diff_to_north_ref_wd(
@@ -470,7 +473,7 @@ def optimize_wtg_north_table(
                 best_score = this_score
                 best_wtg_df = this_wtg_df.copy()
                 best_move_found_this_loop = True
-                print(
+                logger.info(
                     f"wtg_name={wtg_name}, best_score={this_score:.3f}, loop_count={loop_count}, "
                     f"shift_step_size={shift_step_size}, len(best_north_table)={len(best_north_table)}, "
                     f"move={move}",
@@ -479,7 +482,7 @@ def optimize_wtg_north_table(
             max_changepoints_to_add = 0
         else:
             tries_left += 1
-            print(f"tries_left increased to {tries_left}")
+            logger.info(f"tries_left increased to {tries_left}")
             max_changepoints_to_add = min(2, calc_max_changepoints_to_add(len(best_north_table), score=best_score))
         if not best_move_found_this_loop:
             shift_step_size = min(shift_step_size - 1, round(shift_step_size * DECAY_FRACTION))
@@ -491,7 +494,7 @@ def optimize_wtg_north_table(
                 shift_step_size = initial_step_size + 1 + (1 / (DECAY_FRACTION ** (math.pi * (tries_left + 1))) % 10)
                 shift_step_size = round(shift_step_size)
                 tries_left -= 1
-                print(f"tries_left decreased to {tries_left}")
+                logger.info(f"tries_left decreased to {tries_left}")
         if tries_left == 0:
             done_optimizing = True
 
@@ -560,12 +563,14 @@ def optimize_wf_north_table(
         )
 
         changepoints_after = len(wtg_north_table)
-        print(
+        logger.info(
             f"changepoints changed from {changepoints_before} to {changepoints_after} "
             f"[{changepoints_after - changepoints_before}]",
         )
-        print(f"northing score changed from {score_before:.1f} to {score_after:.1f} [{score_after - score_before:.1f}]")
-        print(
+        logger.info(
+            f"northing score changed from {score_before:.1f} to {score_after:.1f} [{score_after - score_before:.1f}]"
+        )
+        logger.info(
             f"max_northing_error changed from {max_northing_error_before:.1f} to {max_northing_error_after:.1f} "
             f"[{max_northing_error_after - max_northing_error_before:.1f}]",
         )

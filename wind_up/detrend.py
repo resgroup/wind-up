@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pandas as pd
 
@@ -9,7 +11,10 @@ from wind_up.plots.detrend_plots import (
     plot_detrend_ws_scatter,
     plot_detrend_wsratio_v_dir_scen,
 )
+from wind_up.result_manager import result_manager
 from wind_up.waking_state import get_iec_upwind_turbines, lat_long_is_valid, list_wtgs_offline_in_scen
+
+logger = logging.getLogger(__name__)
 
 
 def calc_wsratio_v_wd(
@@ -95,7 +100,7 @@ def remove_bad_detrend_results(
     try:
         none_offline_df = wsratio_v_dir_scen.dropna(subset="ws_rom").loc["none offline"]
     except KeyError:
-        print("WARNING: cannot remove_bad_detrend_results, no 'none offline' rows with ws_rom defined")
+        result_manager.warning("cannot remove_bad_detrend_results, no 'none offline' rows with ws_rom defined")
         return wsratio_v_dir_scen
 
     try:
@@ -144,7 +149,7 @@ def remove_bad_detrend_results(
                     wsratio_v_dir_scen.loc[pd.IndexSlice[scen, wd], "ws_rom"] = np.nan
                     remove_count += 1
 
-    print(f"removed {remove_count} bad detrend results")
+    logger.info(f"removed {remove_count} bad detrend results")
     return wsratio_v_dir_scen
 
 
@@ -167,7 +172,7 @@ def calc_wsratio_v_wd_scen(
 
     wsratio_v_dir_scen = pd.DataFrame()
     if len(scens_to_detrend_list) == 0:
-        print("WARNING: no scenarios with enough data to detrend")
+        result_manager.warning("no scenarios with enough data to detrend")
         return wsratio_v_dir_scen
 
     for scen in scens_to_detrend_list:
@@ -242,7 +247,7 @@ def apply_wsratio_v_wd_scen(
     count_detrend_applied_df["scen_wd"] = (
         count_detrend_applied_df["waking_scenario"] + "_" + count_detrend_applied_df["rounded_wd"].astype(str)
     )
-    print(f"detrend applied to {len(count_detrend_applied_df['scen_wd'].unique())} scenario - directions")
+    logger.info(f"detrend applied to {len(count_detrend_applied_df['scen_wd'].unique())} scenario - directions")
 
     return result_df
 
@@ -270,29 +275,27 @@ def check_applied_detrend(
     pre_r2_after_detrend = pre_df[test_ws_col].corr(pre_df[detrend_ws_col]) ** 2
     pre_r2_improvement = pre_r2_after_detrend - pre_r2_before_detrend
     if pre_r2_improvement >= 0:
-        print(
+        logger.info(
             f"detrend improved pre_df ws r2 by {pre_r2_improvement:.2f} "
             f"({pre_r2_before_detrend:.2f} to {pre_r2_after_detrend:.2f})",
         )
     else:
         msg = f"pre_r2_after_detrend < pre_r2_before_detrend, {pre_r2_after_detrend} < {pre_r2_before_detrend}"
-        print("WARNING: " + msg)
+        result_manager.warning(msg)
 
     # print post_df corr change
     post_r2_before_detrend = post_df[test_ws_col].corr(post_df[ref_ws_col]) ** 2
     post_r2_after_detrend = post_df[test_ws_col].corr(post_df[detrend_ws_col]) ** 2
     post_r2_improvement = post_r2_after_detrend - post_r2_before_detrend
     if post_r2_improvement >= 0:
-        print(
+        logger.info(
             f"detrend improved post_df ws r2 by {post_r2_improvement:.2f} "
             f"({post_r2_before_detrend:.2f} to {post_r2_after_detrend:.2f})",
         )
     else:
-        msg = (
-            f"WARNING: post_r2_after_detrend < post_r2_before_detrend,"
-            f" {post_r2_after_detrend} < {post_r2_before_detrend}"
+        result_manager.warning(
+            f"post_r2_after_detrend < post_r2_before_detrend," f" {post_r2_after_detrend} < {post_r2_before_detrend}"
         )
-        print(msg)
 
     if plot_cfg is not None:
         pre_wsratio_v_dir_scen = calc_wsratio_v_wd_scen(

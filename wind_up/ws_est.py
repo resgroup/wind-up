@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pandas as pd
 
@@ -5,6 +7,8 @@ from wind_up.constants import DEFAULT_AIR_DENSITY
 from wind_up.models import PlotConfig, TurbineType, WindUpConfig
 from wind_up.plots.ws_est_plots import plot_ws_est_gain_xs_one_ttype, plot_ws_est_one_ttype_or_wtg
 from wind_up.wind_funcs import calc_cp
+
+logger = logging.getLogger(__name__)
 
 
 def calc_pc_low_high_one_ttype(
@@ -48,7 +52,7 @@ def add_ws_est_one_ttype(
         df_wtg = df_input.loc[wtg]
         mean_cp_wtg = df_wtg.loc[(df_wtg["WindSpeedMean"] - ws_half_rated).abs() < cp_calc_ws_range / 2, "cp"].mean()
         cp_correction_factor = mean_cp_wtg ** (1 / 3) / target_cp ** (1 / 3)
-        print(f"{wtg} cp correction factor = {cp_correction_factor:.2f}")
+        logger.info(f"{wtg} cp correction factor = {cp_correction_factor:.2f}")
         df_input.loc[wtg, "ws_cp_corrected"] = cp_correction_factor * df_input.loc[wtg, "WindSpeedMean"].to_numpy()
 
     # find the four wind speeds used for gain
@@ -138,9 +142,8 @@ def add_ws_est_one_ttype(
 
 
 def add_ws_est(cfg: WindUpConfig, wf_df: pd.DataFrame, pc_per_ttype: dict, plot_cfg: PlotConfig | None) -> pd.DataFrame:
-    print("##############################################################################")
-    print("# estimate wind speed from power")
-    print("##############################################################################")
+    _msg = "#" * 78 + "\n# estimate wind speed from power\n" + "#" * 78
+    logger.info(_msg)
     df_input = wf_df.copy()
     wf_df = pd.DataFrame()
     for ttype in cfg.list_unique_turbine_types():

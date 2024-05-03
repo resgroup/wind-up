@@ -1,9 +1,13 @@
 import datetime as dt
+import logging
 
 import pandas as pd
 
 from wind_up.constants import PROJECTROOT_DIR, TIMEBASE_PD_TIMEDELTA, TIMEBASE_S, TIMESTAMP_COL, TURBINE_DATA_DIR
 from wind_up.models import WindUpConfig
+from wind_up.result_manager import result_manager
+
+logger = logging.getLogger(__name__)
 
 
 def calc_last_xmin_datetime_in_month(d: dt.datetime, td: pd.Timedelta) -> pd.Timestamp:
@@ -60,7 +64,7 @@ def load_smart_scada_month_from_file(
                 pass
 
     if data_loaded_from_file:
-        print(f"loaded SMART scada data from {TURBINE_DATA_DIR / asset_name / fname}")
+        logger.info(f"loaded SMART scada data from {TURBINE_DATA_DIR / asset_name / fname}")
         success = True
 
     return scada_month, success
@@ -136,8 +140,8 @@ def calc_month_list_and_time_info(
 def check_and_convert_scada_raw(
     scada_raw: pd.DataFrame,
     *,
-    smart_tz: str,
-    smart_tf: str,
+    scada_data_timezone: str,
+    scada_data_time_format: str,
     first_datetime_utc_start: pd.Timestamp,
     last_datetime_utc_start: pd.Timestamp,
 ) -> pd.DataFrame:
@@ -155,8 +159,11 @@ def check_and_convert_scada_raw(
     if not isinstance(scada_raw.index, pd.DatetimeIndex):
         msg = f"scada_raw.index is not a pd.DatetimeIndex: {type(scada_raw.index)}"
         raise TypeError(msg)
-    scada_raw.index = scada_raw.index.tz_localize(smart_tz).tz_convert("UTC")
-    if smart_tf == "End":
+
+    if scada_raw.index.tzinfo is not None:
+        scada_raw.index = scada_raw.index.tz_localize(None)
+    scada_raw.index = scada_raw.index.tz_localize(scada_data_timezone).tz_convert("UTC")
+    if scada_data_time_format == "End":
         scada_raw.index = scada_raw.index - pd.Timedelta(minutes=10)
     scada_raw.index = scada_raw.index.rename(TIMESTAMP_COL)
 
@@ -170,8 +177,8 @@ def check_and_convert_scada_raw(
     rows_per_turbine = turbine_rows.max().iloc[0]
     if rows_per_turbine != turbine_rows.min().iloc[0]:
         msg = f"turbines have different number of rows: {rows_per_turbine} != {turbine_rows.min().iloc[0]}"
-        print(f"WARNING: {msg}")
-        print("attempting to repair")
+        result_manager.warning(msg)
+        logger.info("attempting to repair")
         rows_before = len(scada_raw)
         scada_raw_reset = scada_raw.reset_index()
         unique_wtgs = scada_raw_reset["TurbineName"].unique()
@@ -193,13 +200,13 @@ def check_and_convert_scada_raw(
         turbine_rows = reindexed_df.groupby("TurbineName", observed=False)["TurbineName"].count().to_frame()
         new_rows_per_turbine = turbine_rows.max().iloc[0]
         if new_rows_per_turbine == turbine_rows.min().iloc[0] and new_rows_per_turbine == rows_per_turbine:
-            print(f"repair successful. rows before: {rows_before}, rows after: {rows_after}")
+            logger.info(f"repair successful. rows before: {rows_before}, rows after: {rows_after}")
             scada_raw = reindexed_df
         else:
             msg = f"turbines have different number of rows: {new_rows_per_turbine} != {turbine_rows.min().iloc[0]}"
             raise RuntimeError(msg)
 
-    print(f"loaded {len(turbine_rows)} turbines, {rows_per_turbine / 6 / 24 / 365.25:.1f} years per turbine\n")
+    logger.info(f"loaded {len(turbine_rows)} turbines, {rows_per_turbine / 6 / 24 / 365.25:.1f} years per turbine")
     return scada_raw
 
 
@@ -211,7 +218,9 @@ def load_smart_scada_and_md_from_file(
     first_datetime_utc_start: pd.Timestamp,
     last_datetime_utc_start: pd.Timestamp,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    print(f"running load_smart_scada_and_md_from_file for {first_datetime_utc_start} to {last_datetime_utc_start}")
+    logger.info(
+        f"running load_smart_scada_and_md_from_file for {first_datetime_utc_start} to {last_datetime_utc_start}"
+    )
     md = metadata_df
 
     month_start_list_no_tz, last_smart_dt_no_tz, smart_tz, smart_tf = calc_month_list_and_time_info(
@@ -222,11 +231,11 @@ def load_smart_scada_and_md_from_file(
     )
     scada_raw = check_and_convert_scada_raw(
         scada_df,
-        smart_tz=smart_tz,
-        smart_tf=smart_tf,
+        scada_data_timezone=smart_tz,
+        scada_data_time_format=smart_tf,
         first_datetime_utc_start=first_datetime_utc_start,
         last_datetime_utc_start=last_datetime_utc_start,
     )
 
-    print(f"\nfinished load_smart_scada_and_md for {first_datetime_utc_start} to {last_datetime_utc_start}")
+    logger.info(f"finished load_smart_scada_and_md for {first_datetime_utc_start} to {last_datetime_utc_start}")
     return scada_raw, md

@@ -5,6 +5,8 @@ from typing import Any
 
 import pandas as pd
 
+from wind_up.result_manager import result_manager
+
 
 def with_parquet_cache(fp: Path, *, use_cache: bool = True) -> Callable:
     def wrap(func: Callable[..., pd.DataFrame]) -> Callable[..., pd.DataFrame]:
@@ -25,6 +27,7 @@ def with_pickle_cache(fp: Path, *, use_cache: bool = True) -> Callable:
                 with Path.open(fp, "wb") as f:
                     pickle.dump(func(*a, **kw), f)
             with Path.open(fp, "rb") as f:
+                result_manager.warning(f"loading cached pickle {fp}")
                 return pickle.load(f)
 
         return wrapped_f

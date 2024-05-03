@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 import warnings
 from typing import TypeAlias
 
@@ -17,6 +18,7 @@ from wind_up.plots.scada_funcs_plots import (
 )
 from wind_up.smart_data import add_smart_lat_long_to_cfg, load_smart_scada_and_md_from_file
 
+logger = logging.getLogger(__name__)
 ExclusionPeriodsType: TypeAlias = list[tuple[str, dt.datetime, dt.datetime]]
 
 
@@ -49,25 +51,25 @@ def wrap_yaw_and_pitch(df: pd.DataFrame) -> pd.DataFrame:
     yaw_lt0 = (df["YawAngleMean"] < 0).sum()
     yaw_ge360 = (df["YawAngleMean"] >= 360).sum()  # noqa PLR2004
     if yaw_lt0 > 0 or yaw_ge360 > 0:
-        print(f"rows with YawAngleMean lt 0: {yaw_lt0}")
-        print(f"rows with YawAngleMean ge 360: {yaw_ge360}")
+        logger.info(f"rows with YawAngleMean lt 0: {yaw_lt0}")
+        logger.info(f"rows with YawAngleMean ge 360: {yaw_ge360}")
         df["YawAngleMean"] = df["YawAngleMean"] % 360
-        print("wrapped YawAngleMean to 0-360")
+        logger.info("wrapped YawAngleMean to 0-360")
         if "YawAngleMin" in df.columns:
             df["YawAngleMin"] = df["YawAngleMin"].clip(lower=0, upper=360) % 360
-            print("clipped YawAngleMin to 0-360")
+            logger.info("clipped YawAngleMin to 0-360")
         if "YawAngleMax" in df.columns:
             df["YawAngleMax"] = df["YawAngleMax"].clip(lower=0, upper=360) % 360
-            print("clipped YawAngleMax to 0-360")
+            logger.info("clipped YawAngleMax to 0-360")
 
     # ensure pitch data is -180 to 180
     pt_lt_180 = (df["PitchAngleMean"] < -180).sum()  # noqa PLR2004
     pt_ge_180 = (df["PitchAngleMean"] >= 180).sum()  # noqa PLR2004
     if pt_lt_180 > 0 or pt_ge_180 > 0:
-        print(f"rows with PitchAngleMean lt -180: {pt_lt_180}")
-        print(f"rows with PitchAngleMean ge 180: {pt_ge_180}")
+        logger.info(f"rows with PitchAngleMean lt -180: {pt_lt_180}")
+        logger.info(f"rows with PitchAngleMean ge 180: {pt_ge_180}")
         df["PitchAngleMean"] = ((df["PitchAngleMean"] + 180) % 360) - 180
-        print("wrapped PitchAngleMean to -180-180")
+        logger.info("wrapped PitchAngleMean to -180-180")
     return df
 
 
@@ -450,7 +452,7 @@ def scada_multi_index(df: pd.DataFrame) -> pd.DataFrame:
 
 def filter_scada_df(raw_df: pd.DataFrame, cfg: WindUpConfig, plot_cfg: PlotConfig) -> pd.DataFrame:
     ref_col = DataColumns.active_power_mean
-    print(
+    logger.info(
         f"{raw_df[ref_col].isna().sum()} rows "
         f"[{100 * raw_df[ref_col].isna().mean():.1f}%] "
         "of power data is missing before filtering",
@@ -474,7 +476,7 @@ def filter_scada_df(raw_df: pd.DataFrame, cfg: WindUpConfig, plot_cfg: PlotConfi
         plot_title=f"{cfg.asset.name} data coverage after filtering",
         plot_cfg=plot_cfg,
     )
-    print(
+    logger.info(
         f"{filt_df[ref_col].isna().sum()} rows [{100 * filt_df[ref_col].isna().mean():.1f}%] "
         "of power data is missing after filtering",
     )

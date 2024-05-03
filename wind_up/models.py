@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from wind_up.constants import OUTPUT_DIR
 from wind_up.yaml_loader import Loader, construct_include
+
+logger = logging.getLogger(__name__)
 
 
 class PlotConfig(BaseModel):
@@ -287,23 +290,23 @@ class WindUpConfig(BaseModel):
 
     @model_validator(mode="after")
     def print_summary(self: "WindUpConfig") -> "WindUpConfig":
-        print(f"\nloaded WindUpConfig assessment_name: {self.assessment_name}")
+        logger.info(f"loaded WindUpConfig assessment_name: {self.assessment_name}")
         dt_fmt = "%Y-%m-%d %H:%M"
         if self.toggle is not None:
             dt_rng_start = self.analysis_first_dt_utc_start.strftime(dt_fmt)
             dt_rng_end = (self.analysis_last_dt_utc_start + pd.Timedelta("10m")).strftime(dt_fmt)
-            print(
+            logger.info(
                 f"toggle analysis period (UTC): {dt_rng_start} to {dt_rng_end}",
             )
         elif self.prepost is not None:
             dt_rng_start = self.prepost.pre_first_dt_utc_start.strftime(dt_fmt)
             dt_rng_end = (self.prepost.pre_last_dt_utc_start + pd.Timedelta("10m")).strftime(dt_fmt)
-            print(
+            logger.info(
                 f"pre analysis period (UTC): {dt_rng_start} to {dt_rng_end}",
             )
             dt_rng_start = self.prepost.post_first_dt_utc_start.strftime(dt_fmt)
             dt_rng_end = (self.prepost.post_last_dt_utc_start + pd.Timedelta("10m")).strftime(dt_fmt)
-            print(
+            logger.info(
                 f"post analysis period (UTC): {dt_rng_start} to {dt_rng_end}",
             )
         else:
@@ -311,14 +314,10 @@ class WindUpConfig(BaseModel):
             raise RuntimeError(msg)
         dt_rng_start = self.lt_first_dt_utc_start.strftime(dt_fmt)
         dt_rng_end = (self.lt_last_dt_utc_start + pd.Timedelta("10m")).strftime(dt_fmt)
-        print(
-            f"long term period (UTC): {dt_rng_start} to {dt_rng_end}",
-        )
+        logger.info(f"long term period (UTC): {dt_rng_start} to {dt_rng_end}")
         dt_rng_start = self.detrend_first_dt_utc_start.strftime(dt_fmt)
         dt_rng_end = (self.detrend_last_dt_utc_start + pd.Timedelta("10m")).strftime(dt_fmt)
-        print(
-            f"detrend period (UTC): {dt_rng_start} to {dt_rng_end}\n",
-        )
+        logger.info(f"detrend period (UTC): {dt_rng_start} to {dt_rng_end}")
         return self
 
     @classmethod
