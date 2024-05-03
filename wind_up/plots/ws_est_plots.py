@@ -38,7 +38,7 @@ def plot_ws_est_gain_xs_one_ttype(
     plt.close()
 
 
-def plot_ws_est_one_ttype_or_wtg(
+def plot_ws_est_one_ttype_or_wtg(  # noqa C901 PLR0915
     df: pd.DataFrame,
     ttype_or_wtg: str,
     pc_transposed: pd.DataFrame,
@@ -100,7 +100,10 @@ def plot_ws_est_one_ttype_or_wtg(
     plt.close()
 
     plt.figure()
-    wsbins = np.arange(0, max(df["WindSpeedMean"].max(), df["ws_est_blend"].max()) + 0.5, 0.5)
+    try:
+        wsbins = np.arange(0, max(df["WindSpeedMean"].max(), df["ws_est_blend"].max()) + 0.5, 0.5)
+    except ValueError:
+        wsbins = np.arange(0, 25.5, 0.5)
     plt.hist(
         df["WindSpeedMean"],
         bins=wsbins.tolist(),
