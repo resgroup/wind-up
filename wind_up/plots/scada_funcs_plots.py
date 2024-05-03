@@ -68,9 +68,9 @@ def print_and_plot_capacity_factor(scada_df: pd.DataFrame, cfg: WindUpConfig, pl
         tablefmt="outline",
         floatfmt=".1f",
     )
-    logger.info(f"top 3 capacity factor [%]:{_table}")
+    logger.info(f"top 3 capacity factor [%]:\n{_table}")
     _table = tabulate((cf_df.sort_values(by="CF")["CF"][0:3] * 100).to_frame(), tablefmt="outline", floatfmt=".1f")
-    logger.info(f"bottom 3 capacity factor [%]:{_table}")
+    logger.info(f"bottom 3 capacity factor [%]:\n{_table}")
 
 
 def plot_ops_curves_per_ttype(cfg: WindUpConfig, df: pd.DataFrame, title_end: str, plot_cfg: PlotConfig) -> None:
