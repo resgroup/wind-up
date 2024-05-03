@@ -300,7 +300,7 @@ if __name__ == "__main__":
         results_table = tabulate(
             print_df,
             headers="keys",
-            tablefmt="pretty",
+            tablefmt="outline",
             floatfmt=".1f",
             numalign="center",
             stralign="center",
