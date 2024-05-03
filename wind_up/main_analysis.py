@@ -698,42 +698,45 @@ def run_wind_up_analysis(
             test_ref_results = test_ref_results | test_results
             logger.info(test_ref_results)
             results_df = pd.DataFrame(test_ref_results, index=[loop_counter])
-            first_columns = [
-                "wind_up_version",
-                "time_calculated",
-                "preprocess_warning_counts",
-                "test_warning_counts",
-                "test_ref_warning_counts",
-                "test_wtg",
-                "test_pw_col",
-                "ref",
-                "ref_ws_col",
-                "uplift_frc",
-                "unc_one_sigma_frc",
-                "uplift_p95_frc",
-                "uplift_p5_frc",
-                "pp_data_coverage",
-                "distance_m",
-                "bearing_deg",
-                "unc_one_sigma_noadj_frc",
-                "unc_one_sigma_lowerbound_frc",
-                "unc_one_sigma_bootstrap_frc",
-            ]
-            other_columns = [x for x in results_df.columns if x not in first_columns]
-            results_df = results_df[[col for col in first_columns + other_columns if col in results_df.columns]]
-
             results_per_test_ref.append(results_df)
             pd.concat(results_per_test_ref).to_csv(cfg.out_dir / "results_interim.csv")
 
-            msg = (
-                f"warning summary: preprocess_warning_counts={results_df['preprocess_warning_counts'].iloc[0]}, "
-                f"test_warning_counts={results_df['test_warning_counts'].iloc[0]}, "
-                f"test_ref_warning_counts={results_df['test_ref_warning_counts'].iloc[0]}"
-            )
-            logger.info(msg)
+            try:
+                msg = (
+                    f"warning summary: preprocess_warning_counts={results_df['preprocess_warning_counts'].iloc[0]}, "
+                    f"test_warning_counts={results_df['test_warning_counts'].iloc[0]}, "
+                    f"test_ref_warning_counts={results_df['test_ref_warning_counts'].iloc[0]}"
+                )
+                logger.info(msg)
+            except KeyError:
+                pass
             logger.info(f"finished analysing {test_name} {ref_name}\n")
-
     combined_results = pd.concat(results_per_test_ref)
+    first_columns = [
+        "wind_up_version",
+        "time_calculated",
+        "preprocess_warning_counts",
+        "test_warning_counts",
+        "test_ref_warning_counts",
+        "test_wtg",
+        "test_pw_col",
+        "ref",
+        "ref_ws_col",
+        "uplift_frc",
+        "unc_one_sigma_frc",
+        "uplift_p95_frc",
+        "uplift_p5_frc",
+        "pp_data_coverage",
+        "distance_m",
+        "bearing_deg",
+        "unc_one_sigma_noadj_frc",
+        "unc_one_sigma_lowerbound_frc",
+        "unc_one_sigma_bootstrap_frc",
+    ]
+    other_columns = [x for x in results_df.columns if x not in first_columns]
+    combined_results = combined_results[
+        [col for col in first_columns + other_columns if col in combined_results.columns]
+    ]
     combined_results.to_csv(
         cfg.out_dir / f"{cfg.assessment_name}_results_per_test_ref_"
         f"{pd.Timestamp.now('UTC').strftime('%Y%m%d_%H%M%S')}.csv",
