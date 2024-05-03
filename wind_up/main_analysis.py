@@ -313,7 +313,6 @@ def calc_test_ref_results(
         ref_ws_col = "ws_est_from_power_only" if cfg.ignore_turbine_anemometer_data else "ws_est_blend"
     ref_info = {
         "ref": ref_name,
-        "ref_ws_col": ref_ws_col,
     }
     ref_wd_col = "YawAngleMean"
     keep_only_toggle_off = False
@@ -547,6 +546,7 @@ def calc_test_ref_results(
     )
 
     other_results = ref_info | {
+        "ref_ws_col": ref_ws_col,
         "distance_m": distance_m,
         "bearing_deg": bearing_deg,
         "ref_max_northing_error_v_reanalysis": ref_max_northing_error_v_reanalysis,
