@@ -27,9 +27,9 @@ MINIMUM_DATA_COUNT_COVERAGE = 0.5  # 50% of the data must be present
 
 
 @with_parquet_cache(CACHE_FLD / "_smarteole_scada.parquet")
-def _unpack_scada() -> pd.DataFrame:
+def _unpack_scada(timebase_minutes: int = 10) -> pd.DataFrame:
     """
-    Function that translates 1-minute SCADA data to 10 minute data in the wind-up expected format
+    Function that translates 1-minute SCADA data to x minute data in the wind-up expected format
     """
 
     def _separate_turbine_id_from_field(x: str) -> tuple[str, str]:
@@ -50,13 +50,13 @@ def _unpack_scada() -> pd.DataFrame:
         return df.stack(level=0, future_stack=True).reset_index(DataColumns.turbine_name)  # noqa: PD013
 
     def _map_and_mask_cols(df: pd.DataFrame) -> pd.DataFrame:
-        ten_minutes_count_lower_limit = 600 * MINIMUM_DATA_COUNT_COVERAGE
-        mask_active_power = df["active_power_count"] < ten_minutes_count_lower_limit
-        mask_wind_speed = df["wind_speed_count"] < ten_minutes_count_lower_limit
-        mask_pitch_angle = df["blade_1_pitch_angle_count"] < ten_minutes_count_lower_limit
-        mask_gen_rpm = df["generator_speed_count"] < ten_minutes_count_lower_limit
-        mask_temperature = df["temperature_count"] < ten_minutes_count_lower_limit
-        mask_nacelle_position = df["nacelle_position_count"] < ten_minutes_count_lower_limit
+        x_minutes_count_lower_limit = 60 * timebase_minutes * MINIMUM_DATA_COUNT_COVERAGE
+        mask_active_power = df["active_power_count"] < x_minutes_count_lower_limit
+        mask_wind_speed = df["wind_speed_count"] < x_minutes_count_lower_limit
+        mask_pitch_angle = df["blade_1_pitch_angle_count"] < x_minutes_count_lower_limit
+        mask_gen_rpm = df["generator_speed_count"] < x_minutes_count_lower_limit
+        mask_temperature = df["temperature_count"] < x_minutes_count_lower_limit
+        mask_nacelle_position = df["nacelle_position_count"] < x_minutes_count_lower_limit
         return df.assign(
             **{
                 DataColumns.active_power_mean: lambda d: d["active_power_avg"].mask(mask_active_power),
@@ -81,7 +81,7 @@ def _unpack_scada() -> pd.DataFrame:
             pd.read_csv(zf.open(scada_fpath), parse_dates=[0], index_col=0)
             .pipe(_make_turbine_id_a_column)
             .groupby(DataColumns.turbine_name)
-            .resample("10min")
+            .resample(f"{timebase_minutes}min")
             .aggregate(
                 {
                     "active_power_avg": "mean",
@@ -90,7 +90,7 @@ def _unpack_scada() -> pd.DataFrame:
                     "wind_speed_avg": "mean",
                     "wind_speed_std": "mean",
                     "wind_speed_count": "sum",
-                    "blade_1_pitch_angle_avg": "mean",  # no need for circular_mean for small angles
+                    "blade_1_pitch_angle_avg": "mean",  # no need for circular_mean because no wrap
                     "blade_1_pitch_angle_count": "sum",
                     "generator_speed_avg": "mean",
                     "generator_speed_count": "sum",
@@ -125,8 +125,8 @@ def _unpack_metadata() -> pd.DataFrame:
 
 
 @with_parquet_cache(CACHE_FLD / "_smarteole_toggle.parquet")
-def _unpack_toggle_data() -> pd.DataFrame:
-    ten_minutes_count_lower_limit = 600 * MINIMUM_DATA_COUNT_COVERAGE
+def _unpack_toggle_data(timebase_minutes: int = 10) -> pd.DataFrame:
+    ten_minutes_count_lower_limit = 60 * timebase_minutes * MINIMUM_DATA_COUNT_COVERAGE
     toggle_value_threshold: float = 0.95
 
     _fpath = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_ControlLog_1minData.csv"
@@ -139,7 +139,7 @@ def _unpack_toggle_data() -> pd.DataFrame:
     ]
     toggle_df = (
         raw_df[required_in_cols]
-        .resample("10min")
+        .resample(f"{timebase_minutes}min")
         .agg({"control_log_offset_active_avg": "mean", "control_log_offset_active_count": "sum"})
     )
     toggle_df["toggle_on"] = (toggle_df["control_log_offset_active_avg"] >= toggle_value_threshold) & (
@@ -239,7 +239,7 @@ if __name__ == "__main__":
             "detrend_data_selection": "use_toggle_off_data",
             "pairing_filter_method": "any_within_timedelta",
             "pairing_filter_timedelta_seconds": 3600,
-            "toggle_change_settling_filter_seconds": 600,
+            "toggle_change_settling_filter_seconds": 120,
         },
     )
     plot_cfg = PlotConfig(show_plots=False, save_plots=True, plots_dir=cfg.out_dir / "plots")
