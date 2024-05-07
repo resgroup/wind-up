@@ -20,7 +20,7 @@ from wind_up.reanalysis_data import ReanalysisDataset
 CACHE_DIR = PROJECTROOT_DIR / "cache" / "smarteole_example_data"
 
 ANALYSIS_TIMEBASE_S = 600
-CACHE_SUBDIR =CACHE_DIR / f"timebase_{ANALYSIS_TIMEBASE_S}"
+CACHE_SUBDIR = CACHE_DIR / f"timebase_{ANALYSIS_TIMEBASE_S}"
 CACHE_SUBDIR.mkdir(exist_ok=True, parents=True)
 
 ENSURE_DOWNLOAD = 1
@@ -31,7 +31,7 @@ MINIMUM_DATA_COUNT_COVERAGE = 0.5  # 50% of the data must be present
 
 
 @with_parquet_cache(CACHE_SUBDIR / "smarteole_scada.parquet")
-def _unpack_scada(timebase_s) -> pd.DataFrame:
+def _unpack_scada(timebase_s: int) -> pd.DataFrame:
     """
     Function that translates 1-minute SCADA data to x minute data in the wind-up expected format
     """
@@ -214,7 +214,7 @@ if __name__ == "__main__":
         timebase_s=ANALYSIS_TIMEBASE_S,
         require_ref_wake_free=True,
         detrend_min_hours=12,
-        ref_wd_filter=[207 - wd_filter_margin, 236 + wd_filter_margin], # steer is from 207-236
+        ref_wd_filter=[207 - wd_filter_margin, 236 + wd_filter_margin],  # steer is from 207-236
         filter_all_test_wtgs_together=True,
         use_lt_distribution=False,
         out_dir=analysis_output_dir,
