@@ -530,6 +530,9 @@ def calc_test_ref_results(
             toggle_name=cfg.toggle.name if cfg.toggle else None,
         )
 
+    pre_df.to_parquet(cfg.out_dir / f"{test_wtg.name}_{ref_name}_pre_df.parquet")
+    post_df.to_parquet(cfg.out_dir / f"{test_wtg.name}_{ref_name}_post_df.parquet")
+
     pp_results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
         cfg=cfg,
         test_wtg=test_wtg,
@@ -711,7 +714,7 @@ def run_wind_up_analysis(
             except KeyError:
                 pass
             logger.info(f"finished analysing {test_name} {ref_name}\n")
-    combined_results = pd.concat(results_per_test_ref)
+    all_results_per_test_ref = pd.concat(results_per_test_ref)
     first_columns = [
         "wind_up_version",
         "time_calculated",
@@ -734,11 +737,11 @@ def run_wind_up_analysis(
         "unc_one_sigma_bootstrap_frc",
     ]
     other_columns = [x for x in results_df.columns if x not in first_columns]
-    combined_results = combined_results[
-        [col for col in first_columns + other_columns if col in combined_results.columns]
+    all_results_per_test_ref = all_results_per_test_ref[
+        [col for col in first_columns + other_columns if col in all_results_per_test_ref.columns]
     ]
-    combined_results.to_csv(
+    all_results_per_test_ref.to_csv(
         cfg.out_dir / f"{cfg.assessment_name}_results_per_test_ref_"
         f"{pd.Timestamp.now('UTC').strftime('%Y%m%d_%H%M%S')}.csv",
     )
-    return combined_results
+    return all_results_per_test_ref
