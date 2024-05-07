@@ -103,7 +103,7 @@ toml==0.10.2
     # via wind-up (pyproject.toml)
 tomli==2.0.1
     # via poethepoet
-tqdm==4.66.2
+tqdm==4.66.3
     # via wind-up (pyproject.toml)
 types-pyyaml==6.0.12.20240311
     # via wind-up (pyproject.toml)
