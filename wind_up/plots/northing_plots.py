@@ -104,6 +104,7 @@ def plot_northing_changepoint(
         new_col_name="ok_for_yawdir",
         wd_col=northed_col,
         rated_power=next(x for x in cfg.asset.wtgs if x.name == northing_turbine).turbine_type.rated_power_kw,
+        timebase_s=cfg.timebase_s,
     )
     plot_df = plot_df.loc[plot_df["ok_for_yawdir"]]
     plt.plot(

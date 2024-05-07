@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from tests.conftest import TEST_DATA_FLD
-from wind_up.constants import TIMEBASE_PD_TIMEDELTA, TIMESTAMP_COL
+from wind_up.constants import TIMESTAMP_COL
 from wind_up.models import WindUpConfig
 from wind_up.smart_data import (
     add_smart_lat_long_to_cfg,
@@ -13,9 +13,8 @@ from wind_up.smart_data import (
     check_and_convert_scada_raw,
     load_smart_md_from_file,
     load_smart_scada_and_md_from_file,
-    load_smart_scada_month_from_file,
 )
-
+TIMEBASE_PD_TIMEDELTA = pd.Timedelta("10min")
 
 def test_calc_last_xmin_datetime_in_month() -> None:
     inputs = [
@@ -35,44 +34,6 @@ def test_calc_last_xmin_datetime_in_month() -> None:
     for i, e in zip(inputs, expected, strict=True):
         assert calc_last_xmin_datetime_in_month(i, TIMEBASE_PD_TIMEDELTA) == pd.Timestamp(e)
 
-
-def test_successful_load_smart_scada_month_from_file() -> None:
-    df, success = load_smart_scada_month_from_file(
-        asset_name="Marge Wind Farm",
-        first_datetime_no_tz=dt.datetime(2023, 1, 1),
-        last_datetime_no_tz=dt.datetime(2023, 1, 3, 23, 50),
-        test_mode=True,
-    )
-    assert success
-    assert len(df) == 3 * 9 * 144  # 3 days, 9 turbines
-    assert df.index[0] == pd.Timestamp("2023-01-01 00:00:00")
-    assert df.index[-1] == pd.Timestamp("2023-01-03 23:50:00")
-
-
-def test_successful_load_smart_scada_month_from_file_with_missing_rows() -> None:
-    df, success = load_smart_scada_month_from_file(
-        asset_name="Marge Wind Farm",
-        first_datetime_no_tz=dt.datetime(2020, 2, 27),
-        last_datetime_no_tz=dt.datetime(2020, 2, 29, 23, 50),
-        test_mode=True,
-    )
-    assert success
-    assert len(df) == 3 * 9 * 144 - 5  # 3 days, 9 turbines but data file has 5 rows removed intentionally
-    assert df.index[0] == pd.Timestamp("2020-02-27 00:00:00")
-    assert df.index[-1] == pd.Timestamp("2020-02-29 23:50:00")
-
-
-def test_unsuccessful_load_smart_scada_month_from_file() -> None:
-    df, success = load_smart_scada_month_from_file(
-        asset_name="R01s",
-        first_datetime_no_tz=dt.datetime(2023, 1, 1),
-        last_datetime_no_tz=dt.datetime(2023, 1, 3, 23, 50),
-        test_mode=True,
-    )
-    assert not success
-    assert len(df) == 0
-
-
 def test_add_smart_lat_long_to_cfg(test_marge_config: WindUpConfig) -> None:
     cfg = test_marge_config
     md_df = load_smart_md_from_file(asset_name="Marge Wind Farm", test_mode=True)
@@ -90,6 +51,7 @@ def test_calc_month_list_and_time_info() -> None:
         first_datetime_utc_start=pd.Timestamp("2019-12-25 00:20:00", tz="UTC"),
         last_datetime_utc_start=pd.Timestamp("2020-02-28 23:50:00", tz="UTC"),
         md=md_df,
+        timebase_s=600,
     )
     assert month_start_list_no_tz == [
         pd.Timestamp("2019-12-25 00:00:00"),
@@ -99,33 +61,6 @@ def test_calc_month_list_and_time_info() -> None:
     assert last_smart_dt_no_tz == pd.Timestamp("2020-02-29 00:00:00")
     assert smart_tz == "UTC"
     assert smart_tf == "End"
-
-
-def test_check_and_convert_scada_raw() -> None:
-    scada_raw, success = load_smart_scada_month_from_file(
-        asset_name="Marge Wind Farm",
-        first_datetime_no_tz=dt.datetime(2020, 2, 27),
-        last_datetime_no_tz=dt.datetime(2020, 2, 29, 23, 50),
-        test_mode=True,
-    )
-    smart_tz = "UTC"
-    smart_tf = "End"
-    first_datetime_utc_start = pd.Timestamp("2020-02-28 23:50:00", tz="UTC")
-    last_datetime_utc_start = pd.Timestamp("2020-02-29 00:10:00", tz="UTC")
-    scada_converted = check_and_convert_scada_raw(
-        scada_raw,
-        scada_data_timezone=smart_tz,
-        scada_data_time_format=smart_tf,
-        first_datetime_utc_start=first_datetime_utc_start,
-        last_datetime_utc_start=last_datetime_utc_start,
-    )
-    assert len(scada_converted) == 3 * 9  # 3 rows, 9 turbines
-    assert scada_converted.index.name == TIMESTAMP_COL
-    assert scada_converted.index.min() == first_datetime_utc_start
-    assert scada_converted.index.max() == last_datetime_utc_start
-    assert scada_converted["smart_dtTimeStamp"].min() == pd.Timestamp("2020-02-29 00:00:00")
-    assert scada_converted["smart_dtTimeStamp"].max() == pd.Timestamp("2020-02-29 00:20:00")
-
 
 def test_load_smart_scada_and_md_from_file() -> None:
     test_data_dir = TEST_DATA_FLD / "smart_data" / "Marge Wind Farm"
@@ -137,6 +72,7 @@ def test_load_smart_scada_and_md_from_file() -> None:
         metadata_df=pd.read_csv(test_data_dir / "Marge Wind Farm_md.csv"),
         first_datetime_utc_start=first_datetime_utc_start,
         last_datetime_utc_start=last_datetime_utc_start,
+        timebase_s=600,
     )
     assert len(scada_raw) == 3 * 9 * 24 * 6  # 3 days, 9 turbines
     assert scada_raw.index.name == TIMESTAMP_COL

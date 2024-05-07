@@ -7,7 +7,6 @@ from wind_up.constants import (
     REANALYSIS_WS_COL,
     SCATTER_ALPHA,
     SCATTER_S,
-    TIMEBASE_PD_TIMEDELTA,
     TIMESTAMP_COL,
 )
 from wind_up.models import PlotConfig
@@ -17,6 +16,7 @@ mpl.use("Agg")
 
 def plot_find_best_shift_and_corr(
     wf_ws_df: pd.DataFrame,
+    *,
     reanalysis_df: pd.DataFrame,
     shifts: list[int],
     corrs: list[float],
@@ -24,13 +24,14 @@ def plot_find_best_shift_and_corr(
     datastream_id: str,
     best_corr: float,
     best_s: int,
+    timebase_s: int,
     plot_cfg: PlotConfig,
 ) -> None:
     plt.figure()
     plt.plot(shifts, corrs, marker=".")
     plot_title = f"correlation vs shift for {datastream_id}"
     plt.title(plot_title)
-    plt.xlabel(f"shift [{TIMEBASE_PD_TIMEDELTA.total_seconds() // 60:.0f}min rows]")
+    plt.xlabel(f"shift [{timebase_s // 60:.0f}min rows]")
     plt.ylabel("correlation with wind farm mean wind speed")
     plt.grid()
     plt.tight_layout()

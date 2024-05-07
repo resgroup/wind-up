@@ -505,6 +505,7 @@ def get_raw_scada_and_cfg_from_file(
         metadata_df=metadata_df,
         first_datetime_utc_start=first_datetime_utc_start,
         last_datetime_utc_start=last_datetime_utc_start,
+        timebase_s=cfg.timebase_s,
     )
     cfg = add_smart_lat_long_to_cfg(md=md, cfg=cfg)
     if plot_cfg is not None:

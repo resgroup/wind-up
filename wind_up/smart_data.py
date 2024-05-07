@@ -3,7 +3,7 @@ import logging
 
 import pandas as pd
 
-from wind_up.constants import PROJECTROOT_DIR, TIMEBASE_PD_TIMEDELTA, TIMEBASE_S, TIMESTAMP_COL, TURBINE_DATA_DIR
+from wind_up.constants import PROJECTROOT_DIR, TIMESTAMP_COL, TURBINE_DATA_DIR
 from wind_up.models import WindUpConfig
 from wind_up.result_manager import result_manager
 
@@ -14,60 +14,6 @@ def calc_last_xmin_datetime_in_month(d: dt.datetime, td: pd.Timedelta) -> pd.Tim
     return pd.Timestamp(
         pd.offsets.MonthBegin(normalize=True).rollforward(d + td) - td,
     )
-
-
-def load_smart_scada_month_from_file(
-    asset_name: str,
-    first_datetime_no_tz: dt.datetime,
-    last_datetime_no_tz: dt.datetime,
-    *,
-    test_mode: bool = False,
-) -> tuple[pd.DataFrame, bool]:
-    data_dir = PROJECTROOT_DIR / "tests" / "test_data" / "smart_data" if test_mode else TURBINE_DATA_DIR
-    scada_month = pd.DataFrame()
-    data_loaded_from_file = False
-    success = False
-    asset_dir = data_dir / asset_name
-
-    try:
-        fname = (
-            f'{asset_name}_{first_datetime_no_tz.strftime("%Y%m%d")}_{last_datetime_no_tz.strftime("%Y%m%d")}.parquet'
-        )
-        scada_month = pd.read_parquet(asset_dir / fname)
-        data_loaded_from_file = True
-    except FileNotFoundError:
-        pass
-
-    # check for 1st of month file
-    if not data_loaded_from_file and first_datetime_no_tz.strftime("%Y%m%d")[-2:] != "01":
-        try:
-            fname = (
-                f'{asset_name}_{first_datetime_no_tz.strftime("%Y%m")}01_'
-                f'{last_datetime_no_tz.strftime("%Y%m%d")}.parquet'
-            )
-            scada_month = pd.read_parquet(asset_dir / fname)
-            data_loaded_from_file = True
-        except FileNotFoundError:
-            pass
-
-    # check for end of month file
-    if not data_loaded_from_file:
-        end_of_month = calc_last_xmin_datetime_in_month(first_datetime_no_tz, TIMEBASE_PD_TIMEDELTA)
-        if last_datetime_no_tz.strftime("%Y%m%d") != end_of_month.strftime("%Y%m%d"):
-            try:
-                fname = (
-                    f'{asset_name}_{first_datetime_no_tz.strftime("%Y%m%d")}_{end_of_month.strftime("%Y%m%d")}.parquet'
-                )
-                scada_month = pd.read_parquet(asset_dir / fname)
-                data_loaded_from_file = True
-            except FileNotFoundError:
-                pass
-
-    if data_loaded_from_file:
-        logger.info(f"loaded SMART scada data from {TURBINE_DATA_DIR / asset_name / fname}")
-        success = True
-
-    return scada_month, success
 
 
 def add_smart_lat_long_to_cfg(md: pd.DataFrame, cfg: WindUpConfig) -> WindUpConfig:
@@ -95,13 +41,14 @@ def calc_month_list_and_time_info(
     first_datetime_utc_start: pd.Timestamp,
     last_datetime_utc_start: pd.Timestamp,
     md: pd.DataFrame,
+    timebase_s: int,
 ) -> tuple[list[dt.datetime], dt.datetime, str, str]:
-    # make sure TimeSpanMinutes is equal to 10.0 for all turbines
-    if len(md["TimeSpanMinutes"].unique()) > 1 or md["TimeSpanMinutes"].unique()[0] != (TIMEBASE_S / 60):
-        msg = f"TimeSpanMinutes not 10 for all SMART metadata in {asset_name}: {md['TimeSpanMinutes'].unique()}"
-        raise ValueError(
-            msg,
+    if len(md["TimeSpanMinutes"].unique()) > 1 or (60 * md["TimeSpanMinutes"].unique()[0]) != timebase_s:
+        msg = (
+            f"TimeSpanMinutes not consistent with timebase {timebase_s=} for all SMART metadata in "
+            f"{asset_name}: {md['TimeSpanMinutes'].unique()=}"
         )
+        result_manager.warning(msg)
 
     # make sure there is only one TimeZone and TimeFormat
     if len(md["TimeZone"].unique()) > 1:
@@ -122,8 +69,8 @@ def calc_month_list_and_time_info(
     first_smart_dt_no_tz = first_datetime_utc_start.tz_convert(smart_tz).tz_localize(None).to_pydatetime()
     last_smart_dt_no_tz = last_datetime_utc_start.tz_convert(smart_tz).tz_localize(None).to_pydatetime()
     if smart_tf == "End":
-        first_smart_dt_no_tz = first_smart_dt_no_tz + TIMEBASE_PD_TIMEDELTA
-        last_smart_dt_no_tz = last_smart_dt_no_tz + TIMEBASE_PD_TIMEDELTA
+        first_smart_dt_no_tz = first_smart_dt_no_tz + pd.Timedelta(seconds=timebase_s)
+        last_smart_dt_no_tz = last_smart_dt_no_tz + pd.Timedelta(seconds=timebase_s)
 
     month_start_list_no_tz = pd.date_range(
         first_smart_dt_no_tz.strftime("%Y-%m-%d"),
@@ -144,6 +91,7 @@ def check_and_convert_scada_raw(
     scada_data_time_format: str,
     first_datetime_utc_start: pd.Timestamp,
     last_datetime_utc_start: pd.Timestamp,
+    timebase_s: int,
 ) -> pd.DataFrame:
     if scada_raw["TurbineName"].isna().any():
         msg = f"NaNs in TurbineName column of scada_raw: {scada_raw['TurbineName'].isna().sum()}"
@@ -164,7 +112,7 @@ def check_and_convert_scada_raw(
         scada_raw.index = scada_raw.index.tz_localize(None)
     scada_raw.index = scada_raw.index.tz_localize(scada_data_timezone).tz_convert("UTC")
     if scada_data_time_format == "End":
-        scada_raw.index = scada_raw.index - pd.Timedelta(minutes=10)
+        scada_raw.index = scada_raw.index - pd.Timedelta(seconds=timebase_s)
     scada_raw.index = scada_raw.index.rename(TIMESTAMP_COL)
 
     # clip to originally requested datetime range
@@ -185,7 +133,7 @@ def check_and_convert_scada_raw(
         complete_index = pd.date_range(
             start=scada_raw.index.min(),
             end=scada_raw.index.max(),
-            freq=TIMEBASE_PD_TIMEDELTA,
+            freq=pd.Timedelta(seconds=timebase_s),
         )
         reindexed_df = pd.DataFrame()
         for wtg in unique_wtgs:
@@ -205,8 +153,10 @@ def check_and_convert_scada_raw(
         else:
             msg = f"turbines have different number of rows: {new_rows_per_turbine} != {turbine_rows.min().iloc[0]}"
             raise RuntimeError(msg)
-
-    logger.info(f"loaded {len(turbine_rows)} turbines, {rows_per_turbine / 6 / 24 / 365.25:.1f} years per turbine")
+    rows_per_hour = 3600 / timebase_s
+    logger.info(
+        f"loaded {len(turbine_rows)} turbines, {rows_per_turbine / rows_per_hour / 24 / 365.25:.1f} years per turbine"
+    )
     return scada_raw
 
 
@@ -217,6 +167,7 @@ def load_smart_scada_and_md_from_file(
     *,
     first_datetime_utc_start: pd.Timestamp,
     last_datetime_utc_start: pd.Timestamp,
+    timebase_s: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     logger.info(
         f"running load_smart_scada_and_md_from_file for {first_datetime_utc_start} to {last_datetime_utc_start}"
@@ -228,6 +179,7 @@ def load_smart_scada_and_md_from_file(
         first_datetime_utc_start=first_datetime_utc_start,
         last_datetime_utc_start=last_datetime_utc_start,
         md=md,
+        timebase_s=timebase_s,
     )
     scada_raw = check_and_convert_scada_raw(
         scada_df,
@@ -235,6 +187,7 @@ def load_smart_scada_and_md_from_file(
         scada_data_time_format=smart_tf,
         first_datetime_utc_start=first_datetime_utc_start,
         last_datetime_utc_start=last_datetime_utc_start,
+        timebase_s=timebase_s,
     )
 
     logger.info(f"finished load_smart_scada_and_md for {first_datetime_utc_start} to {last_datetime_utc_start}")
