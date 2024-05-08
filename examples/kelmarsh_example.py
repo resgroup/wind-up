@@ -1,15 +1,18 @@
+import sys
 import zipfile
 from pathlib import Path
 
 import pandas as pd
 
-from examples.helpers import download_zenodo_data, setup_logger
 from wind_up.caching import with_parquet_cache
 from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
 from wind_up.interface import AssessmentInputs
 from wind_up.main_analysis import run_wind_up_analysis
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.reanalysis_data import ReanalysisDataset
+
+sys.path.append(str(PROJECTROOT_DIR))
+from examples.helpers import download_zenodo_data, setup_logger
 
 CACHE_FLD = PROJECTROOT_DIR / "cache" / "kelmarsh_example_data"
 TURBINE_METADATA_FILENAME = "Kelmarsh_WT_static.csv"
