@@ -60,7 +60,7 @@ def plot_yaw_direction_pre_post_per_signal(
         label=post_label,
     )
     plt.xlabel(f"{ref_wd_col} [deg]")
-    plt.ylabel(f"{test_wd_col} - {ref_wd_col} [deg]")
+    plt.ylabel(f'{signal_name.replace("_", " ")} [deg]')
     plt.grid()
 
     plot_title = (
