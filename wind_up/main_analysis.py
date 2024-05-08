@@ -289,6 +289,47 @@ def toggle_pairing_filter(
     return filt_pre_df, filt_post_df
 
 
+def yaw_error_results(pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_cols: list[str]) -> dict:
+    results = {}
+    if "test_yaw_error_mean" in pre_df.columns:
+        results["test_yaw_error_pre"] = pre_df.dropna(subset=required_pp_cols)["test_yaw_error_mean"].mean()
+        results["test_yaw_error_post"] = post_df.dropna(subset=required_pp_cols)["test_yaw_error_mean"].mean()
+    if "ref_yaw_error_mean" in pre_df.columns:
+        results["ref_yaw_error_pre"] = pre_df.dropna(subset=required_pp_cols)["ref_yaw_error_mean"].mean()
+        results["ref_yaw_error_post"] = post_df.dropna(subset=required_pp_cols)["ref_yaw_error_mean"].mean()
+    return results
+
+
+def yaw_offset_results(pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_cols: list[str]) -> dict:
+    results = {}
+    yaw_offset_ul = 1e-3
+    if "test_yaw_offset_command" in pre_df.columns:
+        results["test_yaw_offset_command_pre"] = pre_df.dropna(subset=required_pp_cols)[
+            "test_yaw_offset_command"
+        ].mean()
+        if results["test_yaw_offset_command_pre"] > yaw_offset_ul:
+            result_manager.warning(
+                f"test_yaw_offset_command_pre > 0: " f"({results['test_yaw_offset_command_pre']})",
+            )
+        results["test_yaw_offset_command_post"] = post_df.dropna(subset=required_pp_cols)[
+            "test_yaw_offset_command"
+        ].mean()
+    if "ref_yaw_offset_command" in pre_df.columns:
+        results["ref_yaw_offset_command_pre"] = pre_df.dropna(subset=required_pp_cols)["ref_yaw_offset_command"].mean()
+        if results["ref_yaw_offset_command_pre"] > yaw_offset_ul:
+            result_manager.warning(
+                f"ref_yaw_offset_command_pre > 0 for: " f"({results['ref_yaw_offset_command_pre']})",
+            )
+        results["ref_yaw_offset_command_post"] = post_df.dropna(subset=required_pp_cols)[
+            "ref_yaw_offset_command"
+        ].mean()
+        if results["ref_yaw_offset_command_post"] > yaw_offset_ul:
+            result_manager.warning(
+                f"ref_yaw_offset_command_post > 0 for: " f"({results['ref_yaw_offset_command_post']})",
+            )
+    return results
+
+
 def calc_test_ref_results(
     *,
     test_df: pd.DataFrame,
@@ -565,25 +606,17 @@ def calc_test_ref_results(
         "detrend_post_r2_improvement": detrend_post_r2_improvement,
         "mean_power_pre": pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
         "mean_power_post": post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
-        "test_ref_warning_counts": len(result_manager.stored_warnings),
     }
+
+    other_results = other_results | yaw_error_results(
+        pre_df=pre_df, post_df=post_df, required_pp_cols=[detrend_ws_col, test_pw_col, ref_wd_col]
+    )
+    other_results = other_results | yaw_offset_results(
+        pre_df=pre_df, post_df=post_df, required_pp_cols=[detrend_ws_col, test_pw_col, ref_wd_col]
+    )
+
+    other_results["test_ref_warning_counts"] = len(result_manager.stored_warnings)
     result_manager.stored_warnings = []
-
-    if "test_yaw_error_mean" in pre_df.columns:
-        other_results["test_yaw_error_pre"] = pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
-            "test_yaw_error_mean"
-        ].mean()
-        other_results["test_yaw_error_post"] = post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
-            "test_yaw_error_mean"
-        ].mean()
-    if "ref_yaw_error_mean" in pre_df.columns:
-        other_results["ref_yaw_error_pre"] = pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
-            "ref_yaw_error_mean"
-        ].mean()
-        other_results["ref_yaw_error_post"] = post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
-            "ref_yaw_error_mean"
-        ].mean()
-
     return other_results | pp_results
 
 
