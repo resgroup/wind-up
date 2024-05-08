@@ -15,7 +15,7 @@ Then create a virtual environment and install the package in it:
 # create a virtual environment in the .venv folder
 python -m venv .venv
 # activate the virtual environment
-source .venv/Scripts/activate  # or .venv/bin/activate on linux
+source .venv/Scripts/activate  # or .venv/bin/activate on linux or ".venv/Scripts/activate" in Windows command prompt
 # install the wind-up package
 pip install -r requirements.txt
 ```
@@ -34,7 +34,7 @@ pip install -r dev-requirements.txt -e .
 ```
 
 ## Running tests
-Use `poe test` or `poe all` to run unit tests (make sure the virtual environment is activated)
+Install dev dependencies and use `poe test` or `poe all` to run unit tests (make sure the virtual environment is activated)
 
 ## Updating and locking dependencies
 To update the main (and dev) dependencies based off the `pyproject.toml` file conditions use:

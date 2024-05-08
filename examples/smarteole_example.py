@@ -1,4 +1,5 @@
 import logging
+import sys
 import zipfile
 from functools import partial
 from pathlib import Path
@@ -8,7 +9,6 @@ from pandas.testing import assert_frame_equal
 from scipy.stats import circmean
 from tabulate import tabulate
 
-from examples.helpers import download_zenodo_data, setup_logger
 from wind_up.caching import with_parquet_cache
 from wind_up.combine_results import calc_net_uplift
 from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
@@ -16,6 +16,9 @@ from wind_up.interface import AssessmentInputs
 from wind_up.main_analysis import run_wind_up_analysis
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.reanalysis_data import ReanalysisDataset
+
+sys.path.append(str(PROJECTROOT_DIR))
+from examples.helpers import download_zenodo_data, setup_logger
 
 CACHE_DIR = PROJECTROOT_DIR / "cache" / "smarteole_example_data"
 
