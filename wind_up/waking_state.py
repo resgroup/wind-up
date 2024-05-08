@@ -10,7 +10,6 @@ from wind_up.constants import (
     RAW_DOWNTIME_S_COL,
     RAW_POWER_COL,
     RAW_WINDSPEED_COL,
-    TIMEBASE_S,
     TIMESTAMP_COL,
 )
 from wind_up.math_funcs import circ_diff
@@ -21,7 +20,9 @@ from wind_up.wind_funcs import calc_cp
 logger = logging.getLogger(__name__)
 
 
-def add_waking_state_one_ttype(wf_df: pd.DataFrame, ttype: TurbineType, plot_cfg: PlotConfig | None) -> pd.DataFrame:
+def add_waking_state_one_ttype(
+    wf_df: pd.DataFrame, *, ttype: TurbineType, timebase_s: int, plot_cfg: PlotConfig | None
+) -> pd.DataFrame:
     wf_df = wf_df.copy()
     rated_power = ttype.rated_power_kw
     wf_df["waking"] = ~wf_df["ActivePowerMean"].isna()
@@ -52,7 +53,7 @@ def add_waking_state_one_ttype(wf_df: pd.DataFrame, ttype: TurbineType, plot_cfg
 
     margin_for_not_waking_rated_power = 0.01
     wf_df["not_waking"] = wf_df[RAW_POWER_COL] < margin_for_not_waking_rated_power * rated_power
-    wf_df["not_waking"] = wf_df["not_waking"] | (wf_df[RAW_DOWNTIME_S_COL] > TIMEBASE_S * factor_for_waking_cp)
+    wf_df["not_waking"] = wf_df["not_waking"] | (wf_df[RAW_DOWNTIME_S_COL] > timebase_s * factor_for_waking_cp)
 
     wf_df["not_waking"] = wf_df["not_waking"] & (~wf_df["waking"])
     wf_df["unknown_waking"] = (~wf_df["waking"]) & (~wf_df["not_waking"])
@@ -84,6 +85,7 @@ def add_waking_state(cfg: WindUpConfig, wf_df: pd.DataFrame, plot_cfg: PlotConfi
         wf_df_ = add_waking_state_one_ttype(
             wf_df=df_ttype,
             ttype=ttype,
+            timebase_s=cfg.timebase_s,
             plot_cfg=plot_cfg,
         )
         wf_df = pd.concat([wf_df, wf_df_])

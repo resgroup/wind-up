@@ -36,9 +36,10 @@ def plot_data_coverage_heatmap(df: pd.DataFrame, plot_title: str, plot_cfg: Plot
 
 
 def calc_cf_by_turbine(scada_df: pd.DataFrame, cfg: WindUpConfig) -> pd.DataFrame:
+    rows_per_hour = 3600 / cfg.timebase_s
     cf_df = scada_df.groupby("TurbineName", observed=False).agg(
-        hours=pd.NamedAgg(column="TurbineName", aggfunc=lambda x: x.count() / 6),
-        MWh=pd.NamedAgg(column="ActivePowerMean", aggfunc=lambda x: x.sum() / 6 / 1000),
+        hours=pd.NamedAgg(column="TurbineName", aggfunc=lambda x: x.count() / rows_per_hour),
+        MWh=pd.NamedAgg(column="ActivePowerMean", aggfunc=lambda x: x.sum() / rows_per_hour / 1000),
     )
     for i, rp in zip(
         [x.name for x in cfg.asset.wtgs],

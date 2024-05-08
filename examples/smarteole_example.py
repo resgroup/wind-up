@@ -17,7 +17,11 @@ from wind_up.main_analysis import run_wind_up_analysis
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.reanalysis_data import ReanalysisDataset
 
-CACHE_FLD = PROJECTROOT_DIR / "cache" / "smarteole_example_data"
+CACHE_DIR = PROJECTROOT_DIR / "cache" / "smarteole_example_data"
+
+ANALYSIS_TIMEBASE_S = 600
+CACHE_SUBDIR = CACHE_DIR / f"timebase_{ANALYSIS_TIMEBASE_S}"
+CACHE_SUBDIR.mkdir(exist_ok=True, parents=True)
 
 ENSURE_DOWNLOAD = 1
 CHECK_RESULTS = 1
@@ -26,10 +30,10 @@ ZIP_FILENAME = "SMARTEOLE-WFC-open-dataset.zip"
 MINIMUM_DATA_COUNT_COVERAGE = 0.5  # 50% of the data must be present
 
 
-@with_parquet_cache(CACHE_FLD / "_smarteole_scada.parquet")
-def _unpack_scada() -> pd.DataFrame:
+@with_parquet_cache(CACHE_SUBDIR / "smarteole_scada.parquet")
+def _unpack_scada(timebase_s: int) -> pd.DataFrame:
     """
-    Function that translates 1-minute SCADA data to 10 minute data in the wind-up expected format
+    Function that translates 1-minute SCADA data to x minute data in the wind-up expected format
     """
 
     def _separate_turbine_id_from_field(x: str) -> tuple[str, str]:
@@ -50,13 +54,13 @@ def _unpack_scada() -> pd.DataFrame:
         return df.stack(level=0, future_stack=True).reset_index(DataColumns.turbine_name)  # noqa: PD013
 
     def _map_and_mask_cols(df: pd.DataFrame) -> pd.DataFrame:
-        ten_minutes_count_lower_limit = 600 * MINIMUM_DATA_COUNT_COVERAGE
-        mask_active_power = df["active_power_count"] < ten_minutes_count_lower_limit
-        mask_wind_speed = df["wind_speed_count"] < ten_minutes_count_lower_limit
-        mask_pitch_angle = df["blade_1_pitch_angle_count"] < ten_minutes_count_lower_limit
-        mask_gen_rpm = df["generator_speed_count"] < ten_minutes_count_lower_limit
-        mask_temperature = df["temperature_count"] < ten_minutes_count_lower_limit
-        mask_nacelle_position = df["nacelle_position_count"] < ten_minutes_count_lower_limit
+        x_minutes_count_lower_limit = timebase_s * MINIMUM_DATA_COUNT_COVERAGE
+        mask_active_power = df["active_power_count"] < x_minutes_count_lower_limit
+        mask_wind_speed = df["wind_speed_count"] < x_minutes_count_lower_limit
+        mask_pitch_angle = df["blade_1_pitch_angle_count"] < x_minutes_count_lower_limit
+        mask_gen_rpm = df["generator_speed_count"] < x_minutes_count_lower_limit
+        mask_temperature = df["temperature_count"] < x_minutes_count_lower_limit
+        mask_nacelle_position = df["nacelle_position_count"] < x_minutes_count_lower_limit
         return df.assign(
             **{
                 DataColumns.active_power_mean: lambda d: d["active_power_avg"].mask(mask_active_power),
@@ -76,12 +80,12 @@ def _unpack_scada() -> pd.DataFrame:
     # unzipping the data in memory and only reading the relevant files
     scada_fpath = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_SCADA_1minData.csv"
     circular_mean = partial(circmean, low=0, high=360)
-    with zipfile.ZipFile(CACHE_FLD / ZIP_FILENAME) as zf:
+    with zipfile.ZipFile(CACHE_DIR / ZIP_FILENAME) as zf:
         return (
             pd.read_csv(zf.open(scada_fpath), parse_dates=[0], index_col=0)
             .pipe(_make_turbine_id_a_column)
             .groupby(DataColumns.turbine_name)
-            .resample("10min")
+            .resample(f"{timebase_s}s")
             .aggregate(
                 {
                     "active_power_avg": "mean",
@@ -90,7 +94,7 @@ def _unpack_scada() -> pd.DataFrame:
                     "wind_speed_avg": "mean",
                     "wind_speed_std": "mean",
                     "wind_speed_count": "sum",
-                    "blade_1_pitch_angle_avg": "mean",  # no need for circular_mean for small angles
+                    "blade_1_pitch_angle_avg": "mean",  # no need for circular_mean because no wrap
                     "blade_1_pitch_angle_count": "sum",
                     "generator_speed_avg": "mean",
                     "generator_speed_count": "sum",
@@ -110,10 +114,10 @@ def _unpack_scada() -> pd.DataFrame:
         )
 
 
-@with_parquet_cache(CACHE_FLD / "_smarteole_metadata.parquet")
+@with_parquet_cache(CACHE_DIR / "smarteole_metadata.parquet")
 def _unpack_metadata() -> pd.DataFrame:
     md_fpath = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_Coordinates_staticData.csv"
-    with zipfile.ZipFile(CACHE_FLD / ZIP_FILENAME) as zf:
+    with zipfile.ZipFile(CACHE_DIR / ZIP_FILENAME) as zf:
         return (
             pd.read_csv(zf.open(md_fpath), index_col=0)
             .reset_index()
@@ -124,13 +128,13 @@ def _unpack_metadata() -> pd.DataFrame:
         )
 
 
-@with_parquet_cache(CACHE_FLD / "_smarteole_toggle.parquet")
-def _unpack_toggle_data() -> pd.DataFrame:
-    ten_minutes_count_lower_limit = 600 * MINIMUM_DATA_COUNT_COVERAGE
+@with_parquet_cache(CACHE_SUBDIR / "smarteole_toggle.parquet")
+def _unpack_toggle_data(timebase_s: int) -> pd.DataFrame:
+    ten_minutes_count_lower_limit = timebase_s * MINIMUM_DATA_COUNT_COVERAGE
     toggle_value_threshold: float = 0.95
 
     _fpath = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_ControlLog_1minData.csv"
-    with zipfile.ZipFile(CACHE_FLD / ZIP_FILENAME) as zf:
+    with zipfile.ZipFile(CACHE_DIR / ZIP_FILENAME) as zf:
         raw_df = pd.read_csv(zf.open(_fpath), parse_dates=[0], index_col=0)
 
     required_in_cols = [
@@ -139,7 +143,7 @@ def _unpack_toggle_data() -> pd.DataFrame:
     ]
     toggle_df = (
         raw_df[required_in_cols]
-        .resample("10min")
+        .resample(f"{timebase_s}s")
         .agg({"control_log_offset_active_avg": "mean", "control_log_offset_active_count": "sum"})
     )
     toggle_df["toggle_on"] = (toggle_df["control_log_offset_active_avg"] >= toggle_value_threshold) & (
@@ -162,14 +166,14 @@ if __name__ == "__main__":
     logger = logging.getLogger(__name__)
 
     logger.info("Downloading example data from Zenodo")
-    download_zenodo_data(record_id="7342466", output_dir=CACHE_FLD, filenames={ZIP_FILENAME})
+    download_zenodo_data(record_id="7342466", output_dir=CACHE_DIR, filenames={ZIP_FILENAME})
 
     logger.info("Preprocessing (and caching) turbine SCADA data")
-    scada_df = _unpack_scada()
+    scada_df = _unpack_scada(ANALYSIS_TIMEBASE_S)
     logger.info("Preprocessing (and caching) turbine metadata")
     metadata_df = _unpack_metadata()
     logger.info("Preprocessing (and caching) toggle data")
-    toggle_df = _unpack_toggle_data()
+    toggle_df = _unpack_toggle_data(ANALYSIS_TIMEBASE_S)
 
     logger.info("Loading reference reanalysis data")
     reanalysis_dataset = ReanalysisDataset(
@@ -204,11 +208,13 @@ if __name__ == "__main__":
         ("SMV7", pd.Timestamp("2020-02-17 16:30:00+0000"), 4.605999999999972),
     ]
 
+    wd_filter_margin = 3 + 7 * ANALYSIS_TIMEBASE_S / 600
     cfg = WindUpConfig(
         assessment_name="smarteole_example",
+        timebase_s=ANALYSIS_TIMEBASE_S,
         require_ref_wake_free=True,
         detrend_min_hours=12,
-        ref_wd_filter=[197.0, 246.0],
+        ref_wd_filter=[207 - wd_filter_margin, 236 + wd_filter_margin],  # steer is from 207-236
         filter_all_test_wtgs_together=True,
         use_lt_distribution=False,
         out_dir=analysis_output_dir,
@@ -218,11 +224,11 @@ if __name__ == "__main__":
         non_wtg_ref_names=[],
         analysis_first_dt_utc_start=pd.Timestamp("2020-02-17 16:30:00+0000"),
         upgrade_first_dt_utc_start=pd.Timestamp("2020-02-17 16:30:00+0000"),
-        analysis_last_dt_utc_start=pd.Timestamp("2020-05-24 23:50:00+0000"),
+        analysis_last_dt_utc_start=pd.Timestamp("2020-05-25 00:00:00+0000") - pd.Timedelta(seconds=ANALYSIS_TIMEBASE_S),
         lt_first_dt_utc_start=pd.Timestamp("2020-02-17 16:30:00+0000"),
-        lt_last_dt_utc_start=pd.Timestamp("2020-05-24 23:50:00+0000"),
+        lt_last_dt_utc_start=pd.Timestamp("2020-05-25 00:00:00+0000") - pd.Timedelta(seconds=ANALYSIS_TIMEBASE_S),
         detrend_first_dt_utc_start=pd.Timestamp("2020-02-17 16:30:00+0000"),
-        detrend_last_dt_utc_start=pd.Timestamp("2020-05-24 23:50:00+0000"),
+        detrend_last_dt_utc_start=pd.Timestamp("2020-05-25 00:00:00+0000") - pd.Timedelta(seconds=ANALYSIS_TIMEBASE_S),
         years_for_lt_distribution=0,
         years_for_detrend=0,
         ws_bin_width=1.0,
@@ -239,7 +245,7 @@ if __name__ == "__main__":
             "detrend_data_selection": "use_toggle_off_data",
             "pairing_filter_method": "any_within_timedelta",
             "pairing_filter_timedelta_seconds": 3600,
-            "toggle_change_settling_filter_seconds": 600,
+            "toggle_change_settling_filter_seconds": 120,
         },
     )
     plot_cfg = PlotConfig(show_plots=False, save_plots=True, plots_dir=cfg.out_dir / "plots")
@@ -251,7 +257,7 @@ if __name__ == "__main__":
         scada_df=scada_df,
         metadata_df=metadata_df,
         reanalysis_datasets=[reanalysis_dataset],
-        cache_dir=CACHE_FLD,
+        cache_dir=CACHE_SUBDIR,
     )
     results_per_test_ref_df = run_wind_up_analysis(assessment_inputs)
 

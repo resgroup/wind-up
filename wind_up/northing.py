@@ -7,7 +7,6 @@ from scipy.stats import circmean
 from wind_up.constants import (
     RAW_YAWDIR_COL,
     REANALYSIS_WD_COL,
-    ROWS_PER_DAY,
     TIMESTAMP_COL,
     WINDFARM_YAWDIR_COL,
 )
@@ -19,22 +18,23 @@ from wind_up.plots.northing_plots import plot_and_print_northing_error, plot_nor
 logger = logging.getLogger(__name__)
 
 
-def add_rolling_northing_error(wf_df: pd.DataFrame, north_ref_wd_col: str) -> pd.DataFrame:
+def add_rolling_northing_error(wf_df: pd.DataFrame, *, north_ref_wd_col: str, timebase_s: int) -> pd.DataFrame:
     wf_df = wf_df.copy()
     wf_df["apparent_northing_error"] = circ_diff(wf_df["YawAngleMean"], wf_df[north_ref_wd_col])
     ws_ll = 6
     wf_df.loc[~(wf_df["WindSpeedMean"] >= ws_ll), "apparent_northing_error"] = np.nan
     rolling_days = 20
+    rows_per_day = 24 * 3600 / timebase_s
     wf_df["rolling_northing_error"] = (
         wf_df["apparent_northing_error"]
-        .rolling(window=round(rolling_days * ROWS_PER_DAY), min_periods=round(rolling_days * ROWS_PER_DAY // 3))
+        .rolling(window=round(rolling_days * rows_per_day), min_periods=round(rolling_days * rows_per_day // 3))
         .median()
     )
     return wf_df
 
 
-def calc_max_abs_north_errs(wf_df: pd.DataFrame, north_ref_wd_col: str) -> pd.DataFrame:
-    wf_df = add_rolling_northing_error(wf_df.copy(), north_ref_wd_col=north_ref_wd_col)
+def calc_max_abs_north_errs(wf_df: pd.DataFrame, *, north_ref_wd_col: str, timebase_s: int) -> pd.DataFrame:
+    wf_df = add_rolling_northing_error(wf_df.copy(), north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s)
     return wf_df.groupby("TurbineName", observed=True)["rolling_northing_error"].agg(lambda x: x.abs().max())
 
 
@@ -55,9 +55,9 @@ def apply_northing_corrections(
 
     if plot_cfg is not None:
         plot_and_print_northing_error(
-            add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col),
+            add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
             cfg=cfg,
-            abs_north_errs=calc_max_abs_north_errs(wf_df, north_ref_wd_col=north_ref_wd_col),
+            abs_north_errs=calc_max_abs_north_errs(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
             title_end=f"vs {north_ref_wd_col} before northing",
             plot_cfg=plot_cfg,
         )
@@ -97,9 +97,11 @@ def apply_northing_corrections(
         if plot_cfg is not None:
             logger.info(f"applied {len_corrs} northing corrections")
             plot_and_print_northing_error(
-                add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col),
+                add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
                 cfg=cfg,
-                abs_north_errs=calc_max_abs_north_errs(wf_df, north_ref_wd_col=north_ref_wd_col),
+                abs_north_errs=calc_max_abs_north_errs(
+                    wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s
+                ),
                 title_end=f"vs {north_ref_wd_col} after northing",
                 plot_cfg=plot_cfg,
             )
@@ -117,13 +119,16 @@ def check_wtg_northing(
     *,
     wtg_name: str,
     north_ref_wd_col: str,
+    timebase_s: int,
     plot_cfg: PlotConfig | None,
 ) -> float:
     wtg_wf_df = format_wtg_df_like_wf_df(wtg_df, wtg_name=wtg_name)
-    max_northing_error = calc_max_abs_north_errs(wtg_wf_df, north_ref_wd_col=north_ref_wd_col).squeeze()
+    max_northing_error = calc_max_abs_north_errs(
+        wtg_wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s
+    ).squeeze()
     if plot_cfg is not None:
         plot_northing_error(
-            wf_df=add_rolling_northing_error(wtg_wf_df, north_ref_wd_col=north_ref_wd_col),
+            wf_df=add_rolling_northing_error(wtg_wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s),
             title_end=f"{wtg_name} vs {north_ref_wd_col}",
             plot_cfg=plot_cfg,
             sub_dir=wtg_name,
@@ -144,6 +149,7 @@ def calc_wf_yawdir_df(
         new_col_name="ok_for_yawdir",
         wd_col=best_yaw_dir_col,
         rated_power=cfg.get_max_rated_power(),
+        timebase_s=cfg.timebase_s,
     )
     wf_df = wf_df.loc[wf_df["ok_for_yawdir"]].dropna(subset=[best_yaw_dir_col])
     wf_yawdir_df = wf_df.groupby(TIMESTAMP_COL).agg(

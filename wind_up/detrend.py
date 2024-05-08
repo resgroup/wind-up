@@ -3,7 +3,6 @@ import logging
 import numpy as np
 import pandas as pd
 
-from wind_up.constants import ROWS_PER_HOUR
 from wind_up.math_funcs import circ_diff
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.detrend_plots import (
@@ -24,6 +23,7 @@ def calc_wsratio_v_wd(
     ref_ws_col: str,
     ref_wd_col: str,
     min_hours: int,
+    timebase_s: int,
     dir_bin_width: float = 10.0,
 ) -> pd.DataFrame:
     detrend_df = detrend_df.dropna(subset=[test_ws_col, ref_ws_col, ref_wd_col]).copy()
@@ -45,9 +45,10 @@ def calc_wsratio_v_wd(
         subsector_df = detrend_df[detrend_df["within_dir_bin"]].copy()
         if len(subsector_df) > 0:
             directions.append(d)
-            hours.append(len(subsector_df) / ROWS_PER_HOUR)
+            rows_per_hour = 3600 / timebase_s
+            hours.append(len(subsector_df) / rows_per_hour)
             # 61400-12-1 requires >=24h data, >=6h above 8m/s, >= below 8m/s
-            min_count = min_hours * ROWS_PER_HOUR
+            min_count = min_hours * rows_per_hour
             accept_sector = len(subsector_df) >= min_count
             iec_ws_threshold = 8
             accept_sector = accept_sector and ((subsector_df[test_ws_col] < iec_ws_threshold).sum() >= (min_count / 4))
@@ -167,7 +168,8 @@ def calc_wsratio_v_wd_scen(
     plot_cfg: PlotConfig | None,
 ) -> pd.DataFrame:
     count_by_scen = detrend_df.dropna(subset=[test_ws_col, ref_ws_col, ref_wd_col])["waking_scenario"].value_counts()
-    scens_to_detrend = count_by_scen[count_by_scen > (cfg.detrend_min_hours * ROWS_PER_HOUR)]
+    rows_per_hour = 3600 / cfg.timebase_s
+    scens_to_detrend = count_by_scen[count_by_scen > (cfg.detrend_min_hours * rows_per_hour)]
     scens_to_detrend_list = [x for x in scens_to_detrend.index if x != "unknown"]
 
     wsratio_v_dir_scen = pd.DataFrame()
@@ -184,6 +186,7 @@ def calc_wsratio_v_wd_scen(
             ref_ws_col=ref_ws_col,
             ref_wd_col=ref_wd_col,
             min_hours=cfg.detrend_min_hours,
+            timebase_s=cfg.timebase_s,
         )
         wsratio_v_dir["waking_scenario"] = scen
         wsratio_v_dir_scen = pd.concat([wsratio_v_dir_scen, wsratio_v_dir])

@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from wind_up.caching import with_pickle_cache
-from wind_up.constants import REANALYSIS_WD_COL, TIMEBASE_PD_TIMEDELTA, TIMEBASE_S
+from wind_up.constants import REANALYSIS_WD_COL
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.northing import add_wf_yawdir, apply_northing_corrections
 from wind_up.optimize_northing import auto_northing_corrections
@@ -67,11 +67,11 @@ def add_toggle_signals(
         toggle_change_times = pd.DatetimeIndex(
             toggle_on_change_times.to_list() + toggle_off_change_times.to_list(),
         ).sort_values()
-        rows_to_filter = math.ceil(cfg.toggle.toggle_change_settling_filter_seconds / TIMEBASE_S)
+        rows_to_filter = math.ceil(cfg.toggle.toggle_change_settling_filter_seconds / cfg.timebase_s)
         while rows_to_filter > 0:
             toggle_df.loc[toggle_change_times, "toggle_on"] = False
             toggle_df.loc[toggle_change_times, "toggle_off"] = False
-            toggle_change_times = toggle_change_times + TIMEBASE_PD_TIMEDELTA
+            toggle_change_times = toggle_change_times + pd.Timedelta(seconds=cfg.timebase_s)
             rows_to_filter -= 1
 
         toggle_on_rows_after = toggle_df["toggle_on"].sum()

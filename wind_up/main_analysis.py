@@ -232,6 +232,7 @@ def make_extended_time_index(
 
 
 def toggle_pairing_filter(
+    *,
     pre_df: pd.DataFrame,
     post_df: pd.DataFrame,
     pairing_filter_method: str,
@@ -239,6 +240,7 @@ def toggle_pairing_filter(
     detrend_ws_col: str,
     test_pw_col: str,
     ref_wd_col: str,
+    timebase_s: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     required_cols = [detrend_ws_col, test_pw_col, ref_wd_col]
     len_pre_before = len(pre_df.dropna(subset=required_cols))
@@ -256,7 +258,7 @@ def toggle_pairing_filter(
             valid_pre_df.index.isin(
                 make_extended_time_index(
                     valid_post_df.index,
-                    timebase=pd.Timedelta("10min"),
+                    timebase=pd.Timedelta(seconds=timebase_s),
                     max_timedelta_seconds=pairing_filter_timedelta_seconds,
                 ),
             )
@@ -265,7 +267,7 @@ def toggle_pairing_filter(
             valid_post_df.index.isin(
                 make_extended_time_index(
                     valid_pre_df.index,
-                    timebase=pd.Timedelta("10min"),
+                    timebase=pd.Timedelta(seconds=timebase_s),
                     max_timedelta_seconds=pairing_filter_timedelta_seconds,
                 ),
             )
@@ -339,12 +341,14 @@ def calc_test_ref_results(
         ref_df,
         wtg_name=ref_name,
         north_ref_wd_col=REANALYSIS_WD_COL,
+        timebase_s=cfg.timebase_s,
         plot_cfg=plot_cfg,
     )
     ref_max_northing_error_v_wf = check_wtg_northing(
         ref_df,
         wtg_name=ref_name,
         north_ref_wd_col=WINDFARM_YAWDIR_COL,
+        timebase_s=cfg.timebase_s,
         plot_cfg=plot_cfg,
     )
 
@@ -509,13 +513,14 @@ def calc_test_ref_results(
 
     if cfg.toggle is not None:
         pre_df, post_df = toggle_pairing_filter(
-            pre_df,
-            post_df,
+            pre_df=pre_df,
+            post_df=post_df,
             pairing_filter_method=cfg.toggle.pairing_filter_method,
             pairing_filter_timedelta_seconds=cfg.toggle.pairing_filter_timedelta_seconds,
             detrend_ws_col=detrend_ws_col,
             test_pw_col=test_pw_col,
             ref_wd_col=ref_wd_col,
+            timebase_s=cfg.timebase_s,
         )
 
     if plot_cfg is not None:

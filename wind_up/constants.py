@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pandas as pd
-
 PROJECTROOT_DIR = Path(__file__).parents[1]
 CONFIG_DIR = Path(__file__).parents[1] / "config"
 TURBINE_DATA_DIR = Path(__file__).parents[1] / "input_data/turbine_data"
@@ -12,11 +10,6 @@ OUTPUT_DIR = Path(__file__).parents[1] / "output"
 RANDOM_SEED = 0
 SCATTER_S = 1
 SCATTER_ALPHA = 0.2
-
-TIMEBASE_PD_TIMEDELTA = pd.Timedelta("10min")
-TIMEBASE_S = TIMEBASE_PD_TIMEDELTA.total_seconds()
-ROWS_PER_HOUR = 3600 / TIMEBASE_S
-ROWS_PER_DAY = 24 * ROWS_PER_HOUR
 
 
 class DataColumns:

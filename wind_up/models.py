@@ -131,6 +131,10 @@ class WindUpConfig(BaseModel):
         min_length=2,
         description="Name used for assessment output folder",
     )
+    timebase_s: int = Field(
+        default=10 * 60,
+        description="Timebase in seconds for SCADA data, other data is converted to this timebase",
+    )
     ignore_turbine_anemometer_data: bool = Field(
         default=False,
         description="If true do not use turbine anemometer data for anything",
@@ -294,18 +298,18 @@ class WindUpConfig(BaseModel):
         dt_fmt = "%Y-%m-%d %H:%M"
         if self.toggle is not None:
             dt_rng_start = self.analysis_first_dt_utc_start.strftime(dt_fmt)
-            dt_rng_end = (self.analysis_last_dt_utc_start + pd.Timedelta("10m")).strftime(dt_fmt)
+            dt_rng_end = (self.analysis_last_dt_utc_start + pd.Timedelta(seconds=self.timebase_s)).strftime(dt_fmt)
             logger.info(
                 f"toggle analysis period (UTC): {dt_rng_start} to {dt_rng_end}",
             )
         elif self.prepost is not None:
             dt_rng_start = self.prepost.pre_first_dt_utc_start.strftime(dt_fmt)
-            dt_rng_end = (self.prepost.pre_last_dt_utc_start + pd.Timedelta("10m")).strftime(dt_fmt)
+            dt_rng_end = (self.prepost.pre_last_dt_utc_start + pd.Timedelta(seconds=self.timebase_s)).strftime(dt_fmt)
             logger.info(
                 f"pre analysis period (UTC): {dt_rng_start} to {dt_rng_end}",
             )
             dt_rng_start = self.prepost.post_first_dt_utc_start.strftime(dt_fmt)
-            dt_rng_end = (self.prepost.post_last_dt_utc_start + pd.Timedelta("10m")).strftime(dt_fmt)
+            dt_rng_end = (self.prepost.post_last_dt_utc_start + pd.Timedelta(seconds=self.timebase_s)).strftime(dt_fmt)
             logger.info(
                 f"post analysis period (UTC): {dt_rng_start} to {dt_rng_end}",
             )
@@ -313,10 +317,10 @@ class WindUpConfig(BaseModel):
             msg = "toggle and prepost are both set to None"
             raise RuntimeError(msg)
         dt_rng_start = self.lt_first_dt_utc_start.strftime(dt_fmt)
-        dt_rng_end = (self.lt_last_dt_utc_start + pd.Timedelta("10m")).strftime(dt_fmt)
+        dt_rng_end = (self.lt_last_dt_utc_start + pd.Timedelta(seconds=self.timebase_s)).strftime(dt_fmt)
         logger.info(f"long term period (UTC): {dt_rng_start} to {dt_rng_end}")
         dt_rng_start = self.detrend_first_dt_utc_start.strftime(dt_fmt)
-        dt_rng_end = (self.detrend_last_dt_utc_start + pd.Timedelta("10m")).strftime(dt_fmt)
+        dt_rng_end = (self.detrend_last_dt_utc_start + pd.Timedelta(seconds=self.timebase_s)).strftime(dt_fmt)
         logger.info(f"detrend period (UTC): {dt_rng_start} to {dt_rng_end}")
         return self
 
