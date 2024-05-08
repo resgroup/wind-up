@@ -48,7 +48,7 @@ class PrePostSplitter:
 def add_toggle_signals(
     input_df: pd.DataFrame, toggle_df: pd.DataFrame, wtg_name: str, cfg: WindUpConfig
 ) -> pd.DataFrame:
-    toggle_df=toggle_df.copy()
+    toggle_df = toggle_df.copy()
     if cfg.toggle is None:
         msg = "add_toggle_signals cannot be run if cfg.toggle is None"
         raise ValueError(msg)
