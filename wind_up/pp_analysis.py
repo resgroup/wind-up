@@ -7,7 +7,6 @@ import pandas as pd
 from scipy.stats import norm, t
 from tqdm.auto import tqdm
 
-from wind_up.constants import ROWS_PER_HOUR, TIMEBASE_PD_TIMEDELTA, TIMEBASE_S
 from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.plots.pp_analysis_plots import plot_pp_data_coverage, plot_pre_post_pp_analysis
 from wind_up.result_manager import result_manager
@@ -22,6 +21,7 @@ def pp_raw_df(
     ws_col: str,
     ws_bin_edges: np.ndarray,
     pw_col: str,
+    timebase_s: int,
 ) -> pd.DataFrame:
     pp_df = (
         pre_or_post_df.dropna(subset=[pw_col, ws_col])
@@ -39,7 +39,8 @@ def pp_raw_df(
     )
     pp_df["ws_std"] = pp_df["ws_std"].fillna(0)
     pp_df["pw_std"] = pp_df["pw_std"].fillna(0)
-    pp_df["hours"] = pp_df["count"] / ROWS_PER_HOUR
+    rows_per_hour = 3600 / timebase_s
+    pp_df["hours"] = pp_df["count"] / rows_per_hour
     pp_df["ws_sem"] = pp_df["ws_std"] / np.sqrt(pp_df["count"].clip(lower=1))
     pp_df["pw_sem"] = pp_df["pw_std"] / np.sqrt(pp_df["count"].clip(lower=1))
     pp_df.columns = [x + f"_{pre_or_post}" for x in pp_df.columns]
@@ -132,8 +133,12 @@ def pre_post_pp_analysis(
 
     ws_bin_edges = np.arange(0, cutout_ws + cfg.ws_bin_width, cfg.ws_bin_width)
 
-    pre_pp_df = pp_raw_df(pre_df, "pre", ws_col=ws_col, ws_bin_edges=ws_bin_edges, pw_col=pw_col)
-    post_pp_df = pp_raw_df(post_df, "post", ws_col=ws_col, ws_bin_edges=ws_bin_edges, pw_col=pw_col)
+    pre_pp_df = pp_raw_df(
+        pre_df, "pre", ws_col=ws_col, ws_bin_edges=ws_bin_edges, pw_col=pw_col, timebase_s=cfg.timebase_s
+    )
+    post_pp_df = pp_raw_df(
+        post_df, "post", ws_col=ws_col, ws_bin_edges=ws_bin_edges, pw_col=pw_col, timebase_s=cfg.timebase_s
+    )
 
     pre_pp_df = cook_pp(pp_df=pre_pp_df, pre_or_post="pre", ws_bin_width=cfg.ws_bin_width, rated_power=rated_power)
     post_pp_df = cook_pp(pp_df=post_pp_df, pre_or_post="post", ws_bin_width=cfg.ws_bin_width, rated_power=rated_power)
@@ -164,7 +169,9 @@ def pre_post_pp_analysis(
     else:
         missing_bins_unc_scale_factor = 1
 
-    pp_daterange = (cfg.analysis_last_dt_utc_start + TIMEBASE_PD_TIMEDELTA) - cfg.analysis_first_dt_utc_start
+    pp_daterange = (
+        cfg.analysis_last_dt_utc_start + pd.Timedelta(seconds=cfg.timebase_s)
+    ) - cfg.analysis_first_dt_utc_start
     pp_possible_hours = pp_daterange.total_seconds() / 3600
 
     pp_df["pw_at_mid_expected"] = pp_df["pw_at_mid_post"]
@@ -190,7 +197,7 @@ def pre_post_pp_analysis(
     uplift_se_mwh = np.sqrt(expected_post_se_mwh**2 + post_se_mwh**2)
 
     valid_count = round(
-        np.minimum(pp_df["hours_pre"].sum(), pp_df["hours_post"].sum()) * 3600 / TIMEBASE_S,
+        np.minimum(pp_df["hours_pre"].sum(), pp_df["hours_post"].sum()) * 3600 / cfg.timebase_s,
     )
     p_low = (1 - confidence_level) / 2
     p_high = 1 - p_low
@@ -199,7 +206,8 @@ def pre_post_pp_analysis(
         valid_count - 1,
     )
     t_values = t.ppf(
-        p_high, np.minimum(pp_df["hours_pre"].clip(lower=2), pp_df["hours_post"].clip(lower=2)) * 3600 / TIMEBASE_S - 1
+        p_high,
+        np.minimum(pp_df["hours_pre"].clip(lower=2), pp_df["hours_post"].clip(lower=2)) * 3600 / cfg.timebase_s - 1,
     )
     unc_one_sigma_mwh = uplift_se_mwh * t_value_one_sigma
 
@@ -236,6 +244,7 @@ def pre_post_pp_analysis(
             ws_col=ws_col,
             pw_col=pw_col,
             wd_col=wd_col,
+            timebase_s=cfg.timebase_s,
             plot_cfg=plot_cfg,
             confidence_level=confidence_level,
         )
@@ -250,6 +259,7 @@ def pre_post_pp_analysis(
                 pp_df=pp_df,
                 test_df_pp_period=test_df_pp_period,
                 ws_bin_width=cfg.ws_bin_width,
+                timebase_s=cfg.timebase_s,
                 plot_cfg=plot_cfg,
             )
 

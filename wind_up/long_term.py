@@ -19,6 +19,7 @@ def calc_lt_df(
     ws_col: str,
     ws_bin_width: float,
     pw_col: str,
+    timebase_s: int,
 ) -> pd.DataFrame:
     years_of_data = (df_for_lt.index.max() - df_for_lt.index.min()).total_seconds() / 3600 / 24 / 365.25
     if years_of_data < 11.5 / 12:
@@ -42,13 +43,14 @@ def calc_lt_df(
 
     ws_bin_edges = np.arange(0, df_for_lt[ws_col].max() + ws_bin_width, ws_bin_width)
 
+    rows_per_hour = 3600 / timebase_s
     lt_df = (
         df_for_lt.dropna(subset=[ws_col, pw_col])
         .groupby(by=pd.cut(df_for_lt[ws_col], bins=ws_bin_edges, retbins=False), observed=False)
         .agg(
             ws_mean=pd.NamedAgg(column=ws_col, aggfunc=lambda x: x.mean()),
-            observed_hours=pd.NamedAgg(column=ws_col, aggfunc=lambda x: len(x) / 6),
-            observed_mwh=pd.NamedAgg(column=pw_col, aggfunc=lambda x: sum(x) / 6 / 1000),
+            observed_hours=pd.NamedAgg(column=ws_col, aggfunc=lambda x: len(x) / rows_per_hour),
+            observed_mwh=pd.NamedAgg(column=pw_col, aggfunc=lambda x: sum(x) / rows_per_hour / 1000),
         )
     )
     lt_df = lt_df.rename(columns={"ws_mean": f"{ws_col}_mean"})
@@ -110,6 +112,7 @@ def calc_turbine_lt_df(
         ws_col=ws_col,
         ws_bin_width=cfg.ws_bin_width,
         pw_col=pw_col,
+        timebase_s=cfg.timebase_s,
     )
     if plot_cfg is not None:
         plot_lt_ws(lt_df=lt_df, turbine_or_wf_name=wtg_name, title_end=title_end, plot_cfg=plot_cfg, one_turbine=True)
@@ -178,6 +181,7 @@ def calc_windfarm_lt_df(
         ws_col=ws_col,
         ws_bin_width=cfg.ws_bin_width,
         pw_col=pw_col,
+        timebase_s=cfg.timebase_s,
     )
 
     if plot_cfg is not None:

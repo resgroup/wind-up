@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from wind_up.constants import RAW_WINDSPEED_COL, ROWS_PER_HOUR, SCATTER_ALPHA, SCATTER_S
+from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_S
 from wind_up.models import PlotConfig
 
 mpl.use("Agg")
@@ -148,19 +148,21 @@ def plot_pre_post_conditions(
     pre_df: pd.DataFrame,
     post_df: pd.DataFrame,
     wd_col: str,
+    timebase_s: int,
     plot_cfg: PlotConfig,
 ) -> None:
     wd_width = 30
+    rows_per_hour = 3600 / timebase_s
     plt.figure()
     plt.hist(
         pre_df[wd_col],
-        weights=[1 / ROWS_PER_HOUR] * len(pre_df[wd_col]),
+        weights=[1 / rows_per_hour] * len(pre_df[wd_col]),
         bins=list(np.arange(0, 360 + wd_width / 2, wd_width)),
         label="pre",
     )
     plt.hist(
         post_df[wd_col],
-        weights=[1 / ROWS_PER_HOUR] * len(post_df[wd_col]),
+        weights=[1 / rows_per_hour] * len(post_df[wd_col]),
         bins=list(np.arange(0, 360 + wd_width / 2, wd_width)),
         alpha=0.5,
         label="post",
@@ -182,13 +184,13 @@ def plot_pre_post_conditions(
     plt.figure()
     plt.hist(
         pre_df.index.hour,
-        weights=[1 / ROWS_PER_HOUR] * len(pre_df.index.hour),
+        weights=[1 / rows_per_hour] * len(pre_df.index.hour),
         bins=list(np.arange(-hod_width / 2, 24 + hod_width / 2, hod_width)),
         label="pre",
     )
     plt.hist(
         post_df.index.hour,
-        weights=[1 / ROWS_PER_HOUR] * len(post_df.index.hour),
+        weights=[1 / rows_per_hour] * len(post_df.index.hour),
         bins=list(np.arange(-hod_width / 2, 24 + hod_width / 2, hod_width)),
         alpha=0.5,
         label="post",
@@ -210,13 +212,13 @@ def plot_pre_post_conditions(
     plt.figure()
     plt.hist(
         pre_df.index.month,
-        weights=[1 / ROWS_PER_HOUR] * len(pre_df.index.month),
+        weights=[1 / rows_per_hour] * len(pre_df.index.month),
         bins=list(np.arange(0.5, 12 + moy_width, moy_width)),
         label="pre",
     )
     plt.hist(
         post_df.index.month,
-        weights=[1 / ROWS_PER_HOUR] * len(post_df.index.month),
+        weights=[1 / rows_per_hour] * len(post_df.index.month),
         bins=list(np.arange(0.5, 12 + moy_width, moy_width)),
         alpha=0.5,
         label="post",
@@ -245,6 +247,7 @@ def plot_pre_post_pp_analysis(
     ws_col: str,
     pw_col: str,
     wd_col: str,
+    timebase_s: int,
     plot_cfg: PlotConfig,
     confidence_level: float,
 ) -> None:
@@ -254,6 +257,7 @@ def plot_pre_post_pp_analysis(
         pre_df=pre_df.dropna(subset=[ws_col, pw_col]),
         post_df=post_df.dropna(subset=[ws_col, pw_col]),
         wd_col=wd_col,
+        timebase_s=timebase_s,
         plot_cfg=plot_cfg,
     )
 
@@ -327,14 +331,16 @@ def plot_pp_data_coverage(
     pp_df: pd.DataFrame,
     test_df_pp_period: pd.DataFrame,
     ws_bin_width: float,
+    timebase_s: int,
     plot_cfg: PlotConfig,
 ) -> None:
+    rows_per_hour = 3600 / timebase_s
     ws_bin_edges = np.arange(0, test_df_pp_period["test_" + RAW_WINDSPEED_COL].max() + ws_bin_width, ws_bin_width)
     raw_df = test_df_pp_period.groupby(
         by=pd.cut(test_df_pp_period["test_" + RAW_WINDSPEED_COL], bins=ws_bin_edges, retbins=False),
         observed=False,
     ).agg(
-        hours_raw=pd.NamedAgg(column="test_" + RAW_WINDSPEED_COL, aggfunc=lambda x: x.count() / ROWS_PER_HOUR),
+        hours_raw=pd.NamedAgg(column="test_" + RAW_WINDSPEED_COL, aggfunc=lambda x: x.count() / rows_per_hour),
     )
     raw_df["bin_mid"] = [x.mid for x in raw_df.index]
 

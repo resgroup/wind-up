@@ -6,8 +6,6 @@ import pandas as pd
 from wind_up.constants import (
     REANALYSIS_WD_COL,
     REANALYSIS_WS_COL,
-    ROWS_PER_HOUR,
-    TIMEBASE_PD_TIMEDELTA,
     TIMESTAMP_COL,
 )
 from wind_up.models import PlotConfig, WindUpConfig
@@ -16,8 +14,8 @@ from wind_up.plots.reanalysis_plots import plot_find_best_shift_and_corr, plot_w
 logger = logging.getLogger(__name__)
 
 
-def reanalysis_upsample(reanalysis_raw_df: pd.DataFrame) -> pd.DataFrame:
-    reanalysis_df = reanalysis_raw_df.resample(TIMEBASE_PD_TIMEDELTA, label="left").last()
+def reanalysis_upsample(reanalysis_raw_df: pd.DataFrame, *, timebase_s: int) -> pd.DataFrame:
+    reanalysis_df = reanalysis_raw_df.resample(pd.Timedelta(seconds=timebase_s), label="left").last()
     upsample_factor = round(len(reanalysis_df) / len(reanalysis_raw_df))
     # extend the end of the index e.g. by 50 minutes for 10 minute timebase
     reanalysis_df = pd.concat(
@@ -25,9 +23,9 @@ def reanalysis_upsample(reanalysis_raw_df: pd.DataFrame) -> pd.DataFrame:
             reanalysis_df,
             pd.DataFrame(
                 index=pd.date_range(
-                    start=reanalysis_df.index[-1] + pd.Timedelta(TIMEBASE_PD_TIMEDELTA),
+                    start=reanalysis_df.index[-1] + pd.Timedelta(seconds=timebase_s),
                     periods=upsample_factor - 1,
-                    freq=TIMEBASE_PD_TIMEDELTA,
+                    freq=pd.Timedelta(seconds=timebase_s),
                 ),
             ),
         ],
@@ -54,6 +52,7 @@ def find_best_shift_and_corr(
     reanalysis_df: pd.DataFrame,
     wf_name: str,
     datastream_id: str,
+    timebase_s: int,
     plot_cfg: PlotConfig | None,
     wf_ws_lower_limit: float = 0,
 ) -> tuple[float, int]:
@@ -62,7 +61,8 @@ def find_best_shift_and_corr(
     best_corr = -99.0
     shifts = []
     corrs = []
-    for s in range(round(-24 * ROWS_PER_HOUR), round(24 * ROWS_PER_HOUR)):
+    rows_per_hour = 3600 / timebase_s
+    for s in range(round(-24 * rows_per_hour), round(24 * rows_per_hour)):
         this_corr = float(ws_filt_df.corrwith(reanalysis_df[REANALYSIS_WS_COL].shift(s)).squeeze())
         shifts.append(s)
         corrs.append(this_corr)
@@ -79,6 +79,7 @@ def find_best_shift_and_corr(
             datastream_id=datastream_id,
             best_corr=best_corr,
             best_s=best_s,
+            timebase_s=timebase_s,
             plot_cfg=plot_cfg,
         )
 
@@ -135,7 +136,8 @@ def add_reanalysis_data(
         allowed_data_coverage_width=data_coverage_width,
     )
     max_data_coverage_width = 0.3
-    while len(wf_ws_df) < (60 * 24 * ROWS_PER_HOUR) and data_coverage_width < max_data_coverage_width:
+    rows_per_hour = 3600 / cfg.timebase_s
+    while len(wf_ws_df) < (60 * 24 * rows_per_hour) and data_coverage_width < max_data_coverage_width:
         data_coverage_width += 0.05
         wf_ws_df = calc_wf_mean_wind_speed_df(
             wf_df,
@@ -154,13 +156,14 @@ def add_reanalysis_data(
             continue  # skip to next dataset
 
         dsid = reanalysis_dataset.id
-        this_reanalysis_df = reanalysis_upsample(reanalysis_dataset.data)
+        this_reanalysis_df = reanalysis_upsample(reanalysis_dataset.data, timebase_s=cfg.timebase_s)
 
         this_corr, this_s = find_best_shift_and_corr(
             wf_ws_df=wf_ws_df,
             reanalysis_df=this_reanalysis_df,
             wf_name=cfg.asset.name,
             datastream_id=dsid,
+            timebase_s=cfg.timebase_s,
             plot_cfg=plot_cfg,
         )
         if this_corr > best_corr:

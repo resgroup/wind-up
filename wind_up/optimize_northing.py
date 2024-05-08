@@ -10,9 +10,6 @@ from wind_up.constants import (
     RAW_POWER_COL,
     RAW_YAWDIR_COL,
     REANALYSIS_WD_COL,
-    ROWS_PER_HOUR,
-    TIMEBASE_PD_TIMEDELTA,
-    TIMEBASE_S,
     TIMESTAMP_COL,
     WINDFARM_YAWDIR_COL,
 )
@@ -40,7 +37,9 @@ def northing_score_changepoint_component(changepoint_count: int) -> float:
     return float(changepoint_count)
 
 
-def northing_score(wtg_df: pd.DataFrame, *, north_ref_wd_col: str, changepoint_count: int, rated_power: float) -> float:
+def northing_score(
+    wtg_df: pd.DataFrame, *, north_ref_wd_col: str, changepoint_count: int, rated_power: float, timebase_s: int
+) -> float:
     # this component penalizes long-ish, large north errors
     max_component = max(0, wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"].abs().max() - 4) ** 2
 
@@ -49,7 +48,7 @@ def northing_score(wtg_df: pd.DataFrame, *, north_ref_wd_col: str, changepoint_c
 
     # this component penalizes raw data having any north errors
     max_weight = rated_power * YAW_OK_PW_FRACTION
-    min_weight = max_weight / 1000 * (min(600, TIMEBASE_S) / 600)
+    min_weight = max_weight / 1000 * (min(600, timebase_s) / 600)
     raw_wmean_component = (
         wtg_df[f"yaw_diff_to_{north_ref_wd_col}"].clip(lower=-30, upper=30)
         * wtg_df[RAW_POWER_COL].clip(lower=min_weight, upper=max_weight)
@@ -74,6 +73,7 @@ def add_northed_ok_diff_and_rolling_cols(
     wtg_df: pd.DataFrame,
     *,
     north_ref_wd_col: str,
+    timebase_s: int,
     north_offset: float | None = None,
     north_offset_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
@@ -93,12 +93,13 @@ def add_northed_ok_diff_and_rolling_cols(
 
     wtg_df = add_northing_ok_and_diff_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, northed_col=northed_col)
     rolling_hours = 6
+    rows_per_hour = 3600 / timebase_s
     wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"] = (
         wtg_df[f"filt_diff_to_{north_ref_wd_col}"]
         .rolling(
             center=True,
-            window=round(rolling_hours * ROWS_PER_HOUR),
-            min_periods=round(rolling_hours * ROWS_PER_HOUR // 3),
+            window=round(rolling_hours * rows_per_hour),
+            min_periods=round(rolling_hours * rows_per_hour // 3),
         )
         .median()
     )
@@ -107,8 +108,8 @@ def add_northed_ok_diff_and_rolling_cols(
         wtg_df[f"filt_diff_to_{north_ref_wd_col}"]
         .rolling(
             center=True,
-            window=round(rolling_hours * ROWS_PER_HOUR),
-            min_periods=round(rolling_hours * ROWS_PER_HOUR // 3),
+            window=round(rolling_hours * rows_per_hour),
+            min_periods=round(rolling_hours * rows_per_hour // 3),
         )
         .median()
     )
@@ -124,13 +125,14 @@ def calc_north_offset_col(
     *,
     wtg_df: pd.DataFrame,
     north_ref_wd_col: str,
+    timebase_s: int,
 ) -> pd.DataFrame:
     wtg_df = wtg_df.copy()
     wtg_df = add_northing_ok_and_diff_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, northed_col=RAW_YAWDIR_COL)
 
     wtg_north_table = wtg_north_table.copy()
     wtg_north_table = wtg_north_table.sort_values(by=[TIMESTAMP_COL], ascending=True)
-    end_dt = wtg_df.index.max() + TIMEBASE_PD_TIMEDELTA
+    end_dt = wtg_df.index.max() + pd.Timedelta(seconds=timebase_s)
     for start_dt in reversed(wtg_north_table[TIMESTAMP_COL].to_list()):
         section_df = wtg_df[(wtg_df.index >= start_dt) & (wtg_df.index < end_dt)]
         wtg_north_table.loc[
@@ -178,12 +180,14 @@ def score_wtg_north_table(
     improve_north_offset_col: bool,
     north_ref_wd_col: str,
     rated_power: float,
+    timebase_s: int,
 ) -> tuple[pd.DataFrame, float, pd.DataFrame]:
     if improve_north_offset_col:
         output_north_table = calc_north_offset_col(
             wtg_north_table,
             wtg_df=wtg_df,
             north_ref_wd_col=north_ref_wd_col,
+            timebase_s=timebase_s,
         )
     else:
         output_north_table = wtg_north_table.copy()
@@ -191,6 +195,7 @@ def score_wtg_north_table(
         wtg_df.copy(),
         north_ref_wd_col=north_ref_wd_col,
         north_offset_df=output_north_table,
+        timebase_s=timebase_s,
     )
 
     score = northing_score(
@@ -198,6 +203,7 @@ def score_wtg_north_table(
         north_ref_wd_col=north_ref_wd_col,
         changepoint_count=len(output_north_table),
         rated_power=rated_power,
+        timebase_s=timebase_s,
     )
 
     return output_north_table, score, output_wtg_df
@@ -249,6 +255,7 @@ def make_move(
     do_changepoint_moves: bool,
     algo: rpt.base.BaseEstimator,
     timestamps: np.ndarray,
+    timebase_s: int,
 ) -> pd.DataFrame:
     if move.startswith("shift_changepoint_"):
         cp_idx = int(move.split("_")[-2])
@@ -257,7 +264,7 @@ def make_move(
         this_north_table.loc[cp_idx, TIMESTAMP_COL] = this_north_table.loc[
             cp_idx,
             TIMESTAMP_COL,
-        ] + pd.Timedelta(seconds=sign * TIMEBASE_S * shift_step_size)
+        ] + pd.Timedelta(seconds=sign * timebase_s * shift_step_size)
     elif do_changepoint_moves and move.startswith("add_"):
         n_changepoints_to_add = int(move.split("_")[1])
         bkp_idxs = algo.predict(n_bkps=n_changepoints_to_add)[:-1]
@@ -284,6 +291,7 @@ def make_move_and_score_wtg_north_table(
     shift_step_size: int,
     north_ref_wd_col: str,
     rated_power: float,
+    timebase_s: int,
     do_changepoint_moves: bool,
     algo: rpt.base.BaseEstimator,
     timestamps: np.ndarray,
@@ -295,6 +303,7 @@ def make_move_and_score_wtg_north_table(
         do_changepoint_moves=do_changepoint_moves,
         algo=algo,
         timestamps=timestamps,
+        timebase_s=timebase_s,
     )
     if north_table_is_valid(this_north_table, wtg_df=wtg_df):
         min_step_size_for_run_optimize = 100
@@ -312,6 +321,7 @@ def make_move_and_score_wtg_north_table(
         improve_north_offset_col=run_optimize_north_offset,
         north_ref_wd_col=north_ref_wd_col,
         rated_power=rated_power,
+        timebase_s=timebase_s,
     )
     return this_north_table, this_score, this_wtg_df
 
@@ -345,6 +355,7 @@ def prep_for_optimize_wtg_north_table(
     wtg_name: str,
     north_ref_wd_col: str,
     rated_power: float,
+    timebase_s: int,
     plot_cfg: PlotConfig | None,
     initial_wtg_north_table: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -354,14 +365,18 @@ def prep_for_optimize_wtg_north_table(
         new_col_name=f"ok_for_{north_ref_wd_col}_northing",
         wd_col=north_ref_wd_col,
         rated_power=rated_power,
+        timebase_s=timebase_s,
     )
-    wtg_df = add_northed_ok_diff_and_rolling_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, north_offset=0)
+    wtg_df = add_northed_ok_diff_and_rolling_cols(
+        wtg_df, north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s, north_offset=0
+    )
 
     initial_score = northing_score(
         wtg_df,
         north_ref_wd_col=north_ref_wd_col,
         changepoint_count=0,
         rated_power=rated_power,
+        timebase_s=timebase_s,
     )
     logger.info(f"\n\nwtg_name={wtg_name}, north_ref_wd_col={north_ref_wd_col}, initial_score={initial_score:.2f}")
 
@@ -397,6 +412,7 @@ def optimize_wtg_north_table(
     wtg_name: str,
     rated_power: float,
     north_ref_wd_col: str,
+    timebase_s: int,
     plot_cfg: PlotConfig | None,
     initial_wtg_north_table: pd.DataFrame | None = None,
     best_score_margin: float = 0,
@@ -408,6 +424,7 @@ def optimize_wtg_north_table(
         wtg_name=wtg_name,
         north_ref_wd_col=north_ref_wd_col,
         rated_power=rated_power,
+        timebase_s=timebase_s,
         plot_cfg=plot_cfg,
         initial_wtg_north_table=initial_wtg_north_table,
     )
@@ -419,6 +436,7 @@ def optimize_wtg_north_table(
         improve_north_offset_col=True,
         north_ref_wd_col=north_ref_wd_col,
         rated_power=rated_power,
+        timebase_s=timebase_s,
     )
     best_score = initial_score
     logger.info(f"best_score={best_score:.2f} before optimization")
@@ -463,6 +481,7 @@ def optimize_wtg_north_table(
                 shift_step_size=shift_step_size,
                 north_ref_wd_col=north_ref_wd_col,
                 rated_power=rated_power,
+                timebase_s=timebase_s,
                 do_changepoint_moves=do_changepoint_moves,
                 algo=algo,
                 timestamps=timestamps,
@@ -502,6 +521,7 @@ def optimize_wtg_north_table(
     wtg_df = add_northed_ok_diff_and_rolling_cols(
         wtg_df,
         north_ref_wd_col=north_ref_wd_col,
+        timebase_s=timebase_s,
         north_offset_df=wtg_north_table,
     )
     if plot_cfg is not None:
@@ -538,6 +558,7 @@ def optimize_wf_north_table(
             wtg_df,
             wtg_name=wtg_name,
             north_ref_wd_col=north_ref_wd_col,
+            timebase_s=cfg.timebase_s,
             plot_cfg=None,
         )
 
@@ -548,6 +569,7 @@ def optimize_wf_north_table(
             wtg_name=wtg_name,
             rated_power=rated_power,
             north_ref_wd_col=north_ref_wd_col,
+            timebase_s=cfg.timebase_s,
             plot_cfg=plot_cfg,
             initial_wtg_north_table=initial_wtg_north_table,
             best_score_margin=best_score_margin,
@@ -559,6 +581,7 @@ def optimize_wf_north_table(
             optimized_wtg_df,
             wtg_name=wtg_name,
             north_ref_wd_col=north_ref_wd_col,
+            timebase_s=cfg.timebase_s,
             plot_cfg=plot_cfg,
         )
 

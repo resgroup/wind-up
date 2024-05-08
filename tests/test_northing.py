@@ -32,8 +32,8 @@ def test_apply_northing_corrections(test_lsa_t13_config: WindUpConfig) -> None:
     assert median_yaw_after_northing["LSA_T13"] == pytest.approx(235.22855377197266)
     assert median_yaw_after_northing["LSA_T14"] == pytest.approx(224.92881774902344)
 
-    abs_north_errs_before_northing = calc_max_abs_north_errs(wf_df, north_ref_wd_col=REANALYSIS_WD_COL)
-    abs_north_errs_after_northing = calc_max_abs_north_errs(wf_df_after_northing, north_ref_wd_col=REANALYSIS_WD_COL)
+    abs_north_errs_before_northing = calc_max_abs_north_errs(wf_df, north_ref_wd_col=REANALYSIS_WD_COL,timebase_s=cfg.timebase_s)
+    abs_north_errs_after_northing = calc_max_abs_north_errs(wf_df_after_northing, north_ref_wd_col=REANALYSIS_WD_COL,timebase_s=cfg.timebase_s)
     assert abs_north_errs_before_northing.min() == pytest.approx(7.88920288085938)
     assert abs_north_errs_before_northing.max() == pytest.approx(7.88920288085938)
     assert abs_north_errs_after_northing["LSA_T07"] == pytest.approx(18.400006103515604)

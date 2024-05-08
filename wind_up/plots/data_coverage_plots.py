@@ -2,7 +2,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from wind_up.constants import RAW_POWER_COL, RAW_WINDSPEED_COL, ROWS_PER_HOUR
+from wind_up.constants import RAW_POWER_COL, RAW_WINDSPEED_COL
 from wind_up.models import PlotConfig, WindUpConfig
 
 mpl.use("Agg")
@@ -23,7 +23,8 @@ def plot_detrend_data_cov(
 ) -> None:
     plt.figure(figsize=(12, 8))
     window_hrs = 14 * 24
-    expected_rows = ROWS_PER_HOUR * window_hrs
+    rows_per_hour = 3600 / cfg.timebase_s
+    expected_rows = rows_per_hour * window_hrs
     xlims = [
         min(cfg.lt_first_dt_utc_start, test_df.index.min()) - pd.Timedelta(f"{window_hrs}h"),
         cfg.analysis_last_dt_utc_start + pd.Timedelta(f"{window_hrs}h"),
@@ -91,7 +92,8 @@ def plot_pre_post_data_cov(
 ) -> None:
     plt.figure(figsize=(12, 8))
     window_hrs = 14 * 24
-    expected_rows = ROWS_PER_HOUR * window_hrs
+    rows_per_hour = 3600 / cfg.timebase_s
+    expected_rows = rows_per_hour * window_hrs
     xlims = [
         min(cfg.lt_first_dt_utc_start, test_df.index.min()) - pd.Timedelta(f"{window_hrs}h"),
         cfg.analysis_last_dt_utc_start + pd.Timedelta(f"{window_hrs}h"),

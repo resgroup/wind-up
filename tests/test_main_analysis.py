@@ -36,13 +36,14 @@ def test_toggle_pairing_filter_method_none() -> None:
     )
 
     filt_pre_df, filt_post_df = toggle_pairing_filter(
-        pre_df,
-        post_df,
+        pre_df=pre_df,
+        post_df=post_df,
         pairing_filter_method="none",
         pairing_filter_timedelta_seconds=0,
         detrend_ws_col=detrend_ws_col,
         test_pw_col=test_pw_col,
         ref_wd_col=ref_wd_col,
+        timebase_s=600,
     )
     assert_frame_equal(filt_pre_df, pre_df)
     assert_frame_equal(filt_post_df, post_df)
@@ -107,13 +108,14 @@ def test_toggle_pairing_filter_method_any_within_timedelta() -> None:
         [x in copy_of_make_extended_time_index(a.index, pd.Timedelta("10min"), tolerance_minutes * 60) for x in b.index]
     ]
     filt_pre_df, filt_post_df = toggle_pairing_filter(
-        pre_df,
-        post_df,
+        pre_df=pre_df,
+        post_df=post_df,
         pairing_filter_method="any_within_timedelta",
         pairing_filter_timedelta_seconds=pairing_filter_timedelta_seconds,
         detrend_ws_col=detrend_ws_col,
         test_pw_col=test_pw_col,
         ref_wd_col=ref_wd_col,
+        timebase_s=600,
     )
     assert_frame_equal(filt_pre_df, exp_filt_pre_df)
     assert_frame_equal(filt_post_df, exp_filt_post_df)
