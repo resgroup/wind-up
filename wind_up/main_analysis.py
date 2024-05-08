@@ -16,6 +16,7 @@ from wind_up.constants import (
 from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
 from wind_up.interface import AssessmentInputs, add_toggle_signals
 from wind_up.long_term import calc_turbine_lt_dfs_raw_filt
+from wind_up.math_funcs import circ_diff
 from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.northing import (
     check_wtg_northing,
@@ -300,32 +301,52 @@ def yaw_error_results(pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_c
     return results
 
 
-def yaw_offset_results(pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_cols: list[str]) -> dict:
+def yaw_offset_results(
+    pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_cols: list[str], ref_wd_col: str, test_wd_col: str
+) -> dict:
     results = {}
+
+    pre_yaw_offset = pd.Series(
+        circ_diff(
+            pre_df.dropna(subset=required_pp_cols)[ref_wd_col], pre_df.dropna(subset=required_pp_cols)[test_wd_col]
+        )
+    )
+    post_yaw_offset = pd.Series(
+        circ_diff(
+            post_df.dropna(subset=required_pp_cols)[ref_wd_col], post_df.dropna(subset=required_pp_cols)[test_wd_col]
+        )
+    )
+
+    if len(pre_yaw_offset) > 0 and len(post_yaw_offset) > 0:
+        results["mean_test_yaw_offset_pre"] = pre_yaw_offset.mean()
+        results["mean_test_yaw_offset_post"] = post_yaw_offset.mean()
+
     yaw_offset_ul = 1e-3
     if "test_yaw_offset_command" in pre_df.columns:
-        results["test_yaw_offset_command_pre"] = pre_df.dropna(subset=required_pp_cols)[
+        results["mean_test_yaw_offset_command_pre"] = pre_df.dropna(subset=required_pp_cols)[
             "test_yaw_offset_command"
         ].mean()
-        if results["test_yaw_offset_command_pre"] > yaw_offset_ul:
+        if results["mean_test_yaw_offset_command_pre"] > yaw_offset_ul:
             result_manager.warning(
-                f"test_yaw_offset_command_pre > 0: " f"({results['test_yaw_offset_command_pre']})",
+                f"mean_test_yaw_offset_command_pre > 0: " f"({results['mean_test_yaw_offset_command_pre']})",
             )
-        results["test_yaw_offset_command_post"] = post_df.dropna(subset=required_pp_cols)[
+        results["mean_test_yaw_offset_command_post"] = post_df.dropna(subset=required_pp_cols)[
             "test_yaw_offset_command"
         ].mean()
     if "ref_yaw_offset_command" in pre_df.columns:
-        results["ref_yaw_offset_command_pre"] = pre_df.dropna(subset=required_pp_cols)["ref_yaw_offset_command"].mean()
-        if results["ref_yaw_offset_command_pre"] > yaw_offset_ul:
-            result_manager.warning(
-                f"ref_yaw_offset_command_pre > 0 for: " f"({results['ref_yaw_offset_command_pre']})",
-            )
-        results["ref_yaw_offset_command_post"] = post_df.dropna(subset=required_pp_cols)[
+        results["mean_ref_yaw_offset_command_pre"] = pre_df.dropna(subset=required_pp_cols)[
             "ref_yaw_offset_command"
         ].mean()
-        if results["ref_yaw_offset_command_post"] > yaw_offset_ul:
+        if results["mean_ref_yaw_offset_command_pre"] > yaw_offset_ul:
             result_manager.warning(
-                f"ref_yaw_offset_command_post > 0 for: " f"({results['ref_yaw_offset_command_post']})",
+                f"mean_ref_yaw_offset_command_pre > 0 for: " f"({results['mean_ref_yaw_offset_command_pre']})",
+            )
+        results["mean_ref_yaw_offset_command_post"] = post_df.dropna(subset=required_pp_cols)[
+            "ref_yaw_offset_command"
+        ].mean()
+        if results["mean_ref_yaw_offset_command_post"] > yaw_offset_ul:
+            result_manager.warning(
+                f"mean_ref_yaw_offset_command_post > 0 for: " f"({results['mean_ref_yaw_offset_command_post']})",
             )
     return results
 
@@ -612,7 +633,11 @@ def calc_test_ref_results(
         pre_df=pre_df, post_df=post_df, required_pp_cols=[detrend_ws_col, test_pw_col, ref_wd_col]
     )
     other_results = other_results | yaw_offset_results(
-        pre_df=pre_df, post_df=post_df, required_pp_cols=[detrend_ws_col, test_pw_col, ref_wd_col]
+        pre_df=pre_df,
+        post_df=post_df,
+        required_pp_cols=[detrend_ws_col, test_pw_col, ref_wd_col],
+        ref_wd_col=ref_wd_col,
+        test_wd_col="test_YawAngleMean",
     )
 
     other_results["test_ref_warning_counts"] = len(result_manager.stored_warnings)
