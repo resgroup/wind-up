@@ -34,7 +34,7 @@ MINIMUM_DATA_COUNT_COVERAGE = 0.5  # 50% of the data must be present
 
 
 @with_parquet_cache(CACHE_SUBDIR / "smarteole_scada.parquet")
-def _unpack_scada(timebase_s: int) -> pd.DataFrame:
+def unpack_smarteole_scada(timebase_s: int) -> pd.DataFrame:
     """
     Function that translates 1-minute SCADA data to x minute data in the wind-up expected format
     """
@@ -118,7 +118,7 @@ def _unpack_scada(timebase_s: int) -> pd.DataFrame:
 
 
 @with_parquet_cache(CACHE_DIR / "smarteole_metadata.parquet")
-def _unpack_metadata() -> pd.DataFrame:
+def unpack_smarteole_metadata() -> pd.DataFrame:
     md_fpath = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_Coordinates_staticData.csv"
     with zipfile.ZipFile(CACHE_DIR / ZIP_FILENAME) as zf:
         return (
@@ -132,7 +132,7 @@ def _unpack_metadata() -> pd.DataFrame:
 
 
 @with_parquet_cache(CACHE_SUBDIR / "smarteole_toggle.parquet")
-def _unpack_toggle_data(timebase_s: int) -> pd.DataFrame:
+def unpack_smarteole_toggle_data(timebase_s: int) -> pd.DataFrame:
     ten_minutes_count_lower_limit = timebase_s * MINIMUM_DATA_COUNT_COVERAGE
     toggle_value_threshold: float = 0.95
 
@@ -169,36 +169,7 @@ def _unpack_toggle_data(timebase_s: int) -> pd.DataFrame:
     return toggle_df[["toggle_on", "toggle_off", "yaw_offset_command"]]
 
 
-if __name__ == "__main__":
-    analysis_output_dir = OUTPUT_DIR / "smarteole_example"
-    analysis_output_dir.mkdir(exist_ok=True, parents=True)
-    setup_logger(analysis_output_dir / "analysis.log")
-    logger = logging.getLogger(__name__)
-
-    logger.info("Downloading example data from Zenodo")
-    download_zenodo_data(record_id="7342466", output_dir=CACHE_DIR, filenames={ZIP_FILENAME})
-
-    logger.info("Preprocessing (and caching) turbine SCADA data")
-    scada_df = _unpack_scada(ANALYSIS_TIMEBASE_S)
-    logger.info("Preprocessing (and caching) turbine metadata")
-    metadata_df = _unpack_metadata()
-    logger.info("Preprocessing (and caching) toggle data")
-    toggle_df = _unpack_toggle_data(ANALYSIS_TIMEBASE_S)
-
-    logger.info("Merging SMV6 yaw offset command signal into SCADA data")
-    toggle_df_no_tz = toggle_df.copy()
-    toggle_df_no_tz.index = toggle_df_no_tz.index.tz_localize(None)
-    scada_df = scada_df.merge(toggle_df_no_tz["yaw_offset_command"], left_index=True, right_index=True, how="left")
-    scada_df["yaw_offset_command"] = scada_df["yaw_offset_command"].where(scada_df["TurbineName"] == "SMV6", 0)
-    del toggle_df_no_tz
-
-    logger.info("Loading reference reanalysis data")
-    reanalysis_dataset = ReanalysisDataset(
-        id="ERA5T_50.00N_2.75E_100m_1hr",
-        data=pd.read_parquet(PARENT_DIR / "smarteole_data" / "ERA5T_50.00N_2.75E_100m_1hr_20200201_20200531.parquet"),
-    )
-
-    logger.info("Defining Assessment Configuration")
+def define_smarteole_example_config() -> WindUpConfig:
     wtg_map = {
         f"SMV{i}": {
             "name": f"SMV{i}",
@@ -226,7 +197,7 @@ if __name__ == "__main__":
     ]
 
     wd_filter_margin = 3 + 7 * ANALYSIS_TIMEBASE_S / 600
-    cfg = WindUpConfig(
+    return WindUpConfig(
         assessment_name="smarteole_example",
         timebase_s=ANALYSIS_TIMEBASE_S,
         require_ref_wake_free=True,
@@ -265,6 +236,90 @@ if __name__ == "__main__":
             "toggle_change_settling_filter_seconds": 120,
         },
     )
+
+
+def print_smarteole_results(results_per_test_ref_df: pd.DataFrame) -> pd.DataFrame:
+    key_results_df = results_per_test_ref_df[
+        [
+            "test_wtg",
+            "ref",
+            "uplift_frc",
+            "unc_one_sigma_frc",
+            "uplift_p95_frc",
+            "uplift_p5_frc",
+            "pp_valid_hours_pre",
+            "pp_valid_hours_post",
+            "mean_power_post",
+        ]
+    ]
+
+    def _convert_frc_cols_to_pct(input_df: pd.DataFrame, dp: int = 1) -> pd.DataFrame:
+        for i, col in enumerate(x for x in input_df.columns if x.endswith("_frc")):
+            if i == 0:
+                output_df = input_df.assign(**{col: (input_df[col] * 100).round(dp).astype(str) + "%"})
+            else:
+                output_df = output_df.assign(**{col: (input_df[col] * 100).round(dp).astype(str) + "%"})
+            output_df = output_df.rename(columns={col: col.replace("_frc", "_pct")})
+        return output_df
+
+    print_df = _convert_frc_cols_to_pct(key_results_df).rename(
+        columns={
+            "test_wtg": "turbine",
+            "ref": "reference",
+            "uplift_pct": "energy uplift",
+            "unc_one_sigma_pct": "uplift uncertainty",
+            "uplift_p95_pct": "uplift P95",
+            "uplift_p5_pct": "uplift P5",
+            "pp_valid_hours_pre": "valid hours toggle off",
+            "pp_valid_hours_post": "valid hours toggle on",
+            "mean_power_post": "mean power toggle on",
+        }
+    )
+    print_df["mean power toggle on"] = print_df["mean power toggle on"].round(0).astype("int64")
+    results_table = tabulate(
+        print_df,
+        headers="keys",
+        tablefmt="outline",
+        floatfmt=".1f",
+        numalign="center",
+        stralign="center",
+        showindex=False,
+    )
+    print(results_table)
+    return print_df
+
+
+if __name__ == "__main__":
+    analysis_output_dir = OUTPUT_DIR / "smarteole_example"
+    analysis_output_dir.mkdir(exist_ok=True, parents=True)
+    setup_logger(analysis_output_dir / "analysis.log")
+    logger = logging.getLogger(__name__)
+
+    logger.info("Downloading example data from Zenodo")
+    download_zenodo_data(record_id="7342466", output_dir=CACHE_DIR, filenames={ZIP_FILENAME})
+
+    logger.info("Preprocessing (and caching) turbine SCADA data")
+    scada_df = unpack_smarteole_scada(ANALYSIS_TIMEBASE_S)
+    logger.info("Preprocessing (and caching) turbine metadata")
+    metadata_df = unpack_smarteole_metadata()
+    logger.info("Preprocessing (and caching) toggle data")
+    toggle_df = unpack_smarteole_toggle_data(ANALYSIS_TIMEBASE_S)
+
+    logger.info("Merging SMV6 yaw offset command signal into SCADA data")
+    toggle_df_no_tz = toggle_df.copy()
+    toggle_df_no_tz.index = toggle_df_no_tz.index.tz_localize(None)
+    scada_df = scada_df.merge(toggle_df_no_tz["yaw_offset_command"], left_index=True, right_index=True, how="left")
+    scada_df["yaw_offset_command"] = scada_df["yaw_offset_command"].where(scada_df["TurbineName"] == "SMV6", 0)
+    del toggle_df_no_tz
+
+    logger.info("Loading reference reanalysis data")
+    reanalysis_dataset = ReanalysisDataset(
+        id="ERA5T_50.00N_2.75E_100m_1hr",
+        data=pd.read_parquet(PARENT_DIR / "smarteole_data" / "ERA5T_50.00N_2.75E_100m_1hr_20200201_20200531.parquet"),
+    )
+
+    logger.info("Defining Assessment Configuration")
+    cfg = define_smarteole_example_config()
     plot_cfg = PlotConfig(show_plots=False, save_plots=True, plots_dir=cfg.out_dir / "plots")
 
     assessment_inputs = AssessmentInputs.from_cfg(
@@ -281,56 +336,9 @@ if __name__ == "__main__":
     net_p50, net_p95, net_p5 = calc_net_uplift(results_per_test_ref_df, confidence=0.9)
     print(f"net P50: {net_p50:.1%}, net P95: {net_p95:.1%}, net P5: {net_p5:.1%}")
 
+    print_df = print_smarteole_results(results_per_test_ref_df)
+
     if CHECK_RESULTS:
-        # print key results to console
-        key_results_df = results_per_test_ref_df[
-            [
-                "test_wtg",
-                "ref",
-                "uplift_frc",
-                "unc_one_sigma_frc",
-                "uplift_p95_frc",
-                "uplift_p5_frc",
-                "pp_valid_hours_pre",
-                "pp_valid_hours_post",
-                "mean_power_post",
-            ]
-        ]
-
-        def convert_frc_cols_to_pct(input_df: pd.DataFrame, dp: int = 1) -> pd.DataFrame:
-            for i, col in enumerate(x for x in input_df.columns if x.endswith("_frc")):
-                if i == 0:
-                    output_df = input_df.assign(**{col: (input_df[col] * 100).round(dp).astype(str) + "%"})
-                else:
-                    output_df = output_df.assign(**{col: (input_df[col] * 100).round(dp).astype(str) + "%"})
-                output_df = output_df.rename(columns={col: col.replace("_frc", "_pct")})
-            return output_df
-
-        print_df = convert_frc_cols_to_pct(key_results_df).rename(
-            columns={
-                "test_wtg": "turbine",
-                "ref": "reference",
-                "uplift_pct": "energy uplift",
-                "unc_one_sigma_pct": "uplift uncertainty",
-                "uplift_p95_pct": "uplift P95",
-                "uplift_p5_pct": "uplift P5",
-                "pp_valid_hours_pre": "valid hours toggle off",
-                "pp_valid_hours_post": "valid hours toggle on",
-                "mean_power_post": "mean power toggle on",
-            }
-        )
-        print_df["mean power toggle on"] = print_df["mean power toggle on"].round(0).astype("int64")
-        results_table = tabulate(
-            print_df,
-            headers="keys",
-            tablefmt="outline",
-            floatfmt=".1f",
-            numalign="center",
-            stralign="center",
-            showindex=False,
-        )
-        print(results_table)
-
         # raise an error if results don't match expected
         expected_print_df = pd.DataFrame(
             {
