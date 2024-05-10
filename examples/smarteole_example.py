@@ -128,7 +128,7 @@ def unpack_smarteole_metadata(timebase_s: int) -> pd.DataFrame:
             .rename(columns={"Turbine": "Name"})
             .query("Name.str.startswith('SMV')")  # is a turbine
             .loc[:, ["Name", "Latitude", "Longitude"]]
-            .assign(TimeZone="UTC", TimeSpanMinutes=timebase_s/60, TimeFormat="Start")
+            .assign(TimeZone="UTC", TimeSpanMinutes=timebase_s / 60, TimeFormat="Start")
         )
 
 
