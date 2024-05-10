@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 class PlotConfig(BaseModel):
     show_plots: bool = Field(default=False, description="Show plots in interactive window")
     save_plots: bool = Field(default=True, description="Save plots to file")
+    skip_per_turbine_plots: bool = Field(default=False, description="If True skip per turbine plots")
     plots_dir: Path = Field(description="Directory to save plots to")
 
     @model_validator(mode="after")

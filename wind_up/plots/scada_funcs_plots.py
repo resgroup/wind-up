@@ -82,13 +82,14 @@ def plot_ops_curves_per_ttype(cfg: WindUpConfig, df: pd.DataFrame, title_end: st
             title_end=title_end,
             plot_cfg=plot_cfg,
         )
-        for wtg in wtgs:
-            plot_ops_curves_one_ttype_or_wtg(
-                df=df_ttype.loc[[wtg]],
-                ttype_or_wtg=wtg,
-                title_end=title_end,
-                plot_cfg=plot_cfg,
-            )
+        if not plot_cfg.skip_per_turbine_plots:
+            for wtg in wtgs:
+                plot_ops_curves_one_ttype_or_wtg(
+                    df=df_ttype.loc[[wtg]],
+                    ttype_or_wtg=wtg,
+                    title_end=title_end,
+                    plot_cfg=plot_cfg,
+                )
 
 
 def plot_ops_curves_one_ttype_or_wtg(df: pd.DataFrame, ttype_or_wtg: str, title_end: str, plot_cfg: PlotConfig) -> None:

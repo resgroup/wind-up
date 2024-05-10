@@ -45,7 +45,9 @@ colorama==0.4.6
     #   pytest
     #   tqdm
 comm==0.2.2
-    # via ipykernel
+    # via
+    #   ipykernel
+    #   ipywidgets
 contourpy==1.2.1
     # via matplotlib
 coverage==7.5.1
@@ -85,7 +87,11 @@ iniconfig==2.0.0
 ipykernel==6.29.4
     # via jupyterlab
 ipython==8.24.0
-    # via ipykernel
+    # via
+    #   ipykernel
+    #   ipywidgets
+ipywidgets==8.1.2
+    # via wind-up (pyproject.toml)
 isoduration==20.11.0
     # via jsonschema
 jedi==0.19.1
@@ -144,6 +150,8 @@ jupyterlab-server==2.27.1
     # via
     #   jupyterlab
     #   notebook
+jupyterlab-widgets==3.0.10
+    # via ipywidgets
 kiwisolver==1.4.5
     # via matplotlib
 markupsafe==2.1.5
@@ -345,6 +353,7 @@ traitlets==5.14.3
     #   comm
     #   ipykernel
     #   ipython
+    #   ipywidgets
     #   jupyter-client
     #   jupyter-core
     #   jupyter-events
@@ -392,3 +401,5 @@ webencodings==0.5.1
     #   tinycss2
 websocket-client==1.8.0
     # via jupyter-server
+widgetsnbextension==4.0.10
+    # via ipywidgets

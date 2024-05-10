@@ -132,9 +132,12 @@ def add_ws_est_one_ttype(
             pc_transposed=pc_transposed,
             plot_cfg=plot_cfg,
         )
-        for wtg in df_input.index.unique(level="TurbineName"):
-            df_wtg = df_input.loc[wtg]
-            plot_ws_est_one_ttype_or_wtg(df=df_wtg, ttype_or_wtg=wtg, pc_transposed=pc_transposed, plot_cfg=plot_cfg)
+        if not plot_cfg.skip_per_turbine_plots:
+            for wtg in df_input.index.unique(level="TurbineName"):
+                df_wtg = df_input.loc[wtg]
+                plot_ws_est_one_ttype_or_wtg(
+                    df=df_wtg, ttype_or_wtg=wtg, pc_transposed=pc_transposed, plot_cfg=plot_cfg
+                )
 
     cols_to_return = ["ws_est_from_power_only", "ws_est_blend"]
     df[cols_to_return] = df_input[cols_to_return]

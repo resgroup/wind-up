@@ -42,6 +42,7 @@ dev = [
 jupyter = [
     'jupyterlab',
     'notebook',
+    'ipywidgets',
 ]
 
 [tool.setuptools.packages.find]

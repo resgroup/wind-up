@@ -21,12 +21,13 @@ sys.path.append(str(PROJECTROOT_DIR))
 from examples.helpers import download_zenodo_data, setup_logger
 
 CACHE_DIR = PROJECTROOT_DIR / "cache" / "smarteole_example_data"
+ANALYSIS_OUTPUT_DIR = OUTPUT_DIR / "smarteole_example"
+ANALYSIS_OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
 
 ANALYSIS_TIMEBASE_S = 600
 CACHE_SUBDIR = CACHE_DIR / f"timebase_{ANALYSIS_TIMEBASE_S}"
 CACHE_SUBDIR.mkdir(exist_ok=True, parents=True)
 
-ENSURE_DOWNLOAD = 1
 CHECK_RESULTS = 1
 PARENT_DIR = Path(__file__).parent
 ZIP_FILENAME = "SMARTEOLE-WFC-open-dataset.zip"
@@ -205,7 +206,7 @@ def define_smarteole_example_config() -> WindUpConfig:
         ref_wd_filter=[207 - wd_filter_margin, 236 + wd_filter_margin],  # steer is from 207-236
         filter_all_test_wtgs_together=True,
         use_lt_distribution=False,
-        out_dir=analysis_output_dir,
+        out_dir=ANALYSIS_OUTPUT_DIR,
         test_wtgs=[wtg_map["SMV6"], wtg_map["SMV5"]],
         ref_wtgs=[wtg_map["SMV7"]],
         ref_super_wtgs=[],
@@ -238,7 +239,7 @@ def define_smarteole_example_config() -> WindUpConfig:
     )
 
 
-def print_smarteole_results(results_per_test_ref_df: pd.DataFrame) -> pd.DataFrame:
+def print_smarteole_results(results_per_test_ref_df: pd.DataFrame, *, print_small_table: bool = False) -> pd.DataFrame:
     key_results_df = results_per_test_ref_df[
         [
             "test_wtg",
@@ -276,8 +277,13 @@ def print_smarteole_results(results_per_test_ref_df: pd.DataFrame) -> pd.DataFra
         }
     )
     print_df["mean power toggle on"] = print_df["mean power toggle on"].round(0).astype("int64")
+    print_df_for_tabulate = (
+        print_df[["turbine", "reference", "energy uplift", "uplift P95", "uplift P5", "valid hours toggle on"]]
+        if print_small_table
+        else print_df
+    )
     results_table = tabulate(
-        print_df,
+        print_df_for_tabulate,
         headers="keys",
         tablefmt="outline",
         floatfmt=".1f",
@@ -290,9 +296,7 @@ def print_smarteole_results(results_per_test_ref_df: pd.DataFrame) -> pd.DataFra
 
 
 if __name__ == "__main__":
-    analysis_output_dir = OUTPUT_DIR / "smarteole_example"
-    analysis_output_dir.mkdir(exist_ok=True, parents=True)
-    setup_logger(analysis_output_dir / "analysis.log")
+    setup_logger(ANALYSIS_OUTPUT_DIR / "analysis.log")
     logger = logging.getLogger(__name__)
 
     logger.info("Downloading example data from Zenodo")
