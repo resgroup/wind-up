@@ -341,31 +341,24 @@ def yaw_offset_results(
 
     yaw_offset_ul = 1e-3
     if "test_yaw_offset_command" in pre_df.columns:
-        results["mean_test_yaw_offset_command_pre"] = pre_df.dropna(subset=required_pp_cols)[
-            "test_yaw_offset_command"
-        ].mean()
-        if results["mean_test_yaw_offset_command_pre"] > yaw_offset_ul:
-            result_manager.warning(
-                f"mean_test_yaw_offset_command_pre > 0: " f"({results['mean_test_yaw_offset_command_pre']})",
-            )
+        result_name = "mean_test_yaw_offset_command_pre"
+        results[result_name] = pre_df.dropna(subset=required_pp_cols)["test_yaw_offset_command"].mean()
+        if results[result_name] > yaw_offset_ul:
+            result_manager.warning(f"{result_name} > 0: " f"({results[result_name]})")
+
         results["mean_test_yaw_offset_command_post"] = post_df.dropna(subset=required_pp_cols)[
             "test_yaw_offset_command"
         ].mean()
     if "ref_yaw_offset_command" in pre_df.columns:
-        results["mean_ref_yaw_offset_command_pre"] = pre_df.dropna(subset=required_pp_cols)[
-            "ref_yaw_offset_command"
-        ].mean()
-        if results["mean_ref_yaw_offset_command_pre"] > yaw_offset_ul:
-            result_manager.warning(
-                f"mean_ref_yaw_offset_command_pre > 0 for: " f"({results['mean_ref_yaw_offset_command_pre']})",
-            )
-        results["mean_ref_yaw_offset_command_post"] = post_df.dropna(subset=required_pp_cols)[
-            "ref_yaw_offset_command"
-        ].mean()
-        if results["mean_ref_yaw_offset_command_post"] > yaw_offset_ul:
-            result_manager.warning(
-                f"mean_ref_yaw_offset_command_post > 0 for: " f"({results['mean_ref_yaw_offset_command_post']})",
-            )
+        result_name = "mean_ref_yaw_offset_command_pre"
+        results[result_name] = pre_df.dropna(subset=required_pp_cols)["ref_yaw_offset_command"].mean()
+        if results[result_name] > yaw_offset_ul:
+            result_manager.warning(f"{result_name} > 0 for: " f"({results[result_name]})")
+
+        result_name = "mean_ref_yaw_offset_command_pre"
+        results[result_name] = post_df.dropna(subset=required_pp_cols)["ref_yaw_offset_command"].mean()
+        if results[result_name] > yaw_offset_ul:
+            result_manager.warning(f"{result_name} > 0 for: " f"({results[result_name]})")
     return results
 
 
