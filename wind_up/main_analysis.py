@@ -202,6 +202,18 @@ def get_ref_df(
             f"rows from ref_df using ref_wd_filter",
         )
 
+    if cfg.ref_hod_filter is not None:
+        rows_before = len(ref_df)
+        if cfg.ref_hod_filter[0] < cfg.ref_hod_filter[1]:
+            ref_df = ref_df[(ref_df.index.hour >= cfg.ref_hod_filter[0]) & (ref_df.index.hour <= cfg.ref_hod_filter[1])]
+        else:
+            ref_df = ref_df[(ref_df.index.hour >= cfg.ref_hod_filter[0]) | (ref_df.index.hour <= cfg.ref_hod_filter[1])]
+        rows_after = len(ref_df)
+        logger.info(
+            f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
+            f"rows from ref_df using ref_hod_filter",
+        )
+
     if cfg.require_test_wake_free or cfg.require_ref_wake_free:
         ref_df = filter_ref_df_for_wake_free(
             ref_df,

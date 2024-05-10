@@ -156,6 +156,11 @@ class WindUpConfig(BaseModel):
         description="Wind direction filter for reference data; only data within this range is used",
         examples=[[195, 241]],
     )
+    ref_hod_filter: list[float] | None = Field(
+        default=None,
+        description="Hour of day filter for reference data; only data within this range is used",
+        examples=[[18, 6]],
+    )
     filter_all_test_wtgs_together: bool = Field(
         description="If True any row filtered for one test wtg is filtered for all test wtgs. "
         "Recommended for wake steering analysis.",
