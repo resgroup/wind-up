@@ -39,6 +39,10 @@ dev = [
     'mypy',
 ]
 
+jupyter = [
+    'jupyterlab',
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["wind_up*"]
