@@ -119,7 +119,7 @@ def unpack_smarteole_scada(timebase_s: int) -> pd.DataFrame:
 
 
 @with_parquet_cache(CACHE_DIR / "smarteole_metadata.parquet")
-def unpack_smarteole_metadata() -> pd.DataFrame:
+def unpack_smarteole_metadata(timebase_s: int) -> pd.DataFrame:
     md_fpath = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_Coordinates_staticData.csv"
     with zipfile.ZipFile(CACHE_DIR / ZIP_FILENAME) as zf:
         return (
@@ -128,7 +128,7 @@ def unpack_smarteole_metadata() -> pd.DataFrame:
             .rename(columns={"Turbine": "Name"})
             .query("Name.str.startswith('SMV')")  # is a turbine
             .loc[:, ["Name", "Latitude", "Longitude"]]
-            .assign(TimeZone="UTC", TimeSpanMinutes=10, TimeFormat="Start")
+            .assign(TimeZone="UTC", TimeSpanMinutes=timebase_s/60, TimeFormat="Start")
         )
 
 
@@ -305,7 +305,7 @@ if __name__ == "__main__":
     logger.info("Preprocessing (and caching) turbine SCADA data")
     scada_df = unpack_smarteole_scada(ANALYSIS_TIMEBASE_S)
     logger.info("Preprocessing (and caching) turbine metadata")
-    metadata_df = unpack_smarteole_metadata()
+    metadata_df = unpack_smarteole_metadata(ANALYSIS_TIMEBASE_S)
     logger.info("Preprocessing (and caching) toggle data")
     toggle_df = unpack_smarteole_toggle_data(ANALYSIS_TIMEBASE_S)
 
