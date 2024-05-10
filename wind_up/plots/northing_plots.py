@@ -1,6 +1,5 @@
 import logging
 
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 from tabulate import tabulate
@@ -9,7 +8,6 @@ from wind_up.constants import RAW_YAWDIR_COL
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.northing_utils import add_ok_yaw_col
 
-mpl.use("Agg")
 logger = logging.getLogger(__name__)
 
 

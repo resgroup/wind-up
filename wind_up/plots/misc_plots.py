@@ -1,7 +1,6 @@
 import logging
 from pathlib import Path
 
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -9,7 +8,6 @@ import utm
 
 from wind_up.models import WindUpConfig
 
-mpl.use("Agg")
 logger = logging.getLogger(__name__)
 
 

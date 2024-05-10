@@ -154,7 +154,7 @@ if __name__ == "__main__":
 
     reanalysis_dataset = ReanalysisDataset(
         id="ERA5T_52.50N_-1.00E_100m_1hr",
-        data=pd.read_parquet(PARENT_DIR / "kelmarsh_data"/ "ERA5T_52.50N_-1.00E_100m_1hr_2022.parquet"),
+        data=pd.read_parquet(PARENT_DIR / "kelmarsh_data" / "ERA5T_52.50N_-1.00E_100m_1hr_2022.parquet"),
     )
     assessment_inputs = AssessmentInputs.from_cfg(
         cfg=cfg,

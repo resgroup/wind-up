@@ -1,11 +1,8 @@
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 
 from wind_up.constants import RAW_POWER_COL, RAW_WINDSPEED_COL
 from wind_up.models import PlotConfig, WindUpConfig
-
-mpl.use("Agg")
 
 
 def plot_detrend_data_cov(

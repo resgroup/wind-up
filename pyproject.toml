@@ -41,6 +41,7 @@ dev = [
 
 jupyter = [
     'jupyterlab',
+    'notebook',
 ]
 
 [tool.setuptools.packages.find]

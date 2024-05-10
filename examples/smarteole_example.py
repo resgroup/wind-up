@@ -195,7 +195,7 @@ if __name__ == "__main__":
     logger.info("Loading reference reanalysis data")
     reanalysis_dataset = ReanalysisDataset(
         id="ERA5T_50.00N_2.75E_100m_1hr",
-        data=pd.read_parquet(PARENT_DIR / "smarteole_data"/ "ERA5T_50.00N_2.75E_100m_1hr_20200201_20200531.parquet"),
+        data=pd.read_parquet(PARENT_DIR / "smarteole_data" / "ERA5T_50.00N_2.75E_100m_1hr_20200201_20200531.parquet"),
     )
 
     logger.info("Defining Assessment Configuration")

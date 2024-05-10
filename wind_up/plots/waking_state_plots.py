@@ -1,11 +1,8 @@
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 
 from wind_up.constants import RAW_POWER_COL, RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_S
 from wind_up.models import PlotConfig
-
-mpl.use("Agg")
 
 
 def plot_waking_state_one_ttype_or_wtg(wf_df: pd.DataFrame, ttype_or_wtg: str, plot_cfg: PlotConfig) -> None:

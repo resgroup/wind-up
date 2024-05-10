@@ -130,15 +130,20 @@ jupyter-server==2.14.0
     #   jupyter-lsp
     #   jupyterlab
     #   jupyterlab-server
+    #   notebook
     #   notebook-shim
 jupyter-server-terminals==0.5.3
     # via jupyter-server
 jupyterlab==4.2.0
-    # via wind-up (pyproject.toml)
+    # via
+    #   notebook
+    #   wind-up (pyproject.toml)
 jupyterlab-pygments==0.3.0
     # via nbconvert
 jupyterlab-server==2.27.1
-    # via jupyterlab
+    # via
+    #   jupyterlab
+    #   notebook
 kiwisolver==1.4.5
     # via matplotlib
 markupsafe==2.1.5
@@ -170,8 +175,12 @@ nbformat==5.10.4
     #   nbconvert
 nest-asyncio==1.6.0
     # via ipykernel
+notebook==7.0.7
+    # via wind-up (pyproject.toml)
 notebook-shim==0.2.4
-    # via jupyterlab
+    # via
+    #   jupyterlab
+    #   notebook
 numpy==1.26.4
     # via
     #   contourpy
@@ -327,6 +336,7 @@ tornado==6.4
     #   jupyter-client
     #   jupyter-server
     #   jupyterlab
+    #   notebook
     #   terminado
 tqdm==4.66.4
     # via wind-up (pyproject.toml)

@@ -1,7 +1,6 @@
 import logging
 from pathlib import Path
 
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
@@ -11,7 +10,6 @@ from wind_up.constants import SCATTER_ALPHA, SCATTER_S
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.misc_plots import bubble_plot
 
-mpl.use("Agg")
 logger = logging.getLogger(__name__)
 
 

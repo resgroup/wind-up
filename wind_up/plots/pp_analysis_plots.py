@@ -1,12 +1,9 @@
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_S
 from wind_up.models import PlotConfig
-
-mpl.use("Agg")
 
 
 def plot_pre_post_binned_power_curves(

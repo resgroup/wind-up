@@ -1,6 +1,5 @@
 import logging
 
-import matplotlib as mpl
 import pandas as pd
 from matplotlib import pyplot as plt
 
@@ -8,7 +7,6 @@ from wind_up.constants import SCATTER_ALPHA, SCATTER_S
 from wind_up.models import PlotConfig
 from wind_up.result_manager import result_manager
 
-mpl.use("Agg")
 logger = logging.getLogger(__name__)
 
 

@@ -1,10 +1,7 @@
-import matplotlib as mpl
 import pandas as pd
 from matplotlib import pyplot as plt
 
 from wind_up.models import PlotConfig
-
-mpl.use("Agg")
 
 
 def plot_combine_results(trdf: pd.DataFrame, tdf: pd.DataFrame, plot_cfg: PlotConfig) -> None:
