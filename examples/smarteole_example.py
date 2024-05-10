@@ -143,11 +143,18 @@ def _unpack_toggle_data(timebase_s: int) -> pd.DataFrame:
     required_in_cols = [
         "control_log_offset_active_avg",
         "control_log_offset_active_count",
+        "control_log_offset_avg",
     ]
     toggle_df = (
         raw_df[required_in_cols]
         .resample(f"{timebase_s}s")
-        .agg({"control_log_offset_active_avg": "mean", "control_log_offset_active_count": "sum"})
+        .agg(
+            {
+                "control_log_offset_active_avg": "mean",
+                "control_log_offset_active_count": "sum",
+                "control_log_offset_avg": "mean",
+            }
+        )
     )
     toggle_df["toggle_on"] = (toggle_df["control_log_offset_active_avg"] >= toggle_value_threshold) & (
         toggle_df["control_log_offset_active_count"] >= ten_minutes_count_lower_limit
@@ -155,11 +162,11 @@ def _unpack_toggle_data(timebase_s: int) -> pd.DataFrame:
     toggle_df["toggle_off"] = (toggle_df["control_log_offset_active_avg"] <= (1 - toggle_value_threshold)) & (
         toggle_df["control_log_offset_active_count"] >= ten_minutes_count_lower_limit
     )
+    toggle_df["yaw_offset_command"] = toggle_df["control_log_offset_avg"]
 
-    # timestamps represent UTC start format according to Thomas Duc
     toggle_df.index = toggle_df.index.tz_localize("UTC")
     toggle_df.index.name = TIMESTAMP_COL
-    return toggle_df[["toggle_on", "toggle_off"]]
+    return toggle_df[["toggle_on", "toggle_off", "yaw_offset_command"]]
 
 
 if __name__ == "__main__":
@@ -177,6 +184,13 @@ if __name__ == "__main__":
     metadata_df = _unpack_metadata()
     logger.info("Preprocessing (and caching) toggle data")
     toggle_df = _unpack_toggle_data(ANALYSIS_TIMEBASE_S)
+
+    logger.info("Merging SMV6 yaw offset command signal into SCADA data")
+    toggle_df_no_tz = toggle_df.copy()
+    toggle_df_no_tz.index = toggle_df_no_tz.index.tz_localize(None)
+    scada_df = scada_df.merge(toggle_df_no_tz["yaw_offset_command"], left_index=True, right_index=True, how="left")
+    scada_df["yaw_offset_command"] = scada_df["yaw_offset_command"].where(scada_df["TurbineName"] == "SMV6", 0)
+    del toggle_df_no_tz
 
     logger.info("Loading reference reanalysis data")
     reanalysis_dataset = ReanalysisDataset(

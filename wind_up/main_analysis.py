@@ -16,6 +16,7 @@ from wind_up.constants import (
 from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
 from wind_up.interface import AssessmentInputs, add_toggle_signals
 from wind_up.long_term import calc_turbine_lt_dfs_raw_filt
+from wind_up.math_funcs import circ_diff
 from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.northing import (
     check_wtg_northing,
@@ -143,6 +144,34 @@ def filter_ref_df_for_wake_free(
     return ref_df.drop(columns=["rounded_wd"])
 
 
+def filter_ref_df_for_wd_and_hod(ref_df: pd.DataFrame, ref_wd_col: str, cfg: WindUpConfig) -> pd.DataFrame:
+    ref_df = ref_df.copy()
+    if cfg.ref_wd_filter is not None:
+        rows_before = len(ref_df)
+        if cfg.ref_wd_filter[0] < cfg.ref_wd_filter[1]:
+            ref_df = ref_df[(ref_df[ref_wd_col] >= cfg.ref_wd_filter[0]) & (ref_df[ref_wd_col] <= cfg.ref_wd_filter[1])]
+        else:
+            ref_df = ref_df[(ref_df[ref_wd_col] >= cfg.ref_wd_filter[0]) | (ref_df[ref_wd_col] <= cfg.ref_wd_filter[1])]
+        rows_after = len(ref_df)
+        logger.info(
+            f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
+            f"rows from ref_df using ref_wd_filter",
+        )
+
+    if cfg.ref_hod_filter is not None:
+        rows_before = len(ref_df)
+        if cfg.ref_hod_filter[0] < cfg.ref_hod_filter[1]:
+            ref_df = ref_df[(ref_df.index.hour >= cfg.ref_hod_filter[0]) & (ref_df.index.hour <= cfg.ref_hod_filter[1])]
+        else:
+            ref_df = ref_df[(ref_df.index.hour >= cfg.ref_hod_filter[0]) | (ref_df.index.hour <= cfg.ref_hod_filter[1])]
+        rows_after = len(ref_df)
+        logger.info(
+            f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
+            f"rows from ref_df using ref_hod_filter",
+        )
+    return ref_df
+
+
 def get_ref_df(
     *,
     ref_name: str,
@@ -189,17 +218,7 @@ def get_ref_df(
         ref_df[ref_wd_col] = ref_df[original_wd_col]
         ref_df = add_fake_power_data(ref_df, ref_pw_col=ref_pw_col, ref_ws_col=ref_ws_col, scada_pc=scada_pc)
 
-    if cfg.ref_wd_filter is not None:
-        rows_before = len(ref_df)
-        if cfg.ref_wd_filter[0] < cfg.ref_wd_filter[1]:
-            ref_df = ref_df[(ref_df[ref_wd_col] >= cfg.ref_wd_filter[0]) & (ref_df[ref_wd_col] <= cfg.ref_wd_filter[1])]
-        else:
-            ref_df = ref_df[(ref_df[ref_wd_col] >= cfg.ref_wd_filter[0]) | (ref_df[ref_wd_col] <= cfg.ref_wd_filter[1])]
-        rows_after = len(ref_df)
-        logger.info(
-            f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
-            f"rows from ref_df using ref_wd_filter",
-        )
+    ref_df = filter_ref_df_for_wd_and_hod(ref_df, ref_wd_col=ref_wd_col, cfg=cfg)
 
     if cfg.require_test_wake_free or cfg.require_ref_wake_free:
         ref_df = filter_ref_df_for_wake_free(
@@ -287,6 +306,60 @@ def toggle_pairing_filter(
         f"rows from post_df using {pairing_filter_method} pairing filter",
     )
     return filt_pre_df, filt_post_df
+
+
+def yaw_error_results(pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_cols: list[str]) -> dict:
+    results = {}
+    if "test_yaw_error_mean" in pre_df.columns:
+        results["test_yaw_error_pre"] = pre_df.dropna(subset=required_pp_cols)["test_yaw_error_mean"].mean()
+        results["test_yaw_error_post"] = post_df.dropna(subset=required_pp_cols)["test_yaw_error_mean"].mean()
+    if "ref_yaw_error_mean" in pre_df.columns:
+        results["ref_yaw_error_pre"] = pre_df.dropna(subset=required_pp_cols)["ref_yaw_error_mean"].mean()
+        results["ref_yaw_error_post"] = post_df.dropna(subset=required_pp_cols)["ref_yaw_error_mean"].mean()
+    return results
+
+
+def yaw_offset_results(
+    pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_cols: list[str], ref_wd_col: str, test_wd_col: str
+) -> dict:
+    results = {}
+
+    pre_yaw_offset = pd.Series(
+        circ_diff(
+            pre_df.dropna(subset=required_pp_cols)[ref_wd_col], pre_df.dropna(subset=required_pp_cols)[test_wd_col]
+        )
+    )
+    post_yaw_offset = pd.Series(
+        circ_diff(
+            post_df.dropna(subset=required_pp_cols)[ref_wd_col], post_df.dropna(subset=required_pp_cols)[test_wd_col]
+        )
+    )
+
+    if len(pre_yaw_offset) > 0 and len(post_yaw_offset) > 0:
+        results["mean_test_yaw_offset_pre"] = pre_yaw_offset.mean()
+        results["mean_test_yaw_offset_post"] = post_yaw_offset.mean()
+
+    yaw_offset_ul = 1e-3
+    if "test_yaw_offset_command" in pre_df.columns:
+        result_name = "mean_test_yaw_offset_command_pre"
+        results[result_name] = pre_df.dropna(subset=required_pp_cols)["test_yaw_offset_command"].mean()
+        if results[result_name] > yaw_offset_ul:
+            result_manager.warning(f"{result_name} > 0: " f"({results[result_name]})")
+
+        results["mean_test_yaw_offset_command_post"] = post_df.dropna(subset=required_pp_cols)[
+            "test_yaw_offset_command"
+        ].mean()
+    if "ref_yaw_offset_command" in pre_df.columns:
+        result_name = "mean_ref_yaw_offset_command_pre"
+        results[result_name] = pre_df.dropna(subset=required_pp_cols)["ref_yaw_offset_command"].mean()
+        if results[result_name] > yaw_offset_ul:
+            result_manager.warning(f"{result_name} > 0 for: " f"({results[result_name]})")
+
+        result_name = "mean_ref_yaw_offset_command_pre"
+        results[result_name] = post_df.dropna(subset=required_pp_cols)["ref_yaw_offset_command"].mean()
+        if results[result_name] > yaw_offset_ul:
+            result_manager.warning(f"{result_name} > 0 for: " f"({results[result_name]})")
+    return results
 
 
 def calc_test_ref_results(
@@ -565,25 +638,21 @@ def calc_test_ref_results(
         "detrend_post_r2_improvement": detrend_post_r2_improvement,
         "mean_power_pre": pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
         "mean_power_post": post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
-        "test_ref_warning_counts": len(result_manager.stored_warnings),
     }
+
+    other_results = other_results | yaw_error_results(
+        pre_df=pre_df, post_df=post_df, required_pp_cols=[detrend_ws_col, test_pw_col, ref_wd_col]
+    )
+    other_results = other_results | yaw_offset_results(
+        pre_df=pre_df,
+        post_df=post_df,
+        required_pp_cols=[detrend_ws_col, test_pw_col, ref_wd_col],
+        ref_wd_col=ref_wd_col,
+        test_wd_col="test_YawAngleMean",
+    )
+
+    other_results["test_ref_warning_counts"] = len(result_manager.stored_warnings)
     result_manager.stored_warnings = []
-
-    if "test_yaw_error_mean" in pre_df.columns:
-        other_results["test_yaw_error_pre"] = pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
-            "test_yaw_error_mean"
-        ].mean()
-        other_results["test_yaw_error_post"] = post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
-            "test_yaw_error_mean"
-        ].mean()
-    if "ref_yaw_error_mean" in pre_df.columns:
-        other_results["ref_yaw_error_pre"] = pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
-            "ref_yaw_error_mean"
-        ].mean()
-        other_results["ref_yaw_error_post"] = post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[
-            "ref_yaw_error_mean"
-        ].mean()
-
     return other_results | pp_results
 
 

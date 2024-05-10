@@ -153,8 +153,13 @@ class WindUpConfig(BaseModel):
     )
     ref_wd_filter: list[float] | None = Field(
         default=None,
-        description="Wind direction filter for reference data",
+        description="Wind direction filter for reference data; only data within this range is used",
         examples=[[195, 241]],
+    )
+    ref_hod_filter: list[float] | None = Field(
+        default=None,
+        description="Hour of day filter for reference data; only data within this range is used",
+        examples=[[18, 6]],
     )
     filter_all_test_wtgs_together: bool = Field(
         description="If True any row filtered for one test wtg is filtered for all test wtgs. "
