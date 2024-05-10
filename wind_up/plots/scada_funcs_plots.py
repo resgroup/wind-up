@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -49,16 +48,17 @@ def calc_cf_by_turbine(scada_df: pd.DataFrame, cfg: WindUpConfig) -> pd.DataFram
     return cf_df
 
 
-def print_and_plot_capacity_factor(scada_df: pd.DataFrame, cfg: WindUpConfig, plots_dir: Path) -> None:
+def print_and_plot_capacity_factor(scada_df: pd.DataFrame, cfg: WindUpConfig, plots_cfg: PlotConfig) -> None:
     cf_df = calc_cf_by_turbine(scada_df=scada_df, cfg=cfg)
     title = f"{cfg.asset.name} capacity factor"
-    plots_dir.mkdir(parents=True, exist_ok=True)
+    plots_cfg.plots_dir.mkdir(parents=True, exist_ok=True)
     bubble_plot(
         cfg=cfg,
         series=cf_df["CF"] * 100,
         title=f"{cfg.asset.name} capacity factor",
         cbarunits="%",
-        savefigure=plots_dir / f"{title}.png",
+        savefigure=plots_cfg.plots_dir / f"{title}.png",
+        showfigure=plots_cfg.show_plots,
     )
 
     logger.info(f'average capacity factor: {cf_df["CF"].mean() * 100:.1f}%')

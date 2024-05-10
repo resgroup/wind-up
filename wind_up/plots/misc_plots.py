@@ -144,6 +144,7 @@ def bubble_plot(
     cbar_label: str | None = None,
     text_rotation: int = 0,
     figuresize: tuple[float, float] | None = None,
+    showfigure: bool = False,
 ) -> None:
     if isinstance(series, type(pd.DataFrame())):
         msg = "series should be a pandas series"
@@ -211,6 +212,8 @@ def bubble_plot(
                     )
 
     plt.grid()
+    if showfigure:
+        plt.show()
     if savefigure is not None:
         plt.savefig(savefigure, dpi=120)
     plt.close()

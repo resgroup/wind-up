@@ -509,7 +509,7 @@ def get_raw_scada_and_cfg_from_file(
     )
     cfg = add_smart_lat_long_to_cfg(md=md, cfg=cfg)
     if plot_cfg is not None:
-        print_and_plot_capacity_factor(scada_df=scada_raw, cfg=cfg, plots_dir=plot_cfg.plots_dir)
+        print_and_plot_capacity_factor(scada_df=scada_raw, cfg=cfg, plots_cfg=plot_cfg)
     scada_mi_df = scada_multi_index(scada_raw)
     del scada_raw
     if plot_cfg is not None:
