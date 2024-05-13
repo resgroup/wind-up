@@ -164,7 +164,7 @@ def bubble_plot(
     ratio = (ylims[1] - ylims[0]) / (xlims[1] - xlims[0])
     hsize = 10
     if figuresize is None:
-        f, ax = plt.subplots(1, 1, figsize=(hsize * 1.2 / 2, hsize * ratio / 2))
+        f, ax = plt.subplots(1, 1, figsize=(hsize * 1.2, hsize * ratio))
     else:
         f, ax = plt.subplots(1, 1, figsize=figuresize)
 
