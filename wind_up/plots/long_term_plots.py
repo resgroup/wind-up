@@ -1,10 +1,7 @@
-import matplotlib as mpl
 import pandas as pd
 from matplotlib import pyplot as plt
 
 from wind_up.models import PlotConfig
-
-mpl.use("Agg")
 
 
 def plot_lt_ws(

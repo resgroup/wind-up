@@ -1,11 +1,8 @@
-import matplotlib as mpl
 import pandas as pd
 from matplotlib import pyplot as plt
 
 from wind_up.constants import RAW_POWER_COL, REANALYSIS_WD_COL, WINDFARM_YAWDIR_COL
 from wind_up.models import PlotConfig, WindUpConfig
-
-mpl.use("Agg")
 
 
 def plot_diff_to_north_ref_wd(

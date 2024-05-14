@@ -1,11 +1,8 @@
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 
 from wind_up.constants import RAW_POWER_COL, RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_S
 from wind_up.models import PlotConfig, WindUpConfig
-
-mpl.use("Agg")
 
 
 def plot_pc_one_ttype(pc: pd.DataFrame, ttype: str, plot_cfg: PlotConfig) -> None:
@@ -82,10 +79,11 @@ def plot_removed_data_per_ttype_and_wtg(
             ttype_or_wtg=ttype_str,
             plot_cfg=plot_cfg,
         )
-        for wtg_name in wtg_names:
-            plot_removed_data_one_ttype_or_wtg(
-                t_df=df_ttype.loc[[wtg_name]],
-                pc_df=pc_per_ttype[ttype_str],
-                ttype_or_wtg=wtg_name,
-                plot_cfg=plot_cfg,
-            )
+        if not plot_cfg.skip_per_turbine_plots:
+            for wtg_name in wtg_names:
+                plot_removed_data_one_ttype_or_wtg(
+                    t_df=df_ttype.loc[[wtg_name]],
+                    pc_df=pc_per_ttype[ttype_str],
+                    ttype_or_wtg=wtg_name,
+                    plot_cfg=plot_cfg,
+                )

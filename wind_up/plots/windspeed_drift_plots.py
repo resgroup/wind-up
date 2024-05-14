@@ -1,10 +1,7 @@
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 
 from wind_up.models import PlotConfig
-
-mpl.use("Agg")
 
 
 def plot_rolling_windspeed_diff_one_wtg(

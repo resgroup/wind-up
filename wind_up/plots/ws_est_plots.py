@@ -1,11 +1,8 @@
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 from wind_up.models import PlotConfig
-
-mpl.use("Agg")
 
 
 def plot_ws_est_gain_xs_one_ttype(

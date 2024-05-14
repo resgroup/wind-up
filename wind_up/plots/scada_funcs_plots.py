@@ -1,7 +1,5 @@
 import logging
-from pathlib import Path
 
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
@@ -11,7 +9,6 @@ from wind_up.constants import SCATTER_ALPHA, SCATTER_S
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.misc_plots import bubble_plot
 
-mpl.use("Agg")
 logger = logging.getLogger(__name__)
 
 
@@ -51,16 +48,17 @@ def calc_cf_by_turbine(scada_df: pd.DataFrame, cfg: WindUpConfig) -> pd.DataFram
     return cf_df
 
 
-def print_and_plot_capacity_factor(scada_df: pd.DataFrame, cfg: WindUpConfig, plots_dir: Path) -> None:
+def print_and_plot_capacity_factor(scada_df: pd.DataFrame, cfg: WindUpConfig, plots_cfg: PlotConfig) -> None:
     cf_df = calc_cf_by_turbine(scada_df=scada_df, cfg=cfg)
     title = f"{cfg.asset.name} capacity factor"
-    plots_dir.mkdir(parents=True, exist_ok=True)
+    plots_cfg.plots_dir.mkdir(parents=True, exist_ok=True)
     bubble_plot(
         cfg=cfg,
         series=cf_df["CF"] * 100,
         title=f"{cfg.asset.name} capacity factor",
         cbarunits="%",
-        savefigure=plots_dir / f"{title}.png",
+        savefigure=plots_cfg.plots_dir / f"{title}.png",
+        showfigure=plots_cfg.show_plots,
     )
 
     logger.info(f'average capacity factor: {cf_df["CF"].mean() * 100:.1f}%')
@@ -84,13 +82,14 @@ def plot_ops_curves_per_ttype(cfg: WindUpConfig, df: pd.DataFrame, title_end: st
             title_end=title_end,
             plot_cfg=plot_cfg,
         )
-        for wtg in wtgs:
-            plot_ops_curves_one_ttype_or_wtg(
-                df=df_ttype.loc[[wtg]],
-                ttype_or_wtg=wtg,
-                title_end=title_end,
-                plot_cfg=plot_cfg,
-            )
+        if not plot_cfg.skip_per_turbine_plots:
+            for wtg in wtgs:
+                plot_ops_curves_one_ttype_or_wtg(
+                    df=df_ttype.loc[[wtg]],
+                    ttype_or_wtg=wtg,
+                    title_end=title_end,
+                    plot_cfg=plot_cfg,
+                )
 
 
 def plot_ops_curves_one_ttype_or_wtg(df: pd.DataFrame, ttype_or_wtg: str, title_end: str, plot_cfg: PlotConfig) -> None:

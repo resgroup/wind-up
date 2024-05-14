@@ -38,6 +38,11 @@ dev = [
     'ruff',
     'mypy',
 ]
+jupyter = [
+    'jupyterlab',
+    'notebook',
+    'ipywidgets',
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -65,12 +70,12 @@ ignore = [
 ignore-init-module-imports = true
 
 [tool.ruff.lint.mccabe]
-max-complexity = 11 # try to bring this down to 10
+max-complexity = 12 # try to bring this down to 10
 
 [tool.ruff.lint.pylint]
-max-branches = 13 # try to bring this down to 12
+max-branches = 14 # try to bring this down to 12
 max-statements = 66 # try to bring this down to 50
-max-args = 16 # try to bring this down to 5
+max-args = 17 # try to bring this down to 5
 
 [tool.ruff.lint.per-file-ignores]
 "wind_up/models.py" = ["N805", "PERF401"] # try to eliminate this

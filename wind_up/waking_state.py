@@ -70,9 +70,10 @@ def add_waking_state_one_ttype(
             f"{ttype.turbine_type} {unknown_waking_frc * 100:.1f}% of rows have unknown or partial waking",
         )
         plot_waking_state_one_ttype_or_wtg(wf_df=wf_df, ttype_or_wtg=ttype.turbine_type, plot_cfg=plot_cfg)
-        for wtg_name in wf_df.index.unique(level="TurbineName"):
-            df_wtg = wf_df.loc[wtg_name]
-            plot_waking_state_one_ttype_or_wtg(wf_df=df_wtg, ttype_or_wtg=wtg_name, plot_cfg=plot_cfg)
+        if not plot_cfg.skip_per_turbine_plots:
+            for wtg_name in wf_df.index.unique(level="TurbineName"):
+                df_wtg = wf_df.loc[wtg_name]
+                plot_waking_state_one_ttype_or_wtg(wf_df=df_wtg, ttype_or_wtg=wtg_name, plot_cfg=plot_cfg)
     return wf_df
 
 

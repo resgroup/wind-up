@@ -1,4 +1,3 @@
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -10,8 +9,6 @@ from wind_up.constants import (
     TIMESTAMP_COL,
 )
 from wind_up.models import PlotConfig
-
-mpl.use("Agg")
 
 
 def plot_find_best_shift_and_corr(

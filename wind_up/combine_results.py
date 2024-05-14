@@ -2,7 +2,6 @@ import itertools
 import logging
 import math
 
-import matplotlib as mpl
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
@@ -11,7 +10,6 @@ from wind_up.models import PlotConfig
 from wind_up.plots.combine_results_plots import plot_combine_results
 from wind_up.result_manager import result_manager
 
-mpl.use("Agg")
 logger = logging.getLogger(__name__)
 
 

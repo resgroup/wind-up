@@ -353,17 +353,17 @@ def filter_rpm_and_pt_curve_one_ttype(
             rpm_v_ws_curve=rpm_v_ws_curve,
             plot_cfg=plot_cfg,
         )
-
-        for wtg in df_pre_filter.index.unique(level="TurbineName"):
-            plot_filter_rpm_and_pt_curve_one_ttype_or_wtg(
-                df=df_pre_filter.loc[wtg],
-                ttype_or_wtg=wtg,
-                pt_v_pw_curve=pt_v_pw_curve,
-                pt_v_ws_curve=pt_v_ws_curve,
-                rpm_v_pw_curve=rpm_v_pw_curve,
-                rpm_v_ws_curve=rpm_v_ws_curve,
-                plot_cfg=plot_cfg,
-            )
+        if not plot_cfg.skip_per_turbine_plots:
+            for wtg in df_pre_filter.index.unique(level="TurbineName"):
+                plot_filter_rpm_and_pt_curve_one_ttype_or_wtg(
+                    df=df_pre_filter.loc[wtg],
+                    ttype_or_wtg=wtg,
+                    pt_v_pw_curve=pt_v_pw_curve,
+                    pt_v_ws_curve=pt_v_ws_curve,
+                    rpm_v_pw_curve=rpm_v_pw_curve,
+                    rpm_v_ws_curve=rpm_v_ws_curve,
+                    plot_cfg=plot_cfg,
+                )
 
     na_rows_after = df["ActivePowerMean"].isna().sum()
     na_rows = na_rows_after - na_rows_before
@@ -509,7 +509,7 @@ def get_raw_scada_and_cfg_from_file(
     )
     cfg = add_smart_lat_long_to_cfg(md=md, cfg=cfg)
     if plot_cfg is not None:
-        print_and_plot_capacity_factor(scada_df=scada_raw, cfg=cfg, plots_dir=plot_cfg.plots_dir)
+        print_and_plot_capacity_factor(scada_df=scada_raw, cfg=cfg, plots_cfg=plot_cfg)
     scada_mi_df = scada_multi_index(scada_raw)
     del scada_raw
     if plot_cfg is not None:

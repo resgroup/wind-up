@@ -1,4 +1,5 @@
 import logging
+import math
 from collections.abc import Collection
 from pathlib import Path
 
@@ -26,7 +27,7 @@ def setup_logger(log_fpath: Path, level: int = logging.INFO) -> None:
 
 def download_zenodo_data(
     record_id: str, output_dir: Path, filenames: Collection[str] | None = None, *, cache_overwrite: bool = False
-) -> list[Path]:
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     r = requests.get(f"https://zenodo.org/api/records/{record_id}", timeout=10)
     r.raise_for_status()
@@ -52,10 +53,8 @@ def download_zenodo_data(
             with Path.open(dst_fpath, "wb") as f:
                 for chunk in result.iter_content(chunk_size=BYTES_IN_MB):
                     chunk_number = chunk_number + 1
-                    print(f"{chunk_number} out of {filesize:.2f} MB downloaded", end="\r")
+                    print(f"{chunk_number} out of {math.ceil(filesize)} MB downloaded", end="\r")
                     f.write(chunk)
         else:
             logger.info(f"File {dst_fpath} already exists. Skipping download.")
         filepaths.append(dst_fpath)
-
-    return filepaths
