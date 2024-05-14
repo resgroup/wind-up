@@ -8,40 +8,38 @@ A tool to assess yield uplift of wind turbines
 [![TaskRunner: poethepoet](https://img.shields.io/badge/poethepoet-enabled-1abc9c.svg)](https://github.com/nat-n/poethepoet)
 
 ## Getting Started
-We recommend installing this package in a virtual environment with the following commands:
+The wind-up package can be installed in a virtual environment with the following commands:
 ```shell
-# create a virtual environment in the .venv folder
+# create and activate a virtual environment, if needed
 python -m venv .venv
-# activate the virtual environment
 source .venv/Scripts/activate  # or .venv/bin/activate on linux or ".venv/Scripts/activate" in Windows command prompt
-# install the wind-up package
-pip install git+https://github.com/resgroup/wind-up.git#egg=wind-up[jupyter]
+# install the wind-up package in the virtual environment
+pip install git+https://github.com/resgroup/wind-up.git # alternatively clone the repo, navigate to the wind-up folder and run "pip install ."
 ```
 
-See `examples` folder for analysis examples
+See [`examples`](examples) folder for example analysis using the wind-up package. [`smarteole_example.ipynb`](examples%2Fsmarteole_example.ipynb) is a good place to start.
 
 ## Contributing
 To start making changes make a new branch from `main`. Note `main` is protected; 
 if a commit fails to push and you want to undo it try `git reset origin/main --hard`
 
-After cloning the repository and (creating and activating the environment), use the following command to install the package 
+After cloning the repository and (creating and activating the virtual environment), use the following command to install the wind-up package 
 in editable mode with the dev dependencies:
 ```shell
 git clone https://github.com/resgroup/wind-up
 cd wind-up
-# create a virtual environment in the .venv folder
+# create and activate a virtual environment
 python -m venv .venv
-# activate the virtual environment
 source .venv/Scripts/activate  # or .venv/bin/activate on linux or ".venv/Scripts/activate" in Windows command prompt
 # install the package in editable mode with the dev dependencies
-pip install .[jupyter,dev]
+pip install -e .[dev] # or .[jupyter,dev] if you want jupyter dependencies as well
 ```
 
 ## Running tests
 Install dev dependencies and use `poe test` or `poe all` to run unit tests (make sure the virtual environment is activated)
 
 ## License
-See `LICENSE.txt`
+See [`LICENSE.txt`](LICENSE.txt)
 
 ## Contact
 Alex.Clerc@res-group.com
