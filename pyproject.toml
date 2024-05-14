@@ -38,7 +38,6 @@ dev = [
     'ruff',
     'mypy',
 ]
-
 jupyter = [
     'jupyterlab',
     'notebook',
