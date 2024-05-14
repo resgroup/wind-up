@@ -1,4 +1,5 @@
 import logging
+import math
 from dataclasses import dataclass
 
 import pandas as pd
@@ -62,7 +63,7 @@ def find_best_shift_and_corr(
     shifts = []
     corrs = []
     rows_per_hour = 3600 / timebase_s
-    for s in range(round(-24 * rows_per_hour), round(24 * rows_per_hour)):
+    for s in range(round(-24 * rows_per_hour), round(24 * rows_per_hour), math.ceil(rows_per_hour / 6)):
         this_corr = float(ws_filt_df.corrwith(reanalysis_df[REANALYSIS_WS_COL].shift(s)).squeeze())
         shifts.append(s)
         corrs.append(this_corr)
