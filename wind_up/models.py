@@ -294,11 +294,6 @@ class WindUpConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def make_out_dir(self: "WindUpConfig") -> "WindUpConfig":
-        self.out_dir.mkdir(parents=True, exist_ok=True)
-        return self
-
-    @model_validator(mode="after")
     def print_summary(self: "WindUpConfig") -> "WindUpConfig":
         logger.info(f"loaded WindUpConfig assessment_name: {self.assessment_name}")
         dt_fmt = "%Y-%m-%d %H:%M"

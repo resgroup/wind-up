@@ -57,8 +57,8 @@ def print_and_plot_capacity_factor(scada_df: pd.DataFrame, cfg: WindUpConfig, pl
         series=cf_df["CF"] * 100,
         title=f"{cfg.asset.name} capacity factor",
         cbarunits="%",
-        savefigure=plots_cfg.plots_dir / f"{title}.png",
-        showfigure=plots_cfg.show_plots,
+        save_path=plots_cfg.plots_dir / f"{title}.png",
+        show_plot=plots_cfg.show_plots,
     )
 
     logger.info(f'average capacity factor: {cf_df["CF"].mean() * 100:.1f}%')

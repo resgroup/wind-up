@@ -16,14 +16,6 @@ def rescale_vector(
     lowthres: float = 0,
     highthres: float = 1,
 ) -> pd.Series | np.ndarray:
-    """
-    Initially copied from AnemoTools/Math/Math.py
-    Rescales a vector to the specified interval. By default to (0,1)
-    :param vector: pd.Series or np.ndarray, vector to rescale
-    :param float/int, lowthres: minimum value of the rescaled vector
-    :param float/int, highthres: maximum value of the rescaled vector
-    :return: pd.Series or np.ndarray, rescaled vector
-    """
     if isinstance(vector, list):
         vector = np.array(vector)
 
@@ -54,8 +46,7 @@ def bubble_plot_calcs(
     list[str],
     list[str],
     list[str],
-]:  # x, y, xlims, ylims, sc, si, ticks, ticklabs, wtg_id, park_wtgids, series_wtgs
-    # extracting coordinates
+]:
     x = np.array([])
     y = np.array([])
     wtg_id = []
@@ -67,8 +58,8 @@ def bubble_plot_calcs(
     x = x - np.median(x)
     y = y - np.median(y)
 
-    xmar = 500  # 0.15 * (x.max() - x.min())
-    ymar = 500  # 0.05 * (y.max() - y.min())
+    xmar = 500
+    ymar = 500
     xlims = (x.min() - xmar, x.max() + xmar)
     ylims = (y.min() - ymar, y.max() + ymar)
 
@@ -139,12 +130,12 @@ def bubble_plot(
     txt: bool = True,
     title: str | None = None,
     cbarunits: str | None = None,
-    savefigure: Path | None = None,
+    save_path: Path | None = None,
     display_wtgids: bool = True,
     cbar_label: str | None = None,
     text_rotation: int = 0,
     figuresize: tuple[float, float] | None = None,
-    showfigure: bool = False,
+    show_plot: bool = False,
 ) -> None:
     if isinstance(series, type(pd.DataFrame())):
         msg = "series should be a pandas series"
@@ -212,8 +203,8 @@ def bubble_plot(
                     )
 
     plt.grid()
-    if showfigure:
+    if show_plot:
         plt.show()
-    if savefigure is not None:
-        plt.savefig(savefigure, dpi=120)
+    if save_path is not None:
+        plt.savefig(save_path, dpi=120)
     plt.close()
