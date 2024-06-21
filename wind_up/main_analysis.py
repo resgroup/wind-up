@@ -12,6 +12,7 @@ from wind_up.constants import (
     REANALYSIS_WD_COL,
     REANALYSIS_WS_COL,
     WINDFARM_YAWDIR_COL,
+    DataColumns,
 )
 from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
 from wind_up.interface import AssessmentInputs, add_toggle_signals
@@ -362,6 +363,44 @@ def yaw_offset_results(
     return results
 
 
+def check_for_ops_curve_shift(
+    pre_df: pd.DataFrame,
+    post_df: pd.DataFrame,
+    *,
+    wtg_name: str,
+    ws_col: str,
+    pw_col: str,
+    rpm_col: str,
+    pt_col: str,
+) -> dict[str, float]:
+    pre_dropna_df = pre_df.dropna(subset=[ws_col, pw_col, pt_col, rpm_col]).copy()
+    post_dropna_df = post_df.dropna(subset=[ws_col, pw_col, pt_col, rpm_col]).copy()
+
+    results_dict = {}
+    for descr, x_var, y_var, x_bin_width, warn_thresh in [
+        ("powercurve_shift", ws_col, pw_col, 1, 0.01),
+        ("rpm_shift", pw_col, rpm_col, 0, 0.005),
+        ("pitch_shift", ws_col, pt_col, 1, 0.1),
+    ]:
+        bins = np.arange(0, pre_dropna_df[x_var].max() + x_bin_width, x_bin_width) if x_bin_width > 0 else 10
+        mean_curve = pre_dropna_df.groupby(pd.cut(pre_dropna_df[x_var], bins=bins, retbins=False), observed=True).agg(
+            x_mean=pd.NamedAgg(column=x_var, aggfunc="mean"),
+            y_mean=pd.NamedAgg(column=y_var, aggfunc="mean"),
+        )
+        post_dropna_df["expected_y"] = np.interp(post_dropna_df[x_var], mean_curve["x_mean"], mean_curve["y_mean"])
+        mean_df = post_dropna_df.mean()
+        if y_var == pt_col:
+            results_dict[descr] = mean_df[y_var] - mean_df["expected_y"]
+        else:
+            results_dict[descr] = (mean_df[y_var] / mean_df["expected_y"]).clip(0, 2)
+        if abs(results_dict[descr]) > warn_thresh:
+            result_manager.warning(
+                f"{wtg_name} check_for_ops_curve_shift abs {descr} > {warn_thresh}: {results_dict[descr]}"
+            )
+
+    return results_dict
+
+
 def calc_test_ref_results(
     *,
     test_df: pd.DataFrame,
@@ -505,6 +544,16 @@ def calc_test_ref_results(
     pre_df = pre_df.merge(ref_df, how="left", left_index=True, right_index=True)
     post_df = post_df.merge(ref_df, how="left", left_index=True, right_index=True)
 
+    ref_ops_curve_shift_dict = check_for_ops_curve_shift(
+        pre_df,
+        post_df,
+        wtg_name=ref_name,
+        ws_col=ref_ws_col,
+        pw_col=ref_pw_col,
+        rpm_col=f"ref_{DataColumns.gen_rpm_mean}",
+        pt_col=f"ref_{DataColumns.pitch_angle_mean}",
+    )
+
     pre_df = add_waking_scen(
         test_ref_df=pre_df,
         test_name=test_name,
@@ -631,6 +680,9 @@ def calc_test_ref_results(
         "ref_max_northing_error_v_wf": ref_max_northing_error_v_wf,
         "ref_max_ws_drift": ref_max_ws_drift,
         "ref_max_ws_drift_pp_period": ref_max_ws_drift_pp_period,
+        "ref_powercurve_shift": ref_ops_curve_shift_dict["powercurve_shift"],
+        "ref_rpm_shift": ref_ops_curve_shift_dict["rpm_shift"],
+        "ref_pitch_shift": ref_ops_curve_shift_dict["pitch_shift"],
         "detrend_pre_r2_improvement": detrend_pre_r2_improvement,
         "detrend_post_r2_improvement": detrend_post_r2_improvement,
         "mean_power_pre": pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
@@ -727,6 +779,16 @@ def run_wind_up_analysis(
 
         test_df, pre_df, post_df = pre_post_splitter.split(test_df, test_wtg_name=test_name)
 
+        test_ops_curve_shift_dict = check_for_ops_curve_shift(
+            pre_df,
+            post_df,
+            wtg_name=test_name,
+            ws_col=test_ws_col,
+            pw_col=test_pw_col,
+            rpm_col=f"test_{DataColumns.gen_rpm_mean}",
+            pt_col=f"test_{DataColumns.pitch_angle_mean}",
+        )
+
         # compare ops curves of pre_df and post_df
         compare_ops_curves_pre_post(
             pre_df=pre_df,
@@ -744,6 +806,9 @@ def run_wind_up_analysis(
             "lt_wtg_hours_filt": lt_wtg_df_filt["observed_hours"].sum() if lt_wtg_df_filt is not None else 0,
             "test_max_ws_drift": test_max_ws_drift,
             "test_max_ws_drift_pp_period": test_max_ws_drift_pp_period,
+            "test_powercurve_shift": test_ops_curve_shift_dict["powercurve_shift"],
+            "test_rpm_shift": test_ops_curve_shift_dict["rpm_shift"],
+            "test_pitch_shift": test_ops_curve_shift_dict["pitch_shift"],
             "preprocess_warning_counts": preprocess_warning_counts,
             "test_warning_counts": len(result_manager.stored_warnings),
         }
