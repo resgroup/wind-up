@@ -1,11 +1,12 @@
 import logging
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 from tabulate import tabulate
 
-from wind_up.constants import SCATTER_ALPHA, SCATTER_S
+from wind_up.constants import SCATTER_ALPHA, SCATTER_S, DataColumns
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.misc_plots import bubble_plot
 
@@ -90,6 +91,12 @@ def plot_ops_curves_per_ttype(cfg: WindUpConfig, df: pd.DataFrame, title_end: st
                     title_end=title_end,
                     plot_cfg=plot_cfg,
                 )
+                plot_ops_curve_timelines_one_wtg(
+                    wtg_df=df_ttype.loc[wtg],
+                    wtg_name=wtg,
+                    title_end=title_end,
+                    plot_cfg=plot_cfg,
+                )
 
 
 def plot_ops_curves_one_ttype_or_wtg(df: pd.DataFrame, ttype_or_wtg: str, title_end: str, plot_cfg: PlotConfig) -> None:
@@ -141,6 +148,56 @@ def plot_ops_curves_one_ttype_or_wtg(df: pd.DataFrame, ttype_or_wtg: str, title_
     if plot_cfg.save_plots:
         plt.savefig(t_dir / f"{plot_title}.png")
     plt.close()
+
+
+def plot_ops_curve_timelines_one_wtg(wtg_df: pd.DataFrame, wtg_name: str, title_end: str, plot_cfg: PlotConfig) -> None:
+    dropna_df = wtg_df.dropna(
+        subset=[
+            DataColumns.wind_speed_mean,
+            DataColumns.active_power_mean,
+            DataColumns.gen_rpm_mean,
+            DataColumns.pitch_angle_mean,
+        ]
+    )
+    gen_df = dropna_df[dropna_df[DataColumns.active_power_mean] > 0].copy()
+
+    for descr, x_var, y_var, x_bin_width in [
+        ("power curve", DataColumns.wind_speed_mean, DataColumns.active_power_mean, 1),
+        ("rpm v power", DataColumns.active_power_mean, DataColumns.gen_rpm_mean, 0),
+        ("pitch v ws", DataColumns.wind_speed_mean, DataColumns.pitch_angle_mean, 1),
+    ]:
+        bins = np.arange(0, gen_df[x_var].max() + x_bin_width, x_bin_width) if x_bin_width > 0 else 10
+        mean_curve = gen_df.groupby(pd.cut(gen_df[x_var], bins=bins, retbins=False), observed=True).agg(
+            x_mean=pd.NamedAgg(column=x_var, aggfunc="mean"),
+            y_mean=pd.NamedAgg(column=y_var, aggfunc="mean"),
+        )
+        gen_df["expected_y"] = np.interp(gen_df[x_var], mean_curve["x_mean"], mean_curve["y_mean"])
+
+        daily_df = gen_df.resample("D").mean()
+        monthly_df = gen_df.resample("ME").mean()
+        if y_var == DataColumns.pitch_angle_mean:
+            daily_df["relative_y"] = daily_df[y_var] - daily_df["expected_y"]
+            monthly_df["relative_y"] = monthly_df[y_var] - monthly_df["expected_y"]
+        else:
+            daily_df["relative_y"] = (daily_df[y_var] / daily_df["expected_y"]).clip(0.5, 1.5)
+            monthly_df["relative_y"] = (monthly_df[y_var] / monthly_df["expected_y"]).clip(0.5, 1.5)
+
+        plt.figure()
+        plt.plot(daily_df.index, daily_df["relative_y"], label="daily")
+        plt.plot(monthly_df.index, monthly_df["relative_y"], label="monthly")
+        plot_title = f"{wtg_name} relative {descr} timeline {title_end}"
+        plt.title(plot_title)
+        plt.xlabel("date")
+        plt.ylabel(f"relative {descr}")
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        if plot_cfg.show_plots:
+            plt.show()
+        if plot_cfg.save_plots:
+            t_dir = plot_cfg.plots_dir / wtg_name
+            plt.savefig(t_dir / f"{plot_title}.png")
+        plt.close()
 
 
 def plot_toggle_ops_curves_one_ttype_or_wtg(
