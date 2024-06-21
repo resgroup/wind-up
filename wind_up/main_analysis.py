@@ -608,9 +608,6 @@ def calc_test_ref_results(
             toggle_name=cfg.toggle.name if cfg.toggle else None,
         )
 
-    pre_df.to_parquet(cfg.out_dir / f"{test_wtg.name}_{ref_name}_pre_df.parquet")
-    post_df.to_parquet(cfg.out_dir / f"{test_wtg.name}_{ref_name}_post_df.parquet")
-
     pp_results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
         cfg=cfg,
         test_wtg=test_wtg,
