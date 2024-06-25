@@ -72,3 +72,4 @@ dmypy.json
 __pycache__/
 cache/
 output/
+.DS_Store
