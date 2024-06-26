@@ -4,6 +4,7 @@ import pandas as pd
 
 from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_S, DataColumns
 from wind_up.models import PlotConfig
+from wind_up.result_manager import result_manager
 
 
 def plot_pre_post_binned_power_curves(
@@ -180,6 +181,14 @@ def plot_pre_post_condition_histogram(
     last_bin_end: float | None = None,
     x_ticks: np.ndarray | None = None,
 ) -> None:
+    if col not in pre_df.columns:
+        msg = f"plot_pre_post_condition_histogram ref_name={ref_name} pre_df missing required column {col}"
+        result_manager.warning(msg)
+        return
+    if col not in post_df.columns:
+        msg = f"plot_pre_post_condition_histogram ref_name={ref_name} post_df missing required column {col}"
+        result_manager.warning(msg)
+        return
     if first_bin_start is None:
         first_bin_start = round(min(pre_df[col].min(), post_df[col].min()) - bin_width / 2)
     if last_bin_end is None:
