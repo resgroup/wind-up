@@ -6,7 +6,7 @@ from wind_up.caching import with_parquet_cache
 
 
 class TestWithParquetCache:
-    def test_creates_and_fetches_cache(self, tmp_path: Path):
+    def test_creates_and_fetches_cache(self, tmp_path: Path) -> None:
         fp = tmp_path / "test.parquet"
         sample_df = pd.DataFrame({"a": [1, 2, 3]})
 
@@ -22,7 +22,7 @@ class TestWithParquetCache:
         df2 = myfunc()
         pd.testing.assert_frame_equal(df2, sample_df)
 
-    def test_doesnt_run_the_func_if_file_exists(self, tmp_path: Path):
+    def test_doesnt_run_the_func_if_file_exists(self, tmp_path: Path) -> None:
         fp = tmp_path / "test.parquet"
         sample_df = pd.DataFrame({"a": [1, 2, 3]})
         sample_df.to_parquet(fp)

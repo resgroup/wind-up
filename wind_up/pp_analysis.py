@@ -103,6 +103,39 @@ def cook_pp(pp_df: pd.DataFrame, pre_or_post: str, ws_bin_width: float, rated_po
     return pp_df
 
 
+def add_uplift_cols_to_pp_df(pp_df: pd.DataFrame, *, p_low: float, p_high: float, t_values: np.ndarray) -> pd.DataFrame:
+    new_pp_df = pp_df.copy()
+    # calculations needed for uplift vs wind speed plot
+    new_pp_df["uplift_kw"] = new_pp_df["pw_at_mid_post"] - new_pp_df["pw_at_mid_expected"]
+    new_pp_df["uplift_kw_se"] = np.sqrt(new_pp_df["pw_sem_at_mid_post"] ** 2 + new_pp_df["pw_sem_at_mid_expected"] ** 2)
+    new_pp_df[f"uplift_p{p_low * 100:.0f}_kw"] = new_pp_df["uplift_kw"] + new_pp_df["uplift_kw_se"] * t_values
+    new_pp_df[f"uplift_p{p_high * 100:.0f}_kw"] = new_pp_df["uplift_kw"] - new_pp_df["uplift_kw_se"] * t_values
+
+    # calculations needed for relative Cp plots
+    new_pp_df["relative_cp_baseline"] = new_pp_df["pw_at_mid_expected"] / new_pp_df["bin_mid"] ** 3
+    max_baseline_cp = new_pp_df["relative_cp_baseline"].max()
+    new_pp_df["relative_cp_baseline"] = new_pp_df["relative_cp_baseline"] / max_baseline_cp
+    new_pp_df["relative_cp_post"] = new_pp_df["pw_at_mid_post"] / new_pp_df["bin_mid"] ** 3 / max_baseline_cp
+    new_pp_df["relative_cp_sem_at_mid_expected"] = (
+        new_pp_df["pw_sem_at_mid_expected"] / new_pp_df["bin_mid"] ** 3 / max_baseline_cp
+    )
+    new_pp_df["relative_cp_sem_at_mid_post"] = (
+        new_pp_df["pw_sem_at_mid_post"] / new_pp_df["bin_mid"] ** 3 / max_baseline_cp
+    )
+    new_pp_df["uplift_relative_cp"] = new_pp_df["relative_cp_post"] - new_pp_df["relative_cp_baseline"]
+    new_pp_df["uplift_relative_cp_se"] = np.sqrt(
+        new_pp_df["relative_cp_sem_at_mid_post"] ** 2 + new_pp_df["relative_cp_sem_at_mid_expected"] ** 2
+    )
+    new_pp_df[f"uplift_relative_cp_p{p_low * 100:.0f}"] = (
+        new_pp_df["uplift_relative_cp"] + new_pp_df["uplift_relative_cp_se"] * t_values
+    )
+    new_pp_df[f"uplift_relative_cp_p{p_high * 100:.0f}"] = (
+        new_pp_df["uplift_relative_cp"] - new_pp_df["uplift_relative_cp_se"] * t_values
+    )
+
+    return new_pp_df
+
+
 def pre_post_pp_analysis(
     *,
     cfg: WindUpConfig,
@@ -211,11 +244,7 @@ def pre_post_pp_analysis(
     )
     unc_one_sigma_mwh = uplift_se_mwh * t_value_one_sigma
 
-    # calculations needed for uplift vs wind speed plot
-    pp_df["uplift_kw"] = pp_df["pw_at_mid_post"] - pp_df["pw_at_mid_expected"]
-    pp_df["uplift_se"] = np.sqrt(pp_df["pw_sem_at_mid_post"] ** 2 + pp_df["pw_sem_at_mid_expected"] ** 2)
-    pp_df[f"uplift_p{p_low * 100:.0f}_kw"] = pp_df["uplift_kw"] + pp_df["uplift_se"] * t_values
-    pp_df[f"uplift_p{p_high * 100:.0f}_kw"] = pp_df["uplift_kw"] - pp_df["uplift_se"] * t_values
+    pp_df = add_uplift_cols_to_pp_df(pp_df, p_low=p_low, p_high=p_high, t_values=t_values)
 
     pp_valid_hours_pre = pp_df["hours_pre"].sum()
     pp_valid_hours_post = pp_df["hours_post"].sum()

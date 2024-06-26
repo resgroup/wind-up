@@ -52,7 +52,6 @@ include = ["wind_up*"]
 line-length = 120
 target-version = "py310"
 show-fixes = true
-extend-exclude = ["tests"]
 
 [tool.ruff.lint]
 select = ["ALL"] # https://beta.ruff.rs/docs/rules/

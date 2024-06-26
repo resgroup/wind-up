@@ -11,7 +11,7 @@ from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal
 def test_pre_post_pp_analysis_with_reversal(test_lsa_t13_config: WindUpConfig) -> None:
     cfg = test_lsa_t13_config
 
-    test_wtg = next(x for x in cfg.asset.wtgs if x.name=="LSA_T13")
+    test_wtg = next(x for x in cfg.asset.wtgs if x.name == "LSA_T13")
     ref_name = "LSA_T12"
     detrend_ws_col = "ref_ws_detrended"
     test_pw_col = "test_pw_clipped"
@@ -39,9 +39,25 @@ def test_pre_post_pp_analysis_with_reversal(test_lsa_t13_config: WindUpConfig) -
     # minor changes to make actual_df compatible with old expected_df
     expected_df["hours_for_mwh_calc"] = expected_df["hours_per_year"]
     expected_df["hours_per_year"] = actual_df["hours_per_year"]
-    cols_with_new_calc = ["uplift_se", "uplift_p5_kw", "uplift_p95_kw"]
+    cols_with_new_calc = ["uplift_kw_se", "uplift_p5_kw", "uplift_p95_kw"]
     expected_df[cols_with_new_calc] = actual_df[cols_with_new_calc]
-    new_cols = ["pre_valid", "post_valid", "hours_pre_raw", "hours_post_raw", "is_invalid_bin",'pw_at_mid_expected', 'pw_sem_at_mid_expected']
+    new_cols = [
+        "pre_valid",
+        "post_valid",
+        "hours_pre_raw",
+        "hours_post_raw",
+        "is_invalid_bin",
+        "pw_at_mid_expected",
+        "pw_sem_at_mid_expected",
+        "relative_cp_baseline",
+        "relative_cp_post",
+        "relative_cp_sem_at_mid_expected",
+        "relative_cp_sem_at_mid_post",
+        "uplift_relative_cp",
+        "uplift_relative_cp_se",
+        "uplift_relative_cp_p5",
+        "uplift_relative_cp_p95",
+    ]
     expected_df[new_cols] = actual_df[new_cols]
     expected_df = expected_df[actual_df.columns]
 
