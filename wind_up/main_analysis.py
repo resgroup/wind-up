@@ -373,10 +373,25 @@ def check_for_ops_curve_shift(
     rpm_col: str,
     pt_col: str,
 ) -> dict[str, float]:
+    results_dict = {
+        "powercurve_shift": np.nan,
+        "rpm_shift": np.nan,
+        "pitch_shift": np.nan,
+    }
+    # check if all required columns are present
+    required_cols = [ws_col, pw_col, pt_col, rpm_col]
+    for req_col in required_cols:
+        if req_col not in pre_df.columns:
+            msg = f"check_for_ops_curve_shift {wtg_name} pre_df missing required column {req_col}"
+            result_manager.warning(msg)
+            return results_dict
+        if req_col not in post_df.columns:
+            msg = f"check_for_ops_curve_shift {wtg_name} post_df missing required column {req_col}"
+            result_manager.warning(msg)
+            return results_dict
     pre_dropna_df = pre_df.dropna(subset=[ws_col, pw_col, pt_col, rpm_col]).copy()
     post_dropna_df = post_df.dropna(subset=[ws_col, pw_col, pt_col, rpm_col]).copy()
 
-    results_dict = {}
     for descr, x_var, y_var, x_bin_width, warn_thresh in [
         ("powercurve_shift", ws_col, pw_col, 1, 0.01),
         ("rpm_shift", pw_col, rpm_col, 0, 0.005),
