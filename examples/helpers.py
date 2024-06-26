@@ -29,8 +29,19 @@ def download_zenodo_data(
     record_id: str, output_dir: Path, filenames: Collection[str] | None = None, *, cache_overwrite: bool = False
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    r = requests.get(f"https://zenodo.org/api/records/{record_id}", timeout=10)
-    r.raise_for_status()
+    try:
+        r = requests.get(f"https://zenodo.org/api/records/{record_id}", timeout=10)
+        r.raise_for_status()
+
+    # Catch all exceptions
+    except Exception as e:
+        logger.info(f"Failed to download Zenodo record {record_id}. Error: {e}")
+
+        if (output_dir / "SMARTEOLE-WFC-open-dataset.zip").exists():
+            logger.info("Using cached dataset.")
+            return
+
+        raise
 
     files_to_download = r.json()["files"]
     if filenames is not None:
