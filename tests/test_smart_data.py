@@ -10,11 +10,12 @@ from wind_up.smart_data import (
     add_smart_lat_long_to_cfg,
     calc_last_xmin_datetime_in_month,
     calc_month_list_and_time_info,
-    check_and_convert_scada_raw,
     load_smart_md_from_file,
     load_smart_scada_and_md_from_file,
 )
+
 TIMEBASE_PD_TIMEDELTA = pd.Timedelta("10min")
+
 
 def test_calc_last_xmin_datetime_in_month() -> None:
     inputs = [
@@ -33,6 +34,7 @@ def test_calc_last_xmin_datetime_in_month() -> None:
     ]
     for i, e in zip(inputs, expected, strict=True):
         assert calc_last_xmin_datetime_in_month(i, TIMEBASE_PD_TIMEDELTA) == pd.Timestamp(e)
+
 
 def test_add_smart_lat_long_to_cfg(test_marge_config: WindUpConfig) -> None:
     cfg = test_marge_config
@@ -61,6 +63,7 @@ def test_calc_month_list_and_time_info() -> None:
     assert last_smart_dt_no_tz == pd.Timestamp("2020-02-29 00:00:00")
     assert smart_tz == "UTC"
     assert smart_tf == "End"
+
 
 def test_load_smart_scada_and_md_from_file() -> None:
     test_data_dir = TEST_DATA_FLD / "smart_data" / "Marge Wind Farm"

@@ -11,6 +11,7 @@ from wind_up.reanalysis_data import (
     get_dsid_and_dates_from_filename,
 )
 
+
 def test_get_dsid_and_dates_from_filename() -> None:
     assert get_dsid_and_dates_from_filename("ERA5T_47.50N_-3.25E_100m_1hr_19900101_20231031.parquet") == (
         "ERA5T_47.50N_-3.25E_100m_1hr",
