@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_S
+from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_S, DataColumns
 from wind_up.models import PlotConfig
 
 
@@ -85,6 +85,34 @@ def plot_pre_post_binned_power_curves(
         plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
     plt.close()
 
+    plt.figure()
+    plt.errorbar(
+        pp_df["bin_mid"],
+        pp_df["relative_cp_baseline"],
+        yerr=pp_df["relative_cp_sem_at_mid_expected"],
+        label="baseline",
+        marker=".",
+    )
+    plt.errorbar(
+        pp_df["bin_mid"],
+        pp_df["relative_cp_post"],
+        yerr=pp_df["relative_cp_sem_at_mid_post"],
+        label="post",
+        marker=".",
+    )
+    plt.legend()
+    plt.grid()
+    plot_title = f"test={test_name} ref={ref_name} relative Cp"
+    plt.title(plot_title)
+    plt.ylabel("Cp relative to baseline max [-]")
+    plt.xlabel("wind speed bin mid [m/s]")
+    plt.tight_layout()
+    if plot_cfg.show_plots:
+        plt.show()
+    if plot_cfg.save_plots:
+        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+    plt.close()
+
 
 def plot_pre_post_power_curves(
     *,
@@ -138,35 +166,50 @@ def plot_pre_post_power_curves(
     )
 
 
-def plot_pre_post_conditions(
+def plot_pre_post_condition_histogram(
+    pre_df: pd.DataFrame,
+    post_df: pd.DataFrame,
     *,
     test_name: str,
     ref_name: str,
-    pre_df: pd.DataFrame,
-    post_df: pd.DataFrame,
-    wd_col: str,
-    timebase_s: int,
+    rows_per_hour: float,
+    col: str,
+    bin_width: float,
     plot_cfg: PlotConfig,
+    first_bin_start: float | None = None,
+    last_bin_end: float | None = None,
+    x_ticks: np.ndarray | None = None,
 ) -> None:
-    wd_width = 30
-    rows_per_hour = 3600 / timebase_s
+    if first_bin_start is None:
+        first_bin_start = round(min(pre_df[col].min(), post_df[col].min()) - bin_width / 2)
+    if last_bin_end is None:
+        last_bin_end = max(pre_df[col].max(), post_df[col].max())
+    bins = list(
+        np.arange(
+            first_bin_start,
+            last_bin_end + bin_width / 2,
+            bin_width,
+        )
+    )
     plt.figure()
     plt.hist(
-        pre_df[wd_col],
-        weights=[1 / rows_per_hour] * len(pre_df[wd_col]),
-        bins=list(np.arange(0, 360 + wd_width / 2, wd_width)),
+        pre_df[col],
+        weights=[1 / rows_per_hour] * len(pre_df[col]),
+        bins=bins,
         label="pre",
     )
     plt.hist(
-        post_df[wd_col],
-        weights=[1 / rows_per_hour] * len(post_df[wd_col]),
-        bins=list(np.arange(0, 360 + wd_width / 2, wd_width)),
+        post_df[col],
+        weights=[1 / rows_per_hour] * len(post_df[col]),
+        bins=bins,
         alpha=0.5,
         label="post",
     )
-    plot_title = f"{test_name} {ref_name} {wd_col} coverage"
+    plot_title = f"{test_name} {ref_name} {col} coverage"
     plt.title(plot_title)
-    plt.xticks(np.arange(wd_width / 2, 360 + wd_width / 2, wd_width))
+    if x_ticks is not None:
+        plt.xticks(x_ticks)
+    plt.xlabel(col)
     plt.ylabel("hours")
     plt.legend()
     plt.grid()
@@ -176,6 +219,20 @@ def plot_pre_post_conditions(
     if plot_cfg.save_plots:
         plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
     plt.close()
+
+
+def plot_pre_post_conditions(
+    *,
+    test_name: str,
+    ref_name: str,
+    pre_df: pd.DataFrame,
+    post_df: pd.DataFrame,
+    ws_col: str,
+    wd_col: str,
+    timebase_s: int,
+    plot_cfg: PlotConfig,
+) -> None:
+    rows_per_hour = 3600 / timebase_s
 
     hod_width = 1
     plt.figure()
@@ -196,6 +253,7 @@ def plot_pre_post_conditions(
     plt.title(plot_title)
     plt.xticks(np.arange(0, 25, 4))
     plt.ylabel("hours")
+    plt.xlabel("hour of day")
     plt.legend()
     plt.grid()
     plt.tight_layout()
@@ -224,6 +282,7 @@ def plot_pre_post_conditions(
     plt.title(plot_title)
     plt.xticks(np.arange(1, 13, 1))
     plt.ylabel("hours")
+    plt.xlabel("month of year")
     plt.legend()
     plt.grid()
     plt.tight_layout()
@@ -232,6 +291,69 @@ def plot_pre_post_conditions(
     if plot_cfg.save_plots:
         plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
     plt.close()
+
+    wd_width = 30
+    plt.figure()
+    plt.hist(
+        pre_df[wd_col],
+        weights=[1 / rows_per_hour] * len(pre_df[wd_col]),
+        bins=list(np.arange(0, 360 + wd_width / 2, wd_width)),
+        label="pre",
+    )
+    plt.hist(
+        post_df[wd_col],
+        weights=[1 / rows_per_hour] * len(post_df[wd_col]),
+        bins=list(np.arange(0, 360 + wd_width / 2, wd_width)),
+        alpha=0.5,
+        label="post",
+    )
+    plot_title = f"{test_name} {ref_name} {wd_col} coverage"
+    plt.title(plot_title)
+    plt.xticks(np.arange(wd_width / 2, 360 + wd_width / 2, wd_width))
+    plt.ylabel("hours")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    if plot_cfg.show_plots:
+        plt.show()
+    if plot_cfg.save_plots:
+        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+    plt.close()
+
+    plot_pre_post_condition_histogram(
+        pre_df,
+        post_df,
+        test_name=test_name,
+        ref_name=ref_name,
+        rows_per_hour=rows_per_hour,
+        col=wd_col,
+        bin_width=30,
+        plot_cfg=plot_cfg,
+        first_bin_start=0,
+        last_bin_end=360,
+        x_ticks=np.arange(wd_width / 2, 360 + wd_width / 2, wd_width),
+    )
+    plot_pre_post_condition_histogram(
+        pre_df,
+        post_df,
+        test_name=test_name,
+        ref_name=ref_name,
+        rows_per_hour=rows_per_hour,
+        col="ref_" + DataColumns.ambient_temp,
+        bin_width=2,
+        plot_cfg=plot_cfg,
+    )
+    plot_pre_post_condition_histogram(
+        pre_df,
+        post_df,
+        test_name=test_name,
+        ref_name=ref_name,
+        rows_per_hour=rows_per_hour,
+        col=ws_col,
+        bin_width=1,
+        plot_cfg=plot_cfg,
+        first_bin_start=0,
+    )
 
 
 def plot_pre_post_pp_analysis(
@@ -253,6 +375,7 @@ def plot_pre_post_pp_analysis(
         ref_name=ref_name,
         pre_df=pre_df.dropna(subset=[ws_col, pw_col]),
         post_df=post_df.dropna(subset=[ws_col, pw_col]),
+        ws_col=ws_col,
         wd_col=wd_col,
         timebase_s=timebase_s,
         plot_cfg=plot_cfg,
@@ -281,6 +404,22 @@ def plot_pre_post_pp_analysis(
     plot_title = f"test={test_name} ref={ref_name} uplift [kW] and {confidence_level*100:.0f}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [kW]")
+    plt.xlabel("bin centre [m/s]")
+    plt.tight_layout()
+    if plot_cfg.show_plots:
+        plt.show()
+    if plot_cfg.save_plots:
+        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+    plt.close()
+
+    plt.figure()
+    plt.plot(pp_df["bin_mid"], pp_df["uplift_relative_cp"], color="b", marker="s")
+    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_relative_cp_p{p_low * 100:.0f}"], color="r", ls="--")
+    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_relative_cp_p{p_high * 100:.0f}"], color="r", ls="--")
+    plt.grid()
+    plot_title = f"test={test_name} ref={ref_name} relative Cp uplift and {confidence_level * 100:.0f}% CI"
+    plt.title(plot_title)
+    plt.ylabel("change in Cp normalized to max Cp")
     plt.xlabel("bin centre [m/s]")
     plt.tight_layout()
     if plot_cfg.show_plots:
