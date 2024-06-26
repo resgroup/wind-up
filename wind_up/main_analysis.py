@@ -392,7 +392,7 @@ def check_for_ops_curve_shift(
         if y_var == pt_col:
             results_dict[descr] = mean_df[y_var] - mean_df["expected_y"]
         else:
-            results_dict[descr] = (mean_df[y_var] / mean_df["expected_y"]).clip(0, 2)
+            results_dict[descr] = (mean_df[y_var] / mean_df["expected_y"] - 1).clip(-1, 1)
         if abs(results_dict[descr]) > warn_thresh:
             result_manager.warning(
                 f"{wtg_name} check_for_ops_curve_shift abs {descr} > {warn_thresh}: {results_dict[descr]}"
