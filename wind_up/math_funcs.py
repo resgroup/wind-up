@@ -1,7 +1,8 @@
 import numpy as np
+import numpy.typing as npt
 
 
-def circ_diff(angle1: float | np.generic | list, angle2: float | np.generic | list) -> float | np.generic:
+def circ_diff(angle1: float | npt.NDArray | list, angle2: float | npt.NDArray | list) -> float | npt.NDArray:
     """Calculate the circular difference between two angles.
 
     Args:
