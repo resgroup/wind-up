@@ -16,7 +16,7 @@ The wind-up package can be installed in a virtual environment with the following
 python -m venv .venv
 source .venv/Scripts/activate  # or .venv/bin/activate on linux or ".venv/Scripts/activate" in Windows command prompt
 # install the wind-up package in the virtual environment
-pip install wind-up # alternatively clone the repo, navigate to the wind-up folder and run "pip install ."
+pip install res-wind-up # alternatively clone the repo, navigate to the wind-up folder and run "pip install ."
 ```
 Note that the package is named `wind_up` (with an underscore) in Python code. For example to print the version of the installed package use the following code snippet:
 ```python
