@@ -80,7 +80,6 @@ ignore = [
     "ISC001", # can conflict with ruff formatter
     "G004", # logging statement can use f-string
 ]
-ignore-init-module-imports = true
 
 [tool.ruff.lint.mccabe]
 max-complexity = 12 # try to bring this down to 10
