@@ -1,12 +1,19 @@
 [project]
 name = "wind-up"
-version = "0.1.4"
-description = "A tool to assess yield uplift of wind turbines"
+version = "0.1.5"
 authors = [
     { name = "Alex Clerc", email = "alex.clerc@res-group.com" }
 ]
+description = "A tool to assess yield uplift of wind turbines"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE.txt" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     'geographiclib',
     'matplotlib',
@@ -24,6 +31,13 @@ dependencies = [
     'utm',
     'tqdm',
 ]
+
+[project.urls]
+Homepage = "https://github.com/resgroup/wind-up"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 [project.optional-dependencies]
 dev = [
