@@ -1,12 +1,19 @@
 [project]
-name = "wind-up"
-version = "0.1.4"
-description = "A tool to assess yield uplift of wind turbines"
+name = "res-wind-up"
+version = "0.1.6"
 authors = [
     { name = "Alex Clerc", email = "alex.clerc@res-group.com" }
 ]
+description = "A tool to assess yield uplift of wind turbines"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE.txt" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+]
 dependencies = [
     'geographiclib',
     'matplotlib',
@@ -24,6 +31,13 @@ dependencies = [
     'utm',
     'tqdm',
 ]
+
+[project.urls]
+Homepage = "https://github.com/resgroup/wind-up"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 [project.optional-dependencies]
 dev = [
@@ -66,7 +80,6 @@ ignore = [
     "ISC001", # can conflict with ruff formatter
     "G004", # logging statement can use f-string
 ]
-ignore-init-module-imports = true
 
 [tool.ruff.lint.mccabe]
 max-complexity = 12 # try to bring this down to 10
