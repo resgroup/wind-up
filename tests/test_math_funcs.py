@@ -24,3 +24,10 @@ def test_circ_diff(angle1: float | np.generic, angle2: float | np.generic, expec
         assert_series_equal(circ_diff(angle1, angle2), (expected))
     else:
         assert circ_diff(angle1, angle2) == pytest.approx(expected)
+
+
+def test_within_bin() -> None:
+    # this test replicates logic in detrend.py where an older version of circ_diff gets the wrong result
+    d = 242
+    dir_bin_width = 10.0
+    assert not np.abs(circ_diff(d - 5, d)) < dir_bin_width / 2

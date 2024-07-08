@@ -19,4 +19,4 @@ def circ_diff(angle1: float | npt.NDArray | list, angle2: float | npt.NDArray | 
     if isinstance(angle2, list):
         angle2 = np.array(angle2)
 
-    return np.mod(angle1 - angle2 + 180.0, 360.0) - 180.0
+    return np.mod(angle1 - angle2 + 180, 360) - 180
