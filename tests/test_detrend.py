@@ -98,7 +98,4 @@ def test_calc_wsratio_v_wd_scen(test_lsa_t13_config: WindUpConfig) -> None:
         plot_cfg=None,
     )
 
-    # on Github Actions get error DataFrame.iloc[:, 0] (column name="hours") values are different (0.13889 %)
-    # At positional index 50, first diff: 45.5 != 45.666666666666664
-    # therefore set rtol=5e-3 so the test passes on Github Actions
-    assert_frame_equal(actual_pre_df, expected_pre_df, rtol=5e-3)
+    assert_frame_equal(actual_pre_df, expected_pre_df)
