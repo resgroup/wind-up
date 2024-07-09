@@ -10,6 +10,7 @@ OUTPUT_DIR = Path(__file__).parents[1] / "output"
 RANDOM_SEED = 0
 SCATTER_S = 1
 SCATTER_ALPHA = 0.2
+SCATTER_MARKERSCALE = 4
 
 
 class DataColumns:
