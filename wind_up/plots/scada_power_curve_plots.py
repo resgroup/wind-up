@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from wind_up.constants import RAW_POWER_COL, RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_S
+from wind_up.constants import RAW_POWER_COL, RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S
 from wind_up.models import PlotConfig, WindUpConfig
 
 
@@ -50,7 +50,7 @@ def plot_removed_data_one_ttype_or_wtg(
         plt.title(plot_title)
         plt.xlabel(f"{RAW_WINDSPEED_COL} [m/s]")
         plt.ylabel(f"{RAW_POWER_COL} [kW]")
-        plt.legend()
+        plt.legend(loc="best", markerscale=SCATTER_MARKERSCALE)
         plt.grid()
         plt.tight_layout()
         if plot_cfg.show_plots:

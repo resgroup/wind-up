@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_S, DataColumns
+from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
 from wind_up.models import PlotConfig
 from wind_up.result_manager import result_manager
 
@@ -129,7 +129,7 @@ def plot_pre_post_power_curves(
     plt.figure()
     plt.scatter(pre_df[ws_col], pre_df[pw_col], s=SCATTER_S, alpha=SCATTER_ALPHA, label="pre upgrade")
     plt.scatter(post_df[ws_col], post_df[pw_col], s=SCATTER_S, alpha=SCATTER_ALPHA, label="post upgrade")
-    plt.legend()
+    plt.legend(loc="best", markerscale=SCATTER_MARKERSCALE)
     plt.grid()
     plot_title = f"test={test_name} ref={ref_name} power curve data"
     plt.title(plot_title)
@@ -302,33 +302,6 @@ def plot_pre_post_conditions(
     plt.close()
 
     wd_width = 30
-    plt.figure()
-    plt.hist(
-        pre_df[wd_col],
-        weights=[1 / rows_per_hour] * len(pre_df[wd_col]),
-        bins=list(np.arange(0, 360 + wd_width / 2, wd_width)),
-        label="pre",
-    )
-    plt.hist(
-        post_df[wd_col],
-        weights=[1 / rows_per_hour] * len(post_df[wd_col]),
-        bins=list(np.arange(0, 360 + wd_width / 2, wd_width)),
-        alpha=0.5,
-        label="post",
-    )
-    plot_title = f"{test_name} {ref_name} {wd_col} coverage"
-    plt.title(plot_title)
-    plt.xticks(np.arange(wd_width / 2, 360 + wd_width / 2, wd_width))
-    plt.ylabel("hours")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    if plot_cfg.show_plots:
-        plt.show()
-    if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
-    plt.close()
-
     plot_pre_post_condition_histogram(
         pre_df,
         post_df,
@@ -336,7 +309,7 @@ def plot_pre_post_conditions(
         ref_name=ref_name,
         rows_per_hour=rows_per_hour,
         col=wd_col,
-        bin_width=30,
+        bin_width=wd_width,
         plot_cfg=plot_cfg,
         first_bin_start=0,
         last_bin_end=360,

@@ -3,7 +3,7 @@ import logging
 import pandas as pd
 from matplotlib import pyplot as plt
 
-from wind_up.constants import SCATTER_ALPHA, SCATTER_S
+from wind_up.constants import SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S
 from wind_up.models import PlotConfig
 from wind_up.result_manager import result_manager
 
@@ -116,7 +116,7 @@ def plot_apply_wsratio_v_wd_scen(
     )
     plot_title = f"{test_name} {ref_name} detrended wind speed {title_end}"
     plt.title(plot_title)
-    plt.legend()
+    plt.legend(loc="best", markerscale=SCATTER_MARKERSCALE)
     plt.xlabel("ref wind speed [m/s]")
     plt.ylabel(f"{test_ws_col} [m/s]")
     plt.grid()
@@ -132,7 +132,7 @@ def plot_apply_wsratio_v_wd_scen(
     plt.scatter(p_df[detrend_ws_col], p_df[test_pw_col], s=SCATTER_S, alpha=SCATTER_ALPHA, label="after detrend")
     plot_title = f"{test_name} {ref_name} detrended power curve {title_end}"
     plt.title(plot_title)
-    plt.legend()
+    plt.legend(loc="best", markerscale=SCATTER_MARKERSCALE)
     plt.xlabel("ref wind speed [m/s]")
     plt.ylabel(f"{test_pw_col} [kW]")
     plt.grid()
@@ -176,7 +176,7 @@ def plot_check_detrend_scatters(
     plt.xlabel("ref wind speed before/after detrend [m/s]")
     plt.ylabel(f"{test_ws_col} [m/s]")
     plt.grid()
-    plt.legend(fontsize="small")
+    plt.legend(fontsize="small", loc="best", markerscale=SCATTER_MARKERSCALE)
     plt.subplot(2, 1, 2)
     r2_before = post_df[ref_ws_col].corr(post_df[test_ws_col]) ** 2
     r2_after = post_df[detrend_ws_col].corr(post_df[test_ws_col]) ** 2
@@ -197,7 +197,7 @@ def plot_check_detrend_scatters(
     plt.xlabel("ref wind speed before/after detrend [m/s]")
     plt.ylabel(f"{test_ws_col} [m/s]")
     plt.grid()
-    plt.legend(fontsize="small")
+    plt.legend(fontsize="small", loc="best", markerscale=SCATTER_MARKERSCALE)
     plot_title = f"{test_name} vs {ref_name} wind speed detrend check"
     plt.suptitle(plot_title)
     plt.tight_layout()

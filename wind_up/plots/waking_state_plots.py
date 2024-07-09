@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from wind_up.constants import RAW_POWER_COL, RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_S
+from wind_up.constants import RAW_POWER_COL, RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S
 from wind_up.models import PlotConfig
 
 
@@ -36,7 +36,7 @@ def plot_waking_state_one_ttype_or_wtg(wf_df: pd.DataFrame, ttype_or_wtg: str, p
     plot_title = f"{ttype_or_wtg} power curve by waking state"
     plt.title(plot_title)
     plt.grid()
-    plt.legend(loc="lower right")
+    plt.legend(loc="lower right", markerscale=SCATTER_MARKERSCALE)
     plt.tight_layout()
     if plot_cfg.show_plots:
         plt.show()

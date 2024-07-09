@@ -6,7 +6,7 @@ import pandas as pd
 import seaborn as sns
 from tabulate import tabulate
 
-from wind_up.constants import SCATTER_ALPHA, SCATTER_S, DataColumns
+from wind_up.constants import SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.misc_plots import bubble_plot
 
@@ -239,7 +239,7 @@ def plot_toggle_ops_curves_one_ttype_or_wtg(
     plt.xlabel(f"{ws_col} [m/s]")
     plt.ylabel(f"{pw_col} [kW]")
     plt.grid()
-    plt.legend()
+    plt.legend(loc="best", markerscale=SCATTER_MARKERSCALE)
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
@@ -268,7 +268,7 @@ def plot_toggle_ops_curves_one_ttype_or_wtg(
     plt.xlabel(f"{pw_col} [kW]")
     plt.ylabel(f"{rpm_col} [RPM]")
     plt.grid()
-    plt.legend()
+    plt.legend(loc="best", markerscale=SCATTER_MARKERSCALE)
 
     plt.subplot(2, 2, 2)
     plt.scatter(df_off[ws_col], df_off[rpm_col], s=SCATTER_S, alpha=SCATTER_ALPHA)

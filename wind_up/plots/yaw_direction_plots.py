@@ -42,7 +42,7 @@ def plot_yaw_direction_pre_post_per_signal(
     plt.xlabel(f"{ref_wd_col} [deg]")
     plt.ylabel(f"{test_wd_col} [deg]")
     plt.grid()
-    plt.legend()
+    plt.legend(loc="best", markerscale=2)
 
     plt.subplot(2, 1, 2)
     plt.scatter(
