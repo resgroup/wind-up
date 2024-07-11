@@ -1,4 +1,4 @@
-name: Check format lint and test
+name: Lint check and test
 
 on:
   push:
@@ -37,6 +37,12 @@ jobs:
           python -m venv .venv
           source .venv/bin/activate
           pip install .[dev]
+
+      - name: 'Update Dependencies'
+        if: steps.cache-venv.outputs.cache-hit == 'true'
+        run: |
+          source .venv/bin/activate
+          pip install -U .[dev]
 
       - name: "lint-check & test"
         run: |
