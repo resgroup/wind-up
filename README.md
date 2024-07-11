@@ -1,7 +1,7 @@
 # wind-up
 A tool to assess yield uplift of wind turbines
 
-[![CI](https://github.com/resgroup/wind-up/actions/workflows/CI.yaml/badge.svg)](https://github.com/resgroup/wind-up/actions/workflows/CI.yaml)
+[![lint-and-test](https://github.com/resgroup/wind-up/actions/workflows/lint-and-test.yaml/badge.svg)](https://github.com/resgroup/wind-up/actions/workflows/lint-and-test.yaml)
 [![Python 3.10](https://img.shields.io/badge/python-≥3.10-blue.svg)](https://www.python.org/downloads/release/python-3100/)
 [![Lint & Format: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/charliermarsh/ruff/main/assets/badge/v1.json)](https://github.com/charliermarsh/ruff)
 [![Typing: mypy](https://img.shields.io/badge/typing-mypy-yellow.svg)](https://github.com/python/mypy)
