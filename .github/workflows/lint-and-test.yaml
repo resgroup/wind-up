@@ -1,4 +1,4 @@
-name: Check format lint and test
+name: Lint and test
 
 on:
   push:
@@ -15,11 +15,11 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
     steps:
-      - name: "Checkout repository"
-        uses: actions/checkout@v3
+      - name: "checkout repository"
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v4
-        name: 'Set up Python ${{ inputs.python-version }}'
+      - uses: actions/setup-python@v5
+        name: 'set up Python ${{ inputs.python-version }}'
         with:
           python-version: ${{ env.python-version }}
 
@@ -31,14 +31,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-venv-
 
-      - name: 'Create Virtualenv and install Dependencies'
+      - name: 'create virtualenv and install dependencies'
         if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
           python -m venv .venv
           source .venv/bin/activate
           pip install .[dev]
 
-      - name: "lint-check & test"
+      - name: 'update dependencies'
+        if: steps.cache-venv.outputs.cache-hit == 'true'
+        run: |
+          source .venv/bin/activate
+          pip install -U .[dev]
+
+      - name: "lint check & test"
         run: |
           source .venv/bin/activate
           poe lint-check
