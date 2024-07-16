@@ -743,6 +743,35 @@ def calc_test_ref_results(
     return other_results | pp_results
 
 
+def results_per_test_ref_to_df(results_per_test_ref: list[pd.DataFrame]) -> pd.DataFrame:
+    results_per_test_ref_df = pd.concat(results_per_test_ref)
+    first_columns = [
+        "wind_up_version",
+        "time_calculated",
+        "preprocess_warning_counts",
+        "test_warning_counts",
+        "test_ref_warning_counts",
+        "test_wtg",
+        "test_pw_col",
+        "ref",
+        "ref_ws_col",
+        "uplift_frc",
+        "unc_one_sigma_frc",
+        "uplift_p95_frc",
+        "uplift_p5_frc",
+        "pp_data_coverage",
+        "distance_m",
+        "bearing_deg",
+        "unc_one_sigma_noadj_frc",
+        "unc_one_sigma_lowerbound_frc",
+        "unc_one_sigma_bootstrap_frc",
+    ]
+    other_columns = [x for x in results_per_test_ref_df.columns if x not in first_columns]
+    return results_per_test_ref_df[
+        [col for col in first_columns + other_columns if col in results_per_test_ref_df.columns]
+    ]
+
+
 def run_wind_up_analysis(
     inputs: AssessmentInputs,
     random_seed: int = RANDOM_SEED,
@@ -869,7 +898,10 @@ def run_wind_up_analysis(
             logger.info(test_ref_results)
             results_df = pd.DataFrame(test_ref_results, index=[loop_counter])
             results_per_test_ref.append(results_df)
-            pd.concat(results_per_test_ref).to_csv(cfg.out_dir / "results_interim.csv")
+
+            results_per_test_ref_df = results_per_test_ref_to_df(results_per_test_ref)
+
+            results_per_test_ref_df.to_csv(cfg.out_dir / "results_interim.csv")
 
             try:
                 msg = (
@@ -881,34 +913,9 @@ def run_wind_up_analysis(
             except KeyError:
                 pass
             logger.info(f"finished analysing {test_name} {ref_name}\n")
-    all_results_per_test_ref = pd.concat(results_per_test_ref)
-    first_columns = [
-        "wind_up_version",
-        "time_calculated",
-        "preprocess_warning_counts",
-        "test_warning_counts",
-        "test_ref_warning_counts",
-        "test_wtg",
-        "test_pw_col",
-        "ref",
-        "ref_ws_col",
-        "uplift_frc",
-        "unc_one_sigma_frc",
-        "uplift_p95_frc",
-        "uplift_p5_frc",
-        "pp_data_coverage",
-        "distance_m",
-        "bearing_deg",
-        "unc_one_sigma_noadj_frc",
-        "unc_one_sigma_lowerbound_frc",
-        "unc_one_sigma_bootstrap_frc",
-    ]
-    other_columns = [x for x in results_df.columns if x not in first_columns]
-    all_results_per_test_ref = all_results_per_test_ref[
-        [col for col in first_columns + other_columns if col in all_results_per_test_ref.columns]
-    ]
-    all_results_per_test_ref.to_csv(
+
+    results_per_test_ref_df.to_csv(
         cfg.out_dir / f"{cfg.assessment_name}_results_per_test_ref_"
         f"{pd.Timestamp.now('UTC').strftime('%Y%m%d_%H%M%S')}.csv",
     )
-    return all_results_per_test_ref
+    return results_per_test_ref_df
