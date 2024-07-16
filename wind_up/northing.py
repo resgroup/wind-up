@@ -121,6 +121,7 @@ def check_wtg_northing(
     north_ref_wd_col: str,
     timebase_s: int,
     plot_cfg: PlotConfig | None,
+    sub_dir: str | None = None,
 ) -> float:
     wtg_wf_df = format_wtg_df_like_wf_df(wtg_df, wtg_name=wtg_name)
     max_northing_error = calc_max_abs_north_errs(
@@ -131,7 +132,7 @@ def check_wtg_northing(
             wf_df=add_rolling_northing_error(wtg_wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s),
             title_end=f"{wtg_name} vs {north_ref_wd_col}",
             plot_cfg=plot_cfg,
-            sub_dir=wtg_name,
+            sub_dir=wtg_name if sub_dir is None else sub_dir,
         )
     return max_northing_error
 

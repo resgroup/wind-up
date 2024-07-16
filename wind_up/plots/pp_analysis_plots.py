@@ -33,7 +33,7 @@ def plot_pre_post_binned_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -55,7 +55,7 @@ def plot_pre_post_binned_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -83,7 +83,7 @@ def plot_pre_post_binned_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -111,7 +111,7 @@ def plot_pre_post_binned_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
 
@@ -139,7 +139,7 @@ def plot_pre_post_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -156,7 +156,7 @@ def plot_pre_post_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plot_pre_post_binned_power_curves(
@@ -226,7 +226,7 @@ def plot_pre_post_condition_histogram(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
 
@@ -269,7 +269,7 @@ def plot_pre_post_conditions(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     moy_width = 1
@@ -298,7 +298,7 @@ def plot_pre_post_conditions(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     wd_width = 30
@@ -391,7 +391,7 @@ def plot_pre_post_pp_analysis(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -407,7 +407,7 @@ def plot_pre_post_pp_analysis(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -438,7 +438,7 @@ def plot_pre_post_pp_analysis(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
 
@@ -481,5 +481,5 @@ def plot_pp_data_coverage(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()

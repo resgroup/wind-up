@@ -368,10 +368,13 @@ def check_for_ops_curve_shift(
     post_df: pd.DataFrame,
     *,
     wtg_name: str,
-    ws_col: str,
+    scada_ws_col: str,
     pw_col: str,
     rpm_col: str,
     pt_col: str,
+    cfg: WindUpConfig,
+    plot_cfg: PlotConfig,
+    sub_dir: str | None = None,
 ) -> dict[str, float]:
     results_dict = {
         "powercurve_shift": np.nan,
@@ -379,7 +382,7 @@ def check_for_ops_curve_shift(
         "pitch_shift": np.nan,
     }
     # check if all required columns are present
-    required_cols = [ws_col, pw_col, pt_col, rpm_col]
+    required_cols = [scada_ws_col, pw_col, pt_col, rpm_col]
     for req_col in required_cols:
         if req_col not in pre_df.columns:
             msg = f"check_for_ops_curve_shift {wtg_name} pre_df missing required column {req_col}"
@@ -389,13 +392,13 @@ def check_for_ops_curve_shift(
             msg = f"check_for_ops_curve_shift {wtg_name} post_df missing required column {req_col}"
             result_manager.warning(msg)
             return results_dict
-    pre_dropna_df = pre_df.dropna(subset=[ws_col, pw_col, pt_col, rpm_col]).copy()
-    post_dropna_df = post_df.dropna(subset=[ws_col, pw_col, pt_col, rpm_col]).copy()
+    pre_dropna_df = pre_df.dropna(subset=[scada_ws_col, pw_col, pt_col, rpm_col]).copy()
+    post_dropna_df = post_df.dropna(subset=[scada_ws_col, pw_col, pt_col, rpm_col]).copy()
 
     for descr, x_var, y_var, x_bin_width, warn_thresh in [
-        ("powercurve_shift", ws_col, pw_col, 1, 0.01),
+        ("powercurve_shift", scada_ws_col, pw_col, 1, 0.01),
         ("rpm_shift", pw_col, rpm_col, 0, 0.005),
-        ("pitch_shift", ws_col, pt_col, 1, 0.1),
+        ("pitch_shift", scada_ws_col, pt_col, 1, 0.1),
     ]:
         bins = np.arange(0, pre_dropna_df[x_var].max() + x_bin_width, x_bin_width) if x_bin_width > 0 else 10
         mean_curve = pre_dropna_df.groupby(pd.cut(pre_dropna_df[x_var], bins=bins, retbins=False), observed=True).agg(
@@ -412,6 +415,19 @@ def check_for_ops_curve_shift(
             result_manager.warning(
                 f"{wtg_name} check_for_ops_curve_shift abs {descr} > {warn_thresh}: {results_dict[descr]}"
             )
+
+    compare_ops_curves_pre_post(
+        pre_df=pre_df,
+        post_df=post_df,
+        wtg_name=wtg_name,
+        ws_col=scada_ws_col,
+        pw_col=pw_col,
+        pt_col=pt_col,
+        rpm_col=rpm_col,
+        plot_cfg=plot_cfg,
+        is_toggle_test=(cfg.toggle is not None),
+        sub_dir=sub_dir,
+    )
 
     return results_dict
 
@@ -434,6 +450,7 @@ def calc_test_ref_results(
     toggle_df: pd.DataFrame | None = None,
 ) -> dict:
     test_name = test_wtg.name
+    (plot_cfg.plots_dir / test_name / ref_name).mkdir(exist_ok=True)
     ref_pw_col = "pw_clipped"
     if test_name == ref_name:
         ref_ws_col = "WindSpeedMean"
@@ -470,6 +487,7 @@ def calc_test_ref_results(
         north_ref_wd_col=REANALYSIS_WD_COL,
         timebase_s=cfg.timebase_s,
         plot_cfg=plot_cfg,
+        sub_dir=f"{test_name}/{ref_name}",
     )
     ref_max_northing_error_v_wf = check_wtg_northing(
         ref_df,
@@ -477,6 +495,7 @@ def calc_test_ref_results(
         north_ref_wd_col=WINDFARM_YAWDIR_COL,
         timebase_s=cfg.timebase_s,
         plot_cfg=plot_cfg,
+        sub_dir=f"{test_name}/{ref_name}",
     )
 
     ref_pw_col = "ref_" + ref_pw_col
@@ -503,6 +522,7 @@ def calc_test_ref_results(
         reanalysis_ws_col="ref_" + REANALYSIS_WS_COL,
         cfg=cfg,
         plot_cfg=plot_cfg,
+        sub_dir=f"{test_name}/{ref_name}",
     )
 
     detrend_df = test_df.merge(ref_df, how="left", left_index=True, right_index=True)
@@ -563,10 +583,13 @@ def calc_test_ref_results(
         pre_df,
         post_df,
         wtg_name=ref_name,
-        ws_col=ref_ws_col,
-        pw_col=ref_pw_col,
+        scada_ws_col=f"ref_{DataColumns.wind_speed_mean}",
+        pw_col=f"ref_{DataColumns.active_power_mean}",
         rpm_col=f"ref_{DataColumns.gen_rpm_mean}",
         pt_col=f"ref_{DataColumns.pitch_angle_mean}",
+        cfg=cfg,
+        plot_cfg=plot_cfg,
+        sub_dir=f"{test_name}/{ref_name}",
     )
 
     pre_df = add_waking_scen(
@@ -798,19 +821,12 @@ def run_wind_up_analysis(
             pre_df,
             post_df,
             wtg_name=test_name,
-            ws_col=test_ws_col,
-            pw_col=test_pw_col,
+            scada_ws_col=f"test_{DataColumns.wind_speed_mean}",
+            pw_col=f"ref_{DataColumns.active_power_mean}",
             rpm_col=f"test_{DataColumns.gen_rpm_mean}",
             pt_col=f"test_{DataColumns.pitch_angle_mean}",
-        )
-
-        # compare ops curves of pre_df and post_df
-        compare_ops_curves_pre_post(
-            pre_df=pre_df,
-            post_df=post_df,
-            test_name=test_name,
+            cfg=cfg,
             plot_cfg=plot_cfg,
-            is_toggle_test=(cfg.toggle is not None),
         )
 
         test_results = {

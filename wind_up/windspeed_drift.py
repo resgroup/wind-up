@@ -49,13 +49,16 @@ def check_windspeed_drift(
     reanalysis_ws_col: str,
     cfg: WindUpConfig,
     plot_cfg: PlotConfig | None,
+    sub_dir: str | None = None,
 ) -> tuple[float, float]:
     wtg_df = wtg_df.copy()
     wtg_df = add_rolling_windspeed_diff(
         wtg_df, ws_col=ws_col, reanalysis_ws_col=reanalysis_ws_col, timebase_s=cfg.timebase_s
     )
     if plot_cfg is not None:
-        plot_rolling_windspeed_diff_one_wtg(wtg_df=wtg_df, wtg_name=wtg_name, ws_col=ws_col, plot_cfg=plot_cfg)
+        plot_rolling_windspeed_diff_one_wtg(
+            wtg_df=wtg_df, wtg_name=wtg_name, ws_col=ws_col, plot_cfg=plot_cfg, sub_dir=sub_dir
+        )
 
     max_abs_rel_diff = calc_max_abs_relative_rolling_windspeed_diff(wtg_df)
     max_abs_rel_diff_pp_period = calc_max_abs_relative_rolling_windspeed_diff(
