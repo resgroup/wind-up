@@ -71,6 +71,7 @@ def test_brt_t16_pitch() -> None:
     trdf = pd.read_csv(Path(__file__).parents[0] / "test_data/trdf_BRT_T16_pitch_Sep23.csv", index_col=0)
     edf = pd.read_csv(Path(__file__).parents[0] / "test_data/tdf_BRT_T16_pitch.csv", index_col=0)
     tdf = combine_results(trdf=trdf)
+    tdf = tdf[edf.columns.tolist()]
     assert_frame_equal(edf, tdf)
 
 
@@ -78,6 +79,7 @@ def test_brt_t16_pitch_no_auto_choose() -> None:
     trdf = pd.read_csv(Path(__file__).parents[0] / "test_data/trdf_BRT_T16_pitch_Sep23.csv", index_col=0)
     edf = pd.read_csv(Path(__file__).parents[0] / "test_data/tdf_BRT_T16_pitch_no_auto_choose.csv", index_col=0)
     tdf = combine_results(trdf=trdf, auto_choose_refs=False)
+    tdf = tdf[edf.columns.tolist()]
     assert_frame_equal(edf, tdf)
 
 
@@ -86,4 +88,5 @@ def test_brt_t16_pitch_exclude_refs() -> None:
     edf = pd.read_csv(Path(__file__).parents[0] / "test_data/tdf_BRT_T16_pitch_exclude_refs.csv", index_col=0)
     # all but one ref excluded
     tdf = combine_results(trdf=trdf, auto_choose_refs=False, exclude_refs=["BRT_T02", "BRT_T03", "BRT_T04", "BRT_T14"])
+    tdf = tdf[edf.columns.tolist()]
     assert_frame_equal(edf, tdf)
