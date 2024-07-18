@@ -16,7 +16,7 @@ from wind_up.constants import (
 )
 from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
 from wind_up.interface import AssessmentInputs, add_toggle_signals
-from wind_up.long_term import calc_turbine_lt_dfs_raw_filt
+from wind_up.long_term import calc_lt_dfs_raw_filt
 from wind_up.math_funcs import circ_diff
 from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.northing import (
@@ -819,17 +819,18 @@ def run_wind_up_analysis(
                 )
 
         if cfg.use_lt_distribution:
-            lt_wtg_df_raw, lt_wtg_df_filt = calc_turbine_lt_dfs_raw_filt(
-                wtg_name=test_name,
+            lt_df_raw, lt_df_filt = calc_lt_dfs_raw_filt(
+                wtg_or_wf_name=test_name if cfg.use_test_wtg_lt_distribution else cfg.asset.name,
                 cfg=cfg,
-                wtg_df=test_df,
+                wtg_or_wf_df=test_df if cfg.use_test_wtg_lt_distribution else wf_df,
                 ws_col=test_ws_col,
                 pw_col=test_pw_col,
+                one_turbine=cfg.use_test_wtg_lt_distribution,
                 plot_cfg=plot_cfg,
             )
         else:
-            lt_wtg_df_raw = None
-            lt_wtg_df_filt = None
+            lt_df_raw = None
+            lt_df_filt = None
 
         test_df.columns = ["test_" + x for x in test_df.columns]
         test_pw_col = "test_" + test_pw_col
@@ -851,7 +852,7 @@ def run_wind_up_analysis(
             post_df,
             wtg_name=test_name,
             scada_ws_col=f"test_{DataColumns.wind_speed_mean}",
-            pw_col=f"ref_{DataColumns.active_power_mean}",
+            pw_col=f"test_{DataColumns.active_power_mean}",
             rpm_col=f"test_{DataColumns.gen_rpm_mean}",
             pt_col=f"test_{DataColumns.pitch_angle_mean}",
             cfg=cfg,
@@ -862,8 +863,8 @@ def run_wind_up_analysis(
             "wind_up_version": wind_up.__version__,
             "test_wtg": test_name,
             "test_pw_col": test_pw_col,
-            "lt_wtg_hours_raw": lt_wtg_df_raw["observed_hours"].sum() if lt_wtg_df_raw is not None else 0,
-            "lt_wtg_hours_filt": lt_wtg_df_filt["observed_hours"].sum() if lt_wtg_df_filt is not None else 0,
+            "lt_wtg_hours_raw": lt_df_raw["observed_hours"].sum() if lt_df_raw is not None else 0,
+            "lt_wtg_hours_filt": lt_df_filt["observed_hours"].sum() if lt_df_filt is not None else 0,
             "test_max_ws_drift": test_max_ws_drift,
             "test_max_ws_drift_pp_period": test_max_ws_drift_pp_period,
             "test_powercurve_shift": test_ops_curve_shift_dict["powercurve_shift"],
@@ -882,7 +883,7 @@ def run_wind_up_analysis(
                 test_df=test_df,
                 pre_df=pre_df,
                 post_df=post_df,
-                long_term_df=lt_wtg_df_filt,
+                long_term_df=lt_df_filt,
                 wf_df=wf_df,
                 toggle_df=inputs.pre_post_splitter.toggle_df,
                 test_wtg=test_wtg,
