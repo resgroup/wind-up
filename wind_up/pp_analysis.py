@@ -69,8 +69,8 @@ def cook_pp(pp_df: pd.DataFrame, pre_or_post: str, ws_bin_width: float, rated_po
     pp_df[raw_pw_col] = pp_df[pw_col]
     pp_df[raw_hours_col] = pp_df[hours_col]
 
-    # IEC minimum data count method
-    hrs_per_mps = 1
+    # IEC minimum would be 1 hrs_per_mps but using 3 b/c typically higher noise with turbine side-by-side
+    hrs_per_mps = 3
     pp_df[valid_col] = pp_df[f"hours_{pre_or_post}"] > (ws_bin_width * hrs_per_mps)
     pp_df.loc[~pp_df[valid_col], [pw_col, hours_col, ws_col, pw_sem_col]] = np.nan
     pp_df[hours_col] = pp_df[hours_col].fillna(0)
