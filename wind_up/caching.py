@@ -23,11 +23,14 @@ def with_parquet_cache(fp: Path, *, use_cache: bool = True) -> Callable:
 def with_pickle_cache(fp: Path, *, use_cache: bool = True) -> Callable:
     def wrap(func: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped_f(*a: Any, **kw: Any) -> Any:  # noqa
+            fresh_cache = False
             if not Path(fp).is_file() or not use_cache or Path(fp).stat().st_size == 0:
                 with Path.open(fp, "wb") as f:
                     pickle.dump(func(*a, **kw), f)
-            with Path.open(fp, "rb") as f:
+                    fresh_cache = True
+            if not fresh_cache:
                 result_manager.warning(f"loading cached pickle {fp}")
+            with Path.open(fp, "rb") as f:
                 return pickle.load(f)
 
         return wrapped_f
