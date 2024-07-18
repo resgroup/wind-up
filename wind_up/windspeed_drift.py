@@ -65,7 +65,7 @@ def check_windspeed_drift(
         wtg_df.loc[cfg.analysis_first_dt_utc_start : cfg.analysis_last_dt_utc_start],  # type: ignore[misc]
     )
 
-    ws_diff_ul = 0.5
+    ws_diff_ul = 1
     if max_abs_rel_diff > ws_diff_ul:
         result_manager.warning(f"possible wind speed drift of {max_abs_rel_diff:.1f} m/s for {wtg_name}")
     if max_abs_rel_diff_pp_period > ws_diff_ul:
