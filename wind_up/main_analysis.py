@@ -395,6 +395,7 @@ def check_for_ops_curve_shift(
     pre_dropna_df = pre_df.dropna(subset=[scada_ws_col, pw_col, pt_col, rpm_col]).copy()
     post_dropna_df = post_df.dropna(subset=[scada_ws_col, pw_col, pt_col, rpm_col]).copy()
 
+    warning_msg: str | None = None
     for descr, x_var, y_var, x_bin_width, warn_thresh in [
         ("powercurve_shift", scada_ws_col, pw_col, 1, 0.01),
         ("rpm_shift", pw_col, rpm_col, 0, 0.005),
@@ -412,9 +413,11 @@ def check_for_ops_curve_shift(
         else:
             results_dict[descr] = (mean_df[y_var] / mean_df["expected_y"] - 1).clip(-1, 1)
         if abs(results_dict[descr]) > warn_thresh:
-            result_manager.warning(
-                f"{wtg_name} check_for_ops_curve_shift abs {descr} > {warn_thresh}: {results_dict[descr]}"
-            )
+            if warning_msg is None:
+                warning_msg = f"{wtg_name} check_for_ops_curve_shift warnings:"
+            warning_msg += f" abs({descr}) > {warn_thresh}: {abs(results_dict[descr]):.3f}"
+        if warning_msg is not None:
+            result_manager.warning(warning_msg)
 
     compare_ops_curves_pre_post(
         pre_df=pre_df,
