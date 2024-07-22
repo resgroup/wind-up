@@ -416,8 +416,8 @@ def check_for_ops_curve_shift(
             if warning_msg is None:
                 warning_msg = f"{wtg_name} check_for_ops_curve_shift warnings:"
             warning_msg += f" abs({descr}) > {warn_thresh}: {abs(results_dict[descr]):.3f}"
-        if warning_msg is not None:
-            result_manager.warning(warning_msg)
+    if warning_msg is not None:
+        result_manager.warning(warning_msg)
 
     compare_ops_curves_pre_post(
         pre_df=pre_df,
