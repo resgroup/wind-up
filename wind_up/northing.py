@@ -69,6 +69,7 @@ def apply_northing_corrections(
         )
 
     len_corrs = len(wf_north_table)
+    wf_df[northed_col] = wf_df[RAW_YAWDIR_COL]
     if len_corrs == 0:
         if plot_cfg is not None:
             logger.info("no northing corrections to apply")
