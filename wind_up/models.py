@@ -235,7 +235,7 @@ class WindUpConfig(BaseModel):
         description="Method to use for reanalysis (e.g. ERA5) selection",
         examples=["node_with_best_ws_corr"],
     )
-    smart_missing_data_fields: list[str] = Field(
+    missing_scada_data_fields: list[str] = Field(
         default=[],
         description="List of SCADA fields not available for this asset",
         examples=[["YawAngleMin", "YawAngleMax"]],
