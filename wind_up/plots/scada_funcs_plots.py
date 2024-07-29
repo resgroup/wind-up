@@ -202,14 +202,16 @@ def plot_ops_curve_timelines_one_wtg(wtg_df: pd.DataFrame, wtg_name: str, title_
 
 def plot_toggle_ops_curves_one_ttype_or_wtg(
     input_df: pd.DataFrame,
+    *,
     ttype_or_wtg: str,
     title_end: str,
     toggle_name: str,
+    ws_col: str,
+    pw_col: str,
+    pt_col: str,
+    rpm_col: str,
     plot_cfg: PlotConfig,
-    ws_col: str = "test_WindSpeedMean",
-    pw_col: str = "test_ActivePowerMean",
-    pt_col: str = "test_PitchAngleMean",
-    rpm_col: str = "test_GenRpmMean",
+    sub_dir: str | None = None,
 ) -> None:
     pd.set_option("future.no_silent_downcasting", True)  # noqa FBT003
     if "toggle_on" not in input_df.columns or "toggle_off" not in input_df.columns:
@@ -243,7 +245,7 @@ def plot_toggle_ops_curves_one_ttype_or_wtg(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        t_dir = plot_cfg.plots_dir / ttype_or_wtg
+        t_dir = plot_cfg.plots_dir / ttype_or_wtg if sub_dir is None else plot_cfg.plots_dir / sub_dir
         t_dir.mkdir(exist_ok=True, parents=True)
         plt.savefig(t_dir / f"{plot_title}.png")
     plt.close()
@@ -304,17 +306,27 @@ def compare_ops_curves_pre_post(
     pre_df: pd.DataFrame,
     post_df: pd.DataFrame,
     *,
-    test_name: str,
+    wtg_name: str,
+    ws_col: str,
+    pw_col: str,
+    pt_col: str,
+    rpm_col: str,
     plot_cfg: PlotConfig,
     is_toggle_test: bool,
+    sub_dir: str | None = None,
 ) -> None:
     if is_toggle_test:
         plot_toggle_ops_curves_one_ttype_or_wtg(
             input_df=pd.concat([pre_df, post_df]),
-            ttype_or_wtg=test_name,
+            ttype_or_wtg=wtg_name,
             title_end="power performance data",
             toggle_name="toggle",
+            ws_col=ws_col,
+            pw_col=pw_col,
+            pt_col=pt_col,
+            rpm_col=rpm_col,
             plot_cfg=plot_cfg,
+            sub_dir=sub_dir,
         )
     else:
         pre_df_fake_toggle = pre_df.copy()
@@ -323,10 +335,15 @@ def compare_ops_curves_pre_post(
         post_df_fake_toggle["test_toggle_on"] = True
         plot_toggle_ops_curves_one_ttype_or_wtg(
             input_df=pd.concat([pre_df_fake_toggle, post_df_fake_toggle]),
-            ttype_or_wtg=test_name,
+            ttype_or_wtg=wtg_name,
             title_end="power performance data",
             toggle_name="upgrade",
+            ws_col=ws_col,
+            pw_col=pw_col,
+            pt_col=pt_col,
+            rpm_col=rpm_col,
             plot_cfg=plot_cfg,
+            sub_dir=sub_dir,
         )
 
 

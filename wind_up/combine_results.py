@@ -38,12 +38,14 @@ def calc_tdf(trdf: pd.DataFrame, ref_list: list[str], weight_col: str = "unc_wei
             aggfunc=lambda x: (x * trdf.loc[x.index, weight_col]).sum() / trdf.loc[x.index, weight_col].sum(),
         ),
         ref_count=pd.NamedAgg(column="uplift_frc", aggfunc=len),
+        ref_list=pd.NamedAgg(column="ref", aggfunc=lambda x: ", ".join(sorted(x))),
         is_ref=pd.NamedAgg(column="test_wtg", aggfunc=lambda x: x.isin(ref_list).any()),
     )
     tdf["sigma_test"] = (tdf["sigma_uncorr"] + tdf["sigma_corr"]) / 2
     tdf = tdf.sort_values(by=["ref_count", "test_wtg"], ascending=[False, True])
     tdf = tdf.reset_index()
     sigma_ref = calc_sigma_ref(tdf, ref_list)
+    tdf["sigma_ref"] = sigma_ref
     tdf["sigma"] = tdf["sigma_test"].clip(lower=sigma_ref)
     tdf["p95_uplift"] = tdf["p50_uplift"] + norm.ppf(0.05) * tdf["sigma"]
     tdf["p5_uplift"] = tdf["p50_uplift"] + norm.ppf(0.95) * tdf["sigma"]

@@ -66,7 +66,7 @@ def plot_detrend_data_cov(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
 
@@ -139,5 +139,5 @@ def plot_pre_post_data_cov(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()

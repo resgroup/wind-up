@@ -44,9 +44,10 @@ def calc_lt_df(
     ws_bin_edges = np.arange(0, df_for_lt[ws_col].max() + ws_bin_width, ws_bin_width)
 
     rows_per_hour = 3600 / timebase_s
+    df_for_groupby = df_for_lt.reset_index()
     lt_df = (
-        df_for_lt.dropna(subset=[ws_col, pw_col])
-        .groupby(by=pd.cut(df_for_lt[ws_col], bins=ws_bin_edges, retbins=False), observed=False)
+        df_for_groupby.dropna(subset=[ws_col, pw_col])
+        .groupby(by=pd.cut(df_for_groupby[ws_col], bins=ws_bin_edges, retbins=False), observed=False)
         .agg(
             ws_mean=pd.NamedAgg(column=ws_col, aggfunc=lambda x: x.mean()),
             observed_hours=pd.NamedAgg(column=ws_col, aggfunc=lambda x: len(x) / rows_per_hour),
@@ -88,26 +89,33 @@ def calc_lt_df(
     return lt_df
 
 
-def calc_turbine_lt_df(
-    wtg_name: str,
+def filter_and_calc_lt_df(
+    wtg_or_wf_name: str,
     cfg: WindUpConfig,
-    wtg_df: pd.DataFrame,
+    wtg_or_wf_df: pd.DataFrame,
     *,
     ws_col: str,
     pw_col: str,
     title_end: str = "",
+    one_turbine: bool,
     plot_cfg: PlotConfig | None = None,
 ) -> pd.DataFrame:
-    workings_df = wtg_df.copy()
+    workings_df = wtg_or_wf_df.copy()
     if not isinstance(workings_df.index, pd.DatetimeIndex):
-        msg = f"wtg_df must have a DatetimeIndex, got {type(workings_df.index)}"
-        raise TypeError(msg)
+        if "TimeStamp_StartFormat" in workings_df.index.names:
+            workings_df = workings_df.reset_index().set_index("TimeStamp_StartFormat", drop=True)
+        else:
+            msg = (
+                f"workings_df must have a DatetimeIndex or index level called TimeStamp_StartFormat. "
+                f"{workings_df.index.names=}"
+            )
+            raise ValueError(msg)
 
     ok_for_lt = (workings_df.index >= cfg.lt_first_dt_utc_start) & (workings_df.index <= cfg.lt_last_dt_utc_start)
 
     lt_df = calc_lt_df(
         df_for_lt=workings_df[ok_for_lt],
-        num_turbines=1,
+        num_turbines=1 if one_turbine else len(cfg.asset.wtgs),
         years_for_lt_distribution=cfg.years_for_lt_distribution,
         ws_col=ws_col,
         ws_bin_width=cfg.ws_bin_width,
@@ -115,112 +123,54 @@ def calc_turbine_lt_df(
         timebase_s=cfg.timebase_s,
     )
     if plot_cfg is not None:
-        plot_lt_ws(lt_df=lt_df, turbine_or_wf_name=wtg_name, title_end=title_end, plot_cfg=plot_cfg, one_turbine=True)
+        plot_lt_ws(
+            lt_df=lt_df,
+            turbine_or_wf_name=wtg_or_wf_name,
+            title_end=title_end,
+            plot_cfg=plot_cfg,
+            one_turbine=one_turbine,
+        )
 
     return lt_df
 
 
-def calc_turbine_lt_dfs_raw_filt(
-    wtg_name: str,
+def calc_lt_dfs_raw_filt(
+    wtg_or_wf_name: str,
     cfg: WindUpConfig,
-    wtg_df: pd.DataFrame,
+    wtg_or_wf_df: pd.DataFrame,
     *,
     ws_col: str,
     pw_col: str,
+    one_turbine: bool,
     plot_cfg: PlotConfig | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    lt_wf_df_raw = calc_turbine_lt_df(
-        wtg_name=wtg_name,
+    lt_df_raw = filter_and_calc_lt_df(
+        wtg_or_wf_name=wtg_or_wf_name,
         cfg=cfg,
-        wtg_df=wtg_df,
+        wtg_or_wf_df=wtg_or_wf_df,
         ws_col=RAW_WINDSPEED_COL,
         pw_col=RAW_POWER_COL,
         title_end="before filter",
+        one_turbine=one_turbine,
         plot_cfg=plot_cfg,
     )
-    lt_wf_df_filt = calc_turbine_lt_df(
-        wtg_name=wtg_name,
+    lt_df_filt = filter_and_calc_lt_df(
+        wtg_or_wf_name=wtg_or_wf_name,
         cfg=cfg,
-        wtg_df=wtg_df,
+        wtg_or_wf_df=wtg_or_wf_df,
         ws_col=ws_col,
         pw_col=pw_col,
         title_end="after filter",
+        one_turbine=one_turbine,
         plot_cfg=plot_cfg,
     )
     if plot_cfg is not None:
         plot_lt_ws_raw_filt(
-            lt_df_raw=lt_wf_df_raw,
-            lt_df_filt=lt_wf_df_filt,
-            turbine_or_wf_name=wtg_name,
+            lt_df_raw=lt_df_raw,
+            lt_df_filt=lt_df_filt,
+            wtg_or_wf_name=wtg_or_wf_name,
             plot_cfg=plot_cfg,
-            one_turbine=True,
+            one_turbine=one_turbine,
         )
 
-    return lt_wf_df_raw, lt_wf_df_filt
-
-
-def calc_windfarm_lt_df(
-    cfg: WindUpConfig,
-    wf_df: pd.DataFrame,
-    *,
-    ws_col: str,
-    pw_col: str,
-    title_end: str = "",
-    plot_cfg: PlotConfig | None = None,
-) -> pd.DataFrame:
-    workings_df = wf_df.copy()
-    if len(workings_df.index.levels) == 2:  # noqa PLR2004
-        workings_df.index = workings_df.index.droplevel("TurbineName")
-
-    ok_for_lt = (workings_df.index >= cfg.lt_first_dt_utc_start) & (workings_df.index <= cfg.lt_last_dt_utc_start)
-
-    lt_df = calc_lt_df(
-        df_for_lt=workings_df[ok_for_lt],
-        num_turbines=len(cfg.asset.wtgs),
-        years_for_lt_distribution=cfg.years_for_lt_distribution,
-        ws_col=ws_col,
-        ws_bin_width=cfg.ws_bin_width,
-        pw_col=pw_col,
-        timebase_s=cfg.timebase_s,
-    )
-
-    if plot_cfg is not None:
-        plot_lt_ws(lt_df=lt_df, turbine_or_wf_name=cfg.asset.name, title_end=title_end, plot_cfg=plot_cfg)
-
-    return lt_df
-
-
-def calc_windfarm_lt_dfs_raw_filt(
-    cfg: WindUpConfig,
-    wf_df_raw: pd.DataFrame,
-    wf_df_filt: pd.DataFrame,
-    *,
-    ws_col: str,
-    pw_col: str,
-    plot_cfg: PlotConfig | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    lt_wf_df_raw = calc_windfarm_lt_df(
-        cfg=cfg,
-        wf_df=wf_df_raw,
-        ws_col=ws_col,
-        pw_col=pw_col,
-        title_end="before filter",
-        plot_cfg=plot_cfg,
-    )
-    lt_wf_df_filt = calc_windfarm_lt_df(
-        cfg=cfg,
-        wf_df=wf_df_filt,
-        ws_col=ws_col,
-        pw_col=pw_col,
-        title_end="after filter",
-        plot_cfg=plot_cfg,
-    )
-    if plot_cfg is not None:
-        plot_lt_ws_raw_filt(
-            lt_df_raw=lt_wf_df_raw,
-            lt_df_filt=lt_wf_df_filt,
-            turbine_or_wf_name=cfg.asset.name,
-            plot_cfg=plot_cfg,
-        )
-
-    return lt_wf_df_raw, lt_wf_df_filt
+    return lt_df_raw, lt_df_filt

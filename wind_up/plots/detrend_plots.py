@@ -29,7 +29,7 @@ def plot_detrend_ws_scatter(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{title}.png")
     plt.close()
 
 
@@ -64,7 +64,7 @@ def plot_detrend_wsratio_v_dir_scen(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{title}.png")
     plt.close()
 
     plt.figure()
@@ -82,7 +82,7 @@ def plot_detrend_wsratio_v_dir_scen(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{title}.png")
     plt.close()
 
 
@@ -124,7 +124,7 @@ def plot_apply_wsratio_v_wd_scen(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -140,7 +140,7 @@ def plot_apply_wsratio_v_wd_scen(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
 
@@ -204,7 +204,7 @@ def plot_check_detrend_scatters(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
 
@@ -246,7 +246,7 @@ def plot_check_wsratio_v_dir(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{title}.png")
     plt.close()
 
     plt.figure()
@@ -262,7 +262,7 @@ def plot_check_wsratio_v_dir(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{title}.png")
     plt.close()
 
 

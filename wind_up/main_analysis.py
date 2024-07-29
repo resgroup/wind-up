@@ -16,7 +16,7 @@ from wind_up.constants import (
 )
 from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
 from wind_up.interface import AssessmentInputs, add_toggle_signals
-from wind_up.long_term import calc_turbine_lt_dfs_raw_filt
+from wind_up.long_term import calc_lt_dfs_raw_filt
 from wind_up.math_funcs import circ_diff
 from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.northing import (
@@ -368,10 +368,13 @@ def check_for_ops_curve_shift(
     post_df: pd.DataFrame,
     *,
     wtg_name: str,
-    ws_col: str,
+    scada_ws_col: str,
     pw_col: str,
     rpm_col: str,
     pt_col: str,
+    cfg: WindUpConfig,
+    plot_cfg: PlotConfig,
+    sub_dir: str | None = None,
 ) -> dict[str, float]:
     results_dict = {
         "powercurve_shift": np.nan,
@@ -379,7 +382,7 @@ def check_for_ops_curve_shift(
         "pitch_shift": np.nan,
     }
     # check if all required columns are present
-    required_cols = [ws_col, pw_col, pt_col, rpm_col]
+    required_cols = [scada_ws_col, pw_col, pt_col, rpm_col]
     for req_col in required_cols:
         if req_col not in pre_df.columns:
             msg = f"check_for_ops_curve_shift {wtg_name} pre_df missing required column {req_col}"
@@ -389,13 +392,14 @@ def check_for_ops_curve_shift(
             msg = f"check_for_ops_curve_shift {wtg_name} post_df missing required column {req_col}"
             result_manager.warning(msg)
             return results_dict
-    pre_dropna_df = pre_df.dropna(subset=[ws_col, pw_col, pt_col, rpm_col]).copy()
-    post_dropna_df = post_df.dropna(subset=[ws_col, pw_col, pt_col, rpm_col]).copy()
+    pre_dropna_df = pre_df.dropna(subset=[scada_ws_col, pw_col, pt_col, rpm_col]).copy()
+    post_dropna_df = post_df.dropna(subset=[scada_ws_col, pw_col, pt_col, rpm_col]).copy()
 
+    warning_msg: str | None = None
     for descr, x_var, y_var, x_bin_width, warn_thresh in [
-        ("powercurve_shift", ws_col, pw_col, 1, 0.01),
+        ("powercurve_shift", scada_ws_col, pw_col, 1, 0.01),
         ("rpm_shift", pw_col, rpm_col, 0, 0.005),
-        ("pitch_shift", ws_col, pt_col, 1, 0.1),
+        ("pitch_shift", scada_ws_col, pt_col, 1, 0.1),
     ]:
         bins = np.arange(0, pre_dropna_df[x_var].max() + x_bin_width, x_bin_width) if x_bin_width > 0 else 10
         mean_curve = pre_dropna_df.groupby(pd.cut(pre_dropna_df[x_var], bins=bins, retbins=False), observed=True).agg(
@@ -409,9 +413,24 @@ def check_for_ops_curve_shift(
         else:
             results_dict[descr] = (mean_df[y_var] / mean_df["expected_y"] - 1).clip(-1, 1)
         if abs(results_dict[descr]) > warn_thresh:
-            result_manager.warning(
-                f"{wtg_name} check_for_ops_curve_shift abs {descr} > {warn_thresh}: {results_dict[descr]}"
-            )
+            if warning_msg is None:
+                warning_msg = f"{wtg_name} check_for_ops_curve_shift warnings:"
+            warning_msg += f" abs({descr}) > {warn_thresh}: {abs(results_dict[descr]):.3f}"
+    if warning_msg is not None:
+        result_manager.warning(warning_msg)
+
+    compare_ops_curves_pre_post(
+        pre_df=pre_df,
+        post_df=post_df,
+        wtg_name=wtg_name,
+        ws_col=scada_ws_col,
+        pw_col=pw_col,
+        pt_col=pt_col,
+        rpm_col=rpm_col,
+        plot_cfg=plot_cfg,
+        is_toggle_test=(cfg.toggle is not None),
+        sub_dir=sub_dir,
+    )
 
     return results_dict
 
@@ -434,6 +453,7 @@ def calc_test_ref_results(
     toggle_df: pd.DataFrame | None = None,
 ) -> dict:
     test_name = test_wtg.name
+    (plot_cfg.plots_dir / test_name / ref_name).mkdir(exist_ok=True)
     ref_pw_col = "pw_clipped"
     if test_name == ref_name:
         ref_ws_col = "WindSpeedMean"
@@ -470,6 +490,7 @@ def calc_test_ref_results(
         north_ref_wd_col=REANALYSIS_WD_COL,
         timebase_s=cfg.timebase_s,
         plot_cfg=plot_cfg,
+        sub_dir=f"{test_name}/{ref_name}",
     )
     ref_max_northing_error_v_wf = check_wtg_northing(
         ref_df,
@@ -477,6 +498,7 @@ def calc_test_ref_results(
         north_ref_wd_col=WINDFARM_YAWDIR_COL,
         timebase_s=cfg.timebase_s,
         plot_cfg=plot_cfg,
+        sub_dir=f"{test_name}/{ref_name}",
     )
 
     ref_pw_col = "ref_" + ref_pw_col
@@ -503,6 +525,7 @@ def calc_test_ref_results(
         reanalysis_ws_col="ref_" + REANALYSIS_WS_COL,
         cfg=cfg,
         plot_cfg=plot_cfg,
+        sub_dir=f"{test_name}/{ref_name}",
     )
 
     detrend_df = test_df.merge(ref_df, how="left", left_index=True, right_index=True)
@@ -563,10 +586,13 @@ def calc_test_ref_results(
         pre_df,
         post_df,
         wtg_name=ref_name,
-        ws_col=ref_ws_col,
-        pw_col=ref_pw_col,
+        scada_ws_col=f"ref_{DataColumns.wind_speed_mean}",
+        pw_col=f"ref_{DataColumns.active_power_mean}",
         rpm_col=f"ref_{DataColumns.gen_rpm_mean}",
         pt_col=f"ref_{DataColumns.pitch_angle_mean}",
+        cfg=cfg,
+        plot_cfg=plot_cfg,
+        sub_dir=f"{test_name}/{ref_name}",
     )
 
     pre_df = add_waking_scen(
@@ -720,6 +746,35 @@ def calc_test_ref_results(
     return other_results | pp_results
 
 
+def results_per_test_ref_to_df(results_per_test_ref: list[pd.DataFrame]) -> pd.DataFrame:
+    results_per_test_ref_df = pd.concat(results_per_test_ref)
+    first_columns = [
+        "wind_up_version",
+        "time_calculated",
+        "preprocess_warning_counts",
+        "test_warning_counts",
+        "test_ref_warning_counts",
+        "test_wtg",
+        "test_pw_col",
+        "ref",
+        "ref_ws_col",
+        "uplift_frc",
+        "unc_one_sigma_frc",
+        "uplift_p95_frc",
+        "uplift_p5_frc",
+        "pp_data_coverage",
+        "distance_m",
+        "bearing_deg",
+        "unc_one_sigma_noadj_frc",
+        "unc_one_sigma_lowerbound_frc",
+        "unc_one_sigma_bootstrap_frc",
+    ]
+    other_columns = [x for x in results_per_test_ref_df.columns if x not in first_columns]
+    return results_per_test_ref_df[
+        [col for col in first_columns + other_columns if col in results_per_test_ref_df.columns]
+    ]
+
+
 def run_wind_up_analysis(
     inputs: AssessmentInputs,
     random_seed: int = RANDOM_SEED,
@@ -767,17 +822,18 @@ def run_wind_up_analysis(
                 )
 
         if cfg.use_lt_distribution:
-            lt_wtg_df_raw, lt_wtg_df_filt = calc_turbine_lt_dfs_raw_filt(
-                wtg_name=test_name,
+            lt_df_raw, lt_df_filt = calc_lt_dfs_raw_filt(
+                wtg_or_wf_name=test_name if cfg.use_test_wtg_lt_distribution else cfg.asset.name,
                 cfg=cfg,
-                wtg_df=test_df,
+                wtg_or_wf_df=test_df if cfg.use_test_wtg_lt_distribution else wf_df,
                 ws_col=test_ws_col,
                 pw_col=test_pw_col,
+                one_turbine=cfg.use_test_wtg_lt_distribution,
                 plot_cfg=plot_cfg,
             )
         else:
-            lt_wtg_df_raw = None
-            lt_wtg_df_filt = None
+            lt_df_raw = None
+            lt_df_filt = None
 
         test_df.columns = ["test_" + x for x in test_df.columns]
         test_pw_col = "test_" + test_pw_col
@@ -798,27 +854,20 @@ def run_wind_up_analysis(
             pre_df,
             post_df,
             wtg_name=test_name,
-            ws_col=test_ws_col,
-            pw_col=test_pw_col,
+            scada_ws_col=f"test_{DataColumns.wind_speed_mean}",
+            pw_col=f"test_{DataColumns.active_power_mean}",
             rpm_col=f"test_{DataColumns.gen_rpm_mean}",
             pt_col=f"test_{DataColumns.pitch_angle_mean}",
-        )
-
-        # compare ops curves of pre_df and post_df
-        compare_ops_curves_pre_post(
-            pre_df=pre_df,
-            post_df=post_df,
-            test_name=test_name,
+            cfg=cfg,
             plot_cfg=plot_cfg,
-            is_toggle_test=(cfg.toggle is not None),
         )
 
         test_results = {
             "wind_up_version": wind_up.__version__,
             "test_wtg": test_name,
             "test_pw_col": test_pw_col,
-            "lt_wtg_hours_raw": lt_wtg_df_raw["observed_hours"].sum() if lt_wtg_df_raw is not None else 0,
-            "lt_wtg_hours_filt": lt_wtg_df_filt["observed_hours"].sum() if lt_wtg_df_filt is not None else 0,
+            "lt_wtg_hours_raw": lt_df_raw["observed_hours"].sum() if lt_df_raw is not None else 0,
+            "lt_wtg_hours_filt": lt_df_filt["observed_hours"].sum() if lt_df_filt is not None else 0,
             "test_max_ws_drift": test_max_ws_drift,
             "test_max_ws_drift_pp_period": test_max_ws_drift_pp_period,
             "test_powercurve_shift": test_ops_curve_shift_dict["powercurve_shift"],
@@ -837,7 +886,7 @@ def run_wind_up_analysis(
                 test_df=test_df,
                 pre_df=pre_df,
                 post_df=post_df,
-                long_term_df=lt_wtg_df_filt,
+                long_term_df=lt_df_filt,
                 wf_df=wf_df,
                 toggle_df=inputs.pre_post_splitter.toggle_df,
                 test_wtg=test_wtg,
@@ -853,7 +902,10 @@ def run_wind_up_analysis(
             logger.info(test_ref_results)
             results_df = pd.DataFrame(test_ref_results, index=[loop_counter])
             results_per_test_ref.append(results_df)
-            pd.concat(results_per_test_ref).to_csv(cfg.out_dir / "results_interim.csv")
+
+            results_per_test_ref_df = results_per_test_ref_to_df(results_per_test_ref)
+
+            results_per_test_ref_df.to_csv(cfg.out_dir / "results_interim.csv")
 
             try:
                 msg = (
@@ -865,34 +917,9 @@ def run_wind_up_analysis(
             except KeyError:
                 pass
             logger.info(f"finished analysing {test_name} {ref_name}\n")
-    all_results_per_test_ref = pd.concat(results_per_test_ref)
-    first_columns = [
-        "wind_up_version",
-        "time_calculated",
-        "preprocess_warning_counts",
-        "test_warning_counts",
-        "test_ref_warning_counts",
-        "test_wtg",
-        "test_pw_col",
-        "ref",
-        "ref_ws_col",
-        "uplift_frc",
-        "unc_one_sigma_frc",
-        "uplift_p95_frc",
-        "uplift_p5_frc",
-        "pp_data_coverage",
-        "distance_m",
-        "bearing_deg",
-        "unc_one_sigma_noadj_frc",
-        "unc_one_sigma_lowerbound_frc",
-        "unc_one_sigma_bootstrap_frc",
-    ]
-    other_columns = [x for x in results_df.columns if x not in first_columns]
-    all_results_per_test_ref = all_results_per_test_ref[
-        [col for col in first_columns + other_columns if col in all_results_per_test_ref.columns]
-    ]
-    all_results_per_test_ref.to_csv(
+
+    results_per_test_ref_df.to_csv(
         cfg.out_dir / f"{cfg.assessment_name}_results_per_test_ref_"
         f"{pd.Timestamp.now('UTC').strftime('%Y%m%d_%H%M%S')}.csv",
     )
-    return all_results_per_test_ref
+    return results_per_test_ref_df

@@ -33,7 +33,7 @@ def plot_pre_post_binned_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -55,7 +55,7 @@ def plot_pre_post_binned_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -83,7 +83,7 @@ def plot_pre_post_binned_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -111,7 +111,7 @@ def plot_pre_post_binned_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
 
@@ -139,7 +139,7 @@ def plot_pre_post_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plt.figure()
@@ -156,7 +156,7 @@ def plot_pre_post_power_curves(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     plot_pre_post_binned_power_curves(
@@ -226,7 +226,7 @@ def plot_pre_post_condition_histogram(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
 
@@ -269,7 +269,7 @@ def plot_pre_post_conditions(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     moy_width = 1
@@ -298,7 +298,7 @@ def plot_pre_post_conditions(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
     wd_width = 30
@@ -336,6 +336,62 @@ def plot_pre_post_conditions(
         plot_cfg=plot_cfg,
         first_bin_start=0,
     )
+
+
+def plot_pre_post_uplift_pct(
+    *,
+    test_name: str,
+    ref_name: str,
+    pp_df: pd.DataFrame,
+    plot_cfg: PlotConfig,
+    confidence_level: float,
+) -> None:
+    p_low = (1 - confidence_level) / 2
+    p_high = 1 - p_low
+
+    plot_df = pp_df.copy()
+    plot_df["uplift_pct"] = plot_df["uplift_kw"] / plot_df["pw_at_mid_expected"] * 100
+    plot_df[f"uplift_p{p_low * 100:.0f}_pct"] = (
+        plot_df[f"uplift_p{p_low * 100:.0f}_kw"] / plot_df["pw_at_mid_expected"] * 100
+    )
+    plot_df[f"uplift_p{p_high * 100:.0f}_pct"] = (
+        plot_df[f"uplift_p{p_high * 100:.0f}_kw"] / plot_df["pw_at_mid_expected"] * 100
+    )
+
+    plot_df = plot_df.loc[plot_df["pw_at_mid_expected"] > 0.05 * plot_df["pw_at_mid_expected"].max()]
+
+    plt.figure()
+    plt.plot(plot_df["bin_mid"], plot_df["uplift_pct"], color="b", marker="s")
+    plt.plot(plot_df["bin_mid"], plot_df[f"uplift_p{p_low * 100:.0f}_pct"], color="r", ls="--")
+    plt.plot(plot_df["bin_mid"], plot_df[f"uplift_p{p_high * 100:.0f}_pct"], color="r", ls="--")
+    plt.grid()
+    plot_title = f"test={test_name} ref={ref_name} uplift [%] and {confidence_level * 100:.0f}% CI"
+    plt.title(plot_title)
+    plt.ylabel("uplift [%]")
+    plt.xlabel("bin centre [m/s]")
+    plt.tight_layout()
+    if plot_cfg.show_plots:
+        plt.show()
+    if plot_cfg.save_plots:
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
+    plt.close()
+
+    vs_pw_df = plot_df.groupby("pw_at_mid_expected").mean().reset_index()
+    plt.figure()
+    plt.plot(vs_pw_df["pw_at_mid_expected"], vs_pw_df["uplift_pct"], color="b", marker="s")
+    plt.plot(vs_pw_df["pw_at_mid_expected"], vs_pw_df[f"uplift_p{p_low * 100:.0f}_pct"], color="r", ls="--")
+    plt.plot(vs_pw_df["pw_at_mid_expected"], vs_pw_df[f"uplift_p{p_high * 100:.0f}_pct"], color="r", ls="--")
+    plt.grid()
+    plot_title = f"test={test_name} ref={ref_name} uplift [%] vs power and {confidence_level * 100:.0f}% CI"
+    plt.title(plot_title)
+    plt.ylabel("uplift [%]")
+    plt.xlabel("power [kW]")
+    plt.tight_layout()
+    if plot_cfg.show_plots:
+        plt.show()
+    if plot_cfg.save_plots:
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
+    plt.close()
 
 
 def plot_pre_post_pp_analysis(
@@ -391,24 +447,16 @@ def plot_pre_post_pp_analysis(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
-    plt.figure()
-    plt.plot(pp_df["bin_mid"], pp_df["uplift_relative_cp"], color="b", marker="s")
-    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_relative_cp_p{p_low * 100:.0f}"], color="r", ls="--")
-    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_relative_cp_p{p_high * 100:.0f}"], color="r", ls="--")
-    plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} relative Cp uplift and {confidence_level * 100:.0f}% CI"
-    plt.title(plot_title)
-    plt.ylabel("change in Cp normalized to max Cp")
-    plt.xlabel("bin centre [m/s]")
-    plt.tight_layout()
-    if plot_cfg.show_plots:
-        plt.show()
-    if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
-    plt.close()
+    plot_pre_post_uplift_pct(
+        test_name=test_name,
+        ref_name=ref_name,
+        pp_df=pp_df,
+        plot_cfg=plot_cfg,
+        confidence_level=confidence_level,
+    )
 
     plt.figure()
     plt.plot(
@@ -438,7 +486,7 @@ def plot_pre_post_pp_analysis(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()
 
 
@@ -481,5 +529,5 @@ def plot_pp_data_coverage(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
     plt.close()

@@ -170,6 +170,11 @@ class WindUpConfig(BaseModel):
     use_lt_distribution: bool = Field(
         description="If True the long term distribution is calculated and used for uplift calculation", default=True
     )
+    use_test_wtg_lt_distribution: bool = Field(
+        description="If True the test turbine's data is used for the long term distribution, "
+        "otherwise the whole wind farm is used",
+        default=True,
+    )
     out_dir: Path = Field(description="Directory to save assessment output to")
     test_wtgs: list[Turbine] = Field(description="List of test Turbine ids")
     ref_wtgs: list[Turbine] = Field(default=[], description="List of reference Turbine ids")
@@ -230,7 +235,7 @@ class WindUpConfig(BaseModel):
         description="Method to use for reanalysis (e.g. ERA5) selection",
         examples=["node_with_best_ws_corr"],
     )
-    smart_missing_data_fields: list[str] = Field(
+    missing_scada_data_fields: list[str] = Field(
         default=[],
         description="List of SCADA fields not available for this asset",
         examples=[["YawAngleMin", "YawAngleMax"]],

@@ -49,20 +49,23 @@ def check_windspeed_drift(
     reanalysis_ws_col: str,
     cfg: WindUpConfig,
     plot_cfg: PlotConfig | None,
+    sub_dir: str | None = None,
 ) -> tuple[float, float]:
     wtg_df = wtg_df.copy()
     wtg_df = add_rolling_windspeed_diff(
         wtg_df, ws_col=ws_col, reanalysis_ws_col=reanalysis_ws_col, timebase_s=cfg.timebase_s
     )
     if plot_cfg is not None:
-        plot_rolling_windspeed_diff_one_wtg(wtg_df=wtg_df, wtg_name=wtg_name, ws_col=ws_col, plot_cfg=plot_cfg)
+        plot_rolling_windspeed_diff_one_wtg(
+            wtg_df=wtg_df, wtg_name=wtg_name, ws_col=ws_col, plot_cfg=plot_cfg, sub_dir=sub_dir
+        )
 
     max_abs_rel_diff = calc_max_abs_relative_rolling_windspeed_diff(wtg_df)
     max_abs_rel_diff_pp_period = calc_max_abs_relative_rolling_windspeed_diff(
         wtg_df.loc[cfg.analysis_first_dt_utc_start : cfg.analysis_last_dt_utc_start],  # type: ignore[misc]
     )
 
-    ws_diff_ul = 0.5
+    ws_diff_ul = 1
     if max_abs_rel_diff > ws_diff_ul:
         result_manager.warning(f"possible wind speed drift of {max_abs_rel_diff:.1f} m/s for {wtg_name}")
     if max_abs_rel_diff_pp_period > ws_diff_ul:

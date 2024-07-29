@@ -69,8 +69,8 @@ def cook_pp(pp_df: pd.DataFrame, pre_or_post: str, ws_bin_width: float, rated_po
     pp_df[raw_pw_col] = pp_df[pw_col]
     pp_df[raw_hours_col] = pp_df[hours_col]
 
-    # IEC minimum data count method
-    hrs_per_mps = 1
+    # IEC minimum would be 1 hrs_per_mps but using 3 b/c typically higher noise with turbine side-by-side
+    hrs_per_mps = 3
     pp_df[valid_col] = pp_df[f"hours_{pre_or_post}"] > (ws_bin_width * hrs_per_mps)
     pp_df.loc[~pp_df[valid_col], [pw_col, hours_col, ws_col, pw_sem_col]] = np.nan
     pp_df[hours_col] = pp_df[hours_col].fillna(0)
@@ -121,16 +121,6 @@ def add_uplift_cols_to_pp_df(pp_df: pd.DataFrame, *, p_low: float, p_high: float
     )
     new_pp_df["relative_cp_sem_at_mid_post"] = (
         new_pp_df["pw_sem_at_mid_post"] / new_pp_df["bin_mid"] ** 3 / max_baseline_cp
-    )
-    new_pp_df["uplift_relative_cp"] = new_pp_df["relative_cp_post"] - new_pp_df["relative_cp_baseline"]
-    new_pp_df["uplift_relative_cp_se"] = np.sqrt(
-        new_pp_df["relative_cp_sem_at_mid_post"] ** 2 + new_pp_df["relative_cp_sem_at_mid_expected"] ** 2
-    )
-    new_pp_df[f"uplift_relative_cp_p{p_low * 100:.0f}"] = (
-        new_pp_df["uplift_relative_cp"] + new_pp_df["uplift_relative_cp_se"] * t_values
-    )
-    new_pp_df[f"uplift_relative_cp_p{p_high * 100:.0f}"] = (
-        new_pp_df["uplift_relative_cp"] - new_pp_df["uplift_relative_cp_se"] * t_values
     )
 
     return new_pp_df

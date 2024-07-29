@@ -10,6 +10,7 @@ def plot_rolling_windspeed_diff_one_wtg(
     wtg_name: str,
     ws_col: str,
     plot_cfg: PlotConfig,
+    sub_dir: str | None,
 ) -> None:
     plt.figure()
     plt.plot(wtg_df["rolling_windspeed_diff"])
@@ -22,6 +23,7 @@ def plot_rolling_windspeed_diff_one_wtg(
     if plot_cfg.show_plots:
         plt.show()
     if plot_cfg.save_plots:
-        (plot_cfg.plots_dir / wtg_name).mkdir(exist_ok=True, parents=True)
-        plt.savefig(plot_cfg.plots_dir / wtg_name / f"{plot_title}.png")
+        _sub_dir = wtg_name if sub_dir is None else sub_dir
+        (plot_cfg.plots_dir / _sub_dir).mkdir(exist_ok=True, parents=True)
+        plt.savefig(plot_cfg.plots_dir / _sub_dir / f"{plot_title}.png")
     plt.close()

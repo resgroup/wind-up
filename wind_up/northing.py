@@ -69,6 +69,7 @@ def apply_northing_corrections(
         )
 
     len_corrs = len(wf_north_table)
+    wf_df[northed_col] = wf_df[RAW_YAWDIR_COL]
     if len_corrs == 0:
         if plot_cfg is not None:
             logger.info("no northing corrections to apply")
@@ -93,18 +94,16 @@ def apply_northing_corrections(
                 wf_df.loc[df_idx, "YawAngleMin"] = pd.NA
             if "YawAngleMax" in wf_df.columns:
                 wf_df.loc[df_idx, "YawAngleMax"] = pd.NA
-        wf_df["YawAngleMean"] = wf_df[northed_col]
-        if plot_cfg is not None:
-            logger.info(f"applied {len_corrs} northing corrections")
-            plot_and_print_northing_error(
-                add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
-                cfg=cfg,
-                abs_north_errs=calc_max_abs_north_errs(
-                    wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s
-                ),
-                title_end=f"vs {north_ref_wd_col} after northing",
-                plot_cfg=plot_cfg,
-            )
+    logger.info(f"applied {len_corrs} northing corrections")
+    wf_df["YawAngleMean"] = wf_df[northed_col]
+    if plot_cfg is not None:
+        plot_and_print_northing_error(
+            add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
+            cfg=cfg,
+            abs_north_errs=calc_max_abs_north_errs(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
+            title_end=f"vs {north_ref_wd_col} after northing",
+            plot_cfg=plot_cfg,
+        )
     return wf_df
 
 
@@ -121,6 +120,7 @@ def check_wtg_northing(
     north_ref_wd_col: str,
     timebase_s: int,
     plot_cfg: PlotConfig | None,
+    sub_dir: str | None = None,
 ) -> float:
     wtg_wf_df = format_wtg_df_like_wf_df(wtg_df, wtg_name=wtg_name)
     max_northing_error = calc_max_abs_north_errs(
@@ -131,7 +131,7 @@ def check_wtg_northing(
             wf_df=add_rolling_northing_error(wtg_wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s),
             title_end=f"{wtg_name} vs {north_ref_wd_col}",
             plot_cfg=plot_cfg,
-            sub_dir=wtg_name,
+            sub_dir=wtg_name if sub_dir is None else sub_dir,
         )
     return max_northing_error
 
