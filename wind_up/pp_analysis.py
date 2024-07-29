@@ -122,16 +122,6 @@ def add_uplift_cols_to_pp_df(pp_df: pd.DataFrame, *, p_low: float, p_high: float
     new_pp_df["relative_cp_sem_at_mid_post"] = (
         new_pp_df["pw_sem_at_mid_post"] / new_pp_df["bin_mid"] ** 3 / max_baseline_cp
     )
-    new_pp_df["uplift_relative_cp"] = new_pp_df["relative_cp_post"] - new_pp_df["relative_cp_baseline"]
-    new_pp_df["uplift_relative_cp_se"] = np.sqrt(
-        new_pp_df["relative_cp_sem_at_mid_post"] ** 2 + new_pp_df["relative_cp_sem_at_mid_expected"] ** 2
-    )
-    new_pp_df[f"uplift_relative_cp_p{p_low * 100:.0f}"] = (
-        new_pp_df["uplift_relative_cp"] + new_pp_df["uplift_relative_cp_se"] * t_values
-    )
-    new_pp_df[f"uplift_relative_cp_p{p_high * 100:.0f}"] = (
-        new_pp_df["uplift_relative_cp"] - new_pp_df["uplift_relative_cp_se"] * t_values
-    )
 
     return new_pp_df
 

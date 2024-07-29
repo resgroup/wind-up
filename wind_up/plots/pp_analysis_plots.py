@@ -459,22 +459,6 @@ def plot_pre_post_pp_analysis(
     )
 
     plt.figure()
-    plt.plot(pp_df["bin_mid"], pp_df["uplift_relative_cp"], color="b", marker="s")
-    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_relative_cp_p{p_low * 100:.0f}"], color="r", ls="--")
-    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_relative_cp_p{p_high * 100:.0f}"], color="r", ls="--")
-    plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} relative Cp uplift and {confidence_level * 100:.0f}% CI"
-    plt.title(plot_title)
-    plt.ylabel("change in Cp normalized to max Cp")
-    plt.xlabel("bin centre [m/s]")
-    plt.tight_layout()
-    if plot_cfg.show_plots:
-        plt.show()
-    if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
-    plt.close()
-
-    plt.figure()
     plt.plot(
         pp_df["bin_mid"],
         pp_df["uplift_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
