@@ -28,7 +28,7 @@ ANALYSIS_TIMEBASE_S = 600
 CACHE_SUBDIR = CACHE_DIR / f"timebase_{ANALYSIS_TIMEBASE_S}"
 CACHE_SUBDIR.mkdir(exist_ok=True, parents=True)
 
-CHECK_RESULTS = 1
+CHECK_RESULTS = True
 PARENT_DIR = Path(__file__).parent
 ZIP_FILENAME = "SMARTEOLE-WFC-open-dataset.zip"
 MINIMUM_DATA_COUNT_COVERAGE = 0.5  # 50% of the data must be present
@@ -239,7 +239,9 @@ def define_smarteole_example_config() -> WindUpConfig:
     )
 
 
-def print_smarteole_results(results_per_test_ref_df: pd.DataFrame, *, print_small_table: bool = False) -> pd.DataFrame:
+def print_smarteole_results(
+    results_per_test_ref_df: pd.DataFrame, *, print_small_table: bool = False, check_results: bool = False
+) -> None:
     key_results_df = results_per_test_ref_df[
         [
             "test_wtg",
@@ -292,7 +294,25 @@ def print_smarteole_results(results_per_test_ref_df: pd.DataFrame, *, print_smal
         showindex=False,
     )
     print(results_table)
-    return print_df
+
+    if check_results:
+        # raise an error if results don't match expected
+        expected_print_df = pd.DataFrame(
+            {
+                "turbine": ["SMV6", "SMV5"],
+                "reference": ["SMV7", "SMV7"],
+                "energy uplift": ["-1.0%", "3.1%"],
+                "uplift uncertainty": ["0.6%", "1.2%"],
+                "uplift P95": ["-2.0%", "1.2%"],
+                "uplift P5": ["-0.1%", "5.0%"],
+                "valid hours toggle off": [132 + 3 / 6, 133 + 0 / 6],
+                "valid hours toggle on": [136 + 0 / 6, 137 + 1 / 6],
+                "mean power toggle on": [1148, 994],
+            },
+            index=[0, 1],
+        )
+
+        assert_frame_equal(print_df, expected_print_df)
 
 
 if __name__ == "__main__":
@@ -340,23 +360,4 @@ if __name__ == "__main__":
     net_p50, net_p95, net_p5 = calc_net_uplift(results_per_test_ref_df, confidence=0.9)
     print(f"net P50: {net_p50:.1%}, net P95: {net_p95:.1%}, net P5: {net_p5:.1%}")
 
-    print_df = print_smarteole_results(results_per_test_ref_df)
-
-    if CHECK_RESULTS:
-        # raise an error if results don't match expected
-        expected_print_df = pd.DataFrame(
-            {
-                "turbine": ["SMV6", "SMV5"],
-                "reference": ["SMV7", "SMV7"],
-                "energy uplift": ["-1.0%", "3.1%"],
-                "uplift uncertainty": ["0.6%", "1.2%"],
-                "uplift P95": ["-2.0%", "1.2%"],
-                "uplift P5": ["-0.1%", "5.0%"],
-                "valid hours toggle off": [132 + 3 / 6, 133 + 0 / 6],
-                "valid hours toggle on": [136 + 0 / 6, 137 + 1 / 6],
-                "mean power toggle on": [1148, 994],
-            },
-            index=[0, 1],
-        )
-
-        assert_frame_equal(print_df, expected_print_df)
+    print_smarteole_results(results_per_test_ref_df, check_results=CHECK_RESULTS)
