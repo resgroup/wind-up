@@ -100,9 +100,7 @@ def apply_northing_corrections(
         plot_and_print_northing_error(
             add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
             cfg=cfg,
-            abs_north_errs=calc_max_abs_north_errs(
-                wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s
-            ),
+            abs_north_errs=calc_max_abs_north_errs(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
             title_end=f"vs {north_ref_wd_col} after northing",
             plot_cfg=plot_cfg,
         )
