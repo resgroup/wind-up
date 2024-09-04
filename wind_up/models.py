@@ -19,11 +19,6 @@ class PlotConfig(BaseModel):
     skip_per_turbine_plots: bool = Field(default=False, description="If True skip per turbine plots")
     plots_dir: Path = Field(description="Directory to save plots to")
 
-    @model_validator(mode="after")
-    def make_plots_dir(self: "PlotConfig") -> "PlotConfig":
-        self.plots_dir.mkdir(parents=True, exist_ok=True)
-        return self
-
 
 class TurbineType(BaseModel):
     turbine_type: str = Field(
