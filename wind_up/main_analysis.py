@@ -453,7 +453,7 @@ def calc_test_ref_results(
     toggle_df: pd.DataFrame | None = None,
 ) -> dict:
     test_name = test_wtg.name
-    (plot_cfg.plots_dir / test_name / ref_name).mkdir(exist_ok=True)
+    (plot_cfg.plots_dir / test_name / ref_name).mkdir(exist_ok=True, parents=True)
     ref_pw_col = "pw_clipped"
     if test_name == ref_name:
         ref_ws_col = "WindSpeedMean"
