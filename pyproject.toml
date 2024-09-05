@@ -28,8 +28,8 @@ dependencies = [
     'seaborn',
     'tabulate',
     'toml',
-    'utm',
     'tqdm',
+    'utm',
 ]
 
 [project.urls]
