@@ -9,6 +9,7 @@ import pandas as pd
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from wind_up.backporting import strict_zip
 from wind_up.constants import OUTPUT_DIR
 from wind_up.yaml_loader import Loader, construct_include
 
@@ -400,7 +401,7 @@ class WindUpConfig(BaseModel):
             )
         tt_list = [TurbineType.model_validate(tt) for tt in cfg_dct["asset"]["turbine_types"]]
         cfg_dct["asset"]["wtgs"] = [
-            Turbine(name=x, turbine_type=tt) for x, tt in zip(cfg_dct["asset"]["wtgs"], tt_list, strict=True)
+            Turbine(name=x, turbine_type=tt) for x, tt in strict_zip(cfg_dct["asset"]["wtgs"], tt_list)
         ]
         test_wtg_list = []
         for x in cfg_dct["test_wtgs"]:

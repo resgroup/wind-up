@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from wind_up.backporting import strict_zip
 from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, RAW_YAWDIR_COL, DataColumns
 from wind_up.math_funcs import circ_diff
 from wind_up.plots.scada_funcs_plots import (
@@ -111,10 +112,9 @@ def filter_wrong_yaw(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_pw_clipped(df: pd.DataFrame, wtgs: list[Turbine]) -> pd.DataFrame:
     df["pw_clipped"] = df["ActivePowerMean"].clip(lower=0)
-    for i, rp in zip(
+    for i, rp in strict_zip(
         [x.name for x in wtgs],
         [x.turbine_type.rated_power_kw for x in wtgs],
-        strict=True,
     ):
         df.loc[i, "pw_clipped"] = df.loc[i, "pw_clipped"].clip(upper=rp).to_numpy()
     return df

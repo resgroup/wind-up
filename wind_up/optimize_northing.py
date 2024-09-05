@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import ruptures as rpt
 
+from wind_up.backporting import strict_zip
 from wind_up.constants import (
     RAW_POWER_COL,
     RAW_YAWDIR_COL,
@@ -90,10 +91,9 @@ def add_northed_ok_diff_and_rolling_cols(
         wtg_df[northed_col] = wtg_df[RAW_YAWDIR_COL] + north_offset
         wtg_df[northed_col] = wtg_df[northed_col] % 360
     elif north_offset_df is not None:
-        for ts, no in zip(
+        for ts, no in strict_zip(
             north_offset_df[TIMESTAMP_COL].to_list(),
             north_offset_df["north_offset"].to_list(),
-            strict=True,
         ):
             wtg_df.loc[wtg_df.index >= ts, northed_col] = wtg_df.loc[wtg_df.index >= ts, RAW_YAWDIR_COL] + no
         wtg_df[northed_col] = wtg_df[northed_col] % 360
