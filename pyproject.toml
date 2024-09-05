@@ -22,7 +22,6 @@ dependencies = [
     'pydantic >= 2.0.0',
     'python-dotenv',
     'pyyaml',
-    'requests',
     'ruptures',
     'scipy',
     'seaborn',
@@ -47,7 +46,6 @@ dev = [
     'types-pyyaml',
     'types-tabulate',
     'types-toml',
-    'types-requests',
     'types-tqdm',
     'ruff',
     'mypy',
@@ -56,6 +54,10 @@ jupyter = [
     'jupyterlab',
     'notebook',
     'ipywidgets',
+]
+examples = [
+    "requests",
+    "types-requests",
 ]
 
 [tool.setuptools.packages.find]
