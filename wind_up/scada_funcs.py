@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import warnings
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from wind_up.models import PlotConfig, Turbine, WindUpConfig
 
 logger = logging.getLogger(__name__)
-ExclusionPeriodsType: TypeAlias = list[tuple[str, dt.datetime, dt.datetime]]
+ExclusionPeriodsType = list[tuple[str, dt.datetime, dt.datetime]]
 
 
 def filter_stuck_data(df: pd.DataFrame) -> pd.DataFrame:
