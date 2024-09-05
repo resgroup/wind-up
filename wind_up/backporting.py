@@ -9,8 +9,8 @@ else:
 
     def strict_zip(*iterables: Iterable, strict: bool = False) -> Iterator:
         if strict:
-            iterables = [list(it) for it in iterables]
-            if not all(len(it) == len(iterables[0]) for it in iterables):
+            iterables = [list(it) for it in iterables]  # type: ignore[assignment]
+            if not all(len(it) == len(iterables[0]) for it in iterables):  # type: ignore[arg-type]
                 msg = "All iterables must have the same length"
                 raise ValueError(msg)
-        return zip(*iterables, strict=False)
+        return zip(*iterables, strict=False)  # type: ignore[call-overload]
