@@ -36,7 +36,7 @@ cd wind-up
 python -m venv .venv
 source .venv/Scripts/activate  # or .venv/bin/activate on linux or ".venv/Scripts/activate" in Windows command prompt
 # install the package in editable mode with the dev dependencies
-pip install -e .[dev] # or .[jupyter,dev] if you want jupyter dependencies as well
+pip install -e .[dev] # or .[all] if you want examples dependencies as well or .[examples] if you want only examples dependencies
 ```
 Use `poe all` to run all required pre-push commands (make sure the virtual environment is activated)
 

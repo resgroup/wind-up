@@ -39,6 +39,22 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project.optional-dependencies]
+all = [
+    'pytest',
+    'coverage',
+    'poethepoet',
+    'types-pyyaml',
+    'types-tabulate',
+    'types-toml',
+    'types-tqdm',
+    'ruff',
+    'mypy',
+    'jupyterlab',
+    'notebook',
+    'ipywidgets',
+    'requests',
+    'types-requests',
+]
 dev = [
     'pytest',
     'coverage',
@@ -50,14 +66,12 @@ dev = [
     'ruff',
     'mypy',
 ]
-jupyter = [
+examples = [
     'jupyterlab',
     'notebook',
     'ipywidgets',
-]
-examples = [
-    "requests",
-    "types-requests",
+    'requests',
+    'types-requests',
 ]
 
 [tool.setuptools.packages.find]
