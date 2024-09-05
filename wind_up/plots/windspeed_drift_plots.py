@@ -1,7 +1,13 @@
-import matplotlib.pyplot as plt
-import pandas as pd
+from __future__ import annotations
 
-from wind_up.models import PlotConfig
+from typing import TYPE_CHECKING
+
+import matplotlib.pyplot as plt
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from wind_up.models import PlotConfig
 
 
 def plot_rolling_windspeed_diff_one_wtg(

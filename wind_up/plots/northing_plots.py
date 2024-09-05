@@ -1,13 +1,17 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import pandas as pd
 from tabulate import tabulate
 
 from wind_up.constants import RAW_YAWDIR_COL
-from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.northing_utils import add_ok_yaw_col
 
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, WindUpConfig
 logger = logging.getLogger(__name__)
 
 

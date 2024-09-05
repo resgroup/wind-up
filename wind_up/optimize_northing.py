@@ -1,8 +1,9 @@
+from __future__ import annotations
+
 import logging
 import math
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
 import pandas as pd
 import ruptures as rpt
 
@@ -14,7 +15,6 @@ from wind_up.constants import (
     WINDFARM_YAWDIR_COL,
 )
 from wind_up.math_funcs import circ_diff
-from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.northing import (
     add_wf_yawdir,
     apply_northing_corrections,
@@ -27,6 +27,13 @@ from wind_up.plots.optimize_northing_plots import (
     plot_wf_yawdir_and_reanalysis_timeseries,
     plot_yaw_diff_vs_power,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import numpy as np
+
+    from wind_up.models import PlotConfig, WindUpConfig
 
 logger = logging.getLogger(__name__)
 

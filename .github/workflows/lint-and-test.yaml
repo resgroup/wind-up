@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11"]
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
         os: [ubuntu-latest]
     steps:
       - name: "checkout repository"
@@ -31,7 +31,7 @@ jobs:
           path: ./.venv/
           key: ${{ matrix.python-version }}-venv-${{ hashFiles('**/dev-requirements.txt') }}
           restore-keys: |
-            ${{ matrix.python-version }}-venv-
+            ${{ matrix.python-version }}-venv
 
       - name: 'create virtualenv and install dependencies'
         if: steps.cache-venv.outputs.cache-hit != 'true'

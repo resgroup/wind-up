@@ -1,14 +1,15 @@
+from __future__ import annotations
+
 import datetime as dt
 import logging
 import warnings
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 import numpy as np
 import pandas as pd
 
 from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, RAW_YAWDIR_COL, DataColumns
 from wind_up.math_funcs import circ_diff
-from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.plots.scada_funcs_plots import (
     plot_data_coverage_heatmap,
     plot_filter_rpm_and_pt_curve_one_ttype_or_wtg,
@@ -17,6 +18,9 @@ from wind_up.plots.scada_funcs_plots import (
     print_filter_stats,
 )
 from wind_up.smart_data import add_smart_lat_long_to_cfg, load_smart_scada_and_md_from_file
+
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, Turbine, WindUpConfig
 
 logger = logging.getLogger(__name__)
 ExclusionPeriodsType: TypeAlias = list[tuple[str, dt.datetime, dt.datetime]]

@@ -1,6 +1,10 @@
-import math
+from __future__ import annotations
 
-import pandas as pd
+import math
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 def calc_cp(

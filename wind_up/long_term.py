@@ -1,13 +1,17 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from wind_up.constants import HOURS_PER_YEAR, RAW_POWER_COL, RAW_WINDSPEED_COL
-from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.long_term_plots import plot_lt_ws, plot_lt_ws_raw_filt
 from wind_up.result_manager import result_manager
 
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, WindUpConfig
 logger = logging.getLogger(__name__)
 
 

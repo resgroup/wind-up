@@ -1,16 +1,20 @@
+from __future__ import annotations
+
 import contextlib
 import logging
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 from scipy.stats import norm, t
 from tqdm.auto import tqdm
 
-from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.plots.pp_analysis_plots import plot_pp_data_coverage, plot_pre_post_pp_analysis
 from wind_up.result_manager import result_manager
 
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, Turbine, WindUpConfig
 logger = logging.getLogger(__name__)
 
 

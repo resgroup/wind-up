@@ -1,12 +1,17 @@
+from __future__ import annotations
+
 import logging
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import utm
 
-from wind_up.models import WindUpConfig
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from wind_up.models import WindUpConfig
 
 logger = logging.getLogger(__name__)
 

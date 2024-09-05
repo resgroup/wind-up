@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,9 +10,10 @@ import seaborn as sns
 from tabulate import tabulate
 
 from wind_up.constants import SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
-from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.misc_plots import bubble_plot
 
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, WindUpConfig
 logger = logging.getLogger(__name__)
 
 
