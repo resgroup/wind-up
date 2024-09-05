@@ -13,4 +13,4 @@ else:
             if not all(len(it) == len(iterables[0]) for it in iterables):  # type: ignore[arg-type]
                 msg = "All iterables must have the same length"
                 raise ValueError(msg)
-        return zip(*iterables, strict=False)  # type: ignore[call-overload]
+        return zip(*iterables)  # type: ignore[call-overload]
