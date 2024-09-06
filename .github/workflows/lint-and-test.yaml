@@ -32,7 +32,7 @@ jobs:
         key: ${{ matrix.python-version }}-venv-${{ hashFiles('**/pyproject.toml') }}
         restore-keys: |
           ${{ matrix.python-version }}-venv
-    - name: 'create virtualenv and install dependencies'
+    - name: 'create environment and install dependencies'
       if: steps.cache-venv.outputs.cache-hit != 'true'
       run: |
         python -m venv .venv
