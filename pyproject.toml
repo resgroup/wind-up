@@ -6,7 +6,7 @@ authors = [
 ]
 description = "A tool to assess yield uplift of wind turbines"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.9,<4.0"
 license = { file = "LICENSE.txt" }
 classifiers = [
     "Development Status :: 4 - Beta",
