@@ -31,40 +31,52 @@ def calc_wsratio_v_wd(
     # IEC says only use 4-16 m/s
     test_ws_ll = 4
     test_ws_ul = 16
-    ref_ws_ll = test_ws_ll * detrend_df[ref_ws_col].mean() / detrend_df[test_ws_col].mean()
-    ref_ws_ul = test_ws_ul * detrend_df[ref_ws_col].mean() / detrend_df[test_ws_col].mean()
-    detrend_df = detrend_df[(detrend_df[test_ws_col] >= test_ws_ll) & (detrend_df[test_ws_col] < test_ws_ul)]
-    detrend_df = detrend_df[(detrend_df[ref_ws_col] >= ref_ws_ll) & (detrend_df[ref_ws_col] < ref_ws_ul)]
+    test_ws_mean = detrend_df[test_ws_col].mean()
+    ref_ws_mean = detrend_df[ref_ws_col].mean()
 
-    directions = []
-    hours = []
+    ref_ws_ll = test_ws_ll * ref_ws_mean / test_ws_mean
+    ref_ws_ul = test_ws_ul * ref_ws_mean / test_ws_mean
+
+    detrend_df = detrend_df[
+        (detrend_df[test_ws_col] >= test_ws_ll) &
+        (detrend_df[test_ws_col] < test_ws_ul) &
+        (detrend_df[ref_ws_col] >= ref_ws_ll) &
+        (detrend_df[ref_ws_col] < ref_ws_ul)
+    ]
+
+    rows_per_hour = 3600 / timebase_s
+    min_count = min_hours * rows_per_hour
+    iec_ws_threshold = 8
+
+    # Vectorized circular difference calculation
+    directions = np.arange(0, 360)
+    circ_diffs = circ_diff(detrend_df[ref_wd_col].values[:, None], directions)
+
+    within_dir_bins = np.abs(circ_diffs) < dir_bin_width / 2
+    hours = within_dir_bins.sum(axis=0) / rows_per_hour
+
     test_rf_ws_roms = []
-    for d in list(range(0, 360, 1)):
-        detrend_df["circ_diff_to_d"] = circ_diff(detrend_df[ref_wd_col], d)
-        detrend_df["within_dir_bin"] = detrend_df["circ_diff_to_d"].abs() < dir_bin_width / 2
-        subsector_df = detrend_df[detrend_df["within_dir_bin"]].copy()
-        if len(subsector_df) > 0:
-            directions.append(d)
-            rows_per_hour = 3600 / timebase_s
-            hours.append(len(subsector_df) / rows_per_hour)
-            # 61400-12-1 requires >=24h data, >=6h above 8m/s, >= below 8m/s
-            min_count = min_hours * rows_per_hour
-            accept_sector = len(subsector_df) >= min_count
-            iec_ws_threshold = 8
-            accept_sector = accept_sector and ((subsector_df[test_ws_col] < iec_ws_threshold).sum() >= (min_count / 4))
-            accept_sector = accept_sector and ((subsector_df[test_ws_col] >= iec_ws_threshold).sum() >= (min_count / 4))
-            if accept_sector:
+    for idx, direction_mask in enumerate(within_dir_bins.T):
+        subsector_df = detrend_df[direction_mask]
+
+        if len(subsector_df) >= min_count:
+            below_thresh = (subsector_df[test_ws_col] < iec_ws_threshold).sum()
+            above_thresh = (subsector_df[test_ws_col] >= iec_ws_threshold).sum()
+
+            if below_thresh >= (min_count / 4) and above_thresh >= (min_count / 4):
                 rom = subsector_df[test_ws_col].mean() / subsector_df[ref_ws_col].mean()
                 test_rf_ws_roms.append(rom)
             else:
                 test_rf_ws_roms.append(np.nan)
+        else:
+            test_rf_ws_roms.append(np.nan)
 
     return pd.DataFrame(
         {
             "direction": directions,
             "hours": hours,
             "ws_rom": test_rf_ws_roms,
-        },
+        }
     )
 
 
