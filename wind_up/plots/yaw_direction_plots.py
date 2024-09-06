@@ -1,10 +1,16 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 import seaborn as sns
 from matplotlib import pyplot as plt
 
 from wind_up.math_funcs import circ_diff
-from wind_up.models import PlotConfig
+
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig
 
 
 def plot_yaw_direction_pre_post_per_signal(

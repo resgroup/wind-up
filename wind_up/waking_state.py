@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -13,9 +16,11 @@ from wind_up.constants import (
     TIMESTAMP_COL,
 )
 from wind_up.math_funcs import circ_diff
-from wind_up.models import PlotConfig, TurbineType, WindUpConfig
 from wind_up.plots.waking_state_plots import plot_waking_state_one_ttype_or_wtg
 from wind_up.wind_funcs import calc_cp
+
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, TurbineType, WindUpConfig
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ authors = [
 ]
 description = "A tool to assess yield uplift of wind turbines"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { file = "LICENSE.txt" }
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -15,6 +15,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    'eval-type-backport',
     'geographiclib',
     'matplotlib',
     'pandas >= 2.0.0',
@@ -27,8 +28,8 @@ dependencies = [
     'seaborn',
     'tabulate',
     'toml',
-    'utm',
     'tqdm',
+    'utm',
 ]
 
 [project.urls]
@@ -65,7 +66,6 @@ include = ["wind_up*"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
 show-fixes = true
 
 [tool.ruff.lint]
@@ -99,7 +99,6 @@ max-args = 17 # try to bring this down to 5
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
-python_version = "3.10"
 exclude = "build|tests|venv|.venv|__ignore__"
 disallow_untyped_defs = true
 

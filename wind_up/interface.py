@@ -1,13 +1,14 @@
+from __future__ import annotations
+
 import logging
 import math
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from wind_up.caching import with_pickle_cache
 from wind_up.constants import REANALYSIS_WD_COL
-from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.northing import add_wf_yawdir, apply_northing_corrections
 from wind_up.optimize_northing import auto_northing_corrections
 from wind_up.reanalysis_data import ReanalysisDataset, add_reanalysis_data
@@ -17,6 +18,10 @@ from wind_up.smart_data import add_smart_lat_long_to_cfg
 from wind_up.waking_state import add_waking_state
 from wind_up.ws_est import add_ws_est
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from wind_up.models import PlotConfig, WindUpConfig
 logger = logging.getLogger(__name__)
 
 
@@ -121,7 +126,7 @@ class AssessmentInputs:
         toggle_df: pd.DataFrame | None = None,
         reanalysis_datasets: list[ReanalysisDataset],
         cache_dir: Path | None = None,
-    ) -> "AssessmentInputs":
+    ) -> AssessmentInputs:
         func = preprocess if cache_dir is None else with_pickle_cache(cache_dir / "preprocess.pickle")(preprocess)
         wf_df, pc_per_ttype = func(
             cfg=cfg,

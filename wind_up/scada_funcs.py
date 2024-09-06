@@ -1,14 +1,16 @@
+from __future__ import annotations
+
 import datetime as dt
 import logging
 import warnings
-from typing import TypeAlias
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
+from wind_up.backporting import strict_zip
 from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, RAW_YAWDIR_COL, DataColumns
 from wind_up.math_funcs import circ_diff
-from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.plots.scada_funcs_plots import (
     plot_data_coverage_heatmap,
     plot_filter_rpm_and_pt_curve_one_ttype_or_wtg,
@@ -18,8 +20,11 @@ from wind_up.plots.scada_funcs_plots import (
 )
 from wind_up.smart_data import add_smart_lat_long_to_cfg, load_smart_scada_and_md_from_file
 
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, Turbine, WindUpConfig
+
 logger = logging.getLogger(__name__)
-ExclusionPeriodsType: TypeAlias = list[tuple[str, dt.datetime, dt.datetime]]
+ExclusionPeriodsType = list[tuple[str, dt.datetime, dt.datetime]]
 
 
 def filter_stuck_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -107,10 +112,9 @@ def filter_wrong_yaw(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_pw_clipped(df: pd.DataFrame, wtgs: list[Turbine]) -> pd.DataFrame:
     df["pw_clipped"] = df["ActivePowerMean"].clip(lower=0)
-    for i, rp in zip(
+    for i, rp in strict_zip(
         [x.name for x in wtgs],
         [x.turbine_type.rated_power_kw for x in wtgs],
-        strict=True,
     ):
         df.loc[i, "pw_clipped"] = df.loc[i, "pw_clipped"].clip(upper=rp).to_numpy()
     return df

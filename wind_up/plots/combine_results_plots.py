@@ -2,6 +2,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from scipy.stats import norm
 
+from wind_up.backporting import strict_zip
 from wind_up.models import PlotConfig
 
 
@@ -13,10 +14,9 @@ def plot_combine_results(trdf: pd.DataFrame, tdf: pd.DataFrame, plot_cfg: PlotCo
     plt.figure(figsize=(10, 6))
     labels = [
         x + "-" + y
-        for x, y in zip(
+        for x, y in strict_zip(
             [x[-1] for x in trdf["test_wtg"].str.split("_")],
             [x[-1] for x in trdf["ref"].str.split("_")],
-            strict=True,
         )
     ]
     values = trdf["uplift_frc"] * 100

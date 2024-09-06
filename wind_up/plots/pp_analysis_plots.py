@@ -1,10 +1,16 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
-from wind_up.models import PlotConfig
 from wind_up.result_manager import result_manager
+
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig
 
 
 def plot_pre_post_binned_power_curves(
