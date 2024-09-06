@@ -2,8 +2,11 @@ name: Lint and test
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -40,7 +43,6 @@ jobs:
       run: |
         source .venv/bin/activate
         pip install -U .[dev]
-
     - name: "lint check & test"
       run: |
         source .venv/bin/activate
