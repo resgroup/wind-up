@@ -17,37 +17,32 @@ jobs:
         python-version: ["3.9", "3.10", "3.11", "3.12"]
         os: [ubuntu-latest]
     steps:
-      - name: "checkout repository"
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    - name: "set up Python ${{ matrix.python-version }}"
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - uses: actions/cache@v4
+      id: cache-venv
+      with:
+        path: ./.venv/
+        key: ${{ matrix.python-version }}-venv-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          ${{ matrix.python-version }}-venv
+    - name: 'create virtualenv and install dependencies'
+      if: steps.cache-venv.outputs.cache-hit != 'true'
+      run: |
+        python -m venv .venv
+        source .venv/bin/activate
+        pip install .[dev]
+    - name: 'update dependencies'
+      if: steps.cache-venv.outputs.cache-hit == 'true'
+      run: |
+        source .venv/bin/activate
+        pip install -U .[dev]
 
-      - uses: actions/setup-python@v5
-        name: 'set up Python ${{ matrix.python-version }}'
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - uses: actions/cache@v4
-        id: cache-venv
-        with:
-          path: ./.venv/
-          key: ${{ matrix.python-version }}-venv-${{ hashFiles('**/dev-requirements.txt') }}
-          restore-keys: |
-            ${{ matrix.python-version }}-venv
-
-      - name: 'create virtualenv and install dependencies'
-        if: steps.cache-venv.outputs.cache-hit != 'true'
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install .[dev]
-
-      - name: 'update dependencies'
-        if: steps.cache-venv.outputs.cache-hit == 'true'
-        run: |
-          source .venv/bin/activate
-          pip install -U .[dev]
-
-      - name: "lint check & test"
-        run: |
-          source .venv/bin/activate
-          poe lint-check
-          poe test
+    - name: "lint check & test"
+      run: |
+        source .venv/bin/activate
+        poe lint-check
+        poe test
