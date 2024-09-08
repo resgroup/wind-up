@@ -42,10 +42,10 @@ def calc_wsratio_v_wd(
     ref_ws_ul = test_ws_ul * ref_ws_mean / test_ws_mean
 
     detrend_df = detrend_df[
-        (detrend_df[test_ws_col] >= test_ws_ll) &
-        (detrend_df[test_ws_col] < test_ws_ul) &
-        (detrend_df[ref_ws_col] >= ref_ws_ll) &
-        (detrend_df[ref_ws_col] < ref_ws_ul)
+        (detrend_df[test_ws_col] >= test_ws_ll)
+        & (detrend_df[test_ws_col] < test_ws_ul)
+        & (detrend_df[ref_ws_col] >= ref_ws_ll)
+        & (detrend_df[ref_ws_col] < ref_ws_ul)
     ]
 
     rows_per_hour = 3600 / timebase_s
@@ -53,32 +53,37 @@ def calc_wsratio_v_wd(
     iec_ws_threshold = 8
 
     # Vectorized circular difference calculation
-    directions = np.arange(0, 360)
-    circ_diffs = circ_diff(detrend_df[ref_wd_col].values[:, None], directions)
+    directions = np.arange(0, 360, 1)
+    circ_diffs = np.array([circ_diff(detrend_df[ref_wd_col], d) for d in directions])
 
     within_dir_bins = np.abs(circ_diffs) < dir_bin_width / 2
-    hours = within_dir_bins.sum(axis=0) / rows_per_hour
 
+    valid_directions = []
+    valid_hours = []
     test_rf_ws_roms = []
-    for idx, direction_mask in enumerate(within_dir_bins.T):
-        subsector_df = detrend_df[direction_mask]
+    for i, direction in enumerate(directions):
+        subsector_df = detrend_df[within_dir_bins[i]].copy()
 
-        if len(subsector_df) >= min_count:
-            below_thresh = (subsector_df[test_ws_col] < iec_ws_threshold).sum()
-            above_thresh = (subsector_df[test_ws_col] >= iec_ws_threshold).sum()
+        if (subsector_df_len := len(subsector_df)) > 0:
+            valid_directions.append(direction)
+            valid_hours.append(subsector_df_len / rows_per_hour)
 
-            if below_thresh >= (min_count / 4) and above_thresh >= (min_count / 4):
-                rom = subsector_df[test_ws_col].mean() / subsector_df[ref_ws_col].mean()
-                test_rf_ws_roms.append(rom)
+            if subsector_df_len >= min_count:
+                below_thresh = (subsector_df[test_ws_col] < iec_ws_threshold).sum()
+                above_thresh = (subsector_df[test_ws_col] >= iec_ws_threshold).sum()
+
+                if below_thresh >= (min_count / 4) and above_thresh >= (min_count / 4):
+                    rom = subsector_df[test_ws_col].mean() / subsector_df[ref_ws_col].mean()
+                    test_rf_ws_roms.append(rom)
+                else:
+                    test_rf_ws_roms.append(np.nan)
             else:
                 test_rf_ws_roms.append(np.nan)
-        else:
-            test_rf_ws_roms.append(np.nan)
 
     return pd.DataFrame(
         {
-            "direction": directions,
-            "hours": hours,
+            "direction": valid_directions,
+            "hours": valid_hours,
             "ws_rom": test_rf_ws_roms,
         }
     )
