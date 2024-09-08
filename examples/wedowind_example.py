@@ -12,7 +12,6 @@ from matplotlib import pyplot as plt
 
 from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
 from wind_up.interface import AssessmentInputs
-from wind_up.main_analysis import run_wind_up_analysis
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.wind_funcs import calc_cp
 
@@ -28,10 +27,9 @@ PARENT_DIR = Path(__file__).parent
 ZIP_FILENAME = "Turbine_Upgrade_Dataset.zip"
 
 
-def unpack_wedowind_scada(rated_power_kw: float) -> pd.DataFrame:
-    scada_fpath = "Turbine Upgrade Dataset(Pitch Angle Pair).csv"
+def unpack_wedowind_scada(rated_power_kw: float, filename: str) -> pd.DataFrame:
     with zipfile.ZipFile(CACHE_DIR / ZIP_FILENAME) as zf:
-        scada_df_raw = pd.read_csv(zf.open(scada_fpath), parse_dates=[1], index_col=0).drop(columns=["VcosD", "VsinD"])
+        scada_df_raw = pd.read_csv(zf.open(filename), parse_dates=[1], index_col=0).drop(columns=["VcosD", "VsinD"])
     scada_df_test = (
         scada_df_raw.drop(columns=["y_ctrl(normalized)"])
         .copy()
@@ -90,32 +88,35 @@ if __name__ == "__main__":
     download_zenodo_data(
         record_id="5516552", output_dir=CACHE_DIR, filenames={"Inland_Offshore_Wind_Farm_Dataset1.zip"}
     )
-
-    logger.info("Preprocessing turbine SCADA data")
     assumed_rated_power_kw = 1500
     rotor_diameter_m = 80
     cutout_ws_mps = 20
-    scada_df = unpack_wedowind_scada(rated_power_kw=assumed_rated_power_kw)
+
+    filename = "Turbine Upgrade Dataset(Pitch Angle Pair).csv"  # or Turbine Upgrade Dataset(VG Pair).csv
+    logger.info("Preprocessing turbine SCADA data")
+    scada_df = unpack_wedowind_scada(rated_power_kw=assumed_rated_power_kw, filename=filename)
     metadata_df = make_wedowind_metadata_df()
 
     # it is unclear how the scada data is related to the metadata so look for wakes in the data
-    make_custom_plots = False
+    make_custom_plots = True
     if make_custom_plots:
         (ANALYSIS_OUTPUT_DIR / "custom_plots").mkdir(exist_ok=True, parents=True)
+        (ANALYSIS_OUTPUT_DIR / "custom_plots" / "timeseries").mkdir(exist_ok=True)
         for name, df in scada_df.groupby("TurbineName"):
             for col in df.columns:
                 plt.figure()
-                plt.plot(df.index, df[col])
+                plt.scatter(df.index, df[col], s=1)
                 title = f"{name} {col}"
                 plt.xlabel(TIMESTAMP_COL)
                 plt.ylabel(col)
                 plt.xticks(rotation=90)
                 plt.grid()
                 plt.tight_layout()
-                plt.savefig(ANALYSIS_OUTPUT_DIR / "custom_plots" / f"{title}.png")
+                plt.savefig(ANALYSIS_OUTPUT_DIR / "custom_plots" / "timeseries" / f"{title}.png")
                 plt.close()
 
         region2_df = scada_df[(scada_df["normalized_power"] > 0.2) & (scada_df["normalized_power"] < 0.8)]  # noqa PLR2004
+        binned_by_turbine = {}
         for name, df in region2_df.groupby("TurbineName"):
             if name == "Mast":
                 continue
@@ -123,6 +124,7 @@ if __name__ == "__main__":
             _df = df.copy()
             _df["D_bin"] = pd.cut(_df["D"], bins=range(0, 361, 5))
             binned = _df.groupby("D_bin", observed=False)[["D", "normalized_power", "V"]].mean()
+            binned_by_turbine[name] = binned
             plt.figure()
             plt.plot(
                 binned["D"],
@@ -137,12 +139,36 @@ if __name__ == "__main__":
             title = f"{name} Cp vs D"
             plt.title(title)
             plt.xlabel("D")
-            plt.ylabel("normalized_power, V")
+            plt.ylabel("Cp")
             plt.xticks(rotation=90)
             plt.grid()
             plt.tight_layout()
             plt.savefig(ANALYSIS_OUTPUT_DIR / "custom_plots" / f"{title}.png")
             plt.close()
+
+        plt.figure()
+        for name, binned in binned_by_turbine.items():
+            plt.plot(
+                binned["D"],
+                calc_cp(
+                    power_kw=binned["normalized_power"] * assumed_rated_power_kw,
+                    ws_ms=binned["V"],
+                    air_density_kgpm3=1.2,
+                    rotor_diameter_m=rotor_diameter_m,
+                ),
+                label=name,
+                marker=".",
+            )
+        plt.ylim(0.2, 0.7)
+        title = "Cp vs D"
+        plt.title(title)
+        plt.xlabel("D")
+        plt.ylabel("Cp")
+        plt.xticks(rotation=90)
+        plt.grid()
+        plt.tight_layout()
+        plt.savefig(ANALYSIS_OUTPUT_DIR / "custom_plots" / f"{title}.png")
+        plt.close()
 
     # based on the above I think the objects are MAST1, test=WT1 and ref=WT2
     scada_df = scada_df.replace({"TurbineName": {"Test": "WT1", "Ref": "WT2", "Mast": "MAST1"}})
