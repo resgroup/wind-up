@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime as dt
 import logging
 from pathlib import Path
@@ -7,6 +9,7 @@ import pandas as pd
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from wind_up.backporting import strict_zip
 from wind_up.constants import OUTPUT_DIR
 from wind_up.yaml_loader import Loader, construct_include
 
@@ -18,11 +21,6 @@ class PlotConfig(BaseModel):
     save_plots: bool = Field(default=True, description="Save plots to file")
     skip_per_turbine_plots: bool = Field(default=False, description="If True skip per turbine plots")
     plots_dir: Path = Field(description="Directory to save plots to")
-
-    @model_validator(mode="after")
-    def make_plots_dir(self: "PlotConfig") -> "PlotConfig":
-        self.plots_dir.mkdir(parents=True, exist_ok=True)
-        return self
 
 
 class TurbineType(BaseModel):
@@ -58,7 +56,7 @@ class Turbine(BaseModel):
     latitude: float = Field(default=np.nan, ge=-90, le=90)
     longitude: float = Field(default=np.nan, ge=-180, le=180)
 
-    def get_latlongs(self: "Turbine") -> list[tuple[float, float]]:
+    def get_latlongs(self: Turbine) -> list[tuple[float, float]]:
         return [(self.latitude, self.longitude)]
 
 
@@ -273,21 +271,21 @@ class WindUpConfig(BaseModel):
     prepost: PrePost | None = None
 
     @model_validator(mode="after")
-    def check_years_offset_for_pre_period(self: "WindUpConfig") -> "WindUpConfig":
+    def check_years_offset_for_pre_period(self: WindUpConfig) -> WindUpConfig:
         if self.toggle is None and self.years_offset_for_pre_period is None:
             msg = "toggle is None and years_offset_for_pre_period is None"
             raise ValueError(msg)
         return self
 
     @model_validator(mode="after")
-    def check_first_datetime_before_last(self: "WindUpConfig") -> "WindUpConfig":
+    def check_first_datetime_before_last(self: WindUpConfig) -> WindUpConfig:
         if self.upgrade_first_dt_utc_start >= self.analysis_last_dt_utc_start:
             msg = "upgrade_first_datetime must be before last_useable_datetime"
             raise ValueError(msg)
         return self
 
     @model_validator(mode="after")
-    def check_non_wtg_ref_names(self: "WindUpConfig") -> "WindUpConfig":
+    def check_non_wtg_ref_names(self: WindUpConfig) -> WindUpConfig:
         for non_wtg_ref in self.non_wtg_ref_names:
             if non_wtg_ref == "reanalysis":
                 if len(self.reanalysis_method) < 1:
@@ -299,7 +297,7 @@ class WindUpConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def print_summary(self: "WindUpConfig") -> "WindUpConfig":
+    def print_summary(self: WindUpConfig) -> WindUpConfig:
         logger.info(f"loaded WindUpConfig assessment_name: {self.assessment_name}")
         dt_fmt = "%Y-%m-%d %H:%M"
         if self.toggle is not None:
@@ -403,7 +401,7 @@ class WindUpConfig(BaseModel):
             )
         tt_list = [TurbineType.model_validate(tt) for tt in cfg_dct["asset"]["turbine_types"]]
         cfg_dct["asset"]["wtgs"] = [
-            Turbine(name=x, turbine_type=tt) for x, tt in zip(cfg_dct["asset"]["wtgs"], tt_list, strict=True)
+            Turbine(name=x, turbine_type=tt) for x, tt in strict_zip(cfg_dct["asset"]["wtgs"], tt_list)
         ]
         test_wtg_list = []
         for x in cfg_dct["test_wtgs"]:
@@ -429,10 +427,10 @@ class WindUpConfig(BaseModel):
             raise ValueError(msg)
         return WindUpConfig.model_validate(cfg_dct)
 
-    def get_max_rated_power(self: "WindUpConfig") -> float:
+    def get_max_rated_power(self: WindUpConfig) -> float:
         return max(x.turbine_type.rated_power_kw for x in self.asset.wtgs)
 
-    def list_unique_turbine_types(self: "WindUpConfig") -> list["TurbineType"]:
+    def list_unique_turbine_types(self: WindUpConfig) -> list[TurbineType]:
         unique_names = sorted({x.turbine_type.turbine_type for x in self.asset.wtgs})
         unique_turbine_types = []
         for name in unique_names:
@@ -441,11 +439,11 @@ class WindUpConfig(BaseModel):
             )
         return unique_turbine_types
 
-    def list_turbine_ids_of_type(self: "WindUpConfig", ttype: "TurbineType") -> list[str]:
+    def list_turbine_ids_of_type(self: WindUpConfig, ttype: TurbineType) -> list[str]:
         return [x.name for x in self.asset.wtgs if x.turbine_type == ttype]
 
-    def get_normal_operation_genrpm_range(self: "WindUpConfig", ttype: "TurbineType") -> tuple[float, float]:
+    def get_normal_operation_genrpm_range(self: WindUpConfig, ttype: TurbineType) -> tuple[float, float]:
         return next(x.turbine_type.normal_operation_genrpm_range for x in self.asset.wtgs if x.turbine_type == ttype)
 
-    def get_normal_operation_pitch_range(self: "WindUpConfig", ttype: "TurbineType") -> tuple[float, float]:
+    def get_normal_operation_pitch_range(self: WindUpConfig, ttype: TurbineType) -> tuple[float, float]:
         return next(x.turbine_type.normal_operation_pitch_range for x in self.asset.wtgs if x.turbine_type == ttype)

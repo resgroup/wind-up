@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 import logging
 import math
-from collections.abc import Collection
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import requests
 
+if TYPE_CHECKING:
+    from collections.abc import Collection
 logger = logging.getLogger(__name__)
 
 BYTES_IN_MB = 1024 * 1024

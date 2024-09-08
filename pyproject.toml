@@ -1,20 +1,27 @@
 [project]
 name = "res-wind-up"
-version = "0.1.8"
+version = "0.1.9"
 authors = [
     { name = "Alex Clerc", email = "alex.clerc@res-group.com" }
 ]
 description = "A tool to assess yield uplift of wind turbines"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9,<4.0"
 license = { file = "LICENSE.txt" }
 classifiers = [
     "Development Status :: 4 - Beta",
-    "Programming Language :: Python :: 3",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3 :: Only",
     "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering"
 ]
 dependencies = [
+    'eval-type-backport',
     'geographiclib',
     'matplotlib',
     'pandas >= 2.0.0',
@@ -22,14 +29,13 @@ dependencies = [
     'pydantic >= 2.0.0',
     'python-dotenv',
     'pyyaml',
-    'requests',
     'ruptures',
     'scipy',
     'seaborn',
     'tabulate',
     'toml',
-    'utm',
     'tqdm',
+    'utm',
 ]
 
 [project.urls]
@@ -47,16 +53,18 @@ dev = [
     'types-pyyaml',
     'types-tabulate',
     'types-toml',
-    'types-requests',
     'types-tqdm',
+    'types-requests',
     'ruff',
     'mypy',
 ]
-jupyter = [
+examples = [
     'jupyterlab',
     'notebook',
     'ipywidgets',
+    'requests',
 ]
+all = ["res-wind-up[dev,examples]"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -64,7 +72,6 @@ include = ["wind_up*"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
 show-fixes = true
 
 [tool.ruff.lint]
@@ -98,7 +105,6 @@ max-args = 17 # try to bring this down to 5
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
-python_version = "3.10"
 exclude = "build|tests|venv|.venv|__ignore__"
 disallow_untyped_defs = true
 

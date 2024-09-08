@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
-from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.scada_power_curve_plots import plot_pc_per_ttype, plot_removed_data_per_ttype_and_wtg
 
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, WindUpConfig
 logger = logging.getLogger(__name__)
 
 

@@ -1,9 +1,16 @@
-import numpy as np
-import pandas as pd
+from __future__ import annotations
 
-from wind_up.models import PlotConfig, WindUpConfig
+from typing import TYPE_CHECKING
+
+import numpy as np
+
 from wind_up.plots.windspeed_drift_plots import plot_rolling_windspeed_diff_one_wtg
 from wind_up.result_manager import result_manager
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from wind_up.models import PlotConfig, WindUpConfig
 
 
 def add_rolling_windspeed_diff(

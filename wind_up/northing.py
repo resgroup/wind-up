@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -11,10 +14,11 @@ from wind_up.constants import (
     WINDFARM_YAWDIR_COL,
 )
 from wind_up.math_funcs import circ_diff
-from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.northing_utils import add_ok_yaw_col
 from wind_up.plots.northing_plots import plot_and_print_northing_error, plot_northing_changepoint, plot_northing_error
 
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, WindUpConfig
 logger = logging.getLogger(__name__)
 
 

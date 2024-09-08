@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 import pytest
@@ -8,22 +10,22 @@ TEST_DATA_FLD = Path(__file__).parent / "test_data"
 TEST_CONFIG_DIR = TEST_DATA_FLD / "config"
 
 
-@pytest.fixture()
+@pytest.fixture
 def test_lsa_t13_config() -> WindUpConfig:
     return WindUpConfig.from_yaml(TEST_CONFIG_DIR / "test_LSA_T13.yaml")
 
 
-@pytest.fixture()
+@pytest.fixture
 def test_brt_t16_pitch() -> WindUpConfig:
     return WindUpConfig.from_yaml(TEST_CONFIG_DIR / "test_BRT_T16_pitch.yaml")
 
 
-@pytest.fixture()
+@pytest.fixture
 def test_marge_config() -> WindUpConfig:
     return WindUpConfig.from_yaml(TEST_CONFIG_DIR / "test_Marge.yaml")
 
 
-@pytest.fixture()
+@pytest.fixture
 def test_homer_config() -> WindUpConfig:
     cfg = WindUpConfig.from_yaml(TEST_CONFIG_DIR / "test_Homer.yaml")
     t1lat = -58.60364145072843
@@ -37,7 +39,7 @@ def test_homer_config() -> WindUpConfig:
     return cfg
 
 
-@pytest.fixture()
+@pytest.fixture
 def test_homer_with_t00_config() -> WindUpConfig:
     cfg = WindUpConfig.from_yaml(TEST_CONFIG_DIR / "test_Homer.yaml")
     t1lat = -58.60364145072843
