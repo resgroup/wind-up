@@ -218,7 +218,9 @@ if __name__ == "__main__":
         analysis_last_dt_utc_start=scada_df[scada_df["upgrade status"] > 0].index.max(),
         years_offset_for_pre_period=1,
         lt_first_dt_utc_start=scada_df.index.min(),
-        lt_last_dt_utc_start=scada_df.index.min() + pd.DateOffset(years=1) - pd.Timedelta(minutes=10),
+        lt_last_dt_utc_start=scada_df.index.min()
+        + (scada_df[scada_df["upgrade status"] > 0].index.max() - scada_df[scada_df["upgrade status"] > 0].index.min())
+        - pd.Timedelta(minutes=10),
         detrend_first_dt_utc_start=scada_df.index.min(),
         detrend_last_dt_utc_start=scada_df[scada_df["upgrade status"] > 0].index.min()
         - pd.DateOffset(weeks=1)
@@ -233,8 +235,11 @@ if __name__ == "__main__":
         missing_scada_data_fields=["YawAngleMin", "YawAngleMax"],
         prepost={
             "pre_first_dt_utc_start": scada_df.index.min(),
-            "pre_last_dt_utc_start": scada_df[scada_df["upgrade status"] > 0].index.min()
-            - pd.DateOffset(weeks=1)
+            "pre_last_dt_utc_start": scada_df.index.min()
+            + (
+                scada_df[scada_df["upgrade status"] > 0].index.max()
+                - scada_df[scada_df["upgrade status"] > 0].index.min()
+            )
             - pd.Timedelta(minutes=10),
             "post_first_dt_utc_start": scada_df[scada_df["upgrade status"] > 0].index.min(),
             "post_last_dt_utc_start": scada_df[scada_df["upgrade status"] > 0].index.max(),
