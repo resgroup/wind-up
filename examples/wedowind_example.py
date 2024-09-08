@@ -12,6 +12,7 @@ from matplotlib import pyplot as plt
 
 from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
 from wind_up.interface import AssessmentInputs
+from wind_up.main_analysis import run_wind_up_analysis
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.wind_funcs import calc_cp
 
@@ -207,6 +208,7 @@ if __name__ == "__main__":
 
     cfg = WindUpConfig(
         assessment_name=ASSESSMENT_NAME,
+        ref_wd_filter=[150, 240],  # apparent wake free sector
         use_lt_distribution=False,
         out_dir=OUTPUT_DIR / ASSESSMENT_NAME,
         test_wtgs=[wtg_map[x] for x in ["WT1"]],
