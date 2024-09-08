@@ -2,50 +2,49 @@ name: Lint and test
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   pull_request:
-
-env:
-  python-version: "3.10"
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.x"]
+        os: [ubuntu-latest]
     steps:
-      - name: "checkout repository"
-        uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        name: 'set up Python ${{ inputs.python-version }}'
-        with:
-          python-version: ${{ env.python-version }}
-
-      - uses: actions/cache@v4
-        id: cache-venv
-        with:
-          path: ./.venv/
-          key: ${{ runner.os }}-venv-${{ hashFiles('**/dev-requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-venv-
-
-      - name: 'create virtualenv and install dependencies'
-        if: steps.cache-venv.outputs.cache-hit != 'true'
-        run: |
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install .[dev]
-
-      - name: 'update dependencies'
-        if: steps.cache-venv.outputs.cache-hit == 'true'
-        run: |
-          source .venv/bin/activate
-          pip install -U .[dev]
-
-      - name: "lint check & test"
-        run: |
-          source .venv/bin/activate
-          poe lint-check
-          poe test
+    - uses: actions/checkout@v4
+    - name: "set up Python ${{ matrix.python-version }}"
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - uses: actions/cache@v4
+      id: cache-venv
+      with:
+        path: ./.venv/
+        key: ${{ matrix.python-version }}-venv-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          ${{ matrix.python-version }}-venv
+    - name: 'create environment and install dependencies'
+      if: steps.cache-venv.outputs.cache-hit != 'true'
+      run: |
+        python -m venv .venv
+        source .venv/bin/activate
+        pip install .[dev]
+    - name: 'update dependencies'
+      if: steps.cache-venv.outputs.cache-hit == 'true'
+      run: |
+        source .venv/bin/activate
+        pip install -U .[dev]
+    - name: "lint check & test"
+      run: |
+        source .venv/bin/activate
+        poe lint-check
+        poe test

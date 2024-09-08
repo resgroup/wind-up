@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from wind_up.math_funcs import circ_diff
-from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.detrend_plots import (
     plot_check_applied_detrend,
     plot_detrend_ws_scatter,
@@ -13,6 +15,8 @@ from wind_up.plots.detrend_plots import (
 from wind_up.result_manager import result_manager
 from wind_up.waking_state import get_iec_upwind_turbines, lat_long_is_valid, list_wtgs_offline_in_scen
 
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, WindUpConfig
 logger = logging.getLogger(__name__)
 
 

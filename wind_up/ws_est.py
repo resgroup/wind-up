@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from wind_up.constants import DEFAULT_AIR_DENSITY
-from wind_up.models import PlotConfig, TurbineType, WindUpConfig
+
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, TurbineType, WindUpConfig
 from wind_up.plots.ws_est_plots import plot_ws_est_gain_xs_one_ttype, plot_ws_est_one_ttype_or_wtg
 from wind_up.wind_funcs import calc_cp
 

@@ -1,11 +1,13 @@
+from __future__ import annotations
+
 import logging
 import math
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import numpy as np
 import pandas as pd
 import ruptures as rpt
 
+from wind_up.backporting import strict_zip
 from wind_up.constants import (
     RAW_POWER_COL,
     RAW_YAWDIR_COL,
@@ -14,7 +16,6 @@ from wind_up.constants import (
     WINDFARM_YAWDIR_COL,
 )
 from wind_up.math_funcs import circ_diff
-from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.northing import (
     add_wf_yawdir,
     apply_northing_corrections,
@@ -27,6 +28,13 @@ from wind_up.plots.optimize_northing_plots import (
     plot_wf_yawdir_and_reanalysis_timeseries,
     plot_yaw_diff_vs_power,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import numpy as np
+
+    from wind_up.models import PlotConfig, WindUpConfig
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +91,9 @@ def add_northed_ok_diff_and_rolling_cols(
         wtg_df[northed_col] = wtg_df[RAW_YAWDIR_COL] + north_offset
         wtg_df[northed_col] = wtg_df[northed_col] % 360
     elif north_offset_df is not None:
-        for ts, no in zip(
+        for ts, no in strict_zip(
             north_offset_df[TIMESTAMP_COL].to_list(),
             north_offset_df["north_offset"].to_list(),
-            strict=True,
         ):
             wtg_df.loc[wtg_df.index >= ts, northed_col] = wtg_df.loc[wtg_df.index >= ts, RAW_YAWDIR_COL] + no
         wtg_df[northed_col] = wtg_df[northed_col] % 360

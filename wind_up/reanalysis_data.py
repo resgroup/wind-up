@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import logging
 import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -9,9 +12,10 @@ from wind_up.constants import (
     REANALYSIS_WS_COL,
     TIMESTAMP_COL,
 )
-from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.plots.reanalysis_plots import plot_find_best_shift_and_corr, plot_wf_and_reanalysis_sample_timeseries
 
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, WindUpConfig
 logger = logging.getLogger(__name__)
 
 
