@@ -801,7 +801,7 @@ def run_wind_up_analysis(
     logger.info(f"turbines to test: {[x.name for x in wtgs_to_test]}")
     for test_wtg_counter, test_wtg in enumerate(wtgs_to_test):
         test_name = test_wtg.name
-        test_pw_col = "pw_clipped"
+        test_pw_col = DataColumns.active_power_mean
         test_ws_col = "ws_est_from_power_only" if cfg.ignore_turbine_anemometer_data else "ws_est_blend"
         test_df = wf_df.loc[test_wtg.name].copy()
 
@@ -809,14 +809,14 @@ def run_wind_up_analysis(
             for other_test_wtg in cfg.test_wtgs:
                 if other_test_wtg.name == test_name:
                     continue
-                pw_na_before = test_df["ActivePowerMean"].isna().sum()
+                pw_na_before = test_df[DataColumns.active_power_mean].isna().sum()
                 other_test_df = wf_df.loc[other_test_wtg.name]
                 timestamps_to_filter = other_test_df[
                     other_test_df[test_pw_col].isna() | other_test_df[test_ws_col].isna()
                 ].index
-                cols_to_filter = list({test_pw_col, test_ws_col, "ActivePowerMean", "WindSpeedMean"})
+                cols_to_filter = list({test_pw_col, test_ws_col, DataColumns.active_power_mean, "WindSpeedMean"})
                 test_df.loc[timestamps_to_filter, cols_to_filter] = pd.NA
-                pw_na_after = test_df["ActivePowerMean"].isna().sum()
+                pw_na_after = test_df[DataColumns.active_power_mean].isna().sum()
                 print_filter_stats(
                     filter_name=f"filter_all_test_wtgs_together {other_test_wtg.name}",
                     na_rows=pw_na_after - pw_na_before,

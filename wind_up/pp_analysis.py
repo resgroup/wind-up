@@ -57,7 +57,9 @@ def pp_raw_df(
     return pp_df
 
 
-def cook_pp(pp_df: pd.DataFrame, pre_or_post: str, ws_bin_width: float, rated_power: float) -> pd.DataFrame:
+def cook_pp(
+    pp_df: pd.DataFrame, *, pre_or_post: str, ws_bin_width: float, rated_power: float, clip_to_rated: bool = True
+) -> pd.DataFrame:
     pp_df = pp_df.copy()
 
     valid_col = f"{pre_or_post}_valid"
@@ -80,11 +82,20 @@ def cook_pp(pp_df: pd.DataFrame, pre_or_post: str, ws_bin_width: float, rated_po
     pp_df[hours_col] = pp_df[hours_col].fillna(0)
     pp_df[ws_col] = pp_df[ws_col].fillna(pp_df["bin_mid"])
 
-    pp_df[pw_col] = pp_df[pw_col].clip(lower=0, upper=rated_power)
+    if clip_to_rated:
+        pp_df[pw_col] = pp_df[pw_col].clip(lower=0, upper=rated_power)
 
     # data which would have been at rated can be gap filled
     rated_ws = pp_df.loc[pp_df[raw_pw_col] >= rated_power * 0.995, "bin_mid"].min() + 1
-    pp_df.loc[(pp_df["bin_mid"] >= rated_ws) & pp_df[pw_col].isna(), pw_col] = rated_power
+    empty_rated_bins_fill_value = rated_power
+    if not clip_to_rated:
+        try:
+            empty_rated_bins_fill_value = pp_df.loc[
+                (pp_df["bin_mid"] >= rated_ws) & ~pp_df[pw_col].isna(), pw_col
+            ].iloc[-1]
+        except IndexError:
+            pass
+    pp_df.loc[(pp_df["bin_mid"] >= rated_ws) & pp_df[pw_col].isna(), pw_col] = empty_rated_bins_fill_value
     pp_df[pw_sem_col] = pp_df[pw_sem_col].ffill()
 
     # missing data at low wind speed can be filled with 0
@@ -95,7 +106,9 @@ def cook_pp(pp_df: pd.DataFrame, pre_or_post: str, ws_bin_width: float, rated_po
 
     # interpolate power and ci to bin mid
     pp_df[pw_at_mid_col] = np.interp(pp_df["bin_mid"], pp_df[ws_col], pp_df[pw_col])
-    pp_df[pw_at_mid_col] = pp_df[pw_at_mid_col].clip(lower=0, upper=rated_power)
+    pp_df[pw_at_mid_col] = pp_df[pw_at_mid_col].clip(lower=0)
+    if clip_to_rated:
+        pp_df[pw_at_mid_col] = pp_df[pw_at_mid_col].clip(upper=rated_power)
     pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_col] / pp_df[pw_col] * pp_df[pw_at_mid_col]
     pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_at_mid_col].fillna(0)
     pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_at_mid_col].clip(lower=0, upper=pp_df[pw_sem_col])
@@ -167,8 +180,16 @@ def pre_post_pp_analysis(
         post_df, "post", ws_col=ws_col, ws_bin_edges=ws_bin_edges, pw_col=pw_col, timebase_s=cfg.timebase_s
     )
 
-    pre_pp_df = cook_pp(pp_df=pre_pp_df, pre_or_post="pre", ws_bin_width=cfg.ws_bin_width, rated_power=rated_power)
-    post_pp_df = cook_pp(pp_df=post_pp_df, pre_or_post="post", ws_bin_width=cfg.ws_bin_width, rated_power=rated_power)
+    pre_pp_df = cook_pp(
+        pp_df=pre_pp_df, pre_or_post="pre", ws_bin_width=cfg.ws_bin_width, rated_power=rated_power, clip_to_rated=False
+    )
+    post_pp_df = cook_pp(
+        pp_df=post_pp_df,
+        pre_or_post="post",
+        ws_bin_width=cfg.ws_bin_width,
+        rated_power=rated_power,
+        clip_to_rated=False,
+    )
     pp_df = pre_pp_df.merge(
         post_pp_df[[x for x in post_pp_df.columns if x not in pre_pp_df.columns]],
         on=pre_pp_df.index.name,
