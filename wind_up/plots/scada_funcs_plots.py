@@ -20,12 +20,12 @@ logger = logging.getLogger(__name__)
 
 def plot_data_coverage_heatmap(df: pd.DataFrame, plot_title: str, plot_cfg: PlotConfig) -> None:
     # calculate data coverage per turbine
-    covdf = df.groupby("TurbineName", observed=False).agg(
-        power=pd.NamedAgg(column="ActivePowerMean", aggfunc=lambda x: x.count() / x.size),
-        windspeed=pd.NamedAgg(column="WindSpeedMean", aggfunc=lambda x: x.count() / x.size),
-        yaw=pd.NamedAgg(column="YawAngleMean", aggfunc=lambda x: x.count() / x.size),
-        rpm=pd.NamedAgg(column="GenRpmMean", aggfunc=lambda x: x.count() / x.size),
-        pitch=pd.NamedAgg(column="PitchAngleMean", aggfunc=lambda x: x.count() / x.size),
+    covdf = df.groupby(DataColumns.turbine_name, observed=False).agg(
+        power=pd.NamedAgg(column=DataColumns.active_power_mean, aggfunc=lambda x: x.count() / x.size),
+        windspeed=pd.NamedAgg(column=DataColumns.wind_speed_mean, aggfunc=lambda x: x.count() / x.size),
+        yaw=pd.NamedAgg(column=DataColumns.yaw_angle_mean, aggfunc=lambda x: x.count() / x.size),
+        rpm=pd.NamedAgg(column=DataColumns.gen_rpm_mean, aggfunc=lambda x: x.count() / x.size),
+        pitch=pd.NamedAgg(column=DataColumns.pitch_angle_mean, aggfunc=lambda x: x.count() / x.size),
     )
 
     plt.figure()
@@ -40,9 +40,9 @@ def plot_data_coverage_heatmap(df: pd.DataFrame, plot_title: str, plot_cfg: Plot
 
 def calc_cf_by_turbine(scada_df: pd.DataFrame, cfg: WindUpConfig) -> pd.DataFrame:
     rows_per_hour = 3600 / cfg.timebase_s
-    cf_df = scada_df.groupby("TurbineName", observed=False).agg(
-        hours=pd.NamedAgg(column="TurbineName", aggfunc=lambda x: x.count() / rows_per_hour),
-        MWh=pd.NamedAgg(column="ActivePowerMean", aggfunc=lambda x: x.sum() / rows_per_hour / 1000),
+    cf_df = scada_df.groupby(DataColumns.turbine_name, observed=False).agg(
+        hours=pd.NamedAgg(column=DataColumns.turbine_name, aggfunc=lambda x: x.count() / rows_per_hour),
+        MWh=pd.NamedAgg(column=DataColumns.active_power_mean, aggfunc=lambda x: x.sum() / rows_per_hour / 1000),
     )
     for i, rp in strict_zip(
         [x.name for x in cfg.asset.wtgs],
@@ -105,11 +105,11 @@ def plot_ops_curves_per_ttype(cfg: WindUpConfig, df: pd.DataFrame, title_end: st
 
 def plot_ops_curves_one_ttype_or_wtg(df: pd.DataFrame, ttype_or_wtg: str, title_end: str, plot_cfg: PlotConfig) -> None:
     plt.figure()
-    plt.scatter(df["WindSpeedMean"], df["ActivePowerMean"], s=SCATTER_S, alpha=SCATTER_ALPHA)
+    plt.scatter(df[DataColumns.wind_speed_mean], df[DataColumns.active_power_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
     plot_title = f"{ttype_or_wtg} power curve {title_end}"
     plt.title(plot_title)
-    plt.xlabel("WindSpeedMean [m/s]")
-    plt.ylabel("ActivePowerMean [kW]")
+    plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
+    plt.ylabel(f"{DataColumns.active_power_mean} [kW]")
     plt.grid()
     if plot_cfg.show_plots:
         plt.show()
@@ -122,27 +122,27 @@ def plot_ops_curves_one_ttype_or_wtg(df: pd.DataFrame, ttype_or_wtg: str, title_
     # plot rpm and pitch vs power and wind speed in a 2 by 2 grid
     plt.figure(figsize=(12, 8))
     plt.subplot(2, 2, 1)
-    plt.scatter(df["ActivePowerMean"], df["GenRpmMean"], s=SCATTER_S, alpha=SCATTER_ALPHA)
-    plt.xlabel("ActivePowerMean [kW]")
-    plt.ylabel("GenRpmMean [RPM]")
+    plt.scatter(df[DataColumns.active_power_mean], df[DataColumns.gen_rpm_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
+    plt.xlabel(f"{DataColumns.active_power_mean} [kW]")
+    plt.ylabel(f"{DataColumns.gen_rpm_mean} [RPM]")
     plt.grid()
 
     plt.subplot(2, 2, 2)
-    plt.scatter(df["WindSpeedMean"], df["GenRpmMean"], s=SCATTER_S, alpha=SCATTER_ALPHA)
-    plt.xlabel("WindSpeedMean [m/s]")
-    plt.ylabel("GenRpmMean [RPM]")
+    plt.scatter(df[DataColumns.wind_speed_mean], df[DataColumns.gen_rpm_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
+    plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
+    plt.ylabel(f"{DataColumns.gen_rpm_mean} [RPM]")
     plt.grid()
 
     plt.subplot(2, 2, 3)
-    plt.scatter(df["ActivePowerMean"], df["PitchAngleMean"], s=SCATTER_S, alpha=SCATTER_ALPHA)
-    plt.xlabel("ActivePowerMean [kW]")
-    plt.ylabel("PitchAngleMean [deg]")
+    plt.scatter(df[DataColumns.active_power_mean], df[DataColumns.pitch_angle_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
+    plt.xlabel(f"{DataColumns.active_power_mean} [kW]")
+    plt.ylabel(f"{DataColumns.pitch_angle_mean} [deg]")
     plt.grid()
 
     plt.subplot(2, 2, 4)
-    plt.scatter(df["WindSpeedMean"], df["PitchAngleMean"], s=SCATTER_S, alpha=SCATTER_ALPHA)
-    plt.xlabel("WindSpeedMean [m/s]")
-    plt.ylabel("PitchAngleMean [deg]")
+    plt.scatter(df[DataColumns.wind_speed_mean], df[DataColumns.pitch_angle_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
+    plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
+    plt.ylabel(f"{DataColumns.pitch_angle_mean} [deg]")
     plt.grid()
 
     plot_title = f"{ttype_or_wtg} ops curves, {title_end}"
@@ -362,39 +362,39 @@ def plot_filter_rpm_and_pt_curve_one_ttype_or_wtg(
 ) -> None:
     plt.figure(figsize=(12, 8))
     plt.subplot(2, 2, 1)
-    plt.scatter(df["pw_clipped"], df["GenRpmMean"], s=SCATTER_S, alpha=SCATTER_ALPHA)
+    plt.scatter(df["pw_clipped"], df[DataColumns.gen_rpm_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
     x = [rpm_v_pw_curve.index[0].left] + [x.mid for x in rpm_v_pw_curve.index] + [rpm_v_pw_curve.index[-1].right]
     y = [rpm_v_pw_curve["y_limit"].iloc[0], *list(rpm_v_pw_curve["y_limit"]), rpm_v_pw_curve["y_limit"].iloc[-1]]
     plt.plot(x, y, color="red")
     plt.xlabel("pw_clipped [kW]")
-    plt.ylabel("GenRpmMean [deg]")
+    plt.ylabel(f"{DataColumns.gen_rpm_mean} [deg]")
     plt.grid()
 
     plt.subplot(2, 2, 2)
-    plt.scatter(df["WindSpeedMean"], df["GenRpmMean"], s=SCATTER_S, alpha=SCATTER_ALPHA)
+    plt.scatter(df[DataColumns.wind_speed_mean], df[DataColumns.gen_rpm_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
     x = [rpm_v_ws_curve.index[0].left] + [x.mid for x in rpm_v_ws_curve.index] + [rpm_v_ws_curve.index[-1].right]
     y = [rpm_v_ws_curve["y_limit"].iloc[0], *list(rpm_v_ws_curve["y_limit"]), rpm_v_ws_curve["y_limit"].iloc[-1]]
     plt.plot(x, y, color="red")
-    plt.xlabel("WindSpeedMean [m/s]")
-    plt.ylabel("GenRpmMean [deg]")
+    plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
+    plt.ylabel(f"{DataColumns.gen_rpm_mean} [deg]")
     plt.grid()
 
     plt.subplot(2, 2, 3)
-    plt.scatter(df["pw_clipped"], df["PitchAngleMean"], s=SCATTER_S, alpha=SCATTER_ALPHA)
+    plt.scatter(df["pw_clipped"], df[DataColumns.pitch_angle_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
     x = [pt_v_pw_curve.index[0].left] + [x.mid for x in pt_v_pw_curve.index] + [pt_v_pw_curve.index[-1].right]
     y = [pt_v_pw_curve["y_limit"].iloc[0], *list(pt_v_pw_curve["y_limit"]), pt_v_pw_curve["y_limit"].iloc[-1]]
     plt.plot(x, y, color="red")
     plt.xlabel("pw_clipped [kW]")
-    plt.ylabel("PitchAngleMean [deg]")
+    plt.ylabel(f"{DataColumns.pitch_angle_mean} [deg]")
     plt.grid()
 
     plt.subplot(2, 2, 4)
-    plt.scatter(df["WindSpeedMean"], df["PitchAngleMean"], s=SCATTER_S, alpha=SCATTER_ALPHA)
+    plt.scatter(df[DataColumns.wind_speed_mean], df[DataColumns.pitch_angle_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
     x = [pt_v_ws_curve.index[0].left] + [x.mid for x in pt_v_ws_curve.index] + [pt_v_ws_curve.index[-1].right]
     y = [pt_v_ws_curve["y_limit"].iloc[0], *list(pt_v_ws_curve["y_limit"]), pt_v_ws_curve["y_limit"].iloc[-1]]
     plt.plot(x, y, color="red")
-    plt.xlabel("WindSpeedMean [m/s]")
-    plt.ylabel("PitchAngleMean [deg]")
+    plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
+    plt.ylabel(f"{DataColumns.pitch_angle_mean} [deg]")
     plt.grid()
 
     plot_title = f"{ttype_or_wtg} rpm and pitch curve filters"

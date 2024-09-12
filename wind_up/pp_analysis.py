@@ -58,7 +58,7 @@ def pp_raw_df(
 
 
 def cook_pp(
-    pp_df: pd.DataFrame, *, pre_or_post: str, ws_bin_width: float, rated_power: float, clip_to_rated: bool = True
+    pp_df: pd.DataFrame, *, pre_or_post: str, ws_bin_width: float, rated_power: float, clip_to_rated: bool
 ) -> pd.DataFrame:
     pp_df = pp_df.copy()
 
@@ -89,12 +89,10 @@ def cook_pp(
     rated_ws = pp_df.loc[pp_df[raw_pw_col] >= rated_power * 0.995, "bin_mid"].min() + 1
     empty_rated_bins_fill_value = rated_power
     if not clip_to_rated:
-        try:
+        with contextlib.suppress(IndexError):
             empty_rated_bins_fill_value = pp_df.loc[
                 (pp_df["bin_mid"] >= rated_ws) & ~pp_df[pw_col].isna(), pw_col
             ].iloc[-1]
-        except IndexError:
-            pass
     pp_df.loc[(pp_df["bin_mid"] >= rated_ws) & pp_df[pw_col].isna(), pw_col] = empty_rated_bins_fill_value
     pp_df[pw_sem_col] = pp_df[pw_sem_col].ffill()
 
@@ -181,14 +179,18 @@ def pre_post_pp_analysis(
     )
 
     pre_pp_df = cook_pp(
-        pp_df=pre_pp_df, pre_or_post="pre", ws_bin_width=cfg.ws_bin_width, rated_power=rated_power, clip_to_rated=False
+        pp_df=pre_pp_df,
+        pre_or_post="pre",
+        ws_bin_width=cfg.ws_bin_width,
+        rated_power=rated_power,
+        clip_to_rated=cfg.clip_rated_power_pp,
     )
     post_pp_df = cook_pp(
         pp_df=post_pp_df,
         pre_or_post="post",
         ws_bin_width=cfg.ws_bin_width,
         rated_power=rated_power,
-        clip_to_rated=False,
+        clip_to_rated=cfg.clip_rated_power_pp,
     )
     pp_df = pre_pp_df.merge(
         post_pp_df[[x for x in post_pp_df.columns if x not in pre_pp_df.columns]],

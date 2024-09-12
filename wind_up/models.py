@@ -269,6 +269,7 @@ class WindUpConfig(BaseModel):
     )
     toggle: Toggle | None = None
     prepost: PrePost | None = None
+    clip_rated_power_pp: bool = Field(default=True, description="Clip rated power in Pre-Post analysis")
 
     @model_validator(mode="after")
     def check_years_offset_for_pre_period(self: WindUpConfig) -> WindUpConfig:
