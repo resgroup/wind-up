@@ -23,7 +23,7 @@ def setup_logger(log_fpath: Path, level: int = logging.INFO) -> None:
     file_handler.setFormatter(log_formatter_file)
     root_logger.addHandler(file_handler)
 
-    log_formatter_console = logging.Formatter("%(asctime)s [%(levelname)-8s] %(message)s")
+    log_formatter_console = logging.Formatter("%(message)s")
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(log_formatter_console)
     root_logger.addHandler(console_handler)
