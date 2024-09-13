@@ -226,9 +226,13 @@ def pre_post_pp_analysis(
 
     pp_df["pw_at_mid_expected"] = pp_df["pw_at_mid_post"]
     pp_df["pw_sem_at_mid_expected"] = pp_df["pw_sem_at_mid_post"]
-    pp_df.loc[~pp_df["is_invalid_bin"], "pw_at_mid_expected"] = pp_df.loc[~pp_df["is_invalid_bin"], "pw_at_mid_pre"]
-    pp_df.loc[~pp_df["is_invalid_bin"], "pw_sem_at_mid_expected"] = pp_df.loc[
-        ~pp_df["is_invalid_bin"],
+    use_pre_for_expected = ~pp_df["is_invalid_bin"]
+    if cfg.use_rated_invalid_bins:
+        rated_ws = pp_df.loc[pp_df["pw_at_mid_pre"] >= rated_power * 0.995, "bin_mid"].min() + 1
+        use_pre_for_expected = use_pre_for_expected | (pp_df["bin_mid"] >= rated_ws)
+    pp_df.loc[use_pre_for_expected, "pw_at_mid_expected"] = pp_df.loc[use_pre_for_expected, "pw_at_mid_pre"]
+    pp_df.loc[use_pre_for_expected, "pw_sem_at_mid_expected"] = pp_df.loc[
+        use_pre_for_expected,
         "pw_sem_at_mid_pre",
     ]
 
