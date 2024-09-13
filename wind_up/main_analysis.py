@@ -59,7 +59,7 @@ def add_fake_power_data(
     ref_ws_col: str,
     scada_pc: pd.DataFrame,
 ) -> pd.DataFrame:
-    ref_df[ref_pw_col] = np.interp(ref_df[ref_ws_col], scada_pc["WindSpeedMean"], scada_pc["pw_clipped"])
+    ref_df[ref_pw_col] = np.interp(ref_df[ref_ws_col], scada_pc[DataColumns.wind_speed_mean], scada_pc["pw_clipped"])
     return ref_df
 
 
@@ -216,7 +216,7 @@ def get_ref_df(
             msg = "ref_name must be a wtg name or 'reanalysis' or exist in cfg.asset.masts_and_lidars"
             raise ValueError(msg)
         ref_df[ref_ws_col] = ref_df[original_ws_col]
-        ref_df["WindSpeedMean"] = ref_df[original_ws_col]  # needed for northing analysis
+        ref_df[DataColumns.wind_speed_mean] = ref_df[original_ws_col]  # needed for northing analysis
         ref_df["ws_est_from_power_only"] = ref_df[original_ws_col]  # needed for reversal analysis
         ref_df[ref_wd_col] = ref_df[original_wd_col]
         ref_df = add_fake_power_data(ref_df, ref_pw_col=ref_pw_col, ref_ws_col=ref_ws_col, scada_pc=scada_pc)
@@ -458,8 +458,8 @@ def calc_test_ref_results(
     (plot_cfg.plots_dir / test_name / ref_name).mkdir(exist_ok=True, parents=True)
     ref_pw_col = "pw_clipped"
     if test_name == ref_name:
-        ref_ws_col = "WindSpeedMean"
-        test_ws_col = "test_WindSpeedMean"
+        ref_ws_col = DataColumns.wind_speed_mean
+        test_ws_col = "test_"+DataColumns.wind_speed_mean
     else:
         ref_ws_col = "ws_est_from_power_only" if cfg.ignore_turbine_anemometer_data else "ws_est_blend"
     ref_info = {
@@ -801,7 +801,7 @@ def run_wind_up_analysis(
     logger.info(f"turbines to test: {[x.name for x in wtgs_to_test]}")
     for test_wtg_counter, test_wtg in enumerate(wtgs_to_test):
         test_name = test_wtg.name
-        test_pw_col = DataColumns.active_power_mean
+        test_pw_col = "pw_clipped" if cfg.clip_rated_power_pp else DataColumns.active_power_mean
         test_ws_col = "ws_est_from_power_only" if cfg.ignore_turbine_anemometer_data else "ws_est_blend"
         test_df = wf_df.loc[test_wtg.name].copy()
 
@@ -814,7 +814,7 @@ def run_wind_up_analysis(
                 timestamps_to_filter = other_test_df[
                     other_test_df[test_pw_col].isna() | other_test_df[test_ws_col].isna()
                 ].index
-                cols_to_filter = list({test_pw_col, test_ws_col, DataColumns.active_power_mean, "WindSpeedMean"})
+                cols_to_filter = list({test_pw_col, test_ws_col, DataColumns.active_power_mean, DataColumns.wind_speed_mean})
                 test_df.loc[timestamps_to_filter, cols_to_filter] = pd.NA
                 pw_na_after = test_df[DataColumns.active_power_mean].isna().sum()
                 print_filter_stats(
