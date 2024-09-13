@@ -459,7 +459,7 @@ def calc_test_ref_results(
     ref_pw_col = "pw_clipped"
     if test_name == ref_name:
         ref_ws_col = DataColumns.wind_speed_mean
-        test_ws_col = "test_"+DataColumns.wind_speed_mean
+        test_ws_col = "test_" + DataColumns.wind_speed_mean
     else:
         ref_ws_col = "ws_est_from_power_only" if cfg.ignore_turbine_anemometer_data else "ws_est_blend"
     ref_info = {
@@ -814,7 +814,9 @@ def run_wind_up_analysis(
                 timestamps_to_filter = other_test_df[
                     other_test_df[test_pw_col].isna() | other_test_df[test_ws_col].isna()
                 ].index
-                cols_to_filter = list({test_pw_col, test_ws_col, DataColumns.active_power_mean, DataColumns.wind_speed_mean})
+                cols_to_filter = list(
+                    {test_pw_col, test_ws_col, DataColumns.active_power_mean, DataColumns.wind_speed_mean}
+                )
                 test_df.loc[timestamps_to_filter, cols_to_filter] = pd.NA
                 pw_na_after = test_df[DataColumns.active_power_mean].isna().sum()
                 print_filter_stats(
