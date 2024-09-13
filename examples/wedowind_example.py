@@ -44,6 +44,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from pydantic import BaseModel, Field
 
+from examples.helpers import format_and_print_results_table
 from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
 from wind_up.interface import AssessmentInputs
 from wind_up.main_analysis import run_wind_up_analysis
@@ -284,7 +285,11 @@ def generate_custom_exploratory_plots(
             plt.savefig(custom_plots_dir_timeseries / f"{title}.png")
             plt.close()
 
-    region2_df = scada_df[(scada_df["normalized_power"] > 0.2) & (scada_df["normalized_power"] < 0.8)]  # noqa PLR2004
+    region2_power_margin = 0.2
+    region2_df = scada_df[
+        (scada_df["normalized_power"] > region2_power_margin)
+        & (scada_df["normalized_power"] < (1 - region2_power_margin))
+    ]
 
     binned_by_turbine = {}
     for name, df in region2_df.groupby(DataColumns.turbine_name):
@@ -501,7 +506,9 @@ def main(analysis_name: str, *, generate_custom_plots: bool = True) -> None:
     )
 
     # Run Analysis
-    results_per_test_ref_df = run_wind_up_analysis(assessment_inputs)  # noqa: F841
+    results_per_test_ref_df = run_wind_up_analysis(assessment_inputs)
+    results_per_test_ref_df.to_csv(cfg.out_dir / "results_per_test_ref.csv", index=False)
+    _ = format_and_print_results_table(results_per_test_ref_df)
 
 
 if __name__ == "__main__":

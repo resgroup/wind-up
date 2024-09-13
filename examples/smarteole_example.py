@@ -7,7 +7,6 @@ from pathlib import Path
 import pandas as pd
 from pandas.testing import assert_frame_equal
 from scipy.stats import circmean
-from tabulate import tabulate
 
 from wind_up.caching import with_parquet_cache
 from wind_up.combine_results import calc_net_uplift
@@ -18,7 +17,7 @@ from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.reanalysis_data import ReanalysisDataset
 
 sys.path.append(str(PROJECTROOT_DIR))
-from examples.helpers import download_zenodo_data, setup_logger
+from examples.helpers import download_zenodo_data, format_and_print_results_table, setup_logger
 
 CACHE_DIR = PROJECTROOT_DIR / "cache" / "smarteole_example_data"
 ANALYSIS_OUTPUT_DIR = OUTPUT_DIR / "smarteole_example"
@@ -242,58 +241,7 @@ def define_smarteole_example_config() -> WindUpConfig:
 def print_smarteole_results(
     results_per_test_ref_df: pd.DataFrame, *, print_small_table: bool = False, check_results: bool = False
 ) -> None:
-    key_results_df = results_per_test_ref_df[
-        [
-            "test_wtg",
-            "ref",
-            "uplift_frc",
-            "unc_one_sigma_frc",
-            "uplift_p95_frc",
-            "uplift_p5_frc",
-            "pp_valid_hours_pre",
-            "pp_valid_hours_post",
-            "mean_power_post",
-        ]
-    ]
-
-    def _convert_frc_cols_to_pct(input_df: pd.DataFrame, dp: int = 1) -> pd.DataFrame:
-        for i, col in enumerate(x for x in input_df.columns if x.endswith("_frc")):
-            if i == 0:
-                output_df = input_df.assign(**{col: (input_df[col] * 100).round(dp).astype(str) + "%"})
-            else:
-                output_df = output_df.assign(**{col: (input_df[col] * 100).round(dp).astype(str) + "%"})
-            output_df = output_df.rename(columns={col: col.replace("_frc", "_pct")})
-        return output_df
-
-    print_df = _convert_frc_cols_to_pct(key_results_df).rename(
-        columns={
-            "test_wtg": "turbine",
-            "ref": "reference",
-            "uplift_pct": "energy uplift",
-            "unc_one_sigma_pct": "uplift uncertainty",
-            "uplift_p95_pct": "uplift P95",
-            "uplift_p5_pct": "uplift P5",
-            "pp_valid_hours_pre": "valid hours toggle off",
-            "pp_valid_hours_post": "valid hours toggle on",
-            "mean_power_post": "mean power toggle on",
-        }
-    )
-    print_df["mean power toggle on"] = print_df["mean power toggle on"].round(0).astype("int64")
-    print_df_for_tabulate = (
-        print_df[["turbine", "reference", "energy uplift", "uplift P95", "uplift P5", "valid hours toggle on"]]
-        if print_small_table
-        else print_df
-    )
-    results_table = tabulate(
-        print_df_for_tabulate,
-        headers="keys",
-        tablefmt="outline",
-        floatfmt=".1f",
-        numalign="center",
-        stralign="center",
-        showindex=False,
-    )
-    print(results_table)
+    print_df = format_and_print_results_table(results_per_test_ref_df, print_small_table=print_small_table)
 
     if check_results:
         # raise an error if results don't match expected
