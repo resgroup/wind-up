@@ -269,7 +269,7 @@ class WindUpConfig(BaseModel):
     )
     toggle: Toggle | None = None
     prepost: PrePost | None = None
-    clip_rated_power_pp: bool = Field(default=True, description="Clip rated power in Pre-Post analysis")
+    clip_rated_power_pp: bool = Field(default=True, description="Clip rated power in power performance analysis")
     use_rated_invalid_bins: bool = Field(default=False, description="Use rated power bins which have been filled in")
 
     @model_validator(mode="after")

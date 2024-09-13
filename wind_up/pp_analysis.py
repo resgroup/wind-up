@@ -57,6 +57,10 @@ def pp_raw_df(
     return pp_df
 
 
+def _calc_rated_ws(*, pp_df: pd.DataFrame, pw_col: str, rated_power: float) -> float:
+    return pp_df.loc[pp_df[pw_col] >= rated_power * 0.995, "bin_mid"].min() + 1
+
+
 def cook_pp(
     pp_df: pd.DataFrame, *, pre_or_post: str, ws_bin_width: float, rated_power: float, clip_to_rated: bool
 ) -> pd.DataFrame:
@@ -82,11 +86,12 @@ def cook_pp(
     pp_df[hours_col] = pp_df[hours_col].fillna(0)
     pp_df[ws_col] = pp_df[ws_col].fillna(pp_df["bin_mid"])
 
+    pp_df[pw_col] = pp_df[pw_col].clip(lower=0)
     if clip_to_rated:
-        pp_df[pw_col] = pp_df[pw_col].clip(lower=0, upper=rated_power)
+        pp_df[pw_col] = pp_df[pw_col].clip(upper=rated_power)
 
     # data which would have been at rated can be gap filled
-    rated_ws = pp_df.loc[pp_df[raw_pw_col] >= rated_power * 0.995, "bin_mid"].min() + 1
+    rated_ws = _calc_rated_ws(pp_df=pp_df, pw_col=raw_pw_col, rated_power=rated_power)
     empty_rated_bins_fill_value = rated_power
     if not clip_to_rated:
         with contextlib.suppress(IndexError):
@@ -228,7 +233,7 @@ def pre_post_pp_analysis(
     pp_df["pw_sem_at_mid_expected"] = pp_df["pw_sem_at_mid_post"]
     use_pre_for_expected = ~pp_df["is_invalid_bin"]
     if cfg.use_rated_invalid_bins:
-        rated_ws = pp_df.loc[pp_df["pw_at_mid_pre"] >= rated_power * 0.995, "bin_mid"].min() + 1
+        rated_ws = _calc_rated_ws(pp_df=pp_df, pw_col="pw_at_mid_pre", rated_power=rated_power)
         use_pre_for_expected = use_pre_for_expected | (pp_df["bin_mid"] >= rated_ws)
     pp_df.loc[use_pre_for_expected, "pw_at_mid_expected"] = pp_df.loc[use_pre_for_expected, "pw_at_mid_pre"]
     pp_df.loc[use_pre_for_expected, "pw_sem_at_mid_expected"] = pp_df.loc[
