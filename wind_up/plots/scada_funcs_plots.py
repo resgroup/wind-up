@@ -367,7 +367,7 @@ def plot_filter_rpm_and_pt_curve_one_ttype_or_wtg(
     y = [rpm_v_pw_curve["y_limit"].iloc[0], *list(rpm_v_pw_curve["y_limit"]), rpm_v_pw_curve["y_limit"].iloc[-1]]
     plt.plot(x, y, color="red")
     plt.xlabel("pw_clipped [kW]")
-    plt.ylabel(f"{DataColumns.gen_rpm_mean} [deg]")
+    plt.ylabel(f"{DataColumns.gen_rpm_mean} [RPM]")
     plt.grid()
 
     plt.subplot(2, 2, 2)
@@ -376,7 +376,7 @@ def plot_filter_rpm_and_pt_curve_one_ttype_or_wtg(
     y = [rpm_v_ws_curve["y_limit"].iloc[0], *list(rpm_v_ws_curve["y_limit"]), rpm_v_ws_curve["y_limit"].iloc[-1]]
     plt.plot(x, y, color="red")
     plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
-    plt.ylabel(f"{DataColumns.gen_rpm_mean} [deg]")
+    plt.ylabel(f"{DataColumns.gen_rpm_mean} [RPM]")
     plt.grid()
 
     plt.subplot(2, 2, 3)
