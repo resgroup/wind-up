@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,7 +10,7 @@ import seaborn as sns
 from tabulate import tabulate
 
 from wind_up.backporting import strict_zip
-from wind_up.constants import SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
+from wind_up.constants import DATA_UNIT_DEFAULTS, SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
 from wind_up.plots.misc_plots import bubble_plot
 
 if TYPE_CHECKING:
@@ -103,13 +103,47 @@ def plot_ops_curves_per_ttype(cfg: WindUpConfig, df: pd.DataFrame, title_end: st
                 )
 
 
+def _axis_label_from_field_name(field_name: str) -> str:
+    field_name_lean = field_name
+    for _prefix in ["test_", "ref_", "raw_"]:  # this is a list of known prefixes to column names used in some plots
+        field_name_lean = field_name_lean.replace(_prefix, "")
+
+    if field_name_lean not in DATA_UNIT_DEFAULTS:
+        msg = (
+            f"Failed to construct axis label for field '{field_name}' because {field_name_lean} does not have a "
+            "default unit defined"
+        )
+        raise ValueError(msg)
+
+    return f"{field_name} [{DATA_UNIT_DEFAULTS[field_name_lean]}]"
+
+
+def _add_scatter_plot(ax: plt.Axes, scada_data: pd.DataFrame, x_col: str, y_col: str, **kwargs: Any) -> None:  # noqa: ANN401
+    ax.scatter(x=scada_data[x_col], y=scada_data[y_col], s=SCATTER_S, alpha=SCATTER_ALPHA, **kwargs)
+    ax.set_xlabel(_axis_label_from_field_name(x_col))
+    ax.set_ylabel(_axis_label_from_field_name(y_col))
+    ax.grid()
+
+
 def plot_ops_curves_one_ttype_or_wtg(df: pd.DataFrame, ttype_or_wtg: str, title_end: str, plot_cfg: PlotConfig) -> None:
+    """
+    Plot turbine operating curves:
+
+      - Power Curve
+      - RPM and Pitch Angle vs. Power and Wind Speed
+
+    :param df: SCADA 10-minute data
+    :param ttype_or_wtg: Turbine type or name
+    :param title_end: appended to plot titles
+    :param plot_cfg: custom logic e.g. how to show/save plots
+    :return: None
+    """
     plt.figure()
     plt.scatter(df[DataColumns.wind_speed_mean], df[DataColumns.active_power_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
     plot_title = f"{ttype_or_wtg} power curve {title_end}"
     plt.title(plot_title)
-    plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
-    plt.ylabel(f"{DataColumns.active_power_mean} [kW]")
+    plt.xlabel(_axis_label_from_field_name(DataColumns.wind_speed_mean))
+    plt.ylabel(_axis_label_from_field_name(DataColumns.active_power_mean))
     plt.grid()
     if plot_cfg.show_plots:
         plt.show()
@@ -121,29 +155,18 @@ def plot_ops_curves_one_ttype_or_wtg(df: pd.DataFrame, ttype_or_wtg: str, title_
 
     # plot rpm and pitch vs power and wind speed in a 2 by 2 grid
     plt.figure(figsize=(12, 8))
-    plt.subplot(2, 2, 1)
-    plt.scatter(df[DataColumns.active_power_mean], df[DataColumns.gen_rpm_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
-    plt.xlabel(f"{DataColumns.active_power_mean} [kW]")
-    plt.ylabel(f"{DataColumns.gen_rpm_mean} [RPM]")
-    plt.grid()
 
-    plt.subplot(2, 2, 2)
-    plt.scatter(df[DataColumns.wind_speed_mean], df[DataColumns.gen_rpm_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
-    plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
-    plt.ylabel(f"{DataColumns.gen_rpm_mean} [RPM]")
-    plt.grid()
+    ax1 = plt.subplot(2, 2, 1)
+    _add_scatter_plot(ax=ax1, scada_data=df, x_col=DataColumns.active_power_mean, y_col=DataColumns.gen_rpm_mean)
 
-    plt.subplot(2, 2, 3)
-    plt.scatter(df[DataColumns.active_power_mean], df[DataColumns.pitch_angle_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
-    plt.xlabel(f"{DataColumns.active_power_mean} [kW]")
-    plt.ylabel(f"{DataColumns.pitch_angle_mean} [deg]")
-    plt.grid()
+    ax2 = plt.subplot(2, 2, 2)
+    _add_scatter_plot(ax=ax2, scada_data=df, x_col=DataColumns.wind_speed_mean, y_col=DataColumns.gen_rpm_mean)
 
-    plt.subplot(2, 2, 4)
-    plt.scatter(df[DataColumns.wind_speed_mean], df[DataColumns.pitch_angle_mean], s=SCATTER_S, alpha=SCATTER_ALPHA)
-    plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
-    plt.ylabel(f"{DataColumns.pitch_angle_mean} [deg]")
-    plt.grid()
+    ax3 = plt.subplot(2, 2, 3)
+    _add_scatter_plot(ax=ax3, scada_data=df, x_col=DataColumns.active_power_mean, y_col=DataColumns.pitch_angle_mean)
+
+    ax4 = plt.subplot(2, 2, 4)
+    _add_scatter_plot(ax=ax4, scada_data=df, x_col=DataColumns.wind_speed_mean, y_col=DataColumns.pitch_angle_mean)
 
     plot_title = f"{ttype_or_wtg} ops curves, {title_end}"
     plt.suptitle(plot_title)
@@ -256,14 +279,10 @@ def plot_toggle_ops_curves_one_ttype_or_wtg(
 
     # plot rpm and pitch vs power and wind speed in a 2 by 2 grid
     plt.figure(figsize=(12, 8))
-    plt.subplot(2, 2, 1)
-    plt.scatter(
-        df_off[pw_col],
-        df_off[rpm_col],
-        s=SCATTER_S,
-        alpha=SCATTER_ALPHA,
-        label=f"{toggle_name} OFF",
-    )
+    ax1 = plt.subplot(2, 2, 1)
+    _add_scatter_plot(ax=ax1, scada_data=df_off, x_col=pw_col, y_col=rpm_col, label=f"{toggle_name} OFF")
+    _add_scatter_plot(ax=ax1, scada_data=df_on, x_col=pw_col, y_col=rpm_col, label=f"{toggle_name} ON")
+
     plt.scatter(
         df_on[pw_col],
         df_on[rpm_col],
@@ -367,7 +386,7 @@ def plot_filter_rpm_and_pt_curve_one_ttype_or_wtg(
     y = [rpm_v_pw_curve["y_limit"].iloc[0], *list(rpm_v_pw_curve["y_limit"]), rpm_v_pw_curve["y_limit"].iloc[-1]]
     plt.plot(x, y, color="red")
     plt.xlabel("pw_clipped [kW]")
-    plt.ylabel(f"{DataColumns.gen_rpm_mean} [deg]")
+    plt.ylabel(_axis_label_from_field_name(DataColumns.gen_rpm_mean))
     plt.grid()
 
     plt.subplot(2, 2, 2)
@@ -375,8 +394,8 @@ def plot_filter_rpm_and_pt_curve_one_ttype_or_wtg(
     x = [rpm_v_ws_curve.index[0].left] + [x.mid for x in rpm_v_ws_curve.index] + [rpm_v_ws_curve.index[-1].right]
     y = [rpm_v_ws_curve["y_limit"].iloc[0], *list(rpm_v_ws_curve["y_limit"]), rpm_v_ws_curve["y_limit"].iloc[-1]]
     plt.plot(x, y, color="red")
-    plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
-    plt.ylabel(f"{DataColumns.gen_rpm_mean} [deg]")
+    plt.xlabel(_axis_label_from_field_name(DataColumns.wind_speed_mean))
+    plt.ylabel(_axis_label_from_field_name(DataColumns.gen_rpm_mean))
     plt.grid()
 
     plt.subplot(2, 2, 3)
@@ -385,7 +404,7 @@ def plot_filter_rpm_and_pt_curve_one_ttype_or_wtg(
     y = [pt_v_pw_curve["y_limit"].iloc[0], *list(pt_v_pw_curve["y_limit"]), pt_v_pw_curve["y_limit"].iloc[-1]]
     plt.plot(x, y, color="red")
     plt.xlabel("pw_clipped [kW]")
-    plt.ylabel(f"{DataColumns.pitch_angle_mean} [deg]")
+    plt.ylabel(_axis_label_from_field_name(DataColumns.pitch_angle_mean))
     plt.grid()
 
     plt.subplot(2, 2, 4)
@@ -393,8 +412,8 @@ def plot_filter_rpm_and_pt_curve_one_ttype_or_wtg(
     x = [pt_v_ws_curve.index[0].left] + [x.mid for x in pt_v_ws_curve.index] + [pt_v_ws_curve.index[-1].right]
     y = [pt_v_ws_curve["y_limit"].iloc[0], *list(pt_v_ws_curve["y_limit"]), pt_v_ws_curve["y_limit"].iloc[-1]]
     plt.plot(x, y, color="red")
-    plt.xlabel(f"{DataColumns.wind_speed_mean} [m/s]")
-    plt.ylabel(f"{DataColumns.pitch_angle_mean} [deg]")
+    plt.xlabel(_axis_label_from_field_name(DataColumns.wind_speed_mean))
+    plt.ylabel(_axis_label_from_field_name(DataColumns.pitch_angle_mean))
     plt.grid()
 
     plot_title = f"{ttype_or_wtg} rpm and pitch curve filters"

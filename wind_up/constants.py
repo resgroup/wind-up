@@ -32,6 +32,19 @@ class DataColumns:
         return [v for k, v in vars(cls).items() if not k.startswith("_") and k != "all"]
 
 
+DATA_UNIT_DEFAULTS = {
+    DataColumns.active_power_mean: "kW",
+    DataColumns.active_power_sd: "kW",
+    DataColumns.wind_speed_mean: "m/s",
+    DataColumns.wind_speed_sd: "m/s",
+    DataColumns.yaw_angle_mean: "deg",
+    DataColumns.yaw_angle_min: "deg",
+    DataColumns.yaw_angle_max: "deg",
+    DataColumns.pitch_angle_mean: "deg",
+    DataColumns.gen_rpm_mean: "RPM",
+    DataColumns.ambient_temp: "degC",
+}
+
 HOURS_PER_YEAR = 8766
 DEFAULT_AIR_DENSITY = 1.22
 
