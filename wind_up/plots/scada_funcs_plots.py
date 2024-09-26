@@ -282,14 +282,6 @@ def plot_toggle_ops_curves_one_ttype_or_wtg(
     ax1 = plt.subplot(2, 2, 1)
     _add_scatter_plot(ax=ax1, scada_data=df_off, x_col=pw_col, y_col=rpm_col, label=f"{toggle_name} OFF")
     _add_scatter_plot(ax=ax1, scada_data=df_on, x_col=pw_col, y_col=rpm_col, label=f"{toggle_name} ON")
-
-    plt.scatter(
-        df_on[pw_col],
-        df_on[rpm_col],
-        s=SCATTER_S,
-        alpha=SCATTER_ALPHA,
-        label=f"{toggle_name} ON",
-    )
     plt.xlabel(f"{pw_col} [kW]")
     plt.ylabel(f"{rpm_col} [RPM]")
     plt.grid()
