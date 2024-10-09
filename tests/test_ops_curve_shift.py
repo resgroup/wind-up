@@ -6,13 +6,14 @@ import pandas as pd
 import pytest
 
 from wind_up.ops_curve_shift import (
+    CURVE_CONSTANTS,
     CurveConfig,
     CurveShiftInput,
-    CurveThresholds,
     CurveTypes,
     calculate_pitch_curve_shift,
     calculate_power_curve_shift,
     calculate_rpm_curve_shift,
+    calculate_wind_speed_curve_shift,
     check_for_ops_curve_shift,
 )
 
@@ -115,7 +116,7 @@ def test_calculate_power_curve_shift(
             y_col="power",
         )
 
-    if abs(expected) > CurveThresholds.POWER_CURVE.value:
+    if abs(expected) > CURVE_CONSTANTS[CurveTypes.POWER_CURVE.value]["warning_threshold"]:
         assert "Ops Curve Shift warning" in caplog.text
 
     np.testing.assert_almost_equal(actual=actual, desired=expected)
@@ -140,7 +141,7 @@ def test_calculate_rpm_curve_shift(
             y_col="gen_rpm",
         )
 
-    if abs(expected) > CurveThresholds.RPM.value:
+    if abs(expected) > CURVE_CONSTANTS[CurveTypes.RPM.value]["warning_threshold"]:
         assert "Ops Curve Shift warning" in caplog.text
 
     np.testing.assert_almost_equal(actual=actual, desired=expected)
@@ -165,7 +166,32 @@ def test_calculate_pitch_curve_shift(
             y_col="pitch",
         )
 
-    if abs(expected) > CurveThresholds.PITCH.value:
+    if abs(expected) > CURVE_CONSTANTS[CurveTypes.PITCH.value]["warning_threshold"]:
+        assert "Ops Curve Shift warning" in caplog.text
+
+    np.testing.assert_almost_equal(actual=actual, desired=expected)
+
+
+@pytest.mark.parametrize(
+    ("shift_amount", "expected"),
+    [
+        pytest.param(2.0, 0.21621621621621623, id="shift DOES exceed threshold"),
+        pytest.param(0.05, -0.04729729729729748, id="shift DOES NOT exceed threshold"),
+    ],
+)
+def test_calculate_wind_speed_curve_shift(
+    shift_amount: float, expected: float, fake_power_curve_df: pd.DataFrame, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING):
+        actual = calculate_wind_speed_curve_shift(
+            turbine_name="anything",
+            pre_df=fake_power_curve_df.reset_index(),
+            post_df=(fake_power_curve_df + shift_amount).reset_index(),
+            x_col="power",
+            y_col="wind_speed",
+        )
+
+    if abs(expected) > CURVE_CONSTANTS[CurveTypes.WIND_SPEED.value]["warning_threshold"]:
         assert "Ops Curve Shift warning" in caplog.text
 
     np.testing.assert_almost_equal(actual=actual, desired=expected)
@@ -222,6 +248,7 @@ class TestCheckForOpsCurveShift:
             f"{CurveTypes.POWER_CURVE.value}_shift": np.nan,
             f"{CurveTypes.RPM.value}_shift": np.nan,
             f"{CurveTypes.PITCH.value}_shift": np.nan,
+            f"{CurveTypes.WIND_SPEED.value}_shift": np.nan,
         }
 
         assert actual == expected
@@ -244,6 +271,7 @@ class TestCheckForOpsCurveShift:
             patch("wind_up.ops_curve_shift.calculate_power_curve_shift", return_value=np.nan) as mock_power,
             patch("wind_up.ops_curve_shift.calculate_rpm_curve_shift", return_value=np.nan) as mock_rpm,
             patch("wind_up.ops_curve_shift.calculate_pitch_curve_shift", return_value=np.nan) as mock_pitch,
+            patch("wind_up.ops_curve_shift.calculate_wind_speed_curve_shift", return_value=np.nan) as mock_ws,
             patch("wind_up.ops_curve_shift.compare_ops_curves_pre_post", return_value=None) as mock_plot_func,
         ):
             mock_wind_up_conf = Mock()
@@ -272,6 +300,10 @@ class TestCheckForOpsCurveShift:
             turbine_name=wtg_name, pre_df=_df, post_df=_df, x_col="wind_speed", y_col="pitch"
         )
 
+        mock_ws.assert_called_once_with(
+            turbine_name=wtg_name, pre_df=_df, post_df=_df, x_col="power", y_col="wind_speed"
+        )
+
         mock_plot_func.assert_called_once_with(
             pre_df=_df,
             post_df=_df,
@@ -289,6 +321,7 @@ class TestCheckForOpsCurveShift:
             f"{CurveTypes.POWER_CURVE.value}_shift": np.nan,
             f"{CurveTypes.RPM.value}_shift": np.nan,
             f"{CurveTypes.PITCH.value}_shift": np.nan,
+            f"{CurveTypes.WIND_SPEED.value}_shift": np.nan,
         }
 
         assert actual == expected

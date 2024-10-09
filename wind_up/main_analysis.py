@@ -24,7 +24,7 @@ from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.northing import (
     check_wtg_northing,
 )
-from wind_up.ops_curve_shift import check_for_ops_curve_shift
+from wind_up.ops_curve_shift import CurveTypes, check_for_ops_curve_shift
 from wind_up.plots.data_coverage_plots import plot_detrend_data_cov, plot_pre_post_data_cov
 from wind_up.plots.detrend_plots import plot_apply_wsratio_v_wd_scen
 from wind_up.plots.scada_funcs_plots import print_filter_stats
@@ -652,9 +652,10 @@ def calc_test_ref_results(
         "ref_max_northing_error_v_wf": ref_max_northing_error_v_wf,
         "ref_max_ws_drift": ref_max_ws_drift,
         "ref_max_ws_drift_pp_period": ref_max_ws_drift_pp_period,
-        "ref_powercurve_shift": ref_ops_curve_shift_dict["powercurve_shift"],
-        "ref_rpm_shift": ref_ops_curve_shift_dict["rpm_shift"],
-        "ref_pitch_shift": ref_ops_curve_shift_dict["pitch_shift"],
+        "ref_powercurve_shift": ref_ops_curve_shift_dict[f"{CurveTypes.POWER_CURVE.value}_shift"],
+        "ref_rpm_shift": ref_ops_curve_shift_dict[f"{CurveTypes.RPM.value}_shift"],
+        "ref_pitch_shift": ref_ops_curve_shift_dict[f"{CurveTypes.PITCH.value}_shift"],
+        "ref_wind_speed_shift": ref_ops_curve_shift_dict[f"{CurveTypes.WIND_SPEED.value}_shift"],
         "detrend_pre_r2_improvement": detrend_pre_r2_improvement,
         "detrend_post_r2_improvement": detrend_post_r2_improvement,
         "mean_power_pre": pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
@@ -803,9 +804,10 @@ def run_wind_up_analysis(
             "lt_wtg_hours_filt": lt_df_filt["observed_hours"].sum() if lt_df_filt is not None else 0,
             "test_max_ws_drift": test_max_ws_drift,
             "test_max_ws_drift_pp_period": test_max_ws_drift_pp_period,
-            "test_powercurve_shift": test_ops_curve_shift_dict["powercurve_shift"],
-            "test_rpm_shift": test_ops_curve_shift_dict["rpm_shift"],
-            "test_pitch_shift": test_ops_curve_shift_dict["pitch_shift"],
+            "test_powercurve_shift": test_ops_curve_shift_dict[f"{CurveTypes.POWER_CURVE.value}_shift"],
+            "test_rpm_shift": test_ops_curve_shift_dict[f"{CurveTypes.RPM.value}_shift"],
+            "test_pitch_shift": test_ops_curve_shift_dict[f"{CurveTypes.PITCH.value}_shift"],
+            "test_wind_speed_shift": test_ops_curve_shift_dict[f"{CurveTypes.WIND_SPEED.value}_shift"],
             "preprocess_warning_counts": preprocess_warning_counts,
             "test_warning_counts": len(result_manager.stored_warnings),
         }

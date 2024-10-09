@@ -14,24 +14,35 @@ if TYPE_CHECKING:
     from wind_up.models import PlotConfig, WindUpConfig
 
 
-class CurveThresholds(Enum):
-    POWER_CURVE = 0.01
-    RPM = 0.005
-    PITCH = 0.1
-
-
 class CurveTypes(str, Enum):
     POWER_CURVE = "powercurve"
     RPM = "rpm"
     PITCH = "pitch"
+    WIND_SPEED = "windspeed"
+
+
+CURVE_CONSTANTS = {
+    CurveTypes.POWER_CURVE.value: {"warning_threshold": 0.01, "x_bin_width": 1},
+    CurveTypes.RPM.value: {"warning_threshold": 0.005, "x_bin_width": 0},
+    CurveTypes.PITCH.value: {"warning_threshold": 0.1, "x_bin_width": 1},
+    CurveTypes.WIND_SPEED.value: {"warning_threshold": 0.01, "x_bin_width": 1},
+}
 
 
 class CurveConfig(BaseModel):
     name: CurveTypes
     x_col: str
     y_col: str
-    x_bin_width: int
-    warning_threshold: float
+    x_bin_width: int | float | None = None
+    warning_threshold: float | None = None
+
+    @model_validator(mode="after")
+    def validate_constants(self) -> CurveConfig:
+        if self.x_bin_width is None:
+            self.x_bin_width = CURVE_CONSTANTS[self.name]["x_bin_width"]
+        if self.warning_threshold is None:
+            self.warning_threshold = CURVE_CONSTANTS[self.name]["warning_threshold"]
+        return self
 
 
 class CurveShiftInput(BaseModel):
@@ -83,6 +94,7 @@ def check_for_ops_curve_shift(
         f"{CurveTypes.POWER_CURVE.value}_shift": np.nan,
         f"{CurveTypes.RPM.value}_shift": np.nan,
         f"{CurveTypes.PITCH.value}_shift": np.nan,
+        f"{CurveTypes.WIND_SPEED.value}_shift": np.nan,
     }
 
     required_cols = OpsCurveRequiredColumns(wind_speed=scada_ws_col, power=pw_col, pitch=pt_col, rpm=rpm_col)
@@ -102,6 +114,10 @@ def check_for_ops_curve_shift(
 
     results_dict[f"{CurveTypes.PITCH.value}_shift"] = calculate_pitch_curve_shift(
         turbine_name=wtg_name, pre_df=pre_df, post_df=post_df, x_col=scada_ws_col, y_col=pt_col
+    )
+
+    results_dict[f"{CurveTypes.WIND_SPEED.value}_shift"] = calculate_wind_speed_curve_shift(
+        turbine_name=wtg_name, pre_df=pre_df, post_df=post_df, x_col=pw_col, y_col=scada_ws_col
     )
 
     if plot:
@@ -124,13 +140,7 @@ def check_for_ops_curve_shift(
 def calculate_power_curve_shift(
     turbine_name: str, pre_df: pd.DataFrame, post_df: pd.DataFrame, x_col: str, y_col: str
 ) -> float:
-    curve_config = CurveConfig(
-        name=CurveTypes.POWER_CURVE.value,
-        x_col=x_col,
-        y_col=y_col,
-        x_bin_width=1,
-        warning_threshold=CurveThresholds.POWER_CURVE.value,
-    )
+    curve_config = CurveConfig(name=CurveTypes.POWER_CURVE.value, x_col=x_col, y_col=y_col)
 
     curve_shift_input = CurveShiftInput(
         turbine_name=turbine_name, pre_df=pre_df, post_df=post_df, curve_config=curve_config
@@ -142,9 +152,7 @@ def calculate_power_curve_shift(
 def calculate_rpm_curve_shift(
     turbine_name: str, pre_df: pd.DataFrame, post_df: pd.DataFrame, x_col: str, y_col: str
 ) -> float:
-    curve_config = CurveConfig(
-        name=CurveTypes.RPM.value, x_col=x_col, y_col=y_col, x_bin_width=0, warning_threshold=CurveThresholds.RPM.value
-    )
+    curve_config = CurveConfig(name=CurveTypes.RPM.value, x_col=x_col, y_col=y_col)
 
     curve_shift_input = CurveShiftInput(
         turbine_name=turbine_name, pre_df=pre_df, post_df=post_df, curve_config=curve_config
@@ -156,13 +164,19 @@ def calculate_rpm_curve_shift(
 def calculate_pitch_curve_shift(
     turbine_name: str, pre_df: pd.DataFrame, post_df: pd.DataFrame, x_col: str, y_col: str
 ) -> float:
-    curve_config = CurveConfig(
-        name=CurveTypes.PITCH.value,
-        x_col=x_col,
-        y_col=y_col,
-        x_bin_width=1,
-        warning_threshold=CurveThresholds.PITCH.value,
+    curve_config = CurveConfig(name=CurveTypes.PITCH.value, x_col=x_col, y_col=y_col)
+
+    curve_shift_input = CurveShiftInput(
+        turbine_name=turbine_name, pre_df=pre_df, post_df=post_df, curve_config=curve_config
     )
+
+    return _calculate_curve_shift(curve_shift_input=curve_shift_input)
+
+
+def calculate_wind_speed_curve_shift(
+    turbine_name: str, pre_df: pd.DataFrame, post_df: pd.DataFrame, x_col: str, y_col: str
+) -> float:
+    curve_config = CurveConfig(name=CurveTypes.WIND_SPEED.value, x_col=x_col, y_col=y_col)
 
     curve_shift_input = CurveShiftInput(
         turbine_name=turbine_name, pre_df=pre_df, post_df=post_df, curve_config=curve_config
@@ -194,7 +208,7 @@ def _calculate_curve_shift(curve_shift_input: CurveShiftInput) -> float:
     post_df = curve_shift_input.post_df
     wtg_name = curve_shift_input.turbine_name
 
-    bins = np.arange(0, pre_df[conf.x_col].max() + conf.x_bin_width, conf.x_bin_width) if conf.x_bin_width > 0 else 10
+    bins = np.arange(0, pre_df[conf.x_col].max() + conf.x_bin_width, conf.x_bin_width) if conf.x_bin_width > 0 else 10  # type: ignore[operator]
 
     mean_curve = pre_df.groupby(pd.cut(pre_df[conf.x_col], bins=bins, retbins=False), observed=True).agg(
         x_mean=pd.NamedAgg(column=conf.x_col, aggfunc="mean"),
