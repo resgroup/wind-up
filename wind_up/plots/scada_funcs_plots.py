@@ -187,6 +187,8 @@ def plot_ops_curve_timelines_one_wtg(wtg_df: pd.DataFrame, wtg_name: str, title_
         ]
     )
     gen_df = dropna_df[dropna_df[DataColumns.active_power_mean] > 0].copy()
+    if gen_df.empty:
+        return
 
     for descr, x_var, y_var, x_bin_width in [
         ("power curve", DataColumns.wind_speed_mean, DataColumns.active_power_mean, 1),
