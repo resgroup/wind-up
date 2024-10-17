@@ -24,9 +24,10 @@ from wind_up.models import PlotConfig, Turbine, WindUpConfig
 from wind_up.northing import (
     check_wtg_northing,
 )
+from wind_up.ops_curve_shift import CurveTypes, check_for_ops_curve_shift
 from wind_up.plots.data_coverage_plots import plot_detrend_data_cov, plot_pre_post_data_cov
 from wind_up.plots.detrend_plots import plot_apply_wsratio_v_wd_scen
-from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post, print_filter_stats
+from wind_up.plots.scada_funcs_plots import print_filter_stats
 from wind_up.plots.yaw_direction_plots import plot_yaw_direction_pre_post
 from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
 from wind_up.result_manager import result_manager
@@ -365,78 +366,6 @@ def yaw_offset_results(
     return results
 
 
-def check_for_ops_curve_shift(
-    pre_df: pd.DataFrame,
-    post_df: pd.DataFrame,
-    *,
-    wtg_name: str,
-    scada_ws_col: str,
-    pw_col: str,
-    rpm_col: str,
-    pt_col: str,
-    cfg: WindUpConfig,
-    plot_cfg: PlotConfig,
-    sub_dir: str | None = None,
-) -> dict[str, float]:
-    results_dict = {
-        "powercurve_shift": np.nan,
-        "rpm_shift": np.nan,
-        "pitch_shift": np.nan,
-    }
-    # check if all required columns are present
-    required_cols = [scada_ws_col, pw_col, pt_col, rpm_col]
-    for req_col in required_cols:
-        if req_col not in pre_df.columns:
-            msg = f"check_for_ops_curve_shift {wtg_name} pre_df missing required column {req_col}"
-            result_manager.warning(msg)
-            return results_dict
-        if req_col not in post_df.columns:
-            msg = f"check_for_ops_curve_shift {wtg_name} post_df missing required column {req_col}"
-            result_manager.warning(msg)
-            return results_dict
-    pre_dropna_df = pre_df.dropna(subset=[scada_ws_col, pw_col, pt_col, rpm_col]).copy()
-    post_dropna_df = post_df.dropna(subset=[scada_ws_col, pw_col, pt_col, rpm_col]).copy()
-
-    warning_msg: str | None = None
-    for descr, x_var, y_var, x_bin_width, warn_thresh in [
-        ("powercurve_shift", scada_ws_col, pw_col, 1, 0.01),
-        ("rpm_shift", pw_col, rpm_col, 0, 0.005),
-        ("pitch_shift", scada_ws_col, pt_col, 1, 0.1),
-    ]:
-        bins = np.arange(0, pre_dropna_df[x_var].max() + x_bin_width, x_bin_width) if x_bin_width > 0 else 10
-        mean_curve = pre_dropna_df.groupby(pd.cut(pre_dropna_df[x_var], bins=bins, retbins=False), observed=True).agg(
-            x_mean=pd.NamedAgg(column=x_var, aggfunc="mean"),
-            y_mean=pd.NamedAgg(column=y_var, aggfunc="mean"),
-        )
-        post_dropna_df["expected_y"] = np.interp(post_dropna_df[x_var], mean_curve["x_mean"], mean_curve["y_mean"])
-        mean_df = post_dropna_df.mean()
-        if y_var == pt_col:
-            results_dict[descr] = mean_df[y_var] - mean_df["expected_y"]
-        else:
-            results_dict[descr] = (mean_df[y_var] / mean_df["expected_y"] - 1).clip(-1, 1)
-        if abs(results_dict[descr]) > warn_thresh:
-            if warning_msg is None:
-                warning_msg = f"{wtg_name} check_for_ops_curve_shift warnings:"
-            warning_msg += f" abs({descr}) > {warn_thresh}: {abs(results_dict[descr]):.3f}"
-    if warning_msg is not None:
-        result_manager.warning(warning_msg)
-
-    compare_ops_curves_pre_post(
-        pre_df=pre_df,
-        post_df=post_df,
-        wtg_name=wtg_name,
-        ws_col=scada_ws_col,
-        pw_col=pw_col,
-        pt_col=pt_col,
-        rpm_col=rpm_col,
-        plot_cfg=plot_cfg,
-        is_toggle_test=(cfg.toggle is not None),
-        sub_dir=sub_dir,
-    )
-
-    return results_dict
-
-
 def calc_test_ref_results(
     *,
     test_df: pd.DataFrame,
@@ -723,9 +652,10 @@ def calc_test_ref_results(
         "ref_max_northing_error_v_wf": ref_max_northing_error_v_wf,
         "ref_max_ws_drift": ref_max_ws_drift,
         "ref_max_ws_drift_pp_period": ref_max_ws_drift_pp_period,
-        "ref_powercurve_shift": ref_ops_curve_shift_dict["powercurve_shift"],
-        "ref_rpm_shift": ref_ops_curve_shift_dict["rpm_shift"],
-        "ref_pitch_shift": ref_ops_curve_shift_dict["pitch_shift"],
+        "ref_powercurve_shift": ref_ops_curve_shift_dict[f"{CurveTypes.POWER_CURVE.value}_shift"],
+        "ref_rpm_shift": ref_ops_curve_shift_dict[f"{CurveTypes.RPM.value}_shift"],
+        "ref_pitch_shift": ref_ops_curve_shift_dict[f"{CurveTypes.PITCH.value}_shift"],
+        "ref_wind_speed_shift": ref_ops_curve_shift_dict[f"{CurveTypes.WIND_SPEED.value}_shift"],
         "detrend_pre_r2_improvement": detrend_pre_r2_improvement,
         "detrend_post_r2_improvement": detrend_post_r2_improvement,
         "mean_power_pre": pre_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
@@ -874,9 +804,10 @@ def run_wind_up_analysis(
             "lt_wtg_hours_filt": lt_df_filt["observed_hours"].sum() if lt_df_filt is not None else 0,
             "test_max_ws_drift": test_max_ws_drift,
             "test_max_ws_drift_pp_period": test_max_ws_drift_pp_period,
-            "test_powercurve_shift": test_ops_curve_shift_dict["powercurve_shift"],
-            "test_rpm_shift": test_ops_curve_shift_dict["rpm_shift"],
-            "test_pitch_shift": test_ops_curve_shift_dict["pitch_shift"],
+            "test_powercurve_shift": test_ops_curve_shift_dict[f"{CurveTypes.POWER_CURVE.value}_shift"],
+            "test_rpm_shift": test_ops_curve_shift_dict[f"{CurveTypes.RPM.value}_shift"],
+            "test_pitch_shift": test_ops_curve_shift_dict[f"{CurveTypes.PITCH.value}_shift"],
+            "test_wind_speed_shift": test_ops_curve_shift_dict[f"{CurveTypes.WIND_SPEED.value}_shift"],
             "preprocess_warning_counts": preprocess_warning_counts,
             "test_warning_counts": len(result_manager.stored_warnings),
         }

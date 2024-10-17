@@ -132,7 +132,10 @@ filterwarnings = [
 omit = [
     "wind_up/plots/*.py",
 ]
-exclude_lines = ["if __name__ == .__main__.:"]
+exclude_lines = [
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:"
+]
 
 [tool.poe.tasks]
 [tool.poe.tasks.lint]
