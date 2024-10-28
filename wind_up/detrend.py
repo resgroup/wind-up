@@ -233,9 +233,16 @@ def apply_wsratio_v_wd_scen(
     ref_ws_col: str,
     ref_wd_col: str,
 ) -> pd.DataFrame:
+    try:
+        scenario_set_wsratio_dir_scen = set(
+            wsratio_v_dir_scen.dropna(subset="ws_rom").index.unique(level="waking_scenario")
+        )
+    except KeyError as e:  # KeyError: 'Requested level (waking_scenario) does not match index name (None)'
+        logger.warning(e)
+        scenario_set_wsratio_dir_scen = set()
+
     scen_list = list(
-        set(p_df.dropna(subset=[ref_ws_col, ref_wd_col])["waking_scenario"].unique())
-        & set(wsratio_v_dir_scen.dropna(subset="ws_rom").index.unique(level="waking_scenario")),
+        set(p_df.dropna(subset=[ref_ws_col, ref_wd_col])["waking_scenario"].unique()) & scenario_set_wsratio_dir_scen
     )
     all_scens_df = pd.DataFrame()
     for scen in scen_list:

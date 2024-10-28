@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -11,6 +12,9 @@ from wind_up.result_manager import result_manager
 
 if TYPE_CHECKING:
     from wind_up.models import PlotConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 def plot_pre_post_binned_power_curves(
@@ -195,10 +199,11 @@ def plot_pre_post_condition_histogram(
         msg = f"plot_pre_post_condition_histogram ref_name={ref_name} post_df missing required column {col}"
         result_manager.warning(msg)
         return
-    if first_bin_start is None:
-        first_bin_start = round(min(pre_df[col].min(), post_df[col].min()) - bin_width / 2)
-    if last_bin_end is None:
-        last_bin_end = max(pre_df[col].max(), post_df[col].max())
+    if pre_df.empty or post_df.empty:
+        _ref_and_test_str = f"ref: {ref_name}, test: {test_name}"
+        logger.warning("%s - Cannot plot condition histogram as some required data is empty", _ref_and_test_str)
+    first_bin_start = first_bin_start or round(min(pre_df[col].min(), post_df[col].min()) - bin_width / 2)
+    last_bin_end = last_bin_end or max(pre_df[col].max(), post_df[col].max())
     bins = list(
         np.arange(
             first_bin_start,

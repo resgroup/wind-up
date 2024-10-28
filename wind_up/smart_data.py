@@ -122,9 +122,9 @@ def check_and_convert_scada_raw(
     scada_raw.set_index([scada_raw.index, "TurbineName"], verify_integrity=True)
 
     turbine_rows = scada_raw.groupby("TurbineName", observed=False)["TurbineName"].count().to_frame()
-    rows_per_turbine = turbine_rows.max().iloc[0]
-    if rows_per_turbine != turbine_rows.min().iloc[0]:
-        msg = f"turbines have different number of rows: {rows_per_turbine} != {turbine_rows.min().iloc[0]}"
+    max_rows_per_turbine = turbine_rows.max().iloc[0]
+    if max_rows_per_turbine != turbine_rows.min().iloc[0]:
+        msg = f"turbines have different number of rows: {max_rows_per_turbine} != {turbine_rows.min().iloc[0]}"
         result_manager.warning(msg)
         logger.info("attempting to repair")
         rows_before = len(scada_raw)
@@ -147,7 +147,7 @@ def check_and_convert_scada_raw(
 
         turbine_rows = reindexed_df.groupby("TurbineName", observed=False)["TurbineName"].count().to_frame()
         new_rows_per_turbine = turbine_rows.max().iloc[0]
-        if new_rows_per_turbine == turbine_rows.min().iloc[0] and new_rows_per_turbine == rows_per_turbine:
+        if new_rows_per_turbine == turbine_rows.min().iloc[0]:
             logger.info(f"repair successful. rows before: {rows_before}, rows after: {rows_after}")
             scada_raw = reindexed_df
         else:
@@ -155,7 +155,8 @@ def check_and_convert_scada_raw(
             raise RuntimeError(msg)
     rows_per_hour = 3600 / timebase_s
     logger.info(
-        f"loaded {len(turbine_rows)} turbines, {rows_per_turbine / rows_per_hour / 24 / 365.25:.1f} years per turbine"
+        f"loaded {len(turbine_rows)} turbines, {max_rows_per_turbine / rows_per_hour / 24 / 365.25:.1f} "
+        "years per turbine"
     )
     return scada_raw
 

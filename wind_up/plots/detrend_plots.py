@@ -216,6 +216,12 @@ def plot_check_wsratio_v_dir(
     ref_wd_col: str,
     plot_cfg: PlotConfig,
 ) -> None:
+    if pre_wsratio_v_dir.empty:
+        logger.warning("pre_wsratio_v_dir is empty")
+        return
+    if pre_wsratio_v_dir.empty:
+        logger.warning("post_wsratio_v_dir is empty")
+        return
     scen_to_plot = (
         pd.concat([pre_wsratio_v_dir, post_wsratio_v_dir])
         .dropna(subset="ws_rom")
