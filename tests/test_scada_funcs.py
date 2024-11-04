@@ -23,29 +23,32 @@ from wind_up.scada_funcs import (
 
 
 def test_filter_stuck_data() -> None:
+    # Construct input dataframe with stuck rows
     wtgs = ["MRG_T01", "MRG_T02", "MRG_T03"]
-    tstamps = pd.date_range(start="2021-01-01", tz="UTC", periods=3, freq="10min")
+    tstamps = pd.date_range(start="2021-01-01", tz="UTC", periods=3, freq=pd.Timedelta(minutes=10))
     idx = pd.MultiIndex.from_product([wtgs, tstamps], names=["TurbineName", TIMESTAMP_COL])
-    adf = pd.DataFrame(
+    any_timestamp = pd.Timestamp("2000-01-01 00:00:00")
+    input_df = pd.DataFrame(
         data={
             "ActivePowerMean": [5.1, 5.1, 5.1, 0.0, 0.0, 0.0, 5.1, 5.1, 5.1],
             "WindSpeedMean": [5.1, 5.1, np.nan, 0.0, 0.0, 0.0, 5.1, 5.1, 5.1],
             "YawAngleMean": [5.1, 5.1, 5.1, 0.0, 0.0, 0.0, 5.1, 5.1, 17],
             "some_col_with_nans": [np.nan] * 9,
+            "some_col_with_datetimes": [any_timestamp] * 9,
         },
         index=idx,
     )
-    adf = filter_stuck_data(adf)
-    edf = pd.DataFrame(
-        data={
-            "ActivePowerMean": [5.1, np.nan, np.nan, 0.0, 0.0, 0.0, 5.1, np.nan, 5.1],
-            "WindSpeedMean": [5.1, np.nan, np.nan, 0.0, 0.0, 0.0, 5.1, np.nan, 5.1],
-            "YawAngleMean": [5.1, np.nan, np.nan, 0.0, 0.0, 0.0, 5.1, np.nan, 17],
-            "some_col_with_nans": [np.nan] * 9,
-        },
-        index=idx,
-    )
-    assert_frame_equal(edf, adf)
+
+    # Construct expected output with the processed stuck rows
+    expected = input_df.copy()
+    expected.iloc[1:3, :] = np.nan
+    expected.iloc[-2, :] = np.nan
+
+    # Run the function
+    actual = filter_stuck_data(input_df)
+
+    # Check the output is as expected
+    assert_frame_equal(actual, expected)
 
 
 def test_filter_bad_pw_ws() -> None:

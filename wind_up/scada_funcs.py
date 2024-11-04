@@ -28,7 +28,15 @@ ExclusionPeriodsType = list[tuple[str, dt.datetime, dt.datetime]]
 
 
 def filter_stuck_data(df: pd.DataFrame) -> pd.DataFrame:
-    diffdf = df.groupby("TurbineName", observed=False).ffill().fillna(0).diff()
+    """
+    Filter out rows where all columns (except timestamp columns) are the same as the previous row
+    (only where the wind is greater than a low wind threshold).
+
+    :param df: time series where the index is a MultiIndex with levels "TurbineName" and "<your timestamp index name>"
+    :return: dataframe with stuck data rows set to NA
+    """
+    timestamp_columns = [col for col, data_type in df.dtypes.to_dict().items() if "date" in data_type.name]
+    diffdf = df.drop(columns=timestamp_columns).groupby("TurbineName", observed=False).ffill().fillna(0).diff()
     stuck_data = (diffdf == 0).all(axis=1)
     very_low_wind_threshold = 1.5
     very_low_wind = df["WindSpeedMean"] < very_low_wind_threshold
