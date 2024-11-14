@@ -224,9 +224,7 @@ def _calculate_curve_shift(curve_shift_input: CurveShiftInput) -> float:
 
     # log warning
     if abs(result) > conf.warning_threshold:
-        warning_msg = (
-            f"{wtg_name} Ops Curve Shift warning: abs({conf.name}) > {conf.warning_threshold}: {abs(result):.3f}"
-        )
+        warning_msg = f"{wtg_name} Ops Curve Shift warning: abs({conf.name}) > {conf.warning_threshold}: {result:.3f}"
         result_manager.warning(warning_msg)
 
     return result

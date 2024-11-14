@@ -118,6 +118,7 @@ def test_calculate_power_curve_shift(
 
     if abs(expected) > CURVE_CONSTANTS[CurveTypes.POWER_CURVE.value]["warning_threshold"]:
         assert "Ops Curve Shift warning" in caplog.text
+        assert f": {actual:.3f}" in caplog.text  # check the actual value (including its +/- sign) is in the log message
 
     np.testing.assert_almost_equal(actual=actual, desired=expected)
 
