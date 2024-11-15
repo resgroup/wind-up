@@ -1,12 +1,7 @@
-name: Lint and test
+name: Execute Smarteole Example notebook
 
 on:
   push:
-    branches:
-      - main
-    paths-ignore:
-      - 'examples/smarteole_example.ipynb'
-  pull_request:
     branches:
       - main
     paths-ignore:
@@ -15,8 +10,10 @@ on:
 
 
 permissions:
-  contents: read
+  contents: write
 
+env:
+ BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
 jobs:
   lint-and-test:
@@ -24,10 +21,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.x"]
+        python-version: ["3.x"]
         os: [ubuntu-latest]
     steps:
     - uses: actions/checkout@v4
+      with:
+        ref: ${{ env.BRANCH_NAME }}
     - name: "set up Python ${{ matrix.python-version }}"
       uses: actions/setup-python@v5
       with:
@@ -55,3 +54,14 @@ jobs:
         source .venv/bin/activate
         poe lint-check
         poe test
+    - name: 'execute smarteole example notebook and push changes'
+      run: |
+        source .venv/bin/activate
+        poe smarteole-nb
+        git add -A
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        if git status | grep -q modified; then
+          git commit -m "Update smarteole example notebook"
+          git push
+        fi

@@ -208,7 +208,7 @@ def _calculate_curve_shift(curve_shift_input: CurveShiftInput) -> float:
     post_df = curve_shift_input.post_df
     wtg_name = curve_shift_input.turbine_name
 
-    bins = np.arange(0, pre_df[conf.x_col].max() + conf.x_bin_width, conf.x_bin_width) if conf.x_bin_width > 0 else 10  # type: ignore[operator]
+    bins = np.arange(0, pre_df[conf.x_col].max() + conf.x_bin_width, conf.x_bin_width) if conf.x_bin_width > 0 else 10  # type: ignore[operator,var-annotated]
 
     mean_curve = pre_df.groupby(pd.cut(pre_df[conf.x_col], bins=bins, retbins=False), observed=True).agg(
         x_mean=pd.NamedAgg(column=conf.x_col, aggfunc="mean"),
