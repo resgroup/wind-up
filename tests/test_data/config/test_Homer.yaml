@@ -1,0 +1,14 @@
+assessment_name: test_Homer
+test_wtgs:
+    - HMR_T01
+ref_wtgs:
+    - HMR_T02
+upgrade_first_dt_utc_start: 2018-06-14 18:00:00
+analysis_last_dt_utc_start: 2019-06-14 17:50:00
+years_offset_for_pre_period: 1
+years_for_lt_distribution: 1
+years_for_detrend: 1
+ws_bin_width: 1
+reanalysis_method: node_with_best_ws_corr
+asset: !include asset/HMR.yaml
+optimize_northing_corrections: true

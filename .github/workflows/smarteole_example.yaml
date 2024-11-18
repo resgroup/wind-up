@@ -1,0 +1,76 @@
+name: Execute Smarteole Example notebook
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+ BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+
+jobs:
+  run-smarteole-notebook:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.x"]
+        os: [ubuntu-latest]
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ env.BRANCH_NAME }}
+    - name: "set up Python ${{ matrix.python-version }}"
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: 'evaluate last commit'
+      run: |
+        echo "LAST_COMMIT_MESSAGE=$(git log -1 | grep "smarteole_example.ipynb updated by GitHubAction")" >> $GITHUB_ENV
+
+    - uses: actions/cache@v4
+      if: ${{ !contains(env.LAST_COMMIT_MESSAGE, 'smarteole_example.ipynb updated by GitHubAction') }}
+      id: cache-venv
+      with:
+        path: ./.venv/
+        key: ${{ matrix.python-version }}-venv-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          ${{ matrix.python-version }}-venv
+    - name: 'add examples to pyproject.toml as a module so notebook imports work in CI'
+      if: ${{ !contains(env.LAST_COMMIT_MESSAGE, 'smarteole_example.ipynb updated by GitHubAction') }}
+      run: |
+        sed -i 's!\["wind_up\*"\]!\["wind_up\*", "examples"\]!' pyproject.toml
+    - name: 'create environment and install dependencies'
+      if: ${{ (steps.cache-venv.outputs.cache-hit != 'true') && (!contains(env.LAST_COMMIT_MESSAGE, 'smarteole_example.ipynb updated by GitHubAction')) }}
+      run: |
+        python -m venv .venv
+        source .venv/bin/activate
+        pip install .[all]
+    - name: 'update dependencies'
+      if: ${{ (steps.cache-venv.outputs.cache-hit == 'true') && (!contains(env.LAST_COMMIT_MESSAGE, 'smarteole_example.ipynb updated by GitHubAction')) }}
+      run: |
+        source .venv/bin/activate
+        pip install -U .[all]
+    - name: 'revert temporary changes that were made on pyproject.toml'
+      run: |
+        sed -i 's!\["wind_up\*", "examples"\]!\["wind_up\*"\]!' pyproject.toml
+
+    - name: 'execute smarteole example notebook and push changes'
+      if: ${{ !contains(env.LAST_COMMIT_MESSAGE, 'smarteole_example.ipynb updated by GitHubAction') }}
+      run: |
+        source .venv/bin/activate
+        poe smarteole-nb
+        git add -A
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHubAction"
+        if git status | grep -q modified; then
+          git commit --amend -m"$(git log --format=%B -n1)" -m"smarteole_example.ipynb updated by GitHubAction"
+          git push --force-with-lease
+        fi

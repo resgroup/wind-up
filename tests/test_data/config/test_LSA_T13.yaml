@@ -1,0 +1,25 @@
+assessment_name: test_LSA_T13_upgrade
+test_wtgs:
+    - LSA_T13
+ref_wtgs:
+    - LSA_T12
+non_wtg_ref_names:
+    - reanalysis
+upgrade_first_dt_utc_start: 2021-09-30 00:00:00
+analysis_last_dt_utc_start: 2022-07-20 23:50:00
+years_offset_for_pre_period: 1
+years_for_lt_distribution: 3
+years_for_detrend: 3
+ws_bin_width: 1
+reanalysis_method: node_with_best_ws_corr
+asset: !include asset/LSA.yaml
+exclusion_periods_utc:
+    - ['LSA_T13', 2021-09-21 12:40:00, 2021-09-29 18:10:00]
+optimize_northing_corrections: false
+northing_corrections_utc:
+    - ['LSA_T07', 2018-07-20 23:50:00, -15]
+    - ['LSA_T09', 2018-07-20 23:50:00, 16]
+    - ['LSA_T12', 2018-07-20 23:50:00, -162]
+    - ['LSA_T12', 2020-06-18 00:14:30, 10]
+    - ['LSA_T13', 2018-07-20 23:50:00, 3]
+    - ['LSA_T14', 2018-07-20 23:50:00, -9]

@@ -1,0 +1,6 @@
+turbine_type: A90-1.9MW-90
+rated_power_kw: 1900
+rotor_diameter_m: 90
+normal_operation_pitch_range: [-10,40]
+normal_operation_genrpm_range: [800,1600]
+rpm_v_pw_margin_factor: 0.1

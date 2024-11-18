@@ -1,0 +1,6 @@
+turbine_type: B-1.0-62
+rated_power_kw: 1000
+rotor_diameter_m: 62
+normal_operation_pitch_range: [-10,5]
+normal_operation_genrpm_range: [950,1550]
+pitch_to_stall: True

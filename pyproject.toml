@@ -1,0 +1,170 @@
+[project]
+name = "res-wind-up"
+version = "0.1.10"
+authors = [
+    { name = "Alex Clerc", email = "alex.clerc@res-group.com" }
+]
+description = "A tool to assess yield uplift of wind turbines"
+readme = "README.md"
+requires-python = ">=3.9,<4.0"
+license = { file = "LICENSE.txt" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering"
+]
+dependencies = [
+    'eval-type-backport',
+    'geographiclib',
+    'matplotlib',
+    'pandas >= 2.0.0',
+    'pyarrow',
+    'pydantic >= 2.0.0',
+    'python-dotenv',
+    'pyyaml',
+    'ruptures',
+    'scipy',
+    'seaborn',
+    'tabulate',
+    'toml',
+    'tqdm',
+    'utm',
+]
+
+[project.urls]
+Homepage = "https://github.com/resgroup/wind-up"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+dev = [
+    'pytest',
+    'coverage',
+    'poethepoet',
+    'types-pyyaml',
+    'types-tabulate',
+    'types-toml',
+    'types-tqdm',
+    'types-requests',
+    'ruff',
+    'mypy',
+]
+examples = [
+    'jupyterlab',
+    'notebook',
+    'ipywidgets',
+    'requests',
+]
+all = ["res-wind-up[dev,examples]"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["wind_up*"]
+
+[tool.ruff]
+line-length = 120
+show-fixes = true
+
+[tool.ruff.lint]
+select = ["ALL"] # https://beta.ruff.rs/docs/rules/
+ignore = [
+    "ANN101", # `self` doesn't need annotations
+    "ANN102", # `cls` doesn't need annotations
+    "ANN204", # `__init__` doesn't need annotations
+    "S301", # `pickle` and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue
+    "D", # docstring checks
+    "PGH004", # Use specific rule codes when using `noqa`. Seems to give false alarms
+    "COM812", # can conflict with ruff formatter
+    "ISC001", # can conflict with ruff formatter
+    "G004", # logging statement can use f-string
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12 # try to bring this down to 10
+
+[tool.ruff.lint.pylint]
+max-branches = 14 # try to bring this down to 12
+max-statements = 66 # try to bring this down to 50
+max-args = 17 # try to bring this down to 5
+
+[tool.ruff.lint.per-file-ignores]
+"wind_up/models.py" = ["N805", "PERF401"] # try to eliminate this
+"tests/**/*.py" = ["S101", "PLR2004"]  # allow `assert` and magic values in tests
+"tests/test_smart_data.py" = ["DTZ001"]  # SMART functions use tz naive datetimes
+"**/__init__.py" = ["F401"]  # ignore unused imports in __init__.py
+"examples/**/*.py" = ["T20"]  # allow print in examples
+
+[tool.mypy]
+plugins = ["pydantic.mypy"]
+exclude = "build|tests|venv|.venv|__ignore__"
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "geographiclib.geodesic",
+    "pandas",
+    "pandas.testing",
+    "ruptures",
+    "scipy.stats",
+    "seaborn",
+    "utm",
+]
+disable_error_code = ["name-defined"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "error",
+    "ignore:Passing unrecognized arguments to super:DeprecationWarning",  # pycharm debugger issue
+    "ignore:Passing a BlockManager to DataFrame is deprecated:DeprecationWarning",
+]
+
+[tool.coverage.report]
+omit = [
+    "wind_up/plots/*.py",
+]
+exclude_lines = [
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:"
+]
+
+[tool.poe.tasks]
+[tool.poe.tasks.lint]
+help = "Runs formater and linter"
+sequence = [
+    { cmd = "ruff format ." },
+    { cmd = "ruff check . --fix" },
+    { cmd = "mypy ." }
+]
+
+[tool.poe.tasks.lint-check]
+help = "Checks formatter and linter"
+sequence = [
+    { cmd = "ruff format . --check" },
+    { cmd = "ruff check ." },
+    { cmd = "mypy ." }
+]
+
+[tool.poe.tasks.test]
+help = "Runs unit tests and show coverage"
+sequence = [
+    { cmd = "coverage run --source wind_up -m pytest ./tests" },
+    { cmd = "coverage report -m" },
+]
+
+[tool.poe.tasks.smarteole-nb]
+help = "Runs Smarteole notebook"
+shell = "jupyter nbconvert --execute --to notebook --inplace examples/smarteole_example.ipynb"
+
+[tool.poe.tasks.all]
+help = "Run all required pre-push commands"
+sequence = [{ ref = "lint" }, { ref = "test" }, { ref = "smarteole-nb" }]

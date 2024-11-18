@@ -1,0 +1,15 @@
+name: Marge Wind Farm
+wtgs:
+    - MRG_T01
+    - MRG_T02
+    - MRG_T03
+    - MRG_T04
+    - MRG_T05
+    - MRG_T06
+    - MRG_T07
+    - MRG_T08
+    - MRG_T09
+turbine_types:
+    - !include turbine_type/A90_1p9_90.yaml
+masts_and_lidars:
+    - !include masts_and_lidars/MRG_MetMast_pri.yaml

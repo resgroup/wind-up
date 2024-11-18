@@ -1,0 +1,7 @@
+name: Homer Wind Farm
+wtgs:
+    - HMR_T01
+    - HMR_T02
+turbine_types:
+    - !include turbine_type/B_1p0_62.yaml
+    - !include turbine_type/C_1p3_62.yaml
