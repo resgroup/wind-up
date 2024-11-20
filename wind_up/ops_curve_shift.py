@@ -21,6 +21,11 @@ class CurveTypes(str, Enum):
     WIND_SPEED = "windspeed"
 
 
+class CurveShiftOutput(NamedTuple):
+    value: float
+    warning_msg: str | None
+
+
 CURVE_CONSTANTS = {
     CurveTypes.POWER_CURVE.value: {"warning_threshold": 0.01, "x_bin_width": 1},
     CurveTypes.RPM.value: {"warning_threshold": 0.005, "x_bin_width": 0},
@@ -58,7 +63,7 @@ class CurveShiftInput(BaseModel):
         required_cols = {self.curve_config.x_col, self.curve_config.y_col}
         columns_missing_in_pre_df = required_cols - set(self.pre_df.columns)
         columns_missing_in_post_df = required_cols - set(self.post_df.columns)
-        if columns_missing_in_pre_df or columns_missing_in_post_df:
+        if (len(columns_missing_in_pre_df) > 0) or (len(columns_missing_in_post_df) > 0):
             err_msg = "Column name missing in dataframe"
             raise IndexError(err_msg)
 
@@ -104,21 +109,54 @@ def check_for_ops_curve_shift(
     ):
         return results_dict
 
-    results_dict[f"{CurveTypes.POWER_CURVE.value}_shift"] = calculate_power_curve_shift(
-        turbine_name=wtg_name, pre_df=pre_df, post_df=post_df, x_col=scada_ws_col, y_col=pw_col
+    shift_power = calculate_curve_shift(
+        curve_shift_input=CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=pre_df,
+            post_df=post_df,
+            curve_config=CurveConfig(name=CurveTypes.POWER_CURVE, x_col=scada_ws_col, y_col=pw_col),
+        )
     )
 
-    results_dict[f"{CurveTypes.RPM.value}_shift"] = calculate_rpm_curve_shift(
-        turbine_name=wtg_name, pre_df=pre_df, post_df=post_df, x_col=pw_col, y_col=rpm_col
+    shift_rpm = calculate_curve_shift(
+        curve_shift_input=CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=pre_df,
+            post_df=post_df,
+            curve_config=CurveConfig(name=CurveTypes.RPM, x_col=pw_col, y_col=rpm_col),
+        )
     )
 
-    results_dict[f"{CurveTypes.PITCH.value}_shift"] = calculate_pitch_curve_shift(
-        turbine_name=wtg_name, pre_df=pre_df, post_df=post_df, x_col=scada_ws_col, y_col=pt_col
+    shift_pitch = calculate_curve_shift(
+        curve_shift_input=CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=pre_df,
+            post_df=post_df,
+            curve_config=CurveConfig(name=CurveTypes.PITCH, x_col=scada_ws_col, y_col=pt_col),
+        )
     )
 
-    results_dict[f"{CurveTypes.WIND_SPEED.value}_shift"] = calculate_wind_speed_curve_shift(
-        turbine_name=wtg_name, pre_df=pre_df, post_df=post_df, x_col=pw_col, y_col=scada_ws_col
+    shift_wind_speed = calculate_curve_shift(
+        curve_shift_input=CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=pre_df,
+            post_df=post_df,
+            curve_config=CurveConfig(name=CurveTypes.WIND_SPEED, x_col=pw_col, y_col=scada_ws_col),
+        )
     )
+
+    results_dict[f"{CurveTypes.POWER_CURVE.value}_shift"] = shift_power.value
+    results_dict[f"{CurveTypes.RPM.value}_shift"] = shift_rpm.value
+    results_dict[f"{CurveTypes.PITCH.value}_shift"] = shift_pitch.value
+    results_dict[f"{CurveTypes.WIND_SPEED.value}_shift"] = shift_wind_speed.value
+
+    warning_msg = ""
+    for wm in [shift_power.warning_msg, shift_rpm.warning_msg, shift_pitch.warning_msg, shift_wind_speed.warning_msg]:
+        if wm is not None:
+            warning_msg += wm
+
+    if warning_msg:
+        result_manager.warning(warning_msg)
 
     if plot:
         compare_ops_curves_pre_post(
@@ -135,54 +173,6 @@ def check_for_ops_curve_shift(
         )
 
     return results_dict
-
-
-def calculate_power_curve_shift(
-    turbine_name: str, pre_df: pd.DataFrame, post_df: pd.DataFrame, x_col: str, y_col: str
-) -> float:
-    curve_config = CurveConfig(name=CurveTypes.POWER_CURVE.value, x_col=x_col, y_col=y_col)
-
-    curve_shift_input = CurveShiftInput(
-        turbine_name=turbine_name, pre_df=pre_df, post_df=post_df, curve_config=curve_config
-    )
-
-    return _calculate_curve_shift(curve_shift_input=curve_shift_input)
-
-
-def calculate_rpm_curve_shift(
-    turbine_name: str, pre_df: pd.DataFrame, post_df: pd.DataFrame, x_col: str, y_col: str
-) -> float:
-    curve_config = CurveConfig(name=CurveTypes.RPM.value, x_col=x_col, y_col=y_col)
-
-    curve_shift_input = CurveShiftInput(
-        turbine_name=turbine_name, pre_df=pre_df, post_df=post_df, curve_config=curve_config
-    )
-
-    return _calculate_curve_shift(curve_shift_input=curve_shift_input)
-
-
-def calculate_pitch_curve_shift(
-    turbine_name: str, pre_df: pd.DataFrame, post_df: pd.DataFrame, x_col: str, y_col: str
-) -> float:
-    curve_config = CurveConfig(name=CurveTypes.PITCH.value, x_col=x_col, y_col=y_col)
-
-    curve_shift_input = CurveShiftInput(
-        turbine_name=turbine_name, pre_df=pre_df, post_df=post_df, curve_config=curve_config
-    )
-
-    return _calculate_curve_shift(curve_shift_input=curve_shift_input)
-
-
-def calculate_wind_speed_curve_shift(
-    turbine_name: str, pre_df: pd.DataFrame, post_df: pd.DataFrame, x_col: str, y_col: str
-) -> float:
-    curve_config = CurveConfig(name=CurveTypes.WIND_SPEED.value, x_col=x_col, y_col=y_col)
-
-    curve_shift_input = CurveShiftInput(
-        turbine_name=turbine_name, pre_df=pre_df, post_df=post_df, curve_config=curve_config
-    )
-
-    return _calculate_curve_shift(curve_shift_input=curve_shift_input)
 
 
 def _required_cols_are_present(
@@ -202,7 +192,7 @@ def _required_cols_are_present(
     return True
 
 
-def _calculate_curve_shift(curve_shift_input: CurveShiftInput) -> float:
+def calculate_curve_shift(curve_shift_input: CurveShiftInput) -> CurveShiftOutput:
     conf = curve_shift_input.curve_config
     pre_df = curve_shift_input.pre_df
     post_df = curve_shift_input.post_df
@@ -223,8 +213,8 @@ def _calculate_curve_shift(curve_shift_input: CurveShiftInput) -> float:
         result = (mean_df[conf.y_col] / mean_df["expected_y"] - 1).clip(-1, 1)
 
     # log warning
+    warning_msg = None
     if abs(result) > conf.warning_threshold:
         warning_msg = f"{wtg_name} Ops Curve Shift warning: abs({conf.name}) > {conf.warning_threshold}: {result:.3f}"
-        result_manager.warning(warning_msg)
 
-    return result
+    return CurveShiftOutput(value=result, warning_msg=warning_msg)

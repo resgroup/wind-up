@@ -6,14 +6,11 @@ import pandas as pd
 import pytest
 
 from wind_up.ops_curve_shift import (
-    CURVE_CONSTANTS,
     CurveConfig,
     CurveShiftInput,
+    CurveShiftOutput,
     CurveTypes,
-    calculate_pitch_curve_shift,
-    calculate_power_curve_shift,
-    calculate_rpm_curve_shift,
-    calculate_wind_speed_curve_shift,
+    calculate_curve_shift,
     check_for_ops_curve_shift,
 )
 
@@ -23,7 +20,7 @@ def fake_power_curve_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "wind_speed": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
-            "power": [0, 0, 0, 1, 3, 6, 10, 15, 22, 30, 36, 39, 40, 40, 40],
+            "power": [0, 0, np.nan, 1, 3, 6, 10, 15, 22, 30, 36, 39, 40, 40, 40],
         }
     ).set_index("power")
 
@@ -100,27 +97,23 @@ class TestCurveShiftInput:
 @pytest.mark.parametrize(
     ("shift_amount", "expected"),
     [
-        pytest.param(2.0, -0.22099447513812154, id="shift DOES exceed threshold"),
-        pytest.param(0.05, -0.007042253521126751, id="shift DOES NOT exceed threshold"),
+        pytest.param(2.0, -0.21557719054241997, id="shift DOES exceed threshold"),
+        pytest.param(0.05, -0.006954837573730166, id="shift DOES NOT exceed threshold"),
     ],
 )
-def test_calculate_power_curve_shift(
-    shift_amount: float, expected: float, fake_power_curve_df: pd.DataFrame, caplog: pytest.LogCaptureFixture
-) -> None:
-    with caplog.at_level(logging.WARNING):
-        actual = calculate_power_curve_shift(
-            turbine_name="anything",
-            pre_df=fake_power_curve_df.reset_index(),
-            post_df=(fake_power_curve_df + shift_amount).reset_index(),
-            x_col="wind_speed",
-            y_col="power",
-        )
+def test_calculate_power_curve_shift(shift_amount: float, expected: float, fake_power_curve_df: pd.DataFrame) -> None:
+    curve_shift_input = CurveShiftInput(
+        turbine_name="anything",
+        pre_df=fake_power_curve_df.reset_index(),
+        post_df=(fake_power_curve_df + shift_amount).reset_index(),
+        curve_config=CurveConfig(name=CurveTypes.POWER_CURVE, x_col="wind_speed", y_col="power"),
+    )
+    # check that CurveShiftInput pydantic model has removed NaNs
+    assert not curve_shift_input.pre_df.isna().to_numpy().any()
+    assert not curve_shift_input.post_df.isna().to_numpy().any()
+    actual = calculate_curve_shift(curve_shift_input=curve_shift_input)
 
-    if abs(expected) > CURVE_CONSTANTS[CurveTypes.POWER_CURVE.value]["warning_threshold"]:
-        assert "Ops Curve Shift warning" in caplog.text
-        assert f": {actual:.3f}" in caplog.text  # check the actual value (including its +/- sign) is in the log message
-
-    np.testing.assert_almost_equal(actual=actual, desired=expected)
+    np.testing.assert_almost_equal(actual=actual.value, desired=expected)
 
 
 @pytest.mark.parametrize(
@@ -134,18 +127,16 @@ def test_calculate_rpm_curve_shift(
     shift_amount: float, expected: float, fake_gen_rpm_curve_df: pd.DataFrame, caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.WARNING):
-        actual = calculate_rpm_curve_shift(
-            turbine_name="anything",
-            pre_df=fake_gen_rpm_curve_df.reset_index(),
-            post_df=(fake_gen_rpm_curve_df + shift_amount).reset_index(),
-            x_col="wind_speed",
-            y_col="gen_rpm",
+        actual = calculate_curve_shift(
+            curve_shift_input=CurveShiftInput(
+                turbine_name="anything",
+                pre_df=fake_gen_rpm_curve_df.reset_index(),
+                post_df=(fake_gen_rpm_curve_df + shift_amount).reset_index(),
+                curve_config=CurveConfig(name=CurveTypes.RPM, x_col="wind_speed", y_col="gen_rpm"),
+            )
         )
 
-    if abs(expected) > CURVE_CONSTANTS[CurveTypes.RPM.value]["warning_threshold"]:
-        assert "Ops Curve Shift warning" in caplog.text
-
-    np.testing.assert_almost_equal(actual=actual, desired=expected)
+    np.testing.assert_almost_equal(actual=actual.value, desired=expected)
 
 
 @pytest.mark.parametrize(
@@ -155,47 +146,39 @@ def test_calculate_rpm_curve_shift(
         pytest.param(0.13, -0.09533333333333438, id="shift DOES NOT exceed threshold"),
     ],
 )
-def test_calculate_pitch_curve_shift(
-    shift_amount: float, expected: float, fake_pitch_curve_df: pd.DataFrame, caplog: pytest.LogCaptureFixture
-) -> None:
-    with caplog.at_level(logging.WARNING):
-        actual = calculate_pitch_curve_shift(
+def test_calculate_pitch_curve_shift(shift_amount: float, expected: float, fake_pitch_curve_df: pd.DataFrame) -> None:
+    actual = calculate_curve_shift(
+        curve_shift_input=CurveShiftInput(
             turbine_name="anything",
             pre_df=fake_pitch_curve_df.reset_index(),
             post_df=(fake_pitch_curve_df + shift_amount).reset_index(),
-            x_col="wind_speed",
-            y_col="pitch",
+            curve_config=CurveConfig(name=CurveTypes.PITCH, x_col="wind_speed", y_col="pitch"),
         )
+    )
 
-    if abs(expected) > CURVE_CONSTANTS[CurveTypes.PITCH.value]["warning_threshold"]:
-        assert "Ops Curve Shift warning" in caplog.text
-
-    np.testing.assert_almost_equal(actual=actual, desired=expected)
+    np.testing.assert_almost_equal(actual=actual.value, desired=expected)
 
 
 @pytest.mark.parametrize(
     ("shift_amount", "expected"),
     [
-        pytest.param(2.0, 0.21621621621621623, id="shift DOES exceed threshold"),
-        pytest.param(0.05, -0.04729729729729748, id="shift DOES NOT exceed threshold"),
+        pytest.param(2.0, 0.21296296296296302, id="shift DOES exceed threshold"),
+        pytest.param(0.05, -0.03981481481481486, id="shift DOES NOT exceed threshold"),
     ],
 )
 def test_calculate_wind_speed_curve_shift(
-    shift_amount: float, expected: float, fake_power_curve_df: pd.DataFrame, caplog: pytest.LogCaptureFixture
+    shift_amount: float, expected: float, fake_power_curve_df: pd.DataFrame
 ) -> None:
-    with caplog.at_level(logging.WARNING):
-        actual = calculate_wind_speed_curve_shift(
+    actual = calculate_curve_shift(
+        curve_shift_input=CurveShiftInput(
             turbine_name="anything",
             pre_df=fake_power_curve_df.reset_index(),
             post_df=(fake_power_curve_df + shift_amount).reset_index(),
-            x_col="power",
-            y_col="wind_speed",
+            curve_config=CurveConfig(name=CurveTypes.WIND_SPEED, x_col="power", y_col="wind_speed"),
         )
+    )
 
-    if abs(expected) > CURVE_CONSTANTS[CurveTypes.WIND_SPEED.value]["warning_threshold"]:
-        assert "Ops Curve Shift warning" in caplog.text
-
-    np.testing.assert_almost_equal(actual=actual, desired=expected)
+    np.testing.assert_almost_equal(actual=actual.value, desired=expected)
 
 
 class TestCheckForOpsCurveShift:
@@ -269,10 +252,10 @@ class TestCheckForOpsCurveShift:
         wtg_name = "anything"
 
         with (
-            patch("wind_up.ops_curve_shift.calculate_power_curve_shift", return_value=np.nan) as mock_power,
-            patch("wind_up.ops_curve_shift.calculate_rpm_curve_shift", return_value=np.nan) as mock_rpm,
-            patch("wind_up.ops_curve_shift.calculate_pitch_curve_shift", return_value=np.nan) as mock_pitch,
-            patch("wind_up.ops_curve_shift.calculate_wind_speed_curve_shift", return_value=np.nan) as mock_ws,
+            patch(
+                "wind_up.ops_curve_shift.calculate_curve_shift",
+                return_value=CurveShiftOutput(value=np.nan, warning_msg=None),
+            ) as mock_curve_shift,
             patch("wind_up.ops_curve_shift.compare_ops_curves_pre_post", return_value=None) as mock_plot_func,
         ):
             mock_wind_up_conf = Mock()
@@ -291,19 +274,40 @@ class TestCheckForOpsCurveShift:
                 plot_cfg=mock_plot_conf,
             )
 
-        mock_power.assert_called_once_with(
-            turbine_name=wtg_name, pre_df=_df, post_df=_df, x_col="wind_speed", y_col="power"
+        # define expected call inputs
+        curve_input_power = CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=_df,
+            post_df=_df,
+            curve_config=CurveConfig(name=CurveTypes.POWER_CURVE, x_col="wind_speed", y_col="power"),
         )
-
-        mock_rpm.assert_called_once_with(turbine_name=wtg_name, pre_df=_df, post_df=_df, x_col="power", y_col="gen_rpm")
-
-        mock_pitch.assert_called_once_with(
-            turbine_name=wtg_name, pre_df=_df, post_df=_df, x_col="wind_speed", y_col="pitch"
+        curve_input_rpm = CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=_df,
+            post_df=_df,
+            curve_config=CurveConfig(name=CurveTypes.RPM, x_col="power", y_col="gen_rpm"),
         )
-
-        mock_ws.assert_called_once_with(
-            turbine_name=wtg_name, pre_df=_df, post_df=_df, x_col="power", y_col="wind_speed"
+        curve_input_pitch = CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=_df,
+            post_df=_df,
+            curve_config=CurveConfig(name=CurveTypes.PITCH, x_col="wind_speed", y_col="pitch"),
         )
+        curve_input_wind_speed = CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=_df,
+            post_df=_df,
+            curve_config=CurveConfig(name=CurveTypes.WIND_SPEED, x_col="power", y_col="wind_speed"),
+        )
+        _call_inputs_list = [curve_input_power, curve_input_rpm, curve_input_pitch, curve_input_wind_speed]
+
+        # check calls are made with expected inputs
+        for _call, _input in zip(mock_curve_shift.mock_calls, _call_inputs_list):
+            pd.testing.assert_frame_equal(_call.kwargs["curve_shift_input"].pre_df, _input.pre_df)
+            pd.testing.assert_frame_equal(_call.kwargs["curve_shift_input"].post_df, _input.post_df)
+            assert _call.kwargs["curve_shift_input"].model_dump(exclude=["pre_df", "post_df"]) == _input.model_dump(
+                exclude=["pre_df", "post_df"]
+            )
 
         mock_plot_func.assert_called_once_with(
             pre_df=_df,
