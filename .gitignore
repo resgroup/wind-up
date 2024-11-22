@@ -73,3 +73,4 @@ __pycache__/
 cache/
 output/
 .DS_Store
+/examples/kelmarsh_kaggle_data
