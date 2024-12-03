@@ -10,103 +10,120 @@ from wind_up.ops_curve_shift import (
     CurveShiftInput,
     CurveShiftOutput,
     CurveTypes,
+    OpsCurveRequiredColumns,
     calculate_curve_shift,
     check_for_ops_curve_shift,
 )
 
 
 @pytest.fixture
-def fake_power_curve_df() -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "wind_speed": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
-            "power": [0, 0, np.nan, 1, 3, 6, 10, 15, 22, 30, 36, 39, 40, 40, 40],
-        }
-    ).set_index("power")
+def fake_required_columns() -> OpsCurveRequiredColumns:
+    return OpsCurveRequiredColumns(wind_speed="wind_speed", power="power", rpm="gen_rpm", pitch="pitch")
 
 
 @pytest.fixture
-def fake_gen_rpm_curve_df() -> pd.DataFrame:
+def fake_curve_df(fake_required_columns: OpsCurveRequiredColumns) -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "wind_speed": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
-            "gen_rpm": [900, 900, 850, 875, 900, 1000, 1100, 1200, 1350, 1500, 1600, 1600, 1600, 1600, 1600],
+            fake_required_columns.wind_speed: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+            fake_required_columns.power: [0, 0, np.nan, 1, 3, 6, 10, 15, 22, 30, 36, 39, 40, 40, 40],
+            fake_required_columns.rpm: [
+                900,
+                900,
+                850,
+                875,
+                900,
+                1000,
+                1100,
+                1200,
+                1350,
+                1500,
+                1600,
+                1600,
+                1600,
+                1600,
+                1600,
+            ],
+            fake_required_columns.pitch: [4, 4, 4, 3, 2, 1, 1, 1, 2, 5, 8, 11, 13, 14, 15],
         }
-    ).set_index("gen_rpm")
-
-
-@pytest.fixture
-def fake_pitch_curve_df() -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "wind_speed": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
-            "pitch": [4, 4, 4, 3, 2, 1, 1, 1, 2, 5, 8, 11, 13, 14, 15],
-        }
-    ).set_index("pitch")
+    )
 
 
 class TestCurveShiftInput:
     @staticmethod
-    def test_acceptable_inputs(fake_power_curve_df: pd.DataFrame) -> None:
+    def test_acceptable_inputs(fake_curve_df: pd.DataFrame, fake_required_columns: OpsCurveRequiredColumns) -> None:
         _input = CurveShiftInput(
             turbine_name="anything",
-            pre_df=fake_power_curve_df.reset_index(),
-            post_df=fake_power_curve_df.reset_index(),
+            pre_df=fake_curve_df,
+            post_df=fake_curve_df,
             curve_config=CurveConfig(
                 name=CurveTypes.POWER_CURVE.value,
-                x_col="wind_speed",
-                y_col="power",
+                x_col=fake_required_columns.wind_speed,
+                y_col=fake_required_columns.power,
                 x_bin_width=1,
                 warning_threshold=0.01,
             ),
+            ops_curve_required_columns=fake_required_columns,
         )
 
     @pytest.mark.parametrize("column_name", ["wind_speed", "power"])
-    def test_missing_column_in_pre_df(self, column_name: str, fake_power_curve_df: pd.DataFrame) -> None:
-        with pytest.raises(IndexError, match="Column name missing in dataframe"):
+    def test_missing_column_in_pre_df(
+        self, column_name: str, fake_curve_df: pd.DataFrame, fake_required_columns: OpsCurveRequiredColumns
+    ) -> None:
+        with pytest.raises(IndexError, match=f"'{column_name}' column name missing in pre-dataframe"):
             CurveShiftInput(
                 turbine_name="anything",
-                pre_df=fake_power_curve_df.reset_index().drop(columns=column_name),
-                post_df=(fake_power_curve_df + 2).reset_index(),
+                pre_df=fake_curve_df.drop(columns=column_name),
+                post_df=(fake_curve_df + 2),
                 curve_config=CurveConfig(
                     name=CurveTypes.POWER_CURVE.value,
-                    x_col="wind_speed",
-                    y_col="power",
+                    x_col=fake_required_columns.wind_speed,
+                    y_col=fake_required_columns.power,
                     x_bin_width=1,
                     warning_threshold=0.01,
                 ),
+                ops_curve_required_columns=fake_required_columns,
             )
 
     @pytest.mark.parametrize("column_name", ["wind_speed", "power"])
-    def test_missing_column_in_post_df(self, column_name: str, fake_power_curve_df: pd.DataFrame) -> None:
-        with pytest.raises(IndexError, match="Column name missing in dataframe"):
+    def test_missing_column_in_post_df(
+        self, column_name: str, fake_curve_df: pd.DataFrame, fake_required_columns: OpsCurveRequiredColumns
+    ) -> None:
+        with pytest.raises(IndexError, match=f"'{column_name}' column name missing in post-dataframe"):
             CurveShiftInput(
                 turbine_name="anything",
-                pre_df=fake_power_curve_df.reset_index(),
-                post_df=(fake_power_curve_df + 2).reset_index().drop(columns=column_name),
+                pre_df=fake_curve_df,
+                post_df=(fake_curve_df + 2).drop(columns=column_name),
                 curve_config=CurveConfig(
                     name=CurveTypes.POWER_CURVE.value,
-                    x_col="wind_speed",
-                    y_col="power",
+                    x_col=fake_required_columns.wind_speed,
+                    y_col=fake_required_columns.power,
                     x_bin_width=1,
                     warning_threshold=0.01,
                 ),
+                ops_curve_required_columns=fake_required_columns,
             )
 
 
 @pytest.mark.parametrize(
     ("shift_amount", "expected"),
     [
-        pytest.param(2.0, -0.21557719054241997, id="shift DOES exceed threshold"),
-        pytest.param(0.05, -0.006954837573730166, id="shift DOES NOT exceed threshold"),
+        pytest.param(0.0, 0.0, id="zero"),
+        pytest.param(2.0, -0.1376912378303199, id="shift DOES exceed threshold"),
+        pytest.param(0.05, -0.004489831851395176, id="shift DOES NOT exceed threshold"),
     ],
 )
-def test_calculate_power_curve_shift(shift_amount: float, expected: float, fake_power_curve_df: pd.DataFrame) -> None:
+def test_calculate_power_curve_shift(
+    shift_amount: float, expected: float, fake_curve_df: pd.DataFrame, fake_required_columns: OpsCurveRequiredColumns
+) -> None:
     curve_shift_input = CurveShiftInput(
         turbine_name="anything",
-        pre_df=fake_power_curve_df.reset_index(),
-        post_df=(fake_power_curve_df + shift_amount).reset_index(),
-        curve_config=CurveConfig(name=CurveTypes.POWER_CURVE, x_col="wind_speed", y_col="power"),
+        pre_df=fake_curve_df,
+        post_df=(fake_curve_df + shift_amount),
+        curve_config=CurveConfig(
+            name=CurveTypes.POWER_CURVE, x_col=fake_required_columns.wind_speed, y_col=fake_required_columns.power
+        ),
+        ops_curve_required_columns=fake_required_columns,
     )
     # check that CurveShiftInput pydantic model has removed NaNs
     assert not curve_shift_input.pre_df.isna().to_numpy().any()
@@ -119,21 +136,26 @@ def test_calculate_power_curve_shift(shift_amount: float, expected: float, fake_
 @pytest.mark.parametrize(
     ("shift_amount", "expected"),
     [
-        pytest.param(0.2, -0.00712694877505593, id="shift DOES exceed threshold"),
-        pytest.param(0.1, -0.0033534540576795058, id="shift DOES NOT exceed threshold"),
+        pytest.param(0.2, -0.00865091569970633, id="shift DOES exceed threshold"),
+        pytest.param(0.1, -0.004926790475744736, id="shift DOES NOT exceed threshold"),
     ],
 )
 def test_calculate_rpm_curve_shift(
-    shift_amount: float, expected: float, fake_gen_rpm_curve_df: pd.DataFrame, caplog: pytest.LogCaptureFixture
+    shift_amount: float,
+    expected: float,
+    fake_curve_df: pd.DataFrame,
+    fake_required_columns: OpsCurveRequiredColumns,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     with caplog.at_level(logging.WARNING):
         actual = calculate_curve_shift(
             curve_shift_input=CurveShiftInput(
                 turbine_name="anything",
-                pre_df=fake_gen_rpm_curve_df.reset_index(),
-                post_df=(fake_gen_rpm_curve_df + shift_amount).reset_index(),
+                pre_df=fake_curve_df,
+                post_df=(fake_curve_df + shift_amount),
                 curve_config=CurveConfig(name=CurveTypes.RPM, x_col="wind_speed", y_col="gen_rpm"),
-            )
+                ops_curve_required_columns=fake_required_columns,
+            ),
         )
 
     np.testing.assert_almost_equal(actual=actual.value, desired=expected)
@@ -142,17 +164,23 @@ def test_calculate_rpm_curve_shift(
 @pytest.mark.parametrize(
     ("shift_amount", "expected"),
     [
-        pytest.param(0.14, -0.1026666666666678, id="shift DOES exceed threshold"),
-        pytest.param(0.13, -0.09533333333333438, id="shift DOES NOT exceed threshold"),
+        pytest.param(0.0, 0.0, id="zero"),
+        pytest.param(0.6, 0.10714285714285765, id="shift DOES exceed threshold"),
+        pytest.param(0.5, 0.08928571428571441, id="shift DOES NOT exceed threshold"),
     ],
 )
-def test_calculate_pitch_curve_shift(shift_amount: float, expected: float, fake_pitch_curve_df: pd.DataFrame) -> None:
+def test_calculate_pitch_curve_shift(
+    shift_amount: float, expected: float, fake_curve_df: pd.DataFrame, fake_required_columns: OpsCurveRequiredColumns
+) -> None:
     actual = calculate_curve_shift(
         curve_shift_input=CurveShiftInput(
             turbine_name="anything",
-            pre_df=fake_pitch_curve_df.reset_index(),
-            post_df=(fake_pitch_curve_df + shift_amount).reset_index(),
-            curve_config=CurveConfig(name=CurveTypes.PITCH, x_col="wind_speed", y_col="pitch"),
+            pre_df=fake_curve_df,
+            post_df=(fake_curve_df + shift_amount),
+            curve_config=CurveConfig(
+                name=CurveTypes.PITCH, x_col=fake_required_columns.wind_speed, y_col=fake_required_columns.pitch
+            ),
+            ops_curve_required_columns=fake_required_columns,
         )
     )
 
@@ -162,19 +190,23 @@ def test_calculate_pitch_curve_shift(shift_amount: float, expected: float, fake_
 @pytest.mark.parametrize(
     ("shift_amount", "expected"),
     [
-        pytest.param(2.0, 0.21296296296296302, id="shift DOES exceed threshold"),
-        pytest.param(0.05, -0.03981481481481486, id="shift DOES NOT exceed threshold"),
+        pytest.param(2.0, 0.13811720414537776, id="shift DOES exceed threshold"),
+        pytest.param(0.0, -0.04629629629629639, id="shift DOES NOT exceed threshold"),
     ],
 )
 def test_calculate_wind_speed_curve_shift(
-    shift_amount: float, expected: float, fake_power_curve_df: pd.DataFrame
+    shift_amount: float, expected: float, fake_curve_df: pd.DataFrame, fake_required_columns: OpsCurveRequiredColumns
 ) -> None:
+    _df = fake_curve_df.copy()
     actual = calculate_curve_shift(
         curve_shift_input=CurveShiftInput(
             turbine_name="anything",
-            pre_df=fake_power_curve_df.reset_index(),
-            post_df=(fake_power_curve_df + shift_amount).reset_index(),
-            curve_config=CurveConfig(name=CurveTypes.WIND_SPEED, x_col="power", y_col="wind_speed"),
+            pre_df=_df,
+            post_df=(_df + shift_amount),
+            curve_config=CurveConfig(
+                name=CurveTypes.WIND_SPEED, x_col=fake_required_columns.power, y_col=fake_required_columns.wind_speed
+            ),
+            ops_curve_required_columns=fake_required_columns,
         )
     )
 
@@ -199,18 +231,9 @@ class TestCheckForOpsCurveShift:
         self,
         pre_df_or_post_df: str,
         missing_column: str,
-        fake_power_curve_df: pd.DataFrame,
-        fake_gen_rpm_curve_df: pd.DataFrame,
-        fake_pitch_curve_df: pd.DataFrame,
+        fake_curve_df: pd.DataFrame,
     ) -> None:
-        _df = pd.concat(
-            [
-                fake_power_curve_df.reset_index().set_index("wind_speed"),
-                fake_gen_rpm_curve_df.reset_index().set_index("wind_speed"),
-                fake_pitch_curve_df.reset_index().set_index("wind_speed"),
-            ],
-            axis=1,
-        ).reset_index()
+        _df = fake_curve_df.copy()
 
         pre_df = _df.drop(columns=missing_column) if pre_df_or_post_df == "pre" else _df
         post_df = _df.drop(columns=missing_column) if pre_df_or_post_df == "post" else _df
@@ -238,16 +261,9 @@ class TestCheckForOpsCurveShift:
         assert actual == expected
 
     def test_calls_funcs_as_intended(
-        self, fake_power_curve_df: pd.DataFrame, fake_gen_rpm_curve_df: pd.DataFrame, fake_pitch_curve_df: pd.DataFrame
+        self, fake_curve_df: pd.DataFrame, fake_required_columns: OpsCurveRequiredColumns
     ) -> None:
-        _df = pd.concat(
-            [
-                fake_power_curve_df.reset_index().set_index("wind_speed"),
-                fake_gen_rpm_curve_df.reset_index().set_index("wind_speed"),
-                fake_pitch_curve_df.reset_index().set_index("wind_speed"),
-            ],
-            axis=1,
-        ).reset_index()
+        _df = fake_curve_df.copy()
 
         wtg_name = "anything"
 
@@ -279,24 +295,28 @@ class TestCheckForOpsCurveShift:
             turbine_name=wtg_name,
             pre_df=_df,
             post_df=_df,
+            ops_curve_required_columns=fake_required_columns,
             curve_config=CurveConfig(name=CurveTypes.POWER_CURVE, x_col="wind_speed", y_col="power"),
         )
         curve_input_rpm = CurveShiftInput(
             turbine_name=wtg_name,
             pre_df=_df,
             post_df=_df,
+            ops_curve_required_columns=fake_required_columns,
             curve_config=CurveConfig(name=CurveTypes.RPM, x_col="power", y_col="gen_rpm"),
         )
         curve_input_pitch = CurveShiftInput(
             turbine_name=wtg_name,
             pre_df=_df,
             post_df=_df,
+            ops_curve_required_columns=fake_required_columns,
             curve_config=CurveConfig(name=CurveTypes.PITCH, x_col="wind_speed", y_col="pitch"),
         )
         curve_input_wind_speed = CurveShiftInput(
             turbine_name=wtg_name,
             pre_df=_df,
             post_df=_df,
+            ops_curve_required_columns=fake_required_columns,
             curve_config=CurveConfig(name=CurveTypes.WIND_SPEED, x_col="power", y_col="wind_speed"),
         )
         _call_inputs_list = [curve_input_power, curve_input_rpm, curve_input_pitch, curve_input_wind_speed]

@@ -11,6 +11,8 @@ from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post
 from wind_up.result_manager import result_manager
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from wind_up.models import PlotConfig, WindUpConfig
 
 
@@ -30,7 +32,7 @@ CURVE_CONSTANTS = {
     CurveTypes.POWER_CURVE.value: {"warning_threshold": 0.01, "x_bin_width": 1},
     CurveTypes.RPM.value: {"warning_threshold": 0.005, "x_bin_width": 0},
     CurveTypes.PITCH.value: {"warning_threshold": 0.1, "x_bin_width": 1},
-    CurveTypes.WIND_SPEED.value: {"warning_threshold": 0.01, "x_bin_width": 1},
+    CurveTypes.WIND_SPEED.value: {"warning_threshold": 0.01, "x_bin_width": 0.5},
 }
 
 
@@ -50,17 +52,37 @@ class CurveConfig(BaseModel):
         return self
 
 
+class OpsCurveRequiredColumns(BaseModel):
+    wind_speed: str
+    power: str
+    pitch: str
+    rpm: str
+
+    def __iter__(self) -> Iterator[str]:  # type: ignore[override]
+        return iter([self.wind_speed, self.power, self.pitch, self.rpm])
+
+
 class CurveShiftInput(BaseModel):
     turbine_name: str
     pre_df: pd.DataFrame
     post_df: pd.DataFrame
+    ops_curve_required_columns: OpsCurveRequiredColumns
     curve_config: CurveConfig
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @model_validator(mode="after")
     def validate_dataframes(self) -> CurveShiftInput:
-        # check column names
-        required_cols = {self.curve_config.x_col, self.curve_config.y_col}
+        # check curve config columns are present in dataframes
+        for c in [self.curve_config.x_col, self.curve_config.y_col]:
+            if c not in self.pre_df.columns:
+                err_msg = f"'{c}' column name missing in pre-dataframe"
+                raise IndexError(err_msg)
+            if c not in self.post_df.columns:
+                err_msg = f"'{c}' column name missing in post-dataframe"
+                raise IndexError(err_msg)
+
+        # check required columns are present in dataframes
+        required_cols = set(self.ops_curve_required_columns)
         columns_missing_in_pre_df = required_cols - set(self.pre_df.columns)
         columns_missing_in_post_df = required_cols - set(self.post_df.columns)
         if (len(columns_missing_in_pre_df) > 0) or (len(columns_missing_in_post_df) > 0):
@@ -72,13 +94,6 @@ class CurveShiftInput(BaseModel):
         self.post_df = self.post_df.dropna(subset=list(required_cols)).copy()
 
         return self
-
-
-class OpsCurveRequiredColumns(NamedTuple):
-    wind_speed: str
-    power: str
-    pitch: str
-    rpm: str
 
 
 def check_for_ops_curve_shift(
@@ -115,6 +130,7 @@ def check_for_ops_curve_shift(
             pre_df=pre_df,
             post_df=post_df,
             curve_config=CurveConfig(name=CurveTypes.POWER_CURVE, x_col=scada_ws_col, y_col=pw_col),
+            ops_curve_required_columns=required_cols,
         )
     )
 
@@ -124,6 +140,7 @@ def check_for_ops_curve_shift(
             pre_df=pre_df,
             post_df=post_df,
             curve_config=CurveConfig(name=CurveTypes.RPM, x_col=pw_col, y_col=rpm_col),
+            ops_curve_required_columns=required_cols,
         )
     )
 
@@ -133,6 +150,7 @@ def check_for_ops_curve_shift(
             pre_df=pre_df,
             post_df=post_df,
             curve_config=CurveConfig(name=CurveTypes.PITCH, x_col=scada_ws_col, y_col=pt_col),
+            ops_curve_required_columns=required_cols,
         )
     )
 
@@ -142,6 +160,7 @@ def check_for_ops_curve_shift(
             pre_df=pre_df,
             post_df=post_df,
             curve_config=CurveConfig(name=CurveTypes.WIND_SPEED, x_col=pw_col, y_col=scada_ws_col),
+            ops_curve_required_columns=required_cols,
         )
     )
 
