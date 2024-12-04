@@ -226,7 +226,7 @@ def calculate_curve_shift(curve_shift_input: CurveShiftInput) -> CurveShiftOutpu
     post_df["expected_y"] = np.interp(post_df[conf.x_col], mean_curve["x_mean"], mean_curve["y_mean"])
     mean_df = post_df.mean()
 
-    if conf.y_col == CurveTypes.PITCH.value:
+    if conf.name in [CurveTypes.PITCH.value, CurveTypes.PITCH]:
         result = mean_df[conf.y_col] - mean_df["expected_y"]
     else:
         result = (mean_df[conf.y_col] / mean_df["expected_y"] - 1).clip(-1, 1)
