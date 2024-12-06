@@ -18,7 +18,7 @@ from wind_up.ops_curve_shift import (
 
 @pytest.fixture
 def fake_required_columns() -> OpsCurveRequiredColumns:
-    return OpsCurveRequiredColumns(wind_speed="wind_speed", power="power", rpm="gen_rpm", pitch="pitch")
+    return OpsCurveRequiredColumns(wind_speed="wind_speed", power="active_power", rpm="gen_rpm", pitch="pitch_angle")
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ class TestCurveShiftInput:
             ops_curve_required_columns=fake_required_columns,
         )
 
-    @pytest.mark.parametrize("column_name", ["wind_speed", "power"])
+    @pytest.mark.parametrize("column_name", ["wind_speed", "active_power"])
     def test_missing_column_in_pre_df(
         self, column_name: str, fake_curve_df: pd.DataFrame, fake_required_columns: OpsCurveRequiredColumns
     ) -> None:
@@ -85,7 +85,7 @@ class TestCurveShiftInput:
                 ops_curve_required_columns=fake_required_columns,
             )
 
-    @pytest.mark.parametrize("column_name", ["wind_speed", "power"])
+    @pytest.mark.parametrize("column_name", ["wind_speed", "active_power"])
     def test_missing_column_in_post_df(
         self, column_name: str, fake_curve_df: pd.DataFrame, fake_required_columns: OpsCurveRequiredColumns
     ) -> None:
@@ -218,13 +218,13 @@ class TestCheckForOpsCurveShift:
         ("pre_df_or_post_df", "missing_column"),
         [
             ("pre", "wind_speed"),
-            ("pre", "power"),
+            ("pre", "active_power"),
             ("pre", "gen_rpm"),
-            ("pre", "pitch"),
+            ("pre", "pitch_angle"),
             ("post", "wind_speed"),
-            ("post", "power"),
+            ("post", "active_power"),
             ("post", "gen_rpm"),
-            ("post", "pitch"),
+            ("post", "pitch_angle"),
         ],
     )
     def test_missing_required_column(
@@ -282,10 +282,10 @@ class TestCheckForOpsCurveShift:
                 pre_df=_df,
                 post_df=_df,
                 wtg_name=wtg_name,
-                scada_ws_col="wind_speed",
-                pw_col="power",
-                rpm_col="gen_rpm",
-                pt_col="pitch",
+                scada_ws_col=fake_required_columns.wind_speed,
+                pw_col=fake_required_columns.power,
+                rpm_col=fake_required_columns.rpm,
+                pt_col=fake_required_columns.pitch,
                 cfg=mock_wind_up_conf,
                 plot_cfg=mock_plot_conf,
             )
@@ -296,28 +296,36 @@ class TestCheckForOpsCurveShift:
             pre_df=_df,
             post_df=_df,
             ops_curve_required_columns=fake_required_columns,
-            curve_config=CurveConfig(name=CurveTypes.POWER_CURVE, x_col="wind_speed", y_col="power"),
+            curve_config=CurveConfig(
+                name=CurveTypes.POWER_CURVE, x_col=fake_required_columns.wind_speed, y_col=fake_required_columns.power
+            ),
         )
         curve_input_rpm = CurveShiftInput(
             turbine_name=wtg_name,
             pre_df=_df,
             post_df=_df,
             ops_curve_required_columns=fake_required_columns,
-            curve_config=CurveConfig(name=CurveTypes.RPM, x_col="power", y_col="gen_rpm"),
+            curve_config=CurveConfig(
+                name=CurveTypes.RPM, x_col=fake_required_columns.power, y_col=fake_required_columns.rpm
+            ),
         )
         curve_input_pitch = CurveShiftInput(
             turbine_name=wtg_name,
             pre_df=_df,
             post_df=_df,
             ops_curve_required_columns=fake_required_columns,
-            curve_config=CurveConfig(name=CurveTypes.PITCH, x_col="wind_speed", y_col="pitch"),
+            curve_config=CurveConfig(
+                name=CurveTypes.PITCH, x_col=fake_required_columns.wind_speed, y_col=fake_required_columns.pitch
+            ),
         )
         curve_input_wind_speed = CurveShiftInput(
             turbine_name=wtg_name,
             pre_df=_df,
             post_df=_df,
             ops_curve_required_columns=fake_required_columns,
-            curve_config=CurveConfig(name=CurveTypes.WIND_SPEED, x_col="power", y_col="wind_speed"),
+            curve_config=CurveConfig(
+                name=CurveTypes.WIND_SPEED, x_col=fake_required_columns.power, y_col=fake_required_columns.wind_speed
+            ),
         )
         _call_inputs_list = [curve_input_power, curve_input_rpm, curve_input_pitch, curve_input_wind_speed]
 
@@ -333,10 +341,10 @@ class TestCheckForOpsCurveShift:
             pre_df=_df,
             post_df=_df,
             wtg_name=wtg_name,
-            ws_col="wind_speed",
-            pw_col="power",
-            pt_col="pitch",
-            rpm_col="gen_rpm",
+            ws_col=fake_required_columns.wind_speed,
+            pw_col=fake_required_columns.power,
+            pt_col=fake_required_columns.pitch,
+            rpm_col=fake_required_columns.rpm,
             plot_cfg=mock_plot_conf,
             is_toggle_test=mock_wind_up_conf.toggle is not None,
             sub_dir=None,
