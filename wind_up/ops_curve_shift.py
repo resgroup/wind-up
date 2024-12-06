@@ -1,0 +1,239 @@
+from __future__ import annotations
+
+from enum import Enum
+from typing import TYPE_CHECKING, NamedTuple
+
+import numpy as np
+import pandas as pd
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post
+from wind_up.result_manager import result_manager
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from wind_up.models import PlotConfig, WindUpConfig
+
+
+class CurveTypes(str, Enum):
+    POWER_CURVE = "powercurve"
+    RPM = "rpm"
+    PITCH = "pitch"
+    WIND_SPEED = "windspeed"
+
+
+class CurveShiftOutput(NamedTuple):
+    value: float
+    warning_msg: str | None
+
+
+CURVE_CONSTANTS = {
+    CurveTypes.POWER_CURVE.value: {"warning_threshold": 0.01, "x_bin_width": 1},
+    CurveTypes.RPM.value: {"warning_threshold": 0.005, "x_bin_width": 0},
+    CurveTypes.PITCH.value: {"warning_threshold": 0.1, "x_bin_width": 1},
+    CurveTypes.WIND_SPEED.value: {"warning_threshold": 0.01, "x_bin_width": 0.5},
+}
+
+
+class CurveConfig(BaseModel):
+    name: CurveTypes
+    x_col: str
+    y_col: str
+    x_bin_width: int | float | None = None
+    warning_threshold: float | None = None
+
+    @model_validator(mode="after")
+    def validate_constants(self) -> CurveConfig:
+        if self.x_bin_width is None:
+            self.x_bin_width = CURVE_CONSTANTS[self.name]["x_bin_width"]
+        if self.warning_threshold is None:
+            self.warning_threshold = CURVE_CONSTANTS[self.name]["warning_threshold"]
+        return self
+
+
+class OpsCurveRequiredColumns(BaseModel):
+    wind_speed: str
+    power: str
+    pitch: str
+    rpm: str
+
+    def __iter__(self) -> Iterator[str]:  # type: ignore[override]
+        return iter([self.wind_speed, self.power, self.pitch, self.rpm])
+
+
+class CurveShiftInput(BaseModel):
+    turbine_name: str
+    pre_df: pd.DataFrame
+    post_df: pd.DataFrame
+    ops_curve_required_columns: OpsCurveRequiredColumns
+    curve_config: CurveConfig
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @model_validator(mode="after")
+    def validate_dataframes(self) -> CurveShiftInput:
+        # check curve config columns are present in dataframes
+        for c in [self.curve_config.x_col, self.curve_config.y_col]:
+            if c not in self.pre_df.columns:
+                err_msg = f"'{c}' column name missing in pre-dataframe"
+                raise IndexError(err_msg)
+            if c not in self.post_df.columns:
+                err_msg = f"'{c}' column name missing in post-dataframe"
+                raise IndexError(err_msg)
+
+        # check required columns are present in dataframes
+        required_cols = set(self.ops_curve_required_columns)
+        columns_missing_in_pre_df = required_cols - set(self.pre_df.columns)
+        columns_missing_in_post_df = required_cols - set(self.post_df.columns)
+        if (len(columns_missing_in_pre_df) > 0) or (len(columns_missing_in_post_df) > 0):
+            err_msg = "Column name missing in dataframe"
+            raise IndexError(err_msg)
+
+        # remove NA
+        self.pre_df = self.pre_df.dropna(subset=list(required_cols)).copy()
+        self.post_df = self.post_df.dropna(subset=list(required_cols)).copy()
+
+        return self
+
+
+def check_for_ops_curve_shift(
+    pre_df: pd.DataFrame,
+    post_df: pd.DataFrame,
+    *,
+    wtg_name: str,
+    scada_ws_col: str,
+    pw_col: str,
+    rpm_col: str,
+    pt_col: str,
+    cfg: WindUpConfig,
+    plot_cfg: PlotConfig,
+    sub_dir: str | None = None,
+    plot: bool = True,
+) -> dict[str, float]:
+    results_dict = {
+        f"{CurveTypes.POWER_CURVE.value}_shift": np.nan,
+        f"{CurveTypes.RPM.value}_shift": np.nan,
+        f"{CurveTypes.PITCH.value}_shift": np.nan,
+        f"{CurveTypes.WIND_SPEED.value}_shift": np.nan,
+    }
+
+    required_cols = OpsCurveRequiredColumns(wind_speed=scada_ws_col, power=pw_col, pitch=pt_col, rpm=rpm_col)
+
+    if not _required_cols_are_present(
+        pre_df=pre_df, post_df=post_df, turbine_name=wtg_name, required_ops_curve_columns=required_cols
+    ):
+        return results_dict
+
+    shift_power = calculate_curve_shift(
+        curve_shift_input=CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=pre_df,
+            post_df=post_df,
+            curve_config=CurveConfig(name=CurveTypes.POWER_CURVE, x_col=scada_ws_col, y_col=pw_col),
+            ops_curve_required_columns=required_cols,
+        )
+    )
+
+    shift_rpm = calculate_curve_shift(
+        curve_shift_input=CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=pre_df,
+            post_df=post_df,
+            curve_config=CurveConfig(name=CurveTypes.RPM, x_col=pw_col, y_col=rpm_col),
+            ops_curve_required_columns=required_cols,
+        )
+    )
+
+    shift_pitch = calculate_curve_shift(
+        curve_shift_input=CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=pre_df,
+            post_df=post_df,
+            curve_config=CurveConfig(name=CurveTypes.PITCH, x_col=scada_ws_col, y_col=pt_col),
+            ops_curve_required_columns=required_cols,
+        )
+    )
+
+    shift_wind_speed = calculate_curve_shift(
+        curve_shift_input=CurveShiftInput(
+            turbine_name=wtg_name,
+            pre_df=pre_df,
+            post_df=post_df,
+            curve_config=CurveConfig(name=CurveTypes.WIND_SPEED, x_col=pw_col, y_col=scada_ws_col),
+            ops_curve_required_columns=required_cols,
+        )
+    )
+
+    results_dict[f"{CurveTypes.POWER_CURVE.value}_shift"] = shift_power.value
+    results_dict[f"{CurveTypes.RPM.value}_shift"] = shift_rpm.value
+    results_dict[f"{CurveTypes.PITCH.value}_shift"] = shift_pitch.value
+    results_dict[f"{CurveTypes.WIND_SPEED.value}_shift"] = shift_wind_speed.value
+
+    warning_msg = ""
+    for wm in [shift_power.warning_msg, shift_rpm.warning_msg, shift_pitch.warning_msg, shift_wind_speed.warning_msg]:
+        if wm is not None:
+            warning_msg += wm
+
+    if warning_msg:
+        result_manager.warning(warning_msg)
+
+    if plot:
+        compare_ops_curves_pre_post(
+            pre_df=pre_df,
+            post_df=post_df,
+            wtg_name=wtg_name,
+            ws_col=scada_ws_col,
+            pw_col=pw_col,
+            pt_col=pt_col,
+            rpm_col=rpm_col,
+            plot_cfg=plot_cfg,
+            is_toggle_test=(cfg.toggle is not None),
+            sub_dir=sub_dir,
+        )
+
+    return results_dict
+
+
+def _required_cols_are_present(
+    pre_df: pd.DataFrame, post_df: pd.DataFrame, turbine_name: str, required_ops_curve_columns: OpsCurveRequiredColumns
+) -> bool:
+    # check if all required columns are present
+    required_cols = list(required_ops_curve_columns)
+    for req_col in required_cols:
+        if req_col not in pre_df.columns:
+            msg = f"check_for_ops_curve_shift {turbine_name} pre_df missing required column {req_col}"
+            result_manager.warning(msg)
+            return False
+        if req_col not in post_df.columns:
+            msg = f"check_for_ops_curve_shift {turbine_name} post_df missing required column {req_col}"
+            result_manager.warning(msg)
+            return False
+    return True
+
+
+def calculate_curve_shift(curve_shift_input: CurveShiftInput) -> CurveShiftOutput:
+    conf = curve_shift_input.curve_config
+    pre_df = curve_shift_input.pre_df
+    post_df = curve_shift_input.post_df
+    wtg_name = curve_shift_input.turbine_name
+
+    bins = np.arange(0, pre_df[conf.x_col].max() + conf.x_bin_width, conf.x_bin_width) if conf.x_bin_width > 0 else 10  # type: ignore[operator,var-annotated]
+
+    mean_curve = pre_df.groupby(pd.cut(pre_df[conf.x_col], bins=bins, retbins=False), observed=True).agg(
+        x_mean=pd.NamedAgg(column=conf.x_col, aggfunc="mean"),
+        y_mean=pd.NamedAgg(column=conf.y_col, aggfunc="mean"),
+    )
+    post_df["expected_y"] = np.interp(post_df[conf.x_col], mean_curve["x_mean"], mean_curve["y_mean"])
+    mean_df = post_df.mean()
+
+    if conf.name in CurveTypes.PITCH:
+        result = mean_df[conf.y_col] - mean_df["expected_y"]
+    else:
+        result = (mean_df[conf.y_col] / mean_df["expected_y"] - 1).clip(-1, 1)
+
+    # log warning
+    warning_msg = None
+    if abs(result) > conf.warning_threshold:
+        warning_msg = f"{wtg_name} Ops Curve Shift warning: abs({conf.name}) > {conf.warning_threshold}: {result:.3f}"
+
+    return CurveShiftOutput(value=result, warning_msg=warning_msg)
