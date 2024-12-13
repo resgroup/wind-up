@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 
 from examples.helpers import setup_logger
@@ -15,7 +16,7 @@ from wind_up.constants import (
     WINDFARM_YAWDIR_COL,
     DataColumns,
 )
-from wind_up.detrend import calc_wsratio_v_wd_scen
+from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
 from wind_up.interface import AssessmentInputs
 from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.northing import check_wtg_northing
@@ -39,7 +40,14 @@ class KelmarshKaggleScadaUnpacker:
 
     def unpack(self) -> pd.DataFrame:
         if self.scada_df is None:
+            # unpack train.csv
             raw_df = pd.read_csv(self.data_dir / "train.csv", header=[0, 1], index_col=[0], parse_dates=[1])
+            id_df = self._format_index(
+                raw_df[[("Timestamp", "Unnamed: 1_level_1")]]
+                .reset_index()
+                .set_index(("Timestamp", "Unnamed: 1_level_1"))
+                .droplevel(1, axis=1)
+            )
             workings_df = raw_df.set_index(("Timestamp", "Unnamed: 1_level_1"))
             workings_df = workings_df.drop(columns=[("training", "Unnamed: 52_level_1")])
             new_cols = pd.MultiIndex.from_tuples(
@@ -51,11 +59,51 @@ class KelmarshKaggleScadaUnpacker:
             workings_df.columns = new_cols
             workings_df = workings_df.stack().swaplevel(0, 1, axis=0)
             workings_df = workings_df.reset_index(level=0, names="TurbineName")
-            self.scada_df = self._format_scada_df(scada_df=workings_df)
+            train_scada_df = self._format_scada_df(scada_df=workings_df)
+            train_scada_df = train_scada_df.merge(id_df, left_index=True, right_index=True)
+
+            # unpack test.csv
+            raw_df = pd.read_csv(self.data_dir / "test.csv", header=[0, 1], index_col=[0], parse_dates=[1])
+            id_df = self._format_index(
+                raw_df[[("Timestamp", "Unnamed: 1_level_1")]]
+                .reset_index()
+                .set_index(("Timestamp", "Unnamed: 1_level_1"))
+                .droplevel(1, axis=1)
+            )
+            workings_df = raw_df.set_index(("Timestamp", "Unnamed: 1_level_1"))
+            new_cols = pd.MultiIndex.from_tuples(
+                [
+                    ("Wind speed (m/s)", "Kelmarsh 1") if x == ("target_feature", "Unnamed: 53_level_1") else x
+                    for x in workings_df.columns
+                ]
+            )
+            workings_df.columns = new_cols
+            workings_df = workings_df.stack().swaplevel(0, 1, axis=0)
+            workings_df = workings_df.reset_index(level=0, names="TurbineName")
+            test_scada_df = self._format_scada_df(scada_df=workings_df)
+            test_scada_df = test_scada_df.merge(id_df, left_index=True, right_index=True)
+            # verify train_scada_df has 6 turbines
+            assert train_scada_df["TurbineName"].nunique() == 6
+            # verify test_scada_df has 5 turbines
+            assert test_scada_df["TurbineName"].nunique() == 5
+            # verify train_scada_df and test_scada_df have the same columns
+            assert train_scada_df.columns.equals(test_scada_df.columns)
+            # verify train_scada_df and test_scada_df have no matching DatetimeIndex index entries
+            assert len(train_scada_df.index.intersection(test_scada_df.index)) == 0
+            # verify train_scada_df and test_scada_df have no matching values in id column
+            assert len(set(train_scada_df["id"]) & set(test_scada_df["id"])) == 0
+            # combine train_scada_df and test_scada_df
+            self.scada_df = pd.concat([train_scada_df, test_scada_df], axis=0).sort_index()
         return self.scada_df
 
-    @staticmethod
-    def _format_scada_df(scada_df: pd.DataFrame) -> pd.DataFrame:
+    def _format_index(self, df: pd.DataFrame) -> pd.DataFrame:
+        new_df = df.copy()
+        new_df.index.name = TIMESTAMP_COL
+        # make index UTC
+        new_df.index = new_df.index.tz_localize("UTC")
+        return new_df
+
+    def _format_scada_df(self, scada_df: pd.DataFrame) -> pd.DataFrame:
         scada_df = scada_df.rename(
             columns={
                 "Wind speed (m/s)": DataColumns.wind_speed_mean,
@@ -69,10 +117,7 @@ class KelmarshKaggleScadaUnpacker:
         )
         # placeholder values for other required columns
         scada_df[DataColumns.shutdown_duration] = 0
-        scada_df.index.name = TIMESTAMP_COL
-        # make index UTC
-        scada_df.index = scada_df.index.tz_localize("UTC")
-        return scada_df
+        return self._format_index(scada_df)
 
 
 def kelmarsh_kaggle_metadata_df(data_dir: Path) -> pd.DataFrame:
@@ -139,8 +184,8 @@ def main(analysis_name: str) -> None:
         assessment_name=analysis_name,
         use_lt_distribution=False,
         out_dir=ANALYSIS_OUTPUT_DIR / analysis_name,
-        test_wtgs=[wtg_map[x] for x in ["Kelmarsh 1", "Kelmarsh 2"]],
-        ref_wtgs=[wtg_map[x] for x in ["Kelmarsh 3"]],
+        test_wtgs=[wtg_map[x] for x in ["Kelmarsh 1"]],
+        ref_wtgs=[wtg_map[x] for x in ["Kelmarsh 2", "Kelmarsh 3", "Kelmarsh 4", "Kelmarsh 5", "Kelmarsh 6"]],
         years_offset_for_pre_period=1,
         years_for_lt_distribution=1,
         years_for_detrend=1,
@@ -188,16 +233,13 @@ def predict_kelmarsh_t1_windspeed(assessment_inputs: AssessmentInputs) -> None:
     pc_per_ttype = assessment_inputs.pc_per_ttype
     cfg = assessment_inputs.cfg
     plot_cfg = assessment_inputs.plot_cfg
-    pre_post_splitter = assessment_inputs.pre_post_splitter
 
     test_wtg = cfg.test_wtgs[0]
-    test_pw_col = "pw_clipped"
     test_ws_col = "raw_WindSpeedMean"
     test_df = wf_df.loc[test_wtg.name].copy()
     test_name = test_wtg.name
 
     test_df.columns = ["test_" + x for x in test_df.columns]
-    test_pw_col = "test_" + test_pw_col
     test_ws_col = "test_" + test_ws_col
 
     test_max_ws_drift, test_max_ws_drift_pp_period = check_windspeed_drift(
@@ -213,7 +255,6 @@ def predict_kelmarsh_t1_windspeed(assessment_inputs: AssessmentInputs) -> None:
 
     for ref_wtg in cfg.ref_wtgs:
         ref_name = ref_wtg.name
-        ref_pw_col = "pw_clipped"
         ref_wd_col = "YawAngleMean"
         ref_ws_col = "ws_est_blend"
         ref_df = wf_df.loc[ref_name].copy()
@@ -234,7 +275,6 @@ def predict_kelmarsh_t1_windspeed(assessment_inputs: AssessmentInputs) -> None:
             sub_dir=f"{test_name}/{ref_name}",
         )
 
-        ref_pw_col = "ref_" + ref_pw_col
         ref_ws_col = "ref_" + ref_ws_col
         ref_wd_col = "ref_" + ref_wd_col
         ref_df.columns = ["ref_" + x for x in ref_df.columns]
@@ -303,7 +343,41 @@ def predict_kelmarsh_t1_windspeed(assessment_inputs: AssessmentInputs) -> None:
 
         print(wsratio_v_dir_scen)
 
+        detrend_ws_col = "ref_ws_detrended"
+        detrend_df = apply_wsratio_v_wd_scen(
+            detrend_df, wsratio_v_dir_scen, ref_ws_col=ref_ws_col, ref_wd_col=ref_wd_col
+        )
+        detrend_r2_improvement, _ = check_applied_detrend(
+            test_name=test_name,
+            ref_name=ref_name,
+            ref_lat=ref_lat,
+            ref_long=ref_long,
+            pre_df=detrend_df,
+            post_df=detrend_df,
+            test_ws_col=test_ws_col,
+            ref_ws_col=ref_ws_col,
+            detrend_ws_col=detrend_ws_col,
+            ref_wd_col=ref_wd_col,
+            cfg=cfg,
+            plot_cfg=plot_cfg,
+        )
+
+        # compare detrend_ws_col to test_ws_col
+        dropna_df = detrend_df.dropna(subset=[detrend_ws_col, test_ws_col])
+        plt.figure()
+        plt.scatter(dropna_df[test_ws_col], dropna_df[detrend_ws_col], s=1)
+        plt.ylabel(detrend_ws_col)
+        plt.xlabel(test_ws_col)
+        title = f"test={test_name} ref={ref_name} {detrend_ws_col} vs {test_ws_col}"
+        plt.title(title)
+        plt.grid()
+        plt.tight_layout()
+        plt.savefig(plot_cfg.plots_dir / f"{title}.png")
+        print(f"{len(dropna_df)=}")
+        mae = (dropna_df[test_ws_col] - dropna_df[detrend_ws_col]).abs().mean()
+        print(f"{mae=}")
+
 
 if __name__ == "__main__":
     setup_logger(ANALYSIS_OUTPUT_DIR / "analysis.log")
-    main("messin around")
+    main("messin around 2")
