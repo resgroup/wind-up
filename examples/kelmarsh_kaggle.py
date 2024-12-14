@@ -4,9 +4,11 @@ import logging
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from examples.helpers import setup_logger
+from examples.kaggle_pipeline import prepare_submission
 from wind_up.constants import (
     OUTPUT_DIR,
     PROJECTROOT_DIR,
@@ -234,7 +236,7 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
     cfg = assessment_inputs.cfg
     plot_cfg = assessment_inputs.plot_cfg
 
-    wf_df.to_parquet(CACHE_DIR /cfg.assessment_name/ "wf_df.parquet")
+    wf_df.to_parquet(CACHE_DIR / cfg.assessment_name / "wf_df.parquet")
 
     test_wtg = cfg.test_wtgs[0]
     test_ws_col = "raw_WindSpeedMean"
@@ -364,7 +366,7 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
             plot_cfg=plot_cfg,
         )
 
-        detrend_df.to_parquet(CACHE_DIR /cfg.assessment_name/ f"{test_name}_{ref_name}_detrend.parquet")
+        detrend_df.to_parquet(CACHE_DIR / cfg.assessment_name / f"{test_name}_{ref_name}_detrend.parquet")
         # compare detrend_ws_col to test_ws_col
         dropna_df = detrend_df.dropna(subset=[detrend_ws_col, test_ws_col])
         plt.figure()
@@ -383,4 +385,101 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
 
 if __name__ == "__main__":
     setup_logger(ANALYSIS_OUTPUT_DIR / "analysis.log")
-    make_windup_features("messin around 2")
+    recacl_windup_files = False
+    if recacl_windup_files:
+        make_windup_features("messin around 2")
+
+    train_df = pd.read_csv(DATA_DIR / "train.csv", header=[0, 1], index_col=[0], parse_dates=[1])
+    test_df = pd.read_csv(DATA_DIR / "test.csv", header=[0, 1], index_col=[0], parse_dates=[1])
+
+    # Separate features and target
+    target_column=('target_feature', 'Unnamed: 53_level_1')
+    y_train = train_df[target_column]
+    X_train = train_df.drop(columns=[target_column])
+    X_test = test_df
+
+    # First make a copy of the timestamp column to work with
+    timestamp_train = pd.to_datetime(X_train[('Timestamp', 'Unnamed: 1_level_1')])
+    timestamp_test = pd.to_datetime(X_test[('Timestamp', 'Unnamed: 1_level_1')])
+
+    # Create multiple time-based features
+    time_features_train = pd.DataFrame({
+        ('Time', 'hour'): timestamp_train.dt.hour,
+        ('Time', 'month'): timestamp_train.dt.month,
+        ('Time', 'hour_sin'): np.sin(2 * np.pi * timestamp_train.dt.hour / 24),  # Cyclical encoding
+        ('Time', 'hour_cos'): np.cos(2 * np.pi * timestamp_train.dt.hour / 24),
+    })
+
+    time_features_test = pd.DataFrame({
+        ('Time', 'hour'): timestamp_test.dt.hour,
+        ('Time', 'month'): timestamp_test.dt.month,
+        ('Time', 'hour_sin'): np.sin(2 * np.pi * timestamp_test.dt.hour / 24),
+        ('Time', 'hour_cos'): np.cos(2 * np.pi * timestamp_test.dt.hour / 24),
+    })
+
+    # Add these new features to X_train and X_test
+    X_train = pd.concat([X_train, time_features_train], axis=1)
+    X_test = pd.concat([X_test, time_features_test], axis=1)
+
+    # Find the common columns
+    common_columns = X_train.columns.intersection(X_test.columns)
+
+    # Print info about the difference
+    print(f"Columns only in X_train: {set(X_train.columns) - set(X_test.columns)}")
+    print(f"Columns only in X_test: {set(X_test.columns) - set(X_train.columns)}")
+    print(f"Number of common columns: {len(common_columns)}")
+
+    # Keep only the common columns in both datasets
+    X_train = X_train[common_columns]
+    X_test = X_test[common_columns]
+
+    # Get numeric columns from both dataframes
+    numeric_columns = X_train.select_dtypes(include=['int32','int64', 'float64']).columns
+    print(f"Number of numeric columns: {len(numeric_columns)}")
+    print(f"Removed columns: {set(X_train.columns) - set(numeric_columns)}")
+
+    # Keep only numeric columns
+    X_train = X_train[numeric_columns]
+    X_test = X_test[numeric_columns]
+
+    # Verify the shapes and dtypes
+    print(f"\nNew shapes:")
+    print(f"X_train shape: {X_train.shape}")
+    print(f"X_test shape: {X_test.shape}")
+
+    # Verify all columns are numeric
+    print("\nColumn dtypes in X_train:")
+    print(X_train.dtypes.value_counts())
+
+    # Verify the shapes
+    print(f"\nNew shapes:")
+    print(f"X_train shape: {X_train.shape}")
+    print(f"X_test shape: {X_test.shape}")
+
+    feature_names = [' '.join(col).strip() for col in X_train.columns]
+
+    print(f"Number of NaN values in target: {y_train.isna().sum()}")
+    print(f"Total samples: {len(y_train)}")
+
+    mask = ~y_train.isna()
+    X_train = X_train[mask]
+    y_train = y_train[mask]
+
+    # First, evaluate all feature selection methods
+    pipeline = prepare_submission(
+        X_train=X_train,
+        y_train=y_train,
+        X_test=X_test,
+        sample_submission_path=ANALYSIS_OUTPUT_DIR/"sample_submission.csv",
+        evaluate_features=True,
+    )
+
+    # Then, use the best method for your final model
+    pipeline = prepare_submission(
+        X_train=X_train,
+        y_train=y_train,
+        X_test=X_test,
+        sample_submission_path=ANALYSIS_OUTPUT_DIR/"sample_submission.csv",
+        evaluate_features=False,
+        feature_method="model_based",  # or 'mutual_info' or 'boruta'
+    )
