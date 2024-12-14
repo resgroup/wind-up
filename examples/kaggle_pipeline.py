@@ -23,36 +23,72 @@ class FeatureSelector:
 
     def mutual_information(self, X, y, threshold=0.01):
         """Select features based on mutual information with target"""
-        # Impute NaN values
         X_imputed = pd.DataFrame(self.imputer.fit_transform(X), columns=X.columns, index=X.index)
 
         mi_scores = mutual_info_regression(X_imputed, y, random_state=self.random_state)
         self.importance_scores = pd.Series(mi_scores, index=X.columns)
+
+        # Log feature importance details
+        importance_df = pd.DataFrame({"feature": X.columns, "mutual_info_score": mi_scores}).sort_values(
+            "mutual_info_score", ascending=False
+        )
+
+        logger.info("\nMutual Information Scores (top 20):")
+        logger.info(importance_df.head(20))
+
         selected = self.importance_scores[self.importance_scores > threshold].index
+        dropped_features = set(X.columns) - set(selected)
+        logger.info(f"\nDropped features (mutual_info_score <= {threshold}):")
+        logger.info(dropped_features)
+
         return X[selected]
 
     def model_based_selection(self, X, y, threshold="mean"):
         """Use model's feature importances for selection"""
-        # Impute NaN values
         X_imputed = pd.DataFrame(self.imputer.fit_transform(X), columns=X.columns, index=X.index)
 
         model = RandomForestRegressor(n_estimators=100, random_state=self.random_state, n_jobs=-1)
         model.fit(X_imputed, y)
 
+        # Log feature importance details
+        importance_df = pd.DataFrame({"feature": X.columns, "importance": model.feature_importances_}).sort_values(
+            "importance", ascending=False
+        )
+
+        logger.info("\nRandom Forest Feature Importances (top 20):")
+        logger.info(importance_df.head(20))
+
         selector = SelectFromModel(estimator=model, threshold=threshold)
         selector.fit(X_imputed, y)
         selected = X.columns[selector.get_support()]
+
+        dropped_features = set(X.columns) - set(selected)
+        logger.info(f"\nDropped features (below threshold '{threshold}'):")
+        logger.info(dropped_features)
+
         return X[selected]
 
     def boruta_selection(self, X, y):
         """Use Boruta algorithm for feature selection"""
-        # Impute NaN values
         X_imputed = pd.DataFrame(self.imputer.fit_transform(X), columns=X.columns, index=X.index)
 
         rf = RandomForestRegressor(n_estimators=100, random_state=self.random_state, n_jobs=-1)
         boruta = BorutaPy(rf, n_estimators="auto", verbose=0, random_state=self.random_state)
         boruta.fit(X_imputed.values, y.values)
+
+        # Log feature importance details
+        feature_ranks = pd.DataFrame(
+            {"feature": X.columns, "rank": boruta.ranking_, "selected": boruta.support_}
+        ).sort_values("rank")
+
+        logger.info("\nBoruta Feature Rankings:")
+        logger.info(feature_ranks)
+
         selected = X.columns[boruta.support_]
+        dropped_features = set(X.columns) - set(selected)
+        logger.info("\nDropped features (not confirmed by Boruta):")
+        logger.info(dropped_features)
+
         return X[selected]
 
 
