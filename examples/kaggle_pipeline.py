@@ -3,8 +3,9 @@ import warnings
 import numpy as np
 import pandas as pd
 from boruta import BorutaPy
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.feature_selection import SelectFromModel, mutual_info_regression
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import KFold, cross_val_score
 
 warnings.filterwarnings("ignore")
@@ -15,33 +16,39 @@ class FeatureSelector:
         self.random_state = random_state
         self.selected_features = None
         self.importance_scores = None
+        self.imputer = SimpleImputer(strategy="mean")
 
     def mutual_information(self, X, y, threshold=0.01):
         """Select features based on mutual information with target"""
-        mi_scores = mutual_info_regression(X, y, random_state=self.random_state)
+        # Impute NaN values
+        X_imputed = pd.DataFrame(self.imputer.fit_transform(X), columns=X.columns, index=X.index)
+
+        mi_scores = mutual_info_regression(X_imputed, y, random_state=self.random_state)
         self.importance_scores = pd.Series(mi_scores, index=X.columns)
         selected = self.importance_scores[self.importance_scores > threshold].index
         return X[selected]
 
-    def model_based_selection(self, X, y, threshold='mean'):
+    def model_based_selection(self, X, y, threshold="mean"):
         """Use model's feature importances for selection"""
-        # Use RandomForest instead of HistGradientBoosting for feature selection
-        model = RandomForestRegressor(n_estimators=100, random_state=self.random_state)
-        model.fit(X, y)
+        # Impute NaN values
+        X_imputed = pd.DataFrame(self.imputer.fit_transform(X), columns=X.columns, index=X.index)
 
-        selector = SelectFromModel(
-            estimator=model,
-            threshold=threshold
-        )
-        selector.fit(X, y)
+        model = RandomForestRegressor(n_estimators=100, random_state=self.random_state, n_jobs=-1)
+        model.fit(X_imputed, y)
+
+        selector = SelectFromModel(estimator=model, threshold=threshold)
+        selector.fit(X_imputed, y)
         selected = X.columns[selector.get_support()]
         return X[selected]
 
     def boruta_selection(self, X, y):
         """Use Boruta algorithm for feature selection"""
-        rf = HistGradientBoostingRegressor(random_state=self.random_state)
+        # Impute NaN values
+        X_imputed = pd.DataFrame(self.imputer.fit_transform(X), columns=X.columns, index=X.index)
+
+        rf = RandomForestRegressor(n_estimators=100, random_state=self.random_state, n_jobs=-1)
         boruta = BorutaPy(rf, n_estimators="auto", verbose=0, random_state=self.random_state)
-        boruta.fit(X.values, y.values)
+        boruta.fit(X_imputed.values, y.values)
         selected = X.columns[boruta.support_]
         return X[selected]
 
@@ -84,12 +91,12 @@ class KaggleSubmissionPipeline:
                 scores = self._get_cv_scores(X_selected, y_train, cv)
                 results[name] = {
                     "n_features": X_selected.shape[1],
-                    "mean_rmse": np.mean(scores),
-                    "std_rmse": np.std(scores),
+                    "mean_mae": np.mean(scores),
+                    "std_mae": np.std(scores),
                     "selected_features": list(X_selected.columns),
                 }
                 print(f"Number of features: {X_selected.shape[1]}")
-                print(f"Mean RMSE: {np.mean(scores):.4f} (+/- {np.std(scores) * 2:.4f})")
+                print(f"Mean MAE: {np.mean(scores):.4f} (+/- {np.std(scores) * 2:.4f})")
             except Exception as e:
                 print(f"Error with {name}: {e!s}")
 
@@ -102,7 +109,7 @@ class KaggleSubmissionPipeline:
             X,
             y,
             cv=KFold(n_splits=cv, shuffle=True, random_state=42),
-            scoring="neg_root_mean_squared_error",
+            scoring="neg_mean_absolute_error",
             n_jobs=-1,
         )
         return -scores
@@ -126,14 +133,16 @@ class KaggleSubmissionPipeline:
         """Perform cross-validation and print results"""
         scores = self._get_cv_scores(X_train, y_train, cv)
         self.cv_scores = scores
-        print(f"Cross-validation RMSE scores: {scores}")
-        print(f"Mean RMSE: {np.mean(scores):.4f} (+/- {np.std(scores) * 2:.4f})")
+        print(f"Cross-validation MAE scores: {scores}")
+        print(f"Mean MAE: {np.mean(scores):.4f} (+/- {np.std(scores) * 2:.4f})")
 
     def train_and_predict(self, X_train, y_train, X_test):
         """Train model and generate predictions"""
         print("Training final model...")
         self.model.fit(X_train, y_train)
+        predictions = self.model.predict(X_test)
 
+        # Calculate feature importances if available
         if hasattr(self.model, "feature_importances_"):
             importances = pd.DataFrame(
                 {"feature": X_train.columns, "importance": self.model.feature_importances_}
@@ -141,7 +150,6 @@ class KaggleSubmissionPipeline:
             print("\nTop 10 most important features:")
             print(importances.head(10))
 
-        predictions = self.model.predict(X_test)
         return predictions
 
     def create_submission(self, predictions, sample_submission_path, output_path):
@@ -163,6 +171,11 @@ def prepare_submission(
     feature_method="model_based",
 ):
     """Complete pipeline with feature selection"""
+    # Remove rows where target is NaN
+    mask = ~y_train.isna()
+    X_train = X_train[mask]
+    y_train = y_train[mask]
+
     pipeline = KaggleSubmissionPipeline(model)
 
     print("Dataset information:")
