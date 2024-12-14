@@ -345,8 +345,6 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
             plot_cfg=plot_cfg,
         )
 
-        print(wsratio_v_dir_scen)
-
         detrend_ws_col = "ref_ws_detrended"
         detrend_df = apply_wsratio_v_wd_scen(
             detrend_df, wsratio_v_dir_scen, ref_ws_col=ref_ws_col, ref_wd_col=ref_wd_col
@@ -378,9 +376,9 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
         plt.grid()
         plt.tight_layout()
         plt.savefig(plot_cfg.plots_dir / f"{title}.png")
-        print(f"{len(dropna_df)=}")
+        logger.info(f"{len(dropna_df)=}")
         mae = (dropna_df[test_ws_col] - dropna_df[detrend_ws_col]).abs().mean()
-        print(f"{mae=}")
+        logger.info(f"{mae=}")
 
 
 if __name__ == "__main__":
@@ -429,9 +427,9 @@ if __name__ == "__main__":
     common_columns = X_train.columns.intersection(X_test.columns)
 
     # Print info about the difference
-    print(f"Columns only in X_train: {set(X_train.columns) - set(X_test.columns)}")
-    print(f"Columns only in X_test: {set(X_test.columns) - set(X_train.columns)}")
-    print(f"Number of common columns: {len(common_columns)}")
+    logger.info(f"Columns only in X_train: {set(X_train.columns) - set(X_test.columns)}")
+    logger.info(f"Columns only in X_test: {set(X_test.columns) - set(X_train.columns)}")
+    logger.info(f"Number of common columns: {len(common_columns)}")
 
     # Keep only the common columns in both datasets
     X_train = X_train[common_columns]
@@ -439,31 +437,31 @@ if __name__ == "__main__":
 
     # Get numeric columns from both dataframes
     numeric_columns = X_train.select_dtypes(include=["int32", "int64", "float64"]).columns
-    print(f"Number of numeric columns: {len(numeric_columns)}")
-    print(f"Removed columns: {set(X_train.columns) - set(numeric_columns)}")
+    logger.info(f"Number of numeric columns: {len(numeric_columns)}")
+    logger.info(f"Removed columns: {set(X_train.columns) - set(numeric_columns)}")
 
     # Keep only numeric columns
     X_train = X_train[numeric_columns]
     X_test = X_test[numeric_columns]
 
     # Verify the shapes and dtypes
-    print("\nNew shapes:")
-    print(f"X_train shape: {X_train.shape}")
-    print(f"X_test shape: {X_test.shape}")
+    logger.info("\nNew shapes:")
+    logger.info(f"X_train shape: {X_train.shape}")
+    logger.info(f"X_test shape: {X_test.shape}")
 
     # Verify all columns are numeric
-    print("\nColumn dtypes in X_train:")
-    print(X_train.dtypes.value_counts())
+    logger.info("\nColumn dtypes in X_train:")
+    logger.info(X_train.dtypes.value_counts())
 
     # Verify the shapes
-    print("\nNew shapes:")
-    print(f"X_train shape: {X_train.shape}")
-    print(f"X_test shape: {X_test.shape}")
+    logger.info("\nNew shapes:")
+    logger.info(f"X_train shape: {X_train.shape}")
+    logger.info(f"X_test shape: {X_test.shape}")
 
     feature_names = [" ".join(col).strip() for col in X_train.columns]
 
-    print(f"Number of NaN values in target: {y_train.isna().sum()}")
-    print(f"Total samples: {len(y_train)}")
+    logger.info(f"Number of NaN values in target: {y_train.isna().sum()}")
+    logger.info(f"Total samples: {len(y_train)}")
 
     mask = ~y_train.isna()
     X_train = X_train[mask]
