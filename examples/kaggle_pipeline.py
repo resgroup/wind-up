@@ -119,23 +119,23 @@ class KaggleSubmissionPipeline:
     def _get_tuned_model(self):
         """Perform hyperparameter tuning using RandomizedSearchCV"""
         param_distributions = {
-            "learning_rate": uniform(0.01, 0.09),
+            "learning_rate": uniform(0.01, 0.05),
             "max_depth": randint(5, 20),
             "min_samples_leaf": randint(10, 50),
             "l2_regularization": uniform(0.5, 4.5),
         }
 
         base_model = HistGradientBoostingRegressor(
-            max_iter=1000, early_stopping=True, validation_fraction=0.1, n_iter_no_change=20, random_state=42, verbose=0
+            max_iter=500, # lowered from 1000
+            early_stopping=True, validation_fraction=0.1, n_iter_no_change=20, random_state=42, verbose=0
         )
 
         return RandomizedSearchCV(
             base_model,
             param_distributions,
-            n_iter=20,
+            n_iter=10,
             cv=10,
             scoring="neg_mean_absolute_error",
-            n_jobs=-1,
             random_state=42,
             verbose=2,
         )
@@ -147,7 +147,7 @@ class KaggleSubmissionPipeline:
             "all_features": lambda x, y: x,
             "mutual_info": self.feature_selector.mutual_information,
             "model_based": self.feature_selector.model_based_selection,
-            "boruta": self.feature_selector.boruta_selection,
+            # "boruta": self.feature_selector.boruta_selection,# intense!
         }
 
         for name, method in methods.items():

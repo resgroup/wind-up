@@ -382,10 +382,11 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
 
 
 if __name__ == "__main__":
-    setup_logger(ANALYSIS_OUTPUT_DIR / "analysis.log")
+    setup_logger(ANALYSIS_OUTPUT_DIR / f"analysis_{pd.Timestamp.now():%Y%m%d_%H%M%S}.log")
     recacl_windup_files = False
+    assessment_name="messin around 2"
     if recacl_windup_files:
-        make_windup_features("messin around 2")
+        make_windup_features(assessment_name)
 
     train_df = pd.read_csv(DATA_DIR / "train.csv", header=[0, 1], index_col=[0], parse_dates=[1])
     test_df = pd.read_csv(DATA_DIR / "test.csv", header=[0, 1], index_col=[0], parse_dates=[1])
@@ -403,6 +404,7 @@ if __name__ == "__main__":
     # create time-based features
     time_features_train = pd.DataFrame(
         {
+            ("Time", "age in days"): (timestamp_train-min(timestamp_train.min(),timestamp_test.min())).dt.total_seconds()/3600/24,
             ("Time", "hour"): timestamp_train.dt.hour,
             ("Time", "month"): timestamp_train.dt.month,
             ("Time", "hour_sin"): np.sin(2 * np.pi * timestamp_train.dt.hour / 24),  # Cyclical encoding
@@ -412,6 +414,8 @@ if __name__ == "__main__":
 
     time_features_test = pd.DataFrame(
         {
+            ("Time", "age in days"): (timestamp_test - min(timestamp_train.min(),
+                                                            timestamp_test.min())).dt.total_seconds() / 3600 / 24,
             ("Time", "hour"): timestamp_test.dt.hour,
             ("Time", "month"): timestamp_test.dt.month,
             ("Time", "hour_sin"): np.sin(2 * np.pi * timestamp_test.dt.hour / 24),
@@ -422,6 +426,36 @@ if __name__ == "__main__":
     # Add these new features to X_train and X_test
     X_train = pd.concat([X_train, time_features_train], axis=1)
     X_test = pd.concat([X_test, time_features_test], axis=1)
+
+    # load in parquet files and add features
+    for ref_wtg_name in ["Kelmarsh 2", "Kelmarsh 3", "Kelmarsh 4", "Kelmarsh 5", "Kelmarsh 6"]:
+        detrend_df = pd.read_parquet(CACHE_DIR / assessment_name / f"Kelmarsh 1_{ref_wtg_name}_detrend.parquet")
+        detrend_df_no_tz=detrend_df.copy()
+        detrend_df_no_tz.index = detrend_df_no_tz.index.tz_localize(None)
+        assert detrend_df_no_tz.index.min() ==min(X_train[("Timestamp", "Unnamed: 1_level_1")].min(),X_test[("Timestamp", "Unnamed: 1_level_1")].min())
+        assert detrend_df_no_tz.index.max() == max(X_train[("Timestamp", "Unnamed: 1_level_1")].max(),
+                                                   X_test[("Timestamp", "Unnamed: 1_level_1")].max())
+        assert len(detrend_df) == len(X_train)+len(X_test)
+        detrend_df_to_merge = detrend_df_no_tz.copy()
+        # add a column level with the ref_wtg_name
+        detrend_df_to_merge.columns = pd.MultiIndex.from_tuples(
+            [(ref_wtg_name, x) for x in detrend_df_to_merge.columns])
+        features_to_add = [(ref_wtg_name,'ref_reanalysis_ws'),(ref_wtg_name,'ref_reanalysis_wd'),(ref_wtg_name,'ref_ws_detrended')]
+        for col in features_to_add:
+            if col not in detrend_df_to_merge.columns:
+                continue
+            if col in X_train.columns:
+                continue
+            if col[1] in ['ref_reanalysis_ws','ref_reanalysis_wd'] and col[0]!="Kelmarsh 2":
+                continue #  only add these columns for Kelmarsh 2
+            # Create temporary timestamp columns for merging
+            timestamp_train = X_train[("Timestamp", "Unnamed: 1_level_1")].copy()
+            timestamp_test = X_test[("Timestamp", "Unnamed: 1_level_1")].copy()
+            X_train = X_train.merge(detrend_df_to_merge[[col]], left_on=timestamp_train, right_index=True, how="left").drop(columns=("key_0", ""))
+            X_test = X_test.merge(detrend_df_to_merge[[col]], left_on=timestamp_test, right_index=True, how="left").drop(columns=("key_0", ""))
+            logger.info(f"Added {col} to X_train and X_test")
+
+    # TODO add cos and sin
 
     # Find the common columns
     common_columns = X_train.columns.intersection(X_test.columns)
@@ -468,6 +502,7 @@ if __name__ == "__main__":
     y_train = y_train[mask]
 
     evaluate_features = False
+    tune_hyperparameters = False
     if evaluate_features:
         pipeline = prepare_submission(
             X_train=X_train,
@@ -475,6 +510,7 @@ if __name__ == "__main__":
             X_test=X_test,
             sample_submission_path=DATA_DIR / "sample_submission.csv",
             evaluate_features=True,
+            tune_hyperparameters=tune_hyperparameters,
         )
 
     # Then, use the best method for your final model
@@ -486,5 +522,5 @@ if __name__ == "__main__":
         output_path=ANALYSIS_OUTPUT_DIR / f"submission_{pd.Timestamp.now():%Y%m%d_%H%M%S}.csv",
         evaluate_features=False,
         feature_method="all_features",  # or 'mutual_info' or 'model_based' or 'boruta'
-        tune_hyperparameters=True,  # enable hyperparameter tuning
+        tune_hyperparameters=tune_hyperparameters,  # enable hyperparameter tuning
     )
