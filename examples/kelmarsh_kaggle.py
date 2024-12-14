@@ -455,7 +455,13 @@ if __name__ == "__main__":
             X_test = X_test.merge(detrend_df_to_merge[[col]], left_on=timestamp_test, right_index=True, how="left").drop(columns=("key_0", ""))
             logger.info(f"Added {col} to X_train and X_test")
 
-    # TODO add cos and sin
+    # TODO
+    # add cos and sin of direction parameters
+    # add solar position
+    # simplify prepare_submission, eg remove hyperparameter tuning, prepare it for optuna
+    # use optuna to tune hyperparameters
+    # try removing features to see if it helps
+
 
     # Find the common columns
     common_columns = X_train.columns.intersection(X_test.columns)
