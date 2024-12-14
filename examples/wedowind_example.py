@@ -63,7 +63,6 @@ ANALYSIS_OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
 PARENT_DIR = Path(__file__).parent
 ZIP_FILENAME = "Turbine_Upgrade_Dataset.zip"
 
-setup_logger(ANALYSIS_OUTPUT_DIR / "analysis.log")
 logger = logging.getLogger(__name__)
 
 
@@ -512,5 +511,6 @@ def main(analysis_name: str, *, generate_custom_plots: bool = True) -> None:
 
 
 if __name__ == "__main__":
+    setup_logger(ANALYSIS_OUTPUT_DIR / "analysis.log")
     main("Pitch Angle")
     main("Vortex Generator")
