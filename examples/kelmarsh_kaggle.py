@@ -393,29 +393,33 @@ if __name__ == "__main__":
     test_df = pd.read_csv(DATA_DIR / "test.csv", header=[0, 1], index_col=[0], parse_dates=[1])
 
     # Separate features and target
-    target_column=('target_feature', 'Unnamed: 53_level_1')
+    target_column = ("target_feature", "Unnamed: 53_level_1")
     y_train = train_df[target_column]
     X_train = train_df.drop(columns=[target_column])
     X_test = test_df
 
     # First make a copy of the timestamp column to work with
-    timestamp_train = pd.to_datetime(X_train[('Timestamp', 'Unnamed: 1_level_1')])
-    timestamp_test = pd.to_datetime(X_test[('Timestamp', 'Unnamed: 1_level_1')])
+    timestamp_train = pd.to_datetime(X_train[("Timestamp", "Unnamed: 1_level_1")])
+    timestamp_test = pd.to_datetime(X_test[("Timestamp", "Unnamed: 1_level_1")])
 
     # Create multiple time-based features
-    time_features_train = pd.DataFrame({
-        ('Time', 'hour'): timestamp_train.dt.hour,
-        ('Time', 'month'): timestamp_train.dt.month,
-        ('Time', 'hour_sin'): np.sin(2 * np.pi * timestamp_train.dt.hour / 24),  # Cyclical encoding
-        ('Time', 'hour_cos'): np.cos(2 * np.pi * timestamp_train.dt.hour / 24),
-    })
+    time_features_train = pd.DataFrame(
+        {
+            ("Time", "hour"): timestamp_train.dt.hour,
+            ("Time", "month"): timestamp_train.dt.month,
+            ("Time", "hour_sin"): np.sin(2 * np.pi * timestamp_train.dt.hour / 24),  # Cyclical encoding
+            ("Time", "hour_cos"): np.cos(2 * np.pi * timestamp_train.dt.hour / 24),
+        }
+    )
 
-    time_features_test = pd.DataFrame({
-        ('Time', 'hour'): timestamp_test.dt.hour,
-        ('Time', 'month'): timestamp_test.dt.month,
-        ('Time', 'hour_sin'): np.sin(2 * np.pi * timestamp_test.dt.hour / 24),
-        ('Time', 'hour_cos'): np.cos(2 * np.pi * timestamp_test.dt.hour / 24),
-    })
+    time_features_test = pd.DataFrame(
+        {
+            ("Time", "hour"): timestamp_test.dt.hour,
+            ("Time", "month"): timestamp_test.dt.month,
+            ("Time", "hour_sin"): np.sin(2 * np.pi * timestamp_test.dt.hour / 24),
+            ("Time", "hour_cos"): np.cos(2 * np.pi * timestamp_test.dt.hour / 24),
+        }
+    )
 
     # Add these new features to X_train and X_test
     X_train = pd.concat([X_train, time_features_train], axis=1)
@@ -434,7 +438,7 @@ if __name__ == "__main__":
     X_test = X_test[common_columns]
 
     # Get numeric columns from both dataframes
-    numeric_columns = X_train.select_dtypes(include=['int32','int64', 'float64']).columns
+    numeric_columns = X_train.select_dtypes(include=["int32", "int64", "float64"]).columns
     print(f"Number of numeric columns: {len(numeric_columns)}")
     print(f"Removed columns: {set(X_train.columns) - set(numeric_columns)}")
 
@@ -443,7 +447,7 @@ if __name__ == "__main__":
     X_test = X_test[numeric_columns]
 
     # Verify the shapes and dtypes
-    print(f"\nNew shapes:")
+    print("\nNew shapes:")
     print(f"X_train shape: {X_train.shape}")
     print(f"X_test shape: {X_test.shape}")
 
@@ -452,11 +456,11 @@ if __name__ == "__main__":
     print(X_train.dtypes.value_counts())
 
     # Verify the shapes
-    print(f"\nNew shapes:")
+    print("\nNew shapes:")
     print(f"X_train shape: {X_train.shape}")
     print(f"X_test shape: {X_test.shape}")
 
-    feature_names = [' '.join(col).strip() for col in X_train.columns]
+    feature_names = [" ".join(col).strip() for col in X_train.columns]
 
     print(f"Number of NaN values in target: {y_train.isna().sum()}")
     print(f"Total samples: {len(y_train)}")
@@ -470,7 +474,7 @@ if __name__ == "__main__":
         X_train=X_train,
         y_train=y_train,
         X_test=X_test,
-        sample_submission_path=ANALYSIS_OUTPUT_DIR/"sample_submission.csv",
+        sample_submission_path=ANALYSIS_OUTPUT_DIR / "sample_submission.csv",
         evaluate_features=True,
     )
 
@@ -479,7 +483,7 @@ if __name__ == "__main__":
         X_train=X_train,
         y_train=y_train,
         X_test=X_test,
-        sample_submission_path=ANALYSIS_OUTPUT_DIR/"sample_submission.csv",
+        sample_submission_path=ANALYSIS_OUTPUT_DIR / "sample_submission.csv",
         evaluate_features=False,
         feature_method="model_based",  # or 'mutual_info' or 'boruta'
     )
