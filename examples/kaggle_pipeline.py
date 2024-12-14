@@ -1,3 +1,4 @@
+import logging
 import warnings
 
 import numpy as np
@@ -9,6 +10,8 @@ from sklearn.impute import SimpleImputer
 from sklearn.model_selection import KFold, cross_val_score
 
 warnings.filterwarnings("ignore")
+
+logger = logging.getLogger(__name__)
 
 
 class FeatureSelector:
@@ -85,7 +88,7 @@ class KaggleSubmissionPipeline:
         }
 
         for name, method in methods.items():
-            print(f"\nEvaluating {name}...")
+            logger.info(f"\nEvaluating {name}...")
             try:
                 X_selected = method(X_train.copy(), y_train)
                 scores = self._get_cv_scores(X_selected, y_train, cv)
@@ -95,10 +98,10 @@ class KaggleSubmissionPipeline:
                     "std_mae": np.std(scores),
                     "selected_features": list(X_selected.columns),
                 }
-                print(f"Number of features: {X_selected.shape[1]}")
-                print(f"Mean MAE: {np.mean(scores):.4f} (+/- {np.std(scores) * 2:.4f})")
+                logger.info(f"Number of features: {X_selected.shape[1]}")
+                logger.info(f"Mean MAE: {np.mean(scores):.4f} (+/- {np.std(scores) * 2:.4f})")
             except Exception as e:
-                print(f"Error with {name}: {e!s}")
+                logger.error(f"Error with {name}: {e!s}")
 
         return results
 
@@ -133,12 +136,12 @@ class KaggleSubmissionPipeline:
         """Perform cross-validation and print results"""
         scores = self._get_cv_scores(X_train, y_train, cv)
         self.cv_scores = scores
-        print(f"Cross-validation MAE scores: {scores}")
-        print(f"Mean MAE: {np.mean(scores):.4f} (+/- {np.std(scores) * 2:.4f})")
+        logger.info(f"Cross-validation MAE scores: {scores}")
+        logger.info(f"Mean MAE: {np.mean(scores):.4f} (+/- {np.std(scores) * 2:.4f})")
 
     def train_and_predict(self, X_train, y_train, X_test):
         """Train model and generate predictions"""
-        print("Training final model...")
+        logger.info("Training final model...")
         self.model.fit(X_train, y_train)
         predictions = self.model.predict(X_test)
 
@@ -147,8 +150,8 @@ class KaggleSubmissionPipeline:
             importances = pd.DataFrame(
                 {"feature": X_train.columns, "importance": self.model.feature_importances_}
             ).sort_values("importance", ascending=False)
-            print("\nTop 10 most important features:")
-            print(importances.head(10))
+            logger.info("\nTop 10 most important features:")
+            logger.info(importances.head(10))
 
         return predictions
 
@@ -157,7 +160,7 @@ class KaggleSubmissionPipeline:
         submission = pd.read_csv(sample_submission_path)
         submission.iloc[:, 1] = predictions
         submission.to_csv(output_path, index=False)
-        print(f"Submission saved to {output_path}")
+        logger.info(f"Submission saved to {output_path}")
 
 
 def prepare_submission(
@@ -178,19 +181,19 @@ def prepare_submission(
 
     pipeline = KaggleSubmissionPipeline(model)
 
-    print("Dataset information:")
-    print(f"Training data shape: {X_train.shape}")
-    print(f"Test data shape: {X_test.shape}")
-    print("\nMissing values in training data:")
-    print(X_train.isnull().sum().sort_values(ascending=False).head())
+    logger.info("Dataset information:")
+    logger.info(f"Training data shape: {X_train.shape}")
+    logger.info(f"Test data shape: {X_test.shape}")
+    logger.info("\nMissing values in training data:")
+    logger.info(X_train.isnull().sum().sort_values(ascending=False).head())
 
     if evaluate_features:
-        print("\nEvaluating feature selection methods...")
+        logger.info("\nEvaluating feature selection methods...")
         results = pipeline.evaluate_feature_selection_methods(X_train, y_train)
 
     # Select features using chosen method
     X_train_selected, X_test_selected = pipeline.select_features(X_train, y_train, X_test, method=feature_method)
-    print(f"\nSelected {X_train_selected.shape[1]} features using {feature_method}")
+    logger.info(f"\nSelected {X_train_selected.shape[1]} features using {feature_method}")
 
     # Validate model with selected features
     pipeline.validate_model(X_train_selected, y_train)
