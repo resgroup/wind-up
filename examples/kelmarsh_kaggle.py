@@ -127,7 +127,7 @@ def kelmarsh_kaggle_metadata_df(data_dir: Path) -> pd.DataFrame:
     return metadata_df.assign(TimeZone="UTC", TimeSpanMinutes=10, TimeFormat="Start")
 
 
-def main(analysis_name: str) -> None:
+def make_windup_features(analysis_name: str) -> None:
     # verify the data is in the correct location
     expected_files = [
         "train.csv",
@@ -225,14 +225,16 @@ def main(analysis_name: str) -> None:
         cache_dir=cache_assessment,
     )
 
-    predict_kelmarsh_t1_windspeed(assessment_inputs)
+    save_t1_detrend_dfs(assessment_inputs)
 
 
-def predict_kelmarsh_t1_windspeed(assessment_inputs: AssessmentInputs) -> None:
+def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
     wf_df = assessment_inputs.wf_df
     pc_per_ttype = assessment_inputs.pc_per_ttype
     cfg = assessment_inputs.cfg
     plot_cfg = assessment_inputs.plot_cfg
+
+    wf_df.to_parquet(CACHE_DIR /cfg.assessment_name/ "wf_df.parquet")
 
     test_wtg = cfg.test_wtgs[0]
     test_ws_col = "raw_WindSpeedMean"
@@ -362,6 +364,7 @@ def predict_kelmarsh_t1_windspeed(assessment_inputs: AssessmentInputs) -> None:
             plot_cfg=plot_cfg,
         )
 
+        detrend_df.to_parquet(CACHE_DIR /cfg.assessment_name/ f"{test_name}_{ref_name}_detrend.parquet")
         # compare detrend_ws_col to test_ws_col
         dropna_df = detrend_df.dropna(subset=[detrend_ws_col, test_ws_col])
         plt.figure()
@@ -380,4 +383,4 @@ def predict_kelmarsh_t1_windspeed(assessment_inputs: AssessmentInputs) -> None:
 
 if __name__ == "__main__":
     setup_logger(ANALYSIS_OUTPUT_DIR / "analysis.log")
-    main("messin around 2")
+    make_windup_features("messin around 2")
