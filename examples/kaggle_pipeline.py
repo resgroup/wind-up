@@ -4,10 +4,11 @@ import warnings
 import numpy as np
 import pandas as pd
 from boruta import BorutaPy
+from scipy.stats import randint, uniform
 from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.feature_selection import SelectFromModel, mutual_info_regression
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import KFold, cross_val_score
+from sklearn.model_selection import KFold, RandomizedSearchCV, cross_val_score
 
 warnings.filterwarnings("ignore")
 
@@ -93,11 +94,14 @@ class FeatureSelector:
 
 
 class KaggleSubmissionPipeline:
-    def __init__(self, model=None):
-        self.model = (
-            model
-            if model
-            else HistGradientBoostingRegressor(
+    def __init__(self, model=None, tune_hyperparameters=True):
+        self.tune_hyperparameters = tune_hyperparameters
+        if model is not None:
+            self.model = model
+        elif tune_hyperparameters:
+            self.model = self._get_tuned_model()
+        else:
+            self.model = HistGradientBoostingRegressor(
                 max_iter=1000,
                 learning_rate=0.1,
                 max_depth=None,
@@ -109,11 +113,34 @@ class KaggleSubmissionPipeline:
                 n_iter_no_change=20,
                 verbose=1,
             )
-        )
         self.cv_scores = []
         self.feature_selector = FeatureSelector()
 
-    def evaluate_feature_selection_methods(self, X_train, y_train, cv=5):
+    def _get_tuned_model(self):
+        """Perform hyperparameter tuning using RandomizedSearchCV"""
+        param_distributions = {
+            "learning_rate": uniform(0.01, 0.09),
+            "max_depth": randint(5, 20),
+            "min_samples_leaf": randint(10, 50),
+            "l2_regularization": uniform(0.5, 4.5),
+        }
+
+        base_model = HistGradientBoostingRegressor(
+            max_iter=1000, early_stopping=True, validation_fraction=0.1, n_iter_no_change=20, random_state=42, verbose=0
+        )
+
+        return RandomizedSearchCV(
+            base_model,
+            param_distributions,
+            n_iter=20,
+            cv=10,
+            scoring="neg_mean_absolute_error",
+            n_jobs=-1,
+            random_state=42,
+            verbose=2,
+        )
+
+    def evaluate_feature_selection_methods(self, X_train, y_train, cv=10):
         """Compare different feature selection methods"""
         results = {}
         methods = {
@@ -127,6 +154,13 @@ class KaggleSubmissionPipeline:
             logger.info(f"\nEvaluating {name}...")
             try:
                 X_selected = method(X_train.copy(), y_train)
+                if self.tune_hyperparameters and hasattr(self.model, "fit"):
+                    logger.info("Performing hyperparameter tuning...")
+                    self.model.fit(X_selected, y_train)
+                    logger.info("Best parameters found:")
+                    logger.info(self.model.best_params_)
+                    logger.info(f"Best cross-validation MAE: {-self.model.best_score_:.4f}")
+
                 scores = self._get_cv_scores(X_selected, y_train, cv)
                 results[name] = {
                     "n_features": X_selected.shape[1],
@@ -168,7 +202,7 @@ class KaggleSubmissionPipeline:
         X_test_selected = X_test[selected_features]
         return X_train_selected, X_test_selected
 
-    def validate_model(self, X_train, y_train, cv=5):
+    def validate_model(self, X_train, y_train, cv=10):
         """Perform cross-validation and print results"""
         scores = self._get_cv_scores(X_train, y_train, cv)
         self.cv_scores = scores
@@ -178,16 +212,30 @@ class KaggleSubmissionPipeline:
     def train_and_predict(self, X_train, y_train, X_test):
         """Train model and generate predictions"""
         logger.info("Training final model...")
-        self.model.fit(X_train, y_train)
-        predictions = self.model.predict(X_test)
 
-        # Calculate feature importances if available
-        if hasattr(self.model, "feature_importances_"):
-            importances = pd.DataFrame(
-                {"feature": X_train.columns, "importance": self.model.feature_importances_}
-            ).sort_values("importance", ascending=False)
-            logger.info("\nTop 10 most important features:")
-            logger.info(importances.head(10))
+        if self.tune_hyperparameters and hasattr(self.model, "best_estimator_"):
+            logger.info("Using best model from hyperparameter tuning...")
+            # Get the best model from tuning
+            best_model = self.model.best_estimator_
+            # Fit it on the full training data
+            best_model.fit(X_train, y_train)
+            predictions = best_model.predict(X_test)
+
+            # Log best parameters for reference
+            logger.info("Best parameters used:")
+            logger.info(self.model.best_params_)
+        else:
+            # If not tuning hyperparameters, use the base model
+            self.model.fit(X_train, y_train)
+            predictions = self.model.predict(X_test)
+
+            # Calculate feature importances if available
+            if hasattr(self.model, "feature_importances_"):
+                importances = pd.DataFrame(
+                    {"feature": X_train.columns, "importance": self.model.feature_importances_}
+                ).sort_values("importance", ascending=False)
+                logger.info("\nTop 10 most important features:")
+                logger.info(importances.head(10))
 
         return predictions
 
@@ -208,14 +256,15 @@ def prepare_submission(
     model=None,
     evaluate_features=True,
     feature_method="model_based",
+    tune_hyperparameters=True,
 ):
-    """Complete pipeline with feature selection"""
+    """Complete pipeline with feature selection and hyperparameter tuning"""
     # Remove rows where target is NaN
     mask = ~y_train.isna()
     X_train = X_train[mask]
     y_train = y_train[mask]
 
-    pipeline = KaggleSubmissionPipeline(model)
+    pipeline = KaggleSubmissionPipeline(model, tune_hyperparameters=tune_hyperparameters)
 
     logger.info("Dataset information:")
     logger.info(f"Training data shape: {X_train.shape}")

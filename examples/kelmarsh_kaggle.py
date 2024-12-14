@@ -396,11 +396,11 @@ if __name__ == "__main__":
     X_train = train_df.drop(columns=[target_column])
     X_test = test_df
 
-    # First make a copy of the timestamp column to work with
+    # make a copy of the timestamp column to work with
     timestamp_train = pd.to_datetime(X_train[("Timestamp", "Unnamed: 1_level_1")])
     timestamp_test = pd.to_datetime(X_test[("Timestamp", "Unnamed: 1_level_1")])
 
-    # Create multiple time-based features
+    # create time-based features
     time_features_train = pd.DataFrame(
         {
             ("Time", "hour"): timestamp_train.dt.hour,
@@ -467,21 +467,24 @@ if __name__ == "__main__":
     X_train = X_train[mask]
     y_train = y_train[mask]
 
-    # First, evaluate all feature selection methods
-    pipeline = prepare_submission(
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        sample_submission_path=ANALYSIS_OUTPUT_DIR / "sample_submission.csv",
-        evaluate_features=True,
-    )
+    evaluate_features = False
+    if evaluate_features:
+        pipeline = prepare_submission(
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            sample_submission_path=DATA_DIR / "sample_submission.csv",
+            evaluate_features=True,
+        )
 
     # Then, use the best method for your final model
     pipeline = prepare_submission(
         X_train=X_train,
         y_train=y_train,
         X_test=X_test,
-        sample_submission_path=ANALYSIS_OUTPUT_DIR / "sample_submission.csv",
+        sample_submission_path=DATA_DIR / "sample_submission.csv",
+        output_path=ANALYSIS_OUTPUT_DIR / f"submission_{pd.Timestamp.now():%Y%m%d_%H%M%S}.csv",
         evaluate_features=False,
-        feature_method="model_based",  # or 'mutual_info' or 'boruta'
+        feature_method="all_features",  # or 'mutual_info' or 'model_based' or 'boruta'
+        tune_hyperparameters=True,  # enable hyperparameter tuning
     )
