@@ -79,8 +79,6 @@ show-fixes = true
 [tool.ruff.lint]
 select = ["ALL"] # https://beta.ruff.rs/docs/rules/
 ignore = [
-    "ANN101", # `self` doesn't need annotations
-    "ANN102", # `cls` doesn't need annotations
     "ANN204", # `__init__` doesn't need annotations
     "S301", # `pickle` and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue
     "D", # docstring checks
