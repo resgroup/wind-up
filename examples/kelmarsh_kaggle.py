@@ -175,7 +175,8 @@ def make_windup_features(analysis_name: str) -> None:
         for x in metadata_df["Name"]
     }
 
-    # is it OK to use ERA5???
+    # confirmed by emailing Charlie Plumley that using ERA5 is allowed since it's public data
+    # which would generally be available for any wind farm
     reanalysis_dataset = ReanalysisDataset(
         id="ERA5T_52.50N_-1.00E_100m_1hr",
         data=pd.read_parquet(DATA_DIR / "ERA5T_52.50N_-1.00E_100m_1hr.parquet"),
@@ -241,7 +242,9 @@ def make_windup_features(analysis_name: str) -> None:
 
 
 def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
-    """Save the detrended dataframes for Kelmarsh 1 and the reference turbines."""
+    """Save the detrended dataframes for Kelmarsh 1 and the reference turbines.
+
+    note most of this logic is copied from wind_up/main_analysis.py"""
     wf_df = assessment_inputs.wf_df
     cfg = assessment_inputs.cfg
     plot_cfg = assessment_inputs.plot_cfg
@@ -457,7 +460,9 @@ def sun_alt(
     utc_timestamp_col: str | tuple[str, str],
     time_shift: pd.Timedelta,
 ) -> float:
-    """Calculate sun altitude for a given row in a DataFrame."""
+    """Calculate sun altitude for a given row in a DataFrame.
+
+    This code was adapted from https://github.com/NREL/flasc"""
     observer.lat = str(latitude)
     observer.long = str(longitude)
     observer.date = row[utc_timestamp_col] + time_shift
@@ -474,7 +479,9 @@ def add_sun_alt_to_df(
     utc_timestamp_col: str | tuple[str, str],
     time_shift: pd.Timedelta,
 ) -> pd.DataFrame:
-    """Add sun altitude to a DataFrame."""
+    """Calculate sun altitude for a given row in a DataFrame.
+
+    This code was adapted from https://github.com/NREL/flasc"""
     out_df = input_df.copy()
     observer = ephem.Observer()
     return out_df.assign(
@@ -497,7 +504,7 @@ def make_kelmarsh_kaggle_y_train_x_train_x_test(
 ) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
     msg = "Making wind-up features and saving to parquet"
     logger.info(msg)
-    assessment_name = "messin around 2"
+    assessment_name = "kelmarsh_kaggle"
     if recacl_windup_files:
         make_windup_features(assessment_name)
 
@@ -710,26 +717,26 @@ def flatten_and_clean_columns(df: pd.DataFrame) -> pd.DataFrame:
 if __name__ == "__main__":
     setup_logger(ANALYSIS_OUTPUT_DIR / f"automl_{pd.Timestamp.now():%Y%m%d_%H%M%S}.log")
 
-    y_train, X_train, X_test = make_kelmarsh_kaggle_y_train_x_train_x_test()
+    recacl_windup_files = True  # set to False after running one time to generate wind-up results
+    y_train, X_train, X_test = make_kelmarsh_kaggle_y_train_x_train_x_test(recacl_windup_files=recacl_windup_files)
 
     # avoids lightgbm.basic.LightGBMError: Do not support special JSON characters in feature name.
     X_train = flatten_and_clean_columns(X_train)
     X_test = flatten_and_clean_columns(X_test)
 
-    # Use FLAML for automated model and hyperparameter optimization
     automl_settings = {
-        "time_budget": 3600 * 3,  # Seconds to spend
-        "ensemble": True,  # Use ensemble of best
-        "task": "regression",  # Type of task
-        "metric": "mae",  # Evaluation metric
+        "time_budget": 3600 * 1,  # 12 hours was used for best solution
+        "ensemble": True,
+        "task": "regression",
+        "metric": "mae",  # kaggle competition uses MAE
         "estimator_list": [
             "lgbm",
             "xgboost",
             "xgb_limitdepth",
             "rf",
             "extra_tree",
-        ],  # "catboost" can be added but seems to need numpy <2.0
-        "log_file_name": "automl.log",  # Save logs
+        ],  # "catboost" was also in the list for the best solution but seems to need numpy <2.0 at present
+        "log_file_name": "automl.log",
         "seed": 0,
     }
     automl = AutoML()

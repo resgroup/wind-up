@@ -74,3 +74,6 @@ cache/
 output/
 .DS_Store
 /examples/kelmarsh_kaggle_data/*.csv
+/examples/**/*.pickle
+/examples/**/*.log
+/examples/**/*.png
