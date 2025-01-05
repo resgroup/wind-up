@@ -1,4 +1,7 @@
-"""Example submission for https://www.kaggle.com/competitions/predict-the-wind-speed-at-a-wind-turbine/."""
+"""Example submission for https://www.kaggle.com/competitions/predict-the-wind-speed-at-a-wind-turbine/.
+
+wind-up is used for feature engineering, in particular estimating wind speed based on power
+and directional detrending."""
 
 from __future__ import annotations
 
