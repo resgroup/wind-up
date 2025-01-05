@@ -77,3 +77,4 @@ output/
 /examples/**/*.pickle
 /examples/**/*.log
 /examples/**/*.png
+/examples/**/*.parquet
