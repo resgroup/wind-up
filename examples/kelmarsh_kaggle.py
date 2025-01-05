@@ -1,17 +1,21 @@
-"""Example submission for https://www.kaggle.com/competitions/predict-the-wind-speed-at-a-wind-turbine/"""
+"""Example submission for https://www.kaggle.com/competitions/predict-the-wind-speed-at-a-wind-turbine/."""
+
+from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
+import ephem
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from flaml import AutoML
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.impute import SimpleImputer
 
 from examples.helpers import setup_logger
-from examples.kaggle_pipeline import prepare_submission
 from wind_up.constants import (
-    OUTPUT_DIR,
-    PROJECTROOT_DIR,
     REANALYSIS_WD_COL,
     REANALYSIS_WS_COL,
     TIMESTAMP_COL,
@@ -24,11 +28,12 @@ from wind_up.models import PlotConfig, WindUpConfig
 from wind_up.northing import check_wtg_northing
 from wind_up.plots.data_coverage_plots import plot_detrend_data_cov
 from wind_up.reanalysis_data import ReanalysisDataset
-from wind_up.waking_state import add_waking_scen, get_distance_and_bearing
+from wind_up.waking_state import add_waking_scen
 from wind_up.windspeed_drift import check_windspeed_drift
 
 DATA_DIR = Path("kelmarsh_kaggle_data")
-CACHE_DIR = PROJECTROOT_DIR / "cache" / "kelmarsh_kaggle"
+OUTPUT_DIR = Path("kelmarsh_kaggle_output")
+CACHE_DIR = Path("kelmarsh_kaggle_cache")
 ASSESSMENT_NAME = "kelmarsh_kaggle"
 ANALYSIS_OUTPUT_DIR = OUTPUT_DIR / ASSESSMENT_NAME
 ANALYSIS_OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
@@ -36,11 +41,14 @@ logger = logging.getLogger(__name__)
 
 
 class KelmarshKaggleScadaUnpacker:
+    """Class to unpack the Kaggle Kelmarsh SCADA data."""
+
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
         self.scada_df = None
 
     def unpack(self) -> pd.DataFrame:
+        """Unpack the Kaggle Kelmarsh SCADA data."""
         if self.scada_df is None:
             # unpack train.csv
             raw_df = pd.read_csv(self.data_dir / "train.csv", header=[0, 1], index_col=[0], parse_dates=[1])
@@ -84,10 +92,10 @@ class KelmarshKaggleScadaUnpacker:
             workings_df = workings_df.reset_index(level=0, names="TurbineName")
             test_scada_df = self._format_scada_df(scada_df=workings_df)
             test_scada_df = test_scada_df.merge(id_df, left_index=True, right_index=True)
-            # verify train_scada_df has 6 turbines
-            assert train_scada_df["TurbineName"].nunique() == 6
-            # verify test_scada_df has 5 turbines
-            assert test_scada_df["TurbineName"].nunique() == 5
+            _expected_n_turbines_train = 6
+            assert train_scada_df["TurbineName"].nunique() == _expected_n_turbines_train
+            _expected_n_turbines_test = 5
+            assert test_scada_df["TurbineName"].nunique() == _expected_n_turbines_test
             # verify train_scada_df and test_scada_df have the same columns
             assert train_scada_df.columns.equals(test_scada_df.columns)
             # verify train_scada_df and test_scada_df have no matching DatetimeIndex index entries
@@ -123,6 +131,7 @@ class KelmarshKaggleScadaUnpacker:
 
 
 def kelmarsh_kaggle_metadata_df(data_dir: Path) -> pd.DataFrame:
+    """Return the metadata DataFrame for the Kelmarsh Kaggle competition."""
     metadata_df = pd.read_csv(data_dir / "metaData.csv")[["Title", "Latitude", "Longitude"]].rename(
         columns={"Title": "Name"}
     )
@@ -130,6 +139,7 @@ def kelmarsh_kaggle_metadata_df(data_dir: Path) -> pd.DataFrame:
 
 
 def make_windup_features(analysis_name: str) -> None:
+    """Run standard wind-up analysis up to directional detrending saving results to parquet files."""
     # verify the data is in the correct location
     expected_files = [
         "train.csv",
@@ -231,8 +241,8 @@ def make_windup_features(analysis_name: str) -> None:
 
 
 def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
+    """Save the detrended dataframes for Kelmarsh 1 and the reference turbines."""
     wf_df = assessment_inputs.wf_df
-    pc_per_ttype = assessment_inputs.pc_per_ttype
     cfg = assessment_inputs.cfg
     plot_cfg = assessment_inputs.plot_cfg
 
@@ -246,7 +256,7 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
     test_df.columns = ["test_" + x for x in test_df.columns]
     test_ws_col = "test_" + test_ws_col
 
-    test_max_ws_drift, test_max_ws_drift_pp_period = check_windspeed_drift(
+    check_windspeed_drift(
         wtg_df=test_df,
         wtg_name=test_name,
         ws_col=test_ws_col,
@@ -255,14 +265,12 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
         plot_cfg=plot_cfg,
     )
 
-    scada_pc = pc_per_ttype[test_wtg.turbine_type.turbine_type]
-
     for ref_wtg in cfg.ref_wtgs:
         ref_name = ref_wtg.name
         ref_wd_col = "YawAngleMean"
         ref_ws_col = "ws_est_blend"
         ref_df = wf_df.loc[ref_name].copy()
-        ref_max_northing_error_v_reanalysis = check_wtg_northing(
+        check_wtg_northing(
             ref_df,
             wtg_name=ref_name,
             north_ref_wd_col=REANALYSIS_WD_COL,
@@ -270,7 +278,7 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
             plot_cfg=plot_cfg,
             sub_dir=f"{test_name}/{ref_name}",
         )
-        ref_max_northing_error_v_wf = check_wtg_northing(
+        check_wtg_northing(
             ref_df,
             wtg_name=ref_name,
             north_ref_wd_col=WINDFARM_YAWDIR_COL,
@@ -283,19 +291,10 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
         ref_wd_col = "ref_" + ref_wd_col
         ref_df.columns = ["ref_" + x for x in ref_df.columns]
 
-        test_lat = test_wtg.latitude
-        test_long = test_wtg.longitude
         ref_lat = ref_wtg.latitude
         ref_long = ref_wtg.longitude
 
-        distance_m, bearing_deg = get_distance_and_bearing(
-            lat1=test_lat,
-            long1=test_long,
-            lat2=ref_lat,
-            long2=ref_long,
-        )
-
-        ref_max_ws_drift, ref_max_ws_drift_pp_period = check_windspeed_drift(
+        check_windspeed_drift(
             wtg_df=ref_df,
             wtg_name=ref_name,
             ws_col=ref_ws_col,
@@ -349,7 +348,7 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
         detrend_df = apply_wsratio_v_wd_scen(
             detrend_df, wsratio_v_dir_scen, ref_ws_col=ref_ws_col, ref_wd_col=ref_wd_col
         )
-        detrend_r2_improvement, _ = check_applied_detrend(
+        check_applied_detrend(
             test_name=test_name,
             ref_name=ref_name,
             ref_lat=ref_lat,
@@ -381,87 +380,236 @@ def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
         logger.info(f"{mae=}")
 
 
-if __name__ == "__main__":
-    setup_logger(ANALYSIS_OUTPUT_DIR / f"analysis_{pd.Timestamp.now():%Y%m%d_%H%M%S}.log")
-    recacl_windup_files = False
-    assessment_name="messin around 2"
+def create_time_based_features(
+    df: pd.DataFrame, *, timestamp_col: str | tuple[str, str], dataset_min_timestamp: pd.Timestamp
+) -> pd.DataFrame:
+    """Create time-based features from a timestamp column."""
+    # make a copy of the timestamp column to work with
+    timestamps = pd.to_datetime(df[timestamp_col])
+    # Calculate continuous month value (1-12.999...)
+    days_in_month = timestamps.dt.days_in_month
+    continuous_month = (
+        timestamps.dt.month
+        + (timestamps.dt.day - 1) / days_in_month
+        + timestamps.dt.hour / (24 * days_in_month)
+        + timestamps.dt.minute / (24 * 60 * days_in_month)
+    )
+    continuous_hour = timestamps.dt.hour + timestamps.dt.minute / 60 + timestamps.dt.second / 3600
+    return pd.DataFrame(
+        {
+            ("age in days", "Time"): (timestamps - dataset_min_timestamp).dt.total_seconds() / (24 * 3600),
+            ("hour", "Time"): continuous_hour,
+            ("month", "Time"): continuous_month,
+            # Cyclical encoding of relevant features
+            ("month_sin", "Time"): np.sin(2 * np.pi * (continuous_month - 1) / 12),
+            ("month_cos", "Time"): np.cos(2 * np.pi * (continuous_month - 1) / 12),
+            ("hour_sin", "Time"): np.sin(2 * np.pi * continuous_hour / 24),
+            ("hour_cos", "Time"): np.cos(2 * np.pi * continuous_hour / 24),
+        }
+    )
+
+
+def validate_and_rename_reanalysis_cols(
+    x_df: pd.DataFrame, expected_reanalysis_cols: list[tuple[str, str]]
+) -> pd.DataFrame:
+    """Validate and rename reanalysis columns."""
+    x_df = x_df.copy()
+    rename_mapping = {}
+    for col in expected_reanalysis_cols:
+        if col not in x_df.columns:
+            msg = f"Expected {col} in columns"
+            raise ValueError(msg)
+        rename_mapping[col] = (col[0].replace("ref_", ""), "Reanalysis")
+    # Convert columns to list for manipulation
+    new_columns = x_df.columns.to_list()
+    # Replace each column name based on mapping
+    for i, col in enumerate(new_columns):
+        if col in rename_mapping:
+            new_columns[i] = rename_mapping[col]
+
+    # Assign new column names
+    x_df.columns = pd.MultiIndex.from_tuples(new_columns, names=x_df.columns.names)
+
+    return x_df
+
+
+def add_cos_and_sin_of_direction_features(
+    x_df: pd.DataFrame, *, direction_deg_cols: list[tuple[str, str]]
+) -> pd.DataFrame:
+    """Add sine and cosine of features which are directions in degrees (0-360)."""
+    x_df = x_df.copy()
+    for col in direction_deg_cols:
+        angles_deg = x_df[col]
+        if any(angles_deg < 0) or any(angles_deg > 360):  # noqa:PLR2004
+            msg = f"Expected angles to be in range [0,360] for {col}"
+            raise ValueError(msg)
+        x_df[(f"{col[0]}_cos", col[1])] = np.cos(np.radians(angles_deg))
+        x_df[(f"{col[0]}_sin", col[1])] = np.sin(np.radians(angles_deg))
+    return x_df
+
+
+def sun_alt(
+    row: pd.Series,
+    *,
+    observer: ephem.Observer,
+    latitude: float,
+    longitude: float,
+    utc_timestamp_col: str | tuple[str, str],
+    time_shift: pd.Timedelta,
+) -> float:
+    """Calculate sun altitude for a given row in a DataFrame."""
+    observer.lat = str(latitude)
+    observer.long = str(longitude)
+    observer.date = row[utc_timestamp_col] + time_shift
+    sun = ephem.Sun()
+    sun.compute(observer)
+    return float(sun.alt) * 180 / np.pi
+
+
+def add_sun_alt_to_df(
+    input_df: pd.DataFrame,
+    *,
+    latitude: float,
+    longitude: float,
+    utc_timestamp_col: str | tuple[str, str],
+    time_shift: pd.Timedelta,
+) -> pd.DataFrame:
+    """Add sun altitude to a DataFrame."""
+    out_df = input_df.copy()
+    observer = ephem.Observer()
+    return out_df.assign(
+        sun_altitude=out_df.apply(
+            lambda x: sun_alt(
+                x,
+                observer=observer,
+                latitude=latitude,
+                longitude=longitude,
+                utc_timestamp_col=utc_timestamp_col,
+                time_shift=time_shift,
+            ),
+            axis=1,
+        )
+    )
+
+
+def make_kelmarsh_kaggle_y_train_x_train_x_test(
+    *, recacl_windup_files: bool = False, look_at_feature_importance: bool = False
+) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
+    msg = "Making wind-up features and saving to parquet"
+    logger.info(msg)
+    assessment_name = "messin around 2"
     if recacl_windup_files:
         make_windup_features(assessment_name)
+
+    msg = "Loading kaggle competition input data"
+    logger.info(msg)
 
     train_df = pd.read_csv(DATA_DIR / "train.csv", header=[0, 1], index_col=[0], parse_dates=[1])
     test_df = pd.read_csv(DATA_DIR / "test.csv", header=[0, 1], index_col=[0], parse_dates=[1])
 
-    # Separate features and target
+    msg = "Making classic y_train, X_train and X_test pandas Series/DataFrames"
+    logger.info(msg)
     target_column = ("target_feature", "Unnamed: 53_level_1")
     y_train = train_df[target_column]
     X_train = train_df.drop(columns=[target_column])
     X_test = test_df
 
-    # make a copy of the timestamp column to work with
-    timestamp_train = pd.to_datetime(X_train[("Timestamp", "Unnamed: 1_level_1")])
-    timestamp_test = pd.to_datetime(X_test[("Timestamp", "Unnamed: 1_level_1")])
+    msg = "Adding time based features"
+    logger.info(msg)
 
     # create time-based features
-    time_features_train = pd.DataFrame(
-        {
-            ("Time", "age in days"): (timestamp_train-min(timestamp_train.min(),timestamp_test.min())).dt.total_seconds()/3600/24,
-            ("Time", "hour"): timestamp_train.dt.hour,
-            ("Time", "month"): timestamp_train.dt.month,
-            ("Time", "hour_sin"): np.sin(2 * np.pi * timestamp_train.dt.hour / 24),  # Cyclical encoding
-            ("Time", "hour_cos"): np.cos(2 * np.pi * timestamp_train.dt.hour / 24),
-        }
+    timestamp_col = ("Timestamp", "Unnamed: 1_level_1")
+    dataset_min_timestamp = min(X_train[timestamp_col].min(), X_test[timestamp_col].min())
+    time_features_train = create_time_based_features(
+        X_train, timestamp_col=timestamp_col, dataset_min_timestamp=dataset_min_timestamp
     )
-
-    time_features_test = pd.DataFrame(
-        {
-            ("Time", "age in days"): (timestamp_test - min(timestamp_train.min(),
-                                                            timestamp_test.min())).dt.total_seconds() / 3600 / 24,
-            ("Time", "hour"): timestamp_test.dt.hour,
-            ("Time", "month"): timestamp_test.dt.month,
-            ("Time", "hour_sin"): np.sin(2 * np.pi * timestamp_test.dt.hour / 24),
-            ("Time", "hour_cos"): np.cos(2 * np.pi * timestamp_test.dt.hour / 24),
-        }
+    time_features_test = create_time_based_features(
+        X_test, timestamp_col=timestamp_col, dataset_min_timestamp=dataset_min_timestamp
     )
 
     # Add these new features to X_train and X_test
     X_train = pd.concat([X_train, time_features_train], axis=1)
     X_test = pd.concat([X_test, time_features_test], axis=1)
 
+    msg = "Adding wind-up features"
+    logger.info(msg)
+
     # load in parquet files and add features
-    for ref_wtg_name in ["Kelmarsh 2", "Kelmarsh 3", "Kelmarsh 4", "Kelmarsh 5", "Kelmarsh 6"]:
+    ref_turbines_to_use = ["Kelmarsh 2", "Kelmarsh 3", "Kelmarsh 4", "Kelmarsh 5", "Kelmarsh 6"]
+    for ref_wtg_name in ref_turbines_to_use:
         detrend_df = pd.read_parquet(CACHE_DIR / assessment_name / f"Kelmarsh 1_{ref_wtg_name}_detrend.parquet")
-        detrend_df_no_tz=detrend_df.copy()
+        detrend_df_no_tz = detrend_df.copy()
         detrend_df_no_tz.index = detrend_df_no_tz.index.tz_localize(None)
-        assert detrend_df_no_tz.index.min() ==min(X_train[("Timestamp", "Unnamed: 1_level_1")].min(),X_test[("Timestamp", "Unnamed: 1_level_1")].min())
-        assert detrend_df_no_tz.index.max() == max(X_train[("Timestamp", "Unnamed: 1_level_1")].max(),
-                                                   X_test[("Timestamp", "Unnamed: 1_level_1")].max())
-        assert len(detrend_df) == len(X_train)+len(X_test)
+        assert detrend_df_no_tz.index.min() == min(
+            X_train[("Timestamp", "Unnamed: 1_level_1")].min(), X_test[("Timestamp", "Unnamed: 1_level_1")].min()
+        )
+        assert detrend_df_no_tz.index.max() == max(
+            X_train[("Timestamp", "Unnamed: 1_level_1")].max(), X_test[("Timestamp", "Unnamed: 1_level_1")].max()
+        )
+        assert len(detrend_df) == len(X_train) + len(X_test)
         detrend_df_to_merge = detrend_df_no_tz.copy()
         # add a column level with the ref_wtg_name
         detrend_df_to_merge.columns = pd.MultiIndex.from_tuples(
-            [(ref_wtg_name, x) for x in detrend_df_to_merge.columns])
-        features_to_add = [(ref_wtg_name,'ref_reanalysis_ws'),(ref_wtg_name,'ref_reanalysis_wd'),(ref_wtg_name,'ref_ws_detrended')]
+            [(x, ref_wtg_name) for x in detrend_df_to_merge.columns]
+        )
+        reanalysis_cols = ["ref_reanalysis_ws", "ref_reanalysis_wd"]
+        features_to_add = [
+            ("ref_ws_detrended", ref_wtg_name),
+        ] + [(col, ref_wtg_name) for col in reanalysis_cols]
+
         for col in features_to_add:
             if col not in detrend_df_to_merge.columns:
                 continue
             if col in X_train.columns:
                 continue
-            if col[1] in ['ref_reanalysis_ws','ref_reanalysis_wd'] and col[0]!="Kelmarsh 2":
-                continue #  only add these columns for Kelmarsh 2
+            if col[0] in reanalysis_cols and col[1] != ref_turbines_to_use[0]:
+                continue  # only add these columns for Kelmarsh 2
             # Create temporary timestamp columns for merging
             timestamp_train = X_train[("Timestamp", "Unnamed: 1_level_1")].copy()
             timestamp_test = X_test[("Timestamp", "Unnamed: 1_level_1")].copy()
-            X_train = X_train.merge(detrend_df_to_merge[[col]], left_on=timestamp_train, right_index=True, how="left").drop(columns=("key_0", ""))
-            X_test = X_test.merge(detrend_df_to_merge[[col]], left_on=timestamp_test, right_index=True, how="left").drop(columns=("key_0", ""))
+            X_train = X_train.merge(
+                detrend_df_to_merge[[col]], left_on=timestamp_train, right_index=True, how="left"
+            ).drop(columns=("key_0", ""))
+            X_test = X_test.merge(
+                detrend_df_to_merge[[col]], left_on=timestamp_test, right_index=True, how="left"
+            ).drop(columns=("key_0", ""))
             logger.info(f"Added {col} to X_train and X_test")
 
-    # TODO
-    # add cos and sin of direction parameters
-    # add solar position
-    # simplify prepare_submission, eg remove hyperparameter tuning, prepare it for optuna
-    # use optuna to tune hyperparameters
-    # try removing features to see if it helps
+    expected_reanalysis_cols = [(x, ref_turbines_to_use[0]) for x in reanalysis_cols]
+    X_train = validate_and_rename_reanalysis_cols(X_train, expected_reanalysis_cols)
+    X_test = validate_and_rename_reanalysis_cols(X_test, expected_reanalysis_cols)
 
+    msg = "adding cos and sin of direction features"
+    logger.info(msg)
+
+    direction_cols = [
+        x for x in X_test.columns if x[0] in {"Wind direction (°)", "Nacelle position (°)", "reanalysis_wd"}
+    ]
+    X_train = add_cos_and_sin_of_direction_features(X_train, direction_deg_cols=direction_cols)
+    X_test = add_cos_and_sin_of_direction_features(X_test, direction_deg_cols=direction_cols)
+
+    msg = "adding solar position features"
+    logger.info(msg)
+    kelmarsh_metadata = pd.read_csv(DATA_DIR / "metaData.csv")
+    kelmarsh_latitude = kelmarsh_metadata["Latitude"].mean()
+    kelmarsh_longitude = kelmarsh_metadata["Longitude"].mean()
+    X_train = add_sun_alt_to_df(
+        X_train,
+        latitude=kelmarsh_latitude,
+        longitude=kelmarsh_longitude,
+        utc_timestamp_col=timestamp_col,
+        time_shift=pd.Timedelta(hours=0),
+    )
+    X_test = add_sun_alt_to_df(
+        X_test,
+        latitude=kelmarsh_latitude,
+        longitude=kelmarsh_longitude,
+        utc_timestamp_col=timestamp_col,
+        time_shift=pd.Timedelta(hours=0),
+    )
+
+    msg = "Ensure X_train and X_test are consistent and numeric only"
+    logger.info(msg)
 
     # Find the common columns
     common_columns = X_train.columns.intersection(X_test.columns)
@@ -485,7 +633,8 @@ if __name__ == "__main__":
     X_test = X_test[numeric_columns]
 
     # Verify the shapes and dtypes
-    logger.info("\nNew shapes:")
+    logger.info("\nNew shapes after dropping non numeric columns:")
+    logger.info(f"y_train shape: {y_train.shape}")
     logger.info(f"X_train shape: {X_train.shape}")
     logger.info(f"X_test shape: {X_test.shape}")
 
@@ -493,40 +642,110 @@ if __name__ == "__main__":
     logger.info("\nColumn dtypes in X_train:")
     logger.info(X_train.dtypes.value_counts())
 
-    # Verify the shapes
-    logger.info("\nNew shapes:")
-    logger.info(f"X_train shape: {X_train.shape}")
-    logger.info(f"X_test shape: {X_test.shape}")
+    if look_at_feature_importance:
+        logger.info("Calculating feature importances using Random Forest")
+        mask = ~y_train.isna()
+        X_train_dropna = X_train[mask]
+        y_train_dropna = y_train[mask]
+        X_imputed = pd.DataFrame(
+            SimpleImputer(strategy="mean").fit_transform(X_train_dropna),
+            columns=X_train_dropna.columns,
+            index=X_train_dropna.index,
+        )
+        model = RandomForestRegressor(random_state=0)
+        logger.info("Fitting")
+        model.fit(X_imputed, y_train_dropna)
+        # Log feature importance details
+        importance_df = pd.DataFrame(
+            {"feature": X_train_dropna.columns, "importance": model.feature_importances_}
+        ).sort_values("importance", ascending=False)
+        logger.info("\nRandom Forest Feature Importances (top 20):")
+        logger.info(importance_df.head(20))
 
-    feature_names = [" ".join(col).strip() for col in X_train.columns]
+        logger.info("\nRandom Forest Feature Importances (all):")
+        logger.info(importance_df)
+        importance_df.to_csv(ANALYSIS_OUTPUT_DIR / f"feature_importances_{pd.Timestamp.now():%Y%m%d_%H%M%S}.csv")
 
-    logger.info(f"Number of NaN values in target: {y_train.isna().sum()}")
-    logger.info(f"Total samples: {len(y_train)}")
-
+    logger.info(f"Number of rows in y_train: {len(y_train)}")
+    logger.info(f"Number of NaN values in y_train: {y_train.isna().sum()}")
+    msg = "Removing nan rows from y_train (and X_train)"
+    logger.info(msg)
     mask = ~y_train.isna()
     X_train = X_train[mask]
     y_train = y_train[mask]
 
-    evaluate_features = False
-    tune_hyperparameters = False
-    if evaluate_features:
-        pipeline = prepare_submission(
-            X_train=X_train,
-            y_train=y_train,
-            X_test=X_test,
-            sample_submission_path=DATA_DIR / "sample_submission.csv",
-            evaluate_features=True,
-            tune_hyperparameters=tune_hyperparameters,
-        )
+    logger.info("\nNew shapes after removing nan rows from y_train (and X_train):")
+    logger.info(f"y_train shape: {y_train.shape}")
+    logger.info(f"X_train shape: {X_train.shape}")
+    logger.info(f"X_test shape: {X_test.shape}")
+    return y_train, X_train, X_test
 
-    # Then, use the best method for your final model
-    pipeline = prepare_submission(
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        sample_submission_path=DATA_DIR / "sample_submission.csv",
-        output_path=ANALYSIS_OUTPUT_DIR / f"submission_{pd.Timestamp.now():%Y%m%d_%H%M%S}.csv",
-        evaluate_features=False,
-        feature_method="all_features",  # or 'mutual_info' or 'model_based' or 'boruta'
-        tune_hyperparameters=tune_hyperparameters,  # enable hyperparameter tuning
-    )
+
+def flatten_and_clean_columns(df: pd.DataFrame) -> pd.DataFrame:
+    # First join the levels with an underscore
+    if isinstance(df.columns, pd.MultiIndex):
+        flat_cols = ["_".join(map(str, col)).strip() for col in df.columns]
+    else:
+        flat_cols = df.columns.tolist()
+
+    # Then clean any remaining special characters
+    clean_cols = [re.sub(r"[^A-Za-z0-9_]+", "_", col).strip("_") for col in flat_cols]
+
+    # Ensure names are unique
+    seen = set()
+    unique_cols = []
+    for col in clean_cols:
+        if col in seen:
+            counter = 1
+            while f"{col}_{counter}" in seen:
+                counter += 1
+            col = f"{col}_{counter}"  # noqa:PLW2901
+        seen.add(col)
+        unique_cols.append(col)
+
+    df.columns = unique_cols
+    return df
+
+
+if __name__ == "__main__":
+    setup_logger(ANALYSIS_OUTPUT_DIR / f"automl_{pd.Timestamp.now():%Y%m%d_%H%M%S}.log")
+
+    y_train, X_train, X_test = make_kelmarsh_kaggle_y_train_x_train_x_test()
+
+    # avoids lightgbm.basic.LightGBMError: Do not support special JSON characters in feature name.
+    X_train = flatten_and_clean_columns(X_train)
+    X_test = flatten_and_clean_columns(X_test)
+
+    # Use FLAML for automated model and hyperparameter optimization
+    automl_settings = {
+        "time_budget": 3600 * 3,  # Seconds to spend
+        "ensemble": True,  # Use ensemble of best
+        "task": "regression",  # Type of task
+        "metric": "mae",  # Evaluation metric
+        "estimator_list": [
+            "lgbm",
+            "xgboost",
+            "xgb_limitdepth",
+            "rf",
+            "extra_tree",
+        ],  # "catboost" can be added but seems to need numpy <2.0
+        "log_file_name": "automl.log",  # Save logs
+        "seed": 0,
+    }
+    automl = AutoML()
+
+    automl.fit(X_train=X_train, y_train=y_train, **automl_settings)
+    msg = f"{automl.best_config_per_estimator=}"
+    logger.info(msg)
+
+    new_starting_points = automl.best_config_per_estimator
+    logger.info(f"{new_starting_points=}")
+
+    y_test_pred = automl.predict(X_test)
+
+    submission = pd.read_csv(DATA_DIR / "sample_submission.csv")
+    submission.iloc[:, 1] = y_test_pred
+    output_path = ANALYSIS_OUTPUT_DIR / f"automl_submission_{pd.Timestamp.now():%Y%m%d_%H%M%S}.csv"
+    submission.to_csv(output_path, index=False)
+    msg = f"Submission saved to {output_path}"
+    logger.info(msg)

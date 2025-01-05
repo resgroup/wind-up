@@ -63,6 +63,8 @@ examples = [
     'notebook',
     'ipywidgets',
     'requests',
+    'ephem',
+    'flaml[automl]',
 ]
 all = ["res-wind-up[dev,examples]"]
 
@@ -102,6 +104,7 @@ max-args = 17 # try to bring this down to 5
 "tests/test_smart_data.py" = ["DTZ001"]  # SMART functions use tz naive datetimes
 "**/__init__.py" = ["F401"]  # ignore unused imports in __init__.py
 "examples/**/*.py" = ["T20"]  # allow print in examples
+"examples/**/kelmarsh_kaggle.py" = ["S101","PLR0915","PD013","N806"]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
@@ -117,6 +120,9 @@ module = [
     "scipy.stats",
     "seaborn",
     "utm",
+    "ephem",
+    "flaml",
+    "sklearn.*",
 ]
 disable_error_code = ["name-defined"]
 ignore_missing_imports = true
