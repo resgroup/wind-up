@@ -63,6 +63,8 @@ examples = [
     'notebook',
     'ipywidgets',
     'requests',
+    'ephem',
+    'flaml[automl]',
 ]
 all = ["res-wind-up[dev,examples]"]
 
@@ -77,8 +79,6 @@ show-fixes = true
 [tool.ruff.lint]
 select = ["ALL"] # https://beta.ruff.rs/docs/rules/
 ignore = [
-    "ANN101", # `self` doesn't need annotations
-    "ANN102", # `cls` doesn't need annotations
     "ANN204", # `__init__` doesn't need annotations
     "S301", # `pickle` and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue
     "D", # docstring checks
@@ -102,6 +102,7 @@ max-args = 17 # try to bring this down to 5
 "tests/test_smart_data.py" = ["DTZ001"]  # SMART functions use tz naive datetimes
 "**/__init__.py" = ["F401"]  # ignore unused imports in __init__.py
 "examples/**/*.py" = ["T20"]  # allow print in examples
+"examples/**/kelmarsh_kaggle.py" = ["S101","PLR0915","PD013","N806"]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
@@ -117,6 +118,9 @@ module = [
     "scipy.stats",
     "seaborn",
     "utm",
+    "ephem",
+    "flaml",
+    "sklearn.*",
 ]
 disable_error_code = ["name-defined"]
 ignore_missing_imports = true

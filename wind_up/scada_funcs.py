@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
@@ -249,7 +249,7 @@ def filter_rpm_or_pt_curve(
     x_col: str,
     y_col: str,
     y_centile: float,
-    x_bin_edges: list[float],
+    x_bin_edges: list[np.floating[Any]],
     reject_high: bool,
     y_margin: float,
     filter_last_bin: bool = True,
