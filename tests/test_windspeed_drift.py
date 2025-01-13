@@ -26,7 +26,7 @@ def test_check_windspeed_drift(test_lsa_t13_config: WindUpConfig) -> None:
     assert test_max_ws_drift_pp_period == pytest.approx(0.42913942378401204)
 
 
-def test_calc_rolling_windspeed_diff(benchmark) -> None:
+def test_calc_rolling_windspeed_diff() -> None:
     n_values = 50
     timestep = pd.Timedelta("6h")
     ts_index = pd.date_range("2020-01-01", periods=n_values, freq=timestep)
@@ -34,8 +34,7 @@ def test_calc_rolling_windspeed_diff(benchmark) -> None:
     test_df = pd.DataFrame({"ws_col": ws_col_vals, "reanalysis_ws_col": ws_col_vals[::-1]}, index=ts_index)
 
     original = test_df.copy()
-    actual = benchmark(
-        _calculate_rolling_windspeed_diff,
+    actual = _calculate_rolling_windspeed_diff(
         wtg_df=test_df,
         ws_col="ws_col",
         reanalysis_ws_col="reanalysis_ws_col",

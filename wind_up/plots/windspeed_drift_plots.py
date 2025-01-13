@@ -12,14 +12,14 @@ if TYPE_CHECKING:
 
 def plot_rolling_windspeed_diff_one_wtg(
     *,
-    wtg_df: pd.DataFrame,
+    ser: pd.DataFrame,
     wtg_name: str,
     ws_col: str,
     plot_cfg: PlotConfig,
     sub_dir: str | None,
 ) -> None:
     plt.figure()
-    plt.plot(wtg_df["rolling_windspeed_diff"])
+    plt.plot(ser["rolling_windspeed_diff"])
     plot_title = f"{wtg_name} rolling {ws_col} diff to reanalysis"
     plt.title(plot_title)
     plt.xlabel("datetime")
