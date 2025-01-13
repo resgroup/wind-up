@@ -27,34 +27,37 @@ def pp_raw_df(
     pw_col: str,
     timebase_s: int,
 ) -> pd.DataFrame:
-    pp_df = (
-        pre_or_post_df.dropna(subset=[pw_col, ws_col])
+    return (
+        pre_or_post_df.loc[:, [pw_col, ws_col]]
+        .dropna()
         .groupby(
             by=pd.cut(pre_or_post_df[ws_col], bins=ws_bin_edges, retbins=False),
             observed=False,
         )
         .agg(
-            count=pd.NamedAgg(column=pw_col, aggfunc=lambda x: len(x)),
-            ws_mean=pd.NamedAgg(column=ws_col, aggfunc=lambda x: x.mean()),
-            ws_std=pd.NamedAgg(column=ws_col, aggfunc=lambda x: x.std()),
-            pw_mean=pd.NamedAgg(column=pw_col, aggfunc=lambda x: x.mean()),
-            pw_std=pd.NamedAgg(column=pw_col, aggfunc=lambda x: x.std()),
+            count=pd.NamedAgg(column=pw_col, aggfunc=len),
+            ws_mean=pd.NamedAgg(column=ws_col, aggfunc="mean"),
+            ws_std=pd.NamedAgg(column=ws_col, aggfunc="std"),
+            pw_mean=pd.NamedAgg(column=pw_col, aggfunc="mean"),
+            pw_std=pd.NamedAgg(column=pw_col, aggfunc="std"),
         )
+        .assign(
+            ws_std=lambda x: x["ws_std"].fillna(0),
+            pw_std=lambda x: x["pw_std"].fillna(0),
+            hours=lambda x: x["count"] * timebase_s / 3600,
+            ws_sem=lambda x: x["ws_std"] / np.sqrt(x["count"].clip(lower=1)),
+            pw_sem=lambda x: x["pw_std"] / np.sqrt(x["count"].clip(lower=1)),
+        )
+        .pipe(lambda d: d.set_axis(d.columns.map(lambda x: f"{x}_{pre_or_post}"), axis="columns"))
+        .assign(
+            bin_left=lambda x: [i.left for i in x.index],
+            bin_mid=lambda x: [i.mid for i in x.index],
+            bin_right=lambda x: [i.right for i in x.index],
+            bin_closed_right=lambda x: [i.closed_right for i in x.index],
+        )
+        .set_index("bin_mid", drop=False, verify_integrity=True)
+        .rename_axis(f"{ws_col}_bin_mid", axis=0)
     )
-    pp_df["ws_std"] = pp_df["ws_std"].fillna(0)
-    pp_df["pw_std"] = pp_df["pw_std"].fillna(0)
-    rows_per_hour = 3600 / timebase_s
-    pp_df["hours"] = pp_df["count"] / rows_per_hour
-    pp_df["ws_sem"] = pp_df["ws_std"] / np.sqrt(pp_df["count"].clip(lower=1))
-    pp_df["pw_sem"] = pp_df["pw_std"] / np.sqrt(pp_df["count"].clip(lower=1))
-    pp_df.columns = [x + f"_{pre_or_post}" for x in pp_df.columns]
-    pp_df["bin_left"] = [x.left for x in pp_df.index]
-    pp_df["bin_mid"] = [x.mid for x in pp_df.index]
-    pp_df["bin_right"] = [x.right for x in pp_df.index]
-    pp_df["bin_closed_right"] = [x.closed_right for x in pp_df.index]
-    pp_df = pp_df.set_index("bin_mid", drop=False, verify_integrity=True)
-    pp_df.index.name = f"{ws_col}_bin_mid"
-    return pp_df
 
 
 def _calc_rated_ws(*, pp_df: pd.DataFrame, pw_col: str, rated_power: float) -> float:
