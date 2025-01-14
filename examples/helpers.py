@@ -57,7 +57,7 @@ def download_zenodo_data(
         if len(files_to_download) != len(filenames):
             msg = (
                 f"Could not find all files in the Zenodo record. "
-                f"Missing files: {set(filenames) - {i['key'] for i in files_to_download} }"
+                f"Missing files: {set(filenames) - {i['key'] for i in files_to_download}}"
             )
             raise ValueError(msg)
 

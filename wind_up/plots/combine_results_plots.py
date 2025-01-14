@@ -24,7 +24,7 @@ def plot_combine_results(trdf: pd.DataFrame, tdf: pd.DataFrame, plot_cfg: PlotCo
     plt.bar(labels, values, yerr=yerrs, capsize=3)
     plt.xlabel("turbine")
     plt.ylabel("uplift [%]")
-    plot_title = f"uplift and {confidence*100:.0f}% CI by test-ref pair"
+    plot_title = f"uplift and {confidence * 100:.0f}% CI by test-ref pair"
     plt.title("uplift by test-ref pair")
     plt.grid(axis="y")
     plt.xticks(rotation=90, ha="right")
@@ -41,7 +41,7 @@ def plot_combine_results(trdf: pd.DataFrame, tdf: pd.DataFrame, plot_cfg: PlotCo
     plt.bar(labels, values, yerr=yerrs, capsize=3)
     plt.xlabel("turbine")
     plt.ylabel("uplift [%]")
-    plot_title = f"combined uplift and {confidence*100:.0f}% CI"
+    plot_title = f"combined uplift and {confidence * 100:.0f}% CI"
     plt.title(plot_title)
     plt.grid(axis="y")
     plt.xticks(rotation=90, ha="right")

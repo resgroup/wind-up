@@ -88,7 +88,7 @@ def calc_lt_df(
         raise RuntimeError(msg)
 
     logger.info(f"long term distribution uses data from {df_for_lt.index.min()} to {df_for_lt.index.max()}")
-    logger.info(f"long term distribution data coverage: {data_coverage*100:.1f}%")
+    logger.info(f"long term distribution data coverage: {data_coverage * 100:.1f}%")
 
     return lt_df
 

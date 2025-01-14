@@ -434,7 +434,7 @@ def pre_post_pp_analysis_with_reversal(
         logger.info(f"\nresults for test={test_wtg.name} ref={ref_name}:\n")
         logger.info(f"hours pre = {pp_results['pp_valid_hours_pre']:.1f}")
         logger.info(f"hours post = {pp_results['pp_valid_hours_post']:.1f}")
-        logger.info(f"\nuplift estimate before adjustments = {100*pp_results['uplift_frc']:.1f} %")
+        logger.info(f"\nuplift estimate before adjustments = {100 * pp_results['uplift_frc']:.1f} %")
 
         logger.info(f"\npower only uplift estimate = {100 * poweronly_uplift_frc:.1f} %")
         logger.info(f"reversed (power only) uplift estimate = {100 * reversed_uplift_frc:.1f} %\n")
@@ -545,11 +545,11 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
 
     if plot_cfg is not None:
         msg = (
-            f"block bootstrapping uncertainty analysis results (conf={100*confidence_level:.0f}%):"
-            f"\n  median = {100*median:.1f} %"
-            f"\n  lower = {100*lower:.1f} %"
-            f"\n  upper = {100*upper:.1f} %"
-            f"\n  unc_one_sigma = {100*unc_one_sigma:.1f} %"
+            f"block bootstrapping uncertainty analysis results (conf={100 * confidence_level:.0f}%):"
+            f"\n  median = {100 * median:.1f} %"
+            f"\n  lower = {100 * lower:.1f} %"
+            f"\n  upper = {100 * upper:.1f} %"
+            f"\n  unc_one_sigma = {100 * unc_one_sigma:.1f} %"
         )
         logger.info(msg)
 
@@ -578,8 +578,8 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         logger.info(f"missing bins scale factor = {pp_results['missing_bins_unc_scale_factor']:.3f}")
         logger.info(f"final 1 sigma unc = {100 * pp_results['unc_one_sigma_frc']:.1f} %\n")
 
-        logger.info(f"final uplift estimate = {100*pp_results['uplift_frc']:.1f} %")
-        logger.info(f"final P95 uplift estimate = {100*pp_results[f'uplift_p{p_high * 100:.0f}_frc']:.1f} %")
-        logger.info(f"final P5 uplift estimate = {100*pp_results[f'uplift_p{p_low * 100:.0f}_frc']:.1f} %")
+        logger.info(f"final uplift estimate = {100 * pp_results['uplift_frc']:.1f} %")
+        logger.info(f"final P95 uplift estimate = {100 * pp_results[f'uplift_p{p_high * 100:.0f}_frc']:.1f} %")
+        logger.info(f"final P5 uplift estimate = {100 * pp_results[f'uplift_p{p_low * 100:.0f}_frc']:.1f} %")
 
     return pp_results, pp_df
