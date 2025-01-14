@@ -447,10 +447,10 @@ def plot_pre_post_pp_analysis(
 
     plt.figure()
     plt.plot(pp_df["bin_mid"], pp_df["uplift_kw"], color="b", marker="s")
-    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_p{p_low*100:.0f}_kw"], color="r", ls="--")
-    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_p{p_high*100:.0f}_kw"], color="r", ls="--")
+    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_p{p_low * 100:.0f}_kw"], color="r", ls="--")
+    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_p{p_high * 100:.0f}_kw"], color="r", ls="--")
     plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} uplift [kW] and {confidence_level*100:.0f}% CI"
+    plot_title = f"test={test_name} ref={ref_name} uplift [kW] and {confidence_level * 100:.0f}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [kW]")
     plt.xlabel("bin centre [m/s]")
@@ -478,18 +478,18 @@ def plot_pre_post_pp_analysis(
     )
     plt.plot(
         pp_df["bin_mid"],
-        pp_df[f"uplift_p{p_low*100:.0f}_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
+        pp_df[f"uplift_p{p_low * 100:.0f}_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
         color="r",
         ls="--",
     )
     plt.plot(
         pp_df["bin_mid"],
-        pp_df[f"uplift_p{p_high*100:.0f}_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
+        pp_df[f"uplift_p{p_high * 100:.0f}_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
         color="r",
         ls="--",
     )
     plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} uplift [MWh] and {confidence_level*100:.0f}% CI"
+    plot_title = f"test={test_name} ref={ref_name} uplift [MWh] and {confidence_level * 100:.0f}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [MWh]")
     plt.xlabel("bin centre [m/s]")

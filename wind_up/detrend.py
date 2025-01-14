@@ -313,7 +313,7 @@ def check_applied_detrend(
         )
     else:
         result_manager.warning(
-            f"post_r2_after_detrend < post_r2_before_detrend," f" {post_r2_after_detrend} < {post_r2_before_detrend}"
+            f"post_r2_after_detrend < post_r2_before_detrend, {post_r2_after_detrend} < {post_r2_before_detrend}"
         )
 
     if plot_cfg is not None:

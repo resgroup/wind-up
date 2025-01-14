@@ -66,7 +66,7 @@ def print_and_plot_capacity_factor(scada_df: pd.DataFrame, cfg: WindUpConfig, pl
         show_plot=plots_cfg.show_plots,
     )
 
-    logger.info(f'average capacity factor: {cf_df["CF"].mean() * 100:.1f}%')
+    logger.info(f"average capacity factor: {cf_df['CF'].mean() * 100:.1f}%")
     _table = tabulate(
         (cf_df.sort_values(by="CF", ascending=False)["CF"][0:3] * 100).to_frame(),
         tablefmt="outline",

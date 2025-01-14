@@ -66,13 +66,13 @@ def plot_yaw_direction_pre_post_per_signal(
         label=post_label,
     )
     plt.xlabel(f"{ref_wd_col} [deg]")
-    plt.ylabel(f'{signal_name.replace("_", " ")} [deg]')
+    plt.ylabel(f"{signal_name.replace('_', ' ')} [deg]")
     plt.grid()
 
     plot_title = (
         f"{test_name} ref {ref_name} yaw direction scatter"
         if signal_name == "yaw_offset"
-        else f'{test_name} ref {ref_name} {signal_name.replace("_", " ")} scatter'
+        else f"{test_name} ref {ref_name} {signal_name.replace('_', ' ')} scatter"
     )
     plt.suptitle(plot_title)
     if plot_cfg.show_plots:
@@ -144,7 +144,7 @@ def plot_yaw_direction_pre_post_per_signal(
             linewidths=0.5,
             vmin=0,
             vmax=20,
-            cbar_kws={"label": f"{signal_name.replace('_',' ')} [deg]"},
+            cbar_kws={"label": f"{signal_name.replace('_', ' ')} [deg]"},
         )
 
         plt.xlabel("wind direction bin centre [deg]")
@@ -153,7 +153,7 @@ def plot_yaw_direction_pre_post_per_signal(
         signal_descr = (
             f"{ref_name} minus {test_name} yaw direction"
             if signal_name == "yaw_offset"
-            else f'{test_name} ref {ref_name} {signal_name.replace("_", " ")}'
+            else f"{test_name} ref {ref_name} {signal_name.replace('_', ' ')}"
         )
         plot_title = f"{signal_descr} vs ws and wd {label}"
         plt.suptitle(plot_title)
