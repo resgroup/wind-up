@@ -57,6 +57,7 @@ dev = [
     'types-requests',
     'ruff',
     'mypy',
+    'requests',
 ]
 examples = [
     'jupyterlab',
@@ -131,6 +132,7 @@ filterwarnings = [
     "ignore:Passing unrecognized arguments to super:DeprecationWarning",  # pycharm debugger issue
     "ignore:Passing a BlockManager to DataFrame is deprecated:DeprecationWarning",
 ]
+markers = ["slow: mark test as slow."]
 
 [tool.coverage.report]
 omit = [
@@ -154,6 +156,10 @@ sequence = [
     { cmd = "ruff check ." },
     { cmd = "mypy ." }
 ]
+
+[tool.poe.tasks.test-fast]
+help = "Runs tests that are not marked as slow"
+sequence = [{ cmd = 'python -m pytest -m "not slow"' }]
 
 [tool.poe.tasks.test]
 help = "Runs unit tests and show coverage"
