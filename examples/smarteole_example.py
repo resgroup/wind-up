@@ -39,6 +39,10 @@ DEFAULT_SCADA_FILE_PATH = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_SCA
 DEFAULT_METADATA_FILE_PATH = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_Coordinates_staticData.csv"
 DEFAULT_TOGGLE_FILE_PATH = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_ControlLog_1minData.csv"
 
+REANALYSIS_DATA_FILE_PATH = (
+    PROJECTROOT_DIR / "tests/test_data/smarteole/ERA5T_50.00N_2.75E_100m_1hr_20200201_20200531.parquet"
+)
+
 
 @with_parquet_cache(CACHE_SUBDIR / "smarteole_scada.parquet")
 def unpack_smarteole_scada(
@@ -301,8 +305,7 @@ def main_smarteole_analysis(
     check_results: bool = CHECK_RESULTS,
     analysis_output_dir: Path = ANALYSIS_OUTPUT_DIR,
     cache_sub_dir: Path = CACHE_SUBDIR,
-    reanalysis_file_path: Path | str = PARENT_DIR
-    / "smarteole_data/ERA5T_50.00N_2.75E_100m_1hr_20200201_20200531.parquet",
+    reanalysis_file_path: Path | str = REANALYSIS_DATA_FILE_PATH,
 ) -> None:
     setup_logger(ANALYSIS_OUTPUT_DIR / "analysis.log")
     logger = logging.getLogger(__name__)
