@@ -219,7 +219,7 @@ def plot_check_wsratio_v_dir(
     if pre_wsratio_v_dir.empty:
         logger.warning("pre_wsratio_v_dir is empty")
         return
-    if pre_wsratio_v_dir.empty:
+    if post_wsratio_v_dir.empty:
         logger.warning("post_wsratio_v_dir is empty")
         return
     scen_to_plot = (
