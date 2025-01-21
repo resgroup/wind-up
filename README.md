@@ -44,6 +44,8 @@ Use `poe all` to run all required pre-push commands (make sure the virtual envir
 ## Running tests
 Install dev dependencies and use `poe test` to run unit tests (make sure the virtual environment is activated)
 
+For convenience when developing locally, run `poe test-fast` to avoid running the tests marked as slow.
+
 ## License
 See [`LICENSE.txt`](LICENSE.txt)
 
