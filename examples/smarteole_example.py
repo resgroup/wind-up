@@ -275,7 +275,7 @@ def print_smarteole_results(
                 "uplift P5": ["-0.1%", "5.0%"],
                 "valid hours toggle off": [132 + 3 / 6, 133 + 0 / 6],
                 "valid hours toggle on": [136 + 0 / 6, 137 + 1 / 6],
-                "mean power toggle on": [1148, 994],
+                "mean power toggle on": [1149, 994],
             },
             index=[0, 1],
         )
