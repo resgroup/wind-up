@@ -1,3 +1,5 @@
+"""Caching utilities functions."""
+
 import pickle
 from collections.abc import Callable
 from pathlib import Path
@@ -9,6 +11,8 @@ from wind_up.result_manager import result_manager
 
 
 def with_parquet_cache(fp: Path, *, use_cache: bool = True) -> Callable:
+    """Decorator to cache the result of a function to a parquet file."""  # noqa: D401
+
     def wrap(func: Callable[..., pd.DataFrame]) -> Callable[..., pd.DataFrame]:
         def wrapped_f(*a: Any, **kw: Any) -> pd.DataFrame:  # noqa
             if not Path(fp).is_file() or not use_cache:
@@ -21,6 +25,8 @@ def with_parquet_cache(fp: Path, *, use_cache: bool = True) -> Callable:
 
 
 def with_pickle_cache(fp: Path, *, use_cache: bool = True) -> Callable:
+    """Decorator to cache the result of a function to a pickle file."""  # noqa: D401
+
     def wrap(func: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped_f(*a: Any, **kw: Any) -> Any:  # noqa
             fresh_cache = False

@@ -1,3 +1,5 @@
+"""Long term distribution functions."""
+
 from __future__ import annotations
 
 import logging
@@ -15,7 +17,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def calc_lt_df(
+def _calc_lt_df(
     df_for_lt: pd.DataFrame,
     *,
     num_turbines: int,
@@ -93,7 +95,7 @@ def calc_lt_df(
     return lt_df
 
 
-def filter_and_calc_lt_df(
+def _filter_and_calc_lt_df(
     wtg_or_wf_name: str,
     cfg: WindUpConfig,
     wtg_or_wf_df: pd.DataFrame,
@@ -117,7 +119,7 @@ def filter_and_calc_lt_df(
 
     ok_for_lt = (workings_df.index >= cfg.lt_first_dt_utc_start) & (workings_df.index <= cfg.lt_last_dt_utc_start)
 
-    lt_df = calc_lt_df(
+    lt_df = _calc_lt_df(
         df_for_lt=workings_df[ok_for_lt],
         num_turbines=1 if one_turbine else len(cfg.asset.wtgs),
         years_for_lt_distribution=cfg.years_for_lt_distribution,
@@ -148,7 +150,18 @@ def calc_lt_dfs_raw_filt(
     one_turbine: bool,
     plot_cfg: PlotConfig | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    lt_df_raw = filter_and_calc_lt_df(
+    """Get long term distributions for raw and filtered data.
+
+    :param wtg_or_wf_name: name of the wind turbine or wind farm
+    :param cfg: wind up configuration
+    :param wtg_or_wf_df: raw SCADA data
+    :param ws_col: wind speed column name (post filtering)
+    :param pw_col: power column name (post filtering)
+    :param one_turbine: True if only one turbine is being analysed
+    :param plot_cfg: plot configuration
+    :return: tuple of long term distributions for raw and filtered data
+    """
+    lt_df_raw = _filter_and_calc_lt_df(
         wtg_or_wf_name=wtg_or_wf_name,
         cfg=cfg,
         wtg_or_wf_df=wtg_or_wf_df,
@@ -158,7 +171,7 @@ def calc_lt_dfs_raw_filt(
         one_turbine=one_turbine,
         plot_cfg=plot_cfg,
     )
-    lt_df_filt = filter_and_calc_lt_df(
+    lt_df_filt = _filter_and_calc_lt_df(
         wtg_or_wf_name=wtg_or_wf_name,
         cfg=cfg,
         wtg_or_wf_df=wtg_or_wf_df,

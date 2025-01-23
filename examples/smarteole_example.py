@@ -48,9 +48,7 @@ REANALYSIS_DATA_FILE_PATH = (
 def unpack_smarteole_scada(
     timebase_s: int, scada_data_file: Path | str | IO[bytes] = DEFAULT_SCADA_FILE_PATH
 ) -> pd.DataFrame:
-    """
-    Function that translates 1-minute SCADA data to x minute data in the wind-up expected format
-    """
+    """Function that translates 1-minute SCADA data to x minute data in the wind-up expected format"""
 
     def _separate_turbine_id_from_field(x: str) -> tuple[str, str]:
         parts = x.split("_")

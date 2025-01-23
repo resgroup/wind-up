@@ -1,3 +1,5 @@
+"""Detrend wind speed data."""
+
 from __future__ import annotations
 
 import logging
@@ -20,7 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def calc_wsratio_v_wd(
+def _calc_wsratio_v_wd(
     *,
     detrend_df: pd.DataFrame,
     test_ws_col: str,
@@ -72,7 +74,7 @@ def calc_wsratio_v_wd(
     )
 
 
-def apply_wsratio_v_wd(
+def _apply_wsratio_v_wd(
     p_df: pd.DataFrame,
     wsratio_v_dir: pd.DataFrame,
     *,
@@ -94,7 +96,7 @@ def apply_wsratio_v_wd(
     return p_df
 
 
-def remove_bad_detrend_results(
+def _remove_bad_detrend_results(
     wsratio_v_dir_scen: pd.DataFrame,
     test_name: str,
     ref_name: str,
@@ -171,6 +173,20 @@ def calc_wsratio_v_wd_scen(
     cfg: WindUpConfig,
     plot_cfg: PlotConfig | None,
 ) -> pd.DataFrame:
+    """Calculate wind speed ratio vs wind direction for each waking scenario.
+
+    :param test_name: name of the test turbine
+    :param ref_name: name of the reference
+    :param ref_lat: latitude of the reference
+    :param ref_long: longitude of the reference
+    :param detrend_df: DataFrame containing the wind speed data
+    :param test_ws_col: column name of the test turbine wind speed
+    :param ref_ws_col: column name of the reference wind speed
+    :param ref_wd_col: column name of the reference wind direction
+    :param cfg: WindUpConfig object
+    :param plot_cfg: PlotConfig object
+    :return: DataFrame containing the wind speed ratio vs wind direction for each waking scenario
+    """
     count_by_scen = detrend_df.dropna(subset=[test_ws_col, ref_ws_col, ref_wd_col])["waking_scenario"].value_counts()
     rows_per_hour = 3600 / cfg.timebase_s
     scens_to_detrend = count_by_scen[count_by_scen > (cfg.detrend_min_hours * rows_per_hour)]
@@ -184,7 +200,7 @@ def calc_wsratio_v_wd_scen(
     for scen in scens_to_detrend_list:
         scen_df = detrend_df[detrend_df["waking_scenario"] == scen]
         scen_df = scen_df.dropna(subset=[test_ws_col, ref_ws_col, ref_wd_col])
-        wsratio_v_dir = calc_wsratio_v_wd(
+        wsratio_v_dir = _calc_wsratio_v_wd(
             detrend_df=scen_df,
             test_ws_col=test_ws_col,
             ref_ws_col=ref_ws_col,
@@ -197,7 +213,7 @@ def calc_wsratio_v_wd_scen(
 
     wsratio_v_dir_scen = wsratio_v_dir_scen.set_index(["waking_scenario", "direction"])
 
-    wsratio_v_dir_scen = remove_bad_detrend_results(
+    wsratio_v_dir_scen = _remove_bad_detrend_results(
         wsratio_v_dir_scen,
         test_name=test_name,
         ref_name=ref_name,
@@ -233,6 +249,14 @@ def apply_wsratio_v_wd_scen(
     ref_ws_col: str,
     ref_wd_col: str,
 ) -> pd.DataFrame:
+    """Apply wind speed ratio vs wind direction detrend to wind speed data.
+
+    :param p_df: DataFrame containing the wind speed data
+    :param wsratio_v_dir_scen: DataFrame containing the wind speed ratio vs wind direction for each waking scenario
+    :param ref_ws_col: column name of the reference wind speed
+    :param ref_wd_col: column name of the reference wind direction
+    :return: DataFrame containing the wind speed data with the detrended wind speed and reference wind speed
+    """
     try:
         scenario_set_wsratio_dir_scen = set(
             wsratio_v_dir_scen.dropna(subset="ws_rom").index.unique(level="waking_scenario")
@@ -249,7 +273,7 @@ def apply_wsratio_v_wd_scen(
         scen_df = p_df[p_df["waking_scenario"] == scen]
         scen_df = scen_df.dropna(subset=[ref_ws_col, ref_wd_col])
         wsratio_v_dir = wsratio_v_dir_scen.loc[scen].dropna(subset="ws_rom")
-        scen_df = apply_wsratio_v_wd(scen_df, wsratio_v_dir, ref_ws_col=ref_ws_col, ref_wd_col=ref_wd_col)
+        scen_df = _apply_wsratio_v_wd(scen_df, wsratio_v_dir, ref_ws_col=ref_ws_col, ref_wd_col=ref_wd_col)
         all_scens_df = pd.concat([all_scens_df, scen_df])
 
     columns_to_add = ["ws_rom", "ref_ws_detrended"]
@@ -286,6 +310,24 @@ def check_applied_detrend(
     cfg: WindUpConfig,
     plot_cfg: PlotConfig | None,
 ) -> tuple[float, float]:
+    """Check the effect of the detrend on the wind speed data.
+
+    :param test_name: name of the test turbine
+    :param ref_name: name of the reference
+    :param ref_lat: latitude of the reference
+    :param ref_long: longitude of the reference
+    :param pre_df: DataFrame containing the pre-detrend wind speed data
+    :param post_df: DataFrame containing the post-detrend wind speed data
+    :param test_ws_col: column name of the test turbine wind speed
+    :param ref_ws_col: column name of the reference wind speed
+    :param detrend_ws_col: column name of the detrended wind speed
+    :param ref_wd_col: column name of the reference wind direction
+    :param cfg: WindUpConfig object
+    :param plot_cfg: PlotConfig object
+    :return:
+        tuple of the improvement in the pre-detrend wind speed correlation and the improvement in the post-detrend wind
+        speed correlation
+    """
     pre_df = pre_df.dropna(subset=[test_ws_col, ref_ws_col, detrend_ws_col, ref_wd_col]).copy()
     post_df = post_df.dropna(subset=[test_ws_col, ref_ws_col, detrend_ws_col, ref_wd_col]).copy()
 

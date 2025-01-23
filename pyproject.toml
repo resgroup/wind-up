@@ -82,11 +82,12 @@ select = ["ALL"] # https://beta.ruff.rs/docs/rules/
 ignore = [
     "ANN204", # `__init__` doesn't need annotations
     "S301", # `pickle` and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue
-    "D", # docstring checks
     "PGH004", # Use specific rule codes when using `noqa`. Seems to give false alarms
     "COM812", # can conflict with ruff formatter
     "ISC001", # can conflict with ruff formatter
     "G004", # logging statement can use f-string
+    "D203",  # `incorrect-blank-line-before-class` (D203) and `no-blank-line-before-class` (D211) are incompatible
+    "D213",  # `multi-line-summary-first-line` (D212) and `multi-line-summary-second-line` (D213) are incompatible
 ]
 
 [tool.ruff.lint.mccabe]
@@ -99,11 +100,14 @@ max-args = 17 # try to bring this down to 5
 
 [tool.ruff.lint.per-file-ignores]
 "wind_up/models.py" = ["N805", "PERF401"] # try to eliminate this
-"tests/**/*.py" = ["S101", "PLR2004"]  # allow `assert` and magic values in tests
+"tests/**/*.py" = ["S101", "PLR2004", "D"]  # allow `assert` and magic values in tests
 "tests/test_smart_data.py" = ["DTZ001"]  # SMART functions use tz naive datetimes
 "**/__init__.py" = ["F401"]  # ignore unused imports in __init__.py
-"examples/**/*.py" = ["T20"]  # allow print in examples
+"examples/**/*.py" = ["T20", "D"]
 "examples/**/kelmarsh_kaggle.py" = ["S101","PLR0915","PD013","N806"]
+"wind_up/smart_data.py" = ["D"]  # RES specific data loading
+"wind_up/plots/*.py" = ["D"]  # TODO: remove this
+"examples/*.ipynb" = ["D"]  # Jupyter notebooks
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]

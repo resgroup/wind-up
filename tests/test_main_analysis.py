@@ -5,7 +5,7 @@ import pandas as pd
 from pandas.testing import assert_frame_equal
 
 from wind_up.constants import TIMESTAMP_COL
-from wind_up.main_analysis import toggle_pairing_filter
+from wind_up.main_analysis import _toggle_pairing_filter
 
 
 def test_toggle_pairing_filter_method_none() -> None:
@@ -35,7 +35,7 @@ def test_toggle_pairing_filter_method_none() -> None:
         index=post_tstamps,
     )
 
-    filt_pre_df, filt_post_df = toggle_pairing_filter(
+    filt_pre_df, filt_post_df = _toggle_pairing_filter(
         pre_df=pre_df,
         post_df=post_df,
         pairing_filter_method="none",
@@ -107,7 +107,7 @@ def test_toggle_pairing_filter_method_any_within_timedelta() -> None:
     exp_filt_post_df = b[
         [x in copy_of_make_extended_time_index(a.index, pd.Timedelta("10min"), tolerance_minutes * 60) for x in b.index]
     ]
-    filt_pre_df, filt_post_df = toggle_pairing_filter(
+    filt_pre_df, filt_post_df = _toggle_pairing_filter(
         pre_df=pre_df,
         post_df=post_df,
         pairing_filter_method="any_within_timedelta",

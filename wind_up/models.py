@@ -1,3 +1,5 @@
+"""WindUp configuration models."""
+
 from __future__ import annotations
 
 import datetime as dt
@@ -17,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 class PlotConfig(BaseModel):
+    """Plot configuration model."""
+
     show_plots: bool = Field(default=False, description="Show plots in interactive window")
     save_plots: bool = Field(default=True, description="Save plots to file")
     skip_per_turbine_plots: bool = Field(default=False, description="If True skip per turbine plots")
@@ -24,6 +28,8 @@ class PlotConfig(BaseModel):
 
 
 class TurbineType(BaseModel):
+    """Turbine type model."""
+
     turbine_type: str = Field(
         description="Turbine type description",
         min_length=2,
@@ -51,16 +57,21 @@ class TurbineType(BaseModel):
 
 
 class Turbine(BaseModel):
+    """Turbine model."""
+
     name: str = Field(description="Turbine name", min_length=2)
     turbine_type: TurbineType
     latitude: float = Field(default=np.nan, ge=-90, le=90)
     longitude: float = Field(default=np.nan, ge=-180, le=180)
 
     def get_latlongs(self: Turbine) -> list[tuple[float, float]]:
+        """Get the latitude and longitude of the turbine."""
         return [(self.latitude, self.longitude)]
 
 
 class MastOrLidar(BaseModel):
+    """Mast or LiDAR model."""
+
     name: str = Field(description="Object name", min_length=2)
     latitude: float = Field(default=np.nan, ge=-90, le=90)
     longitude: float = Field(default=np.nan, ge=-180, le=180)
@@ -76,12 +87,16 @@ class MastOrLidar(BaseModel):
 
 
 class Asset(BaseModel):
+    """Asset model."""
+
     name: str = Field(description="Asset Name", min_length=2, examples=["Kelmarsh"])
     wtgs: list[Turbine]
     masts_and_lidars: list[MastOrLidar] = Field(description="list of mast and LiDAR objects, if any", default=[])
 
 
 class Toggle(BaseModel):
+    """Toggle model."""
+
     name: str = Field(description="Name of toggle signal to use in plots", min_length=2, default="toggle")
     toggle_file_per_turbine: bool = Field(
         description="Is there one toggle timeseries file per turbine, or one for the asset?",
@@ -111,6 +126,8 @@ class Toggle(BaseModel):
 
 
 class PrePost(BaseModel):
+    """PrePost model."""
+
     pre_first_dt_utc_start: dt.datetime = Field(
         description="First time to use in pre-upgrade analysis, UTC Start format",
     )
@@ -126,6 +143,11 @@ class PrePost(BaseModel):
 
 
 class WindUpConfig(BaseModel):
+    """WindUpConfig model.
+
+    This model is used to store the configuration for a WindUp analysis. The attributes form the basis for the analysis.
+    """
+
     assessment_name: str = Field(
         min_length=2,
         description="Name used for assessment output folder",
@@ -273,21 +295,21 @@ class WindUpConfig(BaseModel):
     use_rated_invalid_bins: bool = Field(default=False, description="Use rated power bins which have been filled in")
 
     @model_validator(mode="after")
-    def check_years_offset_for_pre_period(self: WindUpConfig) -> WindUpConfig:
+    def _check_years_offset_for_pre_period(self: WindUpConfig) -> WindUpConfig:
         if self.toggle is None and self.years_offset_for_pre_period is None:
             msg = "toggle is None and years_offset_for_pre_period is None"
             raise ValueError(msg)
         return self
 
     @model_validator(mode="after")
-    def check_first_datetime_before_last(self: WindUpConfig) -> WindUpConfig:
+    def _check_first_datetime_before_last(self: WindUpConfig) -> WindUpConfig:
         if self.upgrade_first_dt_utc_start >= self.analysis_last_dt_utc_start:
             msg = "upgrade_first_datetime must be before last_useable_datetime"
             raise ValueError(msg)
         return self
 
     @model_validator(mode="after")
-    def check_non_wtg_ref_names(self: WindUpConfig) -> WindUpConfig:
+    def _check_non_wtg_ref_names(self: WindUpConfig) -> WindUpConfig:
         for non_wtg_ref in self.non_wtg_ref_names:
             if non_wtg_ref == "reanalysis":
                 if len(self.reanalysis_method) < 1:
@@ -300,6 +322,7 @@ class WindUpConfig(BaseModel):
 
     @model_validator(mode="after")
     def print_summary(self: WindUpConfig) -> WindUpConfig:
+        """Print a summary of the WindUpConfig."""
         logger.info(f"loaded WindUpConfig assessment_name: {self.assessment_name}")
         dt_fmt = "%Y-%m-%d %H:%M"
         if self.toggle is not None:
@@ -332,6 +355,11 @@ class WindUpConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, file_path: Path) -> "WindUpConfig":  # noqa ANN102
+        """Load WindUpConfig from a yaml file.
+
+        :param file_path: Path to yaml file
+        :return: WindUpConfig
+        """
         yaml.add_constructor("!include", construct_include, Loader)
         with Path.open(file_path) as f:
             cfg_dct = yaml.load(f, Loader)  # noqa S506
@@ -430,9 +458,11 @@ class WindUpConfig(BaseModel):
         return WindUpConfig.model_validate(cfg_dct)
 
     def get_max_rated_power(self: WindUpConfig) -> float:
+        """Get the maximum rated power out of all turbine types on the wind farm asset."""
         return max(x.turbine_type.rated_power_kw for x in self.asset.wtgs)
 
     def list_unique_turbine_types(self: WindUpConfig) -> list[TurbineType]:
+        """List unique turbine types of the wind farm asset."""
         unique_names = sorted({x.turbine_type.turbine_type for x in self.asset.wtgs})
         unique_turbine_types = []
         for name in unique_names:
@@ -442,10 +472,25 @@ class WindUpConfig(BaseModel):
         return unique_turbine_types
 
     def list_turbine_ids_of_type(self: WindUpConfig, ttype: TurbineType) -> list[str]:
+        """List turbine ids of a specific turbine type.
+
+        :param ttype: TurbineType
+        :return: list of turbine ids
+        """
         return [x.name for x in self.asset.wtgs if x.turbine_type == ttype]
 
     def get_normal_operation_genrpm_range(self: WindUpConfig, ttype: TurbineType) -> tuple[float, float]:
+        """Get the normal operation generator rpm range for turbine type.
+
+        :param ttype: TurbineType
+        :return: tuple of generator rpm range
+        """
         return next(x.turbine_type.normal_operation_genrpm_range for x in self.asset.wtgs if x.turbine_type == ttype)
 
     def get_normal_operation_pitch_range(self: WindUpConfig, ttype: TurbineType) -> tuple[float, float]:
+        """Get the normal operation pitch range for turbine type.
+
+        :param ttype: TurbineType
+        :return: tuple of pitch range
+        """
         return next(x.turbine_type.normal_operation_pitch_range for x in self.asset.wtgs if x.turbine_type == ttype)

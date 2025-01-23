@@ -1,3 +1,5 @@
+"""Pre-Post Analysis Module."""
+
 from __future__ import annotations
 
 import contextlib
@@ -18,7 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def pp_raw_df(
+def _pp_raw_df(
     pre_or_post_df: pd.DataFrame,
     pre_or_post: str,
     *,
@@ -64,7 +66,7 @@ def _calc_rated_ws(*, pp_df: pd.DataFrame, pw_col: str, rated_power: float) -> f
     return pp_df.loc[pp_df[pw_col] >= rated_power * 0.995, "bin_mid"].min() + 1
 
 
-def cook_pp(
+def _cook_pp(
     pp_df: pd.DataFrame, *, pre_or_post: str, ws_bin_width: float, rated_power: float, clip_to_rated: bool
 ) -> pd.DataFrame:
     pp_df = pp_df.copy()
@@ -126,7 +128,9 @@ def cook_pp(
     return pp_df
 
 
-def add_uplift_cols_to_pp_df(pp_df: pd.DataFrame, *, p_low: float, p_high: float, t_values: np.ndarray) -> pd.DataFrame:
+def _add_uplift_cols_to_pp_df(
+    pp_df: pd.DataFrame, *, p_low: float, p_high: float, t_values: np.ndarray
+) -> pd.DataFrame:
     new_pp_df = pp_df.copy()
     # calculations needed for uplift vs wind speed plot
     new_pp_df["uplift_kw"] = new_pp_df["pw_at_mid_post"] - new_pp_df["pw_at_mid_expected"]
@@ -149,7 +153,7 @@ def add_uplift_cols_to_pp_df(pp_df: pd.DataFrame, *, p_low: float, p_high: float
     return new_pp_df
 
 
-def pre_post_pp_analysis(
+def _pre_post_pp_analysis(
     *,
     cfg: WindUpConfig,
     test_wtg: Turbine,
@@ -179,21 +183,21 @@ def pre_post_pp_analysis(
 
     ws_bin_edges = np.arange(0, cutout_ws + cfg.ws_bin_width, cfg.ws_bin_width)
 
-    pre_pp_df = pp_raw_df(
+    pre_pp_df = _pp_raw_df(
         pre_df, "pre", ws_col=ws_col, ws_bin_edges=ws_bin_edges, pw_col=pw_col, timebase_s=cfg.timebase_s
     )
-    post_pp_df = pp_raw_df(
+    post_pp_df = _pp_raw_df(
         post_df, "post", ws_col=ws_col, ws_bin_edges=ws_bin_edges, pw_col=pw_col, timebase_s=cfg.timebase_s
     )
 
-    pre_pp_df = cook_pp(
+    pre_pp_df = _cook_pp(
         pp_df=pre_pp_df,
         pre_or_post="pre",
         ws_bin_width=cfg.ws_bin_width,
         rated_power=rated_power,
         clip_to_rated=cfg.clip_rated_power_pp,
     )
-    post_pp_df = cook_pp(
+    post_pp_df = _cook_pp(
         pp_df=post_pp_df,
         pre_or_post="post",
         ws_bin_width=cfg.ws_bin_width,
@@ -273,7 +277,7 @@ def pre_post_pp_analysis(
     )
     unc_one_sigma_mwh = uplift_se_mwh * t_value_one_sigma
 
-    pp_df = add_uplift_cols_to_pp_df(pp_df, p_low=p_low, p_high=p_high, t_values=t_values)
+    pp_df = _add_uplift_cols_to_pp_df(pp_df, p_low=p_low, p_high=p_high, t_values=t_values)
 
     pp_valid_hours_pre = pp_df["hours_pre"].sum()
     pp_valid_hours_post = pp_df["hours_post"].sum()
@@ -324,7 +328,7 @@ def pre_post_pp_analysis(
     return pp_results, pp_df
 
 
-def calc_power_only_and_reversed_uplifts(
+def _calc_power_only_and_reversed_uplifts(
     *,
     cfg: WindUpConfig,
     test_wtg: Turbine,
@@ -345,7 +349,7 @@ def calc_power_only_and_reversed_uplifts(
     post_power_only["ref_ws_power_only_detrended"] = (
         post_power_only["ref_ws_est_from_power_only"] * post_power_only["ws_rom"]
     )
-    power_only_results, _ = pre_post_pp_analysis(
+    power_only_results, _ = _pre_post_pp_analysis(
         cfg=cfg,
         test_wtg=test_wtg,
         ref_name=ref_name,
@@ -366,7 +370,7 @@ def calc_power_only_and_reversed_uplifts(
     post_power_only["test_ws_power_only_detrended"] = (
         post_power_only["test_ws_est_from_power_only"] / post_power_only["ws_rom"]
     )
-    reversed_results, _ = pre_post_pp_analysis(
+    reversed_results, _ = _pre_post_pp_analysis(
         cfg=cfg,
         test_wtg=test_wtg,
         ref_name=ref_name,
@@ -386,7 +390,7 @@ def calc_power_only_and_reversed_uplifts(
     return poweronly_uplift_frc, reversed_uplift_frc
 
 
-def pre_post_pp_analysis_with_reversal(
+def _pre_post_pp_analysis_with_reversal(
     *,
     cfg: WindUpConfig,
     test_wtg: Turbine,
@@ -401,7 +405,7 @@ def pre_post_pp_analysis_with_reversal(
     confidence_level: float = 0.9,
     test_df: pd.DataFrame | None = None,
 ) -> tuple[dict, pd.DataFrame]:
-    pp_results, pp_df = pre_post_pp_analysis(
+    pp_results, pp_df = _pre_post_pp_analysis(
         cfg=cfg,
         test_wtg=test_wtg,
         ref_name=ref_name,
@@ -421,7 +425,7 @@ def pre_post_pp_analysis_with_reversal(
         reversed_uplift_frc = np.nan
         reversal_error = 0.0
     else:
-        poweronly_uplift_frc, reversed_uplift_frc = calc_power_only_and_reversed_uplifts(
+        poweronly_uplift_frc, reversed_uplift_frc = _calc_power_only_and_reversed_uplifts(
             cfg=cfg,
             test_wtg=test_wtg,
             ref_name=ref_name,
@@ -474,7 +478,24 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     confidence_level: float = 0.9,
     test_df: pd.DataFrame | None = None,
 ) -> tuple[dict, pd.DataFrame]:
-    pp_results, pp_df = pre_post_pp_analysis_with_reversal(
+    """Perform pre-post analysis with reversal and block bootstrapping uncertainty analysis.
+
+    :param cfg: WindUpConfig object
+    :param test_wtg: Turbine object for the test turbine
+    :param ref_name: name of the reference turbine
+    :param lt_df: long term data DataFrame
+    :param pre_df: pre period DataFrame
+    :param post_df: post period DataFrame
+    :param ws_col: wind speed column name
+    :param pw_col: power column name
+    :param wd_col: wind direction column name
+    :param plot_cfg: PlotConfig object
+    :param random_seed: random seed for reproducibility
+    :param confidence_level: confidence level
+    :param test_df: test data DataFrame
+    :return: tuple of results dictionary and DataFrame
+    """
+    pp_results, pp_df = _pre_post_pp_analysis_with_reversal(
         cfg=cfg,
         test_wtg=test_wtg,
         ref_name=ref_name,
@@ -518,7 +539,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         post_df_ = post_df_trim.iloc[post_sample_ilocs].sort_index()
 
         try:
-            sample_results, _ = pre_post_pp_analysis_with_reversal(
+            sample_results, _ = _pre_post_pp_analysis_with_reversal(
                 cfg=cfg,
                 test_wtg=test_wtg,
                 ref_name=ref_name,

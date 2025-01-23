@@ -8,7 +8,7 @@ from pandas.testing import assert_frame_equal
 
 from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, TIMESTAMP_COL
 from wind_up.models import WindUpConfig
-from wind_up.scada_funcs import scada_multi_index
+from wind_up.scada_funcs import _scada_multi_index
 from wind_up.waking_state import (
     add_waking_scen,
     add_waking_state,
@@ -220,7 +220,7 @@ def test_add_waking_state(test_lsa_t13_config: WindUpConfig) -> None:
     test_df = pd.read_parquet(Path(__file__).parents[0] / "test_data/LSA_T13_test_df.parquet")
     test_df.columns = test_df.columns.str.replace("test_", "")
     test_df["TurbineName"] = "LSA_T01"
-    wf_df = scada_multi_index(test_df)
+    wf_df = _scada_multi_index(test_df)
     expected_df = wf_df.copy()
     wf_df = wf_df.drop(columns=["waking", "not_waking", "unknown_waking"])
     # remove all turbines from cfg apart from LSA_T01

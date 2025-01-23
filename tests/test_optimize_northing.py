@@ -8,7 +8,7 @@ from pandas.testing import assert_frame_equal
 from tests.conftest import TEST_DATA_FLD
 from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_YAWDIR_COL, TIMESTAMP_COL
 from wind_up.models import WindUpConfig
-from wind_up.optimize_northing import auto_northing_corrections, clip_wtg_north_table
+from wind_up.optimize_northing import _clip_wtg_north_table, auto_northing_corrections
 from wind_up.reanalysis_data import ReanalysisDataset, add_reanalysis_data
 
 
@@ -40,7 +40,7 @@ def test_clip_wtg_north_table_entries_before() -> None:
             "north_offset": [1, 2, 3],
         },
     )
-    actual_wtg_north_table = clip_wtg_north_table(initial_wtg_north_table, wtg_df=wtg_df)
+    actual_wtg_north_table = _clip_wtg_north_table(initial_wtg_north_table, wtg_df=wtg_df)
     assert_frame_equal(actual_wtg_north_table, expected_wtg_north_table)
 
 
@@ -72,7 +72,7 @@ def test_clip_wtg_north_table_entry_exactly_at_start() -> None:
             "north_offset": [1, 2, 3],
         },
     )
-    actual_wtg_north_table = clip_wtg_north_table(initial_wtg_north_table, wtg_df=wtg_df)
+    actual_wtg_north_table = _clip_wtg_north_table(initial_wtg_north_table, wtg_df=wtg_df)
     assert_frame_equal(actual_wtg_north_table, expected_wtg_north_table)
 
 
@@ -101,7 +101,7 @@ def test_clip_wtg_north_table_entry_after_start() -> None:
             "north_offset": [0],
         },
     )
-    actual_wtg_north_table = clip_wtg_north_table(initial_wtg_north_table, wtg_df=wtg_df)
+    actual_wtg_north_table = _clip_wtg_north_table(initial_wtg_north_table, wtg_df=wtg_df)
     assert_frame_equal(actual_wtg_north_table, expected_wtg_north_table)
 
 

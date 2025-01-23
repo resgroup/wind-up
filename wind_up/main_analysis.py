@@ -1,14 +1,16 @@
+"""Main analysis functions for wind-up."""
+
 from __future__ import annotations
 
 import logging
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 import wind_up
 from wind_up.constants import (
-    CONFIG_DIR,
     PROJECTROOT_DIR,
     RANDOM_SEED,
     REANALYSIS_WD_COL,
@@ -20,10 +22,7 @@ from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, che
 from wind_up.interface import AssessmentInputs, add_toggle_signals
 from wind_up.long_term import calc_lt_dfs_raw_filt
 from wind_up.math_funcs import circ_diff
-from wind_up.models import PlotConfig, Turbine, WindUpConfig
-from wind_up.northing import (
-    check_wtg_northing,
-)
+from wind_up.northing import check_wtg_northing
 from wind_up.plots.data_coverage_plots import plot_detrend_data_cov, plot_pre_post_data_cov
 from wind_up.plots.detrend_plots import plot_apply_wsratio_v_wd_scen
 from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post, print_filter_stats
@@ -38,21 +37,13 @@ from wind_up.waking_state import (
 )
 from wind_up.windspeed_drift import check_windspeed_drift
 
+if TYPE_CHECKING:
+    from wind_up.models import PlotConfig, Turbine, WindUpConfig
+
 logger = logging.getLogger(__name__)
 
 
-def get_config_objects(
-    config_yaml_file_name: str,
-    *,
-    show_plots: bool,
-    save_plots: bool,
-) -> tuple[WindUpConfig, PlotConfig]:
-    cfg = WindUpConfig.from_yaml(CONFIG_DIR / config_yaml_file_name)
-    plot_cfg = PlotConfig(show_plots=show_plots, save_plots=save_plots, plots_dir=cfg.out_dir / "plots")
-    return cfg, plot_cfg
-
-
-def add_fake_power_data(
+def _add_fake_power_data(
     ref_df: pd.DataFrame,
     *,
     ref_pw_col: str,
@@ -63,7 +54,7 @@ def add_fake_power_data(
     return ref_df
 
 
-def get_ref_lat_long(ref_name: str, cfg: WindUpConfig) -> tuple[float, float]:
+def _get_ref_lat_long(ref_name: str, cfg: WindUpConfig) -> tuple[float, float]:
     try:
         ref_wtg = next(x for x in cfg.asset.wtgs if x.name == ref_name)
         ref_lat = ref_wtg.latitude
@@ -82,7 +73,7 @@ def get_ref_lat_long(ref_name: str, cfg: WindUpConfig) -> tuple[float, float]:
     return ref_lat, ref_long
 
 
-def filter_ref_df_for_wake_free(
+def _filter_ref_df_for_wake_free(
     ref_df: pd.DataFrame,
     *,
     ref_name: str,
@@ -120,7 +111,7 @@ def filter_ref_df_for_wake_free(
         )
     if cfg.require_ref_wake_free:
         rows_before = len(ref_df)
-        ref_lat, ref_long = get_ref_lat_long(ref_name, cfg)
+        ref_lat, ref_long = _get_ref_lat_long(ref_name, cfg)
         if lat_long_is_valid(ref_lat, ref_long):
             ref_wds_to_keep = []
             for wd in ref_df["rounded_wd"].unique():
@@ -147,7 +138,7 @@ def filter_ref_df_for_wake_free(
     return ref_df.drop(columns=["rounded_wd"])
 
 
-def filter_ref_df_for_wd_and_hod(ref_df: pd.DataFrame, ref_wd_col: str, cfg: WindUpConfig) -> pd.DataFrame:
+def _filter_ref_df_for_wd_and_hod(ref_df: pd.DataFrame, ref_wd_col: str, cfg: WindUpConfig) -> pd.DataFrame:
     ref_df = ref_df.copy()
     if cfg.ref_wd_filter is not None:
         rows_before = len(ref_df)
@@ -175,7 +166,7 @@ def filter_ref_df_for_wd_and_hod(ref_df: pd.DataFrame, ref_wd_col: str, cfg: Win
     return ref_df
 
 
-def get_ref_df(
+def _get_ref_df(
     *,
     ref_name: str,
     wf_df: pd.DataFrame,
@@ -219,12 +210,12 @@ def get_ref_df(
         ref_df[DataColumns.wind_speed_mean] = ref_df[original_ws_col]  # needed for northing analysis
         ref_df["ws_est_from_power_only"] = ref_df[original_ws_col]  # needed for reversal analysis
         ref_df[ref_wd_col] = ref_df[original_wd_col]
-        ref_df = add_fake_power_data(ref_df, ref_pw_col=ref_pw_col, ref_ws_col=ref_ws_col, scada_pc=scada_pc)
+        ref_df = _add_fake_power_data(ref_df, ref_pw_col=ref_pw_col, ref_ws_col=ref_ws_col, scada_pc=scada_pc)
 
-    ref_df = filter_ref_df_for_wd_and_hod(ref_df, ref_wd_col=ref_wd_col, cfg=cfg)
+    ref_df = _filter_ref_df_for_wd_and_hod(ref_df, ref_wd_col=ref_wd_col, cfg=cfg)
 
     if cfg.require_test_wake_free or cfg.require_ref_wake_free:
-        ref_df = filter_ref_df_for_wake_free(
+        ref_df = _filter_ref_df_for_wake_free(
             ref_df,
             ref_name=ref_name,
             ref_wd_col=ref_wd_col,
@@ -234,7 +225,7 @@ def get_ref_df(
     return ref_df
 
 
-def make_extended_time_index(
+def _make_extended_time_index(
     original_index: pd.DatetimeIndex,
     *,
     timebase: pd.Timedelta,
@@ -253,7 +244,7 @@ def make_extended_time_index(
     return extended_index.sort_values().drop_duplicates()
 
 
-def toggle_pairing_filter(
+def _toggle_pairing_filter(
     *,
     pre_df: pd.DataFrame,
     post_df: pd.DataFrame,
@@ -278,7 +269,7 @@ def toggle_pairing_filter(
         valid_post_df = post_df.dropna(subset=required_cols)
         filt_pre_df = valid_pre_df[
             valid_pre_df.index.isin(
-                make_extended_time_index(
+                _make_extended_time_index(
                     valid_post_df.index,
                     timebase=pd.Timedelta(seconds=timebase_s),
                     max_timedelta_seconds=pairing_filter_timedelta_seconds,
@@ -287,7 +278,7 @@ def toggle_pairing_filter(
         ]
         filt_post_df = valid_post_df[
             valid_post_df.index.isin(
-                make_extended_time_index(
+                _make_extended_time_index(
                     valid_pre_df.index,
                     timebase=pd.Timedelta(seconds=timebase_s),
                     max_timedelta_seconds=pairing_filter_timedelta_seconds,
@@ -311,7 +302,7 @@ def toggle_pairing_filter(
     return filt_pre_df, filt_post_df
 
 
-def yaw_error_results(pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_cols: list[str]) -> dict:
+def _yaw_error_results(pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_cols: list[str]) -> dict:
     results = {}
     if "test_yaw_error_mean" in pre_df.columns:
         results["test_yaw_error_pre"] = pre_df.dropna(subset=required_pp_cols)["test_yaw_error_mean"].mean()
@@ -322,7 +313,7 @@ def yaw_error_results(pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_c
     return results
 
 
-def yaw_offset_results(
+def _yaw_offset_results(
     pre_df: pd.DataFrame, post_df: pd.DataFrame, required_pp_cols: list[str], ref_wd_col: str, test_wd_col: str
 ) -> dict:
     results = {}
@@ -365,7 +356,7 @@ def yaw_offset_results(
     return results
 
 
-def check_for_ops_curve_shift(
+def _check_for_ops_curve_shift(
     pre_df: pd.DataFrame,
     post_df: pd.DataFrame,
     *,
@@ -437,7 +428,7 @@ def check_for_ops_curve_shift(
     return results_dict
 
 
-def calc_test_ref_results(
+def _calc_test_ref_results(
     *,
     test_df: pd.DataFrame,
     pre_df: pd.DataFrame,
@@ -471,7 +462,7 @@ def calc_test_ref_results(
         # if ref is test then keep all data, not just toggle off
         # if there is not a toggle file per turbine then keep all data
         keep_only_toggle_off = cfg.toggle.toggle_file_per_turbine and (ref_name != test_name)
-    ref_df = get_ref_df(
+    ref_df = _get_ref_df(
         ref_name=ref_name,
         wf_df=wf_df,
         ref_pw_col=ref_pw_col,
@@ -511,7 +502,7 @@ def calc_test_ref_results(
     test_wtg = next(x for x in cfg.asset.wtgs if x.name == test_name)
     test_lat = test_wtg.latitude
     test_long = test_wtg.longitude
-    ref_lat, ref_long = get_ref_lat_long(ref_name, cfg)
+    ref_lat, ref_long = _get_ref_lat_long(ref_name, cfg)
 
     distance_m, bearing_deg = get_distance_and_bearing(
         lat1=test_lat,
@@ -584,7 +575,7 @@ def calc_test_ref_results(
     pre_df = pre_df.merge(ref_df, how="left", left_index=True, right_index=True)
     post_df = post_df.merge(ref_df, how="left", left_index=True, right_index=True)
 
-    ref_ops_curve_shift_dict = check_for_ops_curve_shift(
+    ref_ops_curve_shift_dict = _check_for_ops_curve_shift(
         pre_df,
         post_df,
         wtg_name=ref_name,
@@ -677,7 +668,7 @@ def calc_test_ref_results(
     )
 
     if cfg.toggle is not None:
-        pre_df, post_df = toggle_pairing_filter(
+        pre_df, post_df = _toggle_pairing_filter(
             pre_df=pre_df,
             post_df=post_df,
             pairing_filter_method=cfg.toggle.pairing_filter_method,
@@ -732,10 +723,10 @@ def calc_test_ref_results(
         "mean_power_post": post_df.dropna(subset=[detrend_ws_col, test_pw_col, ref_wd_col])[test_pw_col].mean(),
     }
 
-    other_results = other_results | yaw_error_results(
+    other_results = other_results | _yaw_error_results(
         pre_df=pre_df, post_df=post_df, required_pp_cols=[detrend_ws_col, test_pw_col, ref_wd_col]
     )
-    other_results = other_results | yaw_offset_results(
+    other_results = other_results | _yaw_offset_results(
         pre_df=pre_df,
         post_df=post_df,
         required_pp_cols=[detrend_ws_col, test_pw_col, ref_wd_col],
@@ -748,7 +739,7 @@ def calc_test_ref_results(
     return other_results | pp_results
 
 
-def results_per_test_ref_to_df(results_per_test_ref: list[pd.DataFrame]) -> pd.DataFrame:
+def _results_per_test_ref_to_df(results_per_test_ref: list[pd.DataFrame]) -> pd.DataFrame:
     results_per_test_ref_df = pd.concat(results_per_test_ref)
     first_columns = [
         "wind_up_version",
@@ -781,6 +772,7 @@ def run_wind_up_analysis(
     inputs: AssessmentInputs,
     random_seed: int = RANDOM_SEED,
 ) -> pd.DataFrame:
+    """Run a wind up analysis."""
     preprocess_warning_counts = len(result_manager.stored_warnings)
     result_manager.stored_warnings = []
 
@@ -854,7 +846,7 @@ def run_wind_up_analysis(
 
         test_df, pre_df, post_df = pre_post_splitter.split(test_df, test_wtg_name=test_name)
 
-        test_ops_curve_shift_dict = check_for_ops_curve_shift(
+        test_ops_curve_shift_dict = _check_for_ops_curve_shift(
             pre_df,
             post_df,
             wtg_name=test_name,
@@ -886,7 +878,7 @@ def run_wind_up_analysis(
         for ref_name_counter, ref_name in enumerate(ref_name_list):
             loop_counter = test_wtg_counter * len(ref_name_list) + ref_name_counter
             logger.info(f"analysing {test_name} {ref_name}, loop_counter={loop_counter}")
-            test_ref_results = calc_test_ref_results(
+            test_ref_results = _calc_test_ref_results(
                 test_df=test_df,
                 pre_df=pre_df,
                 post_df=post_df,
@@ -907,7 +899,7 @@ def run_wind_up_analysis(
             results_df = pd.DataFrame(test_ref_results, index=[loop_counter])
             results_per_test_ref.append(results_df)
 
-            results_per_test_ref_df = results_per_test_ref_to_df(results_per_test_ref)
+            results_per_test_ref_df = _results_per_test_ref_to_df(results_per_test_ref)
 
             results_per_test_ref_df.to_csv(cfg.out_dir / "results_interim.csv")
 

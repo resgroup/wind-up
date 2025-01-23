@@ -5,8 +5,8 @@ import pytest
 
 from wind_up.constants import REANALYSIS_WD_COL
 from wind_up.models import WindUpConfig
-from wind_up.northing import apply_northing_corrections, calc_max_abs_north_errs
-from wind_up.scada_funcs import scada_multi_index
+from wind_up.northing import _calc_max_abs_north_errs, apply_northing_corrections
+from wind_up.scada_funcs import _scada_multi_index
 
 
 def test_apply_northing_corrections(test_lsa_t13_config: WindUpConfig) -> None:
@@ -19,7 +19,7 @@ def test_apply_northing_corrections(test_lsa_t13_config: WindUpConfig) -> None:
         wtg_df = test_df.copy()
         wtg_df["TurbineName"] = wtg_name
         wf_df = pd.concat([wf_df, wtg_df])
-    wf_df = scada_multi_index(wf_df)
+    wf_df = _scada_multi_index(wf_df)
     wf_df_after_northing = apply_northing_corrections(wf_df, cfg=cfg, north_ref_wd_col=REANALYSIS_WD_COL, plot_cfg=None)
 
     median_yaw_before_northing = wf_df.groupby("TurbineName")["YawAngleMean"].median()
@@ -32,10 +32,10 @@ def test_apply_northing_corrections(test_lsa_t13_config: WindUpConfig) -> None:
     assert median_yaw_after_northing["LSA_T13"] == pytest.approx(235.22855377197266)
     assert median_yaw_after_northing["LSA_T14"] == pytest.approx(224.92881774902344)
 
-    abs_north_errs_before_northing = calc_max_abs_north_errs(
+    abs_north_errs_before_northing = _calc_max_abs_north_errs(
         wf_df, north_ref_wd_col=REANALYSIS_WD_COL, timebase_s=cfg.timebase_s
     )
-    abs_north_errs_after_northing = calc_max_abs_north_errs(
+    abs_north_errs_after_northing = _calc_max_abs_north_errs(
         wf_df_after_northing, north_ref_wd_col=REANALYSIS_WD_COL, timebase_s=cfg.timebase_s
     )
     assert abs_north_errs_before_northing.min() == pytest.approx(7.88920288085938)

@@ -1,3 +1,5 @@
+"""Functions for northing corrections and northing error calculations."""
+
 from __future__ import annotations
 
 import logging
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def add_rolling_northing_error(wf_df: pd.DataFrame, *, north_ref_wd_col: str, timebase_s: int) -> pd.DataFrame:
+def _add_rolling_northing_error(wf_df: pd.DataFrame, *, north_ref_wd_col: str, timebase_s: int) -> pd.DataFrame:
     wf_df = wf_df.copy()
     wf_df["apparent_northing_error"] = circ_diff(wf_df["YawAngleMean"], wf_df[north_ref_wd_col])
     ws_ll = 6
@@ -37,12 +39,13 @@ def add_rolling_northing_error(wf_df: pd.DataFrame, *, north_ref_wd_col: str, ti
     return wf_df
 
 
-def calc_max_abs_north_errs(wf_df: pd.DataFrame, *, north_ref_wd_col: str, timebase_s: int) -> pd.DataFrame:
-    wf_df = add_rolling_northing_error(wf_df.copy(), north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s)
+def _calc_max_abs_north_errs(wf_df: pd.DataFrame, *, north_ref_wd_col: str, timebase_s: int) -> pd.DataFrame:
+    wf_df = _add_rolling_northing_error(wf_df.copy(), north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s)
     return wf_df.groupby("TurbineName", observed=True)["rolling_northing_error"].agg(lambda x: x.abs().max())
 
 
 def calc_northed_col_name(north_ref_wd_col: str) -> str:
+    """Calculate the column name for the northing corrected yaw direction."""
     return f"yawdir_northed_to_{north_ref_wd_col}"
 
 
@@ -54,14 +57,25 @@ def apply_northing_corrections(
     plot_cfg: PlotConfig | None,
     wf_north_table: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    """Apply northing corrections to the yaw direction data.
+
+    :param wf_df: wind farm SCADA data
+    :param cfg: wind up configuration
+    :param north_ref_wd_col: column name for which the yaw direction was northed
+    :param plot_cfg: plot configuration
+    :param wf_north_table: wind farm northing table
+    :return: wind farm SCADA data with northing corrected yaw direction
+    """
     wf_df = wf_df.copy()
     northed_col = calc_northed_col_name(north_ref_wd_col)
 
     if plot_cfg is not None:
         plot_and_print_northing_error(
-            add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
+            _add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
             cfg=cfg,
-            abs_north_errs=calc_max_abs_north_errs(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
+            abs_north_errs=_calc_max_abs_north_errs(
+                wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s
+            ),
             title_end=f"vs {north_ref_wd_col} before northing",
             plot_cfg=plot_cfg,
         )
@@ -102,16 +116,18 @@ def apply_northing_corrections(
     wf_df["YawAngleMean"] = wf_df[northed_col]
     if plot_cfg is not None:
         plot_and_print_northing_error(
-            add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
+            _add_rolling_northing_error(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
             cfg=cfg,
-            abs_north_errs=calc_max_abs_north_errs(wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s),
+            abs_north_errs=_calc_max_abs_north_errs(
+                wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=cfg.timebase_s
+            ),
             title_end=f"vs {north_ref_wd_col} after northing",
             plot_cfg=plot_cfg,
         )
     return wf_df
 
 
-def format_wtg_df_like_wf_df(wtg_df: pd.DataFrame, *, wtg_name: str) -> pd.DataFrame:
+def _format_wtg_df_like_wf_df(wtg_df: pd.DataFrame, *, wtg_name: str) -> pd.DataFrame:
     wtg_df = wtg_df.copy()
     wtg_df["TurbineName"] = wtg_name
     return wtg_df.set_index(["TurbineName", wtg_df.index])
@@ -126,13 +142,22 @@ def check_wtg_northing(
     plot_cfg: PlotConfig | None,
     sub_dir: str | None = None,
 ) -> float:
-    wtg_wf_df = format_wtg_df_like_wf_df(wtg_df, wtg_name=wtg_name)
-    max_northing_error = calc_max_abs_north_errs(
+    """Calculate the maximum northing error for a single wind turbine.
+
+    :param wtg_df: wind turbine SCADA data
+    :param wtg_name: wind turbine name
+    :param north_ref_wd_col: column name for which the yaw direction was northed
+    :param timebase_s: time series frequency in seconds
+    :param plot_cfg: plot configuration
+    :param sub_dir: subdirectory in which to save plots
+    """
+    wtg_wf_df = _format_wtg_df_like_wf_df(wtg_df, wtg_name=wtg_name)
+    max_northing_error = _calc_max_abs_north_errs(
         wtg_wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s
     ).squeeze()
     if plot_cfg is not None:
         plot_northing_error(
-            wf_df=add_rolling_northing_error(wtg_wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s),
+            wf_df=_add_rolling_northing_error(wtg_wf_df, north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s),
             title_end=f"{wtg_name} vs {north_ref_wd_col}",
             plot_cfg=plot_cfg,
             sub_dir=wtg_name if sub_dir is None else sub_dir,
@@ -140,7 +165,7 @@ def check_wtg_northing(
     return max_northing_error
 
 
-def calc_wf_yawdir_df(
+def _calc_wf_yawdir_df(
     wf_df: pd.DataFrame,
     *,
     best_yaw_dir_col: str,
@@ -173,7 +198,8 @@ def calc_wf_yawdir_df(
 
 
 def add_wf_yawdir(wf_df: pd.DataFrame, *, cfg: WindUpConfig) -> pd.DataFrame:
-    wf_yawdir_df = calc_wf_yawdir_df(
+    """Add the wind farm yaw direction to the SCADA data."""
+    wf_yawdir_df = _calc_wf_yawdir_df(
         wf_df,
         best_yaw_dir_col=calc_northed_col_name(REANALYSIS_WD_COL),
         min_num_turbines=3,

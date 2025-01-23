@@ -1,3 +1,5 @@
+"""Power curve calculations from SCADA data input."""
+
 from __future__ import annotations
 
 import logging
@@ -19,6 +21,14 @@ def calc_pc_and_rated_ws_one_ttype(
     y_col: str,
     x_bin_width: float,
 ) -> tuple[pd.DataFrame, float]:
+    """Calculate power curve and rated wind speed for one turbine type.
+
+    :param df: SCADA time series data for one turbine type
+    :param x_col: column name for wind speed values
+    :param y_col: column name for power values
+    :param x_bin_width: bin width for wind speed values
+    :return: power curve and rated wind speed
+    """
     x_bin_edges = np.arange(0, df[x_col].max() + x_bin_width, x_bin_width)
     pc = df.groupby(by=pd.cut(df[x_col], bins=x_bin_edges, retbins=False), observed=False).agg(
         x_mean=pd.NamedAgg(column=x_col, aggfunc=lambda x: x.mean()),
@@ -58,6 +68,16 @@ def calc_pc_and_rated_ws(
     x_bin_width: float,
     plot_cfg: PlotConfig | None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, float]]:
+    """Calculate power curve and rated wind speed for each turbine type in the configuration.
+
+    :param cfg: wind up configuration
+    :param wf_df: wind farm SCADA time series data
+    :param x_col: column name for wind speed values
+    :param y_col: column name for power values
+    :param x_bin_width: bin width for wind speed values
+    :param plot_cfg: plot configuration
+    :return: power curve and rated wind speed for each turbine
+    """
     pc_per_ttype: dict[str, pd.DataFrame] = {}
     rated_ws_per_ttype: dict[str, float] = {}
     for ttype in cfg.list_unique_turbine_types():

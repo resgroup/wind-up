@@ -1,3 +1,5 @@
+"""Mathematical functions for wind-up calculations."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -7,14 +9,10 @@ import numpy.typing as npt
 def circ_diff(angle1: float | npt.NDArray | list, angle2: float | npt.NDArray | list) -> float | npt.NDArray:
     """Calculate the circular difference between two angles.
 
-    Args:
-        angle1: First angle in degrees.
-        angle2: Second angle in degrees.
-
-    Returns:
-        Circular difference between the two angles in degrees
+    :param angle1: First angle in degrees.
+    :param angle2: Second angle in degrees.
+    :return: Circular difference between the two angles in degrees
     """
-
     # Convert list to numpy array
     if isinstance(angle1, list):
         angle1 = np.array(angle1)

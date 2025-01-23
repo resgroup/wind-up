@@ -170,6 +170,18 @@ def load_smart_scada_and_md_from_file(
     last_datetime_utc_start: pd.Timestamp,
     timebase_s: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load and process SMART SCADA and metadata from file.
+
+    :param asset_name: wind farm name
+    :param scada_df: wind farm scada data
+    :param metadata_df: wind farm metadata
+    :param first_datetime_utc_start:
+        start date of scada data to retrieve (in 'start' format, i.e. left bound for interval)
+    :param last_datetime_utc_start:
+        end date of scada data to retrieve (in 'start' format, i.e. left bound for interval)
+    :param timebase_s: time series frequency in seconds
+    :return: tuple of SCADA data and metadata
+    """
     logger.info(
         f"running load_smart_scada_and_md_from_file for {first_datetime_utc_start} to {last_datetime_utc_start}"
     )

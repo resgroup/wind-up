@@ -1,3 +1,5 @@
+"""Helpers for running wind-up analysis."""
+
 from __future__ import annotations
 
 import logging
@@ -26,11 +28,25 @@ logger = logging.getLogger(__name__)
 
 
 class PrePostSplitter:
+    """Class to split wind farm data into pre- and post-analysis periods."""
+
     def __init__(self, cfg: WindUpConfig, toggle_df: pd.DataFrame | None = None):
+        """Initialise PrePostSplitter."""
         self.cfg = cfg
         self.toggle_df = toggle_df
 
     def split(self, df: pd.DataFrame, test_wtg_name: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Split wind farm data into pre- and post-analysis periods.
+
+        :param df: wind farm SCADA data
+        :param test_wtg_name: wind turbine name
+        :return:
+            tuple of dataframes containing:
+
+                - test-turbine SCADA data
+                - pre-analysis SCADA data
+                - post-analysis SCADA data
+        """
         if (self.cfg.prepost is not None) and self.cfg.toggle is None:
             test_df = df.copy()
             pre_df = df[df.index <= self.cfg.prepost.pre_last_dt_utc_start].copy()
@@ -53,6 +69,14 @@ class PrePostSplitter:
 def add_toggle_signals(
     input_df: pd.DataFrame, toggle_df: pd.DataFrame, wtg_name: str, cfg: WindUpConfig
 ) -> pd.DataFrame:
+    """Add toggle signals to `input_df` based on `toggle_df`.
+
+    :param input_df: wind farm SCADA data
+    :param toggle_df: toggle data
+    :param wtg_name: wind turbine name
+    :param cfg: wind-up configuration
+    :return: `input_df` with toggle signals added
+    """
     toggle_df = toggle_df.copy()
     if cfg.toggle is None:
         msg = "add_toggle_signals cannot be run if cfg.toggle is None"
@@ -109,6 +133,8 @@ def add_toggle_signals(
 
 @dataclass
 class AssessmentInputs:
+    """Container for inputs to the wind-up assessment."""
+
     wf_df: pd.DataFrame
     pc_per_ttype: dict[str, pd.DataFrame]
     cfg: WindUpConfig
@@ -127,6 +153,17 @@ class AssessmentInputs:
         reanalysis_datasets: list[ReanalysisDataset],
         cache_dir: Path | None = None,
     ) -> AssessmentInputs:
+        """Construct instance of AssessmentInputs from configuration objects and data.
+
+        :param cfg: wind-up configuration
+        :param plot_cfg: plot configuration
+        :param scada_df: wind farm SCADA data
+        :param metadata_df: wind farm metadata
+        :param toggle_df: wind farm toggle data
+        :param reanalysis_datasets: reanalysis datasets
+        :param cache_dir: directory for caching
+        :return: instance of AssessmentInputs
+        """
         func = preprocess if cache_dir is None else with_pickle_cache(cache_dir / "preprocess.pickle")(preprocess)
         wf_df, pc_per_ttype = func(
             cfg=cfg,
@@ -146,7 +183,7 @@ class AssessmentInputs:
         )
 
 
-def get_filtered_wf_df_and_cfg_with_latlongs(
+def _get_filtered_wf_df_and_cfg_with_latlongs(
     cfg: WindUpConfig,
     plot_cfg: PlotConfig,
     *,
@@ -194,9 +231,18 @@ def preprocess(
     metadata_df: pd.DataFrame,
     reanalysis_datasets: list[ReanalysisDataset],
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    """Get filtered wind farm data and power curves for a given wind-up configuration.
+
+    :param cfg: wind-up configuration
+    :param plot_cfg: plot configuration
+    :param scada_df: wind farm SCADA data
+    :param metadata_df: wind farm metadata
+    :param reanalysis_datasets: reanalysis datasets
+    :return: wind farm SCADA data (post filtering) and per turbine type power curves
+    """
     logger.info(f"running wind_up analysis for {cfg.assessment_name}")
 
-    wf_df, pc_per_ttype, cfg = get_filtered_wf_df_and_cfg_with_latlongs(
+    wf_df, pc_per_ttype, cfg = _get_filtered_wf_df_and_cfg_with_latlongs(
         cfg=cfg,
         plot_cfg=plot_cfg,
         scada_df=scada_df,
