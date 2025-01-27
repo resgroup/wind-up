@@ -1,3 +1,5 @@
+"""Constants used in the wind-up package."""
+
 from pathlib import Path
 
 PROJECTROOT_DIR = Path(__file__).parents[1]
@@ -14,6 +16,8 @@ SCATTER_MARKERSCALE = 4
 
 
 class DataColumns:
+    """Enum-like class for column names in the data files."""
+
     turbine_name = "TurbineName"
     active_power_mean = "ActivePowerMean"
     active_power_sd = "ActivePowerSD"
@@ -29,6 +33,7 @@ class DataColumns:
 
     @classmethod
     def all(cls: type["DataColumns"]) -> list[str]:
+        """Return values of all class attributes that are not private."""
         return [v for k, v in vars(cls).items() if not k.startswith("_") and k != "all"]
 
 

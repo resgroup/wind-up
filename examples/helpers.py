@@ -1,3 +1,5 @@
+"""Helper functions for the examples."""
+
 from __future__ import annotations
 
 import logging
@@ -19,6 +21,7 @@ BYTES_IN_MB = 1024 * 1024
 
 
 def setup_logger(log_fpath: Path, level: int = logging.INFO) -> None:
+    """Initializes the logger with a file handler and a console handler."""
     log_formatter_file = logging.Formatter("%(asctime)s [%(levelname)-8s]  %(message)s")
     root_logger = logging.getLogger()
     root_logger.setLevel(level)

@@ -7,7 +7,7 @@ import pandas as pd
 import seaborn as sns
 from matplotlib import pyplot as plt
 
-from wind_up.math_funcs import circ_diff
+from wind_up.circular_math import circ_diff
 
 if TYPE_CHECKING:
     from wind_up.models import PlotConfig

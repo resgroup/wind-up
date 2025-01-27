@@ -7,18 +7,18 @@ from pandas.testing import assert_frame_equal
 from wind_up.constants import TIMESTAMP_COL
 from wind_up.models import WindUpConfig
 from wind_up.scada_funcs import (
-    add_pw_clipped,
-    filter_bad_pw_ws,
-    filter_downtime,
-    filter_exclusions,
-    filter_missing_rpm_or_pt,
-    filter_rpm_and_pt,
-    filter_rpm_and_pt_oor_one_ttype,
-    filter_stuck_data,
-    filter_wrong_yaw,
-    filter_yaw_exclusions,
-    scada_multi_index,
-    wrap_yaw_and_pitch,
+    _add_pw_clipped,
+    _filter_bad_pw_ws,
+    _filter_downtime,
+    _filter_exclusions,
+    _filter_missing_rpm_or_pt,
+    _filter_rpm_and_pt,
+    _filter_rpm_and_pt_oor_one_ttype,
+    _filter_stuck_data,
+    _filter_wrong_yaw,
+    _filter_yaw_exclusions,
+    _scada_multi_index,
+    _wrap_yaw_and_pitch,
 )
 
 
@@ -45,7 +45,7 @@ def test_filter_stuck_data() -> None:
     expected.iloc[-2, :] = np.nan
 
     # Run the function
-    actual = filter_stuck_data(input_df)
+    actual = _filter_stuck_data(input_df)
 
     # Check the output is as expected
     assert_frame_equal(actual, expected)
@@ -64,7 +64,7 @@ def test_filter_bad_pw_ws() -> None:
         },
         index=idx,
     )
-    adf = filter_bad_pw_ws(adf, max_rated_power=2000)
+    adf = _filter_bad_pw_ws(adf, max_rated_power=2000)
     edf = pd.DataFrame(
         data={
             "ActivePowerMean": [np.nan, np.nan, np.nan, np.nan, 4000, np.nan, -1000, np.nan, np.nan],
@@ -89,7 +89,7 @@ def test_wrap_yaw_and_pitch() -> None:
         },
         index=idx,
     )
-    adf = wrap_yaw_and_pitch(adf)
+    adf = _wrap_yaw_and_pitch(adf)
     edf = pd.DataFrame(
         data={
             "YawAngleMean": [179, 180, 181, 359, 0, 1, 359, 0, 1],
@@ -113,7 +113,7 @@ def test_filter_wrong_yaw() -> None:
         },
         index=idx,
     )
-    adf = filter_wrong_yaw(adf)
+    adf = _filter_wrong_yaw(adf)
     edf = pd.DataFrame(
         data={
             "YawAngleMean": [180, 180, 180, np.nan, np.nan, np.nan, np.nan, 180, 180],
@@ -141,7 +141,7 @@ def test_filter_exclusions() -> None:
         ("MRG_T02", pd.Timestamp("2021-01-01 00:29:00", tz="UTC"), pd.Timestamp("2021-01-01 00:31:00", tz="UTC")),
         ("ALL", pd.Timestamp("2021-01-01 00:30:00", tz="UTC"), pd.Timestamp("2022-02-02 00:00:00", tz="UTC")),
     ]
-    adf = filter_exclusions(adf.copy(), exclusion_periods_utc)
+    adf = _filter_exclusions(adf.copy(), exclusion_periods_utc)
     expected_values = [
         np.nan,
         np.nan,
@@ -188,7 +188,7 @@ def test_filter_yaw_exclusions() -> None:
         ("MRG_T02", pd.Timestamp("2021-01-01 00:29:00", tz="UTC"), pd.Timestamp("2021-01-01 00:31:00", tz="UTC")),
         ("ALL", pd.Timestamp("2021-01-01 00:30:00", tz="UTC"), pd.Timestamp("2022-02-02 00:00:00", tz="UTC")),
     ]
-    adf = filter_yaw_exclusions(adf.copy(), yaw_data_exclusions_utc)
+    adf = _filter_yaw_exclusions(adf.copy(), yaw_data_exclusions_utc)
     edf = pd.DataFrame(
         data={
             "ActivePowerMean": [1.0] * len(idx),
@@ -230,7 +230,7 @@ def test_filter_downtime() -> None:
         },
         index=idx,
     )
-    adf = filter_downtime(adf)
+    adf = _filter_downtime(adf)
     edf = pd.DataFrame(
         data={
             "ShutdownDuration": [np.nan, np.nan, 0, np.nan],
@@ -255,7 +255,7 @@ def test_filter_missing_rpm_or_pt() -> None:
         },
         index=idx,
     )
-    adf = filter_missing_rpm_or_pt(adf)
+    adf = _filter_missing_rpm_or_pt(adf)
     edf = pd.DataFrame(
         data={
             "GenRpmMean": [np.nan, np.nan, np.nan, -1],
@@ -281,7 +281,7 @@ def test_filter_rpm_and_pt_oor_one_ttype() -> None:
         },
         index=idx,
     )
-    adf, na_rows = filter_rpm_and_pt_oor_one_ttype(adf, rpm_lower=800, rpm_upper=1600, pt_lower=-10, pt_upper=40)
+    adf, na_rows = _filter_rpm_and_pt_oor_one_ttype(adf, rpm_lower=800, rpm_upper=1600, pt_lower=-10, pt_upper=40)
     edf = pd.DataFrame(
         data={
             "GenRpmMean": [np.nan, 800, 1600, np.nan, np.nan, 1000, 1000, np.nan],
@@ -308,7 +308,7 @@ def test_add_pw_clipped(test_marge_config: WindUpConfig) -> None:
     cfg = test_marge_config
     cfg.asset.wtgs[2].turbine_type.rated_power_kw = 100
     cfg.asset.wtgs = cfg.asset.wtgs[:3]
-    adf = add_pw_clipped(adf, wtgs=cfg.asset.wtgs)
+    adf = _add_pw_clipped(adf, wtgs=cfg.asset.wtgs)
     edf = pd.DataFrame(
         data={
             "ActivePowerMean": [-1, 0, 1901, -1, np.nan, 1900, -1, 1900, 1901],
@@ -324,9 +324,9 @@ def test_filter_rpm_and_pt(test_marge_config: WindUpConfig) -> None:
     adf = pd.read_parquet(
         Path(__file__).parents[0] / "test_data/smart_data/Marge Wind Farm/Marge Wind Farm_20230101_20230103.parquet"
     )
-    adf = scada_multi_index(adf)
-    adf = add_pw_clipped(adf, wtgs=cfg.asset.wtgs)
-    df_ = filter_rpm_and_pt(
+    adf = _scada_multi_index(adf)
+    adf = _add_pw_clipped(adf, wtgs=cfg.asset.wtgs)
+    df_ = _filter_rpm_and_pt(
         input_df=adf,
         cfg=cfg,
         plot_cfg=None,

@@ -208,8 +208,7 @@ def create_fake_wedowind_reanalysis_dataset(start_datetime: dt.datetime) -> Rean
 
 
 def establish_wedowind_key_dates(scada_df: pd.DataFrame) -> KeyDates:
-    """
-    Extracts important dates from the SCADA data. These dates may then be used in the WindUpConfig.
+    """Extracts important dates from the SCADA data. These dates may then be used in the WindUpConfig.
 
     Args:
         scada_df:
@@ -258,8 +257,7 @@ def establish_wedowind_key_dates(scada_df: pd.DataFrame) -> KeyDates:
 def generate_custom_exploratory_plots(
     scada_df: pd.DataFrame, assumed_rated_power_kw: float, rotor_diameter_m: int, out_dir: Path
 ) -> Path:
-    """
-    These custom plots are to help with SCADA data exploration.
+    """These custom plots are to help with SCADA data exploration.
     It was created because it was unclear how the SCADA data is related to the metadata so helped in looking for wakes
     in the data.
 

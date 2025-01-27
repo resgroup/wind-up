@@ -1,3 +1,5 @@
+"""Functions for filtering SCADA data."""
+
 from __future__ import annotations
 
 import datetime as dt
@@ -9,8 +11,8 @@ import numpy as np
 import pandas as pd
 
 from wind_up.backporting import strict_zip
+from wind_up.circular_math import circ_diff
 from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, RAW_YAWDIR_COL, DataColumns
-from wind_up.math_funcs import circ_diff
 from wind_up.plots.scada_funcs_plots import (
     plot_data_coverage_heatmap,
     plot_filter_rpm_and_pt_curve_one_ttype_or_wtg,
@@ -27,14 +29,7 @@ logger = logging.getLogger(__name__)
 ExclusionPeriodsType = list[tuple[str, dt.datetime, dt.datetime]]
 
 
-def filter_stuck_data(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Filter out rows where all columns (except timestamp columns) are the same as the previous row
-    (only where the wind is greater than a low wind threshold).
-
-    :param df: time series where the index is a MultiIndex with levels "TurbineName" and "<your timestamp index name>"
-    :return: dataframe with stuck data rows set to NA
-    """
+def _filter_stuck_data(df: pd.DataFrame) -> pd.DataFrame:
     timestamp_columns = [col for col, data_type in df.dtypes.to_dict().items() if "date" in data_type.name]
     diffdf = df.drop(columns=timestamp_columns).groupby("TurbineName", observed=False).ffill().fillna(0).diff()
     stuck_data = (diffdf == 0).all(axis=1)
@@ -46,7 +41,7 @@ def filter_stuck_data(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def filter_bad_pw_ws(df: pd.DataFrame, max_rated_power: float) -> pd.DataFrame:
+def _filter_bad_pw_ws(df: pd.DataFrame, max_rated_power: float) -> pd.DataFrame:
     na_rows_before = df["ActivePowerMean"].isna().sum()
     df.loc[df[["ActivePowerMean", "WindSpeedMean"]].isna().any(axis=1), :] = pd.NA
     df.loc[(df["ActivePowerMean"] < -0.5 * max_rated_power), :] = pd.NA
@@ -60,7 +55,7 @@ def filter_bad_pw_ws(df: pd.DataFrame, max_rated_power: float) -> pd.DataFrame:
     return df
 
 
-def wrap_yaw_and_pitch(df: pd.DataFrame) -> pd.DataFrame:
+def _wrap_yaw_and_pitch(df: pd.DataFrame) -> pd.DataFrame:
     yaw_lt0 = (df["YawAngleMean"] < 0).sum()
     yaw_ge360 = (df["YawAngleMean"] >= 360).sum()  # noqa PLR2004
     if yaw_lt0 > 0 or yaw_ge360 > 0:
@@ -86,7 +81,7 @@ def wrap_yaw_and_pitch(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def filter_wrong_yaw(df: pd.DataFrame) -> pd.DataFrame:
+def _filter_wrong_yaw(df: pd.DataFrame) -> pd.DataFrame:
     if "YawAngleMin" in df.columns and "YawAngleMax" in df.columns:
         min_wrong = (df["YawAngleMin"] > df["YawAngleMean"]) | (df["YawAngleMin"] > df["YawAngleMax"])
         max_wrong = (df["YawAngleMax"] < df["YawAngleMean"]) | (df["YawAngleMax"] < df["YawAngleMin"])
@@ -118,7 +113,7 @@ def filter_wrong_yaw(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def add_pw_clipped(df: pd.DataFrame, wtgs: list[Turbine]) -> pd.DataFrame:
+def _add_pw_clipped(df: pd.DataFrame, wtgs: list[Turbine]) -> pd.DataFrame:
     df["pw_clipped"] = df["ActivePowerMean"].clip(lower=0)
     for i, rp in strict_zip(
         [x.name for x in wtgs],
@@ -128,7 +123,7 @@ def add_pw_clipped(df: pd.DataFrame, wtgs: list[Turbine]) -> pd.DataFrame:
     return df
 
 
-def filter_exclusions(
+def _filter_exclusions(
     input_df: pd.DataFrame,
     exclusion_periods_utc: ExclusionPeriodsType,
 ) -> pd.DataFrame:
@@ -170,7 +165,7 @@ def filter_exclusions(
     return input_df
 
 
-def filter_yaw_exclusions(
+def _filter_yaw_exclusions(
     input_df: pd.DataFrame,
     yaw_data_exclusions_utc: ExclusionPeriodsType,
 ) -> pd.DataFrame:
@@ -210,14 +205,14 @@ def filter_yaw_exclusions(
     return input_df
 
 
-def filter_cfg_exclusions(
+def _filter_cfg_exclusions(
     input_df: pd.DataFrame, exclusion_periods_utc: ExclusionPeriodsType, yaw_data_exclusions_utc: ExclusionPeriodsType
 ) -> pd.DataFrame:
-    input_df = filter_exclusions(input_df=input_df, exclusion_periods_utc=exclusion_periods_utc)
-    return filter_yaw_exclusions(input_df=input_df, yaw_data_exclusions_utc=yaw_data_exclusions_utc)
+    input_df = _filter_exclusions(input_df=input_df, exclusion_periods_utc=exclusion_periods_utc)
+    return _filter_yaw_exclusions(input_df=input_df, yaw_data_exclusions_utc=yaw_data_exclusions_utc)
 
 
-def filter_downtime(df: pd.DataFrame) -> pd.DataFrame:
+def _filter_downtime(df: pd.DataFrame) -> pd.DataFrame:
     pw_na_before = df["ActivePowerMean"].isna().sum()
     fully_available = df["ShutdownDuration"] == 0
     df.loc[~fully_available, :] = pd.NA
@@ -226,7 +221,7 @@ def filter_downtime(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def filter_rpm_and_pt_oor_one_ttype(
+def _filter_rpm_and_pt_oor_one_ttype(
     df: pd.DataFrame,
     rpm_lower: float,
     rpm_upper: float,
@@ -243,7 +238,7 @@ def filter_rpm_and_pt_oor_one_ttype(
     return df, na_rows
 
 
-def filter_rpm_or_pt_curve(
+def _filter_rpm_or_pt_curve(
     df: pd.DataFrame,
     *,
     x_col: str,
@@ -281,7 +276,7 @@ def filter_rpm_or_pt_curve(
     return df, filter_curve
 
 
-def filter_rpm_and_pt_curve_one_ttype(
+def _filter_rpm_and_pt_curve_one_ttype(
     df: pd.DataFrame,
     *,
     ttype: str,
@@ -314,7 +309,7 @@ def filter_rpm_and_pt_curve_one_ttype(
 
     for _x in range(2):
         # the below filter steps are performed twice in case there is interaction between the filters
-        df, pt_v_pw_curve = filter_rpm_or_pt_curve(
+        df, pt_v_pw_curve = _filter_rpm_or_pt_curve(
             df=df,
             x_col="pw_clipped",
             y_col="PitchAngleMean",
@@ -325,7 +320,7 @@ def filter_rpm_and_pt_curve_one_ttype(
             filter_last_bin=False,
         )
 
-        df, pt_v_ws_curve = filter_rpm_or_pt_curve(
+        df, pt_v_ws_curve = _filter_rpm_or_pt_curve(
             df=df,
             x_col="WindSpeedMean",
             y_col="PitchAngleMean",
@@ -335,7 +330,7 @@ def filter_rpm_and_pt_curve_one_ttype(
             y_margin=pt_margin_ws,
         )
 
-        df, rpm_v_pw_curve = filter_rpm_or_pt_curve(
+        df, rpm_v_pw_curve = _filter_rpm_or_pt_curve(
             df=df,
             x_col="pw_clipped",
             y_col="GenRpmMean",
@@ -345,7 +340,7 @@ def filter_rpm_and_pt_curve_one_ttype(
             y_margin=rpm_margin_pw,
         )
 
-        df, rpm_v_ws_curve = filter_rpm_or_pt_curve(
+        df, rpm_v_ws_curve = _filter_rpm_or_pt_curve(
             df=df,
             x_col="WindSpeedMean",
             y_col="GenRpmMean",
@@ -382,7 +377,7 @@ def filter_rpm_and_pt_curve_one_ttype(
     return df, na_rows
 
 
-def filter_missing_rpm_or_pt(df: pd.DataFrame) -> pd.DataFrame:
+def _filter_missing_rpm_or_pt(df: pd.DataFrame) -> pd.DataFrame:
     pw_na_before = df["ActivePowerMean"].isna().sum()
     df.loc[df[["PitchAngleMean", "GenRpmMean"]].isna().any(axis=1), :] = pd.NA
     pw_na_after = df["ActivePowerMean"].isna().sum()
@@ -395,10 +390,10 @@ def filter_missing_rpm_or_pt(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def filter_rpm_and_pt(input_df: pd.DataFrame, cfg: WindUpConfig, plot_cfg: PlotConfig | None) -> pd.DataFrame:
+def _filter_rpm_and_pt(input_df: pd.DataFrame, cfg: WindUpConfig, plot_cfg: PlotConfig | None) -> pd.DataFrame:
     df_idx_before = input_df.index.copy()
 
-    input_df = filter_missing_rpm_or_pt(df=input_df)
+    input_df = _filter_missing_rpm_or_pt(df=input_df)
 
     # filter out of range pitch and rpm by turbine type
     df_prefilt = input_df.copy()
@@ -409,7 +404,7 @@ def filter_rpm_and_pt(input_df: pd.DataFrame, cfg: WindUpConfig, plot_cfg: PlotC
         df_ttype = df_prefilt.loc[wtgs]
         rpm_lower, rpm_upper = cfg.get_normal_operation_genrpm_range(ttype=ttype)
         pt_lower, pt_upper = cfg.get_normal_operation_pitch_range(ttype=ttype)
-        df_, na_rows_ = filter_rpm_and_pt_oor_one_ttype(
+        df_, na_rows_ = _filter_rpm_and_pt_oor_one_ttype(
             df=df_ttype,
             rpm_lower=rpm_lower,
             rpm_upper=rpm_upper,
@@ -433,7 +428,7 @@ def filter_rpm_and_pt(input_df: pd.DataFrame, cfg: WindUpConfig, plot_cfg: PlotC
     for ttype in cfg.list_unique_turbine_types():
         wtgs = cfg.list_turbine_ids_of_type(ttype)
         df_ttype = df_prefilt.loc[wtgs]
-        df_, na_rows_ = filter_rpm_and_pt_curve_one_ttype(
+        df_, na_rows_ = _filter_rpm_and_pt_curve_one_ttype(
             df=df_ttype,
             ttype=ttype.turbine_type,
             pitch_to_stall=ttype.pitch_to_stall,
@@ -458,11 +453,12 @@ def filter_rpm_and_pt(input_df: pd.DataFrame, cfg: WindUpConfig, plot_cfg: PlotC
     return filt_df
 
 
-def scada_multi_index(df: pd.DataFrame) -> pd.DataFrame:
+def _scada_multi_index(df: pd.DataFrame) -> pd.DataFrame:
     return df.set_index("TurbineName", append=True).swaplevel(axis=0).sort_index()
 
 
 def filter_scada_df(raw_df: pd.DataFrame, cfg: WindUpConfig, plot_cfg: PlotConfig) -> pd.DataFrame:
+    """Filter SCADA data."""
     ref_col = DataColumns.active_power_mean
     logger.info(
         f"{raw_df[ref_col].isna().sum()} rows "
@@ -470,19 +466,19 @@ def filter_scada_df(raw_df: pd.DataFrame, cfg: WindUpConfig, plot_cfg: PlotConfi
         "of power data is missing before filtering",
     )
     filt_df = raw_df.copy()
-    filt_df = filter_stuck_data(df=filt_df)
-    filt_df = filter_bad_pw_ws(df=filt_df, max_rated_power=cfg.get_max_rated_power())
-    filt_df = wrap_yaw_and_pitch(df=filt_df)
-    filt_df = filter_wrong_yaw(df=filt_df)
-    filt_df = filter_cfg_exclusions(
+    filt_df = _filter_stuck_data(df=filt_df)
+    filt_df = _filter_bad_pw_ws(df=filt_df, max_rated_power=cfg.get_max_rated_power())
+    filt_df = _wrap_yaw_and_pitch(df=filt_df)
+    filt_df = _filter_wrong_yaw(df=filt_df)
+    filt_df = _filter_cfg_exclusions(
         input_df=filt_df,
         exclusion_periods_utc=cfg.exclusion_periods_utc,
         yaw_data_exclusions_utc=cfg.yaw_data_exclusions_utc,
     )
-    filt_df = filter_downtime(df=filt_df)
+    filt_df = _filter_downtime(df=filt_df)
     plot_ops_curves_per_ttype(cfg=cfg, df=filt_df, title_end="downtime filter", plot_cfg=plot_cfg)
-    filt_df = add_pw_clipped(df=filt_df, wtgs=cfg.asset.wtgs)
-    filt_df = filter_rpm_and_pt(input_df=filt_df, cfg=cfg, plot_cfg=plot_cfg)
+    filt_df = _add_pw_clipped(df=filt_df, wtgs=cfg.asset.wtgs)
+    filt_df = _filter_rpm_and_pt(input_df=filt_df, cfg=cfg, plot_cfg=plot_cfg)
     plot_data_coverage_heatmap(
         df=filt_df,
         plot_title=f"{cfg.asset.name} data coverage after filtering",
@@ -511,6 +507,16 @@ def get_raw_scada_and_cfg_from_file(
     last_datetime_utc_start: pd.Timestamp,
     plot_cfg: PlotConfig | None,
 ) -> tuple[pd.DataFrame, WindUpConfig]:
+    """Load SMART SCADA and add lat/long to config.
+
+    :param cfg: WindUpConfig
+    :param scada_df: SCADA data
+    :param metadata_df: metadata
+    :param first_datetime_utc_start: start datetime (left bound of interval)
+    :param last_datetime_utc_start: end datetime (left bound of interval)
+    :param plot_cfg: PlotConfig
+    :return: SCADA data and windup config
+    """
     scada_raw, md = load_smart_scada_and_md_from_file(
         asset_name=cfg.asset.name,
         scada_df=scada_df,
@@ -522,7 +528,7 @@ def get_raw_scada_and_cfg_from_file(
     cfg = add_smart_lat_long_to_cfg(md=md, cfg=cfg)
     if plot_cfg is not None:
         print_and_plot_capacity_factor(scada_df=scada_raw, cfg=cfg, plots_cfg=plot_cfg)
-    scada_mi_df = scada_multi_index(scada_raw)
+    scada_mi_df = _scada_multi_index(scada_raw)
     del scada_raw
     if plot_cfg is not None:
         plot_ops_curves_per_ttype(cfg=cfg, df=scada_mi_df, title_end="before filtering", plot_cfg=plot_cfg)

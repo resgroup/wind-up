@@ -1,3 +1,5 @@
+"""Optimize northing corrections."""
+
 from __future__ import annotations
 
 import logging
@@ -8,6 +10,7 @@ import pandas as pd
 import ruptures as rpt
 
 from wind_up.backporting import strict_zip
+from wind_up.circular_math import circ_diff
 from wind_up.constants import (
     RAW_POWER_COL,
     RAW_YAWDIR_COL,
@@ -15,7 +18,6 @@ from wind_up.constants import (
     TIMESTAMP_COL,
     WINDFARM_YAWDIR_COL,
 )
-from wind_up.math_funcs import circ_diff
 from wind_up.northing import (
     add_wf_yawdir,
     apply_northing_corrections,
@@ -41,11 +43,11 @@ logger = logging.getLogger(__name__)
 DECAY_FRACTION = 0.4
 
 
-def northing_score_changepoint_component(changepoint_count: int) -> float:
+def _northing_score_changepoint_component(changepoint_count: int) -> float:
     return float(changepoint_count)
 
 
-def northing_score(
+def _northing_score(
     wtg_df: pd.DataFrame, *, north_ref_wd_col: str, changepoint_count: int, rated_power: float, timebase_s: int
 ) -> float:
     # this component penalizes long-ish, large north errors
@@ -63,12 +65,12 @@ def northing_score(
     ).abs().mean() / max_weight
 
     # this component encourages the correction list to be as short as possible
-    changepoint_component = northing_score_changepoint_component(changepoint_count)
+    changepoint_component = _northing_score_changepoint_component(changepoint_count)
 
     return max_component + median_component + raw_wmean_component + changepoint_component
 
 
-def add_northing_ok_and_diff_cols(wtg_df: pd.DataFrame, *, north_ref_wd_col: str, northed_col: str) -> pd.DataFrame:
+def _add_northing_ok_and_diff_cols(wtg_df: pd.DataFrame, *, north_ref_wd_col: str, northed_col: str) -> pd.DataFrame:
     wtg_df = wtg_df.copy()
 
     wtg_df[f"yaw_diff_to_{north_ref_wd_col}"] = circ_diff(wtg_df[northed_col], wtg_df[north_ref_wd_col])
@@ -77,7 +79,7 @@ def add_northing_ok_and_diff_cols(wtg_df: pd.DataFrame, *, north_ref_wd_col: str
     return wtg_df
 
 
-def add_northed_ok_diff_and_rolling_cols(
+def _add_northed_ok_diff_and_rolling_cols(
     wtg_df: pd.DataFrame,
     *,
     north_ref_wd_col: str,
@@ -98,7 +100,7 @@ def add_northed_ok_diff_and_rolling_cols(
             wtg_df.loc[wtg_df.index >= ts, northed_col] = wtg_df.loc[wtg_df.index >= ts, RAW_YAWDIR_COL] + no
         wtg_df[northed_col] = wtg_df[northed_col] % 360
 
-    wtg_df = add_northing_ok_and_diff_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, northed_col=northed_col)
+    wtg_df = _add_northing_ok_and_diff_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, northed_col=northed_col)
     rolling_hours = 6
     rows_per_hour = 3600 / timebase_s
     wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"] = (
@@ -123,11 +125,11 @@ def add_northed_ok_diff_and_rolling_cols(
     return wtg_df
 
 
-def calc_good_north_offset(section_df: pd.DataFrame, north_ref_wd_col: str) -> float:
+def _calc_good_north_offset(section_df: pd.DataFrame, north_ref_wd_col: str) -> float:
     return -section_df[f"filt_diff_to_{north_ref_wd_col}"].median()
 
 
-def calc_north_offset_col(
+def _calc_north_offset_col(
     wtg_north_table: pd.DataFrame,
     *,
     wtg_df: pd.DataFrame,
@@ -135,7 +137,7 @@ def calc_north_offset_col(
     timebase_s: int,
 ) -> pd.DataFrame:
     wtg_df = wtg_df.copy()
-    wtg_df = add_northing_ok_and_diff_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, northed_col=RAW_YAWDIR_COL)
+    wtg_df = _add_northing_ok_and_diff_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, northed_col=RAW_YAWDIR_COL)
 
     wtg_north_table = wtg_north_table.copy()
     wtg_north_table = wtg_north_table.sort_values(by=[TIMESTAMP_COL], ascending=True)
@@ -145,7 +147,7 @@ def calc_north_offset_col(
         wtg_north_table.loc[
             wtg_north_table[TIMESTAMP_COL] == start_dt,
             "north_offset",
-        ] = calc_good_north_offset(
+        ] = _calc_good_north_offset(
             section_df,
             north_ref_wd_col=north_ref_wd_col,
         )
@@ -153,7 +155,7 @@ def calc_north_offset_col(
     return wtg_north_table
 
 
-def north_table_is_valid(
+def _north_table_is_valid(
     wtg_north_table: pd.DataFrame,
     *,
     wtg_df: pd.DataFrame,
@@ -180,7 +182,7 @@ def north_table_is_valid(
     return is_valid
 
 
-def score_wtg_north_table(
+def _score_wtg_north_table(
     *,
     wtg_north_table: pd.DataFrame,
     wtg_df: pd.DataFrame,
@@ -190,7 +192,7 @@ def score_wtg_north_table(
     timebase_s: int,
 ) -> tuple[pd.DataFrame, float, pd.DataFrame]:
     if improve_north_offset_col:
-        output_north_table = calc_north_offset_col(
+        output_north_table = _calc_north_offset_col(
             wtg_north_table,
             wtg_df=wtg_df,
             north_ref_wd_col=north_ref_wd_col,
@@ -198,14 +200,14 @@ def score_wtg_north_table(
         )
     else:
         output_north_table = wtg_north_table.copy()
-    output_wtg_df = add_northed_ok_diff_and_rolling_cols(
+    output_wtg_df = _add_northed_ok_diff_and_rolling_cols(
         wtg_df.copy(),
         north_ref_wd_col=north_ref_wd_col,
         north_offset_df=output_north_table,
         timebase_s=timebase_s,
     )
 
-    score = northing_score(
+    score = _northing_score(
         output_wtg_df,
         north_ref_wd_col=north_ref_wd_col,
         changepoint_count=len(output_north_table),
@@ -216,16 +218,16 @@ def score_wtg_north_table(
     return output_north_table, score, output_wtg_df
 
 
-def calc_max_changepoints_to_add(changepoint_count: int, *, score: float) -> int:
+def _calc_max_changepoints_to_add(changepoint_count: int, *, score: float) -> int:
     max_changepoints_to_add = 0
-    headroom = score - northing_score_changepoint_component(changepoint_count + 1)
+    headroom = score - _northing_score_changepoint_component(changepoint_count + 1)
     while headroom > 0:
         max_changepoints_to_add += 1
-        headroom = score - northing_score_changepoint_component(max_changepoints_to_add + 1)
+        headroom = score - _northing_score_changepoint_component(max_changepoints_to_add + 1)
     return max_changepoints_to_add
 
 
-def list_possible_moves(
+def _list_possible_moves(
     prev_best_north_table: pd.DataFrame,
     *,
     do_changepoint_moves: bool,
@@ -240,7 +242,7 @@ def list_possible_moves(
     return moves
 
 
-def get_changepoint_objects(
+def _get_changepoint_objects(
     *,
     prev_best_wtg_df: pd.DataFrame,
     north_ref_wd_col: str,
@@ -254,7 +256,7 @@ def get_changepoint_objects(
     return algo, timestamps
 
 
-def make_move(
+def _make_move(
     move: str,
     *,
     prev_best_north_table: pd.DataFrame,
@@ -290,7 +292,7 @@ def make_move(
     return this_north_table
 
 
-def make_move_and_score_wtg_north_table(
+def _make_move_and_score_wtg_north_table(
     move: str,
     *,
     prev_best_north_table: pd.DataFrame,
@@ -303,7 +305,7 @@ def make_move_and_score_wtg_north_table(
     algo: rpt.base.BaseEstimator,
     timestamps: np.ndarray,
 ) -> tuple[pd.DataFrame, float, pd.DataFrame]:
-    this_north_table = make_move(
+    this_north_table = _make_move(
         move,
         prev_best_north_table=prev_best_north_table,
         shift_step_size=shift_step_size,
@@ -312,7 +314,7 @@ def make_move_and_score_wtg_north_table(
         timestamps=timestamps,
         timebase_s=timebase_s,
     )
-    if north_table_is_valid(this_north_table, wtg_df=wtg_df):
+    if _north_table_is_valid(this_north_table, wtg_df=wtg_df):
         min_step_size_for_run_optimize = 100
         run_optimize_north_offset = (
             (len(this_north_table) > len(prev_best_north_table))
@@ -322,7 +324,7 @@ def make_move_and_score_wtg_north_table(
     else:
         this_north_table = prev_best_north_table
         run_optimize_north_offset = False
-    this_north_table, this_score, this_wtg_df = score_wtg_north_table(
+    this_north_table, this_score, this_wtg_df = _score_wtg_north_table(
         wtg_north_table=this_north_table,
         wtg_df=wtg_df,
         improve_north_offset_col=run_optimize_north_offset,
@@ -333,7 +335,7 @@ def make_move_and_score_wtg_north_table(
     return this_north_table, this_score, this_wtg_df
 
 
-def clip_wtg_north_table(initial_wtg_north_table: pd.DataFrame, *, wtg_df: pd.DataFrame) -> pd.DataFrame:
+def _clip_wtg_north_table(initial_wtg_north_table: pd.DataFrame, *, wtg_df: pd.DataFrame) -> pd.DataFrame:
     clipped_wtg_north_table = initial_wtg_north_table.copy()
 
     if clipped_wtg_north_table[TIMESTAMP_COL].min() < wtg_df.index.min():
@@ -356,7 +358,7 @@ def clip_wtg_north_table(initial_wtg_north_table: pd.DataFrame, *, wtg_df: pd.Da
     return clipped_wtg_north_table
 
 
-def prep_for_optimize_wtg_north_table(
+def _prep_for_optimize_wtg_north_table(
     wtg_df: pd.DataFrame,
     *,
     wtg_name: str,
@@ -374,11 +376,11 @@ def prep_for_optimize_wtg_north_table(
         rated_power=rated_power,
         timebase_s=timebase_s,
     )
-    wtg_df = add_northed_ok_diff_and_rolling_cols(
+    wtg_df = _add_northed_ok_diff_and_rolling_cols(
         wtg_df, north_ref_wd_col=north_ref_wd_col, timebase_s=timebase_s, north_offset=0
     )
 
-    initial_score = northing_score(
+    initial_score = _northing_score(
         wtg_df,
         north_ref_wd_col=north_ref_wd_col,
         changepoint_count=0,
@@ -396,24 +398,24 @@ def prep_for_optimize_wtg_north_table(
             index=[0],
         )
     else:
-        initial_wtg_north_table = clip_wtg_north_table(
+        initial_wtg_north_table = _clip_wtg_north_table(
             initial_wtg_north_table,
             wtg_df=wtg_df,
         )
 
-        if not north_table_is_valid(initial_wtg_north_table, wtg_df=wtg_df, check_north_offset=True):
+        if not _north_table_is_valid(initial_wtg_north_table, wtg_df=wtg_df, check_north_offset=True):
             msg = "initial_wtg_north_table is not valid"
             raise ValueError(msg)
         wtg_north_table = initial_wtg_north_table.copy()
 
-    if not north_table_is_valid(wtg_north_table, wtg_df=wtg_df, check_north_offset=True):
+    if not _north_table_is_valid(wtg_north_table, wtg_df=wtg_df, check_north_offset=True):
         msg = "wtg_north_table is not valid"
         raise RuntimeError(msg)
 
     return wtg_df, wtg_north_table
 
 
-def optimize_wtg_north_table(
+def _optimize_wtg_north_table(
     *,
     wtg_df: pd.DataFrame,
     wtg_name: str,
@@ -426,7 +428,7 @@ def optimize_wtg_north_table(
 ) -> tuple[pd.DataFrame, pd.DataFrame, float, float]:
     wtg_df = wtg_df.copy()
 
-    wtg_df, wtg_north_table = prep_for_optimize_wtg_north_table(
+    wtg_df, wtg_north_table = _prep_for_optimize_wtg_north_table(
         wtg_df,
         wtg_name=wtg_name,
         north_ref_wd_col=north_ref_wd_col,
@@ -437,7 +439,7 @@ def optimize_wtg_north_table(
     )
 
     loop_count = 0
-    best_north_table, initial_score, best_wtg_df = score_wtg_north_table(
+    best_north_table, initial_score, best_wtg_df = _score_wtg_north_table(
         wtg_north_table=wtg_north_table,
         wtg_df=wtg_df,
         improve_north_offset_col=True,
@@ -458,7 +460,7 @@ def optimize_wtg_north_table(
         )
 
     done_optimizing = False
-    max_changepoints_to_add = min(5, calc_max_changepoints_to_add(len(best_north_table), score=best_score))
+    max_changepoints_to_add = min(5, _calc_max_changepoints_to_add(len(best_north_table), score=best_score))
     initial_step_size: int = 100
     shift_step_size: int = initial_step_size
     tries_left: int = 1
@@ -469,19 +471,19 @@ def optimize_wtg_north_table(
         prev_best_wtg_df = best_wtg_df.copy()
 
         do_changepoint_moves = max_changepoints_to_add > 0
-        moves = list_possible_moves(
+        moves = _list_possible_moves(
             prev_best_north_table,
             do_changepoint_moves=do_changepoint_moves,
             max_changepoints_to_add=max_changepoints_to_add,
         )
         if do_changepoint_moves:
-            algo, timestamps = get_changepoint_objects(
+            algo, timestamps = _get_changepoint_objects(
                 prev_best_wtg_df=prev_best_wtg_df,
                 north_ref_wd_col=north_ref_wd_col,
             )
 
         for move in moves:
-            this_north_table, this_score, this_wtg_df = make_move_and_score_wtg_north_table(
+            this_north_table, this_score, this_wtg_df = _make_move_and_score_wtg_north_table(
                 move,
                 prev_best_north_table=prev_best_north_table,
                 wtg_df=wtg_df,
@@ -509,13 +511,13 @@ def optimize_wtg_north_table(
         else:
             tries_left += 1
             logger.info(f"tries_left increased to {tries_left}")
-            max_changepoints_to_add = min(2, calc_max_changepoints_to_add(len(best_north_table), score=best_score))
+            max_changepoints_to_add = min(2, _calc_max_changepoints_to_add(len(best_north_table), score=best_score))
         if not best_move_found_this_loop:
             shift_step_size = min(shift_step_size - 1, round(shift_step_size * DECAY_FRACTION))
             if shift_step_size < 1:
                 max_changepoints_to_add = min(
                     2,
-                    calc_max_changepoints_to_add(len(best_north_table), score=best_score),
+                    _calc_max_changepoints_to_add(len(best_north_table), score=best_score),
                 )
                 shift_step_size = initial_step_size + 1 + (1 / (DECAY_FRACTION ** (math.pi * (tries_left + 1))) % 10)
                 shift_step_size = round(shift_step_size)
@@ -525,7 +527,7 @@ def optimize_wtg_north_table(
             done_optimizing = True
 
     wtg_north_table = best_north_table.copy()
-    wtg_df = add_northed_ok_diff_and_rolling_cols(
+    wtg_df = _add_northed_ok_diff_and_rolling_cols(
         wtg_df,
         north_ref_wd_col=north_ref_wd_col,
         timebase_s=timebase_s,
@@ -543,7 +545,7 @@ def optimize_wtg_north_table(
     return wtg_north_table, wtg_df, initial_score, best_score
 
 
-def optimize_wf_north_table(
+def _optimize_wf_north_table(
     wf_df: pd.DataFrame,
     *,
     north_ref_wd_col: str,
@@ -571,7 +573,7 @@ def optimize_wf_north_table(
 
         initial_wtg_north_table = initial_wf_north_table.loc[initial_wf_north_table["TurbineName"] == wtg_name]
         changepoints_before = max(1, len(initial_wtg_north_table))
-        wtg_north_table, optimized_wtg_df, score_before, score_after = optimize_wtg_north_table(
+        wtg_north_table, optimized_wtg_df, score_before, score_after = _optimize_wtg_north_table(
             wtg_df=wtg_df,
             wtg_name=wtg_name,
             rated_power=rated_power,
@@ -614,7 +616,7 @@ def optimize_wf_north_table(
     return optimized_wf_north_table
 
 
-def write_northing_yaml(wf_north_table: pd.DataFrame, *, fpath: Path) -> None:
+def _write_northing_yaml(wf_north_table: pd.DataFrame, *, fpath: Path) -> None:
     north_table_for_yaml = wf_north_table.copy()
     north_table_for_yaml[TIMESTAMP_COL] = north_table_for_yaml[TIMESTAMP_COL].dt.strftime(
         "%Y-%m-%d %H:%M:%S",
@@ -633,9 +635,16 @@ def auto_northing_corrections(
     cfg: WindUpConfig,
     plot_cfg: PlotConfig | None,
 ) -> pd.DataFrame:
+    """Correct the northing of the wind farm to reanalysis data.
+
+    :param wf_df: wind farm SCADA data
+    :param cfg: wind farm configuration
+    :param plot_cfg: plot configuration
+    :return: wind farm SCADA data with corrected northing
+    """
     wf_df = wf_df.copy()
 
-    reanalysis_wf_north_table = optimize_wf_north_table(
+    reanalysis_wf_north_table = _optimize_wf_north_table(
         wf_df,
         north_ref_wd_col=REANALYSIS_WD_COL,
         cfg=cfg,
@@ -644,7 +653,7 @@ def auto_northing_corrections(
     )
     if plot_cfg is not None:
         reanalysis_wf_north_table.to_csv(cfg.out_dir / "reanalysis_wf_north_table.csv")
-        write_northing_yaml(reanalysis_wf_north_table, fpath=cfg.out_dir / "reanalysis_wf_north_table.yaml")
+        _write_northing_yaml(reanalysis_wf_north_table, fpath=cfg.out_dir / "reanalysis_wf_north_table.yaml")
 
     wf_df = apply_northing_corrections(
         wf_df,
@@ -659,7 +668,7 @@ def auto_northing_corrections(
     if plot_cfg is not None:
         plot_wf_yawdir_and_reanalysis_timeseries(wf_df, cfg=cfg, plot_cfg=plot_cfg)
 
-    optimized_northing_corrections = optimize_wf_north_table(
+    optimized_northing_corrections = _optimize_wf_north_table(
         wf_df,
         north_ref_wd_col=WINDFARM_YAWDIR_COL,
         cfg=cfg,
@@ -667,7 +676,7 @@ def auto_northing_corrections(
     )
     if plot_cfg is not None:
         optimized_northing_corrections.to_csv(cfg.out_dir / "optimized_northing_corrections.csv")
-        write_northing_yaml(optimized_northing_corrections, fpath=cfg.out_dir / "optimized_northing_corrections.yaml")
+        _write_northing_yaml(optimized_northing_corrections, fpath=cfg.out_dir / "optimized_northing_corrections.yaml")
 
     return apply_northing_corrections(
         wf_df,

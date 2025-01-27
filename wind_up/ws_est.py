@@ -1,3 +1,5 @@
+"""Estimate wind speed from power."""
+
 from __future__ import annotations
 
 import logging
@@ -24,6 +26,16 @@ def calc_pc_low_high_one_ttype(
     low_q_pct: float,
     high_q_pct: float,
 ) -> pd.DataFrame:
+    """Calculate the low and high quantiles of power as a function of wind speed.
+
+    :param df: time series of wind speed and power
+    :param x_col: wind speed column
+    :param y_col: power column
+    :param x_bin_width: wind speed bin width
+    :param low_q_pct: low quantile percentage
+    :param high_q_pct: high quantile percentage
+    :return: DataFrame with wind speed bin edges, mean power, low quantile power, and high quantile power
+    """
     x_bin_edges = np.arange(0, df[x_col].max() + x_bin_width, x_bin_width)
     return df.groupby(by=pd.cut(df[x_col], bins=x_bin_edges, retbins=False), observed=True).agg(
         x_mean=pd.NamedAgg(column=x_col, aggfunc=lambda x: x.mean()),
@@ -39,6 +51,22 @@ def add_ws_est_one_ttype(
     pc: pd.DataFrame,
     plot_cfg: PlotConfig | None,
 ) -> pd.DataFrame:
+    """Estimate wind speed from power for one turbine type.
+
+    Blends the wind speed estimated from power (used in region 2 of power curve) with the measured wind speed
+    (used in regions 1 and 3).
+
+    :param cfg: wind up configuration
+    :param df: time series of wind speed and power for one turbine type
+    :param ttype: turbine type
+    :param pc: power curve
+    :param plot_cfg: plot configuration
+    :return:
+        time series of wind speed estimates with columns
+
+            - power only wind speed estimate
+            - blended wind speed estimate
+    """
     df_input = df.copy()
 
     # at some point would be good to use an air density time series
@@ -149,7 +177,17 @@ def add_ws_est_one_ttype(
     return df
 
 
-def add_ws_est(cfg: WindUpConfig, wf_df: pd.DataFrame, pc_per_ttype: dict, plot_cfg: PlotConfig | None) -> pd.DataFrame:
+def add_ws_est(
+    cfg: WindUpConfig, wf_df: pd.DataFrame, pc_per_ttype: dict[str, pd.DataFrame], plot_cfg: PlotConfig | None
+) -> pd.DataFrame:
+    """Estimate wind speed from power and add as a new column in the supplied `wf_df`.
+
+    :param cfg: wind up configuration
+    :param wf_df: time series of wind speed and power
+    :param pc_per_ttype: power curve per turbine type
+    :param plot_cfg: plot configuration
+    :return: original `wf_df` with additional columns for wind speed estimates
+    """
     _msg = "#" * 78 + "\n# estimate wind speed from power\n" + "#" * 78
     logger.info(_msg)
     df_input = wf_df.copy()

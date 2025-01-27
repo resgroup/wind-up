@@ -126,8 +126,7 @@ def _add_scatter_plot(ax: plt.Axes, scada_data: pd.DataFrame, x_col: str, y_col:
 
 
 def plot_ops_curves_one_ttype_or_wtg(df: pd.DataFrame, ttype_or_wtg: str, title_end: str, plot_cfg: PlotConfig) -> None:
-    """
-    Plot turbine operating curves:
+    """Plot turbine operating curves:
 
       - Power Curve
       - RPM and Pitch Angle vs. Power and Wind Speed

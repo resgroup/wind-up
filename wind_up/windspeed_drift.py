@@ -1,3 +1,5 @@
+"""Module for calculating wind speed drift."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -49,6 +51,7 @@ def _calculate_rolling_windspeed_diff(
 
 
 def calc_max_abs_relative_rolling_windspeed_diff(ser: pd.Series) -> float:
+    """Calculate the maximum absolute relative wind speed difference."""
     return (ser - ser.median()).abs().max()
 
 
@@ -62,6 +65,21 @@ def check_windspeed_drift(
     plot_cfg: PlotConfig | None,
     sub_dir: str | None = None,
 ) -> tuple[float, float]:
+    """Calculate wind speed drift.
+
+    :param wtg_df: time series of turbine measurement data
+    :param wtg_name: name of the turbine
+    :param ws_col: wind speed column name in `wtg_df`
+    :param reanalysis_ws_col: reanalysis wind speed column name in `wtg_df`
+    :param cfg: wind up configuration
+    :param plot_cfg: plot configuration
+    :param sub_dir: subdirectory in which to save plots
+    :return:
+        tuple containing
+
+            - maximum absolute relative wind speed difference
+            - maximum absolute relative wind speed drift during power performance period
+    """
     rolling_windspeed_diff = _calculate_rolling_windspeed_diff(
         wtg_df, ws_col=ws_col, reanalysis_ws_col=reanalysis_ws_col, timebase_s=cfg.timebase_s
     )

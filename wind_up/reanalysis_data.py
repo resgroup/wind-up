@@ -1,3 +1,5 @@
+"""Module to handle reanalysis data."""
+
 from __future__ import annotations
 
 import logging
@@ -19,7 +21,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def reanalysis_upsample(reanalysis_raw_df: pd.DataFrame, *, timebase_s: int) -> pd.DataFrame:
+def _reanalysis_upsample(reanalysis_raw_df: pd.DataFrame, *, timebase_s: int) -> pd.DataFrame:
     reanalysis_df = reanalysis_raw_df.resample(pd.Timedelta(seconds=timebase_s), label="left").last()
     upsample_factor = round(len(reanalysis_df) / len(reanalysis_raw_df))
     # extend the end of the index e.g. by 50 minutes for 10 minute timebase
@@ -51,7 +53,7 @@ def reanalysis_upsample(reanalysis_raw_df: pd.DataFrame, *, timebase_s: int) -> 
     return reanalysis_df
 
 
-def find_best_shift_and_corr(
+def _find_best_shift_and_corr(
     *,
     wf_ws_df: pd.DataFrame,
     reanalysis_df: pd.DataFrame,
@@ -93,12 +95,19 @@ def find_best_shift_and_corr(
     return best_corr, best_s
 
 
-def calc_wf_mean_wind_speed_df(
+def _calc_wf_mean_wind_speed_df(
     wf_df: pd.DataFrame,
     *,
     num_turbines: int,
     allowed_data_coverage_width: float,
 ) -> pd.DataFrame:
+    """Calculate wind farm mean wind speed.
+
+    :param wf_df: wind farm data
+    :param num_turbines: number of turbines
+    :param allowed_data_coverage_width: allowed data coverage width
+    :return: wind farm mean wind speed and data coverage
+    """
     wf_ws_df = wf_df.groupby(TIMESTAMP_COL).agg(
         WindSpeedMean=pd.NamedAgg(column="WindSpeedMean", aggfunc=lambda x: x.mean()),
         data_coverage=pd.NamedAgg(column="WindSpeedMean", aggfunc=lambda x: x.count() / num_turbines),
@@ -109,6 +118,12 @@ def calc_wf_mean_wind_speed_df(
 
 
 def get_dsid_and_dates_from_filename(filename: str) -> tuple[str, pd.Timestamp, pd.Timestamp]:
+    """Get reanalysis dataset id and dates from filename.
+
+    :param filename:
+        reanalysis data filename, e.g. 'ERA5T_47.50N_-3.25E_100m_1hr_19900101_20231031.parquet'
+    :return: tuple of dataset id and start and end dates
+    """
     fname = filename.replace(".parquet", "")
     date_to = fname.split("_")[-1]
     date_from = fname.split("_")[-2]
@@ -122,6 +137,8 @@ def get_dsid_and_dates_from_filename(filename: str) -> tuple[str, pd.Timestamp, 
 
 @dataclass
 class ReanalysisDataset:
+    """Class to store reanalysis data."""
+
     id: str
     data: pd.DataFrame
 
@@ -134,8 +151,17 @@ def add_reanalysis_data(
     plot_cfg: PlotConfig | None,
     require_full_coverage: bool = False,
 ) -> pd.DataFrame:
+    """Add reanalysis data to the wind farm data.
+
+    :param wf_df: wind farm data
+    :param reanalysis_datasets: list of ReanalysisDataset objects
+    :param cfg: WindUpConfig object
+    :param plot_cfg: PlotConfig object
+    :param require_full_coverage: whether to require full coverage
+    :return: wind farm and reanalysis data
+    """
     data_coverage_width = 0.1
-    wf_ws_df = calc_wf_mean_wind_speed_df(
+    wf_ws_df = _calc_wf_mean_wind_speed_df(
         wf_df,
         num_turbines=len(cfg.asset.wtgs),
         allowed_data_coverage_width=data_coverage_width,
@@ -144,7 +170,7 @@ def add_reanalysis_data(
     rows_per_hour = 3600 / cfg.timebase_s
     while len(wf_ws_df) < (60 * 24 * rows_per_hour) and data_coverage_width < max_data_coverage_width:
         data_coverage_width += 0.05
-        wf_ws_df = calc_wf_mean_wind_speed_df(
+        wf_ws_df = _calc_wf_mean_wind_speed_df(
             wf_df,
             num_turbines=len(cfg.asset.wtgs),
             allowed_data_coverage_width=data_coverage_width,
@@ -161,9 +187,9 @@ def add_reanalysis_data(
             continue  # skip to next dataset
 
         dsid = reanalysis_dataset.id
-        this_reanalysis_df = reanalysis_upsample(reanalysis_dataset.data, timebase_s=cfg.timebase_s)
+        this_reanalysis_df = _reanalysis_upsample(reanalysis_dataset.data, timebase_s=cfg.timebase_s)
 
-        this_corr, this_s = find_best_shift_and_corr(
+        this_corr, this_s = _find_best_shift_and_corr(
             wf_ws_df=wf_ws_df,
             reanalysis_df=this_reanalysis_df,
             wf_name=cfg.asset.name,

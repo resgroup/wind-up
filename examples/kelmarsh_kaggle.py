@@ -1,7 +1,8 @@
 """Example submission for https://www.kaggle.com/competitions/predict-the-wind-speed-at-a-wind-turbine/.
 
 wind-up is used for feature engineering, in particular estimating wind speed based on power
-and directional detrending."""
+and directional detrending.
+"""
 
 from __future__ import annotations
 
@@ -247,7 +248,8 @@ def make_windup_features(analysis_name: str) -> None:
 def save_t1_detrend_dfs(assessment_inputs: AssessmentInputs) -> None:
     """Save the detrended dataframes for Kelmarsh 1 and the reference turbines.
 
-    note most of this logic is copied from wind_up/main_analysis.py"""
+    note most of this logic is copied from wind_up/main_analysis.py
+    """
     wf_df = assessment_inputs.wf_df
     cfg = assessment_inputs.cfg
     plot_cfg = assessment_inputs.plot_cfg
@@ -465,7 +467,8 @@ def sun_alt(
 ) -> float:
     """Calculate sun altitude for a given row in a DataFrame.
 
-    This code was adapted from https://github.com/NREL/flasc"""
+    This code was adapted from https://github.com/NREL/flasc
+    """
     observer.lat = str(latitude)
     observer.long = str(longitude)
     observer.date = row[utc_timestamp_col] + time_shift
@@ -484,7 +487,8 @@ def add_sun_alt_to_df(
 ) -> pd.DataFrame:
     """Calculate sun altitude for a given row in a DataFrame.
 
-    This code was adapted from https://github.com/NREL/flasc"""
+    This code was adapted from https://github.com/NREL/flasc
+    """
     out_df = input_df.copy()
     observer = ephem.Observer()
     return out_df.assign(

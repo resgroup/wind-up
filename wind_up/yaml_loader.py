@@ -1,3 +1,5 @@
+"""Custom YAML loader that supports the `!include` tag."""
+
 import os
 from pathlib import Path
 from typing import IO, Any
@@ -6,7 +8,9 @@ import yaml
 
 
 class Loader(yaml.SafeLoader):
-    def __init__(self: "Loader", stream: IO) -> None:
+    """Custom YAML loader that supports the `!include` tag."""
+
+    def __init__(self: "Loader", stream: IO) -> None:  # noqa: D107
         try:
             self._root = os.path.split(stream.name)[0]
         except AttributeError:
@@ -15,7 +19,7 @@ class Loader(yaml.SafeLoader):
         super().__init__(stream)
 
     @property
-    def root(self: "Loader") -> str:
+    def root(self: "Loader") -> str:  # noqa: D102
         return self._root
 
 

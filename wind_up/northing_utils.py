@@ -1,3 +1,5 @@
+"""Utilities for northing calculations."""
+
 import pandas as pd
 
 from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL
@@ -8,6 +10,7 @@ YAW_OK_PW_FRACTION = 0.05
 def add_ok_yaw_col(
     wf_or_wtg_df: pd.DataFrame, *, new_col_name: str, wd_col: str, rated_power: float, timebase_s: int
 ) -> pd.DataFrame:
+    """Add a column to the DataFrame indicating whether the turbine is ok for yawdir calculation."""
     yaw_of_downtime_s = timebase_s * 1 / 4
     wf_or_wtg_df[new_col_name] = (
         wf_or_wtg_df[wd_col].notna()
