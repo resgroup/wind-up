@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from wind_up.math_funcs import circ_diff
+from wind_up.circular_math import circ_diff
 from wind_up.plots.detrend_plots import (
     plot_check_applied_detrend,
     plot_detrend_ws_scatter,

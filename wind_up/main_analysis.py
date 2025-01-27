@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 import wind_up
+from wind_up.circular_math import circ_diff
 from wind_up.constants import (
     PROJECTROOT_DIR,
     RANDOM_SEED,
@@ -21,7 +22,6 @@ from wind_up.constants import (
 from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
 from wind_up.interface import AssessmentInputs, add_toggle_signals
 from wind_up.long_term import calc_lt_dfs_raw_filt
-from wind_up.math_funcs import circ_diff
 from wind_up.northing import check_wtg_northing
 from wind_up.plots.data_coverage_plots import plot_detrend_data_cov, plot_pre_post_data_cov
 from wind_up.plots.detrend_plots import plot_apply_wsratio_v_wd_scen

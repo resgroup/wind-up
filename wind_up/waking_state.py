@@ -10,6 +10,7 @@ import pandas as pd
 from geographiclib.geodesic import Geodesic
 from tabulate import tabulate
 
+from wind_up.circular_math import circ_diff
 from wind_up.constants import (
     DEFAULT_AIR_DENSITY,
     RAW_DOWNTIME_S_COL,
@@ -17,7 +18,6 @@ from wind_up.constants import (
     RAW_WINDSPEED_COL,
     TIMESTAMP_COL,
 )
-from wind_up.math_funcs import circ_diff
 from wind_up.plots.waking_state_plots import plot_waking_state_one_ttype_or_wtg
 from wind_up.wind_funcs import calc_cp
 

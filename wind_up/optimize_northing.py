@@ -10,6 +10,7 @@ import pandas as pd
 import ruptures as rpt
 
 from wind_up.backporting import strict_zip
+from wind_up.circular_math import circ_diff
 from wind_up.constants import (
     RAW_POWER_COL,
     RAW_YAWDIR_COL,
@@ -17,7 +18,6 @@ from wind_up.constants import (
     TIMESTAMP_COL,
     WINDFARM_YAWDIR_COL,
 )
-from wind_up.math_funcs import circ_diff
 from wind_up.northing import (
     add_wf_yawdir,
     apply_northing_corrections,

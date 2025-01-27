@@ -233,6 +233,8 @@ def preprocess(
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     """Get filtered wind farm data and power curves for a given wind-up configuration.
 
+    Specifically these are mean SCADA power curves rather than power curves suitable for uplift calculation.
+
     :param cfg: wind-up configuration
     :param plot_cfg: plot configuration
     :param scada_df: wind farm SCADA data

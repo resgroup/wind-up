@@ -100,7 +100,11 @@ max-args = 17 # try to bring this down to 5
 
 [tool.ruff.lint.per-file-ignores]
 "wind_up/models.py" = ["N805", "PERF401"] # try to eliminate this
-"tests/**/*.py" = ["S101", "PLR2004", "D"]  # allow `assert` and magic values in tests
+"tests/**/*.py" = [
+    "S101",  # allow `assert`
+    "PLR2004",  # allow magic values
+    "D",  # TODO: remove this
+]
 "tests/test_smart_data.py" = ["DTZ001"]  # SMART functions use tz naive datetimes
 "**/__init__.py" = ["F401"]  # ignore unused imports in __init__.py
 "examples/**/*.py" = ["T20", "D"]

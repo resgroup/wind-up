@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_series_equal
 
-from wind_up.math_funcs import circ_diff
+from wind_up.circular_math import circ_diff
 
 test_circ_diff_data = [
     (0, 0, 0),

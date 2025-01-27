@@ -1,4 +1,4 @@
-"""Mathematical functions for wind-up calculations."""
+"""Circular math functions missing from numpy/scipy."""
 
 from __future__ import annotations
 
