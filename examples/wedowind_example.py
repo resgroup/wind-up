@@ -391,7 +391,7 @@ ANALYSIS_SPECIFIC_CONFIG = {
 }
 
 
-def main(
+def main_wedowind_analysis(
     analysis_name: str,
     *,
     generate_custom_plots: bool = True,
@@ -529,5 +529,5 @@ def main(
 
 if __name__ == "__main__":
     setup_logger(ANALYSIS_OUTPUT_DIR / "analysis.log")
-    main("Pitch Angle")
-    main("Vortex Generator")
+    main_wedowind_analysis("Pitch Angle")
+    main_wedowind_analysis("Vortex Generator")
