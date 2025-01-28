@@ -78,3 +78,5 @@ output/
 /examples/**/*.log
 /examples/**/*.png
 /examples/**/*.parquet
+/tests/**/*.log
+/tests/test_data/wedowind/Pitch Angle/

@@ -30,14 +30,14 @@
 # control turbine, as the control turbine remains unmodified throughout. The vortex generator installation takes
 # effect on June 20, 2011, and the pitch angle adjustment takes effect on April 25, 2011.
 
-import datetime as dt
+from __future__ import annotations
+
 import logging
 import math
 import sys
 import zipfile
 from enum import Enum
-from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -48,19 +48,20 @@ from examples.helpers import format_and_print_results_table
 from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
 from wind_up.interface import AssessmentInputs
 from wind_up.main_analysis import run_wind_up_analysis
-from wind_up.models import PlotConfig, WindUpConfig
+from wind_up.models import Asset, PlotConfig, PrePost, Turbine, WindUpConfig
 from wind_up.reanalysis_data import ReanalysisDataset
 from wind_up.wind_funcs import calc_cp
 
 sys.path.append(str(PROJECTROOT_DIR))
 from examples.helpers import download_zenodo_data, setup_logger
 
+if TYPE_CHECKING:
+    import datetime as dt
+    from pathlib import Path
+
 CACHE_DIR = PROJECTROOT_DIR / "cache" / "wedowind_example"
 ASSESSMENT_NAME = "wedowind_example"
 ANALYSIS_OUTPUT_DIR = OUTPUT_DIR / ASSESSMENT_NAME
-ANALYSIS_OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
-
-PARENT_DIR = Path(__file__).parent
 ZIP_FILENAME = "Turbine_Upgrade_Dataset.zip"
 
 logger = logging.getLogger(__name__)
@@ -165,10 +166,11 @@ class WeDoWindAnalysisConf(BaseModel):
     )
 
 
-def download_wedowind_data_from_zenodo() -> None:
+def download_wedowind_data_from_zenodo(cache_dir: Path = CACHE_DIR) -> None:
     logger.info("Downloading example data from Zenodo")
-    # https://zenodo.org/records/5516556
-    download_zenodo_data(record_id="5516556", output_dir=CACHE_DIR, filenames={ZIP_FILENAME})
+    if not (cache_dir / ZIP_FILENAME).exists():
+        # https://zenodo.org/records/5516556
+        download_zenodo_data(record_id="5516556", output_dir=cache_dir, filenames={ZIP_FILENAME})
 
 
 def create_fake_wedowind_metadata_df() -> pd.DataFrame:
@@ -372,39 +374,55 @@ def generate_custom_exploratory_plots(
     return custom_plots_dir_root
 
 
-def main(analysis_name: str, *, generate_custom_plots: bool = True) -> None:
-    download_wedowind_data_from_zenodo()
+ANALYSIS_SPECIFIC_CONFIG = {
+    "Pitch Angle": WeDoWindAnalysisConf(
+        scada_file_name="Turbine Upgrade Dataset(Pitch Angle Pair).csv",
+        unusable_wd_ranges=[(70, 140), (150, 180)],  # determined by inspecting custom Cp vs D plots
+        ref_wd_filter=[160, 240],  # apparent wake free sector determined by inspecting detrending plots
+        clip_rated_power_pp=False,  # rated power is apparently higher after the upgrade
+        use_rated_invalid_bins=True,  # use extrapolated rated power results
+    ),
+    "Vortex Generator": WeDoWindAnalysisConf(
+        scada_file_name="Turbine Upgrade Dataset(VG Pair).csv",
+        unusable_wd_ranges=[(25, 115), (240, 315)],  # determined by inspecting custom Cp vs D plots
+        ref_wd_filter=[115, 240],  # apparent wake free sector determined by inspecting detrending plots
+        clip_rated_power_pp=True,  # Vortex Generators are not expected to increase rated power
+    ),
+}
+
+
+def main(
+    analysis_name: str,
+    *,
+    generate_custom_plots: bool = True,
+    save_plots: bool = True,
+    cache_dir: Path = CACHE_DIR,
+    analysis_output_dir: Path = ANALYSIS_OUTPUT_DIR,
+    bootstrap_runs_override: int | None = None,
+) -> pd.DataFrame:
+    cache_assessment = cache_dir / analysis_name
+    for d in [cache_dir, analysis_output_dir, cache_assessment]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    if analysis_name not in ANALYSIS_SPECIFIC_CONFIG:
+        msg = f"analysis_name must be one of {list(ANALYSIS_SPECIFIC_CONFIG.keys())}"
+        raise ValueError(msg)
+
+    analysis_conf = ANALYSIS_SPECIFIC_CONFIG[analysis_name]
+
+    download_wedowind_data_from_zenodo(cache_dir=cache_dir)
 
     # assumptions below are based on Table 5.1 of Data Science for Wind Energy (Yu Ding 2020)
     assumed_rated_power_kw = 1500
     assumed_rotor_diameter_m = 80
     cutout_ws_mps = 20
 
-    analysis_specific_config = {
-        "Pitch Angle": WeDoWindAnalysisConf(
-            scada_file_name="Turbine Upgrade Dataset(Pitch Angle Pair).csv",
-            unusable_wd_ranges=[(70, 140), (150, 180)],  # determined by inspecting custom Cp vs D plots
-            ref_wd_filter=[160, 240],  # apparent wake free sector determined by inspecting detrending plots
-            clip_rated_power_pp=False,  # rated power is apparently higher after the upgrade
-            use_rated_invalid_bins=True,  # use extrapolated rated power results
-        ),
-        "Vortex Generator": WeDoWindAnalysisConf(
-            scada_file_name="Turbine Upgrade Dataset(VG Pair).csv",
-            unusable_wd_ranges=[(25, 115), (240, 315)],  # determined by inspecting custom Cp vs D plots
-            ref_wd_filter=[115, 240],  # apparent wake free sector determined by inspecting detrending plots
-            clip_rated_power_pp=True,  # Vortex Generators are not expected to increase rated power
-        ),
-    }
-    if analysis_name not in analysis_specific_config:
-        msg = f"analysis_name must be one of {list(analysis_specific_config.keys())}"
-        raise ValueError(msg)
-
-    analysis_conf = analysis_specific_config[analysis_name]
-
     logger.info("Unpacking turbine SCADA data")
-    scada_df = WeDoWindScadaUnpacker(scada_file_name=analysis_conf.scada_file_name).unpack(
-        rated_power_kw=assumed_rated_power_kw
-    )
+    scada_df = WeDoWindScadaUnpacker(
+        scada_file_name=str(analysis_conf.scada_file_name),
+        wedowind_zip_file_path=cache_dir / ZIP_FILENAME,
+    ).unpack(rated_power_kw=assumed_rated_power_kw)
+
     metadata_df = create_fake_wedowind_metadata_df()
 
     if generate_custom_plots:
@@ -412,7 +430,7 @@ def main(analysis_name: str, *, generate_custom_plots: bool = True) -> None:
             scada_df=scada_df,
             assumed_rated_power_kw=assumed_rated_power_kw,
             rotor_diameter_m=assumed_rotor_diameter_m,
-            out_dir=ANALYSIS_OUTPUT_DIR / analysis_name,
+            out_dir=analysis_output_dir / analysis_name,
         )
 
     # assume WT1 is Test and WT2 is Ref. Since we do not actually know which turbine is which we exclude all waked data.
@@ -452,9 +470,9 @@ def main(analysis_name: str, *, generate_custom_plots: bool = True) -> None:
         assessment_name=analysis_name,
         ref_wd_filter=analysis_conf.ref_wd_filter,
         use_lt_distribution=True,
-        out_dir=ANALYSIS_OUTPUT_DIR / analysis_name,
-        test_wtgs=[wtg_map[x] for x in [WeDoWindTurbineNames.TEST.value]],
-        ref_wtgs=[wtg_map[x] for x in [WeDoWindTurbineNames.REF.value]],
+        out_dir=analysis_output_dir / analysis_name,
+        test_wtgs=[Turbine.model_validate(wtg_map[x]) for x in [WeDoWindTurbineNames.TEST.value]],
+        ref_wtgs=[Turbine.model_validate(wtg_map[x]) for x in [WeDoWindTurbineNames.REF.value]],
         years_offset_for_pre_period=1,
         years_for_lt_distribution=1,
         years_for_detrend=1,
@@ -466,20 +484,23 @@ def main(analysis_name: str, *, generate_custom_plots: bool = True) -> None:
         lt_last_dt_utc_start=key_dates.lt_last_dt_utc_start,
         detrend_first_dt_utc_start=key_dates.detrend_first_dt_utc_start,
         detrend_last_dt_utc_start=key_dates.detrend_last_dt_utc_start,
-        asset={"name": "Mystery Wind Farm", "wtgs": list(wtg_map.values())},
+        asset=Asset.model_validate({"name": "Mystery Wind Farm", "wtgs": list(wtg_map.values())}),
         missing_scada_data_fields=[DataColumns.yaw_angle_min, DataColumns.yaw_angle_max],
-        prepost={
-            "pre_first_dt_utc_start": key_dates.pre_first_dt_utc_start,
-            "pre_last_dt_utc_start": key_dates.pre_last_dt_utc_start,
-            "post_first_dt_utc_start": key_dates.post_first_dt_utc_start,
-            "post_last_dt_utc_start": key_dates.post_last_dt_utc_start,
-        },
+        prepost=PrePost.model_validate(
+            {
+                "pre_first_dt_utc_start": key_dates.pre_first_dt_utc_start,
+                "pre_last_dt_utc_start": key_dates.pre_last_dt_utc_start,
+                "post_first_dt_utc_start": key_dates.post_first_dt_utc_start,
+                "post_last_dt_utc_start": key_dates.post_last_dt_utc_start,
+            }
+        ),
         optimize_northing_corrections=False,
         clip_rated_power_pp=analysis_conf.clip_rated_power_pp,
         use_rated_invalid_bins=analysis_conf.use_rated_invalid_bins,
+        bootstrap_runs_override=bootstrap_runs_override,
     )
 
-    plot_cfg = PlotConfig(show_plots=False, save_plots=True, plots_dir=cfg.out_dir / "plots")
+    plot_cfg = PlotConfig(show_plots=False, save_plots=save_plots, plots_dir=cfg.out_dir / "plots")
 
     wd_ranges_to_exclude = analysis_conf.unusable_wd_ranges
     scada_df_for_assessment = scada_df.copy()
@@ -489,9 +510,6 @@ def main(analysis_name: str, *, generate_custom_plots: bool = True) -> None:
             scada_df_for_assessment[DataColumns.yaw_angle_mean] <= wdr[1]
         )
         scada_df_for_assessment = scada_df_for_assessment.loc[~mask, :]
-
-    cache_assessment = CACHE_DIR / analysis_name
-    cache_assessment.mkdir(parents=True, exist_ok=True)
 
     assessment_inputs = AssessmentInputs.from_cfg(
         cfg=cfg,
@@ -506,6 +524,7 @@ def main(analysis_name: str, *, generate_custom_plots: bool = True) -> None:
     results_per_test_ref_df = run_wind_up_analysis(assessment_inputs)
     results_per_test_ref_df.to_csv(cfg.out_dir / "results_per_test_ref.csv", index=False)
     _ = format_and_print_results_table(results_per_test_ref_df)
+    return results_per_test_ref_df
 
 
 if __name__ == "__main__":
