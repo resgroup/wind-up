@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import matplotlib as mpl
 import pytest
 
+from wind_up.constants import PROJECTROOT_DIR
 from wind_up.models import WindUpConfig
+
+mpl.use("Agg")
 
 TEST_DATA_FLD = Path(__file__).parent / "test_data"
 TEST_CONFIG_DIR = TEST_DATA_FLD / "config"
+CACHE_DIR = PROJECTROOT_DIR / "cache"
 
 
 @pytest.fixture

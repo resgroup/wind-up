@@ -58,6 +58,7 @@ dev = [
     'ruff',
     'mypy',
     'requests',
+    "pandas-stubs>=2.2.2.240807",
 ]
 examples = [
     'jupyterlab',
@@ -76,6 +77,7 @@ include = ["wind_up*"]
 [tool.ruff]
 line-length = 120
 show-fixes = true
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["ALL"] # https://beta.ruff.rs/docs/rules/
@@ -115,6 +117,7 @@ max-args = 17 # try to bring this down to 5
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
+python_version = "3.9"
 exclude = "build|tests|venv|.venv|__ignore__"
 disallow_untyped_defs = true
 
@@ -179,3 +182,7 @@ sequence = [
 [tool.poe.tasks.all]
 help = "Run all required pre-push commands"
 sequence = [{ ref = "lint" }, { ref = "test" }]
+
+[tool.poe.tasks.jupy]
+help = "Start local Jupyterlab server"
+cmd = "python -m jupyter lab"
