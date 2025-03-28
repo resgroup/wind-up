@@ -296,18 +296,15 @@ def _download_data_from_zenodo(analysis_timebase_s: int, cache_dir: Path, zip_fi
     return SmarteoleData(scada_df=scada_df, metadata_df=metadata_df, toggle_df=toggle_df)
 
 
-def main_smarteole_analysis(
+def _construct_assessment_inputs(
     *,
     smarteole_data: SmarteoleData,
+    logger: logging.Logger,
     analysis_timebase_s: int = ANALYSIS_TIMEBASE_S,
-    check_results: bool = CHECK_RESULTS,
     analysis_output_dir: Path = ANALYSIS_OUTPUT_DIR,
-    cache_sub_dir: Path = CACHE_SUBDIR,
     reanalysis_file_path: Path | str = REANALYSIS_DATA_FILE_PATH,
-) -> None:
-    setup_logger(ANALYSIS_OUTPUT_DIR / "analysis.log")
-    logger = logging.getLogger(__name__)
-
+    cache_sub_dir: Path = CACHE_SUBDIR,
+) -> AssessmentInputs:
     logger.info("Merging SMV6 yaw offset command signal into SCADA data")
     toggle_df_no_tz = smarteole_data.toggle_df.copy()
     toggle_df_no_tz.index = toggle_df_no_tz.index.tz_localize(None)
@@ -317,19 +314,19 @@ def main_smarteole_analysis(
     scada_df["yaw_offset_command"] = scada_df["yaw_offset_command"].where(scada_df["TurbineName"] == "SMV6", 0)
     del toggle_df_no_tz
 
-    logger.info("Loading reference reanalysis data")
-    reanalysis_dataset = ReanalysisDataset(
-        id="ERA5T_50.00N_2.75E_100m_1hr",
-        data=pd.read_parquet(reanalysis_file_path),
-    )
-
     logger.info("Defining Assessment Configuration")
     cfg = define_smarteole_example_config(
         analysis_timebase_s=analysis_timebase_s, analysis_output_dir=analysis_output_dir
     )
     plot_cfg = PlotConfig(show_plots=False, save_plots=True, plots_dir=cfg.out_dir / "plots")
 
-    assessment_inputs = AssessmentInputs.from_cfg(
+    logger.info("Loading reference reanalysis data")
+    reanalysis_dataset = ReanalysisDataset(
+        id="ERA5T_50.00N_2.75E_100m_1hr",
+        data=pd.read_parquet(reanalysis_file_path),
+    )
+
+    return AssessmentInputs.from_cfg(
         cfg=cfg,
         plot_cfg=plot_cfg,
         toggle_df=smarteole_data.toggle_df,
@@ -338,6 +335,29 @@ def main_smarteole_analysis(
         reanalysis_datasets=[reanalysis_dataset],
         cache_dir=cache_sub_dir,
     )
+
+
+def main_smarteole_analysis(
+    *,
+    smarteole_data: SmarteoleData,
+    analysis_timebase_s: int = ANALYSIS_TIMEBASE_S,
+    check_results: bool = CHECK_RESULTS,
+    analysis_output_dir: Path = ANALYSIS_OUTPUT_DIR,
+    cache_sub_dir: Path = CACHE_SUBDIR,
+    reanalysis_file_path: Path | str = REANALYSIS_DATA_FILE_PATH,
+) -> None:
+    setup_logger(analysis_output_dir / "analysis.log")
+    logger = logging.getLogger(__name__)
+
+    assessment_inputs = _construct_assessment_inputs(
+        smarteole_data=smarteole_data,
+        logger=logger,
+        analysis_timebase_s=analysis_timebase_s,
+        analysis_output_dir=analysis_output_dir,
+        reanalysis_file_path=reanalysis_file_path,
+        cache_sub_dir=cache_sub_dir,
+    )
+
     results_per_test_ref_df = run_wind_up_analysis(assessment_inputs)
 
     net_p50, net_p95, net_p5 = calc_net_uplift(results_per_test_ref_df, confidence=0.9)

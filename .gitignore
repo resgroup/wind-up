@@ -81,3 +81,5 @@ output/
 /tests/**/*.log
 /tests/test_data/wedowind/Pitch Angle/
 /tests/test_data/wedowind/Vortex Generator/
+# matplotlib testing
+**/result_images/
