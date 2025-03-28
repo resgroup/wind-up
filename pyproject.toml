@@ -58,7 +58,6 @@ dev = [
     'ruff',
     'mypy',
     'requests',
-    "pandas-stubs>=2.2.2.240807",
 ]
 examples = [
     'jupyterlab',
