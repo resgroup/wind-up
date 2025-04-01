@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,9 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from wind_up.interface import AssessmentInputs
+
+
+logger = logging.getLogger(__name__)
 
 
 class DateRangeColors(str, Enum):
@@ -35,7 +39,7 @@ def _validate_data_within_exclusions(
         _data = _series.loc[mask].droplevel(level="TurbineName", axis=0).sort_index()
         if _data[exclusion[1] : exclusion[2]].notna().any():  # type: ignore[misc]
             _msg = f"Data is not all NaN within exclusion period {exclusion}"
-            raise ValueError(_msg)
+            logger.warning(_msg)
 
 
 def _plot_exclusion(

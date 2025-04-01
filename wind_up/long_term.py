@@ -77,7 +77,7 @@ def _calc_lt_df(
     else:
         data_coverage = lt_df["observed_hours"].sum() / (years_of_data * HOURS_PER_YEAR) / num_turbines
         result_manager.warning("years_for_lt_distribution is 0, using years_of_data instead to calculate data coverage")
-    if data_coverage > 1:
+    if np.round(data_coverage, 5) > 1:
         msg = f"Data coverage for long term ws distribution is >1, {data_coverage:.2f}"
         raise RuntimeError(msg)
     lt_df["hours_per_year"] = lt_df["fraction_of_time"] * HOURS_PER_YEAR * data_coverage
@@ -106,7 +106,7 @@ def _filter_and_calc_lt_df(
     one_turbine: bool,
     plot_cfg: PlotConfig | None = None,
 ) -> pd.DataFrame:
-    workings_df = wtg_or_wf_df.copy()
+    workings_df = wtg_or_wf_df[[ws_col, pw_col]].copy()
     if not isinstance(workings_df.index, pd.DatetimeIndex):
         if "TimeStamp_StartFormat" in workings_df.index.names:
             workings_df = workings_df.reset_index().set_index("TimeStamp_StartFormat", drop=True)

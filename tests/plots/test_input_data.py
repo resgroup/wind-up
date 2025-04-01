@@ -1,6 +1,5 @@
 import copy
 import logging
-import re
 
 import numpy as np
 import pandas as pd
@@ -19,7 +18,10 @@ class TestInputDataTimeline:
     @pytest.mark.filterwarnings("ignore")
     @pytest.mark.parametrize("exclusion_period_attribute_name", ["yaw_data_exclusions_utc", "exclusion_periods_utc"])
     def test_data_is_present_within_an_exclusion_period(
-        self, exclusion_period_attribute_name: str, smarteole_assessment_inputs: tuple[AssessmentInputs, SmarteoleData]
+        self,
+        exclusion_period_attribute_name: str,
+        smarteole_assessment_inputs: tuple[AssessmentInputs, SmarteoleData],
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Test that a ValueError is raised if any non-NaN data is present within any exclusion period."""
 
@@ -33,14 +35,13 @@ class TestInputDataTimeline:
             ],
         )
 
-        with pytest.raises(
-            ValueError,
-            match=re.escape(
-                "Data is not all NaN within exclusion period "
-                f"{getattr(assessment_inputs.cfg, exclusion_period_attribute_name)[0]}"
-            ),
-        ):
+        with caplog.at_level(logging.WARNING):
             plot_input_data_timeline(assessment_inputs)
+
+        assert (
+            "Data is not all NaN within exclusion period "
+            f"{getattr(assessment_inputs.cfg, exclusion_period_attribute_name)[0]}"
+        ) in caplog.text
 
     @pytest.mark.slow
     @pytest.mark.filterwarnings("ignore")

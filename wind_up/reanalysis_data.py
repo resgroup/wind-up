@@ -161,6 +161,7 @@ def add_reanalysis_data(
     :return: wind farm and reanalysis data
     """
     data_coverage_width = 0.1
+    logger.info("Calculating wind farm mean wind speed")
     wf_ws_df = _calc_wf_mean_wind_speed_df(
         wf_df,
         num_turbines=len(cfg.asset.wtgs),
@@ -168,8 +169,14 @@ def add_reanalysis_data(
     )
     max_data_coverage_width = 0.3
     rows_per_hour = 3600 / cfg.timebase_s
-    while len(wf_ws_df) < (60 * 24 * rows_per_hour) and data_coverage_width < max_data_coverage_width:
-        data_coverage_width += 0.05
+    rows_per_day = 24 * rows_per_hour
+    rows_per_sixty_days = 60 * rows_per_day
+    data_coverage_width_increment = 0.05
+    while len(wf_ws_df) < rows_per_sixty_days and data_coverage_width < max_data_coverage_width:
+        logger.info(
+            f"Data coverage width {data_coverage_width:.2f} is too low, increasing by {data_coverage_width_increment}"
+        )
+        data_coverage_width += data_coverage_width_increment
         wf_ws_df = _calc_wf_mean_wind_speed_df(
             wf_df,
             num_turbines=len(cfg.asset.wtgs),
