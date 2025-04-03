@@ -153,6 +153,9 @@ def calc_net_uplift(results_per_test_df: pd.DataFrame, *, confidence: float) -> 
     The net uplift is calculated as the weighted average of the uplifts of the test turbines, where the weights are the
     pre-uplift power of the test turbines. The confidence bounds are calculated using the normal distribution.
 
+    This is typically used for wake steering where some turbines lose power to help other turbines gain more power
+    to get a net gain.
+
     :param results_per_test_df: DataFrame containing the results per test turbine (single row per test turbine)
     :param confidence: confidence level for the confidence bounds
     :return: tuple of net_p50, net_p_low, net_p_high
