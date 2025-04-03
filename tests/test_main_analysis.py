@@ -1,11 +1,15 @@
+import logging
 import math
 
 import numpy as np
 import pandas as pd
+import polars as pl
+import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.constants import TIMESTAMP_COL
-from wind_up.main_analysis import _toggle_pairing_filter
+from tests.test_data.hot.data_loader import WindUpComponents
+from wind_up.constants import TIMESTAMP_COL, DataColumns
+from wind_up.main_analysis import _filter_turbine_df_by_other_turbine_dfs, _toggle_pairing_filter
 
 
 def test_toggle_pairing_filter_method_none() -> None:
@@ -119,3 +123,29 @@ def test_toggle_pairing_filter_method_any_within_timedelta() -> None:
     )
     assert_frame_equal(filt_pre_df, exp_filt_pre_df)
     assert_frame_equal(filt_post_df, exp_filt_post_df)
+
+
+def test__filter_turbine_df_by_other_turbine_dfs(
+    hot_windup_components: WindUpComponents, caplog: pytest.LogCaptureFixture
+) -> None:
+    wf_df = hot_windup_components.scada_df.copy().reset_index().set_index([DataColumns.turbine_name, TIMESTAMP_COL])
+    cfg = hot_windup_components.wind_up_config
+
+    test_turbine_name = "T01"
+    test_pw_col = DataColumns.active_power_mean
+    test_ws_col = DataColumns.wind_speed_mean
+
+    test_df = pl.from_pandas(wf_df.loc[test_turbine_name].reset_index())
+
+    with caplog.at_level(logging.INFO):
+        actual = _filter_turbine_df_by_other_turbine_dfs(
+            wind_up_cfg=cfg,
+            test_turbine_name=test_turbine_name,
+            test_df=test_df,
+            pw_col=test_pw_col,
+            ws_col=test_ws_col,
+            windfarm_df=pl.from_pandas(wf_df.reset_index()),
+        )
+
+    assert "filter_all_test_wtgs_together T13 set 2948 rows [1.5%] to NA" in caplog.text
+    assert isinstance(actual, pl.DataFrame)

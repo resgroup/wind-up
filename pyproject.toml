@@ -37,6 +37,7 @@ dependencies = [
     'toml',
     'tqdm',
     'utm',
+    'polars',
 ]
 
 [project.urls]

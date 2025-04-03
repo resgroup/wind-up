@@ -81,5 +81,6 @@ output/
 /tests/**/*.log
 /tests/test_data/wedowind/Pitch Angle/
 /tests/test_data/wedowind/Vortex Generator/
+/tests/test_data/smarteole/SMARTEOLE-WFC-open-dataset.zip
 # matplotlib testing
 **/result_images/
