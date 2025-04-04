@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+from enum import Enum
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -175,3 +176,78 @@ def calc_net_uplift(results_per_test_df: pd.DataFrame, *, confidence: float) -> 
     p_high = 1 - p_low
     net_p_high = net_p50 + norm.ppf(p_high) * net_unc
     return net_p50, net_p_low, net_p_high
+
+
+class _InputColumns(str, Enum):
+    uncertainty_one_sigma = "sigma"
+    p50_uplift = "uplift_frc"
+    test_wtg = "test_wtg"
+    is_ref = "is_ref"
+
+    def __str__(self) -> str:
+        return self.value
+
+    def __repr__(self) -> str:
+        return repr(self.value)
+
+
+def calculate_total_uplift_of_test_turbines(combined_results_df: pd.DataFrame) -> pd.Series:
+    """Calculate the wind farm uplift and confidence bounds when all test turbine uplift results are combined.
+
+    :param combined_results_df:
+        dataframe with columns...
+            - test_wtg: test turbine name
+            - p50_uplift: P50 uplift fraction (float)
+            - p95_uplift: P95 uplift fraction (float)
+            - p5_uplift: P5 uplift fraction (float)
+            - sigma: one sigma uncertainty fraction (float)
+            - sigma_uncorr: one sigma uncertainty uncorrelated fraction (float)
+            - sigma_corr: one sigma uncertainty correlated fraction (float)
+            - ref_count: number of references (int)
+            - ref_list: list of references (str)
+            - is_ref: is the test turbine a reference (bool)
+
+    :return:
+    """
+    _df = combined_results_df.copy().query(f"{_InputColumns.is_ref} == False")
+
+    if _df.shape[0] <= 1:
+        _msg = "combined_results_df must have more than one test turbine"
+        raise ValueError(_msg)
+
+    uncertainty_weight_col = "unc_weight"
+    _df[uncertainty_weight_col] = 1 / (_df[_InputColumns.uncertainty_one_sigma] ** 2)
+
+    def _agg_uplift(x: pd.Series, dataframe: pd.DataFrame) -> float:
+        return (x * dataframe.loc[x.index, uncertainty_weight_col]).sum() / dataframe.loc[
+            x.index, uncertainty_weight_col
+        ].sum()
+
+    def _agg_sigma_uncorr(x: pd.Series, dataframe: pd.DataFrame) -> float:
+        return np.sqrt(
+            (
+                (
+                    x
+                    * dataframe.loc[x.index, uncertainty_weight_col]
+                    / dataframe.loc[x.index, uncertainty_weight_col].sum()
+                )
+                ** 2
+            ).sum()
+        )
+
+    wf_results = pd.Series()
+    wf_results["p50_uplift"] = _agg_uplift(_df[_InputColumns.p50_uplift], _df)
+    wf_results["sigma_uncorr"] = _agg_sigma_uncorr(_df[_InputColumns.uncertainty_one_sigma], _df)
+    wf_results["sigma_corr"] = _agg_uplift(_df[_InputColumns.uncertainty_one_sigma], _df)
+    wf_results["wtg_count"] = _df[_InputColumns.p50_uplift].agg(len)
+    wf_results["wtg_list"] = ", ".join(_df[_InputColumns.test_wtg])
+    wf_results[_InputColumns.uncertainty_one_sigma] = (wf_results["sigma_uncorr"] + wf_results["sigma_corr"]) / 2
+
+    confidence = 0.9
+    wf_results[f"p{100 * (1 - ((1 - confidence) / 2)):.0f}_uplift"] = (
+        wf_results["p50_uplift"] + norm.ppf((1 - confidence) / 2) * wf_results[_InputColumns.uncertainty_one_sigma]
+    )
+    wf_results[f"p{100 * ((1 - confidence) / 2):.0f}_uplift"] = (
+        wf_results["p50_uplift"] + norm.ppf(1 - (1 - confidence) / 2) * wf_results[_InputColumns.uncertainty_one_sigma]
+    )
+    return wf_results

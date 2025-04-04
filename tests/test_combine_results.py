@@ -1,9 +1,10 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.combine_results import combine_results
+from wind_up.combine_results import _InputColumns, calculate_total_uplift_of_test_turbines, combine_results
 
 
 def calc_expected_combine_results(trdf: pd.DataFrame) -> pd.DataFrame:
@@ -90,3 +91,44 @@ def test_brt_t16_pitch_exclude_refs() -> None:
     tdf = combine_results(trdf=trdf, auto_choose_refs=False, exclude_refs=["BRT_T02", "BRT_T03", "BRT_T04", "BRT_T14"])
     tdf = tdf[edf.columns.tolist()]
     assert_frame_equal(edf, tdf)
+
+
+class TestTotalTestTurbinesUplift:
+    def test_not_enough_test_turbines_to_combine(self) -> None:
+        _df = pd.DataFrame(
+            data={
+                _InputColumns.test_wtg: ["test1", "ref1"],
+                _InputColumns.is_ref: [False, True],
+                _InputColumns.p50_uplift: [0.1, 0.0],
+                _InputColumns.uncertainty_one_sigma: [0.1, 0.0],
+            },
+        )
+        with pytest.raises(ValueError, match="combined_results_df must have more than one test turbine"):
+            calculate_total_uplift_of_test_turbines(_df)
+
+    def test_successfully_calculates_uplift(self) -> None:
+        test_turbine_1 = "test_01"
+        test_turbine_2 = "test_02"
+
+        _df = pd.DataFrame(
+            data={
+                _InputColumns.test_wtg: [test_turbine_1, test_turbine_2, "ref_01", "ref_02"],
+                _InputColumns.is_ref: [False, False, True, True],
+                _InputColumns.p50_uplift: [-0.31, 1.5, 0.0, 0.0],
+                _InputColumns.uncertainty_one_sigma: [0.75, 0.36, 0.0, 0.0],
+            },
+        )
+        actual = calculate_total_uplift_of_test_turbines(_df)
+        expected = pd.Series(
+            {
+                "p50_uplift": 1.161066319895969,
+                "sigma_uncorr": 0.3245483006885785,
+                "sigma_corr": 0.4330299089726917,
+                "wtg_count": 2.0,
+                "wtg_list": f"{test_turbine_1}, {test_turbine_2}",
+                "sigma": 0.3787891048306351,
+                "p95_uplift": 0.5380136869655971,
+                "p5_uplift": 1.7841189528263406,
+            }
+        )
+        pd.testing.assert_series_equal(actual, expected)
