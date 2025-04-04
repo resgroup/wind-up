@@ -18,6 +18,7 @@ SCATTER_MARKERSCALE = 4
 class DataColumns:
     """Enum-like class for column names in the data files."""
 
+    timestamp = "TimeStamp_StartFormat"
     turbine_name = "TurbineName"
     active_power_mean = "ActivePowerMean"
     active_power_sd = "ActivePowerSD"
@@ -34,7 +35,7 @@ class DataColumns:
     @classmethod
     def all(cls: type["DataColumns"]) -> list[str]:
         """Return values of all class attributes that are not private."""
-        return [v for k, v in vars(cls).items() if not k.startswith("_") and k != "all"]
+        return [v for k, v in vars(cls).items() if not k.startswith("_") and k not in {"all", "timestamp"}]
 
 
 DATA_UNIT_DEFAULTS = {
