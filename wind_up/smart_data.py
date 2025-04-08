@@ -185,13 +185,12 @@ def load_smart_scada_and_md_from_file(
     logger.info(
         f"running load_smart_scada_and_md_from_file for {first_datetime_utc_start} to {last_datetime_utc_start}"
     )
-    md = metadata_df
 
     month_start_list_no_tz, last_smart_dt_no_tz, smart_tz, smart_tf = calc_month_list_and_time_info(
         asset_name=asset_name,
         first_datetime_utc_start=first_datetime_utc_start,
         last_datetime_utc_start=last_datetime_utc_start,
-        md=md,
+        md=metadata_df,
         timebase_s=timebase_s,
     )
     scada_raw = check_and_convert_scada_raw(
@@ -204,4 +203,4 @@ def load_smart_scada_and_md_from_file(
     )
 
     logger.info(f"finished load_smart_scada_and_md for {first_datetime_utc_start} to {last_datetime_utc_start}")
-    return scada_raw, md
+    return scada_raw, metadata_df

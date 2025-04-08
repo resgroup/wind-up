@@ -1,3 +1,5 @@
+import warnings
+
 import pandas as pd
 from matplotlib import pyplot as plt
 
@@ -13,28 +15,30 @@ def plot_diff_to_north_ref_wd(
     loop_count: int,
     plot_cfg: PlotConfig,
 ) -> None:
-    plt.figure()
-    plt.plot(wtg_df.index, wtg_df[f"yaw_diff_to_{north_ref_wd_col}"], label=f"yaw_diff_to_{north_ref_wd_col}")
-    plt.plot(wtg_df.index, wtg_df[f"filt_diff_to_{north_ref_wd_col}"], label=f"filt_diff_to_{north_ref_wd_col}")
-    plt.plot(
-        wtg_df.index,
-        wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"],
-        label=f"short_rolling_diff_to_{north_ref_wd_col}",
-    )
-    plt.plot(
-        wtg_df.index,
-        wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"],
-        label=f"long_rolling_diff_to_{north_ref_wd_col}",
-    )
-    plt.grid()
-    plt.legend()
-    title = f"{wtg_name} diff to {north_ref_wd_col} loop_count={loop_count}"
-    plt.title(title)
-    plt.xlabel("datetime")
-    plt.ylabel(f"yaw angle diff to {north_ref_wd_col} [deg]")
-    plt.tight_layout()
-    plt.savefig(plot_cfg.plots_dir / wtg_name / f"{title}.png")
-    plt.close()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Creating legend with loc")
+        plt.figure()
+        plt.plot(wtg_df.index, wtg_df[f"yaw_diff_to_{north_ref_wd_col}"], label=f"yaw_diff_to_{north_ref_wd_col}")
+        plt.plot(wtg_df.index, wtg_df[f"filt_diff_to_{north_ref_wd_col}"], label=f"filt_diff_to_{north_ref_wd_col}")
+        plt.plot(
+            wtg_df.index,
+            wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"],
+            label=f"short_rolling_diff_to_{north_ref_wd_col}",
+        )
+        plt.plot(
+            wtg_df.index,
+            wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"],
+            label=f"long_rolling_diff_to_{north_ref_wd_col}",
+        )
+        plt.grid()
+        plt.legend()
+        title = f"{wtg_name} diff to {north_ref_wd_col} loop_count={loop_count}"
+        plt.title(title)
+        plt.xlabel("datetime")
+        plt.ylabel(f"yaw angle diff to {north_ref_wd_col} [deg]")
+        plt.tight_layout()
+        plt.savefig(plot_cfg.plots_dir / wtg_name / f"{title}.png")
+        plt.close()
 
 
 def plot_yaw_diff_vs_power(wtg_df: pd.DataFrame, *, wtg_name: str, north_ref_wd_col: str, plot_cfg: PlotConfig) -> None:
