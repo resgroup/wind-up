@@ -178,9 +178,9 @@ def calc_net_uplift(results_per_test_df: pd.DataFrame, *, confidence: float) -> 
     return net_p50, net_p_low, net_p_high
 
 
-class _InputColumns(str, Enum):
+class _CombinedResultsCols(str, Enum):
     uncertainty_one_sigma = "sigma"
-    p50_uplift = "uplift_frc"
+    p50_uplift = "p50_uplift"
     test_wtg = "test_wtg"
     is_ref = "is_ref"
 
@@ -191,8 +191,8 @@ class _InputColumns(str, Enum):
         return repr(self.value)
 
 
-def calculate_total_uplift_of_test_turbines(combined_results_df: pd.DataFrame) -> pd.Series:
-    """Calculate the wind farm uplift and confidence bounds when all test turbine uplift results are combined.
+def _calculate_total_uplift_of_turbine_group(combined_results_df: pd.DataFrame) -> pd.Series:
+    """Calculate the uplift and confidence bounds when results for a group of turbines are combined.
 
     :param combined_results_df:
         dataframe with columns...
@@ -209,14 +209,19 @@ def calculate_total_uplift_of_test_turbines(combined_results_df: pd.DataFrame) -
 
     :return:
     """
-    _df = combined_results_df.copy().query(f"{_InputColumns.is_ref} == False")
+    _df = combined_results_df.copy()
+
+    # confirm _InputColumns.is_ref is the same value for all rows
+    if len(_df[_CombinedResultsCols.is_ref].value_counts()) != 1:
+        msg = f"{_CombinedResultsCols.is_ref} must be the same value for all rows"
+        raise ValueError(msg)
 
     if _df.shape[0] <= 1:
-        _msg = "combined_results_df must have more than one test turbine"
+        _msg = "combined_results_df must have more than one turbine"
         raise ValueError(_msg)
 
     uncertainty_weight_col = "unc_weight"
-    _df[uncertainty_weight_col] = 1 / (_df[_InputColumns.uncertainty_one_sigma] ** 2)
+    _df[uncertainty_weight_col] = 1 / (_df[_CombinedResultsCols.uncertainty_one_sigma] ** 2)
 
     def _agg_uplift(x: pd.Series, dataframe: pd.DataFrame) -> float:
         return (x * dataframe.loc[x.index, uncertainty_weight_col]).sum() / dataframe.loc[
@@ -235,19 +240,52 @@ def calculate_total_uplift_of_test_turbines(combined_results_df: pd.DataFrame) -
             ).sum()
         )
 
-    wf_results = pd.Series()
-    wf_results["p50_uplift"] = _agg_uplift(_df[_InputColumns.p50_uplift], _df)
-    wf_results["sigma_uncorr"] = _agg_sigma_uncorr(_df[_InputColumns.uncertainty_one_sigma], _df)
-    wf_results["sigma_corr"] = _agg_uplift(_df[_InputColumns.uncertainty_one_sigma], _df)
-    wf_results["wtg_count"] = _df[_InputColumns.p50_uplift].agg(len)
-    wf_results["wtg_list"] = ", ".join(_df[_InputColumns.test_wtg])
-    wf_results[_InputColumns.uncertainty_one_sigma] = (wf_results["sigma_uncorr"] + wf_results["sigma_corr"]) / 2
+    group_results = pd.Series()
+    group_results["p50_uplift"] = _agg_uplift(_df[_CombinedResultsCols.p50_uplift], _df)
+    group_results["sigma_uncorr"] = _agg_sigma_uncorr(_df[_CombinedResultsCols.uncertainty_one_sigma], _df)
+    group_results["sigma_corr"] = _agg_uplift(_df[_CombinedResultsCols.uncertainty_one_sigma], _df)
+    group_results["wtg_count"] = _df[_CombinedResultsCols.p50_uplift].agg(len)
+    group_results["wtg_list"] = ", ".join(sorted(_df[_CombinedResultsCols.test_wtg]))
+    group_results[_CombinedResultsCols.uncertainty_one_sigma] = (
+        group_results["sigma_uncorr"] + group_results["sigma_corr"]
+    ) / 2
 
     confidence = 0.9
-    wf_results[f"p{100 * (1 - ((1 - confidence) / 2)):.0f}_uplift"] = (
-        wf_results["p50_uplift"] + norm.ppf((1 - confidence) / 2) * wf_results[_InputColumns.uncertainty_one_sigma]
+    group_results[f"p{100 * (1 - ((1 - confidence) / 2)):.0f}_uplift"] = (
+        group_results["p50_uplift"]
+        + norm.ppf((1 - confidence) / 2) * group_results[_CombinedResultsCols.uncertainty_one_sigma]
     )
-    wf_results[f"p{100 * ((1 - confidence) / 2):.0f}_uplift"] = (
-        wf_results["p50_uplift"] + norm.ppf(1 - (1 - confidence) / 2) * wf_results[_InputColumns.uncertainty_one_sigma]
+    group_results[f"p{100 * ((1 - confidence) / 2):.0f}_uplift"] = (
+        group_results["p50_uplift"]
+        + norm.ppf(1 - (1 - confidence) / 2) * group_results[_CombinedResultsCols.uncertainty_one_sigma]
     )
-    return wf_results
+    return group_results
+
+
+def calculate_total_uplift_of_test_and_ref_turbines(combined_results_df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate the wind farm uplift and confidence bounds when all test turbine uplift results are combined.
+
+    Also does the same calculation using all reference turbines (expected results is 0% uplift).
+
+    :param combined_results_df:
+        dataframe with columns...
+            - test_wtg: test turbine name
+            - p50_uplift: P50 uplift fraction (float)
+            - p95_uplift: P95 uplift fraction (float)
+            - p5_uplift: P5 uplift fraction (float)
+            - sigma: one sigma uncertainty fraction (float)
+            - sigma_uncorr: one sigma uncertainty uncorrelated fraction (float)
+            - sigma_corr: one sigma uncertainty correlated fraction (float)
+            - ref_count: number of references (int)
+            - ref_list: list of references (str)
+            - is_ref: is the test turbine a reference (bool)
+
+    :return:
+    """
+    test_wtgs_results = _calculate_total_uplift_of_turbine_group(
+        combined_results_df.query(f"{_CombinedResultsCols.is_ref} == False")
+    )
+    ref_wtgs_results = _calculate_total_uplift_of_turbine_group(
+        combined_results_df.query(f"{_CombinedResultsCols.is_ref} == True")
+    )
+    return pd.DataFrame([test_wtgs_results, ref_wtgs_results], index=pd.Index(["test", "ref"], name="role"))
