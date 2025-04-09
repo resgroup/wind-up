@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-from wind_up.plots.combine_results_plots import plot_combine_results
+from wind_up.plots.combine_results_plots import plot_combined_results, plot_testref_and_combined_results
 from wind_up.result_manager import result_manager
 
 if TYPE_CHECKING:
@@ -143,7 +143,7 @@ def combine_results(
     tdf = tdf[cols]
 
     if plot_config is not None:
-        plot_combine_results(trdf=trdf, tdf=tdf, plot_cfg=plot_config)
+        plot_testref_and_combined_results(trdf=trdf, tdf=tdf, plot_cfg=plot_config)
 
     return tdf
 
@@ -262,7 +262,9 @@ def _calculate_total_uplift_of_turbine_group(combined_results_df: pd.DataFrame) 
     return group_results
 
 
-def calculate_total_uplift_of_test_and_ref_turbines(combined_results_df: pd.DataFrame) -> pd.DataFrame:
+def calculate_total_uplift_of_test_and_ref_turbines(
+    combined_results_df: pd.DataFrame, plot_cfg: PlotConfig | None = None
+) -> pd.DataFrame:
     """Calculate the wind farm uplift and confidence bounds when all test turbine uplift results are combined.
 
     Also does the same calculation using all reference turbines (expected results is 0% uplift).
@@ -288,4 +290,9 @@ def calculate_total_uplift_of_test_and_ref_turbines(combined_results_df: pd.Data
     ref_wtgs_results = _calculate_total_uplift_of_turbine_group(
         combined_results_df.query(f"{_CombinedResultsCols.is_ref} == True")
     )
-    return pd.DataFrame([test_wtgs_results, ref_wtgs_results], index=pd.Index(["test", "ref"], name="role"))
+    wf_results = pd.DataFrame([test_wtgs_results, ref_wtgs_results], index=pd.Index(["test", "ref"], name="role"))
+
+    if plot_cfg is not None:
+        plot_combined_results(tdf=wf_results, plot_cfg=plot_cfg)
+
+    return wf_results
