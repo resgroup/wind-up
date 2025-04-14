@@ -81,6 +81,7 @@ def plot_input_data_timeline(
     figsize: tuple[int, int] | None = None,
     height_ratios: tuple[int, int] | None = None,
     save_to_folder: Path | None = None,
+    show_plots: bool = True,
     scada_data_column_for_power: str = DataColumns.active_power_mean,
     scada_data_column_for_yaw_angle: str = DataColumns.yaw_angle_mean,
 ) -> plt.Figure:
@@ -92,6 +93,7 @@ def plot_input_data_timeline(
     :param figsize: size of the plot figure, if `None` it will be auto-sized based on the number of turbines
     :param height_ratios: ratios for the two subplots, if `None` it will be auto-sized based on the number of turbines
     :param save_to_folder: directory in which to save the plot
+    :param show_plots: whether to show the interactive plot or not
     :param scada_data_column_for_power: column name in the wind farm DataFrame to use for power data coverage plotting
     :param scada_data_column_for_yaw_angle: column name in the wind farm DataFrame to use for yaw data coverage plotting
     :return: figure object
@@ -285,5 +287,8 @@ def plot_input_data_timeline(
         if not save_to_folder.is_dir():
             save_to_folder.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_to_folder / "input_data_timeline_fig.png")
+
+    if not show_plots:
+        plt.close(fig)
 
     return fig

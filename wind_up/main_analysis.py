@@ -774,10 +774,6 @@ def run_wind_up_analysis(
     random_seed: int = RANDOM_SEED,
 ) -> pd.DataFrame:
     """Run a wind up analysis."""
-    plot_input_data_timeline(
-        assessment_inputs=inputs, save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None
-    )
-
     preprocess_warning_counts = len(result_manager.stored_warnings)
     result_manager.stored_warnings = []
 
@@ -918,6 +914,12 @@ def run_wind_up_analysis(
             except KeyError:
                 pass
             logger.info(f"finished analysing {test_name} {ref_name}\n")
+
+    plot_input_data_timeline(
+        assessment_inputs=inputs,
+        save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None,
+        show_plots=inputs.plot_cfg.show_plots,
+    )
 
     results_per_test_ref_df.to_csv(
         cfg.out_dir / f"{cfg.assessment_name}_results_per_test_ref_"
