@@ -90,7 +90,7 @@ def _define_wind_up_cfg(analysis_timebase_s: int, analysis_output_dir: Path) -> 
     )
 
 
-def _create_config(tmp_path: str) -> AssessmentInputs:
+def _create_config(tmp_path: Path) -> AssessmentInputs:
     analysis_timebase_s = 600
     reanalysis_file_path = SMARTEOLE_DATA_DIR / "ERA5T_50.00N_2.75E_100m_1hr_20200201_20200531.parquet"
 

@@ -178,6 +178,10 @@ sequence = [
     { cmd = "coverage report -m" },
 ]
 
+[tool.poe.tasks.all-fast]
+help = "Run all required pre-push commands but skips marked slow tests"
+sequence = [{ ref = "lint" }, { ref = "test-fast" }]
+
 [tool.poe.tasks.all]
 help = "Run all required pre-push commands"
 sequence = [{ ref = "lint" }, { ref = "test" }]

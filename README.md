@@ -39,7 +39,8 @@ source .venv/Scripts/activate  # or .venv/bin/activate on linux or ".venv/Script
 # install the package in editable mode with the dev dependencies
 pip install -e .[dev] # or .[all] if you want examples dependencies as well or .[examples] if you want only examples dependencies
 ```
-Use `poe all` to run all required pre-push commands (make sure the virtual environment is activated)
+Use `poe all` to run all required pre-push commands (make sure the virtual environment is activated) or to skip slow 
+tests use `poe all-fast`.
 
 ## Running tests
 Install dev dependencies and use `poe test` to run unit tests (make sure the virtual environment is activated)

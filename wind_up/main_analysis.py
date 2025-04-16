@@ -25,6 +25,7 @@ from wind_up.long_term import calc_lt_dfs_raw_filt
 from wind_up.northing import check_wtg_northing
 from wind_up.plots.data_coverage_plots import plot_detrend_data_cov, plot_pre_post_data_cov
 from wind_up.plots.detrend_plots import plot_apply_wsratio_v_wd_scen
+from wind_up.plots.input_data import plot_input_data_timeline
 from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post, print_filter_stats
 from wind_up.plots.yaw_direction_plots import plot_yaw_direction_pre_post
 from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
@@ -775,6 +776,12 @@ def run_wind_up_analysis(
     """Run a wind up analysis."""
     preprocess_warning_counts = len(result_manager.stored_warnings)
     result_manager.stored_warnings = []
+
+    plot_input_data_timeline(
+        assessment_inputs=inputs,
+        save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None,
+        show_plots=inputs.plot_cfg.show_plots,
+    )
 
     wf_df = inputs.wf_df
     pc_per_ttype = inputs.pc_per_ttype
