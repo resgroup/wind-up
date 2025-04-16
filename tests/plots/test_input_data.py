@@ -172,6 +172,8 @@ class TestInputDataTimeline:
 
         plot_input_data_timeline(assessment_inputs)
 
+    @pytest.mark.slow
+    @pytest.mark.filterwarnings("ignore")
     def test_prepost_not_set_on_wu_cfg(self, smarteole_assessment_inputs: AssessmentInputs) -> None:
         """Test that a ValueError is raised if prepost is not set on the configuration."""
 
