@@ -42,7 +42,7 @@ def _validate_data_within_exclusions(
         _data = _series.loc[mask].droplevel(level=DataColumns.turbine_name, axis=0).sort_index()
         if _data[exclusion[1] : exclusion[2]].notna().any():  # type: ignore[misc]
             _msg = f"Data is not all NaN within exclusion period {exclusion}"
-            raise ValueError(_msg)
+            logger.warning(_msg)
 
 
 def _plot_exclusion(
