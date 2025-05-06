@@ -1,6 +1,6 @@
 [project]
 name = "res-wind-up"
-version = "0.2.1"
+version = "0.2.2"
 authors = [
     { name = "Alex Clerc", email = "alex.clerc@res-group.com" }
 ]
