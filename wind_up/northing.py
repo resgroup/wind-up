@@ -67,6 +67,8 @@ def apply_northing_corrections(
     :return: wind farm SCADA data with northing corrected yaw direction
     """
     wf_df = wf_df.copy()
+    yawanglemean_nan_idx = wf_df.loc[wf_df["YawAngleMean"].isna()].index
+
     northed_col = calc_northed_col_name(north_ref_wd_col)
 
     if plot_cfg is not None:
@@ -113,6 +115,7 @@ def apply_northing_corrections(
             if "YawAngleMax" in wf_df.columns:
                 wf_df.loc[df_idx, "YawAngleMax"] = pd.NA
     logger.info(f"applied {len_corrs} northing corrections")
+    wf_df.loc[yawanglemean_nan_idx, northed_col] = np.nan
     wf_df["YawAngleMean"] = wf_df[northed_col]
     if plot_cfg is not None:
         plot_and_print_northing_error(
