@@ -925,4 +925,5 @@ def run_wind_up_analysis(
         cfg.out_dir / f"{cfg.assessment_name}_results_per_test_ref_"
         f"{pd.Timestamp.now('UTC').strftime('%Y%m%d_%H%M%S')}.csv",
     )
+    cfg.save_json()
     return results_per_test_ref_df

@@ -1,4 +1,11 @@
+import copy
+import datetime as dt
+import json
+import logging
+from pathlib import Path
+
 import pandas as pd
+import pytest
 
 from wind_up.models import PrePost, WindUpConfig
 
@@ -104,3 +111,44 @@ def test_turbine_get_latlongs(test_homer_config: WindUpConfig) -> None:
     cfg = test_homer_config
     assert cfg.asset.wtgs[0].get_latlongs() == [(-58.60364145072843, 103.6841410289202052)]
     assert cfg.asset.wtgs[1].get_latlongs() == [(-58.60261454305449, 103.688364968451364)]
+
+
+class TestWindUpConfigSaveJson:
+    def test_fp_extension_is_not_dot_json(self, test_marge_config: WindUpConfig) -> None:
+        conf = copy.deepcopy(test_marge_config)
+        with pytest.raises(ValueError, match="file_path must end with .json"):
+            conf.save_json(file_path=Path("is_not_a_json_file_extension.txt"))
+
+    def test_saves_as_expected(
+        self, test_marge_config: WindUpConfig, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        conf = copy.deepcopy(test_marge_config)
+
+        # fake exclusions / northing corrections to test the serialization
+        conf.yaw_data_exclusions_utc = [
+            (
+                "ALL",
+                dt.datetime(2000, 1, 1, 0, 0, tzinfo=dt.timezone.utc),
+                dt.datetime(2000, 1, 1, 15, 10, tzinfo=dt.timezone.utc),
+            )
+        ]
+        conf.exclusion_periods_utc = [
+            (
+                "ALL",
+                dt.datetime(2000, 1, 1, 0, 0, tzinfo=dt.timezone.utc),
+                dt.datetime(2000, 1, 1, 15, 10, tzinfo=dt.timezone.utc),
+            )
+        ]
+        conf.northing_corrections_utc = [("ALL", dt.datetime(2000, 1, 1, 0, 40, tzinfo=dt.timezone.utc), 15)]
+
+        fp = tmp_path / "config.json"
+
+        with caplog.at_level(logging.INFO):
+            conf.save_json(file_path=fp)
+
+        assert f"Saved WindUpConfig to {fp}" in caplog.text
+
+        # read the file back and ensure it parses correctly into a WindUpConfig
+        with fp.open() as f:
+            data = json.load(f)
+            WindUpConfig.model_validate(data)
