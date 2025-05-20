@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
 import pandas as pd
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 from wind_up.backporting import strict_zip
 from wind_up.constants import OUTPUT_DIR
@@ -56,13 +58,33 @@ class TurbineType(BaseModel):
     )
 
 
+def _validate_lat(value: float | None) -> float:
+    v = np.nan if value is None else value
+    min_value = -90
+    max_value = 90
+    if v < min_value or v > max_value:
+        err_msg = f"Latitude {v} is out of range"
+        raise ValueError(err_msg)
+    return v
+
+
+def _validate_lon(value: float | None) -> float:
+    v = np.nan if value is None else value
+    min_value = -180
+    max_value = 180
+    if v < min_value or v > max_value:
+        err_msg = f"Latitude {v} is out of range"
+        raise ValueError(err_msg)
+    return v
+
+
 class Turbine(BaseModel):
     """Turbine model."""
 
     name: str = Field(description="Turbine name", min_length=2)
     turbine_type: TurbineType
-    latitude: float = Field(default=np.nan, ge=-90, le=90)
-    longitude: float = Field(default=np.nan, ge=-180, le=180)
+    latitude: Annotated[float, BeforeValidator(_validate_lat)] = np.nan
+    longitude: Annotated[float, BeforeValidator(_validate_lon)] = np.nan
 
     def get_latlongs(self: Turbine) -> list[tuple[float, float]]:
         """Get the latitude and longitude of the turbine."""
@@ -456,6 +478,23 @@ class WindUpConfig(BaseModel):
             msg = "ref_wtgs or non_wtg_ref_names must be specified"
             raise ValueError(msg)
         return WindUpConfig.model_validate(cfg_dct)
+
+    def save_json(self, file_path: Path | None = None) -> None:
+        """Save WindUpConfig to a json file.
+
+        :param file_path: Path to json file
+        :return: None
+        """
+        file_path = file_path or (self.out_dir / f"config_{self.assessment_name}.json")
+        if not file_path.name.endswith(".json"):
+            err_msg = "file_path must end with .json"
+            raise ValueError(err_msg)
+        if not file_path.parent.exists():
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+        with file_path.open(mode="w") as f:
+            json_data = json.loads(self.model_dump_json().replace("NaN", "null"))  # required to serialize NaN
+            json.dump(json_data, f, indent=4)
+        logger.info(f"Saved WindUpConfig to {file_path}")
 
     def get_max_rated_power(self: WindUpConfig) -> float:
         """Get the maximum rated power out of all turbine types on the wind farm asset."""
