@@ -477,6 +477,7 @@ def main_wedowind_analysis(
         years_for_lt_distribution=1,
         years_for_detrend=1,
         ws_bin_width=1.0,
+        use_test_wtg_lt_distribution=True,
         analysis_first_dt_utc_start=key_dates.analysis_first_dt_utc_start,
         upgrade_first_dt_utc_start=key_dates.upgrade_first_dt_utc_start,
         analysis_last_dt_utc_start=key_dates.analysis_last_dt_utc_start,
