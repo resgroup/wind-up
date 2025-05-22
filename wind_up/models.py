@@ -215,7 +215,7 @@ class WindUpConfig(BaseModel):
     use_test_wtg_lt_distribution: bool = Field(
         description="If True the test turbine's data is used for the long term distribution, "
         "otherwise the whole wind farm is used",
-        default=True,
+        default=False,
     )
     out_dir: Path = Field(description="Directory to save assessment output to")
     test_wtgs: list[Turbine] = Field(description="List of test Turbine ids")
