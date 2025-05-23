@@ -207,6 +207,7 @@ def make_windup_features(analysis_name: str) -> None:
         years_for_lt_distribution=1,
         years_for_detrend=1,
         ws_bin_width=1.0,
+        use_test_wtg_lt_distribution=True,
         analysis_first_dt_utc_start=scada_df.index.min(),
         upgrade_first_dt_utc_start=scada_df.index.min() + (scada_df.index.max() - scada_df.index.min()) / 2,
         analysis_last_dt_utc_start=scada_df.index.max(),
