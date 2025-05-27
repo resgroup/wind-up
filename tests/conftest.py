@@ -18,15 +18,24 @@ CACHE_DIR = PROJECTROOT_DIR / "cache"
 
 def _set_legacy_datetimes(cfg: WindUpConfig) -> None:
     """Set the datetimes as they were prior to v0.3."""
-    cfg.prepost.pre_first_dt_utc_start = cfg.upgrade_first_dt_utc_start - dt.timedelta(
-        days=(cfg.years_offset_for_pre_period * 365.25)
+    test_is_toggle = cfg.toggle is not None
+    if test_is_toggle:
+        cfg.analysis_first_dt_utc_start = cfg.upgrade_first_dt_utc_start
+    else:
+        cfg.prepost.pre_first_dt_utc_start = cfg.upgrade_first_dt_utc_start - dt.timedelta(
+            days=(cfg.years_offset_for_pre_period * 365.25)
+        )
+        cfg.prepost.pre_last_dt_utc_start = cfg.analysis_last_dt_utc_start - dt.timedelta(
+            days=(cfg.years_offset_for_pre_period * 365.25)
+        )
+        cfg.analysis_first_dt_utc_start = cfg.prepost.pre_first_dt_utc_start
+    cfg.lt_last_dt_utc_start = (
+        cfg.upgrade_first_dt_utc_start - dt.timedelta(days=7) if test_is_toggle else cfg.prepost.pre_last_dt_utc_start
     )
-    cfg.prepost.pre_last_dt_utc_start = cfg.analysis_last_dt_utc_start - dt.timedelta(
-        days=(cfg.years_offset_for_pre_period * 365.25)
-    )
-    cfg.lt_last_dt_utc_start = cfg.prepost.pre_last_dt_utc_start
     cfg.lt_first_dt_utc_start = cfg.lt_last_dt_utc_start - dt.timedelta(days=(cfg.years_for_lt_distribution * 365.25))
     cfg.detrend_last_dt_utc_start = cfg.lt_last_dt_utc_start
+    if test_is_toggle and cfg.toggle.detrend_data_selection == "use_toggle_off_data":
+        cfg.detrend_last_dt_utc_start = cfg.analysis_last_dt_utc_start
     cfg.detrend_first_dt_utc_start = cfg.detrend_last_dt_utc_start - dt.timedelta(days=(cfg.years_for_detrend * 365.25))
     return cfg
 
