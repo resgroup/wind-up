@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from tests.conftest import TEST_CONFIG_DIR
 from wind_up.models import PrePost, WindUpConfig
 
 
@@ -18,7 +19,8 @@ def test_brt_asset_name(test_brt_t16_pitch: WindUpConfig) -> None:
     assert test_brt_t16_pitch.asset.name == "Bart Wind Farm"
 
 
-def test_datetimes_lsa_t13(test_lsa_t13_config: WindUpConfig) -> None:
+def test_legacy_datetimes_lsa_t13(test_lsa_t13_config: WindUpConfig) -> None:
+    """Legacy test of datetimes calculated when loading LSA T13 yaml."""
     cfg = test_lsa_t13_config
     assert isinstance(cfg.prepost, PrePost)
     assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00", tz="UTC")
@@ -29,6 +31,22 @@ def test_datetimes_lsa_t13(test_lsa_t13_config: WindUpConfig) -> None:
     assert cfg.analysis_last_dt_utc_start == pd.Timestamp("2022-07-20 23:50:00", tz="UTC")
     assert cfg.lt_first_dt_utc_start == pd.Timestamp("2018-07-20 23:50:00", tz="UTC")
     assert cfg.lt_last_dt_utc_start == pd.Timestamp("2021-07-20 17:50:00", tz="UTC")
+
+
+def test_datetimes_lsa_t13() -> None:
+    """Test datetimes calculated when loading LSA T13 yaml."""
+    cfg = WindUpConfig.from_yaml(TEST_CONFIG_DIR / "test_LSA_T13.yaml")
+    assert isinstance(cfg.prepost, PrePost)
+    assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00", tz="UTC")
+    assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp("2022-07-20 23:50:00", tz="UTC")
+    assert cfg.prepost.pre_first_dt_utc_start == pd.Timestamp("2020-09-30 00:00:00", tz="UTC")
+    assert cfg.prepost.pre_last_dt_utc_start == pd.Timestamp("2021-07-20 23:50:00", tz="UTC")
+    assert cfg.analysis_first_dt_utc_start == pd.Timestamp("2020-09-30 00:00:00", tz="UTC")
+    assert cfg.analysis_last_dt_utc_start == pd.Timestamp("2022-07-20 23:50:00", tz="UTC")
+    assert cfg.lt_first_dt_utc_start == pd.Timestamp("2018-07-20 23:50:00", tz="UTC")
+    assert cfg.lt_last_dt_utc_start == pd.Timestamp("2021-07-20 23:50:00", tz="UTC")
+    assert cfg.detrend_first_dt_utc_start == pd.Timestamp("2018-07-20 23:50:00", tz="UTC")
+    assert cfg.detrend_last_dt_utc_start == pd.Timestamp("2021-07-20 23:50:00", tz="UTC")
 
 
 def test_datetimes_brt_t16(test_brt_t16_pitch: WindUpConfig) -> None:
