@@ -17,7 +17,7 @@ CACHE_DIR = PROJECTROOT_DIR / "cache"
 
 
 def _set_legacy_datetimes(cfg: WindUpConfig) -> None:
-    """Set the datetimes as they were prior to v0.3."""
+    """Set the datetimes as they were prior to v0.3.0."""
     test_is_toggle = cfg.toggle is not None
     if test_is_toggle:
         cfg.analysis_first_dt_utc_start = cfg.upgrade_first_dt_utc_start
