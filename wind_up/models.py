@@ -412,9 +412,9 @@ class WindUpConfig(BaseModel):
                 "post_first_dt_utc_start": cfg_dct["upgrade_first_dt_utc_start"],
                 "post_last_dt_utc_start": cfg_dct["analysis_last_dt_utc_start"],
                 "pre_first_dt_utc_start": cfg_dct["upgrade_first_dt_utc_start"]
-                - dt.timedelta(days=(365.25 * cfg_dct["years_offset_for_pre_period"])),
+                - pd.DateOffset(years=cfg_dct["years_offset_for_pre_period"]),
                 "pre_last_dt_utc_start": cfg_dct["analysis_last_dt_utc_start"]
-                - dt.timedelta(days=(365.25 * cfg_dct["years_offset_for_pre_period"])),
+                - pd.DateOffset(years=cfg_dct["years_offset_for_pre_period"]),
             }
             cfg_dct["prepost"] = PrePost.model_validate(pre_post_dict)
             cfg_dct["analysis_first_dt_utc_start"] = cfg_dct["prepost"].pre_first_dt_utc_start
@@ -423,14 +423,14 @@ class WindUpConfig(BaseModel):
             if test_is_toggle
             else cfg_dct["prepost"].pre_last_dt_utc_start
         )
-        cfg_dct["lt_first_dt_utc_start"] = cfg_dct["lt_last_dt_utc_start"] - dt.timedelta(
-            days=(cfg_dct["years_for_lt_distribution"] * 365.25),
+        cfg_dct["lt_first_dt_utc_start"] = cfg_dct["lt_last_dt_utc_start"] - pd.DateOffset(
+            years=cfg_dct["years_for_lt_distribution"]
         )
         cfg_dct["detrend_last_dt_utc_start"] = cfg_dct["lt_last_dt_utc_start"]
         if test_is_toggle and cfg_dct["toggle"].get("detrend_data_selection", None) == "use_toggle_off_data":
             cfg_dct["detrend_last_dt_utc_start"] = cfg_dct["analysis_last_dt_utc_start"]
-        cfg_dct["detrend_first_dt_utc_start"] = cfg_dct["detrend_last_dt_utc_start"] - dt.timedelta(
-            days=(cfg_dct["years_for_detrend"] * 365.25),
+        cfg_dct["detrend_first_dt_utc_start"] = cfg_dct["detrend_last_dt_utc_start"] - pd.DateOffset(
+            years=cfg_dct["years_for_detrend"]
         )
 
         # check each test_wtg exists in asset.wtgs
