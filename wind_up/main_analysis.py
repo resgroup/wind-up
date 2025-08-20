@@ -26,7 +26,11 @@ from wind_up.northing import check_wtg_northing
 from wind_up.plots.data_coverage_plots import plot_detrend_data_cov, plot_pre_post_data_cov
 from wind_up.plots.detrend_plots import plot_apply_wsratio_v_wd_scen
 from wind_up.plots.input_data import plot_input_data_timeline
-from wind_up.plots.scada_funcs_plots import compare_ops_curves_pre_post, print_filter_stats
+from wind_up.plots.scada_funcs_plots import (
+    compare_active_and_reactive_power_pre_post,
+    compare_ops_curves_pre_post,
+    print_filter_stats,
+)
 from wind_up.plots.yaw_direction_plots import plot_yaw_direction_pre_post
 from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
 from wind_up.result_manager import result_manager
@@ -576,6 +580,17 @@ def _calc_test_ref_results(
     pre_df = pre_df.merge(ref_df, how="left", left_index=True, right_index=True)
     post_df = post_df.merge(ref_df, how="left", left_index=True, right_index=True)
 
+    compare_active_and_reactive_power_pre_post(
+        pre_df=pre_df,
+        post_df=post_df,
+        wtg_name=ref_name,
+        active_power_col=f"ref_{DataColumns.active_power_mean}",
+        reactive_power_col=f"ref_{DataColumns.reactive_power_mean}",
+        plot_cfg=plot_cfg,
+        sub_dir=f"{test_name}/{ref_name}",
+        is_toggle_test=cfg.toggle is not None,
+    )
+
     ref_ops_curve_shift_dict = _check_for_ops_curve_shift(
         pre_df,
         post_df,
@@ -852,6 +867,16 @@ def run_wind_up_analysis(
         )
 
         test_df, pre_df, post_df = pre_post_splitter.split(test_df, test_wtg_name=test_name)
+
+        compare_active_and_reactive_power_pre_post(
+            pre_df=pre_df,
+            post_df=post_df,
+            wtg_name=test_name,
+            active_power_col=f"test_{DataColumns.active_power_mean}",
+            reactive_power_col=f"test_{DataColumns.reactive_power_mean}",
+            plot_cfg=plot_cfg,
+            is_toggle_test=cfg.toggle is not None,
+        )
 
         test_ops_curve_shift_dict = _check_for_ops_curve_shift(
             pre_df,

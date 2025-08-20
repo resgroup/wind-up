@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from pathlib import Path
 
 import matplotlib as mpl
 import pytest
 
+from tests.test_data.hot.data_loader import WindUpComponents, construct_hot_windup_components, get_meta_and_scada_data
 from wind_up.constants import PROJECTROOT_DIR
 from wind_up.models import WindUpConfig
 
 mpl.use("Agg")
+
+logger = logging.getLogger(__name__)
 
 TEST_DATA_FLD = Path(__file__).parent / "test_data"
 TEST_CONFIG_DIR = TEST_DATA_FLD / "config"
@@ -85,3 +89,9 @@ def test_homer_with_t00_config() -> WindUpConfig:
     cfg.asset.wtgs[-1].latitude = -58.601587635380
     cfg.asset.wtgs[-1].longitude = 103.692588907983
     return cfg
+
+
+@pytest.fixture
+def hot_windup_components() -> WindUpComponents:
+    hot_data = get_meta_and_scada_data()
+    return construct_hot_windup_components(scada_df=hot_data.scada_df, metadata_df=hot_data.metadata_df)

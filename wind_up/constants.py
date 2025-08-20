@@ -20,6 +20,7 @@ class DataColumns:
 
     turbine_name = "TurbineName"
     active_power_mean = "ActivePowerMean"
+    reactive_power_mean = "ReactivePowerMean"
     active_power_sd = "ActivePowerSD"
     wind_speed_mean = "WindSpeedMean"
     wind_speed_sd = "WindSpeedSD"
@@ -32,14 +33,22 @@ class DataColumns:
     shutdown_duration = "ShutdownDuration"
 
     @classmethod
-    def all(cls: type["DataColumns"]) -> list[str]:
-        """Return values of all class attributes that are not private."""
-        return [v for k, v in vars(cls).items() if not k.startswith("_") and k != "all"]
+    def all(cls: type["DataColumns"], exclude: tuple = ()) -> list[str]:
+        """Return values of all class attributes that are not private.
+
+        :exclude: tuple of values to exclude from the returned list.
+        """
+        return [
+            v
+            for k, v in vars(cls).items()
+            if not k.startswith("_") and k != "all" and v not in exclude and v not in exclude
+        ]
 
 
 DATA_UNIT_DEFAULTS = {
     DataColumns.active_power_mean: "kW",
     DataColumns.active_power_sd: "kW",
+    DataColumns.reactive_power_mean: "kVAR",
     DataColumns.wind_speed_mean: "m/s",
     DataColumns.wind_speed_sd: "m/s",
     DataColumns.yaw_angle_mean: "deg",

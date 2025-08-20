@@ -49,8 +49,11 @@ class PrePostSplitter:
         """
         if (self.cfg.prepost is not None) and self.cfg.toggle is None:
             test_df = df.copy()
-            pre_df = df[df.index <= self.cfg.prepost.pre_last_dt_utc_start].copy()
-            post_df = df[df.index >= self.cfg.prepost.post_first_dt_utc_start].copy()
+            if isinstance(df.index[0], tuple):
+                # if df.index is a MultiIndex, we need to filter by the test_wtg_name
+                test_df = df.loc[test_wtg_name]
+            pre_df = test_df[test_df.index <= self.cfg.prepost.pre_last_dt_utc_start].copy()
+            post_df = test_df[test_df.index >= self.cfg.prepost.post_first_dt_utc_start].copy()
         elif (self.cfg.prepost is None) and self.cfg.toggle is not None:
             if not isinstance(self.toggle_df, pd.DataFrame):
                 raise ValueError("toggle_df must be a pd.DataFrame")  # noqa TRY003
