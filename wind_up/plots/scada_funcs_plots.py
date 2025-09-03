@@ -12,6 +12,7 @@ from tabulate import tabulate
 from wind_up.backporting import strict_zip
 from wind_up.constants import DATA_UNIT_DEFAULTS, SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
 from wind_up.plots.misc_plots import bubble_plot
+from wind_up.result_manager import result_manager
 
 if TYPE_CHECKING:
     from wind_up.models import PlotConfig, WindUpConfig
@@ -316,6 +317,97 @@ def plot_toggle_ops_curves_one_ttype_or_wtg(
     if plot_cfg.save_plots:
         plt.savefig(t_dir / f"{plot_title}.png")
     plt.close()
+
+
+def plot_toggle_active_vs_reactive_power(
+    input_df: pd.DataFrame,
+    *,
+    wtg_name: str,
+    toggle_name: str,
+    active_power_col: str,
+    reactive_power_col: str,
+    plot_cfg: PlotConfig,
+    sub_dir: str | None = None,
+) -> plt.Figure | None:
+    if reactive_power_col not in input_df.columns:
+        logger.warning(
+            "Column '%s' not found, skipping reactive vs active power plot for %s", reactive_power_col, wtg_name
+        )
+        return None
+    pd.set_option("future.no_silent_downcasting", True)  # noqa FBT003
+    if "toggle_on" not in input_df.columns or "toggle_off" not in input_df.columns:
+        df_off = input_df[input_df["test_toggle_off"].fillna(value=False).infer_objects(copy=False)]
+        df_on = input_df[input_df["test_toggle_on"].fillna(value=False).infer_objects(copy=False)]
+    else:
+        df_off = input_df[input_df["toggle_off"].fillna(value=False).infer_objects(copy=False)]
+        df_on = input_df[input_df["toggle_on"].fillna(value=False).infer_objects(copy=False)]
+
+    fig, ax = plt.subplots()
+    _add_scatter_plot(
+        ax=ax, scada_data=df_off, x_col=active_power_col, y_col=reactive_power_col, label=f"{toggle_name} OFF"
+    )
+    _add_scatter_plot(
+        ax=ax, scada_data=df_on, x_col=active_power_col, y_col=reactive_power_col, label=f"{toggle_name} ON"
+    )
+    ax.legend(loc="lower right", markerscale=SCATTER_MARKERSCALE)
+    plot_title = f"{wtg_name} reactive vs active power by {toggle_name} state"
+    ax.set_title(plot_title)
+    ax.grid()
+    if plot_cfg.show_plots:
+        plt.show()
+    if plot_cfg.save_plots:
+        t_dir = plot_cfg.plots_dir / wtg_name if sub_dir is None else plot_cfg.plots_dir / sub_dir
+        t_dir.mkdir(exist_ok=True, parents=True)
+        fig.savefig(t_dir / f"{plot_title}.png")
+    return None
+
+
+def compare_active_and_reactive_power_pre_post(
+    pre_df: pd.DataFrame,
+    post_df: pd.DataFrame,
+    *,
+    wtg_name: str,
+    active_power_col: str,
+    reactive_power_col: str,
+    plot_cfg: PlotConfig,
+    is_toggle_test: bool,
+    sub_dir: str | None = None,
+) -> None:
+    """Plot active vs reactive power
+
+    Distinguishes data pre- and post-upgrade or toggled on/off (depending on `is_toggle_test`).
+    """
+    if reactive_power_col not in pre_df.columns or reactive_power_col not in post_df.columns:
+        result_manager.warning(
+            f"Column '{reactive_power_col}' not found, skipping reactive vs active power plot for {wtg_name}"
+        )
+        return
+
+    if is_toggle_test:
+        plot_toggle_active_vs_reactive_power(
+            input_df=pd.concat([pre_df, post_df]),
+            wtg_name=wtg_name,
+            toggle_name="toggle",
+            active_power_col=active_power_col,
+            reactive_power_col=reactive_power_col,
+            plot_cfg=plot_cfg,
+            sub_dir=sub_dir,
+        )
+        return
+    pre_df_fake_toggle = pre_df.copy()
+    post_df_fake_toggle = post_df.copy()
+    pre_df_fake_toggle["test_toggle_off"] = True
+    post_df_fake_toggle["test_toggle_on"] = True
+    plot_toggle_active_vs_reactive_power(
+        input_df=pd.concat([pre_df_fake_toggle, post_df_fake_toggle]),
+        wtg_name=wtg_name,
+        toggle_name="upgrade",
+        active_power_col=active_power_col,
+        reactive_power_col=reactive_power_col,
+        plot_cfg=plot_cfg,
+        sub_dir=sub_dir,
+    )
+    return
 
 
 def compare_ops_curves_pre_post(

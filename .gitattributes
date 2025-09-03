@@ -1,2 +1,4 @@
 tests/test_data/smarteole/* filter=lfs diff=lfs merge=lfs -text
 tests/test_data/wedowind/Turbine_Upgrade_Dataset.zip filter=lfs diff=lfs merge=lfs -text
+tests/test_data/hot/scada/* filter=lfs diff=lfs merge=lfs -text
+tests/test_data/hot/reanalysis_data/ERA5T_57.50N_-3.25E_100m_1hr_20241231.parquet filter=lfs diff=lfs merge=lfs -text

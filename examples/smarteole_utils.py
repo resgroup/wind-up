@@ -56,7 +56,7 @@ class SmartEoleExtractor:
                 col_name = "_".join(parts[:-1])
             else:
                 wtg_id = parts[-2]
-                col_name = "_".join(parts[:-2] + [parts[-1]])
+                col_name = "_".join(parts[:-2] + [parts[-1]])  # noqa: RUF005
             return f"SMV{wtg_id}", col_name
 
         def _make_turbine_id_a_column(df: pd.DataFrame) -> pd.DataFrame:
@@ -119,7 +119,7 @@ class SmartEoleExtractor:
             )
             .reset_index(DataColumns.turbine_name)
             .pipe(_map_and_mask_cols)
-            .loc[:, DataColumns.all()]
+            .loc[:, DataColumns.all(exclude=(DataColumns.reactive_power_mean,))]
             .rename_axis(TIMESTAMP_COL, axis=0)
             .rename_axis(None, axis=1)
         )

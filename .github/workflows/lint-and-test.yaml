@@ -39,11 +39,13 @@ jobs:
       run: |
         python -m venv .venv
         source .venv/bin/activate
+        python -m pip install --upgrade pip setuptools wheel
         pip install .[dev]
     - name: 'update dependencies'
       if: steps.cache-venv.outputs.cache-hit == 'true'
       run: |
         source .venv/bin/activate
+        python -m pip install --upgrade pip setuptools wheel
         pip install -U .[dev]
     - name: "lint check & test"
       run: |

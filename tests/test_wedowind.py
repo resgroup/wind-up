@@ -20,8 +20,8 @@ def wedowind_expected_pitch_angle_results() -> pd.DataFrame:
         [
             {
                 "preprocess_warning_counts": 0,
-                "test_warning_counts": 6,
-                "test_ref_warning_counts": 3,
+                "test_warning_counts": 7,
+                "test_ref_warning_counts": 4,
                 "test_wtg": "Test",
                 "test_pw_col": "test_ActivePowerMean",
                 "ref": "Ref",
@@ -79,8 +79,8 @@ def wedowind_expected_vg_results() -> pd.DataFrame:
         [
             {
                 "preprocess_warning_counts": 0,
-                "test_warning_counts": 2,
-                "test_ref_warning_counts": 2,
+                "test_warning_counts": 3,
+                "test_ref_warning_counts": 3,
                 "test_wtg": "Test",
                 "test_pw_col": "test_pw_clipped",
                 "ref": "Ref",
