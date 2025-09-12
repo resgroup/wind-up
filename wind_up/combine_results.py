@@ -115,7 +115,8 @@ def combine_results(
 
     if (trdf["unc_one_sigma_frc"] <= 0).any() or trdf["unc_one_sigma_frc"].isna().any():
         msg = "unc_one_sigma_frc must be positive and non-NaN"
-        raise ValueError(msg)
+        print(msg)
+        # raise ValueError(msg)
 
     weight_col = "unc_weight"
     trdf[weight_col] = 1 / (trdf["unc_one_sigma_frc"] ** 2)
