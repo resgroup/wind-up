@@ -116,7 +116,27 @@ def check_and_convert_scada_raw(
     scada_raw.index = scada_raw.index.rename(TIMESTAMP_COL)
 
     # clip to originally requested datetime range
-    scada_raw = scada_raw.loc[first_datetime_utc_start:last_datetime_utc_start]
+    # add 1 day to last_datetime_utc_start to include the last timestamp
+    last_datetime_utc_start = last_datetime_utc_start + pd.Timedelta(seconds=timebase_s)
+    if first_datetime_utc_start not in scada_raw.index:
+        first_timestamp = scada_raw.index[scada_raw.index >= first_datetime_utc_start]
+        if len(first_timestamp) > 0:
+            first_timestamp = first_timestamp[0]
+        else:
+            first_timestamp = scada_raw.index.min()
+    else:
+        first_timestamp = first_datetime_utc_start
+
+    if last_datetime_utc_start not in scada_raw.index:
+        last_timestamp = scada_raw.index[scada_raw.index <= last_datetime_utc_start]
+        if len(last_timestamp) > 0:
+            last_timestamp = last_timestamp[-1]
+        else:
+            last_timestamp = scada_raw.index.max()
+    else:
+        last_timestamp = last_datetime_utc_start
+
+    scada_raw = scada_raw.loc[first_timestamp:last_timestamp]
 
     # verify there is only one row per turbine per timestamp
     scada_raw.set_index([scada_raw.index, "TurbineName"], verify_integrity=True)
