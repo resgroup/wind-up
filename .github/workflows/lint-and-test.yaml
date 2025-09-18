@@ -23,14 +23,15 @@ jobs:
     - uses: actions/checkout@v5
       with:
         lfs: 'true'
-    - name: "Install uv"
+    - name: Install uv and set the Python version
       uses: astral-sh/setup-uv@v6
       with:
         enable-cache: true
         cache-dependency-glob: "uv.lock"
+        python-version: ${{ matrix.python-version }}
     - name: 'Install project'
       run: |
-        uv sync --frozen --all-extras --python ${{ matrix.python-version }}
+        uv sync --frozen --all-extras --dev
     - name: "lint check"
       run: |
         uv run poe lint-check
@@ -46,14 +47,15 @@ jobs:
     - uses: actions/checkout@v5
       with:
         lfs: 'true'
-    - name: "Install uv"
+    - name: Install uv and set the Python version
       uses: astral-sh/setup-uv@v6
       with:
         enable-cache: true
         cache-dependency-glob: "uv.lock"
+        python-version: ${{ matrix.python-version }}
     - name: 'Install project'
       run: |
-        uv sync --frozen --all-extras --python ${{ matrix.python-version }}
+        uv sync --frozen --all-extras --dev
     - name: "test"
       run: |
         uv run poe test
