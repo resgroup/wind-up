@@ -134,7 +134,7 @@ def test_turbine_get_latlongs(test_homer_config: WindUpConfig) -> None:
 class TestWindUpConfigSaveJson:
     def test_fp_extension_is_not_dot_json(self, test_marge_config: WindUpConfig) -> None:
         conf = copy.deepcopy(test_marge_config)
-        with pytest.raises(ValueError, match="file_path must end with .json"):
+        with pytest.raises(ValueError, match=r"file_path must end with .json"):
             conf.save_json(file_path=Path("is_not_a_json_file_extension.txt"))
 
     def test_saves_as_expected(
