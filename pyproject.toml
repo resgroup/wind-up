@@ -30,8 +30,7 @@ dependencies = [
     'pydantic >= 2.0.0',
     'python-dotenv',
     'pyyaml',
-    "ruptures @ git+https://github.com/deepcharles/ruptures.git ; python_version>'3.12'",  # temporary fix to support python 3.13
-    "ruptures ; python_version<'3.13'",
+    'ruptures',
     'scipy',
     'seaborn',
     'tabulate',
