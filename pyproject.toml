@@ -143,6 +143,7 @@ filterwarnings = [
     "error",
     "ignore:Passing unrecognized arguments to super:DeprecationWarning",  # pycharm debugger issue
     "ignore:Passing a BlockManager to DataFrame is deprecated:DeprecationWarning",
+    "ignore:invalid value encountered in cast:RuntimeWarning", # occurs with ubuntu, Python 3.9, pandas 2.3.2
 ]
 markers = [
     "slow: mark test as slow.",
