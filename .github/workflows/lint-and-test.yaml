@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.x"]
+        python-version: ["3.9", "3.13"]
         os: [ubuntu-latest]
     steps:
     - uses: actions/checkout@v5
