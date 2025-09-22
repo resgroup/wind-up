@@ -44,7 +44,7 @@ if a commit fails to push and you want to undo it try `git reset origin/main --h
 
 The development environment should be created and managed using [uv](https://docs.astral.sh/uv/). To create the environment:
 ```shell
-uv sync
+uv sync --extra dev
 ```
 To run the formatting, linting and testing:
 ```shell
