@@ -46,7 +46,7 @@ def _reanalysis_upsample(reanalysis_raw_df: pd.DataFrame, *, timebase_s: int) ->
         reanalysis_df = reanalysis_df.rename(
             columns={"50_m_hws_mean_mps": REANALYSIS_WS_COL, "50_m_hwd_mean_deg-n_true": REANALYSIS_WD_COL},
         )
-    elif "wind_speed_100m" in reanalysis_df.columns and  "wind_direction_100m" in reanalysis_df.columns:
+    elif "wind_speed_100m" in reanalysis_df.columns and "wind_direction_100m" in reanalysis_df.columns:
         reanalysis_df = reanalysis_df.rename(
             columns={"wind_speed_100m": REANALYSIS_WS_COL, "wind_direction_100m": REANALYSIS_WD_COL},
         )
