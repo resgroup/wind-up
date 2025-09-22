@@ -707,7 +707,7 @@ def _calc_test_ref_results(
             toggle_name=cfg.toggle.name if cfg.toggle else None,
         )
 
-    pp_results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
+    pp_results, _pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
         cfg=cfg,
         test_wtg=test_wtg,
         ref_name=ref_name,

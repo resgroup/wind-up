@@ -13,7 +13,7 @@ def test_ws_est(test_homer_config: WindUpConfig) -> None:
     wf_df = pd.read_parquet(Path(__file__).parents[0] / "test_data/Homer Wind Farm_July2023_scada_improved.parquet")
 
     # usually x_bin_width would be cfg.ws_bin_width / 2 but that gives invalid power curve with so little data
-    pc_per_ttype, rated_ws_per_ttype = calc_pc_and_rated_ws(
+    pc_per_ttype, _rated_ws_per_ttype = calc_pc_and_rated_ws(
         cfg=cfg,
         wf_df=wf_df,
         x_col="WindSpeedMean",

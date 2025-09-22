@@ -70,7 +70,7 @@ def test_load_smart_scada_and_md_from_file() -> None:
     test_data_dir = TEST_DATA_FLD / "smart_data" / "Marge Wind Farm"
     first_datetime_utc_start = pd.Timestamp("2020-02-26 23:50:00", tz="UTC")
     last_datetime_utc_start = pd.Timestamp("2020-02-29 23:40:00", tz="UTC")
-    scada_raw, md = load_smart_scada_and_md_from_file(
+    scada_raw, _md = load_smart_scada_and_md_from_file(
         asset_name="Marge Wind Farm",
         scada_df=pd.concat([pd.read_parquet(i) for i in test_data_dir.glob("*.parquet")]),
         metadata_df=pd.read_csv(test_data_dir / "Marge Wind Farm_md.csv"),
