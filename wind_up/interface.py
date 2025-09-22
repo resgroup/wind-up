@@ -211,7 +211,7 @@ def _get_filtered_wf_df_and_cfg_with_latlongs(
         wf_df = apply_northing_corrections(wf_df, cfg=cfg, north_ref_wd_col=REANALYSIS_WD_COL, plot_cfg=plot_cfg)
     wf_df = add_wf_yawdir(wf_df, cfg=cfg)
 
-    pc_per_ttype, rated_ws_per_ttype = calc_pc_and_rated_ws(
+    pc_per_ttype, _rated_ws_per_ttype = calc_pc_and_rated_ws(
         cfg=cfg,
         wf_df=wf_df,
         x_col="WindSpeedMean",

@@ -183,7 +183,7 @@ class TestInputDataTimeline:
         assessment_inputs.cfg.toggle = None  # ensure the analysis type is not toggle
         assessment_inputs.cfg.prepost = None  # remove prepost from the configuration
 
-        with pytest.raises(ValueError, match="PrePost attribute is not set on WindUpConfig."):
+        with pytest.raises(ValueError, match=r"PrePost attribute is not set on WindUpConfig."):
             plot_input_data_timeline(assessment_inputs)
 
     @pytest.mark.slow

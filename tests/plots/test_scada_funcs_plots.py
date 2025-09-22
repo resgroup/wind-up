@@ -7,8 +7,8 @@ import pandas as pd
 import pytest
 from matplotlib.testing.decorators import image_comparison
 
-from build.lib.wind_up.models import PlotConfig
 from wind_up.constants import DataColumns
+from wind_up.models import PlotConfig
 from wind_up.plots import scada_funcs_plots
 
 

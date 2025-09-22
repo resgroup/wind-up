@@ -30,8 +30,7 @@ dependencies = [
     'pydantic >= 2.0.0',
     'python-dotenv',
     'pyyaml',
-    "ruptures @ git+https://github.com/deepcharles/ruptures.git ; python_version>'3.12'",  # temporary fix to support python 3.13
-    "ruptures ; python_version<'3.13'",
+    'ruptures',
     'scipy',
     'seaborn',
     'tabulate',
@@ -144,6 +143,7 @@ filterwarnings = [
     "error",
     "ignore:Passing unrecognized arguments to super:DeprecationWarning",  # pycharm debugger issue
     "ignore:Passing a BlockManager to DataFrame is deprecated:DeprecationWarning",
+    "ignore:invalid value encountered in cast:RuntimeWarning", # occurs with ubuntu, Python 3.9, pandas 2.3.2
 ]
 markers = [
     "slow: mark test as slow.",

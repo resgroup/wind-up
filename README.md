@@ -11,7 +11,20 @@ A tool to assess yield uplift of wind turbines
 ## Getting Started
 See [`examples`](examples) folder for example analysis using the wind-up package. [`smarteole_example.ipynb`](examples%2Fsmarteole_example.ipynb) is a good place to start.
 
-The wind-up package can be installed in a virtual environment with the following commands:
+The wind-up package can be installed using any Python environment manager. Examples using [uv](https://docs.astral.sh/uv/) and [pip](https://pypi.org/project/pip/) are shown below:
+
+### Using uv
+```shell
+# Install the wind-up package in an existing project
+uv add res-wind-up
+
+# Or create a new project and install the wind-up package
+uv init my-project
+cd my-project
+uv add res-wind-up
+```
+
+### Using pip
 ```shell
 # create and activate a virtual environment, if needed
 python -m venv .venv
@@ -29,23 +42,19 @@ print(wind_up.__version__)
 To start making changes fork the repository or make a new branch from `main`. Note `main` is protected; 
 if a commit fails to push and you want to undo it try `git reset origin/main --hard`
 
-After cloning the repository (and creating and activating the virtual environment), use the following commands to install the wind-up package in editable mode with the dev dependencies:
+The development environment should be created and managed using [uv](https://docs.astral.sh/uv/). To create the environment:
 ```shell
-git clone https://github.com/resgroup/wind-up # or your fork of wind-up
-cd wind-up
-# create and activate a virtual environment
-python -m venv .venv
-source .venv/Scripts/activate  # or .venv/bin/activate on linux or ".venv/Scripts/activate" in Windows command prompt
-# install the package in editable mode with the dev dependencies
-pip install -e .[dev] # or .[all] if you want examples dependencies as well or .[examples] if you want only examples dependencies
+uv sync --extra dev
 ```
-Use `poe all` to run all required pre-push commands (make sure the virtual environment is activated) or to skip slow 
-tests use `poe all-fast`.
-
-## Running tests
-Install dev dependencies and use `poe test` to run unit tests (make sure the virtual environment is activated)
-
-For convenience when developing locally, run `poe test-fast` to avoid running the tests marked as slow.
+To run the formatting, linting and testing:
+```shell
+uv run poe all # or all-fast to skip slow tests
+```
+Or simply
+```shell
+poe all # or all-fast to skip slow tests
+```
+if you have activated the virtual environment.
 
 ## License
 See [`LICENSE.txt`](LICENSE.txt)

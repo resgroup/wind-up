@@ -12,43 +12,50 @@ permissions:
   contents: read
 
 jobs:
-  lint-and-test:
+  lint:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.x"]
+        python-version: ["3.9", "3.13"]
         os: [ubuntu-latest]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         lfs: 'true'
-    - name: "set up Python ${{ matrix.python-version }}"
-      uses: actions/setup-python@v5
+    - name: Install uv and set the Python version
+      uses: astral-sh/setup-uv@v6
       with:
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
         python-version: ${{ matrix.python-version }}
-    - uses: actions/cache@v4
-      id: cache-venv
+    - name: 'Install project'
+      run: |
+        uv sync --frozen --all-extras --dev
+    - name: "lint check"
+      run: |
+        uv run poe lint-check
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.13"]
+        os: [ubuntu-latest]
+    steps:
+    - uses: actions/checkout@v5
       with:
-        path: ./.venv/
-        key: ${{ matrix.python-version }}-venv-${{ hashFiles('**/pyproject.toml') }}
-        restore-keys: |
-          ${{ matrix.python-version }}-venv
-    - name: 'create environment and install dependencies'
-      if: steps.cache-venv.outputs.cache-hit != 'true'
+        lfs: 'true'
+    - name: Install uv and set the Python version
+      uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+        python-version: ${{ matrix.python-version }}
+    - name: 'Install project'
       run: |
-        python -m venv .venv
-        source .venv/bin/activate
-        python -m pip install --upgrade pip setuptools wheel
-        pip install .[dev]
-    - name: 'update dependencies'
-      if: steps.cache-venv.outputs.cache-hit == 'true'
+        uv sync --frozen --all-extras --dev
+    - name: "test"
       run: |
-        source .venv/bin/activate
-        python -m pip install --upgrade pip setuptools wheel
-        pip install -U .[dev]
-    - name: "lint check & test"
-      run: |
-        source .venv/bin/activate
-        poe lint-check
-        poe test
+        uv run poe test
