@@ -111,7 +111,7 @@ def check_and_convert_scada_raw(
     try:
         scada_raw.index = scada_raw.index.tz_convert("UTC")
     except TypeError:
-        scada_raw.index = scada_raw.index.tz_localize(scada_data_timezone).tz_convert("UTC")
+        scada_raw.index = scada_raw.index.tz_localize(scada_data_timezone, ambiguous=False).tz_convert("UTC")
     if scada_data_time_format == "End":
         scada_raw.index = scada_raw.index - pd.Timedelta(seconds=timebase_s)
     scada_raw.index = scada_raw.index.rename(TIMESTAMP_COL)
