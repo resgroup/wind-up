@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -11,9 +12,10 @@ from wind_up.circular_math import circ_diff
 
 if TYPE_CHECKING:
     from wind_up.models import PlotConfig
+logger = logging.getLogger(__name__)
 
 
-def plot_yaw_direction_pre_post_per_signal(
+def plot_yaw_direction_pre_post_per_signal(  # noqa:PLR0915
     signal_name: str,
     test_wd_col: str,
     *,
@@ -165,8 +167,9 @@ def plot_yaw_direction_pre_post_per_signal(
                 (plot_cfg.plots_dir / test_name / "yaw_direction").mkdir(exist_ok=True)
                 plt.savefig(plot_cfg.plots_dir / test_name / "yaw_direction" / f"{plot_title}.png")
             plt.close()
-        except ValueError as e:
-            print(f"Skipping {label} {signal_name} heatmap, error: {e}")
+        except ValueError as e:  # noqa:PERF203
+            msg = f"Skipping {label} {signal_name} heatmap, error: {e}"
+            logger.info(msg)
 
 
 def plot_yaw_direction_pre_post(
