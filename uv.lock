@@ -1,4 +1,5 @@
 version = 1
+revision = 1
 requires-python = ">=3.9, <4.0"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -3116,7 +3117,7 @@ wheels = [
 
 [[package]]
 name = "res-wind-up"
-version = "0.4.2"
+version = "0.4.3"
 source = { editable = "." }
 dependencies = [
     { name = "eval-type-backport" },
@@ -3219,6 +3220,7 @@ requires-dist = [
     { name = "types-tqdm", marker = "extra == 'dev'" },
     { name = "utm" },
 ]
+provides-extras = ["dev", "examples", "all"]
 
 [[package]]
 name = "rfc3339-validator"
