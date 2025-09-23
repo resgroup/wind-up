@@ -113,57 +113,60 @@ def plot_yaw_direction_pre_post_per_signal(
     plot_post_df["wd_bin_centre"] = plot_post_df["wd_bins"].apply(_get_mid)
 
     for i, label in enumerate([pre_label, post_label]):
-        plot_df = plot_pre_df if i == 0 else plot_post_df
-        plt.figure(figsize=(8, 8))
-        plt.subplot(2, 1, 1)
-        sns.heatmap(
-            plot_df.pivot_table(
-                index="ws_bin_centre",
-                columns="wd_bin_centre",
-                values=signal_name,
-                aggfunc=lambda x: x.count() / 6,
-                observed=False,
-            ).iloc[::-1],
-            annot=True,
-            cmap="gray_r",
-            fmt=".1f",
-            linewidths=0.5,
-            cbar_kws={"label": "hours of data"},
-        )
-        plt.xlabel("wind direction bin centre [deg]")
-        plt.ylabel("wind speed bin centre [m/s]")
+        try:
+            plot_df = plot_pre_df if i == 0 else plot_post_df
+            plt.figure(figsize=(8, 8))
+            plt.subplot(2, 1, 1)
+            sns.heatmap(
+                plot_df.pivot_table(
+                    index="ws_bin_centre",
+                    columns="wd_bin_centre",
+                    values=signal_name,
+                    aggfunc=lambda x: x.count() / 6,
+                    observed=False,
+                ).iloc[::-1],
+                annot=True,
+                cmap="gray_r",
+                fmt=".1f",
+                linewidths=0.5,
+                cbar_kws={"label": "hours of data"},
+            )
+            plt.xlabel("wind direction bin centre [deg]")
+            plt.ylabel("wind speed bin centre [m/s]")
 
-        plt.subplot(2, 1, 2)
-        sns.heatmap(
-            plot_df.pivot_table(
-                index="ws_bin_centre", columns="wd_bin_centre", values=signal_name, observed=False
-            ).iloc[::-1],
-            annot=True,
-            cmap="YlGnBu",
-            fmt=".1f",
-            linewidths=0.5,
-            vmin=0,
-            vmax=20,
-            cbar_kws={"label": f"{signal_name.replace('_', ' ')} [deg]"},
-        )
+            plt.subplot(2, 1, 2)
+            sns.heatmap(
+                plot_df.pivot_table(
+                    index="ws_bin_centre", columns="wd_bin_centre", values=signal_name, observed=False
+                ).iloc[::-1],
+                annot=True,
+                cmap="YlGnBu",
+                fmt=".1f",
+                linewidths=0.5,
+                vmin=0,
+                vmax=20,
+                cbar_kws={"label": f"{signal_name.replace('_', ' ')} [deg]"},
+            )
 
-        plt.xlabel("wind direction bin centre [deg]")
-        plt.ylabel("wind speed bin centre [m/s]")
+            plt.xlabel("wind direction bin centre [deg]")
+            plt.ylabel("wind speed bin centre [m/s]")
 
-        signal_descr = (
-            f"{ref_name} minus {test_name} yaw direction"
-            if signal_name == "yaw_offset"
-            else f"{test_name} ref {ref_name} {signal_name.replace('_', ' ')}"
-        )
-        plot_title = f"{signal_descr} vs ws and wd {label}"
-        plt.suptitle(plot_title)
-        plt.tight_layout()
-        if plot_cfg.show_plots:
-            plt.show()
-        if plot_cfg.save_plots:
-            (plot_cfg.plots_dir / test_name / "yaw_direction").mkdir(exist_ok=True)
-            plt.savefig(plot_cfg.plots_dir / test_name / "yaw_direction" / f"{plot_title}.png")
-        plt.close()
+            signal_descr = (
+                f"{ref_name} minus {test_name} yaw direction"
+                if signal_name == "yaw_offset"
+                else f"{test_name} ref {ref_name} {signal_name.replace('_', ' ')}"
+            )
+            plot_title = f"{signal_descr} vs ws and wd {label}"
+            plt.suptitle(plot_title)
+            plt.tight_layout()
+            if plot_cfg.show_plots:
+                plt.show()
+            if plot_cfg.save_plots:
+                (plot_cfg.plots_dir / test_name / "yaw_direction").mkdir(exist_ok=True)
+                plt.savefig(plot_cfg.plots_dir / test_name / "yaw_direction" / f"{plot_title}.png")
+            plt.close()
+        except ValueError as e:
+            print(f"Skipping {label} {signal_name} heatmap, error: {e}")
 
 
 def plot_yaw_direction_pre_post(
