@@ -166,10 +166,11 @@ def plot_yaw_direction_pre_post_per_signal(  # noqa:PLR0915
             if plot_cfg.save_plots:
                 (plot_cfg.plots_dir / test_name / "yaw_direction").mkdir(exist_ok=True)
                 plt.savefig(plot_cfg.plots_dir / test_name / "yaw_direction" / f"{plot_title}.png")
-            plt.close()
         except ValueError as e:  # noqa:PERF203
             msg = f"Skipping {label} {signal_name} heatmap, error: {e}"
             logger.info(msg)
+        finally:
+            plt.close()
 
 
 def plot_yaw_direction_pre_post(
