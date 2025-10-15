@@ -6,8 +6,12 @@ import logging
 import math
 from typing import TYPE_CHECKING
 
+import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import ruptures as rpt
+from ruptures.base import BaseCost
+from scipy.stats import circmean
 
 from wind_up.backporting import strict_zip
 from wind_up.circular_math import circ_diff
@@ -34,8 +38,6 @@ from wind_up.plots.optimize_northing_plots import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import numpy as np
-
     from wind_up.models import PlotConfig, WindUpConfig
 
 logger = logging.getLogger(__name__)
@@ -43,12 +45,94 @@ logger = logging.getLogger(__name__)
 DECAY_FRACTION = 0.4
 
 
-def _northing_score_changepoint_component(changepoint_count: int) -> float:
-    return float(changepoint_count)
+class CostCircularL1(BaseCost):
+    """Custom cost function for detecting changes in circular data (e.g., wind directions).
+
+    Uses L1 norm with circular distance for robustness to outliers.
+    """
+
+    model = "circular_l1"
+    min_size = 2
+
+    def __init__(self, period: float = 360.0):
+        """Initialize the circular cost function.
+
+        Parameters
+        ----------
+        period : float, default=360.0
+            The period of the circular data (360 for degrees, 2*pi for radians)
+
+        """
+        self.period = period
+        self.signal = None
+
+    def fit(self, signal: npt.NDArray) -> CostCircularL1:
+        """Set the internal signal parameter.
+
+        Parameters
+        ----------
+        signal : array-like, shape (n_samples,) or (n_samples, 1)
+            The signal to analyze
+
+        Returns
+        -------
+        self
+
+        """
+        if signal.ndim == 1:
+            self.signal = signal
+        else:
+            # Handle 2D array with single column
+            self.signal = signal.ravel()
+        return self
+
+    def error(self, start: int, end: int) -> float:
+        """Return the approximation cost on the segment [start:end].
+
+        Parameters
+        ----------
+        start : int
+            Start index of the segment
+        end : int
+            End index of the segment
+
+        Returns
+        -------
+        float
+            Segment cost (sum of circular L1 distances from median)
+
+        """
+        if end - start < self.min_size:
+            raise rpt.exceptions.NotEnoughPoints
+
+        if self.signal is None:
+            msg = "CostCircularL1 not fitted with signal data"
+            raise RuntimeError(msg)
+
+        sub_signal = self.signal[start:end]
+
+        # cheap and cheerful circ median
+        sub_signal_circmean = circmean(sub_signal, high=self.period / 2, low=-self.period / 2, nan_policy="omit")
+        sub_signal_zero_centred = sub_signal - sub_signal_circmean
+        circmedian = np.nanmedian(sub_signal_zero_centred) + sub_signal_circmean
+
+        circdiffs = circ_diff(sub_signal, circmedian)
+
+        return np.sum(circdiffs)
+
+
+def _northing_score_changepoint_component(changepoint_count: int, *, years_of_data: float) -> float:
+    return 10 * max(float(changepoint_count - 1), 0) / max(years_of_data, 1)
 
 
 def _northing_score(
-    wtg_df: pd.DataFrame, *, north_ref_wd_col: str, changepoint_count: int, rated_power: float, timebase_s: int
+    wtg_df: pd.DataFrame,
+    *,
+    north_ref_wd_col: str,
+    changepoint_count: int,
+    rated_power: float,
+    timebase_s: int,
+    north_offset_df: pd.DataFrame | None,
 ) -> float:
     # this component penalizes long-ish, large north errors
     max_component = max(0, wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"].abs().max() - 4) ** 2
@@ -64,10 +148,29 @@ def _northing_score(
         * wtg_df[RAW_POWER_COL].clip(lower=min_weight, upper=max_weight)
     ).abs().mean() / max_weight
 
-    # this component encourages the correction list to be as short as possible
-    changepoint_component = _northing_score_changepoint_component(changepoint_count)
+    # this component encourages the correction list to be short
+    changepoint_component = _northing_score_changepoint_component(
+        changepoint_count,
+        years_of_data=(wtg_df.index.max() - wtg_df.index.min()).total_seconds() / (3600 * 24 * 365.25),
+    )
 
-    return max_component + median_component + raw_wmean_component + changepoint_component
+    # this component adds a penalty if any adjacent changepoints in north_offset_df have a small abs circ_diff
+    small_adjacent_diffs_component = 0
+    if north_offset_df is not None and len(north_offset_df) > 1:
+        abs_adjacent_diffs = (
+            circ_diff(north_offset_df["north_offset"], north_offset_df["north_offset"].shift()).dropna().abs()  # type:ignore[union-attr]
+        )
+        smallest_acceptable_diff = 3
+        small_adjacent_diffs_component = (
+            10
+            * (
+                1 / abs_adjacent_diffs.clip(lower=1e-6, upper=smallest_acceptable_diff) - 1 / smallest_acceptable_diff
+            ).sum()
+        )
+
+    return (
+        max_component + median_component + raw_wmean_component + changepoint_component + small_adjacent_diffs_component
+    )
 
 
 def _add_northing_ok_and_diff_cols(wtg_df: pd.DataFrame, *, north_ref_wd_col: str, northed_col: str) -> pd.DataFrame:
@@ -213,17 +316,20 @@ def _score_wtg_north_table(
         changepoint_count=len(output_north_table),
         rated_power=rated_power,
         timebase_s=timebase_s,
+        north_offset_df=output_north_table,
     )
 
     return output_north_table, score, output_wtg_df
 
 
-def _calc_max_changepoints_to_add(changepoint_count: int, *, score: float) -> int:
+def _calc_max_changepoints_to_add(changepoint_count: int, *, score: float, years_of_data: float) -> int:
     max_changepoints_to_add = 0
-    headroom = score - _northing_score_changepoint_component(changepoint_count + 1)
+    headroom = score - _northing_score_changepoint_component(changepoint_count + 1, years_of_data=years_of_data)
     while headroom > 0:
         max_changepoints_to_add += 1
-        headroom = score - _northing_score_changepoint_component(max_changepoints_to_add + 1)
+        headroom = score - _northing_score_changepoint_component(
+            max_changepoints_to_add + 1, years_of_data=years_of_data
+        )
     return max_changepoints_to_add
 
 
@@ -248,11 +354,11 @@ def _get_changepoint_objects(
     north_ref_wd_col: str,
 ) -> tuple[rpt.base.BaseEstimator, np.ndarray]:
     col = f"filt_diff_to_{north_ref_wd_col}"
-    model = "l1"
     dropna_df = prev_best_wtg_df.dropna(subset=[col])
     signal = dropna_df[col].to_numpy()
     timestamps = dropna_df.index.to_numpy()
-    algo = rpt.BottomUp(model=model).fit(signal)
+    custom_cost = CostCircularL1(period=360)
+    algo = rpt.BottomUp(custom_cost=custom_cost).fit(signal)
     return algo, timestamps
 
 
@@ -386,6 +492,7 @@ def _prep_for_optimize_wtg_north_table(
         changepoint_count=0,
         rated_power=rated_power,
         timebase_s=timebase_s,
+        north_offset_df=None,
     )
     logger.info(f"\n\nwtg_name={wtg_name}, north_ref_wd_col={north_ref_wd_col}, initial_score={initial_score:.2f}")
 
@@ -423,6 +530,7 @@ def _optimize_wtg_north_table(
     north_ref_wd_col: str,
     timebase_s: int,
     plot_cfg: PlotConfig | None,
+    years_of_data: float,
     initial_wtg_north_table: pd.DataFrame | None = None,
     best_score_margin: float = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, float, float]:
@@ -460,7 +568,9 @@ def _optimize_wtg_north_table(
         )
 
     done_optimizing = False
-    max_changepoints_to_add = min(5, _calc_max_changepoints_to_add(len(best_north_table), score=best_score))
+    max_changepoints_to_add = min(
+        5, _calc_max_changepoints_to_add(len(best_north_table), score=best_score, years_of_data=years_of_data)
+    )
     initial_step_size: int = 100
     shift_step_size: int = initial_step_size
     tries_left: int = 1
@@ -511,13 +621,15 @@ def _optimize_wtg_north_table(
         else:
             tries_left += 1
             logger.info(f"tries_left increased to {tries_left}")
-            max_changepoints_to_add = min(2, _calc_max_changepoints_to_add(len(best_north_table), score=best_score))
+            max_changepoints_to_add = min(
+                2, _calc_max_changepoints_to_add(len(best_north_table), score=best_score, years_of_data=years_of_data)
+            )
         if not best_move_found_this_loop:
             shift_step_size = min(shift_step_size - 1, round(shift_step_size * DECAY_FRACTION))
             if shift_step_size < 1:
                 max_changepoints_to_add = min(
                     2,
-                    _calc_max_changepoints_to_add(len(best_north_table), score=best_score),
+                    _calc_max_changepoints_to_add(len(best_north_table), score=best_score, years_of_data=years_of_data),
                 )
                 shift_step_size = initial_step_size + 1 + (1 / (DECAY_FRACTION ** (math.pi * (tries_left + 1))) % 10)
                 shift_step_size = round(shift_step_size)
@@ -582,6 +694,7 @@ def _optimize_wf_north_table(
             plot_cfg=plot_cfg,
             initial_wtg_north_table=initial_wtg_north_table,
             best_score_margin=best_score_margin,
+            years_of_data=(wtg_df.index.max() - wtg_df.index.min()).total_seconds() / (3600 * 24 * 365.25),
         )
 
         northed_col = calc_northed_col_name(north_ref_wd_col)
@@ -606,6 +719,7 @@ def _optimize_wf_north_table(
             f"max_northing_error changed from {max_northing_error_before:.1f} to {max_northing_error_after:.1f} "
             f"[{max_northing_error_after - max_northing_error_before:.1f}]",
         )
+        logger.info(f"\n{wtg_north_table=}\n")
 
         wtg_north_table["TurbineName"] = wtg_name
         optimized_wf_north_table = (

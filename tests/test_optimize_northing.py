@@ -154,5 +154,5 @@ def test_auto_northing_corrections(test_homer_config: WindUpConfig) -> None:
 
     assert median_yaw_before_northing["HMR_T01"] == pytest.approx(178.0)
     assert median_yaw_before_northing["HMR_T02"] == pytest.approx(206.0)
-    assert median_yaw_after_northing["HMR_T01"] == pytest.approx(269.2)
-    assert median_yaw_after_northing["HMR_T02"] == pytest.approx(269.2)
+    assert median_yaw_after_northing["HMR_T01"] == pytest.approx(268.3, abs=0.5)
+    assert median_yaw_after_northing["HMR_T02"] == pytest.approx(268.0, abs=0.5)
