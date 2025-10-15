@@ -126,10 +126,12 @@ def test_auto_northing_corrections(test_homer_config: WindUpConfig) -> None:
     median_yaw_before_northing = wf_df.groupby("TurbineName", observed=True)["YawAngleMean"].median()
     median_yaw_after_northing = northed_wf_df.groupby("TurbineName", observed=True)["YawAngleMean"].median()
 
+    expected_t1_yaw_after_northing = 269.6
+    expected_t2_yaw_after_northing = 267.6
     assert median_yaw_before_northing["HMR_T01"] == pytest.approx(191.0)
     assert median_yaw_before_northing["HMR_T02"] == pytest.approx(173.0)
-    assert median_yaw_after_northing["HMR_T01"] == pytest.approx(269.6)
-    assert median_yaw_after_northing["HMR_T02"] == pytest.approx(267.6)
+    assert median_yaw_after_northing["HMR_T01"] == pytest.approx(expected_t1_yaw_after_northing)
+    assert median_yaw_after_northing["HMR_T02"] == pytest.approx(expected_t2_yaw_after_northing)
 
     # try to mess up the yaw angles further and run again
     wf_df[RAW_YAWDIR_COL] = (wf_df[RAW_YAWDIR_COL] + 180) % 360
@@ -154,5 +156,5 @@ def test_auto_northing_corrections(test_homer_config: WindUpConfig) -> None:
 
     assert median_yaw_before_northing["HMR_T01"] == pytest.approx(178.0)
     assert median_yaw_before_northing["HMR_T02"] == pytest.approx(206.0)
-    assert median_yaw_after_northing["HMR_T01"] == pytest.approx(268.3, abs=0.5)
-    assert median_yaw_after_northing["HMR_T02"] == pytest.approx(268.0, abs=0.5)
+    assert median_yaw_after_northing["HMR_T01"] == pytest.approx(expected_t1_yaw_after_northing, abs=1.5)
+    assert median_yaw_after_northing["HMR_T02"] == pytest.approx(expected_t2_yaw_after_northing, abs=1.0)

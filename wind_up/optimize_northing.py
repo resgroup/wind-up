@@ -112,12 +112,13 @@ class CostCircularL1(BaseCost):
         sub_signal = self.signal[start:end]
 
         # cheap and cheerful circ median
+        ## calc circmean, noting that sub_signal ranges from -180 to +180
         sub_signal_circmean = circmean(sub_signal, high=self.period / 2, low=-self.period / 2, nan_policy="omit")
-        sub_signal_zero_centred = sub_signal - sub_signal_circmean
-        circmedian = np.nanmedian(sub_signal_zero_centred) + sub_signal_circmean
-
+        ## rotate the data so 0 represents the circmean, calculate median, then rotate back
+        sub_signal_zero_centred = (sub_signal - sub_signal_circmean + 180) % 360 - 180
+        circmedian = (np.nanmedian(sub_signal_zero_centred) + sub_signal_circmean + 180) % 360 - 180
+        # return sum of circ diffs from circ median
         circdiffs = circ_diff(sub_signal, circmedian)
-
         return np.sum(circdiffs)
 
 
@@ -162,7 +163,7 @@ def _northing_score(
         )
         smallest_acceptable_diff = 3
         small_adjacent_diffs_component = (
-            10
+            20  # arbitrary gain
             * (
                 1 / abs_adjacent_diffs.clip(lower=1e-6, upper=smallest_acceptable_diff) - 1 / smallest_acceptable_diff
             ).sum()
@@ -206,6 +207,7 @@ def _add_northed_ok_diff_and_rolling_cols(
     wtg_df = _add_northing_ok_and_diff_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, northed_col=northed_col)
     rolling_hours = 6
     rows_per_hour = 3600 / timebase_s
+    # circular medians would be better but are harder to implement with good performance
     wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"] = (
         wtg_df[f"filt_diff_to_{north_ref_wd_col}"]
         .rolling(
@@ -229,7 +231,14 @@ def _add_northed_ok_diff_and_rolling_cols(
 
 
 def _calc_good_north_offset(section_df: pd.DataFrame, north_ref_wd_col: str) -> float:
-    return -section_df[f"filt_diff_to_{north_ref_wd_col}"].median()
+    # cheap and cheerful circ median
+    north_errors = section_df[f"filt_diff_to_{north_ref_wd_col}"]
+    north_errors_circmean = circmean(north_errors, high=180, low=-180, nan_policy="omit")
+    ## rotate the data so 0 represents the circmean, calculate median, then rotate back
+    north_errors_zero_centred = (north_errors - north_errors_circmean + 180) % 360 - 180
+    circmedian = (np.nanmedian(north_errors_zero_centred) + north_errors_circmean + 180) % 360 - 180
+    # return negative circmedian (the offset to add to make median north error 0)
+    return -circmedian
 
 
 def _calc_north_offset_col(
