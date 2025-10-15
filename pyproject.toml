@@ -126,7 +126,7 @@ module = [
     "geographiclib.geodesic",
     "pandas",
     "pandas.testing",
-    "ruptures",
+    "ruptures.*",
     "scipy.stats",
     "seaborn",
     "utm",

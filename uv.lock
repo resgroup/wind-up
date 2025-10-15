@@ -1,5 +1,4 @@
 version = 1
-revision = 1
 requires-python = ">=3.9, <4.0"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -3117,7 +3116,7 @@ wheels = [
 
 [[package]]
 name = "res-wind-up"
-version = "0.4.3"
+version = "0.4.4"
 source = { editable = "." }
 dependencies = [
     { name = "eval-type-backport" },
@@ -3141,25 +3140,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-all = [
-    { name = "coverage" },
-    { name = "ephem" },
-    { name = "flaml", extra = ["automl"] },
-    { name = "ipywidgets" },
-    { name = "jupyterlab" },
-    { name = "mypy" },
-    { name = "notebook" },
-    { name = "poethepoet" },
-    { name = "pytest" },
-    { name = "pytest-env" },
-    { name = "requests" },
-    { name = "ruff" },
-    { name = "types-pyyaml" },
-    { name = "types-requests" },
-    { name = "types-tabulate" },
-    { name = "types-toml" },
-    { name = "types-tqdm" },
-]
 dev = [
     { name = "coverage" },
     { name = "mypy" },
@@ -3205,7 +3185,6 @@ requires-dist = [
     { name = "pyyaml" },
     { name = "requests", marker = "extra == 'dev'" },
     { name = "requests", marker = "extra == 'examples'" },
-    { name = "res-wind-up", extras = ["dev", "examples"], marker = "extra == 'all'" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "ruptures" },
     { name = "scipy" },
@@ -3220,7 +3199,6 @@ requires-dist = [
     { name = "types-tqdm", marker = "extra == 'dev'" },
     { name = "utm" },
 ]
-provides-extras = ["dev", "examples", "all"]
 
 [[package]]
 name = "rfc3339-validator"
