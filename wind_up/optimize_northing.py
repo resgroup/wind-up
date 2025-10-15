@@ -64,7 +64,7 @@ class CostCircularL1(BaseCost):
 
         """
         self.period = period
-        self.signal = None
+        self.signal: npt.NDArray | None = None
 
     def fit(self, signal: npt.NDArray) -> CostCircularL1:
         """Set the internal signal parameter.
