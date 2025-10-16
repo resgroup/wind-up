@@ -46,7 +46,7 @@ DECAY_FRACTION = 0.4
 
 
 class CostCircularL1(BaseCost):
-    """Custom cost function for detecting changes in circular data (e.g., wind directions).
+    """Custom cost function for detecting changes in circular data which ranges from -180 to 180.
 
     Uses L1 norm with circular distance for robustness to outliers.
     """
@@ -54,52 +54,37 @@ class CostCircularL1(BaseCost):
     model = "circular_l1"
     min_size = 2
 
-    def __init__(self, period: float = 360.0):
-        """Initialize the circular cost function.
-
-        Parameters
-        ----------
-        period : float, default=360.0
-            The period of the circular data (360 for degrees, 2*pi for radians)
-
-        """
-        self.period = period
+    def __init__(self) -> None:
+        """Initialize the circular cost function."""
         self.signal: npt.NDArray | None = None
+        self.min_size = 2
 
     def fit(self, signal: npt.NDArray) -> CostCircularL1:
-        """Set the internal signal parameter.
+        """Set parameters of the instance.
 
-        Parameters
-        ----------
-        signal : array-like, shape (n_samples,) or (n_samples, 1)
-            The signal to analyze
+        Args:
+            signal (array): signal. Shape (n_samples,) or (n_samples, n_features)
 
-        Returns
-        -------
-        self
+        Returns:
+            self
 
         """
         if signal.ndim == 1:
-            self.signal = signal
+            self.signal = signal.reshape(-1, 1)
         else:
-            # Handle 2D array with single column
-            self.signal = signal.ravel()
+            self.signal = signal
+
         return self
 
     def error(self, start: int, end: int) -> float:
         """Return the approximation cost on the segment [start:end].
 
-        Parameters
-        ----------
-        start : int
-            Start index of the segment
-        end : int
-            End index of the segment
+        Args:
+            start (int): start of the segment
+            end (int): end of the segment
 
-        Returns
-        -------
-        float
-            Segment cost (sum of circular L1 distances from median)
+        Returns:
+            segment cost
 
         """
         if end - start < self.min_size:
@@ -113,13 +98,13 @@ class CostCircularL1(BaseCost):
 
         # cheap and cheerful circ median
         ## calc circmean, noting that sub_signal ranges from -180 to +180
-        sub_signal_circmean = circmean(sub_signal, high=self.period / 2, low=-self.period / 2, nan_policy="omit")
+        sub_signal_circmean = circmean(sub_signal, low=-180, high=180, nan_policy="omit")
         ## rotate the data so 0 represents the circmean, calculate median, then rotate back
         sub_signal_zero_centred = (sub_signal - sub_signal_circmean + 180) % 360 - 180
         circmedian = (np.nanmedian(sub_signal_zero_centred) + sub_signal_circmean + 180) % 360 - 180
         # return sum of circ diffs from circ median
-        circdiffs = circ_diff(sub_signal, circmedian)
-        return np.sum(circdiffs)
+        abs_circdiffs = abs(circ_diff(sub_signal, circmedian))
+        return np.sum(abs_circdiffs)
 
 
 def _northing_score_changepoint_component(changepoint_count: int, *, years_of_data: float) -> float:
@@ -366,7 +351,7 @@ def _get_changepoint_objects(
     dropna_df = prev_best_wtg_df.dropna(subset=[col])
     signal = dropna_df[col].to_numpy()
     timestamps = dropna_df.index.to_numpy()
-    custom_cost = CostCircularL1(period=360)
+    custom_cost = CostCircularL1()
     algo = rpt.BottomUp(custom_cost=custom_cost).fit(signal)
     return algo, timestamps
 
@@ -728,7 +713,7 @@ def _optimize_wf_north_table(
             f"max_northing_error changed from {max_northing_error_before:.1f} to {max_northing_error_after:.1f} "
             f"[{max_northing_error_after - max_northing_error_before:.1f}]",
         )
-        logger.info(f"\n{wtg_north_table=}\n")
+        logger.info(f"\n{wtg_north_table=}\n\n")
 
         wtg_north_table["TurbineName"] = wtg_name
         optimized_wf_north_table = (
