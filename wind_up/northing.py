@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from wind_up.circular_math import circ_diff, circ_median, rolling_circ_mean
+from wind_up.circular_math import circ_diff, circ_median, rolling_circ_mean, rolling_circ_median
 from wind_up.constants import (
     RAW_YAWDIR_COL,
     REANALYSIS_WD_COL,
@@ -30,7 +30,7 @@ def _add_rolling_northing_error(wf_df: pd.DataFrame, *, north_ref_wd_col: str, t
     wf_df.loc[~(wf_df["WindSpeedMean"] >= ws_ll), "apparent_northing_error"] = np.nan
     rolling_days = 20
     rows_per_day = 24 * 3600 / timebase_s
-    wf_df["rolling_northing_error"] = rolling_circ_mean(
+    wf_df["rolling_northing_error"] = rolling_circ_median(
         wf_df["apparent_northing_error"],
         window=round(rolling_days * rows_per_day),
         min_periods=round(rolling_days * rows_per_day // 3),

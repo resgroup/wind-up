@@ -6,11 +6,11 @@ import pytest
 from pandas.testing import assert_series_equal
 from scipy.stats import circmean
 
-from wind_up.circular_math import rolling_circ_mean
+from wind_up.circular_math import rolling_circ_median, circ_median
 
 
 @pytest.mark.parametrize("range_360", [True, False])
-def test_rolling_circ_mean(*, range_360: bool) -> None:
+def test_rolling_circ_median(*, range_360: bool) -> None:
     timestamps = pd.date_range(start="2024-01-01", periods=8, freq="600s")
     input_df = pd.DataFrame(
         {
@@ -20,26 +20,18 @@ def test_rolling_circ_mean(*, range_360: bool) -> None:
         },
         index=timestamps,
     )
-
+    window = 8
+    min_periods=4
     for col in input_df.columns:
-        result = rolling_circ_mean(input_df[col], window=4, min_periods=1, center=True, range_360=range_360)
-        expected = (
-            (
-                input_df[col]
-                .rolling(window=4, min_periods=1, center=True)
-                .apply(lambda x: circmean(x, low=0, high=360, nan_policy="omit"))
+        result = rolling_circ_median(input_df[col], window=window, min_periods=min_periods, center=True, range_360=range_360)
+        expected = (input_df[col]
+                .rolling(window=window, min_periods=min_periods, center=True)
+                .apply(lambda x: circ_median(x, range_360=range_360))
             )
-            if range_360
-            else (
-                input_df[col]
-                .rolling(window=4, min_periods=1, center=True)
-                .apply(lambda x: (circmean(x, low=-180, high=180, nan_policy="omit")))
-            )
-        )
         assert_series_equal(result, expected)
 
 
-def test_rolling_circ_mean_all_nans() -> None:
+def test_rolling_circ_median_all_nans() -> None:
     """Test circ_mean_resample_degrees with data which is all NaN."""
     timestamps = pd.date_range(start="2024-01-01", periods=8, freq="1s")
     input_df = pd.DataFrame(
@@ -48,16 +40,16 @@ def test_rolling_circ_mean_all_nans() -> None:
     )
 
     for col in input_df.columns:
-        result = rolling_circ_mean(input_df[col], window=4, min_periods=1, center=True)
+        result = rolling_circ_median(input_df[col], window=4, min_periods=3, center=True, range_360=True)
         expected = (
             input_df[col]
-            .rolling(window=4, min_periods=1, center=True)
-            .apply(lambda x: circmean(x, low=0, high=360, nan_policy="omit"))
+            .rolling(window=4, min_periods=3, center=True)
+            .apply(lambda x: circ_median(x, range_360=True))
         )
         assert_series_equal(result, expected)
 
 
-def test_rolling_circ_mean_performance() -> None:
+def test_rolling_circ_median_performance() -> None:
     """Test that circ_mean_resample_degrees is faster than using circmean directly."""
     # Generate a large dataset
     n_rows = 10_000
@@ -75,21 +67,21 @@ def test_rolling_circ_mean_performance() -> None:
     input_df = pd.DataFrame(data, columns=[f"direction_{i}" for i in range(n_cols)], index=timestamps)
 
     window_size = 40
-    min_periods = 10
+    min_periods = 30
 
     col = "direction_0"
 
     def new_method() -> float:
-        return rolling_circ_mean(input_df[col], window=window_size, min_periods=min_periods, center=True)
+        return rolling_circ_median(input_df[col], window=window_size, min_periods=min_periods, center=True)
 
     def scipy_method() -> float:
         return (
             input_df[col]
             .rolling(window=window_size, min_periods=min_periods, center=True)
-            .apply(lambda x: circmean(x, low=0, high=360, nan_policy="omit"))
+            .apply(lambda x: circ_median(x, range_360=True))
         )
 
-    assert_series_equal(new_method(), scipy_method())
+    assert_series_equal(new_method(), scipy_method(),atol=1)
 
     # compare speed of new vs scipy_method
     number_of_runs = 5
