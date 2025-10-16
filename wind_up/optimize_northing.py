@@ -104,7 +104,7 @@ class CostCircularL1(BaseCost):
         circmedian = (np.nanmedian(sub_signal_zero_centred) + sub_signal_circmean + 180) % 360 - 180
         # return sum of circ diffs from circ median
         abs_circdiffs = abs(circ_diff(sub_signal, circmedian))
-        return np.sum(abs_circdiffs)
+        return np.sum(abs_circdiffs)  # type: ignore[call-overload]
 
 
 def _northing_score_changepoint_component(changepoint_count: int, *, years_of_data: float) -> float:
