@@ -24,6 +24,7 @@ test_circ_diff_data = [
 def test_circ_diff(angle1: float | np.generic, angle2: float | np.generic, expected: float | np.generic) -> None:
     if isinstance(expected, pd.Series):
         assert_series_equal(circ_diff(angle1, angle2), (expected))
+        assert_series_equal(circ_diff(angle1 - 360, angle2 + 360), (expected))
     else:
         assert circ_diff(angle1, angle2) == pytest.approx(expected)
 
