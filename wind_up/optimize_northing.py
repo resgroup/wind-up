@@ -118,7 +118,6 @@ def _northing_score(
     changepoint_count: int,
     rated_power: float,
     timebase_s: int,
-    north_offset_df: pd.DataFrame | None,
 ) -> float:
     # this component penalizes long-ish, large north errors
     max_component = max(0, wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"].abs().max() - 4) ** 2
@@ -140,23 +139,7 @@ def _northing_score(
         years_of_data=(wtg_df.index.max() - wtg_df.index.min()).total_seconds() / (3600 * 24 * 365.25),
     )
 
-    # this component adds a penalty if any adjacent changepoints in north_offset_df have a small abs circ_diff
-    small_adjacent_diffs_component = 0
-    if north_offset_df is not None and len(north_offset_df) > 1:
-        abs_adjacent_diffs = (
-            circ_diff(north_offset_df["north_offset"], north_offset_df["north_offset"].shift()).dropna().abs()  # type:ignore[union-attr]
-        )
-        smallest_acceptable_diff = 3
-        small_adjacent_diffs_component = (
-            20  # arbitrary gain
-            * (
-                1 / abs_adjacent_diffs.clip(lower=1e-6, upper=smallest_acceptable_diff) - 1 / smallest_acceptable_diff
-            ).sum()
-        )
-
-    return (
-        max_component + median_component + raw_wmean_component + changepoint_component + small_adjacent_diffs_component
-    )
+    return max_component + median_component + raw_wmean_component + changepoint_component
 
 
 def _add_northing_ok_and_diff_cols(wtg_df: pd.DataFrame, *, north_ref_wd_col: str, northed_col: str) -> pd.DataFrame:
@@ -310,7 +293,6 @@ def _score_wtg_north_table(
         changepoint_count=len(output_north_table),
         rated_power=rated_power,
         timebase_s=timebase_s,
-        north_offset_df=output_north_table,
     )
 
     return output_north_table, score, output_wtg_df
@@ -486,7 +468,6 @@ def _prep_for_optimize_wtg_north_table(
         changepoint_count=0,
         rated_power=rated_power,
         timebase_s=timebase_s,
-        north_offset_df=None,
     )
     logger.info(f"\n\nwtg_name={wtg_name}, north_ref_wd_col={north_ref_wd_col}, initial_score={initial_score:.2f}")
 
