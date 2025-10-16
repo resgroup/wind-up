@@ -123,7 +123,7 @@ def _northing_score(
     max_component = max(0, wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"].abs().max() - 4) ** 2
 
     # this component penalizes the median north error of filtered data being far from 0
-    median_component = max(0, abs(circ_median(wtg_df[f"filt_diff_to_{north_ref_wd_col}"], range_360=False)) - 0.1) ** 2
+    median_component = max(0, abs(circ_median(wtg_df[f"filt_diff_to_{north_ref_wd_col}"], range_360=False)) - 0.1) ** 2  # type:ignore[operator]
 
     # this component penalizes raw data having any north errors
     max_weight = rated_power * YAW_OK_PW_FRACTION
