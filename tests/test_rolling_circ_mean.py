@@ -22,17 +22,17 @@ def test_rolling_circ_mean(*, range_360: bool) -> None:
     )
 
     for col in input_df.columns:
-        result = rolling_circ_mean(input_df[col], window=4, min_periods=1, range_360=range_360)
+        result = rolling_circ_mean(input_df[col], window=4, min_periods=1, center=True, range_360=range_360)
         expected = (
             (
                 input_df[col]
-                .rolling(window=4, min_periods=1)
+                .rolling(window=4, min_periods=1, center=True)
                 .apply(lambda x: circmean(x, low=0, high=360, nan_policy="omit"))
             )
             if range_360
             else (
                 input_df[col]
-                .rolling(window=4, min_periods=1)
+                .rolling(window=4, min_periods=1, center=True)
                 .apply(lambda x: (circmean(x, low=-180, high=180, nan_policy="omit")))
             )
         )
@@ -48,10 +48,10 @@ def test_circ_mean_resample_degrees_all_nans() -> None:
     )
 
     for col in input_df.columns:
-        result = rolling_circ_mean(input_df[col], window=4, min_periods=1)
+        result = rolling_circ_mean(input_df[col], window=4, min_periods=1, center=True)
         expected = (
             input_df[col]
-            .rolling(window=4, min_periods=1)
+            .rolling(window=4, min_periods=1, center=True)
             .apply(lambda x: circmean(x, low=0, high=360, nan_policy="omit"))
         )
         assert_series_equal(result, expected)
@@ -80,12 +80,12 @@ def test_performance_comparison() -> None:
     col = "direction_0"
 
     def new_method() -> float:
-        return rolling_circ_mean(input_df[col], window=window_size, min_periods=min_periods)
+        return rolling_circ_mean(input_df[col], window=window_size, min_periods=min_periods, center=True)
 
     def scipy_method() -> float:
         return (
             input_df[col]
-            .rolling(window=window_size, min_periods=min_periods)
+            .rolling(window=window_size, min_periods=min_periods, center=True)
             .apply(lambda x: circmean(x, low=0, high=360, nan_policy="omit"))
         )
 
