@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import numpy.typing as npt
+import pandas as pd
 from scipy.stats import circmean
 
 
@@ -71,3 +72,28 @@ def circ_median(angles: npt.NDArray, axis: int | None = None, *, range_360: bool
         return median_angle
     # Convert to [-180, 180)
     return np.mod(median_angle + 180, 360) - 180
+
+
+def rolling_circ_mean(series: pd.Series, window: int, min_periods: int, *, range_360: bool = True) -> pd.Series:
+    """Efficient rolling circular mean for angles in degrees.
+
+    :param series: Series of angles in degrees.
+    :param window: Size of the rolling window.
+    :param min_periods: Minimum number of observations required to have a value.
+    :param range_360: If True, return result in [0, 360). If False, return result in [-180, 180).
+    :return: Series with rolling circular mean.
+    """
+    rad_values = np.deg2rad(series)
+    sin_series = pd.Series(np.sin(rad_values), index=series.index)
+    cos_series = pd.Series(np.cos(rad_values), index=series.index)
+
+    sin_rolling = sin_series.rolling(window=window, min_periods=min_periods).mean()
+    cos_rolling = cos_series.rolling(window=window, min_periods=min_periods).mean()
+
+    result = (np.rad2deg(np.arctan2(sin_rolling, cos_rolling)) + 360) % 360
+
+    if not range_360:
+        # Convert to [-180, 180)
+        result = np.mod(result + 180, 360) - 180
+
+    return result
