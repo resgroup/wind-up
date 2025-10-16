@@ -14,7 +14,7 @@ from ruptures.base import BaseCost
 from scipy.stats import circmean
 
 from wind_up.backporting import strict_zip
-from wind_up.circular_math import circ_diff
+from wind_up.circular_math import circ_diff, circ_median, rolling_circ_mean
 from wind_up.constants import (
     RAW_POWER_COL,
     RAW_YAWDIR_COL,
@@ -123,7 +123,7 @@ def _northing_score(
     max_component = max(0, wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"].abs().max() - 4) ** 2
 
     # this component penalizes the median north error of filtered data being far from 0
-    median_component = max(0, abs(wtg_df[f"filt_diff_to_{north_ref_wd_col}"].median()) - 0.1) ** 2
+    median_component = max(0, abs(circ_median(wtg_df[f"filt_diff_to_{north_ref_wd_col}"], range_360=False)) - 0.1) ** 2
 
     # this component penalizes raw data having any north errors
     max_weight = rated_power * YAW_OK_PW_FRACTION
@@ -175,25 +175,20 @@ def _add_northed_ok_diff_and_rolling_cols(
     wtg_df = _add_northing_ok_and_diff_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, northed_col=northed_col)
     rolling_hours = 6
     rows_per_hour = 3600 / timebase_s
-    # circular medians would be better but are harder to implement with good performance
-    wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"] = (
-        wtg_df[f"filt_diff_to_{north_ref_wd_col}"]
-        .rolling(
-            center=True,
-            window=round(rolling_hours * rows_per_hour),
-            min_periods=round(rolling_hours * rows_per_hour // 3),
-        )
-        .median()
+    wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"] = rolling_circ_mean(
+        wtg_df[f"filt_diff_to_{north_ref_wd_col}"],
+        center=True,
+        window=round(rolling_hours * rows_per_hour),
+        min_periods=round(rolling_hours * rows_per_hour // 3),
+        range_360=False,
     )
     rolling_hours = 15 * 24
-    wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"] = (
-        wtg_df[f"filt_diff_to_{north_ref_wd_col}"]
-        .rolling(
-            center=True,
-            window=round(rolling_hours * rows_per_hour),
-            min_periods=round(rolling_hours * rows_per_hour // 3),
-        )
-        .median()
+    wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"] = rolling_circ_mean(
+        wtg_df[f"filt_diff_to_{north_ref_wd_col}"],
+        center=True,
+        window=round(rolling_hours * rows_per_hour),
+        min_periods=round(rolling_hours * rows_per_hour // 3),
+        range_360=False,
     )
     return wtg_df
 
