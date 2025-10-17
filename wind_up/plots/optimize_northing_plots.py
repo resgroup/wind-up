@@ -45,7 +45,7 @@ def plot_yaw_diff_vs_power(wtg_df: pd.DataFrame, *, wtg_name: str, north_ref_wd_
     plt.ylabel(f"yaw_diff_to_{north_ref_wd_col}")
     title = f"{wtg_name} yaw_diff_to_{north_ref_wd_col} vs {RAW_POWER_COL}"
     plt.tight_layout()
-    (plot_cfg.plots_dir / wtg_name).mkdir(exist_ok=True)
+    (plot_cfg.plots_dir / wtg_name).mkdir(exist_ok=True, parents=True)
     plt.savefig(plot_cfg.plots_dir / wtg_name / f"{title}.png")
     plt.close()
 
