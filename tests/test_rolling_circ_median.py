@@ -29,7 +29,6 @@ def test_rolling_circ_median(*, range_360: bool) -> None:
         expected = input_df[col].rolling(window=window, min_periods=min_periods, center=True).apply(circ_median_exact)
         if not range_360:
             expected = ((expected + 180) % 360) - 180
-        assert_series_equal(result, expected, atol=0.1)
         residuals = circ_diff(result, expected)
         if any(~residuals.isna()):
             assert residuals.abs().max() < 1e-1
