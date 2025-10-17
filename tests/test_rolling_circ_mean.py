@@ -40,7 +40,6 @@ def test_rolling_circ_mean(*, range_360: bool) -> None:
 
 
 def test_rolling_circ_mean_all_nans() -> None:
-    """Test circ_mean_resample_degrees with data which is all NaN."""
     timestamps = pd.date_range(start="2024-01-01", periods=8, freq="1s")
     input_df = pd.DataFrame(
         {"wind_direction": 8 * [np.nan], "nacelle_direction": 8 * [np.nan]},
@@ -56,17 +55,15 @@ def test_rolling_circ_mean_all_nans() -> None:
         )
         assert_series_equal(result, expected)
 
-
+@pytest.mark.slow
 def test_rolling_circ_mean_performance() -> None:
-    """Test that circ_mean_resample_degrees is faster than using circmean directly."""
     # Generate a large dataset
     n_rows = 10_000
     n_cols = 1
     timestamps = pd.date_range(start="2024-01-01", periods=n_rows, freq="1s")
 
-    # Generate random angles between 0 and 360
     rng = np.random.default_rng(0)
-    data = rng.uniform(0, 359.9, size=(n_rows, n_cols))
+    data = np.concatenate([rng.normal(4, 20, n_rows // 2) % 360, rng.normal(354, 20, n_rows // 2) % 360])
     # Add some NaN values (5% of data)
     nan_rate = 0.05
     nan_mask = rng.random(size=data.shape) < nan_rate
@@ -98,7 +95,7 @@ def test_rolling_circ_mean_performance() -> None:
         scipy_method,
         number=number_of_runs,
     )
-    minimum_speed_up = 10
+    minimum_speed_up = 100
     assert rolling_circ_mean_time < apply_scipy_circmean_time / minimum_speed_up, (
         f"New method ({rolling_circ_mean_time:.2f}s) should be at least {minimum_speed_up}x faster than "
         f"old method ({apply_scipy_circmean_time:.2f}s)"
