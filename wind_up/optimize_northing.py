@@ -14,7 +14,7 @@ from ruptures.base import BaseCost
 from scipy.stats import circmean
 
 from wind_up.backporting import strict_zip
-from wind_up.circular_math import circ_diff, circ_median, rolling_circ_mean
+from wind_up.circular_math import circ_diff, circ_median, rolling_circ_median_approx
 from wind_up.constants import (
     RAW_POWER_COL,
     RAW_YAWDIR_COL,
@@ -175,7 +175,7 @@ def _add_northed_ok_diff_and_rolling_cols(
     wtg_df = _add_northing_ok_and_diff_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, northed_col=northed_col)
     rolling_hours = 6
     rows_per_hour = 3600 / timebase_s
-    wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"] = rolling_circ_mean(
+    wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"] = rolling_circ_median_approx(
         wtg_df[f"filt_diff_to_{north_ref_wd_col}"],
         center=True,
         window=round(rolling_hours * rows_per_hour),
@@ -183,7 +183,7 @@ def _add_northed_ok_diff_and_rolling_cols(
         range_360=False,
     )
     rolling_hours = 15 * 24
-    wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"] = rolling_circ_mean(
+    wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"] = rolling_circ_median_approx(
         wtg_df[f"filt_diff_to_{north_ref_wd_col}"],
         center=True,
         window=round(rolling_hours * rows_per_hour),
@@ -194,14 +194,8 @@ def _add_northed_ok_diff_and_rolling_cols(
 
 
 def _calc_good_north_offset(section_df: pd.DataFrame, north_ref_wd_col: str) -> float:
-    # cheap and cheerful circ median
     north_errors = section_df[f"filt_diff_to_{north_ref_wd_col}"]
-    north_errors_circmean = circmean(north_errors, high=180, low=-180, nan_policy="omit")
-    ## rotate the data so 0 represents the circmean, calculate median, then rotate back
-    north_errors_zero_centred = (north_errors - north_errors_circmean + 180) % 360 - 180
-    circmedian = (np.nanmedian(north_errors_zero_centred) + north_errors_circmean + 180) % 360 - 180
-    # return negative circmedian (the offset to add to make median north error 0)
-    return -circmedian
+    return -circ_median(north_errors)
 
 
 def _calc_north_offset_col(
