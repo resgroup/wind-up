@@ -55,6 +55,7 @@ def test_rolling_circ_mean_all_nans() -> None:
         )
         assert_series_equal(result, expected)
 
+
 @pytest.mark.slow
 def test_rolling_circ_mean_performance() -> None:
     # Generate a large dataset
