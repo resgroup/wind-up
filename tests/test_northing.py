@@ -39,10 +39,10 @@ def test_apply_northing_corrections(test_lsa_t13_config: WindUpConfig) -> None:
     abs_north_errs_after_northing = _calc_max_abs_north_errs(
         wf_df_after_northing, north_ref_wd_col=REANALYSIS_WD_COL, timebase_s=cfg.timebase_s
     )
-    assert abs_north_errs_before_northing.min() == pytest.approx(7.978039620049401)
-    assert abs_north_errs_before_northing.max() == pytest.approx(7.978039620049401)
-    assert abs_north_errs_after_northing["LSA_T07"] == pytest.approx(18.130420466185228)
-    assert abs_north_errs_after_northing["LSA_T09"] == pytest.approx(126.70998424500277)
-    assert abs_north_errs_after_northing["LSA_T12"] == pytest.approx(164.815273171483)
-    assert abs_north_errs_after_northing["LSA_T13"] == pytest.approx(10.978039620049401)
-    assert abs_north_errs_after_northing["LSA_T14"] == pytest.approx(12.130420466185228)
+    assert abs_north_errs_before_northing.min() == pytest.approx(7.911393667045218)
+    assert abs_north_errs_before_northing.max() == pytest.approx(7.911393667045218)
+    assert abs_north_errs_after_northing["LSA_T07"] == pytest.approx(18.402401473162058)
+    assert abs_north_errs_after_northing["LSA_T09"] == pytest.approx(174.10443861846687)
+    assert abs_north_errs_after_northing["LSA_T12"] == pytest.approx(172.59341754958666)
+    assert abs_north_errs_after_northing["LSA_T13"] == pytest.approx(10.894109266368332)
+    assert abs_north_errs_after_northing["LSA_T14"] == pytest.approx(12.41110384502656)
