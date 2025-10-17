@@ -65,7 +65,7 @@ def circ_median_exact(angles: np.ndarray | list) -> float:
         return angles[tied_indices[0]]
     # Return circular mean of tied angles
     tied_angles = angles[tied_indices]
-    return circmean(tied_angles, high=360, low=0)
+    return circmean(tied_angles, high=360, low=0) % 360
 
 
 test_circ_median_data = [
