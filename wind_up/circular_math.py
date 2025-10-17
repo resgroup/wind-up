@@ -75,7 +75,7 @@ def circ_median(angles: npt.NDArray, axis: int | None = None, *, range_360: bool
 
 
 def rolling_circ_mean(
-    series: pd.Series, *,window: int, min_periods: int,  center: bool = False, range_360: bool = True
+    series: pd.Series, *, window: int, min_periods: int, center: bool = False, range_360: bool = True
 ) -> pd.Series:
     """Efficient rolling circular mean for angles in degrees.
 
@@ -102,7 +102,7 @@ def rolling_circ_mean(
     return result
 
 
-def rolling_circ_median(
+def rolling_circ_median_approx(
     series: pd.Series, *, window: int, min_periods: int, center: bool = False, range_360: bool = True
 ) -> pd.Series:
     """Efficient rolling circular (approximate) median for angles in degrees.
@@ -112,22 +112,19 @@ def rolling_circ_median(
     :param min_periods: Minimum number of observations required to have a value.
     :param center: If True, set the labels at the center of the window.
     :param range_360: If True, return result in [0, 360). If False, return result in [-180, 180).
-    :return: Series with rolling circular mean.
+    :return: Series with rolling circular median.
     """
-    # Calculate circular mean
-    circular_mean = rolling_circ_mean(series, window=window, min_periods=1, center=center, range_360=range_360)
+    rad_values = np.deg2rad(series)
+    sin_series = pd.Series(np.sin(rad_values), index=series.index)
+    cos_series = pd.Series(np.cos(rad_values), index=series.index)
 
-    # Center the data around 180 (subtract mean, add 180)
-    centered_series = (series - circular_mean + 180).mod(360)
+    sin_rolling = sin_series.rolling(window=window, min_periods=min_periods, center=center).median()
+    cos_rolling = cos_series.rolling(window=window, min_periods=min_periods, center=center).median()
 
-    # Compute ordinary median on centered data
-    median_centered = centered_series.rolling(window=window, min_periods=min_periods, center=center).median()
+    result = (np.rad2deg(np.arctan2(sin_rolling, cos_rolling)) + 360) % 360
 
-    # Rotate back (subtract 180, add mean back)
-    result = (median_centered - 180 + circular_mean).mod(360)
+    if not range_360:
+        # Convert to [-180, 180)
+        result = np.mod(result + 180, 360) - 180
 
-    # Convert to requested range
-    if range_360:
-        return result
-    # Convert to [-180, 180)
-    return np.mod(result + 180, 360) - 180
+    return result
