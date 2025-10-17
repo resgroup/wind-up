@@ -30,6 +30,10 @@ def test_rolling_circ_median(*, range_360: bool) -> None:
         if not range_360:
             expected = ((expected + 180) % 360) - 180
         assert_series_equal(result, expected, atol=0.1)
+        residuals = circ_diff(result, expected)
+        if any(~residuals.isna()):
+            assert residuals.abs().max() < 1e-1
+        assert_series_equal(result, expected, atol=360)  # big atol to avoid wrap error
 
 
 def test_rolling_circ_median_all_nans() -> None:
