@@ -45,6 +45,7 @@ def test_rolling_circ_median_all_nans() -> None:
         assert_series_equal(result, expected)
 
 
+@pytest.mark.slow
 def test_rolling_circ_median_performance() -> None:
     # Generate a large dataset
     n_rows = 10_000
@@ -85,7 +86,7 @@ def test_rolling_circ_median_performance() -> None:
     assert_series_equal(new_method_results, exact_method_results, atol=360)  # big atol to avoid wrap error
 
     # check speed
-    number_of_runs = 5
+    number_of_runs = 10
     rolling_circ_median_time = timeit.timeit(new_method, number=number_of_runs)
     apply_exact_time = timeit.timeit(
         exact_method,

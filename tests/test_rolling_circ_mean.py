@@ -90,7 +90,7 @@ def test_rolling_circ_mean_performance() -> None:
     assert_series_equal(new_method(), scipy_method())
 
     # compare speed of new vs scipy_method
-    number_of_runs = 5
+    number_of_runs = 10
     rolling_circ_mean_time = timeit.timeit(new_method, number=number_of_runs)
     apply_scipy_circmean_time = timeit.timeit(
         scipy_method,

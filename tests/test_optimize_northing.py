@@ -113,6 +113,7 @@ wind_direction_offsets = [
 ]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(("wind_direction_offset"), wind_direction_offsets)
 def test_auto_northing_corrections(test_homer_config: WindUpConfig, wind_direction_offset: float) -> None:
     cfg = test_homer_config

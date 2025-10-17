@@ -195,7 +195,7 @@ def _add_northed_ok_diff_and_rolling_cols(
 
 def _calc_good_north_offset(section_df: pd.DataFrame, north_ref_wd_col: str) -> float:
     north_errors = section_df[f"filt_diff_to_{north_ref_wd_col}"]
-    return -circ_median(north_errors)
+    return -float(circ_median(north_errors))
 
 
 def _calc_north_offset_col(
