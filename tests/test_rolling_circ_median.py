@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 from pandas.testing import assert_series_equal
-from scipy.stats import circmean
 
-from wind_up.circular_math import rolling_circ_median, circ_median
+from tests.test_math_funcs import circ_median_exact
+from wind_up.circular_math import circ_diff, rolling_circ_median_approx
 
 
 @pytest.mark.parametrize("range_360", [True, False])
@@ -20,19 +20,19 @@ def test_rolling_circ_median(*, range_360: bool) -> None:
         },
         index=timestamps,
     )
-    window = 8
-    min_periods=4
+    window = 4
+    min_periods = 3
     for col in input_df.columns:
-        result = rolling_circ_median(input_df[col], window=window, min_periods=min_periods, center=True, range_360=range_360)
-        expected = (input_df[col]
-                .rolling(window=window, min_periods=min_periods, center=True)
-                .apply(lambda x: circ_median(x, range_360=range_360))
-            )
-        assert_series_equal(result, expected)
+        result = rolling_circ_median_approx(
+            input_df[col], window=window, min_periods=min_periods, center=True, range_360=range_360
+        )
+        expected = input_df[col].rolling(window=window, min_periods=min_periods, center=True).apply(circ_median_exact)
+        if not range_360:
+            expected = ((expected + 180) % 360) - 180
+        assert_series_equal(result, expected, atol=0.1)
 
 
 def test_rolling_circ_median_all_nans() -> None:
-    """Test circ_mean_resample_degrees with data which is all NaN."""
     timestamps = pd.date_range(start="2024-01-01", periods=8, freq="1s")
     input_df = pd.DataFrame(
         {"wind_direction": 8 * [np.nan], "nacelle_direction": 8 * [np.nan]},
@@ -40,25 +40,19 @@ def test_rolling_circ_median_all_nans() -> None:
     )
 
     for col in input_df.columns:
-        result = rolling_circ_median(input_df[col], window=4, min_periods=3, center=True, range_360=True)
-        expected = (
-            input_df[col]
-            .rolling(window=4, min_periods=3, center=True)
-            .apply(lambda x: circ_median(x, range_360=True))
-        )
+        result = rolling_circ_median_approx(input_df[col], window=4, min_periods=3, center=True, range_360=True)
+        expected = input_df[col].rolling(window=4, min_periods=3, center=True).apply(lambda x: circ_median_exact(x))
         assert_series_equal(result, expected)
 
 
 def test_rolling_circ_median_performance() -> None:
-    """Test that circ_mean_resample_degrees is faster than using circmean directly."""
     # Generate a large dataset
     n_rows = 10_000
     n_cols = 1
     timestamps = pd.date_range(start="2024-01-01", periods=n_rows, freq="1s")
 
-    # Generate random angles between 0 and 360
     rng = np.random.default_rng(0)
-    data = rng.uniform(0, 359.9, size=(n_rows, n_cols))
+    data = np.concatenate([rng.normal(4, 20, n_rows // 2) % 360, rng.normal(354, 20, n_rows // 2) % 360])
     # Add some NaN values (5% of data)
     nan_rate = 0.05
     nan_mask = rng.random(size=data.shape) < nan_rate
@@ -72,26 +66,33 @@ def test_rolling_circ_median_performance() -> None:
     col = "direction_0"
 
     def new_method() -> float:
-        return rolling_circ_median(input_df[col], window=window_size, min_periods=min_periods, center=True)
+        return rolling_circ_median_approx(input_df[col], window=window_size, min_periods=min_periods, center=True)
 
-    def scipy_method() -> float:
+    def exact_method() -> float:
         return (
             input_df[col]
             .rolling(window=window_size, min_periods=min_periods, center=True)
-            .apply(lambda x: circ_median(x, range_360=True))
+            .apply(lambda x: circ_median_exact(x))
         )
 
-    assert_series_equal(new_method(), scipy_method(),atol=1)
+    new_method_results = new_method()
+    exact_method_results = exact_method()
+    residuals = circ_diff(new_method_results, exact_method_results)
+    # results are not expected to exactly match
+    assert abs(residuals.mean()) < 2e-2
+    assert residuals.abs().mean() < 3e-1
+    assert residuals.abs().max() < 6
+    assert_series_equal(new_method_results, exact_method_results, atol=360)  # big atol to avoid wrap error
 
-    # compare speed of new vs scipy_method
+    # check speed
     number_of_runs = 5
-    rolling_circ_mean_time = timeit.timeit(new_method, number=number_of_runs)
-    apply_scipy_circmean_time = timeit.timeit(
-        scipy_method,
+    rolling_circ_median_time = timeit.timeit(new_method, number=number_of_runs)
+    apply_exact_time = timeit.timeit(
+        exact_method,
         number=number_of_runs,
     )
-    minimum_speed_up = 10
-    assert rolling_circ_mean_time < apply_scipy_circmean_time / minimum_speed_up, (
-        f"New method ({rolling_circ_mean_time:.2f}s) should be at least {minimum_speed_up}x faster than "
-        f"old method ({apply_scipy_circmean_time:.2f}s)"
+    minimum_speed_up = 100
+    assert rolling_circ_median_time < apply_exact_time / minimum_speed_up, (
+        f"New method ({rolling_circ_median_time:.2f}s) should be at least {minimum_speed_up}x faster than "
+        f"old method ({apply_exact_time:.2f}s)"
     )
