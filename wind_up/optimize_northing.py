@@ -6,11 +6,15 @@ import logging
 import math
 from typing import TYPE_CHECKING
 
+import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import ruptures as rpt
+from ruptures.base import BaseCost
+from scipy.stats import circmean
 
 from wind_up.backporting import strict_zip
-from wind_up.circular_math import circ_diff
+from wind_up.circular_math import circ_diff, circ_median, rolling_circ_median_approx
 from wind_up.constants import (
     RAW_POWER_COL,
     RAW_YAWDIR_COL,
@@ -34,8 +38,6 @@ from wind_up.plots.optimize_northing_plots import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import numpy as np
-
     from wind_up.models import PlotConfig, WindUpConfig
 
 logger = logging.getLogger(__name__)
@@ -43,18 +45,82 @@ logger = logging.getLogger(__name__)
 DECAY_FRACTION = 0.4
 
 
-def _northing_score_changepoint_component(changepoint_count: int) -> float:
-    return float(changepoint_count)
+class CostCircularL1(BaseCost):
+    """Custom cost function for detecting changes in circular data which ranges from -180 to 180.
+
+    Uses L1 norm with circular distance for robustness to outliers.
+    """
+
+    model = "circular_l1"
+    min_size = 2
+
+    def __init__(self) -> None:
+        """Initialize the circular cost function."""
+        self.signal: npt.NDArray | None = None
+        self.min_size = 2
+
+    def fit(self, signal: npt.NDArray) -> CostCircularL1:
+        """Set parameters of the instance.
+
+        Args:
+            signal (array): signal. Shape (n_samples,) or (n_samples, n_features)
+
+        Returns:
+            self
+
+        """
+        self.signal = signal.reshape(-1, 1) if signal.ndim == 1 else signal
+
+        return self
+
+    def error(self, start: int, end: int) -> float:
+        """Return the approximation cost on the segment [start:end].
+
+        Args:
+            start (int): start of the segment
+            end (int): end of the segment
+
+        Returns:
+            segment cost
+
+        """
+        if end - start < self.min_size:
+            raise rpt.exceptions.NotEnoughPoints
+
+        if self.signal is None:
+            msg = "CostCircularL1 not fitted with signal data"
+            raise RuntimeError(msg)
+
+        sub_signal = self.signal[start:end]
+
+        # cheap and cheerful circ median
+        ## calc circmean, noting that sub_signal ranges from -180 to +180
+        sub_signal_circmean = circmean(sub_signal, low=-180, high=180, nan_policy="omit")
+        ## rotate the data so 0 represents the circmean, calculate median, then rotate back
+        sub_signal_zero_centred = (sub_signal - sub_signal_circmean + 180) % 360 - 180
+        circmedian = (np.nanmedian(sub_signal_zero_centred) + sub_signal_circmean + 180) % 360 - 180
+        # return sum of circ diffs from circ median
+        abs_circdiffs = abs(circ_diff(sub_signal, circmedian))
+        return np.sum(abs_circdiffs)  # type: ignore[call-overload]
+
+
+def _northing_score_changepoint_component(changepoint_count: int, *, years_of_data: float) -> float:
+    return 10 * max(float(changepoint_count - 1), 0) / max(years_of_data, 1)
 
 
 def _northing_score(
-    wtg_df: pd.DataFrame, *, north_ref_wd_col: str, changepoint_count: int, rated_power: float, timebase_s: int
+    wtg_df: pd.DataFrame,
+    *,
+    north_ref_wd_col: str,
+    changepoint_count: int,
+    rated_power: float,
+    timebase_s: int,
 ) -> float:
     # this component penalizes long-ish, large north errors
     max_component = max(0, wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"].abs().max() - 4) ** 2
 
     # this component penalizes the median north error of filtered data being far from 0
-    median_component = max(0, abs(wtg_df[f"filt_diff_to_{north_ref_wd_col}"].median()) - 0.1) ** 2
+    median_component = max(0, abs(circ_median(wtg_df[f"filt_diff_to_{north_ref_wd_col}"], range_360=False)) - 0.1) ** 2  # type:ignore[operator]
 
     # this component penalizes raw data having any north errors
     max_weight = rated_power * YAW_OK_PW_FRACTION
@@ -64,8 +130,11 @@ def _northing_score(
         * wtg_df[RAW_POWER_COL].clip(lower=min_weight, upper=max_weight)
     ).abs().mean() / max_weight
 
-    # this component encourages the correction list to be as short as possible
-    changepoint_component = _northing_score_changepoint_component(changepoint_count)
+    # this component encourages the correction list to be short
+    changepoint_component = _northing_score_changepoint_component(
+        changepoint_count,
+        years_of_data=(wtg_df.index.max() - wtg_df.index.min()).total_seconds() / (3600 * 24 * 365.25),
+    )
 
     return max_component + median_component + raw_wmean_component + changepoint_component
 
@@ -103,30 +172,27 @@ def _add_northed_ok_diff_and_rolling_cols(
     wtg_df = _add_northing_ok_and_diff_cols(wtg_df, north_ref_wd_col=north_ref_wd_col, northed_col=northed_col)
     rolling_hours = 6
     rows_per_hour = 3600 / timebase_s
-    wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"] = (
-        wtg_df[f"filt_diff_to_{north_ref_wd_col}"]
-        .rolling(
-            center=True,
-            window=round(rolling_hours * rows_per_hour),
-            min_periods=round(rolling_hours * rows_per_hour // 3),
-        )
-        .median()
+    wtg_df[f"short_rolling_diff_to_{north_ref_wd_col}"] = rolling_circ_median_approx(
+        wtg_df[f"filt_diff_to_{north_ref_wd_col}"],
+        center=True,
+        window=round(rolling_hours * rows_per_hour),
+        min_periods=round(rolling_hours * rows_per_hour // 3),
+        range_360=False,
     )
     rolling_hours = 15 * 24
-    wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"] = (
-        wtg_df[f"filt_diff_to_{north_ref_wd_col}"]
-        .rolling(
-            center=True,
-            window=round(rolling_hours * rows_per_hour),
-            min_periods=round(rolling_hours * rows_per_hour // 3),
-        )
-        .median()
+    wtg_df[f"long_rolling_diff_to_{north_ref_wd_col}"] = rolling_circ_median_approx(
+        wtg_df[f"filt_diff_to_{north_ref_wd_col}"],
+        center=True,
+        window=round(rolling_hours * rows_per_hour),
+        min_periods=round(rolling_hours * rows_per_hour // 3),
+        range_360=False,
     )
     return wtg_df
 
 
 def _calc_good_north_offset(section_df: pd.DataFrame, north_ref_wd_col: str) -> float:
-    return -section_df[f"filt_diff_to_{north_ref_wd_col}"].median()
+    north_errors = section_df[f"filt_diff_to_{north_ref_wd_col}"]
+    return -float(circ_median(north_errors, range_360=False))
 
 
 def _calc_north_offset_col(
@@ -218,12 +284,14 @@ def _score_wtg_north_table(
     return output_north_table, score, output_wtg_df
 
 
-def _calc_max_changepoints_to_add(changepoint_count: int, *, score: float) -> int:
+def _calc_max_changepoints_to_add(changepoint_count: int, *, score: float, years_of_data: float) -> int:
     max_changepoints_to_add = 0
-    headroom = score - _northing_score_changepoint_component(changepoint_count + 1)
+    headroom = score - _northing_score_changepoint_component(changepoint_count + 1, years_of_data=years_of_data)
     while headroom > 0:
         max_changepoints_to_add += 1
-        headroom = score - _northing_score_changepoint_component(max_changepoints_to_add + 1)
+        headroom = score - _northing_score_changepoint_component(
+            max_changepoints_to_add + 1, years_of_data=years_of_data
+        )
     return max_changepoints_to_add
 
 
@@ -248,11 +316,11 @@ def _get_changepoint_objects(
     north_ref_wd_col: str,
 ) -> tuple[rpt.base.BaseEstimator, np.ndarray]:
     col = f"filt_diff_to_{north_ref_wd_col}"
-    model = "l1"
     dropna_df = prev_best_wtg_df.dropna(subset=[col])
     signal = dropna_df[col].to_numpy()
     timestamps = dropna_df.index.to_numpy()
-    algo = rpt.BottomUp(model=model).fit(signal)
+    custom_cost = CostCircularL1()
+    algo = rpt.BottomUp(custom_cost=custom_cost).fit(signal)
     return algo, timestamps
 
 
@@ -423,6 +491,7 @@ def _optimize_wtg_north_table(
     north_ref_wd_col: str,
     timebase_s: int,
     plot_cfg: PlotConfig | None,
+    years_of_data: float,
     initial_wtg_north_table: pd.DataFrame | None = None,
     best_score_margin: float = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, float, float]:
@@ -460,7 +529,9 @@ def _optimize_wtg_north_table(
         )
 
     done_optimizing = False
-    max_changepoints_to_add = min(5, _calc_max_changepoints_to_add(len(best_north_table), score=best_score))
+    max_changepoints_to_add = min(
+        5, _calc_max_changepoints_to_add(len(best_north_table), score=best_score, years_of_data=years_of_data)
+    )
     initial_step_size: int = 100
     shift_step_size: int = initial_step_size
     tries_left: int = 1
@@ -511,13 +582,15 @@ def _optimize_wtg_north_table(
         else:
             tries_left += 1
             logger.info(f"tries_left increased to {tries_left}")
-            max_changepoints_to_add = min(2, _calc_max_changepoints_to_add(len(best_north_table), score=best_score))
+            max_changepoints_to_add = min(
+                2, _calc_max_changepoints_to_add(len(best_north_table), score=best_score, years_of_data=years_of_data)
+            )
         if not best_move_found_this_loop:
             shift_step_size = min(shift_step_size - 1, round(shift_step_size * DECAY_FRACTION))
             if shift_step_size < 1:
                 max_changepoints_to_add = min(
                     2,
-                    _calc_max_changepoints_to_add(len(best_north_table), score=best_score),
+                    _calc_max_changepoints_to_add(len(best_north_table), score=best_score, years_of_data=years_of_data),
                 )
                 shift_step_size = initial_step_size + 1 + (1 / (DECAY_FRACTION ** (math.pi * (tries_left + 1))) % 10)
                 shift_step_size = round(shift_step_size)
@@ -582,6 +655,7 @@ def _optimize_wf_north_table(
             plot_cfg=plot_cfg,
             initial_wtg_north_table=initial_wtg_north_table,
             best_score_margin=best_score_margin,
+            years_of_data=(wtg_df.index.max() - wtg_df.index.min()).total_seconds() / (3600 * 24 * 365.25),
         )
 
         northed_col = calc_northed_col_name(north_ref_wd_col)
@@ -606,6 +680,7 @@ def _optimize_wf_north_table(
             f"max_northing_error changed from {max_northing_error_before:.1f} to {max_northing_error_after:.1f} "
             f"[{max_northing_error_after - max_northing_error_before:.1f}]",
         )
+        logger.info(f"\n{wtg_north_table=}\n\n")
 
         wtg_north_table["TurbineName"] = wtg_name
         optimized_wf_north_table = (

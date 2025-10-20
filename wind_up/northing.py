@@ -7,9 +7,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
-from scipy.stats import circmean
 
-from wind_up.circular_math import circ_diff
+from wind_up.circular_math import circ_diff, circ_median, rolling_circ_median_approx
 from wind_up.constants import (
     RAW_YAWDIR_COL,
     REANALYSIS_WD_COL,
@@ -31,10 +30,12 @@ def _add_rolling_northing_error(wf_df: pd.DataFrame, *, north_ref_wd_col: str, t
     wf_df.loc[~(wf_df["WindSpeedMean"] >= ws_ll), "apparent_northing_error"] = np.nan
     rolling_days = 20
     rows_per_day = 24 * 3600 / timebase_s
-    wf_df["rolling_northing_error"] = (
-        wf_df["apparent_northing_error"]
-        .rolling(window=round(rolling_days * rows_per_day), min_periods=round(rolling_days * rows_per_day // 3))
-        .median()
+    wf_df["rolling_northing_error"] = rolling_circ_median_approx(
+        wf_df["apparent_northing_error"],
+        window=round(rolling_days * rows_per_day),
+        min_periods=round(rolling_days * rows_per_day // 3),
+        center=True,
+        range_360=False,
     )
     return wf_df
 
@@ -187,12 +188,7 @@ def _calc_wf_yawdir_df(
     wf_yawdir_df = wf_df.groupby(TIMESTAMP_COL).agg(
         wf_yawdir=pd.NamedAgg(
             column=best_yaw_dir_col,
-            aggfunc=lambda x: (
-                ((x - circmean(x, low=0, high=360, nan_policy="omit") + 180) % 360).median(skipna=True)
-                + circmean(x, low=0, high=360, nan_policy="omit")
-                - 180
-            )
-            % 360,
+            aggfunc=lambda x: circ_median(x),
         ),
         num_turbines=pd.NamedAgg(column=best_yaw_dir_col, aggfunc=lambda x: x.count()),
     )

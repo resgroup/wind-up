@@ -1,6 +1,6 @@
 [project]
 name = "res-wind-up"
-version = "0.4.3"
+version = "0.4.4"
 authors = [
     { name = "Alex Clerc", email = "alex.clerc@res-group.com" }
 ]
@@ -69,7 +69,6 @@ examples = [
     'ephem',
     'flaml[automl]',
 ]
-all = ["res-wind-up[dev,examples]"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -127,7 +126,7 @@ module = [
     "geographiclib.geodesic",
     "pandas",
     "pandas.testing",
-    "ruptures",
+    "ruptures.*",
     "scipy.stats",
     "seaborn",
     "utm",
