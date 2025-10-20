@@ -69,10 +69,7 @@ class CostCircularL1(BaseCost):
             self
 
         """
-        if signal.ndim == 1:
-            self.signal = signal.reshape(-1, 1)
-        else:
-            self.signal = signal
+        self.signal = signal.reshape(-1, 1) if signal.ndim == 1 else signal
 
         return self
 
