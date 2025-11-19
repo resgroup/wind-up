@@ -32,7 +32,6 @@ from wind_up.plots.scada_funcs_plots import (
 )
 from wind_up.plots.yaw_direction_plots import plot_yaw_direction_pre_post
 from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
-from wind_up.reanalysis_data import MastOrLiDARDataset
 from wind_up.result_manager import result_manager
 from wind_up.waking_state import (
     add_waking_scen,
@@ -44,6 +43,7 @@ from wind_up.windspeed_drift import check_windspeed_drift
 
 if TYPE_CHECKING:
     from wind_up.models import PlotConfig, Turbine, WindUpConfig
+    from wind_up.reanalysis_data import MastOrLiDARDataset
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +202,9 @@ def _get_ref_df(
             original_wd_col = REANALYSIS_WD_COL
         elif ref_name in [x.name for x in cfg.asset.masts_and_lidars]:
             ref_obj = next(x for x in cfg.asset.masts_and_lidars if x.name == ref_name)
+            if mast_or_lidar_datasets is None:
+                msg = f"No mast or lidar datasets provided for {ref_name}"
+                raise ValueError(msg)
             ref_df = next(x for x in mast_or_lidar_datasets if x.id == ref_name).data
             northing_df = wf_df.loc[cfg.test_wtgs[0].name, [REANALYSIS_WS_COL, REANALYSIS_WD_COL, WINDFARM_YAWDIR_COL]]
             ref_df = ref_df.merge(northing_df, how="left", left_index=True, right_index=True)
