@@ -222,3 +222,11 @@ def add_reanalysis_data(
     if plot_cfg is not None:
         plot_wf_and_reanalysis_sample_timeseries(wf_df=wf_and_reanalysis_df, plot_cfg=plot_cfg)
     return wf_and_reanalysis_df
+
+
+@dataclass
+class MastOrLiDARDataset:
+    """Class to store mast or LiDAR data."""
+
+    id: str
+    data: pd.DataFrame

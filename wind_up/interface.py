@@ -13,7 +13,7 @@ from wind_up.caching import with_pickle_cache
 from wind_up.constants import REANALYSIS_WD_COL
 from wind_up.northing import add_wf_yawdir, apply_northing_corrections
 from wind_up.optimize_northing import auto_northing_corrections
-from wind_up.reanalysis_data import ReanalysisDataset, add_reanalysis_data
+from wind_up.reanalysis_data import MastOrLiDARDataset, ReanalysisDataset, add_reanalysis_data
 from wind_up.scada_funcs import filter_scada_df, get_raw_scada_and_cfg_from_file
 from wind_up.scada_power_curve import calc_pc_and_rated_ws
 from wind_up.smart_data import add_smart_lat_long_to_cfg
@@ -143,6 +143,7 @@ class AssessmentInputs:
     cfg: WindUpConfig
     plot_cfg: PlotConfig
     pre_post_splitter: PrePostSplitter
+    mast_or_lidar_datasets: list[MastOrLiDARDataset] | None = None
 
     @classmethod
     def from_cfg(
@@ -155,6 +156,7 @@ class AssessmentInputs:
         toggle_df: pd.DataFrame | None = None,
         reanalysis_datasets: list[ReanalysisDataset],
         cache_dir: Path | None = None,
+        mast_or_lidar_datasets: list[MastOrLiDARDataset] | None = None,
     ) -> AssessmentInputs:
         """Construct instance of AssessmentInputs from configuration objects and data.
 
@@ -183,6 +185,7 @@ class AssessmentInputs:
             cfg=cfg,
             plot_cfg=plot_cfg,
             pre_post_splitter=pre_post_splitter,
+            mast_or_lidar_datasets=mast_or_lidar_datasets,
         )
 
 

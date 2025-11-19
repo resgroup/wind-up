@@ -97,10 +97,6 @@ class MastOrLidar(BaseModel):
     name: str = Field(description="Object name", min_length=2)
     latitude: float = Field(default=np.nan, ge=-90, le=90)
     longitude: float = Field(default=np.nan, ge=-180, le=180)
-    data_file_name: str = Field(
-        min_length=2,
-        description="Name of data timeseries file",
-    )
     wind_speed_column: str = Field(min_length=2, description="Name of wind speed column in data timeseries file")
     wind_direction_column: str = Field(
         min_length=2,

@@ -12,7 +12,6 @@ import pandas as pd
 import wind_up
 from wind_up.circular_math import circ_diff
 from wind_up.constants import (
-    PROJECTROOT_DIR,
     RANDOM_SEED,
     REANALYSIS_WD_COL,
     REANALYSIS_WS_COL,
@@ -33,6 +32,7 @@ from wind_up.plots.scada_funcs_plots import (
 )
 from wind_up.plots.yaw_direction_plots import plot_yaw_direction_pre_post
 from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
+from wind_up.reanalysis_data import MastOrLiDARDataset
 from wind_up.result_manager import result_manager
 from wind_up.waking_state import (
     add_waking_scen,
@@ -183,6 +183,7 @@ def _get_ref_df(
     test_wtg: Turbine,
     toggle_df: pd.DataFrame | None = None,
     keep_only_toggle_off: bool = True,
+    mast_or_lidar_datasets: list[MastOrLiDARDataset] | None = None,
 ) -> pd.DataFrame:
     if ref_name in [x.name for x in cfg.asset.wtgs]:
         ref_df = wf_df.loc[ref_name].copy()
@@ -201,9 +202,7 @@ def _get_ref_df(
             original_wd_col = REANALYSIS_WD_COL
         elif ref_name in [x.name for x in cfg.asset.masts_and_lidars]:
             ref_obj = next(x for x in cfg.asset.masts_and_lidars if x.name == ref_name)
-            ref_df = pd.read_parquet(
-                PROJECTROOT_DIR / "input_data" / "masts_and_lidars" / cfg.asset.name / f"{ref_obj.data_file_name}",
-            )
+            ref_df = next(x for x in mast_or_lidar_datasets if x.id == ref_name).data
             northing_df = wf_df.loc[cfg.test_wtgs[0].name, [REANALYSIS_WS_COL, REANALYSIS_WD_COL, WINDFARM_YAWDIR_COL]]
             ref_df = ref_df.merge(northing_df, how="left", left_index=True, right_index=True)
             original_ws_col = ref_obj.wind_speed_column
@@ -449,6 +448,7 @@ def _calc_test_ref_results(
     plot_cfg: PlotConfig,
     random_seed: int,
     toggle_df: pd.DataFrame | None = None,
+    mast_or_lidar_datasets: list[MastOrLiDARDataset] | None = None,
 ) -> dict:
     test_name = test_wtg.name
     (plot_cfg.plots_dir / test_name / ref_name).mkdir(exist_ok=True, parents=True)
@@ -478,6 +478,7 @@ def _calc_test_ref_results(
         test_wtg=test_wtg,
         toggle_df=toggle_df,
         keep_only_toggle_off=keep_only_toggle_off,
+        mast_or_lidar_datasets=mast_or_lidar_datasets,
     )
     if len(ref_df) == 0:
         result_manager.warning(f"ref_df is empty for {ref_name}")
@@ -925,6 +926,7 @@ def run_wind_up_analysis(
                 cfg=cfg,
                 plot_cfg=plot_cfg,
                 random_seed=random_seed,
+                mast_or_lidar_datasets=inputs.mast_or_lidar_datasets,
             )
             test_ref_results = test_ref_results | test_results
             logger.info(test_ref_results)
