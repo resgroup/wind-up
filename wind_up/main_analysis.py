@@ -728,7 +728,6 @@ def _calc_test_ref_results(
 
     if cfg.write_pp_df_parquets:
         (cfg.out_dir / "pp_df").mkdir(exist_ok=True)
-        detrend_df.to_parquet(cfg.out_dir / "pp_df" / f"{test_wtg.name}_{ref_name}_detrend_df.parquet")
         pre_df.to_parquet(cfg.out_dir / "pp_df" / f"{test_wtg.name}_{ref_name}_pre_df.parquet")
         post_df.to_parquet(cfg.out_dir / "pp_df" / f"{test_wtg.name}_{ref_name}_post_df.parquet")
         _pp_df.to_parquet(cfg.out_dir / "pp_df" / f"{test_wtg.name}_{ref_name}_pp_df.parquet")
