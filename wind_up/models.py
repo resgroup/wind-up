@@ -174,6 +174,10 @@ class WindUpConfig(BaseModel):
         default=10 * 60,
         description="Timebase in seconds for SCADA data, other data is converted to this timebase",
     )
+    write_pp_df_parquets: bool = Field(
+        default=False,
+        description="If true the power performance parquet files are written along with other results and plots.",
+    )
     ignore_turbine_anemometer_data: bool = Field(
         default=False,
         description="If true do not use turbine anemometer data for anything",
