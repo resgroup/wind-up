@@ -726,6 +726,12 @@ def _calc_test_ref_results(
         random_seed=random_seed,
     )
 
+    if cfg.write_pp_df_parquets:
+        (cfg.out_dir / "pp_df").mkdir(exist_ok=True)
+        pre_df.to_parquet(cfg.out_dir / "pp_df" / f"{test_wtg.name}_{ref_name}_pre_df.parquet")
+        post_df.to_parquet(cfg.out_dir / "pp_df" / f"{test_wtg.name}_{ref_name}_post_df.parquet")
+        _pp_df.to_parquet(cfg.out_dir / "pp_df" / f"{test_wtg.name}_{ref_name}_pp_df.parquet")
+
     other_results = ref_info | {
         "ref_ws_col": ref_ws_col,
         "distance_m": distance_m,
