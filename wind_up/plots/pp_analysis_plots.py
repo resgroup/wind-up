@@ -202,6 +202,15 @@ def plot_pre_post_condition_histogram(
     if pre_df.empty or post_df.empty:
         _ref_and_test_str = f"ref: {ref_name}, test: {test_name}"
         logger.warning("%s - Cannot plot condition histogram as some required data is empty", _ref_and_test_str)
+        return
+    if pre_df[col].dropna().empty or post_df[col].dropna().empty:
+        _ref_and_test_str = f"ref: {ref_name}, test: {test_name}"
+        logger.warning(
+            "%s - Cannot plot condition histogram as column is empty: %s",
+            _ref_and_test_str,
+            col,
+        )
+        return
     first_bin_start = first_bin_start or round(min(pre_df[col].min(), post_df[col].min()) - bin_width / 2)
     last_bin_end = last_bin_end or max(pre_df[col].max(), post_df[col].max())
     bins = list(
