@@ -490,7 +490,7 @@ class WindUpConfig(BaseModel):
         with file_path.open(mode="w") as f:
             json_data = json.loads(self.model_dump_json().replace("NaN", "null"))  # required to serialize NaN
             json.dump(json_data, f, indent=4)
-        logger.info(f"Saved WindUpConfig to {file_path}")
+        logger.info(f"Saved WindUpConfig to {file_path.name}")
 
     def get_max_rated_power(self: WindUpConfig) -> float:
         """Get the maximum rated power out of all turbine types on the wind farm asset."""

@@ -37,6 +37,7 @@ dependencies = [
     'toml',
     'tqdm',
     'utm',
+    'polars',
 ]
 
 [project.urls]
@@ -185,6 +186,12 @@ sequence = [
     { cmd = "coverage report -m" },
 ]
 
+[tool.poe.tasks.test-benchmark]
+help = "Runs unit tests and show coverage"
+sequence = [
+    { cmd = 'pytest -v -k "benchmark" --benchmark-only' }
+]
+
 [tool.poe.tasks.all-fast]
 help = "Run all required pre-push commands but skips marked slow tests"
 sequence = [{ ref = "lint" }, { ref = "test-fast" }]
@@ -196,3 +203,8 @@ sequence = [{ ref = "lint" }, { ref = "test" }]
 [tool.poe.tasks.jupy]
 help = "Start local Jupyterlab server"
 cmd = "python -m jupyter lab"
+
+[dependency-groups]
+dev = [
+    "pytest-benchmark>=5.2.3",
+]

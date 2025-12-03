@@ -164,7 +164,7 @@ class TestWindUpConfigSaveJson:
         with caplog.at_level(logging.INFO):
             conf.save_json(file_path=fp)
 
-        assert f"Saved WindUpConfig to {fp}" in caplog.text
+        assert f"Saved WindUpConfig to {fp.name}" in caplog.text
 
         # read the file back and ensure it parses correctly into a WindUpConfig
         with fp.open() as f:
