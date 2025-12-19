@@ -804,7 +804,6 @@ def run_wind_up_analysis(
         show_plots=inputs.plot_cfg.show_plots,
     )
 
-    wf_df = inputs.wf_df
     windfarm_df = pl.from_pandas(inputs.wf_df.reset_index())
     pc_per_ttype = inputs.pc_per_ttype
     cfg = inputs.cfg
