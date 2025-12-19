@@ -1,28 +1,18 @@
 import copy
 import datetime as dt
 import logging
-import tempfile
-from collections.abc import Generator
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 from matplotlib.testing.decorators import image_comparison
 
-from tests.test_smarteole import _create_config
 from wind_up.constants import DataColumns
 from wind_up.interface import AssessmentInputs
 from wind_up.models import PrePost
 from wind_up.plots.input_data import plot_input_data_timeline
 
 logger = logging.getLogger(__name__)
-
-
-@pytest.fixture(scope="module")
-def smarteole_assessment_inputs() -> Generator[AssessmentInputs, None, None]:
-    with tempfile.TemporaryDirectory() as tmpdirname:  # cannot use pytest tmp_path because of fixture scope mismatch
-        yield _create_config(tmp_path=Path(tmpdirname))
 
 
 class TestInputDataTimeline:

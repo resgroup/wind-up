@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+import polars as pl
 
 import wind_up
 from wind_up.circular_math import circ_diff
@@ -15,6 +16,7 @@ from wind_up.constants import (
     RANDOM_SEED,
     REANALYSIS_WD_COL,
     REANALYSIS_WS_COL,
+    TIMESTAMP_COL,
     WINDFARM_YAWDIR_COL,
     DataColumns,
 )
@@ -802,7 +804,7 @@ def run_wind_up_analysis(
         show_plots=inputs.plot_cfg.show_plots,
     )
 
-    wf_df = inputs.wf_df
+    windfarm_df = pl.from_pandas(inputs.wf_df.reset_index())
     pc_per_ttype = inputs.pc_per_ttype
     cfg = inputs.cfg
     plot_cfg = inputs.plot_cfg
@@ -819,29 +821,28 @@ def run_wind_up_analysis(
     logger.info(f"turbines to test: {[x.name for x in wtgs_to_test]}")
     for test_wtg_counter, test_wtg in enumerate(wtgs_to_test):
         test_name = test_wtg.name
+        # these must remain in the for loop as they are modified later in the loop
         test_pw_col = "pw_clipped" if cfg.clip_rated_power_pp else DataColumns.active_power_mean
         test_ws_col = "ws_est_from_power_only" if cfg.ignore_turbine_anemometer_data else "ws_est_blend"
-        test_df = wf_df.loc[test_wtg.name].copy()
+
+        test_df = windfarm_df.filter(pl.col(DataColumns.turbine_name) == test_name).drop(DataColumns.turbine_name)
 
         if cfg.filter_all_test_wtgs_together:
-            for other_test_wtg in cfg.test_wtgs:
-                if other_test_wtg.name == test_name:
-                    continue
-                pw_na_before = test_df[DataColumns.active_power_mean].isna().sum()
-                other_test_df = wf_df.loc[other_test_wtg.name]
-                timestamps_to_filter = other_test_df[
-                    other_test_df[test_pw_col].isna() | other_test_df[test_ws_col].isna()
-                ].index
-                cols_to_filter = list(
-                    {test_pw_col, test_ws_col, DataColumns.active_power_mean, DataColumns.wind_speed_mean}
-                )
-                test_df.loc[timestamps_to_filter, cols_to_filter] = pd.NA
-                pw_na_after = test_df[DataColumns.active_power_mean].isna().sum()
-                print_filter_stats(
-                    filter_name=f"filter_all_test_wtgs_together {other_test_wtg.name}",
-                    na_rows=pw_na_after - pw_na_before,
-                    total_rows=len(test_df),
-                )
+            test_df = _filter_turbine_df_by_other_turbine_dfs(
+                wind_up_cfg=cfg,
+                test_turbine_name=test_name,
+                test_df=test_df,
+                pw_col=test_pw_col,
+                ws_col=test_ws_col,
+                windfarm_df=windfarm_df,
+            )
+
+        test_df = test_df.to_pandas().set_index(TIMESTAMP_COL)
+        wf_df = (
+            windfarm_df.to_pandas()
+            .astype({DataColumns.turbine_name: str})
+            .set_index([DataColumns.turbine_name, TIMESTAMP_COL])
+        )
 
         if cfg.use_lt_distribution:
             lt_df_raw, lt_df_filt = calc_lt_dfs_raw_filt(
@@ -957,3 +958,56 @@ def run_wind_up_analysis(
     )
     cfg.save_json()
     return results_per_test_ref_df
+
+
+def _filter_turbine_df_by_other_turbine_dfs(
+    *,
+    wind_up_cfg: WindUpConfig,
+    test_turbine_name: str,
+    test_df: pl.DataFrame,
+    pw_col: str,
+    ws_col: str,
+    windfarm_df: pl.DataFrame,
+) -> pl.DataFrame:
+    """Filter test_df to only include rows where all other test turbines have valid data.
+
+    :param wind_up_cfg: wind-up config model object
+    :param test_df: test turbine DataFrame
+    :param pw_col: name of active power column
+    :param ws_col: name of wind speed column
+    :param windfarm_df: entire wind farm DataFrame
+    """
+    for other_test_wtg in wind_up_cfg.test_wtgs:
+        if other_test_wtg.name == test_turbine_name:
+            continue
+
+        pw_na_before = test_df.get_column(DataColumns.active_power_mean).is_null().sum()
+
+        other_test_df = windfarm_df.filter(pl.col(DataColumns.turbine_name) == other_test_wtg.name)
+
+        # Get timestamps where either test column is null
+        timestamps_to_filter = other_test_df.filter(pl.col(pw_col).is_null() | pl.col(ws_col).is_null()).get_column(
+            TIMESTAMP_COL
+        )
+
+        cols_to_filter = list({pw_col, ws_col, DataColumns.active_power_mean, DataColumns.wind_speed_mean})
+
+        # Set columns to null for matching timestamps
+        test_df = test_df.with_columns(
+            [
+                pl.when(pl.col(TIMESTAMP_COL).is_in(timestamps_to_filter.implode()))
+                .then(None)
+                .otherwise(pl.col(col))
+                .alias(col)
+                for col in cols_to_filter
+            ]
+        )
+
+        pw_na_after = test_df.get_column(DataColumns.active_power_mean).is_null().sum()
+
+        print_filter_stats(
+            filter_name=f"filter_all_test_wtgs_together {other_test_wtg.name}",
+            na_rows=int(pw_na_after - pw_na_before),
+            total_rows=len(test_df),
+        )
+    return test_df

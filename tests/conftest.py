@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib as mpl
 import pytest
 
 from tests.test_data.hot.data_loader import WindUpComponents, construct_hot_windup_components, get_meta_and_scada_data
+from tests.utils.smarteole import create_config
 from wind_up.constants import PROJECTROOT_DIR
 from wind_up.models import WindUpConfig
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+    from wind_up.interface import AssessmentInputs
 
 mpl.use("Agg")
 
@@ -95,3 +103,11 @@ def test_homer_with_t00_config() -> WindUpConfig:
 def hot_windup_components() -> WindUpComponents:
     hot_data = get_meta_and_scada_data()
     return construct_hot_windup_components(scada_df=hot_data.scada_df, metadata_df=hot_data.metadata_df)
+
+
+@pytest.fixture(scope="session")
+def smarteole_assessment_inputs() -> Generator[AssessmentInputs, None, None]:
+    with tempfile.TemporaryDirectory() as tmpdirname:  # cannot use pytest tmp_path because of fixture scope mismatch
+        yield create_config(
+            tmp_path=Path(tmpdirname), smarteole_data_dir=TEST_DATA_FLD / "smarteole", cache_dir=CACHE_DIR
+        )
