@@ -7,10 +7,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
+from wind_up.constants import (
+    RAW_WINDSPEED_COL,
+    SCATTER_ALPHA,
+    SCATTER_MARKERSCALE,
+    SCATTER_S,
+    TIMESTAMP_COL,
+    DataColumns,
+)
 from wind_up.result_manager import result_manager
 
 if TYPE_CHECKING:
+    import polars as pl
+
     from wind_up.models import PlotConfig
 
 
@@ -409,9 +418,9 @@ def plot_pre_post_pp_analysis(
     *,
     test_name: str,
     ref_name: str,
-    pp_df: pd.DataFrame,
-    pre_df: pd.DataFrame,
-    post_df: pd.DataFrame,
+    pp_df: pd.DataFrame | pl.DataFrame,
+    pre_df: pd.DataFrame | pl.DataFrame,
+    post_df: pd.DataFrame | pl.DataFrame,
     ws_col: str,
     pw_col: str,
     wd_col: str,
@@ -419,6 +428,10 @@ def plot_pre_post_pp_analysis(
     plot_cfg: PlotConfig,
     confidence_level: float,
 ) -> None:
+    pp_df = pp_df if isinstance(pp_df, pd.DataFrame) else pp_df.to_pandas().set_index(f"{ws_col}_bin_mid")
+    pre_df = pre_df if isinstance(pre_df, pd.DataFrame) else pre_df.to_pandas().set_index(TIMESTAMP_COL)
+    post_df = post_df if isinstance(post_df, pd.DataFrame) else post_df.to_pandas().set_index(TIMESTAMP_COL)
+
     plot_pre_post_conditions(
         test_name=test_name,
         ref_name=ref_name,
