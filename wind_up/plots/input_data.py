@@ -84,7 +84,7 @@ def plot_input_data_timeline(
     show_plots: bool = True,
     scada_data_column_for_power: str = DataColumns.active_power_mean,
     scada_data_column_for_yaw_angle: str = DataColumns.yaw_angle_mean,
-) -> plt.Figure:
+) -> None:
     """Plot timeline of input data with key milestones and data exclusions.
 
     This function does not do any data filtering itself, but instead only displays the data as it is provided.
@@ -281,6 +281,10 @@ def plot_input_data_timeline(
         box = a.get_position()
         a.set_position([box.x0, box.y0, box.width * 0.8, box.height])  # type: ignore[arg-type]
         handles, labels = a.get_legend_handles_labels()
+        # remove duplicates from handles and labels
+        by_label = dict(zip(labels, handles,strict=True))
+        handles = list(by_label.values())
+        labels = list(by_label.keys())
         a.legend(handles[::-1], labels[::-1], bbox_to_anchor=(1.04, 1), borderaxespad=0)
 
     if save_to_folder is not None:
@@ -288,7 +292,4 @@ def plot_input_data_timeline(
             save_to_folder.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_to_folder / "input_data_timeline_fig.png")
 
-    if not show_plots:
-        plt.close(fig)
-
-    return fig
+    plt.close(fig)
