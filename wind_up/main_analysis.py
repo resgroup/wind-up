@@ -805,7 +805,6 @@ def run_wind_up_analysis(
     plot_input_data_timeline(
         assessment_inputs=inputs,
         save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None,
-        show_plots=inputs.plot_cfg.show_plots,
     )
 
     wf_df = inputs.wf_df
