@@ -81,10 +81,9 @@ def plot_input_data_timeline(
     figsize: tuple[int, int] | None = None,
     height_ratios: tuple[int, int] | None = None,
     save_to_folder: Path | None = None,
-    show_plots: bool = True,
     scada_data_column_for_power: str = DataColumns.active_power_mean,
     scada_data_column_for_yaw_angle: str = DataColumns.yaw_angle_mean,
-) -> plt.Figure:
+) -> None:
     """Plot timeline of input data with key milestones and data exclusions.
 
     This function does not do any data filtering itself, but instead only displays the data as it is provided.
@@ -93,7 +92,6 @@ def plot_input_data_timeline(
     :param figsize: size of the plot figure, if `None` it will be auto-sized based on the number of turbines
     :param height_ratios: ratios for the two subplots, if `None` it will be auto-sized based on the number of turbines
     :param save_to_folder: directory in which to save the plot
-    :param show_plots: whether to show the interactive plot or not
     :param scada_data_column_for_power: column name in the wind farm DataFrame to use for power data coverage plotting
     :param scada_data_column_for_yaw_angle: column name in the wind farm DataFrame to use for yaw data coverage plotting
     :return: figure object
@@ -281,6 +279,10 @@ def plot_input_data_timeline(
         box = a.get_position()
         a.set_position([box.x0, box.y0, box.width * 0.8, box.height])  # type: ignore[arg-type]
         handles, labels = a.get_legend_handles_labels()
+        # remove duplicate labels
+        handles_by_label = dict(zip(labels, handles, strict=True))  # type:ignore[call-overload]
+        handles = list(handles_by_label.values())
+        labels = list(handles_by_label.keys())
         a.legend(handles[::-1], labels[::-1], bbox_to_anchor=(1.04, 1), borderaxespad=0)
 
     if save_to_folder is not None:
@@ -288,7 +290,4 @@ def plot_input_data_timeline(
             save_to_folder.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_to_folder / "input_data_timeline_fig.png")
 
-    if not show_plots:
-        plt.close(fig)
-
-    return fig
+    plt.close(fig)
