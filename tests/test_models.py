@@ -170,3 +170,47 @@ class TestWindUpConfigSaveJson:
         with fp.open() as f:
             data = json.load(f)
             WindUpConfig.model_validate(data)
+
+
+class TestMatchingMonthsOverride:
+    """Tests date ranges of pre-upgrade period based on `WindUpConfig.from_yaml` config file loading."""
+
+    def test_without_pre_last_dt_utc_start(self) -> None:
+        """Checks default matching-months logic.
+
+        Tests constructed pre-upgrade period when `pre_last_dt_utc_start` is not specified in the config file.
+        """
+        cfg = WindUpConfig.from_yaml(TEST_CONFIG_DIR / "test_LSA_T13.yaml")
+        assert cfg.prepost.pre_first_dt_utc_start == pd.Timestamp("2020-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.pre_last_dt_utc_start == pd.Timestamp("2021-07-20 23:50:00+0000", tz="UTC")
+        assert cfg.upgrade_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp("2022-07-20 23:50:00+0000", tz="UTC")
+
+    def test_with_pre_last_dt_utc_start(self) -> None:
+        """Check that a pre-upgrade period (start and end date) may be specified explicitly in the config file.
+
+        If a config file contains an entry for `pre_last_dt_utc_start`, this should override the default matching-months
+        logic.
+        """
+        # Modify yaml file and then load it to ensure the override works as expected
+        yaml_path = TEST_CONFIG_DIR / "test_LSA_T13.yaml"
+        with yaml_path.open() as f:
+            yaml_str = f.read()
+            # Add a new line with "pre_last_dt_utc_start" value
+            new_line = "\npre_last_dt_utc_start: 2021-09-29 23:50:00+0000\n"
+            yaml_str += new_line
+            modified_yaml_path = TEST_CONFIG_DIR / "modified_test_LSA_T13.yaml"
+            with modified_yaml_path.open("w") as mf:
+                mf.write(yaml_str)
+
+        cfg = WindUpConfig.from_yaml(modified_yaml_path)
+
+        # delete the modified yaml file after loading the config
+        modified_yaml_path.unlink()
+
+        assert cfg.prepost.pre_first_dt_utc_start == pd.Timestamp("2020-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.pre_last_dt_utc_start == pd.Timestamp("2021-09-29 23:50:00+0000", tz="UTC")
+        assert cfg.upgrade_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp("2022-07-20 23:50:00+0000", tz="UTC")
