@@ -724,6 +724,7 @@ def _calc_test_ref_results(
         plot_cfg=plot_cfg,
         test_df=test_df,
         random_seed=random_seed,
+        site_mean_pc_df=scada_pc if cfg.gapfill_uplift_curve_using_site_mean_power_curve else None,
     )
 
     other_results = ref_info | {

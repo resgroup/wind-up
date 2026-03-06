@@ -311,6 +311,13 @@ class WindUpConfig(BaseModel):
     prepost: PrePost | None = None
     clip_rated_power_pp: bool = Field(default=True, description="Clip rated power in power performance analysis")
     use_rated_invalid_bins: bool = Field(default=False, description="Use rated power bins which have been filled in")
+    gapfill_uplift_curve_using_site_mean_power_curve: bool = Field(
+        default=False,
+        description=(
+            "Whether to gapfill the uplift curve using the site mean power curve when there are not enough data points "
+            "to calculate an uplift value for a given power bin. The IEC standard approach is setting this to `False`."
+        ),
+    )
 
     @model_validator(mode="after")
     def _check_years_offset_for_pre_period(self: WindUpConfig) -> WindUpConfig:

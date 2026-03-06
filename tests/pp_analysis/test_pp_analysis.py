@@ -1,9 +1,8 @@
-from pathlib import Path
-
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
+from tests.conftest import TEST_DATA_FLD
 from wind_up.models import WindUpConfig
 from wind_up.pp_analysis import _pre_post_pp_analysis_with_reversal
 
@@ -17,11 +16,11 @@ def test_pre_post_pp_analysis_with_reversal(test_lsa_t13_config: WindUpConfig) -
     test_pw_col = "test_pw_clipped"
     ref_wd_col = "ref_YawAngleMean"
 
-    pre_df = pd.read_parquet(Path(__file__).parents[0] / "test_data/LSA_T13_LSA_T12_pre_df.parquet")
-    post_df = pd.read_parquet(Path(__file__).parents[0] / "test_data/LSA_T13_LSA_T12_post_df.parquet")
-    lt_wtg_df_filt = pd.read_parquet(Path(__file__).parents[0] / "test_data/LSA_T13_lt_wtg_df_filt.parquet")
-    test_df = pd.read_parquet(Path(__file__).parents[0] / "test_data/LSA_T13_test_df.parquet")
-    expected_df = pd.read_parquet(Path(__file__).parents[0] / "test_data/pre_post_pp_analysis_expected_df.parquet")
+    pre_df = pd.read_parquet(TEST_DATA_FLD / "LSA_T13_LSA_T12_pre_df.parquet")
+    post_df = pd.read_parquet(TEST_DATA_FLD / "LSA_T13_LSA_T12_post_df.parquet")
+    lt_wtg_df_filt = pd.read_parquet(TEST_DATA_FLD / "LSA_T13_lt_wtg_df_filt.parquet")
+    test_df = pd.read_parquet(TEST_DATA_FLD / "LSA_T13_test_df.parquet")
+    expected_df = pd.read_parquet(TEST_DATA_FLD / "pre_post_pp_analysis_expected_df.parquet")
     pp_results, actual_df = _pre_post_pp_analysis_with_reversal(
         cfg=cfg,
         test_wtg=test_wtg,
