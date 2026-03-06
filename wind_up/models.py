@@ -404,13 +404,20 @@ class WindUpConfig(BaseModel):
         if test_is_toggle:
             cfg_dct["analysis_first_dt_utc_start"] = cfg_dct["upgrade_first_dt_utc_start"]
         else:
+            if cfg_dct.get("pre_last_dt_utc_start") is not None:
+                pre_last_dt_utc_start = pd.to_datetime(cfg_dct.get("pre_last_dt_utc_start"))
+            else:
+                pre_last_dt_utc_start = pd.to_datetime(
+                    cfg_dct["analysis_last_dt_utc_start"] - pd.DateOffset(years=cfg_dct["years_offset_for_pre_period"])
+                )
+            if pre_last_dt_utc_start.tzinfo is None:
+                pre_last_dt_utc_start = pre_last_dt_utc_start.tz_localize("UTC")
             pre_post_dict = {
                 "post_first_dt_utc_start": cfg_dct["upgrade_first_dt_utc_start"],
                 "post_last_dt_utc_start": cfg_dct["analysis_last_dt_utc_start"],
                 "pre_first_dt_utc_start": cfg_dct["upgrade_first_dt_utc_start"]
                 - pd.DateOffset(years=cfg_dct["years_offset_for_pre_period"]),
-                "pre_last_dt_utc_start": cfg_dct["analysis_last_dt_utc_start"]
-                - pd.DateOffset(years=cfg_dct["years_offset_for_pre_period"]),
+                "pre_last_dt_utc_start": pre_last_dt_utc_start,
             }
             cfg_dct["prepost"] = PrePost.model_validate(pre_post_dict)
             cfg_dct["analysis_first_dt_utc_start"] = cfg_dct["prepost"].pre_first_dt_utc_start
