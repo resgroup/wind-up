@@ -159,6 +159,27 @@ class PrePost(BaseModel):
         description="Last time to use in post-upgrade analysis, UTC Start format",
     )
 
+    @model_validator(mode="after")
+    def _validate_pre_period_dates(self) -> PrePost:
+        if self.pre_first_dt_utc_start >= self.pre_last_dt_utc_start:
+            msg = "Start date of pre-period must be before the end date of pre-period."
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_post_period_dates(self) -> PrePost:
+        if self.post_first_dt_utc_start >= self.post_last_dt_utc_start:
+            msg = "Start date of post-period must be before the end date of post-period."
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_pre_is_prior_to_post(self) -> PrePost:
+        if self.pre_last_dt_utc_start >= self.post_first_dt_utc_start:
+            msg = "End date of pre-period must be before the Start date of post-period."
+            raise ValueError(msg)
+        return self
+
 
 class WindUpConfig(BaseModel):
     """WindUpConfig model.
@@ -318,6 +339,17 @@ class WindUpConfig(BaseModel):
             "to calculate an uplift value for a given power bin. The IEC standard approach is setting this to `False`."
         ),
     )
+
+    @model_validator(mode="after")
+    def _validate_pre_period_is_before_upgrade_date(self: WindUpConfig) -> WindUpConfig:
+        if (
+            (self.toggle is None)
+            and (self.prepost is not None)
+            and (self.prepost.pre_last_dt_utc_start >= self.upgrade_first_dt_utc_start)
+        ):
+            msg = "pre_last_dt_utc_start must be before upgrade_first_dt_utc_start"
+            raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def _check_years_offset_for_pre_period(self: WindUpConfig) -> WindUpConfig:

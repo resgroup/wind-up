@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from tests.conftest import TEST_CONFIG_DIR
 from wind_up.models import PrePost, WindUpConfig
@@ -246,3 +247,61 @@ def test_windupconfig_with_extended_post_period_length() -> None:
     assert cfg.upgrade_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
     assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
     assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp(analysis_end, tz="UTC")
+
+
+class TestPrePostValidation:
+    @pytest.fixture
+    def valid_dates(self) -> dict[str, dt.datetime]:
+        return {
+            "pre_first_dt_utc_start": dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc),
+            "pre_last_dt_utc_start": dt.datetime(2000, 1, 15, tzinfo=dt.timezone.utc),
+            "post_first_dt_utc_start": dt.datetime(2000, 1, 16, tzinfo=dt.timezone.utc),
+            "post_last_dt_utc_start": dt.datetime(2000, 1, 29, tzinfo=dt.timezone.utc),
+        }
+
+    def test_valid_prepost(self, valid_dates: dict[str, dt.datetime]) -> None:
+        PrePost(**valid_dates)
+
+    def test_pre_period_start_after_end_raises(self, valid_dates: dict[str, dt.datetime]) -> None:
+        valid_dates["pre_first_dt_utc_start"] = dt.datetime(2000, 1, 20, tzinfo=dt.timezone.utc)
+        with pytest.raises(
+            ValidationError, match=re.escape("Start date of pre-period must be before the end date of pre-period.")
+        ):
+            PrePost(**valid_dates)
+
+    def test_pre_period_equal_start_and_end_is_invalid(self, valid_dates: dict[str, dt.datetime]) -> None:
+        valid_dates["pre_first_dt_utc_start"] = valid_dates["pre_last_dt_utc_start"]
+        with pytest.raises(
+            ValidationError, match=re.escape("Start date of pre-period must be before the end date of pre-period.")
+        ):
+            PrePost(**valid_dates)
+
+    def test_post_period_start_after_end_raises(self, valid_dates: dict[str, dt.datetime]) -> None:
+        valid_dates["post_first_dt_utc_start"] = dt.datetime(2000, 1, 30, tzinfo=dt.timezone.utc)
+        with pytest.raises(
+            ValidationError, match=re.escape("Start date of post-period must be before the end date of post-period.")
+        ):
+            PrePost(**valid_dates)
+
+    def test_post_period_equal_start_and_end_is_invalid(self, valid_dates: dict[str, dt.datetime]) -> None:
+        valid_dates["post_first_dt_utc_start"] = valid_dates["post_last_dt_utc_start"]
+        with pytest.raises(
+            ValidationError, match=re.escape("Start date of post-period must be before the end date of post-period.")
+        ):
+            PrePost(**valid_dates)
+
+    def test_pre_last_after_post_first_raises(self, valid_dates: dict[str, dt.datetime]) -> None:
+        valid_dates["pre_last_dt_utc_start"] = dt.datetime(2000, 1, 20, tzinfo=dt.timezone.utc)
+        with pytest.raises(
+            ValidationError, match=re.escape("End date of pre-period must be before the Start date of post-period.")
+        ):
+            PrePost(**valid_dates)
+
+    def test_pre_last_equal_post_first_raises(self, valid_dates: dict[str, dt.datetime]) -> None:
+        same_dt = dt.datetime(2000, 1, 16, tzinfo=dt.timezone.utc)
+        valid_dates["pre_last_dt_utc_start"] = same_dt
+        valid_dates["post_first_dt_utc_start"] = same_dt
+        with pytest.raises(
+            ValidationError, match=re.escape("End date of pre-period must be before the Start date of post-period.")
+        ):
+            PrePost(**valid_dates)
