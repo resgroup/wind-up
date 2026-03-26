@@ -2,6 +2,7 @@ import copy
 import datetime as dt
 import json
 import logging
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -214,3 +215,34 @@ class TestMatchingMonthsOverride:
         assert cfg.upgrade_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
         assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
         assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp("2022-07-20 23:50:00+0000", tz="UTC")
+
+
+def test_windupconfig_with_extended_post_period_length() -> None:
+    """Check that the pre-period does not extend over the upgrade date.
+
+    Check that if the `analysis_last_dt_utc_start` is >1 year post upgrade that if the `years_offset_for_pre_period` is
+    1 year, then the maximum end date of the pre-period is the upgrade date (with a days contingency).
+    """
+    # Modify yaml file and then load it to ensure the override works as expected
+    yaml_path = TEST_CONFIG_DIR / "test_LSA_T13.yaml"
+    with yaml_path.open() as f:
+        yaml_str = f.read()
+
+    # Replace the existing line containing "pre_last_dt_utc_start"
+    analysis_end = "2026-01-01 23:50:00+0000"
+    yaml_str = re.sub(r"analysis_last_dt_utc_start:.*", f"analysis_last_dt_utc_start: {analysis_end}", yaml_str)
+
+    modified_yaml_path = TEST_CONFIG_DIR / "modified_test_LSA_T13.yaml"
+    with modified_yaml_path.open("w") as mf:
+        mf.write(yaml_str)
+
+    cfg = WindUpConfig.from_yaml(modified_yaml_path)
+
+    # delete the modified yaml file after loading the config
+    modified_yaml_path.unlink()
+
+    assert cfg.prepost.pre_first_dt_utc_start == pd.Timestamp("2020-09-30 00:00:00+0000", tz="UTC")
+    assert cfg.prepost.pre_last_dt_utc_start == (cfg.upgrade_first_dt_utc_start - pd.Timedelta(days=1))  # key check
+    assert cfg.upgrade_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+    assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+    assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp(analysis_end, tz="UTC")
