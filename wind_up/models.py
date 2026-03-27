@@ -451,10 +451,11 @@ class WindUpConfig(BaseModel):
                 pre_last_dt_utc_start = pd.to_datetime(
                     cfg_dct["analysis_last_dt_utc_start"] - pd.DateOffset(years=cfg_dct["years_offset_for_pre_period"])
                 )
-                if pre_last_dt_utc_start > cfg_dct["upgrade_first_dt_utc_start"]:
-                    pre_last_dt_utc_start = pd.to_datetime(cfg_dct["upgrade_first_dt_utc_start"]) - pd.Timedelta(
-                        seconds=cfg_dct.get("timebase_s", DEFAULT_TIMEBASE_S)
-                    )
+                if pre_last_dt_utc_start > (
+                    pre_max_threshold := pd.to_datetime(cfg_dct["upgrade_first_dt_utc_start"])
+                    - pd.Timedelta(seconds=cfg_dct.get("timebase_s", DEFAULT_TIMEBASE_S))
+                ):
+                    pre_last_dt_utc_start = pre_max_threshold
             if pre_last_dt_utc_start.tzinfo is None:
                 pre_last_dt_utc_start = pre_last_dt_utc_start.tz_localize("UTC")
             pre_post_dict = {
