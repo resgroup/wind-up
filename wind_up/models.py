@@ -19,6 +19,8 @@ from wind_up.yaml_loader import Loader, construct_include
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TIMEBASE_S = 10 * 60
+
 
 class PlotConfig(BaseModel):
     """Plot configuration model."""
@@ -192,7 +194,7 @@ class WindUpConfig(BaseModel):
         description="Name used for assessment output folder",
     )
     timebase_s: int = Field(
-        default=10 * 60,
+        default=DEFAULT_TIMEBASE_S,
         description="Timebase in seconds for SCADA data, other data is converted to this timebase",
     )
     ignore_turbine_anemometer_data: bool = Field(
@@ -451,8 +453,8 @@ class WindUpConfig(BaseModel):
                 )
                 if pre_last_dt_utc_start > cfg_dct["upgrade_first_dt_utc_start"]:
                     pre_last_dt_utc_start = pd.to_datetime(cfg_dct["upgrade_first_dt_utc_start"]) - pd.Timedelta(
-                        days=1
-                    )  # One day for contingency
+                        seconds=cfg_dct.get("timebase_s", DEFAULT_TIMEBASE_S)
+                    )
             if pre_last_dt_utc_start.tzinfo is None:
                 pre_last_dt_utc_start = pre_last_dt_utc_start.tz_localize("UTC")
             pre_post_dict = {

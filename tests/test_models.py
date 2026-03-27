@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from tests.conftest import TEST_CONFIG_DIR
-from wind_up.models import PrePost, WindUpConfig
+from wind_up.models import DEFAULT_TIMEBASE_S, PrePost, WindUpConfig
 
 
 def test_lsa_asset_name(test_lsa_t13_config: WindUpConfig) -> None:
@@ -243,7 +243,9 @@ def test_windupconfig_with_extended_post_period_length() -> None:
     modified_yaml_path.unlink()
 
     assert cfg.prepost.pre_first_dt_utc_start == pd.Timestamp("2020-09-30 00:00:00+0000", tz="UTC")
-    assert cfg.prepost.pre_last_dt_utc_start == (cfg.upgrade_first_dt_utc_start - pd.Timedelta(days=1))  # key check
+    assert cfg.prepost.pre_last_dt_utc_start == (
+        cfg.upgrade_first_dt_utc_start - pd.Timedelta(seconds=DEFAULT_TIMEBASE_S)
+    )  # key check
     assert cfg.upgrade_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
     assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
     assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp(analysis_end, tz="UTC")
