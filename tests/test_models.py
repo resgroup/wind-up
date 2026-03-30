@@ -222,7 +222,7 @@ def test_windupconfig_with_extended_post_period_length() -> None:
     """Check that the pre-period does not extend over the upgrade date.
 
     Check that if the `analysis_last_dt_utc_start` is >1 year post upgrade that if the `years_offset_for_pre_period` is
-    1 year, then the maximum end date of the pre-period is the upgrade date (with a days contingency).
+    1 year, then the maximum end date of the pre-period is one timebase before upgrade date.
     """
     # Modify yaml file and then load it to ensure the override works as expected
     yaml_path = TEST_CONFIG_DIR / "test_LSA_T13.yaml"
