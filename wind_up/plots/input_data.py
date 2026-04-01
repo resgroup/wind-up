@@ -45,24 +45,47 @@ def _validate_data_within_exclusions(
             logger.warning(_msg)
 
 
-def _plot_exclusion(
+def _plot_turbine_exclusion(
     *,
     y_value: int,
-    y_values: list[int],
     turbine_name: str,
     name_for_legend: str,
     exclusions: list[tuple[str, dt.datetime, dt.datetime]],
     trace_format: dict,
     ax: plt.Axes,
+    legend_already_added: set[str],
 ) -> None:
-    for _count, exclusion in enumerate(exclusions):
-        _name_for_legend = {"label": name_for_legend} if _count == 0 else {}
+    for exclusion in exclusions:
+        if exclusion[0] != turbine_name:
+            continue
+        _name_for_legend = {}
+        if name_for_legend not in legend_already_added:
+            _name_for_legend = {"label": name_for_legend}
+            legend_already_added.add(name_for_legend)
         left, right = exclusion[1], exclusion[2]
-        if exclusion[0] == turbine_name:
-            ax.barh(y_value, left=left, width=right - left, **trace_format, **_name_for_legend)  # type: ignore[arg-type]
-        elif exclusion[0].lower() == "all":
-            for y in y_values:
-                ax.barh(y, left=left, width=right - left, **trace_format, **_name_for_legend)  # type: ignore[arg-type]
+        ax.barh(y_value, left=left, width=right - left, **trace_format, **_name_for_legend)  # type: ignore[arg-type]
+
+
+def _plot_all_exclusion(
+    *,
+    y_values: list[int],
+    name_for_legend: str,
+    exclusions: list[tuple[str, dt.datetime, dt.datetime]],
+    trace_format: dict,
+    ax: plt.Axes,
+    legend_already_added: set[str],
+) -> None:
+    for exclusion in exclusions:
+        if exclusion[0].lower() != "all":
+            continue
+        _name_for_legend = {}
+        if name_for_legend not in legend_already_added:
+            _name_for_legend = {"label": name_for_legend}
+            legend_already_added.add(name_for_legend)
+        left, right = exclusion[1], exclusion[2]
+        for y in y_values:
+            ax.barh(y, left=left, width=right - left, **trace_format, **_name_for_legend)  # type: ignore[arg-type]
+            _name_for_legend = {}  # only label the first bar
 
 
 def _plot_data_coverage(
@@ -75,7 +98,7 @@ def _plot_data_coverage(
     ax.plot(column_data.index, column_data, color=color, linewidth=1, **_label)  # type: ignore[arg-type]
 
 
-def plot_input_data_timeline(
+def plot_input_data_timeline(  # noqa: PLR0915
     assessment_inputs: AssessmentInputs,
     *,
     figsize: tuple[int, int] | None = None,
@@ -125,6 +148,10 @@ def plot_input_data_timeline(
         gridspec_kw={"height_ratios": list(height_ratios)},  # type:ignore[arg-type]
     )
 
+    legend_already_added: set[str] = set()
+    trace_fmt_general = {"height": 0.5, "color": "red", "alpha": 0.5}
+    trace_fmt_yaw = {"height": 0.5, "color": "black", "alpha": 0.5}
+
     for y_value_count, t in enumerate(turbines):
         y_value = y_value_count + 1
 
@@ -159,28 +186,44 @@ def plot_input_data_timeline(
         )
 
         # yaw exclusions
-        trace_fmt_yaw = {"height": 0.5, "color": "black", "alpha": 0.5}
-        _plot_exclusion(
+        _plot_turbine_exclusion(
             y_value=y_value,
-            y_values=y_values,
             turbine_name=t,
             name_for_legend="Yaw Exclusion Period",
             exclusions=_wu_cfg.yaw_data_exclusions_utc,
             trace_format=trace_fmt_yaw,
             ax=ax_turbines,
+            legend_already_added=legend_already_added,
         )
 
         # general exclusions
-        trace_fmt_general = {"height": 0.5, "color": "red", "alpha": 0.5}
-        _plot_exclusion(
+        _plot_turbine_exclusion(
             y_value=y_value,
-            y_values=y_values,
             turbine_name=t,
             name_for_legend="Exclusion Period",
             exclusions=_wu_cfg.exclusion_periods_utc,
             trace_format=trace_fmt_general,
             ax=ax_turbines,
+            legend_already_added=legend_already_added,
         )
+
+    # all exclusions (drawn once, outside turbine loop)
+    _plot_all_exclusion(
+        y_values=y_values,
+        name_for_legend="Yaw Exclusion Period",
+        exclusions=_wu_cfg.yaw_data_exclusions_utc,
+        trace_format=trace_fmt_yaw,
+        ax=ax_turbines,
+        legend_already_added=legend_already_added,
+    )
+    _plot_all_exclusion(
+        y_values=y_values,
+        name_for_legend="Exclusion Period",
+        exclusions=_wu_cfg.exclusion_periods_utc,
+        trace_format=trace_fmt_general,
+        ax=ax_turbines,
+        legend_already_added=legend_already_added,
+    )
 
     # plot wind farm
     # --------------
