@@ -211,3 +211,35 @@ class TestInputDataTimeline:
         assessment_inputs.wf_df = pd.concat([assessment_inputs.wf_df, *dfs])
 
         plot_input_data_timeline(assessment_inputs=assessment_inputs)
+
+    @pytest.mark.slow
+    @pytest.mark.filterwarnings("ignore")
+    @image_comparison(
+        baseline_images=["input_data_timeline_fig_all_exclusions"], remove_text=False, extensions=["png"], style="mpl20"
+    )
+    def test_no_duplicate_legend_entries(
+        self,
+        smarteole_assessment_inputs: AssessmentInputs,
+    ) -> None:
+        """Test that exclusion periods affecting 'all' turbines do not produce duplicate legend entries."""
+
+        assessment_inputs = copy.deepcopy(smarteole_assessment_inputs)
+
+        assessment_inputs.cfg.yaw_data_exclusions_utc = [
+            ("SMV1", pd.Timestamp("2020-03-01T00:00:00+0000"), pd.Timestamp("2020-03-03T00:00:00+0000")),
+            ("SMV4", pd.Timestamp("2020-04-02T00:00:00+0000"), pd.Timestamp("2020-05-20T00:00:00+0000")),
+            ("All", pd.Timestamp("2020-05-22T00:00:00+0000"), pd.Timestamp("2020-05-23T00:00:00+0000")),
+        ]
+
+        assessment_inputs.cfg.exclusion_periods_utc = [
+            ("SMV3", pd.Timestamp("2020-04-01T00:00:00+0000"), pd.Timestamp("2020-04-10T00:00:00+0000")),
+            ("SMV6", pd.Timestamp("2020-03-10T00:00:00+0000"), pd.Timestamp("2020-03-12T00:00:00+0000")),
+            ("all", pd.Timestamp("2020-03-14T00:00:00+0000"), pd.Timestamp("2020-03-15T00:00:00+0000")),
+        ]
+
+        fig = plot_input_data_timeline(assessment_inputs)
+
+        # Check there are no duplicate entries in the legend for the turbine subplot
+        ax_turbines = fig.axes[0]
+        _, labels = ax_turbines.get_legend_handles_labels()
+        assert len(labels) == len(set(labels)), f"Duplicate legend entries found: {labels}"
