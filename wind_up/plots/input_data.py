@@ -320,11 +320,16 @@ def plot_input_data_timeline(  # noqa: PLR0915
 
     # legends
     for a in [ax_turbines, ax_wf]:
-        # Shrink current axis's width by 20%
         box = a.get_position()
-        a.set_position([box.x0, box.y0, box.width * 0.8, box.height])  # type: ignore[arg-type]
-        handles, labels = a.get_legend_handles_labels()
-        a.legend(handles[::-1], labels[::-1], bbox_to_anchor=(1.04, 1), borderaxespad=0)
+        a.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+
+    # Top subplot - legend outside top-right
+    handles, labels = ax_turbines.get_legend_handles_labels()
+    ax_turbines.legend(handles[::-1], labels[::-1], bbox_to_anchor=(1.04, 1), loc="upper left", borderaxespad=0)
+
+    # Bottom subplot - legend outside top-right (same as top)
+    handles, labels = ax_wf.get_legend_handles_labels()
+    ax_wf.legend(handles[::-1], labels[::-1], bbox_to_anchor=(1.04, 1), loc="upper left", borderaxespad=0)
 
     if save_to_folder is not None:
         if not save_to_folder.is_dir():
