@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from matplotlib import pyplot as plt
 
 import wind_up
 from wind_up.circular_math import circ_diff
@@ -803,10 +804,12 @@ def run_wind_up_analysis(
     preprocess_warning_counts = len(result_manager.stored_warnings)
     result_manager.stored_warnings = []
 
-    plot_input_data_timeline(
+    _fig = plot_input_data_timeline(
         assessment_inputs=inputs,
         save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None,
+        show_plots=inputs.plot_cfg.show_plots,
     )
+    plt.close(_fig)
 
     wf_df = inputs.wf_df
     pc_per_ttype = inputs.pc_per_ttype

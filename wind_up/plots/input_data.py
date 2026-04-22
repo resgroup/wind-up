@@ -104,9 +104,10 @@ def plot_input_data_timeline(  # noqa: PLR0915
     figsize: tuple[int, int] | None = None,
     height_ratios: tuple[int, int] | None = None,
     save_to_folder: Path | None = None,
+    show_plots: bool = True,
     scada_data_column_for_power: str = DataColumns.active_power_mean,
     scada_data_column_for_yaw_angle: str = DataColumns.yaw_angle_mean,
-) -> None:
+) -> plt.Figure:
     """Plot timeline of input data with key milestones and data exclusions.
 
     This function does not do any data filtering itself, but instead only displays the data as it is provided.
@@ -334,4 +335,7 @@ def plot_input_data_timeline(  # noqa: PLR0915
             save_to_folder.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_to_folder / "input_data_timeline_fig.png")
 
-    plt.close(fig)
+    if not show_plots:
+        plt.close(fig)
+
+    return fig
