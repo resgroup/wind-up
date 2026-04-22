@@ -116,6 +116,7 @@ def plot_input_data_timeline(  # noqa: PLR0915
     :param figsize: size of the plot figure, if `None` it will be auto-sized based on the number of turbines
     :param height_ratios: ratios for the two subplots, if `None` it will be auto-sized based on the number of turbines
     :param save_to_folder: directory in which to save the plot
+    :param show_plots: whether to show the interactive plot or not
     :param scada_data_column_for_power: column name in the wind farm DataFrame to use for power data coverage plotting
     :param scada_data_column_for_yaw_angle: column name in the wind farm DataFrame to use for yaw data coverage plotting
     :return: figure object
