@@ -19,6 +19,8 @@ from wind_up.yaml_loader import Loader, construct_include
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TIMEBASE_S = 10 * 60
+
 
 class PlotConfig(BaseModel):
     """Plot configuration model."""
@@ -159,6 +161,27 @@ class PrePost(BaseModel):
         description="Last time to use in post-upgrade analysis, UTC Start format",
     )
 
+    @model_validator(mode="after")
+    def _validate_pre_period_dates(self) -> PrePost:
+        if self.pre_first_dt_utc_start >= self.pre_last_dt_utc_start:
+            msg = "Start date of pre-period must be before the end date of pre-period."
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_post_period_dates(self) -> PrePost:
+        if self.post_first_dt_utc_start >= self.post_last_dt_utc_start:
+            msg = "Start date of post-period must be before the end date of post-period."
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_pre_is_prior_to_post(self) -> PrePost:
+        if self.pre_last_dt_utc_start >= self.post_first_dt_utc_start:
+            msg = "End date of pre-period must be before the Start date of post-period."
+            raise ValueError(msg)
+        return self
+
 
 class WindUpConfig(BaseModel):
     """WindUpConfig model.
@@ -171,7 +194,7 @@ class WindUpConfig(BaseModel):
         description="Name used for assessment output folder",
     )
     timebase_s: int = Field(
-        default=10 * 60,
+        default=DEFAULT_TIMEBASE_S,
         description="Timebase in seconds for SCADA data, other data is converted to this timebase",
     )
     write_pp_df_parquets: bool = Field(
@@ -315,6 +338,24 @@ class WindUpConfig(BaseModel):
     prepost: PrePost | None = None
     clip_rated_power_pp: bool = Field(default=True, description="Clip rated power in power performance analysis")
     use_rated_invalid_bins: bool = Field(default=False, description="Use rated power bins which have been filled in")
+    gapfill_uplift_curve_using_site_mean_power_curve: bool = Field(
+        default=False,
+        description=(
+            "Whether to gapfill the uplift curve using the site mean power curve when there are not enough data points "
+            "to calculate an uplift value for a given power bin. The IEC standard approach is setting this to `False`."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_pre_period_is_before_upgrade_date(self: WindUpConfig) -> WindUpConfig:
+        if (
+            (self.toggle is None)
+            and (self.prepost is not None)
+            and (self.prepost.pre_last_dt_utc_start >= self.upgrade_first_dt_utc_start)
+        ):
+            msg = "pre_last_dt_utc_start must be before upgrade_first_dt_utc_start"
+            raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def _check_years_offset_for_pre_period(self: WindUpConfig) -> WindUpConfig:
@@ -408,13 +449,25 @@ class WindUpConfig(BaseModel):
         if test_is_toggle:
             cfg_dct["analysis_first_dt_utc_start"] = cfg_dct["upgrade_first_dt_utc_start"]
         else:
+            if cfg_dct.get("pre_last_dt_utc_start") is not None:
+                pre_last_dt_utc_start = pd.to_datetime(cfg_dct.get("pre_last_dt_utc_start"))
+            else:
+                pre_last_dt_utc_start = pd.to_datetime(
+                    cfg_dct["analysis_last_dt_utc_start"] - pd.DateOffset(years=cfg_dct["years_offset_for_pre_period"])
+                )
+                if pre_last_dt_utc_start > (
+                    pre_max_threshold := pd.to_datetime(cfg_dct["upgrade_first_dt_utc_start"])
+                    - pd.Timedelta(seconds=cfg_dct.get("timebase_s", DEFAULT_TIMEBASE_S))
+                ):
+                    pre_last_dt_utc_start = pre_max_threshold
+            if pre_last_dt_utc_start.tzinfo is None:
+                pre_last_dt_utc_start = pre_last_dt_utc_start.tz_localize("UTC")
             pre_post_dict = {
                 "post_first_dt_utc_start": cfg_dct["upgrade_first_dt_utc_start"],
                 "post_last_dt_utc_start": cfg_dct["analysis_last_dt_utc_start"],
                 "pre_first_dt_utc_start": cfg_dct["upgrade_first_dt_utc_start"]
                 - pd.DateOffset(years=cfg_dct["years_offset_for_pre_period"]),
-                "pre_last_dt_utc_start": cfg_dct["analysis_last_dt_utc_start"]
-                - pd.DateOffset(years=cfg_dct["years_offset_for_pre_period"]),
+                "pre_last_dt_utc_start": pre_last_dt_utc_start,
             }
             cfg_dct["prepost"] = PrePost.model_validate(pre_post_dict)
             cfg_dct["analysis_first_dt_utc_start"] = cfg_dct["prepost"].pre_first_dt_utc_start

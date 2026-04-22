@@ -2,13 +2,15 @@ import copy
 import datetime as dt
 import json
 import logging
+import re
 from pathlib import Path
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from tests.conftest import TEST_CONFIG_DIR
-from wind_up.models import PrePost, WindUpConfig
+from wind_up.models import DEFAULT_TIMEBASE_S, PrePost, WindUpConfig
 
 
 def test_lsa_asset_name(test_lsa_t13_config: WindUpConfig) -> None:
@@ -170,3 +172,138 @@ class TestWindUpConfigSaveJson:
         with fp.open() as f:
             data = json.load(f)
             WindUpConfig.model_validate(data)
+
+
+class TestMatchingMonthsOverride:
+    """Tests date ranges of pre-upgrade period based on `WindUpConfig.from_yaml` config file loading."""
+
+    def test_without_pre_last_dt_utc_start(self) -> None:
+        """Checks default matching-months logic.
+
+        Tests constructed pre-upgrade period when `pre_last_dt_utc_start` is not specified in the config file.
+        """
+        cfg = WindUpConfig.from_yaml(TEST_CONFIG_DIR / "test_LSA_T13.yaml")
+        assert cfg.prepost.pre_first_dt_utc_start == pd.Timestamp("2020-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.pre_last_dt_utc_start == pd.Timestamp("2021-07-20 23:50:00+0000", tz="UTC")
+        assert cfg.upgrade_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp("2022-07-20 23:50:00+0000", tz="UTC")
+
+    def test_with_pre_last_dt_utc_start(self) -> None:
+        """Check that a pre-upgrade period (start and end date) may be specified explicitly in the config file.
+
+        If a config file contains an entry for `pre_last_dt_utc_start`, this should override the default matching-months
+        logic.
+        """
+        # Modify yaml file and then load it to ensure the override works as expected
+        yaml_path = TEST_CONFIG_DIR / "test_LSA_T13.yaml"
+        with yaml_path.open() as f:
+            yaml_str = f.read()
+            # Add a new line with "pre_last_dt_utc_start" value
+            new_line = "\npre_last_dt_utc_start: 2021-09-29 23:50:00+0000\n"
+            yaml_str += new_line
+            modified_yaml_path = TEST_CONFIG_DIR / "modified_test_LSA_T13.yaml"
+            with modified_yaml_path.open("w") as mf:
+                mf.write(yaml_str)
+
+        cfg = WindUpConfig.from_yaml(modified_yaml_path)
+
+        # delete the modified yaml file after loading the config
+        modified_yaml_path.unlink()
+
+        assert cfg.prepost.pre_first_dt_utc_start == pd.Timestamp("2020-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.pre_last_dt_utc_start == pd.Timestamp("2021-09-29 23:50:00+0000", tz="UTC")
+        assert cfg.upgrade_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+        assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp("2022-07-20 23:50:00+0000", tz="UTC")
+
+
+def test_windupconfig_with_extended_post_period_length() -> None:
+    """Check that the pre-period does not extend over the upgrade date.
+
+    Check that if the `analysis_last_dt_utc_start` is >1 year post upgrade that if the `years_offset_for_pre_period` is
+    1 year, then the maximum end date of the pre-period is one timebase before upgrade date.
+    """
+    # Modify yaml file and then load it to ensure the override works as expected
+    yaml_path = TEST_CONFIG_DIR / "test_LSA_T13.yaml"
+    with yaml_path.open() as f:
+        yaml_str = f.read()
+
+    # Replace the existing line containing "pre_last_dt_utc_start"
+    analysis_end = "2026-01-01 23:50:00+0000"
+    yaml_str = re.sub(r"analysis_last_dt_utc_start:.*", f"analysis_last_dt_utc_start: {analysis_end}", yaml_str)
+
+    modified_yaml_path = TEST_CONFIG_DIR / "modified_test_LSA_T13.yaml"
+    with modified_yaml_path.open("w") as mf:
+        mf.write(yaml_str)
+
+    cfg = WindUpConfig.from_yaml(modified_yaml_path)
+
+    # delete the modified yaml file after loading the config
+    modified_yaml_path.unlink()
+
+    assert cfg.prepost.pre_first_dt_utc_start == pd.Timestamp("2020-09-30 00:00:00+0000", tz="UTC")
+    assert cfg.prepost.pre_last_dt_utc_start == (
+        cfg.upgrade_first_dt_utc_start - pd.Timedelta(seconds=DEFAULT_TIMEBASE_S)
+    )  # key check
+    assert cfg.upgrade_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+    assert cfg.prepost.post_first_dt_utc_start == pd.Timestamp("2021-09-30 00:00:00+0000", tz="UTC")
+    assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp(analysis_end, tz="UTC")
+
+
+class TestPrePostValidation:
+    @pytest.fixture
+    def valid_dates(self) -> dict[str, dt.datetime]:
+        return {
+            "pre_first_dt_utc_start": dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc),
+            "pre_last_dt_utc_start": dt.datetime(2000, 1, 15, tzinfo=dt.timezone.utc),
+            "post_first_dt_utc_start": dt.datetime(2000, 1, 16, tzinfo=dt.timezone.utc),
+            "post_last_dt_utc_start": dt.datetime(2000, 1, 29, tzinfo=dt.timezone.utc),
+        }
+
+    def test_valid_prepost(self, valid_dates: dict[str, dt.datetime]) -> None:
+        PrePost(**valid_dates)
+
+    def test_pre_period_start_after_end_raises(self, valid_dates: dict[str, dt.datetime]) -> None:
+        valid_dates["pre_first_dt_utc_start"] = dt.datetime(2000, 1, 20, tzinfo=dt.timezone.utc)
+        with pytest.raises(
+            ValidationError, match=re.escape("Start date of pre-period must be before the end date of pre-period.")
+        ):
+            PrePost(**valid_dates)
+
+    def test_pre_period_equal_start_and_end_is_invalid(self, valid_dates: dict[str, dt.datetime]) -> None:
+        valid_dates["pre_first_dt_utc_start"] = valid_dates["pre_last_dt_utc_start"]
+        with pytest.raises(
+            ValidationError, match=re.escape("Start date of pre-period must be before the end date of pre-period.")
+        ):
+            PrePost(**valid_dates)
+
+    def test_post_period_start_after_end_raises(self, valid_dates: dict[str, dt.datetime]) -> None:
+        valid_dates["post_first_dt_utc_start"] = dt.datetime(2000, 1, 30, tzinfo=dt.timezone.utc)
+        with pytest.raises(
+            ValidationError, match=re.escape("Start date of post-period must be before the end date of post-period.")
+        ):
+            PrePost(**valid_dates)
+
+    def test_post_period_equal_start_and_end_is_invalid(self, valid_dates: dict[str, dt.datetime]) -> None:
+        valid_dates["post_first_dt_utc_start"] = valid_dates["post_last_dt_utc_start"]
+        with pytest.raises(
+            ValidationError, match=re.escape("Start date of post-period must be before the end date of post-period.")
+        ):
+            PrePost(**valid_dates)
+
+    def test_pre_last_after_post_first_raises(self, valid_dates: dict[str, dt.datetime]) -> None:
+        valid_dates["pre_last_dt_utc_start"] = dt.datetime(2000, 1, 20, tzinfo=dt.timezone.utc)
+        with pytest.raises(
+            ValidationError, match=re.escape("End date of pre-period must be before the Start date of post-period.")
+        ):
+            PrePost(**valid_dates)
+
+    def test_pre_last_equal_post_first_raises(self, valid_dates: dict[str, dt.datetime]) -> None:
+        same_dt = dt.datetime(2000, 1, 16, tzinfo=dt.timezone.utc)
+        valid_dates["pre_last_dt_utc_start"] = same_dt
+        valid_dates["post_first_dt_utc_start"] = same_dt
+        with pytest.raises(
+            ValidationError, match=re.escape("End date of pre-period must be before the Start date of post-period.")
+        ):
+            PrePost(**valid_dates)
