@@ -142,11 +142,12 @@ def plot_yaw_direction_pre_post_per_signal(  # noqa:PLR0915
                     index="ws_bin_centre", columns="wd_bin_centre", values=signal_name, observed=False
                 ).iloc[::-1],
                 annot=True,
-                cmap="YlGnBu",
+                cmap="RdBu_r",
                 fmt=".1f",
                 linewidths=0.5,
-                vmin=0,
+                vmin=-20,
                 vmax=20,
+                center=0,
                 cbar_kws={"label": f"{signal_name.replace('_', ' ')} [deg]"},
             )
 
