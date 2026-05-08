@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from matplotlib import pyplot as plt
 
 import wind_up
 from wind_up.circular_math import circ_diff
@@ -727,6 +728,12 @@ def _calc_test_ref_results(
         site_mean_pc_df=scada_pc if cfg.gapfill_uplift_curve_using_site_mean_power_curve else None,
     )
 
+    if cfg.write_pp_df_parquets:
+        (cfg.out_dir / "pp_df").mkdir(exist_ok=True)
+        pre_df.to_parquet(cfg.out_dir / "pp_df" / f"{test_wtg.name}_{ref_name}_pre_df.parquet")
+        post_df.to_parquet(cfg.out_dir / "pp_df" / f"{test_wtg.name}_{ref_name}_post_df.parquet")
+        _pp_df.to_parquet(cfg.out_dir / "pp_df" / f"{test_wtg.name}_{ref_name}_pp_df.parquet")
+
     other_results = ref_info | {
         "ref_ws_col": ref_ws_col,
         "distance_m": distance_m,
@@ -797,11 +804,12 @@ def run_wind_up_analysis(
     preprocess_warning_counts = len(result_manager.stored_warnings)
     result_manager.stored_warnings = []
 
-    plot_input_data_timeline(
+    _fig = plot_input_data_timeline(
         assessment_inputs=inputs,
         save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None,
         show_plots=inputs.plot_cfg.show_plots,
     )
+    plt.close(_fig)
 
     wf_df = inputs.wf_df
     pc_per_ttype = inputs.pc_per_ttype
