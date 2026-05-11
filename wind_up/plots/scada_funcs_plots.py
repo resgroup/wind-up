@@ -359,6 +359,8 @@ def plot_toggle_active_vs_reactive_power(
         t_dir = plot_cfg.plots_dir / wtg_name if sub_dir is None else plot_cfg.plots_dir / sub_dir
         t_dir.mkdir(exist_ok=True, parents=True)
         fig.savefig(t_dir / f"{plot_title}.png")
+    if not plot_cfg.show_plots:
+        plt.close(fig)
     return None
 
 
