@@ -585,7 +585,7 @@ def _calc_test_ref_results(
     pre_df = pre_df.merge(ref_df, how="left", left_index=True, right_index=True)
     post_df = post_df.merge(ref_df, how="left", left_index=True, right_index=True)
 
-    compare_active_and_reactive_power_pre_post(
+    _fig = compare_active_and_reactive_power_pre_post(
         pre_df=pre_df,
         post_df=post_df,
         wtg_name=ref_name,
@@ -595,6 +595,7 @@ def _calc_test_ref_results(
         sub_dir=f"{test_name}/{ref_name}",
         is_toggle_test=cfg.toggle is not None,
     )
+    plt.close(_fig)
 
     ref_ops_curve_shift_dict = _check_for_ops_curve_shift(
         pre_df,
@@ -881,7 +882,7 @@ def run_wind_up_analysis(
 
         test_df, pre_df, post_df = pre_post_splitter.split(test_df, test_wtg_name=test_name)
 
-        compare_active_and_reactive_power_pre_post(
+        _fig = compare_active_and_reactive_power_pre_post(
             pre_df=pre_df,
             post_df=post_df,
             wtg_name=test_name,
@@ -890,6 +891,7 @@ def run_wind_up_analysis(
             plot_cfg=plot_cfg,
             is_toggle_test=cfg.toggle is not None,
         )
+        plt.close(_fig)
 
         test_ops_curve_shift_dict = _check_for_ops_curve_shift(
             pre_df,
