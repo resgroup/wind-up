@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def plot_yaw_direction_pre_post_per_signal(  # noqa:PLR0915
+def plot_yaw_direction_pre_post_per_signal(
     signal_name: str,
     test_wd_col: str,
     *,
