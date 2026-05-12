@@ -595,7 +595,8 @@ def _calc_test_ref_results(
         sub_dir=f"{test_name}/{ref_name}",
         is_toggle_test=cfg.toggle is not None,
     )
-    plt.close(_fig)
+    if _fig is not None:
+        plt.close(_fig)
 
     ref_ops_curve_shift_dict = _check_for_ops_curve_shift(
         pre_df,
@@ -891,7 +892,8 @@ def run_wind_up_analysis(
             plot_cfg=plot_cfg,
             is_toggle_test=cfg.toggle is not None,
         )
-        plt.close(_fig)
+        if _fig is not None:
+            plt.close(_fig)
 
         test_ops_curve_shift_dict = _check_for_ops_curve_shift(
             pre_df,
