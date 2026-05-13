@@ -1,63 +1,229 @@
 # wind-up
-A tool to assess yield uplift of wind turbines
 
-[![image](https://img.shields.io/pypi/v/res-wind-up.svg)](https://pypi.python.org/pypi/res-wind-up)
-[![image](https://img.shields.io/pypi/l/res-wind-up.svg)](https://github.com/resgroup/wind-up/blob/main/LICENSE.txt)
-[![image](https://img.shields.io/pypi/pyversions/res-wind-up.svg)](https://pypi.python.org/pypi/res-wind-up)
+A Python package for assessing wind-turbine yield uplift from operational data.
+
+[![PyPI version](https://img.shields.io/pypi/v/res-wind-up.svg)](https://pypi.python.org/pypi/res-wind-up)
+[![License](https://img.shields.io/pypi/l/res-wind-up.svg)](https://github.com/resgroup/wind-up/blob/main/LICENSE.txt)
+[![Python versions](https://img.shields.io/pypi/pyversions/res-wind-up.svg)](https://pypi.python.org/pypi/res-wind-up)
 [![Lint & Format: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/charliermarsh/ruff/main/assets/badge/v1.json)](https://github.com/charliermarsh/ruff)
 [![Typing: mypy](https://img.shields.io/badge/typing-mypy-yellow.svg)](https://github.com/python/mypy)
-[![lint-and-test](https://github.com/resgroup/wind-up/actions/workflows/lint-and-test.yaml/badge.svg)](https://github.com/resgroup/wind-up/actions/workflows/lint-and-test.yaml)
+[![Lint and test](https://github.com/resgroup/wind-up/actions/workflows/lint-and-test.yaml/badge.svg)](https://github.com/resgroup/wind-up/actions/workflows/lint-and-test.yaml)
 
-## Getting Started
-See [`examples`](examples) folder for example analysis using the wind-up package. [`smarteole_example.ipynb`](examples%2Fsmarteole_example.ipynb) is a good place to start.
+`wind-up` compares turbine performance before and after a change to estimate
+energy-yield uplift. It is designed for wind-farm SCADA analysis where the
+signal of interest is small, operational data is messy, and a credible result
+needs more than a simple before/after power-curve plot.
 
-The wind-up package can be installed using any Python environment manager. Examples using [uv](https://docs.astral.sh/uv/) and [pip](https://pypi.org/project/pip/) are shown below:
+The package is published on PyPI as `res-wind-up` and imported in Python as
+`wind_up`.
 
-### Using uv
-```shell
-# Install the wind-up package in an existing project
-uv add res-wind-up
+## What it does
 
-# Or create a new project and install the wind-up package
-uv init my-project
-cd my-project
+`wind-up` provides a complete analysis workflow for pre/post or toggle-style
+uplift assessments:
+
+- prepares and filters wind-farm SCADA data
+- builds SCADA-derived power curves by turbine type
+- adds reanalysis, mast, or LiDAR reference data
+- applies yaw-direction northing corrections
+- estimates wind speed and waking state
+- detrends test-turbine performance against reference turbines or external references
+- performs pre/post power-performance analysis with reversal checks and bootstrapped uncertainty
+- combines per-reference results into turbine-level and fleet-level uplift estimates
+- writes result tables and diagnostic plots for review
+
+The public examples cover several realistic analysis shapes, including
+Smarteole toggle data, Kelmarsh turbine data, and WeDoWind challenge-style
+pre/post assessments.
+
+## Installation
+
+Install the released package with your Python environment manager of choice.
+Python `>=3.9,<4.0` is supported.
+
+Using `uv`:
+
+```bash
 uv add res-wind-up
 ```
 
-### Using pip
-```shell
-# create and activate a virtual environment, if needed
+Using `pip`:
+
+```bash
 python -m venv .venv
-source .venv/Scripts/activate  # or .venv/bin/activate on linux or ".venv/Scripts/activate" in Windows command prompt
-# install the wind-up package in the virtual environment
-pip install res-wind-up # alternatively clone the repo, navigate to the wind-up folder and run "pip install ."
+source .venv/bin/activate
+pip install res-wind-up
 ```
-Note that the package is named `wind_up` (with an underscore) in Python code. For example to print the version of the installed package use the following code snippet:
+
+On Windows PowerShell, activate the virtual environment with:
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+To run the bundled notebooks and example scripts, install the optional example
+dependencies as well:
+
+```bash
+uv add "res-wind-up[examples]"
+# or
+pip install "res-wind-up[examples]"
+```
+
+Check that the package imports correctly:
+
 ```python
 import wind_up
+
 print(wind_up.__version__)
 ```
 
-## Contributing
-To start making changes fork the repository or make a new branch from `main`. Note `main` is protected; 
-if a commit fails to push and you want to undo it try `git reset origin/main --hard`
+## First steps
 
-The development environment should be created and managed using [uv](https://docs.astral.sh/uv/). To create the environment:
-```shell
-uv sync --extra dev
+The fastest way to understand the expected data model and analysis flow is to
+start from the examples:
+
+- [`examples/smarteole_example.ipynb`](examples/smarteole_example.ipynb) -
+  a notebook walkthrough and the best place to start
+- [`examples/kelmarsh_kaggle.py`](examples/kelmarsh_kaggle.py) -
+  a script-oriented pre/post example using Kelmarsh data
+- [`examples/wedowind_example.py`](examples/wedowind_example.py) -
+  WeDoWind pitch-angle and vortex-generator analyses
+
+A typical analysis has four stages:
+
+```python
+from wind_up.interface import AssessmentInputs
+from wind_up.main_analysis import run_wind_up_analysis
+from wind_up.models import PlotConfig, WindUpConfig
+from wind_up.reanalysis_data import ReanalysisDataset
+
+# 1. Build a WindUpConfig describing the asset, test turbines,
+#    reference turbines, analysis dates, filters, and output folder.
+cfg = WindUpConfig(...)
+
+# 2. Configure diagnostic plot output.
+plot_cfg = PlotConfig(
+    show_plots=False,
+    save_plots=True,
+    plots_dir=cfg.out_dir / "plots",
+)
+
+# 3. Prepare inputs from SCADA, metadata, and reference datasets.
+assessment_inputs = AssessmentInputs.from_cfg(
+    cfg=cfg,
+    plot_cfg=plot_cfg,
+    scada_df=scada_df,
+    metadata_df=metadata_df,
+    reanalysis_datasets=[ReanalysisDataset(id="ERA5", data=reanalysis_df)],
+    cache_dir=cache_dir,
+)
+
+# 4. Run the assessment and save the per-test/per-reference results.
+results_per_test_ref_df = run_wind_up_analysis(assessment_inputs)
+results_per_test_ref_df.to_csv(cfg.out_dir / "results_per_test_ref.csv", index=False)
 ```
-To run the formatting, linting and testing:
-```shell
-uv run poe all # or all-fast to skip slow tests
+
+For complete, executable versions of this pattern, use the example files above.
+The configuration is intentionally explicit: wind-resource assessments are
+sensitive to turbine metadata, analysis periods, filters, and reference choices,
+so those assumptions should be visible in code.
+
+## Inputs and outputs
+
+At a high level, an assessment needs:
+
+| Input | Purpose |
+| --- | --- |
+| SCADA time series | turbine power, wind speed, yaw, pitch, RPM, downtime, and related operational signals |
+| turbine metadata | turbine names, turbine type, rated power, rotor diameter, and location where available |
+| analysis configuration | test/reference turbines, pre/post or toggle periods, filters, long-term settings, and output paths |
+| reference data | reanalysis, mast, LiDAR, or reference-turbine signals used for detrending and validation |
+
+The main analysis returns a `pandas.DataFrame` with per-test/per-reference uplift
+results, uncertainty columns, warning counts, and supporting diagnostic metrics.
+When plot saving is enabled, diagnostic figures are written under
+`PlotConfig.plots_dir`; CSV results are written under the configured assessment
+output directory.
+
+## Analysis features
+
+`wind-up` includes utilities for the parts of an uplift study that usually need
+careful handling:
+
+- SCADA cleaning and filtering for unavailable or implausible operating data
+- turbine-type power-curve estimation
+- wind-speed estimation from turbine power and measured wind speed
+- wake-state calculation using turbine coordinates and wind direction
+- yaw-direction northing checks and optional optimized northing corrections
+- long-term distribution calculations
+- wind-speed drift checks
+- pre/post and toggle-based splitting
+- reference selection and combined uplift calculations
+- diagnostic plots for input data, detrending, power curves, yaw direction,
+  reanalysis comparison, waking state, long-term distributions, and final results
+
+## Development
+
+This project uses `uv` for dependency management, `poethepoet` for task running,
+Ruff for formatting/linting, mypy for type checking, and pytest with coverage for
+tests.
+
+Create the development environment:
+
+```bash
+uv sync --all-extras --dev
 ```
-Or simply
-```shell
-poe all # or all-fast to skip slow tests
+
+> [!TIP]
+> For normal local development and pre-push checks, start with the fast suite.
+> It runs formatting, linting, type checking, and tests that are not marked as
+> slow.
+
+```bash
+uv run poe all-fast
 ```
-if you have activated the virtual environment.
+
+Run the full local verification suite before releases or when you need the slow
+regression tests as well:
+
+```bash
+uv run poe all
+```
+
+> [!NOTE]
+> `uv run poe all` includes tests marked as slow. On a typical local machine it
+> can take 15 minutes or more; `uv run poe all-fast` is much quicker for everyday
+> iteration.
+
+Individual tasks are also available:
+
+```bash
+uv run poe lint-check   # formatter, linter, and mypy checks
+uv run poe test-fast    # tests excluding the slow marker
+uv run poe test         # full test suite with coverage report
+uv run poe jupy         # start JupyterLab for example exploration
+```
+
+> [!WARNING]
+> `uv run poe jupy` starts a local JupyterLab server and keeps running until you
+> stop it. Use it when you want an interactive notebook session, not as a
+> one-shot verification command.
+
+The GitHub Actions workflow runs linting and tests on Python 3.9 and 3.13.
+
+## Project status
+
+The package is marked as beta in the Python package metadata. Interfaces and
+configuration options may still evolve, but the repository includes a substantial
+test suite and example analyses for regression coverage.
 
 ## License
-See [`LICENSE.txt`](LICENSE.txt)
+
+`wind-up` is released under the BSD 3-Clause License. See
+[`LICENSE.txt`](LICENSE.txt) for the full license text.
 
 ## Contact
-Alex.Clerc@res-group.com
+
+For questions about the package, contact Alex Clerc at
+[Alex.Clerc@res-group.com](mailto:Alex.Clerc@res-group.com).
