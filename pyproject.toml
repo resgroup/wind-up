@@ -49,6 +49,7 @@ build-backend = "setuptools.build_meta"
 [project.optional-dependencies]
 dev = [
     'pytest',
+    'pytest-benchmark',
     'coverage',
     'poethepoet',
     'types-pyyaml',

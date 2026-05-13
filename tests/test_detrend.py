@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
+from pytest_benchmark.fixture import BenchmarkFixture
 
 from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
 from wind_up.models import WindUpConfig
@@ -66,7 +67,7 @@ def test_check_applied_detrend(test_lsa_t13_config: WindUpConfig) -> None:
     assert detrend_post_r2_improvement == pytest.approx(0.03776561982402227)
 
 
-def test_calc_wsratio_v_wd_scen(test_lsa_t13_config: WindUpConfig) -> None:
+def test_calc_wsratio_v_wd_scen(benchmark: BenchmarkFixture, test_lsa_t13_config: WindUpConfig) -> None:
     # this test case borrows logic and results from check_applied_detrend where data which has already been detrended
     # is used to calculate the wsratio_v_wd_scen again to check it is flat
     cfg = test_lsa_t13_config
@@ -85,7 +86,8 @@ def test_calc_wsratio_v_wd_scen(test_lsa_t13_config: WindUpConfig) -> None:
     expected_pre_df = pd.read_parquet(
         Path(__file__).parents[0] / "test_data/LSA_T13_LSA_T12_check_pre_wsratio_v_dir_scen.parquet",
     )
-    actual_pre_df = calc_wsratio_v_wd_scen(
+    actual_pre_df = benchmark(
+        calc_wsratio_v_wd_scen,
         test_name=test_name,
         ref_name=ref_name,
         ref_lat=ref_lat,
