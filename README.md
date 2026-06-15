@@ -154,7 +154,7 @@ careful handling:
 - SCADA cleaning and filtering for unavailable or implausible operating data
 - power curve estimation by turbine type
 - wind speed estimation from turbine power (preferred for reference turbines) and measured wind speed
-- wake-state calculation using turbine coordinates and wind direction
+- waking state calculation per timestep using turbine coordinates and SCADA
 - yaw-direction northing checks and optional optimized northing corrections
 - long-term distribution calculations
 - wind-speed drift checks
