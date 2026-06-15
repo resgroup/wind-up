@@ -155,7 +155,7 @@ careful handling:
 - power curve estimation by turbine type
 - wind speed estimation from turbine power (preferred for reference turbines) and measured wind speed
 - waking state calculation per timestep using turbine coordinates and SCADA
-- yaw-direction northing checks and optional optimized northing corrections
+- yaw direction northing checks and optional optimized northing corrections
 - long-term distribution calculations
 - wind-speed drift checks
 - pre/post and toggle-based splitting
