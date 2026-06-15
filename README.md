@@ -1,6 +1,6 @@
 # wind-up
 
-A Python package for assessing wind-turbine yield uplift from operational data.
+A Python package for assessing wind turbine yield uplift from operational data.
 
 [![PyPI version](https://img.shields.io/pypi/v/res-wind-up.svg)](https://pypi.python.org/pypi/res-wind-up)
 [![License](https://img.shields.io/pypi/l/res-wind-up.svg)](https://github.com/resgroup/wind-up/blob/main/LICENSE.txt)
