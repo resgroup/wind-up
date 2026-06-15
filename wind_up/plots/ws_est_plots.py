@@ -35,7 +35,7 @@ def plot_ws_est_gain_xs_one_ttype(
     plt.close()
 
 
-def plot_ws_est_one_ttype_or_wtg(  # noqa C901 PLR0915
+def plot_ws_est_one_ttype_or_wtg(
     df: pd.DataFrame,
     ttype_or_wtg: str,
     pc_transposed: pd.DataFrame,

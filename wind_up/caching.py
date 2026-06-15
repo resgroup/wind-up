@@ -31,6 +31,7 @@ def with_pickle_cache(fp: Path, *, use_cache: bool = True) -> Callable:
         def wrapped_f(*a: Any, **kw: Any) -> Any:  # noqa
             fresh_cache = False
             if not Path(fp).is_file() or not use_cache or Path(fp).stat().st_size == 0:
+                fp.parent.mkdir(parents=True, exist_ok=True)
                 with Path.open(fp, "wb") as f:
                     pickle.dump(func(*a, **kw), f)
                     fresh_cache = True

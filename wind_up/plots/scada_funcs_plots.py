@@ -359,7 +359,7 @@ def plot_toggle_active_vs_reactive_power(
         t_dir = plot_cfg.plots_dir / wtg_name if sub_dir is None else plot_cfg.plots_dir / sub_dir
         t_dir.mkdir(exist_ok=True, parents=True)
         fig.savefig(t_dir / f"{plot_title}.png")
-    return None
+    return fig
 
 
 def compare_active_and_reactive_power_pre_post(
@@ -372,7 +372,7 @@ def compare_active_and_reactive_power_pre_post(
     plot_cfg: PlotConfig,
     is_toggle_test: bool,
     sub_dir: str | None = None,
-) -> None:
+) -> plt.Figure | None:
     """Plot active vs reactive power
 
     Distinguishes data pre- and post-upgrade or toggled on/off (depending on `is_toggle_test`).
@@ -381,10 +381,10 @@ def compare_active_and_reactive_power_pre_post(
         result_manager.warning(
             f"Column '{reactive_power_col}' not found, skipping reactive vs active power plot for {wtg_name}"
         )
-        return
+        return None
 
     if is_toggle_test:
-        plot_toggle_active_vs_reactive_power(
+        return plot_toggle_active_vs_reactive_power(
             input_df=pd.concat([pre_df, post_df]),
             wtg_name=wtg_name,
             toggle_name="toggle",
@@ -393,12 +393,11 @@ def compare_active_and_reactive_power_pre_post(
             plot_cfg=plot_cfg,
             sub_dir=sub_dir,
         )
-        return
     pre_df_fake_toggle = pre_df.copy()
     post_df_fake_toggle = post_df.copy()
     pre_df_fake_toggle["test_toggle_off"] = True
     post_df_fake_toggle["test_toggle_on"] = True
-    plot_toggle_active_vs_reactive_power(
+    return plot_toggle_active_vs_reactive_power(
         input_df=pd.concat([pre_df_fake_toggle, post_df_fake_toggle]),
         wtg_name=wtg_name,
         toggle_name="upgrade",
@@ -407,7 +406,6 @@ def compare_active_and_reactive_power_pre_post(
         plot_cfg=plot_cfg,
         sub_dir=sub_dir,
     )
-    return
 
 
 def compare_ops_curves_pre_post(

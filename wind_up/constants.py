@@ -7,7 +7,7 @@ CONFIG_DIR = Path(__file__).parents[1] / "config"
 TURBINE_DATA_DIR = Path(__file__).parents[1] / "input_data/turbine_data"
 REANALYSIS_DIR = Path(__file__).parents[1] / "input_data/reanalysis"
 TOGGLE_DIR = Path(__file__).parents[1] / "input_data/toggle"
-OUTPUT_DIR = Path(__file__).parents[1] / "output"
+OUTPUT_DIR = Path.home() / "wind-up-output"
 
 RANDOM_SEED = 0
 SCATTER_S = 1

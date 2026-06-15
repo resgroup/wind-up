@@ -14,21 +14,23 @@ def plot_combined_results(tdf: pd.DataFrame, *, plot_cfg: PlotConfig, confidence
     grouped_results = tdf.index.name == "role"
 
     plt.figure()
-    labels = tdf.index.to_list() if grouped_results else tdf["test_wtg"]
+    labels = (
+        [f"{i} ({int(v)} wtgs)" for i, v in zip(tdf.index, tdf["wtg_count"])] if grouped_results else tdf["test_wtg"]
+    )
     values = tdf["p50_uplift"] * 100
     yerrs = tdf["sigma"] * 100 * z_score
     plt.bar(labels, values, yerr=yerrs, capsize=3)
     plt.xlabel("turbine group" if grouped_results else "turbine")
-    plt.ylabel("uplift [%]")
+    plt.ylabel("uplift [%]", fontsize=12)
     plot_title = f"combined uplift and {confidence * 100:.0f}% CI"
     plt.title(plot_title)
     plt.grid(axis="y")
-    plt.xticks(rotation=90, ha="right")
+    plt.xticks(fontsize=12)
     plt.tight_layout()
     if show_plots:
         plt.show()
     if save_plots:
-        plt.savefig(plot_cfg.plots_dir / f"{plot_title}.png")
+        plt.savefig(plot_cfg.plots_dir / f"{plot_title.replace('%', 'pct')}.png")
     plt.close()
 
 
