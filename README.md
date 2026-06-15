@@ -28,7 +28,7 @@ uplift assessments:
 - applies yaw direction northing corrections
 - estimates wind speed and waking state
 - detrends test turbine performance against reference wind direction
-- performs pre/post power-performance analysis with reversal checks and bootstrapped uncertainty
+- performs pre/post power performance analysis with reversal checks and bootstrapped uncertainty
 - combines per-reference results into turbine-level and fleet-level uplift estimates
 - writes result tables and diagnostic plots for review
 
