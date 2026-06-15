@@ -33,7 +33,7 @@ uplift assessments:
 - writes result tables and diagnostic plots for review
 
 The public examples cover several realistic analysis shapes, including
-Smarteole toggle data, Kelmarsh turbine data, and WeDoWind challenge-style
+SMARTEOLE toggle data, Kelmarsh turbine data, and WeDoWind challenge-style
 pre/post assessments.
 
 ## Installation
