@@ -25,7 +25,7 @@ uplift assessments:
 - prepares and filters wind-farm SCADA data
 - builds SCADA-derived power curves by turbine type
 - adds reanalysis, mast, or LiDAR reference data
-- applies yaw-direction northing corrections
+- applies yaw direction northing corrections
 - estimates wind speed and waking state
 - detrends test-turbine performance against reference turbines or external references
 - performs pre/post power-performance analysis with reversal checks and bootstrapped uncertainty
