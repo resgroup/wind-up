@@ -157,7 +157,7 @@ careful handling:
 - waking state calculation per timestep using turbine coordinates and SCADA
 - yaw direction northing checks and optional optimized northing corrections
 - long-term distribution calculations
-- wind-speed drift checks
+- wind speed drift checks
 - pre/post and toggle-based splitting
 - reference selection and combined uplift calculations
 - diagnostic plots for input data, detrending, power curves, yaw direction,
