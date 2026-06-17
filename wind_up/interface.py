@@ -57,7 +57,14 @@ class PrePostSplitter:
         elif (self.cfg.prepost is None) and self.cfg.toggle is not None:
             if not isinstance(self.toggle_df, pd.DataFrame):
                 raise ValueError("toggle_df must be a pd.DataFrame")  # noqa TRY003
-            test_df = add_toggle_signals(df, toggle_df=self.toggle_df, wtg_name=test_wtg_name, cfg=self.cfg)
+            toggle_wtg_name = test_wtg_name
+            borrow = self.cfg.toggle.borrow_toggle_from_wtg
+            if borrow is not None and test_wtg_name not in {x.name for x in self.cfg.test_wtgs}:
+                toggle_wtg_name = borrow
+                logger.info(
+                    f"{test_wtg_name} is not a test wtg; borrowing toggle signal from {borrow}",
+                )
+            test_df = add_toggle_signals(df, toggle_df=self.toggle_df, wtg_name=toggle_wtg_name, cfg=self.cfg)
             test_df = test_df.rename(columns={"toggle_off": "test_toggle_off", "toggle_on": "test_toggle_on"})
             pre_df = test_df[test_df["test_toggle_off"].fillna(value=False)].copy()
             post_df = test_df[test_df["test_toggle_on"].fillna(value=False)].copy()
