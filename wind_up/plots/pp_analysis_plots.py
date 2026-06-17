@@ -534,7 +534,7 @@ def plot_pp_data_coverage(
     plt.title(plot_title)
     plt.ylabel("data coverage [%]")
     plt.xlabel("bin centre [m/s]")
-    plt.ylim([0, 100])
+    plt.ylim((0, 100))
     plt.grid()
     plt.tight_layout()
     if plot_cfg.show_plots:

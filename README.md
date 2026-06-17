@@ -45,7 +45,7 @@ in the [`docs`](docs) folder.
 ## Installation
 
 Install the released package with your Python environment manager of choice.
-Python `>=3.10,<4.0` is supported.
+Python 3.10 to 3.13 is supported.
 
 Using `uv`:
 

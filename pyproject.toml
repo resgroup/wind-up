@@ -6,7 +6,7 @@ authors = [
 ]
 description = "A tool to assess yield uplift of wind turbines"
 readme = "README.md"
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.10,<3.14"
 license = { file = "LICENSE.txt" }
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -23,7 +23,7 @@ classifiers = [
 dependencies = [
     'eval-type-backport',
     'geographiclib',
-    'matplotlib<3.11',
+    'matplotlib',
     'pandas >= 2.0.0,<3.0.0',
     'pyarrow',
     'pydantic >= 2.0.0',
