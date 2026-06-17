@@ -44,7 +44,7 @@ def test_rolling_circ_median_all_nans() -> None:
 
     for col in input_df.columns:
         result = rolling_circ_median_approx(input_df[col], window=4, min_periods=3, center=True, range_360=True)
-        expected = input_df[col].rolling(window=4, min_periods=3, center=True).apply(lambda x: circ_median_exact(x))
+        expected = input_df[col].rolling(window=4, min_periods=3, center=True).apply(circ_median_exact)
         assert_series_equal(result, expected)
 
 
@@ -73,11 +73,7 @@ def test_rolling_circ_median_performance() -> None:
         return rolling_circ_median_approx(input_df[col], window=window_size, min_periods=min_periods, center=True)
 
     def exact_method() -> float:
-        return (
-            input_df[col]
-            .rolling(window=window_size, min_periods=min_periods, center=True)
-            .apply(lambda x: circ_median_exact(x))
-        )
+        return input_df[col].rolling(window=window_size, min_periods=min_periods, center=True).apply(circ_median_exact)
 
     new_method_results = new_method()
     exact_method_results = exact_method()
