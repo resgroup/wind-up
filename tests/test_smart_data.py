@@ -8,7 +8,6 @@ import pandas as pd
 import pytest
 
 from tests.conftest import TEST_DATA_FLD
-from wind_up.backporting import strict_zip
 from wind_up.constants import TIMESTAMP_COL
 from wind_up.smart_data import (
     add_smart_lat_long_to_cfg,
@@ -40,7 +39,7 @@ def test_calc_last_xmin_datetime_in_month() -> None:
         dt.datetime(2020, 2, 29, 23, 50),
         dt.datetime(2020, 2, 29, 23, 50),
     ]
-    for i, e in strict_zip(inputs, expected):
+    for i, e in zip(inputs, expected, strict=True):
         assert calc_last_xmin_datetime_in_month(i, TIMEBASE_PD_TIMEDELTA) == pd.Timestamp(e)
 
 
