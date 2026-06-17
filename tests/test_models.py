@@ -257,17 +257,17 @@ def test_borrow_toggle_from_wtg_defaults_to_none(test_marge_config: WindUpConfig
 
 
 def test_borrow_toggle_from_wtg_accepts_a_test_wtg(test_marge_config: WindUpConfig) -> None:
-    cfg = test_marge_config
-    cfg.toggle.borrow_toggle_from_wtg = "MRG_T01"  # a member of test_wtgs
-    # the after-validator returns self unchanged when the value is valid
-    assert cfg._check_borrow_toggle_from_wtg() is cfg
+    raw = test_marge_config.model_dump()
+    raw["toggle"]["borrow_toggle_from_wtg"] = "MRG_T01"  # a member of test_wtgs
+    cfg = WindUpConfig.model_validate(raw)
+    assert cfg.toggle.borrow_toggle_from_wtg == "MRG_T01"
 
 
 def test_borrow_toggle_from_wtg_rejects_non_test_wtg(test_marge_config: WindUpConfig) -> None:
-    cfg = test_marge_config
-    cfg.toggle.borrow_toggle_from_wtg = "MRG_T02"  # a ref wtg, not a test wtg
-    with pytest.raises(ValueError, match="borrow_toggle_from_wtg"):
-        cfg._check_borrow_toggle_from_wtg()
+    raw = test_marge_config.model_dump()
+    raw["toggle"]["borrow_toggle_from_wtg"] = "MRG_T02"  # a ref wtg, not a test wtg
+    with pytest.raises(ValidationError, match="borrow_toggle_from_wtg"):
+        WindUpConfig.model_validate(raw)
 
 
 class TestPrePostValidation:
