@@ -9,7 +9,6 @@ import pandas as pd
 import seaborn as sns
 from tabulate import tabulate
 
-from wind_up.backporting import strict_zip
 from wind_up.constants import DATA_UNIT_DEFAULTS, SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
 from wind_up.plots.misc_plots import bubble_plot
 from wind_up.result_manager import result_manager
@@ -45,9 +44,10 @@ def calc_cf_by_turbine(scada_df: pd.DataFrame, cfg: WindUpConfig) -> pd.DataFram
         hours=pd.NamedAgg(column=DataColumns.turbine_name, aggfunc=lambda x: x.count() / rows_per_hour),
         MWh=pd.NamedAgg(column=DataColumns.active_power_mean, aggfunc=lambda x: x.sum() / rows_per_hour / 1000),
     )
-    for i, rp in strict_zip(
+    for i, rp in zip(
         [x.name for x in cfg.asset.wtgs],
         [x.turbine_type.rated_power_kw for x in cfg.asset.wtgs],
+        strict=True,
     ):
         cf_df.loc[i, "rated_power_kW"] = rp
     cf_df["CF"] = cf_df["MWh"] / (cf_df["hours"] * cf_df["rated_power_kW"] / 1000)
