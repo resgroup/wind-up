@@ -120,7 +120,7 @@ def plot_northing_changepoint(
     plt.axvline(northing_datetime_utc, color="grey", linestyle="--", label="northing correction")
     plt.xlabel("timestamp")
     plt.ylabel("direction [deg]")
-    plt.xlim([xmin, xmax])
+    plt.xlim((xmin, xmax))
     plt.xticks(rotation=45)
     title = f"{northing_turbine} north_ref_wd_col={north_ref_wd_col} {northing_datetime_utc.strftime('%Y-%m-%d')}"
     plt.title(title)

@@ -1,17 +1,16 @@
 [project]
 name = "res-wind-up"
-version = "0.4.10"
+version = "0.5.0"
 authors = [
     { name = "Alex Clerc", email = "alex.clerc@res-group.com" }
 ]
 description = "A tool to assess yield uplift of wind turbines"
 readme = "README.md"
-requires-python = ">=3.9,<4.0"
+requires-python = ">=3.10,<3.14"
 license = { file = "LICENSE.txt" }
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -25,7 +24,7 @@ dependencies = [
     'eval-type-backport',
     'geographiclib',
     'matplotlib',
-    'pandas >= 2.0.0',
+    'pandas >= 2.0.0,<3.0.0',
     'pyarrow',
     'pydantic >= 2.0.0',
     'python-dotenv',
@@ -57,7 +56,7 @@ dev = [
     'types-tqdm',
     'types-requests',
     'ruff',
-    'mypy',
+    'mypy<1.19',
     'requests',
     'pytest-env',
 ]
@@ -74,10 +73,17 @@ examples = [
 where = ["."]
 include = ["wind_up*"]
 
+[tool.uv]
+# Dev/CI-only constraint (not part of published metadata, so consumers are unaffected).
+# matplotlib 3.11 dropped Python 3.10, so an unpinned universal lock resolves matplotlib 3.10
+# on the 3.10 job but 3.11 on the 3.13 job; the image-comparison baselines are matplotlib-version
+# specific, so keep the test environment on a single matplotlib (3.10.x, which supports 3.10-3.13).
+constraint-dependencies = ["matplotlib<3.11"]
+
 [tool.ruff]
 line-length = 120
 show-fixes = true
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["ALL"] # https://beta.ruff.rs/docs/rules/
@@ -117,7 +123,7 @@ max-args = 17 # try to bring this down to 5
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
-python_version = "3.9"
+python_version = "3.10"
 exclude = "build|tests|venv|.venv|__ignore__"
 disallow_untyped_defs = true
 

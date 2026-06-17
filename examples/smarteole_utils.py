@@ -8,7 +8,7 @@ import logging
 import zipfile
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 import pandas as pd
 from scipy.stats import circmean
@@ -17,7 +17,7 @@ from wind_up.caching import with_parquet_cache
 from wind_up.constants import PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
 
 if TYPE_CHECKING:
-    FilePathOrBuffer = Union[str, bytearray]
+    FilePathOrBuffer = str | bytearray
 
 SCADA_FILE_PATH = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_SCADA_1minData.csv"
 METADATA_FILE_PATH = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_Coordinates_staticData.csv"

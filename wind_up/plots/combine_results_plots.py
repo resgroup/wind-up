@@ -2,7 +2,6 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from scipy.stats import norm
 
-from wind_up.backporting import strict_zip
 from wind_up.models import PlotConfig
 
 
@@ -15,7 +14,9 @@ def plot_combined_results(tdf: pd.DataFrame, *, plot_cfg: PlotConfig, confidence
 
     plt.figure()
     labels = (
-        [f"{i} ({int(v)} wtgs)" for i, v in zip(tdf.index, tdf["wtg_count"])] if grouped_results else tdf["test_wtg"]
+        [f"{i} ({int(v)} wtgs)" for i, v in zip(tdf.index, tdf["wtg_count"], strict=True)]
+        if grouped_results
+        else tdf["test_wtg"]
     )
     values = tdf["p50_uplift"] * 100
     yerrs = tdf["sigma"] * 100 * z_score
@@ -44,9 +45,10 @@ def plot_testref_and_combined_results(
     plt.figure(figsize=(10, 6))
     labels = [
         x + "-" + y
-        for x, y in strict_zip(
+        for x, y in zip(
             [x[-1] for x in trdf["test_wtg"].str.split("_")],
             [x[-1] for x in trdf["ref"].str.split("_")],
+            strict=True,
         )
     ]
     values = trdf["uplift_frc"] * 100

@@ -36,10 +36,16 @@ The public examples cover several realistic analysis shapes, including
 SMARTEOLE toggle data, Kelmarsh turbine data, and WeDoWind challenge-style
 pre/post assessments.
 
+## Methodology
+
+The validation methodology that `wind-up` implements is described in detail in
+[**wind-up uplift validation methodology v3**](docs/wind-up%20uplift%20validation%20methodology%20v3.pdf)
+in the [`docs`](docs) folder.
+
 ## Installation
 
 Install the released package with your Python environment manager of choice.
-Python `>=3.9,<4.0` is supported.
+Python 3.10 to 3.13 is supported.
 
 Using `uv`:
 
@@ -146,6 +152,12 @@ When plot saving is enabled, diagnostic figures are written under
 `PlotConfig.plots_dir`; CSV results are written under the configured assessment
 output directory.
 
+> [!NOTE]
+> On import, `wind-up` selects the non-interactive matplotlib `Agg` backend
+> unless the `MPLBACKEND` environment variable is already set. This lets analyses
+> run headless (CI, SSH, batch servers) without an X server. Set `MPLBACKEND`
+> yourself before importing `wind_up` if you want an interactive backend.
+
 ## Analysis features
 
 `wind-up` includes utilities for the parts of an uplift study that usually need
@@ -210,7 +222,7 @@ uv run poe jupy         # start JupyterLab for example exploration
 > stop it. Use it when you want an interactive notebook session, not as a
 > one-shot verification command.
 
-The GitHub Actions workflow runs linting and tests on Python 3.9 and 3.13.
+The GitHub Actions workflow runs linting and tests on Python 3.10 and 3.13.
 
 ## Project status
 

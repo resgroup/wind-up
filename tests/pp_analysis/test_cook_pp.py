@@ -49,7 +49,9 @@ def _make_pp_raw_df(
             pw_std_col: [50.0 if p is not None else np.nan for p in pw_means],
             ws_std_col: [0.2] * n,
             count_col: counts,
-            pw_sem_col: [50.0 / max(1, c) ** 0.5 if p is not None else np.nan for p, c in zip(pw_means, counts)],
+            pw_sem_col: [
+                50.0 / max(1, c) ** 0.5 if p is not None else np.nan for p, c in zip(pw_means, counts, strict=True)
+            ],
             ws_sem_col: [0.2 / max(1, c) ** 0.5 for c in counts],
         }
     )

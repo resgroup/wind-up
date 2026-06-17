@@ -33,7 +33,7 @@ def test_rolling_circ_mean(*, range_360: bool) -> None:
             else (
                 input_df[col]
                 .rolling(window=4, min_periods=1, center=True)
-                .apply(lambda x: (circmean(x, low=-180, high=180, nan_policy="omit")))
+                .apply(lambda x: circmean(x, low=-180, high=180, nan_policy="omit"))
             )
         )
         assert_series_equal(result, expected)

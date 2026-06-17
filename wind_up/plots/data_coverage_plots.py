@@ -22,10 +22,10 @@ def plot_detrend_data_cov(
     window_hrs = 14 * 24
     rows_per_hour = 3600 / cfg.timebase_s
     expected_rows = rows_per_hour * window_hrs
-    xlims = [
+    xlims = (
         min(cfg.lt_first_dt_utc_start, test_df.index.min()) - pd.Timedelta(f"{window_hrs}h"),
         cfg.analysis_last_dt_utc_start + pd.Timedelta(f"{window_hrs}h"),
-    ]
+    )
     plt.subplot(3, 1, 1)
     plot_df_raw = (
         test_df.resample(f"{window_hrs}h")["test_" + RAW_POWER_COL, "test_" + RAW_WINDSPEED_COL].count()
@@ -37,7 +37,7 @@ def plot_detrend_data_cov(
     plt.plot(plot_df_raw.index, plot_df_raw["test_" + RAW_WINDSPEED_COL], label="WindSpeedMean before filter")
     plt.plot(plot_df.index, plot_df[test_ws_col], label=test_ws_col)
     plt.xlim(xlims)
-    plt.ylim([0, 105])
+    plt.ylim((0, 105))
     plt.ylabel("data coverage [%]")
     plt.grid()
     plt.legend()
@@ -46,7 +46,7 @@ def plot_detrend_data_cov(
     plt.plot(plot_df.index, plot_df[ref_ws_col], label=ref_ws_col)
     plt.plot(plot_df.index, plot_df[ref_wd_col], label=ref_wd_col)
     plt.xlim(xlims)
-    plt.ylim([0, 105])
+    plt.ylim((0, 105))
     plt.ylabel("data coverage [%]")
     plt.grid()
     plt.legend()
@@ -56,7 +56,7 @@ def plot_detrend_data_cov(
     )
     plt.plot(plot_df.index, plot_df[test_ws_col], label=f"detrend {test_ws_col}")
     plt.xlim(xlims)
-    plt.ylim([0, 105])
+    plt.ylim((0, 105))
     plt.ylabel("data coverage [%]")
     plt.grid()
     plt.legend()
@@ -91,10 +91,10 @@ def plot_pre_post_data_cov(
     window_hrs = 14 * 24
     rows_per_hour = 3600 / cfg.timebase_s
     expected_rows = rows_per_hour * window_hrs
-    xlims = [
+    xlims = (
         min(cfg.lt_first_dt_utc_start, test_df.index.min()) - pd.Timedelta(f"{window_hrs}h"),
         cfg.analysis_last_dt_utc_start + pd.Timedelta(f"{window_hrs}h"),
-    ]
+    )
     plt.subplot(3, 1, 1)
     plot_df_raw = (
         test_df.resample(f"{window_hrs}h")["test_" + RAW_POWER_COL, "test_" + RAW_WINDSPEED_COL].count()
@@ -107,7 +107,7 @@ def plot_pre_post_data_cov(
     plt.plot(plot_df.index, plot_df[test_pw_col], label=test_pw_col)
     plt.plot(plot_df.index, plot_df[test_ws_col], label=test_ws_col)
     plt.xlim(xlims)
-    plt.ylim([0, 105])
+    plt.ylim((0, 105))
     plt.ylabel("data coverage [%]")
     plt.grid()
     plt.legend()
@@ -117,7 +117,7 @@ def plot_pre_post_data_cov(
     plt.plot(plot_df.index, plot_df[ref_ws_col], label=ref_ws_col)
     plt.plot(plot_df.index, plot_df[ref_wd_col], label=ref_wd_col)
     plt.xlim(xlims)
-    plt.ylim([0, 105])
+    plt.ylim((0, 105))
     plt.ylabel("data coverage [%]")
     plt.grid()
     plt.legend()
@@ -129,7 +129,7 @@ def plot_pre_post_data_cov(
     plt.plot(plot_post_df.index, plot_post_df[test_pw_col], label=f"post {test_pw_col}")
     plt.plot(plot_post_df.index, plot_post_df[detrend_ws_col], label=f"post {detrend_ws_col}")
     plt.xlim(xlims)
-    plt.ylim([0, 105])
+    plt.ylim((0, 105))
     plt.ylabel("data coverage [%]")
     plt.grid()
     plt.legend()
