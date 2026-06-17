@@ -118,7 +118,7 @@ def _cook_pp(
     if clip_to_rated:
         pp_df[pw_col] = pp_df[pw_col].clip(upper=rated_power)
 
-    pp_df[pw_sem_col] = pp_df[pw_sem_col].ffill()
+    pp_df[pw_sem_col] = pp_df[pw_sem_col].ffill().bfill()
 
     # missing data at low wind speed can be filled with 0
     pp_df.loc[pp_df.index[pp_df[pw_col].isna().cummin()], [pw_col, pw_sem_col]] = 0

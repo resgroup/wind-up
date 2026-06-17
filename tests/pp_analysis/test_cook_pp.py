@@ -392,6 +392,38 @@ class TestMissingValuesWarning:
         assert "pp_df has missing values" in result_manager.stored_warnings
 
 
+class TestPwSemGapFilling:
+    """``pw_sem_*`` must not contain NaN after gap filling.
+
+    Leading low-ws bins that are invalid have their power gap-filled (e.g. from the
+    site mean power curve), but their standard error has nothing below to ``ffill``
+    from. Such bins must inherit the nearest valid SEM (via ``bfill``) rather than be
+    left NaN, which otherwise triggers a spurious "pp_df has missing values" warning.
+    See https://github.com/resgroup/wind-up/issues/95.
+    """
+
+    @pytest.mark.parametrize("pre_or_post", ["pre", "post"])
+    def test_leading_invalid_bins_do_not_leave_pw_sem_nan(self, pre_or_post: str) -> None:
+        bin_mids = list(range(1, 26))
+        pw_means = [min(RATED_POWER, max(0.0, RATED_POWER * (m - 3) / 9)) for m in bin_mids]
+        # lowest bins (<=3 m/s) are invalid (insufficient hours); the rest are valid
+        hours = [1.0 if m <= 3 else 50.0 for m in bin_mids]
+        raw_df = _make_pp_raw_df(bin_mids, pw_means, hours, pre_or_post=pre_or_post)
+
+        result_manager.stored_warnings.clear()
+        result = _cook_pp(
+            raw_df,
+            pre_or_post=pre_or_post,
+            ws_bin_width=WS_BIN_WIDTH,
+            rated_power=RATED_POWER,
+            clip_to_rated=False,
+            site_mean_pc_df=_make_site_mean_pc_df(),
+        )
+
+        assert not result[f"pw_sem_{pre_or_post}"].isna().any()
+        assert "pp_df has missing values" not in result_manager.stored_warnings
+
+
 class TestPostPeriod:
     def test_post_period_columns_named_correctly(self) -> None:
         post_df = _make_pp_raw_df(
