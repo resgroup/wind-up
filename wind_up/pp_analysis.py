@@ -118,7 +118,7 @@ def _cook_pp(
     if clip_to_rated:
         pp_df[pw_col] = pp_df[pw_col].clip(upper=rated_power)
 
-    pp_df[pw_sem_col] = pp_df[pw_sem_col].ffill()
+    pp_df[pw_sem_col] = pp_df[pw_sem_col].ffill().bfill()
 
     # missing data at low wind speed can be filled with 0
     pp_df.loc[pp_df.index[pp_df[pw_col].isna().cummin()], [pw_col, pw_sem_col]] = 0
@@ -135,7 +135,7 @@ def _cook_pp(
     pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_at_mid_col].fillna(0)
     pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_at_mid_col].clip(lower=0, upper=pp_df[pw_sem_col])
 
-    if pp_df[[col for col in pp_df.columns if col is not raw_pw_col]].isna().any().any():
+    if pp_df[[col for col in pp_df.columns if col != raw_pw_col]].isna().any().any():
         msg = "pp_df has missing values"
         result_manager.warning(msg)
 

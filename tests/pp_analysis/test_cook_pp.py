@@ -7,7 +7,8 @@ import pandas as pd
 import pytest
 
 from wind_up.constants import DataColumns
-from wind_up.pp_analysis import _cook_pp
+from wind_up.pp_analysis import _cook_pp, _pp_raw_df
+from wind_up.result_manager import result_manager
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -312,6 +313,114 @@ class TestSiteMeanPcGapFilling:
 # ---------------------------------------------------------------------------
 # post period tests
 # ---------------------------------------------------------------------------
+
+
+class TestMissingValuesWarning:
+    """The raw power column (``pw_mean_*_raw``) is expected to contain NaN for empty
+    wind-speed bins and must be excluded from the missing-values check.
+    """
+
+    def test_empty_bins_do_not_trigger_missing_values_warning(self) -> None:
+        # Build a realistic raw pp_df via _pp_raw_df so that genuinely empty bins
+        # (no observations) produce NaN in the raw power column only.
+        rng = np.random.default_rng(0)
+        edges = np.arange(0, CUTOUT_WS + WS_BIN_WIDTH, WS_BIN_WIDTH)
+        n = 2000
+        ws = np.clip(rng.gamma(shape=6.0, scale=1.3, size=n), 0, CUTOUT_WS - 0.01)
+
+        def pc(w: float) -> float:
+            if w < 3:
+                return 0.0
+            if w >= 12:
+                return RATED_POWER
+            return RATED_POWER * (w - 3) / 9
+
+        pw = np.array([pc(w) for w in ws]) + rng.normal(0, 20, n)
+        raw_df = _pp_raw_df(
+            pd.DataFrame({"ws": ws, "pw": pw}),
+            "pre",
+            ws_col="ws",
+            ws_bin_edges=edges,
+            pw_col="pw",
+            timebase_s=600,
+        )
+        # sanity: the raw power column has empty bins, i.e. genuine NaNs
+        assert raw_df["pw_mean_pre"].isna().any()
+
+        result_manager.stored_warnings.clear()
+        result = _cook_pp(
+            raw_df,
+            pre_or_post="pre",
+            ws_bin_width=WS_BIN_WIDTH,
+            rated_power=RATED_POWER,
+            clip_to_rated=False,
+        )
+
+        # only the raw column should carry NaN; nothing else
+        non_raw_cols = [c for c in result.columns if c != "pw_mean_pre_raw"]
+        assert not result[non_raw_cols].isna().any().any()
+        assert "pp_df has missing values" not in result_manager.stored_warnings
+
+    def test_genuine_missing_values_still_warn(self) -> None:
+        # Force a NaN into a non-raw column and confirm the check still fires.
+        raw_df = _make_pp_raw_df(
+            bin_mids=list(range(1, 26)),
+            pw_means=[min(RATED_POWER, max(0.0, RATED_POWER * (m - 3) / 9)) for m in range(1, 26)],
+            hours=[50.0] * 25,
+        )
+        result_manager.stored_warnings.clear()
+        _ = _cook_pp(
+            raw_df,
+            pre_or_post="pre",
+            ws_bin_width=WS_BIN_WIDTH,
+            rated_power=RATED_POWER,
+            clip_to_rated=False,
+        )
+        assert "pp_df has missing values" not in result_manager.stored_warnings
+        # now corrupt a non-raw column and re-run the check logic path
+        result_manager.stored_warnings.clear()
+        corrupted = raw_df.copy()
+        corrupted.loc[corrupted["bin_mid"] == 10, "ws_std_pre"] = np.nan
+        _ = _cook_pp(
+            corrupted,
+            pre_or_post="pre",
+            ws_bin_width=WS_BIN_WIDTH,
+            rated_power=RATED_POWER,
+            clip_to_rated=False,
+        )
+        assert "pp_df has missing values" in result_manager.stored_warnings
+
+
+class TestPwSemGapFilling:
+    """``pw_sem_*`` must not contain NaN after gap filling.
+
+    Leading low-ws bins that are invalid have their power gap-filled (e.g. from the
+    site mean power curve), but their standard error has nothing below to ``ffill``
+    from. Such bins must inherit the nearest valid SEM (via ``bfill``) rather than be
+    left NaN, which otherwise triggers a spurious "pp_df has missing values" warning.
+    See https://github.com/resgroup/wind-up/issues/95.
+    """
+
+    @pytest.mark.parametrize("pre_or_post", ["pre", "post"])
+    def test_leading_invalid_bins_do_not_leave_pw_sem_nan(self, pre_or_post: str) -> None:
+        bin_mids = list(range(1, 26))
+        pw_means = [min(RATED_POWER, max(0.0, RATED_POWER * (m - 3) / 9)) for m in bin_mids]
+        # lowest bins (<=3 m/s) are invalid (insufficient hours); the rest are valid
+        hours = [1.0 if m <= 3 else 50.0 for m in bin_mids]
+        raw_df = _make_pp_raw_df(bin_mids, pw_means, hours, pre_or_post=pre_or_post)
+
+        result_manager.stored_warnings.clear()
+        result = _cook_pp(
+            raw_df,
+            pre_or_post=pre_or_post,
+            ws_bin_width=WS_BIN_WIDTH,
+            rated_power=RATED_POWER,
+            clip_to_rated=False,
+            site_mean_pc_df=_make_site_mean_pc_df(),
+        )
+
+        assert not result[f"pw_sem_{pre_or_post}"].isna().any()
+        assert "pp_df has missing values" not in result_manager.stored_warnings
 
 
 class TestPostPeriod:
