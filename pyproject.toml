@@ -73,6 +73,13 @@ examples = [
 where = ["."]
 include = ["wind_up*"]
 
+[tool.uv]
+# Dev/CI-only constraint (not part of published metadata, so consumers are unaffected).
+# matplotlib 3.11 dropped Python 3.10, so an unpinned universal lock resolves matplotlib 3.10
+# on the 3.10 job but 3.11 on the 3.13 job; the image-comparison baselines are matplotlib-version
+# specific, so keep the test environment on a single matplotlib (3.10.x, which supports 3.10-3.13).
+constraint-dependencies = ["matplotlib<3.11"]
+
 [tool.ruff]
 line-length = 120
 show-fixes = true
