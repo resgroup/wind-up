@@ -142,6 +142,12 @@ class Toggle(BaseModel):
         description="Time delta in seconds filter out after a toggle state change",
         default=10 * 60,
     )
+    borrow_toggle_from_wtg: str | None = Field(
+        default=None,
+        description="When a non-test turbine is analysed in the test role (the reference round "
+        "robin), borrow this turbine's toggle signal so it gets a real pre/post split instead of "
+        "an empty post period. Must name one of cfg.test_wtgs.",
+    )
 
 
 class PrePost(BaseModel):
@@ -379,6 +385,18 @@ class WindUpConfig(BaseModel):
                     raise ValueError(msg)
             elif len([x for x in self.asset.masts_and_lidars if x.name == non_wtg_ref]) != 1:
                 msg = f"there is not exactly 1 non_wtg_ref {non_wtg_ref} in cfg.asset.masts_and_lidars"
+                raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _check_borrow_toggle_from_wtg(self: WindUpConfig) -> WindUpConfig:
+        if self.toggle is not None and self.toggle.borrow_toggle_from_wtg is not None:
+            test_names = {x.name for x in self.test_wtgs}
+            if self.toggle.borrow_toggle_from_wtg not in test_names:
+                msg = (
+                    f"toggle.borrow_toggle_from_wtg {self.toggle.borrow_toggle_from_wtg!r} must be "
+                    f"one of test_wtgs {sorted(test_names)}"
+                )
                 raise ValueError(msg)
         return self
 

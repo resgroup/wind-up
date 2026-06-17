@@ -251,6 +251,25 @@ def test_windupconfig_with_extended_post_period_length() -> None:
     assert cfg.prepost.post_last_dt_utc_start == pd.Timestamp(analysis_end, tz="UTC")
 
 
+def test_borrow_toggle_from_wtg_defaults_to_none(test_marge_config: WindUpConfig) -> None:
+    assert test_marge_config.toggle is not None
+    assert test_marge_config.toggle.borrow_toggle_from_wtg is None
+
+
+def test_borrow_toggle_from_wtg_accepts_a_test_wtg(test_marge_config: WindUpConfig) -> None:
+    cfg = test_marge_config
+    cfg.toggle.borrow_toggle_from_wtg = "MRG_T01"  # a member of test_wtgs
+    # the after-validator returns self unchanged when the value is valid
+    assert cfg._check_borrow_toggle_from_wtg() is cfg
+
+
+def test_borrow_toggle_from_wtg_rejects_non_test_wtg(test_marge_config: WindUpConfig) -> None:
+    cfg = test_marge_config
+    cfg.toggle.borrow_toggle_from_wtg = "MRG_T02"  # a ref wtg, not a test wtg
+    with pytest.raises(ValueError, match="borrow_toggle_from_wtg"):
+        cfg._check_borrow_toggle_from_wtg()
+
+
 class TestPrePostValidation:
     @pytest.fixture
     def valid_dates(self) -> dict[str, dt.datetime]:
