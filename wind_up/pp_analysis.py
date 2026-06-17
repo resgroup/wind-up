@@ -538,7 +538,11 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     pre_df_dropna = pre_df.dropna(subset=[ws_col, pw_col, wd_col])
     post_df_dropna = post_df.dropna(subset=[ws_col, pw_col, wd_col])
 
-    n_samples = cfg.bootstrap_runs_override if cfg.bootstrap_runs_override else round(40 * (1 / (1 - confidence_level)))
+    n_samples = (
+        cfg.bootstrap_runs_override
+        if cfg.bootstrap_runs_override is not None
+        else round(40 * (1 / (1 - confidence_level)))
+    )
     if plot_cfg is not None:
         logger.info(f"Running block bootstrapping uncertainty analysis n_samples = {n_samples}")
     bootstrapped_uplifts = np.empty(n_samples)
