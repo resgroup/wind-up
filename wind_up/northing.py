@@ -188,7 +188,7 @@ def _calc_wf_yawdir_df(
     wf_yawdir_df = wf_df.groupby(TIMESTAMP_COL).agg(
         wf_yawdir=pd.NamedAgg(
             column=best_yaw_dir_col,
-            aggfunc=lambda x: circ_median(x),
+            aggfunc=circ_median,
         ),
         num_turbines=pd.NamedAgg(column=best_yaw_dir_col, aggfunc=lambda x: x.count()),
     )
