@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 import ephem
 import matplotlib.pyplot as plt
@@ -732,7 +733,7 @@ if __name__ == "__main__":
     X_train = flatten_and_clean_columns(X_train)
     X_test = flatten_and_clean_columns(X_test)
 
-    automl_settings = {
+    automl_settings: dict[str, Any] = {
         "time_budget": 3600 * 1,  # 12 hours was used for best solution
         "ensemble": True,
         "task": "regression",
