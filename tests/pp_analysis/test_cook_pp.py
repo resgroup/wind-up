@@ -317,8 +317,7 @@ class TestSiteMeanPcGapFilling:
 
 class TestMissingValuesWarning:
     """The raw power column (``pw_mean_*_raw``) is expected to contain NaN for empty
-    wind-speed bins and must be excluded from the missing-values check. See
-    https://github.com/resgroup/wind-up/issues/95.
+    wind-speed bins and must be excluded from the missing-values check.
     """
 
     def test_empty_bins_do_not_trigger_missing_values_warning(self) -> None:
