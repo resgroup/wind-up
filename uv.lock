@@ -2846,7 +2846,7 @@ wheels = [
 
 [[package]]
 name = "res-wind-up"
-version = "0.4.11"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "eval-type-backport" },
