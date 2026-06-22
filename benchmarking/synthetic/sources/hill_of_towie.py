@@ -473,12 +473,11 @@ def calc_shutdown_duration(wind_up_df: pd.DataFrame) -> pd.DataFrame:
     # record. The frame holds one row per (timestamp, turbine) interleaved by timestamp,
     # so both the forward-fill and the diff must be grouped by turbine — an ungrouped diff
     # would compare adjacent rows belonging to different turbines, not a turbine over time.
-    turbine_key = wind_up_df[DataColumns.turbine_name].to_numpy()
     diffdf = (
-        wind_up_df.groupby(turbine_key, observed=False)[signal_cols]
+        wind_up_df.groupby("TurbineName", observed=False)[signal_cols]
         .ffill()
         .fillna(0.0)
-        .groupby(turbine_key, observed=False)
+        .groupby(wind_up_df["TurbineName"], observed=False)
         .diff()
     )
     stuck_data = (diffdf == 0).all(axis=1)
