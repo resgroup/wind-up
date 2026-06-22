@@ -164,6 +164,8 @@ def apply_rated_change(
 ) -> npt.NDArray[np.float64]:
     """Apply a rated-power change to (already Cp-adjusted) power.
 
+    In future this function should change other test turbine fields especially pitch angle but this is deferred for now.
+
     See :class:`RatedPowerChange` for the downrate/uprate behaviour.
     """
     if new_rated_kw <= old_rated_kw:

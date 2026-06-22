@@ -36,7 +36,7 @@ def _rows(
 
 
 def test_constant_cp_change_scales_region2_power() -> None:
-    """At 2000 kW (region-2 fraction 0.25) a +10% Cp gives 2050 kW."""
+    """At 2000 kW (region-2 fraction 0.25) a +10% Cp gives 2050 kW (not 2200 due to 25% region 2)."""
     rows = _rows([2000.0])
     out = apply_upgrades(rows, [ConstantCpChange(delta=0.10)], CpCore(rated_power_kw=2300.0))
     assert out[DataColumns.active_power_mean].iloc[0] == pytest.approx(2050.0)
