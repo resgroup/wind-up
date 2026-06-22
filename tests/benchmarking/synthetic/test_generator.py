@@ -83,7 +83,7 @@ def test_generator_retains_unchanged_original() -> None:
 
 
 def test_toggle_modifies_alternate_blocks() -> None:
-    """In toggle mode the upgrade is active on alternate blocks of the schedule period."""
+    """In toggle mode ``period`` is a full on/off cycle: half off then half on."""
     wf_df = _wf_df(periods=288)  # two days at 10-min
     dataset = generate_dataset(
         scada_df=wf_df,
@@ -94,10 +94,11 @@ def test_toggle_modifies_alternate_blocks() -> None:
     )
     t01 = dataset.synthetic_df[dataset.synthetic_df[DataColumns.turbine_name] == "T01"]
     start = t01.index.min()
-    day1 = t01[t01.index < start + pd.Timedelta(days=1)][DataColumns.active_power_mean]
-    day2 = t01[t01.index >= start + pd.Timedelta(days=1)][DataColumns.active_power_mean]
-    assert np.allclose(day1.to_numpy(), 1000.0)  # first block: toggle off
-    assert np.all(day2.to_numpy() > 1000.0)  # second block: toggle on
+    half = pd.Timedelta(hours=12)
+    first_half = t01[t01.index < start + half][DataColumns.active_power_mean]
+    second_half = t01[(t01.index >= start + half) & (t01.index < start + 2 * half)][DataColumns.active_power_mean]
+    assert np.allclose(first_half.to_numpy(), 1000.0)  # first half-period: toggle off
+    assert np.all(second_half.to_numpy() > 1000.0)  # second half-period: toggle on
 
 
 def test_run_metadata_records_recipe() -> None:

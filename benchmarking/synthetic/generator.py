@@ -34,9 +34,9 @@ _MODIFIED_COLUMNS = (
 
 @dataclass(frozen=True)
 class ToggleSchedule:
-    """A simple regular toggle: the upgrade alternates on/off every ``period``.
+    """A simple regular toggle: the upgrade alternates on/off over each ``period``.
 
-    :param period: length of each on/off block
+    :param period: length of one full on/off cycle (half off, half on)
     :param start_on: whether the first block is treated (on); default off (pre-like)
     """
 
@@ -82,6 +82,7 @@ class SyntheticDataset:
         ground_truth = {}
         for wtg in self.run_metadata.get("test_wtgs", []):
             result = self.true_uplift(test_wtg=wtg, by="ws", bins=_GROUND_TRUTH_WS_BINS)
+            assert result.by_condition is not None  # always set when ``by`` is given  # noqa: S101
             by_condition = result.by_condition.copy()
             by_condition["condition_bin"] = by_condition["condition_bin"].astype(str)
             ground_truth[wtg] = {
@@ -105,7 +106,8 @@ def _treated_mask(
         return np.asarray(index >= upgrade_timing)
     if mode == "toggle":
         schedule = upgrade_timing
-        block = (index - index.min()) // schedule.period
+        # ``period`` is a full on/off cycle, so each on/off block is half a period.
+        block = (index - index.min()) // (schedule.period / 2)
         on_parity = 0 if schedule.start_on else 1
         return np.asarray((np.asarray(block) % 2) == on_parity)
     msg = f"unknown mode {mode!r}"
