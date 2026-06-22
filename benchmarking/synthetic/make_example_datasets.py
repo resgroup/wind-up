@@ -25,7 +25,9 @@ from benchmarking.synthetic.upgrades import (
 logger = logging.getLogger(__name__)
 
 # A stable, no-upgrade Hill of Towie window: comfortably before the real T13 AeroUp
-# (installed Sep 2021) and the 2024 pitch TuneUp. T01 had no upgrade in this period.
+# (installed Sep 2021)
+# All of 2016-2020 was previously confirmed stable for T01 and all nearby turbines
+# during the setup of the Kaggle power prediction challenge.
 DEFAULT_START_DT = pd.Timestamp("2020-06-01", tz="UTC")
 DEFAULT_END_DT_EXCL = pd.Timestamp("2020-09-01", tz="UTC")
 DEFAULT_TEST_WTG = "T01"

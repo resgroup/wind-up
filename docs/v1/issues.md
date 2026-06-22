@@ -32,10 +32,6 @@ serve as ground truth for evaluating uplift methods.
 **Done when:** a documented function/CLI produces ≥1 synthetic dataset per profile
 from open data, with the ground-truth uplift recorded alongside.
 
-**Open questions:** where the generator lives (wind-up subpackage vs companion
-public repo — current lean: in-repo but standalone); how condition-dependent
-profiles are parameterised.
-
 ---
 
 ## Issue 2 — P50 evaluation harness & scoring (WS1)
