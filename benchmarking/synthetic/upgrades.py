@@ -97,7 +97,8 @@ def _condition_series(rows: pd.DataFrame, by: str) -> npt.NDArray[np.float64]:
     if by == "ti":
         ws = rows[DataColumns.wind_speed_mean].to_numpy(dtype=float)
         sd = rows[DataColumns.wind_speed_sd].to_numpy(dtype=float)
-        return sd / ws
+        # NaN (not inf/0-division warning) for calm rows; warnings are errors in tests.
+        return np.divide(sd, ws, out=np.full_like(sd, np.nan), where=ws != 0)
     return rows[by].to_numpy(dtype=float)
 
 

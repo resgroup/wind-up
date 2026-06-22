@@ -496,16 +496,27 @@ def scada_df_to_wind_up_df(scada_df: pd.DataFrame, *, shutdown_duration_df: pd.D
     per-blade pitch columns when absent. If ``shutdown_duration_df`` is given its
     ``ShutdownDuration`` is merged in; otherwise it is computed.
     """
-    wind_up_df = (
-        scada_df.stack(level=0, future_stack=True).reset_index(level=1).rename(columns={"StationId": "TurbineName"})  # noqa: PD013
-    )
+    # future_stack=True only exists in pandas >= 2.1; without it >= 2.1 emits a
+    # FutureWarning (an error under the test config). Fall back for pandas 2.0.x.
+    try:
+        stacked = scada_df.stack(level=0, future_stack=True)  # noqa: PD013
+    except TypeError:
+        stacked = scada_df.stack(level=0, dropna=False)  # noqa: PD013
+    wind_up_df = stacked.reset_index(level=1).rename(columns={"StationId": "TurbineName"})
 
     if DataColumns.pitch_angle_mean not in wind_up_df.columns:
         wind_up_df[DataColumns.pitch_angle_mean] = wind_up_df[["pitch_angle_a", "pitch_angle_b", "pitch_angle_c"]].mean(
             axis=1
         )
     if shutdown_duration_df is not None:
-        wind_up_df = wind_up_df.merge(shutdown_duration_df, how="left", on=["TimeStamp_StartFormat", "TurbineName"])
+        # TimeStamp_StartFormat is the index name here, not a column, so merge on it
+        # via a temporary reset and restore the index afterwards.
+        index_name = wind_up_df.index.name
+        wind_up_df = (
+            wind_up_df.reset_index()
+            .merge(shutdown_duration_df, how="left", on=["TimeStamp_StartFormat", "TurbineName"])
+            .set_index(index_name)
+        )
     else:
         wind_up_df = calc_shutdown_duration(wind_up_df)
     return wind_up_df

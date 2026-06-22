@@ -134,7 +134,8 @@ def generate_dataset(
     :param upgrade_timing: changeover timestamp (prepost) or toggle schedule
     :param cp_params: Cp surface parameters for the test turbines
     :param rated_power_kw: baseline rated power for the test turbines
-    :param seed: top-level seed for reproducibility
+    :param seed: recorded in run metadata for provenance; generation is fully
+        deterministic and does not otherwise consume it
     :return: the synthetic dataset, original reference and run metadata
     """
     original_df = scada_df.copy()

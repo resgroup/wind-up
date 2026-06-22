@@ -25,7 +25,8 @@ def _condition_series(rows: pd.DataFrame, by: str) -> npt.NDArray[np.float64]:
     if by == "ti":
         ws = rows[DataColumns.wind_speed_mean].to_numpy(dtype=float)
         sd = rows[DataColumns.wind_speed_sd].to_numpy(dtype=float)
-        return sd / ws
+        # NaN (not inf/0-division warning) for calm rows; warnings are errors in tests.
+        return np.divide(sd, ws, out=np.full_like(sd, np.nan), where=ws != 0)
     if by == "ws":
         return rows[DataColumns.wind_speed_mean].to_numpy(dtype=float)
     return rows[by].to_numpy(dtype=float)
@@ -60,6 +61,10 @@ def true_uplift(
     :param bins: bin edges for the ``by`` condition
     :return: the overall energy-ratio uplift, and a per-condition table when ``by`` is set
     """
+    if by is not None and bins is None:
+        msg = "bins must be provided when by is set (per-condition breakdown needs explicit edges)"
+        raise ValueError(msg)
+
     original_wtg = original_df[original_df[DataColumns.turbine_name] == test_wtg]
     synthetic_power = synthetic_df.loc[
         synthetic_df[DataColumns.turbine_name] == test_wtg, DataColumns.active_power_mean
