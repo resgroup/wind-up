@@ -509,14 +509,9 @@ def scada_df_to_wind_up_df(scada_df: pd.DataFrame, *, shutdown_duration_df: pd.D
             axis=1
         )
     if shutdown_duration_df is not None:
-        # TimeStamp_StartFormat is the index name here, not a column, so merge on it
-        # via a temporary reset and restore the index afterwards.
-        index_name = wind_up_df.index.name
-        wind_up_df = (
-            wind_up_df.reset_index()
-            .merge(shutdown_duration_df, how="left", on=["TimeStamp_StartFormat", "TurbineName"])
-            .set_index(index_name)
-        )
+        # pandas merge accepts the named index level TimeStamp_StartFormat alongside the
+        # TurbineName column and preserves the index, so no reset is needed.
+        wind_up_df = wind_up_df.merge(shutdown_duration_df, how="left", on=["TimeStamp_StartFormat", "TurbineName"])
     else:
         wind_up_df = calc_shutdown_duration(wind_up_df)
     return wind_up_df
