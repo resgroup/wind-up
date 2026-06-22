@@ -1,0 +1,131 @@
+"""Tests for the replicate ensemble (the precision axis)."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from benchmarking.harness.replicates import Replicate, StudyConfig, build_replicates
+from benchmarking.synthetic import ConstantCpChange, ToggleSchedule
+from wind_up.constants import TIMESTAMP_COL, DataColumns
+
+PROFILE = [ConstantCpChange(delta=0.05)]
+
+
+def _base_scada(turbines: tuple[str, ...] = ("T1", "T3", "T4", "T7", "T99")) -> pd.DataFrame:
+    """A small multi-turbine wind farm spanning three years of daily records."""
+    index = pd.date_range("2016-01-01", "2018-12-31", freq="1D", tz="UTC")
+    frames = [
+        pd.DataFrame(
+            {
+                DataColumns.turbine_name: turbine,
+                DataColumns.active_power_mean: 1000.0,
+                DataColumns.wind_speed_mean: 8.0,
+                DataColumns.wind_speed_sd: 0.8,
+                DataColumns.gen_rpm_mean: 1400.0,
+            },
+            index=index,
+        )
+        for turbine in turbines
+    ]
+    wf_df = pd.concat(frames)
+    wf_df.index.name = TIMESTAMP_COL
+    return wf_df
+
+
+def _study(mode: str = "prepost", n_replicates: int = 5, seed: int = 0) -> StudyConfig:
+    return StudyConfig(
+        mode=mode,
+        turbine_subset=["T1", "T3", "T4", "T7"],
+        treatment_start_range=(pd.Timestamp("2017-01-01", tz="UTC"), pd.Timestamp("2017-12-31", tz="UTC")),
+        min_pre_months=12,
+        campaign_months=[3, 6],
+        toggle_period=pd.Timedelta(days=14),
+        n_replicates=n_replicates,
+        seed=seed,
+    )
+
+
+def test_max_activity_months_is_the_longest_campaign() -> None:
+    assert _study().max_activity_months == 6
+
+
+def test_build_replicates_returns_n_replicate_records() -> None:
+    reps = build_replicates(_base_scada(), PROFILE, _study(n_replicates=5))
+    assert len(reps) == 5
+    assert all(isinstance(r, Replicate) for r in reps)
+
+
+def test_data_is_subset_to_turbine_subset() -> None:
+    reps = build_replicates(_base_scada(), PROFILE, _study())
+    present = set(reps[0].dataset.synthetic_df[DataColumns.turbine_name].unique())
+    assert present == {"T1", "T3", "T4", "T7"}  # the other ~17 turbines dropped
+
+
+def test_each_replicate_draws_a_test_turbine_from_the_subset() -> None:
+    reps = build_replicates(_base_scada(), PROFILE, _study())
+    assert all(r.test_wtg in {"T1", "T3", "T4", "T7"} for r in reps)
+
+
+def test_treatment_start_is_a_pandas_timestamp_supporting_offset_arithmetic() -> None:
+    # campaign.py does `treatment_start - pd.DateOffset(...)`, which needs a pd.Timestamp
+    reps = build_replicates(_base_scada(), PROFILE, _study())
+    start = reps[0].treatment_start
+    assert isinstance(start, pd.Timestamp)
+    assert start.tz is not None  # tz-aware, matching the SCADA index
+    _ = start - pd.DateOffset(months=12)  # must not raise
+
+
+def test_treatment_start_falls_within_the_configured_range() -> None:
+    study = _study()
+    reps = build_replicates(_base_scada(), PROFILE, study)
+    lo, hi = study.treatment_start_range
+    for r in reps:
+        assert lo <= r.treatment_start <= hi
+
+
+def test_draws_are_deterministic_by_seed() -> None:
+    base = _base_scada()
+    reps_a = build_replicates(base, PROFILE, _study(seed=42))
+    reps_b = build_replicates(base, PROFILE, _study(seed=42))
+    assert [(r.test_wtg, r.treatment_start) for r in reps_a] == [(r.test_wtg, r.treatment_start) for r in reps_b]
+
+
+def test_different_seed_changes_the_draws() -> None:
+    base = _base_scada()
+    reps_a = build_replicates(base, PROFILE, _study(seed=1))
+    reps_b = build_replicates(base, PROFILE, _study(seed=2))
+    assert [(r.test_wtg, r.treatment_start) for r in reps_a] != [(r.test_wtg, r.treatment_start) for r in reps_b]
+
+
+def test_prepost_replicate_upgrade_timing_is_the_treatment_start() -> None:
+    reps = build_replicates(_base_scada(), PROFILE, _study(mode="prepost"))
+    r = reps[0]
+    assert r.upgrade_timing == r.treatment_start
+
+
+def test_toggle_replicate_builds_schedule_with_start_and_period() -> None:
+    study = _study(mode="toggle")
+    reps = build_replicates(_base_scada(), PROFILE, study)
+    timing = reps[0].upgrade_timing
+    assert isinstance(timing, ToggleSchedule)
+    assert timing.start == reps[0].treatment_start
+    assert timing.period == study.toggle_period
+
+
+def test_replicate_true_uplift_delegates_to_its_dataset() -> None:
+    reps = build_replicates(_base_scada(), PROFILE, _study())
+    r = reps[0]
+    via_replicate = r.true_uplift()
+    via_dataset = r.dataset.true_uplift(test_wtg=r.test_wtg)
+    assert via_replicate.overall == via_dataset.overall
+
+
+def test_injected_upgrade_actually_changed_the_test_turbine() -> None:
+    reps = build_replicates(_base_scada(), PROFILE, _study())
+    r = reps[0]
+    syn = r.dataset.synthetic_df
+    orig = r.dataset.original_df
+    test_syn = syn[syn[DataColumns.turbine_name] == r.test_wtg][DataColumns.active_power_mean].to_numpy()
+    test_orig = orig[orig[DataColumns.turbine_name] == r.test_wtg][DataColumns.active_power_mean].to_numpy()
+    assert np.any(test_syn != test_orig)  # the profile left a mark

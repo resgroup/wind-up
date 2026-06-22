@@ -9,7 +9,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset
+from benchmarking.synthetic.generator import (
+    SyntheticDataset,
+    ToggleSchedule,
+    generate_dataset,
+    treated_mask,
+)
 from benchmarking.synthetic.upgrades import ConstantCpChange
 from wind_up.constants import TIMESTAMP_COL, DataColumns
 
@@ -99,6 +104,46 @@ def test_toggle_modifies_alternate_blocks() -> None:
     second_half = t01[(t01.index >= start + half) & (t01.index < start + 2 * half)][DataColumns.active_power_mean]
     assert np.allclose(first_half.to_numpy(), 1000.0)  # first half-period: toggle off
     assert np.all(second_half.to_numpy() > 1000.0)  # second half-period: toggle on
+
+
+def test_toggle_start_leaves_pre_start_rows_untreated() -> None:
+    """A ToggleSchedule.start places baseline before toggling: pre-start rows stay untreated."""
+    wf_df = _wf_df(periods=288)  # two days at 10-min
+    timestamps = wf_df.index.unique()
+    start = timestamps[len(timestamps) // 2]  # toggling begins at the midpoint
+
+    dataset = generate_dataset(
+        scada_df=wf_df,
+        test_wtgs=["T01"],
+        upgrades=[ConstantCpChange(delta=0.10)],
+        mode="toggle",
+        upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=12), start=start),
+    )
+    t01 = dataset.synthetic_df[dataset.synthetic_df[DataColumns.turbine_name] == "T01"]
+    before = t01[t01.index < start][DataColumns.active_power_mean]
+    assert np.allclose(before.to_numpy(), 1000.0)  # baseline before toggling: untreated
+
+    # start_on defaults False: [start, start+6h) off, [start+6h, start+12h) on.
+    half = pd.Timedelta(hours=6)
+    off_block = t01[(t01.index >= start) & (t01.index < start + half)][DataColumns.active_power_mean]
+    on_block = t01[(t01.index >= start + half) & (t01.index < start + 2 * half)][DataColumns.active_power_mean]
+    assert np.allclose(off_block.to_numpy(), 1000.0)
+    assert np.all(on_block.to_numpy() > 1000.0)
+
+
+def test_public_treated_mask_infers_mode_from_timing_type() -> None:
+    """treated_mask infers prepost vs toggle from the upgrade_timing type."""
+    wf_df = _wf_df(turbines=("T01",), periods=288)
+    index = wf_df.index
+    changeover = index[len(index) // 2]
+
+    prepost_mask = treated_mask(index, changeover)
+    assert np.array_equal(prepost_mask, np.asarray(index >= changeover))
+
+    schedule = ToggleSchedule(period=pd.Timedelta(hours=12), start=changeover)
+    toggle_mask = treated_mask(index, schedule)
+    assert not toggle_mask[np.asarray(index < changeover)].any()  # baseline untreated
+    assert toggle_mask[np.asarray(index >= changeover)].any()  # some on-rows after start
 
 
 def test_run_metadata_records_recipe() -> None:
