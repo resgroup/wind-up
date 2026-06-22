@@ -1,9 +1,8 @@
 """Vectorised Cp-space physics core for synthetic upgrade injection.
 
 The Cp surface is an analytic, parameterised model of Cp as a function of tip-speed
-ratio (TSR) and blade pitch. It replaces the proprietary Hill of Towie Cp lookup table
-with a public, made-up surface that is internally self-consistent for power<->Cp
-conversion. See the v1 benchmarking design notes for the model derivation.
+ratio (TSR) and blade pitch. It makes a made-up surface that is internally self-consistent for power<->Cp
+conversion.
 """
 
 from __future__ import annotations
@@ -26,14 +25,15 @@ class CpParams:
     banana_factor: float
 
 
-# Hill of Towie Cp model (workbook "Cp model" sheet, column Q).
+# Hill of Towie Cp model: log-symmetric TSR form, coefficients least-squares fitted to
+# the turbine's Cp(TSR, pitch) table, weighted (1 + Cp)^2 to favour the high-Cp region.
 HOT_CP_MODEL = CpParams(
-    cp_max=0.45,
-    opt_pitch=-1.0,
-    pitch_scale=1.0 / 180.0,
-    opt_tsr=7.0,
-    tsr_scale=1.0 / 21.0,
-    banana_factor=45.0,
+    cp_max=0.4509,
+    opt_pitch=-1.2085,
+    pitch_scale=0.0067,
+    opt_tsr=6.6255,
+    tsr_scale=1.5558,
+    banana_factor=42.2606,
 )
 
 
@@ -57,7 +57,11 @@ def cp_surface(
     # producing the characteristic curved ("banana") Cp contours.
     effective_opt_pitch = params.opt_pitch + params.banana_factor * np.abs(1.0 / params.opt_tsr - 1.0 / tsr_arr)
     pitch_factor = np.maximum(0.0, 1.0 - params.pitch_scale * (effective_opt_pitch - pitch_arr) ** 2)
-    tsr_factor = np.maximum(0.0, 1.0 - params.tsr_scale * (params.opt_tsr - tsr_arr) ** 2)
+    # The TSR falloff is log-symmetric (penalises tsr/opt_tsr + opt_tsr/tsr - 2), so it
+    # decays gently up the high-TSR side as real turbines do, unlike a symmetric
+    # quadratic.
+    tsr_ratio = tsr_arr / params.opt_tsr
+    tsr_factor = np.maximum(0.0, 1.0 - params.tsr_scale * (tsr_ratio + 1.0 / tsr_ratio - 2.0))
     return params.cp_max * pitch_factor * tsr_factor
 
 

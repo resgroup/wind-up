@@ -23,16 +23,21 @@ def test_cp_peaks_at_optimal_tsr_and_pitch() -> None:
 
 
 def test_cp_off_optimal_pitch_matches_hand_calculation() -> None:
-    """At optimal TSR, pitch 0 deg: Cp = Cp_max * (1 - pitch_scale * 1^2) = 0.45 * 179/180."""
+    """At optimal TSR the TSR factor is exactly 1, so Cp = cp_max * (1 - pitch_scale * opt_pitch^2)."""
     cp = cp_surface(tsr=HOT_CP_MODEL.opt_tsr, pitch=0.0, params=HOT_CP_MODEL)
-    assert cp == pytest.approx(0.4475)
+    expected = HOT_CP_MODEL.cp_max * (1.0 - HOT_CP_MODEL.pitch_scale * HOT_CP_MODEL.opt_pitch**2)
+    assert cp == pytest.approx(expected)
 
 
 def test_cp_surface_is_vectorised() -> None:
-    """Array inputs return an array of the matching Cp values."""
-    cp = cp_surface(tsr=[7.0, 7.0], pitch=[-1.0, 0.0], params=HOT_CP_MODEL)
+    """Array inputs return an array of the per-element scalar Cp values."""
+    cp = cp_surface(tsr=[7.0, 8.0], pitch=[-1.0, 0.0], params=HOT_CP_MODEL)
     assert cp.shape == (2,)
-    np.testing.assert_allclose(cp, [0.45, 0.4475])
+    expected = [
+        float(cp_surface(tsr=7.0, pitch=-1.0, params=HOT_CP_MODEL)),
+        float(cp_surface(tsr=8.0, pitch=0.0, params=HOT_CP_MODEL)),
+    ]
+    np.testing.assert_allclose(cp, expected)
 
 
 def test_cp_clamps_to_zero_far_from_peak() -> None:
