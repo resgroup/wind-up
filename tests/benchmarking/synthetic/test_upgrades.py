@@ -49,6 +49,21 @@ def test_empty_upgrade_list_leaves_rows_unchanged() -> None:
     pd.testing.assert_series_equal(out[DataColumns.active_power_mean], rows[DataColumns.active_power_mean])
 
 
+def test_constant_cp_change_only_treats_producing_below_rated_records() -> None:
+    """Non-producing (<=0) and virtually-rated rows are not treated; region-2 rows are.
+
+    Locks the user-visible behaviour: a Cp change only scales genuine producing records
+    below pure rated, so idling/curtailed and at-rated records keep their original power.
+    """
+    rows = _rows([-5.0, 0.0, 1000.0, 2295.0])
+    out = apply_upgrades(rows, [ConstantCpChange(delta=0.03)], CpCore(rated_power_kw=2300.0))
+    power = out[DataColumns.active_power_mean].to_numpy()
+    assert power[0] == pytest.approx(-5.0)  # negative: untouched
+    assert power[1] == pytest.approx(0.0)  # zero: untouched
+    assert power[2] > 1000.0  # producing region 2: still changed
+    assert power[3] == pytest.approx(2295.0)  # virtually rated: untouched
+
+
 def test_constant_cp_change_does_not_mutate_input() -> None:
     """apply_upgrades returns a new frame and leaves the caller's rows untouched."""
     rows = _rows([1500.0])

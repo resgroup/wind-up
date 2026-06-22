@@ -58,6 +58,32 @@ def test_uplift_depends_on_record_window() -> None:
     assert full.overall == pytest.approx(0.05)
 
 
+def test_overall_uplift_ignores_nan_power_records() -> None:
+    """Real SCADA can have NaN power; those records must not poison the ratio.
+
+    Rows where the original power is NaN are unchanged by the upgrade (NaN stays NaN),
+    so they must be excluded rather than (a) flagged as treated via ``NaN != NaN`` or
+    (b) turning the energy sums into NaN.
+    """
+    original, synthetic = _paired(
+        [1000.0, np.nan, 1000.0, np.nan],
+        [1100.0, np.nan, 1100.0, np.nan],
+    )
+    result = true_uplift(synthetic, original, test_wtg="T01")
+    assert result.overall == pytest.approx(0.10)
+
+
+def test_explicit_mask_drops_nan_power_records() -> None:
+    """An explicit mask still excludes NaN-power rows from the energy ratio."""
+    original, synthetic = _paired(
+        [1000.0, np.nan, 1000.0, 1000.0],
+        [1100.0, np.nan, 1100.0, 1000.0],
+    )
+    result = true_uplift(synthetic, original, test_wtg="T01", mask=np.array([True, True, True, True]))
+    # finite rows: (1100+1100+1000)/(1000+1000+1000) - 1
+    assert result.overall == pytest.approx((1100.0 + 1100.0 + 1000.0) / 3000.0 - 1.0)
+
+
 def test_per_condition_breakdown_by_wind_speed() -> None:
     """A by='ws' breakdown reports the true uplift within original wind-speed bins."""
     original, synthetic = _paired(

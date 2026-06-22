@@ -75,9 +75,15 @@ def test_power_from_cp_change_applies_region2_weighted_ratio() -> None:
 
 
 def test_power_from_cp_change_clips_at_rated() -> None:
-    """A large Cp ratio near rated cannot push power above the rated clip."""
-    new = power_from_cp_change(2280.0, cp_ratio=5.0, rated_power_kw=2300.0)
+    """A large Cp ratio below the near-rated band cannot push power above the rated clip."""
+    new = power_from_cp_change(2200.0, cp_ratio=5.0, rated_power_kw=2300.0)
     assert new == pytest.approx(2300.0)
+
+
+def test_power_from_cp_change_leaves_near_rated_power_unchanged() -> None:
+    """A virtually-pure-rated record is untouched by a Cp change (positive or negative)."""
+    assert power_from_cp_change(2295.0, cp_ratio=1.03, rated_power_kw=2300.0) == pytest.approx(2295.0)
+    assert power_from_cp_change(2295.0, cp_ratio=0.97, rated_power_kw=2300.0) == pytest.approx(2295.0)
 
 
 def test_power_from_cp_change_reduces_power_for_negative_delta() -> None:
@@ -86,11 +92,31 @@ def test_power_from_cp_change_reduces_power_for_negative_delta() -> None:
     assert new == pytest.approx(800.0 * 0.90, rel=1e-3)
 
 
+def test_power_from_cp_change_leaves_negative_power_unchanged() -> None:
+    """A non-producing (negative power) record is untouched by a positive Cp change."""
+    new = power_from_cp_change(-5.0, cp_ratio=1.03, rated_power_kw=2300.0)
+    assert new == pytest.approx(-5.0)
+
+
+def test_power_from_cp_change_leaves_negative_power_unchanged_for_negative_delta() -> None:
+    """A degraded-blades (negative) Cp change is still a no-op on non-producing records."""
+    new = power_from_cp_change(-5.0, cp_ratio=0.90, rated_power_kw=2300.0)
+    assert new == pytest.approx(-5.0)
+
+
+def test_power_from_cp_change_leaves_zero_power_unchanged() -> None:
+    """A zero-power record is left at zero by a Cp change."""
+    new = power_from_cp_change(0.0, cp_ratio=1.10, rated_power_kw=2300.0)
+    assert new == pytest.approx(0.0)
+
+
 def test_power_from_cp_change_is_vectorised() -> None:
-    """Array inputs return an array of modified powers."""
-    new = power_from_cp_change(np.array([500.0, 2000.0]), cp_ratio=1.10, rated_power_kw=2300.0)
-    assert new.shape == (2,)
-    assert new[1] == pytest.approx(2050.0)
+    """Array inputs return an array of modified powers; non-producing rows are untouched."""
+    new = power_from_cp_change(np.array([-5.0, 0.0, 2000.0]), cp_ratio=1.10, rated_power_kw=2300.0)
+    assert new.shape == (3,)
+    assert new[0] == pytest.approx(-5.0)
+    assert new[1] == pytest.approx(0.0)
+    assert new[2] == pytest.approx(2050.0)
 
 
 def test_rpm_from_power_matches_curve_anchor() -> None:
@@ -128,7 +154,7 @@ def test_cpcore_apply_cp_ratio_uses_its_rated_power() -> None:
     """CpCore.apply_cp_ratio clips at the core's configured rated power."""
     core = CpCore(rated_power_kw=2300.0)
     assert core.apply_cp_ratio(2000.0, cp_ratio=1.10) == pytest.approx(2050.0)
-    assert core.apply_cp_ratio(2280.0, cp_ratio=5.0) == pytest.approx(2300.0)
+    assert core.apply_cp_ratio(2200.0, cp_ratio=5.0) == pytest.approx(2300.0)
 
 
 def test_cpcore_rpm_after_tracks_power() -> None:

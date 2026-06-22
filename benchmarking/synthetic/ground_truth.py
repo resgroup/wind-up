@@ -66,19 +66,37 @@ def true_uplift(
     ].to_numpy(dtype=float)
     original_power = original_wtg[DataColumns.active_power_mean].to_numpy(dtype=float)
 
-    row_mask = synthetic_power != original_power if mask is None else np.asarray(mask, dtype=bool)
+    row_mask = changed_record_mask(synthetic_power, original_power) if mask is None else np.asarray(mask, dtype=bool)
+    # Real SCADA carries NaN power (downtime/missing); such records have no usable energy
+    # and must not poison the sums, so the ratio is taken over finite records only.
+    effective = row_mask & np.isfinite(synthetic_power) & np.isfinite(original_power)
 
-    overall = synthetic_power[row_mask].sum() / original_power[row_mask].sum() - 1.0
+    denom = original_power[effective].sum()
+    overall = synthetic_power[effective].sum() / denom - 1.0 if denom else float("nan")
 
     by_condition = None
     if by is not None:
         by_condition = _uplift_by_condition(
-            condition=_condition_series(original_wtg, by)[row_mask],
-            synthetic_power=synthetic_power[row_mask],
-            original_power=original_power[row_mask],
+            condition=_condition_series(original_wtg, by)[effective],
+            synthetic_power=synthetic_power[effective],
+            original_power=original_power[effective],
             bins=bins,
         )
     return UpliftResult(overall=float(overall), by_condition=by_condition)
+
+
+def changed_record_mask(
+    synthetic_power: npt.NDArray[np.float64], original_power: npt.NDArray[np.float64]
+) -> npt.NDArray[np.bool_]:
+    """Boolean mask of records the upgrade actually changed (NaN-safe).
+
+    A plain ``synthetic != original`` would flag downtime rows where both powers are NaN
+    (since ``NaN != NaN``); those are excluded here so only genuinely modified records
+    are treated as upgraded.
+    """
+    differs = synthetic_power != original_power
+    both_nan = np.isnan(synthetic_power) & np.isnan(original_power)
+    return differs & ~both_nan
 
 
 def _uplift_by_condition(
