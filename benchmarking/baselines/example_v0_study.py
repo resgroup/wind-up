@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_START_DT = pd.Timestamp("2016-01-01", tz="UTC")
 DEFAULT_END_DT_EXCL = pd.Timestamp("2021-01-01", tz="UTC")
 DEFAULT_WTG_NUMBERS = [1, 3, 4, 7]
-DEFAULT_TURBINE_SUBSET = ["T01", "T03", "T04", "T07"]
+DEFAULT_TURBINE_SUBSET = [f"T{x:02d}" for x in DEFAULT_WTG_NUMBERS]
 DEFAULT_TREATMENT_START_RANGE = (pd.Timestamp("2018-01-01", tz="UTC"), pd.Timestamp("2020-01-01", tz="UTC"))
 MIN_PRE_MONTHS = 24
 
