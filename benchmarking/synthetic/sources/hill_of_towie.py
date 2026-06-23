@@ -75,9 +75,9 @@ def get_data_dir() -> Path:
 # --------------------------------------------------------------------------------------
 def download_zenodo_data(
     record_id: str,
+    *,
     output_dir: Path | None = None,
     filenames: Collection[str] | None = None,
-    *,
     cache_overwrite: bool = False,
 ) -> None:
     """Download and cache files from zenodo.org."""

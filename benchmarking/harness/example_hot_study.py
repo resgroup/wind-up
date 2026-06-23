@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.harness import (
+    Method,
     MethodInput,
     MethodOutput,
     StudyConfig,
@@ -89,7 +90,7 @@ def _oracle_overall_uplift(mi: MethodInput, original_df: pd.DataFrame) -> float:
 class OracleMethod:
     """Returns the injected truth; its signed error is ~0 at every campaign length."""
 
-    def __init__(self, original_df: pd.DataFrame, name: str = "oracle") -> None:
+    def __init__(self, original_df: pd.DataFrame, *, name: str = "oracle") -> None:
         """Store the no-upgrade baseline used to recover the injected truth."""
         self._original = original_df
         self.name = name
@@ -102,7 +103,7 @@ class OracleMethod:
 class BiasedMethod:
     """Returns the truth plus a fixed offset; its error sits at that offset."""
 
-    def __init__(self, original_df: pd.DataFrame, offset: float, name: str = "biased") -> None:
+    def __init__(self, original_df: pd.DataFrame, *, offset: float, name: str = "biased") -> None:
         """Store the baseline and the fixed offset added to every estimate."""
         self._original = original_df
         self._offset = offset
@@ -123,7 +124,7 @@ class ShrinkingNoiseMethod:
     this makes the plotted spread band narrow as the campaign grows.
     """
 
-    def __init__(self, original_df: pd.DataFrame, base_sigma: float = 0.03, name: str = "realistic") -> None:
+    def __init__(self, original_df: pd.DataFrame, *, base_sigma: float = 0.03, name: str = "realistic") -> None:
         """Store the baseline and the base noise level scaled by campaign length."""
         self._original = original_df
         self._base_sigma = base_sigma
@@ -183,7 +184,7 @@ def run_example_study(
         n_replicates=n_replicates,
         seed=seed,
     )
-    methods = [
+    methods: list[Method] = [
         OracleMethod(scada_df),
         BiasedMethod(scada_df, offset=0.02),
         ShrinkingNoiseMethod(scada_df, base_sigma=0.03),
@@ -198,7 +199,9 @@ def run_example_study(
         profile_name,
         delta * 100,
     )
-    results = score_study(scada_df, [ConstantCpChange(delta=delta)], methods, study, profile_name=profile_name)
+    results = score_study(
+        scada_df, profile=[ConstantCpChange(delta=delta)], methods=methods, study=study, profile_name=profile_name
+    )
     summary = leaderboard(results)
 
     results_path = out_dir / "results_tidy.csv"

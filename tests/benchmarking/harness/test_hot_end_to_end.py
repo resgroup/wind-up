@@ -43,7 +43,9 @@ def test_constant_cp_study_on_real_hot_data(tmp_path: Path) -> None:
     )
     methods = [OracleMethod(scada_df), BiasedMethod(scada_df, offset=0.02)]
 
-    results = score_study(scada_df, [ConstantCpChange(delta=0.05)], methods, study, profile_name="constant_cp_5pct")
+    results = score_study(
+        scada_df, profile=[ConstantCpChange(delta=0.05)], methods=methods, study=study, profile_name="constant_cp_5pct"
+    )
     summary = leaderboard(results)
 
     oracle = summary[summary["method"] == "oracle"]

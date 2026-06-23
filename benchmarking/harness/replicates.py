@@ -80,6 +80,7 @@ class Replicate:
 
 def build_replicates(
     base_scada: pd.DataFrame,
+    *,
     profile: list,
     study: StudyConfig,
 ) -> list[Replicate]:

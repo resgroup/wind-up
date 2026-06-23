@@ -175,7 +175,7 @@ def generate_dataset(
         if not mask.any():
             continue
         cp = CpCore(rated_power_kw=rated_power_kw, cp_params=cp_params)
-        modified = apply_upgrades(synthetic_df.loc[mask], upgrades, cp)
+        modified = apply_upgrades(synthetic_df.loc[mask], upgrades, cp=cp)
         for col in _MODIFIED_COLUMNS:
             synthetic_df.loc[mask, col] = modified[col].to_numpy()
 

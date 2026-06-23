@@ -51,25 +51,25 @@ def test_max_activity_months_is_the_longest_campaign() -> None:
 
 
 def test_build_replicates_returns_n_replicate_records() -> None:
-    reps = build_replicates(_base_scada(), PROFILE, _study(n_replicates=5))
+    reps = build_replicates(_base_scada(), profile=PROFILE, study=_study(n_replicates=5))
     assert len(reps) == 5
     assert all(isinstance(r, Replicate) for r in reps)
 
 
 def test_data_is_subset_to_turbine_subset() -> None:
-    reps = build_replicates(_base_scada(), PROFILE, _study())
+    reps = build_replicates(_base_scada(), profile=PROFILE, study=_study())
     present = set(reps[0].dataset.synthetic_df[DataColumns.turbine_name].unique())
     assert present == {"T1", "T3", "T4", "T7"}  # the other ~17 turbines dropped
 
 
 def test_each_replicate_draws_a_test_turbine_from_the_subset() -> None:
-    reps = build_replicates(_base_scada(), PROFILE, _study())
+    reps = build_replicates(_base_scada(), profile=PROFILE, study=_study())
     assert all(r.test_wtg in {"T1", "T3", "T4", "T7"} for r in reps)
 
 
 def test_treatment_start_is_a_pandas_timestamp_supporting_offset_arithmetic() -> None:
     # campaign.py does `treatment_start - pd.DateOffset(...)`, which needs a pd.Timestamp
-    reps = build_replicates(_base_scada(), PROFILE, _study())
+    reps = build_replicates(_base_scada(), profile=PROFILE, study=_study())
     start = reps[0].treatment_start
     assert isinstance(start, pd.Timestamp)
     assert start.tz is not None  # tz-aware, matching the SCADA index
@@ -78,7 +78,7 @@ def test_treatment_start_is_a_pandas_timestamp_supporting_offset_arithmetic() ->
 
 def test_treatment_start_falls_within_the_configured_range() -> None:
     study = _study()
-    reps = build_replicates(_base_scada(), PROFILE, study)
+    reps = build_replicates(_base_scada(), profile=PROFILE, study=study)
     lo, hi = study.treatment_start_range
     for r in reps:
         assert lo <= r.treatment_start <= hi
@@ -86,27 +86,27 @@ def test_treatment_start_falls_within_the_configured_range() -> None:
 
 def test_draws_are_deterministic_by_seed() -> None:
     base = _base_scada()
-    reps_a = build_replicates(base, PROFILE, _study(seed=42))
-    reps_b = build_replicates(base, PROFILE, _study(seed=42))
+    reps_a = build_replicates(base, profile=PROFILE, study=_study(seed=42))
+    reps_b = build_replicates(base, profile=PROFILE, study=_study(seed=42))
     assert [(r.test_wtg, r.treatment_start) for r in reps_a] == [(r.test_wtg, r.treatment_start) for r in reps_b]
 
 
 def test_different_seed_changes_the_draws() -> None:
     base = _base_scada()
-    reps_a = build_replicates(base, PROFILE, _study(seed=1))
-    reps_b = build_replicates(base, PROFILE, _study(seed=2))
+    reps_a = build_replicates(base, profile=PROFILE, study=_study(seed=1))
+    reps_b = build_replicates(base, profile=PROFILE, study=_study(seed=2))
     assert [(r.test_wtg, r.treatment_start) for r in reps_a] != [(r.test_wtg, r.treatment_start) for r in reps_b]
 
 
 def test_prepost_replicate_upgrade_timing_is_the_treatment_start() -> None:
-    reps = build_replicates(_base_scada(), PROFILE, _study(mode="prepost"))
+    reps = build_replicates(_base_scada(), profile=PROFILE, study=_study(mode="prepost"))
     r = reps[0]
     assert r.upgrade_timing == r.treatment_start
 
 
 def test_toggle_replicate_builds_schedule_with_start_and_period() -> None:
     study = _study(mode="toggle")
-    reps = build_replicates(_base_scada(), PROFILE, study)
+    reps = build_replicates(_base_scada(), profile=PROFILE, study=study)
     timing = reps[0].upgrade_timing
     assert isinstance(timing, ToggleSchedule)
     assert timing.start == reps[0].treatment_start
@@ -114,7 +114,7 @@ def test_toggle_replicate_builds_schedule_with_start_and_period() -> None:
 
 
 def test_replicate_true_uplift_delegates_to_its_dataset() -> None:
-    reps = build_replicates(_base_scada(), PROFILE, _study())
+    reps = build_replicates(_base_scada(), profile=PROFILE, study=_study())
     r = reps[0]
     via_replicate = r.true_uplift()
     via_dataset = r.dataset.true_uplift(test_wtg=r.test_wtg)
@@ -122,7 +122,7 @@ def test_replicate_true_uplift_delegates_to_its_dataset() -> None:
 
 
 def test_injected_upgrade_actually_changed_the_test_turbine() -> None:
-    reps = build_replicates(_base_scada(), PROFILE, _study())
+    reps = build_replicates(_base_scada(), profile=PROFILE, study=_study())
     r = reps[0]
     syn = r.dataset.synthetic_df
     orig = r.dataset.original_df

@@ -50,7 +50,7 @@ def _study(mode: str = "prepost", n_replicates: int = 4, seed: int = 0) -> Study
 
 def test_results_have_one_row_per_method_replicate_and_campaign_length() -> None:
     base = _base_scada()
-    results = score_study(base, PROFILE, [OracleMethod(base)], _study(n_replicates=4))
+    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=4))
     # 4 replicates x 2 campaign lengths x 1 method
     assert len(results) == 4 * 2
     assert set(results["campaign_months"]) == {3, 6}
@@ -60,19 +60,19 @@ def test_results_have_one_row_per_method_replicate_and_campaign_length() -> None
 
 def test_oracle_method_has_near_zero_signed_error() -> None:
     base = _base_scada()
-    results = score_study(base, PROFILE, [OracleMethod(base)], _study())
+    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study())
     assert np.allclose(results["signed_error"].to_numpy(), 0.0, atol=1e-9)
 
 
 def test_biased_method_signed_error_equals_offset() -> None:
     base = _base_scada()
-    results = score_study(base, PROFILE, [BiasedMethod(base, offset=0.02)], _study())
+    results = score_study(base, profile=PROFILE, methods=[BiasedMethod(base, offset=0.02)], study=_study())
     assert np.allclose(results["signed_error"].to_numpy(), 0.02, atol=1e-9)
 
 
 def test_truth_is_recomputed_per_campaign_length_not_shared() -> None:
     base = _base_scada()
-    results = score_study(base, PROFILE, [OracleMethod(base)], _study())
+    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study())
     # constant power -> uplift is ~equal across lengths, but truth must be present per row
     assert results["truth"].notna().all()
     assert (results["truth"] > 0).all()  # +5% Cp raises region-2 power
@@ -80,7 +80,9 @@ def test_truth_is_recomputed_per_campaign_length_not_shared() -> None:
 
 def test_profile_name_is_recorded() -> None:
     base = _base_scada()
-    results = score_study(base, PROFILE, [OracleMethod(base)], _study(), profile_name="constant_cp_5pct")
+    results = score_study(
+        base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(), profile_name="constant_cp_5pct"
+    )
     assert set(results["profile"]) == {"constant_cp_5pct"}
 
 
@@ -88,7 +90,7 @@ def test_fairness_every_method_sees_identical_method_inputs() -> None:
     base = _base_scada()
     rec_a = RecordingMethod(name="a")
     rec_b = RecordingMethod(name="b")
-    score_study(base, PROFILE, [rec_a, rec_b], _study())
+    score_study(base, profile=PROFILE, methods=[rec_a, rec_b], study=_study())
 
     assert len(rec_a.seen) == len(rec_b.seen) > 0
     for mi_a, mi_b in zip(rec_a.seen, rec_b.seen, strict=True):
@@ -100,7 +102,7 @@ def test_fairness_every_method_sees_identical_method_inputs() -> None:
 def test_fairness_shorter_campaign_input_is_a_prefix_of_the_longer() -> None:
     base = _base_scada()
     rec = RecordingMethod()
-    score_study(base, PROFILE, [rec], _study(n_replicates=1))
+    score_study(base, profile=PROFILE, methods=[rec], study=_study(n_replicates=1))
     # one replicate, lengths [3, 6] in order
     short_mi, long_mi = rec.seen[0], rec.seen[1]
     assert short_mi.scada_df.index.min() == long_mi.scada_df.index.min()  # same baseline start
@@ -110,14 +112,16 @@ def test_fairness_shorter_campaign_input_is_a_prefix_of_the_longer() -> None:
 
 def test_toggle_study_scores_without_error() -> None:
     base = _base_scada()
-    results = score_study(base, PROFILE, [OracleMethod(base)], _study(mode="toggle"))
+    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(mode="toggle"))
     assert len(results) == 4 * 2
     assert np.allclose(results["signed_error"].to_numpy(), 0.0, atol=1e-9)
 
 
 def test_two_methods_scored_side_by_side() -> None:
     base = _base_scada()
-    results = score_study(base, PROFILE, [OracleMethod(base), BiasedMethod(base, offset=0.01)], _study())
+    results = score_study(
+        base, profile=PROFILE, methods=[OracleMethod(base), BiasedMethod(base, offset=0.01)], study=_study()
+    )
     assert set(results["method"]) == {"oracle", "biased"}
     oracle_err = results[results["method"] == "oracle"]["signed_error"].to_numpy()
     biased_err = results[results["method"] == "biased"]["signed_error"].to_numpy()

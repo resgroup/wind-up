@@ -82,6 +82,7 @@ def window_row_mask(index: pd.DatetimeIndex, window: CampaignWindow) -> npt.NDAr
 def treated_activity_mask(
     index: pd.DatetimeIndex,
     upgrade_timing: pd.Timestamp | ToggleSchedule,
+    *,
     window: CampaignWindow,
 ) -> npt.NDArray[np.bool_]:
     """Boolean mask of the test turbine's treated rows within ``[treatment_start, activity_end)``.

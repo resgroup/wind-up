@@ -34,10 +34,10 @@ if TYPE_CHECKING:
 
 def score_study(
     base_scada: pd.DataFrame,
+    *,
     profile: list,
     methods: list[Method],
     study: StudyConfig,
-    *,
     profile_name: str = "profile",
 ) -> pd.DataFrame:
     """Score ``methods`` on ``study`` over ``profile`` injected into ``base_scada``.
@@ -45,7 +45,7 @@ def score_study(
     Returns a tidy long-format frame: one row per method x replicate x campaign length, with
     the P50 ``estimate``, the ground-truth ``truth`` and their ``signed_error``.
     """
-    replicates = build_replicates(base_scada, profile, study)
+    replicates = build_replicates(base_scada, profile=profile, study=study)
     data_start = base_scada.index.min()
     data_end = base_scada.index.max()
     instances = _materialise_instances(replicates, study, data_start=data_start, data_end=data_end)
@@ -110,5 +110,5 @@ def _truth_overall(replicate: Replicate, window: CampaignWindow) -> float:
     """Ground-truth uplift over the test turbine's treated rows within the activity window."""
     synthetic = replicate.synthetic_df
     test_index = synthetic.loc[synthetic[DataColumns.turbine_name] == replicate.test_wtg].index
-    mask = treated_activity_mask(test_index, replicate.upgrade_timing, window)
+    mask = treated_activity_mask(test_index, replicate.upgrade_timing, window=window)
     return replicate.true_uplift(mask=mask).overall

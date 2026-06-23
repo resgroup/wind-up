@@ -64,7 +64,7 @@ def test_window_row_mask_selects_baseline_through_activity_end() -> None:
 def test_prepost_truth_mask_is_the_post_rows_within_activity() -> None:
     index = pd.date_range("2017-01-01", "2019-06-01", freq="1D", tz="UTC")
     [window] = campaign_windows(T0, min_pre_months=12, campaign_months=[6])
-    mask = treated_activity_mask(index, T0, window)  # prepost: a bare timestamp
+    mask = treated_activity_mask(index, T0, window=window)  # prepost: a bare timestamp
     selected = index[mask]
     assert (selected >= T0).all()
     assert (selected < window.activity_end).all()
@@ -75,7 +75,7 @@ def test_toggle_truth_mask_excludes_baseline_and_keeps_only_on_rows() -> None:
     index = pd.date_range("2017-01-01", "2019-06-01", freq="6h", tz="UTC")
     schedule = ToggleSchedule(period=pd.Timedelta(days=14), start=T0)
     [window] = campaign_windows(T0, min_pre_months=12, campaign_months=[6])
-    mask = treated_activity_mask(index, schedule, window)
+    mask = treated_activity_mask(index, schedule, window=window)
     assert not mask[index < T0].any()  # baseline untreated
     assert mask.any()  # some on-rows inside the toggling window
     assert (index[mask] < window.activity_end).all()
