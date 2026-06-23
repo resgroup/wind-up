@@ -10,6 +10,7 @@ def test_public_api_exports_core_entry_points() -> None:
         "generate_dataset",
         "SyntheticDataset",
         "ToggleSchedule",
+        "treated_mask",
         "true_uplift",
         "CpCore",
         "HOT_CP_MODEL",

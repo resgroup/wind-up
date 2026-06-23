@@ -7,7 +7,7 @@ derivable ground-truth uplift, for objectively evaluating uplift methods.
 from __future__ import annotations
 
 from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams, cp_surface
-from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset
+from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset, treated_mask
 from benchmarking.synthetic.ground_truth import UpliftResult, true_uplift
 from benchmarking.synthetic.plots import plot_power_curve_comparison
 from benchmarking.synthetic.upgrades import (
@@ -35,5 +35,6 @@ __all__ = [
     "cp_surface",
     "generate_dataset",
     "plot_power_curve_comparison",
+    "treated_mask",
     "true_uplift",
 ]

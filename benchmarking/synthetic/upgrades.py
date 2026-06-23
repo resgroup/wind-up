@@ -177,7 +177,7 @@ def apply_rated_change(
     return np.minimum(lifted, new_rated_kw)
 
 
-def apply_upgrades(rows: pd.DataFrame, upgrades: list, cp: CpCore) -> pd.DataFrame:
+def apply_upgrades(rows: pd.DataFrame, upgrades: list, *, cp: CpCore) -> pd.DataFrame:
     """Resolve and apply a list of upgrades to one test turbine's treated rows.
 
     Cp ratios from all upgrades multiply together and are applied to the original power

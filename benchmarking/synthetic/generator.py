@@ -38,10 +38,14 @@ class ToggleSchedule:
 
     :param period: length of one full on/off cycle (half off, half on)
     :param start_on: whether the first block is treated (on); default off (pre-like)
+    :param start: when toggling begins; rows before it are untreated baseline and it is
+        the toggle origin. ``None`` (default) keeps the data's first timestamp as origin
+        with no baseline.
     """
 
     period: pd.Timedelta
     start_on: bool = False
+    start: pd.Timestamp | None = None
 
 
 @dataclass
@@ -103,15 +107,38 @@ def _treated_mask(
 ) -> np.ndarray:
     """Boolean mask over ``index`` selecting the rows where the upgrade is active."""
     if mode == "prepost":
+        if isinstance(upgrade_timing, ToggleSchedule):
+            msg = "prepost mode needs a changeover Timestamp, got a ToggleSchedule"
+            raise TypeError(msg)
         return np.asarray(index >= upgrade_timing)
     if mode == "toggle":
+        if not isinstance(upgrade_timing, ToggleSchedule):
+            msg = f"toggle mode needs a ToggleSchedule, got {type(upgrade_timing).__name__}"
+            raise TypeError(msg)
         schedule = upgrade_timing
+        origin = schedule.start if schedule.start is not None else index.min()
         # ``period`` is a full on/off cycle, so each on/off block is half a period.
-        block = (index - index.min()) // (schedule.period / 2)
+        block = (index - origin) // (schedule.period / 2)
         on_parity = 0 if schedule.start_on else 1
-        return np.asarray((np.asarray(block) % 2) == on_parity)
+        treated = np.asarray((np.asarray(block) % 2) == on_parity)
+        if schedule.start is not None:
+            # Rows before toggling begins are untreated baseline (and their negative block
+            # index must not be allowed to alias onto an "on" parity).
+            treated &= np.asarray(index >= schedule.start)
+        return treated
     msg = f"unknown mode {mode!r}"
     raise ValueError(msg)
+
+
+def treated_mask(index: pd.DatetimeIndex, upgrade_timing: pd.Timestamp | ToggleSchedule) -> np.ndarray:
+    """Boolean mask of the rows an upgrade treats, with the mode inferred from ``upgrade_timing``.
+
+    A ``ToggleSchedule`` selects toggle mode; any other value (a changeover timestamp) selects
+    prepost mode. Shared by the generator, methods and the scoring truth path so they all agree
+    on which rows are treated.
+    """
+    mode: Literal["prepost", "toggle"] = "toggle" if isinstance(upgrade_timing, ToggleSchedule) else "prepost"
+    return _treated_mask(index, mode=mode, upgrade_timing=upgrade_timing)
 
 
 def generate_dataset(
@@ -148,7 +175,7 @@ def generate_dataset(
         if not mask.any():
             continue
         cp = CpCore(rated_power_kw=rated_power_kw, cp_params=cp_params)
-        modified = apply_upgrades(synthetic_df.loc[mask], upgrades, cp)
+        modified = apply_upgrades(synthetic_df.loc[mask], upgrades, cp=cp)
         for col in _MODIFIED_COLUMNS:
             synthetic_df.loc[mask, col] = modified[col].to_numpy()
 
