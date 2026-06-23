@@ -82,7 +82,7 @@ def run_v0_study(
     out_dir = Path(out_root) if out_root is not None else default_output_root()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    context = build_hot_v0_context()
+    context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
     scratch_dir = out_dir / "windup_runs"
 
     all_results = []
@@ -134,6 +134,7 @@ def main(
         start_dt=start_dt,
         end_dt_excl=end_dt_excl,
         wtg_numbers=wtg_numbers,
+        wtg_names=DEFAULT_TURBINE_SUBSET,
         data_dir=Path(data_dir) if data_dir is not None else None,
     )
     study = StudyConfig(
