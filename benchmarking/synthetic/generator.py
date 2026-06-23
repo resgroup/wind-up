@@ -107,8 +107,14 @@ def _treated_mask(
 ) -> np.ndarray:
     """Boolean mask over ``index`` selecting the rows where the upgrade is active."""
     if mode == "prepost":
+        if isinstance(upgrade_timing, ToggleSchedule):
+            msg = "prepost mode needs a changeover Timestamp, got a ToggleSchedule"
+            raise TypeError(msg)
         return np.asarray(index >= upgrade_timing)
     if mode == "toggle":
+        if not isinstance(upgrade_timing, ToggleSchedule):
+            msg = f"toggle mode needs a ToggleSchedule, got {type(upgrade_timing).__name__}"
+            raise TypeError(msg)
         schedule = upgrade_timing
         origin = schedule.start if schedule.start is not None else index.min()
         # ``period`` is a full on/off cycle, so each on/off block is half a period.

@@ -49,13 +49,15 @@ def score_study(
     data_start = base_scada.index.min()
     data_end = base_scada.index.max()
     instances = _materialise_instances(replicates, study, data_start=data_start, data_end=data_end)
+    # Truth depends only on ``(replicate, window)``, so compute it once here rather than once
+    # per method (it would otherwise carry an avoidable ``len(methods)`` multiplier).
+    truths = [_truth_overall(replicate, window) for replicate, window in instances]
 
     rows = []
     for method in methods:
-        for replicate, window in instances:
+        for (replicate, window), truth in zip(instances, truths, strict=True):
             method_input = _method_input(replicate, window)
             output = method.estimate(method_input)
-            truth = _truth_overall(replicate, window)
             rows.append(
                 {
                     "method": method.name,
@@ -80,7 +82,7 @@ def _materialise_instances(
     data_end: pd.Timestamp,
 ) -> list[tuple[Replicate, CampaignWindow]]:
     """Build the fixed ``(replicate, campaign window)`` list shared by every method."""
-    instances = []
+    instances: list[tuple[Replicate, CampaignWindow]] = []
     for replicate in replicates:
         windows = campaign_windows(
             replicate.treatment_start,
