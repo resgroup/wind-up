@@ -2,9 +2,6 @@
 
 Score an uplift method's P50 estimate against the known injected truth from the synthetic
 generator, reporting accuracy (bias) and precision (spread) as a function of campaign length.
-
-See the design spec
-``docs/superpowers/specs/2026-06-22-p50-evaluation-harness-design.md``.
 """
 
 from __future__ import annotations
