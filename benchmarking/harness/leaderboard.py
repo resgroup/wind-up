@@ -18,8 +18,9 @@ def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
     """Summarise scoring results into per-(method, profile, campaign-length) bias/spread/score.
 
     Only overall-uplift rows (``condition == "overall"``) are summarised; per-condition rows are
-    excluded. Returns one row per group with ``bias``, ``spread``, ``score`` and
-    ``n_replicates``, sorted by method, profile then campaign length.
+    excluded. Returns one row per group with ``bias``, ``spread``, ``score``, the mean recovered
+    and true uplift (``mean_estimate`` / ``mean_truth``, when those columns are present in the
+    input) and ``n_replicates``, sorted by method, profile then campaign length.
     """
     overall = results_df[results_df["condition"] == "overall"] if "condition" in results_df else results_df
 
@@ -32,7 +33,10 @@ def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
                 "bias": summary.bias,
                 "spread": summary.spread,
                 "score": summary.score,
+                "mean_estimate": float(group["estimate"].mean()) if "estimate" in group else float("nan"),
+                "mean_truth": float(group["truth"].mean()) if "truth" in group else float("nan"),
                 "n_replicates": summary.n,
             }
         )
-    return pd.DataFrame(records, columns=[*_GROUP_KEYS, "bias", "spread", "score", "n_replicates"])
+    columns = [*_GROUP_KEYS, "bias", "spread", "score", "mean_estimate", "mean_truth", "n_replicates"]
+    return pd.DataFrame(records, columns=columns)

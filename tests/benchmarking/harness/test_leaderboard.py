@@ -54,6 +54,18 @@ def test_only_overall_condition_rows_are_summarised() -> None:
     assert row["n_replicates"] == 1
 
 
+def test_mean_estimate_and_truth_are_averaged() -> None:
+    results = _results(
+        [
+            {"campaign_months": 3, "signed_error": 0.01, "estimate": 0.06, "truth": 0.05},
+            {"campaign_months": 3, "signed_error": -0.01, "estimate": 0.04, "truth": 0.05},
+        ]
+    )
+    row = leaderboard(results).set_index("campaign_months").loc[3]
+    assert row["mean_estimate"] == pytest.approx(0.05)
+    assert row["mean_truth"] == pytest.approx(0.05)
+
+
 def test_methods_are_compared_side_by_side() -> None:
     results = pd.DataFrame(
         [
