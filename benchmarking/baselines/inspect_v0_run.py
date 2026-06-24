@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from benchmarking.baselines.example_v0_study import default_output_root
+from benchmarking.baselines.example_prepost_study import default_output_root
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import (
