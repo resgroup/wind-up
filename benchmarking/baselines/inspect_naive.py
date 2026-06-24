@@ -3,7 +3,8 @@
 A runnable companion to :mod:`benchmarking.baselines.inspect_v0_run`, but for
 :class:`benchmarking.baselines.naive_ratio.NaiveRatioMethod`. It runs a handful of replicates in
 each mode with ``save_plots=True``, each in its **own output directory**, so the naive method's
-diagnostics (the per-run data-stats / results CSVs and the scatter + ratio-timeseries plots) can
+diagnostics (the per-run data-stats / results CSVs and the scatter, ratio-timeseries and
+used-data-coverage plots) can
 be eyeballed to confirm it received and interpreted the data correctly. The naive method has no
 wind_up dependency, so no v0 context / metadata is needed.
 

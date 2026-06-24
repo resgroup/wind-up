@@ -14,9 +14,10 @@ It uses **only** the active-power-mean column (test and references); it never re
 direction, rpm or any other SCADA tag, which keeps it honest under design-note section 3 (the
 test turbine's own wind speed is post-treatment and is never touched).
 
-Each run writes a per-run folder ``naive_<test>_<treatstart>_<lastdate>/`` (v0-style naming)
+Each run writes a per-run folder ``naive_<test>_<upgradestart>_<lastdate>/`` (v0-style naming)
 under ``out_dir`` (a temp dir by default), holding a per-segment data-stats CSV, a headline
-results CSV, and -- when ``save_plots`` -- two diagnostic plots. The rich stats let a human
+results CSV, and -- when ``save_plots`` -- three diagnostic plots (a test-vs-reference scatter,
+a per-segment daily-ratio timeseries, and a per-segment used-data-coverage timeseries). The rich stats let a human
 confirm the right data was received and interpreted: the headline uplift is re-derivable from
 the stats CSV as ``rho = used_test_mwh / used_ref_total_mwh`` per segment.
 """
@@ -63,8 +64,8 @@ def _wide_power(scada_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _treatment_start(upgrade_timing: pd.Timestamp | ToggleSchedule, index: pd.DatetimeIndex) -> pd.Timestamp:
-    """Return the treatment-start timestamp (changeover for prepost; toggle origin for toggle)."""
+def _upgrade_start(upgrade_timing: pd.Timestamp | ToggleSchedule, index: pd.DatetimeIndex) -> pd.Timestamp:
+    """Return the upgrade-start timestamp (changeover for prepost; toggle origin for toggle)."""
     if isinstance(upgrade_timing, ToggleSchedule):
         return upgrade_timing.start if upgrade_timing.start is not None else index.min()
     return pd.Timestamp(upgrade_timing)
@@ -76,7 +77,7 @@ class NaiveRatioMethod:
 
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
-    :param save_plots: also write the two diagnostic plots under ``<run>/plots``
+    :param save_plots: also write the three diagnostic plots under ``<run>/plots``
     :param timebase: analysis timebase; inferred from the data when ``None``
     """
 
@@ -126,9 +127,9 @@ class NaiveRatioMethod:
         n_refs: int,
     ) -> None:
         """Write the data-stats CSV, the headline results CSV and (optionally) the plots."""
-        treat_start = _treatment_start(mi.upgrade_timing, wide.index)
+        upgrade_start = _upgrade_start(mi.upgrade_timing, wide.index)
         last_dt = wide.index.max()
-        run_name = f"naive_{mi.test_wtg}_{treat_start:%Y%m%d}_{last_dt:%Y%m%d}"
+        run_name = f"naive_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{last_dt:%Y%m%d}"
         out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="naive_"))
         run_dir = out_root / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -237,18 +238,50 @@ def _segment_stats(
     return pd.DataFrame(rows)
 
 
+def _daily_segment_ratio(
+    index: pd.DatetimeIndex,
+    test_pw: npt.NDArray[np.float64],
+    ref_total: npt.NDArray[np.float64],
+    seg_mask: npt.NDArray[np.bool_],
+) -> pd.Series:
+    """Daily sum-based test/reference ratio (Sum test / Sum ref) over ``seg_mask`` rows; NaN on empty days.
+
+    This matches the method's own ``rho`` definition (a ratio of sums, not a mean of per-timestamp
+    ratios), so the daily series fluctuates around the scalar ``rho`` the estimate uses instead of
+    blowing up on low-wind timestamps.
+    """
+    test = pd.Series(np.where(seg_mask, test_pw, np.nan), index=index)
+    ref = pd.Series(np.where(seg_mask, ref_total, np.nan), index=index)
+    return test.resample("1D").sum(min_count=1) / ref.resample("1D").sum(min_count=1)
+
+
+def _daily_segment_coverage(
+    index: pd.DatetimeIndex, used: npt.NDArray[np.bool_], seg_mask: npt.NDArray[np.bool_]
+) -> pd.Series:
+    """Daily used-data coverage in [0, 1].
+
+    Of the segment timestamps present each day, the fraction that survived complete-case filtering
+    (test and every reference finite). NaN on days with no segment timestamps.
+    """
+    used_seg = pd.Series((used & seg_mask).astype(float), index=index)
+    present_seg = pd.Series(seg_mask.astype(float), index=index)
+    return used_seg.resample("1D").sum() / present_seg.resample("1D").sum().replace(0.0, np.nan)
+
+
 def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: str) -> None:
-    """Write the scatter and ratio-timeseries diagnostic plots."""
+    """Write the scatter, ratio-timeseries and used-coverage-timeseries diagnostic plots."""
     plots_dir.mkdir(parents=True, exist_ok=True)
     refs = [c for c in wide.columns if c != test]
     ts_treated = np.asarray(treated_mask(wide.index, mi.upgrade_timing))
     test_pw = wide[test].to_numpy(dtype=float)
     ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
     used = wide[[test, *refs]].notna().all(axis=1).to_numpy()
+    upgrade_start = _upgrade_start(mi.upgrade_timing, wide.index)
+    segments = (("baseline", used & ~ts_treated, "C0"), ("upgraded", used & ts_treated, "C1"))
 
-    # 1) scatter of test vs reference-total power, baseline/treated coloured, with rho slopes.
+    # 1) scatter of test vs reference-total power, baseline/upgraded coloured, with rho slopes.
     fig, ax = plt.subplots(figsize=(7, 7))
-    for label, seg, color in (("baseline", used & ~ts_treated, "C0"), ("treated", used & ts_treated, "C1")):
+    for label, seg, color in segments:
         ax.scatter(ref_total[seg], test_pw[seg], s=8, alpha=0.4, color=color, label=label)
         rho = _rho(test_pw, ref_total, seg)
         if np.isfinite(rho) and seg.any():
@@ -263,17 +296,38 @@ def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: s
     fig.savefig(plots_dir / f"{test}_scatter.png", dpi=150)
     plt.close(fig)
 
-    # 2) resampled test/ref_total ratio over time with the treatment boundary marked.
-    ratio = pd.Series(np.where(used, test_pw / np.where(ref_total == 0, np.nan, ref_total), np.nan), index=wide.index)
-    daily = ratio.resample("1D").mean()
+    # 2) daily sum-based test/ref ratio, one series per segment, with each segment's scalar rho overlaid.
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(daily.index.to_numpy(), daily.to_numpy(), marker=".", linewidth=0.8)
-    ax.axvline(_treatment_start(mi.upgrade_timing, wide.index), color="k", linestyle="--", label="treatment start")
+    for label, seg, color in segments:
+        daily = _daily_segment_ratio(wide.index, test_pw, ref_total, seg)
+        ax.plot(daily.index.to_numpy(), daily.to_numpy(), marker=".", linewidth=0.8, color=color, label=label)
+        rho = _rho(test_pw, ref_total, seg)
+        span = wide.index[seg]
+        if np.isfinite(rho) and len(span):
+            ax.hlines(rho, span.min(), span.max(), color=color, linestyle="--", linewidth=1.5)
+    ax.axvline(upgrade_start, color="k", linestyle="--", label="upgrade start")
     ax.set_xlabel("date")
     ax.set_ylabel("test / reference-total ratio")
-    ax.set_title(f"{test}: daily test/reference ratio")
+    ax.set_title(f"{test}: daily test/reference ratio (dashed = rho used by estimate)")
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
     fig.savefig(plots_dir / f"{test}_ratio_timeseries.png", dpi=150)
+    plt.close(fig)
+
+    # 3) daily used-data coverage, one series per segment, so each segment is seen to receive data.
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for label, _seg, color in segments:
+        seg_mask = ~ts_treated if label == "baseline" else ts_treated
+        daily = _daily_segment_coverage(wide.index, used, seg_mask)
+        ax.plot(daily.index.to_numpy(), daily.to_numpy(), marker=".", linewidth=0.8, color=color, label=label)
+    ax.axvline(upgrade_start, color="k", linestyle="--", label="upgrade start")
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_xlabel("date")
+    ax.set_ylabel("used-data coverage [fraction]")
+    ax.set_title(f"{test}: daily used-data coverage (complete-case)")
+    ax.grid(visible=True, alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(plots_dir / f"{test}_coverage_timeseries.png", dpi=150)
     plt.close(fig)

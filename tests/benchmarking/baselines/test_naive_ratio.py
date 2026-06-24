@@ -14,7 +14,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.naive_ratio import NaiveRatioMethod, _infer_timebase
+from benchmarking.baselines.naive_ratio import (
+    NaiveRatioMethod,
+    _daily_segment_coverage,
+    _daily_segment_ratio,
+    _infer_timebase,
+)
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import ToggleSchedule, treated_mask
 from wind_up.constants import TIMESTAMP_COL, DataColumns
@@ -185,6 +190,50 @@ class TestErrors:
         assert np.isnan(out.p50_overall)
 
 
+class TestPlotSeries:
+    """The per-segment daily series that back the revised ratio plot and the new coverage plot."""
+
+    def test_ratio_series_split_by_segment(self) -> None:
+        # one day baseline (ratio 0.8) then one day upgraded (ratio 0.8*1.05); daily sum-based ratio.
+        idx = _index(288, freq="10min")  # two full days
+        upgrade = idx[144]
+        treated = np.asarray(idx >= upgrade)
+        scada = _recovery_scada(idx, treated=treated, uplift=0.05)
+        wide = scada.pivot_table(
+            index=scada.index, columns=DataColumns.turbine_name, values=DataColumns.active_power_mean
+        )
+        test_pw = wide["T1"].to_numpy()
+        ref_total = wide[["R1", "R2"]].sum(axis=1).to_numpy()
+        used = np.ones(len(wide), dtype=bool)
+
+        base = _daily_segment_ratio(wide.index, test_pw, ref_total, used & ~treated)
+        up = _daily_segment_ratio(wide.index, test_pw, ref_total, used & treated)
+        # each segment only has data on its own day; the other day is NaN.
+        assert base.dropna().to_numpy() == pytest.approx(0.8)
+        assert up.dropna().to_numpy() == pytest.approx(0.8 * 1.05)
+        assert base.index.equals(up.index)
+
+    def test_coverage_series_in_unit_interval(self) -> None:
+        idx = _index(288, freq="10min")
+        upgrade = idx[144]
+        treated = np.asarray(idx >= upgrade)
+        scada = _recovery_scada(idx, treated=treated, uplift=0.05)
+        wide = scada.pivot_table(
+            index=scada.index, columns=DataColumns.turbine_name, values=DataColumns.active_power_mean
+        )
+        used = np.ones(len(wide), dtype=bool)
+        used[10] = used[200] = False  # drop one timestamp in each segment
+
+        base = _daily_segment_coverage(wide.index, used, ~treated)
+        up = _daily_segment_coverage(wide.index, used, treated)
+        for series in (base, up):
+            finite = series.dropna()
+            assert ((finite >= 0.0) & (finite <= 1.0)).all()
+        # complete data minus one dropped timestamp per 144-stamp day.
+        assert base.dropna().to_numpy() == pytest.approx(143 / 144)
+        assert up.dropna().to_numpy() == pytest.approx(143 / 144)
+
+
 def _read_only_csv(folder: Path, kind: str) -> pd.DataFrame:
     run_dirs = [p for p in Path(folder).iterdir() if p.is_dir()]
     assert len(run_dirs) == 1, f"expected exactly one run dir, found {run_dirs}"
@@ -234,8 +283,8 @@ class TestDiagnostics:
     def test_save_plots_writes_pngs(self, tmp_path) -> None:  # noqa: ANN001
         self._run(tmp_path, save_plots=True)
         run_dir = next(p for p in Path(tmp_path).iterdir() if p.is_dir())
-        pngs = list((run_dir / "plots").glob("*.png"))
-        assert len(pngs) == 2
+        names = {p.name for p in (run_dir / "plots").glob("*.png")}
+        assert names == {"T1_scatter.png", "T1_ratio_timeseries.png", "T1_coverage_timeseries.png"}
 
     def test_no_plots_by_default(self, tmp_path) -> None:  # noqa: ANN001
         self._run(tmp_path)
