@@ -82,8 +82,7 @@ agnostic contract; the drafted "per test-reference conditioned dataset" was over
 v0 (an R-learner fits once per test turbine over all references at once), and the
 `assessment_method` production selector only earns its place once there is a winner to
 promote. The durable kernel of the old issue — a treatment-invariant reference-only
-feature builder + the §8 bias-guard test (design note §3/§8) — folds into Issue 5. See
-`docs/superpowers/specs/2026-06-24-naive-energy-ratio-method-design.md`.
+feature builder + the §8 bias-guard test (design note §3/§8) — folds into Issue 5.
 
 **The method.** For a set of rows let `ρ = Σ test_power / Σ reference_total_power` over
 *complete-case* timestamps (test turbine **and every** reference finite). Estimate
