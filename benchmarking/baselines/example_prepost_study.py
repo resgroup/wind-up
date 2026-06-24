@@ -29,8 +29,10 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import partial
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
@@ -67,6 +69,24 @@ def default_output_root() -> Path:
     return root / "prepost"
 
 
+def save_per_method_curve(out_dir: Path, profile_name: str, method_name: str, method_results: pd.DataFrame) -> None:
+    """Write a single-method campaign-length curve the moment that method finishes.
+
+    Same three panels as the combined :func:`plot_campaign_curves` plot (uplift recovery, bias +/-
+    spread, score) but for one method, so a long run can be sanity-checked method-by-method as each
+    completes -- catching a broken method early -- instead of only at the very end. Methods run
+    fastest-first (oracle, naive, then the slow wind_up run), so the cheap anchors appear first.
+    """
+    summary = leaderboard(method_results)
+    fig = plot_campaign_curves(
+        summary,
+        save_path=out_dir / f"campaign_curves_{profile_name}_{method_name}.png",
+        title=f"{profile_name} - {method_name}",
+    )
+    plt.close(fig)
+    logger.info("Saved per-method curve for %s (profile %s)", method_name, profile_name)
+
+
 def run_prepost_study(
     base_scada: pd.DataFrame,
     *,
@@ -92,14 +112,22 @@ def run_prepost_study(
 
     all_results = []
     for profile_name, profile in profiles.items():
-        methods: list[Method] = [
-            V0BinnedMethod(context, scratch_dir=scratch_dir),
-            NaiveRatioMethod(out_dir=out_dir / "naive_runs"),
-        ]
+        # Fastest first (oracle is instant, naive has no wind_up pipeline, v0 is a full wind_up run
+        # per campaign), so the per-method curves below appear early and a bad method is caught fast.
+        methods: list[Method] = []
         if include_oracle:
             methods.append(OracleMethod(base_scada))
+        methods.append(NaiveRatioMethod(out_dir=out_dir / "naive_runs"))
+        methods.append(V0BinnedMethod(context, scratch_dir=scratch_dir))
         logger.info("Scoring prepost profile %s with methods %s", profile_name, [m.name for m in methods])
-        results = score_study(base_scada, profile=profile, methods=methods, study=study, profile_name=profile_name)
+        results = score_study(
+            base_scada,
+            profile=profile,
+            methods=methods,
+            study=study,
+            profile_name=profile_name,
+            on_method_complete=partial(save_per_method_curve, out_dir, profile_name),
+        )
         summary = leaderboard(results)
 
         results.to_csv(out_dir / f"results_{profile_name}.csv", index=False)

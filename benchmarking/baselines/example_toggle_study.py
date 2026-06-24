@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import partial
 from pathlib import Path
 
 import pandas as pd
@@ -33,6 +34,7 @@ from benchmarking.baselines.example_prepost_study import (
     DEFAULT_TURBINE_SUBSET,
     DEFAULT_WTG_NUMBERS,
     MIN_PRE_MONTHS,
+    save_per_method_curve,
 )
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
@@ -85,14 +87,22 @@ def run_toggle_study(
 
     all_results = []
     for profile_name, profile in profiles.items():
-        methods: list[Method] = [
-            V0BinnedMethod(context, scratch_dir=scratch_dir),
-            NaiveRatioMethod(out_dir=out_dir / "naive_runs"),
-        ]
+        # Fastest first (oracle is instant, naive has no wind_up pipeline, v0 is a full wind_up run
+        # per campaign), so the per-method curves appear early and a bad method is caught fast.
+        methods: list[Method] = []
         if include_oracle:
             methods.append(OracleMethod(base_scada))
+        methods.append(NaiveRatioMethod(out_dir=out_dir / "naive_runs"))
+        methods.append(V0BinnedMethod(context, scratch_dir=scratch_dir))
         logger.info("Scoring toggle profile %s with methods %s", profile_name, [m.name for m in methods])
-        results = score_study(base_scada, profile=profile, methods=methods, study=study, profile_name=profile_name)
+        results = score_study(
+            base_scada,
+            profile=profile,
+            methods=methods,
+            study=study,
+            profile_name=profile_name,
+            on_method_complete=partial(save_per_method_curve, out_dir, profile_name),
+        )
         summary = leaderboard(results)
 
         results.to_csv(out_dir / f"results_{profile_name}.csv", index=False)
