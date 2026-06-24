@@ -62,23 +62,6 @@ class TestBuildEra5Df:
 
 
 class TestGetEra5HourlyDf:
-    def test_hot_wrapper_delegates_with_hot_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured: dict[str, object] = {}
-
-        def fake_generic(**kwargs: object) -> pd.DataFrame:
-            captured.update(kwargs)
-            return pd.DataFrame()
-
-        monkeypatch.setattr(era5, "get_era5_hourly_df", fake_generic)
-        era5.get_hot_era5_hourly_df()
-        assert captured == {
-            "lat": era5.HOT_LAT,
-            "lon": era5.HOT_LON,
-            "start_date": era5.HOT_ERA5_START,
-            "end_date": era5.HOT_ERA5_END,
-            "fields": era5.HOT_ERA5_FIELDS,
-        }
-
     def test_end_date_defaults_to_today(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 

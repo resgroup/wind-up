@@ -17,18 +17,34 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata
-from wind_up.era5 import get_hot_reanalysis_datasets
+from wind_up.era5 import get_era5_hourly_df
+from wind_up.reanalysis_data import ReanalysisDataset
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     import pandas as pd
 
-    from wind_up.reanalysis_data import ReanalysisDataset
-
 ASSETS_DIR = Path(__file__).parent / "assets"
 ASSET_YAML = ASSETS_DIR / "HOT.yaml"
 NORTHING_YAML = ASSETS_DIR / "optimized_northing_corrections.yaml"
+
+HOT_LAT: float = 57.50
+HOT_LON: float = -3.25
+HOT_ERA5_START: str = "2000-01-01"
+HOT_ERA5_END: str = "2026-05-01"
+
+
+def get_hot_reanalysis_datasets() -> list[ReanalysisDataset]:
+    """Return a list with one :class:`ReanalysisDataset` for the Hill of Towie site."""
+    return [
+        ReanalysisDataset(
+            id=f"ERA5_{HOT_LAT:.2f}_{HOT_LON:.2f}",
+            data=get_era5_hourly_df(
+                lat=HOT_LAT, lon=HOT_LON, start_date=HOT_ERA5_START, end_date=HOT_ERA5_END
+            ),
+        )
+    ]
 
 
 @dataclass

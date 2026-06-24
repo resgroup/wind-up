@@ -38,6 +38,30 @@ class TestVendoredAssets:
         assert {row[0] for row in corrections} == {f"T{i:02d}" for i in range(1, 22)}
 
 
+class TestGetHotReanalysisDatasets:
+    def test_wraps_era5_df_for_hot_site(self, monkeypatch) -> None:  # noqa: ANN001
+        captured: dict[str, object] = {}
+        era5_df = pd.DataFrame({"wind_speed_100m": [1.0, 2.0]})
+
+        def fake_get_era5(**kwargs):  # noqa: ANN003, ANN202
+            captured.update(kwargs)
+            return era5_df
+
+        monkeypatch.setattr(hot_context, "get_era5_hourly_df", fake_get_era5)
+
+        datasets = hot_context.get_hot_reanalysis_datasets()
+
+        assert len(datasets) == 1
+        assert datasets[0].id == f"ERA5_{hot_context.HOT_LAT:.2f}_{hot_context.HOT_LON:.2f}"
+        pd.testing.assert_frame_equal(datasets[0].data, era5_df)
+        assert captured == {
+            "lat": hot_context.HOT_LAT,
+            "lon": hot_context.HOT_LON,
+            "start_date": hot_context.HOT_ERA5_START,
+            "end_date": hot_context.HOT_ERA5_END,
+        }
+
+
 class TestBuildHotV0Context:
     def test_wires_metadata_and_reanalysis_loaders(self, monkeypatch) -> None:  # noqa: ANN001
         metadata = pd.DataFrame({"Name": ["T01"], "Latitude": [57.5], "Longitude": [-3.25]})

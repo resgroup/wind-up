@@ -1,14 +1,13 @@
 """ERA5 reanalysis data fetching via the Open-Meteo archive API.
 
-Ported from hill-of-towie-open-source-analysis ``hot_open/era5_helpers.py`` (its intended
-future home). The Open-Meteo client libraries (``openmeteo_requests``, ``requests_cache``,
-``retry_requests``) are an optional dependency group (``era5``) and are imported lazily, so
-this module imports without them; only the live network fetch needs them installed.
+The Open-Meteo client libraries (``openmeteo_requests``, ``requests_cache``, ``retry_requests``)
+are an optional dependency group (``era5``) and are imported lazily, so this module imports
+without them; only the live network fetch needs them installed.
 
 The returned DataFrame uses the Open-Meteo column names (``wind_speed_100m`` /
 ``wind_direction_100m``); :func:`wind_up.reanalysis_data._reanalysis_upsample` already renames
 those to the wind-up reanalysis columns, so a :class:`~wind_up.reanalysis_data.ReanalysisDataset`
-built here drops straight into an analysis.
+built from it drops straight into an analysis.
 """
 
 from __future__ import annotations
@@ -21,16 +20,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from wind_up.reanalysis_data import ReanalysisDataset
-
 logger = logging.getLogger(__name__)
 
 CACHE_DIR_ENV = "WIND_UP_CACHE_DIR"
 
-HOT_LAT: float = 57.50
-HOT_LON: float = -3.25
-HOT_ERA5_START: str = "2000-01-01"
-HOT_ERA5_END: str = "2026-05-01"
 ERA5_DEFAULT_FIELDS: list[str] = [
     "temperature_2m",
     "relative_humidity_2m",
@@ -52,7 +45,6 @@ ERA5_DEFAULT_FIELDS: list[str] = [
     "wind_gusts_10m",
     "weather_code",
 ]
-HOT_ERA5_FIELDS: list[str] = ERA5_DEFAULT_FIELDS
 
 
 def _resolve_cache_dir(cache_dir: str | Path | None) -> Path:
@@ -175,22 +167,3 @@ def _fetch_era5_from_open_meteo(  # pragma: no cover - live network fetch
         },
     )
     return _build_era5_df(responses[0], fields)
-
-
-def get_hot_era5_hourly_df(
-    start_date: str = HOT_ERA5_START,
-    end_date: str = HOT_ERA5_END,
-    fields: list[str] = HOT_ERA5_FIELDS,
-) -> pd.DataFrame:
-    """Fetch hourly ERA5 data for the HOT site (convenience wrapper over :func:`get_era5_hourly_df`)."""
-    return get_era5_hourly_df(lat=HOT_LAT, lon=HOT_LON, start_date=start_date, end_date=end_date, fields=fields)
-
-
-def get_hot_reanalysis_datasets() -> list[ReanalysisDataset]:
-    """Return a list with one :class:`ReanalysisDataset` for the HOT site."""
-    return [
-        ReanalysisDataset(
-            id=f"ERA5_{HOT_LAT:.2f}_{HOT_LON:.2f}",
-            data=get_hot_era5_hourly_df(),
-        )
-    ]
