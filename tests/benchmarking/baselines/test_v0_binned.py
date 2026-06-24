@@ -71,6 +71,11 @@ class TestBuildConfig:
         cfg = method._build_config(_method_input(["T01", "T02", "T03", "T04"], "T01"))  # noqa: SLF001
         assert sorted(w.name for w in cfg.asset.wtgs) == ["T01", "T02", "T03", "T04"]
 
+    def test_raises_when_no_reference_turbines(self, tmp_path) -> None:  # noqa: ANN001
+        method = V0BinnedMethod(_context(), scratch_dir=tmp_path)
+        with pytest.raises(ValueError, match="no reference turbines"):
+            method._build_config(_method_input(["T01"], "T01"))  # noqa: SLF001
+
 
 class TestToggleGuard:
     def test_toggle_schedule_raises(self, tmp_path) -> None:  # noqa: ANN001

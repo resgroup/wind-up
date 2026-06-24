@@ -123,6 +123,12 @@ class V0BinnedMethod:
         """Render and load the per-campaign WindUpConfig, with the asset filtered to the subset."""
         subset = _subset_turbines(mi.scada_df)
         refs = [t for t in subset if t != mi.test_wtg]
+        if not refs:
+            msg = (
+                f"no reference turbines available for test_wtg {mi.test_wtg!r}: scada_df contains only "
+                f"{subset}. The v0 binned method needs at least one reference turbine."
+            )
+            raise ValueError(msg)
         upgrade = pd.Timestamp(mi.upgrade_timing)
         analysis_last = pd.Timestamp(mi.scada_df.index.max())
         assessment_name = f"v0_{mi.test_wtg}_{upgrade:%Y%m%d}_{analysis_last:%Y%m%d}"

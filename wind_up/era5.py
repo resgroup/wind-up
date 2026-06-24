@@ -102,15 +102,18 @@ def get_era5_hourly_df(
     lon: float,
     start_date: str = "2000-01-01",
     end_date: str | None = None,
-    fields: list[str] = ERA5_DEFAULT_FIELDS,
+    fields: list[str] | None = None,
     cache_dir: str | Path | None = None,
 ) -> pd.DataFrame:
     """Fetch hourly ERA5 data from Open-Meteo for any location and return as a DataFrame.
 
-    ``end_date`` defaults to today (UTC) when ``None``. Each unique combination of arguments
-    is cached to its own parquet file keyed by a hash of the arguments. Delete the cache file
-    to force a refetch.
+    ``fields`` defaults to a copy of :data:`ERA5_DEFAULT_FIELDS` when ``None``. ``end_date``
+    defaults to today (UTC) when ``None``. Each unique combination of arguments is cached to
+    its own parquet file keyed by a hash of the arguments. Delete the cache file to force a
+    refetch.
     """
+    if fields is None:
+        fields = list(ERA5_DEFAULT_FIELDS)
     if end_date is None:
         end_date = pd.Timestamp.now(tz="UTC").normalize().strftime("%Y-%m-%d")
     cache_path = _era5_cache_path(lat, lon, start_date, end_date, fields, cache_dir=cache_dir)
