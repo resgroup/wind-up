@@ -15,7 +15,7 @@ from benchmarking.baselines import v0_binned
 from benchmarking.baselines.hot_context import HotV0Context
 from benchmarking.baselines.v0_binned import V0BinnedMethod, _extract_p50, _subset_turbines
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.synthetic import ToggleSchedule
+from benchmarking.synthetic import ToggleSchedule, treated_mask
 from wind_up.constants import DataColumns
 
 
@@ -77,14 +77,59 @@ class TestBuildConfig:
             method._build_config(_method_input(["T01"], "T01"))  # noqa: SLF001
 
 
-class TestToggleGuard:
-    def test_toggle_schedule_raises(self, tmp_path) -> None:  # noqa: ANN001
+def _dense_scada(turbines: list[str], *, start: pd.Timestamp, end: pd.Timestamp, freq: str = "1D") -> pd.DataFrame:
+    """Long-format scada on a regular grid (enough rows for a toggle split)."""
+    index = pd.date_range(start, end, freq=freq, tz="UTC", name="TimeStamp_StartFormat")
+    frames = [
+        pd.DataFrame({DataColumns.turbine_name: t, DataColumns.active_power_mean: 1.0}, index=index) for t in turbines
+    ]
+    return pd.concat(frames)
+
+
+class TestBuildToggleDf:
+    def test_before_start_both_false_after_exactly_one_true(self) -> None:
+        idx = pd.date_range(UPGRADE - pd.Timedelta(minutes=30), periods=9, freq="10min", tz="UTC")
+        scada = _dense_scada(["a", "b"], start=idx[0], end=idx[-1], freq="10min")
+        schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=UPGRADE)
+        df = v0_binned._build_toggle_df(scada, schedule)  # noqa: SLF001
+
+        before = df.index < UPGRADE
+        assert not df.loc[before, "toggle_on"].any()
+        assert not df.loc[before, "toggle_off"].any()
+        after = df.index >= UPGRADE
+        assert (df.loc[after, "toggle_on"] ^ df.loc[after, "toggle_off"]).all()
+        assert (df["toggle_on"].to_numpy() == treated_mask(df.index, schedule)).all()
+
+
+class TestBuildConfigToggle:
+    def test_sets_toggle_block_not_prepost(self, tmp_path) -> None:  # noqa: ANN001
         method = V0BinnedMethod(_context(), scratch_dir=tmp_path)
-        scada = _make_scada(["T01", "T02"], start=UPGRADE, end=UPGRADE + pd.DateOffset(months=6))
-        toggle = ToggleSchedule(period=pd.Timedelta(hours=1), start=UPGRADE)
-        mi = MethodInput(scada_df=scada, test_wtg="T01", upgrade_timing=toggle)
-        with pytest.raises(NotImplementedError):
-            method.estimate(mi)
+        scada = _dense_scada(
+            ["T01", "T02", "T03", "T04"], start=UPGRADE - pd.DateOffset(years=1), end=UPGRADE + pd.DateOffset(months=6)
+        )
+        schedule = ToggleSchedule(period=pd.Timedelta(days=2), start=UPGRADE)
+        cfg = method._build_config(MethodInput(scada_df=scada, test_wtg="T01", upgrade_timing=schedule))  # noqa: SLF001
+        assert cfg.toggle is not None
+        assert cfg.prepost is None
+        assert cfg.toggle.detrend_data_selection == "use_toggle_off_data"
+        assert cfg.toggle.toggle_change_settling_filter_seconds == 0
+        assert pd.Timestamp(cfg.upgrade_first_dt_utc_start) == UPGRADE
+
+
+class TestEstimateToggle:
+    def test_wires_toggle_df_and_returns_p50(self, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+        captured = _stub_pipeline(monkeypatch)
+        method = V0BinnedMethod(_context(), scratch_dir=tmp_path)
+        scada = _dense_scada(
+            ["T01", "T02", "T03"], start=UPGRADE - pd.DateOffset(months=6), end=UPGRADE + pd.DateOffset(months=6)
+        )
+        schedule = ToggleSchedule(period=pd.Timedelta(days=2), start=UPGRADE)
+        out = method.estimate(MethodInput(scada_df=scada, test_wtg="T01", upgrade_timing=schedule))
+
+        assert out.p50_overall == pytest.approx(0.042)
+        toggle_df = captured["from_cfg_kwargs"]["toggle_df"]
+        assert sorted(toggle_df.columns) == ["toggle_off", "toggle_on"]
+        assert toggle_df["toggle_on"].any()
 
 
 class TestExtractP50:

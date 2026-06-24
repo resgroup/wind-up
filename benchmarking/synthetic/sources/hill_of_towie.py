@@ -19,6 +19,7 @@ import without them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -357,32 +358,25 @@ hill_of_towie_fields = [
 ]
 
 
-def load_hot_10min_data(  # noqa: C901
+def _unpack_hot_10min_zips(  # noqa: C901
     *,
     data_dir: Path,
-    wtg_numbers: Sequence[int],
+    years_to_load: Sequence[int],
+    serial_numbers: Sequence[int],
     start_dt: pd.Timestamp,
     end_dt_excl: pd.Timestamp,
-    use_turbine_names: bool = True,
-    rename_cols_using_aliases: bool = False,
-    custom_fields: Sequence[WPSBackupFileField] | None = None,
+    fields_to_load: Sequence[WPSBackupFileField],
+    rename_cols_using_aliases: bool,
 ) -> pd.DataFrame:
-    """Return a wide 10-min SCADA dataframe for Hill of Towie (downloading year zips)."""
+    """Unpack the year zips into one wide, serial-keyed 10-min dataframe (the slow step).
+
+    This is the expensive part of :func:`load_hot_10min_data` (reading and pivoting every
+    monthly CSV from each year zip); it is cached by :func:`_load_unpacked_hot_10min`. The
+    result is keyed on serial numbers (not turbine names) and not yet clipped/resampled to the
+    exact window.
+    """
     from tqdm import tqdm  # noqa: PLC0415  (lazy: keep network deps out of the import path)
 
-    if str(start_dt.tz) != "UTC" or str(end_dt_excl.tz) != "UTC":
-        msg = "start_dt and end_dt_excl must be in UTC"
-        raise ValueError(msg)
-    if end_dt_excl <= start_dt:
-        msg = "end_dt_excl must be after start_dt"
-        raise ValueError(msg)
-
-    serial_numbers = [x + _HOT_SERIAL_OFFSET for x in wtg_numbers]
-    first_year_to_load = start_dt.year
-    last_year_to_load = (end_dt_excl - pd.Timedelta(seconds=TIMEBASE_S)).year
-    years_to_load = list(range(first_year_to_load, last_year_to_load + 1))
-    ensure_hot_data_files([f"{y}.zip" for y in years_to_load], data_dir=data_dir)
-    fields_to_load = hill_of_towie_fields if custom_fields is None else custom_fields
     tables_to_load = {x.table_name for x in fields_to_load}
     result_dfs = []
     for i_year, _year in enumerate(years_to_load):
@@ -433,7 +427,119 @@ def load_hot_10min_data(  # noqa: C901
                 year_dfs.append(table_df)
             year_df = pd.concat(year_dfs, axis=1)
             result_dfs.append(year_df)
-    combined_df = pd.concat(result_dfs, verify_integrity=True, sort=True)
+    return pd.concat(result_dfs, verify_integrity=True, sort=True)
+
+
+def _unpacked_hot_10min_cache_path(
+    *,
+    years_to_load: Sequence[int],
+    serial_numbers: Sequence[int],
+    start_dt: pd.Timestamp,
+    end_dt_excl: pd.Timestamp,
+    fields_to_load: Sequence[WPSBackupFileField],
+    rename_cols_using_aliases: bool,
+    cache_dir: Path,
+) -> Path:
+    """Build a deterministic parquet cache path keyed by every arg that affects the unpacked df."""
+    args_blob = json.dumps(
+        {
+            "years": sorted(years_to_load),
+            "serials": sorted(serial_numbers),
+            "start_dt": start_dt.isoformat(),
+            "end_dt_excl": end_dt_excl.isoformat(),
+            "fields": sorted(f"{x.table_name}.{x.field_name}->{x.alias}" for x in fields_to_load),
+            "rename_cols_using_aliases": rename_cols_using_aliases,
+        },
+        sort_keys=True,
+    )
+    args_hash = hashlib.sha256(args_blob.encode("utf-8")).hexdigest()[:16]
+    return cache_dir / f"hot10min_{start_dt:%Y%m%d}_{end_dt_excl:%Y%m%d}_{args_hash}.parquet"
+
+
+def _load_unpacked_hot_10min(
+    *,
+    data_dir: Path,
+    years_to_load: Sequence[int],
+    serial_numbers: Sequence[int],
+    start_dt: pd.Timestamp,
+    end_dt_excl: pd.Timestamp,
+    fields_to_load: Sequence[WPSBackupFileField],
+    rename_cols_using_aliases: bool,
+    cache_dir: Path,
+) -> pd.DataFrame:
+    """Return the unpacked 10-min dataframe, reading the cached parquet when present.
+
+    Each unique combination of arguments is cached to its own parquet (named by the window plus
+    a hash of the args). Delete the file to force a re-unpack.
+    """
+    cache_path = _unpacked_hot_10min_cache_path(
+        years_to_load=years_to_load,
+        serial_numbers=serial_numbers,
+        start_dt=start_dt,
+        end_dt_excl=end_dt_excl,
+        fields_to_load=fields_to_load,
+        rename_cols_using_aliases=rename_cols_using_aliases,
+        cache_dir=cache_dir,
+    )
+    if cache_path.exists():
+        logger.info("Reading cached HoT 10min unpack: %s", cache_path)
+        return pd.read_parquet(cache_path)
+
+    combined_df = _unpack_hot_10min_zips(
+        data_dir=data_dir,
+        years_to_load=years_to_load,
+        serial_numbers=serial_numbers,
+        start_dt=start_dt,
+        end_dt_excl=end_dt_excl,
+        fields_to_load=fields_to_load,
+        rename_cols_using_aliases=rename_cols_using_aliases,
+    )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Writing HoT 10min unpack cache: %s", cache_path)
+    combined_df.to_parquet(cache_path)
+    return combined_df
+
+
+def load_hot_10min_data(
+    *,
+    data_dir: Path,
+    wtg_numbers: Sequence[int],
+    start_dt: pd.Timestamp,
+    end_dt_excl: pd.Timestamp,
+    use_turbine_names: bool = True,
+    rename_cols_using_aliases: bool = False,
+    custom_fields: Sequence[WPSBackupFileField] | None = None,
+    cache_dir: Path | None = None,
+) -> pd.DataFrame:
+    """Return a wide 10-min SCADA dataframe for Hill of Towie (downloading year zips).
+
+    The slow zip-unpacking step is cached as parquet under ``cache_dir`` (defaults to
+    ``data_dir / "unpacked_cache"``), keyed by the turbines/window/fields, so repeated studies
+    over the same data reuse it instead of re-reading every monthly CSV.
+    """
+    if str(start_dt.tz) != "UTC" or str(end_dt_excl.tz) != "UTC":
+        msg = "start_dt and end_dt_excl must be in UTC"
+        raise ValueError(msg)
+    if end_dt_excl <= start_dt:
+        msg = "end_dt_excl must be after start_dt"
+        raise ValueError(msg)
+
+    serial_numbers = [x + _HOT_SERIAL_OFFSET for x in wtg_numbers]
+    first_year_to_load = start_dt.year
+    last_year_to_load = (end_dt_excl - pd.Timedelta(seconds=TIMEBASE_S)).year
+    years_to_load = list(range(first_year_to_load, last_year_to_load + 1))
+    ensure_hot_data_files([f"{y}.zip" for y in years_to_load], data_dir=data_dir)
+    fields_to_load = hill_of_towie_fields if custom_fields is None else custom_fields
+    combined_df = _load_unpacked_hot_10min(
+        data_dir=data_dir,
+        years_to_load=years_to_load,
+        serial_numbers=serial_numbers,
+        start_dt=start_dt,
+        end_dt_excl=end_dt_excl,
+        fields_to_load=fields_to_load,
+        rename_cols_using_aliases=rename_cols_using_aliases,
+        cache_dir=cache_dir if cache_dir is not None else data_dir / "unpacked_cache",
+    )
     if use_turbine_names:
         cols = combined_df.columns
         serial_to_name = {x: f"T{x - _HOT_SERIAL_OFFSET:02d}" for x in cols.get_level_values(0).unique()}
