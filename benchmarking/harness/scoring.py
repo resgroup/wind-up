@@ -27,6 +27,8 @@ from benchmarking.harness.replicates import build_replicates
 from wind_up.constants import DataColumns
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from benchmarking.harness.campaign import CampaignWindow
     from benchmarking.harness.method import Method
     from benchmarking.harness.replicates import Replicate, StudyConfig
@@ -39,6 +41,7 @@ def score_study(
     methods: list[Method],
     study: StudyConfig,
     profile_name: str = "profile",
+    on_method_complete: Callable[[str, pd.DataFrame], None] | None = None,
 ) -> pd.DataFrame:
     """Score ``methods`` on ``study`` over ``profile`` injected into ``base_scada``.
 
@@ -46,6 +49,12 @@ def score_study(
     the P50 ``estimate``, the ground-truth ``truth`` and their ``signed_error``. Each row also
     carries the window it was tested over — ``treatment_start`` (the upgrade start),
     ``baseline_start`` and ``activity_end`` — so a result is self-describing.
+
+    :param on_method_complete: optional hook called as each method finishes its full instance
+        sweep, with ``(method_name, that_method's_rows)`` (the same rows it contributes to the
+        returned frame). Lets a caller act on a method's results early — e.g. plot them — instead
+        of waiting for every method, useful when a slow method runs last. It never changes the
+        returned frame; order methods fastest-first to get the earliest feedback.
     """
     replicates = build_replicates(base_scada, profile=profile, study=study)
     data_start = base_scada.index.min()
@@ -57,10 +66,11 @@ def score_study(
 
     rows = []
     for method in methods:
+        method_rows = []
         for (replicate, window), truth in zip(instances, truths, strict=True):
             method_input = _method_input(replicate, window)
             output = method.estimate(method_input)
-            rows.append(
+            method_rows.append(
                 {
                     "method": method.name,
                     "profile": profile_name,
@@ -76,6 +86,9 @@ def score_study(
                     "signed_error": output.p50_overall - truth,
                 }
             )
+        if on_method_complete is not None:
+            on_method_complete(method.name, pd.DataFrame(method_rows))
+        rows.extend(method_rows)
     return pd.DataFrame(rows)
 
 
