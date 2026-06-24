@@ -113,6 +113,10 @@ class V0BinnedMethod:
         )
         trdf = run_wind_up_analysis(inputs)
         tdf = combine_results(trdf, auto_choose_refs=False, plot_config=None)
+        tdf.to_csv(
+            cfg.out_dir
+            / f"{cfg.assessment_name}_combined_results_{pd.Timestamp.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
         return MethodOutput(p50_overall=_extract_p50(tdf, mi.test_wtg))
 
     def _build_config(self, mi: MethodInput) -> WindUpConfig:
@@ -145,5 +149,5 @@ class V0BinnedMethod:
         # it so wind farm coverage (e.g. reanalysis correlation) is computed over the right count.
         cfg.asset.wtgs = [w for w in cfg.asset.wtgs if w.name in subset]
         # similar subsetting logic for northing_corrections_utc
-        cfg.northing_corrections_utc= [n for n in cfg.northing_corrections_utc if n[0] in subset]
+        cfg.northing_corrections_utc = [n for n in cfg.northing_corrections_utc if n[0] in subset]
         return cfg

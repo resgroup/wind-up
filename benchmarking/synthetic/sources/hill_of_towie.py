@@ -520,13 +520,13 @@ def scada_df_to_wind_up_df(scada_df: pd.DataFrame, *, shutdown_duration_df: pd.D
 # --------------------------------------------------------------------------------------
 # Turbine metadata + top-level loader
 # --------------------------------------------------------------------------------------
-def load_hot_metadata(*, data_dir: Path | None = None,wtg_names: Sequence[str] | None = None) -> pd.DataFrame:
+def load_hot_metadata(*, data_dir: Path | None = None, wtg_names: Sequence[str] | None = None) -> pd.DataFrame:
     """Load Hill of Towie turbine metadata (Name, Latitude, Longitude) in wind-up format."""
     data_dir = data_dir if data_dir is not None else get_data_dir()
     ensure_hot_data_files(["Hill_of_Towie_turbine_metadata.csv"], data_dir=data_dir)
     metadata_path = data_dir / "Hill_of_Towie_turbine_metadata.csv"
     logger.info("Reading: %s", metadata_path)
-    return_df= (
+    return_df = (
         pd.read_csv(metadata_path)
         .loc[:, ["Turbine Name", "Latitude", "Longitude"]]
         .rename(columns={"Turbine Name": "Name"})
@@ -543,7 +543,7 @@ def load_hot_scada(
     start_dt: pd.Timestamp,
     end_dt_excl: pd.Timestamp,
     wtg_numbers: Sequence[int] | None = None,
-wtg_names: Sequence[str] | None = None,
+    wtg_names: Sequence[str] | None = None,
     data_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Download (if needed) and load wind-up-format Hill of Towie SCADA plus metadata.

@@ -12,9 +12,10 @@ harness seam stay thin until the Issue 4 contract has two real consumers to desi
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata
 from wind_up.era5 import get_hot_reanalysis_datasets
@@ -45,11 +46,11 @@ class HotV0Context:
     northing_yaml: Path = NORTHING_YAML
 
 
-def build_hot_v0_context(*, data_dir: str | Path | None = None,wtg_names: Sequence[str] | None = None) -> HotV0Context:
+def build_hot_v0_context(*, data_dir: str | Path | None = None, wtg_names: Sequence[str] | None = None) -> HotV0Context:
     """Assemble the HoT v0 context: load metadata and (fetch+cache) ERA5 reanalysis once.
 
     :param data_dir: Hill of Towie data/cache dir; defaults to the source package default
     """
-    metadata_df = load_hot_metadata(data_dir=Path(data_dir) if data_dir is not None else None,wtg_names=wtg_names)
+    metadata_df = load_hot_metadata(data_dir=Path(data_dir) if data_dir is not None else None, wtg_names=wtg_names)
     reanalysis_datasets = get_hot_reanalysis_datasets()
     return HotV0Context(metadata_df=metadata_df, reanalysis_datasets=reanalysis_datasets)
