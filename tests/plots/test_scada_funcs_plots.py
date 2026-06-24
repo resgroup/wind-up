@@ -121,3 +121,39 @@ class TestCompareActiveAndReactivePowerPrePost:
         log_msg = caplog.records[-1]
         assert log_msg.levelname == logging.getLevelName(logging.WARNING)
         assert expected_msg == log_msg.getMessage()
+
+
+class TestPrintAndPlotCapacityFactor:
+    @staticmethod
+    def _make_scada_df(cfg) -> pd.DataFrame:  # noqa: ANN001
+        rows = [
+            {DataColumns.turbine_name: wtg.name, DataColumns.active_power_mean: 500.0}
+            for wtg in cfg.asset.wtgs
+            for _ in range(6)
+        ]
+        return pd.DataFrame(rows)
+
+    def test_does_not_save_when_save_plots_false(self, test_homer_config, tmp_path: Path) -> None:  # noqa: ANN001
+        plots_dir = tmp_path / "plots"
+        scada_df = self._make_scada_df(test_homer_config)
+
+        scada_funcs_plots.print_and_plot_capacity_factor(
+            scada_df=scada_df,
+            cfg=test_homer_config,
+            plots_cfg=PlotConfig(save_plots=False, show_plots=False, plots_dir=plots_dir),
+        )
+
+        assert not plots_dir.exists()
+
+    def test_saves_when_save_plots_true(self, test_homer_config, tmp_path: Path) -> None:  # noqa: ANN001
+        plots_dir = tmp_path / "plots"
+        scada_df = self._make_scada_df(test_homer_config)
+
+        scada_funcs_plots.print_and_plot_capacity_factor(
+            scada_df=scada_df,
+            cfg=test_homer_config,
+            plots_cfg=PlotConfig(save_plots=True, show_plots=False, plots_dir=plots_dir),
+        )
+
+        expected = plots_dir / f"{test_homer_config.asset.name} capacity factor.png"
+        assert expected.is_file()

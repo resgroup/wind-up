@@ -46,6 +46,24 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project.optional-dependencies]
+era5 = [
+    'openmeteo-requests',
+    'requests-cache',
+    'retry-requests',
+]
+examples = [
+    'jupyterlab',
+    'notebook',
+    'ipywidgets',
+    'requests',
+    'ephem',
+    'flaml[automl]',
+]
+
+# PEP 735 dependency groups. uv installs the `dev` group by default on `uv sync` (use
+# `--no-dev` to skip it), so contributor tooling is present without naming an extra; unlike
+# `[project.optional-dependencies]`, groups are not published in the wheel metadata.
+[dependency-groups]
 dev = [
     'pytest',
     'coverage',
@@ -59,14 +77,9 @@ dev = [
     'mypy<1.19',
     'requests',
     'pytest-env',
-]
-examples = [
-    'jupyterlab',
-    'notebook',
-    'ipywidgets',
-    'requests',
-    'ephem',
-    'flaml[automl]',
+    'openmeteo-requests',
+    'requests-cache',
+    'retry-requests',
 ]
 
 [tool.setuptools.packages.find]
@@ -139,6 +152,9 @@ module = [
     "ephem",
     "flaml",
     "sklearn.*",
+    "openmeteo_requests",
+    "requests_cache",
+    "retry_requests",
 ]
 disable_error_code = ["name-defined"]
 ignore_missing_imports = true

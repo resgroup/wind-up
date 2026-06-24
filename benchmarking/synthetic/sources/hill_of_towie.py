@@ -520,18 +520,22 @@ def scada_df_to_wind_up_df(scada_df: pd.DataFrame, *, shutdown_duration_df: pd.D
 # --------------------------------------------------------------------------------------
 # Turbine metadata + top-level loader
 # --------------------------------------------------------------------------------------
-def load_hot_metadata(*, data_dir: Path | None = None) -> pd.DataFrame:
+def load_hot_metadata(*, data_dir: Path | None = None, wtg_names: Sequence[str] | None = None) -> pd.DataFrame:
     """Load Hill of Towie turbine metadata (Name, Latitude, Longitude) in wind-up format."""
     data_dir = data_dir if data_dir is not None else get_data_dir()
     ensure_hot_data_files(["Hill_of_Towie_turbine_metadata.csv"], data_dir=data_dir)
     metadata_path = data_dir / "Hill_of_Towie_turbine_metadata.csv"
     logger.info("Reading: %s", metadata_path)
-    return (
+    return_df = (
         pd.read_csv(metadata_path)
         .loc[:, ["Turbine Name", "Latitude", "Longitude"]]
         .rename(columns={"Turbine Name": "Name"})
         .assign(TimeZone="UTC", TimeSpanMinutes=10, TimeFormat="Start")
     )
+    if wtg_names is not None:
+        # only return return_df rows where the turbine name is in wtg_names
+        return_df = return_df[return_df["Name"].isin(wtg_names)]
+    return return_df
 
 
 def load_hot_scada(
@@ -539,6 +543,7 @@ def load_hot_scada(
     start_dt: pd.Timestamp,
     end_dt_excl: pd.Timestamp,
     wtg_numbers: Sequence[int] | None = None,
+    wtg_names: Sequence[str] | None = None,
     data_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Download (if needed) and load wind-up-format Hill of Towie SCADA plus metadata.
@@ -553,6 +558,7 @@ def load_hot_scada(
     :param data_dir: data/cache directory; defaults to :func:`get_data_dir`
     """
     data_dir = data_dir if data_dir is not None else get_data_dir()
+    metadata_df = load_hot_metadata(data_dir=data_dir, wtg_names=wtg_names)
     wtg_numbers = list(range(HOT_FIRST_WTG, HOT_LAST_WTG + 1)) if wtg_numbers is None else list(wtg_numbers)
     wide_scada_df = load_hot_10min_data(
         data_dir=data_dir,
@@ -562,5 +568,4 @@ def load_hot_scada(
         rename_cols_using_aliases=True,
     )
     scada_df = scada_df_to_wind_up_df(wide_scada_df)
-    metadata_df = load_hot_metadata(data_dir=data_dir)
     return scada_df, metadata_df

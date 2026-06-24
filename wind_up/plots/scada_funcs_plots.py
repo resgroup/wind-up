@@ -57,13 +57,16 @@ def calc_cf_by_turbine(scada_df: pd.DataFrame, cfg: WindUpConfig) -> pd.DataFram
 def print_and_plot_capacity_factor(scada_df: pd.DataFrame, cfg: WindUpConfig, plots_cfg: PlotConfig) -> None:
     cf_df = calc_cf_by_turbine(scada_df=scada_df, cfg=cfg)
     title = f"{cfg.asset.name} capacity factor"
-    plots_cfg.plots_dir.mkdir(parents=True, exist_ok=True)
+    save_path = None
+    if plots_cfg.save_plots:
+        plots_cfg.plots_dir.mkdir(parents=True, exist_ok=True)
+        save_path = plots_cfg.plots_dir / f"{title}.png"
     bubble_plot(
         cfg=cfg,
         series=cf_df["CF"] * 100,
         title=f"{cfg.asset.name} capacity factor",
         cbarunits="%",
-        save_path=plots_cfg.plots_dir / f"{title}.png",
+        save_path=save_path,
         show_plot=plots_cfg.show_plots,
     )
 

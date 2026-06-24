@@ -127,6 +127,9 @@ def plot_northing_changepoint(
     plt.legend(fontsize="small", ncol=2)
     plt.grid()
     plt.tight_layout()
-    (plot_cfg.plots_dir / northing_turbine).mkdir(exist_ok=True)
-    plt.savefig(plot_cfg.plots_dir / northing_turbine / f"{title}.png")
+    if plot_cfg.show_plots:
+        plt.show()
+    if plot_cfg.save_plots:
+        (plot_cfg.plots_dir / northing_turbine).mkdir(parents=True, exist_ok=True)
+        plt.savefig(plot_cfg.plots_dir / northing_turbine / f"{title}.png")
     plt.close()
