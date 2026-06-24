@@ -129,9 +129,9 @@ class TestTimebaseInvariance:
                 treated10 = treated
             scada = _recovery_scada(idx, treated=treated, uplift=0.04)
             results.append(
-                NaiveRatioMethod().estimate(
-                    MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade)
-                ).p50_overall
+                NaiveRatioMethod()
+                .estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade))
+                .p50_overall
             )
         assert results[0] == pytest.approx(results[1])
 

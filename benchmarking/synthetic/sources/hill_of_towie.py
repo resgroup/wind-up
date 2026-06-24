@@ -358,7 +358,7 @@ hill_of_towie_fields = [
 ]
 
 
-def _unpack_hot_10min_year(  # noqa: C901
+def _unpack_hot_10min_year(
     *,
     data_dir: Path,
     year: int,
