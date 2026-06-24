@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from benchmarking.baselines.example_v0_study import default_output_root
+from benchmarking.baselines.example_prepost_study import default_output_root
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.harness import (
     MethodInput,

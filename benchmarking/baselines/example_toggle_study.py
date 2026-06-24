@@ -1,6 +1,6 @@
 """Driver: score v0 and the naive ratio method on a TOGGLE campaign on real Hill of Towie data.
 
-Mirrors :mod:`benchmarking.baselines.example_v0_study` but runs in toggle mode: a fast
+Mirrors :mod:`benchmarking.baselines.example_prepost_study` but runs in toggle mode: a fast
 20-min-on / 20-min-off schedule (``toggle_period = 40min``) and a single 3% constant-Cp upgrade.
 ``V0BinnedMethod`` runs wind_up's native toggle assessment; ``NaiveRatioMethod`` splits on/off
 via the shared toggle mask. An oracle anchor is scored too, so its ~0 error confirms the
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from benchmarking.baselines.example_v0_study import (
+from benchmarking.baselines.example_prepost_study import (
     DEFAULT_END_DT_EXCL,
     DEFAULT_START_DT,
     DEFAULT_TREATMENT_START_RANGE,
