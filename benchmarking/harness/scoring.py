@@ -43,7 +43,9 @@ def score_study(
     """Score ``methods`` on ``study`` over ``profile`` injected into ``base_scada``.
 
     Returns a tidy long-format frame: one row per method x replicate x campaign length, with
-    the P50 ``estimate``, the ground-truth ``truth`` and their ``signed_error``.
+    the P50 ``estimate``, the ground-truth ``truth`` and their ``signed_error``. Each row also
+    carries the window it was tested over — ``treatment_start`` (the upgrade start),
+    ``baseline_start`` and ``activity_end`` — so a result is self-describing.
     """
     replicates = build_replicates(base_scada, profile=profile, study=study)
     data_start = base_scada.index.min()
@@ -65,6 +67,9 @@ def score_study(
                     "replicate": replicate.replicate_id,
                     "test_wtg": replicate.test_wtg,
                     "campaign_months": window.months,
+                    "treatment_start": window.treatment_start,
+                    "baseline_start": window.baseline_start,
+                    "activity_end": window.activity_end,
                     "condition": "overall",
                     "estimate": output.p50_overall,
                     "truth": truth,

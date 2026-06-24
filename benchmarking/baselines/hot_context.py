@@ -12,7 +12,6 @@ harness seam stay thin until the Issue 4 contract has two real consumers to desi
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,6 +20,8 @@ from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata
 from wind_up.era5 import get_hot_reanalysis_datasets
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import pandas as pd
 
     from wind_up.reanalysis_data import ReanalysisDataset

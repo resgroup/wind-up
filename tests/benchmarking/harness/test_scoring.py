@@ -58,6 +58,18 @@ def test_results_have_one_row_per_method_replicate_and_campaign_length() -> None
     assert set(results.columns) >= expected_columns
 
 
+def test_results_record_the_window_boundaries_per_replicate() -> None:
+    base = _base_scada()
+    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1))
+    for col in ("treatment_start", "baseline_start", "activity_end"):
+        assert col in results.columns
+        assert results[col].notna().all()
+    # baseline_start = treatment_start - min_pre_months (12), activity_end = treatment_start + campaign_months
+    row3 = results[results["campaign_months"] == 3].iloc[0]
+    assert row3["baseline_start"] == row3["treatment_start"] - pd.DateOffset(months=12)
+    assert row3["activity_end"] == row3["treatment_start"] + pd.DateOffset(months=3)
+
+
 def test_oracle_method_has_near_zero_signed_error() -> None:
     base = _base_scada()
     results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study())

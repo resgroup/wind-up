@@ -44,8 +44,9 @@ class TestBuildHotV0Context:
         sentinel_reanalysis = [object()]
         captured: dict[str, object] = {}
 
-        def fake_metadata(*, data_dir=None):  # noqa: ANN001, ANN202
+        def fake_metadata(*, data_dir=None, wtg_names=None):  # noqa: ANN001, ANN202
             captured["data_dir"] = data_dir
+            captured["wtg_names"] = wtg_names
             return metadata
 
         monkeypatch.setattr(hot_context, "load_hot_metadata", fake_metadata)

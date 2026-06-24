@@ -145,6 +145,7 @@ class V0BinnedMethod:
 
         cfg = WindUpConfig.from_yaml(yaml_path)
         cfg.out_dir = scratch / assessment_name
+        cfg.out_dir.mkdir(parents=True, exist_ok=True)
         # The asset YAML lists all 21 HoT turbines, but only the subset has SCADA here. Restrict
         # it so wind farm coverage (e.g. reanalysis correlation) is computed over the right count.
         cfg.asset.wtgs = [w for w in cfg.asset.wtgs if w.name in subset]
