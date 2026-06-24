@@ -18,6 +18,7 @@ from benchmarking.baselines.naive_ratio import (
     NaiveRatioMethod,
     _daily_segment_coverage,
     _daily_segment_ratio,
+    _expected_per_day,
     _infer_timebase,
 )
 from benchmarking.harness.method import MethodInput, MethodOutput
@@ -213,7 +214,9 @@ class TestPlotSeries:
         assert up.dropna().to_numpy() == pytest.approx(0.8 * 1.05)
         assert base.index.equals(up.index)
 
-    def test_coverage_series_in_unit_interval(self) -> None:
+    def test_prepost_coverage_is_per_day_share_of_expected(self) -> None:
+        # day 1 entirely baseline, day 2 entirely upgraded (prepost). Coverage is the segment's
+        # share of the day's 144 expected timestamps, so the inactive segment reads 0 that day.
         idx = _index(288, freq="10min")
         upgrade = idx[144]
         treated = np.asarray(idx >= upgrade)
@@ -222,16 +225,36 @@ class TestPlotSeries:
             index=scada.index, columns=DataColumns.turbine_name, values=DataColumns.active_power_mean
         )
         used = np.ones(len(wide), dtype=bool)
-        used[10] = used[200] = False  # drop one timestamp in each segment
+        used[10] = used[200] = False  # drop one timestamp in each day
 
-        base = _daily_segment_coverage(wide.index, used, ~treated)
-        up = _daily_segment_coverage(wide.index, used, treated)
+        expected = _expected_per_day(wide.index, _infer_timebase(wide.index))
+        assert expected.to_numpy() == pytest.approx(144)
+        base = _daily_segment_coverage(wide.index, used, ~treated, expected)
+        up = _daily_segment_coverage(wide.index, used, treated, expected)
         for series in (base, up):
-            finite = series.dropna()
-            assert ((finite >= 0.0) & (finite <= 1.0)).all()
-        # complete data minus one dropped timestamp per 144-stamp day.
-        assert base.dropna().to_numpy() == pytest.approx(143 / 144)
-        assert up.dropna().to_numpy() == pytest.approx(143 / 144)
+            assert ((series >= 0.0) & (series <= 1.0)).all()
+        # baseline: 143/144 on day 1, 0 on day 2 (no baseline data); upgraded mirrors it.
+        assert base.to_numpy() == pytest.approx([143 / 144, 0.0])
+        assert up.to_numpy() == pytest.approx([0.0, 143 / 144])
+        # the two segments sum to the day's overall complete-case coverage.
+        assert (base + up).to_numpy() == pytest.approx([143 / 144, 143 / 144])
+
+    def test_toggle_coverage_capped_near_duty_cycle(self) -> None:
+        # 20-on/20-off toggle on 10-min data -> each segment can occupy at most ~50% of a day.
+        idx = _index(288, freq="10min")
+        schedule = ToggleSchedule(period=pd.Timedelta(minutes=40), start=idx[0])
+        treated = np.asarray(treated_mask(idx, schedule))
+        scada = _recovery_scada(idx, treated=treated, uplift=0.05)
+        wide = scada.pivot_table(
+            index=scada.index, columns=DataColumns.turbine_name, values=DataColumns.active_power_mean
+        )
+        used = np.ones(len(wide), dtype=bool)
+
+        expected = _expected_per_day(wide.index, _infer_timebase(wide.index))
+        base = _daily_segment_coverage(wide.index, used, ~treated, expected)
+        up = _daily_segment_coverage(wide.index, used, treated, expected)
+        assert base.to_numpy() == pytest.approx(0.5)
+        assert up.to_numpy() == pytest.approx(0.5)
 
 
 def _read_only_csv(folder: Path, kind: str) -> pd.DataFrame:

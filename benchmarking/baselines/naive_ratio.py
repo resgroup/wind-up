@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.ticker import PercentFormatter
 
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import ToggleSchedule, treated_mask
@@ -255,17 +256,29 @@ def _daily_segment_ratio(
     return test.resample("1D").sum(min_count=1) / ref.resample("1D").sum(min_count=1)
 
 
-def _daily_segment_coverage(
-    index: pd.DatetimeIndex, used: npt.NDArray[np.bool_], seg_mask: npt.NDArray[np.bool_]
-) -> pd.Series:
-    """Daily used-data coverage in [0, 1].
+def _expected_per_day(index: pd.DatetimeIndex, timebase: pd.Timedelta) -> pd.Series:
+    """Daily count of timestamps the analysis timebase grid expects between the data's first and last."""
+    grid = pd.date_range(index.min(), index.max(), freq=timebase)
+    return pd.Series(1.0, index=grid).resample("1D").sum()
 
-    Of the segment timestamps present each day, the fraction that survived complete-case filtering
-    (test and every reference finite). NaN on days with no segment timestamps.
+
+def _daily_segment_coverage(
+    index: pd.DatetimeIndex,
+    used: npt.NDArray[np.bool_],
+    seg_mask: npt.NDArray[np.bool_],
+    expected_per_day: pd.Series,
+) -> pd.Series:
+    """Daily used-data coverage in [0, 1], as a fraction of the day's expected timestamps.
+
+    Numerator: complete-case timestamps (test and every reference finite) assigned to this segment
+    each day. Denominator: the day's expected timestamp count on the analysis timebase grid, which
+    is shared across segments. So the two segments' coverages sum to the day's overall complete-case
+    coverage, and under toggle each segment is capped near the duty cycle (~50%) of slots it can ever
+    occupy. NaN on days the grid does not reach.
     """
     used_seg = pd.Series((used & seg_mask).astype(float), index=index)
-    present_seg = pd.Series(seg_mask.astype(float), index=index)
-    return used_seg.resample("1D").sum() / present_seg.resample("1D").sum().replace(0.0, np.nan)
+    daily_used = used_seg.resample("1D").sum()
+    return daily_used / expected_per_day.reindex(daily_used.index)
 
 
 def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: str) -> None:
@@ -315,17 +328,20 @@ def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: s
     fig.savefig(plots_dir / f"{test}_ratio_timeseries.png", dpi=150)
     plt.close(fig)
 
-    # 3) daily used-data coverage, one series per segment, so each segment is seen to receive data.
+    # 3) daily used-data coverage as a fraction of the day's expected timestamps, one series per
+    # segment, so each segment is seen to receive its share (under toggle, ~50% each post-upgrade).
+    expected_per_day = _expected_per_day(wide.index, _infer_timebase(wide.index))
     fig, ax = plt.subplots(figsize=(10, 5))
     for label, _seg, color in segments:
         seg_mask = ~ts_treated if label == "baseline" else ts_treated
-        daily = _daily_segment_coverage(wide.index, used, seg_mask)
+        daily = _daily_segment_coverage(wide.index, used, seg_mask, expected_per_day)
         ax.plot(daily.index.to_numpy(), daily.to_numpy(), marker=".", linewidth=0.8, color=color, label=label)
     ax.axvline(upgrade_start, color="k", linestyle="--", label="upgrade start")
-    ax.set_ylim(-0.02, 1.02)
+    ax.set_ylim(0.0, 1.0)
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
     ax.set_xlabel("date")
-    ax.set_ylabel("used-data coverage [fraction]")
-    ax.set_title(f"{test}: daily used-data coverage (complete-case)")
+    ax.set_ylabel("used-data coverage")
+    ax.set_title(f"{test}: daily used-data coverage (complete-case, % of expected timestamps)")
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
