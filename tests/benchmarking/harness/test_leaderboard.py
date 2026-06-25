@@ -66,6 +66,22 @@ def test_mean_estimate_and_truth_are_averaged() -> None:
     assert row["mean_truth"] == pytest.approx(0.05)
 
 
+def test_wall_time_is_summed_and_averaged_per_group() -> None:
+    results = _results(
+        [
+            {"campaign_months": 3, "signed_error": 0.0, "wall_time_s": 1.5},
+            {"campaign_months": 3, "signed_error": 0.0, "wall_time_s": 2.5},
+            {"campaign_months": 6, "signed_error": 0.0, "wall_time_s": 4.0},
+        ]
+    )
+    summary = leaderboard(results).set_index("campaign_months")
+    # total compute for the group, and the typical per-run cost
+    assert summary.loc[3, "wall_time_s_sum"] == pytest.approx(4.0)
+    assert summary.loc[3, "wall_time_s_mean"] == pytest.approx(2.0)
+    assert summary.loc[6, "wall_time_s_sum"] == pytest.approx(4.0)
+    assert summary.loc[6, "wall_time_s_mean"] == pytest.approx(4.0)
+
+
 def test_methods_are_compared_side_by_side() -> None:
     results = pd.DataFrame(
         [

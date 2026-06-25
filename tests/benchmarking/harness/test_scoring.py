@@ -58,6 +58,14 @@ def test_results_have_one_row_per_method_replicate_and_campaign_length() -> None
     assert set(results.columns) >= expected_columns
 
 
+def test_results_record_wall_time_per_run() -> None:
+    base = _base_scada()
+    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1))
+    assert "wall_time_s" in results.columns
+    assert results["wall_time_s"].notna().all()
+    assert (results["wall_time_s"] >= 0).all()
+
+
 def test_results_record_the_window_boundaries_per_replicate() -> None:
     base = _base_scada()
     results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1))
@@ -168,4 +176,7 @@ def test_on_method_complete_is_optional() -> None:
         base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(), on_method_complete=lambda _n, _d: None
     )
     without_cb = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study())
-    pd.testing.assert_frame_equal(with_cb, without_cb)
+    # wall_time_s is measured per run, so it differs between two runs; the callback must not change
+    # anything else.
+    drop = ["wall_time_s"]
+    pd.testing.assert_frame_equal(with_cb.drop(columns=drop), without_cb.drop(columns=drop))

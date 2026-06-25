@@ -141,3 +141,13 @@ its accuracy/precision appears in the leaderboard.
   Phase 2).
 - Conditional/heterogeneous uplift reporting & SHAP story (G3, Phase 2).
 - Report content generation and I/O / step-independence maturation (WS5, Phase 4).
+- **Method-controlled baseline horizon / recency weighting (R-learner).** Today the R-learner
+  pools *all* pre-upgrade baseline it is given (e.g. 24 months) into the nuisance fits with equal
+  weight, and uses no timestamp features, so it cannot down-weight stale data. Since the goal is
+  usually the upgrade's *future* benefit, the most recent baseline is the most representative of
+  the farm's future state, and far-past data (turbine ageing, sensor drift, soiling, controller
+  changes) is less so. Add a method-owned horizon control — a `max_baseline_months` cap and/or an
+  exponential recency weight on the fit (via LightGBM `sample_weight`) — so the method, not the
+  harness, decides how far back to trust. Keep it compatible with the no-timestamp-feature rule
+  (weighting/selection by recency is fine; calendar features are not) and the block bootstrap.
+  Pairs naturally with the long-term ERA5 extrapolation work (representativeness weighting, WS4).

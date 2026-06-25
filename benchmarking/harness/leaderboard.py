@@ -20,7 +20,9 @@ def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
     Only overall-uplift rows (``condition == "overall"``) are summarised; per-condition rows are
     excluded. Returns one row per group with ``bias``, ``spread``, ``score``, the mean recovered
     and true uplift (``mean_estimate`` / ``mean_truth``, when those columns are present in the
-    input) and ``n_replicates``, sorted by method, profile then campaign length.
+    input), ``n_replicates``, and the group's wall time (``wall_time_s_sum`` total and
+    ``wall_time_s_mean`` per run, when ``wall_time_s`` is present), sorted by method, profile then
+    campaign length.
     """
     overall = results_df[results_df["condition"] == "overall"] if "condition" in results_df else results_df
 
@@ -36,7 +38,19 @@ def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
                 "mean_estimate": float(group["estimate"].mean()) if "estimate" in group else float("nan"),
                 "mean_truth": float(group["truth"].mean()) if "truth" in group else float("nan"),
                 "n_replicates": summary.n,
+                "wall_time_s_sum": float(group["wall_time_s"].sum()) if "wall_time_s" in group else float("nan"),
+                "wall_time_s_mean": float(group["wall_time_s"].mean()) if "wall_time_s" in group else float("nan"),
             }
         )
-    columns = [*_GROUP_KEYS, "bias", "spread", "score", "mean_estimate", "mean_truth", "n_replicates"]
+    columns = [
+        *_GROUP_KEYS,
+        "bias",
+        "spread",
+        "score",
+        "mean_estimate",
+        "mean_truth",
+        "n_replicates",
+        "wall_time_s_sum",
+        "wall_time_s_mean",
+    ]
     return pd.DataFrame(records, columns=columns)

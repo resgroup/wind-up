@@ -17,6 +17,7 @@ long-format DataFrame, the input to the leaderboard and plots.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -72,7 +73,9 @@ def score_study(
         method_rows = []
         for (replicate, window), truth in zip(instances, truths, strict=True):
             method_input = _method_input(replicate, window)
+            start = time.perf_counter()
             output = method.estimate(method_input)
+            wall_time_s = time.perf_counter() - start
             method_rows.append(
                 {
                     "method": method.name,
@@ -87,6 +90,7 @@ def score_study(
                     "estimate": output.p50_overall,
                     "truth": truth,
                     "signed_error": output.p50_overall - truth,
+                    "wall_time_s": wall_time_s,
                 }
             )
         if on_method_complete is not None:

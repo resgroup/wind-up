@@ -126,3 +126,37 @@ class TestDiagnostics:
         run_dir = next(p for p in Path(tmp_path).iterdir() if p.is_dir())
         pngs = {p.name for p in (run_dir / "plots").glob("*.png")}
         assert pngs  # at least the feature-importance plot
+
+
+class TestToggleCampaignOnly:
+    """A toggle fit restricted to the campaign window has a balanced (~0.5) propensity."""
+
+    def _toggle_scada(self) -> tuple[pd.DataFrame, ToggleSchedule]:
+        idx = _index(3000)
+        start = idx[1500]  # 1500 pre-campaign rows, then 1500 rows of interleaved on/off
+        schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=start)
+        treated = np.asarray(treated_mask(idx, schedule))
+        return _weather_scada(idx, treated=treated, uplift=0.03), schedule
+
+    def test_campaign_only_balances_propensity_and_recovers(self, tmp_path: Path) -> None:
+        scada, schedule = self._toggle_scada()
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        out_on = RLearnerMethod(
+            active_power_col=_POWER, wind_speed_col=_WS, out_dir=tmp_path / "on", n_folds=4, model_params=_SMALL
+        ).estimate(mi)
+        RLearnerMethod(
+            active_power_col=_POWER,
+            wind_speed_col=_WS,
+            out_dir=tmp_path / "off",
+            n_folds=4,
+            model_params=_SMALL,
+            toggle_campaign_only=False,
+        ).estimate(mi)
+        res_on = _read_one(tmp_path / "on", "results").iloc[0]
+        res_off = _read_one(tmp_path / "off", "results").iloc[0]
+        # campaign-only: ~50/50 on/off so propensity centres near 0.5; full-window dilutes it with
+        # 1500 pre-campaign baseline rows, dragging the mean propensity well below 0.5.
+        assert res_on["propensity_mean"] == pytest.approx(0.5, abs=0.12)
+        assert res_on["propensity_mean"] > res_off["propensity_mean"]
+        assert res_on["n_selected"] < res_off["n_selected"]
+        assert out_on.p50_overall == pytest.approx(0.03, abs=0.015)

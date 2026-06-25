@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +59,21 @@ def _upgrade_start(upgrade_timing: pd.Timestamp | ToggleSchedule, index: pd.Date
     return pd.Timestamp(upgrade_timing)
 
 
+def _restrict_to_campaign(mi: MethodInput, *, toggle_campaign_only: bool) -> MethodInput:
+    """Drop pre-campaign rows for a toggle campaign so the on/off comparison shares a distribution.
+
+    The harness toggle window also carries the pre-campaign baseline, whose distribution differs
+    from the campaign and reintroduces the temporal confounding toggling exists to avoid. When
+    ``toggle_campaign_only`` (the default), restrict a toggle input to records at/after the toggle
+    start (the interleaved on/off blocks), giving a balanced propensity and pure variance
+    reduction. No-op for prepost and when the flag is off.
+    """
+    timing = mi.upgrade_timing
+    if not (toggle_campaign_only and isinstance(timing, ToggleSchedule) and timing.start is not None):
+        return mi
+    return replace(mi, scada_df=mi.scada_df.loc[mi.scada_df.index >= timing.start])
+
+
 @dataclass
 class RLearnerMethod:
     """Pluggable cross-fit R-learner uplift estimator (prepost and toggle).
@@ -75,6 +90,9 @@ class RLearnerMethod:
     :param seed: cross-fitting seed
     :param model_params: LightGBM overrides passed to every nuisance/effect model
     :param timebase: analysis timebase; inferred from the data when ``None``
+    :param toggle_campaign_only: for a toggle campaign, fit only on the interleaved on/off blocks
+        (drop the pre-campaign baseline) so the propensity is balanced and there is no temporal
+        confounding; no-op for prepost (whose baseline is the pre-campaign data)
     """
 
     active_power_col: str
@@ -88,9 +106,11 @@ class RLearnerMethod:
     seed: int = 0
     model_params: dict[str, Any] = field(default_factory=dict)
     timebase: pd.Timedelta | None = None
+    toggle_campaign_only: bool = True
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
+        mi = _restrict_to_campaign(mi, toggle_campaign_only=self.toggle_campaign_only)
         scada = mi.scada_df
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
