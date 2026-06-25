@@ -6,8 +6,9 @@ issues on `resgroup/wind-up`. These cover **Phase 1** only (see
 minimal data contract, and the first new candidate method — all judged on **P50
 accuracy and precision only**.
 
-Suggested order of execution: #1 → #2 → #3 → #4 → #5, with #4 (the data contract)
-informing #3 and #5.
+Suggested order of execution: #1 → #2 → #3 → #4 → #5. (Issue 4 was originally a data
+contract + method-selector issue; it has been re-scoped to a naive energy-ratio method —
+see Issue 4 below for why.)
 
 ---
 
@@ -69,26 +70,41 @@ reference point in the leaderboard.
 
 ---
 
-## Issue 4 — Assessment data contract + pluggable method interface (WS3)
+## Issue 4 — Naive energy-ratio method (WS3)
 
-**Goal:** the minimal foundation that lets multiple methods and the harness share
-one interface — without a big refactor.
+**Goal:** a second, deliberately simple, fully independent method that validates the
+harness is not implicitly tuned to v0 — and proves the existing thin method seam is
+genuinely pluggable.
+
+**Why this, not the original "data contract" issue:** the thin
+`MethodInput`/`MethodOutput` seam from Issues 2–3 already *is* the shared, method-
+agnostic contract; the drafted "per test-reference conditioned dataset" was over-fit to
+v0 (an R-learner fits once per test turbine over all references at once), and the
+`assessment_method` production selector only earns its place once there is a winner to
+promote. The durable kernel of the old issue — a treatment-invariant reference-only
+feature builder + the §8 bias-guard test (design note §3/§8) — folds into Issue 5.
+
+**The method.** For a set of rows let `ρ = Σ test_power / Σ reference_total_power` over
+*complete-case* timestamps (test turbine **and every** reference finite). Estimate
+`uplift = ρ(treated) / ρ(baseline) − 1`. It never reads the test turbine's own wind
+speed (design note §3), shares no code with v0, and has no wind_up dependency. It makes
+no covariate-shift correction by design, so it is the "don't condition at all" floor:
+biased on prepost, near-unbiased on toggle (interleaved on/off share a wind
+distribution).
 
 **Scope**
-- Define a standardized **per test-reference, pre/post conditioned dataset** (a
-  documented schema) carrying **treatment-invariant features only** (reference /
-  met-mast / LiDAR / ERA5 derived; never the test turbine's own SCADA wind speed —
-  see design note §3).
-- Define a thin method interface: input = the contract; output = a P50 uplift
-  estimate (overall and, where supported, per condition).
-- Add a minimal `assessment_method` selector so a method can be chosen via config,
-  reusing existing inputs / test-ref pairing / result objects.
+- `NaiveRatioMethod` behind the existing `Method` seam; prepost **and** toggle.
+- Rich per-run diagnostics (a data-stats CSV per `all`/`baseline`/`upgraded` segment, a
+  headline-results CSV, optional plots) so a human can confirm the right data was
+  received and interpreted; the headline uplift is re-derivable from the stats CSV.
+- Add toggle support to `V0BinnedMethod` (wiring wind_up's native toggle assessment) so
+  v0 can be scored on toggle campaigns too.
+- Add the naive method to the existing prepost driver; add a new toggle example driver
+  (3% Cp increase, 20-min-on/20-min-off) scoring naive + v0 + oracle.
 
-**Done when:** the v0 baseline (Issue 3) and a stub method both run through the
-same contract + selector, and the harness (Issue 2) consumes their outputs.
-
-**Note:** keep this deliberately thin — just enough to avoid baking in assumptions
-about the winning method.
+**Done when:** `naive_ratio` is scored alongside `v0_binned` and the oracle on the
+synthetic profiles for both prepost and toggle, the per-run diagnostics are written, and
+its accuracy/precision appears in the leaderboard.
 
 ---
 

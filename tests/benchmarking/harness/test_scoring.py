@@ -139,3 +139,33 @@ def test_two_methods_scored_side_by_side() -> None:
     biased_err = results[results["method"] == "biased"]["signed_error"].to_numpy()
     assert np.allclose(oracle_err, 0.0, atol=1e-9)
     assert np.allclose(biased_err, 0.01, atol=1e-9)
+
+
+def test_on_method_complete_fires_per_method_with_only_that_methods_rows() -> None:
+    base = _base_scada()
+    seen: list[tuple[str, pd.DataFrame]] = []
+    methods = [OracleMethod(base), BiasedMethod(base, offset=0.01)]
+    results = score_study(
+        base,
+        profile=PROFILE,
+        methods=methods,
+        study=_study(),
+        on_method_complete=lambda name, df: seen.append((name, df)),
+    )
+    # one call per method, in method order, each carrying only that method's rows
+    assert [name for name, _ in seen] == ["oracle", "biased"]
+    for name, df in seen:
+        assert set(df["method"]) == {name}
+        assert len(df) == 4 * 2  # 4 replicates x 2 campaign lengths
+    # the callback never changes the returned frame: the slices concatenate back to it exactly
+    rebuilt = pd.concat([df for _, df in seen], ignore_index=True)
+    pd.testing.assert_frame_equal(rebuilt, results)
+
+
+def test_on_method_complete_is_optional() -> None:
+    base = _base_scada()
+    with_cb = score_study(
+        base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(), on_method_complete=lambda _n, _d: None
+    )
+    without_cb = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study())
+    pd.testing.assert_frame_equal(with_cb, without_cb)

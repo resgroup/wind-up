@@ -19,6 +19,7 @@ import without them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -357,7 +358,140 @@ hill_of_towie_fields = [
 ]
 
 
-def load_hot_10min_data(  # noqa: C901
+def _unpack_hot_10min_year(
+    *,
+    data_dir: Path,
+    year: int,
+    serial_numbers: Sequence[int],
+    fields_to_load: Sequence[WPSBackupFileField],
+    rename_cols_using_aliases: bool,
+) -> pd.DataFrame:
+    """Unpack one full year zip into a wide, serial-keyed 10-min dataframe (the slow step).
+
+    This is the expensive part of :func:`load_hot_10min_data` (reading and pivoting every monthly
+    CSV in the year zip); it is cached per (year, turbine) by :func:`_load_unpacked_hot_10min`.
+    The result covers the whole year (no window clipping), is keyed on serial numbers (not turbine
+    names), and only includes the requested ``serial_numbers``.
+    """
+    from tqdm import tqdm  # noqa: PLC0415  (lazy: keep network deps out of the import path)
+
+    tables_to_load = {x.table_name for x in fields_to_load}
+    zip_path = data_dir / f"{year}.zip"
+    logger.info("Beginning 10min data unpacking: %s", zip_path)
+    with ZipFile(zip_path) as zip_file:
+        year_dfs = []
+        for _table in tqdm(tables_to_load, desc=f"unpacking {zip_path.stem}"):
+            table_dfs = []
+            for _month in range(1, 13):
+                if (fname := f"{_table}_{year}_{_month:02d}.csv") not in zip_file.namelist():
+                    continue
+                _df = pd.read_csv(zip_file.open(fname), index_col=0, parse_dates=True)[
+                    ["StationId", *[x.field_name for x in fields_to_load if x.table_name == _table]]
+                ]
+                if rename_cols_using_aliases:
+                    _df = _df.rename(columns={x.field_name: x.alias for x in fields_to_load if x.table_name == _table})
+                if _df.index.name != "TimeStamp":
+                    msg = f"unexpected index name, {_df.index.name =}"
+                    raise ValueError(msg)
+                if not isinstance(_df.index, pd.DatetimeIndex):
+                    _df.index = pd.to_datetime(_df.index, format="ISO8601")
+                    if not isinstance(_df.index, pd.DatetimeIndex):
+                        msg = f"unexpected index type, {_df.index.name =} {type(_df.index)=}"
+                        raise TypeError(msg)
+                # convert to Start Format UTC
+                _df.index = _df.index.tz_localize("UTC")  # type:ignore[attr-defined]
+                _df.index = _df.index - pd.Timedelta(minutes=10)
+                _df.index.name = "TimeStamp_StartFormat"
+                # drop any timestamps not in this month; files overlap by 10 minutes
+                _df = _df[(_df.index.year == year) & (_df.index.month == _month)]  # type:ignore[attr-defined,assignment]
+                _df = _df[_df["StationId"].isin(serial_numbers)]
+                pivoted_df = _df.pivot_table(
+                    index=_df.index.name,
+                    columns="StationId",
+                    values=[x for x in _df.columns if x != "StationId"],
+                ).swaplevel(axis=1)
+                table_dfs.append(pivoted_df)
+            table_df = pd.concat(table_dfs, verify_integrity=True, sort=True)
+            year_dfs.append(table_df)
+        return pd.concat(year_dfs, axis=1)
+
+
+def _year_turbine_cache_path(
+    *,
+    year: int,
+    serial_number: int,
+    fields_to_load: Sequence[WPSBackupFileField],
+    rename_cols_using_aliases: bool,
+    cache_dir: Path,
+) -> Path:
+    """Build the deterministic parquet path for one (year, turbine).
+
+    The Zenodo record is a fixed one-zip-per-year layout, so a turbine-year is the stable unit of
+    work: the path depends only on the year, the turbine, and the field set (folded into a short
+    hash so a custom field selection gets its own files). It deliberately does **not** depend on
+    the requested window or the rest of the turbine subset, so any study reuses these files.
+    """
+    fields_blob = json.dumps(
+        {
+            "fields": sorted(f"{x.table_name}.{x.field_name}->{x.alias}" for x in fields_to_load),
+            "rename_cols_using_aliases": rename_cols_using_aliases,
+        },
+        sort_keys=True,
+    )
+    fields_hash = hashlib.sha256(fields_blob.encode("utf-8")).hexdigest()[:16]
+    wtg_number = serial_number - _HOT_SERIAL_OFFSET
+    return cache_dir / f"hot10min_{year}_T{wtg_number:02d}_{fields_hash}.parquet"
+
+
+def _load_unpacked_hot_10min(
+    *,
+    data_dir: Path,
+    years_to_load: Sequence[int],
+    serial_numbers: Sequence[int],
+    fields_to_load: Sequence[WPSBackupFileField],
+    rename_cols_using_aliases: bool,
+    cache_dir: Path,
+) -> pd.DataFrame:
+    """Return the full-year, serial-keyed 10-min df for the requested years and turbines.
+
+    Caches one parquet per (year, turbine): a turbine-year is unpacked from its zip at most once
+    and then reused for any window or turbine subset. When some requested turbines are not yet
+    cached for a year, that year's zip is unpacked once for just those turbines and one parquet is
+    written per turbine. Delete a file to force a re-unpack of that turbine-year.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    year_frames = []
+    for year in years_to_load:
+        paths = {
+            serial: _year_turbine_cache_path(
+                year=year,
+                serial_number=serial,
+                fields_to_load=fields_to_load,
+                rename_cols_using_aliases=rename_cols_using_aliases,
+                cache_dir=cache_dir,
+            )
+            for serial in serial_numbers
+        }
+        missing = [serial for serial in serial_numbers if not paths[serial].exists()]
+        if missing:
+            logger.info("HoT %d cache miss for turbines %s; unpacking", year, missing)
+            unpacked = _unpack_hot_10min_year(
+                data_dir=data_dir,
+                year=year,
+                serial_numbers=missing,
+                fields_to_load=fields_to_load,
+                rename_cols_using_aliases=rename_cols_using_aliases,
+            )
+            for serial in missing:
+                serial_df = unpacked.loc[:, unpacked.columns.get_level_values(0) == serial]
+                logger.info("Writing HoT cache: %s", paths[serial])
+                serial_df.to_parquet(paths[serial])
+        per_turbine = [pd.read_parquet(paths[serial]) for serial in serial_numbers]
+        year_frames.append(pd.concat(per_turbine, axis=1))
+    return pd.concat(year_frames, verify_integrity=True, sort=True)
+
+
+def load_hot_10min_data(
     *,
     data_dir: Path,
     wtg_numbers: Sequence[int],
@@ -366,10 +500,16 @@ def load_hot_10min_data(  # noqa: C901
     use_turbine_names: bool = True,
     rename_cols_using_aliases: bool = False,
     custom_fields: Sequence[WPSBackupFileField] | None = None,
+    cache_dir: Path | None = None,
 ) -> pd.DataFrame:
-    """Return a wide 10-min SCADA dataframe for Hill of Towie (downloading year zips)."""
-    from tqdm import tqdm  # noqa: PLC0415  (lazy: keep network deps out of the import path)
+    """Return a wide 10-min SCADA dataframe for Hill of Towie (downloading year zips).
 
+    The slow zip-unpacking step is cached as parquet under ``cache_dir`` (defaults to
+    ``data_dir / "unpacked_cache"``), one file per (year, turbine). Because the Zenodo record is a
+    fixed one-zip-per-year layout, a turbine-year is unpacked at most once and then reused for any
+    window or turbine subset, so repeated studies over the same data skip re-reading every monthly
+    CSV.
+    """
     if str(start_dt.tz) != "UTC" or str(end_dt_excl.tz) != "UTC":
         msg = "start_dt and end_dt_excl must be in UTC"
         raise ValueError(msg)
@@ -383,57 +523,14 @@ def load_hot_10min_data(  # noqa: C901
     years_to_load = list(range(first_year_to_load, last_year_to_load + 1))
     ensure_hot_data_files([f"{y}.zip" for y in years_to_load], data_dir=data_dir)
     fields_to_load = hill_of_towie_fields if custom_fields is None else custom_fields
-    tables_to_load = {x.table_name for x in fields_to_load}
-    result_dfs = []
-    for i_year, _year in enumerate(years_to_load):
-        zip_path = data_dir / f"{_year}.zip"
-        logger.info("[%d/%d] Beginning 10min data unpacking: %s", i_year + 1, len(years_to_load), zip_path)
-        with ZipFile(zip_path) as zip_file:
-            year_dfs = []
-            for _table in tqdm(tables_to_load, desc=f"unpacking {zip_path.stem}"):
-                table_dfs = []
-                for _month in range(1, 13):
-                    if pd.Timestamp(year=_year, month=_month, day=1, tz="UTC") < (
-                        start_dt - pd.DateOffset(months=1, days=1)
-                    ) or pd.Timestamp(year=_year, month=_month, day=1, tz="UTC") > (
-                        end_dt_excl + pd.DateOffset(months=1, days=1)
-                    ):
-                        continue
-                    if (fname := f"{_table}_{_year}_{_month:02d}.csv") not in zip_file.namelist():
-                        continue
-                    _df = pd.read_csv(zip_file.open(fname), index_col=0, parse_dates=True)[
-                        ["StationId", *[x.field_name for x in fields_to_load if x.table_name == _table]]
-                    ]
-                    if rename_cols_using_aliases:
-                        _df = _df.rename(
-                            columns={x.field_name: x.alias for x in fields_to_load if x.table_name == _table}
-                        )
-                    if _df.index.name != "TimeStamp":
-                        msg = f"unexpected index name, {_df.index.name =}"
-                        raise ValueError(msg)
-                    if not isinstance(_df.index, pd.DatetimeIndex):
-                        _df.index = pd.to_datetime(_df.index, format="ISO8601")
-                        if not isinstance(_df.index, pd.DatetimeIndex):
-                            msg = f"unexpected index type, {_df.index.name =} {type(_df.index)=}"
-                            raise TypeError(msg)
-                    # convert to Start Format UTC
-                    _df.index = _df.index.tz_localize("UTC")  # type:ignore[attr-defined]
-                    _df.index = _df.index - pd.Timedelta(minutes=10)
-                    _df.index.name = "TimeStamp_StartFormat"
-                    # drop any timestamps not in this month; files overlap by 10 minutes
-                    _df = _df[(_df.index.year == _year) & (_df.index.month == _month)]  # type:ignore[attr-defined,assignment]
-                    _df = _df[_df["StationId"].isin(serial_numbers)]
-                    pivoted_df = _df.pivot_table(
-                        index=_df.index.name,
-                        columns="StationId",
-                        values=[x for x in _df.columns if x != "StationId"],
-                    ).swaplevel(axis=1)
-                    table_dfs.append(pivoted_df)
-                table_df = pd.concat(table_dfs, verify_integrity=True, sort=True)
-                year_dfs.append(table_df)
-            year_df = pd.concat(year_dfs, axis=1)
-            result_dfs.append(year_df)
-    combined_df = pd.concat(result_dfs, verify_integrity=True, sort=True)
+    combined_df = _load_unpacked_hot_10min(
+        data_dir=data_dir,
+        years_to_load=years_to_load,
+        serial_numbers=serial_numbers,
+        fields_to_load=fields_to_load,
+        rename_cols_using_aliases=rename_cols_using_aliases,
+        cache_dir=cache_dir if cache_dir is not None else data_dir / "unpacked_cache",
+    )
     if use_turbine_names:
         cols = combined_df.columns
         serial_to_name = {x: f"T{x - _HOT_SERIAL_OFFSET:02d}" for x in cols.get_level_values(0).unique()}

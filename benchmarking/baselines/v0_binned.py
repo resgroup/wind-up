@@ -17,7 +17,14 @@ With ``years_offset_for_pre_period: 1`` and ``years_for_{lt_distribution,detrend
 ``from_yaml`` derives a seasonally-matched pre period (the post window shifted back one year)
 and a one-year detrend window; the harness only provides ~12 months of pre data, so the pre
 and detrend windows are constrained accordingly — the campaign-length degradation the harness
-exists to measure. Prepost mode only; a ``ToggleSchedule`` input raises ``NotImplementedError``.
+exists to measure.
+
+Both prepost and toggle inputs are supported. A ``ToggleSchedule`` selects wind_up's native
+toggle assessment: the config carries a ``toggle:`` block (``detrend_data_selection:
+use_toggle_off_data``, settling filter 0) instead of the prepost offset fields, and the on/off
+signal is supplied as a ``toggle_df`` built from the schedule (see ``_build_toggle_df``). For
+toggle, the power-performance split uses campaign data only (``analysis_first`` =
+``upgrade_first``), while pre-processing/detrend/long-term steps still use pre-campaign data.
 """
 
 from __future__ import annotations
@@ -27,10 +34,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.synthetic import ToggleSchedule
+from benchmarking.synthetic import ToggleSchedule, treated_mask
 from wind_up.combine_results import combine_results
 from wind_up.constants import DataColumns
 from wind_up.interface import AssessmentInputs
@@ -58,6 +66,49 @@ optimize_northing_corrections: false
 northing_corrections_utc: !include {northing_yaml}
 asset: !include {asset_yaml}
 """
+
+# Toggle variant: wind_up's native toggle assessment. ``analysis_first`` is derived as the
+# toggle campaign start (``upgrade_first``), so the on/off power-performance split uses only
+# campaign data; long-term/detrend windows still reach back into pre-campaign data. The toggle
+# signal is supplied directly as a ``toggle_df`` (see ``_build_toggle_df``), so ``toggle_filename``
+# is a never-read placeholder. The settling filter is 0 because the synthetic toggle blocks are
+# short and have no real settling transient.
+_TOGGLE_YAML_TEMPLATE = """\
+assessment_name: {assessment_name}
+test_wtgs:
+  - {test_wtg}
+ref_wtgs:
+{ref_lines}
+upgrade_first_dt_utc_start: {upgrade}
+analysis_last_dt_utc_start: {analysis_last}
+years_for_lt_distribution: 1
+years_for_detrend: 1
+use_lt_distribution: false
+ws_bin_width: {ws_bin_width}
+reanalysis_method: {reanalysis_method}
+optimize_northing_corrections: false
+toggle:
+  toggle_file_per_turbine: false
+  toggle_filename: not_used.parquet
+  detrend_data_selection: use_toggle_off_data
+  toggle_change_settling_filter_seconds: 0
+northing_corrections_utc: !include {northing_yaml}
+asset: !include {asset_yaml}
+"""
+
+
+def _build_toggle_df(scada_df: pd.DataFrame, schedule: ToggleSchedule) -> pd.DataFrame:
+    """Build wind_up's toggle signal (``toggle_on``/``toggle_off``) from a ``ToggleSchedule``.
+
+    Realistic toggle-signal semantics: before the campaign start both flags are False (no signal
+    yet), and from the start onward exactly one is True per record (``toggle_on`` = treated,
+    ``toggle_off`` = the interleaved off-blocks). Indexed by the data's unique timestamps so
+    ``add_toggle_signals`` can merge it onto every turbine.
+    """
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    toggle_on = np.asarray(treated_mask(index, schedule))
+    toggle_off = (~toggle_on) & np.asarray(index >= schedule.start) if schedule.start is not None else ~toggle_on
+    return pd.DataFrame({"toggle_on": toggle_on, "toggle_off": toggle_off}, index=index)
 
 
 def _subset_turbines(scada_df: pd.DataFrame) -> list[str]:
@@ -96,21 +147,23 @@ class V0BinnedMethod:
     save_plots: bool = False
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
-        """Run a faithful v0 pre/post analysis for one campaign and return its P50 uplift."""
-        if isinstance(mi.upgrade_timing, ToggleSchedule):
-            msg = "V0BinnedMethod supports prepost mode only; toggle schedules are not implemented"
-            raise NotImplementedError(msg)
-
+        """Run a faithful v0 power-performance analysis (prepost or toggle) and return its P50 uplift."""
         cfg = self._build_config(mi)
         plot_cfg = PlotConfig(show_plots=False, save_plots=self.save_plots, plots_dir=cfg.out_dir / "plots")
-        inputs = AssessmentInputs.from_cfg(
-            cfg=cfg,
-            plot_cfg=plot_cfg,
-            scada_df=mi.scada_df,
-            metadata_df=self.context.metadata_df,
-            reanalysis_datasets=self.context.reanalysis_datasets,
-            cache_dir=None,
-        )
+        from_cfg_kwargs: dict = {
+            "cfg": cfg,
+            "plot_cfg": plot_cfg,
+            # wind_up mutates the SCADA frame in place (e.g. smart_data.check_and_convert_scada_raw);
+            # the harness hands us a ``.loc`` slice, so pass a defensive copy to avoid pandas'
+            # SettingWithCopyWarning (escalated to an error by the test suite's warning filter).
+            "scada_df": mi.scada_df.copy(),
+            "metadata_df": self.context.metadata_df,
+            "reanalysis_datasets": self.context.reanalysis_datasets,
+            "cache_dir": None,
+        }
+        if isinstance(mi.upgrade_timing, ToggleSchedule):
+            from_cfg_kwargs["toggle_df"] = _build_toggle_df(mi.scada_df, mi.upgrade_timing)
+        inputs = AssessmentInputs.from_cfg(**from_cfg_kwargs)
         trdf = run_wind_up_analysis(inputs)
         tdf = combine_results(trdf, auto_choose_refs=False, plot_config=None)
         tdf.to_csv(
@@ -129,13 +182,20 @@ class V0BinnedMethod:
                 f"{subset}. The v0 binned method needs at least one reference turbine."
             )
             raise ValueError(msg)
-        upgrade = pd.Timestamp(mi.upgrade_timing)
+        is_toggle = isinstance(mi.upgrade_timing, ToggleSchedule)
+        if is_toggle:
+            upgrade = pd.Timestamp(
+                mi.upgrade_timing.start if mi.upgrade_timing.start is not None else mi.scada_df.index.min()
+            )
+        else:
+            upgrade = pd.Timestamp(mi.upgrade_timing)
         analysis_last = pd.Timestamp(mi.scada_df.index.max())
         assessment_name = f"v0_{mi.test_wtg}_{upgrade:%Y%m%d}_{analysis_last:%Y%m%d}"
 
         scratch = Path(self.scratch_dir) if self.scratch_dir is not None else Path(tempfile.mkdtemp(prefix="v0_"))
         scratch.mkdir(parents=True, exist_ok=True)
-        yaml_text = _CAMPAIGN_YAML_TEMPLATE.format(
+        template = _TOGGLE_YAML_TEMPLATE if is_toggle else _CAMPAIGN_YAML_TEMPLATE
+        yaml_text = template.format(
             assessment_name=assessment_name,
             test_wtg=mi.test_wtg,
             ref_lines="\n".join(f"  - {r}" for r in refs),
