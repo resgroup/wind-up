@@ -50,8 +50,8 @@ def plot_power_curve_comparison(
     against wind speed for the treated records. Records the upgrade actually changed
     (NaN-safe) are highlighted in the first two panels.
 
-    :param synthetic_df: wind-up-format synthetic SCADA (all turbines)
-    :param original_df: the untouched original SCADA (all turbines)
+    :param synthetic_df: source-native synthetic SCADA (all turbines), keyed by ``columns``
+    :param original_df: the untouched source-native original SCADA (all turbines)
     :param test_wtg: turbine to plot
     :param save_path: if given, the figure is written here (PNG)
     :param title: optional overall figure title

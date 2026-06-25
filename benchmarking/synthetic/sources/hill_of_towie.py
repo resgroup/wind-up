@@ -340,16 +340,28 @@ class WPSBackupFileField(NamedTuple):
     table_name: str
 
 
+# Source-native Hill of Towie tag names referenced by ``HOT_COLUMNS`` (the source-native schema
+# methods see). Defined once here and reused below in ``hill_of_towie_fields`` so each tag string
+# lives in exactly one place, while ``HOT_COLUMNS`` is built directly from these tags rather than
+# routed through the v0 ``DataColumns`` vocabulary (which stays confined to the on-ramp aliases).
+_TAG_ACTIVE_POWER_MEAN = "wtc_ActPower_mean"
+_TAG_WIND_SPEED_MEAN = "wtc_AcWindSp_mean"
+_TAG_WIND_SPEED_SD = "wtc_AcWindSp_stddev"
+_TAG_GEN_RPM_MEAN = "wtc_GenRpm_mean"
+
+
 hill_of_towie_fields = [
-    WPSBackupFileField(alias=DataColumns.active_power_mean, field_name="wtc_ActPower_mean", table_name="tblSCTurGrid"),
+    WPSBackupFileField(
+        alias=DataColumns.active_power_mean, field_name=_TAG_ACTIVE_POWER_MEAN, table_name="tblSCTurGrid"
+    ),
     WPSBackupFileField(alias=DataColumns.active_power_sd, field_name="wtc_ActPower_stddev", table_name="tblSCTurGrid"),
     WPSBackupFileField(alias="ReactivePowerMean", field_name="wtc_ReactPwr_mean", table_name="tblSCTurGrid"),
-    WPSBackupFileField(alias=DataColumns.wind_speed_mean, field_name="wtc_AcWindSp_mean", table_name="tblSCTurbine"),
-    WPSBackupFileField(alias=DataColumns.wind_speed_sd, field_name="wtc_AcWindSp_stddev", table_name="tblSCTurbine"),
+    WPSBackupFileField(alias=DataColumns.wind_speed_mean, field_name=_TAG_WIND_SPEED_MEAN, table_name="tblSCTurbine"),
+    WPSBackupFileField(alias=DataColumns.wind_speed_sd, field_name=_TAG_WIND_SPEED_SD, table_name="tblSCTurbine"),
     WPSBackupFileField(alias=DataColumns.yaw_angle_mean, field_name="wtc_NacelPos_mean", table_name="tblSCTurbine"),
     WPSBackupFileField(alias=DataColumns.yaw_angle_min, field_name="wtc_NacelPos_min", table_name="tblSCTurbine"),
     WPSBackupFileField(alias=DataColumns.yaw_angle_max, field_name="wtc_NacelPos_max", table_name="tblSCTurbine"),
-    WPSBackupFileField(alias=DataColumns.gen_rpm_mean, field_name="wtc_GenRpm_mean", table_name="tblSCTurbine"),
+    WPSBackupFileField(alias=DataColumns.gen_rpm_mean, field_name=_TAG_GEN_RPM_MEAN, table_name="tblSCTurbine"),
     WPSBackupFileField(alias="pitch_angle_a", field_name="wtc_PitcPosA_mean", table_name="tblSCTurbine"),
     WPSBackupFileField(alias="pitch_angle_b", field_name="wtc_PitcPosB_mean", table_name="tblSCTurbine"),
     WPSBackupFileField(alias="pitch_angle_c", field_name="wtc_PitcPosC_mean", table_name="tblSCTurbine"),
@@ -363,16 +375,15 @@ hill_of_towie_fields = [
 
 # The Hill of Towie source-native column schema the synthetic pipeline and methods see. The
 # raw 10-min tag names (``wtc_*``) are kept as-is (no v0 aliasing); the long-format turbine
-# identifier is ``TurbineName`` (assigned by :func:`scada_wide_to_long`). Derived from
-# ``hill_of_towie_fields`` so the source's tag names live in exactly one place.
-_FIELD_BY_ALIAS = {f.alias: f.field_name for f in hill_of_towie_fields}
+# identifier is ``TurbineName`` (assigned by :func:`scada_wide_to_long`). Built directly from
+# the source-native tag constants above, so the schema carries no v0 vocabulary.
 HOT_TURBINE_COL = "TurbineName"
 HOT_COLUMNS = ColumnSchema(
     turbine=HOT_TURBINE_COL,
-    active_power=_FIELD_BY_ALIAS[DataColumns.active_power_mean],
-    wind_speed=_FIELD_BY_ALIAS[DataColumns.wind_speed_mean],
-    wind_speed_sd=_FIELD_BY_ALIAS[DataColumns.wind_speed_sd],
-    gen_rpm=_FIELD_BY_ALIAS[DataColumns.gen_rpm_mean],
+    active_power=_TAG_ACTIVE_POWER_MEAN,
+    wind_speed=_TAG_WIND_SPEED_MEAN,
+    wind_speed_sd=_TAG_WIND_SPEED_SD,
+    gen_rpm=_TAG_GEN_RPM_MEAN,
 )
 
 
