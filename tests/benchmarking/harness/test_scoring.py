@@ -7,8 +7,8 @@ import pandas as pd
 
 from benchmarking.harness.replicates import StudyConfig
 from benchmarking.harness.scoring import score_study
-from benchmarking.synthetic import ConstantCpChange
-from wind_up.constants import TIMESTAMP_COL, DataColumns
+from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
+from wind_up.constants import TIMESTAMP_COL
 
 from .stubs import BiasedMethod, OracleMethod, RecordingMethod
 
@@ -20,11 +20,11 @@ def _base_scada(turbines: tuple[str, ...] = ("T1", "T3", "T4", "T7")) -> pd.Data
     frames = [
         pd.DataFrame(
             {
-                DataColumns.turbine_name: turbine,
-                DataColumns.active_power_mean: 1000.0,
-                DataColumns.wind_speed_mean: 8.0,
-                DataColumns.wind_speed_sd: 0.8,
-                DataColumns.gen_rpm_mean: 1400.0,
+                HOT_COLUMNS.turbine: turbine,
+                HOT_COLUMNS.active_power: 1000.0,
+                HOT_COLUMNS.wind_speed: 8.0,
+                HOT_COLUMNS.wind_speed_sd: 0.8,
+                HOT_COLUMNS.gen_rpm: 1400.0,
             },
             index=index,
         )

@@ -13,8 +13,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.synthetic import treated_mask
-from wind_up.constants import DataColumns
+from benchmarking.synthetic import HOT_COLUMNS, treated_mask
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -23,13 +22,13 @@ if TYPE_CHECKING:
 def oracle_overall_uplift(mi: MethodInput, original_df: pd.DataFrame) -> float:
     """Energy-ratio uplift over the treated test-turbine rows in ``mi``'s window."""
     syn = mi.scada_df
-    test_rows = syn[syn[DataColumns.turbine_name] == mi.test_wtg]
+    test_rows = syn[syn[mi.turbine_col] == mi.test_wtg]
     treated = treated_mask(test_rows.index, mi.upgrade_timing)
     treated_rows = test_rows[treated]
 
-    syn_power = treated_rows[DataColumns.active_power_mean].to_numpy(dtype=float)
-    orig_test = original_df[original_df[DataColumns.turbine_name] == mi.test_wtg]
-    orig_power = orig_test.loc[treated_rows.index, DataColumns.active_power_mean].to_numpy(dtype=float)
+    syn_power = treated_rows[HOT_COLUMNS.active_power].to_numpy(dtype=float)
+    orig_test = original_df[original_df[mi.turbine_col] == mi.test_wtg]
+    orig_power = orig_test.loc[treated_rows.index, HOT_COLUMNS.active_power].to_numpy(dtype=float)
 
     finite = np.isfinite(syn_power) & np.isfinite(orig_power)
     denom = orig_power[finite].sum()
@@ -81,6 +80,11 @@ class RecordingMethod:
         self.seen: list[MethodInput] = []
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
-        captured = MethodInput(scada_df=mi.scada_df.copy(), test_wtg=mi.test_wtg, upgrade_timing=mi.upgrade_timing)
+        captured = MethodInput(
+            scada_df=mi.scada_df.copy(),
+            test_wtg=mi.test_wtg,
+            upgrade_timing=mi.upgrade_timing,
+            turbine_col=mi.turbine_col,
+        )
         self.seen.append(captured)
         return MethodOutput(p50_overall=0.0)

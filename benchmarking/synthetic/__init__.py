@@ -10,6 +10,8 @@ from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams, cp_su
 from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset, treated_mask
 from benchmarking.synthetic.ground_truth import UpliftResult, true_uplift
 from benchmarking.synthetic.plots import plot_power_curve_comparison
+from benchmarking.synthetic.schema import ColumnSchema
+from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
 from benchmarking.synthetic.upgrades import (
     ConditionCpChange,
     ConstantCpChange,
@@ -20,7 +22,9 @@ from benchmarking.synthetic.upgrades import (
 )
 
 __all__ = [
+    "HOT_COLUMNS",
     "HOT_CP_MODEL",
+    "ColumnSchema",
     "ConditionCpChange",
     "ConstantCpChange",
     "CpCore",

@@ -20,12 +20,13 @@ import numpy as np
 import numpy.typing as npt
 
 from benchmarking.synthetic.cp_core import power_from_cp_change, region2_fraction, rpm_from_power_change
-from wind_up.constants import DataColumns
+from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
 
 if TYPE_CHECKING:
     import pandas as pd
 
     from benchmarking.synthetic.cp_core import CpCore
+    from benchmarking.synthetic.schema import ColumnSchema
 
 
 @dataclass
@@ -54,7 +55,7 @@ class ConstantCpChange:
         """Return serialisable provenance describing this upgrade."""
         return {"kind": "constant_cp", "delta": self.delta, "ws_delta": self.ws_delta}
 
-    def __call__(self, rows: pd.DataFrame) -> UpgradeEffect:  # noqa: ARG002
+    def __call__(self, rows: pd.DataFrame, columns: ColumnSchema) -> UpgradeEffect:  # noqa: ARG002
         """Return this upgrade's effect on the given rows."""
         return UpgradeEffect(cp_ratio=1.0 + self.delta, ws_factor=1.0 + self.ws_delta)
 
@@ -81,22 +82,22 @@ class WindSpeedCpChange:
             "ws_delta": self.ws_delta,
         }
 
-    def __call__(self, rows: pd.DataFrame) -> UpgradeEffect:
+    def __call__(self, rows: pd.DataFrame, columns: ColumnSchema) -> UpgradeEffect:
         """Return this upgrade's effect on the given rows."""
-        original_ws = rows[DataColumns.wind_speed_mean].to_numpy(dtype=float)
+        original_ws = rows[columns.wind_speed].to_numpy(dtype=float)
         delta = np.interp(original_ws, self.ws_points, self.deltas)
         return UpgradeEffect(cp_ratio=1.0 + delta, ws_factor=1.0 + self.ws_delta)
 
 
-def _condition_series(rows: pd.DataFrame, by: str) -> npt.NDArray[np.float64]:
+def _condition_series(rows: pd.DataFrame, by: str, columns: ColumnSchema) -> npt.NDArray[np.float64]:
     """Compute a treatment-invariant condition signal from the original rows.
 
-    ``by="ti"`` is turbulence intensity (WindSpeedSD / WindSpeedMean); any other value is
+    ``by="ti"`` is turbulence intensity (wind-speed SD / wind-speed mean); any other value is
     treated as the name of a column already present in ``rows``.
     """
     if by == "ti":
-        ws = rows[DataColumns.wind_speed_mean].to_numpy(dtype=float)
-        sd = rows[DataColumns.wind_speed_sd].to_numpy(dtype=float)
+        ws = rows[columns.wind_speed].to_numpy(dtype=float)
+        sd = rows[columns.wind_speed_sd].to_numpy(dtype=float)
         # NaN (not inf/0-division warning) for calm rows; warnings are errors in tests.
         return np.divide(sd, ws, out=np.full_like(sd, np.nan), where=ws != 0)
     return rows[by].to_numpy(dtype=float)
@@ -127,9 +128,9 @@ class ConditionCpChange:
             "ws_delta": self.ws_delta,
         }
 
-    def __call__(self, rows: pd.DataFrame) -> UpgradeEffect:
+    def __call__(self, rows: pd.DataFrame, columns: ColumnSchema) -> UpgradeEffect:
         """Return this upgrade's effect on the given rows."""
-        condition = _condition_series(rows, self.by)
+        condition = _condition_series(rows, self.by, columns)
         delta = np.interp(condition, self.points, self.deltas)
         return UpgradeEffect(cp_ratio=1.0 + delta, ws_factor=1.0 + self.ws_delta)
 
@@ -151,7 +152,7 @@ class RatedPowerChange:
         """Return serialisable provenance describing this upgrade."""
         return {"kind": "rated_power", "new_rated_power_kw": self.new_rated_power_kw}
 
-    def __call__(self, rows: pd.DataFrame) -> UpgradeEffect:  # noqa: ARG002
+    def __call__(self, rows: pd.DataFrame, columns: ColumnSchema) -> UpgradeEffect:  # noqa: ARG002
         """Return this upgrade's effect on the given rows."""
         return UpgradeEffect(new_rated_power_kw=self.new_rated_power_kw)
 
@@ -177,7 +178,9 @@ def apply_rated_change(
     return np.minimum(lifted, new_rated_kw)
 
 
-def apply_upgrades(rows: pd.DataFrame, upgrades: list, *, cp: CpCore) -> pd.DataFrame:
+def apply_upgrades(
+    rows: pd.DataFrame, upgrades: list, *, cp: CpCore, columns: ColumnSchema = HOT_COLUMNS
+) -> pd.DataFrame:
     """Resolve and apply a list of upgrades to one test turbine's treated rows.
 
     Cp ratios from all upgrades multiply together and are applied to the original power
@@ -188,19 +191,20 @@ def apply_upgrades(rows: pd.DataFrame, upgrades: list, *, cp: CpCore) -> pd.Data
     :param rows: treated rows for one test turbine, carrying the original SCADA tags
     :param upgrades: upgrade callables to resolve
     :param cp: the turbine's Cp core (rated power and Cp parameters)
+    :param columns: the source-native column schema ``rows`` is keyed by
     :return: a new frame with modified power, rpm and wind-speed columns
     """
     out = rows.copy()
     n = len(rows)
-    baseline_power = rows[DataColumns.active_power_mean].to_numpy(dtype=float)
-    baseline_rpm = rows[DataColumns.gen_rpm_mean].to_numpy(dtype=float)
-    baseline_ws = rows[DataColumns.wind_speed_mean].to_numpy(dtype=float)
+    baseline_power = rows[columns.active_power].to_numpy(dtype=float)
+    baseline_rpm = rows[columns.gen_rpm].to_numpy(dtype=float)
+    baseline_ws = rows[columns.wind_speed].to_numpy(dtype=float)
 
     cp_ratio = np.ones(n)
     ws_factor = 1.0
     new_rated_power_kw: float | None = None
     for upgrade in upgrades:
-        effect = upgrade(rows)
+        effect = upgrade(rows, columns)
         cp_ratio = cp_ratio * np.asarray(effect.cp_ratio, dtype=float)
         ws_factor *= effect.ws_factor
         if effect.new_rated_power_kw is not None:
@@ -216,7 +220,7 @@ def apply_upgrades(rows: pd.DataFrame, upgrades: list, *, cp: CpCore) -> pd.Data
         )
     new_rpm = rpm_from_power_change(baseline_rpm=baseline_rpm, baseline_power_kw=baseline_power, new_power_kw=new_power)
 
-    out[DataColumns.active_power_mean] = new_power
-    out[DataColumns.gen_rpm_mean] = new_rpm
-    out[DataColumns.wind_speed_mean] = baseline_ws * ws_factor
+    out[columns.active_power] = new_power
+    out[columns.gen_rpm] = new_rpm
+    out[columns.wind_speed] = baseline_ws * ws_factor
     return out

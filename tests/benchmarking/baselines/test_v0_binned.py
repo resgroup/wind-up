@@ -15,18 +15,41 @@ from benchmarking.baselines import v0_binned
 from benchmarking.baselines.hot_context import HotV0Context
 from benchmarking.baselines.v0_binned import V0BinnedMethod, _extract_p50, _subset_turbines
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.synthetic import ToggleSchedule, treated_mask
-from wind_up.constants import DataColumns
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
+from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format
+
+# The harness hands v0 source-native SCADA, so the fixtures carry the source-native tag names and
+# the full field set the v0 on-ramp (``long_to_wind_up_format``) needs (pitch blades, yaw, the
+# time-ready signal) to derive ``PitchAngleMean`` / ``ShutdownDuration``.
+_SOURCE_FIELDS = (
+    HOT_COLUMNS.active_power,
+    HOT_COLUMNS.wind_speed,
+    HOT_COLUMNS.wind_speed_sd,
+    HOT_COLUMNS.gen_rpm,
+    "wtc_ActPower_stddev",
+    "wtc_NacelPos_mean",
+    "wtc_PitcPosA_mean",
+    "wtc_PitcPosB_mean",
+    "wtc_PitcPosC_mean",
+)
 
 
-def _make_scada(turbines: list[str], *, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    """Minimal scada whose only meaningful content is the turbine names and the index span."""
-    index = pd.DatetimeIndex([start, end], name="TimeStamp_StartFormat")
+def _long_scada(turbines: list[str], index: pd.DatetimeIndex) -> pd.DataFrame:
+    """A source-native long SCADA frame complete enough for the v0 on-ramp to convert."""
     frames = [
-        pd.DataFrame({DataColumns.turbine_name: t, DataColumns.active_power_mean: [1.0, 1.0]}, index=index)
+        pd.DataFrame(
+            {HOT_COLUMNS.turbine: t, **dict.fromkeys(_SOURCE_FIELDS, 1.0), "wtc_ScReToOp_timeon": 600.0},
+            index=index,
+        )
         for t in turbines
     ]
     return pd.concat(frames)
+
+
+def _make_scada(turbines: list[str], *, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """Minimal-span scada (two timestamps) whose meaningful content is the turbines and span."""
+    index = pd.DatetimeIndex([start, end], name="TimeStamp_StartFormat")
+    return _long_scada(turbines, index)
 
 
 def _context() -> HotV0Context:
@@ -44,7 +67,7 @@ def _method_input(turbines: list[str], test_wtg: str) -> MethodInput:
 class TestSubsetTurbines:
     def test_returns_sorted_unique_names(self) -> None:
         scada = _make_scada(["T04", "T01", "T03"], start=UPGRADE, end=UPGRADE + pd.DateOffset(months=1))
-        assert _subset_turbines(scada) == ["T01", "T03", "T04"]
+        assert _subset_turbines(scada, HOT_COLUMNS.turbine) == ["T01", "T03", "T04"]
 
 
 class TestBuildConfig:
@@ -78,12 +101,9 @@ class TestBuildConfig:
 
 
 def _dense_scada(turbines: list[str], *, start: pd.Timestamp, end: pd.Timestamp, freq: str = "1D") -> pd.DataFrame:
-    """Long-format scada on a regular grid (enough rows for a toggle split)."""
+    """Source-native long scada on a regular grid (enough rows for a toggle split)."""
     index = pd.date_range(start, end, freq=freq, tz="UTC", name="TimeStamp_StartFormat")
-    frames = [
-        pd.DataFrame({DataColumns.turbine_name: t, DataColumns.active_power_mean: 1.0}, index=index) for t in turbines
-    ]
-    return pd.concat(frames)
+    return _long_scada(turbines, index)
 
 
 class TestBuildToggleDf:
@@ -187,9 +207,11 @@ class TestEstimateWiring:
         assert captured["run_inputs"] == "inputs-sentinel"
         assert captured["combine_trdf"] == "trdf-sentinel"
         assert captured["combine_kwargs"]["auto_choose_refs"] is False
-        # the same scada/metadata/reanalysis from the context are handed to the pipeline
+        # the source-native scada is converted to wind-up format on the way into the pipeline,
+        # and the metadata/reanalysis from the context are handed through unchanged
         kwargs = captured["from_cfg_kwargs"]
-        assert kwargs["scada_df"].equals(_method_input(["T01", "T02", "T03", "T04"], "T01").scada_df)
+        expected_scada = long_to_wind_up_format(_method_input(["T01", "T02", "T03", "T04"], "T01").scada_df)
+        assert kwargs["scada_df"].equals(expected_scada)
         assert kwargs["reanalysis_datasets"] == []
 
     def test_save_plots_defaults_off(self, tmp_path, monkeypatch) -> None:  # noqa: ANN001

@@ -40,6 +40,7 @@ from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import Method, StudyConfig, leaderboard, plot_campaign_curves, score_study
 from benchmarking.harness.example_hot_study import OracleMethod
+from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.make_example_datasets import example_profiles
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
@@ -120,7 +121,7 @@ def run_prepost_study(
         methods: list[Method] = []
         if include_oracle:
             methods.append(OracleMethod(base_scada))
-        methods.append(NaiveRatioMethod(out_dir=out_dir / "naive_runs"))
+        methods.append(NaiveRatioMethod(active_power_col=HOT_COLUMNS.active_power, out_dir=out_dir / "naive_runs"))
         methods.append(V0BinnedMethod(context, scratch_dir=scratch_dir))
         logger.info("Scoring prepost profile %s with methods %s", profile_name, [m.name for m in methods])
         results = score_study(

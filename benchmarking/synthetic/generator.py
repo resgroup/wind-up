@@ -17,19 +17,15 @@ import numpy as np
 
 from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams
 from benchmarking.synthetic.ground_truth import UpliftResult, true_uplift
+from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
 from benchmarking.synthetic.upgrades import apply_upgrades
-from wind_up.constants import DataColumns
 
 if TYPE_CHECKING:
     import pandas as pd
 
-_GROUND_TRUTH_WS_BINS = list(np.arange(0.0, 26.0, 1.0))
+    from benchmarking.synthetic.schema import ColumnSchema
 
-_MODIFIED_COLUMNS = (
-    DataColumns.active_power_mean,
-    DataColumns.gen_rpm_mean,
-    DataColumns.wind_speed_mean,
-)
+_GROUND_TRUTH_WS_BINS = list(np.arange(0.0, 26.0, 1.0))
 
 
 @dataclass(frozen=True)
@@ -55,6 +51,7 @@ class SyntheticDataset:
     synthetic_df: pd.DataFrame
     original_df: pd.DataFrame
     run_metadata: dict = field(default_factory=dict)
+    columns: ColumnSchema = HOT_COLUMNS
 
     def true_uplift(
         self,
@@ -70,7 +67,9 @@ class SyntheticDataset:
         """
         if test_wtg is None:
             test_wtg = self.run_metadata["test_wtgs"][0]
-        return true_uplift(self.synthetic_df, self.original_df, test_wtg=test_wtg, mask=mask, by=by, bins=bins)
+        return true_uplift(
+            self.synthetic_df, self.original_df, test_wtg=test_wtg, mask=mask, by=by, bins=bins, columns=self.columns
+        )
 
     def save(self, out_dir: str | Path) -> Path:
         """Write synthetic.parquet, original.parquet and run_metadata.json to ``out_dir``.
@@ -150,33 +149,36 @@ def generate_dataset(
     upgrade_timing: pd.Timestamp | ToggleSchedule,
     cp_params: CpParams = HOT_CP_MODEL,
     rated_power_kw: float = 2300.0,
+    columns: ColumnSchema = HOT_COLUMNS,
     seed: int = 0,
 ) -> SyntheticDataset:
     """Generate a synthetic dataset by injecting an upgrade into the test turbine(s).
 
-    :param scada_df: wind-up-format real SCADA (all turbines), the no-upgrade baseline
+    :param scada_df: source-native long real SCADA (all turbines), the no-upgrade baseline
     :param test_wtgs: turbine name(s) to upgrade
     :param upgrades: upgrade callables applied to each test turbine's treated rows
     :param mode: ``"prepost"`` (changeover date) or ``"toggle"``
     :param upgrade_timing: changeover timestamp (prepost) or toggle schedule
     :param cp_params: Cp surface parameters for the test turbines
     :param rated_power_kw: baseline rated power for the test turbines
+    :param columns: the source-native column schema ``scada_df`` is keyed by
     :param seed: recorded in run metadata for provenance; generation is fully
         deterministic and does not otherwise consume it
     :return: the synthetic dataset, original reference and run metadata
     """
     original_df = scada_df.copy()
     synthetic_df = scada_df.copy()
+    modified_columns = (columns.active_power, columns.gen_rpm, columns.wind_speed)
 
     treated = _treated_mask(synthetic_df.index, mode=mode, upgrade_timing=upgrade_timing)
     for wtg in test_wtgs:
-        is_test = (synthetic_df[DataColumns.turbine_name] == wtg).to_numpy()
+        is_test = (synthetic_df[columns.turbine] == wtg).to_numpy()
         mask = is_test & treated
         if not mask.any():
             continue
         cp = CpCore(rated_power_kw=rated_power_kw, cp_params=cp_params)
-        modified = apply_upgrades(synthetic_df.loc[mask], upgrades, cp=cp)
-        for col in _MODIFIED_COLUMNS:
+        modified = apply_upgrades(synthetic_df.loc[mask], upgrades, cp=cp, columns=columns)
+        for col in modified_columns:
             synthetic_df.loc[mask, col] = modified[col].to_numpy()
 
     run_metadata = {
@@ -188,4 +190,6 @@ def generate_dataset(
         "cp_params": asdict(cp_params),
         "seed": seed,
     }
-    return SyntheticDataset(synthetic_df=synthetic_df, original_df=original_df, run_metadata=run_metadata)
+    return SyntheticDataset(
+        synthetic_df=synthetic_df, original_df=original_df, run_metadata=run_metadata, columns=columns
+    )

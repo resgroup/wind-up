@@ -20,13 +20,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from benchmarking.synthetic.ground_truth import changed_record_mask
-from wind_up.constants import DataColumns
+from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     import pandas as pd
     from matplotlib.figure import Figure
+
+    from benchmarking.synthetic.schema import ColumnSchema
 
 _BASELINE_STYLE = {"s": 6, "alpha": 0.4, "color": "tab:blue", "label": "baseline rows"}
 _TREATED_STYLE = {"s": 6, "alpha": 0.5, "color": "tab:red", "label": "treated rows"}
@@ -39,6 +41,7 @@ def plot_power_curve_comparison(
     test_wtg: str,
     save_path: str | Path | None = None,
     title: str | None = None,
+    columns: ColumnSchema = HOT_COLUMNS,
 ) -> Figure:
     """Plot the test turbine's original vs synthetic power curve plus the kW change.
 
@@ -47,19 +50,20 @@ def plot_power_curve_comparison(
     against wind speed for the treated records. Records the upgrade actually changed
     (NaN-safe) are highlighted in the first two panels.
 
-    :param synthetic_df: wind-up-format synthetic SCADA (all turbines)
-    :param original_df: the untouched original SCADA (all turbines)
+    :param synthetic_df: source-native synthetic SCADA (all turbines), keyed by ``columns``
+    :param original_df: the untouched source-native original SCADA (all turbines)
     :param test_wtg: turbine to plot
     :param save_path: if given, the figure is written here (PNG)
     :param title: optional overall figure title
+    :param columns: the source-native column schema the frames are keyed by
     :return: the matplotlib Figure
     """
-    original = original_df[original_df[DataColumns.turbine_name] == test_wtg]
-    synthetic = synthetic_df[synthetic_df[DataColumns.turbine_name] == test_wtg]
+    original = original_df[original_df[columns.turbine] == test_wtg]
+    synthetic = synthetic_df[synthetic_df[columns.turbine] == test_wtg]
 
-    ws = original[DataColumns.wind_speed_mean].to_numpy(dtype=float)
-    original_power = original[DataColumns.active_power_mean].to_numpy(dtype=float)
-    synthetic_power = synthetic[DataColumns.active_power_mean].to_numpy(dtype=float)
+    ws = original[columns.wind_speed].to_numpy(dtype=float)
+    original_power = original[columns.active_power].to_numpy(dtype=float)
+    synthetic_power = synthetic[columns.active_power].to_numpy(dtype=float)
 
     # Treated = records genuinely modified by the upgrade (NaN downtime rows excluded).
     treated = changed_record_mask(synthetic_power, original_power)

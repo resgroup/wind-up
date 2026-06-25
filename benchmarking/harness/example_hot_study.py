@@ -40,9 +40,8 @@ from benchmarking.harness import (
     plot_campaign_curves,
     score_study,
 )
-from benchmarking.synthetic import ConstantCpChange, treated_mask
+from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange, treated_mask
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
-from wind_up.constants import DataColumns
 
 logger = logging.getLogger(__name__)
 
@@ -74,13 +73,13 @@ def _oracle_overall_uplift(mi: MethodInput, original_df: pd.DataFrame) -> float:
     below wrap this to drive bias and spread.
     """
     syn = mi.scada_df
-    test_rows = syn[syn[DataColumns.turbine_name] == mi.test_wtg]
+    test_rows = syn[syn[HOT_COLUMNS.turbine] == mi.test_wtg]
     treated = treated_mask(test_rows.index, mi.upgrade_timing)
     treated_rows = test_rows[treated]
 
-    syn_power = treated_rows[DataColumns.active_power_mean].to_numpy(dtype=float)
-    orig_test = original_df[original_df[DataColumns.turbine_name] == mi.test_wtg]
-    orig_power = orig_test.loc[treated_rows.index, DataColumns.active_power_mean].to_numpy(dtype=float)
+    syn_power = treated_rows[HOT_COLUMNS.active_power].to_numpy(dtype=float)
+    orig_test = original_df[original_df[HOT_COLUMNS.turbine] == mi.test_wtg]
+    orig_power = orig_test.loc[treated_rows.index, HOT_COLUMNS.active_power].to_numpy(dtype=float)
 
     finite = np.isfinite(syn_power) & np.isfinite(orig_power)
     denom = orig_power[finite].sum()

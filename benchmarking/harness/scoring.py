@@ -24,7 +24,7 @@ import pandas as pd
 from benchmarking.harness.campaign import campaign_windows, treated_activity_mask, window_row_mask
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.replicates import build_replicates
-from wind_up.constants import DataColumns
+from benchmarking.synthetic import HOT_COLUMNS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from benchmarking.harness.campaign import CampaignWindow
     from benchmarking.harness.method import Method
     from benchmarking.harness.replicates import Replicate, StudyConfig
+    from benchmarking.synthetic import ColumnSchema
 
 
 def score_study(
@@ -41,6 +42,7 @@ def score_study(
     methods: list[Method],
     study: StudyConfig,
     profile_name: str = "profile",
+    columns: ColumnSchema = HOT_COLUMNS,
     on_method_complete: Callable[[str, pd.DataFrame], None] | None = None,
 ) -> pd.DataFrame:
     """Score ``methods`` on ``study`` over ``profile`` injected into ``base_scada``.
@@ -50,13 +52,14 @@ def score_study(
     carries the window it was tested over — ``treatment_start`` (the upgrade start),
     ``baseline_start`` and ``activity_end`` — so a result is self-describing.
 
+    :param columns: the source-native column schema ``base_scada`` is keyed by
     :param on_method_complete: optional hook called as each method finishes its full instance
         sweep, with ``(method_name, that_method's_rows)`` (the same rows it contributes to the
         returned frame). Lets a caller act on a method's results early — e.g. plot them — instead
         of waiting for every method, useful when a slow method runs last. It never changes the
         returned frame; order methods fastest-first to get the earliest feedback.
     """
-    replicates = build_replicates(base_scada, profile=profile, study=study)
+    replicates = build_replicates(base_scada, profile=profile, study=study, columns=columns)
     data_start = base_scada.index.min()
     data_end = base_scada.index.max()
     instances = _materialise_instances(replicates, study, data_start=data_start, data_end=data_end)
@@ -121,12 +124,13 @@ def _method_input(replicate: Replicate, window: CampaignWindow) -> MethodInput:
         scada_df=synthetic.loc[row_mask],
         test_wtg=replicate.test_wtg,
         upgrade_timing=replicate.upgrade_timing,
+        turbine_col=replicate.dataset.columns.turbine,
     )
 
 
 def _truth_overall(replicate: Replicate, window: CampaignWindow) -> float:
     """Ground-truth uplift over the test turbine's treated rows within the activity window."""
     synthetic = replicate.synthetic_df
-    test_index = synthetic.loc[synthetic[DataColumns.turbine_name] == replicate.test_wtg].index
+    test_index = synthetic.loc[synthetic[replicate.dataset.columns.turbine] == replicate.test_wtg].index
     mask = treated_activity_mask(test_index, replicate.upgrade_timing, window=window)
     return replicate.true_uplift(mask=mask).overall

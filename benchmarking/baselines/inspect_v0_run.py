@@ -37,9 +37,8 @@ from benchmarking.harness import (
     treated_activity_mask,
     window_row_mask,
 )
-from benchmarking.synthetic import ConstantCpChange
+from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
-from wind_up.constants import DataColumns
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +113,13 @@ def inspect_v0_run(
             scada_df=syn.loc[window_row_mask(syn.index, window)],
             test_wtg=rep.test_wtg,
             upgrade_timing=rep.upgrade_timing,
+            turbine_col=HOT_COLUMNS.turbine,
         )
         rep_dir = out_dir / f"replicate_{rep.replicate_id:02d}_{rep.test_wtg}"
         method = V0BinnedMethod(context, scratch_dir=rep_dir, save_plots=True)
         estimate = method.estimate(mi).p50_overall
 
-        test_index = syn.loc[syn[DataColumns.turbine_name] == rep.test_wtg].index
+        test_index = syn.loc[syn[HOT_COLUMNS.turbine] == rep.test_wtg].index
         truth = rep.true_uplift(mask=treated_activity_mask(test_index, rep.upgrade_timing, window=window)).overall
 
         logger.info(

@@ -22,14 +22,21 @@ if TYPE_CHECKING:
 class MethodInput:
     """The windowed data a method sees for one campaign.
 
+    The frame carries **source-native** SCADA column names (the real tag names of the data
+    source). Identifying turbines is a property of the data, not a method choice, so the seam
+    names the turbine-identifier column here; methods read any value columns (e.g. active power)
+    by their own source-native config.
+
     :param scada_df: windowed synthetic SCADA (all subset turbines, baseline + activity)
     :param test_wtg: the upgraded turbine to estimate
     :param upgrade_timing: changeover timestamp (prepost) or schedule (toggle)
+    :param turbine_col: the turbine-identifier column in ``scada_df``
     """
 
     scada_df: pd.DataFrame
     test_wtg: str
     upgrade_timing: pd.Timestamp | ToggleSchedule
+    turbine_col: str = "TurbineName"
 
 
 @dataclass

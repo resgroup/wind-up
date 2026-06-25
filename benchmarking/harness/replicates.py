@@ -17,14 +17,13 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
-from benchmarking.synthetic import ToggleSchedule, generate_dataset
-from wind_up.constants import DataColumns
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, generate_dataset
 
 if TYPE_CHECKING:
     import numpy.typing as npt
     import pandas as pd
 
-    from benchmarking.synthetic import SyntheticDataset, UpliftResult
+    from benchmarking.synthetic import ColumnSchema, SyntheticDataset, UpliftResult
 
 
 @dataclass(frozen=True)
@@ -83,13 +82,16 @@ def build_replicates(
     *,
     profile: list,
     study: StudyConfig,
+    columns: ColumnSchema = HOT_COLUMNS,
 ) -> list[Replicate]:
     """Draw ``study.n_replicates`` replicates of ``profile`` from ``base_scada``.
 
     Subsets the data to ``turbine_subset``, then draws ``(test turbine, treatment_start)`` pairs
     deterministically from ``seed`` and injects the profile via the synthetic generator.
+
+    :param columns: the source-native column schema ``base_scada`` is keyed by
     """
-    subset = base_scada[base_scada[DataColumns.turbine_name].isin(study.turbine_subset)]
+    subset = base_scada[base_scada[columns.turbine].isin(study.turbine_subset)]
     candidates = _candidate_starts(subset.index, study.treatment_start_range)
 
     rng = np.random.default_rng(study.seed)
@@ -105,6 +107,7 @@ def build_replicates(
             upgrades=profile,
             mode=study.mode,
             upgrade_timing=upgrade_timing,
+            columns=columns,
             seed=study.seed,
         )
         replicates.append(

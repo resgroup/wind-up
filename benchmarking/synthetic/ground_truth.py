@@ -14,21 +14,23 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from wind_up.constants import DataColumns
+from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
 
 if TYPE_CHECKING:
     import numpy.typing as npt
 
+    from benchmarking.synthetic.schema import ColumnSchema
 
-def _condition_series(rows: pd.DataFrame, by: str) -> npt.NDArray[np.float64]:
+
+def _condition_series(rows: pd.DataFrame, by: str, columns: ColumnSchema) -> npt.NDArray[np.float64]:
     """Resolve a treatment-invariant condition signal from the original rows."""
     if by == "ti":
-        ws = rows[DataColumns.wind_speed_mean].to_numpy(dtype=float)
-        sd = rows[DataColumns.wind_speed_sd].to_numpy(dtype=float)
+        ws = rows[columns.wind_speed].to_numpy(dtype=float)
+        sd = rows[columns.wind_speed_sd].to_numpy(dtype=float)
         # NaN (not inf/0-division warning) for calm rows; warnings are errors in tests.
         return np.divide(sd, ws, out=np.full_like(sd, np.nan), where=ws != 0)
     if by == "ws":
-        return rows[DataColumns.wind_speed_mean].to_numpy(dtype=float)
+        return rows[columns.wind_speed].to_numpy(dtype=float)
     return rows[by].to_numpy(dtype=float)
 
 
@@ -48,6 +50,7 @@ def true_uplift(
     mask: npt.ArrayLike | None = None,
     by: str | None = None,
     bins: npt.ArrayLike | None = None,
+    columns: ColumnSchema = HOT_COLUMNS,
 ) -> UpliftResult:
     """Compute the true uplift of the test turbine, synthetic vs original.
 
@@ -59,17 +62,18 @@ def true_uplift(
     :param by: optional treatment-invariant condition for a per-condition breakdown
         (``"ws"``, ``"ti"`` or an original column name)
     :param bins: bin edges for the ``by`` condition
+    :param columns: the source-native column schema the frames are keyed by
     :return: the overall energy-ratio uplift, and a per-condition table when ``by`` is set
     """
     if by is not None and bins is None:
         msg = "bins must be provided when by is set (per-condition breakdown needs explicit edges)"
         raise ValueError(msg)
 
-    original_wtg = original_df[original_df[DataColumns.turbine_name] == test_wtg]
-    synthetic_power = synthetic_df.loc[
-        synthetic_df[DataColumns.turbine_name] == test_wtg, DataColumns.active_power_mean
-    ].to_numpy(dtype=float)
-    original_power = original_wtg[DataColumns.active_power_mean].to_numpy(dtype=float)
+    original_wtg = original_df[original_df[columns.turbine] == test_wtg]
+    synthetic_power = synthetic_df.loc[synthetic_df[columns.turbine] == test_wtg, columns.active_power].to_numpy(
+        dtype=float
+    )
+    original_power = original_wtg[columns.active_power].to_numpy(dtype=float)
 
     row_mask = changed_record_mask(synthetic_power, original_power) if mask is None else np.asarray(mask, dtype=bool)
     # Real SCADA carries NaN power (downtime/missing); such records have no usable energy
@@ -82,7 +86,7 @@ def true_uplift(
     by_condition = None
     if by is not None:
         by_condition = _uplift_by_condition(
-            condition=_condition_series(original_wtg, by)[effective],
+            condition=_condition_series(original_wtg, by, columns)[effective],
             synthetic_power=synthetic_power[effective],
             original_power=original_power[effective],
             bins=bins,

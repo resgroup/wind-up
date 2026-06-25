@@ -10,9 +10,11 @@ estimates uplift as the ratio-of-ratios ``rho(treated) / rho(baseline) - 1``. It
 source on the synthetic data is genuine pre/post covariate shift -- it applies no
 conditioning by design -- so it is the "what if you don't condition at all" leaderboard floor.
 
-It uses **only** the active-power-mean column (test and references); it never reads wind speed,
-direction, rpm or any other SCADA tag, which keeps it honest under design-note section 3 (the
-test turbine's own wind speed is post-treatment and is never touched).
+It uses **only** the configured active-power column (test and references); it never reads wind
+speed, direction, rpm or any other SCADA tag, which keeps it honest under design-note section 3
+(the test turbine's own wind speed is post-treatment and is never touched). It speaks the data
+source's own column names — the active-power column is configured and the turbine column comes
+from the seam — so it shares no code with, and makes no assumptions from, v0.
 
 Each run writes a per-run folder ``naive_<test>_<upgradestart>_<lastdate>/`` (v0-style naming)
 under ``out_dir`` (a temp dir by default), holding a per-segment data-stats CSV, a headline
@@ -36,7 +38,6 @@ from matplotlib.ticker import PercentFormatter
 
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import ToggleSchedule, treated_mask
-from wind_up.constants import DataColumns
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -53,14 +54,14 @@ def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
     return pd.Timedelta(np.median(np.diff(unique.to_numpy())))
 
 
-def _wide_power(scada_df: pd.DataFrame) -> pd.DataFrame:
+def _wide_power(scada_df: pd.DataFrame, *, turbine_col: str, active_power_col: str) -> pd.DataFrame:
     """Pivot long SCADA to a timestamp x turbine table of active power (NaN where missing)."""
-    tmp = scada_df[[DataColumns.turbine_name, DataColumns.active_power_mean]].copy()
+    tmp = scada_df[[turbine_col, active_power_col]].copy()
     tmp["_ts"] = scada_df.index
     return tmp.pivot_table(
         index="_ts",
-        columns=DataColumns.turbine_name,
-        values=DataColumns.active_power_mean,
+        columns=turbine_col,
+        values=active_power_col,
         aggfunc="first",
     )
 
@@ -76,12 +77,15 @@ def _upgrade_start(upgrade_timing: pd.Timestamp | ToggleSchedule, index: pd.Date
 class NaiveRatioMethod:
     """Pluggable naive energy-ratio baseline (prepost and toggle).
 
+    :param active_power_col: the source-native active-power column to read (the only signal the
+        method touches); the turbine-identifier column comes from the seam (``MethodInput``)
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param save_plots: also write the three diagnostic plots under ``<run>/plots``
     :param timebase: analysis timebase; inferred from the data when ``None``
     """
 
+    active_power_col: str
     name: str = "naive_ratio"
     out_dir: Path | None = None
     save_plots: bool = False
@@ -89,7 +93,7 @@ class NaiveRatioMethod:
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
-        wide = _wide_power(mi.scada_df)
+        wide = _wide_power(mi.scada_df, turbine_col=mi.turbine_col, active_power_col=self.active_power_col)
         test = mi.test_wtg
         refs = [c for c in wide.columns if c != test]
         if not refs:
@@ -110,7 +114,15 @@ class NaiveRatioMethod:
         recoverable = np.isfinite(rho_base) and rho_base != 0 and np.isfinite(rho_up)
         uplift = rho_up / rho_base - 1.0 if recoverable else np.nan
 
-        stats = _segment_stats(mi, wide=wide, used=used, ts_treated=ts_treated, refs=refs, timebase=timebase)
+        stats = _segment_stats(
+            mi,
+            wide=wide,
+            used=used,
+            ts_treated=ts_treated,
+            refs=refs,
+            timebase=timebase,
+            active_power_col=self.active_power_col,
+        )
         self._write_outputs(
             mi,
             wide=wide,
@@ -189,6 +201,7 @@ def _segment_stats(
     ts_treated: npt.NDArray[np.bool_],
     refs: list[str],
     timebase: pd.Timedelta,
+    active_power_col: str,
 ) -> pd.DataFrame:
     """Build the per-segment (all/baseline/upgraded) diagnostics table."""
     test = mi.test_wtg
@@ -198,7 +211,7 @@ def _segment_stats(
     timebase_hours = timebase / pd.Timedelta(hours=1)
 
     row_treated = np.asarray(treated_mask(mi.scada_df.index, mi.upgrade_timing))
-    row_power = mi.scada_df[DataColumns.active_power_mean].to_numpy(dtype=float)
+    row_power = mi.scada_df[active_power_col].to_numpy(dtype=float)
 
     ts_masks = {"all": np.ones(len(wide), dtype=bool), "baseline": ~ts_treated, "upgraded": ts_treated}
     row_masks = {"all": np.ones(len(mi.scada_df), dtype=bool), "baseline": ~row_treated, "upgraded": row_treated}
