@@ -112,7 +112,14 @@ class NaiveRatioMethod:
 
         stats = _segment_stats(mi, wide=wide, used=used, ts_treated=ts_treated, refs=refs, timebase=timebase)
         self._write_outputs(
-            mi, wide=wide, stats=stats, rho_base=rho_base, rho_up=rho_up, uplift=uplift, n_refs=len(refs)
+            mi,
+            wide=wide,
+            stats=stats,
+            rho_base=rho_base,
+            rho_up=rho_up,
+            uplift=uplift,
+            n_refs=len(refs),
+            timebase=timebase,
         )
         return MethodOutput(p50_overall=float(uplift))
 
@@ -126,6 +133,7 @@ class NaiveRatioMethod:
         rho_up: float,
         uplift: float,
         n_refs: int,
+        timebase: pd.Timedelta,
     ) -> None:
         """Write the data-stats CSV, the headline results CSV and (optionally) the plots."""
         upgrade_start = _upgrade_start(mi.upgrade_timing, wide.index)
@@ -160,7 +168,7 @@ class NaiveRatioMethod:
         results.to_csv(run_dir / f"{run_name}_results_{ts}.csv", index=False)
 
         if self.save_plots:
-            _save_plots(run_dir / "plots", wide=wide, mi=mi, test=mi.test_wtg)
+            _save_plots(run_dir / "plots", wide=wide, mi=mi, test=mi.test_wtg, timebase=timebase)
 
 
 def _rho(test_pw: npt.NDArray[np.float64], ref_total: npt.NDArray[np.float64], mask: npt.NDArray[np.bool_]) -> float:
@@ -281,7 +289,7 @@ def _daily_segment_coverage(
     return daily_used / expected_per_day.reindex(daily_used.index)
 
 
-def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: str) -> None:
+def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: str, timebase: pd.Timedelta) -> None:
     """Write the scatter, ratio-timeseries and used-coverage-timeseries diagnostic plots."""
     plots_dir.mkdir(parents=True, exist_ok=True)
     refs = [c for c in wide.columns if c != test]
@@ -330,7 +338,7 @@ def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: s
 
     # 3) daily used-data coverage as a fraction of the day's expected timestamps, one series per
     # segment, so each segment is seen to receive its share (under toggle, ~50% each post-upgrade).
-    expected_per_day = _expected_per_day(wide.index, _infer_timebase(wide.index))
+    expected_per_day = _expected_per_day(wide.index, timebase)
     fig, ax = plt.subplots(figsize=(10, 5))
     for label, _seg, color in segments:
         seg_mask = ~ts_treated if label == "baseline" else ts_treated
