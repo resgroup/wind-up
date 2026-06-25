@@ -93,6 +93,7 @@ def run_prepost_study(
     profiles: dict[str, list],
     study: StudyConfig,
     out_root: str | Path | None = None,
+    data_dir: str | Path | None = None,
     include_oracle: bool = True,
 ) -> pd.DataFrame:
     """Score v0 and the naive ratio method (and an oracle anchor) over ``profiles`` and save outputs.
@@ -101,13 +102,15 @@ def run_prepost_study(
     :param profiles: mapping of profile name -> list of upgrade callables to inject
     :param study: the replicate/campaign sweep configuration (``mode="prepost"``)
     :param out_root: output directory; defaults to :func:`default_output_root`
+    :param data_dir: Hill of Towie data/cache dir for the v0 context metadata; defaults to the
+        source package default (keep it the same as the dir ``base_scada`` was loaded from)
     :param include_oracle: also score an oracle that returns the injected truth (sanity anchor)
     :return: the concatenated tidy per-replicate results across all profiles
     """
     out_dir = Path(out_root) if out_root is not None else default_output_root()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
+    context = build_hot_v0_context(data_dir=data_dir, wtg_names=DEFAULT_TURBINE_SUBSET)
     scratch_dir = out_dir / "windup_runs"
 
     all_results = []
@@ -182,7 +185,7 @@ def main(
         n_replicates=n_replicates,
         seed=0,
     )
-    return run_prepost_study(scada_df, profiles=example_profiles(), study=study, out_root=out_root)
+    return run_prepost_study(scada_df, profiles=example_profiles(), study=study, out_root=out_root, data_dir=data_dir)
 
 
 if __name__ == "__main__":
