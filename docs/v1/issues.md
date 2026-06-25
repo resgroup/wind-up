@@ -127,7 +127,7 @@ its accuracy/precision appears in the leaderboard.
 - Score on the harness across all synthetic profiles and the short-campaign sweep;
   compare to naive first (fast), then the v0 baseline after naive is beaten.
 - Uncertainty/P95 explicitly **out of scope** here (Phase 3 / WS4) but keep it in mind.
-- Reporting uplift by condition (eg uplift by wind speed, direction, etc) out of scope for now but keep it in find
+- Reporting uplift by condition (eg uplift by wind speed, direction, etc) out of scope for now but keep it in mind
 
 **Done when:** the R-learner runs through a prepost and toggle study and its P50 accuracy/precision vs the baseline is recorded in the leaderboard and similar or better than v0.
 
