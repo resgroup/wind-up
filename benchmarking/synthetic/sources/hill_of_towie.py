@@ -92,48 +92,55 @@ def download_zenodo_data(
     output_dir.mkdir(parents=True, exist_ok=True)
     metadata_fpath = output_dir / "zenodo_dataset_metadata.json"
 
-    if not cache_overwrite and metadata_fpath.is_file():
-        logger.info("Loading metadata from %s", metadata_fpath)
-        with metadata_fpath.open() as f:
-            content = json.load(f)
-    else:
-        logger.info("Fetching metadata from zenodo...")
-        r = requests.get(
-            f"https://zenodo.org/api/records/{record_id}",
-            timeout=(_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S),
-        )
-        r.raise_for_status()
-        content = r.json()
-        with metadata_fpath.open("w") as f:
-            json.dump(content, f)
-        logger.info("Saved metadata to %s", metadata_fpath)
+    # One Session for the whole download so its connection pool (and every socket) is
+    # closed deterministically on exit. A per-call ``requests.get`` closes its transient
+    # pool before the streamed response's socket is released back to it, leaking the
+    # socket until GC -- which trips ``filterwarnings = error`` via ResourceWarning.
+    with requests.Session() as session:
+        if not cache_overwrite and metadata_fpath.is_file():
+            logger.info("Loading metadata from %s", metadata_fpath)
+            with metadata_fpath.open() as f:
+                content = json.load(f)
+        else:
+            logger.info("Fetching metadata from zenodo...")
+            with session.get(
+                f"https://zenodo.org/api/records/{record_id}",
+                timeout=(_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S),
+            ) as r:
+                r.raise_for_status()
+                content = r.json()
+            with metadata_fpath.open("w") as f:
+                json.dump(content, f)
+            logger.info("Saved metadata to %s", metadata_fpath)
 
-    remote_files: list[dict] = content["files"]
-    if filenames is None:
-        files_to_download: list[dict] = list(remote_files)
-    else:
-        files_to_download = list(_check_name_of_files_to_download(filenames, remote_files))
-    required_keys = {f["key"] for f in files_to_download}
-    # Auto-include any small file in the record (READMEs, deployment reports, ...).
-    for rf in remote_files:
-        if rf["size"] < SMALL_FILE_THRESHOLD_BYTES and rf["key"] not in required_keys:
-            files_to_download.append(rf)
+        remote_files: list[dict] = content["files"]
+        if filenames is None:
+            files_to_download: list[dict] = list(remote_files)
+        else:
+            files_to_download = list(_check_name_of_files_to_download(filenames, remote_files))
+        required_keys = {f["key"] for f in files_to_download}
+        # Auto-include any small file in the record (READMEs, deployment reports, ...).
+        for rf in remote_files:
+            if rf["size"] < SMALL_FILE_THRESHOLD_BYTES and rf["key"] not in required_keys:
+                files_to_download.append(rf)
 
-    downloaded_files = 0
-    n_files_to_download = len(files_to_download)
-    for i_file, file_to_download in enumerate(files_to_download, start=1):
-        is_required = file_to_download["key"] in required_keys
-        downloaded_files += _download_one_file(
-            file_to_download,
-            output_dir,
-            cache_overwrite=cache_overwrite,
-            is_required=is_required,
-            progress_prefix=f"[{i_file}/{n_files_to_download}]",
-        )
+        downloaded_files = 0
+        n_files_to_download = len(files_to_download)
+        for i_file, file_to_download in enumerate(files_to_download, start=1):
+            is_required = file_to_download["key"] in required_keys
+            downloaded_files += _download_one_file(
+                session,
+                file_to_download,
+                output_dir,
+                cache_overwrite=cache_overwrite,
+                is_required=is_required,
+                progress_prefix=f"[{i_file}/{n_files_to_download}]",
+            )
     logger.info("Download finished: %s new files cached at %s", downloaded_files, output_dir)
 
 
 def _download_one_file(
+    session: requests.Session,
     file_entry: dict,
     output_dir: Path,
     *,
@@ -142,6 +149,9 @@ def _download_one_file(
     progress_prefix: str,
 ) -> int:
     """Download a single Zenodo file. Returns 1 if a new file was written, 0 otherwise.
+
+    Uses the caller's :class:`requests.Session` so its connection pool is closed once
+    by the caller, releasing every socket deterministically rather than at GC.
 
     Retries up to ``_MAX_DOWNLOAD_ATTEMPTS`` times on transient network errors with
     exponential backoff, resuming partial downloads via a ``Range`` header. Required
@@ -174,7 +184,7 @@ def _download_one_file(
         existing_size = dst_fpath.stat().st_size if dst_fpath.is_file() else 0
         headers = {"Range": f"bytes={existing_size}-"} if existing_size > 0 else {}
         try:
-            result = requests.get(
+            result = session.get(
                 _file_url,
                 stream=True,
                 timeout=(_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S),

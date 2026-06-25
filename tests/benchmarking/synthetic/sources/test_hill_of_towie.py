@@ -9,12 +9,23 @@ separately by a ``slow``-marked test that is excluded from the default offline s
 
 from __future__ import annotations
 
+import json
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pandas as pd
 
 from benchmarking.synthetic import HOT_COLUMNS
-from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format, scada_wide_to_long
+from benchmarking.synthetic.sources.hill_of_towie import (
+    download_zenodo_data,
+    long_to_wind_up_format,
+    scada_wide_to_long,
+)
 from wind_up.constants import TIMESTAMP_COL, DataColumns
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 TIMEBASE_S = 600
 
@@ -120,3 +131,50 @@ def test_calc_shutdown_duration_flags_only_the_frozen_turbine() -> None:
     t02 = wind_up_df.loc[wind_up_df[DataColumns.turbine_name] == "T02", DataColumns.shutdown_duration].to_numpy()
     assert np.allclose(t01[1:], TIMEBASE_S)  # frozen turbine -> downtime after the first row
     assert np.allclose(t02, 0.0)  # varying turbine -> available throughout
+
+
+def test_download_routes_through_one_session_closed_once(tmp_path: Path) -> None:
+    """Every Zenodo request goes through a single Session that is closed exactly once.
+
+    Regression guard for leaked SSL sockets: a per-call ``requests.get`` closes its
+    transient connection pool before the streamed response's socket is released back to
+    it, so the socket lingers until GC and trips ``filterwarnings = error`` via
+    ResourceWarning. A single Session whose pool is closed on exit releases every socket
+    deterministically. Asserting one Session, closed once, encodes exactly that fix.
+    """
+    # Pre-cache the metadata so this stays offline; the file-download branch (the leak
+    # source) still has to route its streamed get through the shared Session.
+    file_entry = {"key": "small.txt", "size": 10, "links": {"self": "https://zenodo.test/small.txt"}}
+    (tmp_path / "zenodo_dataset_metadata.json").write_text(json.dumps({"files": [file_entry]}))
+
+    response = MagicMock()
+    response.status_code = 200
+    response.iter_content.return_value = [b"0123456789"]
+    response.__enter__.return_value = response
+    response.__exit__.return_value = False
+
+    session = MagicMock()
+    session.get.return_value = response
+    session.__enter__.return_value = session
+    session.__exit__.return_value = False
+
+    def _banned_get(*_args: object, **_kwargs: object) -> object:
+        msg = "per-call requests.get leaks sockets; route every request through the shared Session"
+        raise AssertionError(msg)
+
+    with (
+        patch("requests.Session", return_value=session) as session_cls,
+        patch("requests.get", side_effect=_banned_get),
+    ):
+        download_zenodo_data(record_id="123", output_dir=tmp_path)
+
+    session_cls.assert_called_once()  # exactly one Session for the whole download
+    session.__enter__.assert_called_once()
+    session.__exit__.assert_called_once()  # pool (and its sockets) closed deterministically
+    session.get.assert_called_once_with(
+        file_entry["links"]["self"],
+        stream=True,
+        timeout=(10, 60),
+        headers={},
+    )
+    assert (tmp_path / "small.txt").read_bytes() == b"0123456789"
