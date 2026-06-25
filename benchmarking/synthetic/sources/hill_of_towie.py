@@ -193,6 +193,7 @@ def _download_one_file(
             file_mode = "ab" if resume else "wb"
             remaining_bytes = max(0, _file_size - existing_size)
             with (
+                result,  # close the streamed response (and its socket) deterministically, not at GC
                 Path.open(dst_fpath, file_mode) as f,
                 tqdm(
                     total=remaining_bytes,
