@@ -9,8 +9,9 @@ import pandas as pd
 import pytest
 
 import benchmarking.synthetic.make_example_datasets as driver
+from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.make_example_datasets import example_profiles, generate_example_datasets, main
-from wind_up.constants import TIMESTAMP_COL, DataColumns
+from wind_up.constants import TIMESTAMP_COL
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -27,11 +28,11 @@ def _swept_wf_df(
     frames = [
         pd.DataFrame(
             {
-                DataColumns.turbine_name: turbine,
-                DataColumns.active_power_mean: power,
-                DataColumns.wind_speed_mean: ws,
-                DataColumns.wind_speed_sd: 0.1 * ws,
-                DataColumns.gen_rpm_mean: 1400.0,
+                HOT_COLUMNS.turbine: turbine,
+                HOT_COLUMNS.active_power: power,
+                HOT_COLUMNS.wind_speed: ws,
+                HOT_COLUMNS.wind_speed_sd: 0.1 * ws,
+                HOT_COLUMNS.gen_rpm: 1400.0,
             },
             index=index,
         )

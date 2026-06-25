@@ -8,12 +8,14 @@ written diagnostics, and the error/degenerate paths.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from benchmarking.baselines import naive_ratio
 from benchmarking.baselines.naive_ratio import (
     NaiveRatioMethod,
     _daily_segment_coverage,
@@ -23,18 +25,23 @@ from benchmarking.baselines.naive_ratio import (
 )
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import ToggleSchedule, treated_mask
-from wind_up.constants import TIMESTAMP_COL, DataColumns
+
+# Deliberately non-v0 column names: the method is source-agnostic, so the active-power column
+# is configured and the turbine column comes from the seam. Using names that are nothing like
+# v0's ``DataColumns`` proves the method never reaches for wind_up's vocabulary.
+_TURBINE_COL = "asset_id"
+_POWER_COL = "kw"
 
 
 def _index(n: int, *, freq: str = "10min", start: str = "2020-01-01") -> pd.DatetimeIndex:
-    return pd.date_range(start=start, periods=n, freq=freq, tz="UTC", name=TIMESTAMP_COL)
+    return pd.date_range(start=start, periods=n, freq=freq, tz="UTC", name="timestamp")
 
 
 def _scada(power_by_turbine: dict[str, np.ndarray], index: pd.DatetimeIndex) -> pd.DataFrame:
     """Long-format SCADA: one block of rows per turbine, sharing ``index``."""
     frames = [
         pd.DataFrame(
-            {DataColumns.turbine_name: name, DataColumns.active_power_mean: np.asarray(vals, dtype=float)},
+            {_TURBINE_COL: name, _POWER_COL: np.asarray(vals, dtype=float)},
             index=index,
         )
         for name, vals in power_by_turbine.items()
@@ -68,13 +75,24 @@ class TestInferTimebase:
         assert _infer_timebase(doubled) == pd.Timedelta(minutes=10)
 
 
+def test_naive_ratio_shares_no_wind_up_code() -> None:
+    """The naive method is an independent, source-native baseline: it must not import wind_up."""
+    tree = ast.parse(Path(naive_ratio.__file__).read_text())
+    modules = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+    modules |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+    offenders = {m for m in modules if m == "wind_up" or m.startswith("wind_up.")}
+    assert not offenders, f"naive_ratio must not depend on wind_up, found imports: {offenders}"
+
+
 class TestRecovery:
     def test_prepost_recovers_known_uplift(self) -> None:
         idx = _index(20)
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.07)
-        out = NaiveRatioMethod().estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade))
+        out = NaiveRatioMethod(active_power_col=_POWER_COL).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        )
         assert isinstance(out, MethodOutput)
         assert out.p50_overall == pytest.approx(0.07)
         assert out.p50_by_condition is None
@@ -84,7 +102,9 @@ class TestRecovery:
         schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=idx[0])
         treated = treated_mask(idx, schedule)
         scada = _recovery_scada(idx, treated=treated, uplift=0.03)
-        out = NaiveRatioMethod().estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule))
+        out = NaiveRatioMethod(active_power_col=_POWER_COL).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
         assert out.p50_overall == pytest.approx(0.03)
 
 
@@ -94,14 +114,18 @@ class TestCompleteCase:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        clean = NaiveRatioMethod().estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade))
+        clean = NaiveRatioMethod(active_power_col=_POWER_COL).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        )
 
         # NaN one reference at a used baseline timestamp: that timestamp must be excluded, but
         # since the ratio is identical at every row the estimate is unchanged.
         corrupted = scada.copy()
-        mask = (corrupted[DataColumns.turbine_name] == "R1") & (corrupted.index == idx[3])
-        corrupted.loc[mask, DataColumns.active_power_mean] = np.nan
-        out = NaiveRatioMethod().estimate(MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=upgrade))
+        mask = (corrupted[_TURBINE_COL] == "R1") & (corrupted.index == idx[3])
+        corrupted.loc[mask, _POWER_COL] = np.nan
+        out = NaiveRatioMethod(active_power_col=_POWER_COL).estimate(
+            MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        )
         assert out.p50_overall == pytest.approx(clean.p50_overall)
 
     def test_nan_at_unused_timestamp_does_not_change_estimate(self) -> None:
@@ -111,15 +135,15 @@ class TestCompleteCase:
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
         # make idx[2] already unused (test NaN), then add a second NaN at the same timestamp
         base = scada.copy()
-        base.loc[(base[DataColumns.turbine_name] == "T1") & (base.index == idx[2]), DataColumns.active_power_mean] = (
-            np.nan
+        base.loc[(base[_TURBINE_COL] == "T1") & (base.index == idx[2]), _POWER_COL] = np.nan
+        before = NaiveRatioMethod(active_power_col=_POWER_COL).estimate(
+            MethodInput(scada_df=base, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
         )
-        before = NaiveRatioMethod().estimate(MethodInput(scada_df=base, test_wtg="T1", upgrade_timing=upgrade))
         after_df = base.copy()
-        after_df.loc[
-            (after_df[DataColumns.turbine_name] == "R1") & (after_df.index == idx[2]), DataColumns.active_power_mean
-        ] = np.nan
-        after = NaiveRatioMethod().estimate(MethodInput(scada_df=after_df, test_wtg="T1", upgrade_timing=upgrade))
+        after_df.loc[(after_df[_TURBINE_COL] == "R1") & (after_df.index == idx[2]), _POWER_COL] = np.nan
+        after = NaiveRatioMethod(active_power_col=_POWER_COL).estimate(
+            MethodInput(scada_df=after_df, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        )
         assert after.p50_overall == pytest.approx(before.p50_overall)
 
 
@@ -135,8 +159,8 @@ class TestTimebaseInvariance:
                 treated10 = treated
             scada = _recovery_scada(idx, treated=treated, uplift=0.04)
             results.append(
-                NaiveRatioMethod()
-                .estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade))
+                NaiveRatioMethod(active_power_col=_POWER_COL)
+                .estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL))
                 .p50_overall
             )
         assert results[0] == pytest.approx(results[1])
@@ -146,8 +170,8 @@ class TestTimebaseInvariance:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        method = NaiveRatioMethod(out_dir=tmp_path, timebase=pd.Timedelta(minutes=30))
-        method.estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade))
+        method = NaiveRatioMethod(active_power_col=_POWER_COL, out_dir=tmp_path, timebase=pd.Timedelta(minutes=30))
+        method.estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL))
         stats = _read_only_csv(tmp_path, "data_stats")
         all_row = stats[stats["segment"] == "all"].iloc[0]
         # MWh = sum(power_kw) * timebase_hours / 1000; check it used 0.5h not 1/6h
@@ -161,13 +185,17 @@ class TestActivePowerOnly:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        plain = NaiveRatioMethod().estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade))
+        plain = NaiveRatioMethod(active_power_col=_POWER_COL).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        )
 
         with_extra = scada.copy()
         rng = np.random.default_rng(0)
-        with_extra[DataColumns.wind_speed_mean] = rng.normal(size=len(with_extra))
-        with_extra[DataColumns.gen_rpm_mean] = rng.normal(size=len(with_extra))
-        out = NaiveRatioMethod().estimate(MethodInput(scada_df=with_extra, test_wtg="T1", upgrade_timing=upgrade))
+        with_extra["ws"] = rng.normal(size=len(with_extra))
+        with_extra["rpm"] = rng.normal(size=len(with_extra))
+        out = NaiveRatioMethod(active_power_col=_POWER_COL).estimate(
+            MethodInput(scada_df=with_extra, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        )
         assert out.p50_overall == pytest.approx(plain.p50_overall)
 
 
@@ -177,7 +205,9 @@ class TestErrors:
         upgrade = idx[10]
         scada = _scada({"T1": np.ones(len(idx))}, idx)
         with pytest.raises(ValueError, match="reference"):
-            NaiveRatioMethod().estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade))
+            NaiveRatioMethod(active_power_col=_POWER_COL).estimate(
+                MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+            )
 
     def test_no_used_baseline_returns_nan(self) -> None:
         idx = _index(20)
@@ -185,9 +215,11 @@ class TestErrors:
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
         # NaN the test turbine across the whole baseline -> no used baseline timestamps
-        is_baseline_test = (scada[DataColumns.turbine_name] == "T1") & np.asarray(scada.index < upgrade)
-        scada.loc[is_baseline_test, DataColumns.active_power_mean] = np.nan
-        out = NaiveRatioMethod().estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade))
+        is_baseline_test = (scada[_TURBINE_COL] == "T1") & np.asarray(scada.index < upgrade)
+        scada.loc[is_baseline_test, _POWER_COL] = np.nan
+        out = NaiveRatioMethod(active_power_col=_POWER_COL).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        )
         assert np.isnan(out.p50_overall)
 
 
@@ -200,9 +232,7 @@ class TestPlotSeries:
         upgrade = idx[144]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        wide = scada.pivot_table(
-            index=scada.index, columns=DataColumns.turbine_name, values=DataColumns.active_power_mean
-        )
+        wide = scada.pivot_table(index=scada.index, columns=_TURBINE_COL, values=_POWER_COL)
         test_pw = wide["T1"].to_numpy()
         ref_total = wide[["R1", "R2"]].sum(axis=1).to_numpy()
         used = np.ones(len(wide), dtype=bool)
@@ -221,9 +251,7 @@ class TestPlotSeries:
         upgrade = idx[144]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        wide = scada.pivot_table(
-            index=scada.index, columns=DataColumns.turbine_name, values=DataColumns.active_power_mean
-        )
+        wide = scada.pivot_table(index=scada.index, columns=_TURBINE_COL, values=_POWER_COL)
         used = np.ones(len(wide), dtype=bool)
         used[10] = used[200] = False  # drop one timestamp in each day
 
@@ -245,9 +273,7 @@ class TestPlotSeries:
         schedule = ToggleSchedule(period=pd.Timedelta(minutes=40), start=idx[0])
         treated = np.asarray(treated_mask(idx, schedule))
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        wide = scada.pivot_table(
-            index=scada.index, columns=DataColumns.turbine_name, values=DataColumns.active_power_mean
-        )
+        wide = scada.pivot_table(index=scada.index, columns=_TURBINE_COL, values=_POWER_COL)
         used = np.ones(len(wide), dtype=bool)
 
         expected = _expected_per_day(wide.index, _infer_timebase(wide.index))
@@ -271,8 +297,10 @@ class TestDiagnostics:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.06)
-        method = NaiveRatioMethod(out_dir=tmp_path, save_plots=save_plots)
-        out = method.estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade))
+        method = NaiveRatioMethod(active_power_col=_POWER_COL, out_dir=tmp_path, save_plots=save_plots)
+        out = method.estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        )
         return out, idx, upgrade
 
     def test_writes_both_csvs(self, tmp_path) -> None:  # noqa: ANN001

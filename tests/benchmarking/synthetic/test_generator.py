@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.generator import (
     SyntheticDataset,
     ToggleSchedule,
@@ -17,7 +18,7 @@ from benchmarking.synthetic.generator import (
     treated_mask,
 )
 from benchmarking.synthetic.upgrades import ConstantCpChange
-from wind_up.constants import TIMESTAMP_COL, DataColumns
+from wind_up.constants import TIMESTAMP_COL
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -35,11 +36,11 @@ def _wf_df(
     for turbine in turbines:
         frame = pd.DataFrame(
             {
-                DataColumns.turbine_name: turbine,
-                DataColumns.active_power_mean: float(power),
-                DataColumns.wind_speed_mean: 8.0,
-                DataColumns.wind_speed_sd: 0.8,
-                DataColumns.gen_rpm_mean: 1400.0,
+                HOT_COLUMNS.turbine: turbine,
+                HOT_COLUMNS.active_power: float(power),
+                HOT_COLUMNS.wind_speed: 8.0,
+                HOT_COLUMNS.wind_speed_sd: 0.8,
+                HOT_COLUMNS.gen_rpm: 1400.0,
             },
             index=index,
         )
@@ -64,13 +65,13 @@ def test_prepost_modifies_only_post_rows_of_test_turbine() -> None:
     )
     synthetic = dataset.synthetic_df
 
-    t01 = synthetic[synthetic[DataColumns.turbine_name] == "T01"]
-    pre = t01[t01.index < changeover][DataColumns.active_power_mean]
-    post = t01[t01.index >= changeover][DataColumns.active_power_mean]
+    t01 = synthetic[synthetic[HOT_COLUMNS.turbine] == "T01"]
+    pre = t01[t01.index < changeover][HOT_COLUMNS.active_power]
+    post = t01[t01.index >= changeover][HOT_COLUMNS.active_power]
     assert np.allclose(pre.to_numpy(), 1000.0)
     assert np.all(post.to_numpy() > 1000.0)
 
-    t02 = synthetic[synthetic[DataColumns.turbine_name] == "T02"][DataColumns.active_power_mean]
+    t02 = synthetic[synthetic[HOT_COLUMNS.turbine] == "T02"][HOT_COLUMNS.active_power]
     assert np.allclose(t02.to_numpy(), 1000.0)
 
 
@@ -98,11 +99,11 @@ def test_toggle_modifies_alternate_blocks() -> None:
         mode="toggle",
         upgrade_timing=ToggleSchedule(period=pd.Timedelta(days=1)),
     )
-    t01 = dataset.synthetic_df[dataset.synthetic_df[DataColumns.turbine_name] == "T01"]
+    t01 = dataset.synthetic_df[dataset.synthetic_df[HOT_COLUMNS.turbine] == "T01"]
     start = t01.index.min()
     half = pd.Timedelta(hours=12)
-    first_half = t01[t01.index < start + half][DataColumns.active_power_mean]
-    second_half = t01[(t01.index >= start + half) & (t01.index < start + 2 * half)][DataColumns.active_power_mean]
+    first_half = t01[t01.index < start + half][HOT_COLUMNS.active_power]
+    second_half = t01[(t01.index >= start + half) & (t01.index < start + 2 * half)][HOT_COLUMNS.active_power]
     assert np.allclose(first_half.to_numpy(), 1000.0)  # first half-period: toggle off
     assert np.all(second_half.to_numpy() > 1000.0)  # second half-period: toggle on
 
@@ -120,14 +121,14 @@ def test_toggle_start_leaves_pre_start_rows_untreated() -> None:
         mode="toggle",
         upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=12), start=start),
     )
-    t01 = dataset.synthetic_df[dataset.synthetic_df[DataColumns.turbine_name] == "T01"]
-    before = t01[t01.index < start][DataColumns.active_power_mean]
+    t01 = dataset.synthetic_df[dataset.synthetic_df[HOT_COLUMNS.turbine] == "T01"]
+    before = t01[t01.index < start][HOT_COLUMNS.active_power]
     assert np.allclose(before.to_numpy(), 1000.0)  # baseline before toggling: untreated
 
     # start_on defaults False: [start, start+6h) off, [start+6h, start+12h) on.
     half = pd.Timedelta(hours=6)
-    off_block = t01[(t01.index >= start) & (t01.index < start + half)][DataColumns.active_power_mean]
-    on_block = t01[(t01.index >= start + half) & (t01.index < start + 2 * half)][DataColumns.active_power_mean]
+    off_block = t01[(t01.index >= start) & (t01.index < start + half)][HOT_COLUMNS.active_power]
+    on_block = t01[(t01.index >= start + half) & (t01.index < start + 2 * half)][HOT_COLUMNS.active_power]
     assert np.allclose(off_block.to_numpy(), 1000.0)
     assert np.all(on_block.to_numpy() > 1000.0)
 

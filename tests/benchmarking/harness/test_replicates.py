@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.harness.replicates import Replicate, StudyConfig, build_replicates
-from benchmarking.synthetic import ConstantCpChange, ToggleSchedule
-from wind_up.constants import TIMESTAMP_COL, DataColumns
+from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange, ToggleSchedule
+from wind_up.constants import TIMESTAMP_COL
 
 PROFILE = [ConstantCpChange(delta=0.05)]
 
@@ -18,11 +18,11 @@ def _base_scada(turbines: tuple[str, ...] = ("T1", "T3", "T4", "T7", "T99")) -> 
     frames = [
         pd.DataFrame(
             {
-                DataColumns.turbine_name: turbine,
-                DataColumns.active_power_mean: 1000.0,
-                DataColumns.wind_speed_mean: 8.0,
-                DataColumns.wind_speed_sd: 0.8,
-                DataColumns.gen_rpm_mean: 1400.0,
+                HOT_COLUMNS.turbine: turbine,
+                HOT_COLUMNS.active_power: 1000.0,
+                HOT_COLUMNS.wind_speed: 8.0,
+                HOT_COLUMNS.wind_speed_sd: 0.8,
+                HOT_COLUMNS.gen_rpm: 1400.0,
             },
             index=index,
         )
@@ -58,7 +58,7 @@ def test_build_replicates_returns_n_replicate_records() -> None:
 
 def test_data_is_subset_to_turbine_subset() -> None:
     reps = build_replicates(_base_scada(), profile=PROFILE, study=_study())
-    present = set(reps[0].dataset.synthetic_df[DataColumns.turbine_name].unique())
+    present = set(reps[0].dataset.synthetic_df[HOT_COLUMNS.turbine].unique())
     assert present == {"T1", "T3", "T4", "T7"}  # the other ~17 turbines dropped
 
 
@@ -126,6 +126,6 @@ def test_injected_upgrade_actually_changed_the_test_turbine() -> None:
     r = reps[0]
     syn = r.dataset.synthetic_df
     orig = r.dataset.original_df
-    test_syn = syn[syn[DataColumns.turbine_name] == r.test_wtg][DataColumns.active_power_mean].to_numpy()
-    test_orig = orig[orig[DataColumns.turbine_name] == r.test_wtg][DataColumns.active_power_mean].to_numpy()
+    test_syn = syn[syn[HOT_COLUMNS.turbine] == r.test_wtg][HOT_COLUMNS.active_power].to_numpy()
+    test_orig = orig[orig[HOT_COLUMNS.turbine] == r.test_wtg][HOT_COLUMNS.active_power].to_numpy()
     assert np.any(test_syn != test_orig)  # the profile left a mark

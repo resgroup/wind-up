@@ -39,8 +39,8 @@ import pandas as pd
 
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import ToggleSchedule, treated_mask
+from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format
 from wind_up.combine_results import combine_results
-from wind_up.constants import DataColumns
 from wind_up.interface import AssessmentInputs
 from wind_up.main_analysis import run_wind_up_analysis
 from wind_up.models import PlotConfig, WindUpConfig
@@ -111,9 +111,9 @@ def _build_toggle_df(scada_df: pd.DataFrame, schedule: ToggleSchedule) -> pd.Dat
     return pd.DataFrame({"toggle_on": toggle_on, "toggle_off": toggle_off}, index=index)
 
 
-def _subset_turbines(scada_df: pd.DataFrame) -> list[str]:
+def _subset_turbines(scada_df: pd.DataFrame, turbine_col: str) -> list[str]:
     """Return the sorted unique turbine names present in ``scada_df``."""
-    return sorted(scada_df[DataColumns.turbine_name].unique().tolist())
+    return sorted(scada_df[turbine_col].unique().tolist())
 
 
 def _extract_p50(tdf: pd.DataFrame, test_wtg: str) -> float:
@@ -153,10 +153,10 @@ class V0BinnedMethod:
         from_cfg_kwargs: dict = {
             "cfg": cfg,
             "plot_cfg": plot_cfg,
-            # wind_up mutates the SCADA frame in place (e.g. smart_data.check_and_convert_scada_raw);
-            # the harness hands us a ``.loc`` slice, so pass a defensive copy to avoid pandas'
-            # SettingWithCopyWarning (escalated to an error by the test suite's warning filter).
-            "scada_df": mi.scada_df.copy(),
+            # The harness hands us source-native SCADA; v0 needs wind-up format, so convert here
+            # (the v0 baseline is the only place that knows v0's column names). The conversion
+            # returns a fresh frame, so there is no in-place mutation of the harness's slice.
+            "scada_df": long_to_wind_up_format(mi.scada_df),
             "metadata_df": self.context.metadata_df,
             "reanalysis_datasets": self.context.reanalysis_datasets,
             "cache_dir": None,
@@ -174,7 +174,7 @@ class V0BinnedMethod:
 
     def _build_config(self, mi: MethodInput) -> WindUpConfig:
         """Render and load the per-campaign WindUpConfig, with the asset filtered to the subset."""
-        subset = _subset_turbines(mi.scada_df)
+        subset = _subset_turbines(mi.scada_df, mi.turbine_col)
         refs = [t for t in subset if t != mi.test_wtg]
         if not refs:
             msg = (

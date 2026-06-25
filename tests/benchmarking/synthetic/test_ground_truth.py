@@ -6,8 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.ground_truth import true_uplift
-from wind_up.constants import TIMESTAMP_COL, DataColumns
+from wind_up.constants import TIMESTAMP_COL
 
 
 def _paired(
@@ -23,10 +24,10 @@ def _paired(
     def frame(power: list[float]) -> pd.DataFrame:
         df = pd.DataFrame(
             {
-                DataColumns.turbine_name: wtg,
-                DataColumns.active_power_mean: np.array(power, dtype=float),
-                DataColumns.wind_speed_mean: np.array(ws if ws is not None else [8.0] * n, dtype=float),
-                DataColumns.wind_speed_sd: 0.8,
+                HOT_COLUMNS.turbine: wtg,
+                HOT_COLUMNS.active_power: np.array(power, dtype=float),
+                HOT_COLUMNS.wind_speed: np.array(ws if ws is not None else [8.0] * n, dtype=float),
+                HOT_COLUMNS.wind_speed_sd: 0.8,
             },
             index=index,
         )

@@ -18,7 +18,7 @@ from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import StudyConfig, score_study
 from benchmarking.harness.example_hot_study import OracleMethod
-from benchmarking.synthetic import ConstantCpChange
+from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
 
@@ -46,7 +46,7 @@ def test_naive_and_v0_recover_toggle_uplift(tmp_path) -> None:  # noqa: ANN001
         profile=[ConstantCpChange(delta=0.05)],
         methods=[
             V0BinnedMethod(context, scratch_dir=tmp_path / "windup_runs"),
-            NaiveRatioMethod(out_dir=tmp_path / "naive_runs"),
+            NaiveRatioMethod(active_power_col=HOT_COLUMNS.active_power, out_dir=tmp_path / "naive_runs"),
             OracleMethod(scada_df),
         ],
         study=study,

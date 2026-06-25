@@ -6,15 +6,18 @@ wind-up-format SCADA end to end:
 
 - the Zenodo fetcher (``ensure_hot_data_files`` / ``download_zenodo_data``) that
   downloads and caches the Hill of Towie v2 datapack (Zenodo record ``20204946``);
-- the 10-minute SCADA loader (``load_hot_10min_data``) and the wide-to-narrow
-  wind-up-format conversion (``scada_df_to_wind_up_df``);
-- ``load_hot_scada`` that ties them together and returns wind-up-format SCADA plus
-  turbine metadata.
+- the 10-minute SCADA loader (``load_hot_10min_data``) and the wide-to-long reshape
+  (``scada_wide_to_long``) that keeps source-native ``wtc_*`` tag names;
+- ``load_hot_scada`` that ties them together and returns source-native long SCADA plus
+  turbine metadata;
+- ``long_to_wind_up_format``, the v0-only on-ramp that aliases the source columns to
+  :class:`~wind_up.constants.DataColumns` names and derives ``PitchAngleMean`` /
+  ``ShutdownDuration``.
 
 Copied rather than imported so ``benchmarking`` stays hermetic and depends on
-``wind_up`` only for :class:`~wind_up.constants.DataColumns`. ``requests`` and
-``tqdm`` are imported lazily inside the network/IO functions so the pure transforms
-import without them.
+``wind_up`` only for :class:`~wind_up.constants.DataColumns` (used by the v0 on-ramp).
+``requests`` and ``tqdm`` are imported lazily inside the network/IO functions so the pure
+transforms import without them.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from zipfile import ZipFile
 
 import pandas as pd
 
+from benchmarking.synthetic.schema import ColumnSchema
 from wind_up.constants import DataColumns
 
 if TYPE_CHECKING:
@@ -357,6 +361,20 @@ hill_of_towie_fields = [
     WPSBackupFileField(alias="PowerReference", field_name="wtc_PowerRef_endvalue", table_name="tblSCTurbine"),
 ]
 
+# The Hill of Towie source-native column schema the synthetic pipeline and methods see. The
+# raw 10-min tag names (``wtc_*``) are kept as-is (no v0 aliasing); the long-format turbine
+# identifier is ``TurbineName`` (assigned by :func:`scada_wide_to_long`). Derived from
+# ``hill_of_towie_fields`` so the source's tag names live in exactly one place.
+_FIELD_BY_ALIAS = {f.alias: f.field_name for f in hill_of_towie_fields}
+HOT_TURBINE_COL = "TurbineName"
+HOT_COLUMNS = ColumnSchema(
+    turbine=HOT_TURBINE_COL,
+    active_power=_FIELD_BY_ALIAS[DataColumns.active_power_mean],
+    wind_speed=_FIELD_BY_ALIAS[DataColumns.wind_speed_mean],
+    wind_speed_sd=_FIELD_BY_ALIAS[DataColumns.wind_speed_sd],
+    gen_rpm=_FIELD_BY_ALIAS[DataColumns.gen_rpm_mean],
+)
+
 
 def _unpack_hot_10min_year(
     *,
@@ -364,14 +382,14 @@ def _unpack_hot_10min_year(
     year: int,
     serial_numbers: Sequence[int],
     fields_to_load: Sequence[WPSBackupFileField],
-    rename_cols_using_aliases: bool,
 ) -> pd.DataFrame:
     """Unpack one full year zip into a wide, serial-keyed 10-min dataframe (the slow step).
 
     This is the expensive part of :func:`load_hot_10min_data` (reading and pivoting every monthly
     CSV in the year zip); it is cached per (year, turbine) by :func:`_load_unpacked_hot_10min`.
     The result covers the whole year (no window clipping), is keyed on serial numbers (not turbine
-    names), and only includes the requested ``serial_numbers``.
+    names), and only includes the requested ``serial_numbers``. Columns keep their source-native
+    tag names (the ``wtc_*`` field names); any v0 aliasing is the v0 baseline's concern.
     """
     from tqdm import tqdm  # noqa: PLC0415  (lazy: keep network deps out of the import path)
 
@@ -388,8 +406,6 @@ def _unpack_hot_10min_year(
                 _df = pd.read_csv(zip_file.open(fname), index_col=0, parse_dates=True)[
                     ["StationId", *[x.field_name for x in fields_to_load if x.table_name == _table]]
                 ]
-                if rename_cols_using_aliases:
-                    _df = _df.rename(columns={x.field_name: x.alias for x in fields_to_load if x.table_name == _table})
                 if _df.index.name != "TimeStamp":
                     msg = f"unexpected index name, {_df.index.name =}"
                     raise ValueError(msg)
@@ -421,7 +437,6 @@ def _year_turbine_cache_path(
     year: int,
     serial_number: int,
     fields_to_load: Sequence[WPSBackupFileField],
-    rename_cols_using_aliases: bool,
     cache_dir: Path,
 ) -> Path:
     """Build the deterministic parquet path for one (year, turbine).
@@ -432,10 +447,7 @@ def _year_turbine_cache_path(
     the requested window or the rest of the turbine subset, so any study reuses these files.
     """
     fields_blob = json.dumps(
-        {
-            "fields": sorted(f"{x.table_name}.{x.field_name}->{x.alias}" for x in fields_to_load),
-            "rename_cols_using_aliases": rename_cols_using_aliases,
-        },
+        {"fields": sorted(f"{x.table_name}.{x.field_name}->{x.alias}" for x in fields_to_load)},
         sort_keys=True,
     )
     fields_hash = hashlib.sha256(fields_blob.encode("utf-8")).hexdigest()[:16]
@@ -449,7 +461,6 @@ def _load_unpacked_hot_10min(
     years_to_load: Sequence[int],
     serial_numbers: Sequence[int],
     fields_to_load: Sequence[WPSBackupFileField],
-    rename_cols_using_aliases: bool,
     cache_dir: Path,
 ) -> pd.DataFrame:
     """Return the full-year, serial-keyed 10-min df for the requested years and turbines.
@@ -467,7 +478,6 @@ def _load_unpacked_hot_10min(
                 year=year,
                 serial_number=serial,
                 fields_to_load=fields_to_load,
-                rename_cols_using_aliases=rename_cols_using_aliases,
                 cache_dir=cache_dir,
             )
             for serial in serial_numbers
@@ -480,7 +490,6 @@ def _load_unpacked_hot_10min(
                 year=year,
                 serial_numbers=missing,
                 fields_to_load=fields_to_load,
-                rename_cols_using_aliases=rename_cols_using_aliases,
             )
             for serial in missing:
                 serial_df = unpacked.loc[:, unpacked.columns.get_level_values(0) == serial]
@@ -498,11 +507,13 @@ def load_hot_10min_data(
     start_dt: pd.Timestamp,
     end_dt_excl: pd.Timestamp,
     use_turbine_names: bool = True,
-    rename_cols_using_aliases: bool = False,
     custom_fields: Sequence[WPSBackupFileField] | None = None,
     cache_dir: Path | None = None,
 ) -> pd.DataFrame:
     """Return a wide 10-min SCADA dataframe for Hill of Towie (downloading year zips).
+
+    Columns keep their source-native ``wtc_*`` tag names; the level-0 turbine key is the serial
+    number, or the ``T01``-style turbine name when ``use_turbine_names``.
 
     The slow zip-unpacking step is cached as parquet under ``cache_dir`` (defaults to
     ``data_dir / "unpacked_cache"``), one file per (year, turbine). Because the Zenodo record is a
@@ -528,7 +539,6 @@ def load_hot_10min_data(
         years_to_load=years_to_load,
         serial_numbers=serial_numbers,
         fields_to_load=fields_to_load,
-        rename_cols_using_aliases=rename_cols_using_aliases,
         cache_dir=cache_dir if cache_dir is not None else data_dir / "unpacked_cache",
     )
     if use_turbine_names:
@@ -585,13 +595,14 @@ def calc_shutdown_duration(wind_up_df: pd.DataFrame) -> pd.DataFrame:
     return wind_up_df
 
 
-def scada_df_to_wind_up_df(scada_df: pd.DataFrame, *, shutdown_duration_df: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Convert wide two-level ``scada_df`` to narrow wind-up-format ``wind_up_df``.
+def scada_wide_to_long(scada_df: pd.DataFrame, *, columns: ColumnSchema = HOT_COLUMNS) -> pd.DataFrame:
+    """Convert wide two-level ``scada_df`` to a narrow, source-native long frame.
 
-    ``scada_df`` has two column levels (turbine, field); ``wind_up_df`` has one column
-    level plus a ``TurbineName`` column. ``PitchAngleMean`` is derived from the three
-    per-blade pitch columns when absent. If ``shutdown_duration_df`` is given its
-    ``ShutdownDuration`` is merged in; otherwise it is computed.
+    ``scada_df`` has two column levels (turbine, field); the result has one column level plus a
+    ``columns.turbine`` identifier column, and keeps the source-native ``wtc_*`` field names. This
+    is the method-facing layout: v0-specific aliasing and the derived ``PitchAngleMean`` /
+    ``ShutdownDuration`` columns are added later by :func:`long_to_wind_up_format`, which only the
+    v0 baseline needs.
     """
     # future_stack=True only exists in pandas >= 2.1; without it >= 2.1 emits a
     # FutureWarning (an error under the test config). Fall back for pandas 2.0.x.
@@ -599,19 +610,23 @@ def scada_df_to_wind_up_df(scada_df: pd.DataFrame, *, shutdown_duration_df: pd.D
         stacked = scada_df.stack(level=0, future_stack=True)  # noqa: PD013
     except TypeError:
         stacked = scada_df.stack(level=0, dropna=False)  # noqa: PD013
-    wind_up_df = stacked.reset_index(level=1).rename(columns={"StationId": "TurbineName"})
+    return stacked.reset_index(level=1).rename(columns={"StationId": columns.turbine})
 
+
+def long_to_wind_up_format(long_df: pd.DataFrame) -> pd.DataFrame:
+    """Convert a source-native long frame (see :func:`scada_wide_to_long`) to wind-up format.
+
+    Renames the Hill of Towie ``wtc_*`` tag names to their v0 :class:`DataColumns` aliases, derives
+    ``PitchAngleMean`` from the three per-blade pitch columns when absent, and computes
+    ``ShutdownDuration``. This is the v0 baseline's on-ramp; the rest of the pipeline never needs it.
+    """
+    alias_by_field = {f.field_name: f.alias for f in hill_of_towie_fields}
+    wind_up_df = long_df.rename(columns=alias_by_field)
     if DataColumns.pitch_angle_mean not in wind_up_df.columns:
         wind_up_df[DataColumns.pitch_angle_mean] = wind_up_df[["pitch_angle_a", "pitch_angle_b", "pitch_angle_c"]].mean(
             axis=1
         )
-    if shutdown_duration_df is not None:
-        # pandas merge accepts the named index level TimeStamp_StartFormat alongside the
-        # TurbineName column and preserves the index, so no reset is needed.
-        wind_up_df = wind_up_df.merge(shutdown_duration_df, how="left", on=["TimeStamp_StartFormat", "TurbineName"])
-    else:
-        wind_up_df = calc_shutdown_duration(wind_up_df)
-    return wind_up_df
+    return calc_shutdown_duration(wind_up_df)
 
 
 # --------------------------------------------------------------------------------------
@@ -643,11 +658,12 @@ def load_hot_scada(
     wtg_names: Sequence[str] | None = None,
     data_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Download (if needed) and load wind-up-format Hill of Towie SCADA plus metadata.
+    """Download (if needed) and load source-native long Hill of Towie SCADA plus metadata.
 
-    Downloads and caches the v2 datapack year zips from Zenodo, unpacks the requested
-    window, and converts to wind-up format (computing ``ShutdownDuration``). Returns
-    ``(scada_df, metadata_df)`` ready for the synthetic generator.
+    Downloads and caches the v2 datapack year zips from Zenodo, unpacks the requested window, and
+    reshapes to a long frame with source-native ``wtc_*`` tag names (see :data:`HOT_COLUMNS`).
+    Returns ``(scada_df, metadata_df)`` ready for the synthetic generator. v0-specific aliasing is
+    applied later, only by the v0 baseline (see :func:`long_to_wind_up_format`).
 
     :param start_dt: inclusive UTC window start
     :param end_dt_excl: exclusive UTC window end
@@ -662,7 +678,6 @@ def load_hot_scada(
         wtg_numbers=wtg_numbers,
         start_dt=start_dt,
         end_dt_excl=end_dt_excl,
-        rename_cols_using_aliases=True,
     )
-    scada_df = scada_df_to_wind_up_df(wide_scada_df)
+    scada_df = scada_wide_to_long(wide_scada_df)
     return scada_df, metadata_df
