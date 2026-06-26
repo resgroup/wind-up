@@ -7,11 +7,19 @@ consistent DPI and closes the figure.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import sys
 from typing import TYPE_CHECKING
 
 import matplotlib as mpl
 
-mpl.use("Agg")  # headless: these run in studies/CI with no display
+# Headless by default: these run in studies/CI with no display. Mirror wind_up/__init__.py — respect
+# an explicit MPLBACKEND (checked by key presence), leave the backend alone if pyplot is already
+# imported (e.g. an interactive notebook), and never let a late use() failure break import.
+if "MPLBACKEND" not in os.environ and "matplotlib.pyplot" not in sys.modules:
+    with contextlib.suppress(ImportError):
+        mpl.use("Agg")
 
 if TYPE_CHECKING:
     from pathlib import Path

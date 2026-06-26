@@ -57,7 +57,10 @@ def density_scatter(
     scatter = ax.scatter(xv, yv, c=z, **kwargs)
     if colorbar:
         cbar = ax.figure.colorbar(scatter, ax=ax)
-        cbar.ax.set_yticklabels([])
+        # The density scale is arbitrary, so hide the numeric ticks. Use the colorbar API
+        # (set_ticks) rather than set_yticklabels([]), which trips Matplotlib's FixedFormatter
+        # warning — fatal under the tests' warnings-as-errors config.
+        cbar.set_ticks([])
         cbar.ax.set_ylabel("data density")
     return ax
 
