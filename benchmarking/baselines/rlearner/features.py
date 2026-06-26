@@ -53,16 +53,16 @@ def build_reference_features(scada_df: pd.DataFrame, *, test_wtg: str, turbine_c
     value_cols = [c for c in scada_df.columns if c != turbine_col]
     index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
 
+    # One pivot over all value columns (MultiIndex columns: (value_col, turbine)) rather than one
+    # pivot_table per column — much cheaper on wide SCADA frames. Then keep reference turbines only,
+    # in (value_col, ref) order, and flatten to the "<tag> @ <turbine>" names.
     tmp = scada_df.copy()
     tmp["_ts"] = scada_df.index
-    blocks = []
-    for col in value_cols:
-        wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=col, aggfunc="first")
-        ref_wide = wide[[r for r in refs if r in wide.columns]]
-        ref_wide.columns = [f"{col}{QUALIFIER}{r}" for r in ref_wide.columns]
-        blocks.append(ref_wide)
-
-    features = pd.concat(blocks, axis=1).reindex(index)
+    wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=value_cols, aggfunc="first")
+    keep = [(col, r) for col in value_cols for r in refs if (col, r) in wide.columns]
+    features = wide.loc[:, keep]
+    features.columns = [f"{col}{QUALIFIER}{r}" for col, r in keep]
+    features = features.reindex(index)
     features = pd.concat(
         [features, engineered_reference_features(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)], axis=1
     )

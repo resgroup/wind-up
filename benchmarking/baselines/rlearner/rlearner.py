@@ -26,7 +26,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from sklearn.model_selection import KFold
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -37,6 +36,19 @@ if TYPE_CHECKING:
 # Below this |t_res| the R-learner pseudo-outcome y_res/t_res is numerically unstable; such
 # rows carry ~zero R-loss weight anyway, so they are dropped from the effect fit.
 _MIN_T_RES = 1e-6
+
+
+def _import_kfold() -> Any:  # noqa: ANN401
+    """Import scikit-learn's ``KFold`` lazily with a helpful error if the optional ``ml`` group is missing.
+
+    Mirrors the lazy LightGBM import so this package imports without the optional ``ml`` dependencies.
+    """
+    try:
+        from sklearn.model_selection import KFold  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover - exercised only without the optional dep
+        msg = "scikit-learn is required for the R-learner method; install the 'ml' optional dependency group."
+        raise ImportError(msg) from exc
+    return KFold
 
 
 @dataclass
@@ -83,7 +95,7 @@ def cross_fit_rlearner(
 
     m_hat = np.empty(n)
     e_hat = np.empty(n)
-    folds = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    folds = _import_kfold()(n_splits=n_folds, shuffle=True, random_state=seed)
     for train_idx, test_idx in folds.split(x):
         x_tr, x_te = x.iloc[train_idx], x.iloc[test_idx]
         m_hat[test_idx] = make_outcome().fit(x_tr, y[train_idx]).predict(x_te)

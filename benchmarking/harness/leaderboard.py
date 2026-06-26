@@ -38,7 +38,9 @@ def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
                 "mean_estimate": float(group["estimate"].mean()) if "estimate" in group else float("nan"),
                 "mean_truth": float(group["truth"].mean()) if "truth" in group else float("nan"),
                 "n_replicates": summary.n,
-                "wall_time_s_sum": float(group["wall_time_s"].sum()) if "wall_time_s" in group else float("nan"),
+                "wall_time_s_sum": float(group["wall_time_s"].sum(min_count=1))
+                if "wall_time_s" in group
+                else float("nan"),
                 "wall_time_s_mean": float(group["wall_time_s"].mean()) if "wall_time_s" in group else float("nan"),
             }
         )
