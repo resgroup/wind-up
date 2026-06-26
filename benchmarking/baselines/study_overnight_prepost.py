@@ -26,8 +26,10 @@ from benchmarking.baselines.example_prepost_study import (
     DEFAULT_TURBINE_SUBSET,
     DEFAULT_WTG_NUMBERS,
     MIN_PRE_MONTHS,
+    default_output_root,
     run_prepost_study,
 )
+from benchmarking.baselines.overnight_common import start_overnight_run
 from benchmarking.baselines.overnight_profiles import overnight_profiles
 from benchmarking.harness import StudyConfig
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
@@ -42,13 +44,6 @@ CAMPAIGN_MONTHS = [3, 6, 12]  # campaign-length sweep grid
 
 def main() -> None:
     """Load real Hill of Towie SCADA and run the overnight prepost study (incl. v0)."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    scada_df, _ = load_hot_scada(
-        start_dt=DEFAULT_START_DT,
-        end_dt_excl=DEFAULT_END_DT_EXCL,
-        wtg_numbers=DEFAULT_WTG_NUMBERS,
-        wtg_names=DEFAULT_TURBINE_SUBSET,
-    )
     study = StudyConfig(
         mode="prepost",
         turbine_subset=DEFAULT_TURBINE_SUBSET,
@@ -58,7 +53,14 @@ def main() -> None:
         n_replicates=N_REPLICATES,
         seed=0,
     )
-    run_prepost_study(scada_df, profiles=overnight_profiles(), study=study, include_v0=True)
+    out_dir = start_overnight_run("prepost", study, output_root=default_output_root().parent)
+    scada_df, _ = load_hot_scada(
+        start_dt=DEFAULT_START_DT,
+        end_dt_excl=DEFAULT_END_DT_EXCL,
+        wtg_numbers=DEFAULT_WTG_NUMBERS,
+        wtg_names=DEFAULT_TURBINE_SUBSET,
+    )
+    run_prepost_study(scada_df, profiles=overnight_profiles(), study=study, out_root=out_dir, include_v0=True)
 
 
 if __name__ == "__main__":
