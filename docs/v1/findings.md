@@ -7,6 +7,60 @@ from, not just conclusions.
 
 ---
 
+## F2 — The prepost R-learner bias is driven by reactive-power and pitch reference features acting as calendar-time proxies
+
+*2026-06-26 — Issue 5 (cross-fit R-learner). Source: the ablation driver
+`benchmarking/baselines/inspect_prepost_feature_ablation.py`, which pins the F1 hard case
+(`cp_0pct` placebo on `T07`, 6-month prepost, true uplift 0%) and the identical `MethodInput`,
+then re-runs the R-learner with reference features removed before feature-building. Follows up F1.*
+
+### Observation
+On the F1 placebo case, dropping the reference **reactive-power** feature, then the **pitch**
+features as well, removes almost all of the bias (truth = 0%, fixed seed, only the feature set
+changes between arms):
+
+| arm | dropped tags | R-learner estimate | error |
+|---|---|---|---|
+| full (all features) | — | **−22.26%** | −22.26% |
+| no reactive power | `wtc_ReactPwr_mean` | **−5.81%** | −5.81% |
+| no reactive power, no pitch | `wtc_ReactPwr_mean` + `wtc_PitcPos{A,B,C}_mean` | **−1.39%** | −1.39% |
+
+Reactive power alone accounts for ~16 of the ~22 points of bias; adding pitch removes most of the
+rest, leaving the placebo within ~1.4% of zero.
+
+*(The full-feature estimate is −22.3% here vs the ~−14% quoted for this case in
+`inspect_prepost_hard_case`'s docstring. The docstring predates the `mandatory availability filter`
+commit `f8c3491`, which changed row selection; the cross-arm comparison is internally consistent
+regardless of the absolute level.)*
+
+### Interpretation — direct evidence for F1's overlap-failure root cause
+F1 attributes the prepost bias to an overlap/positivity failure: the propensity model reconstructs
+"is this the upgraded season?" from seasonally/temporally varying reference features. This ablation
+localises *which* features carry that signal. Reactive power and pitch are the top propensity
+features (F1 diagnostics), and the reactive-power diagnostic plots show its **control regime changes
+over calendar time** — so it is a near-deterministic clock. Remove that clock and the propensity
+model can no longer separate the long baseline from the upgraded season, so the `t_res → 0`
+blow-up and the confounding it drives both shrink. This is the F1 root-cause #1 mechanism shown
+end-to-end, with reactive power identified as the dominant temporal proxy and pitch as secondary.
+
+**Caveat:** this is a diagnosis, not a fix. Dropping informative features only removes the proxy
+*channel*; any reference feature with a time trend (or a post-treatment correlation) can re-open it,
+and discarding genuinely predictive signal is the wrong long-term lever. The principled fixes remain
+F1's: a test-vs-reference contrast (so common-mode temporal drift cancels before the ML sees it)
+and/or a season-matched baseline window.
+
+### To pick up Monday
+1. **Isolate pitch** — run the missing arm (drop pitch only, keep reactive) to split their
+   contributions cleanly; the current run only brackets them.
+2. **Confirm it generalises** — repeat across the other hard cases / a couple of seeds / the
+   non-placebo profiles (does removing the proxies also tame the +76% `cp_plus_10pct` overshoot?).
+3. **Watch the propensity diagnostic** — re-check `propensity_std` per arm; the hypothesis predicts
+   it falls back toward the flat base rate as the temporal proxies are removed.
+4. **Decide the lever** — feed this into the F1 direction choice: feature hygiene/guarding vs the
+   test-vs-reference contrast. The contrast is still expected to be the larger, more principled win.
+
+---
+
 ## F1 — The R-learner is accurate in toggle but fails in prepost (overlap/confounding)
 
 *2026-06-26 — Issue 5 (cross-fit R-learner). Source: the overnight studies
