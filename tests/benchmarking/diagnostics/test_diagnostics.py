@@ -108,7 +108,14 @@ def test_common_diagnostics_writes_expected_plots(tmp_path: Path) -> None:
 
 
 def test_optional_signals_skip_gracefully(tmp_path: Path) -> None:
-    bare = ColumnSchema(turbine="turbine", active_power="power", wind_speed="ws", wind_speed_sd="ws_sd", gen_rpm="rpm")
+    bare = ColumnSchema(
+        turbine="turbine",
+        active_power="power",
+        wind_speed="ws",
+        wind_speed_sd="ws_sd",
+        gen_rpm="rpm",
+        availability="avail",
+    )
     ctx = _context(tmp_path, columns=bare, with_era5=False)
     written = write_common_diagnostics(ctx)
     names = {p.name for p in written}

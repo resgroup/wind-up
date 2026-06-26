@@ -25,6 +25,9 @@ class ColumnSchema:
     :param wind_speed: mean nacelle wind speed
     :param wind_speed_sd: nacelle wind-speed standard deviation (turbulence intensity input)
     :param gen_rpm: mean generator rpm
+    :param availability: a "ready to operate" counter (e.g. seconds available in the period).
+        **Required**: the methods use it for downtime filtering, which must never be silently
+        skipped, so every source must supply it.
 
     The remaining roles are **diagnostics-only**: they name extra signals the shared per-run
     diagnostics plot, never estimation inputs. Each defaults to ``None`` so a source that lacks a
@@ -37,7 +40,6 @@ class ColumnSchema:
     :param reactive_power: mean reactive power
     :param nacelle_position: nacelle/yaw position (wind-direction proxy; diagnostics only)
     :param ambient_temp: ambient temperature
-    :param availability: a "ready to operate" counter (e.g. seconds available in the period)
     """
 
     turbine: str
@@ -45,8 +47,8 @@ class ColumnSchema:
     wind_speed: str
     wind_speed_sd: str
     gen_rpm: str
+    availability: str
     pitch: str | None = None
     reactive_power: str | None = None
     nacelle_position: str | None = None
     ambient_temp: str | None = None
-    availability: str | None = None

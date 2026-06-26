@@ -82,9 +82,11 @@ class RLearnerMethod:
     """Pluggable cross-fit R-learner uplift estimator (prepost and toggle).
 
     :param active_power_col: the test turbine's active-power column (the outcome ``Y``)
+    :param availability_col: **required** "ready to operate" counter for the downtime filter; rows
+        below a full period of availability are dropped. Required so downtime filtering can never be
+        silently skipped (the lack of it was a real oversight).
     :param wind_speed_col: the wind-speed tag, used for ERA5 sync (reference mean) and the
         stuck-filter low-wind exemption; required if ``era5_hourly_df`` is given
-    :param availability_col: optional "ready to operate" counter for the downtime filter
     :param era5_hourly_df: optional raw hourly ERA5 (Open-Meteo columns); added as features when given
     :param columns: source-native column schema, used only by the shared diagnostics (not estimation)
     :param name: method name shown in the leaderboard
@@ -100,8 +102,8 @@ class RLearnerMethod:
     """
 
     active_power_col: str
+    availability_col: str
     wind_speed_col: str | None = None
-    availability_col: str | None = None
     era5_hourly_df: pd.DataFrame | None = None
     columns: ColumnSchema = HOT_COLUMNS
     name: str = "rlearner"
@@ -117,6 +119,12 @@ class RLearnerMethod:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
         mi = _restrict_to_campaign(mi, toggle_campaign_only=self.toggle_campaign_only)
         scada = mi.scada_df
+        if self.availability_col not in scada.columns:
+            msg = (
+                f"availability_col {self.availability_col!r} is not in scada_df; the downtime filter is "
+                f"required for the R-learner and cannot be skipped."
+            )
+            raise ValueError(msg)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
         n_refs = scada[mi.turbine_col].nunique() - 1

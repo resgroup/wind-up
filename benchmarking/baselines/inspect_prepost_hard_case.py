@@ -151,7 +151,12 @@ def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
     """Return the methods to inspect, each writing diagnostics (plots on) into its own subfolder."""
     context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
     methods: list[Method] = [
-        NaiveRatioMethod(active_power_col=HOT_COLUMNS.active_power, out_dir=out_dir / "naive", save_plots=True),
+        NaiveRatioMethod(
+            active_power_col=HOT_COLUMNS.active_power,
+            availability_col=HOT_COLUMNS.availability,
+            out_dir=out_dir / "naive",
+            save_plots=True,
+        ),
         RLearnerMethod(
             active_power_col=HOT_COLUMNS.active_power,
             wind_speed_col=HOT_COLUMNS.wind_speed,

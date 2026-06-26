@@ -5,16 +5,18 @@ no wind_up dependency. For a set of rows it forms the test-to-reference ratio
 
     rho(rows) = sum(test power) / sum(reference total power)
 
-over *used* timestamps (complete-case: the test turbine and every reference finite), and
-estimates uplift as the ratio-of-ratios ``rho(treated) / rho(baseline) - 1``. Its only error
-source on the synthetic data is genuine pre/post covariate shift -- it applies no
-conditioning by design -- so it is the "what if you don't condition at all" leaderboard floor.
+over *used* timestamps and estimates uplift as the ratio-of-ratios
+``rho(treated) / rho(baseline) - 1``. Its only error source on the synthetic data is genuine
+pre/post covariate shift -- it applies no conditioning by design -- so it is the "what if you
+don't condition at all" leaderboard floor.
 
-It uses **only** the configured active-power column (test and references); it never reads wind
-speed, direction, rpm or any other SCADA tag, which keeps it honest under design-note section 3
-(the test turbine's own wind speed is post-treatment and is never touched). It speaks the data
-source's own column names — the active-power column is configured and the turbine column comes
-from the seam — so it shares no code with, and makes no assumptions from, v0.
+**Used timestamps** require every turbine (test and references) to be available (an availability
+counter at a full period) and have finite power — a down turbine on either side of the ratio would
+otherwise bias it. The availability column is therefore **required** (the lack of downtime
+filtering was a real oversight). Only the active-power column enters the ``rho`` *computation*; the
+availability column is used solely for row selection (cause, not effect), so the estimate still
+never conditions on the test turbine's post-treatment wind speed (design-note §3). It speaks the
+data source's own column names and has no wind_up dependency.
 
 Each run writes a per-run folder ``naive_<test>_<upgradestart>_<lastdate>/`` (v0-style naming)
 under ``out_dir`` (a temp dir by default), holding a per-segment data-stats CSV, a headline
@@ -36,6 +38,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
+from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
@@ -57,14 +60,14 @@ def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
     return pd.Timedelta(np.median(np.diff(unique.to_numpy())))
 
 
-def _wide_power(scada_df: pd.DataFrame, *, turbine_col: str, active_power_col: str) -> pd.DataFrame:
-    """Pivot long SCADA to a timestamp x turbine table of active power (NaN where missing)."""
-    tmp = scada_df[[turbine_col, active_power_col]].copy()
+def _wide_column(scada_df: pd.DataFrame, *, turbine_col: str, value_col: str) -> pd.DataFrame:
+    """Pivot long SCADA to a timestamp x turbine table of ``value_col`` (NaN where missing)."""
+    tmp = scada_df[[turbine_col, value_col]].copy()
     tmp["_ts"] = scada_df.index
     return tmp.pivot_table(
         index="_ts",
         columns=turbine_col,
-        values=active_power_col,
+        values=value_col,
         aggfunc="first",
     )
 
@@ -95,18 +98,23 @@ def restrict_to_campaign(mi: MethodInput, *, toggle_campaign_only: bool) -> Meth
 class NaiveRatioMethod:
     """Pluggable naive energy-ratio baseline (prepost and toggle).
 
-    :param active_power_col: the source-native active-power column to read (the only signal the
-        method touches); the turbine-identifier column comes from the seam (``MethodInput``)
+    :param active_power_col: the source-native active-power column (the only signal in the ``rho``
+        computation); the turbine-identifier column comes from the seam (``MethodInput``)
+    :param availability_col: **required** "ready to operate" counter for the downtime filter,
+        applied to the test turbine and every reference; rows below a full period of availability
+        are dropped. Required so downtime filtering can never be silently skipped.
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
-    :param save_plots: also write the three diagnostic plots under ``<run>/plots``
+    :param save_plots: also write the diagnostic plots under ``<run>/plots``
     :param timebase: analysis timebase; inferred from the data when ``None``
     :param toggle_campaign_only: for a toggle campaign, fit only on the interleaved on/off blocks
         (drop the pre-campaign baseline) so on and off share a wind distribution; no-op for prepost
-    :param columns: source-native column schema, used only by the shared diagnostics (not estimation)
+    :param columns: source-native column schema (the wind-speed column feeds the stuck filter's
+        calm exemption and the diagnostics; never the ``rho`` computation)
     """
 
     active_power_col: str
+    availability_col: str
     name: str = "naive_ratio"
     out_dir: Path | None = None
     save_plots: bool = False
@@ -117,7 +125,7 @@ class NaiveRatioMethod:
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
         mi = restrict_to_campaign(mi, toggle_campaign_only=self.toggle_campaign_only)
-        wide = _wide_power(mi.scada_df, turbine_col=mi.turbine_col, active_power_col=self.active_power_col)
+        wide = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.active_power_col)
         test = mi.test_wtg
         refs = [c for c in wide.columns if c != test]
         if not refs:
@@ -127,11 +135,18 @@ class NaiveRatioMethod:
             )
             raise ValueError(msg)
 
+        if self.availability_col not in mi.scada_df.columns:
+            msg = (
+                f"availability_col {self.availability_col!r} is not in scada_df; the downtime filter is "
+                f"required for the naive method and cannot be skipped."
+            )
+            raise ValueError(msg)
+
         timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
         ts_treated = np.asarray(treated_mask(wide.index, mi.upgrade_timing))
         test_pw = wide[test].to_numpy(dtype=float)
         ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
-        used = wide[[test, *refs]].notna().all(axis=1).to_numpy()
+        used = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase).to_numpy()
 
         rho_base = _rho(test_pw, ref_total, used & ~ts_treated)
         rho_up = _rho(test_pw, ref_total, used & ts_treated)
@@ -158,6 +173,38 @@ class NaiveRatioMethod:
             timebase=timebase,
         )
         return MethodOutput(p50_overall=float(uplift))
+
+    def _used_mask(
+        self, mi: MethodInput, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
+    ) -> pd.Series:
+        """Complete-case timestamps that also pass downtime filtering on the test turbine and every reference.
+
+        Returns a bool Series on ``wide.index``. Every turbine (test and references) must be
+        available (counter >= a full period) and have finite power — a down turbine on either side
+        of the ratio is therefore excluded. The test turbine additionally goes through the shared
+        :class:`NormalOperationFilter` (the same downtime + finite-power logic the R-learner uses;
+        the stuck filter is left off here as the ratio sums raw power rather than fitting a model).
+        """
+        turbines = [test, *refs]
+        complete = wide[turbines].notna().all(axis=1)
+
+        full = timebase.total_seconds()
+        avail = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.availability_col).reindex(
+            index=wide.index, columns=turbines
+        )
+        all_available = (avail >= full).all(axis=1)
+
+        test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]
+        test_keep = (
+            NormalOperationFilter(
+                active_power_col=self.active_power_col,
+                availability_col=self.availability_col,
+                apply_stuck_filter=False,
+            )
+            .keep_mask(test_rows, timebase=timebase)
+            .reindex(wide.index, fill_value=False)
+        )
+        return complete & all_available & test_keep
 
     def _write_outputs(
         self,
@@ -219,9 +266,11 @@ class NaiveRatioMethod:
     ) -> None:
         """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
         # ``wide`` (a pivot) drops all-NaN timestamps, so align the masks to the full unique index
-        # the DiagnosticContext uses (timestamps absent from ``wide`` are simply not complete-case).
+        # the DiagnosticContext uses (timestamps absent from ``wide`` are simply not used).
         index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
-        used = wide.notna().all(axis=1).reindex(index, fill_value=False).to_numpy()
+        test, refs = mi.test_wtg, [c for c in wide.columns if c != mi.test_wtg]
+        used_series = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
+        used = used_series.reindex(index, fill_value=False).to_numpy()
         treated = np.asarray(treated_mask(index, mi.upgrade_timing)).astype(bool)
         # Align the schema's active-power role to the column this method was configured to read,
         # so the shared power plots use the right column even if it differs from the schema default.
@@ -241,6 +290,7 @@ class NaiveRatioMethod:
         write_common_diagnostics(ctx)
         params = {
             "active_power_col": self.active_power_col,
+            "availability_col": self.availability_col,
             "toggle_campaign_only": self.toggle_campaign_only,
         }
         write_run_config(ctx, method_name=self.name, method_params=params)

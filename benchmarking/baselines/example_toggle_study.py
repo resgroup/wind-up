@@ -98,7 +98,13 @@ def run_toggle_study(
         methods: list[Method] = []
         if include_oracle:
             methods.append(OracleMethod(base_scada))
-        methods.append(NaiveRatioMethod(active_power_col=HOT_COLUMNS.active_power, out_dir=out_dir / "naive_runs"))
+        methods.append(
+            NaiveRatioMethod(
+                active_power_col=HOT_COLUMNS.active_power,
+                availability_col=HOT_COLUMNS.availability,
+                out_dir=out_dir / "naive_runs",
+            )
+        )
         # R-learner after the naive floor, before slow v0; same columns v0 sees (refs only) + ERA5.
         methods.append(
             RLearnerMethod(
