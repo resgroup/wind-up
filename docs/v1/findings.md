@@ -1,0 +1,89 @@
+# wind-up v1 — findings log
+
+Empirical findings from the v1 benchmarking work. Newest first. Each entry records what was
+observed, the evidence, the root cause, and what (if anything) it implies for the method design
+or the issues list. Keep entries reproducible: name the study driver and the diagnostics they came
+from, not just conclusions.
+
+---
+
+## F1 — The R-learner is accurate in toggle but fails in prepost (overlap/confounding)
+
+*2026-06-26 — Issue 5 (cross-fit R-learner). Source: the overnight studies
+`benchmarking/baselines/study_overnight_{toggle,prepost}.py` over the seven shared
+`overnight_profiles`, `n_replicates=4`, campaign sweep 3/6/(9)/12 months, incl. v0.*
+
+### Observation
+In **toggle** the R-learner is excellent — it tracks the oracle and matches or beats v0. In
+**prepost** it is badly biased, and the error grows with the magnitude of the true effect (it
+amplifies). Mean P50 estimate vs truth, 3-month campaign:
+
+| profile | truth | toggle rlearner | prepost rlearner |
+|---|---|---|---|
+| cp_0pct (placebo) | 0.000 | +0.003 | **−0.158** |
+| cp_plus_3pct | 0.020 | 0.023 | **−0.010** |
+| cp_plus_10pct | 0.068 | 0.072 | **+0.763** |
+| cp_minus_10pct | −0.068 | −0.066 | **−0.359** |
+| ws_dependent_cp | 0.033 | 0.036 | +0.123 |
+
+Toggle bias is ~0.001–0.003 with tiny spread; prepost overshoots (+10% → +76%, −10% → −36%) and
+even the 0% placebo reads −16%. Longer campaigns shrink but do not fix it (cp_plus_10pct prepost:
+0.76 → 0.33 → 0.19 at 3/6/12 months). By contrast v0 holds prepost bias to ~−0.006 to −0.014.
+
+### Evidence — the propensity diagnostic
+From the per-run `results` / `data_stats` CSVs (same test turbine, same upgrade window):
+
+- **Toggle:** `propensity_mean ≈ 0.500`, `propensity_std ≈ 0.11`. Baseline and upgraded both span
+  the same dates (interleaved 20-on/20-off), so they share a weather distribution. Propensity ≈ 0.5
+  everywhere → the treatment residual `t − e_hat` is healthy → the R-learner collapses to clean
+  regression adjustment. This is the regime it is designed for (design note §4).
+- **Prepost:** `propensity_mean ≈ 0.11`, `propensity_std ≈ 0.27`. The `data_stats` show why:
+  **baseline ≈ 2 years (2016→2018), upgraded ≈ one 3-month season (early 2018)**. Treatment is a
+  deterministic function of calendar time, against a long, season-mismatched baseline.
+
+### Root cause
+This is an identifiability problem, not a bug. There are no timestamp features (by design — shuffled
+K-fold cross-fitting assumes it), so in prepost the only contrast available is across time. That
+breaks the estimator two ways, both visible in the diagnostics:
+
+1. **Overlap / positivity failure.** The propensity model partially reconstructs "is this the
+   upgraded season?" from seasonally-varying reference features (`std 0.27`, far from the flat 0.11
+   base rate). Where `e_hat` drifts toward the upgraded window, `t_res → 0`, the pseudo-outcome
+   `y_res / t_res` blows up, the `t_res²` weights concentrate on a few high-leverage rows, and the
+   effect model extrapolates — producing the variance explosion and the magnitude-scaling bias.
+2. **Unmodelled non-stationarity → confounding.** The outcome model `m(x) = E[Y|X]` is pooled over
+   the long baseline but never forms a *test-vs-reference contrast*. Any drift in the test turbine's
+   power relative to the references over those two years (seasonal `Y|X` shifts, air density, icing,
+   direction/wake differences between a winter-heavy baseline and the specific post season) lands in
+   the post-window residual and, because treatment ≡ time, is attributed straight to `tau`. The
+   placebo −16% is pure confounding with no real effect.
+
+v0 survives prepost precisely because it differences the test/reference power ratio and detrends,
+cancelling the common-mode drift the R-learner leaves in.
+
+### Implications / candidate directions (not yet actioned)
+In rough order of expected leverage:
+
+1. **Give the R-learner a test-vs-reference contrast** (the v0 lever): model the test/reference
+   power *ratio* (or difference) as the outcome so common-mode seasonal/long-term drift cancels
+   before the ML sees it. Largest expected win for prepost.
+2. **Match the baseline window to the post window** (same season, comparable length) rather than
+   pooling the full multi-year history — reduces non-stationarity, though it does not restore
+   within-`X` overlap.
+3. **Treat the R-learner as a randomised-treatment (toggle) method.** Consistent with the design
+   note framing (it collapses to regression adjustment when the propensity is flat), the honest
+   Phase-1 conclusion may be: R-learner for toggle, v0/reference-ratio for prepost — with the
+   prepost overlap failure documented as a finding.
+
+Relative to Issue 5's "done when" (P50 similar/better than v0 in both prepost and toggle): **met for
+toggle, not met for prepost.**
+
+### Secondary observations from these runs
+- **Stale outputs intermixed.** The earlier output directories carried `leaderboard_all_profiles.csv`
+  and several per-profile files from an older study (no rlearner rows, old profile names, a 9-month
+  grid) alongside the fresh overnight outputs. Addressed by writing each run to a fresh timestamped
+  folder with a `run.log` recording the git commit and study config
+  (`benchmarking/baselines/overnight_common.py`, wired into both overnight scripts).
+- **Both overnight runs were truncated** (ran out of wall-clock on the slow v0 step, not a crash):
+  prepost completed 5 of 7 profiles, toggle 6 of 7. With `include_v0=True`, v0 dominates the budget
+  (~hours per profile vs seconds for rlearner/naive) — see the "skip v0 in initial passes" note.

@@ -51,6 +51,10 @@ era5 = [
     'requests-cache',
     'retry-requests',
 ]
+ml = [
+    'lightgbm',
+    'scikit-learn',
+]
 examples = [
     'jupyterlab',
     'notebook',
@@ -80,6 +84,8 @@ dev = [
     'openmeteo-requests',
     'requests-cache',
     'retry-requests',
+    'lightgbm',
+    'scikit-learn',
 ]
 
 [tool.setuptools.packages.find]

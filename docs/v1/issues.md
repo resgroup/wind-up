@@ -110,23 +110,26 @@ its accuracy/precision appears in the leaderboard.
 
 ## Issue 5 — First candidate: cross-fit R-learner (P50) (WS2)
 
-**Goal:** implement the design-note R-learner as the first new method behind the
-Issue 4 interface and score it against the baseline.
+**Goal:** implement the design-note R-learner as the first new method and score it against the baselines (naive and v0).
 
 **Scope**
 - Cross-fit R-learner producing a P50 uplift, per the design note
   (LightGBM outcome [L2/Huber] + propensity nuisances; effect model on residuals).
+- Be sure to provide rich csvs and diagnostic plots; look at Naive for inspiration and grow from there depending on the method details
+- There should be no restrictions / limitations on what data is provided (v0 dependency removed from harness in previous PR). To start with just provide the same data columns that v0 gets to prove the method is superior; even more data columns (eg all Min and Max fields) can be provided later
+- Provide ERA5 data to the method as well. It will need to be upsampled to 10min timebase. Use a wind speed correlation sweep to sync with the SCADA (see existing wind-up code for inspiration)
 - **Treatment-invariant reference-only features** — enforced; include a regression
   test on a deliberately treatment-corrupted nacelle wind speed proving the
   reference-only rule removes the post-treatment bias (design note §8). Reference
   turbines affected by the wakes of upgraded turbines may need to be excluded in
   certain wind directions (very relevant for wake steering).
+- Another known feature to avoid is voltage (at the turbine's external connection); if the turbines are wired in series then the voltage drop across the test turbine will be approximately proportional to its active power, so if the method can see the voltage at the two turbines either side of the test turbine then estimating power is trivial and the power estimate is not using information about the weather. The giveaway that this issue is happening is feature importance; make sure feature importance diagnostic plots and log messages are emitted.
 - Score on the harness across all synthetic profiles and the short-campaign sweep;
-  compare to the v0 baseline.
-- Uncertainty/P95 explicitly **out of scope** here (Phase 3 / WS4).
+  compare to naive first (fast), then the v0 baseline after naive is beaten.
+- Uncertainty/P95 explicitly **out of scope** here (Phase 3 / WS4) but keep it in mind.
+- Reporting uplift by condition (eg uplift by wind speed, direction, etc) out of scope for now but keep it in mind
 
-**Done when:** the R-learner runs through the contract, the bias-guard test passes,
-and its P50 accuracy/precision vs the baseline is recorded in the leaderboard.
+**Done when:** the R-learner runs through a prepost and toggle study and its P50 accuracy/precision vs the baseline is recorded in the leaderboard and similar or better than v0.
 
 ---
 
@@ -138,3 +141,13 @@ and its P50 accuracy/precision vs the baseline is recorded in the leaderboard.
   Phase 2).
 - Conditional/heterogeneous uplift reporting & SHAP story (G3, Phase 2).
 - Report content generation and I/O / step-independence maturation (WS5, Phase 4).
+- **Method-controlled baseline horizon / recency weighting (R-learner).** Today the R-learner
+  pools *all* pre-upgrade baseline it is given (e.g. 24 months) into the nuisance fits with equal
+  weight, and uses no timestamp features, so it cannot down-weight stale data. Since the goal is
+  usually the upgrade's *future* benefit, the most recent baseline is the most representative of
+  the farm's future state, and far-past data (turbine ageing, sensor drift, soiling, controller
+  changes) is less so. Add a method-owned horizon control — a `max_baseline_months` cap and/or an
+  exponential recency weight on the fit (via LightGBM `sample_weight`) — so the method, not the
+  harness, decides how far back to trust. Keep it compatible with the no-timestamp-feature rule
+  (weighting/selection by recency is fine; calendar features are not) and the block bootstrap.
+  Pairs naturally with the long-term ERA5 extrapolation work (representativeness weighting, WS4).

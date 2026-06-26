@@ -27,7 +27,7 @@ the stats CSV as ``rho = used_test_mwh / used_ref_total_mwh`` per segment.
 from __future__ import annotations
 
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -73,6 +73,21 @@ def _upgrade_start(upgrade_timing: pd.Timestamp | ToggleSchedule, index: pd.Date
     return pd.Timestamp(upgrade_timing)
 
 
+def restrict_to_campaign(mi: MethodInput, *, toggle_campaign_only: bool) -> MethodInput:
+    """Drop pre-campaign rows for a toggle campaign so the on/off comparison shares a distribution.
+
+    For toggle, the harness window also carries the pre-campaign baseline, whose distribution
+    differs from the campaign and reintroduces the covariate shift toggling exists to avoid. When
+    ``toggle_campaign_only`` (the default), restrict a toggle input to records at/after the toggle
+    start, leaving only the interleaved on/off blocks. No-op for prepost (its baseline *is* the
+    pre-campaign data) and when the flag is off.
+    """
+    timing = mi.upgrade_timing
+    if not (toggle_campaign_only and isinstance(timing, ToggleSchedule) and timing.start is not None):
+        return mi
+    return replace(mi, scada_df=mi.scada_df.loc[mi.scada_df.index >= timing.start])
+
+
 @dataclass
 class NaiveRatioMethod:
     """Pluggable naive energy-ratio baseline (prepost and toggle).
@@ -83,6 +98,8 @@ class NaiveRatioMethod:
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param save_plots: also write the three diagnostic plots under ``<run>/plots``
     :param timebase: analysis timebase; inferred from the data when ``None``
+    :param toggle_campaign_only: for a toggle campaign, fit only on the interleaved on/off blocks
+        (drop the pre-campaign baseline) so on and off share a wind distribution; no-op for prepost
     """
 
     active_power_col: str
@@ -90,9 +107,11 @@ class NaiveRatioMethod:
     out_dir: Path | None = None
     save_plots: bool = False
     timebase: pd.Timedelta | None = None
+    toggle_campaign_only: bool = True
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
+        mi = restrict_to_campaign(mi, toggle_campaign_only=self.toggle_campaign_only)
         wide = _wide_power(mi.scada_df, turbine_col=mi.turbine_col, active_power_col=self.active_power_col)
         test = mi.test_wtg
         refs = [c for c in wide.columns if c != test]

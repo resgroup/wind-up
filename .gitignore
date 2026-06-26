@@ -83,3 +83,4 @@ output/
 /tests/test_data/wedowind/Vortex Generator/
 # matplotlib testing
 **/result_images/
+/docs/v1/extra_docs/

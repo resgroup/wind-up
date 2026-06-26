@@ -2681,10 +2681,16 @@ examples = [
     { name = "notebook" },
     { name = "requests" },
 ]
+ml = [
+    { name = "lightgbm" },
+    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scikit-learn", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
 
 [package.dev-dependencies]
 dev = [
     { name = "coverage" },
+    { name = "lightgbm" },
     { name = "mypy" },
     { name = "openmeteo-requests" },
     { name = "poethepoet" },
@@ -2694,6 +2700,8 @@ dev = [
     { name = "requests-cache" },
     { name = "retry-requests" },
     { name = "ruff" },
+    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scikit-learn", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "types-pyyaml" },
     { name = "types-requests" },
     { name = "types-tabulate" },
@@ -2709,6 +2717,7 @@ requires-dist = [
     { name = "geographiclib" },
     { name = "ipywidgets", marker = "extra == 'examples'" },
     { name = "jupyterlab", marker = "extra == 'examples'" },
+    { name = "lightgbm", marker = "extra == 'ml'" },
     { name = "matplotlib" },
     { name = "notebook", marker = "extra == 'examples'" },
     { name = "openmeteo-requests", marker = "extra == 'era5'" },
@@ -2721,6 +2730,7 @@ requires-dist = [
     { name = "requests-cache", marker = "extra == 'era5'" },
     { name = "retry-requests", marker = "extra == 'era5'" },
     { name = "ruptures" },
+    { name = "scikit-learn", marker = "extra == 'ml'" },
     { name = "scipy" },
     { name = "seaborn" },
     { name = "tabulate" },
@@ -2728,11 +2738,12 @@ requires-dist = [
     { name = "tqdm" },
     { name = "utm" },
 ]
-provides-extras = ["era5", "examples"]
+provides-extras = ["era5", "ml", "examples"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage" },
+    { name = "lightgbm" },
     { name = "mypy", specifier = "<1.19" },
     { name = "openmeteo-requests" },
     { name = "poethepoet" },
@@ -2742,6 +2753,7 @@ dev = [
     { name = "requests-cache" },
     { name = "retry-requests" },
     { name = "ruff" },
+    { name = "scikit-learn" },
     { name = "types-pyyaml" },
     { name = "types-requests" },
     { name = "types-tabulate" },

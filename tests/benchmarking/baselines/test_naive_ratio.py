@@ -341,3 +341,38 @@ class TestDiagnostics:
         self._run(tmp_path)
         run_dir = next(p for p in Path(tmp_path).iterdir() if p.is_dir())
         assert not (run_dir / "plots").exists()
+
+
+class TestToggleCampaignOnly:
+    """``toggle_campaign_only`` restricts a toggle fit to the campaign window (drops pre-campaign)."""
+
+    def _toggle_scada(self) -> tuple[pd.DataFrame, ToggleSchedule, pd.Timestamp]:
+        idx = _index(300)
+        start = idx[100]  # 100 pre-campaign rows, then 200 rows of interleaved on/off
+        schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=start)
+        treated = np.asarray(treated_mask(idx, schedule))
+        return _recovery_scada(idx, treated=treated, uplift=0.05), schedule, start
+
+    def test_campaign_only_excludes_precampaign_from_baseline(self, tmp_path) -> None:  # noqa: ANN001
+        scada, schedule, start = self._toggle_scada()
+        NaiveRatioMethod(active_power_col=_POWER_COL, out_dir=tmp_path / "on").estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        NaiveRatioMethod(active_power_col=_POWER_COL, out_dir=tmp_path / "off", toggle_campaign_only=False).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        base_on = _read_only_csv(tmp_path / "on", "data_stats").set_index("segment").loc["baseline"]
+        base_off = _read_only_csv(tmp_path / "off", "data_stats").set_index("segment").loc["baseline"]
+        # campaign-only drops the 100 pre-campaign rows from the baseline class
+        assert base_on["n_used_timestamps"] < base_off["n_used_timestamps"]
+        assert pd.Timestamp(base_on["first_timestamp"]) >= start
+
+    def test_prepost_unaffected_by_flag(self) -> None:
+        idx = _index(20)
+        upgrade = idx[10]
+        treated = np.asarray(idx >= upgrade)
+        scada = _recovery_scada(idx, treated=treated, uplift=0.05)
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        a = NaiveRatioMethod(active_power_col=_POWER_COL).estimate(mi)
+        b = NaiveRatioMethod(active_power_col=_POWER_COL, toggle_campaign_only=False).estimate(mi)
+        assert a.p50_overall == pytest.approx(b.p50_overall)

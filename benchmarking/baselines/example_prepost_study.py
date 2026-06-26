@@ -37,6 +37,7 @@ import pandas as pd
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
+from benchmarking.baselines.rlearner import RLearnerMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import Method, StudyConfig, leaderboard, plot_campaign_curves, score_study
 from benchmarking.harness.example_hot_study import OracleMethod
@@ -96,8 +97,9 @@ def run_prepost_study(
     out_root: str | Path | None = None,
     data_dir: str | Path | None = None,
     include_oracle: bool = True,
+    include_v0: bool = True,
 ) -> pd.DataFrame:
-    """Score v0 and the naive ratio method (and an oracle anchor) over ``profiles`` and save outputs.
+    """Score the methods (oracle anchor, naive, R-learner, v0) over ``profiles`` and save outputs.
 
     :param base_scada: wind-up-format real SCADA (all subset turbines), the no-upgrade baseline
     :param profiles: mapping of profile name -> list of upgrade callables to inject
@@ -106,6 +108,8 @@ def run_prepost_study(
     :param data_dir: Hill of Towie data/cache dir for the v0 context metadata; defaults to the
         source package default (keep it the same as the dir ``base_scada`` was loaded from)
     :param include_oracle: also score an oracle that returns the injected truth (sanity anchor)
+    :param include_v0: also score the v0 binned baseline; off-able because a real wind_up run per
+        campaign is very slow, so an initial oracle+naive+R-learner pass is much quicker to review
     :return: the concatenated tidy per-replicate results across all profiles
     """
     out_dir = Path(out_root) if out_root is not None else default_output_root()
@@ -122,7 +126,21 @@ def run_prepost_study(
         if include_oracle:
             methods.append(OracleMethod(base_scada))
         methods.append(NaiveRatioMethod(active_power_col=HOT_COLUMNS.active_power, out_dir=out_dir / "naive_runs"))
-        methods.append(V0BinnedMethod(context, scratch_dir=scratch_dir))
+        # The R-learner runs after the cheap naive floor (compare to it first) and before the slow
+        # v0 run. It is given the same columns v0 sees, restricted to references, plus ERA5 (the
+        # context's hourly reanalysis frame). The HoT availability counter is not wired as a
+        # downtime filter yet (its units/full-period value need confirming); the stuck-data filter
+        # and the finite-power rule still apply.
+        methods.append(
+            RLearnerMethod(
+                active_power_col=HOT_COLUMNS.active_power,
+                wind_speed_col=HOT_COLUMNS.wind_speed,
+                era5_hourly_df=context.reanalysis_datasets[0].data,
+                out_dir=out_dir / "rlearner_runs",
+            )
+        )
+        if include_v0:
+            methods.append(V0BinnedMethod(context, scratch_dir=scratch_dir))
         logger.info("Scoring prepost profile %s with methods %s", profile_name, [m.name for m in methods])
         results = score_study(
             base_scada,
@@ -155,6 +173,7 @@ def main(
     wtg_numbers: list[int] | None = None,
     n_replicates: int = 4,
     campaign_months: list[int] | None = None,
+    include_v0: bool = True,
 ) -> pd.DataFrame:
     """Run the prepost study end-to-end on real Hill of Towie data and save outputs.
 
@@ -165,6 +184,7 @@ def main(
     :param wtg_numbers: turbine numbers to load; defaults to the stable south-west cluster
     :param n_replicates: ensemble size per profile (each replicate x campaign is a full v0 run)
     :param campaign_months: the campaign-length sweep grid, in months
+    :param include_v0: also score the slow v0 baseline (set False for a quick oracle+naive+R-learner pass)
     :return: the combined tidy results across all profiles
     """
     wtg_numbers = wtg_numbers if wtg_numbers is not None else DEFAULT_WTG_NUMBERS
@@ -186,7 +206,9 @@ def main(
         n_replicates=n_replicates,
         seed=0,
     )
-    return run_prepost_study(scada_df, profiles=example_profiles(), study=study, out_root=out_root, data_dir=data_dir)
+    return run_prepost_study(
+        scada_df, profiles=example_profiles(), study=study, out_root=out_root, data_dir=data_dir, include_v0=include_v0
+    )
 
 
 if __name__ == "__main__":
