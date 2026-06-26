@@ -2,7 +2,7 @@
 
 The R-learner gets reference nacelle positions as raw features with **no** northing correction;
 an offset or jumps in a turbine's yaw zero distorts the direction signal the model sees. This
-plots, per turbine, the **daily circular mean** of (nacelle position - ERA5 wind direction) over
+plots, per turbine, the **monthly circular mean** of (nacelle position - ERA5 wind direction) over
 time, so a drift or step in the offset stands out. Only rows where the turbine is generating
 (≥ 5% of its rated power) are used, because a parked turbine often points away from the wind.
 
