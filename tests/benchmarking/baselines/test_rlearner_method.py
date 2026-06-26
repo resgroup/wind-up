@@ -124,8 +124,8 @@ class TestDiagnostics:
     def test_save_plots_writes_pngs(self, tmp_path: Path) -> None:
         self._run(tmp_path, save_plots=True)
         run_dir = next(p for p in Path(tmp_path).iterdir() if p.is_dir())
-        pngs = {p.name for p in (run_dir / "plots").glob("*.png")}
-        assert pngs  # at least the feature-importance plot
+        pngs = {p.name for p in (run_dir / "plots").rglob("*.png")}
+        assert "feature_importance.png" in pngs
 
 
 class TestToggleCampaignOnly:

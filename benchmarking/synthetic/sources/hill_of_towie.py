@@ -359,6 +359,13 @@ _TAG_ACTIVE_POWER_MEAN = "wtc_ActPower_mean"
 _TAG_WIND_SPEED_MEAN = "wtc_AcWindSp_mean"
 _TAG_WIND_SPEED_SD = "wtc_AcWindSp_stddev"
 _TAG_GEN_RPM_MEAN = "wtc_GenRpm_mean"
+# Diagnostics-only tags (not estimation inputs): see ``ColumnSchema`` and the shared per-run
+# diagnostics. ``wtc_NacelPos_mean`` is a wind-direction proxy for plotting only.
+_TAG_PITCH_MEAN = "wtc_PitcPosA_mean"
+_TAG_REACTIVE_POWER_MEAN = "wtc_ReactPwr_mean"
+_TAG_NACELLE_POSITION_MEAN = "wtc_NacelPos_mean"
+_TAG_AMBIENT_TEMP_MEAN = "wtc_AmbieTmp_mean"
+_TAG_AVAILABILITY = "wtc_ScReToOp_timeon"
 
 
 hill_of_towie_fields = [
@@ -395,6 +402,11 @@ HOT_COLUMNS = ColumnSchema(
     wind_speed=_TAG_WIND_SPEED_MEAN,
     wind_speed_sd=_TAG_WIND_SPEED_SD,
     gen_rpm=_TAG_GEN_RPM_MEAN,
+    pitch=_TAG_PITCH_MEAN,
+    reactive_power=_TAG_REACTIVE_POWER_MEAN,
+    nacelle_position=_TAG_NACELLE_POSITION_MEAN,
+    ambient_temp=_TAG_AMBIENT_TEMP_MEAN,
+    availability=_TAG_AVAILABILITY,
 )
 
 

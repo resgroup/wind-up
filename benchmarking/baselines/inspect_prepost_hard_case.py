@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -54,9 +55,11 @@ from benchmarking.harness import (
     treated_activity_mask,
     window_row_mask,
 )
-from benchmarking.harness.replicates import Replicate
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
+
+if TYPE_CHECKING:
+    from benchmarking.harness.replicates import Replicate
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +74,7 @@ DEFAULT_CAMPAIGN_MONTHS = 6
 
 
 def _overnight_study() -> StudyConfig:
-    """The prepost ``StudyConfig`` the overnight run used (so draws are bit-identical)."""
+    """Return the prepost ``StudyConfig`` the overnight run used (so draws are bit-identical)."""
     return StudyConfig(
         mode="prepost",
         turbine_subset=DEFAULT_TURBINE_SUBSET,
@@ -145,13 +148,14 @@ def _pin_case(
 
 
 def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
-    """The methods to inspect, each writing diagnostics (plots on) into its own subfolder."""
+    """Return the methods to inspect, each writing diagnostics (plots on) into its own subfolder."""
     context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
     methods: list[Method] = [
         NaiveRatioMethod(active_power_col=HOT_COLUMNS.active_power, out_dir=out_dir / "naive", save_plots=True),
         RLearnerMethod(
             active_power_col=HOT_COLUMNS.active_power,
             wind_speed_col=HOT_COLUMNS.wind_speed,
+            availability_col=HOT_COLUMNS.availability,
             era5_hourly_df=context.reanalysis_datasets[0].data,
             out_dir=out_dir / "rlearner",
             save_plots=True,

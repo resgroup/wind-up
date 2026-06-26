@@ -36,11 +36,14 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
+from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.synthetic import ToggleSchedule, treated_mask
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
 
 if TYPE_CHECKING:
     import numpy.typing as npt
+
+    from benchmarking.synthetic import ColumnSchema
 
 _SEGMENTS = ("all", "baseline", "upgraded")
 _MIN_POINTS_FOR_TIMEBASE = 2
@@ -100,6 +103,7 @@ class NaiveRatioMethod:
     :param timebase: analysis timebase; inferred from the data when ``None``
     :param toggle_campaign_only: for a toggle campaign, fit only on the interleaved on/off blocks
         (drop the pre-campaign baseline) so on and off share a wind distribution; no-op for prepost
+    :param columns: source-native column schema, used only by the shared diagnostics (not estimation)
     """
 
     active_power_col: str
@@ -108,6 +112,7 @@ class NaiveRatioMethod:
     save_plots: bool = False
     timebase: pd.Timedelta | None = None
     toggle_campaign_only: bool = True
+    columns: ColumnSchema = HOT_COLUMNS
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
@@ -199,7 +204,46 @@ class NaiveRatioMethod:
         results.to_csv(run_dir / f"{run_name}_results_{ts}.csv", index=False)
 
         if self.save_plots:
-            _save_plots(run_dir / "plots", wide=wide, mi=mi, test=mi.test_wtg, timebase=timebase)
+            _save_plots(
+                run_dir / "plots",
+                wide=wide,
+                mi=mi,
+                test=mi.test_wtg,
+                timebase=timebase,
+                active_power_col=self.active_power_col,
+            )
+            self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, timebase=timebase)
+
+    def _write_shared_diagnostics(
+        self, mi: MethodInput, *, run_dir: Path, wide: pd.DataFrame, timebase: pd.Timedelta
+    ) -> None:
+        """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
+        # ``wide`` (a pivot) drops all-NaN timestamps, so align the masks to the full unique index
+        # the DiagnosticContext uses (timestamps absent from ``wide`` are simply not complete-case).
+        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        used = wide.notna().all(axis=1).reindex(index, fill_value=False).to_numpy()
+        treated = np.asarray(treated_mask(index, mi.upgrade_timing)).astype(bool)
+        # Align the schema's active-power role to the column this method was configured to read,
+        # so the shared power plots use the right column even if it differs from the schema default.
+        columns = replace(self.columns, active_power=self.active_power_col)
+        ctx = DiagnosticContext(
+            run_dir=run_dir,
+            test_wtg=mi.test_wtg,
+            turbine_col=mi.turbine_col,
+            columns=columns,
+            scada_df=mi.scada_df,
+            treated_ts=treated,
+            used_ts=used,
+            timebase=timebase,
+            mode="toggle" if isinstance(mi.upgrade_timing, ToggleSchedule) else "prepost",
+            era5_df=None,
+        )
+        write_common_diagnostics(ctx)
+        params = {
+            "active_power_col": self.active_power_col,
+            "toggle_campaign_only": self.toggle_campaign_only,
+        }
+        write_run_config(ctx, method_name=self.name, method_params=params)
 
 
 def _rho(test_pw: npt.NDArray[np.float64], ref_total: npt.NDArray[np.float64], mask: npt.NDArray[np.bool_]) -> float:
@@ -321,9 +365,10 @@ def _daily_segment_coverage(
     return daily_used / expected_per_day.reindex(daily_used.index)
 
 
-def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: str, timebase: pd.Timedelta) -> None:
-    """Write the scatter, ratio-timeseries and used-coverage-timeseries diagnostic plots."""
-    plots_dir.mkdir(parents=True, exist_ok=True)
+def _save_plots(
+    plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: str, timebase: pd.Timedelta, active_power_col: str
+) -> None:
+    """Write the scatter, ratio-timeseries and used-coverage-timeseries diagnostic plots (by stage)."""
     refs = [c for c in wide.columns if c != test]
     ts_treated = np.asarray(treated_mask(wide.index, mi.upgrade_timing))
     test_pw = wide[test].to_numpy(dtype=float)
@@ -340,14 +385,13 @@ def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: s
         if np.isfinite(rho) and seg.any():
             x_max = float(np.nanmax(ref_total[seg]))
             ax.plot([0, x_max], [0, rho * x_max], color=color, linewidth=1.5)
-    ax.set_xlabel("reference total power [kW]")
-    ax.set_ylabel(f"{test} power [kW]")
+    ax.set_xlabel(f"sum of reference {active_power_col} [kW]")
+    ax.set_ylabel(f"{active_power_col} @ {test} [kW]")
     ax.set_title(f"{test}: test vs reference-total power")
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    fig.savefig(plots_dir / f"{test}_scatter.png", dpi=150)
-    plt.close(fig)
+    _save(fig, plots_dir / stages.UPLIFT_INPUTS / f"{test}_scatter.png")
 
     # 2) daily sum-based test/ref ratio, one series per segment, with each segment's scalar rho overlaid.
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -365,8 +409,7 @@ def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: s
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    fig.savefig(plots_dir / f"{test}_ratio_timeseries.png", dpi=150)
-    plt.close(fig)
+    _save(fig, plots_dir / stages.UPLIFT_RESULTS / f"{test}_ratio_timeseries.png")
 
     # 3) daily used-data coverage as a fraction of the day's expected timestamps, one series per
     # segment, so each segment is seen to receive its share (under toggle, ~50% each post-upgrade).
@@ -385,5 +428,11 @@ def _save_plots(plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: s
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    fig.savefig(plots_dir / f"{test}_coverage_timeseries.png", dpi=150)
+    _save(fig, plots_dir / stages.FILTER / f"{test}_coverage_timeseries.png")
+
+
+def _save(fig: plt.Figure, path: Path) -> None:
+    """Write a figure to ``path`` (creating its stage subfolder) and close it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=150)
     plt.close(fig)

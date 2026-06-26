@@ -104,6 +104,7 @@ def run_toggle_study(
             RLearnerMethod(
                 active_power_col=HOT_COLUMNS.active_power,
                 wind_speed_col=HOT_COLUMNS.wind_speed,
+                availability_col=HOT_COLUMNS.availability,
                 era5_hourly_df=context.reanalysis_datasets[0].data,
                 out_dir=out_dir / "rlearner_runs",
             )

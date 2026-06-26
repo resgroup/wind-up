@@ -334,8 +334,11 @@ class TestDiagnostics:
     def test_save_plots_writes_pngs(self, tmp_path) -> None:  # noqa: ANN001
         self._run(tmp_path, save_plots=True)
         run_dir = next(p for p in Path(tmp_path).iterdir() if p.is_dir())
-        names = {p.name for p in (run_dir / "plots").glob("*.png")}
-        assert names == {"T1_scatter.png", "T1_ratio_timeseries.png", "T1_coverage_timeseries.png"}
+        names = {p.name for p in (run_dir / "plots").rglob("*.png")}
+        # the method's own naive plots, plus the shared cross-method diagnostics it now emits
+        assert {"T1_scatter.png", "T1_ratio_timeseries.png", "T1_coverage_timeseries.png"} <= names
+        # a run-config YAML is written alongside the plots
+        assert any(run_dir.glob("config_*.yaml"))
 
     def test_no_plots_by_default(self, tmp_path) -> None:  # noqa: ANN001
         self._run(tmp_path)

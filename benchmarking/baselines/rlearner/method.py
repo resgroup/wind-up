@@ -32,11 +32,14 @@ from benchmarking.baselines.rlearner.features import (
 from benchmarking.baselines.rlearner.filtering import NormalOperationFilter
 from benchmarking.baselines.rlearner.nuisance import make_effect_model, make_outcome_model, make_propensity_model
 from benchmarking.baselines.rlearner.rlearner import cross_fit_rlearner
+from benchmarking.diagnostics import DiagnosticContext, write_common_diagnostics, write_run_config
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.synthetic import ToggleSchedule
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from benchmarking.synthetic import ColumnSchema
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +86,7 @@ class RLearnerMethod:
         stuck-filter low-wind exemption; required if ``era5_hourly_df`` is given
     :param availability_col: optional "ready to operate" counter for the downtime filter
     :param era5_hourly_df: optional raw hourly ERA5 (Open-Meteo columns); added as features when given
+    :param columns: source-native column schema, used only by the shared diagnostics (not estimation)
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param save_plots: also write the diagnostic plots
@@ -99,6 +103,7 @@ class RLearnerMethod:
     wind_speed_col: str | None = None
     availability_col: str | None = None
     era5_hourly_df: pd.DataFrame | None = None
+    columns: ColumnSchema = HOT_COLUMNS
     name: str = "rlearner"
     out_dir: Path | None = None
     save_plots: bool = False
@@ -125,6 +130,7 @@ class RLearnerMethod:
         )
         features = build_reference_features(scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col)
         reference_ws = self._reference_mean_ws(features, index=index)
+        own_ws = self._own_ws(scada, mi=mi, index=index)
         features, era5 = self._add_era5(features, index=index, reference_ws=reference_ws, timebase=timebase)
 
         selected = self._select_rows(scada, mi=mi, index=index, y=y, timebase=timebase)
@@ -148,7 +154,7 @@ class RLearnerMethod:
             y=y,
             fit=fit,
             x_sel=x_sel,
-            reference_ws=reference_ws,
+            own_ws=own_ws,
             overall=overall,
             n_refs=n_refs,
             era5=era5,
@@ -165,13 +171,23 @@ class RLearnerMethod:
         }
 
     def _reference_mean_ws(self, features: pd.DataFrame, *, index: pd.DatetimeIndex) -> pd.Series:
-        """Mean wind speed across reference turbines (for ERA5 sync and the tau-vs-ws plot)."""
+        """Mean wind speed across reference turbines (used only for ERA5 lag sync)."""
         if self.wind_speed_col is None:
             return pd.Series(np.nan, index=index)
         ws_cols = [c for c in features.columns if c.startswith(f"{self.wind_speed_col}{QUALIFIER}")]
         if not ws_cols:
             return pd.Series(np.nan, index=index)
         return features[ws_cols].mean(axis=1)
+
+    def _own_ws(self, scada: pd.DataFrame, *, mi: MethodInput, index: pd.DatetimeIndex) -> np.ndarray | None:
+        """Return the test turbine's own wind speed aligned to ``index`` (for SCADA diagnostics), or None."""
+        if self.wind_speed_col is None:
+            return None
+        test_rows = scada[scada[mi.turbine_col] == mi.test_wtg]
+        series = pd.Series(
+            test_rows[self.wind_speed_col].to_numpy(dtype=float), index=pd.DatetimeIndex(test_rows.index)
+        )
+        return series[~series.index.duplicated()].reindex(index).to_numpy(dtype=float)
 
     def _add_era5(
         self, features: pd.DataFrame, *, index: pd.DatetimeIndex, reference_ws: pd.Series, timebase: pd.Timedelta
@@ -209,7 +225,7 @@ class RLearnerMethod:
         y: pd.Series,
         fit: Any,  # noqa: ANN401
         x_sel: pd.DataFrame,
-        reference_ws: pd.Series,
+        own_ws: np.ndarray | None,
         overall: float,
         n_refs: int,
         era5: Any,  # noqa: ANN401
@@ -235,9 +251,12 @@ class RLearnerMethod:
             e_hat=fit.e_hat,
             mu0=fit.mu0,
             y_selected=y_arr[selected],
-            condition_ws=reference_ws.to_numpy(dtype=float)[selected] if self.wind_speed_col is not None else None,
+            condition_ws=own_ws[selected] if own_ws is not None else None,
+            condition_ws_label=f"{self.wind_speed_col} @ {mi.test_wtg}" if self.wind_speed_col is not None else None,
             feature_names=list(x_sel.columns),
+            feature_values=x_sel,
             outcome_model=fit.outcome_model,
+            propensity_model=fit.propensity_model,
             effect_model=fit.effect_model,
             overall_uplift=overall,
             n_refs=n_refs,
@@ -249,6 +268,57 @@ class RLearnerMethod:
         diag.log_top_features(importance)
         if self.save_plots:
             diag.save_plots(run_dir / "plots", data, importance)
+            self._write_shared_diagnostics(mi, run_dir=run_dir, t=t, selected=selected, timebase=timebase, era5=era5)
+
+    def _write_shared_diagnostics(
+        self,
+        mi: MethodInput,
+        *,
+        run_dir: Path,
+        t: pd.Series,
+        selected: np.ndarray,
+        timebase: pd.Timedelta,
+        era5: Any,  # noqa: ANN401
+    ) -> None:
+        """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
+        # Align the schema's active-power / wind-speed roles to the columns this method was
+        # configured to read, so the shared plots use the right columns even if they differ.
+        columns = replace(self.columns, active_power=self.active_power_col)
+        if self.wind_speed_col is not None:
+            columns = replace(columns, wind_speed=self.wind_speed_col)
+        ctx = DiagnosticContext(
+            run_dir=run_dir,
+            test_wtg=mi.test_wtg,
+            turbine_col=mi.turbine_col,
+            columns=columns,
+            scada_df=mi.scada_df,
+            treated_ts=t.to_numpy().astype(bool),
+            used_ts=np.asarray(selected, dtype=bool),
+            timebase=timebase,
+            mode="toggle" if isinstance(mi.upgrade_timing, ToggleSchedule) else "prepost",
+            era5_df=era5.aligned if era5 is not None else None,
+        )
+        write_common_diagnostics(ctx)
+        extra = {
+            "n_folds": self.n_folds,
+            "seed": self.seed,
+            "era5_lag_rows": era5.best_lag_rows if era5 is not None else None,
+            "era5_corr": era5.best_corr if era5 is not None else None,
+        }
+        write_run_config(ctx, method_name=self.name, method_params=self._config_params(), extra=extra)
+
+    def _config_params(self) -> dict[str, Any]:
+        """Return the R-learner configuration recorded in the run-config YAML."""
+        return {
+            "active_power_col": self.active_power_col,
+            "wind_speed_col": self.wind_speed_col,
+            "availability_col": self.availability_col,
+            "n_folds": self.n_folds,
+            "seed": self.seed,
+            "toggle_campaign_only": self.toggle_campaign_only,
+            "has_era5": self.era5_hourly_df is not None,
+            "model_params": self.model_params,
+        }
 
 
 def _aggregate_uplift(*, tau: np.ndarray, mu0: np.ndarray, upgraded: np.ndarray) -> float:
