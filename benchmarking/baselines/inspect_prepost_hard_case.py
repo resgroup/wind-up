@@ -240,4 +240,4 @@ def inspect_prepost_hard_case(
 
 
 if __name__ == "__main__":
-    inspect_prepost_hard_case()
+    inspect_prepost_hard_case(include_v0=False)

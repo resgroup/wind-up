@@ -19,6 +19,7 @@ from benchmarking.diagnostics.coverage import (
 from benchmarking.diagnostics.curves import (
     plot_curves_by_upgrade,
     plot_ops_curves,
+    plot_ops_curves_kept,
     plot_power_factor,
     plot_reactive_vs_active,
 )
@@ -41,6 +42,7 @@ _PLOTS: tuple[Callable[[DiagnosticContext], Path | None], ...] = (
     plot_filter_coverage,
     plot_condition_histograms,
     plot_ops_curves,
+    plot_ops_curves_kept,
     plot_curves_by_upgrade,
     plot_reactive_vs_active,
     plot_power_factor,

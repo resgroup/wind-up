@@ -166,6 +166,7 @@ class NaiveRatioMethod:
             mi,
             wide=wide,
             stats=stats,
+            used=used,
             rho_base=rho_base,
             rho_up=rho_up,
             uplift=uplift,
@@ -212,6 +213,7 @@ class NaiveRatioMethod:
         *,
         wide: pd.DataFrame,
         stats: pd.DataFrame,
+        used: np.ndarray,
         rho_base: float,
         rho_up: float,
         uplift: float,
@@ -256,6 +258,7 @@ class NaiveRatioMethod:
                 wide=wide,
                 mi=mi,
                 test=mi.test_wtg,
+                used=used,
                 timebase=timebase,
                 active_power_col=self.active_power_col,
             )
@@ -416,14 +419,24 @@ def _daily_segment_coverage(
 
 
 def _save_plots(
-    plots_dir: Path, *, wide: pd.DataFrame, mi: MethodInput, test: str, timebase: pd.Timedelta, active_power_col: str
+    plots_dir: Path,
+    *,
+    wide: pd.DataFrame,
+    mi: MethodInput,
+    test: str,
+    used: np.ndarray,
+    timebase: pd.Timedelta,
+    active_power_col: str,
 ) -> None:
-    """Write the scatter, ratio-timeseries and used-coverage-timeseries diagnostic plots (by stage)."""
+    """Write the scatter, ratio-timeseries and used-coverage-timeseries diagnostic plots (by stage).
+
+    ``used`` is the method's real downtime-filtered mask (test + every reference passing the
+    availability/finite filter), so the scatter shows only the rows the estimate actually uses.
+    """
     refs = [c for c in wide.columns if c != test]
     ts_treated = np.asarray(treated_mask(wide.index, mi.upgrade_timing))
     test_pw = wide[test].to_numpy(dtype=float)
     ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
-    used = wide[[test, *refs]].notna().all(axis=1).to_numpy()
     upgrade_start = _upgrade_start(mi.upgrade_timing, wide.index)
     segments = (("baseline", used & ~ts_treated, "C0"), ("upgraded", used & ts_treated, "C1"))
 

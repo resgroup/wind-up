@@ -98,6 +98,7 @@ def test_common_diagnostics_writes_expected_plots(tmp_path: Path) -> None:
         "filter_coverage.png",
         "condition_histograms.png",
         "ops_curves.png",
+        "ops_curves_kept_only.png",
         "ops_curves_by_upgrade.png",
         "reactive_vs_active.png",
         "power_factor.png",

@@ -130,6 +130,19 @@ def plot_ops_curves(ctx: DiagnosticContext) -> Path | None:
     )
 
 
+def plot_ops_curves_kept(ctx: DiagnosticContext) -> Path | None:
+    """Draw the operating-curve figure for the KEPT rows only (so removed points cannot mask them)."""
+    used = np.asarray(ctx.used_ts, dtype=bool)
+    segments: Segments = [("kept", used, "C0")]
+    return _ops_curve_figure(
+        ctx,
+        segments=segments,
+        title="operating curves (used rows only)",
+        filename="ops_curves_kept_only.png",
+        stage=stages.FILTER,
+    )
+
+
 def plot_curves_by_upgrade(ctx: DiagnosticContext) -> Path | None:
     """Draw the operating-curve figure coloured baseline vs upgraded, over the used rows."""
     used = np.asarray(ctx.used_ts, dtype=bool)
