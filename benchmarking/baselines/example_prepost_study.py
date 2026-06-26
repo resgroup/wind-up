@@ -125,16 +125,23 @@ def run_prepost_study(
         methods: list[Method] = []
         if include_oracle:
             methods.append(OracleMethod(base_scada))
-        methods.append(NaiveRatioMethod(active_power_col=HOT_COLUMNS.active_power, out_dir=out_dir / "naive_runs"))
+        methods.append(
+            NaiveRatioMethod(
+                active_power_col=HOT_COLUMNS.active_power,
+                availability_col=HOT_COLUMNS.availability,
+                out_dir=out_dir / "naive_runs",
+            )
+        )
         # The R-learner runs after the cheap naive floor (compare to it first) and before the slow
         # v0 run. It is given the same columns v0 sees, restricted to references, plus ERA5 (the
-        # context's hourly reanalysis frame). The HoT availability counter is not wired as a
-        # downtime filter yet (its units/full-period value need confirming); the stuck-data filter
-        # and the finite-power rule still apply.
+        # context's hourly reanalysis frame). The HoT availability counter (wtc_ScReToOp_timeon) is
+        # wired as a downtime filter (kept rows need a full timebase of availability, 600 s); the
+        # stuck-data filter and the finite-power rule also apply.
         methods.append(
             RLearnerMethod(
                 active_power_col=HOT_COLUMNS.active_power,
                 wind_speed_col=HOT_COLUMNS.wind_speed,
+                availability_col=HOT_COLUMNS.availability,
                 era5_hourly_df=context.reanalysis_datasets[0].data,
                 out_dir=out_dir / "rlearner_runs",
             )

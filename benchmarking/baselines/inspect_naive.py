@@ -82,7 +82,12 @@ def _inspect_mode(scada_df: pd.DataFrame, *, study: StudyConfig, out_dir: Path, 
         )
         rep_dir = out_dir / f"replicate_{rep.replicate_id:02d}_{rep.test_wtg}"
         estimate = (
-            NaiveRatioMethod(active_power_col=HOT_COLUMNS.active_power, out_dir=rep_dir, save_plots=True)
+            NaiveRatioMethod(
+                active_power_col=HOT_COLUMNS.active_power,
+                availability_col=HOT_COLUMNS.availability,
+                out_dir=rep_dir,
+                save_plots=True,
+            )
             .estimate(mi)
             .p50_overall
         )

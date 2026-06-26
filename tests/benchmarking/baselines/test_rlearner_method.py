@@ -20,6 +20,8 @@ from benchmarking.synthetic import ToggleSchedule, treated_mask
 _TURBINE = "TurbineName"
 _POWER = "wtc_ActPower_mean"
 _WS = "wtc_AcWindSp_mean"
+_AVAIL = "wtc_ScReToOp_timeon"
+_FULLY_AVAILABLE_SECS = 3600.0  # >= any test timebase's full period, so the availability filter keeps every row
 _SMALL = {"n_estimators": 120, "num_leaves": 15, "min_child_samples": 20, "verbose": -1}
 
 
@@ -37,7 +39,7 @@ def _weather_scada(idx: pd.DatetimeIndex, *, treated: np.ndarray, uplift: float)
         power = 80.0 * w + rng.normal(0, 5.0, len(idx))
         if name == "T1":
             power = np.where(treated, power * (1.0 + uplift), power)
-        frames.append(pd.DataFrame({_TURBINE: name, _POWER: power, _WS: ws}, index=idx))
+        frames.append(pd.DataFrame({_TURBINE: name, _POWER: power, _WS: ws, _AVAIL: _FULLY_AVAILABLE_SECS}, index=idx))
     return pd.concat(frames)
 
 
@@ -45,11 +47,29 @@ def _method(tmp_path: Path) -> RLearnerMethod:
     return RLearnerMethod(
         active_power_col=_POWER,
         wind_speed_col=_WS,
+        availability_col=_AVAIL,
         out_dir=tmp_path,
         n_folds=4,
         model_params=_SMALL,
         seed=0,
     )
+
+
+class TestDowntimeFilterRequired:
+    """The downtime filter is mandatory: availability must be configured and present in the data."""
+
+    def test_availability_col_is_required(self, tmp_path: Path) -> None:
+        with pytest.raises(TypeError):
+            RLearnerMethod(active_power_col=_POWER, wind_speed_col=_WS, out_dir=tmp_path)  # type: ignore[call-arg]
+
+    def test_missing_availability_column_raises(self, tmp_path: Path) -> None:
+        idx = _index(200)
+        upgrade = idx[100]
+        scada = _weather_scada(idx, treated=np.asarray(idx >= upgrade), uplift=0.03).drop(columns=[_AVAIL])
+        with pytest.raises(ValueError, match="availability"):
+            _method(tmp_path).estimate(
+                MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE)
+            )
 
 
 class TestRecovery:
@@ -103,6 +123,7 @@ class TestDiagnostics:
         method = RLearnerMethod(
             active_power_col=_POWER,
             wind_speed_col=_WS,
+            availability_col=_AVAIL,
             out_dir=tmp_path,
             n_folds=4,
             model_params=_SMALL,
@@ -124,8 +145,8 @@ class TestDiagnostics:
     def test_save_plots_writes_pngs(self, tmp_path: Path) -> None:
         self._run(tmp_path, save_plots=True)
         run_dir = next(p for p in Path(tmp_path).iterdir() if p.is_dir())
-        pngs = {p.name for p in (run_dir / "plots").glob("*.png")}
-        assert pngs  # at least the feature-importance plot
+        pngs = {p.name for p in (run_dir / "plots").rglob("*.png")}
+        assert "feature_importance.png" in pngs
 
 
 class TestToggleCampaignOnly:
@@ -142,11 +163,17 @@ class TestToggleCampaignOnly:
         scada, schedule = self._toggle_scada()
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
         out_on = RLearnerMethod(
-            active_power_col=_POWER, wind_speed_col=_WS, out_dir=tmp_path / "on", n_folds=4, model_params=_SMALL
+            active_power_col=_POWER,
+            wind_speed_col=_WS,
+            availability_col=_AVAIL,
+            out_dir=tmp_path / "on",
+            n_folds=4,
+            model_params=_SMALL,
         ).estimate(mi)
         RLearnerMethod(
             active_power_col=_POWER,
             wind_speed_col=_WS,
+            availability_col=_AVAIL,
             out_dir=tmp_path / "off",
             n_folds=4,
             model_params=_SMALL,

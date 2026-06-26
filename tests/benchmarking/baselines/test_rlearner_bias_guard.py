@@ -25,6 +25,8 @@ from benchmarking.harness.method import MethodInput
 _TURBINE = "TurbineName"
 _POWER = "wtc_ActPower_mean"
 _WS = "wtc_AcWindSp_mean"
+_AVAIL = "wtc_ScReToOp_timeon"
+_FULLY_AVAILABLE_SECS = 3600.0
 _SMALL = {"n_estimators": 120, "num_leaves": 15, "min_child_samples": 20, "verbose": -1}
 _UPLIFT = 0.05
 
@@ -48,7 +50,7 @@ def _corrupted_scada(idx: pd.DatetimeIndex, treated: np.ndarray) -> pd.DataFrame
         if name == "T1":
             power = np.where(treated, power * (1.0 + _UPLIFT), power)
             ws = ws - 100.0 * treated  # upgrade corrupts the test anemometer (post-treatment)
-        frames.append(pd.DataFrame({_TURBINE: name, _POWER: power, _WS: ws}, index=idx))
+        frames.append(pd.DataFrame({_TURBINE: name, _POWER: power, _WS: ws, _AVAIL: _FULLY_AVAILABLE_SECS}, index=idx))
     return pd.concat(frames)
 
 
@@ -101,7 +103,12 @@ def test_method_recovers_uplift_despite_corrupted_test_ws(tmp_path) -> None:  # 
     treated = np.asarray(idx >= upgrade)
     scada = _corrupted_scada(idx, treated)
     out = RLearnerMethod(
-        active_power_col=_POWER, wind_speed_col=_WS, out_dir=tmp_path, n_folds=4, model_params=_SMALL
+        active_power_col=_POWER,
+        wind_speed_col=_WS,
+        availability_col=_AVAIL,
+        out_dir=tmp_path,
+        n_folds=4,
+        model_params=_SMALL,
     ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE))
     assert out.p50_overall == pytest.approx(_UPLIFT, abs=0.015)
 

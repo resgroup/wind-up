@@ -60,6 +60,7 @@ class RLearnerFit:
     :param e_hat: cross-fit propensity ``E[T|X]``
     :param mu0: baseline (un-upgraded) expected power ``m_hat - e_hat * tau``
     :param outcome_model: outcome model refit on all rows (for feature importance)
+    :param propensity_model: propensity model refit on all rows (for feature importance)
     :param effect_model: the fitted effect model ``tau(x)`` (for feature importance)
     """
 
@@ -68,6 +69,7 @@ class RLearnerFit:
     e_hat: npt.NDArray[np.float64]
     mu0: npt.NDArray[np.float64]
     outcome_model: Any
+    propensity_model: Any
     effect_model: Any
 
 
@@ -111,10 +113,18 @@ def cross_fit_rlearner(
     effect_model.fit(x.iloc[usable], pseudo[usable], sample_weight=weights[usable])
     tau = effect_model.predict(x)
 
-    # Refit the outcome on all rows so feature importance reflects one model over the full data.
+    # Refit outcome and propensity on all rows so feature importance reflects one model over the
+    # full data (the propensity importance shows which references reconstruct the treatment).
     outcome_model = make_outcome().fit(x, y)
+    propensity_model = make_propensity().fit(x, t)
 
     mu0 = m_hat - e_hat * tau
     return RLearnerFit(
-        tau=tau, m_hat=m_hat, e_hat=e_hat, mu0=mu0, outcome_model=outcome_model, effect_model=effect_model
+        tau=tau,
+        m_hat=m_hat,
+        e_hat=e_hat,
+        mu0=mu0,
+        outcome_model=outcome_model,
+        propensity_model=propensity_model,
+        effect_model=effect_model,
     )

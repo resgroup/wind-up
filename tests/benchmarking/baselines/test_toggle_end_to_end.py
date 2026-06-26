@@ -44,7 +44,11 @@ def test_naive_recovers_toggle_uplift(tmp_path) -> None:  # noqa: ANN001
         scada_df,
         profile=[ConstantCpChange(delta=0.05)],
         methods=[
-            NaiveRatioMethod(active_power_col=HOT_COLUMNS.active_power, out_dir=tmp_path / "naive_runs"),
+            NaiveRatioMethod(
+                active_power_col=HOT_COLUMNS.active_power,
+                availability_col=HOT_COLUMNS.availability,
+                out_dir=tmp_path / "naive_runs",
+            ),
             OracleMethod(scada_df),
         ],
         study=study,
