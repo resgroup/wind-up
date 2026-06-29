@@ -10,8 +10,8 @@ from, not just conclusions.
 ## F3 — A simple counterfactual power model halves prepost bias and spread vs naive; toggle is a wash
 
 *2026-06-29 — new method `power_model` (the simplest-possible ML method: a single LightGBM
-counterfactual power model, design spec `docs/superpowers/specs/2026-06-29-power-model-design.md`).
-Source: `benchmarking/baselines/example_{prepost,toggle}_study.py` run over the four
+counterfactual power model). Source: `benchmarking/baselines/example_{prepost,toggle}_study.py`
+run over the four
 `example_profiles` (`constant_cp`, `wind_speed_cp`, `ti_cp`, `rated_power`), `n_replicates=4`,
 campaign sweep 3/6/9/12 months, seed 0, scoring **naive + power_model** (oracle anchor; v0 off).
 256 runs (64 per mode per method); the oracle's max |signed error| was 0.0, confirming harness
