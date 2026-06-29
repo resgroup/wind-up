@@ -12,6 +12,7 @@ Everything here is pure reporting; the estimate itself is computed in :mod:`meth
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -213,6 +214,7 @@ def save_plots(plots_dir: Path, data: DiagnosticData, importance: pd.DataFrame) 
     inputs_dir = plots_dir / stages.UPLIFT_INPUTS
     inputs_dir.mkdir(parents=True, exist_ok=True)
     _plot_feature_overview(inputs_dir, feature_catalogue(data))
+    _save_feature_histograms(inputs_dir / "feature_histograms", data)
 
     if data.era5_sweep is not None:
         feat_dir = plots_dir / stages.FEATURE_ENG
@@ -243,6 +245,53 @@ def _plot_feature_overview(plots_dir: Path, catalogue: pd.DataFrame) -> None:
     ax.set_title("all features: importance (bar) and coverage (colour) — short + cold = drop candidate")
     apply_grid(ax)
     save_fig(fig, plots_dir / "feature_overview.png")
+
+
+def _save_feature_histograms(out_dir: Path, data: DiagnosticData) -> None:
+    """One baseline-vs-upgraded density histogram per model input feature, using the real tag name.
+
+    Every column the uplift model actually sees gets its own plot (named by its real source tag /
+    ERA5 column) so a reviewer can check the baseline and upgraded distributions overlap for *each*
+    input — the per-feature view of the overlap/positivity story, complementing the curated shared
+    ``condition_histograms.png``.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sel = np.asarray(data.selected_all, dtype=bool)
+    treated_sel = np.asarray(data.treated_all, dtype=bool)[sel]  # aligned to feature_values rows
+    baseline_sel = ~treated_sel
+    for feature in data.feature_names:
+        vals = data.feature_values[feature].to_numpy(dtype=float)
+        bins = _robust_bins(vals)
+        fig, ax = plt.subplots(figsize=(7, 5))
+        for seg_label, seg, color in (("baseline", baseline_sel, "C0"), ("upgraded", treated_sel, "C1")):
+            seg_vals = vals[seg & np.isfinite(vals)]
+            if seg_vals.size:
+                ax.hist(
+                    seg_vals, bins=bins, density=True, histtype="stepfilled", alpha=0.45, color=color, label=seg_label
+                )
+        ax.set_xlabel(feature)
+        ax.set_ylabel("density")
+        ax.set_title(f"{data.test_wtg}: {feature}\n(used rows, baseline vs upgraded)")
+        apply_grid(ax)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend()
+        save_fig(fig, out_dir / f"{_safe_filename(feature)}.png")
+
+
+def _robust_bins(values: np.ndarray, *, bins: int = 30) -> list[float] | int:
+    """Bin edges over the 1st-99th percentile of the finite values, so outliers don't dominate."""
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return bins
+    lo, hi = np.percentile(finite, [1, 99])
+    if hi <= lo:
+        return bins
+    return np.linspace(lo, hi, bins + 1).tolist()
+
+
+def _safe_filename(name: str) -> str:
+    """Turn a feature name (which may contain ``@``, spaces, ``/``) into a safe file stem."""
+    return re.sub(r"[^0-9A-Za-z._-]+", "_", name).strip("_")
 
 
 def _plot_predicted_vs_actual(plots_dir: Path, data: DiagnosticData) -> None:
