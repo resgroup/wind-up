@@ -7,6 +7,75 @@ from, not just conclusions.
 
 ---
 
+## F3 — A simple counterfactual power model halves prepost bias and spread vs naive; toggle is a wash
+
+*2026-06-29 — new method `power_model` (the simplest-possible ML method: a single LightGBM
+counterfactual power model, design spec `docs/superpowers/specs/2026-06-29-power-model-design.md`).
+Source: `benchmarking/baselines/example_{prepost,toggle}_study.py` run over the four
+`example_profiles` (`constant_cp`, `wind_speed_cp`, `ti_cp`, `rated_power`), `n_replicates=4`,
+campaign sweep 3/6/9/12 months, seed 0, scoring **naive + power_model** (oracle anchor; v0 off).
+256 runs (64 per mode per method); the oracle's max |signed error| was 0.0, confirming harness
+wiring. Single-case cross-check: `benchmarking/baselines/inspect_prepost_hard_case.py`.*
+
+`power_model` fits the test turbine's power on curated reference-only features (each reference's
+active power + availability, all raw ERA5 columns) over the baseline and predicts the
+counterfactual over the upgraded window: `uplift = sum(actual)/sum(counterfactual) − 1`. It is the
+contrast lever F1 recommended (expected power expressed *through* the references), now realised by
+a much simpler estimator than the R-learner — no propensity, no cross-fit.
+
+### Observation — bias (mean signed error) and spread (std signed error), fractional uplift
+Overall, by campaign type:
+
+| mode | method | bias | spread | MAE |
+|---|---|---|---|---|
+| prepost | naive_ratio | −0.63% | 1.20% | 0.97% |
+| prepost | **power_model** | **−0.34%** | **0.54%** | **0.53%** |
+| toggle | naive_ratio | +0.15% | 0.22% | 0.21% |
+| toggle | power_model | +0.16% | 0.18% | 0.20% |
+
+By campaign length (the short-campaign story, serves G2):
+
+| mode | method | 3mo | 6mo | 9mo | 12mo |
+|---|---|---|---|---|---|
+| prepost | naive | −1.08% / 1.65% | −0.60 / 1.19 | −0.38 / 0.95 | −0.45 / 0.81 |
+| prepost | **power_model** | **−0.69% / 0.54%** | −0.23 / 0.51 | −0.23 / 0.55 | −0.21 / 0.43 |
+| toggle | naive | +0.31% / 0.22% | +0.16 / 0.23 | +0.06 / 0.21 | +0.08 / 0.12 |
+| toggle | power_model | +0.36% / 0.08% | +0.12 / 0.18 | +0.10 / 0.17 | +0.05 / 0.10 |
+
+(bias / spread per cell). Both methods are **flat across the four upgrade types** — in prepost
+power_model holds bias ≈ −0.34% and spread ≈ 0.55% on *every* profile (naive ≈ −0.6% / 1.2% on
+every profile), so neither method has a profile-specific weak spot.
+
+Single hard case (F1's placebo: `cp_0pct`, `T07`, 6-month prepost, truth 0%): power_model reads
+**−0.18%** where the cross-fit R-learner was ~−14% biased (naive +0.58%, v0 ~0%).
+
+### Interpretation
+- **Prepost is the clear win.** power_model roughly **halves both bias and spread** vs naive
+  (spread 1.20%→0.54%, MAE 0.97%→0.53%), and its edge is largest at short campaigns — 3-month
+  prepost spread 0.54% vs naive's 1.65% (~3× tighter), degrading far more gracefully as data
+  shrinks. Expressing expected power through the references cancels the common-mode seasonal/
+  long-term drift that naive's raw pre/post ratio carries — the F1 contrast lever, delivered by a
+  method far simpler than the R-learner (which *amplified* prepost error instead).
+- **Toggle is a wash.** Both methods are near-unbiased with ~0.2% spread. On interleaved on/off
+  blocks there is little covariate shift for the model to correct, so the ML adds nothing over the
+  naive ratio. power_model carries a touch more bias at 3-month toggle (+0.36%) but the tightest
+  spread (0.08%).
+
+### Implications
+1. **power_model is the new baseline to beat** for prepost, and a credible drop-in for toggle.
+   It is wired into both example study drivers and `inspect_prepost_hard_case.py` in place of the
+   R-learner (which is kept as a comparator but no longer invested in).
+2. **This is vs naive, not yet vs v0.** v0 was excluded for speed. The honest open question
+   (G-level) is whether power_model beats v0 in *both* modes — v0 held prepost bias to ~−0.006 to
+   −0.014 (F1), comparable to power_model's −0.0034 here, so a direct v0 vs power_model prepost
+   run is the next comparison. Toggle is where neither naive nor the R-learner beat v0, so a v0
+   toggle comparison is the priority there.
+3. The small residual prepost bias (~−0.3%, slightly negative at every length) is worth a look —
+   plausibly mild non-stationarity or filter asymmetry between the long baseline and the post
+   season; a candidate for the future season-matched / recency-weighted baseline horizon.
+
+---
+
 ## F2 — The prepost R-learner bias is driven by reactive-power and pitch reference features acting as calendar-time proxies
 
 *2026-06-26 — Issue 5 (cross-fit R-learner). Source: the ablation driver
