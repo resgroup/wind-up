@@ -1,0 +1,393 @@
+{
+  "schema": "power_model_compare_baseline_v1",
+  "modes": {
+    "prepost": {
+      "recorded_utc": "2026-06-30T10:04:36Z",
+      "git_commit": "ddd1b63-dirty",
+      "n_replicates": 4,
+      "seed": 0,
+      "campaign_months": [
+        3,
+        6,
+        12
+      ],
+      "profiles": [
+        "cp_0pct",
+        "cp_minus_10pct",
+        "cp_plus_10pct",
+        "cp_plus_3pct",
+        "rated_plus_5pct",
+        "ti_dependent_cp",
+        "ws_dependent_cp"
+      ],
+      "cells": [
+        {
+          "profile": "cp_0pct",
+          "campaign_months": 3,
+          "bias": -0.00660529,
+          "spread": 0.00466565,
+          "score": 0.00808691
+        },
+        {
+          "profile": "cp_0pct",
+          "campaign_months": 6,
+          "bias": -0.00216502,
+          "spread": 0.00397077,
+          "score": 0.00452264
+        },
+        {
+          "profile": "cp_0pct",
+          "campaign_months": 12,
+          "bias": -0.00260598,
+          "spread": 0.00450127,
+          "score": 0.0052012
+        },
+        {
+          "profile": "cp_minus_10pct",
+          "campaign_months": 3,
+          "bias": -0.00608179,
+          "spread": 0.00437577,
+          "score": 0.00749236
+        },
+        {
+          "profile": "cp_minus_10pct",
+          "campaign_months": 6,
+          "bias": -0.00192257,
+          "spread": 0.00368846,
+          "score": 0.00415945
+        },
+        {
+          "profile": "cp_minus_10pct",
+          "campaign_months": 12,
+          "bias": -0.0023763,
+          "spread": 0.00423041,
+          "score": 0.00485213
+        },
+        {
+          "profile": "cp_plus_10pct",
+          "campaign_months": 3,
+          "bias": -0.00712802,
+          "spread": 0.00495523,
+          "score": 0.00868119
+        },
+        {
+          "profile": "cp_plus_10pct",
+          "campaign_months": 6,
+          "bias": -0.00240698,
+          "spread": 0.00425268,
+          "score": 0.0048866
+        },
+        {
+          "profile": "cp_plus_10pct",
+          "campaign_months": 12,
+          "bias": -0.00283565,
+          "spread": 0.00477221,
+          "score": 0.00555111
+        },
+        {
+          "profile": "cp_plus_3pct",
+          "campaign_months": 3,
+          "bias": -0.00676189,
+          "spread": 0.00475233,
+          "score": 0.00826485
+        },
+        {
+          "profile": "cp_plus_3pct",
+          "campaign_months": 6,
+          "bias": -0.00223764,
+          "spread": 0.00405543,
+          "score": 0.0046318
+        },
+        {
+          "profile": "cp_plus_3pct",
+          "campaign_months": 12,
+          "bias": -0.00267486,
+          "spread": 0.00458252,
+          "score": 0.00530607
+        },
+        {
+          "profile": "rated_plus_5pct",
+          "campaign_months": 3,
+          "bias": -0.00670173,
+          "spread": 0.00474853,
+          "score": 0.00821351
+        },
+        {
+          "profile": "rated_plus_5pct",
+          "campaign_months": 6,
+          "bias": -0.00218881,
+          "spread": 0.00403347,
+          "score": 0.00458909
+        },
+        {
+          "profile": "rated_plus_5pct",
+          "campaign_months": 12,
+          "bias": -0.00264277,
+          "spread": 0.00458772,
+          "score": 0.00529447
+        },
+        {
+          "profile": "ti_dependent_cp",
+          "campaign_months": 3,
+          "bias": -0.0069171,
+          "spread": 0.00485054,
+          "score": 0.00844831
+        },
+        {
+          "profile": "ti_dependent_cp",
+          "campaign_months": 6,
+          "bias": -0.00231017,
+          "spread": 0.00414554,
+          "score": 0.00474578
+        },
+        {
+          "profile": "ti_dependent_cp",
+          "campaign_months": 12,
+          "bias": -0.00274427,
+          "spread": 0.00467084,
+          "score": 0.00541736
+        },
+        {
+          "profile": "ws_dependent_cp",
+          "campaign_months": 3,
+          "bias": -0.00683324,
+          "spread": 0.00483019,
+          "score": 0.00836803
+        },
+        {
+          "profile": "ws_dependent_cp",
+          "campaign_months": 6,
+          "bias": -0.00225087,
+          "spread": 0.00412935,
+          "score": 0.00470297
+        },
+        {
+          "profile": "ws_dependent_cp",
+          "campaign_months": 12,
+          "bias": -0.00267457,
+          "spread": 0.00463682,
+          "score": 0.00535289
+        }
+      ]
+    },
+    "toggle": {
+      "recorded_utc": "2026-06-30T10:04:36Z",
+      "git_commit": "ddd1b63-dirty",
+      "n_replicates": 4,
+      "seed": 0,
+      "campaign_months": [
+        3,
+        6,
+        9,
+        12
+      ],
+      "profiles": [
+        "cp_0pct",
+        "cp_minus_10pct",
+        "cp_plus_10pct",
+        "cp_plus_3pct",
+        "rated_plus_5pct",
+        "ti_dependent_cp",
+        "ws_dependent_cp"
+      ],
+      "cells": [
+        {
+          "profile": "cp_0pct",
+          "campaign_months": 3,
+          "bias": 0.00362415,
+          "spread": 0.00084001,
+          "score": 0.00372022
+        },
+        {
+          "profile": "cp_0pct",
+          "campaign_months": 6,
+          "bias": 0.00129828,
+          "spread": 0.00178902,
+          "score": 0.00221046
+        },
+        {
+          "profile": "cp_0pct",
+          "campaign_months": 9,
+          "bias": 0.00086062,
+          "spread": 0.00160665,
+          "score": 0.00182263
+        },
+        {
+          "profile": "cp_0pct",
+          "campaign_months": 12,
+          "bias": 0.00056382,
+          "spread": 0.00088262,
+          "score": 0.00104734
+        },
+        {
+          "profile": "cp_minus_10pct",
+          "campaign_months": 3,
+          "bias": 0.0034594,
+          "spread": 0.00078816,
+          "score": 0.00354805
+        },
+        {
+          "profile": "cp_minus_10pct",
+          "campaign_months": 6,
+          "bias": 0.00131574,
+          "spread": 0.00168113,
+          "score": 0.0021348
+        },
+        {
+          "profile": "cp_minus_10pct",
+          "campaign_months": 9,
+          "bias": 0.00088486,
+          "spread": 0.0015148,
+          "score": 0.0017543
+        },
+        {
+          "profile": "cp_minus_10pct",
+          "campaign_months": 12,
+          "bias": 0.00061016,
+          "spread": 0.00085288,
+          "score": 0.00104867
+        },
+        {
+          "profile": "cp_plus_10pct",
+          "campaign_months": 3,
+          "bias": 0.0037889,
+          "spread": 0.00089431,
+          "score": 0.00389301
+        },
+        {
+          "profile": "cp_plus_10pct",
+          "campaign_months": 6,
+          "bias": 0.00128082,
+          "spread": 0.00189692,
+          "score": 0.00228884
+        },
+        {
+          "profile": "cp_plus_10pct",
+          "campaign_months": 9,
+          "bias": 0.00083644,
+          "spread": 0.00169846,
+          "score": 0.00189325
+        },
+        {
+          "profile": "cp_plus_10pct",
+          "campaign_months": 12,
+          "bias": 0.00051748,
+          "spread": 0.00091239,
+          "score": 0.00104892
+        },
+        {
+          "profile": "cp_plus_3pct",
+          "campaign_months": 3,
+          "bias": 0.00367357,
+          "spread": 0.00085606,
+          "score": 0.003772
+        },
+        {
+          "profile": "cp_plus_3pct",
+          "campaign_months": 6,
+          "bias": 0.00129304,
+          "spread": 0.00182139,
+          "score": 0.0022337
+        },
+        {
+          "profile": "cp_plus_3pct",
+          "campaign_months": 9,
+          "bias": 0.00085336,
+          "spread": 0.0016342,
+          "score": 0.00184359
+        },
+        {
+          "profile": "cp_plus_3pct",
+          "campaign_months": 12,
+          "bias": 0.00054992,
+          "spread": 0.00089155,
+          "score": 0.00104751
+        },
+        {
+          "profile": "rated_plus_5pct",
+          "campaign_months": 3,
+          "bias": 0.00369558,
+          "spread": 0.00086132,
+          "score": 0.00379462
+        },
+        {
+          "profile": "rated_plus_5pct",
+          "campaign_months": 6,
+          "bias": 0.00133541,
+          "spread": 0.00181816,
+          "score": 0.00225589
+        },
+        {
+          "profile": "rated_plus_5pct",
+          "campaign_months": 9,
+          "bias": 0.00088821,
+          "spread": 0.00163333,
+          "score": 0.00185922
+        },
+        {
+          "profile": "rated_plus_5pct",
+          "campaign_months": 12,
+          "bias": 0.00059381,
+          "spread": 0.00090885,
+          "score": 0.00108564
+        },
+        {
+          "profile": "ti_dependent_cp",
+          "campaign_months": 3,
+          "bias": 0.00373349,
+          "spread": 0.00087011,
+          "score": 0.00383354
+        },
+        {
+          "profile": "ti_dependent_cp",
+          "campaign_months": 6,
+          "bias": 0.00128565,
+          "spread": 0.0018638,
+          "score": 0.00226421
+        },
+        {
+          "profile": "ti_dependent_cp",
+          "campaign_months": 9,
+          "bias": 0.0008499,
+          "spread": 0.00167478,
+          "score": 0.00187809
+        },
+        {
+          "profile": "ti_dependent_cp",
+          "campaign_months": 12,
+          "bias": 0.00053768,
+          "spread": 0.0009069,
+          "score": 0.00105431
+        },
+        {
+          "profile": "ws_dependent_cp",
+          "campaign_months": 3,
+          "bias": 0.00372194,
+          "spread": 0.00088052,
+          "score": 0.00382467
+        },
+        {
+          "profile": "ws_dependent_cp",
+          "campaign_months": 6,
+          "bias": 0.00132792,
+          "spread": 0.00184903,
+          "score": 0.00227646
+        },
+        {
+          "profile": "ws_dependent_cp",
+          "campaign_months": 9,
+          "bias": 0.00087805,
+          "spread": 0.00165961,
+          "score": 0.00187757
+        },
+        {
+          "profile": "ws_dependent_cp",
+          "campaign_months": 12,
+          "bias": 0.00058349,
+          "spread": 0.00092061,
+          "score": 0.00108995
+        }
+      ]
+    }
+  }
+}

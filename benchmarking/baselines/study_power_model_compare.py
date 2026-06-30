@@ -22,22 +22,36 @@ merge would be comparing different cases, so it fails loudly rather than plottin
 ``truth`` column the harness attaches to every ``power_model`` row is itself the cross-check, so
 re-running the oracle/naive anchors purely to validate the line-up is unnecessary.)
 
+**Benchmark regression tracking.** ``power_model``'s bias/spread/score per
+``(mode, profile, campaign_months)`` at a known-good commit is frozen in a committed JSON benchmark
+(``study_power_model_compare_baseline.json``, next to this script). Every run diffs the fresh
+``power_model`` against it and logs a mean-over-profiles table of the deltas (spread/score: a
+negative delta is an improvement; bias: a smaller ``|bias|`` is better) plus a per-cell
+``benchmark_comparison_<mode>.csv``, so an attempt to improve ``power_model`` is scored objectively
+against where it stands today. Bump the benchmark **deliberately** with ``--update-baseline`` once an
+improvement is accepted (it rewrites only the modes you ran; commit the new JSON).
+
 Run from the repo root::
 
     uv run python -m benchmarking.baselines.study_power_model_compare \
         --reference-dir "~/temp/wind-up-benchmarking/badass overnight runs 30 June"
 
-Use ``--skip-run`` to only re-merge/re-plot from a previous ``power_model`` run under
-``--output-dir`` (e.g. to tweak plotting without re-fitting). Use ``--modes prepost`` /
-``--modes toggle`` to restrict to one mode.
+Use ``--skip-run`` to only re-merge/re-plot (and re-diff the benchmark) from a previous
+``power_model`` run under ``--output-dir`` (e.g. to tweak plotting without re-fitting). Use
+``--modes prepost`` / ``--modes toggle`` to restrict to one mode. Use ``--update-baseline`` to
+re-record the benchmark from the current run.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import subprocess
+from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -75,6 +89,18 @@ SEED = 0
 _CASE_KEYS = ["profile", "test_wtg", "campaign_months", "treatment_start"]
 _DEFAULT_REFERENCE_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "badass overnight runs 30 June"
 _DEFAULT_OUTPUT_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "power_model_compare"
+
+# The committed power_model benchmark: its bias/spread/score per (mode, profile, campaign) frozen at
+# a known-good commit, so future power_model changes are scored against it. Lives next to this script
+# (tracked) — update it deliberately with --update-baseline when an improvement is accepted.
+_BASELINE_PATH = Path(__file__).resolve().parent / "study_power_model_compare_baseline.json"
+_BASELINE_SCHEMA = "power_model_compare_baseline_v1"
+# Per-cell metrics recorded and diffed. spread/score: lower is better; bias: |bias| nearer 0 is better.
+_METRIC_COLS = ["bias", "spread", "score"]
+# A delta smaller than this (fractional uplift) is floating-point noise, not a real change: an
+# identical (deterministic, seed-fixed) run must read as no change, while any genuine power_model
+# change moves the metrics by >= ~1e-4. 1e-7 fraction = 1e-5 pp, well below the reported resolution.
+_IMPROVE_EPS = 1e-7
 
 
 def _prepost_study() -> StudyConfig:
@@ -207,6 +233,129 @@ def _check_alignment(fresh: pd.DataFrame, reference: pd.DataFrame) -> None:
     logger.info("Alignment OK: %d cases match the reference run on ground truth.", len(common))
 
 
+def _git_commit() -> str:
+    """Return the short HEAD commit (``-dirty`` if the tree is modified), or ``unknown``."""
+    repo = Path(__file__).resolve().parent
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],  # noqa: S607
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"],  # noqa: S607
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        return "unknown"
+    return f"{commit}-dirty" if dirty else commit
+
+
+def power_model_leaderboard(fresh: pd.DataFrame) -> pd.DataFrame:
+    """Reduce the fresh ``power_model`` rows to one ``(profile, campaign_months)`` row of bias/spread/score."""
+    pm = fresh[fresh["method"] == "power_model"]
+    summary = leaderboard(pm)
+    return summary[["profile", "campaign_months", *_METRIC_COLS]].sort_values(["profile", "campaign_months"])
+
+
+def record_baseline(lb_by_mode: dict[str, pd.DataFrame], study_by_mode: dict[str, StudyConfig], path: Path) -> None:
+    """Write/refresh the committed benchmark for the given modes (other modes in the file are kept)."""
+    doc: dict[str, Any] = {"schema": _BASELINE_SCHEMA, "modes": {}}
+    if path.exists():
+        doc = json.loads(path.read_text())
+        doc.setdefault("modes", {})
+    commit = _git_commit()
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for mode, lb in lb_by_mode.items():
+        study = study_by_mode[mode]
+        doc["modes"][mode] = {
+            "recorded_utc": now,
+            "git_commit": commit,
+            "n_replicates": study.n_replicates,
+            "seed": study.seed,
+            "campaign_months": list(study.campaign_months),
+            "profiles": sorted(lb["profile"].unique()),
+            "cells": lb.round(8).to_dict(orient="records"),
+        }
+    path.write_text(json.dumps(doc, indent=2) + "\n")
+    logger.info("Recorded power_model benchmark for %s at %s (commit %s)", list(lb_by_mode), path, commit)
+
+
+def _load_baseline_cells(mode: str, path: Path) -> tuple[pd.DataFrame, dict[str, Any]] | None:
+    """Load the recorded benchmark cells (+ provenance) for ``mode``, or ``None`` if not recorded."""
+    if not path.exists():
+        return None
+    entry = json.loads(path.read_text()).get("modes", {}).get(mode)
+    if entry is None:
+        return None
+    return pd.DataFrame(entry["cells"]), entry
+
+
+def compare_to_benchmark(mode: str, lb: pd.DataFrame, baseline_path: Path, comparison_dir: Path) -> None:
+    """Diff the fresh power_model bias/spread/score against the committed benchmark and report it.
+
+    Writes a per-cell ``benchmark_comparison_<mode>.csv`` and logs a mean-over-profiles table with the
+    deltas. spread/score: a negative delta is an improvement; bias: a smaller ``|bias|`` is better.
+    """
+    loaded = _load_baseline_cells(mode, baseline_path)
+    if loaded is None:
+        logger.warning(
+            "No power_model benchmark recorded for %s in %s yet — run with --update-baseline to set it.",
+            mode,
+            baseline_path,
+        )
+        return
+    base, prov = loaded
+    merged = lb.merge(base, on=["profile", "campaign_months"], how="outer", suffixes=("", "_base"))
+    for col in _METRIC_COLS:
+        merged[f"d_{col}"] = merged[col] - merged[f"{col}_base"]
+    merged["d_abs_bias"] = merged["bias"].abs() - merged["bias_base"].abs()
+    merged.sort_values(["profile", "campaign_months"]).to_csv(
+        comparison_dir / f"benchmark_comparison_{mode}.csv", index=False
+    )
+
+    pp = 100.0
+    report = merged.groupby("campaign_months").mean(numeric_only=True)
+    overall = merged.mean(numeric_only=True).to_frame().T
+    overall.index = ["ALL"]
+    table = pd.concat([report, overall])
+    show = pd.DataFrame(
+        {
+            "bias": table["bias"] * pp,
+            "Δbias": table["d_bias"] * pp,
+            "spread": table["spread"] * pp,
+            "Δspread": table["d_spread"] * pp,
+            "score": table["score"] * pp,
+            "Δscore": table["d_score"] * pp,
+        }
+    ).round(3)
+    n_cells = int(merged[_METRIC_COLS].notna().all(axis=1).sum())
+
+    def tally(delta: pd.Series) -> str:
+        """Count cells that moved beyond the noise floor: ``better`` (down) vs ``worse`` (up)."""
+        better = int((delta < -_IMPROVE_EPS).sum())
+        worse = int((delta > _IMPROVE_EPS).sum())
+        return f"{better} better / {worse} worse (of {n_cells})"
+
+    logger.info(
+        "%s power_model vs benchmark (recorded %s, commit %s); mean over profiles [pp], "
+        "Δ<0 = better for spread/score:\n%s\n"
+        "cells: spread %s; score %s; |bias| %s",
+        mode,
+        prov.get("recorded_utc", "?"),
+        prov.get("git_commit", "?"),
+        show.to_string(),
+        tally(merged["d_spread"]),
+        tally(merged["d_score"]),
+        tally(merged["d_abs_bias"]),
+    )
+
+
 def merge_and_plot(mode: str, fresh: pd.DataFrame, reference_mode_dir: Path, out_dir: Path) -> pd.DataFrame:
     """Merge fresh power_model with reference v0/naive, write merged tables + per-profile plots."""
     comparison_dir = out_dir / "comparison"
@@ -269,12 +418,27 @@ def main() -> None:
         action="store_true",
         help="reuse a previous power_model run under --output-dir; only re-merge and re-plot",
     )
+    parser.add_argument(
+        "--baseline-path",
+        type=Path,
+        default=_BASELINE_PATH,
+        help="the committed power_model benchmark JSON to diff against (and to --update-baseline)",
+    )
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="overwrite the recorded benchmark for the run modes with this run (do this deliberately, "
+        "only when an improvement is accepted); without it, the run is diffed against the benchmark",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
     reference_dir = args.reference_dir.expanduser()
     output_dir = args.output_dir.expanduser()
+    baseline_path = args.baseline_path.expanduser()
 
+    lb_by_mode: dict[str, pd.DataFrame] = {}
+    study_by_mode: dict[str, StudyConfig] = {}
     for mode in args.modes:
         logger.info("=== %s ===", mode.upper())
         mode_out_dir = output_dir / mode
@@ -284,6 +448,13 @@ def main() -> None:
         else:
             fresh = run_power_model(mode, mode_out_dir)
         merge_and_plot(mode, fresh, reference_dir / mode, mode_out_dir)
+        lb_by_mode[mode] = power_model_leaderboard(fresh)
+        study_by_mode[mode] = _prepost_study() if mode == "prepost" else _toggle_study()
+        if not args.update_baseline:
+            compare_to_benchmark(mode, lb_by_mode[mode], baseline_path, mode_out_dir / "comparison")
+
+    if args.update_baseline:
+        record_baseline(lb_by_mode, study_by_mode, baseline_path)
 
     logger.info("All done. Comparison plots under %s/<mode>/comparison/", output_dir)
 
