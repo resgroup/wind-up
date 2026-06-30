@@ -8,15 +8,12 @@ bias/precision metrics; Recording captures inputs for the fairness test.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import numpy as np
+import pandas as pd
 
+from benchmarking.harness.conditions import CONDITION_BINS, energy_ratio_by_bin
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, treated_mask
-
-if TYPE_CHECKING:
-    import pandas as pd
 
 
 def oracle_overall_uplift(mi: MethodInput, original_df: pd.DataFrame) -> float:
@@ -88,3 +85,37 @@ class RecordingMethod:
         )
         self.seen.append(captured)
         return MethodOutput(p50_overall=0.0)
+
+
+def conditional_oracle_by_condition(mi: MethodInput, original_df: pd.DataFrame) -> pd.DataFrame:
+    """Per-bin oracle uplift over treated rows, binned on the test turbine's measured ws/ti."""
+    syn = mi.scada_df
+    test_rows = syn[syn[mi.turbine_col] == mi.test_wtg]
+    treated = treated_mask(test_rows.index, mi.upgrade_timing)
+    treated_rows = test_rows[treated]
+    orig_test = original_df[original_df[mi.turbine_col] == mi.test_wtg]
+    actual = treated_rows[HOT_COLUMNS.active_power].to_numpy(dtype=float)
+    counterfactual = orig_test.loc[treated_rows.index, HOT_COLUMNS.active_power].to_numpy(dtype=float)
+    ws = treated_rows[HOT_COLUMNS.wind_speed].to_numpy(dtype=float)
+    sd = treated_rows[HOT_COLUMNS.wind_speed_sd].to_numpy(dtype=float)
+    ti = np.divide(sd, ws, out=np.full_like(sd, np.nan), where=ws != 0)
+    frames = []
+    for name, values in (("ws", ws), ("ti", ti)):
+        table = energy_ratio_by_bin(values, actual, counterfactual, bins=CONDITION_BINS[name])
+        table.insert(0, "condition", name)
+        frames.append(table[["condition", "condition_bin", "p50_uplift"]])
+    return pd.concat(frames, ignore_index=True)
+
+
+class ConditionalOracleMethod:
+    """Oracle that also emits per-bin oracle uplift; conditional signed error should be ~0."""
+
+    def __init__(self, original_df: pd.DataFrame, name: str = "cond_oracle") -> None:
+        self._original = original_df
+        self.name = name
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:
+        return MethodOutput(
+            p50_overall=oracle_overall_uplift(mi, self._original),
+            p50_by_condition=conditional_oracle_by_condition(mi, self._original),
+        )

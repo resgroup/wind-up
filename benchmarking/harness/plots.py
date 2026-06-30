@@ -105,3 +105,41 @@ def _set_score_ylim(ax: plt.Axes, scores_pp: np.ndarray) -> None:
     span = hi - lo
     margin = 0.05 * span if span > 0 else max(abs(hi), 1.0) * 0.05
     ax.set_ylim(bottom=min(0.0, lo) - margin)
+
+
+def plot_conditional_uplift(
+    summary_df: pd.DataFrame,
+    *,
+    condition: str,
+    save_path: str | Path | None = None,
+    title: str | None = None,
+) -> Figure:
+    """Plot mean recovered vs true uplift across bins of one condition, with a bias±spread band."""
+    df = summary_df[summary_df["condition"] == condition].copy()
+    df["_left"] = df["condition_bin"].str.extract(r"\(([-0-9.]+),").astype(float)
+    df = df.sort_values("_left")
+    order = df.drop_duplicates("condition_bin")["condition_bin"].tolist()
+    x = np.arange(len(order))
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    truth = df.drop_duplicates("condition_bin").set_index("condition_bin").reindex(order)["mean_truth"]
+    ax.plot(x, truth.to_numpy() * _FRACTION_TO_PP, "--", marker="s", color="k", label="true uplift")
+    for i, method in enumerate(sorted(df["method"].unique())):
+        m = df[df["method"] == method].set_index("condition_bin").reindex(order)
+        est = m["mean_estimate"].to_numpy() * _FRACTION_TO_PP
+        ax.plot(x, est, marker="o", color=f"C{i}", label=method)
+        if "spread" in m:
+            sp = m["spread"].to_numpy() * _FRACTION_TO_PP
+            ax.fill_between(x, est - sp, est + sp, color=f"C{i}", alpha=0.2)
+    ax.set_xticks(x)
+    ax.set_xticklabels(order, rotation=45, ha="right")
+    ax.set_xlabel(condition)
+    ax.set_ylabel("uplift [pp]")
+    ax.axhline(0.0, color="grey", lw=0.8)
+    ax.legend()
+    if title:
+        ax.set_title(title)
+    fig.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path, dpi=120)
+    return fig

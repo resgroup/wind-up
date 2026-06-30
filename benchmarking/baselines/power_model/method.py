@@ -37,9 +37,11 @@ from benchmarking.baselines.power_model.features import (
     era5_feature_frame,
     extract_outcome,
     reference_mean_wind_speed,
+    test_condition_signals,
 )
 from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 from benchmarking.diagnostics import DiagnosticContext, write_common_diagnostics, write_run_config
+from benchmarking.harness.conditions import CONDITION_BINS, energy_ratio_by_bin
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
 
@@ -93,6 +95,7 @@ class PowerModelMethod:
     active_power_col: str
     availability_col: str
     wind_speed_col: str | None = None
+    wind_speed_sd_col: str | None = None
     era5_hourly_df: pd.DataFrame | None = None
     columns: ColumnSchema = HOT_COLUMNS
     name: str = "power_model"
@@ -148,6 +151,17 @@ class PowerModelMethod:
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
 
+        by_condition: pd.DataFrame | None = None
+        if self.wind_speed_col is not None:
+            conditions = test_condition_signals(
+                scada,
+                test_wtg=mi.test_wtg,
+                turbine_col=mi.turbine_col,
+                wind_speed_col=self.wind_speed_col,
+                wind_speed_sd_col=self.wind_speed_sd_col,
+            )
+            by_condition = self._conditional_uplift(conditions, upgraded_sel=upgraded_sel, fit=fit)
+
         self._write(
             mi,
             index=index,
@@ -164,7 +178,7 @@ class PowerModelMethod:
             n_refs=n_refs,
             era5=era5,
         )
-        return MethodOutput(p50_overall=uplift)
+        return MethodOutput(p50_overall=uplift, p50_by_condition=by_condition)
 
     def _add_era5(
         self,
@@ -233,6 +247,20 @@ class PowerModelMethod:
             "y_baseline_valid": y_valid,
             "pred_baseline_valid": pred_valid,
         }
+
+    def _conditional_uplift(
+        self, conditions: pd.DataFrame, *, upgraded_sel: np.ndarray, fit: dict[str, Any]
+    ) -> pd.DataFrame | None:
+        """Reduce the upgraded actual/counterfactual ledger to per-bin energy-ratio uplift."""
+        cond_up = conditions.iloc[upgraded_sel]
+        actual = fit["y_upgraded"]
+        counterfactual = fit["pred_upgraded"]
+        frames = []
+        for name in [c for c in ("ws", "ti") if c in cond_up.columns]:
+            table = energy_ratio_by_bin(cond_up[name].to_numpy(), actual, counterfactual, bins=CONDITION_BINS[name])
+            table.insert(0, "condition", name)
+            frames.append(table[["condition", "condition_bin", "p50_uplift"]])
+        return pd.concat(frames, ignore_index=True) if frames else None
 
     def _make_model(self) -> Any:  # noqa: ANN401
         """Outcome model with ``seed`` plumbed into LightGBM's ``random_state`` (caller overrides win)."""
@@ -361,6 +389,7 @@ class PowerModelMethod:
             "active_power_col": self.active_power_col,
             "availability_col": self.availability_col,
             "wind_speed_col": self.wind_speed_col,
+            "wind_speed_sd_col": self.wind_speed_sd_col,
             "seed": self.seed,
             "toggle_campaign_only": self.toggle_campaign_only,
             "has_era5": self.era5_hourly_df is not None,

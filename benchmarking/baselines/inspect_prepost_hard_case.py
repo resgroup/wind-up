@@ -48,11 +48,15 @@ from benchmarking.baselines.overnight_profiles import overnight_profiles
 from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import (
+    CONDITION_BINS,
+    CampaignWindow,
     Method,
     MethodInput,
+    MethodOutput,
     StudyConfig,
     build_replicates,
     campaign_windows,
+    plot_conditional_uplift,
     treated_activity_mask,
     window_row_mask,
 )
@@ -106,8 +110,8 @@ def _select_replicate(replicates: list[Replicate], test_wtg: str) -> Replicate:
 
 def _pin_case(
     scada_df: pd.DataFrame, *, study: StudyConfig, profile_name: str, test_wtg: str, campaign_months: int
-) -> tuple[Replicate, MethodInput, float]:
-    """Build the pinned replicate, its shared ``MethodInput`` and the ground-truth uplift."""
+) -> tuple[Replicate, MethodInput, float, CampaignWindow]:
+    """Build the pinned replicate, its shared ``MethodInput``, the ground-truth uplift, and the window."""
     profile = overnight_profiles()[profile_name]
     replicates = build_replicates(scada_df, profile=profile, study=study)
     rep = _select_replicate(replicates, test_wtg)
@@ -145,7 +149,7 @@ def _pin_case(
         window.activity_end,
         100 * truth,
     )
-    return rep, mi, truth
+    return rep, mi, truth, window
 
 
 def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
@@ -161,6 +165,7 @@ def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
         PowerModelMethod(
             active_power_col=HOT_COLUMNS.active_power,
             wind_speed_col=HOT_COLUMNS.wind_speed,
+            wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
             availability_col=HOT_COLUMNS.availability,
             era5_hourly_df=context.reanalysis_datasets[0].data,
             out_dir=out_dir / "power_model",
@@ -199,6 +204,75 @@ def _run_methods(methods: list[Method], *, mi: MethodInput, truth: float) -> pd.
     return pd.DataFrame(rows)
 
 
+def _plot_conditional_uplift(
+    rep: Replicate, mi: MethodInput, window: CampaignWindow, *, out_dir: Path, profile_name: str
+) -> None:
+    """Re-run the power model on ``mi`` and write per-condition uplift-vs-truth plots."""
+    context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
+    power_model = PowerModelMethod(
+        active_power_col=HOT_COLUMNS.active_power,
+        wind_speed_col=HOT_COLUMNS.wind_speed,
+        wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
+        availability_col=HOT_COLUMNS.availability,
+        era5_hourly_df=context.reanalysis_datasets[0].data,
+        out_dir=out_dir / "power_model_conditional",
+    )
+    pm_output = power_model.estimate(mi)
+    if pm_output.p50_by_condition is None:
+        logger.warning("power_model returned no p50_by_condition; skipping conditional uplift plots")
+        return
+
+    test_index = rep.synthetic_df.loc[rep.synthetic_df[HOT_COLUMNS.turbine] == rep.test_wtg].index
+    mask = treated_activity_mask(test_index, rep.upgrade_timing, window=window)
+    truth_by_condition = {
+        c: rep.true_uplift(mask=mask, by=c, bins=CONDITION_BINS[c]).by_condition for c in ("ws", "ti")
+    }
+    # Filter out conditions where true_uplift returned None (should not happen when bins given)
+    truth_by_condition_clean: dict[str, pd.DataFrame] = {
+        c: df for c, df in truth_by_condition.items() if df is not None
+    }
+    if not truth_by_condition_clean:
+        logger.warning("No per-condition truth available; skipping conditional uplift plots")
+        return
+
+    frame = conditional_truth_vs_estimate(pm_output, truth_by_condition_clean, method_name=power_model.name)
+    for c in truth_by_condition_clean:
+        plot_conditional_uplift(
+            frame,
+            condition=c,
+            save_path=out_dir / f"conditional_uplift_{c}.png",
+            title=f"Conditional uplift ({c}) — profile={profile_name}, wtg={mi.test_wtg}",
+        )
+    logger.info("Wrote conditional uplift plots to %s", out_dir)
+
+
+def conditional_truth_vs_estimate(
+    output: MethodOutput, truth_by_condition: dict[str, pd.DataFrame], *, method_name: str
+) -> pd.DataFrame:
+    """Shape a method's p50_by_condition + per-condition truth into a plot_conditional_uplift frame."""
+    if output.p50_by_condition is None:
+        msg = "output.p50_by_condition must not be None"
+        raise ValueError(msg)
+    frames = []
+    bc = output.p50_by_condition
+    for condition, truth in truth_by_condition.items():
+        est = bc[bc["condition"] == condition].set_index("condition_bin")["p50_uplift"]
+        t = truth.assign(condition_bin=truth["condition_bin"].astype(str)).set_index("condition_bin")["true_uplift"]
+        bins = est.index.union(t.index)
+        frames.append(
+            pd.DataFrame(
+                {
+                    "method": method_name,
+                    "condition": condition,
+                    "condition_bin": bins,
+                    "mean_estimate": est.reindex(bins).to_numpy(),
+                    "mean_truth": t.reindex(bins).to_numpy(),
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)
+
+
 def inspect_prepost_hard_case(
     *,
     profile_name: str = DEFAULT_PROFILE,
@@ -228,11 +302,13 @@ def inspect_prepost_hard_case(
         wtg_names=DEFAULT_TURBINE_SUBSET,
     )
 
-    _rep, mi, truth = _pin_case(
+    rep, mi, truth, window = _pin_case(
         scada_df, study=study, profile_name=profile_name, test_wtg=test_wtg, campaign_months=campaign_months
     )
     methods = _build_methods(out_dir, include_v0=include_v0)
     summary = _run_methods(methods, mi=mi, truth=truth)
+
+    _plot_conditional_uplift(rep, mi, window, out_dir=out_dir, profile_name=profile_name)
 
     summary_path = out_dir / "comparison_summary.csv"
     summary.to_csv(summary_path, index=False)

@@ -69,7 +69,14 @@ from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_PERIOD
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.overnight_profiles import overnight_profiles
 from benchmarking.baselines.power_model import PowerModelMethod
-from benchmarking.harness import StudyConfig, leaderboard, plot_campaign_curves, score_study
+from benchmarking.harness import (
+    StudyConfig,
+    conditional_leaderboard,
+    leaderboard,
+    plot_campaign_curves,
+    plot_conditional_uplift,
+    score_study,
+)
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
@@ -94,7 +101,7 @@ _DEFAULT_OUTPUT_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "power_mod
 # a known-good commit, so future power_model changes are scored against it. Lives next to this script
 # (tracked) — update it deliberately with --update-baseline when an improvement is accepted.
 _BASELINE_PATH = Path(__file__).resolve().parent / "study_power_model_compare_baseline.json"
-_BASELINE_SCHEMA = "power_model_compare_baseline_v1"
+_BASELINE_SCHEMA = "power_model_compare_baseline_v2"
 # Per-cell metrics recorded and diffed. spread/score: lower is better; bias: |bias| nearer 0 is better.
 _METRIC_COLS = ["bias", "spread", "score"]
 # A delta smaller than this (fractional uplift) is floating-point noise, not a real change: an
@@ -152,6 +159,7 @@ def run_power_model(mode: str, out_dir: Path) -> pd.DataFrame:
             active_power_col=HOT_COLUMNS.active_power,
             wind_speed_col=HOT_COLUMNS.wind_speed,
             availability_col=HOT_COLUMNS.availability,
+            wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
             era5_hourly_df=context.reanalysis_datasets[0].data,
             out_dir=out_dir / "power_model_runs",
         )
@@ -257,18 +265,23 @@ def _git_commit() -> str:
 
 
 def power_model_leaderboard(fresh: pd.DataFrame) -> pd.DataFrame:
-    """Reduce the fresh ``power_model`` rows to one ``(profile, campaign_months)`` row of bias/spread/score."""
+    """One row per (profile, campaign, condition, bin) of power_model bias/spread/score (overall incl.)."""
     pm = fresh[fresh["method"] == "power_model"]
-    summary = leaderboard(pm)
-    return summary[["profile", "campaign_months", *_METRIC_COLS]].sort_values(["profile", "campaign_months"])
+    overall = leaderboard(pm).assign(condition="overall", condition_bin="overall")
+    conditional = conditional_leaderboard(pm)
+    cols = ["profile", "campaign_months", "condition", "condition_bin", *_METRIC_COLS]
+    stacked = pd.concat([overall[cols], conditional[cols]], ignore_index=True)
+    return stacked.sort_values(["profile", "campaign_months", "condition", "condition_bin"])
 
 
 def record_baseline(lb_by_mode: dict[str, pd.DataFrame], study_by_mode: dict[str, StudyConfig], path: Path) -> None:
     """Write/refresh the committed benchmark for the given modes (other modes in the file are kept)."""
     doc: dict[str, Any] = {"schema": _BASELINE_SCHEMA, "modes": {}}
     if path.exists():
-        doc = json.loads(path.read_text())
-        doc.setdefault("modes", {})
+        loaded = json.loads(path.read_text())
+        if loaded.get("schema") == _BASELINE_SCHEMA:
+            doc = loaded
+            doc.setdefault("modes", {})
     commit = _git_commit()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for mode, lb in lb_by_mode.items():
@@ -290,7 +303,16 @@ def _load_baseline_cells(mode: str, path: Path) -> tuple[pd.DataFrame, dict[str,
     """Load the recorded benchmark cells (+ provenance) for ``mode``, or ``None`` if not recorded."""
     if not path.exists():
         return None
-    entry = json.loads(path.read_text()).get("modes", {}).get(mode)
+    doc = json.loads(path.read_text())
+    if doc.get("schema") != _BASELINE_SCHEMA:
+        logger.warning(
+            "Baseline %s has schema %r, expected %r — run --update-baseline to regenerate.",
+            path,
+            doc.get("schema"),
+            _BASELINE_SCHEMA,
+        )
+        return None
+    entry = doc.get("modes", {}).get(mode)
     if entry is None:
         return None
     return pd.DataFrame(entry["cells"]), entry
@@ -311,16 +333,17 @@ def compare_to_benchmark(mode: str, lb: pd.DataFrame, baseline_path: Path, compa
         )
         return
     base, prov = loaded
-    merged = lb.merge(base, on=["profile", "campaign_months"], how="outer", suffixes=("", "_base"))
+    merge_keys = ["profile", "campaign_months", "condition", "condition_bin"]
+    merged = lb.merge(base, on=merge_keys, how="outer", suffixes=("", "_base"))
     for col in _METRIC_COLS:
         merged[f"d_{col}"] = merged[col] - merged[f"{col}_base"]
     merged["d_abs_bias"] = merged["bias"].abs() - merged["bias_base"].abs()
-    merged.sort_values(["profile", "campaign_months"]).to_csv(
+    merged.sort_values(["profile", "campaign_months", "condition", "condition_bin"]).to_csv(
         comparison_dir / f"benchmark_comparison_{mode}.csv", index=False
     )
 
     pp = 100.0
-    report = merged.groupby("campaign_months").mean(numeric_only=True)
+    report = merged.groupby(["campaign_months", "condition"]).mean(numeric_only=True)
     overall = merged.mean(numeric_only=True).to_frame().T
     overall.index = ["ALL"]
     table = pd.concat([report, overall])
@@ -387,6 +410,24 @@ def merge_and_plot(mode: str, fresh: pd.DataFrame, reference_mode_dir: Path, out
         mode,
         all_summary[["method", "profile", "campaign_months", "bias", "spread", "score"]].to_string(index=False),
     )
+
+    # Conditional comparison plots for power_model (v0/naive emit no conditional rows — expected).
+    pm_rows = merged[merged["method"] == "power_model"]
+    if not pm_rows.empty and "condition" in pm_rows.columns:
+        cond_lb = conditional_leaderboard(pm_rows)
+        if not cond_lb.empty:
+            for profile in profiles:
+                for condition in cond_lb["condition"].unique():
+                    subset = cond_lb[(cond_lb["profile"] == profile) & (cond_lb["condition"] == condition)]
+                    if subset.empty:
+                        continue
+                    plot_conditional_uplift(
+                        subset,
+                        condition=condition,
+                        save_path=comparison_dir / f"conditional_{profile}_{condition}.png",
+                        title=f"{mode} - {profile} power_model vs {condition}",
+                    )
+
     logger.info("Wrote %s comparison outputs to %s", mode, comparison_dir)
     return merged
 

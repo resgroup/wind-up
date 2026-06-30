@@ -12,14 +12,25 @@ from benchmarking.harness.campaign import (
     treated_activity_mask,
     window_row_mask,
 )
-from benchmarking.harness.leaderboard import leaderboard
+from benchmarking.harness.conditions import (
+    CONDITION_BINS,
+    CONDITIONS,
+    TI_BINS,
+    WS_BINS,
+    energy_ratio_by_bin,
+)
+from benchmarking.harness.leaderboard import conditional_leaderboard, leaderboard
 from benchmarking.harness.method import Method, MethodInput, MethodOutput
 from benchmarking.harness.metrics import ErrorSummary, summarize_errors
-from benchmarking.harness.plots import plot_campaign_curves
+from benchmarking.harness.plots import plot_campaign_curves, plot_conditional_uplift
 from benchmarking.harness.replicates import Replicate, StudyConfig, build_replicates
 from benchmarking.harness.scoring import score_study
 
 __all__ = [
+    "CONDITIONS",
+    "CONDITION_BINS",
+    "TI_BINS",
+    "WS_BINS",
     "CampaignWindow",
     "ErrorSummary",
     "Method",
@@ -29,8 +40,11 @@ __all__ = [
     "StudyConfig",
     "build_replicates",
     "campaign_windows",
+    "conditional_leaderboard",
+    "energy_ratio_by_bin",
     "leaderboard",
     "plot_campaign_curves",
+    "plot_conditional_uplift",
     "score_study",
     "summarize_errors",
     "treated_activity_mask",

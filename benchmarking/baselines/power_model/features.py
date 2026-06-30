@@ -133,6 +133,31 @@ def reference_mean_wind_speed(
     return pd.concat(cols, axis=1).mean(axis=1)
 
 
+def test_condition_signals(
+    scada_df: pd.DataFrame,
+    *,
+    test_wtg: str,
+    turbine_col: str,
+    wind_speed_col: str,
+    wind_speed_sd_col: str | None,
+) -> pd.DataFrame:
+    """Test turbine's MEASURED ws and ti on the unique sorted index (post-treatment, accepted §3).
+
+    ``ti`` is omitted when no SD column is configured.
+    """
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    rows = scada_df[scada_df[turbine_col] == test_wtg]
+    ws = pd.Series(rows[wind_speed_col].to_numpy(dtype=float), index=pd.DatetimeIndex(rows.index))
+    ws = ws[~ws.index.duplicated()].reindex(index)
+    out = pd.DataFrame({"ws": ws})
+    if wind_speed_sd_col is not None and wind_speed_sd_col in scada_df.columns:
+        sd = pd.Series(rows[wind_speed_sd_col].to_numpy(dtype=float), index=pd.DatetimeIndex(rows.index))
+        sd = sd[~sd.index.duplicated()].reindex(index)
+        ws_arr = ws.to_numpy()
+        out["ti"] = np.divide(sd.to_numpy(), ws_arr, out=np.full(len(ws_arr), np.nan), where=ws_arr != 0)
+    return out
+
+
 def check_reference_only(feature_names: list[str], *, test_wtg: str) -> None:
     """Raise if any feature is qualified with the test turbine (violating the §3 rule)."""
     offenders = [f for f in feature_names if f.endswith(f"{QUALIFIER}{test_wtg}")]

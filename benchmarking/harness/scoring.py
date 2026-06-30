@@ -23,12 +23,16 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from benchmarking.harness.campaign import campaign_windows, treated_activity_mask, window_row_mask
+from benchmarking.harness.conditions import CONDITION_BINS
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.replicates import build_replicates
 from benchmarking.synthetic import HOT_COLUMNS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    import numpy as np
+    import numpy.typing as npt
 
     from benchmarking.harness.campaign import CampaignWindow
     from benchmarking.harness.method import Method
@@ -66,33 +70,40 @@ def score_study(
     instances = _materialise_instances(replicates, study, data_start=data_start, data_end=data_end)
     # Truth depends only on ``(replicate, window)``, so compute it once here rather than once
     # per method (it would otherwise carry an avoidable ``len(methods)`` multiplier).
-    truths = [_truth_overall(replicate, window) for replicate, window in instances]
+    truth_masks = [_truth_mask(r, w) for r, w in instances]
+    truths = [r.true_uplift(mask=m).overall for (r, _), m in zip(instances, truth_masks, strict=True)]
 
     rows = []
     for method in methods:
-        method_rows = []
-        for (replicate, window), truth in zip(instances, truths, strict=True):
+        method_rows: list[dict[str, object]] = []
+        for (replicate, window), truth, mask in zip(instances, truths, truth_masks, strict=True):
             method_input = _method_input(replicate, window)
             start = time.perf_counter()
             output = method.estimate(method_input)
             wall_time_s = time.perf_counter() - start
+            base_fields: dict[str, object] = {
+                "method": method.name,
+                "profile": profile_name,
+                "replicate": replicate.replicate_id,
+                "test_wtg": replicate.test_wtg,
+                "campaign_months": window.months,
+                "treatment_start": window.treatment_start,
+                "baseline_start": window.baseline_start,
+                "activity_end": window.activity_end,
+            }
             method_rows.append(
                 {
-                    "method": method.name,
-                    "profile": profile_name,
-                    "replicate": replicate.replicate_id,
-                    "test_wtg": replicate.test_wtg,
-                    "campaign_months": window.months,
-                    "treatment_start": window.treatment_start,
-                    "baseline_start": window.baseline_start,
-                    "activity_end": window.activity_end,
+                    **base_fields,
                     "condition": "overall",
+                    "condition_bin": "overall",
                     "estimate": output.p50_overall,
                     "truth": truth,
                     "signed_error": output.p50_overall - truth,
                     "wall_time_s": wall_time_s,
                 }
             )
+            if output.p50_by_condition is not None:
+                method_rows.extend(_conditional_rows(output.p50_by_condition, replicate, window, mask, base_fields))
         if on_method_complete is not None:
             on_method_complete(method.name, pd.DataFrame(method_rows))
         rows.extend(method_rows)
@@ -132,9 +143,42 @@ def _method_input(replicate: Replicate, window: CampaignWindow) -> MethodInput:
     )
 
 
-def _truth_overall(replicate: Replicate, window: CampaignWindow) -> float:
-    """Ground-truth uplift over the test turbine's treated rows within the activity window."""
+def _truth_mask(replicate: Replicate, window: CampaignWindow) -> npt.NDArray[np.bool_]:
+    """Return the treated-activity mask over the test turbine's rows for this window."""
     synthetic = replicate.synthetic_df
     test_index = synthetic.loc[synthetic[replicate.dataset.columns.turbine] == replicate.test_wtg].index
-    mask = treated_activity_mask(test_index, replicate.upgrade_timing, window=window)
-    return replicate.true_uplift(mask=mask).overall
+    return treated_activity_mask(test_index, replicate.upgrade_timing, window=window)
+
+
+def _conditional_rows(
+    by_condition: pd.DataFrame,
+    replicate: Replicate,
+    window: CampaignWindow,  # noqa: ARG001 (kept for symmetry / future use)
+    mask: npt.NDArray[np.bool_],
+    base_fields: dict[str, object],
+) -> list[dict[str, object]]:
+    """Join each method per-bin estimate to per-bin truth for every condition present."""
+    rows: list[dict[str, object]] = []
+    for condition, est in by_condition.groupby("condition"):
+        truth_df = replicate.true_uplift(mask=mask, by=condition, bins=CONDITION_BINS[str(condition)]).by_condition
+        if truth_df is None:  # always set when by= is passed; guard for type narrowing
+            continue  # pragma: no cover
+        truth_series = truth_df.assign(condition_bin=truth_df["condition_bin"].astype(str)).set_index("condition_bin")[
+            "true_uplift"
+        ]
+        for _, r in est.iterrows():
+            bin_label = str(r["condition_bin"])
+            t = float(truth_series.get(bin_label, float("nan")))
+            e = float(r["p50_uplift"])
+            rows.append(
+                {
+                    **base_fields,
+                    "condition": condition,
+                    "condition_bin": bin_label,
+                    "estimate": e,
+                    "truth": t,
+                    "signed_error": e - t,
+                    "wall_time_s": float("nan"),
+                }
+            )
+    return rows
