@@ -82,7 +82,8 @@ class PowerModelMethod:
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param save_plots: also write the diagnostic plots
-    :param seed: seed for the baseline holdout split
+    :param seed: seed for the baseline holdout split and the LightGBM ``random_state`` (a caller-supplied
+        ``random_state`` in ``model_params`` still wins)
     :param model_params: LightGBM overrides passed to the outcome model
     :param timebase: analysis timebase; inferred from the data when ``None``
     :param toggle_campaign_only: for a toggle campaign, fit only on the interleaved on/off blocks
@@ -180,6 +181,13 @@ class PowerModelMethod:
         if self.wind_speed_col is None:
             msg = "wind_speed_col is required to sync ERA5 (it provides the reference wind speed)."
             raise ValueError(msg)
+        if self.wind_speed_col not in scada.columns:
+            msg = (
+                f"wind_speed_col {self.wind_speed_col!r} is not in scada_df; it provides the reference wind "
+                f"speed the ERA5 lag sync locks onto. A missing column silently yields an all-NaN reference "
+                f"wind speed and a meaningless lag, so this is treated as a configuration error."
+            )
+            raise ValueError(msg)
         reference_ws = reference_mean_wind_speed(
             scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, wind_speed_col=self.wind_speed_col
         )
@@ -215,7 +223,7 @@ class PowerModelMethod:
 
         y_valid, pred_valid = self._holdout_fit(x_base, y_base)
 
-        final = make_outcome_model(**self.model_params)
+        final = self._make_model()
         final.fit(x_base, y_base)
         pred_up = np.asarray(final.predict(x_up), dtype=float)
         return {
@@ -226,11 +234,15 @@ class PowerModelMethod:
             "pred_baseline_valid": pred_valid,
         }
 
+    def _make_model(self) -> Any:  # noqa: ANN401
+        """Outcome model with ``seed`` plumbed into LightGBM's ``random_state`` (caller overrides win)."""
+        return make_outcome_model(**{"random_state": self.seed, **self.model_params})
+
     def _holdout_fit(self, x_base: pd.DataFrame, y_base: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Train on a baseline train split, predict a held-out baseline slice (honest fit quality)."""
         n = len(y_base)
         if n < _MIN_HOLDOUT_ROWS:
-            model = make_outcome_model(**self.model_params)
+            model = self._make_model()
             model.fit(x_base, y_base)
             return y_base, np.asarray(model.predict(x_base), dtype=float)
         rng = np.random.default_rng(self.seed)
@@ -238,7 +250,7 @@ class PowerModelMethod:
         n_valid = n // 5
         valid_idx = order[:n_valid]
         train_idx = order[n_valid:]
-        model = make_outcome_model(**self.model_params)
+        model = self._make_model()
         model.fit(x_base.iloc[train_idx], y_base[train_idx])
         pred_valid = np.asarray(model.predict(x_base.iloc[valid_idx]), dtype=float)
         return y_base[valid_idx], pred_valid

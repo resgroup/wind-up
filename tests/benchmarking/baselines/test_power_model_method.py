@@ -92,6 +92,23 @@ class TestRecovery:
         assert out.p50_overall == pytest.approx(0.0, abs=0.02)
 
 
+class TestConfigGuards:
+    def test_era5_with_missing_wind_speed_col_raises(self) -> None:
+        n = 200
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        treated = np.asarray(idx >= idx[n // 2])
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            wind_speed_col="not_a_real_column",
+            era5_hourly_df=pd.DataFrame({"wind_speed_100m": [1.0]}),
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
+        with pytest.raises(ValueError, match="not in scada_df"):
+            method.estimate(mi)
+
+
 class TestReferenceOnly:
     def test_leak_bait_test_column_does_not_change_estimate(self) -> None:
         n = 4000

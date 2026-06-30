@@ -37,9 +37,9 @@ By campaign length (the short-campaign story, serves G2):
 
 | mode | method | 3mo | 6mo | 9mo | 12mo |
 |---|---|---|---|---|---|
-| prepost | naive | −1.08% / 1.65% | −0.60 / 1.19 | −0.38 / 0.95 | −0.45 / 0.81 |
+| prepost | naive_ratio | −1.08% / 1.65% | −0.60 / 1.19 | −0.38 / 0.95 | −0.45 / 0.81 |
 | prepost | **power_model** | **−0.69% / 0.54%** | −0.23 / 0.51 | −0.23 / 0.55 | −0.21 / 0.43 |
-| toggle | naive | +0.31% / 0.22% | +0.16 / 0.23 | +0.06 / 0.21 | +0.08 / 0.12 |
+| toggle | naive_ratio | +0.31% / 0.22% | +0.16 / 0.23 | +0.06 / 0.21 | +0.08 / 0.12 |
 | toggle | power_model | +0.36% / 0.08% | +0.12 / 0.18 | +0.10 / 0.17 | +0.05 / 0.10 |
 
 (bias / spread per cell). Both methods are **flat across the four upgrade types** — in prepost
