@@ -1,0 +1,144 @@
+"""Build the power-model's curated, reference-only feature matrix.
+
+The discipline (design note §3): every model feature must be *upgrade-invariant* — derived from
+reference turbines (or ERA5), never the test turbine's own signals, which the upgrade distorts.
+Unlike the R-learner's *maximal* feature builder, this matrix is deliberately **curated** to
+features known to relate to the *cause* of the test turbine's power — weather and wakes:
+
+* per **reference turbine**: active power (the primary stable weather-driven measurement) and the
+  availability counter (whether the reference is operating, hence whether it is making a wake);
+* all raw **ERA5** columns, passed through under their original Open-Meteo names (no renaming),
+  with derived ``sin``/``cos`` companions for the circular wind-direction fields.
+
+Features that are not expected to add value and risk the model learning coincidences rather than
+cause-effect (reactive power, blade pitch, …) are intentionally excluded.
+
+Feature columns from references are named ``"<tag>{QUALIFIER}<turbine>"`` so the original tag is
+preserved verbatim in importance diagnostics. :func:`check_reference_only` rejects any
+test-turbine-qualified column (the §3 guard).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from benchmarking.baselines.era5_sync import ERA5_WD, ERA5_WS
+
+# Separator between a source-native tag and the turbine it came from in a feature name.
+QUALIFIER = " @ "
+
+
+def _references(scada_df: pd.DataFrame, *, test_wtg: str, turbine_col: str) -> list[str]:
+    """Sorted reference turbine names (every turbine present except the test turbine)."""
+    refs = sorted(t for t in scada_df[turbine_col].unique() if t != test_wtg)
+    if not refs:
+        msg = (
+            f"no reference turbines available for test_wtg {test_wtg!r}: scada_df contains only "
+            f"{sorted(scada_df[turbine_col].unique())}. The power model needs at least one reference turbine."
+        )
+        raise ValueError(msg)
+    return refs
+
+
+def build_reference_features(
+    scada_df: pd.DataFrame,
+    *,
+    test_wtg: str,
+    turbine_col: str,
+    active_power_col: str,
+    availability_col: str,
+) -> pd.DataFrame:
+    """Wide, curated reference features: each reference turbine's active power + availability.
+
+    Columns are ``"<tag>{QUALIFIER}<turbine>"`` keeping the original tag name. The test turbine
+    contributes nothing (its power is the outcome, extracted separately). NaNs are preserved (no
+    complete-case dropping) — LightGBM handles them natively. Raises if no reference turbine is
+    present, or (defensively) if any test-turbine column would leak in.
+    """
+    refs = _references(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)
+    value_cols = [active_power_col, availability_col]
+    missing = [c for c in value_cols if c not in scada_df.columns]
+    if missing:
+        msg = f"scada_df is missing required reference-feature columns {missing}; have {list(scada_df.columns)}"
+        raise ValueError(msg)
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+
+    tmp = scada_df[[turbine_col, *value_cols]].copy()
+    tmp["_ts"] = scada_df.index
+    wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=value_cols, aggfunc="first")
+    keep = [(col, r) for col in value_cols for r in refs if (col, r) in wide.columns]
+    features = wide.loc[:, keep]
+    features.columns = [f"{col}{QUALIFIER}{r}" for col, r in keep]
+    features = features.reindex(index)
+    features.index.name = index.name
+    check_reference_only(features.columns.tolist(), test_wtg=test_wtg)
+    return features
+
+
+def era5_feature_frame(aligned_era5: pd.DataFrame) -> pd.DataFrame:
+    """Turn aligned ERA5 into model features: all raw columns passed through + dir sin/cos companions.
+
+    All raw Open-Meteo columns are kept under their original names (no renaming); the neutral
+    ``era5_ws`` / ``era5_wd`` aliases the sync adds for back-compat are dropped here (they duplicate
+    ``wind_speed_100m`` / ``wind_direction_100m``). Circular wind-direction fields additionally get
+    derived ``<col>_sin`` / ``<col>_cos`` companions (LightGBM cannot see that 359° ≈ 1°); the raw
+    degree columns are kept too.
+    """
+    raw_cols = [c for c in aligned_era5.columns if c not in (ERA5_WS, ERA5_WD)]
+    out = aligned_era5[raw_cols].astype(float).copy()
+    for col in raw_cols:
+        if "direction" in col:
+            rad = np.deg2rad(out[col].to_numpy(dtype=float))
+            out[f"{col}_sin"] = np.sin(rad)
+            out[f"{col}_cos"] = np.cos(rad)
+    return out
+
+
+def extract_outcome(
+    scada_df: pd.DataFrame,
+    *,
+    test_wtg: str,
+    turbine_col: str,
+    active_power_col: str,
+) -> pd.Series:
+    """Return the outcome ``y`` (the test turbine's active power) on the unique sorted index."""
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    test_rows = scada_df[scada_df[turbine_col] == test_wtg]
+    y = pd.Series(test_rows[active_power_col].to_numpy(dtype=float), index=pd.DatetimeIndex(test_rows.index))
+    return y[~y.index.duplicated()].reindex(index)
+
+
+def reference_mean_wind_speed(
+    scada_df: pd.DataFrame,
+    *,
+    test_wtg: str,
+    turbine_col: str,
+    wind_speed_col: str,
+) -> pd.Series:
+    """Mean wind speed across reference turbines on the unique index (used only for ERA5 lag sync).
+
+    This is **not** a model feature — it is the site wind-speed signal the ERA5 correlation sweep
+    locks onto. Computed from references only so it stays upgrade-invariant.
+    """
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    refs = _references(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)
+    if wind_speed_col not in scada_df.columns:
+        return pd.Series(np.nan, index=index)
+    cols = []
+    for r in refs:
+        rows = scada_df[scada_df[turbine_col] == r]
+        series = pd.Series(rows[wind_speed_col].to_numpy(dtype=float), index=pd.DatetimeIndex(rows.index))
+        cols.append(series[~series.index.duplicated()].reindex(index))
+    return pd.concat(cols, axis=1).mean(axis=1)
+
+
+def check_reference_only(feature_names: list[str], *, test_wtg: str) -> None:
+    """Raise if any feature is qualified with the test turbine (violating the §3 rule)."""
+    offenders = [f for f in feature_names if f.endswith(f"{QUALIFIER}{test_wtg}")]
+    if offenders:
+        msg = (
+            f"reference-only rule violated: features derived from the test turbine {test_wtg!r} "
+            f"are not allowed (the upgrade distorts its signals, design note §3): {offenders}"
+        )
+        raise ValueError(msg)

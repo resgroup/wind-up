@@ -38,7 +38,7 @@ from benchmarking.baselines.example_prepost_study import (
 )
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
-from benchmarking.baselines.rlearner import RLearnerMethod
+from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import Method, StudyConfig, leaderboard, plot_campaign_curves, score_study
 from benchmarking.harness.example_hot_study import OracleMethod
@@ -73,7 +73,7 @@ def run_toggle_study(
     include_oracle: bool = True,
     include_v0: bool = True,
 ) -> pd.DataFrame:
-    """Score the methods (oracle anchor, naive, R-learner, v0) on a toggle study and save outputs.
+    """Score the methods (oracle anchor, naive, power_model, v0) on a toggle study and save outputs.
 
     :param base_scada: wind-up-format real SCADA (all subset turbines), the no-upgrade baseline
     :param profiles: mapping of profile name -> list of upgrade callables to inject
@@ -82,7 +82,7 @@ def run_toggle_study(
     :param data_dir: Hill of Towie data/cache dir for the v0 context metadata; defaults to the
         source package default (keep it the same as the dir ``base_scada`` was loaded from)
     :param include_oracle: also score an oracle that returns the injected truth (sanity anchor)
-    :param include_v0: also score the slow v0 baseline (set False for a quick oracle+naive+R-learner pass)
+    :param include_v0: also score the slow v0 baseline (set False for a quick oracle+naive+power_model pass)
     :return: the concatenated tidy per-replicate results across all profiles
     """
     out_dir = Path(out_root) if out_root is not None else default_output_root()
@@ -105,14 +105,14 @@ def run_toggle_study(
                 out_dir=out_dir / "naive_runs",
             )
         )
-        # R-learner after the naive floor, before slow v0; same columns v0 sees (refs only) + ERA5.
+        # Power model after the naive floor, before slow v0; curated reference-only features + ERA5.
         methods.append(
-            RLearnerMethod(
+            PowerModelMethod(
                 active_power_col=HOT_COLUMNS.active_power,
                 wind_speed_col=HOT_COLUMNS.wind_speed,
                 availability_col=HOT_COLUMNS.availability,
                 era5_hourly_df=context.reanalysis_datasets[0].data,
-                out_dir=out_dir / "rlearner_runs",
+                out_dir=out_dir / "power_model_runs",
             )
         )
         if include_v0:
@@ -162,7 +162,7 @@ def main(
     :param n_replicates: ensemble size per profile
     :param campaign_months: the campaign-length (toggling-duration) sweep grid, in months
     :param toggle_period: the on/off cycle length (20 min on + 20 min off = 40 min by default)
-    :param include_v0: also score the slow v0 baseline (set False for a quick oracle+naive+R-learner pass)
+    :param include_v0: also score the slow v0 baseline (set False for a quick oracle+naive+power_model pass)
     :return: the combined tidy results across all profiles
     """
     wtg_numbers = wtg_numbers if wtg_numbers is not None else DEFAULT_WTG_NUMBERS

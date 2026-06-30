@@ -29,6 +29,19 @@ if TYPE_CHECKING:
 
 _MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
+# Real Open-Meteo wind-direction column, preferred over the neutral ``era5_wd`` alias for labels.
+_ERA5_RAW_WD = "wind_direction_100m"
+
+
+def _era5_wd_column(ctx: DiagnosticContext) -> str | None:
+    """Return the ERA5 wind-direction column to plot — the real Open-Meteo name if present, else the alias."""
+    if ctx.era5_df is None:
+        return None
+    for col in (_ERA5_RAW_WD, ERA5_WD_COL):
+        if col in ctx.era5_df.columns:
+            return col
+    return None
+
 
 def _conditions(ctx: DiagnosticContext) -> list[tuple[str, np.ndarray, np.ndarray | None]]:
     """Return the (label, per-timestamp values, bins) conditions available for this run.
@@ -43,8 +56,9 @@ def _conditions(ctx: DiagnosticContext) -> list[tuple[str, np.ndarray, np.ndarra
         (f"{cols.wind_speed} (ref mean) [m/s]", ctx.reference_mean(cols.wind_speed).to_numpy(dtype=float), None),
     ]
 
-    if ctx.era5_df is not None and ERA5_WD_COL in ctx.era5_df.columns:
-        items.append((f"{ERA5_WD_COL} [deg]", ctx.era5_df[ERA5_WD_COL].reindex(index).to_numpy(dtype=float), None))
+    wd_col = _era5_wd_column(ctx)
+    if wd_col is not None and ctx.era5_df is not None:
+        items.append((f"{wd_col} [deg]", ctx.era5_df[wd_col].reindex(index).to_numpy(dtype=float), None))
     elif ctx.has_column(cols.nacelle_position):
         label = f"{cols.nacelle_position} (ref mean) [deg]"
         items.append((label, ctx.reference_mean(cols.nacelle_position).to_numpy(dtype=float), None))

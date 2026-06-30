@@ -2,11 +2,12 @@
 
 A focused investigation driver (findings F1): replay the **exact** overnight prepost study
 draws (same ``StudyConfig``/seed/profile), pin a single hard ``(test_wtg, campaign_months)``
-run, and execute naive + R-learner (+ v0) on the **identical** ``MethodInput`` with
+run, and execute naive + power_model (+ v0) on the **identical** ``MethodInput`` with
 ``save_plots=True``, each into its own subfolder of one timestamped run dir. The default case is
-``cp_0pct`` (placebo) on ``T07`` at 6 months — where the R-learner is badly biased (~-14%) while
-naive (~+2%) and v0 (~0%) are fine — so the per-method diagnostics can be eyeballed side by side
-to understand *why*.
+``cp_0pct`` (placebo) on ``T07`` at 6 months — the prepost case where the cross-fit R-learner was
+badly biased (~-14%) while naive (~+2%) and v0 (~0%) are fine. The question here is whether the
+counterfactual power model, which forms the test-vs-reference contrast the R-learner lacked, also
+stays near zero — eyeball the per-method diagnostics side by side to confirm.
 
 Because the draws are a deterministic function of ``(StudyConfig, seed)`` and the harness builds
 one ``MethodInput`` per ``(replicate, window)``, every method here sees the same data the
@@ -17,9 +18,9 @@ Run it::
     uv run python -m benchmarking.baselines.inspect_prepost_hard_case
 
 Outputs land under ``WIND_UP_BENCHMARKING_OUTPUT_DIR``/``inspect_hard_case``/``<timestamp>/``
-(``naive/``, ``rlearner/``, ``v0/`` run folders, a ``comparison_summary.csv`` and ``run.log``).
+(``naive/``, ``power_model/``, ``v0/`` run folders, a ``comparison_summary.csv`` and ``run.log``).
 The first run downloads + caches the Hill of Towie SCADA (Zenodo) and ERA5 (Open-Meteo, ``era5``
-group); the ``ml`` group is needed for the R-learner and v0 needs the wind_up pipeline.
+group); the ``ml`` group is needed for the power model and v0 needs the wind_up pipeline.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.overnight_common import start_overnight_run
 from benchmarking.baselines.overnight_profiles import overnight_profiles
-from benchmarking.baselines.rlearner import RLearnerMethod
+from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import (
     Method,
@@ -157,12 +158,12 @@ def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
             out_dir=out_dir / "naive",
             save_plots=True,
         ),
-        RLearnerMethod(
+        PowerModelMethod(
             active_power_col=HOT_COLUMNS.active_power,
             wind_speed_col=HOT_COLUMNS.wind_speed,
             availability_col=HOT_COLUMNS.availability,
             era5_hourly_df=context.reanalysis_datasets[0].data,
-            out_dir=out_dir / "rlearner",
+            out_dir=out_dir / "power_model",
             save_plots=True,
         ),
     ]

@@ -39,9 +39,12 @@ class TestUpsample:
         assert len(out) == 18
         assert out.index.freq is None or len(out) == 18
 
-    def test_renames_to_neutral_columns(self) -> None:
+    def test_passes_through_raw_columns_and_adds_aliases(self) -> None:
         out = upsample_era5_to_timebase(_hourly(2), timebase=pd.Timedelta(minutes=10))
-        assert set(out.columns) == {ERA5_WS, ERA5_WD}
+        # raw Open-Meteo columns are preserved (no renaming) and neutral ws/wd aliases are added
+        assert set(out.columns) == {_RAW_WS, _RAW_WD, ERA5_WS, ERA5_WD}
+        assert out[ERA5_WS].equals(out[_RAW_WS])
+        assert out[ERA5_WD].equals(out[_RAW_WD])
 
     def test_forward_fills_within_the_hour(self) -> None:
         out = upsample_era5_to_timebase(_hourly(2), timebase=pd.Timedelta(minutes=10))
@@ -81,7 +84,7 @@ class TestSyncEra5:
         reference_ws = pd.Series(rng.normal(8.0, 2.0, size=len(target)), index=target)
         result = sync_era5(era5, target_index=target, reference_ws=reference_ws)
         assert isinstance(result, Era5SyncResult)
-        assert list(result.aligned.columns) == [ERA5_WS, ERA5_WD]
+        assert {_RAW_WS, _RAW_WD, ERA5_WS, ERA5_WD} <= set(result.aligned.columns)
         assert result.aligned.index.equals(target)
 
     def test_applies_recovered_lag_to_columns(self) -> None:
