@@ -7,6 +7,94 @@ from, not just conclusions.
 
 ---
 
+## F4 — power_model beats v0 in prepost and at longer-toggle; v0's edge is only short-toggle, and v0 alone breaks on rated-power uprates
+
+*2026-06-30 — the three-way comparison F3 flagged as the open question (power_model vs v0 in
+*both* modes). Source: `benchmarking/baselines/study_power_model_compare.py`, which re-runs
+**only** `power_model` over the current overnight cases and merges it with the frozen `v0_binned`
++ `naive_ratio` rows from the overnight run (`study_overnight_{prepost,toggle}.py`,
+`include_v0=True`). Seven `overnight_profiles` (`cp_minus_10pct`, `cp_0pct`, `cp_plus_3pct`,
+`cp_plus_10pct`, `ws_dependent_cp`, `ti_dependent_cp`, `rated_plus_5pct`), `n_replicates=4`,
+seed 0; prepost campaigns 3/6/12 mo (84 cases/method), toggle 3/6/9/12 mo (112 cases/method). The
+script's alignment guard confirmed all 84 + 112 fresh cases match the reference run's
+method-independent ground truth exactly, so the merge compares identical cases.*
+
+All numbers below are percentage points of fractional uplift (a 0.01 fraction = 1 pp). Bias = mean
+signed error, spread = std of signed error, RMSE pooled over all cases for that mode/method.
+
+### Observation — pooled over all profiles and campaign lengths
+
+| mode | method | bias | spread | MAE | RMSE | within ±1pp | per-case win |
+|---|---|---|---|---|---|---|---|
+| prepost | naive_ratio | −1.11 | 4.62 | 3.83 | 4.73 | 17% | 0% |
+| prepost | **power_model** | **−0.39** | **0.49** | **0.53** | **0.62** | **86%** | **73%** |
+| prepost | v0_binned | −0.73 | 0.72 | 0.84 | 1.03 | 62% | 27% |
+| toggle | naive_ratio | +0.15 | 0.16 | 0.19 | 0.22 | 100% | 39% |
+| toggle | power_model | +0.16 | 0.19 | 0.20 | 0.24 | 100% | 22% |
+| toggle | v0_binned | −0.01 | 0.33 | 0.23 | 0.32 | 98% | 38% |
+
+("per-case win" = share of the N cases where that method has the smallest |error|.) In prepost,
+**power_model's |error| is smaller than v0's in 73% of cases and smaller than naive's in 100%**.
+
+### Observation — RMSE by campaign length (the short-data story, serves G2)
+
+| mode | method | 3mo | 6mo | 9mo | 12mo |
+|---|---|---|---|---|---|
+| prepost | naive_ratio | 7.32 | 3.19 | — | 1.84 |
+| prepost | **power_model** | **0.82** | **0.46** | — | **0.53** |
+| prepost | v0_binned | 1.22 | 0.94 | — | 0.89 |
+| toggle | naive_ratio | **0.30** | 0.23 | 0.17 | 0.14 |
+| toggle | power_model | 0.38 | **0.22** | **0.18** | **0.11** |
+| toggle | v0_binned | 0.32 | 0.31 | 0.33 | 0.32 |
+
+The two structural facts: **(a)** in prepost power_model leads at every length, its biggest margin
+at 3 months (0.82 vs v0 1.22 vs naive 7.32); **(b)** in toggle, power_model and naive both tighten
+with more data (power_model 0.38 → 0.11), but **v0 does not improve with campaign length** — it
+sits at ~0.32 RMSE from 3 to 12 months. So v0 only wins the shortest toggle campaign; from 6
+months on, power_model is best in toggle too.
+
+### Observation — profile spotlight (pooled over campaigns)
+
+| profile | method | bias | RMSE | max |error| |
+|---|---|---|---|---|
+| prepost `rated_plus_5pct` | **power_model** | **−0.38** | **0.62** | **1.05** |
+| prepost `rated_plus_5pct` | v0_binned | −1.24 | 1.42 | 2.23 |
+| toggle `rated_plus_5pct` | **power_model** | +0.16 | **0.25** | **0.49** |
+| toggle `rated_plus_5pct` | v0_binned | −0.63 | 0.68 | 1.10 |
+
+power_model is **flat across all seven profiles** (prepost RMSE 0.61–0.63, bias ≈ −0.38 on every
+one), whereas **v0 has a specific weak spot on the rated-power uprate** — its worst profile in both
+modes (the only profile where v0's toggle RMSE, 0.68, is more than ~2× its others). A rated-power
+change shifts power at high wind speeds where v0's binned power-curve has sparse, noisy bins;
+power_model's continuous reference-conditioned fit has no such blind spot. On the placebo
+(`cp_0pct`) all three are well-behaved (toggle v0 even edges power_model, 0.18 vs 0.24 RMSE).
+
+### Interpretation
+- **Prepost: power_model is the better method, decisively.** Lower bias (−0.39 vs −0.73 pp), lower
+  spread (0.49 vs 0.72), ~40% lower RMSE than v0, and it wins the majority of cases head-to-head —
+  the F1 contrast lever (expected power through the references) cancelling the common-mode drift
+  that v0 corrects only through its detrend step. naive is not in contention (covariate shift).
+- **Toggle: a near-tie that tips to power_model with data.** Naive and power_model are
+  near-identical and both beat v0 overall on RMSE; v0's larger spread and its failure to improve
+  with longer toggling are the cost of its binning. v0's only advantage is the 3-month toggle
+  campaign, where power_model carries slightly more bias (+0.37) before its variance collapses.
+- **v0's rated-power weakness is the clearest single result.** It is the one regime where v0 is
+  both biased and high-variance in *both* modes, and where power_model's flatness is most valuable.
+
+### Implications
+1. **Answers F3's open question: power_model ≥ v0 in both modes for P50** — strictly better in
+   prepost and at toggle ≥ 6 months, with v0 ahead only at the shortest toggle campaign. It is now
+   the baseline to beat (G-level), not just vs naive.
+2. **Short-toggle bias is power_model's one soft spot** — the +0.37 pp at 3-month toggle is the
+   thing to chip at next (mirrors the residual prepost bias noted in F3 #3); candidates are the
+   baseline-horizon / recency weighting already on the list.
+3. **Add a rated-power-uprate case to any v0 regression framing** — it is v0's worst regime and a
+   natural demonstrator for power_model's advantage; worth a dedicated diagnostic.
+4. Reproduce/extend with `study_power_model_compare.py` (`--skip-run` to re-merge, `--modes` to
+   restrict); it reuses the frozen slow v0 so each power_model iteration is cheap.
+
+---
+
 ## F3 — A simple counterfactual power model halves prepost bias and spread vs naive; toggle is a wash
 
 *2026-06-29 — new method `power_model` (the simplest-possible ML method: a single LightGBM
