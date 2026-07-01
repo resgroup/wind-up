@@ -19,6 +19,7 @@ from benchmarking.baselines.study_power_model_compare import (
     _overlay_frame,
     _select_profiles,
     _tally,
+    accept_candidate,
     conditional_before_after,
     conditional_before_after_table,
     power_model_leaderboard,
@@ -459,3 +460,68 @@ def test_record_baseline_stamps_current_schema_over_old_file(tmp_path: Path) -> 
     cells_df, prov = loaded
     assert isinstance(cells_df, pd.DataFrame)
     assert prov["n_replicates"] == 1
+
+
+def _v2_toggle_doc() -> dict:
+    """A valid committed baseline (schema v2) that already holds a toggle mode."""
+    return {
+        "schema": _BASELINE_SCHEMA,
+        "modes": {
+            "toggle": {
+                "recorded_utc": "2025-01-01T00:00:00Z",
+                "git_commit": "abc1234",
+                "n_replicates": 1,
+                "seed": 0,
+                "campaign_months": [6],
+                "profiles": ["test_profile"],
+                "cells": [
+                    {
+                        "profile": "test_profile",
+                        "campaign_months": 6,
+                        "condition": "overall",
+                        "condition_bin": "overall",
+                        "bias": 0.05,
+                        "spread": 0.06,
+                        "score": 0.07,
+                    }
+                ],
+            }
+        },
+    }
+
+
+def test_record_baseline_seeds_siblings_from_seed_path(tmp_path: Path) -> None:
+    """A candidate written to a fresh path must inherit sibling modes from the committed seed_path."""
+    seed = tmp_path / "committed.json"
+    seed.write_text(json.dumps(_v2_toggle_doc()))
+    candidate = tmp_path / "candidate.json"
+
+    record_baseline({"prepost": _minimal_leaderboard()}, {"prepost": _minimal_study()}, candidate, seed_path=seed)
+
+    written = json.loads(candidate.read_text())
+    assert set(written["modes"]) == {"prepost", "toggle"}, "candidate must carry the seeded toggle sibling"
+    # The committed seed itself must be untouched (only the candidate file is written).
+    assert set(json.loads(seed.read_text())["modes"]) == {"toggle"}
+
+
+def test_accept_candidate_promotes_candidate_to_baseline(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.json"
+    baseline = tmp_path / "baseline.json"
+    record_baseline({"prepost": _minimal_leaderboard()}, {"prepost": _minimal_study()}, candidate)
+
+    accept_candidate(candidate, baseline)
+
+    assert baseline.read_text() == candidate.read_text()
+    assert _load_baseline_cells("prepost", baseline) is not None
+
+
+def test_accept_candidate_missing_candidate_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="no candidate"):
+        accept_candidate(tmp_path / "nope.json", tmp_path / "baseline.json")
+
+
+def test_accept_candidate_rejects_wrong_schema(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate.json"
+    candidate.write_text(json.dumps({"schema": "power_model_compare_baseline_v1", "modes": {}}))
+    with pytest.raises(ValueError, match="schema"):
+        accept_candidate(candidate, tmp_path / "baseline.json")

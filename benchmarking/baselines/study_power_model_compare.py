@@ -28,8 +28,14 @@ re-running the oracle/naive anchors purely to validate the line-up is unnecessar
 ``power_model`` against it and logs a mean-over-profiles table of the deltas (spread/score: a
 negative delta is an improvement; bias: a smaller ``|bias|`` is better) plus a per-cell
 ``benchmark_comparison_<mode>.csv``, so an attempt to improve ``power_model`` is scored objectively
-against where it stands today. Bump the benchmark **deliberately** with ``--update-baseline`` once an
-improvement is accepted (it rewrites only the modes you ran; commit the new JSON).
+against where it stands today.
+
+**Accepting an improvement without a second sweep.** Every full sweep also drops a *candidate*
+baseline (``<output-dir>/candidate_baseline.json``, seeded from the committed baseline so unrun modes
+are preserved) — i.e. exactly what the committed file would become if you accept this run. If the run
+looks good, promote it near-instantly with ``--accept-candidate`` (copies the candidate over the
+committed JSON and exits, no re-run); then commit the JSON. ``--update-baseline`` still records
+directly from a fresh sweep, but with the candidate flow you rarely need it.
 
 **Per-bin before/after view.** Alongside the overall diff, the run also surfaces the *conditional*
 before/after for the change under test on the two condition-dependent hard cases plus the placebo
@@ -50,7 +56,8 @@ For fast feedback on a power_model change, restrict to one mode and one profile 
 still emits its overall + per-bin before/after view. Use ``--skip-run`` to only re-merge/re-plot (and
 re-diff the benchmark) from a previous ``power_model`` run under ``--output-dir`` (e.g. to tweak
 plotting without re-fitting). Use ``--update-baseline`` to re-record the benchmark from the current
-run (needs the full profile set — it cannot be combined with ``--profiles``).
+run (needs the full profile set — it cannot be combined with ``--profiles``), or ``--accept-candidate``
+to promote the candidate a previous full sweep already wrote (no re-run).
 """
 
 from __future__ import annotations
@@ -311,11 +318,23 @@ def power_model_leaderboard(fresh: pd.DataFrame) -> pd.DataFrame:
     return stacked.sort_values(["profile", "campaign_months", "condition", "condition_bin"])
 
 
-def record_baseline(lb_by_mode: dict[str, pd.DataFrame], study_by_mode: dict[str, StudyConfig], path: Path) -> None:
-    """Write/refresh the committed benchmark for the given modes (other modes in the file are kept)."""
+def record_baseline(
+    lb_by_mode: dict[str, pd.DataFrame],
+    study_by_mode: dict[str, StudyConfig],
+    path: Path,
+    *,
+    seed_path: Path | None = None,
+) -> None:
+    """Write/refresh the benchmark for the given modes (other modes in the file are kept).
+
+    Sibling modes not in ``lb_by_mode`` are inherited from ``seed_path`` (default: ``path`` itself). A
+    *candidate* baseline is written by pointing ``path`` at the candidate file while seeding from the
+    committed baseline, so the candidate equals what accepting this run would make the committed file.
+    """
+    seed = seed_path if seed_path is not None else path
     doc: dict[str, Any] = {"schema": _BASELINE_SCHEMA, "modes": {}}
-    if path.exists():
-        loaded = json.loads(path.read_text())
+    if seed.exists():
+        loaded = json.loads(seed.read_text())
         if loaded.get("schema") == _BASELINE_SCHEMA:
             doc = loaded
             doc.setdefault("modes", {})
@@ -332,8 +351,37 @@ def record_baseline(lb_by_mode: dict[str, pd.DataFrame], study_by_mode: dict[str
             "profiles": sorted(lb["profile"].unique()),
             "cells": lb.round(8).to_dict(orient="records"),
         }
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=2) + "\n")
     logger.info("Recorded power_model benchmark for %s at %s (commit %s)", list(lb_by_mode), path, commit)
+
+
+def _candidate_path(output_dir: Path) -> Path:
+    """Where a full sweep drops its candidate baseline (promote it with ``--accept-candidate``)."""
+    return output_dir / "candidate_baseline.json"
+
+
+def accept_candidate(candidate_path: Path, baseline_path: Path) -> None:
+    """Promote a candidate baseline to the committed benchmark — a near-instant, no-sweep action.
+
+    Every full sweep writes a candidate (see :func:`record_baseline`); this copies it over
+    ``baseline_path`` so accepting an improvement never means re-running the ~30-minute sweep.
+    """
+    if not candidate_path.exists():
+        msg = f"no candidate baseline at {candidate_path}; run a full sweep (all profiles) first to produce one."
+        raise FileNotFoundError(msg)
+    text = candidate_path.read_text()
+    schema = json.loads(text).get("schema")
+    if schema != _BASELINE_SCHEMA:
+        msg = f"candidate {candidate_path} has schema {schema!r}, expected {_BASELINE_SCHEMA!r}; regenerate it."
+        raise ValueError(msg)
+    baseline_path.write_text(text)
+    logger.info(
+        "Promoted candidate %s -> committed baseline %s (modes %s). Commit the new JSON.",
+        candidate_path,
+        baseline_path,
+        sorted(json.loads(text).get("modes", {})),
+    )
 
 
 def _load_baseline_cells(mode: str, path: Path) -> tuple[pd.DataFrame, dict[str, Any]] | None:
@@ -674,6 +722,12 @@ def main() -> None:
         help="overwrite the recorded benchmark for the run modes with this run (do this deliberately, "
         "only when an improvement is accepted); without it, the run is diffed against the benchmark",
     )
+    parser.add_argument(
+        "--accept-candidate",
+        action="store_true",
+        help="promote the candidate baseline written by the last full sweep (under --output-dir) to the "
+        "committed --baseline-path and exit — a near-instant accept with no re-run. Then commit the JSON.",
+    )
     args = parser.parse_args()
     if args.profiles is not None and args.update_baseline:
         # record_baseline rewrites a mode's cells wholesale, so a subset run would drop the other
@@ -684,6 +738,10 @@ def main() -> None:
     reference_dir = args.reference_dir.expanduser()
     output_dir = args.output_dir.expanduser()
     baseline_path = args.baseline_path.expanduser()
+
+    if args.accept_candidate:
+        accept_candidate(_candidate_path(output_dir), baseline_path)
+        return
 
     lb_by_mode: dict[str, pd.DataFrame] = {}
     study_by_mode: dict[str, StudyConfig] = {}
@@ -706,6 +764,14 @@ def main() -> None:
 
     if args.update_baseline:
         record_baseline(lb_by_mode, study_by_mode, baseline_path)
+    elif args.profiles is None:
+        # A full sweep: drop a candidate baseline (seeded from committed) so an accepted improvement is a
+        # near-instant `--accept-candidate` away, with no second sweep. Subset runs are incomplete -> skip.
+        candidate = _candidate_path(output_dir)
+        record_baseline(lb_by_mode, study_by_mode, candidate, seed_path=baseline_path)
+        logger.info("Candidate baseline written to %s — accept it with --accept-candidate (no re-run).", candidate)
+    else:
+        logger.info("Subset run (--profiles) — no candidate baseline written (it would be incomplete).")
 
     logger.info("All done. Comparison plots under %s/<mode>/comparison/", output_dir)
 
