@@ -31,6 +31,15 @@ negative delta is an improvement; bias: a smaller ``|bias|`` is better) plus a p
 against where it stands today. Bump the benchmark **deliberately** with ``--update-baseline`` once an
 improvement is accepted (it rewrites only the modes you ran; commit the new JSON).
 
+**Per-bin before/after view.** Alongside the overall diff, the run also surfaces the *conditional*
+before/after for the change under test on the two condition-dependent hard cases plus the placebo
+(:data:`COVERED_PROFILES`): a per-bin ``|bias|`` table with a ``better``/``worse``/``~`` verdict
+(``conditional_benchmark_comparison_<mode>.csv`` + log) and one overlay per ``(profile, condition)``
+plotting truth vs the benchmark vs the current run
+(``conditional_before_after_<profile>_<condition>.png``). The benchmark's per-bin curve is
+reconstructed from its stored per-bin bias, so no benchmark-JSON change is needed. Both the overall
+tally and the per-bin verdict use one materiality band (:data:`_MATERIAL_PP`).
+
 Run from the repo root::
 
     uv run python -m benchmarking.baselines.study_power_model_compare \
@@ -104,10 +113,18 @@ _BASELINE_PATH = Path(__file__).resolve().parent / "study_power_model_compare_ba
 _BASELINE_SCHEMA = "power_model_compare_baseline_v2"
 # Per-cell metrics recorded and diffed. spread/score: lower is better; bias: |bias| nearer 0 is better.
 _METRIC_COLS = ["bias", "spread", "score"]
-# A delta smaller than this (fractional uplift) is floating-point noise, not a real change: an
-# identical (deterministic, seed-fixed) run must read as no change, while any genuine power_model
-# change moves the metrics by >= ~1e-4. 1e-7 fraction = 1e-5 pp, well below the reported resolution.
-_IMPROVE_EPS = 1e-7
+# Materiality band (percentage points) for the "did this change help/hurt/neutral" verdicts, shared by
+# the overall tally() and the per-bin conditional table so the report speaks one language. A move whose
+# magnitude is <= this reads neutral ("~"). 0.1 pp is well above floating-point noise (so an identical
+# deterministic re-run still reads all-neutral) yet small enough to catch any change worth judging;
+# hard-case per-bin biases run to tens of pp. tally() works on fractional deltas, so it uses the
+# fractional form _MATERIAL_PP / 100.
+_MATERIAL_PP = 0.1
+_PP = 100.0  # fraction -> percentage points
+# Profiles that get the per-bin before/after conditional view: the two condition-dependent hard cases
+# plus the placebo (true uplift 0 in every bin — confirms a change adds no per-bin bias). The overall
+# benchmark diff already covers all profiles; the other homogeneous cp_* have flat per-bin truth.
+COVERED_PROFILES = ("cp_0pct", "ti_dependent_cp", "ws_dependent_cp")
 
 
 def _prepost_study() -> StudyConfig:
@@ -319,6 +336,152 @@ def _load_baseline_cells(mode: str, path: Path) -> tuple[pd.DataFrame, dict[str,
     return pd.DataFrame(entry["cells"]), entry
 
 
+def _tally(delta: pd.Series, n_cells: int, *, threshold: float) -> str:
+    """Count cells that moved beyond the materiality band: ``better`` (down) vs ``worse`` (up).
+
+    ``delta`` is a fractional metric change; ``threshold`` is the band in the same fractional units.
+    """
+    better = int((delta < -threshold).sum())
+    worse = int((delta > threshold).sum())
+    return f"{better} better / {worse} worse (of {n_cells})"
+
+
+def _verdict(d_abs_bias_pp: float, material_pp: float) -> str:
+    """``better`` / ``worse`` / ``~`` for a per-bin |bias| change (pp) against the materiality band."""
+    if d_abs_bias_pp < -material_pp:
+        return "better"
+    if d_abs_bias_pp > material_pp:
+        return "worse"
+    return "~"
+
+
+_MERGE_KEYS = ["profile", "campaign_months", "condition", "condition_bin"]
+
+
+def _covered_longest(fresh_cond_lb: pd.DataFrame) -> pd.DataFrame:
+    """Fresh conditional rows restricted to the covered profiles' ws/ti bins at their longest campaign."""
+    fresh = fresh_cond_lb[
+        fresh_cond_lb["profile"].isin(COVERED_PROFILES) & fresh_cond_lb["condition"].isin(["ws", "ti"])
+    ].copy()
+    if fresh.empty:
+        return fresh
+    longest = fresh.groupby("profile")["campaign_months"].transform("max")
+    return fresh[fresh["campaign_months"] == longest]
+
+
+def conditional_before_after_table(
+    fresh_cond_lb: pd.DataFrame, baseline_cells: pd.DataFrame, *, material_pp: float = _MATERIAL_PP
+) -> pd.DataFrame:
+    """Per-bin before/after table for the covered profiles at their longest campaign (values in pp).
+
+    ``fresh_cond_lb`` is a fresh :func:`~benchmarking.harness.conditional_leaderboard` (carrying
+    ``mean_estimate`` / ``mean_truth`` / ``bias`` per bin); ``baseline_cells`` is the recorded benchmark
+    (per-bin ``bias`` only). The benchmark's per-bin estimate is reconstructed exactly as
+    ``mean_truth + bias`` (ground truth is deterministic and alignment-guarded), so no benchmark-JSON
+    schema change is needed. Returns one row per ``(profile, condition, condition_bin)`` with the
+    reconstructed ``est_before``, fresh ``est_after``, ``|bias|`` before/after, their pp delta, and a
+    ``better``/``worse``/``~`` verdict against ``material_pp``.
+    """
+    columns = [
+        "profile", "condition", "condition_bin", "campaign_months",
+        "mean_truth", "est_before", "est_after", "abs_bias_before", "abs_bias_after", "d_abs_bias", "verdict",
+    ]  # fmt: skip
+    fresh = _covered_longest(fresh_cond_lb)
+    if fresh.empty:
+        return pd.DataFrame(columns=columns)
+
+    base = baseline_cells[[*_MERGE_KEYS, "bias"]].rename(columns={"bias": "bias_before"})
+    merged = fresh.merge(base, on=_MERGE_KEYS, how="inner")
+
+    out = pd.DataFrame(
+        {
+            "profile": merged["profile"],
+            "condition": merged["condition"],
+            "condition_bin": merged["condition_bin"],
+            "campaign_months": merged["campaign_months"],
+            "mean_truth": merged["mean_truth"] * _PP,
+            "est_before": (merged["mean_truth"] + merged["bias_before"]) * _PP,
+            "est_after": merged["mean_estimate"] * _PP,
+            "abs_bias_before": merged["bias_before"].abs() * _PP,
+            "abs_bias_after": merged["bias"].abs() * _PP,
+        }
+    )
+    out["d_abs_bias"] = out["abs_bias_after"] - out["abs_bias_before"]
+    out["verdict"] = out["d_abs_bias"].apply(lambda d: _verdict(d, material_pp))
+    return out.sort_values(["profile", "condition", "condition_bin"]).reset_index(drop=True)
+
+
+def _overlay_frame(fresh_cond_lb: pd.DataFrame, baseline_cells: pd.DataFrame) -> pd.DataFrame:
+    """Two-"method" frame (benchmark + current) for :func:`plot_conditional_uplift`, in fractional units.
+
+    The benchmark series' ``mean_estimate`` is reconstructed as ``mean_truth + bias`` and carries the
+    benchmark's own per-bin ``spread``; the current series is the fresh estimate/spread. Both share the
+    fresh ``mean_truth`` (the truth line). Empty if no covered-profile cells line up.
+    """
+    fresh = _covered_longest(fresh_cond_lb)
+    plot_cols = ["profile", "condition", "condition_bin", "method", "mean_truth", "mean_estimate", "spread"]
+    if fresh.empty:
+        return pd.DataFrame(columns=plot_cols)
+    base = baseline_cells[[*_MERGE_KEYS, "bias", "spread"]].rename(
+        columns={"bias": "bias_before", "spread": "spread_before"}
+    )
+    merged = fresh.merge(base, on=_MERGE_KEYS, how="inner")
+    shared = {c: merged[c] for c in ["profile", "condition", "condition_bin", "mean_truth"]}
+    benchmark = pd.DataFrame(
+        {**shared, "method": "power_model (benchmark)",
+         "mean_estimate": merged["mean_truth"] + merged["bias_before"], "spread": merged["spread_before"]}
+    )  # fmt: skip
+    current = pd.DataFrame(
+        {**shared, "method": "power_model (current)",
+         "mean_estimate": merged["mean_estimate"], "spread": merged["spread"]}
+    )  # fmt: skip
+    return pd.concat([benchmark, current], ignore_index=True)[plot_cols]
+
+
+def conditional_before_after(mode: str, fresh: pd.DataFrame, baseline_path: Path, comparison_dir: Path) -> None:
+    """Per-bin before/after view for the covered profiles: a delta table (CSV + log) and overlay plots.
+
+    Reads the recorded benchmark, computes the fresh power_model conditional leaderboard, and writes
+    ``conditional_benchmark_comparison_<mode>.csv`` plus one
+    ``conditional_before_after_<profile>_<condition>.png`` overlay (truth vs benchmark vs current) per
+    covered ``(profile, condition)``. A no-op (with a warning) when no benchmark is recorded for ``mode``.
+    """
+    loaded = _load_baseline_cells(mode, baseline_path)
+    if loaded is None:
+        logger.warning(
+            "No power_model benchmark for %s in %s — skipping the per-bin before/after view.",
+            mode,
+            baseline_path,
+        )
+        return
+    base, prov = loaded
+    cond_lb = conditional_leaderboard(fresh[fresh["method"] == "power_model"])
+
+    table = conditional_before_after_table(cond_lb, base)
+    if table.empty:
+        logger.info("%s: no covered-profile conditional cells line up with the benchmark; nothing to show.", mode)
+        return
+    table.round(4).to_csv(comparison_dir / f"conditional_benchmark_comparison_{mode}.csv", index=False)
+    logger.info(
+        "%s power_model per-bin |bias| vs benchmark (recorded %s, commit %s) [pp], verdict band +/-%.3g pp:\n%s",
+        mode,
+        prov.get("recorded_utc", "?"),
+        prov.get("git_commit", "?"),
+        _MATERIAL_PP,
+        table.round(3).to_string(index=False),
+    )
+
+    overlay = _overlay_frame(cond_lb, base)
+    commit = prov.get("git_commit", "?")
+    for (profile, condition), subset in overlay.groupby(["profile", "condition"]):
+        plot_conditional_uplift(
+            subset,
+            condition=condition,
+            save_path=comparison_dir / f"conditional_before_after_{profile}_{condition}.png",
+            title=f"{mode} - {profile} power_model before/after vs {condition} (benchmark {commit})",
+        )
+
+
 def compare_to_benchmark(mode: str, lb: pd.DataFrame, baseline_path: Path, comparison_dir: Path) -> None:
     """Diff the fresh power_model bias/spread/score against the committed benchmark and report it.
 
@@ -343,40 +506,35 @@ def compare_to_benchmark(mode: str, lb: pd.DataFrame, baseline_path: Path, compa
         comparison_dir / f"benchmark_comparison_{mode}.csv", index=False
     )
 
-    pp = 100.0
     report = merged.groupby(["campaign_months", "condition"]).mean(numeric_only=True)
     overall = merged.mean(numeric_only=True).to_frame().T
     overall.index = ["ALL"]
     table = pd.concat([report, overall])
     show = pd.DataFrame(
         {
-            "bias": table["bias"] * pp,
-            "Δbias": table["d_bias"] * pp,
-            "spread": table["spread"] * pp,
-            "Δspread": table["d_spread"] * pp,
-            "score": table["score"] * pp,
-            "Δscore": table["d_score"] * pp,
+            "bias": table["bias"] * _PP,
+            "Δbias": table["d_bias"] * _PP,
+            "spread": table["spread"] * _PP,
+            "Δspread": table["d_spread"] * _PP,
+            "score": table["score"] * _PP,
+            "Δscore": table["d_score"] * _PP,
         }
     ).round(3)
     n_cells = int(merged[_METRIC_COLS].notna().all(axis=1).sum())
-
-    def tally(delta: pd.Series) -> str:
-        """Count cells that moved beyond the noise floor: ``better`` (down) vs ``worse`` (up)."""
-        better = int((delta < -_IMPROVE_EPS).sum())
-        worse = int((delta > _IMPROVE_EPS).sum())
-        return f"{better} better / {worse} worse (of {n_cells})"
+    threshold = _MATERIAL_PP / _PP  # tally works on fractional deltas; the band is defined in pp.
 
     logger.info(
         "%s power_model vs benchmark (recorded %s, commit %s); mean over profiles [pp], "
-        "Δ<0 = better for spread/score:\n%s\n"
+        "Δ<0 = better for spread/score (|Δ| <= %.3g pp reads neutral):\n%s\n"
         "cells: spread %s; score %s; |bias| %s",
         mode,
         prov.get("recorded_utc", "?"),
         prov.get("git_commit", "?"),
+        _MATERIAL_PP,
         show.to_string(),
-        tally(merged["d_spread"]),
-        tally(merged["d_score"]),
-        tally(merged["d_abs_bias"]),
+        _tally(merged["d_spread"], n_cells, threshold=threshold),
+        _tally(merged["d_score"], n_cells, threshold=threshold),
+        _tally(merged["d_abs_bias"], n_cells, threshold=threshold),
     )
 
 
@@ -510,6 +668,7 @@ def main() -> None:
         study_by_mode[mode] = _prepost_study() if mode == "prepost" else _toggle_study()
         if not args.update_baseline:
             compare_to_benchmark(mode, lb_by_mode[mode], baseline_path, mode_out_dir / "comparison")
+            conditional_before_after(mode, fresh, baseline_path, mode_out_dir / "comparison")
 
     if args.update_baseline:
         record_baseline(lb_by_mode, study_by_mode, baseline_path)
