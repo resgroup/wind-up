@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from matplotlib.colors import Normalize
 
@@ -25,6 +26,7 @@ from benchmarking.baselines.power_model.features import QUALIFIER
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.style import apply_grid, save_fig
+from benchmarking.harness.conditions import TI_BINS, WS_BINS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -66,6 +68,9 @@ class DiagnosticData:
     era5_lag_rows: int | None
     era5_corr: float | None
     era5_sweep: pd.DataFrame | None
+    # test-turbine ws/TI row-aligned to each segment's residuals (None when no wind-speed col)
+    cond_upgraded: pd.DataFrame | None = None
+    cond_baseline_valid: pd.DataFrame | None = None
 
 
 def feature_importance_long(data: DiagnosticData) -> pd.DataFrame:
@@ -206,6 +211,7 @@ def save_plots(plots_dir: Path, data: DiagnosticData, importance: pd.DataFrame) 
     _plot_importance(model_dir, importance, test_wtg=data.test_wtg)
     _plot_predicted_vs_actual(model_dir, data)
     _plot_residual_vs_mean(model_dir, data)
+    _plot_residual_binned(model_dir, data)
 
     results_dir = plots_dir / stages.UPLIFT_RESULTS
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -358,6 +364,170 @@ def _plot_residual_vs_mean(plots_dir: Path, data: DiagnosticData) -> None:
         apply_grid(ax)
     fig.suptitle(f"{data.test_wtg}: power-model residual vs mean power (Bland-Altman)")
     save_fig(fig, plots_dir / "residual_vs_mean.png")
+
+
+_RESID_POWER_BINS = 20
+_MIN_BIN_COUNT = 3  # below this a bin's mean/SD is too noisy to plot
+
+
+def _binned_stats(
+    x: npt.ArrayLike, y: npt.ArrayLike, edges: npt.ArrayLike
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Bin ``y`` by ``x`` over ``edges``; return (bin centres, mean, SD, count), NaN-safe.
+
+    Empty or sparsely populated bins (< :data:`_MIN_BIN_COUNT`) yield NaN mean/SD so a noisy tail
+    does not draw a misleading spike. SD is the sample standard deviation of the residual in the bin.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    edges = np.asarray(edges, dtype=float)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    mean = np.full(len(centers), np.nan)
+    sd = np.full(len(centers), np.nan)
+    count = np.zeros(len(centers), dtype=int)
+    finite = np.isfinite(x) & np.isfinite(y)
+    if finite.any():
+        cats = pd.cut(x[finite], bins=edges)
+        grouped = pd.Series(y[finite]).groupby(cats, observed=False)
+        count = grouped.size().to_numpy()
+        mean = grouped.mean().to_numpy()
+        sd = grouped.std().to_numpy()  # ddof=1; NaN for singleton bins
+    thin = count < _MIN_BIN_COUNT
+    mean[thin] = np.nan
+    sd[thin] = np.nan
+    return centers, mean, sd, count
+
+
+def _power_bin_edges(*arrays: np.ndarray | None, n_bins: int = _RESID_POWER_BINS) -> np.ndarray:
+    """Equal-width power-bin edges from 0 to the robust (99th-pct) max across the given arrays."""
+    present = [np.asarray(a, dtype=float) for a in arrays if a is not None and len(a)]
+    finite = np.concatenate(present)[np.isfinite(np.concatenate(present))] if present else np.array([])
+    hi = float(np.nanpercentile(finite, 99)) if finite.size else 1.0
+    if not np.isfinite(hi) or hi <= 0:
+        hi = 1.0
+    return np.linspace(0.0, hi, n_bins + 1)
+
+
+def _axis_values(
+    kind: str, actual: np.ndarray, predicted: np.ndarray, cond: pd.DataFrame | None
+) -> np.ndarray | None:
+    """Binning-axis values for one segment: power axes from actual/predicted, ws/TI from ``cond``."""
+    if kind == "actual":
+        return np.asarray(actual, dtype=float)
+    if kind == "mean":
+        return 0.5 * (np.asarray(actual, dtype=float) + np.asarray(predicted, dtype=float))
+    if cond is not None and kind in cond.columns:
+        return cond[kind].to_numpy(dtype=float)
+    return None
+
+
+def _plot_residual_binned(plots_dir: Path, data: DiagnosticData) -> None:
+    """Mean and SD of the residual (actual - predicted) binned by power, wind speed and TI.
+
+    The shrinkage check: a regularised learner predicts smoother than reality (over-predicts where
+    power is low, under-predicts where it is high), so on the **held-out baseline** — where the true
+    uplift is zero and the residual is pure model error — the mean residual tilts up with power.
+    Because power maps to wind speed, and TI is inversely related to wind speed at fixed power, that
+    single compression re-appears as a negative residual at low wind speed / high TI, which is what
+    masquerades as condition-dependent uplift. The ``upgraded`` segment adds the true uplift on top.
+
+    Binning by *actual* power inflates the trend (the residual contains ``+actual``); the
+    ``mean(actual, predicted)`` (Bland-Altman) axis is the unbiased read. Both are shown so the
+    inflation is visible.
+
+    Two files are written: ``residual_binned.png`` in absolute kW, and ``residual_binned_pct.png``
+    where each bin's mean/SD residual is divided by that same bin's mean actual power (a true
+    percentage of the typical power in the bin, whatever the x-variable); bins with mean power <= 0
+    are dropped.
+    """
+    _residual_binned_figure(plots_dir / "residual_binned.png", data, as_percent=False)
+    _residual_binned_figure(plots_dir / "residual_binned_pct.png", data, as_percent=True)
+
+
+def _residual_binned_figure(save_path: Path, data: DiagnosticData, *, as_percent: bool) -> None:
+    """Render one binned-residual figure (absolute kW or percentage of the mean x-variable)."""
+    segments = [
+        ("baseline (held-out)", data.y_baseline_valid, data.pred_baseline_valid, data.cond_baseline_valid, "C0"),
+        ("upgraded", data.y_upgraded, data.pred_upgraded, data.cond_upgraded, "C1"),
+    ]
+    power_edges = _power_bin_edges(
+        data.y_baseline_valid, data.pred_baseline_valid, data.y_upgraded, data.pred_upgraded
+    )
+    # (axis kind, bin edges, x-axis label); ``_axis_values`` resolves the kind per segment
+    specs: list[tuple[str, np.ndarray, str]] = [
+        ("actual", power_edges, "actual power [kW]"),
+        ("mean", power_edges, "mean(actual, predicted) [kW]"),
+        ("ws", np.asarray(WS_BINS, dtype=float), "wind speed [m/s]"),
+        ("ti", np.asarray(TI_BINS, dtype=float), "TI"),
+    ]
+    # keep an axis only if at least one segment yields values for it (ws/TI need a wind-speed col)
+    specs = [s for s in specs if any(_axis_values(s[0], a, p, c) is not None for _, a, p, c, _ in segments)]
+    if not specs:
+        return
+
+    unit = "%" if as_percent else "kW"
+    fig, axes = plt.subplots(2, len(specs), figsize=(5.0 * len(specs), 8.5), squeeze=False, sharey="row")
+    mean_vals: list[np.ndarray] = []  # every plotted point, to size the shared y-axis from inliers
+    sd_vals: list[np.ndarray] = []
+    for col, (kind, edges, xlabel) in enumerate(specs):
+        mean_ax, sd_ax = axes[0][col], axes[1][col]
+        for label, actual, predicted, cond, color in segments:
+            values = _axis_values(kind, actual, predicted, cond)
+            if values is None:
+                continue
+            actual_arr = np.asarray(actual, dtype=float)
+            resid = actual_arr - np.asarray(predicted, dtype=float)
+            centers, mean, sd, _ = _binned_stats(values, resid, edges)
+            if as_percent:
+                _, mean_power, _, _ = _binned_stats(values, actual_arr, edges)  # per-bin denominator
+                mean = _as_percent_of_power(mean, mean_power)
+                sd = _as_percent_of_power(sd, mean_power)
+            mean_ax.plot(centers, mean, marker="o", ms=3, color=color, label=label)
+            sd_ax.plot(centers, sd, marker="o", ms=3, color=color, label=label)
+            mean_vals.append(mean)
+            sd_vals.append(sd)
+        mean_ax.axhline(0, color="k", lw=1)
+        mean_ax.set_title(xlabel)
+        mean_ax.set_ylabel(f"mean residual [{unit}]")
+        sd_ax.set_ylabel(f"SD of residual [{unit}]")
+        sd_ax.set_xlabel(xlabel)
+        for ax in (mean_ax, sd_ax):
+            ax.legend(loc="best", fontsize=8)
+            apply_grid(ax)
+    if as_percent:
+        # Size the shared y-axis from bins within ±30%; extreme low-power bins still plot but clip.
+        _set_ylim_from_inliers(axes[0][0], mean_vals)
+        _set_ylim_from_inliers(axes[1][0], sd_vals)
+    suffix = " (% of bin mean power)" if as_percent else ""
+    fig.suptitle(f"{data.test_wtg}: residual (actual - predicted) binned — shrinkage check{suffix}")
+    save_fig(fig, save_path)
+
+
+_INLIER_PCT = 30.0  # bins beyond ±this (% of power) don't get to blow up the shared y-axis
+
+
+def _set_ylim_from_inliers(ax: plt.Axes, value_arrays: list[np.ndarray]) -> None:
+    """Set ``ax`` y-limits from points within ±:data:`_INLIER_PCT`, with a small margin.
+
+    Outliers (e.g. tiny-power bins with huge % residuals) are still drawn but fall outside the
+    limits and clip, so the readable bulk is not crushed. No-op if there are no inliers.
+    """
+    if not value_arrays:
+        return
+    pooled = np.concatenate(value_arrays)
+    inliers = pooled[np.isfinite(pooled) & (np.abs(pooled) <= _INLIER_PCT)]
+    if inliers.size == 0:
+        return
+    lo, hi = float(inliers.min()), float(inliers.max())
+    margin = 0.05 * (hi - lo) if hi > lo else max(abs(hi), 1.0) * 0.05
+    ax.set_ylim(lo - margin, hi + margin)
+
+
+def _as_percent_of_power(stat: npt.ArrayLike, mean_power: npt.ArrayLike) -> np.ndarray:
+    """Express a per-bin kW statistic as a percentage of that bin's mean power (NaN where <= 0)."""
+    power = np.asarray(mean_power, dtype=float)
+    denom = np.where(power > 0, power, np.nan)
+    return 100.0 * np.asarray(stat, dtype=float) / denom
 
 
 def _plot_actual_vs_counterfactual_timeseries(plots_dir: Path, data: DiagnosticData) -> None:
