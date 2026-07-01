@@ -77,7 +77,7 @@ from benchmarking.harness import (
     plot_conditional_uplift,
     score_study,
 )
-from benchmarking.synthetic import HOT_COLUMNS
+from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
 logger = logging.getLogger(__name__)
@@ -160,6 +160,7 @@ def run_power_model(mode: str, out_dir: Path) -> pd.DataFrame:
             wind_speed_col=HOT_COLUMNS.wind_speed,
             availability_col=HOT_COLUMNS.availability,
             wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
+            baseline_rated_power_kw=HOT_RATED_POWER_KW,
             era5_hourly_df=context.reanalysis_datasets[0].data,
             out_dir=out_dir / "power_model_runs",
         )

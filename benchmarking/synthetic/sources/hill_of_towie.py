@@ -409,6 +409,10 @@ HOT_COLUMNS = ColumnSchema(
     availability=_TAG_AVAILABILITY,
 )
 
+# Baseline rated power of the Hill of Towie test turbines (kW); matches the synthetic generator's
+# baseline ``rated_power_kw`` default and caps the power-model counterfactual predictions.
+HOT_RATED_POWER_KW = 2300.0
+
 
 def _unpack_hot_10min_year(
     *,

@@ -42,7 +42,7 @@ from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import Method, StudyConfig, leaderboard, plot_campaign_curves, score_study
 from benchmarking.harness.example_hot_study import OracleMethod
-from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
+from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW, ConstantCpChange
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,7 @@ def run_toggle_study(
                 active_power_col=HOT_COLUMNS.active_power,
                 wind_speed_col=HOT_COLUMNS.wind_speed,
                 availability_col=HOT_COLUMNS.availability,
+                baseline_rated_power_kw=HOT_RATED_POWER_KW,
                 era5_hourly_df=context.reanalysis_datasets[0].data,
                 out_dir=out_dir / "power_model_runs",
             )
