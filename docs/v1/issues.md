@@ -133,6 +133,87 @@ its accuracy/precision appears in the leaderboard.
 
 ---
 
+## Issue 6 — Clip power_model predicted power to a sane range (power_model)
+
+**Goal:** stop the boosted counterfactual over/under-shooting the physically plausible
+range at the extremes — a small precision gain, especially in the fragile tail bins. Do
+this first: it is low-risk and serves as the simple test case for Issue 7.
+
+**Scope**
+- In `PowerModelMethod._fit_predict` (`benchmarking/baselines/power_model/method.py`),
+  clip every model prediction (the upgraded counterfactual *and* the baseline-holdout
+  prediction) to `[lower, upper]` with `lower = min(0, min(y_train))` and
+  `upper = max(rated_power_kw, max(y_train))`, where `y_train` is the fitted-on baseline
+  outcome. (Tree boosting sums trees, so predictions can slightly exceed the training
+  `y` range; the clip binds only at the extremes — expect a small effect.)
+- Add an optional `rated_power_kw: float | None = None` config field; when `None` the
+  upper bound is just `max(y_train)`. HoT rated = 2300 kW.
+- Keep it a pure post-prediction transform so overall and conditional both use clipped
+  predictions consistently.
+
+**Done when:** predictions are bounded; existing recovery/placebo tests still pass; a
+unit test on the clip helper confirms out-of-range predictions are pulled to the bounds
+and in-range ones are untouched.
+
+---
+
+## Issue 7 — Confirm the improvement-evaluation workflow surfaces what's needed (power_model)
+
+**Goal:** before the larger bias-correction work, prove that
+`study_power_model_compare.py` gives the information needed to judge a power_model change
+— using the Issue 6 clip as the first, simple test case.
+
+**Scope**
+- Run `benchmarking/baselines/study_power_model_compare.py` (power_model vs frozen
+  v0/naive, 3-method plots) on the clipped power_model.
+- Confirm it reports, side-by-side and legibly, both **overall** P50 error and the
+  **per-condition** (ws & TI) recovered-vs-truth curves for the `ti_dependent_cp` /
+  `ws_dependent_cp` hard cases — enough to see whether a change helped, hurt, or was
+  neutral, overall and per bin.
+- If a needed view is missing (e.g. a corrected-vs-current conditional overlay against
+  truth, or a per-bin error table), add the minimal reporting to the study/inspect
+  scripts so Issue 8 can be evaluated the same way.
+
+**Done when:** a single command produces the overall + per-condition comparison for the
+clip change, and the improvement is readable from it without ad-hoc digging.
+
+---
+
+## Issue 8 — Cross-prediction bias-cancellation for shrinkage-driven conditional bias (power_model)
+
+**Goal:** remove the counterfactual model's conditional (shrinkage) bias — the F5 root
+cause — by cancelling it between two symmetric train/predict directions on weather-matched
+data. Applies to both the overall and per-condition estimates.
+
+**Scope**
+- **Matching-variable analysis (one-off, do first).** On Hill of Towie, run a feature-
+  importance analysis to choose which ERA5 variables to match on (likely wind speed +
+  direction, possibly more). Record the chosen set + rationale in `docs/v1/findings.md`
+  and hard-code it as the default matching set. ERA5 is preferred for its full coverage
+  and temporal stability; the set may later be tuned per wind farm.
+- **ERA5 coarsened-exact matching (CEM).** New utility: bin baseline vs upgraded rows on
+  the chosen (synced) ERA5 variables; within each cell subsample the larger side to the
+  smaller side's count (seeded); drop one-sided cells. Yields equal-count, weather-matched
+  baseline/upgraded sets. The matching axis (ERA5) is distinct from the reporting/binning
+  axis (test-turbine ws/TI, kept as today so bins match ground truth).
+- **Two directions + geometric combine.** Forward: train on matched baseline, predict
+  matched upgraded → `r_fwd` (overall and per bin via `energy_ratio_by_bin`). Reverse:
+  train on matched upgraded, predict matched baseline → `r_rev`. Combine
+  `uplift = sqrt((1+r_fwd)/(1+r_rev)) − 1` (exact under a common per-bin multiplicative
+  shrinkage); also emit implied bias `1/sqrt((1+r_fwd)(1+r_rev))` as a diagnostic. Guard
+  non-positive `(1+r)` and empty/sparse bins.
+- **Opt-in flag** (e.g. `bias_correct: bool = False`) so the corrected overall +
+  conditional can be A/B'd against current behaviour before any default flips.
+- Reuse the existing outcome model factory (`make_outcome_model`) and `CONDITION_BINS`;
+  extend diagnostics to overlay corrected vs current conditional curves against truth.
+
+**Done when:** with the flag on, `study_power_model_compare.py` (Issue 7) shows the
+`ti_dependent_cp` / `ws_dependent_cp` conditional curves materially flatter toward truth
+and the overall P50 no worse than today; a regression test recovers a known condition-
+dependent uplift more accurately with correction on than off; findings.md updated.
+
+---
+
 ## Not in the first wave (tracked for later phases)
 
 - Uncertainty / P95 model: block bootstrap, conformal OOD, density-ratio long-term
