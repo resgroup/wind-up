@@ -401,7 +401,8 @@ def _binned_stats(
 def _power_bin_edges(*arrays: np.ndarray | None, n_bins: int = _RESID_POWER_BINS) -> np.ndarray:
     """Equal-width power-bin edges from 0 to the robust (99th-pct) max across the given arrays."""
     present = [np.asarray(a, dtype=float) for a in arrays if a is not None and len(a)]
-    finite = np.concatenate(present)[np.isfinite(np.concatenate(present))] if present else np.array([])
+    combined = np.concatenate(present) if present else np.array([])
+    finite = combined[np.isfinite(combined)]
     hi = float(np.nanpercentile(finite, 99)) if finite.size else 1.0
     if not np.isfinite(hi) or hi <= 0:
         hi = 1.0
