@@ -17,6 +17,7 @@ from benchmarking.baselines.study_power_model_compare import (
     _conditional_plot_subset,
     _load_baseline_cells,
     _overlay_frame,
+    _select_profiles,
     _tally,
     conditional_before_after,
     conditional_before_after_table,
@@ -280,6 +281,22 @@ def test_conditional_before_after_no_baseline_is_noop(tmp_path: Path) -> None:
     # No baseline file -> warn and return without writing anything (mirrors compare_to_benchmark).
     conditional_before_after("prepost", _fresh_results(), tmp_path / "missing.json", comparison_dir)
     assert not list(comparison_dir.iterdir())
+
+
+def test_select_profiles_none_returns_all() -> None:
+    selected = _select_profiles(None)
+    assert "cp_0pct" in selected
+    assert len(selected) == 7  # the full overnight set
+
+
+def test_select_profiles_restricts_and_preserves_order() -> None:
+    selected = _select_profiles(["cp_0pct"])
+    assert list(selected) == ["cp_0pct"]
+
+
+def test_select_profiles_rejects_unknown_name() -> None:
+    with pytest.raises(ValueError, match="unknown profile"):
+        _select_profiles(["cp_0pct", "not_a_profile"])
 
 
 def test_tally_uses_pp_band_in_fractional_form() -> None:

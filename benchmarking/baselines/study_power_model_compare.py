@@ -45,10 +45,12 @@ Run from the repo root::
     uv run python -m benchmarking.baselines.study_power_model_compare \
         --reference-dir "~/temp/wind-up-benchmarking/badass overnight runs 30 June"
 
-Use ``--skip-run`` to only re-merge/re-plot (and re-diff the benchmark) from a previous
-``power_model`` run under ``--output-dir`` (e.g. to tweak plotting without re-fitting). Use
-``--modes prepost`` / ``--modes toggle`` to restrict to one mode. Use ``--update-baseline`` to
-re-record the benchmark from the current run.
+For fast feedback on a power_model change, restrict to one mode and one profile — e.g.
+``--modes prepost --profiles cp_0pct`` fits a single case in ~minutes (vs ~30 for the full sweep) and
+still emits its overall + per-bin before/after view. Use ``--skip-run`` to only re-merge/re-plot (and
+re-diff the benchmark) from a previous ``power_model`` run under ``--output-dir`` (e.g. to tweak
+plotting without re-fitting). Use ``--update-baseline`` to re-record the benchmark from the current
+run (needs the full profile set — it cannot be combined with ``--profiles``).
 """
 
 from __future__ import annotations
@@ -152,13 +154,30 @@ def _toggle_study() -> StudyConfig:
     )
 
 
-def run_power_model(mode: str, out_dir: Path) -> pd.DataFrame:
+def _select_profiles(requested: list[str] | None) -> dict[str, list]:
+    """Return the overnight profiles to score: all when ``requested`` is ``None``, else the named subset.
+
+    A subset (e.g. ``["cp_0pct"]``) gives fast iteration on a power_model change — one case in ~minutes
+    rather than the whole ~30-minute sweep. Unknown names fail loudly rather than silently scoring less.
+    """
+    all_profiles = overnight_profiles()
+    if requested is None:
+        return all_profiles
+    unknown = [name for name in requested if name not in all_profiles]
+    if unknown:
+        msg = f"unknown profile(s) {unknown}; available: {sorted(all_profiles)}"
+        raise ValueError(msg)
+    return {name: all_profiles[name] for name in requested}
+
+
+def run_power_model(mode: str, out_dir: Path, *, profiles: list[str] | None = None) -> pd.DataFrame:
     """Score **only** ``power_model`` over the overnight cases for one mode (no v0/naive/oracle).
 
-    Each fresh row still carries the harness's method-independent ground ``truth`` (so the merge's
-    alignment guard has its cross-check without recomputing any anchor). Writes a per-profile
-    ``results_*.csv`` and per-profile ``power_model`` curve under ``out_dir`` (the latter lets a long
-    run be sanity-checked profile-by-profile), and returns the concatenated tidy results.
+    ``profiles`` restricts to a subset of :func:`overnight_profiles` (default: all) for fast feedback on
+    a power_model change. Each fresh row still carries the harness's method-independent ground ``truth``
+    (so the merge's alignment guard has its cross-check without recomputing any anchor). Writes a
+    per-profile ``results_*.csv`` and per-profile ``power_model`` curve under ``out_dir`` (the latter
+    lets a long run be sanity-checked profile-by-profile), and returns the concatenated tidy results.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     scada_df, _ = load_hot_scada(
@@ -171,7 +190,7 @@ def run_power_model(mode: str, out_dir: Path) -> pd.DataFrame:
     study = _prepost_study() if mode == "prepost" else _toggle_study()
 
     all_results = []
-    for profile_name, profile in overnight_profiles().items():
+    for profile_name, profile in _select_profiles(profiles).items():
         method = PowerModelMethod(
             active_power_col=HOT_COLUMNS.active_power,
             wind_speed_col=HOT_COLUMNS.wind_speed,
@@ -497,6 +516,7 @@ def compare_to_benchmark(mode: str, lb: pd.DataFrame, baseline_path: Path, compa
         )
         return
     base, prov = loaded
+    base = base[base["profile"].isin(lb["profile"].unique())]  # scope to the profiles actually run
     merge_keys = ["profile", "campaign_months", "condition", "condition_bin"]
     merged = lb.merge(base, on=merge_keys, how="outer", suffixes=("", "_base"))
     for col in _METRIC_COLS:
@@ -630,6 +650,14 @@ def main() -> None:
         help="which mode(s) to run (default: both)",
     )
     parser.add_argument(
+        "--profiles",
+        nargs="+",
+        choices=sorted(overnight_profiles()),
+        default=None,
+        help="restrict to a subset of overnight profiles for fast feedback (default: all seven). "
+        "e.g. --profiles cp_0pct runs just the placebo. Cannot be combined with --update-baseline.",
+    )
+    parser.add_argument(
         "--skip-run",
         action="store_true",
         help="reuse a previous power_model run under --output-dir; only re-merge and re-plot",
@@ -647,6 +675,10 @@ def main() -> None:
         "only when an improvement is accepted); without it, the run is diffed against the benchmark",
     )
     args = parser.parse_args()
+    if args.profiles is not None and args.update_baseline:
+        # record_baseline rewrites a mode's cells wholesale, so a subset run would drop the other
+        # profiles from the committed benchmark. Refuse rather than silently corrupt it.
+        parser.error("--update-baseline needs the full profile set; do not combine it with --profiles")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
     reference_dir = args.reference_dir.expanduser()
@@ -660,9 +692,11 @@ def main() -> None:
         mode_out_dir = output_dir / mode
         if args.skip_run:
             fresh = _load_fresh_results(mode_out_dir)
+            if args.profiles is not None:
+                fresh = fresh[fresh["profile"].isin(args.profiles)]
             logger.info("Reusing %d fresh rows from %s", len(fresh), mode_out_dir)
         else:
-            fresh = run_power_model(mode, mode_out_dir)
+            fresh = run_power_model(mode, mode_out_dir, profiles=args.profiles)
         merge_and_plot(mode, fresh, reference_dir / mode, mode_out_dir)
         lb_by_mode[mode] = power_model_leaderboard(fresh)
         study_by_mode[mode] = _prepost_study() if mode == "prepost" else _toggle_study()
