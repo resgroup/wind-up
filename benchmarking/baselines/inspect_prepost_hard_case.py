@@ -60,7 +60,7 @@ from benchmarking.harness import (
     treated_activity_mask,
     window_row_mask,
 )
-from benchmarking.synthetic import HOT_COLUMNS
+from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
 if TYPE_CHECKING:
@@ -167,6 +167,7 @@ def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
             wind_speed_col=HOT_COLUMNS.wind_speed,
             wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
             availability_col=HOT_COLUMNS.availability,
+            baseline_rated_power_kw=HOT_RATED_POWER_KW,
             era5_hourly_df=context.reanalysis_datasets[0].data,
             out_dir=out_dir / "power_model",
             save_plots=True,
@@ -214,6 +215,7 @@ def _plot_conditional_uplift(
         wind_speed_col=HOT_COLUMNS.wind_speed,
         wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
         availability_col=HOT_COLUMNS.availability,
+        baseline_rated_power_kw=HOT_RATED_POWER_KW,
         era5_hourly_df=context.reanalysis_datasets[0].data,
         out_dir=out_dir / "power_model_conditional",
     )

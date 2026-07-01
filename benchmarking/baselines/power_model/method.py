@@ -69,6 +69,20 @@ def _upgrade_start(upgrade_timing: pd.Timestamp | ToggleSchedule, index: pd.Date
     return pd.Timestamp(upgrade_timing)
 
 
+def _clip_predictions(pred: np.ndarray, *, y_train: np.ndarray, rated_power_kw: float) -> np.ndarray:
+    """Clip boosted predictions to the physically plausible range of the fitted-on outcome.
+
+    Tree boosting sums trees, so a prediction can drift slightly past the training ``y`` range; the
+    clip binds only at those extremes. ``lower = min(0, min(y_train))`` floors at 0 for non-negative
+    training data but never pulls a genuinely-negative observation up; ``upper`` is the rated ceiling
+    but never below the largest observed training outcome. ``y_train`` is the outcome of the rows the
+    predicting model was fitted on; ``rated_power_kw`` is that turbine's rating for those rows.
+    """
+    lower = min(0.0, float(np.min(y_train)))
+    upper = max(float(rated_power_kw), float(np.max(y_train)))
+    return np.clip(pred, lower, upper)
+
+
 @dataclass
 class PowerModelMethod:
     """Pluggable counterfactual power-model uplift estimator (prepost and toggle).
@@ -77,6 +91,10 @@ class PowerModelMethod:
         reference active-power feature)
     :param availability_col: **required** "ready to operate" counter; drives the test-turbine
         downtime filter and is itself a reference feature (whether a reference is waking)
+    :param baseline_rated_power_kw: **required** rated power of the turbine over the data the model is
+        fitted on — today every fit is on baseline rows, so this is the baseline rating. It caps the
+        clipped counterfactual predictions. (A future cross-predict direction that trains on upgraded
+        data would need the upgraded rating; that is out of scope here.)
     :param wind_speed_col: the wind-speed tag; the reference mean feeds the ERA5 lag sync and the
         stuck-filter calm exemption. Required if ``era5_hourly_df`` is given.
     :param era5_hourly_df: optional raw hourly ERA5 (Open-Meteo columns); added as features when given
@@ -94,6 +112,7 @@ class PowerModelMethod:
 
     active_power_col: str
     availability_col: str
+    baseline_rated_power_kw: float
     wind_speed_col: str | None = None
     wind_speed_sd_col: str | None = None
     era5_hourly_df: pd.DataFrame | None = None
@@ -247,7 +266,9 @@ class PowerModelMethod:
 
         final = self._make_model()
         final.fit(x_base, y_base)
-        pred_up = np.asarray(final.predict(x_up), dtype=float)
+        pred_up = _clip_predictions(
+            np.asarray(final.predict(x_up), dtype=float), y_train=y_base, rated_power_kw=self.baseline_rated_power_kw
+        )
         return {
             "model": final,
             "pred_upgraded": pred_up,
@@ -285,7 +306,12 @@ class PowerModelMethod:
         if n < _MIN_HOLDOUT_ROWS:
             model = self._make_model()
             model.fit(x_base, y_base)
-            return y_base, np.asarray(model.predict(x_base), dtype=float), np.arange(n)
+            pred = _clip_predictions(
+                np.asarray(model.predict(x_base), dtype=float),
+                y_train=y_base,
+                rated_power_kw=self.baseline_rated_power_kw,
+            )
+            return y_base, pred, np.arange(n)
         rng = np.random.default_rng(self.seed)
         order = rng.permutation(n)
         n_valid = n // 5
@@ -293,7 +319,11 @@ class PowerModelMethod:
         train_idx = order[n_valid:]
         model = self._make_model()
         model.fit(x_base.iloc[train_idx], y_base[train_idx])
-        pred_valid = np.asarray(model.predict(x_base.iloc[valid_idx]), dtype=float)
+        pred_valid = _clip_predictions(
+            np.asarray(model.predict(x_base.iloc[valid_idx]), dtype=float),
+            y_train=y_base[train_idx],
+            rated_power_kw=self.baseline_rated_power_kw,
+        )
         return y_base[valid_idx], pred_valid, valid_idx
 
     def _write(
@@ -405,6 +435,7 @@ class PowerModelMethod:
         return {
             "active_power_col": self.active_power_col,
             "availability_col": self.availability_col,
+            "baseline_rated_power_kw": self.baseline_rated_power_kw,
             "wind_speed_col": self.wind_speed_col,
             "wind_speed_sd_col": self.wind_speed_sd_col,
             "seed": self.seed,

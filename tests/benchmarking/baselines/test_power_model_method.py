@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from benchmarking.baselines.power_model import PowerModelMethod
+from benchmarking.baselines.power_model.method import _clip_predictions
 from benchmarking.harness.method import MethodInput
 from benchmarking.synthetic import ToggleSchedule
 
@@ -62,7 +63,11 @@ class TestRecovery:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER, availability_col=_AVAIL, wind_speed_col=_WS, model_params=_FAST_PARAMS
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         out = method.estimate(mi)
@@ -75,7 +80,11 @@ class TestRecovery:
         treated = np.asarray((((idx - idx.min()) // (schedule.period / 2)).astype(int) % 2) == 1)
         scada = _toy_scada(n, uplift=0.04, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER, availability_col=_AVAIL, wind_speed_col=_WS, model_params=_FAST_PARAMS
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
         out = method.estimate(mi)
@@ -88,7 +97,11 @@ class TestRecovery:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.0, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER, availability_col=_AVAIL, wind_speed_col=_WS, model_params=_FAST_PARAMS
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         out = method.estimate(mi)
@@ -104,6 +117,7 @@ class TestConfigGuards:
         method = PowerModelMethod(
             active_power_col=_POWER,
             availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
             wind_speed_col="not_a_real_column",
             era5_hourly_df=pd.DataFrame({"wind_speed_100m": [1.0]}),
         )
@@ -120,7 +134,11 @@ class TestReferenceOnly:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER, availability_col=_AVAIL, wind_speed_col=_WS, model_params=_FAST_PARAMS
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         baseline = method.estimate(mi).p50_overall
@@ -136,6 +154,28 @@ class TestReferenceOnly:
         assert with_leak == pytest.approx(baseline, abs=1e-9)
 
 
+class TestClipPredictions:
+    def test_out_of_range_pulled_to_bounds_in_range_untouched(self) -> None:
+        # lower = min(0, 0) = 0; upper = max(2300, 1000) = 2300
+        pred = np.array([-50.0, 500.0, 1500.0, 2400.0])
+        clipped = _clip_predictions(pred, y_train=np.array([0.0, 500.0, 1000.0]), rated_power_kw=2300.0)
+        assert clipped.tolist() == [0.0, 500.0, 1500.0, 2300.0]
+
+    def test_upper_bound_is_max_of_rated_and_train(self) -> None:
+        # an observed outcome above rated raises the ceiling above rated_power_kw
+        clipped = _clip_predictions(np.array([3000.0]), y_train=np.array([0.0, 2500.0]), rated_power_kw=2300.0)
+        assert clipped.tolist() == [2500.0]
+
+    def test_floors_at_zero_for_nonnegative_training_data(self) -> None:
+        clipped = _clip_predictions(np.array([-5.0]), y_train=np.array([10.0, 100.0]), rated_power_kw=2300.0)
+        assert clipped.tolist() == [0.0]
+
+    def test_lower_bound_allows_negative_training_data(self) -> None:
+        # min(0, min(y_train)) never clips a genuinely-negative observation up to 0
+        clipped = _clip_predictions(np.array([-100.0]), y_train=np.array([-30.0, 100.0]), rated_power_kw=2300.0)
+        assert clipped.tolist() == [-30.0]
+
+
 class TestConditionalUplift:
     def test_emits_conditional_uplift_by_ws_and_ti(self) -> None:
         n = 4000
@@ -146,6 +186,7 @@ class TestConditionalUplift:
         method = PowerModelMethod(
             active_power_col=_POWER,
             availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
             wind_speed_sd_col=_WS_SD,
             model_params=_FAST_PARAMS,
@@ -163,7 +204,11 @@ class TestConditionalUplift:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER, availability_col=_AVAIL, wind_speed_col=_WS, model_params=_FAST_PARAMS
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         out = method.estimate(mi)

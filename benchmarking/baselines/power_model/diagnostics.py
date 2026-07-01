@@ -409,9 +409,7 @@ def _power_bin_edges(*arrays: np.ndarray | None, n_bins: int = _RESID_POWER_BINS
     return np.linspace(0.0, hi, n_bins + 1)
 
 
-def _axis_values(
-    kind: str, actual: np.ndarray, predicted: np.ndarray, cond: pd.DataFrame | None
-) -> np.ndarray | None:
+def _axis_values(kind: str, actual: np.ndarray, predicted: np.ndarray, cond: pd.DataFrame | None) -> np.ndarray | None:
     """Binning-axis values for one segment: power axes from actual/predicted, ws/TI from ``cond``."""
     if kind == "actual":
         return np.asarray(actual, dtype=float)
@@ -451,9 +449,7 @@ def _residual_binned_figure(save_path: Path, data: DiagnosticData, *, as_percent
         ("baseline (held-out)", data.y_baseline_valid, data.pred_baseline_valid, data.cond_baseline_valid, "C0"),
         ("upgraded", data.y_upgraded, data.pred_upgraded, data.cond_upgraded, "C1"),
     ]
-    power_edges = _power_bin_edges(
-        data.y_baseline_valid, data.pred_baseline_valid, data.y_upgraded, data.pred_upgraded
-    )
+    power_edges = _power_bin_edges(data.y_baseline_valid, data.pred_baseline_valid, data.y_upgraded, data.pred_upgraded)
     # (axis kind, bin edges, x-axis label); ``_axis_values`` resolves the kind per segment
     specs: list[tuple[str, np.ndarray, str]] = [
         ("actual", power_edges, "actual power [kW]"),
