@@ -375,6 +375,7 @@ def accept_candidate(candidate_path: Path, baseline_path: Path) -> None:
     if schema != _BASELINE_SCHEMA:
         msg = f"candidate {candidate_path} has schema {schema!r}, expected {_BASELINE_SCHEMA!r}; regenerate it."
         raise ValueError(msg)
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
     baseline_path.write_text(text)
     logger.info(
         "Promoted candidate %s -> committed baseline %s (modes %s). Commit the new JSON.",
@@ -588,7 +589,10 @@ def compare_to_benchmark(mode: str, lb: pd.DataFrame, baseline_path: Path, compa
             "Δscore": table["d_score"] * _PP,
         }
     ).round(3)
-    n_cells = int(merged[_METRIC_COLS].notna().all(axis=1).sum())
+    # Only rows where both fresh and benchmark metrics are present can contribute to the tallies
+    # (outer-merge leaves NaN deltas otherwise), so count those to keep "(of N)" consistent.
+    metric_cols = _METRIC_COLS + [f"{col}_base" for col in _METRIC_COLS]
+    n_cells = int(merged[metric_cols].notna().all(axis=1).sum())
     threshold = _MATERIAL_PP / _PP  # tally works on fractional deltas; the band is defined in pp.
 
     logger.info(

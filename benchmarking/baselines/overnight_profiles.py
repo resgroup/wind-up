@@ -12,13 +12,12 @@ sign, magnitude and shape:
 from __future__ import annotations
 
 from benchmarking.synthetic import (
+    HOT_RATED_POWER_KW,
     ConditionCpChange,
     ConstantCpChange,
     RatedPowerChange,
     WindSpeedCpChange,
 )
-
-HOT_RATED_POWER_KW = 2300.0
 
 
 def overnight_profiles() -> dict[str, list]:
