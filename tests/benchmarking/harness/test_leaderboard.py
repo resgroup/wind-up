@@ -7,7 +7,7 @@ import math
 import pandas as pd
 import pytest
 
-from benchmarking.harness.leaderboard import leaderboard
+from benchmarking.harness.leaderboard import conditional_leaderboard, leaderboard
 
 
 def _results(rows: list[dict]) -> pd.DataFrame:
@@ -94,3 +94,48 @@ def test_methods_are_compared_side_by_side() -> None:
     by_method = summary.set_index("method")
     assert by_method.loc["a", "score"] == pytest.approx(0.0)
     assert by_method.loc["b", "score"] == pytest.approx(0.1)
+
+
+def test_conditional_leaderboard_groups_by_condition_bin() -> None:
+    df = pd.DataFrame(
+        {
+            "method": "m",
+            "profile": "p",
+            "campaign_months": 6,
+            "condition": ["ws", "ws", "ws", "ws"],
+            "condition_bin": ["(6.0, 8.0]", "(6.0, 8.0]", "(8.0, 10.0]", "(8.0, 10.0]"],
+            "estimate": [0.11, 0.09, 0.05, 0.05],
+            "truth": [0.10, 0.10, 0.05, 0.05],
+            "signed_error": [0.01, -0.01, 0.0, 0.0],
+        }
+    )
+    lb = conditional_leaderboard(df)
+    assert set(lb.columns) >= {
+        "method",
+        "profile",
+        "campaign_months",
+        "condition",
+        "condition_bin",
+        "bias",
+        "spread",
+        "score",
+    }
+    row = lb[lb["condition_bin"] == "(6.0, 8.0]"].iloc[0]
+    assert row["bias"] == 0.0
+    assert row["spread"] == pytest.approx(0.01)
+
+
+def test_conditional_leaderboard_ignores_overall_rows() -> None:
+    df = pd.DataFrame(
+        {
+            "method": "m",
+            "profile": "p",
+            "campaign_months": 6,
+            "condition": ["overall"],
+            "condition_bin": ["overall"],
+            "estimate": [0.1],
+            "truth": [0.1],
+            "signed_error": [0.0],
+        }
+    )
+    assert conditional_leaderboard(df).empty

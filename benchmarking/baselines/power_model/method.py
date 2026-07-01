@@ -37,9 +37,11 @@ from benchmarking.baselines.power_model.features import (
     era5_feature_frame,
     extract_outcome,
     reference_mean_wind_speed,
+    test_condition_signals,
 )
 from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 from benchmarking.diagnostics import DiagnosticContext, write_common_diagnostics, write_run_config
+from benchmarking.harness.conditions import CONDITION_BINS, energy_ratio_by_bin
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
 
@@ -93,6 +95,7 @@ class PowerModelMethod:
     active_power_col: str
     availability_col: str
     wind_speed_col: str | None = None
+    wind_speed_sd_col: str | None = None
     era5_hourly_df: pd.DataFrame | None = None
     columns: ColumnSchema = HOT_COLUMNS
     name: str = "power_model"
@@ -148,6 +151,22 @@ class PowerModelMethod:
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
 
+        by_condition: pd.DataFrame | None = None
+        cond_upgraded: pd.DataFrame | None = None
+        cond_baseline_valid: pd.DataFrame | None = None
+        if self.wind_speed_col is not None:
+            conditions = test_condition_signals(
+                scada,
+                test_wtg=mi.test_wtg,
+                turbine_col=mi.turbine_col,
+                wind_speed_col=self.wind_speed_col,
+                wind_speed_sd_col=self.wind_speed_sd_col,
+            )
+            by_condition = self._conditional_uplift(conditions, upgraded_sel=upgraded_sel, fit=fit)
+            # ws/TI for each segment's residuals, row-aligned to the fit arrays for the diagnostics.
+            cond_upgraded = conditions.iloc[upgraded_sel].reset_index(drop=True)
+            cond_baseline_valid = conditions.iloc[fit["baseline_valid_pos"]].reset_index(drop=True)
+
         self._write(
             mi,
             index=index,
@@ -163,8 +182,10 @@ class PowerModelMethod:
             sum_counter=sum_counter,
             n_refs=n_refs,
             era5=era5,
+            cond_upgraded=cond_upgraded,
+            cond_baseline_valid=cond_baseline_valid,
         )
-        return MethodOutput(p50_overall=uplift)
+        return MethodOutput(p50_overall=uplift, p50_by_condition=by_condition)
 
     def _add_era5(
         self,
@@ -221,7 +242,8 @@ class PowerModelMethod:
         x_up = features.iloc[upgraded_sel]
         y_up = y[upgraded_sel]
 
-        y_valid, pred_valid = self._holdout_fit(x_base, y_base)
+        y_valid, pred_valid, valid_local = self._holdout_fit(x_base, y_base)
+        baseline_valid_pos = np.flatnonzero(baseline_sel)[valid_local]
 
         final = self._make_model()
         final.fit(x_base, y_base)
@@ -232,19 +254,38 @@ class PowerModelMethod:
             "y_upgraded": y_up,
             "y_baseline_valid": y_valid,
             "pred_baseline_valid": pred_valid,
+            "baseline_valid_pos": baseline_valid_pos,  # positions over ``index`` of the held-out rows
         }
+
+    def _conditional_uplift(
+        self, conditions: pd.DataFrame, *, upgraded_sel: np.ndarray, fit: dict[str, Any]
+    ) -> pd.DataFrame | None:
+        """Reduce the upgraded actual/counterfactual ledger to per-bin energy-ratio uplift."""
+        cond_up = conditions.iloc[upgraded_sel]
+        actual = fit["y_upgraded"]
+        counterfactual = fit["pred_upgraded"]
+        frames = []
+        for name in [c for c in ("ws", "ti") if c in cond_up.columns]:
+            table = energy_ratio_by_bin(cond_up[name].to_numpy(), actual, counterfactual, bins=CONDITION_BINS[name])
+            table.insert(0, "condition", name)
+            frames.append(table[["condition", "condition_bin", "p50_uplift"]])
+        return pd.concat(frames, ignore_index=True) if frames else None
 
     def _make_model(self) -> Any:  # noqa: ANN401
         """Outcome model with ``seed`` plumbed into LightGBM's ``random_state`` (caller overrides win)."""
         return make_outcome_model(**{"random_state": self.seed, **self.model_params})
 
-    def _holdout_fit(self, x_base: pd.DataFrame, y_base: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Train on a baseline train split, predict a held-out baseline slice (honest fit quality)."""
+    def _holdout_fit(self, x_base: pd.DataFrame, y_base: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Train on a baseline train split, predict a held-out baseline slice (honest fit quality).
+
+        Also returns the held-out rows' positions **within the baseline block** so the caller can
+        line the residuals up with their conditions (ws/TI) for the diagnostics.
+        """
         n = len(y_base)
         if n < _MIN_HOLDOUT_ROWS:
             model = self._make_model()
             model.fit(x_base, y_base)
-            return y_base, np.asarray(model.predict(x_base), dtype=float)
+            return y_base, np.asarray(model.predict(x_base), dtype=float), np.arange(n)
         rng = np.random.default_rng(self.seed)
         order = rng.permutation(n)
         n_valid = n // 5
@@ -253,7 +294,7 @@ class PowerModelMethod:
         model = self._make_model()
         model.fit(x_base.iloc[train_idx], y_base[train_idx])
         pred_valid = np.asarray(model.predict(x_base.iloc[valid_idx]), dtype=float)
-        return y_base[valid_idx], pred_valid
+        return y_base[valid_idx], pred_valid, valid_idx
 
     def _write(
         self,
@@ -272,6 +313,8 @@ class PowerModelMethod:
         sum_counter: float,
         n_refs: int,
         era5: Any,  # noqa: ANN401
+        cond_upgraded: pd.DataFrame | None = None,
+        cond_baseline_valid: pd.DataFrame | None = None,
     ) -> None:
         """Assemble the diagnostic data and write the CSVs (+ plots), logging the top features."""
         upgrade_start = _upgrade_start(mi.upgrade_timing, index)
@@ -306,6 +349,8 @@ class PowerModelMethod:
             era5_lag_rows=era5.best_lag_rows if era5 is not None else None,
             era5_corr=era5.best_corr if era5 is not None else None,
             era5_sweep=era5.sweep if era5 is not None else None,
+            cond_upgraded=cond_upgraded,
+            cond_baseline_valid=cond_baseline_valid,
         )
         importance = diag.write_csvs(run_dir, run_name, ts, data)
         diag.log_top_features(importance)
@@ -361,6 +406,7 @@ class PowerModelMethod:
             "active_power_col": self.active_power_col,
             "availability_col": self.availability_col,
             "wind_speed_col": self.wind_speed_col,
+            "wind_speed_sd_col": self.wind_speed_sd_col,
             "seed": self.seed,
             "toggle_campaign_only": self.toggle_campaign_only,
             "has_era5": self.era5_hourly_df is not None,

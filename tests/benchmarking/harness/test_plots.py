@@ -8,9 +8,10 @@ import matplotlib as mpl
 
 mpl.use("Agg")  # headless: no display needed for tests
 
+import matplotlib.pyplot as plt
 import pandas as pd
 
-from benchmarking.harness.plots import plot_campaign_curves
+from benchmarking.harness.plots import plot_campaign_curves, plot_conditional_uplift
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -91,3 +92,21 @@ def test_saves_file(tmp_path: Path) -> None:
     plot_campaign_curves(_summary(), save_path=save_path)
     assert save_path.exists()
     assert save_path.stat().st_size > 0
+
+
+def test_plot_conditional_uplift_writes_png(tmp_path: Path) -> None:
+    summary = pd.DataFrame(
+        {
+            "method": ["power_model", "power_model"],
+            "condition": ["ws", "ws"],
+            "condition_bin": ["(4.0, 6.0]", "(6.0, 8.0]"],
+            "mean_estimate": [0.09, 0.05],
+            "mean_truth": [0.10, 0.05],
+            "bias": [-0.01, 0.0],
+            "spread": [0.01, 0.005],
+        }
+    )
+    out = tmp_path / "cond.png"
+    fig = plot_conditional_uplift(summary, condition="ws", save_path=out, title="ws_dependent_cp 6mo")
+    assert out.exists()
+    plt.close(fig)

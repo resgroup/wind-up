@@ -92,7 +92,7 @@ def inspect_prepost_feature_ablation() -> pd.DataFrame:
         wtg_numbers=DEFAULT_WTG_NUMBERS,
         wtg_names=DEFAULT_TURBINE_SUBSET,
     )
-    _rep, mi, truth = _pin_case(
+    _rep, mi, truth, _window = _pin_case(
         scada_df,
         study=study,
         profile_name=DEFAULT_PROFILE,

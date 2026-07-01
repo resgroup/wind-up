@@ -10,7 +10,7 @@ from benchmarking.harness.scoring import score_study
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.constants import TIMESTAMP_COL
 
-from .stubs import BiasedMethod, OracleMethod, RecordingMethod
+from .stubs import BiasedMethod, ConditionalOracleMethod, OracleMethod, RecordingMethod
 
 PROFILE = [ConstantCpChange(delta=0.05)]
 
@@ -180,3 +180,23 @@ def test_on_method_complete_is_optional() -> None:
     # anything else.
     drop = ["wall_time_s"]
     pd.testing.assert_frame_equal(with_cb.drop(columns=drop), without_cb.drop(columns=drop))
+
+
+def test_conditional_rows_are_emitted_with_truth_and_near_zero_error() -> None:
+    base = _base_scada()
+    results = score_study(base, profile=PROFILE, methods=[ConditionalOracleMethod(base)], study=_study(n_replicates=1))
+    assert "condition_bin" in results.columns
+    overall = results[results["condition"] == "overall"]
+    assert (overall["condition_bin"] == "overall").all()
+    cond = results[results["condition"].isin(["ws", "ti"])]
+    assert set(cond["condition"]) == {"ws", "ti"}
+    # populated bins: a per-bin oracle must match per-bin truth
+    populated = cond[cond["truth"].notna() & cond["estimate"].notna()]
+    assert len(populated) > 0
+    assert np.allclose(populated["signed_error"].to_numpy(), 0.0, atol=1e-9)
+
+
+def test_overall_only_method_emits_no_conditional_rows() -> None:
+    base = _base_scada()
+    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1))
+    assert set(results["condition"]) == {"overall"}

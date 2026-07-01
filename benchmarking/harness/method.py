@@ -44,8 +44,9 @@ class MethodOutput:
     """A method's P50 uplift estimate.
 
     :param p50_overall: overall P50 uplift (energy-ratio fraction)
-    :param p50_by_condition: optional per-condition estimates (columns ``condition_bin``,
-        ``p50_uplift``); ``None`` when the method produces only an overall number
+    :param p50_by_condition: optional per-condition estimates (columns ``condition``,
+        ``condition_bin``, ``p50_uplift``); ``condition`` ∈ {"ws","ti"}; ``None`` when the
+        method produces only an overall number
     """
 
     p50_overall: float

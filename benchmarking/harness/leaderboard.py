@@ -12,6 +12,7 @@ import pandas as pd
 from benchmarking.harness.metrics import summarize_errors
 
 _GROUP_KEYS = ["method", "profile", "campaign_months"]
+_CONDITION_GROUP_KEYS = ["method", "profile", "campaign_months", "condition", "condition_bin"]
 
 
 def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
@@ -55,4 +56,33 @@ def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
         "wall_time_s_sum",
         "wall_time_s_mean",
     ]
+    return pd.DataFrame(records, columns=columns)
+
+
+def conditional_leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
+    """Per-(method, profile, campaign, condition, bin) bias/spread/score over the conditional rows.
+
+    Only per-condition rows (``condition`` in ["ws", "ti"]) are summarised; overall rows
+    (``condition == "overall"``) are excluded. Returns one row per group with ``bias``,
+    ``spread``, ``score``, the mean recovered and true uplift (``mean_estimate`` /
+    ``mean_truth``, when those columns are present in the input), and ``n_replicates``,
+    sorted by method, profile, campaign length, condition, then condition_bin.
+    """
+    cond = results_df[results_df["condition"].isin(["ws", "ti"])] if "condition" in results_df else results_df.iloc[:0]
+
+    records = []
+    for keys, group in cond.groupby(_CONDITION_GROUP_KEYS, sort=True):
+        summary = summarize_errors(group["signed_error"].to_numpy())
+        records.append(
+            {
+                **dict(zip(_CONDITION_GROUP_KEYS, keys, strict=True)),
+                "bias": summary.bias,
+                "spread": summary.spread,
+                "score": summary.score,
+                "mean_estimate": float(group["estimate"].mean()) if "estimate" in group else float("nan"),
+                "mean_truth": float(group["truth"].mean()) if "truth" in group else float("nan"),
+                "n_replicates": summary.n,
+            }
+        )
+    columns = [*_CONDITION_GROUP_KEYS, "bias", "spread", "score", "mean_estimate", "mean_truth", "n_replicates"]
     return pd.DataFrame(records, columns=columns)

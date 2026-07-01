@@ -7,6 +7,174 @@ from, not just conclusions.
 
 ---
 
+## F5 — power_model's condition-dependent uplift error is the counterfactual model's own conditional bias (shrinkage), not a §3 post-treatment-conditioning artefact
+
+*2026-07-01 — first result off the conditional-uplift instrument (per-(ws, TI)-bin scoring; see
+`benchmarking/harness/conditions.py`, `scoring.py`, `PowerModelMethod._conditional_uplift`).
+Diagnosed with a new per-segment residual diagnostic
+`benchmarking/baselines/power_model/diagnostics.py::_plot_residual_binned` (writes
+`residual_binned.png` and `residual_binned_pct.png` under `5_uplift_modelling/`), regenerated via
+`benchmarking/baselines/inspect_prepost_hard_case.py`. The pinned case is the `cp_0pct` placebo on
+`T07`, 6-month prepost, true uplift 0% — so in both the held-out baseline and the "upgraded" window
+the residual is pure model error, an unusually clean read on model bias.*
+
+### Observation
+`power_model`'s overall P50 is excellent (F3/F4), but its **per-bin** uplift decomposition is badly
+distorted at the condition extremes. On `ti_dependent_cp` the recovered uplift slopes to ≈ −75 pp in
+the highest TI bin where the truth is roughly flat; on `ws_dependent_cp` the (2,4] m/s bin reads
+≈ −30 pp against a +17 pp truth. The overall estimate is unaffected because these errors integrate
+to ≈ 0.
+
+### Evidence — three facts that localise the cause
+1. **Not a §3 / binning-axis problem.** The synthetic upgrades for `ti_dependent_cp` and
+   `ws_dependent_cp` use `ws_delta = 0` (`ws_factor = 1.0`) and never modify `wind_speed_sd`
+   (`generator.py` `modified_columns = active_power, gen_rpm, wind_speed`). So the test turbine's
+   **measured** ws/TI under treatment equals its **original untreated** ws/TI exactly — the method
+   already bins on the same treatment-invariant axis the ground truth uses. (Binning the estimate on
+   a reference-derived ws/TI instead would therefore change nothing; confirmed by reasoning, not
+   pursued. Ground-truth binning was left unchanged.)
+2. **Not confounding.** Toggle (concurrent reference, ≈ no temporal confounding) shows the *same*
+   per-bin distortion shape as prepost.
+3. **It is model shrinkage / conditional bias.** On the placebo, `residual_binned.png` shows the mean
+   residual (actual − predicted) tilting from ≈ −25 kW at low power to ≈ +80 kW at high power — the
+   tilt survives the Bland-Altman `mean(actual, predicted)` axis, so it is a real conditional bias,
+   not just the errors-in-variables inflation from binning by actual. Across TI the same residual runs
+   ≈ +30 kW → −38 kW (zero-crossing at TI ≈ 0.17), exactly the shape of the fake TI-uplift. The
+   baseline and upgraded residual curves overlay (as they must at truth 0).
+
+### Root cause
+A regularised learner minimises squared error, so its prediction is pulled toward the conditional
+mean: with imperfect features it **predicts smoother than reality** — over-predicts where power is low,
+under-predicts where it is high (predicted-vs-actual slope < 1). The §3 rule forbids the test
+turbine's own ws/TI as features, so the counterfactual model carries no direct turbulence
+information; its residuals are therefore correlated with TI. Because power maps monotonically to wind
+speed, and TI is inversely related to wind speed at fixed power, this single compression re-appears as
+a negative residual at low ws / high TI and positive at high ws / low TI. The compression averages to
+≈ 0 over the whole window (so the headline uplift is clean), but slicing the energy ratio
+`Σactual / Σcounterfactual` **by condition** re-exposes the conditional bias as a spurious
+condition-dependent uplift.
+
+A **second, separate** failure mode inflates the visible excursions at the extremes: the low-ws /
+high-TI bins hold very little energy, so a small kW residual over a tiny `Σcounterfactual` becomes a
+huge *percentage*. The `residual_binned_pct.png` view (each bin's residual as a % of that bin's mean
+power) makes this explicit — the well-populated bins sit within ±5–15% while the tiny-power bins blow
+out to −160% (ws 5 m/s) / −330% (TI 0.35). So the extremes combine real conditional bias with ratio
+instability.
+
+### Interpretation
+The per-bin instrument is faithfully measuring **model bias**, not a defect in the harness or the
+conditioning axis. The overall-P50 verdict of F3/F4 stands; what F5 adds is that *conditional* P50 is
+only trustworthy where (a) the counterfactual model's conditional bias is small and (b) the bin holds
+enough energy for a stable ratio.
+
+### Implications / candidate directions (not yet actioned)
+1. **Reduce the counterfactual model's conditional bias** — the core lever. Leading candidate:
+   **baseline-residual calibration** — estimate the model's per-condition mean residual `b(cond)` on
+   untreated data (prepost baseline / toggle off-blocks, where the true uplift is 0) and subtract it
+   from the upgraded per-bin ratio. On the placebo the baseline residual curve *is* an estimate of
+   that bias and overlays the upgraded curve, so this should flatten the conditional-uplift curves
+   toward truth. To be designed before coding.
+2. **Give the model a treatment-invariant turbulence proxy** (each reference's own sd/ws, or ERA5
+   gust/spread) so the counterfactual can learn the TI–power relation without touching the treated
+   signal (§3-legal). Partial: only as good as the proxy's correlation with local TI.
+3. **Guard the fragile tails** — suppress or flag bins below an energy/count floor; orthogonal to
+   1–2 and fixes only the ratio-instability half.
+4. **Reporting/tooling shipped this cycle:** the two `residual_binned*` diagnostics (shared y per row;
+   percentage version normalised by each bin's own mean power, with the shared y-axis sized from bins
+   within ±30% so tiny-power outliers clip rather than crush the scale). Widening TI bins 5%→10% was
+   tried to tame the plot and **reverted** — it did not address the underlying bias and the y-axis
+   sizing is the better fix.
+
+---
+
+## F4 — power_model beats v0 in prepost and at longer-toggle; v0's edge is only short-toggle, and v0 alone breaks on rated-power uprates
+
+*2026-06-30 — the three-way comparison F3 flagged as the open question (power_model vs v0 in
+*both* modes). Source: `benchmarking/baselines/study_power_model_compare.py`, which re-runs
+**only** `power_model` over the current overnight cases and merges it with the frozen `v0_binned`
++ `naive_ratio` rows from the overnight run (`study_overnight_{prepost,toggle}.py`,
+`include_v0=True`). Seven `overnight_profiles` (`cp_minus_10pct`, `cp_0pct`, `cp_plus_3pct`,
+`cp_plus_10pct`, `ws_dependent_cp`, `ti_dependent_cp`, `rated_plus_5pct`), `n_replicates=4`,
+seed 0; prepost campaigns 3/6/12 mo (84 cases/method), toggle 3/6/9/12 mo (112 cases/method). The
+script's alignment guard confirmed all 84 + 112 fresh cases match the reference run's
+method-independent ground truth exactly, so the merge compares identical cases.*
+
+All numbers below are percentage points of fractional uplift (a 0.01 fraction = 1 pp). Bias = mean
+signed error, spread = std of signed error, RMSE pooled over all cases for that mode/method.
+
+### Observation — pooled over all profiles and campaign lengths
+
+| mode | method | bias | spread | MAE | RMSE | within ±1pp | per-case win |
+|---|---|---|---|---|---|---|---|
+| prepost | naive_ratio | −1.11 | 4.62 | 3.83 | 4.73 | 17% | 0% |
+| prepost | **power_model** | **−0.39** | **0.49** | **0.53** | **0.62** | **86%** | **73%** |
+| prepost | v0_binned | −0.73 | 0.72 | 0.84 | 1.03 | 62% | 27% |
+| toggle | naive_ratio | +0.15 | 0.16 | 0.19 | 0.22 | 100% | 39% |
+| toggle | power_model | +0.16 | 0.19 | 0.20 | 0.24 | 100% | 22% |
+| toggle | v0_binned | −0.01 | 0.33 | 0.23 | 0.32 | 98% | 38% |
+
+("per-case win" = share of the N cases where that method has the smallest |error|.) In prepost,
+**power_model's |error| is smaller than v0's in 73% of cases and smaller than naive's in 100%**.
+
+### Observation — RMSE by campaign length (the short-data story, serves G2)
+
+| mode | method | 3mo | 6mo | 9mo | 12mo |
+|---|---|---|---|---|---|
+| prepost | naive_ratio | 7.32 | 3.19 | — | 1.84 |
+| prepost | **power_model** | **0.82** | **0.46** | — | **0.53** |
+| prepost | v0_binned | 1.22 | 0.94 | — | 0.89 |
+| toggle | naive_ratio | **0.30** | 0.23 | 0.17 | 0.14 |
+| toggle | power_model | 0.38 | **0.22** | **0.18** | **0.11** |
+| toggle | v0_binned | 0.32 | 0.31 | 0.33 | 0.32 |
+
+The two structural facts: **(a)** in prepost power_model leads at every length, its biggest margin
+at 3 months (0.82 vs v0 1.22 vs naive 7.32); **(b)** in toggle, power_model and naive both tighten
+with more data (power_model 0.38 → 0.11), but **v0 does not improve with campaign length** — it
+sits at ~0.32 RMSE from 3 to 12 months. So v0 only wins the shortest toggle campaign; from 6
+months on, power_model is best in toggle too.
+
+### Observation — profile spotlight (pooled over campaigns)
+
+| profile | method | bias | RMSE | max |error| |
+|---|---|---|---|---|
+| prepost `rated_plus_5pct` | **power_model** | **−0.38** | **0.62** | **1.05** |
+| prepost `rated_plus_5pct` | v0_binned | −1.24 | 1.42 | 2.23 |
+| toggle `rated_plus_5pct` | **power_model** | +0.16 | **0.25** | **0.49** |
+| toggle `rated_plus_5pct` | v0_binned | −0.63 | 0.68 | 1.10 |
+
+power_model is **flat across all seven profiles** (prepost RMSE 0.61–0.63, bias ≈ −0.38 on every
+one), whereas **v0 has a specific weak spot on the rated-power uprate** — its worst profile in both
+modes (the only profile where v0's toggle RMSE, 0.68, is more than ~2× its others). A rated-power
+change shifts power at high wind speeds where v0's binned power-curve has sparse, noisy bins;
+power_model's continuous reference-conditioned fit has no such blind spot. On the placebo
+(`cp_0pct`) all three are well-behaved (toggle v0 even edges power_model, 0.18 vs 0.24 RMSE).
+
+### Interpretation
+- **Prepost: power_model is the better method, decisively.** Lower bias (−0.39 vs −0.73 pp), lower
+  spread (0.49 vs 0.72), ~40% lower RMSE than v0, and it wins the majority of cases head-to-head —
+  the F1 contrast lever (expected power through the references) cancelling the common-mode drift
+  that v0 corrects only through its detrend step. naive is not in contention (covariate shift).
+- **Toggle: a near-tie that tips to power_model with data.** Naive and power_model are
+  near-identical and both beat v0 overall on RMSE; v0's larger spread and its failure to improve
+  with longer toggling are the cost of its binning. v0's only advantage is the 3-month toggle
+  campaign, where power_model carries slightly more bias (+0.37) before its variance collapses.
+- **v0's rated-power weakness is the clearest single result.** It is the one regime where v0 is
+  both biased and high-variance in *both* modes, and where power_model's flatness is most valuable.
+
+### Implications
+1. **Answers F3's open question: power_model ≥ v0 in both modes for P50** — strictly better in
+   prepost and at toggle ≥ 6 months, with v0 ahead only at the shortest toggle campaign. It is now
+   the baseline to beat (G-level), not just vs naive.
+2. **Short-toggle bias is power_model's one soft spot** — the +0.37 pp at 3-month toggle is the
+   thing to chip at next (mirrors the residual prepost bias noted in F3 #3); candidates are the
+   baseline-horizon / recency weighting already on the list.
+3. **Add a rated-power-uprate case to any v0 regression framing** — it is v0's worst regime and a
+   natural demonstrator for power_model's advantage; worth a dedicated diagnostic.
+4. Reproduce/extend with `study_power_model_compare.py` (`--skip-run` to re-merge, `--modes` to
+   restrict); it reuses the frozen slow v0 so each power_model iteration is cheap.
+
+---
+
 ## F3 — A simple counterfactual power model halves prepost bias and spread vs naive; toggle is a wash
 
 *2026-06-29 — new method `power_model` (the simplest-possible ML method: a single LightGBM
