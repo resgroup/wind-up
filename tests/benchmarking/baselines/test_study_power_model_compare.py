@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 from benchmarking.baselines.study_power_model_compare import (
     _BASELINE_SCHEMA,
+    _conditional_plot_subset,
     _load_baseline_cells,
     power_model_leaderboard,
     record_baseline,
@@ -38,6 +39,40 @@ def test_power_model_leaderboard_includes_overall_and_conditional_cells() -> Non
     assert ("overall", "overall") in keys
     assert ("ws", "(6.0, 8.0]") in keys
     assert {"profile", "campaign_months", "condition", "condition_bin", "bias", "spread", "score"} <= set(lb.columns)
+
+
+def test_conditional_plot_subset_collapses_to_longest_campaign() -> None:
+    # conditional_leaderboard keeps one row per (campaign_months, condition_bin); the plot needs a
+    # single row per bin, so mixing campaign lengths must be collapsed (regression: a multi-campaign
+    # subset raised "cannot reindex on an axis with duplicate labels" in plot_conditional_uplift).
+    cond_lb = pd.DataFrame(
+        {
+            "method": "power_model",
+            "profile": "ws_dependent_cp",
+            "campaign_months": [3, 3, 12, 12],
+            "condition": "ws",
+            "condition_bin": ["(4.0, 6.0]", "(6.0, 8.0]", "(4.0, 6.0]", "(6.0, 8.0]"],
+            "mean_estimate": [0.09, 0.05, 0.10, 0.05],
+            "mean_truth": [0.10, 0.05, 0.10, 0.05],
+            "bias": [-0.01, 0.0, 0.0, 0.0],
+            "spread": [0.01, 0.005, 0.008, 0.004],
+        }
+    )
+    subset = _conditional_plot_subset(cond_lb, "ws_dependent_cp", "ws")
+    assert list(subset["campaign_months"].unique()) == [12]
+    assert not subset["condition_bin"].duplicated().any()
+
+
+def test_conditional_plot_subset_empty_for_absent_profile() -> None:
+    cond_lb = pd.DataFrame(
+        {
+            "profile": ["ws_dependent_cp"],
+            "condition": ["ws"],
+            "campaign_months": [6],
+            "condition_bin": ["(6.0, 8.0]"],
+        }
+    )
+    assert _conditional_plot_subset(cond_lb, "other_profile", "ws").empty
 
 
 def _minimal_study() -> StudyConfig:

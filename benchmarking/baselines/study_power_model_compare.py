@@ -379,6 +379,21 @@ def compare_to_benchmark(mode: str, lb: pd.DataFrame, baseline_path: Path, compa
     )
 
 
+def _conditional_plot_subset(cond_lb: pd.DataFrame, profile: str, condition: str) -> pd.DataFrame:
+    """Rows for one (profile, condition) at the longest campaign length only.
+
+    ``conditional_leaderboard`` keeps one row per ``(method, profile, campaign_months, condition,
+    condition_bin)``, but :func:`~benchmarking.harness.plots.plot_conditional_uplift` expects a
+    single row per ``condition_bin`` per method. Collapse to the longest campaign (most data, so the
+    cleanest per-bin estimate) rather than mixing campaign lengths into one line.
+    """
+    subset = cond_lb[(cond_lb["profile"] == profile) & (cond_lb["condition"] == condition)]
+    if subset.empty:
+        return subset
+    longest = int(subset["campaign_months"].max())
+    return subset[subset["campaign_months"] == longest]
+
+
 def merge_and_plot(mode: str, fresh: pd.DataFrame, reference_mode_dir: Path, out_dir: Path) -> pd.DataFrame:
     """Merge fresh power_model with reference v0/naive, write merged tables + per-profile plots."""
     comparison_dir = out_dir / "comparison"
@@ -418,14 +433,15 @@ def merge_and_plot(mode: str, fresh: pd.DataFrame, reference_mode_dir: Path, out
         if not cond_lb.empty:
             for profile in profiles:
                 for condition in cond_lb["condition"].unique():
-                    subset = cond_lb[(cond_lb["profile"] == profile) & (cond_lb["condition"] == condition)]
+                    subset = _conditional_plot_subset(cond_lb, profile, condition)
                     if subset.empty:
                         continue
+                    longest = int(subset["campaign_months"].iloc[0])
                     plot_conditional_uplift(
                         subset,
                         condition=condition,
                         save_path=comparison_dir / f"conditional_{profile}_{condition}.png",
-                        title=f"{mode} - {profile} power_model vs {condition}",
+                        title=f"{mode} - {profile} power_model vs {condition} ({longest}mo)",
                     )
 
     logger.info("Wrote %s comparison outputs to %s", mode, comparison_dir)
