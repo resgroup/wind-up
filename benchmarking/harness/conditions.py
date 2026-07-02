@@ -42,8 +42,13 @@ def energy_ratio_by_bin(
     table["n_records"] = grouped.size()
     table = table.reindex(all_bins)
     table["n_records"] = table["n_records"].fillna(0).astype(int)
+    # empty bins get a 0 energy sum (they contribute nothing to a downstream aggregation)
+    table[["actual", "counterfactual"]] = table[["actual", "counterfactual"]].fillna(0.0)
     denom = table["counterfactual"].to_numpy()
     table["p50_uplift"] = (
         np.divide(table["actual"].to_numpy(), denom, out=np.full(len(table), np.nan), where=denom != 0) - 1.0
     )
-    return table.reset_index(names="condition_bin")[["condition_bin", "p50_uplift", "n_records"]]
+    table = table.rename(columns={"actual": "sum_actual", "counterfactual": "sum_counterfactual"})
+    return table.reset_index(names="condition_bin")[
+        ["condition_bin", "p50_uplift", "n_records", "sum_actual", "sum_counterfactual"]
+    ]

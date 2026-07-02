@@ -177,14 +177,31 @@ def _select_profiles(requested: list[str] | None) -> dict[str, list]:
     return {name: all_profiles[name] for name in requested}
 
 
-def run_power_model(mode: str, out_dir: Path, *, profiles: list[str] | None = None) -> pd.DataFrame:
+def _make_power_model(out_dir: Path, *, era5_hourly_df: pd.DataFrame, bias_correct: bool) -> PowerModelMethod:
+    """Construct the HoT-configured ``power_model`` method, optionally with the Issue 8 bias correction on."""
+    return PowerModelMethod(
+        active_power_col=HOT_COLUMNS.active_power,
+        wind_speed_col=HOT_COLUMNS.wind_speed,
+        availability_col=HOT_COLUMNS.availability,
+        wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
+        baseline_rated_power_kw=HOT_RATED_POWER_KW,
+        era5_hourly_df=era5_hourly_df,
+        out_dir=out_dir / "power_model_runs",
+        bias_correct=bias_correct,
+    )
+
+
+def run_power_model(
+    mode: str, out_dir: Path, *, profiles: list[str] | None = None, bias_correct: bool = False
+) -> pd.DataFrame:
     """Score **only** ``power_model`` over the overnight cases for one mode (no v0/naive/oracle).
 
     ``profiles`` restricts to a subset of :func:`overnight_profiles` (default: all) for fast feedback on
-    a power_model change. Each fresh row still carries the harness's method-independent ground ``truth``
-    (so the merge's alignment guard has its cross-check without recomputing any anchor). Writes a
-    per-profile ``results_*.csv`` and per-profile ``power_model`` curve under ``out_dir`` (the latter
-    lets a long run be sanity-checked profile-by-profile), and returns the concatenated tidy results.
+    a power_model change. ``bias_correct`` turns on the Issue 8 two-direction correction (the A/B: the
+    committed benchmark is the uncorrected run, so "current" then reads as corrected). Each fresh row
+    still carries the harness's method-independent ground ``truth`` (so the merge's alignment guard has
+    its cross-check without recomputing any anchor). Writes a per-profile ``results_*.csv`` and
+    per-profile ``power_model`` curve under ``out_dir``, and returns the concatenated tidy results.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     scada_df, _ = load_hot_scada(
@@ -198,16 +215,12 @@ def run_power_model(mode: str, out_dir: Path, *, profiles: list[str] | None = No
 
     all_results = []
     for profile_name, profile in _select_profiles(profiles).items():
-        method = PowerModelMethod(
-            active_power_col=HOT_COLUMNS.active_power,
-            wind_speed_col=HOT_COLUMNS.wind_speed,
-            availability_col=HOT_COLUMNS.availability,
-            wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
-            baseline_rated_power_kw=HOT_RATED_POWER_KW,
-            era5_hourly_df=context.reanalysis_datasets[0].data,
-            out_dir=out_dir / "power_model_runs",
+        method = _make_power_model(
+            out_dir, era5_hourly_df=context.reanalysis_datasets[0].data, bias_correct=bias_correct
         )
-        logger.info("Scoring %s profile %s with power_model", mode, profile_name)
+        logger.info(
+            "Scoring %s profile %s with power_model%s", mode, profile_name, " (bias_correct)" if bias_correct else ""
+        )
         results = score_study(
             scada_df,
             profile=profile,
@@ -732,11 +745,22 @@ def main() -> None:
         help="promote the candidate baseline written by the last full sweep (under --output-dir) to the "
         "committed --baseline-path and exit — a near-instant accept with no re-run. Then commit the JSON.",
     )
+    parser.add_argument(
+        "--bias-correct",
+        action="store_true",
+        help="turn on the Issue 8 two-direction bias correction (opt-in). The committed benchmark is the "
+        "uncorrected run, so the before/after view then reads as corrected-vs-uncorrected-vs-truth. Cannot "
+        "be combined with --update-baseline (the benchmark must stay the uncorrected reference).",
+    )
     args = parser.parse_args()
     if args.profiles is not None and args.update_baseline:
         # record_baseline rewrites a mode's cells wholesale, so a subset run would drop the other
         # profiles from the committed benchmark. Refuse rather than silently corrupt it.
         parser.error("--update-baseline needs the full profile set; do not combine it with --profiles")
+    if args.bias_correct and args.update_baseline:
+        # The committed benchmark is the uncorrected reference the correction is A/B'd against; recording a
+        # corrected run over it would destroy that reference. Refuse rather than silently overwrite it.
+        parser.error("--bias-correct cannot be combined with --update-baseline (keep the benchmark uncorrected)")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
     reference_dir = args.reference_dir.expanduser()
@@ -758,7 +782,7 @@ def main() -> None:
                 fresh = fresh[fresh["profile"].isin(args.profiles)]
             logger.info("Reusing %d fresh rows from %s", len(fresh), mode_out_dir)
         else:
-            fresh = run_power_model(mode, mode_out_dir, profiles=args.profiles)
+            fresh = run_power_model(mode, mode_out_dir, profiles=args.profiles, bias_correct=args.bias_correct)
         merge_and_plot(mode, fresh, reference_dir / mode, mode_out_dir)
         lb_by_mode[mode] = power_model_leaderboard(fresh)
         study_by_mode[mode] = _prepost_study() if mode == "prepost" else _toggle_study()
@@ -768,6 +792,10 @@ def main() -> None:
 
     if args.update_baseline:
         record_baseline(lb_by_mode, study_by_mode, baseline_path)
+    elif args.bias_correct:
+        # A corrected run is a diagnostic A/B against the uncorrected benchmark — never a candidate to
+        # promote, or accepting it would replace the uncorrected reference. Skip the candidate write.
+        logger.info("Bias-corrected run — no candidate baseline written (the benchmark stays uncorrected).")
     elif args.profiles is None:
         # A full sweep: drop a candidate baseline (seeded from committed) so an accepted improvement is a
         # near-instant `--accept-candidate` away, with no second sweep. Subset runs are incomplete -> skip.

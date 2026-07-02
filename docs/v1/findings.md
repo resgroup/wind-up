@@ -7,6 +7,194 @@ from, not just conclusions.
 
 ---
 
+## F8 — the self-consistent correction: keep the uncorrected full-data headline, re-level the matched decomposition onto it — overall now no worse
+
+*2026-07-02 — Issue 8, the fix for F7's headline cost. Same A/B command
+(`study_power_model_compare --modes prepost --profiles cp_0pct ti_dependent_cp ws_dependent_cp
+--bias-correct`) and artefacts as F7. Estimator reworked in `PowerModelMethod._estimate_bias_corrected`
+/ `_corrected_conditional`; new pure helper `_relevel_conditional`; `energy_ratio_by_bin` now also
+returns per-bin `sum_actual` / `sum_counterfactual`.*
+
+### The estimator (final)
+- **Overall = the uncorrected full-data estimate.** Train on **all** baseline, predict **all** upgraded,
+  one energy ratio — *identical* to the `bias_correct=False` headline (a unit test asserts exact
+  equality). The whole-window shrinkage integrates to ≈ 0 (F5), so this is already the cleanest overall;
+  the correction is spent only on the decomposition.
+- **Per-bin = the matched two-direction shape, re-leveled onto the headline.** The shape
+  `1+u_b = sqrt((1+r_fwd_b)/(1+r_rev_b))` still comes from the **CEM-matched** forward/reverse fits
+  (matching is required — without it the reverse model predicts out-of-distribution across the prepost
+  weather shift). Each condition is then rescaled by one factor `λ_c = (1+overall)/(1+u_agg)` whose
+  **weights are the full-upgraded per-bin energy**, so the reported per-bin MWh partitions the full-data
+  headline exactly ("overall = aggregation" self-consistency).
+
+### Why not the two earlier variants (both measured)
+Getting here took ruling out two tempting overalls, both worse than uncorrected:
+- **Global `sqrt`-combine** (the F7 estimator): mean overall |bias| **0.49 pp** — not self-consistent
+  (three separate nonlinear reductions) and still worse than uncorrected at short campaigns.
+- **Matched forward-only** `r_fwd_all`: mean overall |bias| **0.82 pp** — *worse still*. The premise
+  "the matched forward recovers the overall because shrinkage integrates out" was wrong: on the ≈ 11%
+  matched subset the forward model is not energy-conserving, so `r_fwd_all` keeps a residual `(1+u)/s`
+  shrinkage (~+1 pp at 3 mo). The `sqrt`-combine had actually been *cancelling* that. Lesson: the
+  matched subset can't beat the full-data overall for the headline; only the per-bin *shape* needs the
+  matched cross-prediction.
+
+### Result
+- **Overall: no worse — identical to uncorrected** at every profile × campaign (|Δ bias| and |Δ spread|
+  ≤ 1e-4 pp, float noise). Contrast: uncorrected 0.35 pp, F7 combine 0.49, forward-only 0.82.
+- **Per-bin de-tilt preserved:** 57 better / 9 worse / 3 ~ of 69 covered cells; mean per-bin |bias|
+  ≈ 14 pp → ≈ 8.5 pp — the F5 tilt is gone across the populated range, and the ws & ti decompositions
+  now energy-aggregate back to the (unchanged) headline.
+- The 9 "worse" cells remain the sparsest TI/ws extremes (overshoot), left **unfloored** by choice; the
+  re-level keeps them from moving the headline, so it is a tail display issue, not a headline bug.
+
+### Decision / implications
+- **`bias_correct` becomes a pure decomposition refinement on an unchanged headline.** The correction
+  never touches the P50 — it only re-attributes the same total MWh across bins with the shrinkage tilt
+  removed. That is a safe, Pareto-neutral property for the overall.
+- **Still opt-in (`bias_correct=False` default);** whether to make it the default is a later call.
+- **Follow-ups:** a per-reporting-bin matched-count floor for the sparse-extreme overshoot (one-line);
+  density-ratio weighting (WS4) to enlarge the short-campaign matched set; a toggle-mode A/B (prepost is
+  the F5/F7/F8 case reported here).
+
+---
+
+## F7 — the two-direction bias correction removes the F5 per-bin tilt but costs overall P50 at short campaigns, so it stays opt-in
+
+*2026-07-02 — Issue 8, Component 6 A/B run. Command:
+`study_power_model_compare --modes prepost --profiles cp_0pct ti_dependent_cp ws_dependent_cp --bias-correct`.
+The committed benchmark is the **uncorrected** frozen run, so the run's before/after machinery reads as
+corrected ("current") vs uncorrected ("benchmark") vs truth. Artefacts under the run's `comparison/`:
+`conditional_before_after_<profile>_<condition>.png` (per-bin overlays),
+`conditional_benchmark_comparison_prepost.csv` (per-bin |bias| verdict) and `benchmark_comparison_prepost.csv`
+(overall). Single-case overlays also reproduced via `inspect_prepost_hard_case.py` (now runs uncorrected +
+bias-corrected side by side).*
+
+### Observation — the per-bin conditional bias is largely removed (the F5 target)
+Across the two condition-dependent hard cases plus the placebo, at the 12-month campaign the correction
+flattens the per-bin uplift toward truth in the large majority of bins: **57 better / 9 worse / 3 neutral of
+69 covered cells**, mean per-bin |bias| ≈ **14 pp → ≈ 8.5 pp**. The F5 tilt is gone across the populated
+range — e.g. `cp_0pct` placebo `ti (0.30,0.35]` 17.6 → 0.04 pp and `ws (2,4]` 45.6 → 12.7 pp;
+`ws_dependent_cp` `ti (0.30,0.35]` 18.7 → 0.17 pp. The implied shrinkage the correction cancels is ≈ 0.99
+overall on these cases (a small overall compression that integrates to ≈ 0, exactly as F5 predicted).
+
+### Observation — the cost: overall P50 degrades at short campaigns
+The correction is **not** free on the headline number. Overall |bias| / spread (pp), corrected vs uncorrected:
+
+| campaign | corrected \|bias\| | uncorrected \|bias\| | Δ\|bias\| | Δ spread |
+| --- | --- | --- | --- | --- |
+| 3 mo  | 0.66–0.78 | 0.18–0.63 | **+0.06 … +0.16** (worse) | ≈ +0.6 (worse) |
+| 6 mo  | 0.56–0.73 | 0.18–0.19 | **+0.38 … +0.54** (worse) | ≈ +0.05 (worse) |
+| 12 mo | 0.05–0.10 | 0.23–0.24 | **−0.14 … −0.18** (better) | ≈ −0.15 (better) |
+
+So the done-when "overall P50 no worse" holds **only at 12 months**; at 3/6 months the correction adds a
+few tenths of a pp of bias and spread.
+
+**Mechanism — finite-sample cost of a nonlinear two-ratio combine on a shrunken matched set.** The corrected
+overall is a *different estimator*, not the same one on less data: the uncorrected path is one energy ratio
+`Σactual/Σcf − 1` over **all** upgraded rows from **one** model trained on **all** baseline rows; the corrected
+path is `sqrt((1+r_fwd)/(1+r_rev)) − 1` from **two** models trained on the **CEM-matched subset**. Two things
+compound at short campaigns: (1) the matched subset collapses — the short upgraded window can only match a
+sliver of the abundant baseline, so from the per-run CEM balance the fraction of baseline actually used falls
+to **≈ 11% at 3 mo** (~11k rows/side) vs **≈ 47% at 12 mo** (~47k), i.e. each counterfactual model trains on
+~9× less data at 3 mo; (2) the two noisier per-direction ratios are combined through a **nonlinear** function,
+so by Jensen's inequality the expected combined value is offset from the noise-free value, and that offset
+**grows as the inputs get noisier**. The campaign-length signature is the tell: a change of *estimand* (matching
+to a different weather mix) would be roughly campaign-independent, but this cost **vanishes as data grows**
+(worse at 3 mo → better than uncorrected at 12 mo) — the fingerprint of a finite-sample effect. The uncorrected
+overall pays none of this and is already clean because the shrinkage integrates to ≈ 0 over the whole window
+(F5): **the correction spends precision fixing a per-bin problem the headline never had.**
+
+### The failure mode — sparse extreme bins overcorrect
+All 9 "worse" per-bin cells are the sparsest condition extremes (lowest-TI `(0.0,0.05]`, highest-TI
+`(0.40,0.50]`, lowest-ws `(2,4]`). There the two-direction ratio is estimated on very few matched rows, so
+the correction overshoots — e.g. `ti (0.45,0.50]` swings −76.7 → +92.9 pp. This both drags the mean per-bin
+|bias| up (hence ≈ 8.5 pp, not lower) and, via the extreme bins, perturbs the overall energy ratio at short
+campaigns. Some extreme bins also drop to `NaN` (the non-positive-ratio / thin-bin guard), visible as gaps
+in the single-case overlays.
+
+### Decision / implications
+- **Stays opt-in (`bias_correct=False` default); no default flip.** It decisively fixes the per-bin
+  decomposition but is not a strict Pareto improvement on the overall P50, so it is not ready to be the
+  default — exactly the A/B outcome the opt-in design was built to allow.
+- **Candidate follow-ups** (being taken up next): the defect has two distinct sources needing two distinct
+  levers, since the overall is a **global** energy ratio (sparse reporting bins carry little weight in it, so a
+  per-bin fix does **not** touch it):
+  1. **Per-bin extreme overshoot** → a **minimum matched-count floor per reporting bin**, below which that bin
+     falls back to the uncorrected estimate — directly kills the sparse-bin overshoot (the 9 "worse" cells).
+  2. **Overall short-campaign cost** → report the **uncorrected single-direction estimate as the headline P50**
+     (F5: the whole-window shrinkage integrates to ≈ 0, so the two-direction combine only adds finite-sample
+     noise there), keeping the two-direction correction for the per-bin *decomposition* where the shrinkage does
+     **not** integrate out. This makes "overall no worse" hold by construction.
+  Density-ratio weighting instead of hard CEM subsampling (earmarked for WS4) would additionally reclaim the
+  short-campaign matched-sample size.
+- Toggle mode not yet A/B'd; prepost is where F5 was diagnosed and is the case reported here.
+
+---
+
+## F6 — the ERA5 matching variables for Issue 8 bias-cancellation are `wind_speed_100m` + `wind_gusts_10m` + `wind_direction_100m`
+
+*2026-07-02 — Issue 8, Component 1 matching-variable analysis. New one-off script
+`benchmarking/baselines/inspect_era5_matching_importance.py` ranks the ERA5-only fields by how well
+they predict the test turbine's real (un-upgraded) power, using LightGBM gain and held-out sklearn
+permutation importance. Run on `T01`, ~253k normally-operating rows over the default 2016–2020 HoT
+window; outputs (`feature_importance.png`, `predicted_vs_actual.png`, `era5_matching_importance.csv`)
+under `<study-output-root>/inspection_era5_matching`.*
+
+### Observation
+The ERA5→test-power model predicts well (held-out **R²=0.84**, RMSE ≈ 287 kW), so the ranking is
+trustworthy, not just precise. Wind-magnitude fields dominate: `wind_speed_100m`, `wind_speed_10m`
+and `wind_gusts_10m` together carry ≈ 89% of the gain; every direction / thermodynamic field is
+< 2% on both views. But `wind_speed_10m` and `wind_speed_100m` are strongly collinear, so **gain and
+permutation disagreed** on the 2nd variable (gain favoured `wind_speed_10m`, permutation favoured
+`wind_gusts_10m`) — the collinearity makes neither view a clean guide.
+
+### What was done
+Folded the two collinear speeds into one physical vertical-shear exponent
+`alpha = ln(ws_100m / ws_10m) / ln(100/10)` (a stability / turbulence proxy that directly attacks the
+F5 cause) and dropped `wind_speed_10m`. Held-out fit was **unchanged** (R²=0.844), confirming the two
+speeds were substitutes, and with the redundancy gone **gain and permutation agree cleanly**:
+`wind_speed_100m` ≫ `wind_gusts_10m` ≫ `wind_shear_exponent`, then a flat tail. The shear exponent is
+a real independent signal (~2.5% on both views) but an order of magnitude below the two magnitude
+fields at HoT.
+
+### Decision
+- **Matching set = `("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")`.** The first two are
+  the top of the importance ranking (once the 10m/100m redundancy is folded out); **wind direction is
+  added on physical grounds** — it governs the wake geometry between the test turbine and its
+  references, so omitting it would leave a first-order confounder unmatched even though its *marginal*
+  importance for predicting power is small.
+- **Shear exponent deferred.** It ranks 3rd on importance and modest, and adopting it properly means
+  adding the derivation to the method's real feature path (`power_model/features.py`), not just the
+  analysis script where it currently lives. Left for another day; the shear derivation stays in
+  `inspect_era5_matching_importance.py` only and changes no scored method or benchmark.
+
+### Bin widths — verified on real HoT by the coverage sweep
+A CEM coverage/sensitivity sweep (T01 prepost split at 2018-06-01, ~121k baseline / ~132k upgraded
+normally-operating rows, via `benchmarking.baselines.power_model.matching.coarsened_exact_match`)
+confirmed 3-var matching is affordable despite the nominal cell explosion — HoT weather concentrates
+(prevailing SW ≈ 240°), so occupied cells are a small fraction of nominal and retention stays high:
+
+| ws / gust / dir | one-sided dropped | matched/side | retained base / up |
+| --- | --- | --- | --- |
+| 2 / 3 / 30° | 101 | 111,166 | 91.7% / 84.4% |
+| **2 / 3 / 20°** | **143** | **109,313** | **90.1% / 83.0%** |
+| 2 / 3 / 10° | 271 | 105,511 | 87.0% / 80.1% |
+| 1 / 3 / 5° | 950 | 95,930 | 79.1% / 72.9% |
+
+**Chosen widths: `wind_speed_100m` = 2 m/s, `wind_gusts_10m` = 3 m/s, `wind_direction_100m` = 20°.**
+ws = 2 m/s (generalises fine over that band and retains a touch more than 1 m/s); direction = 20°
+because `wind_direction_100m` is a *reanalysis* direction — spatially smooth and coarse, so finer than
+~20–30° is finer than the signal supports, and 5–10° roughly 3–7×'s the dropped one-sided cells for
+little directional gain. 20° keeps ~90%/83% retention with ~120 matched rows per two-sided cell.
+
+### Implications
+Component 3 hard-codes the method's `matching_vars` default to the 3-var set and `matching_bin_edges`
+to `{wind_speed_100m: 0..32 @ 2, wind_gusts_10m: 0..44 @ 3, wind_direction_100m: 0..360 @ 20}` (fixed
+sectors, no wraparound — adjacent sectors are just separate cells, per Component 2). Per-farm re-tuning
+and a proper shear feature are later steps.
+
+---
+
 ## F5 — power_model's condition-dependent uplift error is the counterfactual model's own conditional bias (shrinkage), not a §3 post-treatment-conditioning artefact
 
 *2026-07-01 — first result off the conditional-uplift instrument (per-(ws, TI)-bin scoring; see

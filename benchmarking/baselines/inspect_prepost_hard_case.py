@@ -152,9 +152,32 @@ def _pin_case(
     return rep, mi, truth, window
 
 
+def _power_model(
+    out_dir: Path, era5_hourly_df: pd.DataFrame, *, bias_correct: bool, save_plots: bool
+) -> PowerModelMethod:
+    """Construct the HoT-configured power model, optionally with the Issue 8 bias correction on."""
+    return PowerModelMethod(
+        active_power_col=HOT_COLUMNS.active_power,
+        wind_speed_col=HOT_COLUMNS.wind_speed,
+        wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
+        availability_col=HOT_COLUMNS.availability,
+        baseline_rated_power_kw=HOT_RATED_POWER_KW,
+        era5_hourly_df=era5_hourly_df,
+        out_dir=out_dir,
+        save_plots=save_plots,
+        bias_correct=bias_correct,
+        name="power_model_bc" if bias_correct else "power_model",
+    )
+
+
 def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
-    """Return the methods to inspect, each writing diagnostics (plots on) into its own subfolder."""
+    """Return the methods to inspect, each writing diagnostics (plots on) into its own subfolder.
+
+    Both the uncorrected and the Issue 8 bias-corrected power model are run, so their diagnostics sit
+    side by side (the corrected folder carries the implied-shrinkage and CEM-balance outputs).
+    """
     context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
+    era5 = context.reanalysis_datasets[0].data
     methods: list[Method] = [
         NaiveRatioMethod(
             active_power_col=HOT_COLUMNS.active_power,
@@ -162,16 +185,8 @@ def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
             out_dir=out_dir / "naive",
             save_plots=True,
         ),
-        PowerModelMethod(
-            active_power_col=HOT_COLUMNS.active_power,
-            wind_speed_col=HOT_COLUMNS.wind_speed,
-            wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
-            availability_col=HOT_COLUMNS.availability,
-            baseline_rated_power_kw=HOT_RATED_POWER_KW,
-            era5_hourly_df=context.reanalysis_datasets[0].data,
-            out_dir=out_dir / "power_model",
-            save_plots=True,
-        ),
+        _power_model(out_dir / "power_model", era5, bias_correct=False, save_plots=True),
+        _power_model(out_dir / "power_model_bias_correct", era5, bias_correct=True, save_plots=True),
     ]
     if include_v0:
         methods.append(V0BinnedMethod(context, scratch_dir=out_dir / "v0", save_plots=True))
@@ -208,21 +223,14 @@ def _run_methods(methods: list[Method], *, mi: MethodInput, truth: float) -> pd.
 def _plot_conditional_uplift(
     rep: Replicate, mi: MethodInput, window: CampaignWindow, *, out_dir: Path, profile_name: str
 ) -> None:
-    """Re-run the power model on ``mi`` and write per-condition uplift-vs-truth plots."""
+    """Overlay the uncorrected and Issue 8 bias-corrected power model against per-condition truth.
+
+    The two estimate lines plus the truth line on one plot are the direct before/after of the
+    correction: on a condition-dependent hard case (or the placebo) the uncorrected line carries the
+    F5 shrinkage tilt while the corrected one should hug truth.
+    """
     context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
-    power_model = PowerModelMethod(
-        active_power_col=HOT_COLUMNS.active_power,
-        wind_speed_col=HOT_COLUMNS.wind_speed,
-        wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
-        availability_col=HOT_COLUMNS.availability,
-        baseline_rated_power_kw=HOT_RATED_POWER_KW,
-        era5_hourly_df=context.reanalysis_datasets[0].data,
-        out_dir=out_dir / "power_model_conditional",
-    )
-    pm_output = power_model.estimate(mi)
-    if pm_output.p50_by_condition is None:
-        logger.warning("power_model returned no p50_by_condition; skipping conditional uplift plots")
-        return
+    era5 = context.reanalysis_datasets[0].data
 
     test_index = rep.synthetic_df.loc[rep.synthetic_df[HOT_COLUMNS.turbine] == rep.test_wtg].index
     mask = treated_activity_mask(test_index, rep.upgrade_timing, window=window)
@@ -237,15 +245,26 @@ def _plot_conditional_uplift(
         logger.warning("No per-condition truth available; skipping conditional uplift plots")
         return
 
-    frame = conditional_truth_vs_estimate(pm_output, truth_by_condition_clean, method_name=power_model.name)
+    frames = []
+    for label, bias_correct in (("power_model", False), ("power_model (bias_correct)", True)):
+        pm = _power_model(out_dir / f"{label} conditional", era5, bias_correct=bias_correct, save_plots=False)
+        output = pm.estimate(mi)
+        if output.p50_by_condition is None:
+            logger.warning("%s returned no p50_by_condition; skipping its conditional line", label)
+            continue
+        frames.append(conditional_truth_vs_estimate(output, truth_by_condition_clean, method_name=label))
+    if not frames:
+        return
+
+    frame = pd.concat(frames, ignore_index=True)
     for c in truth_by_condition_clean:
         plot_conditional_uplift(
             frame,
             condition=c,
             save_path=out_dir / f"conditional_uplift_{c}.png",
-            title=f"Conditional uplift ({c}) — profile={profile_name}, wtg={mi.test_wtg}",
+            title=f"Conditional uplift ({c}) — profile={profile_name}, wtg={mi.test_wtg} (uncorrected vs bias_correct)",
         )
-    logger.info("Wrote conditional uplift plots to %s", out_dir)
+    logger.info("Wrote conditional uplift plots (uncorrected vs bias_correct) to %s", out_dir)
 
 
 def conditional_truth_vs_estimate(
