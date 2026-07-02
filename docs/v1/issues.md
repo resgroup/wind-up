@@ -232,3 +232,15 @@ dependent uplift more accurately with correction on than off; findings.md update
   harness, decides how far back to trust. Keep it compatible with the no-timestamp-feature rule
   (weighting/selection by recency is fine; calendar features are not) and the block bootstrap.
   Pairs naturally with the long-term ERA5 extrapolation work (representativeness weighting, WS4).
+- **Derived ERA5 atmospheric features.** Today the methods consume ERA5 mostly as raw
+  Open-Meteo columns. Derive the physically-meaningful quantities that actually drive turbine
+  power and its scatter, all §3-legal (reanalysis, upgrade-invariant): **air density** (from
+  temperature + pressure + humidity), **vertical shear exponent** and **vertical veer** (from the
+  10 m / 100 m wind speed and direction pairs), and **atmospheric stability indicators** —
+  **bulk Richardson number** and **Monin–Obukhov length** (from the near-surface gradients + heat
+  flux fields). These are better features for the counterfactual/outcome models than the raw
+  levels, and — crucially for Issue 8 — strong candidate **CEM matching variables** and TI/shear
+  proxies that directly attack the F5 shrinkage cause (the §3 rule denies the model the test
+  turbine's own turbulence, so a treatment-invariant stability/shear proxy is the principled
+  substitute). Build as a shared ERA5-derivation utility so every method and the matching step
+  reuse it. Pairs with the matching-variable analysis (Issue 8) and the long-term ERA5 work (WS4).
