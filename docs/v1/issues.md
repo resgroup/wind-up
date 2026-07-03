@@ -10,9 +10,9 @@ conditional P50, then extending the measurement to AEP uplift and starting the
 uncertainty (Phase 3 / WS4) work.
 
 Suggested order of execution: #1 → #2 → #3 → #4 → #5 (done), then
-#9 → #10 → #11 → #12 → #13 → #14 → #15. (#9–#11 are independent input-data /
-feature trials sharing one evaluation protocol — many ideas, each tested one by one;
-#13 is small and independent, so it can be pulled earlier; #15 builds on #14's AEP
+#9 → #10 → #11 → #12 → #13 → #14 → #15 → #16. (#9–#12 are independent input-data and
+model trials sharing one evaluation protocol — many ideas, each tested one by one;
+#14 is small and independent, so it can be pulled earlier; #16 builds on #15's AEP
 machinery, so it goes last.) (Issue 4 was originally a data contract +
 method-selector issue; it has been re-scoped to a naive energy-ratio method — see
 Issue 4 below for why.)
@@ -343,7 +343,62 @@ the findings entry.
 
 ---
 
-## Issue 12 — Calibrate out the structural headline bias (covariate-shift-weighted baseline residuals) (WS2)
+## Issue 12 — Outcome-model fundamentals: objective, hyperparameters, calibration slope, alternative learners (WS2)
+
+**Goal:** revisit the basics of the counterfactual model itself. Today it is a LightGBM
+regressor with the L2 objective and fixed design-note hyperparameters (600 trees,
+lr 0.03, 63 leaves, `min_child_samples=200`, subsample/colsample 0.8) — never tuned, no
+early stopping, and identical whether the fit has ~13k training rows (3-month toggle) or
+~250k (2-year prepost baseline).
+
+**Two framing principles (record them in findings.md so they aren't relitigated):**
+- **The objective must target the conditional mean.** The estimand is an energy ratio and
+  energy is a sum of conditional means, so L2 stays the default (design note §2). Power
+  conditional on features is skewed (near cut-in and around rated), so median-type
+  objectives — MAE, Huber in its robust regime, quantile-0.5 — estimate the median and
+  would bias the energy sum. The F5 shrinkage is a *regularisation* artefact, not a loss
+  artefact; changing objective does not fix it. Legitimate within the mean family:
+  **Tweedie** or variance-weighted L2 for the strong heteroscedasticity of power
+  (an efficiency candidate, not a bias fix).
+- **Tune on uplift metrics, never on prediction RMSE.** More regularisation can improve
+  held-out RMSE while *worsening* shrinkage — the two objectives disagree exactly where
+  it matters. Yardsticks: placebo bias on the harness, per-bin residual flatness and
+  predicted-vs-actual **calibration slope** (target ≈ 1) on a time-blocked held-out
+  baseline, and replicate spread. Guard against overfitting the benchmark: tune on the
+  held-out-baseline proxies, confirm on the harness, ideally on turbines/windows not used
+  for tuning.
+
+**Scope (per the Issue 9 protocol, one candidate at a time)**
+- **Data-size-adaptive capacity:** early stopping on a time-blocked validation split;
+  scale `min_child_samples` / leaves with training size (the 3-month and 24-month fits
+  differ ~10× in rows but share one capacity today).
+- **`linear_tree=True`:** piecewise-linear leaves reduce the flat-leaf compression at the
+  edges of the feature distribution — a direct attack on the F5 shrinkage (and it
+  softens the Issue 10 boundary-clamping caveat, since linear leaves extrapolate).
+- **Post-hoc calibration-slope correction:** fit actual-vs-predicted on time-blocked
+  held-out baseline (linear, or isotonic), apply to the counterfactual predictions — the
+  cheap de-shrinking cousin of Issue 13's residual calibration; measure how much each
+  contributes when combined.
+- **Seed ensembling:** average K seeds (subsample/colsample noise) for variance
+  reduction; measure the replicate-spread gain vs run-time cost.
+- **Alternative learners behind a model-factory seam** (make the outcome model injectable
+  on `PowerModelMethod` rather than hard-coded to `make_outcome_model`): CatBoost /
+  XGBoost as same-family sanity checks; a small tabular NN or TabPFN for the short-
+  campaign regime; and a deliberately low-variance structured baseline (GAM / linear on
+  hub-height ws + direction features from Issue 9) — lightly regularised so nearly
+  shrinkage-free, valuable as a cross-check on the tree models' conditional bias even if
+  its overall accuracy is worse.
+- **Quantile objectives are out of scope for the point estimate** (median ≠ mean under
+  skew → biased energy). Quantile models return in Issue 16 / WS4 for conformal OOD
+  filtering and diagnostics — not as the uplift estimator.
+
+**Done when:** a findings entry records the verdict per candidate against the uplift
+yardsticks; defaults change only where those improve; the benchmark is regenerated if
+defaults change.
+
+---
+
+## Issue 13 — Calibrate out the structural headline bias (covariate-shift-weighted baseline residuals) (WS2)
 
 **Goal:** remove the persistent overall-P50 bias: prepost ≈ **−0.4 pp on every profile**
 (F3/F4) and toggle ≈ +0.4 pp at 3 months. The flatness across profiles says it is a model
@@ -368,9 +423,10 @@ the headline rather than the bins, which Issue 8 already fixed).
 - **A/B behind a flag** (the Issue 8 playbook): placebo-centred evaluation across the
   campaign sweep — the win condition is placebo prepost bias → ≈ 0 **without** a spread
   cost at short campaigns (the F7 failure mode to avoid).
-- **Sequencing with Issues 9–11:** run after (or with) the feature trials — better
-  features shrink `b(x)` and therefore the correction; report how much bias remains for
-  the calibration once features improve.
+- **Sequencing with Issues 9–12:** run after (or with) the feature and model trials —
+  better features and a better-calibrated model shrink `b(x)` and therefore the
+  correction (Issue 12's calibration-slope fix is the closest cousin); report how much
+  bias remains for this calibration once those land.
 - Keep the Issue 8 conditional path consistent: the re-level target becomes the
   calibrated headline.
 
@@ -380,7 +436,7 @@ mechanism; benchmark regenerated if the calibration becomes the default.
 
 ---
 
-## Issue 13 — Harden the conditional decomposition: matched-count floor, per-bin balance, re-level coverage (WS2)
+## Issue 14 — Harden the conditional decomposition: matched-count floor, per-bin balance, re-level coverage (WS2)
 
 **Goal:** fix the three known remaining defects of the two-direction conditional
 estimate, so every reported per-bin number is trustworthy or explicitly absent.
@@ -410,7 +466,7 @@ decomposition still energy-aggregates exactly to the headline.
 
 ---
 
-## Issue 14 — AEP uplift: long-term extrapolation design + harness scoring (WS1/WS4)
+## Issue 15 — AEP uplift: long-term extrapolation design + harness scoring (WS1/WS4)
 
 **Goal:** turn the campaign conditional uplift into an **AEP uplift** — the long-term
 annual energy benefit, PR #100's third metric — and score it in the harness against known
@@ -438,7 +494,7 @@ and take the energy-weighted sum of the conditional uplift:
   (matching, uplift bins and long-term weights all on the same treatment-invariant axis).
   Sketch both in a short design note section before coding; the ERA5-axis route avoids a
   post-treatment reporting axis entirely and is likely cleaner for AEP.
-- **Coverage fallback.** Long-term bins with no measured `u_b` (or floored by Issue 13)
+- **Coverage fallback.** Long-term bins with no measured `u_b` (or floored by Issue 14)
   fall back to the overall uplift; report the coverage fraction (share of long-term energy
   in bins with a measured uplift) as a headline diagnostic.
 - **Harness truth + scoring.** The generator knows the true uplift function, so the true
@@ -456,7 +512,7 @@ beats the naive extrapolation baseline on condition-dependent profiles.
 
 ---
 
-## Issue 15 — Uncertainty: campaign & AEP P50 uncertainty with harness coverage scoring (WS4)
+## Issue 16 — Uncertainty: campaign & AEP P50 uncertainty with harness coverage scoring (WS4)
 
 **Goal:** start Phase 3 — report an uncertainty (σ / P95) on the campaign overall P50 and
 the AEP P50, and verify it in the harness per PR #100: the campaign-uplift P95 should sit
@@ -479,6 +535,11 @@ establishes the machinery and a first honest number, not the final uncertainty m
   replicate ensemble, plus mean interval width — so a method cannot win coverage by
   inflating σ. Validate first on the placebo (truth 0), where miscalibration is most
   visible.
+- **Why not quantile regression for P95:** per-row predictive quantiles describe
+  single-timestamp scatter and do not aggregate into a quantile of the campaign *ratio*
+  without independence assumptions the autocorrelated 10-min data violates — hence the
+  block bootstrap. Quantile models stay on the WS4 list for conformal OOD filtering and
+  diagnostics.
 - **AEP P95.** Combine the campaign sampling uncertainty (bootstrap above) with the
   long-term-distribution uncertainty (resample ERA5 *years* to get the inter-annual
   variability of `E_b^LT`). Document explicitly what is in and out of scope of the
@@ -494,7 +555,7 @@ agreed tolerance of nominal on the placebo and the standard profiles.
 
 ## Not in the first wave (tracked for later phases)
 
-- Uncertainty / P95 model beyond Issue 15's first cut: conformal OOD filtering,
+- Uncertainty / P95 model beyond Issue 16's first cut: conformal OOD filtering,
   density-ratio long-term weighting in place of hard CEM subsampling (WS4, Phase 3).
   Density-ratio weighting also reclaims the short-campaign matched-set size the CEM
   subsample throws away (F7 follow-up).
