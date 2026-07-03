@@ -128,7 +128,9 @@ def _cell_codes(matching_frame: pd.DataFrame, bin_edges: dict[str, list[float]])
     """Integer cell code per (row, var); -1 where the value is NaN or outside the var's edges."""
     columns = []
     for var, edges in bin_edges.items():
-        cut = pd.cut(matching_frame[var], bins=edges, labels=False)  # NaN outside edges / on NaN input
+        # include_lowest so a value exactly on the lowest edge (e.g. 0° direction, calm wind) lands in
+        # the first cell rather than becoming NaN and being dropped as if out of range.
+        cut = pd.cut(matching_frame[var], bins=edges, labels=False, include_lowest=True)  # NaN outside / on NaN
         columns.append(cut.to_numpy(dtype=float))
     stacked = np.column_stack(columns)
     return np.where(np.isfinite(stacked), stacked, -1.0).astype(int)

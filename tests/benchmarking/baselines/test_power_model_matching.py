@@ -52,8 +52,9 @@ class TestEqualCounts:
     def test_equal_counts_within_every_retained_cell(self) -> None:
         result = _match()
         retained = result.per_cell[result.per_cell["n_matched"] > 0]
-        # after matching each retained cell has the same count on both sides
-        assert (retained["n_matched"] == retained["n_matched"]).all()
+        # after matching each retained cell keeps min(before) rows per side (equalised), and > 0
+        assert (retained["n_matched"] == retained[["n_baseline", "n_upgraded"]].min(axis=1)).all()
+        assert (retained["n_matched"] > 0).all()
         # cell A keeps 1/side, cell B keeps 2/side
         assert sorted(retained["n_matched"].tolist()) == [1, 2]
 
