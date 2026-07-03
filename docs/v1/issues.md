@@ -181,9 +181,12 @@ clip change, and the improvement is readable from it without ad-hoc digging.
 
 ## Issue 8 — Cross-prediction bias-cancellation for shrinkage-driven conditional bias (power_model)
 
-**Goal:** remove the counterfactual model's conditional (shrinkage) bias — the F5 root
+**Goal:** remove the counterfactual model's **per-condition** (shrinkage) bias — the F5 root
 cause — by cancelling it between two symmetric train/predict directions on weather-matched
-data. Applies to both the overall and per-condition estimates.
+data. The overall P50 is left as the single full-window fit (its whole-window shrinkage
+integrates to ≈0, so it is already the cleanest headline); the two-direction correction is
+spent on the per-condition decomposition, which is then re-leveled so its energy aggregation
+equals that headline (F8).
 
 **Scope**
 - **Matching-variable analysis (one-off, do first).** On Hill of Towie, run a feature-
@@ -202,15 +205,24 @@ data. Applies to both the overall and per-condition estimates.
   `uplift = sqrt((1+r_fwd)/(1+r_rev)) − 1` (exact under a common per-bin multiplicative
   shrinkage); also emit implied bias `1/sqrt((1+r_fwd)(1+r_rev))` as a diagnostic. Guard
   non-positive `(1+r)` and empty/sparse bins.
-- **Opt-in flag** (e.g. `bias_correct: bool = False`) so the corrected overall +
-  conditional can be A/B'd against current behaviour before any default flips.
+- **Default, not opt-in.** The matched two-direction cross-prediction is the **sole**
+  conditional-uplift method and is **on by default** via `conditional_uplift: bool = True` on
+  `PowerModelMethod` (an A/B `bias_correct` flag was used during development, then removed once
+  the approach won). It requires ERA5 (the matching axis) and runs **last** — nothing else
+  depends on it — so `conditional_uplift=False` skips the expensive cross-prediction and returns
+  only the overall P50. Per-run outputs: conditional CSVs in a `conditional/` subfolder, the
+  implied-shrinkage plot in `plots/7_conditional_uplift/`.
 - Reuse the existing outcome model factory (`make_outcome_model`) and `CONDITION_BINS`;
-  extend diagnostics to overlay corrected vs current conditional curves against truth.
+  diagnostics carry the implied-shrinkage `1/sqrt((1+r_fwd)(1+r_rev))` and the CEM balance, and
+  `study_power_model_compare.py` overlays the committed benchmark vs the current run vs truth per
+  covered `(profile, condition)` (a benchmark regression view).
 
-**Done when:** with the flag on, `study_power_model_compare.py` (Issue 7) shows the
-`ti_dependent_cp` / `ws_dependent_cp` conditional curves materially flatter toward truth
-and the overall P50 no worse than today; a regression test recovers a known condition-
-dependent uplift more accurately with correction on than off; findings.md updated.
+**Done when:** `study_power_model_compare.py` (Issue 7) shows the `ti_dependent_cp` /
+`ws_dependent_cp` conditional curves materially flatter toward truth with the overall P50
+unchanged; a regression test recovers a known flat-zero placebo per-condition uplift to a small
+absolute per-bin bias (the shrinkage tilt cancelled); findings.md updated. *Shipped 2026-07-03:
+overall P50 bit-identical, conditional score roughly halved (prepost mean |bias| 18.2→6.3 pp,
+toggle 13.0→4.1 pp) and the benchmark regenerated under the new default.*
 
 ---
 
