@@ -7,6 +7,40 @@ from, not just conclusions.
 
 ---
 
+## F9 — the matched two-direction conditional cross-prediction shipped as the sole conditional method, on by default
+
+*2026-07-03 — Issue 8 ship. The F7/F8 development-time A/B flag `bias_correct` is **removed**; the
+matched two-direction cross-prediction is now the sole conditional-uplift path, controlled by
+`PowerModelMethod.conditional_uplift: bool = True` (**default on**). Current helpers:
+`PowerModelMethod._estimate_conditional` (ERA5 match + forward/reverse fits) and `_conditional_by_bin`
+(the re-leveled per-bin shape); the pure re-level helper `_relevel_conditional` is unchanged. Re-run
+via `study_power_model_compare.py` (Issue 7), which overlays the committed benchmark vs the current run
+vs truth per covered `(profile, condition)`.*
+
+### What shipped (supersedes the F8 "still opt-in" decision)
+- **Default flip.** F8 left the correction opt-in pending an A/B verdict; that verdict came in and it
+  became the default. `conditional_uplift=False` still skips the expensive cross-prediction and returns
+  overall-P50 only, so the opt-out remains for the ERA5-less / overall-only configuration.
+- **Overall P50 unchanged, by construction.** The headline is still the single full-window fit
+  (F8): the ship is bit-identical on overall P50 (max |Δ bias| ≤ 1e-4 pp both modes) — the correction
+  is spent only on the per-condition decomposition.
+- **Conditional accuracy roughly halved.** Over the condition-dependent + placebo profiles, mean per-bin
+  |bias| falls **prepost 18.2 → 6.3 pp**, **toggle 13.0 → 4.1 pp** (score prepost 22.6 → 10.2, toggle
+  18.2 → 8.0); ~87% of covered bins improve. The remaining worse bins are the rare sparse tails (tiny
+  counts, both methods noise) — the F7 sparse-extreme overshoot, left unfloored by choice (F8).
+
+### Packaging
+- **One run folder**, not four: conditional CSVs under a `conditional/` subfolder, the implied-shrinkage
+  diagnostic under `plots/7_conditional_uplift/`. The `implied_shrinkage` diagnostic stays on the public
+  surface; the "bias correct(ed)" naming is gone.
+- **Benchmark JSON regenerated** under the new default; `docs/v1/issues.md` Issue 8 updated to match.
+
+### Implications / follow-ups (carried from F7/F8)
+- A per-reporting-bin matched-count floor for the sparse-extreme overshoot (the handful of worse bins).
+- Density-ratio weighting (WS4) to enlarge the short-campaign matched set.
+
+---
+
 ## F8 — the self-consistent correction: keep the uncorrected full-data headline, re-level the matched decomposition onto it — overall now no worse
 
 *2026-07-02 — Issue 8, the fix for F7's headline cost. Same A/B command

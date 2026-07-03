@@ -279,9 +279,12 @@ class PowerModelMethod:
         )
 
         # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
-        # it (eventually AEP extrapolation will). Skipped entirely when conditional_uplift is off.
+        # it (eventually AEP extrapolation will). Skipped when conditional_uplift is off, or when there is no
+        # wind_speed_col — the per-(ws, TI) decomposition needs it, so without it the expensive ERA5 match +
+        # two-direction fits would run only for _conditional_by_bin to return None (and could raise a spurious
+        # missing-ERA5 error).
         by_condition: pd.DataFrame | None = None
-        if self.conditional_uplift:
+        if self.conditional_uplift and self.wind_speed_col is not None:
             by_condition = self._estimate_conditional(
                 scada,
                 mi=mi,

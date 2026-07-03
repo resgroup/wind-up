@@ -212,7 +212,9 @@ def run_power_model(mode: str, out_dir: Path, *, profiles: list[str] | None = No
 
     all_results = []
     for profile_name, profile in _select_profiles(profiles).items():
-        method = _make_power_model(out_dir, era5_hourly_df=context.reanalysis_datasets[0].data)
+        # Per-profile subfolder: the method's run dir is power_model_<wtg>_<start>_<end> (no profile), so
+        # profiles sharing a (wtg, window) would otherwise overwrite each other's non-timestamped diagnostics.
+        method = _make_power_model(out_dir / profile_name, era5_hourly_df=context.reanalysis_datasets[0].data)
         logger.info("Scoring %s profile %s with power_model", mode, profile_name)
         results = score_study(
             scada_df,

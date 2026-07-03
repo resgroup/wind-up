@@ -104,6 +104,12 @@ def coarsened_exact_match(
         msg = f"matching_frame is missing matching columns {missing}; have {list(matching_frame.columns)}"
         raise ValueError(msg)
 
+    n_rows = len(matching_frame)
+    for name, sel in (("baseline_sel", baseline_sel), ("upgraded_sel", upgraded_sel)):
+        if np.asarray(sel).shape != (n_rows,):
+            msg = f"{name} shape {np.asarray(sel).shape} does not align to matching_frame's {n_rows} rows"
+            raise ValueError(msg)
+
     codes = _cell_codes(matching_frame, bin_edges)
     valid_cell = np.all(codes >= 0, axis=1)  # -1 marks a NaN/out-of-range value in some var
     base = np.flatnonzero(np.asarray(baseline_sel, dtype=bool) & valid_cell)
