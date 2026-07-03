@@ -1,14 +1,21 @@
 # wind-up v1 — first issues (drafts)
 
-Drafts of the first concrete issues, to be refined here and then created as GitHub
-issues on `resgroup/wind-up`. These cover **Phase 1** only (see
+Drafts of the concrete issues, to be refined here and then created as GitHub
+issues on `resgroup/wind-up`. Issues 1–8 cover **Phase 1** (see
 [roadmap.md](roadmap.md)): the public evaluation harness, the v0 baseline, the
-minimal data contract, and the first new candidate method — all judged on **P50
-accuracy and precision only**.
+minimal data contract, and the first new candidate methods — all judged on **P50
+accuracy and precision only**. Issues 9+ are the **second wave**, drafted after
+Issue 8 shipped: improving `power_model` (the current best method) on overall and
+conditional P50, then extending the measurement to AEP uplift and starting the
+uncertainty (Phase 3 / WS4) work.
 
-Suggested order of execution: #1 → #2 → #3 → #4 → #5. (Issue 4 was originally a data
-contract + method-selector issue; it has been re-scoped to a naive energy-ratio method —
-see Issue 4 below for why.)
+Suggested order of execution: #1 → #2 → #3 → #4 → #5 (done), then
+#9 → #10 → #11 → #12 → #13 → #14 → #15. (#9–#11 are independent input-data /
+feature trials sharing one evaluation protocol — many ideas, each tested one by one;
+#13 is small and independent, so it can be pulled earlier; #15 builds on #14's AEP
+machinery, so it goes last.) (Issue 4 was originally a data contract +
+method-selector issue; it has been re-scoped to a naive energy-ratio method — see
+Issue 4 below for why.)
 
 ---
 
@@ -226,13 +233,275 @@ toggle 13.0→4.1 pp) and the benchmark regenerated under the new default.*
 
 ---
 
+## Issue 9 — ERA5 feature engineering: derived quantities + hub-height interpolation (WS2)
+
+**Goal:** use ERA5 better. Today the model consumes the raw Open-Meteo columns (plus
+direction sin/cos); derive the physically meaningful, §3-legal quantities that actually
+drive turbine power and its scatter — including a turbulence proxy, which the model
+currently lacks entirely (the F5 root cause: the §3 rule denies it the test turbine's own
+ws/TI, so its residuals correlate with TI). This issue also establishes the shared
+**candidate-by-candidate evaluation protocol** that Issues 10–11 reuse.
+
+**Evaluation protocol (shared by Issues 9–11).** There are many ideas for improving the
+input data available to the model; they must be tested **one by one** (or in the smallest
+sensible groups) so each one's effect is known. Per candidate: add it, A/B via
+`study_power_model_compare.py` against the committed benchmark, and accept only what earns
+its place. Gates: **overall P50 no worse** — the placebo prepost bias is the sharpest read
+(a feature that imports temporal drift shows up there); **conditional** mean |bias| /
+`implied_shrinkage` improved or neutral; **feature importance sane** (the F2 lesson: a
+channel can act as a calendar proxy; the Issue 5 voltage lesson: importance diagnostics
+are the giveaway). Record every accepted **and rejected** candidate with evidence in
+`findings.md`; regenerate the benchmark JSON whenever a default changes.
+
+**Scope (the ERA5 candidates)**
+- **Hub-height wind speed.** New optional `hub_height_m` config (Hill of Towie = 59 m).
+  Compute the local shear exponent `alpha = ln(ws_100m/ws_10m)/ln(10)` per row and
+  interpolate with the shear power law: `ws_hh = ws_100m · (hh/100)^alpha`.
+- **Gust turbulence proxy:** `wind_gusts_10m / wind_speed_10m` — a unitless, TI-like
+  quantity (guard the calm-wind denominator).
+- **Shear exponent** `alpha` as a feature in its own right (F6 already validated it as a
+  real independent signal and folded out the 10 m/100 m collinearity), **vertical veer**
+  (`wind_direction_100m − wind_direction_10m`, wrapped to ±180°), **air density** (from
+  temperature + surface pressure + humidity), and a **stability indicator** if the
+  available fields allow.
+- Build as a **shared ERA5-derivation utility** so every method *and* the CEM matching
+  step reuse it (the shear derivation currently lives only in
+  `inspect_era5_matching_importance.py`).
+- Optionally revisit `matching_vars` afterwards (e.g. the gust proxy or `alpha` in place
+  of raw gusts, per F6's deferral) — a separate benchmark regeneration if taken.
+
+**Done when:** the derivation utility exists with unit tests (known-input checks); every
+candidate has an accept/reject verdict recorded in `findings.md`; the benchmark is
+regenerated under the accepted default set with overall P50 and conditional no worse.
+
+---
+
+## Issue 10 — Time features: campaign-relative drift, season, solar position (WS2)
+
+**Goal:** today the timestamp is dropped before modelling, so the model cannot know about
+anything that varies with time but not weather. Trial explicitly-constructed time features
+— the headline motivation is **reference turbines changing over time**, a major bias risk
+and one of the main challenges the method must deal with: a drift feature gives the model
+a chance to absorb reference change instead of attributing it to the upgrade.
+
+**Scope (one by one, per the Issue 9 protocol)**
+- **`time_since_campaign_start`** in days (negative in the baseline). Lets the model track
+  slow reference change relative to the campaign.
+- **Time of year:** Julian day offset to a meteorologically meaningful anchor (say
+  June 21), split into sin/cos components — tells the model roughly what season it is,
+  potentially useful beyond the instantaneous weather data.
+- **Time of day, as solar altitude + azimuth** computed from an optional lat/long config
+  and the UTC timestamp (a physically meaningful encoding of diurnal cycle; calculation
+  code exists in other projects and can be ported).
+- **Known caveats to test against, not reasons to skip.** In prepost,
+  `time_since_campaign_start` is treatment-collinear, and trees cannot extrapolate — for
+  upgraded rows the feature exceeds every training value, so predictions clamp at the
+  boundary leaves: it can encode baseline-internal drift but freezes it at the changeover.
+  Season features against a < 12-month baseline are partial calendar proxies. Whether each
+  helps or imports bias is exactly what the placebo gate decides — run it at multiple
+  campaign lengths in **both** modes before accepting.
+- The R-learner's "no timestamp features" rule (later-work list) was about shuffled
+  cross-fitting; power_model has no cross-fitting, so trialling these is legitimate — but
+  a time feature dominating the importance ranking is a red flag.
+
+**Done when:** each time feature has an accept/reject verdict with placebo evidence in
+both modes in `findings.md`; the benchmark is regenerated if any are accepted.
+
+---
+
+## Issue 11 — Reference power statistics features (max / min / SD) (WS2)
+
+**Goal:** give the counterfactual a local variability/turbulence signal through the most
+**calibration-stable channel** — the reference power signal. Bring in each reference's
+active-power **max, min and SD** companion fields (present in the Hill of Towie open
+data; usually available from any wind farm). Within-period power SD in particular is a
+§3-legal turbulence proxy, sited at the farm rather than at ERA5's grid scale.
+
+**Why reference power and not reference wind speed:** reference nacelle wind speed /
+wind-speed SD were considered and **rejected**. A reference anemometer is at high risk of
+changing calibration over time; in a prepost campaign that drift would be read as uplift
+(a toggle campaign might tolerate it, but prepost and toggle share one code path, so the
+risky feature stays out of both). Reference *power* is more likely to be stable — and
+since references are usually the same turbine type as the test turbine, exposed to the
+same performance-degradation tendencies, it leads to a fairer expectation of what the
+test turbine could have produced.
+
+**Scope**
+- Wire the max/min/SD active-power fields through `build_reference_features` (same
+  `"<tag> @ <turbine>"` naming; NaN-tolerant as today; `check_reference_only` still
+  applies). Column names configurable like the existing `active_power_col`.
+- A/B per the Issue 9 protocol: one field (or the trio) at a time, placebo gate,
+  importance watch — power max/min/SD could in principle carry a drift signature too
+  (e.g. a reference derate changes its max), which is precisely what the placebo run
+  detects.
+- Confirm the harness/synthetic path carries these columns unmodified for reference
+  turbines (only the test turbine's signals are injected).
+
+**Done when:** verdict per field recorded in `findings.md`; benchmark regenerated if
+accepted; the rejected reference-anemometer alternative and its rationale are noted in
+the findings entry.
+
+---
+
+## Issue 12 — Calibrate out the structural headline bias (covariate-shift-weighted baseline residuals) (WS2)
+
+**Goal:** remove the persistent overall-P50 bias: prepost ≈ **−0.4 pp on every profile**
+(F3/F4) and toggle ≈ +0.4 pp at 3 months. The flatness across profiles says it is a model
+artefact, not effect-dependent. Mechanism: the model's conditional bias `b(x)` integrates
+to ≈ 0 over the *training* (baseline) covariate mix, but the headline evaluates it over
+the *upgraded* window's mix — any weather/seasonal shift between the windows converts
+conditional bias into headline bias. Estimate that term on untreated data and subtract it
+(this is F5's implication #1, baseline-residual calibration, never actioned — aimed at
+the headline rather than the bins, which Issue 8 already fixed).
+
+**Scope**
+- **Time-blocked baseline cross-validation.** Replace the random 20% holdout in
+  `_holdout_fit` with contiguous time blocks (out-of-fold prediction for every baseline
+  row). The current shuffled split leaks autocorrelation (holdout rows sit minutes from
+  training rows), so its residuals are optimistic — fine as a display, unusable as a
+  calibration basis. This also makes the step-5 fit-quality diagnostics honest.
+- **The calibration.** From the out-of-fold baseline residuals, estimate the mean residual
+  per ERA5 cell (reuse the CEM coarsening); weight cells by the *upgraded* window's
+  occupancy to get the expected headline bias under the upgraded mix; subtract it from
+  `Σcounterfactual` (guard cells unseen in baseline — fall back to the global mean
+  residual). Prepost first; check whether the same lever explains the 3-month toggle bias.
+- **A/B behind a flag** (the Issue 8 playbook): placebo-centred evaluation across the
+  campaign sweep — the win condition is placebo prepost bias → ≈ 0 **without** a spread
+  cost at short campaigns (the F7 failure mode to avoid).
+- **Sequencing with Issues 9–11:** run after (or with) the feature trials — better
+  features shrink `b(x)` and therefore the correction; report how much bias remains for
+  the calibration once features improve.
+- Keep the Issue 8 conditional path consistent: the re-level target becomes the
+  calibrated headline.
+
+**Done when:** pooled prepost |bias| materially reduced (target ≲ 0.1–0.2 pp on the
+placebo) at no spread cost at any campaign length; findings entry quantifying the
+mechanism; benchmark regenerated if the calibration becomes the default.
+
+---
+
+## Issue 13 — Harden the conditional decomposition: matched-count floor, per-bin balance, re-level coverage (WS2)
+
+**Goal:** fix the three known remaining defects of the two-direction conditional
+estimate, so every reported per-bin number is trustworthy or explicitly absent.
+
+**Scope**
+- **Per-reporting-bin matched-count floor** (the F7/F9 follow-up): below a minimum matched
+  count per side in a reporting bin, report NaN (or fall back to the overall uplift)
+  instead of the overshooting two-direction combine, and carry a coverage flag in the
+  conditional CSV. Kills the sparse-extreme swings (e.g. TI (0.45,0.50] −77 → +93 pp).
+- **Per-reporting-bin balance.** The shrinkage-cancellation premise is *per bin*, but CEM
+  equalises the ERA5-cell mix only globally — within one ws/TI reporting bin the forward
+  and reverse row sets can still have different weather mixes. Post-stratify: within each
+  reporting bin, reweight the two directions' rows to a common ERA5-cell weighting (no new
+  model fits needed). Measure whether it moves the per-bin bias before adopting.
+- **Re-level coverage fix.** `_relevel_conditional` computes the aggregation over
+  covered (finite-shape) bins only, but the target `1+overall` includes the energy of
+  *uncovered* bins — so covered bins absorb the uncovered bins' MWh and λ is tilted when
+  coverage is imperfect. Impute uncovered bins at the overall uplift (or exclude their
+  energy from the target) so coverage gaps stop leaking into covered-bin estimates; with
+  the floor above creating more NaN bins, this matters more than today.
+- Unit tests for the floor, the imputation, and the reweighting; A/B via
+  `study_power_model_compare.py` as usual.
+
+**Done when:** the sparse-extreme bins are no longer the "worse than benchmark" set
+(fixed or absent by the floor); conditional mean |bias| no worse overall; the
+decomposition still energy-aggregates exactly to the headline.
+
+---
+
+## Issue 14 — AEP uplift: long-term extrapolation design + harness scoring (WS1/WS4)
+
+**Goal:** turn the campaign conditional uplift into an **AEP uplift** — the long-term
+annual energy benefit, PR #100's third metric — and score it in the harness against known
+ground truth. The core idea: choose the condition axes from the nature of the upgrade
+(wind speed only for most upgrades; add wind direction etc. for complex upgrades like
+wake steering), estimate the **long-term MWh distribution** over those condition bins,
+and take the energy-weighted sum of the conditional uplift:
+`AEP uplift = Σ_b E_b^LT · (1+u_b) / Σ_b E_b^LT − 1`.
+
+**Scope**
+- **Upgrade-nature-driven condition axes.** A config on the method/driver naming the
+  binning axes for extrapolation (default `("ws",)`; wake steering `("ws", "wd")`, …).
+  Generalise the Issue 8 conditional machinery to produce `u_b` on those axes (today it
+  emits ws and TI *marginals*; direction and joint axes need the same treatment).
+- **Long-term energy distribution `E_b^LT`.** Two candidate sources, decided in design:
+  (a) long on-site SCADA history binned on measured conditions (simple, but needs years
+  of history and stationary sensors); (b) long-term ERA5 (10–20 y) driven through the
+  campaign-learned relation between ERA5 and the test turbine's conditions/energy — e.g.
+  the baseline counterfactual model evaluated over the long-term ERA5 record, or an
+  ERA5-cell occupancy map × per-cell mean energy from the campaign. (b) is preferred
+  (works for any site, matches the WS4 density-ratio framing).
+- **The axis-consistency question (design decision).** Conditional uplift is binned on
+  test-measured ws/TI, but the long-term record is ERA5 — either learn the ERA5→test-axis
+  transfer on the campaign overlap, or run the AEP path end-to-end on the ERA5 axis
+  (matching, uplift bins and long-term weights all on the same treatment-invariant axis).
+  Sketch both in a short design note section before coding; the ERA5-axis route avoids a
+  post-treatment reporting axis entirely and is likely cleaner for AEP.
+- **Coverage fallback.** Long-term bins with no measured `u_b` (or floored by Issue 13)
+  fall back to the overall uplift; report the coverage fraction (share of long-term energy
+  in bins with a measured uplift) as a headline diagnostic.
+- **Harness truth + scoring.** The generator knows the true uplift function, so the true
+  AEP uplift per replicate is the injected profile applied over the **full multi-year
+  dataset** (not just the campaign window); score `estimate − truth` with the same
+  bias/spread/score metrics and campaign-length sweep. Include a naive extrapolation
+  baseline (`AEP uplift = campaign overall uplift`) — the bar to beat, which only a
+  condition-dependent profile can separate from the real thing.
+- **A direction-dependent (wake-steering-shaped) profile** in the generator, so the
+  "bin by direction" path is actually exercised (listed in Issue 1, never implemented).
+
+**Done when:** the design decision (axis strategy) is recorded; the harness emits AEP
+truth and scores; `power_model` produces an AEP estimate on at least the ws axis and
+beats the naive extrapolation baseline on condition-dependent profiles.
+
+---
+
+## Issue 15 — Uncertainty: campaign & AEP P50 uncertainty with harness coverage scoring (WS4)
+
+**Goal:** start Phase 3 — report an uncertainty (σ / P95) on the campaign overall P50 and
+the AEP P50, and verify it in the harness per PR #100: the campaign-uplift P95 should sit
+below the true uplift ~95% of the time. (P50 accuracy work stays the priority; this issue
+establishes the machinery and a first honest number, not the final uncertainty model.)
+
+**Scope**
+- **Method-side estimator: circular block bootstrap** over time blocks of the baseline
+  and upgraded rows (block length ≥ the residual autocorrelation scale, likely ~1 day).
+  Two variants to compare on a small grid: *cheap* (fix the fitted model, resample the
+  (actual, counterfactual) pairs → distribution of the energy ratio) and *full* (refit the
+  model per resample — captures model-fit noise, ~50–100× the cost). Emit σ and empirical
+  quantiles; P95 = P50 − 1.645σ under normality or the empirical quantile, whichever the
+  data supports.
+- **Seam extension (additive).** Optional uncertainty fields on `MethodOutput`
+  (e.g. `sigma_overall`, `p95_overall`, per-bin σ) — `None` for methods that don't emit
+  them, no breaking change to existing methods.
+- **Harness scoring.** Coverage = fraction of (replicate × campaign) cases with
+  `truth ≥ P95` (target 0.95), plus a calibration read at 2–3 more quantiles using the
+  replicate ensemble, plus mean interval width — so a method cannot win coverage by
+  inflating σ. Validate first on the placebo (truth 0), where miscalibration is most
+  visible.
+- **AEP P95.** Combine the campaign sampling uncertainty (bootstrap above) with the
+  long-term-distribution uncertainty (resample ERA5 *years* to get the inter-annual
+  variability of `E_b^LT`). Document explicitly what is in and out of scope of the
+  reported number (e.g. model-form error and sensor drift are out, for now).
+- Cross-check the block bootstrap design against v0's existing bootstrap (`wind_up`
+  uncertainty machinery) — same idea, method-appropriate implementation; no v0 import.
+
+**Done when:** `power_model` emits σ/P95 for campaign and AEP uplift; the harness reports
+coverage and interval width per profile × campaign length; observed coverage is within an
+agreed tolerance of nominal on the placebo and the standard profiles.
+
+---
+
 ## Not in the first wave (tracked for later phases)
 
-- Uncertainty / P95 model: block bootstrap, conformal OOD, density-ratio long-term
-  weighting (WS4, Phase 3).
+- Uncertainty / P95 model beyond Issue 15's first cut: conformal OOD filtering,
+  density-ratio long-term weighting in place of hard CEM subsampling (WS4, Phase 3).
+  Density-ratio weighting also reclaims the short-campaign matched-set size the CEM
+  subsample throws away (F7 follow-up).
 - Further candidate methods: DSWE / `funGP`, Astolfi multivariate-linear (WS2,
   Phase 2).
-- Conditional/heterogeneous uplift reporting & SHAP story (G3, Phase 2).
+- Conditional/heterogeneous uplift reporting & SHAP story beyond ws/TI/direction
+  bins (G3, Phase 2).
 - Report content generation and I/O / step-independence maturation (WS5, Phase 4).
 - **Method-controlled baseline horizon / recency weighting (R-learner).** Today the R-learner
   pools *all* pre-upgrade baseline it is given (e.g. 24 months) into the nuisance fits with equal
@@ -244,15 +513,5 @@ toggle 13.0→4.1 pp) and the benchmark regenerated under the new default.*
   harness, decides how far back to trust. Keep it compatible with the no-timestamp-feature rule
   (weighting/selection by recency is fine; calendar features are not) and the block bootstrap.
   Pairs naturally with the long-term ERA5 extrapolation work (representativeness weighting, WS4).
-- **Derived ERA5 atmospheric features.** Today the methods consume ERA5 mostly as raw
-  Open-Meteo columns. Derive the physically-meaningful quantities that actually drive turbine
-  power and its scatter, all §3-legal (reanalysis, upgrade-invariant): **air density** (from
-  temperature + pressure + humidity), **vertical shear exponent** and **vertical veer** (from the
-  10 m / 100 m wind speed and direction pairs), and **atmospheric stability indicators** —
-  **bulk Richardson number** and **Monin–Obukhov length** (from the near-surface gradients + heat
-  flux fields). These are better features for the counterfactual/outcome models than the raw
-  levels, and — crucially for Issue 8 — strong candidate **CEM matching variables** and TI/shear
-  proxies that directly attack the F5 shrinkage cause (the §3 rule denies the model the test
-  turbine's own turbulence, so a treatment-invariant stability/shear proxy is the principled
-  substitute). Build as a shared ERA5-derivation utility so every method and the matching step
-  reuse it. Pairs with the matching-variable analysis (Issue 8) and the long-term ERA5 work (WS4).
+- ~~**Derived ERA5 atmospheric features.**~~ Promoted into **Issue 9** (air density, shear
+  exponent, veer, stability indicators as a shared ERA5-derivation utility).
