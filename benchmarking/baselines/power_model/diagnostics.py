@@ -204,7 +204,7 @@ def write_csvs(run_dir: Path, run_name: str, ts: str, data: DiagnosticData) -> p
     return importance
 
 
-def write_bias_correction_csvs(
+def write_conditional_csvs(
     run_dir: Path,
     run_name: str,
     ts: str,
@@ -213,17 +213,17 @@ def write_bias_correction_csvs(
     per_bin: pd.DataFrame | None,
     match: Any,  # noqa: ANN401 - MatchResult (avoids importing the matching module into diagnostics)
 ) -> None:
-    """Write the two-direction bias-correction diagnostics: implied shrinkage ``s`` + the CEM balance.
+    """Write the conditional-step diagnostics: implied shrinkage ``s`` + the CEM balance.
 
-    ``overall`` is the single-row headline (both directions' ratios, the corrected uplift, and the
-    implied shrinkage that was cancelled); ``per_bin`` the same per (ws, TI) bin; ``match`` the CEM
-    balance/coverage (retained fractions, effective sample size, one-sided cells dropped) plus the
-    per-cell counts. Together they show, for one case, how much conditional bias the correction removed
-    and how healthy the matching was.
+    ``overall`` is the single-row headline (both directions' ratios, the headline uplift, and the
+    implied shrinkage the two directions cancelled); ``per_bin`` the same per (ws, TI) bin; ``match`` the
+    CEM balance/coverage (retained fractions, effective sample size, one-sided cells dropped) plus the
+    per-cell counts. Together they show, for one case, how much conditional shrinkage was cancelled and
+    how healthy the matching was. ``run_dir`` is the run's ``conditional/`` subfolder.
     """
-    pd.DataFrame([overall]).to_csv(run_dir / f"{run_name}_bias_correction_overall_{ts}.csv", index=False)
+    pd.DataFrame([overall]).to_csv(run_dir / f"{run_name}_conditional_overall_{ts}.csv", index=False)
     if per_bin is not None:
-        per_bin.to_csv(run_dir / f"{run_name}_bias_correction_by_bin_{ts}.csv", index=False)
+        per_bin.to_csv(run_dir / f"{run_name}_conditional_by_bin_{ts}.csv", index=False)
     balance = {
         "n_baseline_in": match.n_baseline_in,
         "n_upgraded_in": match.n_upgraded_in,

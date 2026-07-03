@@ -29,14 +29,12 @@ from benchmarking.baselines.study_power_model_compare import (
 from benchmarking.harness import StudyConfig
 
 
-def test_make_power_model_sets_bias_correct(tmp_path: Path) -> None:
+def test_make_power_model_defaults_to_conditional_on(tmp_path: Path) -> None:
     era5 = pd.DataFrame({"wind_speed_100m": [1.0]})
-    on = _make_power_model(tmp_path, era5_hourly_df=era5, bias_correct=True)
-    off = _make_power_model(tmp_path, era5_hourly_df=era5, bias_correct=False)
-    assert on.bias_correct is True
-    assert off.bias_correct is False
-    # the corrected method still matches on the F6 set by default
-    assert on.matching_vars == ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
+    method = _make_power_model(tmp_path, era5_hourly_df=era5)
+    # the compare sweep runs power_model at its default: conditional uplift on, matching on the F6 set
+    assert method.conditional_uplift is True
+    assert method.matching_vars == ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
 
 
 def test_power_model_leaderboard_includes_overall_and_conditional_cells() -> None:

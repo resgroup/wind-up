@@ -77,6 +77,7 @@ class TestRecovery:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
+            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -94,6 +95,7 @@ class TestRecovery:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
+            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
@@ -111,6 +113,7 @@ class TestRecovery:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
+            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -148,6 +151,7 @@ class TestReferenceOnly:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
+            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -199,6 +203,7 @@ class TestConditionalUplift:
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
             wind_speed_sd_col=_WS_SD,
+            era5_hourly_df=_toy_era5(idx),  # conditional uplift (default on) matches on ERA5 weather
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -218,6 +223,7 @@ class TestConditionalUplift:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
+            era5_hourly_df=_toy_era5(idx),  # conditional uplift (default on) matches on ERA5 weather
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -290,7 +296,7 @@ class TestCombineDirections:
         assert np.isnan(out).tolist() == [True, True]
 
 
-class TestBiasCorrect:
+class TestConditional:
     def test_requires_era5(self) -> None:
         n = 300
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
@@ -301,8 +307,7 @@ class TestBiasCorrect:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
-            bias_correct=True,  # but no era5_hourly_df
-            model_params=_FAST_PARAMS,
+            model_params=_FAST_PARAMS,  # conditional on by default, but no era5_hourly_df -> must raise
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
         with pytest.raises(ValueError, match="ERA5"):
@@ -321,7 +326,6 @@ class TestBiasCorrect:
             wind_speed_col=_WS,
             wind_speed_sd_col=_WS_SD,
             era5_hourly_df=_toy_era5(idx),
-            bias_correct=True,
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -331,7 +335,7 @@ class TestBiasCorrect:
         assert set(out.p50_by_condition["condition"]) == {"ws", "ti"}
         assert list(out.p50_by_condition.columns) == ["condition", "condition_bin", "p50_uplift"]
 
-    def test_overall_equals_uncorrected_and_bins_aggregate_to_it(self, tmp_path: Path) -> None:
+    def test_overall_matches_conditional_off_and_bins_aggregate_to_it(self, tmp_path: Path) -> None:
         n = 4000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = idx[n // 2]
@@ -347,15 +351,15 @@ class TestBiasCorrect:
             "model_params": _FAST_PARAMS,
         }
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        uncorrected = PowerModelMethod(**config).estimate(mi).p50_overall
-        method = PowerModelMethod(**config, bias_correct=True, out_dir=tmp_path)
+        overall_only = PowerModelMethod(**config, conditional_uplift=False).estimate(mi).p50_overall
+        method = PowerModelMethod(**config, out_dir=tmp_path)  # conditional on by default
         out = method.estimate(mi)
 
-        # 1. the headline is the uncorrected full-data estimate, unchanged by the correction
-        assert out.p50_overall == pytest.approx(uncorrected, rel=1e-9)
+        # 1. the headline is the single full-data fit; computing the conditional step leaves it unchanged
+        assert out.p50_overall == pytest.approx(overall_only, rel=1e-9)
         # 2. self-consistency: each of the ws and ti decompositions energy-aggregates back to that overall
         run_dir = next(p for p in tmp_path.iterdir() if p.is_dir())
-        by_bin = pd.read_csv(next(run_dir.glob("*_bias_correction_by_bin_*.csv")))
+        by_bin = pd.read_csv(next((run_dir / "conditional").glob("*_conditional_by_bin_*.csv")))
         for _cond, g in by_bin.groupby("condition"):
             good = g[np.isfinite(g["p50_uplift"])]
             agg = good["sum_actual"].sum() / (good["sum_actual"] / (1.0 + good["p50_uplift"])).sum()
@@ -374,7 +378,6 @@ class TestBiasCorrect:
             wind_speed_col=_WS,
             wind_speed_sd_col=_WS_SD,
             era5_hourly_df=_toy_era5(idx),
-            bias_correct=True,
             out_dir=tmp_path,
             model_params=_FAST_PARAMS,
         )
@@ -383,11 +386,11 @@ class TestBiasCorrect:
 
         run_dirs = [p for p in tmp_path.iterdir() if p.is_dir()]
         assert len(run_dirs) == 1
-        run_dir = run_dirs[0]
-        overall = pd.read_csv(next(run_dir.glob("*_bias_correction_overall_*.csv")))
-        by_bin = pd.read_csv(next(run_dir.glob("*_bias_correction_by_bin_*.csv")))
-        balance = pd.read_csv(next(run_dir.glob("*_cem_balance_*.csv")))
-        assert next(run_dir.glob("*_cem_cells_*.csv"), None) is not None
+        conditional_dir = run_dirs[0] / "conditional"
+        overall = pd.read_csv(next(conditional_dir.glob("*_conditional_overall_*.csv")))
+        by_bin = pd.read_csv(next(conditional_dir.glob("*_conditional_by_bin_*.csv")))
+        balance = pd.read_csv(next(conditional_dir.glob("*_cem_balance_*.csv")))
+        assert next(conditional_dir.glob("*_cem_cells_*.csv"), None) is not None
         # implied shrinkage s is surfaced overall and per-bin; matched weather -> s ~ 1
         assert "implied_shrinkage" in overall.columns
         assert overall["implied_shrinkage"].iloc[0] == pytest.approx(1.0, abs=0.1)
@@ -428,37 +431,32 @@ def _ws_bin_bias(by_condition: pd.DataFrame) -> pd.Series:
     return ws.set_index("condition_bin")["p50_uplift"]
 
 
-class TestBiasCorrectionRegression:
-    def test_correction_flattens_per_bin_shrinkage_at_placebo(self) -> None:
+class TestConditionalRegression:
+    def test_conditional_flat_at_shrinkage_placebo(self) -> None:
+        # Bias guard (design note §8-analog): on a placebo whose references are noisy proxies of a steep
+        # power curve, a single counterfactual fit shrinks and reads a spurious per-ws-bin uplift tilt
+        # (the F5 mechanism). The two-direction matched conditional cancels that common shrinkage, so the
+        # (default) conditional uplift must read ~flat-zero in every bin against the flat-0 truth.
         n = 5000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = idx[n // 2]
         treated = np.asarray(idx >= changeover)
         scada = _shrinkage_scada(n, uplift=0.0, treated=treated)  # placebo: true uplift 0 in every bin
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        config = {
-            "active_power_col": _POWER,
-            "availability_col": _AVAIL,
-            "baseline_rated_power_kw": 6000.0,
-            "wind_speed_col": _WS,
-            "wind_speed_sd_col": _WS_SD,
-            "era5_hourly_df": _toy_era5(idx),
-            "model_params": _FAST_PARAMS,
-        }
-        off = PowerModelMethod(**config, bias_correct=False).estimate(mi).p50_by_condition
-        on = PowerModelMethod(**config, bias_correct=True).estimate(mi).p50_by_condition
-
-        off_ws, on_ws = _ws_bin_bias(off), _ws_bin_bias(on)
-        bins = off_ws.dropna().index.intersection(on_ws.dropna().index)
-        off_bias = off_ws.loc[bins].abs().mean()
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=6000.0,
+            wind_speed_col=_WS,
+            wind_speed_sd_col=_WS_SD,
+            era5_hourly_df=_toy_era5(idx),
+            model_params=_FAST_PARAMS,
+        )
+        on_ws = _ws_bin_bias(method.estimate(mi).p50_by_condition)
+        bins = on_ws.dropna().index
         on_bias = on_ws.loc[bins].abs().mean()
-        # The setup is deterministic (fixed seeds); observed on this data: mean|off| ≈ 0.125,
-        # mean|on| ≈ 0.0095, max|on| ≈ 0.020. Thresholds sit ~2.5x from those so a version/platform
-        # bump won't flake, but a modest regression in the correction *will* trip them.
-        # 1. the uncorrected path carries a strong per-bin shrinkage tilt against the flat (0) truth ...
-        assert off_bias > 0.05
-        # 2. ... and the correction flattens it by a large factor (not just "somewhat better") ...
-        assert on_bias < 0.20 * off_bias
-        # 3. ... to a small absolute residual, with no single bin left materially biased.
+        # Deterministic (fixed seeds); observed on this data: mean|bias| ≈ 0.0095, max|bias| ≈ 0.020.
+        # Thresholds sit ~2.5x above so a version/platform bump won't flake, but a regression in the
+        # matched cancellation (which would let the shrinkage tilt back in) will trip them.
         assert on_bias < 0.025
         assert on_ws.loc[bins].abs().max() < 0.05

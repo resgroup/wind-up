@@ -41,7 +41,7 @@ from benchmarking.baselines.power_model.features import (
 )
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
 from benchmarking.baselines.rlearner.nuisance import make_outcome_model
-from benchmarking.diagnostics import DiagnosticContext, write_common_diagnostics, write_run_config
+from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import CONDITION_BINS, energy_ratio_by_bin
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
@@ -169,11 +169,13 @@ class PowerModelMethod:
     :param timebase: analysis timebase; inferred from the data when ``None``
     :param toggle_campaign_only: for a toggle campaign, fit only on the interleaved on/off blocks
         (drop the pre-campaign baseline) so on and off share a wind distribution; no-op for prepost
-    :param bias_correct: opt-in two-direction bias-cancellation (Issue 8). When ``True``, match the
-        baseline and upgraded periods on ERA5 weather (CEM) and cancel the counterfactual model's
-        conditional shrinkage between two symmetric train/predict directions; **requires ERA5**. When
-        ``False`` (default) the single-direction path is used, completely unchanged.
-    :param matching_vars: ERA5 columns matched on when ``bias_correct`` (default: the F6 set)
+    :param conditional_uplift: compute the per-(ws, TI)-bin conditional uplift distribution (default
+        ``True``). The overall P50 is a single baseline→upgraded fit either way; when this is ``True``
+        an extra two-direction, ERA5-weather-matched (CEM) cross-prediction runs **last** to estimate
+        the conditional shape (its common per-bin shrinkage cancels), then re-levels onto the headline.
+        It **requires ERA5** (the matching axis is the ERA5 columns). Set ``False`` to skip that
+        cross-prediction — the expensive part — and return only the overall P50.
+    :param matching_vars: ERA5 columns matched on for the conditional step (default: the F6 set)
     :param matching_bin_edges: per-variable CEM bin edges; the F6 defaults are used when ``None``
     """
 
@@ -191,7 +193,7 @@ class PowerModelMethod:
     model_params: dict[str, Any] = field(default_factory=dict)
     timebase: pd.Timedelta | None = None
     toggle_campaign_only: bool = True
-    bias_correct: bool = False
+    conditional_uplift: bool = True
     matching_vars: tuple[str, ...] = _DEFAULT_MATCHING_VARS
     matching_bin_edges: dict[str, list[float]] | None = None
 
@@ -233,19 +235,15 @@ class PowerModelMethod:
             msg = "no normally-operating upgraded rows to estimate uplift over."
             raise ValueError(msg)
 
-        if self.bias_correct:
-            return self._estimate_bias_corrected(
-                scada, mi=mi, index=index, features=features, y=y, baseline_sel=baseline_sel, upgraded_sel=upgraded_sel
-            )
-
-        fit = self._fit_predict(
-            features, y=y.to_numpy(dtype=float), baseline_sel=baseline_sel, upgraded_sel=upgraded_sel
-        )
+        y_arr = y.to_numpy(dtype=float)
+        fit = self._fit_predict(features, y=y_arr, baseline_sel=baseline_sel, upgraded_sel=upgraded_sel)
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
 
-        by_condition: pd.DataFrame | None = None
+        # ws/TI row-aligned to each segment's residuals, for the overall shrinkage-check diagnostics (cheap,
+        # plots only). Computed here so the run folder's step-5 residual plots are drawn whether or not the
+        # optional conditional step runs.
         cond_upgraded: pd.DataFrame | None = None
         cond_baseline_valid: pd.DataFrame | None = None
         if self.wind_speed_col is not None:
@@ -256,19 +254,19 @@ class PowerModelMethod:
                 wind_speed_col=self.wind_speed_col,
                 wind_speed_sd_col=self.wind_speed_sd_col,
             )
-            by_condition = self._conditional_uplift(conditions, upgraded_sel=upgraded_sel, fit=fit)
-            # ws/TI for each segment's residuals, row-aligned to the fit arrays for the diagnostics.
             cond_upgraded = conditions.iloc[upgraded_sel].reset_index(drop=True)
             cond_baseline_valid = conditions.iloc[fit["baseline_valid_pos"]].reset_index(drop=True)
 
+        run_dir = self._run_dir(mi, index)
         self._write(
             mi,
+            run_dir=run_dir,
             index=index,
             timebase=timebase,
             t=t,
             selected=selected,
             upgraded_sel=upgraded_sel,
-            y=y.to_numpy(dtype=float),
+            y=y_arr,
             features=features,
             fit=fit,
             uplift=uplift,
@@ -279,38 +277,49 @@ class PowerModelMethod:
             cond_upgraded=cond_upgraded,
             cond_baseline_valid=cond_baseline_valid,
         )
+
+        # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
+        # it (eventually AEP extrapolation will). Skipped entirely when conditional_uplift is off.
+        by_condition: pd.DataFrame | None = None
+        if self.conditional_uplift:
+            by_condition = self._estimate_conditional(
+                scada,
+                mi=mi,
+                features=features,
+                y=y_arr,
+                baseline_sel=baseline_sel,
+                upgraded_sel=upgraded_sel,
+                fit=fit,
+                overall_ratio=uplift,
+                run_dir=run_dir,
+            )
         return MethodOutput(p50_overall=uplift, p50_by_condition=by_condition)
 
-    def _estimate_bias_corrected(
+    def _estimate_conditional(
         self,
         scada: pd.DataFrame,
         *,
         mi: MethodInput,
-        index: pd.DatetimeIndex,
         features: pd.DataFrame,
-        y: pd.Series,
+        y: np.ndarray,
         baseline_sel: np.ndarray,
         upgraded_sel: np.ndarray,
-    ) -> MethodOutput:
-        """Two-direction (CEM-matched) estimate that cancels the counterfactual model's shrinkage (Issue 8).
+        fit: dict[str, Any],
+        overall_ratio: float,
+        run_dir: Path,
+    ) -> pd.DataFrame | None:
+        """Per-(ws, TI)-bin conditional uplift via a two-direction, ERA5-weather-matched cross-prediction.
 
         Match the baseline and upgraded periods on ERA5 weather, then fit/predict in both directions and
-        combine so the common per-bin shrinkage cancels (design/F5). Requires ERA5 — the matching axis is
-        the synced ERA5 columns, which live in ``features`` (``era5_feature_frame`` passes them through).
+        combine so the common per-bin shrinkage cancels (design/F5); the decomposition is re-leveled onto the
+        already-computed overall headline (``overall_ratio``, from the single full fit ``fit``) so the per-bin
+        MWh partitions it (F8). Requires ERA5 — the matching axis is the synced ERA5 columns, which live in
+        ``features`` (``era5_feature_frame`` passes them through). Returns the ``[condition, condition_bin,
+        p50_uplift]`` frame (or ``None`` when no wind-speed column), and writes the per-run diagnostics.
         """
         if self.era5_hourly_df is None:
-            msg = "bias_correct=True requires ERA5 (era5_hourly_df): the matching axis is the ERA5 weather columns."
+            msg = "conditional_uplift requires ERA5 (era5_hourly_df): the matching axis is the ERA5 weather columns."
             raise ValueError(msg)
-        y_arr = y.to_numpy(dtype=float)
-
-        # Overall = the uncorrected full-data estimate: train on ALL baseline, predict ALL upgraded, one energy
-        # ratio (identical to the bias_correct=False headline). The whole-window shrinkage integrates to ≈ 0
-        # (F5) so this is already the cleanest overall; the matched two-direction correction is spent only on
-        # the per-bin *decomposition*, which is re-leveled back onto this headline so the MWh adds up (F8).
-        fit_full = self._fit_predict(features, y=y_arr, baseline_sel=baseline_sel, upgraded_sel=upgraded_sel)
-        sum_actual = float(fit_full["y_upgraded"].sum())
-        sum_counter = float(fit_full["pred_upgraded"].sum())
-        uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
 
         # Matched two-direction fits, for the per-bin shape only. Matching is required: without it the reverse
         # model (train upgraded, predict baseline) would extrapolate out-of-distribution across the prepost
@@ -324,42 +333,41 @@ class PowerModelMethod:
             seed=self.seed,
         )
         mb, mu = match.baseline_positions, match.upgraded_positions
-        pred_up = self._fit_direction(features, y_arr, train=mb, predict=mu)  # forward: 1+r_fwd = (1+u)/s
+        pred_up = self._fit_direction(features, y, train=mb, predict=mu)  # forward: 1+r_fwd = (1+u)/s
         # Reverse (train matched-upgraded, predict matched-baseline): 1+r_rev = 1/(s(1+u)). Clip reuses
         # baseline_rated_power_kw — its upper bound max(rated, max(y_train)) already lifts the ceiling for an
         # uprate, so no separate upgraded-rating field is needed.
-        pred_base = self._fit_direction(features, y_arr, train=mu, predict=mb)
-        r_fwd = _ratio(y_arr[mu], pred_up)
-        r_rev = _ratio(y_arr[mb], pred_base)
+        pred_base = self._fit_direction(features, y, train=mu, predict=mb)
+        r_fwd = _ratio(y[mu], pred_up)
+        r_rev = _ratio(y[mb], pred_base)
 
-        per_bin = self._corrected_conditional(
+        per_bin = self._conditional_by_bin(
             scada,
             mi=mi,
-            y=y_arr,
+            y=y,
             mb=mb,
             mu=mu,
             pred_up=pred_up,
             pred_base=pred_base,
             upgraded_pos=np.flatnonzero(upgraded_sel),
-            actual_full=fit_full["y_upgraded"],
-            overall_ratio=uplift,
+            actual_full=fit["y_upgraded"],
+            overall_ratio=overall_ratio,
         )
         by_condition = per_bin[["condition", "condition_bin", "p50_uplift"]].copy() if per_bin is not None else None
-        self._write_bias_correction(
-            mi, index=index, match=match, r_fwd=r_fwd, r_rev=r_rev, uplift=uplift, per_bin=per_bin
+        self._write_conditional(
+            mi, run_dir=run_dir, match=match, r_fwd=r_fwd, r_rev=r_rev, uplift=overall_ratio, per_bin=per_bin
         )
         logger.info(
-            "%s %s (bias_correct): uplift=%+.3f%% (uncorrected headline)  implied_s=%.3f  "
-            "(r_fwd=%+.3f, r_rev=%+.3f, matched=%d/side)",
+            "%s %s conditional uplift: headline=%+.3f%%  implied_s=%.3f  (r_fwd=%+.3f, r_rev=%+.3f, matched=%d/side)",
             self.name,
             mi.test_wtg,
-            100 * uplift,
+            100 * overall_ratio,
             float(_implied_shrinkage(np.array([r_fwd]), np.array([r_rev]))[0]),
             r_fwd,
             r_rev,
             match.n_matched_per_side,
         )
-        return MethodOutput(p50_overall=uplift, p50_by_condition=by_condition)
+        return by_condition
 
     def _fit_direction(
         self, features: pd.DataFrame, y: np.ndarray, *, train: np.ndarray, predict: np.ndarray
@@ -373,7 +381,7 @@ class PowerModelMethod:
             rated_power_kw=self.baseline_rated_power_kw,
         )
 
-    def _corrected_conditional(
+    def _conditional_by_bin(
         self,
         scada: pd.DataFrame,
         *,
@@ -443,23 +451,26 @@ class PowerModelMethod:
             )
         return pd.concat(frames, ignore_index=True) if frames else None
 
-    def _write_bias_correction(
+    def _write_conditional(
         self,
         mi: MethodInput,
         *,
-        index: pd.DatetimeIndex,
+        run_dir: Path,
         match: Any,  # noqa: ANN401 - MatchResult
         r_fwd: float,
         r_rev: float,
         uplift: float,
         per_bin: pd.DataFrame | None,
     ) -> None:
-        """Write the per-run implied-shrinkage + CEM-balance diagnostics (and the per-bin plot if enabled)."""
-        upgrade_start = _upgrade_start(mi.upgrade_timing, index)
-        run_name = f"power_model_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{index.max():%Y%m%d}"
-        out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="power_model_bc_"))
-        run_dir = out_root / run_name
-        run_dir.mkdir(parents=True, exist_ok=True)
+        """Write the conditional-step diagnostics (implied shrinkage + CEM balance) and the per-bin plot.
+
+        CSVs go in ``run_dir/conditional/``; the per-bin implied-shrinkage plot (when ``save_plots``) goes in
+        the step-7 plot folder, keeping the optional conditional outputs separate from the always-on overall
+        diagnostics in the same run folder.
+        """
+        conditional_dir = run_dir / "conditional"
+        conditional_dir.mkdir(parents=True, exist_ok=True)
+        run_name = run_dir.name
         ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
         overall = {
             "test_wtg": mi.test_wtg,
@@ -469,9 +480,9 @@ class PowerModelMethod:
             "uplift_frc": uplift,
             "implied_shrinkage": float(_implied_shrinkage(np.array([r_fwd]), np.array([r_rev]))[0]),
         }
-        diag.write_bias_correction_csvs(run_dir, run_name, ts, overall=overall, per_bin=per_bin, match=match)
+        diag.write_conditional_csvs(conditional_dir, run_name, ts, overall=overall, per_bin=per_bin, match=match)
         if self.save_plots and per_bin is not None:
-            diag.plot_implied_shrinkage(run_dir / "plots", per_bin, test_wtg=mi.test_wtg)
+            diag.plot_implied_shrinkage(run_dir / "plots" / stages.CONDITIONAL_UPLIFT, per_bin, test_wtg=mi.test_wtg)
 
     def _default_bin_edges(self) -> dict[str, list[float]]:
         """Per-variable CEM edges for ``matching_vars`` from the F6 defaults; raise on an unknown var."""
@@ -556,20 +567,6 @@ class PowerModelMethod:
             "baseline_valid_pos": baseline_valid_pos,  # positions over ``index`` of the held-out rows
         }
 
-    def _conditional_uplift(
-        self, conditions: pd.DataFrame, *, upgraded_sel: np.ndarray, fit: dict[str, Any]
-    ) -> pd.DataFrame | None:
-        """Reduce the upgraded actual/counterfactual ledger to per-bin energy-ratio uplift."""
-        cond_up = conditions.iloc[upgraded_sel]
-        actual = fit["y_upgraded"]
-        counterfactual = fit["pred_upgraded"]
-        frames = []
-        for name in [c for c in ("ws", "ti") if c in cond_up.columns]:
-            table = energy_ratio_by_bin(cond_up[name].to_numpy(), actual, counterfactual, bins=CONDITION_BINS[name])
-            table.insert(0, "condition", name)
-            frames.append(table[["condition", "condition_bin", "p50_uplift"]])
-        return pd.concat(frames, ignore_index=True) if frames else None
-
     def _make_model(self) -> Any:  # noqa: ANN401
         """Outcome model with ``seed`` plumbed into LightGBM's ``random_state`` (caller overrides win)."""
         return make_outcome_model(**{"random_state": self.seed, **self.model_params})
@@ -604,10 +601,24 @@ class PowerModelMethod:
         )
         return y_base[valid_idx], pred_valid, valid_idx
 
+    def _run_dir(self, mi: MethodInput, index: pd.DatetimeIndex) -> Path:
+        """Return the per-run output folder ``<out_dir>/power_model_<wtg>_<start>_<end>`` (a temp dir when unset).
+
+        Computed once per ``estimate`` and shared by the overall diagnostics and the optional conditional
+        step so both write into the *same* run folder.
+        """
+        upgrade_start = _upgrade_start(mi.upgrade_timing, index)
+        run_name = f"power_model_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{index.max():%Y%m%d}"
+        out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="power_model_"))
+        run_dir = out_root / run_name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
+
     def _write(
         self,
         mi: MethodInput,
         *,
+        run_dir: Path,
         index: pd.DatetimeIndex,
         timebase: pd.Timedelta,
         t: np.ndarray,
@@ -625,11 +636,7 @@ class PowerModelMethod:
         cond_baseline_valid: pd.DataFrame | None = None,
     ) -> None:
         """Assemble the diagnostic data and write the CSVs (+ plots), logging the top features."""
-        upgrade_start = _upgrade_start(mi.upgrade_timing, index)
-        run_name = f"power_model_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{index.max():%Y%m%d}"
-        out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="power_model_"))
-        run_dir = out_root / run_name
-        run_dir.mkdir(parents=True, exist_ok=True)
+        run_name = run_dir.name
         ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
 
         x_sel = features.iloc[selected]

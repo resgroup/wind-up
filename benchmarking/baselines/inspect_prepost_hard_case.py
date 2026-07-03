@@ -152,10 +152,8 @@ def _pin_case(
     return rep, mi, truth, window
 
 
-def _power_model(
-    out_dir: Path, era5_hourly_df: pd.DataFrame, *, bias_correct: bool, save_plots: bool
-) -> PowerModelMethod:
-    """Construct the HoT-configured power model, optionally with the Issue 8 bias correction on."""
+def _power_model(out_dir: Path, era5_hourly_df: pd.DataFrame, *, save_plots: bool) -> PowerModelMethod:
+    """Construct the HoT-configured power model (its default: conditional uplift on)."""
     return PowerModelMethod(
         active_power_col=HOT_COLUMNS.active_power,
         wind_speed_col=HOT_COLUMNS.wind_speed,
@@ -165,16 +163,14 @@ def _power_model(
         era5_hourly_df=era5_hourly_df,
         out_dir=out_dir,
         save_plots=save_plots,
-        bias_correct=bias_correct,
-        name="power_model_bc" if bias_correct else "power_model",
     )
 
 
 def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
     """Return the methods to inspect, each writing diagnostics (plots on) into its own subfolder.
 
-    Both the uncorrected and the Issue 8 bias-corrected power model are run, so their diagnostics sit
-    side by side (the corrected folder carries the implied-shrinkage and CEM-balance outputs).
+    One ``power_model`` run folder: with conditional uplift on (the default) it carries the overall
+    diagnostics plus the conditional CSVs (``conditional/``) and the step-7 implied-shrinkage plot.
     """
     context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
     era5 = context.reanalysis_datasets[0].data
@@ -185,21 +181,29 @@ def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
             out_dir=out_dir / "naive",
             save_plots=True,
         ),
-        _power_model(out_dir / "power_model", era5, bias_correct=False, save_plots=True),
-        _power_model(out_dir / "power_model_bias_correct", era5, bias_correct=True, save_plots=True),
+        _power_model(out_dir / "power_model", era5, save_plots=True),
     ]
     if include_v0:
         methods.append(V0BinnedMethod(context, scratch_dir=out_dir / "v0", save_plots=True))
     return methods
 
 
-def _run_methods(methods: list[Method], *, mi: MethodInput, truth: float) -> pd.DataFrame:
-    """Run every method on the identical input; return a tidy estimate/error/wall-time comparison."""
+def _run_methods(
+    methods: list[Method], *, mi: MethodInput, truth: float
+) -> tuple[pd.DataFrame, dict[str, MethodOutput]]:
+    """Run every method on the identical input; return the tidy comparison and each method's output.
+
+    The outputs are returned so the power_model conditional estimate (computed here as part of its run)
+    is reused for the per-condition truth overlay — no second power_model fit.
+    """
     rows = []
+    outputs: dict[str, MethodOutput] = {}
     for method in methods:
         start = time.perf_counter()
-        estimate = method.estimate(mi).p50_overall
+        output = method.estimate(mi)
         wall_time_s = time.perf_counter() - start
+        outputs[method.name] = output
+        estimate = output.p50_overall
         logger.info(
             "%-12s estimate %+.3f%%  truth %+.3f%%  error %+.3f%%  (%.1fs)",
             method.name,
@@ -217,20 +221,21 @@ def _run_methods(methods: list[Method], *, mi: MethodInput, truth: float) -> pd.
                 "wall_time_s": wall_time_s,
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), outputs
 
 
 def _plot_conditional_uplift(
-    rep: Replicate, mi: MethodInput, window: CampaignWindow, *, out_dir: Path, profile_name: str
+    rep: Replicate, output: MethodOutput, window: CampaignWindow, *, out_dir: Path, profile_name: str, test_wtg: str
 ) -> None:
-    """Overlay the uncorrected and Issue 8 bias-corrected power model against per-condition truth.
+    """Overlay the power_model conditional estimate against per-condition truth on the pinned case.
 
-    The two estimate lines plus the truth line on one plot are the direct before/after of the
-    correction: on a condition-dependent hard case (or the placebo) the uncorrected line carries the
-    F5 shrinkage tilt while the corrected one should hug truth.
+    Reuses the ``MethodOutput`` from the main power_model run (conditional uplift on by default), so the
+    estimate line is drawn against the known per-condition truth: on a condition-dependent hard case
+    (or the placebo) it should hug truth.
     """
-    context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
-    era5 = context.reanalysis_datasets[0].data
+    if output.p50_by_condition is None:
+        logger.warning("power_model returned no p50_by_condition; skipping conditional uplift plots")
+        return
 
     test_index = rep.synthetic_df.loc[rep.synthetic_df[HOT_COLUMNS.turbine] == rep.test_wtg].index
     mask = treated_activity_mask(test_index, rep.upgrade_timing, window=window)
@@ -245,26 +250,15 @@ def _plot_conditional_uplift(
         logger.warning("No per-condition truth available; skipping conditional uplift plots")
         return
 
-    frames = []
-    for label, bias_correct in (("power_model", False), ("power_model (bias_correct)", True)):
-        pm = _power_model(out_dir / f"{label} conditional", era5, bias_correct=bias_correct, save_plots=False)
-        output = pm.estimate(mi)
-        if output.p50_by_condition is None:
-            logger.warning("%s returned no p50_by_condition; skipping its conditional line", label)
-            continue
-        frames.append(conditional_truth_vs_estimate(output, truth_by_condition_clean, method_name=label))
-    if not frames:
-        return
-
-    frame = pd.concat(frames, ignore_index=True)
+    frame = conditional_truth_vs_estimate(output, truth_by_condition_clean, method_name="power_model")
     for c in truth_by_condition_clean:
         plot_conditional_uplift(
             frame,
             condition=c,
             save_path=out_dir / f"conditional_uplift_{c}.png",
-            title=f"Conditional uplift ({c}) — profile={profile_name}, wtg={mi.test_wtg} (uncorrected vs bias_correct)",
+            title=f"Conditional uplift ({c}) — profile={profile_name}, wtg={test_wtg} (power_model vs truth)",
         )
-    logger.info("Wrote conditional uplift plots (uncorrected vs bias_correct) to %s", out_dir)
+    logger.info("Wrote conditional uplift plots (power_model vs truth) to %s", out_dir)
 
 
 def conditional_truth_vs_estimate(
@@ -327,9 +321,11 @@ def inspect_prepost_hard_case(
         scada_df, study=study, profile_name=profile_name, test_wtg=test_wtg, campaign_months=campaign_months
     )
     methods = _build_methods(out_dir, include_v0=include_v0)
-    summary = _run_methods(methods, mi=mi, truth=truth)
+    summary, outputs = _run_methods(methods, mi=mi, truth=truth)
 
-    _plot_conditional_uplift(rep, mi, window, out_dir=out_dir, profile_name=profile_name)
+    _plot_conditional_uplift(
+        rep, outputs["power_model"], window, out_dir=out_dir, profile_name=profile_name, test_wtg=mi.test_wtg
+    )
 
     summary_path = out_dir / "comparison_summary.csv"
     summary.to_csv(summary_path, index=False)
