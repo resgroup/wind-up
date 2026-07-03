@@ -463,33 +463,64 @@ default changes.
 
 ---
 
-## Issue 14 — Harden the conditional decomposition: matched-count floor, per-bin balance, re-level coverage (WS2)
+## Issue 14 — Harden the conditional decomposition: count floor, imputation, balance, re-level coverage (WS2)
 
 **Goal:** fix the three known remaining defects of the two-direction conditional
-estimate, so every reported per-bin number is trustworthy or explicitly absent.
+estimate, so every reported per-bin number is either trustworthy or an explicitly
+flagged, physics-informed fallback — and keep the scoring honest about the difference.
 
 **Scope**
-- **Per-reporting-bin matched-count floor** (the F7/F9 follow-up): below a minimum matched
-  count per side in a reporting bin, report NaN (or fall back to the overall uplift)
-  instead of the overshooting two-direction combine, and carry a coverage flag in the
-  conditional CSV. Kills the sparse-extreme swings (e.g. TI (0.45,0.50] −77 → +93 pp).
+- **Per-reporting-bin matched-count floor** (the F7/F9 follow-up): below a minimum
+  matched count per side in a reporting bin, replace the overshooting two-direction
+  combine with the imputed value (next bullet) and set `covered=False` in the
+  conditional CSV — a flagged fallback, never a bare NaN, so every bin stays scoreable
+  and abstention can't game the leaderboard (`summarize_errors` drops non-finite errors,
+  so NaN-ing hard bins would otherwise improve the conditional score for free). The
+  floor is on *effective* per-side counts — Kish ESS `(Σw)²/Σw²` if the balance
+  reweighting below is adopted, raw counts otherwise — with the threshold chosen on
+  placebo/benchmark evidence across many bins, not tuned to the one known bad TI bin.
+  Kills the sparse-extreme swings (e.g. TI (0.45,0.50] −77 → +93 pp).
+- **Physics-informed imputation for floored ws bins.** Uplift vs wind speed has a known
+  shape for most upgrades (Cp-maximising from cut-in to rated, rated power thereafter):
+  fill uncovered low-ws bins from the closest covered bin above (bfill on ascending ws),
+  then fill everything above the last covered bin with **0 uplift** (at rated, baseline
+  and upgraded both hit rated power). Two documented caveats: the 0-at-rated prior is
+  wrong for uprating/power-boost upgrades (keep the imputer a documented, replaceable
+  default and let benchmark profiles that violate it expose it), and when coverage stops
+  well below rated the 0-fill is conservative for the in-between bins. TI has no such
+  ordering physics — impute floored TI bins at the overall uplift.
+- **Re-level with imputed bins pinned.** `_relevel_conditional` computes the aggregation
+  over covered (finite-shape) bins only, but the target `1+overall` includes the energy
+  of *uncovered* bins — so covered bins absorb the uncovered bins' MWh and λ is tilted
+  when coverage is imperfect. Fix: hold imputed bins fixed at their imputed uplift
+  (pinned, not λ-rescaled) and solve λ over the measured bins only, so measured +
+  imputed together satisfy the headline identity exactly (guard the degenerate case of
+  no measured bins → overall-only). With the floor creating more imputed bins, this
+  matters more than today.
 - **Per-reporting-bin balance.** The shrinkage-cancellation premise is *per bin*, but CEM
   equalises the ERA5-cell mix only globally — within one ws/TI reporting bin the forward
-  and reverse row sets can still have different weather mixes. Post-stratify: within each
-  reporting bin, reweight the two directions' rows to a common ERA5-cell weighting (no new
-  model fits needed). Measure whether it moves the per-bin bias before adopting.
-- **Re-level coverage fix.** `_relevel_conditional` computes the aggregation over
-  covered (finite-shape) bins only, but the target `1+overall` includes the energy of
-  *uncovered* bins — so covered bins absorb the uncovered bins' MWh and λ is tilted when
-  coverage is imperfect. Impute uncovered bins at the overall uplift (or exclude their
-  energy from the target) so coverage gaps stop leaking into covered-bin estimates; with
-  the floor above creating more NaN bins, this matters more than today.
-- Unit tests for the floor, the imputation, and the reweighting; A/B via
+  and reverse row sets can still have different weather mixes (partly because the bin
+  axes are the test turbine's post-treatment nacelle signals, so the same nominal bin
+  samples different weather pre vs post). Post-stratify within each reporting bin to the
+  **intersection** of the two directions' ERA5-cell supports (no new model fits needed):
+  honest but thins sparse bins, which is fine — the ESS floor then catches them instead
+  of a heavily-reweighted number sneaking through. Measure whether it moves the per-bin
+  bias before adopting.
+- **Coverage in the scoring.** Surface coverage next to conditional accuracy in the
+  leaderboard/comparison outputs (e.g. fraction of upgraded energy in `covered` bins),
+  and compare A/B variants on commonly-covered bins as well as overall — imputed bins
+  are scored like any other (the flag distinguishes them), so the imputation prior is
+  itself benchmarked.
+- **Sequencing:** the three fixes interact (balance changes effective counts → floor;
+  floor changes coverage → re-level), so land and measure them incrementally in the
+  order re-level fix (a pure bug) → floor + imputation → balance, per the Issue 9
+  protocol. Unit tests for the floor, the imputation, and the reweighting; A/B via
   `study_power_model_compare.py` as usual.
 
 **Done when:** the sparse-extreme bins are no longer the "worse than benchmark" set
-(fixed or absent by the floor); conditional mean |bias| no worse overall; the
-  decomposition still energy-aggregates exactly to the headline.
+(fixed, or flagged-and-imputed by the floor); conditional |bias| no worse on
+commonly-covered bins; coverage visible in the leaderboard; the decomposition —
+measured plus pinned imputed bins — still energy-aggregates exactly to the headline.
 
 ---
 
@@ -522,8 +553,10 @@ and take the energy-weighted sum of the conditional uplift:
   Sketch both in a short design note section before coding; the ERA5-axis route avoids a
   post-treatment reporting axis entirely and is likely cleaner for AEP.
 - **Coverage fallback.** Long-term bins with no measured `u_b` (or floored by Issue 14)
-  fall back to the overall uplift; report the coverage fraction (share of long-term energy
-  in bins with a measured uplift) as a headline diagnostic.
+  take Issue 14's imputed values (bfill-then-0 on the ws axis — the 0-at-rated prior
+  matters even more here, since long-term energy concentrates in high-ws bins that an
+  overall-uplift fallback would over-credit); report the coverage fraction (share of
+  long-term energy in bins with a measured uplift) as a headline diagnostic.
 - **Harness truth + scoring.** The generator knows the true uplift function, so the true
   AEP uplift per replicate is the injected profile applied over the **full multi-year
   dataset** (not just the campaign window); score `estimate − truth` with the same
