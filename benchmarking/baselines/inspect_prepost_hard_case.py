@@ -152,9 +152,28 @@ def _pin_case(
     return rep, mi, truth, window
 
 
+def _power_model(out_dir: Path, era5_hourly_df: pd.DataFrame, *, save_plots: bool) -> PowerModelMethod:
+    """Construct the HoT-configured power model (its default: conditional uplift on)."""
+    return PowerModelMethod(
+        active_power_col=HOT_COLUMNS.active_power,
+        wind_speed_col=HOT_COLUMNS.wind_speed,
+        wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
+        availability_col=HOT_COLUMNS.availability,
+        baseline_rated_power_kw=HOT_RATED_POWER_KW,
+        era5_hourly_df=era5_hourly_df,
+        out_dir=out_dir,
+        save_plots=save_plots,
+    )
+
+
 def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
-    """Return the methods to inspect, each writing diagnostics (plots on) into its own subfolder."""
+    """Return the methods to inspect, each writing diagnostics (plots on) into its own subfolder.
+
+    One ``power_model`` run folder: with conditional uplift on (the default) it carries the overall
+    diagnostics plus the conditional CSVs (``conditional/``) and the step-7 implied-shrinkage plot.
+    """
     context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
+    era5 = context.reanalysis_datasets[0].data
     methods: list[Method] = [
         NaiveRatioMethod(
             active_power_col=HOT_COLUMNS.active_power,
@@ -162,29 +181,29 @@ def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
             out_dir=out_dir / "naive",
             save_plots=True,
         ),
-        PowerModelMethod(
-            active_power_col=HOT_COLUMNS.active_power,
-            wind_speed_col=HOT_COLUMNS.wind_speed,
-            wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
-            availability_col=HOT_COLUMNS.availability,
-            baseline_rated_power_kw=HOT_RATED_POWER_KW,
-            era5_hourly_df=context.reanalysis_datasets[0].data,
-            out_dir=out_dir / "power_model",
-            save_plots=True,
-        ),
+        _power_model(out_dir / "power_model", era5, save_plots=True),
     ]
     if include_v0:
         methods.append(V0BinnedMethod(context, scratch_dir=out_dir / "v0", save_plots=True))
     return methods
 
 
-def _run_methods(methods: list[Method], *, mi: MethodInput, truth: float) -> pd.DataFrame:
-    """Run every method on the identical input; return a tidy estimate/error/wall-time comparison."""
+def _run_methods(
+    methods: list[Method], *, mi: MethodInput, truth: float
+) -> tuple[pd.DataFrame, dict[str, MethodOutput]]:
+    """Run every method on the identical input; return the tidy comparison and each method's output.
+
+    The outputs are returned so the power_model conditional estimate (computed here as part of its run)
+    is reused for the per-condition truth overlay — no second power_model fit.
+    """
     rows = []
+    outputs: dict[str, MethodOutput] = {}
     for method in methods:
         start = time.perf_counter()
-        estimate = method.estimate(mi).p50_overall
+        output = method.estimate(mi)
         wall_time_s = time.perf_counter() - start
+        outputs[method.name] = output
+        estimate = output.p50_overall
         logger.info(
             "%-12s estimate %+.3f%%  truth %+.3f%%  error %+.3f%%  (%.1fs)",
             method.name,
@@ -202,25 +221,19 @@ def _run_methods(methods: list[Method], *, mi: MethodInput, truth: float) -> pd.
                 "wall_time_s": wall_time_s,
             }
         )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), outputs
 
 
 def _plot_conditional_uplift(
-    rep: Replicate, mi: MethodInput, window: CampaignWindow, *, out_dir: Path, profile_name: str
+    rep: Replicate, output: MethodOutput, window: CampaignWindow, *, out_dir: Path, profile_name: str, test_wtg: str
 ) -> None:
-    """Re-run the power model on ``mi`` and write per-condition uplift-vs-truth plots."""
-    context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
-    power_model = PowerModelMethod(
-        active_power_col=HOT_COLUMNS.active_power,
-        wind_speed_col=HOT_COLUMNS.wind_speed,
-        wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
-        availability_col=HOT_COLUMNS.availability,
-        baseline_rated_power_kw=HOT_RATED_POWER_KW,
-        era5_hourly_df=context.reanalysis_datasets[0].data,
-        out_dir=out_dir / "power_model_conditional",
-    )
-    pm_output = power_model.estimate(mi)
-    if pm_output.p50_by_condition is None:
+    """Overlay the power_model conditional estimate against per-condition truth on the pinned case.
+
+    Reuses the ``MethodOutput`` from the main power_model run (conditional uplift on by default), so the
+    estimate line is drawn against the known per-condition truth: on a condition-dependent hard case
+    (or the placebo) it should hug truth.
+    """
+    if output.p50_by_condition is None:
         logger.warning("power_model returned no p50_by_condition; skipping conditional uplift plots")
         return
 
@@ -237,15 +250,15 @@ def _plot_conditional_uplift(
         logger.warning("No per-condition truth available; skipping conditional uplift plots")
         return
 
-    frame = conditional_truth_vs_estimate(pm_output, truth_by_condition_clean, method_name=power_model.name)
+    frame = conditional_truth_vs_estimate(output, truth_by_condition_clean, method_name="power_model")
     for c in truth_by_condition_clean:
         plot_conditional_uplift(
             frame,
             condition=c,
             save_path=out_dir / f"conditional_uplift_{c}.png",
-            title=f"Conditional uplift ({c}) — profile={profile_name}, wtg={mi.test_wtg}",
+            title=f"Conditional uplift ({c}) — profile={profile_name}, wtg={test_wtg} (power_model vs truth)",
         )
-    logger.info("Wrote conditional uplift plots to %s", out_dir)
+    logger.info("Wrote conditional uplift plots (power_model vs truth) to %s", out_dir)
 
 
 def conditional_truth_vs_estimate(
@@ -308,9 +321,11 @@ def inspect_prepost_hard_case(
         scada_df, study=study, profile_name=profile_name, test_wtg=test_wtg, campaign_months=campaign_months
     )
     methods = _build_methods(out_dir, include_v0=include_v0)
-    summary = _run_methods(methods, mi=mi, truth=truth)
+    summary, outputs = _run_methods(methods, mi=mi, truth=truth)
 
-    _plot_conditional_uplift(rep, mi, window, out_dir=out_dir, profile_name=profile_name)
+    _plot_conditional_uplift(
+        rep, outputs["power_model"], window, out_dir=out_dir, profile_name=profile_name, test_wtg=mi.test_wtg
+    )
 
     summary_path = out_dir / "comparison_summary.csv"
     summary.to_csv(summary_path, index=False)

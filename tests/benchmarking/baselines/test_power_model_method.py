@@ -8,12 +8,22 @@ recovers the uplift — for both prepost and toggle. Also checks the reference-o
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from benchmarking.baselines.power_model import PowerModelMethod
-from benchmarking.baselines.power_model.method import _clip_predictions
+
+if TYPE_CHECKING:
+    from pathlib import Path
+from benchmarking.baselines.power_model.method import (
+    _clip_predictions,
+    _combine_uplift,
+    _implied_shrinkage,
+    _relevel_conditional,
+)
 from benchmarking.harness.method import MethodInput
 from benchmarking.synthetic import ToggleSchedule
 
@@ -67,6 +77,7 @@ class TestRecovery:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
+            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -84,6 +95,7 @@ class TestRecovery:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
+            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
@@ -101,6 +113,7 @@ class TestRecovery:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
+            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -138,6 +151,7 @@ class TestReferenceOnly:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
+            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -189,6 +203,7 @@ class TestConditionalUplift:
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
             wind_speed_sd_col=_WS_SD,
+            era5_hourly_df=_toy_era5(idx),  # conditional uplift (default on) matches on ERA5 weather
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -208,8 +223,240 @@ class TestConditionalUplift:
             availability_col=_AVAIL,
             baseline_rated_power_kw=2300.0,
             wind_speed_col=_WS,
+            era5_hourly_df=_toy_era5(idx),  # conditional uplift (default on) matches on ERA5 weather
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         out = method.estimate(mi)
         assert set(out.p50_by_condition["condition"]) == {"ws"}
+
+
+def _toy_era5(scada_idx: pd.DatetimeIndex, *, seed: int = 0) -> pd.DataFrame:
+    """Hourly ERA5 covering the toy window with the three F6 matching columns, i.i.d. over the window.
+
+    Weather is drawn independently per hour, so the baseline and upgraded periods share a distribution
+    and CEM finds well-populated two-sided cells. Values sit in modest ranges so the default matching
+    bin edges give a handful of populated cells rather than one row each.
+    """
+    hours = pd.date_range(
+        scada_idx.min().floor("h") - pd.Timedelta(hours=2), scada_idx.max().ceil("h") + pd.Timedelta(hours=2), freq="h"
+    )
+    rng = np.random.default_rng(seed + 7)
+    ws = rng.uniform(4.0, 12.0, len(hours))
+    return pd.DataFrame(
+        {
+            "wind_speed_100m": ws,
+            "wind_gusts_10m": ws * 1.4 + rng.uniform(0.0, 2.0, len(hours)),
+            "wind_direction_100m": rng.uniform(200.0, 260.0, len(hours)),
+        },
+        index=hours,
+    )
+
+
+class TestRelevelConditional:
+    def test_releveled_bins_aggregate_to_overall(self) -> None:
+        # a per-bin corrected *shape* is rescaled by one factor so its energy-weighted aggregation
+        # (ratio-of-sums Σactual / Σ(actual/(1+u_b))) equals a target overall ratio.
+        sum_actual = np.array([1000.0, 2000.0, 500.0])
+        one_plus_u = np.array([1.10, 0.95, 1.30])
+        final = _relevel_conditional(sum_actual, one_plus_u, one_plus_overall=1.05)
+        agg = sum_actual.sum() / (sum_actual / final).sum()
+        assert agg == pytest.approx(1.05)
+
+    def test_identity_when_already_aggregated(self) -> None:
+        # bins that already aggregate to the overall need no re-level (λ = 1)
+        sum_actual = np.array([1000.0, 1000.0])
+        one_plus_u = np.array([1.1, 1.1])  # aggregates to 1.1
+        final = _relevel_conditional(sum_actual, one_plus_u, one_plus_overall=1.1)
+        assert final == pytest.approx(one_plus_u)
+
+    def test_nan_bin_excluded_but_others_still_aggregate(self) -> None:
+        sum_actual = np.array([1000.0, 0.0, 500.0])
+        one_plus_u = np.array([1.1, np.nan, 0.9])
+        final = _relevel_conditional(sum_actual, one_plus_u, one_plus_overall=1.05)
+        assert np.isnan(final[1])
+        finite = np.isfinite(final)
+        agg = sum_actual[finite].sum() / (sum_actual[finite] / final[finite]).sum()
+        assert agg == pytest.approx(1.05)
+
+
+class TestCombineDirections:
+    def test_recovers_uplift_and_shrinkage_from_ratios(self) -> None:
+        # construct the two directions from a known uplift u and shrinkage s:
+        #   1 + r_fwd = (1 + u) / s ;  1 + r_rev = 1 / (s (1 + u))
+        u, s = 0.06, 0.85
+        r_fwd = (1 + u) / s - 1
+        r_rev = 1 / (s * (1 + u)) - 1
+        assert _combine_uplift(np.array([r_fwd]), np.array([r_rev]))[0] == pytest.approx(u)
+        assert _implied_shrinkage(np.array([r_fwd]), np.array([r_rev]))[0] == pytest.approx(s)
+
+    def test_nonpositive_ratio_gives_nan(self) -> None:
+        # (1 + r) <= 0 on either side is unphysical -> NaN, not a complex/blown-up number
+        out = _combine_uplift(np.array([-1.5, 0.1]), np.array([0.1, -2.0]))
+        assert np.isnan(out).tolist() == [True, True]
+
+
+class TestConditional:
+    def test_requires_era5(self) -> None:
+        n = 300
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        treated = np.asarray(idx >= idx[n // 2])
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            model_params=_FAST_PARAMS,  # conditional on by default, but no era5_hourly_df -> must raise
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
+        with pytest.raises(ValueError, match="ERA5"):
+            method.estimate(mi)
+
+    def test_recovers_known_uplift_through_two_directions(self) -> None:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        treated = np.asarray(idx >= changeover)
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            wind_speed_sd_col=_WS_SD,
+            era5_hourly_df=_toy_era5(idx),
+            model_params=_FAST_PARAMS,
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        out = method.estimate(mi)
+        # matched i.i.d. weather -> shrinkage ~1, forward-only overall recovers the true uplift
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+        assert set(out.p50_by_condition["condition"]) == {"ws", "ti"}
+        assert list(out.p50_by_condition.columns) == ["condition", "condition_bin", "p50_uplift"]
+
+    def test_overall_matches_conditional_off_and_bins_aggregate_to_it(self, tmp_path: Path) -> None:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        treated = np.asarray(idx >= changeover)
+        scada = _toy_scada(n, uplift=0.03, treated=treated)
+        config = {
+            "active_power_col": _POWER,
+            "availability_col": _AVAIL,
+            "baseline_rated_power_kw": 2300.0,
+            "wind_speed_col": _WS,
+            "wind_speed_sd_col": _WS_SD,
+            "era5_hourly_df": _toy_era5(idx),  # same features both ways, so the headline is comparable
+            "model_params": _FAST_PARAMS,
+        }
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        overall_only = PowerModelMethod(**config, conditional_uplift=False).estimate(mi).p50_overall
+        method = PowerModelMethod(**config, out_dir=tmp_path)  # conditional on by default
+        out = method.estimate(mi)
+
+        # 1. the headline is the single full-data fit; computing the conditional step leaves it unchanged
+        assert out.p50_overall == pytest.approx(overall_only, rel=1e-9)
+        # 2. self-consistency: each of the ws and ti decompositions energy-aggregates back to that overall
+        run_dir = next(p for p in tmp_path.iterdir() if p.is_dir())
+        by_bin = pd.read_csv(next((run_dir / "conditional").glob("*_conditional_by_bin_*.csv")))
+        for _cond, g in by_bin.groupby("condition"):
+            good = g[np.isfinite(g["p50_uplift"])]
+            agg = good["sum_actual"].sum() / (good["sum_actual"] / (1.0 + good["p50_uplift"])).sum()
+            assert agg == pytest.approx(1.0 + out.p50_overall, rel=1e-6)
+
+    def test_writes_shrinkage_and_cem_balance_diagnostics(self, tmp_path: Path) -> None:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        treated = np.asarray(idx >= changeover)
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            wind_speed_sd_col=_WS_SD,
+            era5_hourly_df=_toy_era5(idx),
+            out_dir=tmp_path,
+            model_params=_FAST_PARAMS,
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        method.estimate(mi)
+
+        run_dirs = [p for p in tmp_path.iterdir() if p.is_dir()]
+        assert len(run_dirs) == 1
+        conditional_dir = run_dirs[0] / "conditional"
+        overall = pd.read_csv(next(conditional_dir.glob("*_conditional_overall_*.csv")))
+        by_bin = pd.read_csv(next(conditional_dir.glob("*_conditional_by_bin_*.csv")))
+        balance = pd.read_csv(next(conditional_dir.glob("*_cem_balance_*.csv")))
+        assert next(conditional_dir.glob("*_cem_cells_*.csv"), None) is not None
+        # implied shrinkage s is surfaced overall and per-bin; matched weather -> s ~ 1
+        assert "implied_shrinkage" in overall.columns
+        assert overall["implied_shrinkage"].iloc[0] == pytest.approx(1.0, abs=0.1)
+        assert {"condition", "condition_bin", "r_fwd", "r_rev", "implied_shrinkage", "p50_uplift"} <= set(
+            by_bin.columns
+        )
+        # CEM balance carries the coverage numbers
+        assert {"n_matched_per_side", "retained_fraction_baseline", "n_cells_one_sided"} <= set(balance.columns)
+
+
+def _shrinkage_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0) -> pd.DataFrame:
+    """Attenuation-shrinkage toy: references are *noisy* proxies of a steep power curve.
+
+    Because the references (the model's features) are noisy measurements of the same weather-driven
+    power, the counterfactual model learns an attenuated conditional mean — it over-predicts where power
+    is low and under-predicts where it is high (multiplicative shrinkage). The test wind speed is the
+    *clean* driver, so binning by it exposes that compression as a spurious per-bin uplift tilt even at
+    the placebo (the F5 mechanism). Weather is i.i.d. across the window, so baseline and upgraded are
+    distribution-matched and the shrinkage is common to both cross-predict directions -> it cancels.
+    """
+    idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC", name="timestamp")
+    rng = np.random.default_rng(seed)
+    w = rng.uniform(3.0, 12.0, n)  # latent wind speed, i.i.d. -> matched across periods
+    curve = 20.0 * w**2  # steep power curve (≈180..2880 kW), so per-ws-bin compression is visible
+    test_power = np.where(treated, curve * (1.0 + uplift), curve) + rng.normal(0.0, 20.0, n)
+    parts = [pd.DataFrame({_TURBINE: "T1", _POWER: test_power, _AVAIL: 600.0, _WS: w, _WS_SD: 0.05 * w}, index=idx)]
+    for i in range(1, 4):
+        ref_power = curve + rng.normal(0.0, 500.0, n)  # noisy proxy of the curve -> attenuation shrinkage
+        parts.append(
+            pd.DataFrame({_TURBINE: f"R{i}", _POWER: ref_power, _AVAIL: 600.0, _WS: w, _WS_SD: 0.05 * w}, index=idx)
+        )
+    return pd.concat(parts)
+
+
+def _ws_bin_bias(by_condition: pd.DataFrame) -> pd.Series:
+    """Per-ws-bin uplift indexed by bin (truth is 0 at placebo, so the value *is* the bias)."""
+    ws = by_condition[by_condition["condition"] == "ws"]
+    return ws.set_index("condition_bin")["p50_uplift"]
+
+
+class TestConditionalRegression:
+    def test_conditional_flat_at_shrinkage_placebo(self) -> None:
+        # Bias guard (design note §8-analog): on a placebo whose references are noisy proxies of a steep
+        # power curve, a single counterfactual fit shrinks and reads a spurious per-ws-bin uplift tilt
+        # (the F5 mechanism). The two-direction matched conditional cancels that common shrinkage, so the
+        # (default) conditional uplift must read ~flat-zero in every bin against the flat-0 truth.
+        n = 5000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        treated = np.asarray(idx >= changeover)
+        scada = _shrinkage_scada(n, uplift=0.0, treated=treated)  # placebo: true uplift 0 in every bin
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=6000.0,
+            wind_speed_col=_WS,
+            wind_speed_sd_col=_WS_SD,
+            era5_hourly_df=_toy_era5(idx),
+            model_params=_FAST_PARAMS,
+        )
+        on_ws = _ws_bin_bias(method.estimate(mi).p50_by_condition)
+        bins = on_ws.dropna().index
+        on_bias = on_ws.loc[bins].abs().mean()
+        # Deterministic (fixed seeds); observed on this data: mean|bias| ≈ 0.0095, max|bias| ≈ 0.020.
+        # Thresholds sit ~2.5x above so a version/platform bump won't flake, but a regression in the
+        # matched cancellation (which would let the shrinkage tilt back in) will trip them.
+        assert on_bias < 0.025
+        assert on_ws.loc[bins].abs().max() < 0.05

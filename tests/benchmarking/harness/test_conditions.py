@@ -45,3 +45,16 @@ def test_energy_ratio_by_bin_is_nan_safe_and_covers_all_bins() -> None:
     assert len(out) == len(WS_BINS) - 1
     assert out["condition_bin"].is_unique
     assert out.loc[out["condition_bin"] == "(6.0, 8.0]", "p50_uplift"].isna().all()
+
+
+def test_energy_ratio_by_bin_exposes_per_bin_sums() -> None:
+    # the per-bin actual/counterfactual energy sums are needed to re-level a decomposition to an overall
+    cond = np.array([5.0, 5.0, 7.0])
+    actual = np.array([110.0, 90.0, 150.0])
+    counterfactual = np.array([100.0, 100.0, 100.0])
+    by = energy_ratio_by_bin(cond, actual, counterfactual, bins=WS_BINS).set_index("condition_bin")
+    assert by.loc["(4.0, 6.0]", "sum_actual"] == 200.0
+    assert by.loc["(4.0, 6.0]", "sum_counterfactual"] == 200.0
+    assert by.loc["(6.0, 8.0]", "sum_actual"] == 150.0
+    # empty bins carry a zero energy sum (they contribute nothing to an aggregation)
+    assert by.loc["(8.0, 10.0]", "sum_actual"] == 0.0

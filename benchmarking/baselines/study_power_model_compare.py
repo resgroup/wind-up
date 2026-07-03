@@ -177,14 +177,28 @@ def _select_profiles(requested: list[str] | None) -> dict[str, list]:
     return {name: all_profiles[name] for name in requested}
 
 
+def _make_power_model(out_dir: Path, *, era5_hourly_df: pd.DataFrame) -> PowerModelMethod:
+    """Construct the HoT-configured ``power_model`` method (its default: conditional uplift on)."""
+    return PowerModelMethod(
+        active_power_col=HOT_COLUMNS.active_power,
+        wind_speed_col=HOT_COLUMNS.wind_speed,
+        availability_col=HOT_COLUMNS.availability,
+        wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
+        baseline_rated_power_kw=HOT_RATED_POWER_KW,
+        era5_hourly_df=era5_hourly_df,
+        out_dir=out_dir / "power_model_runs",
+    )
+
+
 def run_power_model(mode: str, out_dir: Path, *, profiles: list[str] | None = None) -> pd.DataFrame:
     """Score **only** ``power_model`` over the overnight cases for one mode (no v0/naive/oracle).
 
     ``profiles`` restricts to a subset of :func:`overnight_profiles` (default: all) for fast feedback on
-    a power_model change. Each fresh row still carries the harness's method-independent ground ``truth``
-    (so the merge's alignment guard has its cross-check without recomputing any anchor). Writes a
-    per-profile ``results_*.csv`` and per-profile ``power_model`` curve under ``out_dir`` (the latter
-    lets a long run be sanity-checked profile-by-profile), and returns the concatenated tidy results.
+    a power_model change. power_model runs at its default (conditional uplift on), so every case also
+    emits the per-bin conditional cells the benchmark tracks. Each fresh row still carries the harness's
+    method-independent ground ``truth`` (so the merge's alignment guard has its cross-check without
+    recomputing any anchor). Writes a per-profile ``results_*.csv`` and per-profile ``power_model`` curve
+    under ``out_dir``, and returns the concatenated tidy results.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     scada_df, _ = load_hot_scada(
@@ -198,15 +212,9 @@ def run_power_model(mode: str, out_dir: Path, *, profiles: list[str] | None = No
 
     all_results = []
     for profile_name, profile in _select_profiles(profiles).items():
-        method = PowerModelMethod(
-            active_power_col=HOT_COLUMNS.active_power,
-            wind_speed_col=HOT_COLUMNS.wind_speed,
-            availability_col=HOT_COLUMNS.availability,
-            wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
-            baseline_rated_power_kw=HOT_RATED_POWER_KW,
-            era5_hourly_df=context.reanalysis_datasets[0].data,
-            out_dir=out_dir / "power_model_runs",
-        )
+        # Per-profile subfolder: the method's run dir is power_model_<wtg>_<start>_<end> (no profile), so
+        # profiles sharing a (wtg, window) would otherwise overwrite each other's non-timestamped diagnostics.
+        method = _make_power_model(out_dir / profile_name, era5_hourly_df=context.reanalysis_datasets[0].data)
         logger.info("Scoring %s profile %s with power_model", mode, profile_name)
         results = score_study(
             scada_df,
@@ -546,7 +554,7 @@ def conditional_before_after(mode: str, fresh: pd.DataFrame, baseline_path: Path
             subset,
             condition=condition,
             save_path=comparison_dir / f"conditional_before_after_{profile}_{condition}.png",
-            title=f"{mode} - {profile} power_model before/after vs {condition} (benchmark {commit})",
+            title=f"{mode} - {profile} power_model benchmark vs current vs {condition} (benchmark {commit})",
         )
 
 

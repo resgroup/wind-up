@@ -204,6 +204,62 @@ def write_csvs(run_dir: Path, run_name: str, ts: str, data: DiagnosticData) -> p
     return importance
 
 
+def write_conditional_csvs(
+    run_dir: Path,
+    run_name: str,
+    ts: str,
+    *,
+    overall: dict[str, Any],
+    per_bin: pd.DataFrame | None,
+    match: Any,  # noqa: ANN401 - MatchResult (avoids importing the matching module into diagnostics)
+) -> None:
+    """Write the conditional-step diagnostics: implied shrinkage ``s`` + the CEM balance.
+
+    ``overall`` is the single-row headline (both directions' ratios, the headline uplift, and the
+    implied shrinkage the two directions cancelled); ``per_bin`` the same per (ws, TI) bin; ``match`` the
+    CEM balance/coverage (retained fractions, effective sample size, one-sided cells dropped) plus the
+    per-cell counts. Together they show, for one case, how much conditional shrinkage was cancelled and
+    how healthy the matching was. ``run_dir`` is the run's ``conditional/`` subfolder.
+    """
+    pd.DataFrame([overall]).to_csv(run_dir / f"{run_name}_conditional_overall_{ts}.csv", index=False)
+    if per_bin is not None:
+        per_bin.to_csv(run_dir / f"{run_name}_conditional_by_bin_{ts}.csv", index=False)
+    balance = {
+        "n_baseline_in": match.n_baseline_in,
+        "n_upgraded_in": match.n_upgraded_in,
+        "n_matched_per_side": match.n_matched_per_side,
+        "retained_fraction_baseline": match.retained_fraction_baseline,
+        "retained_fraction_upgraded": match.retained_fraction_upgraded,
+        "n_cells_two_sided": match.n_cells_two_sided,
+        "n_cells_one_sided": match.n_cells_one_sided,
+    }
+    pd.DataFrame([balance]).to_csv(run_dir / f"{run_name}_cem_balance_{ts}.csv", index=False)
+    match.per_cell.to_csv(run_dir / f"{run_name}_cem_cells_{ts}.csv", index=False)
+
+
+def plot_implied_shrinkage(plots_dir: Path, per_bin: pd.DataFrame, *, test_wtg: str) -> None:
+    """Bar of the implied shrinkage ``s`` per (ws, TI) bin — how much conditional bias each bin carried.
+
+    ``s`` = 1 means the two directions agree (no shrinkage to cancel); ``s`` < 1 is the multiplicative
+    compression the correction removed, and a slope across bins is the F5 signature.
+    """
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    conditions = [c for c in ("ws", "ti") if c in set(per_bin["condition"])]
+    fig, axes = plt.subplots(1, max(1, len(conditions)), figsize=(7.5 * max(1, len(conditions)), 5), squeeze=False)
+    for ax, cond in zip(axes[0], conditions, strict=False):
+        sub = per_bin[per_bin["condition"] == cond]
+        ax.bar(sub["condition_bin"].astype(str), sub["implied_shrinkage"], color="C2")
+        ax.axhline(1.0, color="k", linewidth=1, linestyle="--", label="s = 1 (no shrinkage)")
+        ax.set_xlabel(f"{cond} bin")
+        ax.set_ylabel("implied shrinkage s")
+        ax.set_title(f"{cond}: implied shrinkage cancelled")
+        ax.tick_params(axis="x", labelrotation=90)
+        ax.legend(loc="lower right")
+        apply_grid(ax)
+    fig.suptitle(f"{test_wtg}: two-direction implied shrinkage per bin")
+    save_fig(fig, plots_dir / "implied_shrinkage.png")
+
+
 def save_plots(plots_dir: Path, data: DiagnosticData, importance: pd.DataFrame) -> None:
     """Write the power-model diagnostic plots into their analysis-stage subfolders."""
     model_dir = plots_dir / stages.UPLIFT_MODELLING
