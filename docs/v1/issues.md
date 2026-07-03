@@ -258,7 +258,7 @@ are the giveaway). Record every accepted **and rejected** candidate with evidenc
   Compute the local shear exponent `alpha = ln(ws_100m/ws_10m)/ln(10)` per row and
   interpolate with the shear power law: `ws_hh = ws_100m · (hh/100)^alpha`.
 - **Gust turbulence proxy:** `wind_gusts_10m / wind_speed_10m` — a unitless, TI-like
-  quantity (guard the calm-wind denominator).
+  quantity (guard the calm-wind denominator). Do a comparison to real (SCADA) TI and play around with the calculation if it the ERA5 derived TI is not realistic.
 - **Shear exponent** `alpha` as a feature in its own right (F6 already validated it as a
   real independent signal and folded out the 10 m/100 m collinearity), **vertical veer**
   (`wind_direction_100m − wind_direction_10m`, wrapped to ±180°), **air density** (from
@@ -282,12 +282,12 @@ regenerated under the accepted default set with overall P50 and conditional no w
 anything that varies with time but not weather. Trial explicitly-constructed time features
 — the headline motivation is **reference turbines changing over time**, a major bias risk
 and one of the main challenges the method must deal with: a drift feature gives the model
-a chance to absorb reference change instead of attributing it to the upgrade.
+a chance to absorb reference change instead of attributing it to the upgrade. It is also possible to ERA5 to drift over time vs the site due to ERA5 input data changes over time and site exposure changes over time (eg forestry growth, new neighbour wind farm, etc.)
 
 **Scope (one by one, per the Issue 9 protocol)**
-- **`time_since_campaign_start`** in days (negative in the baseline). Lets the model track
+- **`time_since_campaign_start`** continuous value in unit of days (negative in the baseline). Lets the model track
   slow reference change relative to the campaign.
-- **Time of year:** Julian day offset to a meteorologically meaningful anchor (say
+- **Time of year:** continuous value measuring the Julian day offset to a meteorologically meaningful anchor (say
   June 21), split into sin/cos components — tells the model roughly what season it is,
   potentially useful beyond the instantaneous weather data.
 - **Time of day, as solar altitude + azimuth** computed from an optional lat/long config
@@ -398,16 +398,23 @@ defaults change.
 
 ---
 
-## Issue 13 — Calibrate out the structural headline bias (covariate-shift-weighted baseline residuals) (WS2)
+## Issue 13 — Calibrate out the structural headline bias; revisit toggle's campaign-only training (WS2)
 
 **Goal:** remove the persistent overall-P50 bias: prepost ≈ **−0.4 pp on every profile**
 (F3/F4) and toggle ≈ +0.4 pp at 3 months. The flatness across profiles says it is a model
-artefact, not effect-dependent. Mechanism: the model's conditional bias `b(x)` integrates
-to ≈ 0 over the *training* (baseline) covariate mix, but the headline evaluates it over
-the *upgraded* window's mix — any weather/seasonal shift between the windows converts
+artefact, not effect-dependent — but the two modes get there by different mechanisms, and
+this issue addresses both. **Prepost:** the model's conditional bias `b(x)` integrates to
+≈ 0 over the *training* (baseline) covariate mix, but the headline evaluates it over the
+*upgraded* window's mix — any weather/seasonal shift between the windows converts
 conditional bias into headline bias. Estimate that term on untreated data and subtract it
 (this is F5's implication #1, baseline-residual calibration, never actioned — aimed at
-the headline rather than the bins, which Issue 8 already fixed).
+the headline rather than the bins, which Issue 8 already fixed). **Toggle:** under
+`toggle_campaign_only=True` the train (off) and predict (on) rows interleave through the
+same weeks, so train/predict covariate shift is minimal by construction — the 3-month
+bias is more plausibly small-sample shrinkage from the tiny fit (~6–7k off rows vs ~250k
+for a 2-year prepost baseline). The candidate fix is more training data: the pre-campaign
+baseline that `toggle_campaign_only` currently drops, made safe by exactly this issue's
+calibration plus Issue 10's time features.
 
 **Scope**
 - **Time-blocked baseline cross-validation.** Replace the random 20% holdout in
@@ -419,10 +426,27 @@ the headline rather than the bins, which Issue 8 already fixed).
   per ERA5 cell (reuse the CEM coarsening); weight cells by the *upgraded* window's
   occupancy to get the expected headline bias under the upgraded mix; subtract it from
   `Σcounterfactual` (guard cells unseen in baseline — fall back to the global mean
-  residual). Prepost first; check whether the same lever explains the 3-month toggle bias.
+  residual). For toggle, the campaign's off rows are untreated data under (almost
+  exactly) the on rows' covariate mix, so their out-of-fold residuals estimate the
+  headline bias more directly than the ERA5-cell reweighting prepost needs.
+- **Toggle training-window revisit.** Today `toggle_campaign_only=True` drops every
+  pre-campaign row, so a 3-month toggle fits on the campaign's off rows only. Trial
+  including the pre-campaign baseline as a 2×2 on the placebo sweep — {campaign-only,
+  all-data} × {calibration off, on} — with the Issue 10 time features in place.
+  `time_since_campaign_start` is *not* treatment-collinear in toggle (on and off
+  interleave), so the model can learn baseline→campaign drift and interpolate within the
+  campaign, largely voiding the Issue 10 boundary-clamping caveat. Win condition: the
+  extra rows cut shrinkage/spread without importing drift bias. Decide the
+  `toggle_campaign_only` default from that evidence (`naive_ratio` keeps campaign-only
+  regardless — there the restriction *is* the method's distribution matching).
+- **Time-decay weights are a contingency, not a deliverable.** If the placebo with
+  pre-campaign data shows drift-driven bias that the time features and the calibration do
+  not absorb, trial exponential time-decay sample weights before rejecting pre-campaign
+  data outright; otherwise the age-of-data feature carries the recency signal and keeps
+  full effective sample size.
 - **A/B behind a flag** (the Issue 8 playbook): placebo-centred evaluation across the
-  campaign sweep — the win condition is placebo prepost bias → ≈ 0 **without** a spread
-  cost at short campaigns (the F7 failure mode to avoid).
+  campaign sweep in **both modes** — the win condition is placebo bias → ≈ 0 **without**
+  a spread cost at short campaigns (the F7 failure mode to avoid).
 - **Sequencing with Issues 9–12:** run after (or with) the feature and model trials —
   better features and a better-calibrated model shrink `b(x)` and therefore the
   correction (Issue 12's calibration-slope fix is the closest cousin); report how much
@@ -431,8 +455,11 @@ the headline rather than the bins, which Issue 8 already fixed).
   calibrated headline.
 
 **Done when:** pooled prepost |bias| materially reduced (target ≲ 0.1–0.2 pp on the
-placebo) at no spread cost at any campaign length; findings entry quantifying the
-mechanism; benchmark regenerated if the calibration becomes the default.
+placebo) at no spread cost at any campaign length; the 3-month toggle bias explained, and
+either materially reduced or the campaign-only default re-confirmed with placebo
+evidence; a recorded decision on the `toggle_campaign_only` default; findings entry
+quantifying both mechanisms; benchmark regenerated if the calibration or the toggle
+default changes.
 
 ---
 
@@ -462,7 +489,7 @@ estimate, so every reported per-bin number is trustworthy or explicitly absent.
 
 **Done when:** the sparse-extreme bins are no longer the "worse than benchmark" set
 (fixed or absent by the floor); conditional mean |bias| no worse overall; the
-decomposition still energy-aggregates exactly to the headline.
+  decomposition still energy-aggregates exactly to the headline.
 
 ---
 
