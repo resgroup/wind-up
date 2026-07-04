@@ -10,10 +10,12 @@ from benchmarking.baselines.power_model.fitting import (
     IDENTITY_CALIBRATION,
     OUTCOME_MODEL_FACTORIES,
     CalibrationLine,
+    cell_residual_calibration,
     early_stopped_n_estimators,
     fit_calibration_line,
     time_block_folds,
 )
+from benchmarking.baselines.power_model.matching import cell_codes
 from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 
 
@@ -74,6 +76,65 @@ class TestCalibrationLine:
         x = np.array([1.0, 2.0, 3.0])
         np.testing.assert_array_equal(IDENTITY_CALIBRATION.apply(x), x)
         assert CalibrationLine(intercept=1.0, slope=2.0).apply(np.array([3.0]))[0] == 7.0
+
+
+class TestCellResidualCalibration:
+    def test_reads_out_centred_cell_means_under_target_mix(self) -> None:
+        # two cells: cell 0 residual mean +10, cell 1 residual mean -10 (global mean 0);
+        # the target sits mostly in cell 1, so the correction reads out the differential there
+        codes_base = np.array([[0]] * 50 + [[1]] * 50)
+        residuals = np.array([10.0] * 50 + [-10.0] * 50)
+        codes_target = np.array([[0]] * 2 + [[1]] * 8)
+        calib = cell_residual_calibration(codes_baseline=codes_base, residuals=residuals, codes_target=codes_target)
+        np.testing.assert_allclose(calib.per_row_residual, [10.0] * 2 + [-10.0] * 8)
+        assert calib.global_mean_residual == pytest.approx(0.0)
+        assert calib.n_target_unseen == 0
+        assert calib.n_cells == 2
+
+    def test_global_level_offset_is_centred_out(self) -> None:
+        # the F14 lesson: a uniform OOF level offset (here +5 everywhere) is an artefact of the
+        # out-of-fold basis and must not transfer to the correction
+        codes_base = np.array([[0]] * 50 + [[1]] * 50)
+        residuals = np.array([15.0] * 50 + [-5.0] * 50)  # cell means +15/-5, global +5
+        codes_target = np.array([[0], [1]])
+        calib = cell_residual_calibration(codes_baseline=codes_base, residuals=residuals, codes_target=codes_target)
+        np.testing.assert_allclose(calib.per_row_residual, [10.0, -10.0])
+        assert calib.global_mean_residual == pytest.approx(5.0)
+
+    def test_unseen_cell_and_invalid_row_get_zero(self) -> None:
+        codes_base = np.array([[0]] * 10)
+        residuals = np.full(10, 3.0)
+        codes_target = np.array([[0], [5], [-1]])  # seen, unseen, invalid
+        calib = cell_residual_calibration(codes_baseline=codes_base, residuals=residuals, codes_target=codes_target)
+        np.testing.assert_allclose(calib.per_row_residual, [0.0, 0.0, 0.0])  # single cell = global mean
+        assert calib.n_target_unseen == 2
+
+    def test_nan_and_invalid_baseline_rows_only_count_toward_global_mean(self) -> None:
+        codes_base = np.array([[0], [0], [-1], [0]])
+        residuals = np.array([2.0, 4.0, 100.0, np.nan])  # invalid-cell row only enters the global mean
+        codes_target = np.array([[0], [7]])
+        calib = cell_residual_calibration(codes_baseline=codes_base, residuals=residuals, codes_target=codes_target)
+        global_mean = (2.0 + 4.0 + 100.0) / 3
+        assert calib.per_row_residual[0] == pytest.approx(3.0 - global_mean)  # centred cell mean
+        assert calib.per_row_residual[1] == pytest.approx(0.0)  # unseen -> no differential info
+        assert calib.n_cells == 1
+
+    def test_multi_var_cells_via_cell_codes(self) -> None:
+        frame = pd.DataFrame({"a": [0.5, 0.5, 1.5, 1.5], "b": [0.5, 0.5, 0.5, 1.5]})
+        edges = {"a": [0.0, 1.0, 2.0], "b": [0.0, 1.0, 2.0]}
+        codes = cell_codes(frame, edges)
+        residuals = np.array([1.0, 3.0, 5.0, 7.0])
+        calib = cell_residual_calibration(codes_baseline=codes, residuals=residuals, codes_target=codes)
+        global_mean = 4.0
+        np.testing.assert_allclose(calib.per_row_residual, np.array([2.0, 2.0, 5.0, 7.0]) - global_mean)
+        assert calib.n_cells == 3
+
+    def test_correction_integrates_to_zero_under_baseline_mix(self) -> None:
+        rng = np.random.default_rng(3)
+        codes = rng.integers(0, 4, size=(500, 1))
+        residuals = rng.normal(2.0, 1.0, 500) + 3.0 * codes[:, 0]
+        calib = cell_residual_calibration(codes_baseline=codes, residuals=residuals, codes_target=codes)
+        assert float(calib.per_row_residual.mean()) == pytest.approx(0.0, abs=1e-9)
 
 
 class TestEarlyStoppedNEstimators:

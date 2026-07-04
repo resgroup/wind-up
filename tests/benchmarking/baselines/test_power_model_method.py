@@ -165,14 +165,15 @@ def _prepost_case(n: int = 4000, *, uplift: float = 0.05) -> tuple[MethodInput, 
 
 
 def _fundamentals_method(**overrides: object) -> PowerModelMethod:
-    return PowerModelMethod(
-        active_power_col=_POWER,
-        availability_col=_AVAIL,
-        baseline_rated_power_kw=2300.0,
-        wind_speed_col=_WS,
-        conditional_uplift=False,
-        **overrides,  # type: ignore[arg-type]
-    )
+    kwargs: dict[str, object] = {
+        "active_power_col": _POWER,
+        "availability_col": _AVAIL,
+        "baseline_rated_power_kw": 2300.0,
+        "wind_speed_col": _WS,
+        "conditional_uplift": False,
+        **overrides,
+    }
+    return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
 
 
 class TestModelFundamentals:
@@ -225,6 +226,72 @@ class TestModelFundamentals:
             _fundamentals_method(calibrate_slope=True, early_stopping=True).estimate(mi)
         with pytest.raises(ValueError, match="calibrate_slope"):
             _fundamentals_method(calibrate_slope=True, n_seed_ensemble=2).estimate(mi)
+
+    def test_calibrate_residuals_recovers_uplift_and_placebo(self) -> None:
+        for uplift in (0.05, 0.0):
+            mi, _ = _prepost_case(uplift=uplift)
+            method = _fundamentals_method(
+                model_params=_FAST_PARAMS,
+                calibrate_residuals=True,
+                era5_hourly_df=_toy_era5(pd.DatetimeIndex(pd.unique(mi.scada_df.index))),
+            )
+            out = method.estimate(mi)
+            assert out.p50_overall == pytest.approx(uplift, abs=0.02)
+
+    def test_time_decay_weights_recover_uplift(self) -> None:
+        mi, _ = _prepost_case()
+        out = _fundamentals_method(model_params=_FAST_PARAMS, time_decay_half_life_days=30.0).estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+
+    def test_time_decay_weight_values(self) -> None:
+        method = _fundamentals_method(time_decay_half_life_days=10.0)
+        index = pd.date_range("2019-01-01", periods=5, freq="10D", tz="UTC")
+        # campaign interval [index[2], index[3]]: inside weighs 1, outside decays both ways
+        weights = method._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3])  # noqa: SLF001
+        np.testing.assert_allclose(weights, [0.25, 0.5, 1.0, 1.0, 0.5])
+        off = _fundamentals_method()._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3])  # noqa: SLF001
+        assert off is None
+
+    def test_issue13_config_conflicts_raise(self) -> None:
+        mi, _ = _prepost_case(n=200)
+        era5 = _toy_era5(pd.DatetimeIndex(pd.unique(mi.scada_df.index)))
+        with pytest.raises(ValueError, match="requires ERA5"):
+            _fundamentals_method(calibrate_residuals=True).estimate(mi)
+        with pytest.raises(ValueError, match="competing headline corrections"):
+            _fundamentals_method(calibrate_residuals=True, calibrate_slope=True, era5_hourly_df=era5).estimate(mi)
+        with pytest.raises(ValueError, match="out-of-fold basis"):
+            _fundamentals_method(calibrate_residuals=True, n_seed_ensemble=2, era5_hourly_df=era5).estimate(mi)
+        with pytest.raises(ValueError, match="must be positive"):
+            _fundamentals_method(time_decay_half_life_days=0.0).estimate(mi)
+
+    def test_campaign_mask_bites_only_for_started_toggle(self) -> None:
+        index = pd.date_range("2019-01-01", periods=4, freq="10D", tz="UTC")
+        mask = PowerModelMethod._campaign_mask  # noqa: SLF001
+        np.testing.assert_array_equal(
+            mask(index, upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=4), start=index[2])),
+            [False, False, True, True],
+        )
+        assert mask(index, upgrade_timing=pd.Timestamp(index[2])).all()  # prepost: all-True
+        assert mask(index, upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=4))).all()  # no start
+
+    def test_toggle_all_data_with_conditional_recovers_uplift(self) -> None:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        start = idx[n // 2]  # first half pre-campaign baseline, second half interleaved toggle
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=4), start=start)
+        within = (((idx - start) // (schedule.period / 2)).astype(int) % 2) == 1
+        treated = np.asarray((idx >= start) & within)
+        scada = _toy_scada(n, uplift=0.04, treated=treated)
+        method = _fundamentals_method(
+            model_params=_FAST_PARAMS,
+            toggle_campaign_only=False,
+            conditional_uplift=True,
+            era5_hourly_df=_toy_era5(idx),
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        out = method.estimate(mi)
+        assert out.p50_overall == pytest.approx(0.04, abs=0.02)
+        assert out.p50_by_condition is not None
 
     def test_model_factory_config_label_is_stable(self) -> None:
         def label_for(**overrides: object) -> str | None:

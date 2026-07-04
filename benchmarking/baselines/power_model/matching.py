@@ -110,7 +110,7 @@ def coarsened_exact_match(
             msg = f"{name} shape {np.asarray(sel).shape} does not align to matching_frame's {n_rows} rows"
             raise ValueError(msg)
 
-    codes = _cell_codes(matching_frame, bin_edges)
+    codes = cell_codes(matching_frame, bin_edges)
     valid_cell = np.all(codes >= 0, axis=1)  # -1 marks a NaN/out-of-range value in some var
     base = np.flatnonzero(np.asarray(baseline_sel, dtype=bool) & valid_cell)
     up = np.flatnonzero(np.asarray(upgraded_sel, dtype=bool) & valid_cell)
@@ -130,8 +130,12 @@ def coarsened_exact_match(
     return result
 
 
-def _cell_codes(matching_frame: pd.DataFrame, bin_edges: dict[str, list[float]]) -> np.ndarray:
-    """Integer cell code per (row, var); -1 where the value is NaN or outside the var's edges."""
+def cell_codes(matching_frame: pd.DataFrame, bin_edges: dict[str, list[float]]) -> np.ndarray:
+    """Integer cell code per (row, var); -1 where the value is NaN or outside the var's edges.
+
+    Public because the coarsening is shared: CEM matching here, and the residual calibration
+    (Issue 13), which estimates mean out-of-fold residuals over the same cells.
+    """
     columns = []
     for var, edges in bin_edges.items():
         # include_lowest so a value exactly on the lowest edge (e.g. 0° direction, calm wind) lands in
