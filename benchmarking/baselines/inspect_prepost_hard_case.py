@@ -45,7 +45,7 @@ from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.overnight_common import start_overnight_run
 from benchmarking.baselines.overnight_profiles import overnight_profiles
-from benchmarking.baselines.power_model import PowerModelMethod
+from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import (
     CONDITION_BINS,
@@ -163,6 +163,9 @@ def _power_model(out_dir: Path, era5_hourly_df: pd.DataFrame, *, save_plots: boo
         era5_hourly_df=era5_hourly_df,
         # Issue 11 accepted default (findings F12): reference active-power minimum feature.
         reference_stat_cols=("wtc_ActPower_min",),
+        # Removal-ablation accepted defaults (findings F13).
+        availability_feature=False,
+        era5_exclude=CURATED_ERA5_EXCLUDE,
         out_dir=out_dir,
         save_plots=save_plots,
     )

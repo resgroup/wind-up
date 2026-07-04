@@ -7,6 +7,6 @@ baseline, predict the counterfactual over the upgraded window, and take the ener
 
 from __future__ import annotations
 
-from benchmarking.baselines.power_model.method import PowerModelMethod
+from benchmarking.baselines.power_model.method import CURATED_ERA5_EXCLUDE, PowerModelMethod
 
-__all__ = ["PowerModelMethod"]
+__all__ = ["CURATED_ERA5_EXCLUDE", "PowerModelMethod"]

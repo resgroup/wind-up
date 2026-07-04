@@ -61,6 +61,19 @@ logger = logging.getLogger(__name__)
 _MIN_BASELINE_ROWS = 10
 _MIN_HOLDOUT_ROWS = 20  # below this, report the in-sample fit (no point splitting off a tiny valid set)
 
+# The removal-ablation verdict (findings F13): raw Open-Meteo columns the curated feature set does
+# better without — redundant thermodynamic derivatives of temperature/humidity and the precipitation
+# trio. HoT drivers pass this (with availability_feature=False) as the accepted default; kept here,
+# not baked into ``era5_exclude``'s dataclass default, so a non-Open-Meteo ERA5 frame is not broken
+# by exclusions it never had.
+CURATED_ERA5_EXCLUDE: tuple[str, ...] = (
+    "apparent_temperature",
+    "dew_point_2m",
+    "precipitation",
+    "rain",
+    "snowfall",
+)
+
 # F6 matching set + bin widths for the bias-cancellation correction, verified on real HoT by the CEM
 # coverage sweep (docs/v1/findings.md F6). wind_speed_100m (dominant) is binned finest, wind_gusts_10m
 # coarser, and wind_direction_100m in 20° sectors (a reanalysis direction — finer is finer than the

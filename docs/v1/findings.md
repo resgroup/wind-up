@@ -7,6 +7,44 @@ from, not just conclusions.
 
 ---
 
+## F13 — removal ablation: dropping the availability feature + five ERA5 columns improves the benchmark; low importance ≠ removable
+
+*2026-07-04 — follow-up to the Issue 9–11 additions: the same A/B protocol run in reverse (remove each
+currently-accepted feature group, keep any removal that noticeably improves the score). Two new
+ablation knobs on `PowerModelMethod`: `era5_exclude` (drops raw ERA5 columns + their sin/cos
+companions; guarded against excluding `matching_vars` while `conditional_uplift` is on) and
+`availability_feature` (drops the per-reference availability *feature*; `availability_col` stays
+required for the downtime filter). Screens on the placebo, confirmation via two full sweeps
+(`--method-overrides` on `study_power_model_compare.py`), all diffed against the post-F12 benchmark.*
+
+### The accepted removal set (now the driver default; benchmark regenerated)
+`availability_feature=False` + `era5_exclude = CURATED_ERA5_EXCLUDE = (apparent_temperature,
+dew_point_2m, precipitation, rain, snowfall)`. Full-sweep deltas (pp; negative = better):
+- **prepost overall**: Δ|bias| −0.19, Δspread −0.18, Δscore **−0.24** — the largest overall
+  improvement of the whole Issue 9–11 campaign, and it came from *removing* features. Per campaign
+  (placebo): 3 mo bias −0.59 → −0.12, 12 mo −0.21 → **0.00**, 6 mo overshoots mildly (−0.17 → +0.30).
+- **toggle**: overall neutral (≤0.006); conditional Δ|bias| −0.98, Δscore **−1.47**.
+- **prepost conditional**: the one cost, Δscore +0.54 (cells split 212 better / 183 worse) — accepted
+  against the overall-P50 gains (Phase 1 is judged on P50 accuracy/precision first).
+- Availability-alone (set A) shows nearly the same numbers; the ERA5 trims add a small consistent
+  extra (prepost conditional Δ|bias| +0.07 → −0.17 vs A). The removals stack cleanly — unlike the
+  F12 max+min interaction.
+
+### Why removing availability helps
+References are almost always available, and when one is not, its *power* column already carries the
+fact (0/NaN) — so the counter added noise and a mild maintenance-calendar proxy rather than wake
+information. The curated-feature physical argument ("the model should know whether a reference is
+waking") was measured and lost to the data.
+
+### Kept columns — low importance is not a removal licence
+Removing bottom-of-the-ranking columns often *hurt*: `pressure_msl` removal cost +2.09 pp prepost
+conditional score (the model evidently uses the msl-vs-surface pressure pair jointly), `weather_code`
+removal +0.49, `cloud_cover` removal +0.39 toggle conditional, humidity removal worse everywhere.
+Together with F12's rank-3/rank-4 accepted/rejected split, the lesson is symmetric: importance rank
+predicts neither a feature's value nor its removability — only the benchmark gates do.
+
+---
+
 ## F12 — reference active-power **minimum** accepted as a default feature; SD and max rejected (Issue 11)
 
 *2026-07-04 — Issue 11 verdicts. Candidates A/B'd one field at a time per the Issue 9 protocol:

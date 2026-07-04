@@ -87,7 +87,7 @@ from benchmarking.baselines.example_prepost_study import (
 from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_PERIOD
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.overnight_profiles import overnight_profiles
-from benchmarking.baselines.power_model import PowerModelMethod
+from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelMethod
 from benchmarking.harness import (
     StudyConfig,
     conditional_leaderboard,
@@ -197,6 +197,10 @@ def _make_power_model(
         # Issue 11 accepted default (findings F12): each reference's within-period active-power
         # minimum. Better on every benchmark gate in both modes; max/SD were rejected.
         "reference_stat_cols": ("wtc_ActPower_min",),
+        # Removal-ablation accepted defaults (findings F13): drop the availability feature and the
+        # redundant thermodynamic/precipitation ERA5 columns.
+        "availability_feature": False,
+        "era5_exclude": CURATED_ERA5_EXCLUDE,
         "out_dir": out_dir / "power_model_runs",
     }
     if overrides:
