@@ -366,13 +366,21 @@ _TAG_REACTIVE_POWER_MEAN = "wtc_ReactPwr_mean"
 _TAG_NACELLE_POSITION_MEAN = "wtc_NacelPos_mean"
 _TAG_AMBIENT_TEMP_MEAN = "wtc_AmbieTmp_mean"
 _TAG_AVAILABILITY = "wtc_ScReToOp_timeon"
+# Reference active-power companion statistics (Issue 11): within-period max/min/SD of active power.
+# The SD in particular is a calibration-stable, farm-sited turbulence proxy a method may opt into
+# as reference features; the mean stays the primary signal.
+_TAG_ACTIVE_POWER_MAX = "wtc_ActPower_max"
+_TAG_ACTIVE_POWER_MIN = "wtc_ActPower_min"
+_TAG_ACTIVE_POWER_SD = "wtc_ActPower_stddev"
 
 
 hill_of_towie_fields = [
     WPSBackupFileField(
         alias=DataColumns.active_power_mean, field_name=_TAG_ACTIVE_POWER_MEAN, table_name="tblSCTurGrid"
     ),
-    WPSBackupFileField(alias=DataColumns.active_power_sd, field_name="wtc_ActPower_stddev", table_name="tblSCTurGrid"),
+    WPSBackupFileField(alias=DataColumns.active_power_sd, field_name=_TAG_ACTIVE_POWER_SD, table_name="tblSCTurGrid"),
+    WPSBackupFileField(alias="ActivePowerMax", field_name=_TAG_ACTIVE_POWER_MAX, table_name="tblSCTurGrid"),
+    WPSBackupFileField(alias="ActivePowerMin", field_name=_TAG_ACTIVE_POWER_MIN, table_name="tblSCTurGrid"),
     WPSBackupFileField(alias="ReactivePowerMean", field_name="wtc_ReactPwr_mean", table_name="tblSCTurGrid"),
     WPSBackupFileField(alias=DataColumns.wind_speed_mean, field_name=_TAG_WIND_SPEED_MEAN, table_name="tblSCTurbine"),
     WPSBackupFileField(alias=DataColumns.wind_speed_sd, field_name=_TAG_WIND_SPEED_SD, table_name="tblSCTurbine"),
@@ -412,6 +420,16 @@ HOT_COLUMNS = ColumnSchema(
 # Baseline rated power of the Hill of Towie test turbines (kW); matches the synthetic generator's
 # baseline ``rated_power_kw`` default and caps the power-model counterfactual predictions.
 HOT_RATED_POWER_KW = 2300.0
+
+# Hub height of the Hill of Towie turbines (m); feeds the ERA5 hub-height wind-speed derivation.
+HOT_HUB_HEIGHT_M = 59.0
+
+# The reference active-power companion statistics (max/min/SD) a method may opt into as features.
+HOT_ACTIVE_POWER_STAT_COLS: tuple[str, ...] = (
+    _TAG_ACTIVE_POWER_MAX,
+    _TAG_ACTIVE_POWER_MIN,
+    _TAG_ACTIVE_POWER_SD,
+)
 
 
 def _unpack_hot_10min_year(

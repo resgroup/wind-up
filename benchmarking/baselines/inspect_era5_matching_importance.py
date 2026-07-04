@@ -45,6 +45,7 @@ import numpy as np
 import pandas as pd
 from sklearn.inspection import permutation_importance
 
+from benchmarking.baselines.era5_derived import shear_exponent
 from benchmarking.baselines.era5_sync import sync_era5
 from benchmarking.baselines.example_prepost_study import (
     DEFAULT_END_DT_EXCL,
@@ -81,26 +82,18 @@ def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
     return pd.Timedelta(np.median(np.diff(unique.to_numpy())))
 
 
-_SHEAR_HEIGHTS_M = (10.0, 100.0)  # the two ERA5 wind-speed levels the shear exponent is fit between
-
-
 def add_shear_exponent(features: pd.DataFrame) -> pd.DataFrame:
     """Fold the collinear 10m/100m wind speeds into one physical vertical-shear exponent.
 
     The two ERA5 wind speeds are strongly correlated, so gain splits credit between them while
     permutation discounts whichever is redundant — neither view then cleanly reflects the *shear* they
-    jointly encode. The power-law exponent ``alpha = ln(ws_100m / ws_10m) / ln(100/10)`` captures that
-    shear in a single column (a stability / turbulence proxy that directly attacks the F5 cause), so we
-    keep ``wind_speed_100m`` as the magnitude and drop the now-redundant ``wind_speed_10m``. ``alpha`` is
-    NaN where either speed is non-positive (calm); LightGBM handles that natively.
+    jointly encode. The power-law exponent (see
+    :func:`benchmarking.baselines.era5_derived.shear_exponent`, the shared Issue 9 utility) captures
+    that shear in a single column (a stability / turbulence proxy that directly attacks the F5 cause),
+    so we keep ``wind_speed_100m`` as the magnitude and drop the now-redundant ``wind_speed_10m``.
     """
-    lo_m, hi_m = _SHEAR_HEIGHTS_M
-    ws_hi = features["wind_speed_100m"].to_numpy(dtype=float)
-    ws_lo = features["wind_speed_10m"].to_numpy(dtype=float)
-    positive = (ws_hi > 0) & (ws_lo > 0)
-    alpha = np.full(len(features), np.nan)
-    alpha[positive] = np.log(ws_hi[positive] / ws_lo[positive]) / np.log(hi_m / lo_m)
-    return features.assign(wind_shear_exponent=alpha).drop(columns=["wind_speed_10m"])
+    alpha = shear_exponent(features["wind_speed_10m"], features["wind_speed_100m"])
+    return features.assign(wind_shear_exponent=alpha.to_numpy()).drop(columns=["wind_speed_10m"])
 
 
 def build_era5_and_outcome(scada_df: pd.DataFrame, *, test_wtg: str) -> tuple[pd.DataFrame, pd.Series]:

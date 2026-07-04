@@ -20,10 +20,15 @@ test-turbine-qualified column (the §3 guard).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.era5_sync import ERA5_WD, ERA5_WS
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # Separator between a source-native tag and the turbine it came from in a feature name.
 QUALIFIER = " @ "
@@ -48,17 +53,29 @@ def build_reference_features(
     turbine_col: str,
     active_power_col: str,
     availability_col: str,
+    extra_cols: Sequence[str] = (),
+    include_availability: bool = True,
 ) -> pd.DataFrame:
-    """Wide, curated reference features: each reference turbine's active power + availability.
+    """Wide, curated reference features: each reference turbine's active power (+ optional extras).
 
+    By default each reference contributes its active power and availability; ``extra_cols`` adds
+    more per-reference channels and ``include_availability=False`` drops the availability feature.
     Columns are ``"<tag>{QUALIFIER}<turbine>"`` keeping the original tag name. The test turbine
     contributes nothing (its power is the outcome, extracted separately). NaNs are preserved (no
     complete-case dropping) — LightGBM handles them natively. Raises if no reference turbine is
     present, or (defensively) if any test-turbine column would leak in.
+
+    :param extra_cols: additional per-reference value columns to carry as features (Issue 11's
+        active-power max/min/SD statistics); must be present in ``scada_df`` like the primary two
+    :param include_availability: when ``False``, drop the per-reference availability *feature*
+        (removal-ablation knob); ``availability_col`` must still exist in ``scada_df`` (the
+        downtime filter needs it), so its presence is validated either way
     """
     refs = _references(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)
-    value_cols = [active_power_col, availability_col]
-    missing = [c for c in value_cols if c not in scada_df.columns]
+    value_cols = [active_power_col, *([availability_col] if include_availability else []), *extra_cols]
+    # availability_col stays validated even when not featured: it is a required input and the
+    # docstring contract is that it exists for the downstream downtime filter.
+    missing = sorted(c for c in {*value_cols, availability_col} if c not in scada_df.columns)
     if missing:
         msg = f"scada_df is missing required reference-feature columns {missing}; have {list(scada_df.columns)}"
         raise ValueError(msg)

@@ -7,6 +7,153 @@ from, not just conclusions.
 
 ---
 
+## F13 — removal ablation: dropping the availability feature + five ERA5 columns improves the benchmark; low importance ≠ removable
+
+*2026-07-04 — follow-up to the Issue 9–11 additions: the same A/B protocol run in reverse (remove each
+currently-accepted feature group, keep any removal that noticeably improves the score). Two new
+ablation knobs on `PowerModelMethod`: `era5_exclude` (drops raw ERA5 columns + their sin/cos
+companions; guarded against excluding `matching_vars` while `conditional_uplift` is on) and
+`availability_feature` (drops the per-reference availability *feature*; `availability_col` stays
+required for the downtime filter). Screens on the placebo, confirmation via two full sweeps
+(`--method-overrides` on `study_power_model_compare.py`), all diffed against the post-F12 benchmark.*
+
+### The accepted removal set (now the driver default; benchmark regenerated)
+`availability_feature=False` + `era5_exclude = CURATED_ERA5_EXCLUDE = (apparent_temperature,
+dew_point_2m, precipitation, rain, snowfall)`. Full-sweep deltas (pp; negative = better):
+- **prepost overall**: Δ|bias| −0.19, Δspread −0.18, Δscore **−0.24** — the largest overall
+  improvement of the whole Issue 9–11 campaign, and it came from *removing* features. Per campaign
+  (placebo): 3 mo bias −0.59 → −0.12, 12 mo −0.21 → **0.00**, 6 mo overshoots mildly (−0.17 → +0.30).
+- **toggle**: overall neutral (≤0.006); conditional Δ|bias| −0.98, Δscore **−1.47**.
+- **prepost conditional**: the one cost, Δscore +0.54 (cells split 212 better / 183 worse) — accepted
+  against the overall-P50 gains (Phase 1 is judged on P50 accuracy/precision first).
+- Availability-alone (set A) shows nearly the same numbers; the ERA5 trims add a small consistent
+  extra (prepost conditional Δ|bias| +0.07 → −0.17 vs A). The removals stack cleanly — unlike the
+  F12 max+min interaction.
+
+### Why removing availability helps
+References are almost always available, and when one is not, its *power* column already carries the
+fact (0/NaN) — so the counter added noise and a mild maintenance-calendar proxy rather than wake
+information. The curated-feature physical argument ("the model should know whether a reference is
+waking") was measured and lost to the data.
+
+### Kept columns — low importance is not a removal licence
+Removing bottom-of-the-ranking columns often *hurt*: `pressure_msl` removal cost +2.09 pp prepost
+conditional score (the model evidently uses the msl-vs-surface pressure pair jointly), `weather_code`
+removal +0.49, `cloud_cover` removal +0.39 toggle conditional, humidity removal worse everywhere.
+Together with F12's rank-3/rank-4 accepted/rejected split, the lesson is symmetric: importance rank
+predicts neither a feature's value nor its removability — only the benchmark gates do.
+
+---
+
+## F12 — reference active-power **minimum** accepted as a default feature; SD and max rejected (Issue 11)
+
+*2026-07-04 — Issue 11 verdicts. Candidates A/B'd one field at a time per the Issue 9 protocol:
+`study_power_model_compare.py --method-overrides '{"reference_stat_cols": [...]}'` against the committed
+benchmark — placebo (`cp_0pct`, both modes) screen first, full 7-profile sweep for survivors. The HoT
+loader now also unpacks `wtc_ActPower_max` / `wtc_ActPower_min` (the SD was already loaded); the fields
+reach the model via `build_reference_features(..., extra_cols=...)` /
+`PowerModelMethod.reference_stat_cols`.*
+
+### Verdicts (deltas vs the pre-change benchmark, in pp; negative = better)
+- **`wtc_ActPower_min` — ACCEPTED, now the default** (`reference_stat_cols=("wtc_ActPower_min",)` in the
+  HoT drivers). Better on every gate in both modes: overall P50 Δ|bias| −0.01 (prepost) / −0.006 (toggle),
+  Δspread ~0 / −0.009; conditional mean Δ|bias| **−0.46 (prepost)** / **−0.75 (toggle)**, Δscore −0.40 /
+  −1.30. Interpretation: the within-period minimum tells the model when a reference dipped (gust lulls,
+  brief curtailments) — a farm-sited variability signal the mean hides. **Benchmark JSON regenerated**
+  from this configuration's full sweep.
+- **`wtc_ActPower_stddev` — REJECTED.** The placebo screen alone disqualified it: conditional mean
+  Δ|bias| +2.8 / Δscore +3.98 (prepost), +0.65 / +1.38 (toggle), and it jumped to importance rank 5.
+  The within-period power SD is exactly the kind of channel the placebo gate exists for.
+- **`wtc_ActPower_max` — REJECTED.** Full sweep: it shifts the prepost overall bias **uniformly +0.33 pp
+  across all seven profiles** — a counterfactual level shift, not uplift tracking. That happens to offset
+  the structural −0.4 pp prepost headline bias (|bias| improves) but costs spread (+0.08; 240/469 cells
+  worse) and is an accidental cancellation — Issue 13 addresses that bias properly. Toggle-side it helps
+  (−1.13 conditional), but combined with `min` (trio minus SD) it is toxic: prepost conditional
+  Δ|bias| +3.4 / Δscore +5.2. Max and min together destabilise the matched conditional fits.
+- **Reference nacelle wind speed / wind-speed SD — rejected without trial** (recorded per the issue): a
+  reference anemometer is at high risk of calibration drift, which a prepost campaign reads as uplift;
+  reference *power* is the calibration-stable channel, and same-type references degrade like the test
+  turbine, giving a fairer counterfactual expectation.
+
+### Method note
+Importance rank alone was a poor red-flag here: `max`/`min` both ranked 3rd–4th (gain frac 3–4%), yet one
+was accepted and one rejected — the benchmark gates (placebo bias, spread, conditional cells) did the
+discriminating, not the ranking.
+
+---
+
+## F11 — explicit time features rejected: campaign-drift, season and solar all fail or add nothing (Issue 10)
+
+*2026-07-04 — Issue 10 verdicts. `benchmarking/baselines/time_features.py` ships the features
+(`days_since_campaign_start`, June-21-anchored `season` sin/cos, NOAA `solar` altitude/azimuth validated
+against an ephem reference to <0.01°) behind `PowerModelMethod.time_features` (+ `latitude`/`longitude`),
+default **off**. A/B'd one at a time on the placebo (`cp_0pct`, both modes) via
+`study_power_model_compare.py --method-overrides`.*
+
+### Verdicts (placebo deltas vs benchmark, pp)
+- **`days_since_campaign_start` — REJECTED.** Prepost is the anticipated failure, measured: overall
+  Δbias +0.23, Δspread **+1.08**, Δscore +0.97; conditional Δscore +5.3 with 54/67 cells worse. Trees
+  cannot extrapolate the feature past the changeover (every upgraded-row value exceeds the training
+  range, so predictions clamp at boundary leaves), which *adds* variance instead of absorbing drift.
+  Toggle is ~neutral (−0.001 overall) — but prepost and toggle share one code path, so it stays out.
+- **`season` — REJECTED.** Prepost overall slightly worse (Δscore +0.14, max Δ|bias| +0.26 at one
+  campaign length), conditional worse in both modes (+0.39 / +0.16). Against a <12-month baseline the
+  pair is a partial calendar proxy, as the issue warned.
+- **`solar` — REJECTED.** Neutral overall (≤0.03) but conditional worse in both modes (+0.90 / +0.29
+  Δscore) and negligible importance (rank 22–24 of 32, gain frac ≤0.0003) — the instantaneous weather
+  columns already carry the diurnal signal at this site.
+
+### Method note
+The feared "time feature dominating the importance ranking" red flag never fired — all three sat far
+down the ranking (gain frac ≤0.0006) *while still doing damage through spread*. The placebo benchmark
+gate, not the importance watch, is the effective detector for drift-importing features. The module stays
+in the tree for future sources (e.g. a site with genuine reference drift may re-litigate
+`days_since_campaign_start` in toggle-only form).
+
+---
+
+## F10 — ERA5 derived quantities: utility shipped; hub-height wind speed validated standalone; no derivation earns a default place in the full model (Issue 9)
+
+*2026-07-04 — Issue 9 verdicts. `benchmarking/baselines/era5_derived.py` is the shared derivation
+utility (shear exponent, hub-height ws via the shear power law + `hub_height_m` — `HOT_HUB_HEIGHT_M =
+59.0`, gust ratio, gust margin, veer, moist-air density), reused by
+`inspect_era5_matching_importance.py` and available to the CEM matching step; features reach the model
+via `PowerModelMethod.era5_derivations`, default **off**. Screened per candidate on the placebo, full
+sweeps for survivors (`study_power_model_compare.py --method-overrides`).*
+
+### The gust "TI proxy" is not one (measured against real SCADA TI)
+- `gust_ratio = wind_gusts_10m / wind_speed_10m` correlates with the test turbine's measured TI at
+  **Pearson +0.03** (Spearman +0.11; T01, ws>4 m/s, n≈195k) and implies TI ≈ 0.31 at the median vs the
+  real 0.17 — ERA5's hourly grid-scale gustiness is a different quantity from local 10-min turbulence.
+- Variants (per the issue's "play around" instruction): the absolute **gust margin** `gusts − ws_100m`
+  is the best simple correlate (+0.22), shear exponent −0.21, |veer| −0.21, `gusts/ws_100m` +0.11.
+  A LightGBM fit of TI on *all* ERA5 columns reaches held-out **R² = 0.38**, dominated by wind-direction
+  sin/cos (~31% of gain — wake/terrain sectors) — much of site TI is direction-determined and the model
+  already sees direction.
+
+### A/B verdicts (vs benchmark, pp)
+- **`wind_speed_hub` — validated, left opt-in.** With reference features removed (ERA5-only ranking, the
+  Issue 9 exploration) it *dominates*: 63% of gain, permutation importance 0.48 vs 0.10 for raw
+  `wind_speed_100m`. In the full model its full sweep improves overall P50 in both modes (prepost
+  Δ|bias| −0.02, Δspread −0.035 uniformly across profiles; toggle conditional −1.02 score) at a small
+  prepost conditional cost (+0.13). But combined with the accepted `wtc_ActPower_min` its marginal value
+  disappears (combo no better than `min` alone, toggle conditional diluted), so it is **not defaulted**;
+  it is the natural candidate for the F6 `matching_vars` revisit and for reference-poor sources.
+- **`shear_exponent`, `veer` — REJECTED (mode-split).** Both help toggle conditional (−0.41 / −0.47
+  score) and hurt prepost (+0.80 / +0.54); one code path, so out.
+- **`gust_ratio`, `gust_margin`, `air_density` — REJECTED.** Overall neutral; conditional worse
+  (gust_ratio prepost +1.33 score with the (6, ws) cell +5.9; gust_margin +0.34/+0.23; air_density
+  +0.60 prepost, 25/35 cells worse). Consistent with the TI-proxy result: these columns add split noise,
+  not cause.
+
+### Interpretation
+The reference active-power features already carry the site signal ERA5 derivations try to reconstruct —
+in the full model every derivation lands at gain frac ≤0.0012. ERA5 derivations matter where references
+are absent: the ERA5-only fit (R² 0.85) is where `wind_speed_hub` shines, which is exactly the CEM
+matching / AEP-extrapolation context (Issues 8/15), not the counterfactual feature set.
+
+---
+
 ## F9 — the matched two-direction conditional cross-prediction shipped as the sole conditional method, on by default
 
 *2026-07-03 — Issue 8 ship. The F7/F8 development-time A/B flag `bias_correct` is **removed**; the

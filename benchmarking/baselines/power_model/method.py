@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
+from benchmarking.baselines.era5_derived import era5_derived_frame
 from benchmarking.baselines.era5_sync import sync_era5
 from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.baselines.naive_ratio import restrict_to_campaign
@@ -41,6 +42,12 @@ from benchmarking.baselines.power_model.features import (
 )
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
 from benchmarking.baselines.rlearner.nuisance import make_outcome_model
+from benchmarking.baselines.time_features import (
+    TIME_FEATURE_NAMES,
+    days_since_campaign_start,
+    season_sin_cos,
+    solar_altitude_azimuth,
+)
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import CONDITION_BINS, energy_ratio_by_bin
 from benchmarking.harness.method import MethodInput, MethodOutput
@@ -53,6 +60,19 @@ logger = logging.getLogger(__name__)
 
 _MIN_BASELINE_ROWS = 10
 _MIN_HOLDOUT_ROWS = 20  # below this, report the in-sample fit (no point splitting off a tiny valid set)
+
+# The removal-ablation verdict (findings F13): raw Open-Meteo columns the curated feature set does
+# better without — redundant thermodynamic derivatives of temperature/humidity and the precipitation
+# trio. HoT drivers pass this (with availability_feature=False) as the accepted default; kept here,
+# not baked into ``era5_exclude``'s dataclass default, so a non-Open-Meteo ERA5 frame is not broken
+# by exclusions it never had.
+CURATED_ERA5_EXCLUDE: tuple[str, ...] = (
+    "apparent_temperature",
+    "dew_point_2m",
+    "precipitation",
+    "rain",
+    "snowfall",
+)
 
 # F6 matching set + bin widths for the bias-cancellation correction, verified on real HoT by the CEM
 # coverage sweep (docs/v1/findings.md F6). wind_speed_100m (dominant) is binned finest, wind_gusts_10m
@@ -177,6 +197,20 @@ class PowerModelMethod:
         cross-prediction — the expensive part — and return only the overall P50.
     :param matching_vars: ERA5 columns matched on for the conditional step (default: the F6 set)
     :param matching_bin_edges: per-variable CEM bin edges; the F6 defaults are used when ``None``
+    :param era5_derivations: derived ERA5 feature columns to add (Issue 9; see
+        :data:`~benchmarking.baselines.era5_derived.ERA5_DERIVATIONS`); requires ``era5_hourly_df``
+    :param hub_height_m: turbine hub height, required by the ``wind_speed_hub`` derivation
+    :param time_features: explicit time features to add (Issue 10; see
+        :data:`~benchmarking.baselines.time_features.TIME_FEATURE_NAMES`)
+    :param latitude: site latitude in degrees, required by the ``solar`` time feature
+    :param longitude: site longitude in degrees (east positive), required by the ``solar`` time feature
+    :param reference_stat_cols: extra per-reference value columns to carry as features (Issue 11's
+        active-power max/min/SD companion statistics)
+    :param era5_exclude: raw ERA5 columns to drop from the model features (removal-ablation knob;
+        a dropped direction column also loses its sin/cos companions). Columns used as
+        ``matching_vars`` cannot be excluded while ``conditional_uplift`` is on.
+    :param availability_feature: when ``False``, drop the per-reference availability *feature*
+        (removal-ablation knob); ``availability_col`` itself stays required for the downtime filter
     """
 
     active_power_col: str
@@ -196,6 +230,14 @@ class PowerModelMethod:
     conditional_uplift: bool = True
     matching_vars: tuple[str, ...] = _DEFAULT_MATCHING_VARS
     matching_bin_edges: dict[str, list[float]] | None = None
+    era5_derivations: tuple[str, ...] = ()
+    hub_height_m: float | None = None
+    time_features: tuple[str, ...] = ()
+    latitude: float | None = None
+    longitude: float | None = None
+    reference_stat_cols: tuple[str, ...] = ()
+    era5_exclude: tuple[str, ...] = ()
+    availability_feature: bool = True
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
@@ -220,8 +262,13 @@ class PowerModelMethod:
             turbine_col=mi.turbine_col,
             active_power_col=self.active_power_col,
             availability_col=self.availability_col,
+            extra_cols=self.reference_stat_cols,
+            include_availability=self.availability_feature,
         )
         features, era5 = self._add_era5(scada, features, mi=mi, index=index, timebase=timebase)
+        if self.time_features:
+            time_frame = self._time_feature_frame(index, campaign_start=_upgrade_start(mi.upgrade_timing, index))
+            features = pd.concat([features, time_frame], axis=1)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
 
         t = np.asarray(treated_mask(index, mi.upgrade_timing)).astype(bool)
@@ -507,8 +554,11 @@ class PowerModelMethod:
         index: pd.DatetimeIndex,
         timebase: pd.Timedelta,
     ) -> tuple[pd.DataFrame, Any]:
-        """Sync ERA5 (if supplied) and append its features; return the (features, sync-result)."""
+        """Sync ERA5 (if supplied) and append its features (+ requested derived quantities)."""
         if self.era5_hourly_df is None:
+            if self.era5_derivations:
+                msg = "era5_derivations requested but no era5_hourly_df supplied; the derivations need ERA5."
+                raise ValueError(msg)
             return features, None
         if self.wind_speed_col is None:
             msg = "wind_speed_col is required to sync ERA5 (it provides the reference wind speed)."
@@ -524,7 +574,56 @@ class PowerModelMethod:
             scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, wind_speed_col=self.wind_speed_col
         )
         result = sync_era5(self.era5_hourly_df, target_index=index, reference_ws=reference_ws, timebase=timebase)
-        return pd.concat([features, era5_feature_frame(result.aligned)], axis=1), result
+        era5_features = era5_feature_frame(result.aligned)
+        if self.era5_exclude:
+            missing = sorted(set(self.era5_exclude) - set(era5_features.columns))
+            if missing:
+                msg = f"era5_exclude names columns not in the ERA5 features: {missing}"
+                raise ValueError(msg)
+            blocked = sorted(set(self.era5_exclude) & set(self.matching_vars))
+            if blocked and self.conditional_uplift:
+                msg = (
+                    f"era5_exclude {blocked} are conditional-uplift matching_vars; excluding them as model "
+                    f"features would break the CEM matching step. Turn conditional_uplift off or re-pick "
+                    f"matching_vars first."
+                )
+                raise ValueError(msg)
+            drop = [
+                c
+                for c in era5_features.columns
+                if c in self.era5_exclude or any(c == f"{raw}_{t}" for raw in self.era5_exclude for t in ("sin", "cos"))
+            ]
+            era5_features = era5_features.drop(columns=drop)
+        frames = [features, era5_features]
+        if self.era5_derivations:
+            frames.append(
+                era5_derived_frame(result.aligned, derivations=self.era5_derivations, hub_height_m=self.hub_height_m)
+            )
+        return pd.concat(frames, axis=1), result
+
+    def _time_feature_frame(self, index: pd.DatetimeIndex, *, campaign_start: pd.Timestamp) -> pd.DataFrame:
+        """Build the configured explicit time features (Issue 10) on the analysis index.
+
+        ``days_since_campaign_start`` is anchored to the upgrade start (prepost changeover / toggle
+        origin) so the model can absorb slow reference drift relative to the campaign; ``season``
+        adds the June-21-anchored sin/cos pair; ``solar`` adds solar altitude + azimuth sin/cos
+        (requires ``latitude`` / ``longitude``).
+        """
+        unknown = [f for f in self.time_features if f not in TIME_FEATURE_NAMES]
+        if unknown:
+            msg = f"unknown time feature(s) {unknown}; available: {list(TIME_FEATURE_NAMES)}"
+            raise ValueError(msg)
+        frames: list[pd.DataFrame] = []
+        if "days_since_campaign_start" in self.time_features:
+            frames.append(days_since_campaign_start(index, campaign_start=campaign_start).to_frame())
+        if "season" in self.time_features:
+            frames.append(season_sin_cos(index))
+        if "solar" in self.time_features:
+            if self.latitude is None or self.longitude is None:
+                msg = "the solar time feature requires latitude and longitude."
+                raise ValueError(msg)
+            frames.append(solar_altitude_azimuth(index, latitude=self.latitude, longitude=self.longitude))
+        return pd.concat(frames, axis=1)
 
     def _select_rows(
         self, scada: pd.DataFrame, *, mi: MethodInput, index: pd.DatetimeIndex, y: pd.Series, timebase: pd.Timedelta
@@ -729,5 +828,13 @@ class PowerModelMethod:
             "seed": self.seed,
             "toggle_campaign_only": self.toggle_campaign_only,
             "has_era5": self.era5_hourly_df is not None,
+            "era5_derivations": list(self.era5_derivations),
+            "hub_height_m": self.hub_height_m,
+            "time_features": list(self.time_features),
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "reference_stat_cols": list(self.reference_stat_cols),
+            "era5_exclude": list(self.era5_exclude),
+            "availability_feature": self.availability_feature,
             "model_params": self.model_params,
         }

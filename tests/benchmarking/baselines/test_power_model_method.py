@@ -32,6 +32,9 @@ _POWER = "wtc_ActPower_mean"
 _AVAIL = "wtc_ScReToOp_timeon"
 _WS = "wtc_AcWindSp_mean"
 _WS_SD = "wtc_AcWindSp_stddev"
+_POWER_MAX = "wtc_ActPower_max"
+_POWER_MIN = "wtc_ActPower_min"
+_POWER_SD = "wtc_ActPower_stddev"
 
 # Small/fast LightGBM so the toy data (a few thousand rows) is fit well.
 _FAST_PARAMS = {"n_estimators": 120, "learning_rate": 0.1, "num_leaves": 31, "min_child_samples": 20}
@@ -58,7 +61,18 @@ def _toy_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0) -> 
     }
     parts = [
         pd.DataFrame(
-            {_TURBINE: name, _POWER: power, _AVAIL: 600.0, _WS: power / 100.0, _WS_SD: power / 1000.0}, index=idx
+            {
+                _TURBINE: name,
+                _POWER: power,
+                _AVAIL: 600.0,
+                _WS: power / 100.0,
+                _WS_SD: power / 1000.0,
+                # active-power companion statistics (Issue 11 reference_stat_cols candidates)
+                _POWER_MAX: power * 1.15,
+                _POWER_MIN: power * 0.85,
+                _POWER_SD: np.abs(power) / 20.0,
+            },
+            index=idx,
         )
         for name, power in frames.items()
     ]
@@ -248,9 +262,186 @@ def _toy_era5(scada_idx: pd.DatetimeIndex, *, seed: int = 0) -> pd.DataFrame:
             "wind_speed_100m": ws,
             "wind_gusts_10m": ws * 1.4 + rng.uniform(0.0, 2.0, len(hours)),
             "wind_direction_100m": rng.uniform(200.0, 260.0, len(hours)),
+            # extra raw columns so the Issue 9 derivations have their inputs
+            "wind_speed_10m": ws * 0.75,
+            "wind_direction_10m": rng.uniform(190.0, 250.0, len(hours)),
+            "temperature_2m": rng.uniform(0.0, 15.0, len(hours)),
+            "surface_pressure": rng.uniform(980.0, 1030.0, len(hours)),
+            "relative_humidity_2m": rng.uniform(50.0, 100.0, len(hours)),
         },
         index=hours,
     )
+
+
+class TestFeatureConfig:
+    """The Issue 9/10/11 opt-in feature config: columns reach the model and estimates stay sound."""
+
+    def _prepost_mi(self, n: int = 4000, *, uplift: float = 0.05) -> MethodInput:
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        treated = np.asarray(idx >= idx[n // 2])
+        scada = _toy_scada(n, uplift=uplift, treated=treated)
+        return MethodInput(
+            scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE
+        )
+
+    def _fitted_feature_names(self, out_dir: Path) -> set[str]:
+        files = sorted(out_dir.rglob("*_feature_importance_*.csv"))
+        assert files, f"no feature-importance CSV under {out_dir}"
+        return set(pd.read_csv(files[-1])["feature"])
+
+    def test_era5_derivations_reach_model_and_recovery_holds(self, tmp_path: Path) -> None:
+        mi = self._prepost_mi()
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
+            conditional_uplift=False,
+            model_params=_FAST_PARAMS,
+            era5_derivations=("shear_exponent", "wind_speed_hub", "gust_ratio", "veer", "air_density"),
+            hub_height_m=59.0,
+            out_dir=tmp_path,
+        )
+        out = method.estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+        fitted = self._fitted_feature_names(tmp_path)
+        assert {"shear_exponent", "wind_speed_hub", "gust_ratio", "veer", "air_density"} <= fitted
+
+    def test_time_features_reach_model_and_recovery_holds(self, tmp_path: Path) -> None:
+        mi = self._prepost_mi()
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            conditional_uplift=False,
+            model_params=_FAST_PARAMS,
+            time_features=("days_since_campaign_start", "season", "solar"),
+            latitude=57.5,
+            longitude=-3.25,
+            out_dir=tmp_path,
+        )
+        out = method.estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+        fitted = self._fitted_feature_names(tmp_path)
+        assert {
+            "days_since_campaign_start",
+            "season_sin",
+            "season_cos",
+            "solar_altitude",
+            "solar_azimuth_sin",
+            "solar_azimuth_cos",
+        } <= fitted
+
+    def test_reference_stat_cols_reach_model_and_recovery_holds(self, tmp_path: Path) -> None:
+        mi = self._prepost_mi()
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            conditional_uplift=False,
+            model_params=_FAST_PARAMS,
+            reference_stat_cols=(_POWER_MAX, _POWER_MIN, _POWER_SD),
+            out_dir=tmp_path,
+        )
+        out = method.estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+        fitted = self._fitted_feature_names(tmp_path)
+        assert {f"{_POWER_SD} @ R1", f"{_POWER_MAX} @ R2", f"{_POWER_MIN} @ R3"} <= fitted
+        assert not any(name.endswith(" @ T1") for name in fitted)
+
+    def test_era5_exclude_drops_column_and_direction_companions(self, tmp_path: Path) -> None:
+        mi = self._prepost_mi()
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
+            conditional_uplift=False,
+            model_params=_FAST_PARAMS,
+            era5_exclude=("wind_speed_10m", "wind_direction_10m"),
+            out_dir=tmp_path,
+        )
+        out = method.estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+        fitted = self._fitted_feature_names(tmp_path)
+        assert (
+            not {
+                "wind_speed_10m",
+                "wind_direction_10m",
+                "wind_direction_10m_sin",
+                "wind_direction_10m_cos",
+            }
+            & fitted
+        )
+        assert "wind_speed_100m" in fitted
+
+    def test_era5_exclude_of_matching_var_raises_with_conditional_on(self) -> None:
+        mi = self._prepost_mi(n=300)
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
+            era5_exclude=("wind_gusts_10m",),
+        )
+        with pytest.raises(ValueError, match="matching_vars"):
+            method.estimate(mi)
+
+    def test_availability_feature_off_removes_availability_columns(self, tmp_path: Path) -> None:
+        mi = self._prepost_mi()
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            conditional_uplift=False,
+            model_params=_FAST_PARAMS,
+            availability_feature=False,
+            out_dir=tmp_path,
+        )
+        out = method.estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+        fitted = self._fitted_feature_names(tmp_path)
+        assert not any(name.startswith(_AVAIL) for name in fitted)
+        assert f"{_POWER} @ R1" in fitted
+
+    def test_era5_derivations_without_era5_raises(self) -> None:
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            era5_derivations=("gust_ratio",),
+        )
+        with pytest.raises(ValueError, match="need ERA5"):
+            method.estimate(self._prepost_mi(n=300))
+
+    def test_unknown_time_feature_raises(self) -> None:
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            time_features=("hour_of_week",),
+        )
+        with pytest.raises(ValueError, match="unknown time feature"):
+            method.estimate(self._prepost_mi(n=300))
+
+    def test_solar_requires_lat_long(self) -> None:
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            time_features=("solar",),
+        )
+        with pytest.raises(ValueError, match="latitude and longitude"):
+            method.estimate(self._prepost_mi(n=300))
 
 
 class TestRelevelConditional:
