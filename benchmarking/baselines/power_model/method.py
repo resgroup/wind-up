@@ -248,7 +248,8 @@ class PowerModelMethod:
         ``actual ~ a + b * predicted`` on time-blocked out-of-fold baseline predictions and apply
         the line to the counterfactual predictions before the energy ratio (default ``False``).
         Applies to the overall headline only — the conditional two-direction step cancels its
-        per-bin shrinkage by construction.
+        per-bin shrinkage by construction. The line is fit with single-seed, non-early-stopped
+        models, so it cannot be combined with ``early_stopping`` or ``n_seed_ensemble > 1``.
     """
 
     active_power_col: str
@@ -736,6 +737,13 @@ class PowerModelMethod:
         if self.n_seed_ensemble > 1 and "random_state" in self.model_params:
             msg = "a fixed random_state in model_params would make every ensemble member identical."
             raise ValueError(msg)
+        if self.calibrate_slope and (self.early_stopping or self.n_seed_ensemble > 1):
+            msg = (
+                "calibrate_slope fits its out-of-fold line with single-seed, non-early-stopped models, "
+                "so combining it with early_stopping or n_seed_ensemble > 1 would calibrate against a "
+                "different model configuration than the predictions it corrects."
+            )
+            raise ValueError(msg)
 
     def _make_model(self, *, seed: int | None = None, extra_params: dict[str, Any] | None = None) -> Any:  # noqa: ANN401
         """One unfitted outcome model: the ``model_factory`` seam, or LightGBM with ``seed`` plumbed in.
@@ -940,6 +948,20 @@ class PowerModelMethod:
         }
         write_run_config(ctx, method_name=self.name, method_params=self._config_params(), extra=extra)
 
+    def _model_factory_label(self) -> str | None:
+        """Return a stable, diffable label for ``model_factory`` in the run-config YAML.
+
+        Registry names pass through; a callable is identified by ``module.qualname`` rather than
+        ``repr`` (whose memory address would make the YAML nondeterministic across runs).
+        """
+        if self.model_factory is None or isinstance(self.model_factory, str):
+            return self.model_factory
+        module = getattr(self.model_factory, "__module__", None)
+        qualname = getattr(self.model_factory, "__qualname__", None)
+        if qualname is None:  # e.g. functools.partial or a callable instance
+            return f"<callable {type(self.model_factory).__name__}>"
+        return f"{module}.{qualname}" if module else qualname
+
     def _config_params(self) -> dict[str, Any]:
         """Return the power-model configuration recorded in the run-config YAML."""
         return {
@@ -960,7 +982,7 @@ class PowerModelMethod:
             "era5_exclude": list(self.era5_exclude),
             "availability_feature": self.availability_feature,
             "model_params": self.model_params,
-            "model_factory": (repr(self.model_factory) if callable(self.model_factory) else self.model_factory),
+            "model_factory": self._model_factory_label(),
             "n_seed_ensemble": self.n_seed_ensemble,
             "early_stopping": self.early_stopping,
             "calibrate_slope": self.calibrate_slope,

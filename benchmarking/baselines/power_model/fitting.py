@@ -114,6 +114,10 @@ def early_stopped_n_estimators(
         eval_set=[(x.iloc[valid_mask], y[valid_mask])],
         callbacks=[lightgbm.early_stopping(stopping_rounds=stopping_rounds, verbose=False)],
     )
+    # With the callback attached, best_iteration_ is a positive int whether or not early stopping
+    # triggered (= n_estimators when it never did). None/0 are LightGBM's "no early stopping ran"
+    # sentinels (0 is the Booster-level value), so both fall back to the ceiling — a plain
+    # `is not None` check would turn the 0 sentinel into a zero-tree model.
     best = getattr(model, "best_iteration_", None)
     chosen = int(best) if best else int(model.n_estimators)
     logger.info(

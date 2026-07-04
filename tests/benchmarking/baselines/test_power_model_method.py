@@ -221,6 +221,21 @@ class TestModelFundamentals:
             _fundamentals_method(n_seed_ensemble=0).estimate(mi)
         with pytest.raises(ValueError, match="random_state"):
             _fundamentals_method(model_params={"random_state": 1}, n_seed_ensemble=2).estimate(mi)
+        with pytest.raises(ValueError, match="calibrate_slope"):
+            _fundamentals_method(calibrate_slope=True, early_stopping=True).estimate(mi)
+        with pytest.raises(ValueError, match="calibrate_slope"):
+            _fundamentals_method(calibrate_slope=True, n_seed_ensemble=2).estimate(mi)
+
+    def test_model_factory_config_label_is_stable(self) -> None:
+        def label_for(**overrides: object) -> str | None:
+            return _fundamentals_method(**overrides)._config_params()["model_factory"]  # noqa: SLF001
+
+        assert label_for() is None
+        assert label_for(model_factory="hgb") == "hgb"
+        expected = f"{make_outcome_model.__module__}.{make_outcome_model.__qualname__}"
+        assert label_for(model_factory=make_outcome_model) == expected
+        # a lambda's repr embeds a memory address; the label must not (it goes in the run-config YAML)
+        assert "0x" not in str(label_for(model_factory=lambda s: s))
 
 
 class TestReferenceOnly:
