@@ -40,6 +40,14 @@ from benchmarking.baselines.power_model.features import (
     reference_mean_wind_speed,
     test_condition_signals,
 )
+from benchmarking.baselines.power_model.fitting import (
+    IDENTITY_CALIBRATION,
+    OUTCOME_MODEL_FACTORIES,
+    CalibrationLine,
+    early_stopped_n_estimators,
+    fit_calibration_line,
+    time_block_folds,
+)
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
 from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 from benchmarking.baselines.time_features import (
@@ -54,12 +62,21 @@ from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from benchmarking.synthetic import ColumnSchema
 
 logger = logging.getLogger(__name__)
 
 _MIN_BASELINE_ROWS = 10
 _MIN_HOLDOUT_ROWS = 20  # below this, report the in-sample fit (no point splitting off a tiny valid set)
+# Time-blocked split shape shared by the holdout diagnostic, the early-stopping valid set and the
+# calibration OOF: 25 contiguous blocks round-robin over 5 folds, so each fold is ~20% of the rows
+# spread across the whole window (seasonally balanced) while staying contiguous at the block scale.
+_N_FOLDS = 5
+_N_BLOCKS = 25
+_MIN_EARLY_STOPPING_ROWS = 200  # below this a valid split is too small for early stopping to mean anything
+_EARLY_STOPPING_CEILING = 3000  # capacity ceiling when early stopping picks the tree count
 
 # The removal-ablation verdict (findings F13): raw Open-Meteo columns the curated feature set does
 # better without — redundant thermodynamic derivatives of temperature/humidity and the precipitation
@@ -73,6 +90,12 @@ CURATED_ERA5_EXCLUDE: tuple[str, ...] = (
     "rain",
     "snowfall",
 )
+
+# The Issue 12 capacity verdict (findings F14): loosening min_child_samples 200 -> 50 materially
+# improves prepost spread/score (placebo ALL Δscore -0.62 pp) at neutral overall P50; 20 overshoots
+# into overfit. A power_model-specific tuning — the design-note common params in
+# ``make_outcome_model`` (shared with the R-learner) are unchanged; drivers pass this instead.
+TUNED_MODEL_PARAMS: dict[str, Any] = {"min_child_samples": 50}
 
 # F6 matching set + bin widths for the bias-cancellation correction, verified on real HoT by the CEM
 # coverage sweep (docs/v1/findings.md F6). wind_speed_100m (dominant) is binned finest, wind_gusts_10m
@@ -211,6 +234,21 @@ class PowerModelMethod:
         ``matching_vars`` cannot be excluded while ``conditional_uplift`` is on.
     :param availability_feature: when ``False``, drop the per-reference availability *feature*
         (removal-ablation knob); ``availability_col`` itself stays required for the downtime filter
+    :param model_factory: the outcome-model seam (Issue 12): a registered factory name (see
+        :data:`~benchmarking.baselines.power_model.fitting.OUTCOME_MODEL_FACTORIES`) or a callable
+        ``seed -> unfitted sklearn-style regressor``. ``None`` (default) keeps the design-note
+        LightGBM model. A factory bakes in its own hyperparameters, so it cannot be combined with
+        ``model_params`` or ``early_stopping``.
+    :param n_seed_ensemble: fit this many models (seeds ``seed .. seed+K-1``) per training set and
+        average their predictions — variance reduction from the subsample/colsample noise (default 1)
+    :param early_stopping: pick the LightGBM tree count by early stopping on a time-blocked
+        validation split, then refit on all training rows at that capacity — data-size-adaptive
+        capacity instead of one fixed ``n_estimators`` for every fit size (default ``False``)
+    :param calibrate_slope: post-hoc calibration-slope correction (Issue 12): fit
+        ``actual ~ a + b * predicted`` on time-blocked out-of-fold baseline predictions and apply
+        the line to the counterfactual predictions before the energy ratio (default ``False``).
+        Applies to the overall headline only — the conditional two-direction step cancels its
+        per-bin shrinkage by construction.
     """
 
     active_power_col: str
@@ -238,9 +276,14 @@ class PowerModelMethod:
     reference_stat_cols: tuple[str, ...] = ()
     era5_exclude: tuple[str, ...] = ()
     availability_feature: bool = True
+    model_factory: str | Callable[[int], Any] | None = None
+    n_seed_ensemble: int = 1
+    early_stopping: bool = False
+    calibrate_slope: bool = False
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
+        self._validate_model_config()
         mi = restrict_to_campaign(mi, toggle_campaign_only=self.toggle_campaign_only)
         scada = mi.scada_df
         if self.availability_col not in scada.columns:
@@ -422,11 +465,14 @@ class PowerModelMethod:
     def _fit_direction(
         self, features: pd.DataFrame, y: np.ndarray, *, train: np.ndarray, predict: np.ndarray
     ) -> np.ndarray:
-        """Fit the outcome model on ``train`` rows and return clipped predictions for ``predict`` rows."""
-        model = self._make_model()
-        model.fit(features.iloc[train], y[train])
+        """Fit the outcome model(s) on ``train`` rows and return clipped predictions for ``predict`` rows.
+
+        No calibration here: the two-direction combine cancels the common per-bin shrinkage by
+        construction, so the slope correction is spent only on the overall headline.
+        """
+        models = self._fit_models(features.iloc[train], y[train])
         return _clip_predictions(
-            np.asarray(model.predict(features.iloc[predict]), dtype=float),
+            self._predict_mean(models, features.iloc[predict]),
             y_train=y[train],
             rated_power_kw=self.baseline_rated_power_kw,
         )
@@ -643,9 +689,10 @@ class PowerModelMethod:
     ) -> dict[str, Any]:
         """Fit on baseline, predict the upgraded counterfactual; also a held-out baseline fit metric.
 
-        The final model (for the counterfactual) is fit on **all** baseline rows. A separate model on
-        a baseline train split predicts a held-out baseline slice, giving an honest fit-quality number
-        that is not inflated by in-sample optimism.
+        The final model(s) (for the counterfactual) are fit on **all** baseline rows. A separate model
+        on a baseline train split predicts a held-out baseline slice, giving an honest fit-quality
+        number that is not inflated by in-sample optimism. When ``calibrate_slope`` is on, the
+        counterfactual predictions pass through the out-of-fold calibration line before clipping.
         """
         x_base = features.iloc[baseline_sel]
         y_base = y[baseline_sel]
@@ -655,53 +702,129 @@ class PowerModelMethod:
         y_valid, pred_valid, valid_local = self._holdout_fit(x_base, y_base)
         baseline_valid_pos = np.flatnonzero(baseline_sel)[valid_local]
 
-        final = self._make_model()
-        final.fit(x_base, y_base)
+        models = self._fit_models(x_base, y_base)
+        calibration = self._fit_calibration(x_base, y_base) if self.calibrate_slope else IDENTITY_CALIBRATION
         pred_up = _clip_predictions(
-            np.asarray(final.predict(x_up), dtype=float), y_train=y_base, rated_power_kw=self.baseline_rated_power_kw
+            calibration.apply(self._predict_mean(models, x_up)),
+            y_train=y_base,
+            rated_power_kw=self.baseline_rated_power_kw,
         )
         return {
-            "model": final,
+            "model": models[0],
             "pred_upgraded": pred_up,
             "y_upgraded": y_up,
             "y_baseline_valid": y_valid,
             "pred_baseline_valid": pred_valid,
             "baseline_valid_pos": baseline_valid_pos,  # positions over ``index`` of the held-out rows
+            "calibration": calibration,
         }
 
-    def _make_model(self) -> Any:  # noqa: ANN401
-        """Outcome model with ``seed`` plumbed into LightGBM's ``random_state`` (caller overrides win)."""
-        return make_outcome_model(**{"random_state": self.seed, **self.model_params})
+    def _validate_model_config(self) -> None:
+        """Fail loudly on model-fundamentals config combinations that would silently misbehave."""
+        if isinstance(self.model_factory, str) and self.model_factory not in OUTCOME_MODEL_FACTORIES:
+            msg = f"unknown model_factory {self.model_factory!r}; registered: {sorted(OUTCOME_MODEL_FACTORIES)}"
+            raise ValueError(msg)
+        if self.model_factory is not None and self.model_params:
+            msg = "model_factory bakes in its own hyperparameters; model_params would be silently ignored."
+            raise ValueError(msg)
+        if self.model_factory is not None and self.early_stopping:
+            msg = "early_stopping picks a LightGBM tree count; it cannot be combined with model_factory."
+            raise ValueError(msg)
+        if self.n_seed_ensemble < 1:
+            msg = f"n_seed_ensemble must be >= 1, got {self.n_seed_ensemble}"
+            raise ValueError(msg)
+        if self.n_seed_ensemble > 1 and "random_state" in self.model_params:
+            msg = "a fixed random_state in model_params would make every ensemble member identical."
+            raise ValueError(msg)
+
+    def _make_model(self, *, seed: int | None = None, extra_params: dict[str, Any] | None = None) -> Any:  # noqa: ANN401
+        """One unfitted outcome model: the ``model_factory`` seam, or LightGBM with ``seed`` plumbed in.
+
+        For the default LightGBM path a caller-supplied ``random_state`` in ``model_params`` still
+        wins over ``seed``; ``extra_params`` (the early-stopped capacity) wins over everything.
+        """
+        s = self.seed if seed is None else seed
+        if self.model_factory is not None:
+            factory = (
+                OUTCOME_MODEL_FACTORIES[self.model_factory]
+                if isinstance(self.model_factory, str)
+                else self.model_factory
+            )
+            return factory(s)
+        return make_outcome_model(**{"random_state": s, **self.model_params, **(extra_params or {})})
+
+    def _fit_models(self, x_train: pd.DataFrame, y_train: np.ndarray) -> list[Any]:
+        """Fit the outcome model(s) on one training set, honouring ``early_stopping`` / ``n_seed_ensemble``.
+
+        Early stopping runs once (a probe fit on a time-blocked split picks the tree count), then every
+        ensemble member is refit on **all** training rows at that capacity with its own seed.
+        """
+        extra: dict[str, Any] = {}
+        if self.early_stopping and len(y_train) >= _MIN_EARLY_STOPPING_ROWS:
+            ceiling = int(self.model_params.get("n_estimators", _EARLY_STOPPING_CEILING))
+            extra["n_estimators"] = early_stopped_n_estimators(
+                lambda: self._make_model(extra_params={"n_estimators": ceiling}),
+                x_train,
+                y_train,
+                valid_mask=time_block_folds(len(y_train), n_folds=_N_FOLDS, n_blocks=_N_BLOCKS) == 0,
+            )
+        models = []
+        for k in range(self.n_seed_ensemble):
+            model = self._make_model(seed=self.seed + k, extra_params=extra)
+            model.fit(x_train, y_train)
+            models.append(model)
+        return models
+
+    @staticmethod
+    def _predict_mean(models: list[Any], x: pd.DataFrame) -> np.ndarray:
+        """Seed-ensemble prediction: the mean over the fitted models (unclipped)."""
+        return np.mean([np.asarray(m.predict(x), dtype=float) for m in models], axis=0)
+
+    def _fit_calibration(self, x_base: pd.DataFrame, y_base: np.ndarray) -> CalibrationLine:
+        """Fit the calibration line on time-blocked out-of-fold baseline predictions (single-seed fits).
+
+        Every baseline row gets a prediction from a model not trained on its fold, so the slope is not
+        flattered by in-sample optimism (a shuffled or in-sample basis would read ~1 by construction).
+        """
+        n = len(y_base)
+        if n < _MIN_HOLDOUT_ROWS:
+            return IDENTITY_CALIBRATION
+        folds = time_block_folds(n, n_folds=_N_FOLDS, n_blocks=_N_BLOCKS)
+        oof = np.full(n, np.nan)
+        for f in range(_N_FOLDS):
+            hold = folds == f
+            model = self._make_model()
+            model.fit(x_base.iloc[~hold], y_base[~hold])
+            oof[hold] = np.asarray(model.predict(x_base.iloc[hold]), dtype=float)
+        line = fit_calibration_line(y_base, oof)
+        logger.info("%s calibration line: slope=%.4f intercept=%.2f (n=%d)", self.name, line.slope, line.intercept, n)
+        return line
 
     def _holdout_fit(self, x_base: pd.DataFrame, y_base: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Train on a baseline train split, predict a held-out baseline slice (honest fit quality).
 
-        Also returns the held-out rows' positions **within the baseline block** so the caller can
-        line the residuals up with their conditions (ws/TI) for the diagnostics.
+        The held-out slice is **time-blocked** (fold 0 of the shared split shape), not shuffled — a
+        shuffled holdout sits minutes from its training rows, so autocorrelation makes its residuals
+        optimistic. Also returns the held-out rows' positions **within the baseline block** so the
+        caller can line the residuals up with their conditions (ws/TI) for the diagnostics.
         """
         n = len(y_base)
         if n < _MIN_HOLDOUT_ROWS:
-            model = self._make_model()
-            model.fit(x_base, y_base)
+            models = self._fit_models(x_base, y_base)
             pred = _clip_predictions(
-                np.asarray(model.predict(x_base), dtype=float),
+                self._predict_mean(models, x_base),
                 y_train=y_base,
                 rated_power_kw=self.baseline_rated_power_kw,
             )
             return y_base, pred, np.arange(n)
-        rng = np.random.default_rng(self.seed)
-        order = rng.permutation(n)
-        n_valid = n // 5
-        valid_idx = order[:n_valid]
-        train_idx = order[n_valid:]
-        model = self._make_model()
-        model.fit(x_base.iloc[train_idx], y_base[train_idx])
+        valid = time_block_folds(n, n_folds=_N_FOLDS, n_blocks=_N_BLOCKS) == 0
+        models = self._fit_models(x_base.iloc[~valid], y_base[~valid])
         pred_valid = _clip_predictions(
-            np.asarray(model.predict(x_base.iloc[valid_idx]), dtype=float),
-            y_train=y_base[train_idx],
+            self._predict_mean(models, x_base.iloc[valid]),
+            y_train=y_base[~valid],
             rated_power_kw=self.baseline_rated_power_kw,
         )
-        return y_base[valid_idx], pred_valid, valid_idx
+        return y_base[valid], pred_valid, np.flatnonzero(valid)
 
     def _run_dir(self, mi: MethodInput, index: pd.DatetimeIndex) -> Path:
         """Return the per-run output folder ``<out_dir>/power_model_<wtg>_<start>_<end>`` (a temp dir when unset).
@@ -837,4 +960,8 @@ class PowerModelMethod:
             "era5_exclude": list(self.era5_exclude),
             "availability_feature": self.availability_feature,
             "model_params": self.model_params,
+            "model_factory": (repr(self.model_factory) if callable(self.model_factory) else self.model_factory),
+            "n_seed_ensemble": self.n_seed_ensemble,
+            "early_stopping": self.early_stopping,
+            "calibrate_slope": self.calibrate_slope,
         }

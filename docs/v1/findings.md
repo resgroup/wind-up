@@ -7,6 +7,93 @@ from, not just conclusions.
 
 ---
 
+## F14 — outcome-model fundamentals: `min_child_samples` 200→50 accepted; linear_tree, early stopping, calibration slope, seed ensembling and alternative learners rejected; the toggle headline bias localised to small-fit tree shrinkage (Issue 12)
+
+*2026-07-04 — Issue 12 verdicts. New module `benchmarking/baselines/power_model/fitting.py`
+(time-blocked folds, calibration line, early-stopped capacity pick, and the model-factory registry
+`OUTCOME_MODEL_FACTORIES`) behind four new `PowerModelMethod` knobs — `model_factory` (str or
+callable), `n_seed_ensemble`, `early_stopping`, `calibrate_slope` — all defaulting to today's
+behaviour (a default-config re-run diffs the benchmark at ≤0.001 pp everywhere). The baseline
+holdout *diagnostic* switched from a shuffled 20% split to a time-blocked fold (Issue 13's honest
+display item; estimates unchanged). Candidates A/B'd per the Issue 9 protocol:
+`study_power_model_compare.py --method-overrides` placebo screens (`cp_0pct`, both modes), full
+7-profile sweep for the survivor, all diffed against the post-F13 benchmark.*
+
+### Framing principles (recorded here so they aren't relitigated)
+- **The objective targets the conditional mean.** The estimand is an energy ratio and energy is a
+  sum of conditional means, so L2 stays (design note §2). Power conditional on features is skewed
+  (near cut-in, around rated), so median-type objectives — MAE, Huber in its robust regime,
+  quantile-0.5 — estimate the median and bias the energy sum. The F5 shrinkage is a
+  *regularisation* artefact, not a loss artefact; changing objective does not fix it. Legitimate
+  within the mean family: Tweedie / variance-weighted L2 (efficiency candidates, untried).
+  Quantile objectives are out of scope for the point estimate (they return in Issue 16/WS4).
+- **Tune on uplift metrics, never on prediction RMSE.** More regularisation can improve held-out
+  RMSE while worsening shrinkage. Yardsticks: placebo bias on the harness, per-bin residual
+  flatness, the predicted-vs-actual **calibration slope** (target ≈ 1) on a time-blocked held-out
+  baseline, and replicate spread.
+
+### ACCEPTED — `min_child_samples` 200→50 (now the driver default; benchmark regenerated)
+- Placebo screen: prepost ALL Δscore **−0.62**, Δspread −0.75 (score cells 31 better / 9 worse);
+  toggle overall better at every campaign. Dose-response check at `min_child_samples=20`
+  overshoots (prepost ALL only −0.12, overall biases drift positive) — 50 is the sweet spot.
+- Full 7-profile sweep: **prepost ALL Δscore −0.36, Δspread −0.41** (cells: score 216 better / 86
+  worse of 469); overall P50 neutral-or-better at every campaign in both modes (prepost 3-month
+  placebo |bias| 0.121 → 0.018). The accepted cost: a few large toggle ti cells at 9/12 months
+  regress (9-month ti Δscore +3.2; toggle conditional mean +0.29 even though score cells split
+  159 better / 145 worse) — accepted against the overall-P50/precision gains, the F13 precedent.
+- Shipped as `TUNED_MODEL_PARAMS = {"min_child_samples": 50}` passed by the four HoT drivers;
+  the design-note common params in `make_outcome_model` (shared with the R-learner) are unchanged.
+
+### REJECTED — everything else, each with a one-screen placebo verdict
+- **`linear_tree=True`** — mode-split (the F10 shear/veer pattern): toggle mildly better (ALL
+  Δscore −0.36) but prepost overall bias worse at every campaign (+0.32/+0.28/+0.11 pp) and
+  prepost conditional much worse (3-month ti Δscore +8.4). The hoped-for F5 edge-extrapolation fix
+  adds bias/variance under the prepost weather shift instead.
+- **`early_stopping`** (time-blocked valid split, refit at the picked capacity) — neutral overall
+  in both modes *including the 3-month-toggle small-fit regime it was aimed at*; conditional
+  slightly net-worse; +~15% runtime. The fixed design-note capacity is validated across the ~10×
+  fit-size range.
+- **`calibrate_slope`** — prepost neutral (nothing to correct), toggle **overcorrects**: bias
+  flips sign (3-month +0.39 → −0.38) with a spread cost (Δspread +0.60) — the F7 short-campaign
+  failure mode. Root cause: the line is fit on out-of-fold predictions from 80%-sized fits, which
+  shrink more than the 100% fit it is applied to, and that gap is largest exactly where the
+  correction is largest.
+- **`n_seed_ensemble=4`** — overall deltas neutral in both modes (|Δspread| ≤ 0.02 pp) for ~75%
+  more runtime: replicate spread is dominated by weather sampling across windows, not seed noise.
+- **`model_factory="hgb"`** (sklearn HistGradientBoostingRegressor, capacity-matched) — prepost
+  worse (ALL Δscore +0.26), toggle marginally better: LightGBM's behaviour is family-level, not an
+  implementation quirk. Stays in the registry as the cross-implementation check.
+- **`model_factory="linear"`** (impute→scale→Ridge structured baseline) — far worse overall as
+  expected (prepost placebo bias +3.5/+2.5/+1.3 pp; misspecification dominates the hoped-for
+  "shrinkage-free" property), **but the cross-check paid off** (next section).
+
+### The toggle headline bias is small-fit tree shrinkage — three independent probes agree (Issue 13 hand-off)
+- **Calibration slopes scale with fit size**: ~1.0005–1.005 at n≈100k (2-year prepost baseline),
+  ~1.008–1.017 at n≈12–25k, **~1.013–1.027 at n≈6k** (3-month toggle off rows). The prepost
+  baseline is essentially slope-calibrated, so the −0.4 pp prepost headline bias is *not* a global
+  calibration artefact — consistent with Issue 13's covariate-shift mechanism for prepost.
+- **The linear model's toggle headline reads ~0** (3-month +0.39 → −0.01, better at every
+  campaign length): a learner with no tree-style shrinkage does not show the bias.
+- **More training data removes it**: `toggle_campaign_only=False` (the Issue 13 2×2's
+  {all-data, no-calibration} cell, measured) cuts the 3-month toggle headline bias to +0.07 —
+  but without the Issue 13 calibration/time-feature guards it imports drift everywhere else
+  (conditional 3-month ti Δscore +12.7; ≥6-month campaigns uniformly worse; cells 13 better / 58
+  worse). Campaign-only stays the default; revisit inside Issue 13's full 2×2.
+- Capacity is *not* the lever: the accepted `min_child_samples=50` barely moves the 3-month
+  toggle headline (+0.39 → +0.35). The shrinkage that matters is intrinsic to boosted trees on
+  ~6k rows, so Issue 13's data-side fixes (more rows, made safe by calibration) are the right
+  attack.
+
+### Method notes
+- The placebo screen again did all the discriminating; nothing needed the full sweep to be
+  rejected. One screen ≈ 13 min vs ≈ 55 min for a full sweep.
+- Post-hoc OOF calibration applied to a refit-on-100% model is structurally biased toward
+  overcorrection at small n (the OOF-vs-final shrinkage gap) — any future residual-calibration
+  design (Issue 13) must estimate the correction against the *final* model's predictions, e.g.
+  by calibrating on a window the final model genuinely never saw, not by recycling OOF folds.
+
+---
+
 ## F13 — removal ablation: dropping the availability feature + five ERA5 columns improves the benchmark; low importance ≠ removable
 
 *2026-07-04 — follow-up to the Issue 9–11 additions: the same A/B protocol run in reverse (remove each
