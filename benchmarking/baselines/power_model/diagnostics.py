@@ -74,8 +74,14 @@ class DiagnosticData:
 
 
 def feature_importance_long(data: DiagnosticData) -> pd.DataFrame:
-    """Long table of LightGBM gain/split importance for the (single) outcome power model."""
-    booster = data.outcome_model.booster_
+    """Long table of LightGBM gain/split importance for the (single) outcome power model.
+
+    An alternative learner injected via the model-factory seam has no ``booster_``; the table then
+    carries NaN importances (the feature *catalogue* still works) rather than failing the run.
+    """
+    booster = getattr(data.outcome_model, "booster_", None)
+    if booster is None:
+        return pd.DataFrame({"feature": data.feature_names, "gain": np.nan, "split_count": np.nan})
     return pd.DataFrame(
         {
             "feature": data.feature_names,

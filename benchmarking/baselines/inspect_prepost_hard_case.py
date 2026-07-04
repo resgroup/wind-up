@@ -45,7 +45,7 @@ from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.overnight_common import start_overnight_run
 from benchmarking.baselines.overnight_profiles import overnight_profiles
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelMethod
+from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import (
     CONDITION_BINS,
@@ -166,6 +166,8 @@ def _power_model(out_dir: Path, era5_hourly_df: pd.DataFrame, *, save_plots: boo
         # Removal-ablation accepted defaults (findings F13).
         availability_feature=False,
         era5_exclude=CURATED_ERA5_EXCLUDE,
+        # Issue 12 accepted default (findings F14): looser leaf capacity.
+        model_params=dict(TUNED_MODEL_PARAMS),
         out_dir=out_dir,
         save_plots=save_plots,
     )

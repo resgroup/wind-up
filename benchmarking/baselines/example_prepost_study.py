@@ -37,7 +37,7 @@ import pandas as pd
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelMethod
+from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import Method, StudyConfig, leaderboard, plot_campaign_curves, score_study
 from benchmarking.harness.example_hot_study import OracleMethod
@@ -150,6 +150,8 @@ def run_prepost_study(
                 # Removal-ablation accepted defaults (findings F13).
                 availability_feature=False,
                 era5_exclude=CURATED_ERA5_EXCLUDE,
+                # Issue 12 accepted default (findings F14): looser leaf capacity.
+                model_params=dict(TUNED_MODEL_PARAMS),
                 out_dir=out_dir / "power_model_runs",
             )
         )

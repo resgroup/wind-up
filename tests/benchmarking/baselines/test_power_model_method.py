@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from benchmarking.baselines.power_model import PowerModelMethod
+from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -151,6 +152,90 @@ class TestConfigGuards:
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
         with pytest.raises(ValueError, match="not in scada_df"):
             method.estimate(mi)
+
+
+def _prepost_case(n: int = 4000, *, uplift: float = 0.05) -> tuple[MethodInput, pd.Timestamp]:
+    """A toy prepost MethodInput with a known uplift, for the model-fundamentals config trials."""
+    idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+    changeover = idx[n // 2]
+    treated = np.asarray(idx >= changeover)
+    scada = _toy_scada(n, uplift=uplift, treated=treated)
+    mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+    return mi, changeover
+
+
+def _fundamentals_method(**overrides: object) -> PowerModelMethod:
+    return PowerModelMethod(
+        active_power_col=_POWER,
+        availability_col=_AVAIL,
+        baseline_rated_power_kw=2300.0,
+        wind_speed_col=_WS,
+        conditional_uplift=False,
+        **overrides,  # type: ignore[arg-type]
+    )
+
+
+class TestModelFundamentals:
+    """Issue 12 knobs: model factory, seed ensemble, early stopping, calibration slope."""
+
+    @pytest.mark.parametrize("factory", ["hgb", "linear"])
+    def test_registered_factories_recover_uplift(self, factory: str) -> None:
+        mi, _ = _prepost_case()
+        out = _fundamentals_method(model_factory=factory).estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+
+    def test_callable_factory_recovers_uplift(self) -> None:
+        mi, _ = _prepost_case()
+        method = _fundamentals_method(model_factory=lambda seed: make_outcome_model(random_state=seed, **_FAST_PARAMS))
+        out = method.estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+
+    def test_seed_ensemble_recovers_uplift(self) -> None:
+        mi, _ = _prepost_case()
+        out = _fundamentals_method(model_params=_FAST_PARAMS, n_seed_ensemble=3).estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+
+    def test_early_stopping_recovers_uplift(self) -> None:
+        mi, _ = _prepost_case()
+        # n_estimators in model_params is the early-stopping ceiling (keeps the probe fit fast)
+        out = _fundamentals_method(model_params=dict(_FAST_PARAMS), early_stopping=True).estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+
+    def test_calibrate_slope_recovers_uplift_and_placebo(self) -> None:
+        mi, _ = _prepost_case()
+        out = _fundamentals_method(model_params=_FAST_PARAMS, calibrate_slope=True).estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+        mi0, _ = _prepost_case(uplift=0.0)
+        out0 = _fundamentals_method(model_params=_FAST_PARAMS, calibrate_slope=True).estimate(mi0)
+        assert out0.p50_overall == pytest.approx(0.0, abs=0.02)
+
+    def test_config_conflicts_raise(self) -> None:
+        mi, _ = _prepost_case(n=200)
+        with pytest.raises(ValueError, match="unknown model_factory"):
+            _fundamentals_method(model_factory="not_a_factory").estimate(mi)
+        with pytest.raises(ValueError, match="model_params"):
+            _fundamentals_method(model_factory="linear", model_params=_FAST_PARAMS).estimate(mi)
+        with pytest.raises(ValueError, match="early_stopping"):
+            _fundamentals_method(model_factory="linear", early_stopping=True).estimate(mi)
+        with pytest.raises(ValueError, match="n_seed_ensemble"):
+            _fundamentals_method(n_seed_ensemble=0).estimate(mi)
+        with pytest.raises(ValueError, match="random_state"):
+            _fundamentals_method(model_params={"random_state": 1}, n_seed_ensemble=2).estimate(mi)
+        with pytest.raises(ValueError, match="calibrate_slope"):
+            _fundamentals_method(calibrate_slope=True, early_stopping=True).estimate(mi)
+        with pytest.raises(ValueError, match="calibrate_slope"):
+            _fundamentals_method(calibrate_slope=True, n_seed_ensemble=2).estimate(mi)
+
+    def test_model_factory_config_label_is_stable(self) -> None:
+        def label_for(**overrides: object) -> str | None:
+            return _fundamentals_method(**overrides)._config_params()["model_factory"]  # noqa: SLF001
+
+        assert label_for() is None
+        assert label_for(model_factory="hgb") == "hgb"
+        expected = f"{make_outcome_model.__module__}.{make_outcome_model.__qualname__}"
+        assert label_for(model_factory=make_outcome_model) == expected
+        # a lambda's repr embeds a memory address; the label must not (it goes in the run-config YAML)
+        assert "0x" not in str(label_for(model_factory=lambda s: s))
 
 
 class TestReferenceOnly:
