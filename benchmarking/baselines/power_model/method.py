@@ -193,6 +193,11 @@ class PowerModelMethod:
     :param longitude: site longitude in degrees (east positive), required by the ``solar`` time feature
     :param reference_stat_cols: extra per-reference value columns to carry as features (Issue 11's
         active-power max/min/SD companion statistics)
+    :param era5_exclude: raw ERA5 columns to drop from the model features (removal-ablation knob;
+        a dropped direction column also loses its sin/cos companions). Columns used as
+        ``matching_vars`` cannot be excluded while ``conditional_uplift`` is on.
+    :param availability_feature: when ``False``, drop the per-reference availability *feature*
+        (removal-ablation knob); ``availability_col`` itself stays required for the downtime filter
     """
 
     active_power_col: str
@@ -218,6 +223,8 @@ class PowerModelMethod:
     latitude: float | None = None
     longitude: float | None = None
     reference_stat_cols: tuple[str, ...] = ()
+    era5_exclude: tuple[str, ...] = ()
+    availability_feature: bool = True
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
@@ -243,6 +250,7 @@ class PowerModelMethod:
             active_power_col=self.active_power_col,
             availability_col=self.availability_col,
             extra_cols=self.reference_stat_cols,
+            include_availability=self.availability_feature,
         )
         features, era5 = self._add_era5(scada, features, mi=mi, index=index, timebase=timebase)
         if self.time_features:
@@ -553,7 +561,27 @@ class PowerModelMethod:
             scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, wind_speed_col=self.wind_speed_col
         )
         result = sync_era5(self.era5_hourly_df, target_index=index, reference_ws=reference_ws, timebase=timebase)
-        frames = [features, era5_feature_frame(result.aligned)]
+        era5_features = era5_feature_frame(result.aligned)
+        if self.era5_exclude:
+            missing = sorted(set(self.era5_exclude) - set(era5_features.columns))
+            if missing:
+                msg = f"era5_exclude names columns not in the ERA5 features: {missing}"
+                raise ValueError(msg)
+            blocked = sorted(set(self.era5_exclude) & set(self.matching_vars))
+            if blocked and self.conditional_uplift:
+                msg = (
+                    f"era5_exclude {blocked} are conditional-uplift matching_vars; excluding them as model "
+                    f"features would break the CEM matching step. Turn conditional_uplift off or re-pick "
+                    f"matching_vars first."
+                )
+                raise ValueError(msg)
+            drop = [
+                c
+                for c in era5_features.columns
+                if c in self.era5_exclude or any(c == f"{raw}_{t}" for raw in self.era5_exclude for t in ("sin", "cos"))
+            ]
+            era5_features = era5_features.drop(columns=drop)
+        frames = [features, era5_features]
         if self.era5_derivations:
             frames.append(
                 era5_derived_frame(result.aligned, derivations=self.era5_derivations, hub_height_m=self.hub_height_m)
@@ -793,5 +821,7 @@ class PowerModelMethod:
             "latitude": self.latitude,
             "longitude": self.longitude,
             "reference_stat_cols": list(self.reference_stat_cols),
+            "era5_exclude": list(self.era5_exclude),
+            "availability_feature": self.availability_feature,
             "model_params": self.model_params,
         }

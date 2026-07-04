@@ -54,6 +54,7 @@ def build_reference_features(
     active_power_col: str,
     availability_col: str,
     extra_cols: Sequence[str] = (),
+    include_availability: bool = True,
 ) -> pd.DataFrame:
     """Wide, curated reference features: each reference turbine's active power + availability.
 
@@ -64,9 +65,11 @@ def build_reference_features(
 
     :param extra_cols: additional per-reference value columns to carry as features (Issue 11's
         active-power max/min/SD statistics); must be present in ``scada_df`` like the primary two
+    :param include_availability: when ``False``, drop the per-reference availability *feature*
+        (removal-ablation knob); the column must still exist (the downtime filter needs it)
     """
     refs = _references(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)
-    value_cols = [active_power_col, availability_col, *extra_cols]
+    value_cols = [active_power_col, *([availability_col] if include_availability else []), *extra_cols]
     missing = [c for c in value_cols if c not in scada_df.columns]
     if missing:
         msg = f"scada_df is missing required reference-feature columns {missing}; have {list(scada_df.columns)}"

@@ -352,6 +352,64 @@ class TestFeatureConfig:
         assert {f"{_POWER_SD} @ R1", f"{_POWER_MAX} @ R2", f"{_POWER_MIN} @ R3"} <= fitted
         assert not any(name.endswith(" @ T1") for name in fitted)
 
+    def test_era5_exclude_drops_column_and_direction_companions(self, tmp_path: Path) -> None:
+        mi = self._prepost_mi()
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
+            conditional_uplift=False,
+            model_params=_FAST_PARAMS,
+            era5_exclude=("wind_speed_10m", "wind_direction_10m"),
+            out_dir=tmp_path,
+        )
+        out = method.estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+        fitted = self._fitted_feature_names(tmp_path)
+        assert (
+            not {
+                "wind_speed_10m",
+                "wind_direction_10m",
+                "wind_direction_10m_sin",
+                "wind_direction_10m_cos",
+            }
+            & fitted
+        )
+        assert "wind_speed_100m" in fitted
+
+    def test_era5_exclude_of_matching_var_raises_with_conditional_on(self) -> None:
+        mi = self._prepost_mi(n=300)
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
+            era5_exclude=("wind_gusts_10m",),
+        )
+        with pytest.raises(ValueError, match="matching_vars"):
+            method.estimate(mi)
+
+    def test_availability_feature_off_removes_availability_columns(self, tmp_path: Path) -> None:
+        mi = self._prepost_mi()
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            conditional_uplift=False,
+            model_params=_FAST_PARAMS,
+            availability_feature=False,
+            out_dir=tmp_path,
+        )
+        out = method.estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+        fitted = self._fitted_feature_names(tmp_path)
+        assert not any(name.startswith(_AVAIL) for name in fitted)
+        assert f"{_POWER} @ R1" in fitted
+
     def test_era5_derivations_without_era5_raises(self) -> None:
         method = PowerModelMethod(
             active_power_col=_POWER,
