@@ -81,6 +81,9 @@ def days_since_campaign_start(index: pd.DatetimeIndex, *, campaign_start: pd.Tim
         ``index``, holding ``(index - campaign_start) / 1 day`` as a float.
     """
     _require_tz_aware(index)
+    if campaign_start.tzinfo is None:
+        msg = "campaign_start must be timezone-aware (expected tz-aware UTC); got a tz-naive Timestamp."
+        raise ValueError(msg)
     days = (index - campaign_start) / pd.Timedelta(days=1)
     return pd.Series(days, index=index, name="days_since_campaign_start")
 

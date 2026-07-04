@@ -104,6 +104,19 @@ class TestBuildReferenceFeatures:
         assert f"wtc_ActPower_stddev{QUALIFIER}R2" in feats.columns
         assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
 
+    def test_missing_availability_col_raises_even_when_not_featured(self) -> None:
+        idx = _index(12)
+        scada = _scada(idx).drop(columns=[_AVAIL])
+        with pytest.raises(ValueError, match="missing required reference-feature columns"):
+            build_reference_features(
+                scada,
+                test_wtg="T1",
+                turbine_col=_TURBINE,
+                active_power_col=_POWER,
+                availability_col=_AVAIL,
+                include_availability=False,
+            )
+
     def test_missing_extra_col_raises(self) -> None:
         idx = _index(12)
         with pytest.raises(ValueError, match="missing required reference-feature columns"):

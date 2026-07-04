@@ -38,6 +38,12 @@ def test_days_since_campaign_start_exact_values() -> None:
     assert result.index.equals(index)
 
 
+def test_days_since_campaign_start_raises_on_tz_naive_campaign_start() -> None:
+    index = pd.date_range("2018-06-21", periods=3, freq="D", tz="UTC")
+    with pytest.raises(ValueError, match="campaign_start must be timezone-aware"):
+        days_since_campaign_start(index, campaign_start=pd.Timestamp("2018-06-22"))
+
+
 def test_days_since_campaign_start_raises_on_tz_naive_index() -> None:
     index = pd.DatetimeIndex(["2020-01-01 00:00:00"])
     with pytest.raises(ValueError, match="timezone-aware"):
