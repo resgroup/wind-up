@@ -71,6 +71,25 @@ def test_season_sin_cos_is_on_unit_circle() -> None:
     np.testing.assert_allclose(magnitude_sq, np.ones_like(magnitude_sq))
 
 
+def test_season_sin_cos_leap_year_anchor_stays_on_june21() -> None:
+    # 2020 is a leap year: June 21 is day-of-year 173, and the anchor must move with it.
+    index = pd.DatetimeIndex(["2020-06-21 12:00:00"], tz="UTC")
+
+    result = season_sin_cos(index)
+
+    np.testing.assert_allclose(result["season_cos"].to_numpy(), [1.0], atol=0.01)
+    np.testing.assert_allclose(result["season_sin"].to_numpy(), [0.0], atol=0.02)
+
+
+def test_season_sin_cos_non_utc_index_encodes_the_same_instants() -> None:
+    utc = pd.DatetimeIndex(["2018-06-21 12:00:00"], tz="UTC")
+    same_instant_elsewhere = utc.tz_convert("Australia/Sydney")
+
+    np.testing.assert_allclose(
+        season_sin_cos(same_instant_elsewhere).to_numpy(), season_sin_cos(utc).to_numpy(), atol=1e-12
+    )
+
+
 def test_season_sin_cos_raises_on_tz_naive_index() -> None:
     index = pd.DatetimeIndex(["2018-06-21 12:00:00"])
     with pytest.raises(ValueError, match="timezone-aware"):

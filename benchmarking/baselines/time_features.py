@@ -40,8 +40,8 @@ import pandas as pd
 # multiple columns (see season_sin_cos / solar_altitude_azimuth).
 TIME_FEATURE_NAMES: tuple[str, ...] = ("days_since_campaign_start", "season", "solar")
 
-# Day-of-year of June 21st in a non-leap year; the season angle's zero-crossing anchor.
-_JUNE21_DAY_OF_YEAR = 172
+# Day-of-year of June 21st in a non-leap year (one later in leap years); the season anchor.
+_JUNE21_DAY_OF_YEAR_NON_LEAP = 172
 # Mean length of a year in days (Gregorian calendar average, i.e. including leap years).
 _DAYS_PER_YEAR = 365.25
 _SECONDS_PER_DAY = 86_400.0
@@ -98,17 +98,20 @@ def season_sin_cos(index: pd.DatetimeIndex) -> pd.DataFrame:
         indexed by ``index``.
     """
     _require_tz_aware(index)
+    index_utc = index.tz_convert("UTC")  # wall-clock fields below must read UTC, whatever tz came in
     fractional_day_of_year = (
-        index.dayofyear.to_numpy(dtype=float)
+        index_utc.dayofyear.to_numpy(dtype=float)
         + (
-            index.hour.to_numpy(dtype=float) * 3600.0
-            + index.minute.to_numpy(dtype=float) * 60.0
-            + index.second.to_numpy(dtype=float)
-            + index.microsecond.to_numpy(dtype=float) / 1.0e6
+            index_utc.hour.to_numpy(dtype=float) * 3600.0
+            + index_utc.minute.to_numpy(dtype=float) * 60.0
+            + index_utc.second.to_numpy(dtype=float)
+            + index_utc.microsecond.to_numpy(dtype=float) / 1.0e6
         )
         / _SECONDS_PER_DAY
     )
-    offset_from_june21 = fractional_day_of_year - _JUNE21_DAY_OF_YEAR
+    # June 21 is day 172 in a non-leap year but 173 in a leap year (the extra Feb 29 shifts it).
+    june21_day_of_year = _JUNE21_DAY_OF_YEAR_NON_LEAP + index_utc.is_leap_year.astype(float)
+    offset_from_june21 = fractional_day_of_year - june21_day_of_year
     angle = 2.0 * np.pi * offset_from_june21 / _DAYS_PER_YEAR
     return pd.DataFrame({"season_sin": np.sin(angle), "season_cos": np.cos(angle)}, index=index)
 
@@ -183,11 +186,9 @@ def solar_altitude_azimuth(index: pd.DatetimeIndex, *, latitude: float, longitud
     true_solar_time = np.mod(
         minutes_since_midnight + equation_of_time + _MINUTES_PER_DEGREE_LONGITUDE * longitude, _MINUTES_PER_DAY
     )
-    hour_angle = np.where(
-        true_solar_time * _DEGREES_PER_MINUTE < 0.0,
-        true_solar_time * _DEGREES_PER_MINUTE + 180.0,
-        true_solar_time * _DEGREES_PER_MINUTE - 180.0,
-    )
+    # true_solar_time is wrapped into [0, 1440) above, so the NOAA spreadsheet's negative branch
+    # cannot occur and the hour angle reduces to the single expression over [-180, 180).
+    hour_angle = true_solar_time * _DEGREES_PER_MINUTE - 180.0
 
     lat_rad = np.radians(latitude)
     declin_rad = np.radians(sun_declin)

@@ -151,12 +151,17 @@ def era5_derived_frame(
         msg = f"aligned ERA5 is missing columns {missing} required by derivations {list(derivations)}"
         raise ValueError(msg)
 
+    # alpha feeds both shear_exponent and wind_speed_hub; compute it at most once.
+    alpha: pd.Series | None = None
+    if {"shear_exponent", "wind_speed_hub"} & set(derivations):
+        alpha = shear_exponent(aligned_era5["wind_speed_10m"], aligned_era5["wind_speed_100m"])
     out = pd.DataFrame(index=aligned_era5.index)
     for name in derivations:
         if name == "shear_exponent":
-            out[name] = shear_exponent(aligned_era5["wind_speed_10m"], aligned_era5["wind_speed_100m"])
+            assert alpha is not None  # noqa: S101 - set above whenever this branch is reachable
+            out[name] = alpha
         elif name == "wind_speed_hub":
-            alpha = shear_exponent(aligned_era5["wind_speed_10m"], aligned_era5["wind_speed_100m"])
+            assert alpha is not None  # noqa: S101 - set above whenever this branch is reachable
             assert hub_height_m is not None  # noqa: S101 - narrowed above; mypy needs the hint
             out[name] = hub_height_wind_speed(aligned_era5["wind_speed_100m"], alpha, hub_height_m=hub_height_m)
         elif name == "gust_ratio":
