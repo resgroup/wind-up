@@ -20,10 +20,15 @@ test-turbine-qualified column (the §3 guard).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.era5_sync import ERA5_WD, ERA5_WS
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # Separator between a source-native tag and the turbine it came from in a feature name.
 QUALIFIER = " @ "
@@ -48,6 +53,7 @@ def build_reference_features(
     turbine_col: str,
     active_power_col: str,
     availability_col: str,
+    extra_cols: Sequence[str] = (),
 ) -> pd.DataFrame:
     """Wide, curated reference features: each reference turbine's active power + availability.
 
@@ -55,9 +61,12 @@ def build_reference_features(
     contributes nothing (its power is the outcome, extracted separately). NaNs are preserved (no
     complete-case dropping) — LightGBM handles them natively. Raises if no reference turbine is
     present, or (defensively) if any test-turbine column would leak in.
+
+    :param extra_cols: additional per-reference value columns to carry as features (Issue 11's
+        active-power max/min/SD statistics); must be present in ``scada_df`` like the primary two
     """
     refs = _references(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)
-    value_cols = [active_power_col, availability_col]
+    value_cols = [active_power_col, availability_col, *extra_cols]
     missing = [c for c in value_cols if c not in scada_df.columns]
     if missing:
         msg = f"scada_df is missing required reference-feature columns {missing}; have {list(scada_df.columns)}"

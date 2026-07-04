@@ -87,6 +87,35 @@ class TestBuildReferenceFeatures:
                 only_test, test_wtg="T1", turbine_col=_TURBINE, active_power_col=_POWER, availability_col=_AVAIL
             )
 
+    def test_extra_cols_add_per_reference_features(self) -> None:
+        idx = _index(12)
+        scada = _scada(idx)
+        scada["wtc_ActPower_stddev"] = 7.0
+        feats = build_reference_features(
+            scada,
+            test_wtg="T1",
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            extra_cols=("wtc_ActPower_stddev",),
+        )
+        # three references x three value columns; still nothing from the test turbine
+        assert len(feats.columns) == 9
+        assert f"wtc_ActPower_stddev{QUALIFIER}R2" in feats.columns
+        assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
+
+    def test_missing_extra_col_raises(self) -> None:
+        idx = _index(12)
+        with pytest.raises(ValueError, match="missing required reference-feature columns"):
+            build_reference_features(
+                _scada(idx),
+                test_wtg="T1",
+                turbine_col=_TURBINE,
+                active_power_col=_POWER,
+                availability_col=_AVAIL,
+                extra_cols=("wtc_ActPower_stddev",),
+            )
+
     def test_extra_test_turbine_column_never_reaches_features(self) -> None:
         idx = _index(12)
         scada = _scada(idx)

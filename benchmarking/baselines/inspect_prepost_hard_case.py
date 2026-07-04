@@ -161,6 +161,8 @@ def _power_model(out_dir: Path, era5_hourly_df: pd.DataFrame, *, save_plots: boo
         availability_col=HOT_COLUMNS.availability,
         baseline_rated_power_kw=HOT_RATED_POWER_KW,
         era5_hourly_df=era5_hourly_df,
+        # Issue 11 accepted default (findings F12): reference active-power minimum feature.
+        reference_stat_cols=("wtc_ActPower_min",),
         out_dir=out_dir,
         save_plots=save_plots,
     )

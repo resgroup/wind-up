@@ -63,6 +63,7 @@ to promote the candidate a previous full sweep already wrote (no re-run).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import subprocess
@@ -177,20 +178,44 @@ def _select_profiles(requested: list[str] | None) -> dict[str, list]:
     return {name: all_profiles[name] for name in requested}
 
 
-def _make_power_model(out_dir: Path, *, era5_hourly_df: pd.DataFrame) -> PowerModelMethod:
-    """Construct the HoT-configured ``power_model`` method (its default: conditional uplift on)."""
-    return PowerModelMethod(
-        active_power_col=HOT_COLUMNS.active_power,
-        wind_speed_col=HOT_COLUMNS.wind_speed,
-        availability_col=HOT_COLUMNS.availability,
-        wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
-        baseline_rated_power_kw=HOT_RATED_POWER_KW,
-        era5_hourly_df=era5_hourly_df,
-        out_dir=out_dir / "power_model_runs",
-    )
+def _make_power_model(
+    out_dir: Path, *, era5_hourly_df: pd.DataFrame, overrides: dict[str, Any] | None = None
+) -> PowerModelMethod:
+    """Construct the HoT-configured ``power_model`` method (its default: conditional uplift on).
+
+    ``overrides`` are ``PowerModelMethod`` field overrides for candidate A/B runs (the Issue 9/10/11
+    protocol), e.g. ``{"era5_derivations": ["gust_ratio"]}``; unknown field names fail loudly and
+    JSON lists are coerced to the tuples the dataclass fields expect.
+    """
+    kwargs: dict[str, Any] = {
+        "active_power_col": HOT_COLUMNS.active_power,
+        "wind_speed_col": HOT_COLUMNS.wind_speed,
+        "availability_col": HOT_COLUMNS.availability,
+        "wind_speed_sd_col": HOT_COLUMNS.wind_speed_sd,
+        "baseline_rated_power_kw": HOT_RATED_POWER_KW,
+        "era5_hourly_df": era5_hourly_df,
+        # Issue 11 accepted default (findings F12): each reference's within-period active-power
+        # minimum. Better on every benchmark gate in both modes; max/SD were rejected.
+        "reference_stat_cols": ("wtc_ActPower_min",),
+        "out_dir": out_dir / "power_model_runs",
+    }
+    if overrides:
+        known = {f.name for f in dataclasses.fields(PowerModelMethod)}
+        unknown = sorted(set(overrides) - known)
+        if unknown:
+            msg = f"unknown PowerModelMethod field(s) in --method-overrides: {unknown}"
+            raise ValueError(msg)
+        kwargs.update({k: tuple(v) if isinstance(v, list) else v for k, v in overrides.items()})
+    return PowerModelMethod(**kwargs)
 
 
-def run_power_model(mode: str, out_dir: Path, *, profiles: list[str] | None = None) -> pd.DataFrame:
+def run_power_model(
+    mode: str,
+    out_dir: Path,
+    *,
+    profiles: list[str] | None = None,
+    method_overrides: dict[str, Any] | None = None,
+) -> pd.DataFrame:
     """Score **only** ``power_model`` over the overnight cases for one mode (no v0/naive/oracle).
 
     ``profiles`` restricts to a subset of :func:`overnight_profiles` (default: all) for fast feedback on
@@ -214,7 +239,11 @@ def run_power_model(mode: str, out_dir: Path, *, profiles: list[str] | None = No
     for profile_name, profile in _select_profiles(profiles).items():
         # Per-profile subfolder: the method's run dir is power_model_<wtg>_<start>_<end> (no profile), so
         # profiles sharing a (wtg, window) would otherwise overwrite each other's non-timestamped diagnostics.
-        method = _make_power_model(out_dir / profile_name, era5_hourly_df=context.reanalysis_datasets[0].data)
+        method = _make_power_model(
+            out_dir / profile_name,
+            era5_hourly_df=context.reanalysis_datasets[0].data,
+            overrides=method_overrides,
+        )
         logger.info("Scoring %s profile %s with power_model", mode, profile_name)
         results = score_study(
             scada_df,
@@ -718,6 +747,14 @@ def main() -> None:
         "e.g. --profiles cp_0pct runs just the placebo. Cannot be combined with --update-baseline.",
     )
     parser.add_argument(
+        "--method-overrides",
+        type=str,
+        default=None,
+        help="JSON dict of PowerModelMethod field overrides for a candidate A/B run, e.g. "
+        '\'{"era5_derivations": ["gust_ratio"]}\'. The run is diffed against the benchmark as usual '
+        "but no candidate baseline is written (the overridden config is not the committed default).",
+    )
+    parser.add_argument(
         "--skip-run",
         action="store_true",
         help="reuse a previous power_model run under --output-dir; only re-merge and re-plot",
@@ -745,6 +782,10 @@ def main() -> None:
         # record_baseline rewrites a mode's cells wholesale, so a subset run would drop the other
         # profiles from the committed benchmark. Refuse rather than silently corrupt it.
         parser.error("--update-baseline needs the full profile set; do not combine it with --profiles")
+    method_overrides: dict[str, Any] | None = json.loads(args.method_overrides) if args.method_overrides else None
+    if method_overrides is not None and args.update_baseline:
+        # the benchmark freezes the *committed default* config; an overridden run must not be recorded as it
+        parser.error("--update-baseline records the default config; do not combine it with --method-overrides")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
     reference_dir = args.reference_dir.expanduser()
@@ -766,7 +807,9 @@ def main() -> None:
                 fresh = fresh[fresh["profile"].isin(args.profiles)]
             logger.info("Reusing %d fresh rows from %s", len(fresh), mode_out_dir)
         else:
-            fresh = run_power_model(mode, mode_out_dir, profiles=args.profiles)
+            fresh = run_power_model(mode, mode_out_dir, profiles=args.profiles, method_overrides=method_overrides)
+            if method_overrides is not None:  # provenance: which A/B candidate this run was
+                (mode_out_dir / "method_overrides.json").write_text(json.dumps(method_overrides, indent=2) + "\n")
         merge_and_plot(mode, fresh, reference_dir / mode, mode_out_dir)
         lb_by_mode[mode] = power_model_leaderboard(fresh)
         study_by_mode[mode] = _prepost_study() if mode == "prepost" else _toggle_study()
@@ -776,6 +819,8 @@ def main() -> None:
 
     if args.update_baseline:
         record_baseline(lb_by_mode, study_by_mode, baseline_path)
+    elif method_overrides is not None:
+        logger.info("Overridden run (--method-overrides) — no candidate baseline written (not the default config).")
     elif args.profiles is None:
         # A full sweep: drop a candidate baseline (seeded from committed) so an accepted improvement is a
         # near-instant `--accept-candidate` away, with no second sweep. Subset runs are incomplete -> skip.
