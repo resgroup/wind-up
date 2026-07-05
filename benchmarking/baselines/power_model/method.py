@@ -326,6 +326,8 @@ class PowerModelMethod:
     calibrate_residuals: bool = False
     time_decay_half_life_days: float | None = 548.0
     toggle_estimator: str = "counterfactual"
+    # Not configuration: latches the missing-sample_weight warning so it fires once per instance.
+    _warned_no_sample_weight: bool = field(default=False, init=False, repr=False, compare=False)
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
@@ -805,7 +807,14 @@ class PowerModelMethod:
         x_up = features.iloc[upgraded_sel]
         y_up = y[upgraded_sel]
         w_base = weights[baseline_sel] if weights is not None else None
-        if double_ratio and len(y_base) >= _MIN_HOLDOUT_ROWS:
+        if double_ratio:
+            if len(y_base) < _MIN_HOLDOUT_ROWS:
+                # Fail loudly rather than silently estimating with a different estimator than requested.
+                msg = (
+                    f"toggle_estimator='double_ratio' needs at least {_MIN_HOLDOUT_ROWS} off rows for its "
+                    f"out-of-fold basis, got {len(y_base)}."
+                )
+                raise ValueError(msg)
             return self._fit_predict_double_ratio(
                 x_base, y_base=y_base, x_up=x_up, y_up=y_up, baseline_sel=baseline_sel, w_base=w_base
             )
@@ -849,11 +858,14 @@ class PowerModelMethod:
         Fit one model per time-blocked fold on the off rows; each off row is predicted out-of-fold
         and every on row by the mean of the fold models — both sides therefore share the ~80%-fit
         basis (the F15 consistency rule), so the model's shrinkage/level bias cancels in
-        ``rho_on / rho_off``. The returned counterfactual is ``fold_ensemble_prediction * rho_off``
-        (``rho_off = Σy_off / Σpred_off``, the model's observed miscalibration on the off rows), which
-        makes ``Σactual / Σcounterfactual - 1`` equal the double ratio exactly — downstream sums,
-        diagnostics and the conditional re-level stay self-consistent. The full out-of-fold off-row
-        predictions double as the held-out fit-quality diagnostic.
+        ``rho_on / rho_off``. The returned counterfactual is ``clip(fold_ensemble_prediction) *
+        rho_off`` (``rho_off = Σy_off / Σpred_off``, the model's observed miscalibration on the off
+        rows): the physical clip applies to the *prediction* and the calibration scale on top, so
+        ``Σactual / Σcounterfactual - 1`` equals the double ratio of the clipped predictions
+        exactly — downstream sums, diagnostics and the conditional re-level stay self-consistent.
+        (The scaled counterfactual may exceed the clip ceiling by the ~0-3 % calibration factor;
+        that is deliberate — re-clipping after scaling would break the identity.) The full
+        out-of-fold off-row predictions double as the held-out fit-quality diagnostic.
         """
         n = len(y_base)
         folds = time_block_folds(n, n_folds=_N_FOLDS, n_blocks=_N_BLOCKS)
@@ -873,8 +885,9 @@ class PowerModelMethod:
             models.append(model)
         pred_off = _clip_predictions(oof, y_train=y_base, rated_power_kw=self.baseline_rated_power_kw)
         rho_off = _ratio(y_base, pred_off) + 1.0
-        pred_up = _clip_predictions(
-            np.mean(preds_on, axis=0) * rho_off, y_train=y_base, rated_power_kw=self.baseline_rated_power_kw
+        pred_up = (
+            _clip_predictions(np.mean(preds_on, axis=0), y_train=y_base, rated_power_kw=self.baseline_rated_power_kw)
+            * rho_off
         )
         logger.info(
             "%s double-ratio toggle estimator: rho_off=%.5f over %d off rows (%d folds)",
@@ -942,20 +955,23 @@ class PowerModelMethod:
         """Return the fit kwargs for the time-decay ``weights``, empty for models that cannot take them.
 
         A ``model_factory`` learner may not accept ``sample_weight`` (e.g. an sklearn ``Pipeline``);
-        with the weights on by default, such learners fit unweighted — warned once per run rather
-        than crashing the factory seam.
+        with the weights on by default, such learners fit unweighted — warned once per method
+        instance (many fits happen per estimate: folds, holdout, ensemble) rather than crashing
+        the factory seam.
         """
         if weights is None:
             return {}
         from sklearn.utils.validation import has_fit_parameter  # noqa: PLC0415
 
         if not has_fit_parameter(model, "sample_weight"):
-            logger.warning(
-                "%s: outcome model %s does not accept sample_weight; time-decay weights are ignored "
-                "for its fits (set time_decay_half_life_days=None to silence this).",
-                self.name,
-                type(model).__name__,
-            )
+            if not self._warned_no_sample_weight:
+                self._warned_no_sample_weight = True
+                logger.warning(
+                    "%s: outcome model %s does not accept sample_weight; time-decay weights are ignored "
+                    "for its fits (set time_decay_half_life_days=None to silence this).",
+                    self.name,
+                    type(model).__name__,
+                )
             return {}
         return {"sample_weight": weights}
 

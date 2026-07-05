@@ -300,6 +300,19 @@ class TestModelFundamentals:
         with pytest.raises(ValueError, match="fold-basis calibration"):
             _fundamentals_method(toggle_estimator="double_ratio", n_seed_ensemble=2).estimate(mi)
 
+    def test_double_ratio_too_few_off_rows_raises(self) -> None:
+        # 36 rows, half toggled on -> ~18 off rows after filtering, below the fold-basis minimum;
+        # the requested estimator must fail loudly, not silently fall back to the counterfactual.
+        n = 36
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        schedule = ToggleSchedule(period=pd.Timedelta(minutes=20))
+        treated = np.asarray((((idx - idx.min()) // (schedule.period / 2)).astype(int) % 2) == 1)
+        scada = _toy_scada(n, uplift=0.0, treated=treated)
+        method = _fundamentals_method(model_params=_FAST_PARAMS, toggle_estimator="double_ratio")
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        with pytest.raises(ValueError, match=r"double_ratio.*off rows"):
+            method.estimate(mi)
+
     def test_toggle_all_data_with_conditional_recovers_uplift(self) -> None:
         n = 4000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
