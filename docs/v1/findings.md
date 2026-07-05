@@ -7,6 +7,149 @@ from, not just conclusions.
 
 ---
 
+## F16 — a finite time-decay half-life (548 d) is the default, applied to the headline fit only; the double-ratio toggle estimator validated as opt-in; the 1–2-month regime flips the training-window verdict (Issue 13 extension)
+
+*2026-07-04/05 — three user-directed follow-ups to F15, A/B'd against the post-F15 benchmark.
+New: `toggle_estimator="double_ratio"` on `PowerModelMethod` (the naive-adoption hybrid) and
+`benchmarking/baselines/inspect_short_campaigns.py` (1–2-month campaigns are outside the committed
+benchmark grid; oracle + naive anchor them — the oracle scores exactly 0 there, so the harness
+itself is sound at those lengths).*
+
+### ACCEPTED — `time_decay_half_life_days = 548` (1.5 years), headline fit only; benchmark regenerated
+- **Why finite at all:** the method must work on any dataset; with 20 years of SCADA an unbounded
+  training window would let ancient eras dominate the campaign era. `0.5^(days outside the
+  campaign interval / 548)`: rows in the campaign weigh exactly 1, year-old data ~63%,
+  decade-old ~1%.
+- **Dose curve (cp_0pct, both modes):** 90/180/365/548/1096 days all leave the toggle overall
+  neutral-or-better; prepost overall bias nudges up slightly (+0.1–0.2 pp at 3 months) and
+  everything ≥365 d is indistinguishable on this 2.5-year dataset — the specific choice of 548
+  rests on the bounding argument, not a HoT win. Short half-lives (90 d) measurably help
+  1–3-month campaigns in **both** modes (prepost 2-month score 0.21 vs 0.59 unweighted; toggle
+  best-or-near-best at 1/2/3 months) at a small long-prepost bias cost — the documented
+  short-campaign tuning.
+- **Headline fit only.** Weighting the conditional two-direction fits destabilises the sparse
+  extreme-TI tail bins (a degenerate matched fit in one replicate read +1039 % in one bin; it
+  appeared at hl365/548 and not at 180/1096 — replicate chance, the F7/F8 tail fragility that
+  Issue 14's count floor addresses). The matched contrast is already era-insensitive (its common
+  shrinkage cancels), so the weights buy nothing there. With weights confined to the headline
+  path the full sweep is clean: prepost conditional ALL Δscore +5.4 (weighted) → **+0.03**
+  (headline-only); every overall row in both modes inside the ±0.1 pp neutrality band, toggle
+  slightly better everywhere.
+
+### Validated opt-in — `toggle_estimator="double_ratio"` (the naive-adoption hybrid)
+- The model is demoted to removing condition unfairness; the headline is a ratio of ratios,
+  ``(Σy_on/Σpred_on) / (Σy_off/Σpred_off) − 1``. Off rows are predicted out-of-fold and on rows
+  by the same fold-model ensemble (basis-consistent, the F15 rule), so the model's shrinkage /
+  level bias cancels between the interleaved sides instead of needing to be zero.
+- **On the benchmark grid it does exactly what it promises:** toggle placebo headline bias ≈ 0 at
+  every campaign length (−0.00/+0.08/−0.06/−0.05 pp vs +0.12/+0.16/+0.08/+0.08 for the default),
+  score neutral. The logged ρ_off (0.9995–1.0006 on ~100k-row fits) is precisely the residual OOF
+  shrinkage, cancelled by construction.
+- **Not the default, for two measured reasons:** (i) with campaign-only training it overcorrects
+  and the 3-month spread balloons (0.26 → 0.80 — five fold models on ~6k rows are noise); (ii) at
+  1–2-month campaigns it is *worse* than the default (score 1.05/0.59 vs 0.90/0.38): with
+  all-data training, ρ_off is measured across two years of eras while the ON window is a
+  one-month sliver, so the "cancellation" subtracts the wrong era's miscalibration. Right tool
+  for ≥3-month toggle campaigns where headline-bias purity matters.
+
+### The 1–2-month regime check (the reason the user asked for it)
+- **The Issue 13 training-window verdict flips below ~3 months:** campaign-only training wins at
+  1–2 months (toggle 1-month score 0.334 vs 0.895 for all-data; bias +0.02 vs −0.64) because the
+  campaign is <5 % of the all-data training set and drift dominates; all-data wins at ≥3 months
+  where shrinkage dominates. The decay weights interpolate between the regimes: hl90 is
+  best-or-near-best at 1, 2 *and* 3 months. A campaign-length-adaptive training window (or
+  half-life) is the natural future refinement — noted for the later-work list, not implemented.
+- The 3–12-month verdicts (the committed benchmark grid) all stand: mcs=50, tco=False, and the
+  F12/F13 feature set were re-checked where they can flip and none reversed on that grid.
+- power_model beats the naive anchor at 1–2-month toggle only in its campaign-only configuration
+  (0.334 vs 0.518 at 1 month); in the default all-data configuration naive wins there — worth
+  remembering when quoting short-campaign capability.
+
+### Method notes
+- The weights default surfaced a seam conflict: sklearn ``Pipeline`` factories take no
+  ``sample_weight``. ``_fit_kwargs`` now probes support (``has_fit_parameter``) and fits
+  unweighted with a warning instead of crashing the factory seam.
+- 1–2-month campaigns are deliberately **not** added to the committed benchmark grid (the frozen
+  v0/naive reference runs don't cover them); `inspect_short_campaigns.py` is the reproducible
+  driver for that regime.
+
+---
+
+## F15 — residual calibration rejected with a sharpened OOF-transfer rule; `toggle_campaign_only=False` accepted (all-data headline training + campaign-restricted conditional); time-decay weights validated as opt-in (Issue 13)
+
+*2026-07-04 — Issue 13 verdicts. New `PowerModelMethod` knobs (default off): `calibrate_residuals`
+(ERA5-cell residual calibration: full-baseline out-of-fold predictions via the shared time-blocked
+folds, mean residual per F6 CEM cell — `matching.cell_codes` is now public — read out under the
+upgraded window's occupancy) and `time_decay_half_life_days` (campaign-proximity sample weights
+`0.5^(days outside the campaign interval / half-life)`: interleaved campaign rows weigh exactly 1,
+pre-campaign rows decay; threaded through every fit). One structural change: with
+`toggle_campaign_only=False` the conditional two-direction step now **matches within the campaign
+only** — pre-campaign rows serve only the headline fit's training data. A/B'd on the placebo
+(`cp_0pct`) against the post-F14 benchmark; acceptance via a full 7-profile sweep. Entering
+Issue 13, the prepost placebo headline bias was already −0.02/+0.35/+0.05 pp at 3/6/12 months
+(the F3-era uniform −0.4 pp is gone since F13/F14) and toggle +0.36 pp at 3 months (F14: small-fit
+tree shrinkage).*
+
+### REJECTED — ERA5-cell residual calibration, twice; the F14 OOF-transfer rule now covers *shape*
+- **v1 (raw cell means)**: prepost bias up nearly uniformly (+0.32/+0.21/+0.13 pp) — the global OOF
+  residual level (≈ −1 kW: fold models fit on 80% of the rows over-predict relative to the final
+  100% fit) leaks into every cell mean and swamps the mix-shift signal. Toggle: right direction but
+  a short-campaign spread cost (3-month Δspread +0.72 — the F7 failure mode; the level term is
+  noise at small n).
+- **v2 (centred: `cell_mean − global_mean`, the pure mix-shift differential; unseen cells → 0)**:
+  prepost deltas nearly identical to v1 (+0.33/+0.20/+0.15). The logged corrections under the
+  upgraded mix are systematically *negative* (−0.05…−4.9 kW) while the observed placebo bias is
+  *positive* — **the estimated correction has the wrong sign vs the actual bias**. The fold
+  models' conditional residual *structure* differs from the final refit model's, not just its
+  level. Toggle adds a sparse-cell artifact: ~450 F6 cells over ~6k off rows ≈ 13 rows/cell of
+  noise (uniform positive bias shifts decaying ~1/n).
+- **The sharpened rule (extends the F14 method note): out-of-fold residuals cannot be transferred
+  to a refit model — neither their level nor their conditional shape.** Any future residual
+  calibration must be basis-consistent: estimate corrections for the model actually deployed
+  (e.g. predict with the fold ensemble itself, or calibrate on a held-out era the final model
+  never saw).
+- **Corollary**: the remaining prepost 6-month +0.35 pp placebo bias is measurably *not* an
+  ERA5-weather-mix-shift effect (the purpose-built correction moves it the wrong way). 3- and
+  12-month prepost already meet the issue's ≲0.1–0.2 pp target; the 6-month anomaly stays open
+  (candidate mechanism: a seasonal/drift interaction specific to half-year windows).
+
+### ACCEPTED — `toggle_campaign_only=False` (all-data headline training; benchmark regenerated)
+- **Where the all-data damage actually lives.** Every naive all-data arm wrecked the toggle
+  conditional identically (3-month ti Δscore ≈ +14) regardless of decay weights or calibration —
+  because the drift enters through the conditional CEM **matching** (pre-campaign rows matched
+  against campaign on-rows at full weight in the two-direction contrast), not through the fits.
+  Weighting cannot fix a matching problem; the structural fix (conditional matches within the
+  campaign only, where its shared-distribution assumption holds) resolves it completely — the
+  3-month conditional comes out *better* than the campaign-only benchmark (ti Δscore −1.7).
+- **Full-sweep verdict (7 profiles)**: prepost bit-identical (the flip is toggle-only; 0.0 across
+  all 469 cells). Toggle: 3-month headline bias +0.358 → **+0.121** (Δscore −0.070), pooled ALL
+  Δscore −0.144, |bias| cells 144 better / 86 worse. Accepted cost: mild spread at 9/12 months
+  (overall Δscore +0.11/+0.08) — the extra rows only add drift variance once the campaign is
+  data-rich. Three-method picture: power_model now ties v0/naive at 3-month toggle (0.294 vs
+  0.296/0.297), closing its last deficit vs v0 (F4); naive keeps the 9/12-month toggle lead.
+- `naive_ratio` keeps campaign-only, per the issue — there the restriction *is* the method's
+  distribution matching.
+
+### Validated opt-in — `time_decay_half_life_days` (campaign-proximity training weights)
+- On top of all-data + the conditional fix, 90-day half-life trades headline bias for spread:
+  3-month bias +0.19 (vs +0.12 unweighted) but the best 3-month overall score of any arm (0.239
+  vs 0.290 unweighted, 0.359 benchmark), and pooled ALL −0.142. The 45-day dose is flat vs 90
+  (ALL 4.038 vs 4.045) — the response is insensitive in this range.
+- **Not defaulted** because the weights are shared-path: in prepost they nudge the placebo
+  headline bias *up* at all three campaign lengths (+0.09/+0.09/+0.02; score is a wash — 3-month
+  −0.14 better, 6-month +0.12 worse) — the wrong direction for the issue's own target metric.
+  Remains available where short-campaign spread matters more than bias purity.
+
+### Method notes
+- The refactor no-op was verified against the benchmark before any A/B (all deltas 0.0), and the
+  uncentered→centred iteration was driven by the per-run correction logs — keep logging the
+  mean correction and the centred-out level; they made the wrong-sign diagnosis possible.
+- Issue 13's "time-blocked baseline cross-validation" item shipped across F14/F15: the holdout
+  display is time-blocked (F14) and `_oof_baseline_predictions` gives every baseline row an
+  out-of-fold prediction (F15), shared by both calibration paths.
+
+---
+
 ## F14 — outcome-model fundamentals: `min_child_samples` 200→50 accepted; linear_tree, early stopping, calibration slope, seed ensembling and alternative learners rejected; the toggle headline bias localised to small-fit tree shrinkage (Issue 12)
 
 *2026-07-04 — Issue 12 verdicts. New module `benchmarking/baselines/power_model/fitting.py`
@@ -26,7 +169,7 @@ display item; estimates unchanged). Candidates A/B'd per the Issue 9 protocol:
   quantile-0.5 — estimate the median and bias the energy sum. The F5 shrinkage is a
   *regularisation* artefact, not a loss artefact; changing objective does not fix it. Legitimate
   within the mean family: Tweedie / variance-weighted L2 (efficiency candidates, untried).
-  Quantile objectives are out of scope for the point estimate (they return in Issue 16/WS4).
+  Quantile objectives are out of scope for the point estimate (they return in Issue 17/WS4).
 - **Tune on uplift metrics, never on prediction RMSE.** More regularisation can improve held-out
   RMSE while worsening shrinkage. Yardsticks: placebo bias on the harness, per-bin residual
   flatness, the predicted-vs-actual **calibration slope** (target ≈ 1) on a time-blocked held-out

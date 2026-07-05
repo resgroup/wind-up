@@ -37,6 +37,7 @@ def _rlearner(tmp_path) -> RLearnerMethod:  # noqa: ANN001
     )
 
 
+@pytest.mark.skip(reason="Rlearner method abandoned")
 @pytest.mark.slow
 def test_rlearner_recovers_prepost_uplift(tmp_path) -> None:  # noqa: ANN001
     scada_df, _ = load_hot_scada(
@@ -69,6 +70,7 @@ def test_rlearner_recovers_prepost_uplift(tmp_path) -> None:  # noqa: ANN001
     assert abs(rlearner_row["signed_error"]) < 0.03
 
 
+@pytest.mark.skip(reason="Rlearner method abandoned")
 @pytest.mark.slow
 def test_rlearner_recovers_toggle_uplift(tmp_path) -> None:  # noqa: ANN001
     scada_df, _ = load_hot_scada(

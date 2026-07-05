@@ -44,11 +44,12 @@ from benchmarking.baselines.power_model.fitting import (
     IDENTITY_CALIBRATION,
     OUTCOME_MODEL_FACTORIES,
     CalibrationLine,
+    cell_residual_calibration,
     early_stopped_n_estimators,
     fit_calibration_line,
     time_block_folds,
 )
-from benchmarking.baselines.power_model.matching import coarsened_exact_match
+from benchmarking.baselines.power_model.matching import cell_codes, coarsened_exact_match
 from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 from benchmarking.baselines.time_features import (
     TIME_FEATURE_NAMES,
@@ -211,7 +212,11 @@ class PowerModelMethod:
     :param model_params: LightGBM overrides passed to the outcome model
     :param timebase: analysis timebase; inferred from the data when ``None``
     :param toggle_campaign_only: for a toggle campaign, fit only on the interleaved on/off blocks
-        (drop the pre-campaign baseline) so on and off share a wind distribution; no-op for prepost
+        (drop the pre-campaign baseline); no-op for prepost. Default ``False`` since Issue 13
+        (findings F15): training on the pre-campaign baseline too removes most of the small-fit
+        shrinkage bias at short campaigns (3-month placebo +0.35 → +0.12 pp) — made safe for the
+        conditional step by matching within the campaign only (see ``estimate``). Set ``True`` to
+        restore the strict same-distribution training window.
     :param conditional_uplift: compute the per-(ws, TI)-bin conditional uplift distribution (default
         ``True``). The overall P50 is a single baseline→upgraded fit either way; when this is ``True``
         an extra two-direction, ERA5-weather-matched (CEM) cross-prediction runs **last** to estimate
@@ -244,12 +249,49 @@ class PowerModelMethod:
     :param early_stopping: pick the LightGBM tree count by early stopping on a time-blocked
         validation split, then refit on all training rows at that capacity — data-size-adaptive
         capacity instead of one fixed ``n_estimators`` for every fit size (default ``False``)
-    :param calibrate_slope: post-hoc calibration-slope correction (Issue 12): fit
-        ``actual ~ a + b * predicted`` on time-blocked out-of-fold baseline predictions and apply
-        the line to the counterfactual predictions before the energy ratio (default ``False``).
-        Applies to the overall headline only — the conditional two-direction step cancels its
-        per-bin shrinkage by construction. The line is fit with single-seed, non-early-stopped
-        models, so it cannot be combined with ``early_stopping`` or ``n_seed_ensemble > 1``.
+    :param calibrate_slope: post-hoc calibration-slope correction (Issue 12). **Measured and
+        rejected as a default (findings F14): the line is fit on out-of-fold predictions from
+        ~80%-sized fits, which shrink more than the final 100% fit it corrects, so it overcorrects
+        exactly where the correction is largest (small fits) — keep off unless researching that
+        mechanism.** When on: fit ``actual ~ a + b * predicted`` on time-blocked out-of-fold
+        baseline predictions and apply the line to the counterfactual predictions before the
+        energy ratio. Applies to the overall headline only — the conditional two-direction step
+        cancels its per-bin shrinkage by construction. The line is fit with single-seed,
+        non-early-stopped models, so it cannot be combined with ``early_stopping`` or
+        ``n_seed_ensemble > 1``.
+    :param calibrate_residuals: ERA5-cell residual calibration (Issue 13). **Measured and rejected
+        as a default (findings F15): out-of-fold residuals transfer to the final refit model in
+        neither level nor conditional shape — the estimated correction had the wrong sign vs the
+        observed placebo bias — so this knob is retained for research only.** When on: estimate
+        the mean out-of-fold baseline residual per coarsened ERA5 cell (the ``matching_vars`` / F6
+        CEM coarsening), **centred by the global mean residual** so only the mix-shift
+        differential transfers (the OOF *level* artefact, the F14 lesson — necessary but, per F15,
+        not sufficient), and add each upgraded row's centred cell mean (0 for cells unseen in
+        baseline) to its counterfactual prediction before the energy ratio. Requires
+        ``era5_hourly_df``; mutually exclusive with ``calibrate_slope`` and, like it, with
+        ``early_stopping`` / ``n_seed_ensemble > 1`` (the out-of-fold basis must match the final
+        model configuration).
+    :param time_decay_half_life_days: training rows are sample-weighted by their proximity in
+        time to the campaign data: ``0.5 ** (days_outside_campaign / half_life)``. Rows inside
+        the campaign interval (for toggle, the interleaved on and off rows) weigh 1; rows outside
+        decay with their distance to it — so distant history informs the fit without dominating
+        it (Issue 13's recency weighting; the alternative to the rejected F11 drift *feature*).
+        Default **548 days (1.5 years)**: finite by design so an arbitrarily long SCADA history
+        cannot dominate the campaign era (year-old data still weighs ~63%, decade-old ~1%); on
+        the 2.5-year benchmark dataset it is neutral-to-slightly-better at every campaign length
+        (findings F16). Shorter half-lives (~90 days) measurably help 1-3-month campaigns at a
+        small long-prepost bias cost; ``None`` disables the weighting.
+    :param toggle_estimator: how a **toggle** headline is estimated (ignored for prepost).
+        ``"counterfactual"`` (default): ``Σactual/Σprediction - 1`` — needs the model to be
+        absolutely calibrated. ``"double_ratio"``: the naive-adoption hybrid — the model only
+        removes condition unfairness and the headline is a ratio of ratios,
+        ``(Σy_on/Σpred_on) / (Σy_off/Σpred_off) - 1``, where the off rows are predicted
+        out-of-fold and the on rows by the same fold-model ensemble (basis-consistent, the F15
+        rule), so the model's shrinkage/level bias cancels between the interleaved on and off
+        sides instead of needing to be zero. Implemented as
+        ``counterfactual = fold_ensemble_prediction * rho_off`` so every downstream sum and the
+        conditional re-level stay self-consistent. Cannot be combined with the calibrations
+        (it *is* one) or ``early_stopping`` / ``n_seed_ensemble > 1``.
     """
 
     active_power_col: str
@@ -265,7 +307,7 @@ class PowerModelMethod:
     seed: int = 0
     model_params: dict[str, Any] = field(default_factory=dict)
     timebase: pd.Timedelta | None = None
-    toggle_campaign_only: bool = True
+    toggle_campaign_only: bool = False
     conditional_uplift: bool = True
     matching_vars: tuple[str, ...] = _DEFAULT_MATCHING_VARS
     matching_bin_edges: dict[str, list[float]] | None = None
@@ -281,6 +323,11 @@ class PowerModelMethod:
     n_seed_ensemble: int = 1
     early_stopping: bool = False
     calibrate_slope: bool = False
+    calibrate_residuals: bool = False
+    time_decay_half_life_days: float | None = 548.0
+    toggle_estimator: str = "counterfactual"
+    # Not configuration: latches the missing-sample_weight warning so it fires once per instance.
+    _warned_no_sample_weight: bool = field(default=False, init=False, repr=False, compare=False)
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
@@ -327,7 +374,18 @@ class PowerModelMethod:
             raise ValueError(msg)
 
         y_arr = y.to_numpy(dtype=float)
-        fit = self._fit_predict(features, y=y_arr, baseline_sel=baseline_sel, upgraded_sel=upgraded_sel)
+        weights = self._time_decay_weights(
+            index, campaign_start=_upgrade_start(mi.upgrade_timing, index), campaign_end=index.max()
+        )
+        double_ratio = self.toggle_estimator == "double_ratio" and isinstance(mi.upgrade_timing, ToggleSchedule)
+        fit = self._fit_predict(
+            features,
+            y=y_arr,
+            baseline_sel=baseline_sel,
+            upgraded_sel=upgraded_sel,
+            weights=weights,
+            double_ratio=double_ratio,
+        )
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
@@ -376,18 +434,38 @@ class PowerModelMethod:
         # missing-ERA5 error).
         by_condition: pd.DataFrame | None = None
         if self.conditional_uplift and self.wind_speed_col is not None:
+            # The conditional two-direction step matches untreated against treated rows and relies on
+            # them sharing a distribution *and era* — for a toggle trained on pre-campaign data too
+            # (toggle_campaign_only=False), only the interleaved campaign off rows qualify: matching
+            # pre-campaign rows against campaign on rows would read reference/era drift as per-bin
+            # uplift. The extra pre-campaign rows serve only the headline fit's training data.
+            # No time-decay weights here either (F16): the matched contrast is already
+            # era-insensitive (its common shrinkage cancels), and weighting the direction fits
+            # destabilises the sparse extreme-condition bins (a degenerate tail fit in one
+            # replicate can read three-digit per-bin uplift).
             by_condition = self._estimate_conditional(
                 scada,
                 mi=mi,
                 features=features,
                 y=y_arr,
-                baseline_sel=baseline_sel,
+                baseline_sel=baseline_sel & self._campaign_mask(index, upgrade_timing=mi.upgrade_timing),
                 upgraded_sel=upgraded_sel,
                 fit=fit,
                 overall_ratio=uplift,
                 run_dir=run_dir,
             )
         return MethodOutput(p50_overall=uplift, p50_by_condition=by_condition)
+
+    @staticmethod
+    def _campaign_mask(index: pd.DatetimeIndex, *, upgrade_timing: pd.Timestamp | ToggleSchedule) -> np.ndarray:
+        """Boolean over ``index``: rows at/after the campaign start (all-True for prepost).
+
+        Prepost has no pre-campaign data beyond its baseline (which *is* the training era), so the
+        mask only bites for a toggle whose input still carries pre-campaign rows.
+        """
+        if isinstance(upgrade_timing, ToggleSchedule) and upgrade_timing.start is not None:
+            return np.asarray(index >= upgrade_timing.start)
+        return np.ones(len(index), dtype=bool)
 
     def _estimate_conditional(
         self,
@@ -427,7 +505,8 @@ class PowerModelMethod:
             seed=self.seed,
         )
         mb, mu = match.baseline_positions, match.upgraded_positions
-        pred_up = self._fit_direction(features, y, train=mb, predict=mu)  # forward: 1+r_fwd = (1+u)/s
+        # Forward (train matched-baseline, predict matched-upgraded) gives ``1+r_fwd = (1+u)/s``.
+        pred_up = self._fit_direction(features, y, train=mb, predict=mu)
         # Reverse (train matched-upgraded, predict matched-baseline): 1+r_rev = 1/(s(1+u)). Clip reuses
         # baseline_rated_power_kw — its upper bound max(rated, max(y_train)) already lifts the ceiling for an
         # uprate, so no separate upgraded-rating field is needed.
@@ -468,8 +547,9 @@ class PowerModelMethod:
     ) -> np.ndarray:
         """Fit the outcome model(s) on ``train`` rows and return clipped predictions for ``predict`` rows.
 
-        No calibration here: the two-direction combine cancels the common per-bin shrinkage by
-        construction, so the slope correction is spent only on the overall headline.
+        No calibration and no time-decay weights here: the two-direction combine cancels the common
+        per-bin shrinkage by construction, and weighting the matched fits only destabilises sparse
+        extreme-condition bins (F16) — the corrections are spent on the overall headline instead.
         """
         models = self._fit_models(features.iloc[train], y[train])
         return _clip_predictions(
@@ -628,11 +708,11 @@ class PowerModelMethod:
                 msg = f"era5_exclude names columns not in the ERA5 features: {missing}"
                 raise ValueError(msg)
             blocked = sorted(set(self.era5_exclude) & set(self.matching_vars))
-            if blocked and self.conditional_uplift:
+            if blocked and (self.conditional_uplift or self.calibrate_residuals):
                 msg = (
-                    f"era5_exclude {blocked} are conditional-uplift matching_vars; excluding them as model "
-                    f"features would break the CEM matching step. Turn conditional_uplift off or re-pick "
-                    f"matching_vars first."
+                    f"era5_exclude {blocked} are matching_vars; excluding them as model features would "
+                    f"break the CEM matching / residual-calibration cells. Turn conditional_uplift and "
+                    f"calibrate_residuals off or re-pick matching_vars first."
                 )
                 raise ValueError(msg)
             drop = [
@@ -672,6 +752,24 @@ class PowerModelMethod:
             frames.append(solar_altitude_azimuth(index, latitude=self.latitude, longitude=self.longitude))
         return pd.concat(frames, axis=1)
 
+    def _time_decay_weights(
+        self, index: pd.DatetimeIndex, *, campaign_start: pd.Timestamp, campaign_end: pd.Timestamp
+    ) -> np.ndarray | None:
+        """Exponential campaign-proximity sample weights over the analysis index (``None`` = knob off).
+
+        ``0.5 ** (days_outside_campaign / half_life)`` where the distance is to the campaign
+        *interval* ``[campaign_start, campaign_end]``: every row inside the campaign (for toggle,
+        the interleaved on **and** off rows) weighs exactly 1, and rows outside decay with their
+        distance to it — so distant history still informs the fit without dominating it. With
+        today's flows only pre-campaign rows exist outside the interval, but the definition is
+        two-sided on purpose.
+        """
+        if self.time_decay_half_life_days is None:
+            return None
+        seconds_outside = np.maximum((campaign_start - index).total_seconds(), (index - campaign_end).total_seconds())
+        days_outside = np.maximum(seconds_outside / 86400.0, 0.0)
+        return np.asarray(0.5 ** (days_outside / self.time_decay_half_life_days), dtype=float)
+
     def _select_rows(
         self, scada: pd.DataFrame, *, mi: MethodInput, index: pd.DatetimeIndex, y: pd.Series, timebase: pd.Timedelta
     ) -> np.ndarray:
@@ -686,30 +784,55 @@ class PowerModelMethod:
         return keep.to_numpy() & np.isfinite(y.to_numpy(dtype=float))
 
     def _fit_predict(
-        self, features: pd.DataFrame, *, y: np.ndarray, baseline_sel: np.ndarray, upgraded_sel: np.ndarray
+        self,
+        features: pd.DataFrame,
+        *,
+        y: np.ndarray,
+        baseline_sel: np.ndarray,
+        upgraded_sel: np.ndarray,
+        weights: np.ndarray | None = None,
+        double_ratio: bool = False,
     ) -> dict[str, Any]:
         """Fit on baseline, predict the upgraded counterfactual; also a held-out baseline fit metric.
 
         The final model(s) (for the counterfactual) are fit on **all** baseline rows. A separate model
         on a baseline train split predicts a held-out baseline slice, giving an honest fit-quality
-        number that is not inflated by in-sample optimism. When ``calibrate_slope`` is on, the
-        counterfactual predictions pass through the out-of-fold calibration line before clipping.
+        number that is not inflated by in-sample optimism. When ``calibrate_slope`` /
+        ``calibrate_residuals`` is on, the counterfactual predictions pass through the out-of-fold
+        correction (line / per-cell residual means) before clipping. ``double_ratio`` switches to the
+        toggle ratio-of-ratios estimator (see :attr:`toggle_estimator`).
         """
         x_base = features.iloc[baseline_sel]
         y_base = y[baseline_sel]
         x_up = features.iloc[upgraded_sel]
         y_up = y[upgraded_sel]
+        w_base = weights[baseline_sel] if weights is not None else None
+        if double_ratio:
+            if len(y_base) < _MIN_HOLDOUT_ROWS:
+                # Fail loudly rather than silently estimating with a different estimator than requested.
+                msg = (
+                    f"toggle_estimator='double_ratio' needs at least {_MIN_HOLDOUT_ROWS} off rows for its "
+                    f"out-of-fold basis, got {len(y_base)}."
+                )
+                raise ValueError(msg)
+            return self._fit_predict_double_ratio(
+                x_base, y_base=y_base, x_up=x_up, y_up=y_up, baseline_sel=baseline_sel, w_base=w_base
+            )
 
-        y_valid, pred_valid, valid_local = self._holdout_fit(x_base, y_base)
+        y_valid, pred_valid, valid_local = self._holdout_fit(x_base, y_base, w_base=w_base)
         baseline_valid_pos = np.flatnonzero(baseline_sel)[valid_local]
 
-        models = self._fit_models(x_base, y_base)
-        calibration = self._fit_calibration(x_base, y_base) if self.calibrate_slope else IDENTITY_CALIBRATION
-        pred_up = _clip_predictions(
-            calibration.apply(self._predict_mean(models, x_up)),
-            y_train=y_base,
-            rated_power_kw=self.baseline_rated_power_kw,
-        )
+        models = self._fit_models(x_base, y_base, weights=w_base)
+        pred_raw = self._predict_mean(models, x_up)
+        calibration = IDENTITY_CALIBRATION
+        if self.calibrate_slope:
+            calibration = self._fit_calibration(x_base, y_base, w_base=w_base)
+            pred_raw = calibration.apply(pred_raw)
+        elif self.calibrate_residuals:
+            pred_raw = pred_raw + self._residual_corrections(
+                features, y=y, baseline_sel=baseline_sel, upgraded_sel=upgraded_sel, w_base=w_base
+            )
+        pred_up = _clip_predictions(pred_raw, y_train=y_base, rated_power_kw=self.baseline_rated_power_kw)
         return {
             "model": models[0],
             "pred_upgraded": pred_up,
@@ -718,6 +841,69 @@ class PowerModelMethod:
             "pred_baseline_valid": pred_valid,
             "baseline_valid_pos": baseline_valid_pos,  # positions over ``index`` of the held-out rows
             "calibration": calibration,
+        }
+
+    def _fit_predict_double_ratio(
+        self,
+        x_base: pd.DataFrame,
+        *,
+        y_base: np.ndarray,
+        x_up: pd.DataFrame,
+        y_up: np.ndarray,
+        baseline_sel: np.ndarray,
+        w_base: np.ndarray | None,
+    ) -> dict[str, Any]:
+        """Estimate via the toggle ratio-of-ratios: a model-normalised naive comparison (Issue 13 hybrid).
+
+        Fit one model per time-blocked fold on the off rows; each off row is predicted out-of-fold
+        and every on row by the mean of the fold models — both sides therefore share the ~80%-fit
+        basis (the F15 consistency rule), so the model's shrinkage/level bias cancels in
+        ``rho_on / rho_off``. The returned counterfactual is ``clip(fold_ensemble_prediction) *
+        rho_off`` (``rho_off = Σy_off / Σpred_off``, the model's observed miscalibration on the off
+        rows): the physical clip applies to the *prediction* and the calibration scale on top, so
+        ``Σactual / Σcounterfactual - 1`` equals the double ratio of the clipped predictions
+        exactly — downstream sums, diagnostics and the conditional re-level stay self-consistent.
+        (The scaled counterfactual may exceed the clip ceiling by the ~0-3 % calibration factor;
+        that is deliberate — re-clipping after scaling would break the identity.) The full
+        out-of-fold off-row predictions double as the held-out fit-quality diagnostic.
+        """
+        n = len(y_base)
+        folds = time_block_folds(n, n_folds=_N_FOLDS, n_blocks=_N_BLOCKS)
+        oof = np.full(n, np.nan)
+        preds_on = []
+        models = []
+        for f in range(_N_FOLDS):
+            hold = folds == f
+            model = self._make_model()
+            model.fit(
+                x_base.iloc[~hold],
+                y_base[~hold],
+                **self._fit_kwargs(model, w_base[~hold] if w_base is not None else None),
+            )
+            oof[hold] = np.asarray(model.predict(x_base.iloc[hold]), dtype=float)
+            preds_on.append(np.asarray(model.predict(x_up), dtype=float))
+            models.append(model)
+        pred_off = _clip_predictions(oof, y_train=y_base, rated_power_kw=self.baseline_rated_power_kw)
+        rho_off = _ratio(y_base, pred_off) + 1.0
+        pred_up = (
+            _clip_predictions(np.mean(preds_on, axis=0), y_train=y_base, rated_power_kw=self.baseline_rated_power_kw)
+            * rho_off
+        )
+        logger.info(
+            "%s double-ratio toggle estimator: rho_off=%.5f over %d off rows (%d folds)",
+            self.name,
+            rho_off,
+            n,
+            _N_FOLDS,
+        )
+        return {
+            "model": models[0],
+            "pred_upgraded": pred_up,
+            "y_upgraded": y_up,
+            "y_baseline_valid": y_base,
+            "pred_baseline_valid": pred_off,
+            "baseline_valid_pos": np.flatnonzero(baseline_sel),
+            "calibration": IDENTITY_CALIBRATION,
         }
 
     def _validate_model_config(self) -> None:
@@ -737,13 +923,57 @@ class PowerModelMethod:
         if self.n_seed_ensemble > 1 and "random_state" in self.model_params:
             msg = "a fixed random_state in model_params would make every ensemble member identical."
             raise ValueError(msg)
-        if self.calibrate_slope and (self.early_stopping or self.n_seed_ensemble > 1):
+        if self.calibrate_slope and self.calibrate_residuals:
+            msg = "calibrate_slope and calibrate_residuals are competing headline corrections; enable at most one."
+            raise ValueError(msg)
+        if (self.calibrate_slope or self.calibrate_residuals) and (self.early_stopping or self.n_seed_ensemble > 1):
             msg = (
-                "calibrate_slope fits its out-of-fold line with single-seed, non-early-stopped models, "
-                "so combining it with early_stopping or n_seed_ensemble > 1 would calibrate against a "
-                "different model configuration than the predictions it corrects."
+                "calibrate_slope / calibrate_residuals fit their out-of-fold basis with single-seed, "
+                "non-early-stopped models, so combining them with early_stopping or n_seed_ensemble > 1 "
+                "would calibrate against a different model configuration than the predictions they correct."
             )
             raise ValueError(msg)
+        if self.calibrate_residuals and self.era5_hourly_df is None:
+            msg = "calibrate_residuals requires ERA5 (era5_hourly_df): the residual cells are the ERA5 matching_vars."
+            raise ValueError(msg)
+        if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
+            msg = f"time_decay_half_life_days must be positive, got {self.time_decay_half_life_days}"
+            raise ValueError(msg)
+        if self.toggle_estimator not in ("counterfactual", "double_ratio"):
+            msg = f"unknown toggle_estimator {self.toggle_estimator!r}; expected 'counterfactual' or 'double_ratio'"
+            raise ValueError(msg)
+        if self.toggle_estimator == "double_ratio" and (
+            self.calibrate_slope or self.calibrate_residuals or self.early_stopping or self.n_seed_ensemble > 1
+        ):
+            msg = (
+                "toggle_estimator='double_ratio' is itself a fold-basis calibration; it cannot be combined "
+                "with calibrate_slope, calibrate_residuals, early_stopping or n_seed_ensemble > 1."
+            )
+            raise ValueError(msg)
+
+    def _fit_kwargs(self, model: Any, weights: np.ndarray | None) -> dict[str, Any]:  # noqa: ANN401
+        """Return the fit kwargs for the time-decay ``weights``, empty for models that cannot take them.
+
+        A ``model_factory`` learner may not accept ``sample_weight`` (e.g. an sklearn ``Pipeline``);
+        with the weights on by default, such learners fit unweighted — warned once per method
+        instance (many fits happen per estimate: folds, holdout, ensemble) rather than crashing
+        the factory seam.
+        """
+        if weights is None:
+            return {}
+        from sklearn.utils.validation import has_fit_parameter  # noqa: PLC0415
+
+        if not has_fit_parameter(model, "sample_weight"):
+            if not self._warned_no_sample_weight:
+                self._warned_no_sample_weight = True
+                logger.warning(
+                    "%s: outcome model %s does not accept sample_weight; time-decay weights are ignored "
+                    "for its fits (set time_decay_half_life_days=None to silence this).",
+                    self.name,
+                    type(model).__name__,
+                )
+            return {}
+        return {"sample_weight": weights}
 
     def _make_model(self, *, seed: int | None = None, extra_params: dict[str, Any] | None = None) -> Any:  # noqa: ANN401
         """One unfitted outcome model: the ``model_factory`` seam, or LightGBM with ``seed`` plumbed in.
@@ -761,11 +991,14 @@ class PowerModelMethod:
             return factory(s)
         return make_outcome_model(**{"random_state": s, **self.model_params, **(extra_params or {})})
 
-    def _fit_models(self, x_train: pd.DataFrame, y_train: np.ndarray) -> list[Any]:
+    def _fit_models(
+        self, x_train: pd.DataFrame, y_train: np.ndarray, *, weights: np.ndarray | None = None
+    ) -> list[Any]:
         """Fit the outcome model(s) on one training set, honouring ``early_stopping`` / ``n_seed_ensemble``.
 
         Early stopping runs once (a probe fit on a time-blocked split picks the tree count), then every
-        ensemble member is refit on **all** training rows at that capacity with its own seed.
+        ensemble member is refit on **all** training rows at that capacity with its own seed. ``weights``
+        (the time-decay sample weights, aligned to the training rows) are passed to every fit when given.
         """
         extra: dict[str, Any] = {}
         if self.early_stopping and len(y_train) >= _MIN_EARLY_STOPPING_ROWS:
@@ -779,7 +1012,7 @@ class PowerModelMethod:
         models = []
         for k in range(self.n_seed_ensemble):
             model = self._make_model(seed=self.seed + k, extra_params=extra)
-            model.fit(x_train, y_train)
+            model.fit(x_train, y_train, **self._fit_kwargs(model, weights))
             models.append(model)
         return models
 
@@ -788,27 +1021,83 @@ class PowerModelMethod:
         """Seed-ensemble prediction: the mean over the fitted models (unclipped)."""
         return np.mean([np.asarray(m.predict(x), dtype=float) for m in models], axis=0)
 
-    def _fit_calibration(self, x_base: pd.DataFrame, y_base: np.ndarray) -> CalibrationLine:
-        """Fit the calibration line on time-blocked out-of-fold baseline predictions (single-seed fits).
+    def _oof_baseline_predictions(
+        self, x_base: pd.DataFrame, y_base: np.ndarray, *, w_base: np.ndarray | None = None
+    ) -> np.ndarray:
+        """Out-of-fold prediction for every baseline row via time-blocked folds (single-seed fits).
 
-        Every baseline row gets a prediction from a model not trained on its fold, so the slope is not
-        flattered by in-sample optimism (a shuffled or in-sample basis would read ~1 by construction).
+        Every baseline row gets a prediction from a model not trained on its fold, so residuals /
+        calibration fits on this basis are not flattered by in-sample optimism (a shuffled or
+        in-sample basis would read unbiased by construction).
         """
         n = len(y_base)
-        if n < _MIN_HOLDOUT_ROWS:
-            return IDENTITY_CALIBRATION
         folds = time_block_folds(n, n_folds=_N_FOLDS, n_blocks=_N_BLOCKS)
         oof = np.full(n, np.nan)
         for f in range(_N_FOLDS):
             hold = folds == f
             model = self._make_model()
-            model.fit(x_base.iloc[~hold], y_base[~hold])
+            model.fit(
+                x_base.iloc[~hold],
+                y_base[~hold],
+                **self._fit_kwargs(model, w_base[~hold] if w_base is not None else None),
+            )
             oof[hold] = np.asarray(model.predict(x_base.iloc[hold]), dtype=float)
-        line = fit_calibration_line(y_base, oof)
+        return oof
+
+    def _fit_calibration(
+        self, x_base: pd.DataFrame, y_base: np.ndarray, *, w_base: np.ndarray | None = None
+    ) -> CalibrationLine:
+        """Fit the calibration line on time-blocked out-of-fold baseline predictions."""
+        n = len(y_base)
+        if n < _MIN_HOLDOUT_ROWS:
+            return IDENTITY_CALIBRATION
+        line = fit_calibration_line(y_base, self._oof_baseline_predictions(x_base, y_base, w_base=w_base))
         logger.info("%s calibration line: slope=%.4f intercept=%.2f (n=%d)", self.name, line.slope, line.intercept, n)
         return line
 
-    def _holdout_fit(self, x_base: pd.DataFrame, y_base: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _residual_corrections(
+        self,
+        features: pd.DataFrame,
+        *,
+        y: np.ndarray,
+        baseline_sel: np.ndarray,
+        upgraded_sel: np.ndarray,
+        w_base: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Per-upgraded-row correction from centred cell-mean out-of-fold baseline residuals (Issue 13).
+
+        The cells are the F6 CEM coarsening of ``matching_vars``; adding each upgraded row's centred
+        cell-mean baseline residual to its prediction removes the headline bias that the
+        baseline→upgraded covariate-mix shift converts from the model's conditional bias (the global
+        OOF level is centred out — see :func:`~benchmarking.baselines.power_model.fitting.
+        cell_residual_calibration`). Returns zeros when the baseline is too small to split.
+        """
+        x_base = features.iloc[baseline_sel]
+        y_base = y[baseline_sel]
+        n_up = int(np.asarray(upgraded_sel).sum())
+        if len(y_base) < _MIN_HOLDOUT_ROWS:
+            return np.zeros(n_up)
+        residuals = y_base - self._oof_baseline_predictions(x_base, y_base, w_base=w_base)
+        edges = self.matching_bin_edges if self.matching_bin_edges is not None else self._default_bin_edges()
+        codes = cell_codes(features[list(self.matching_vars)], edges)
+        calib = cell_residual_calibration(
+            codes_baseline=codes[baseline_sel], residuals=residuals, codes_target=codes[upgraded_sel]
+        )
+        logger.info(
+            "%s residual calibration: mean centred correction %+.2f kW over %d upgraded rows "
+            "(%d cells; %d rows unseen -> 0; centred-out OOF level %+.2f kW)",
+            self.name,
+            float(calib.per_row_residual.mean()) if n_up else float("nan"),
+            n_up,
+            calib.n_cells,
+            calib.n_target_unseen,
+            calib.global_mean_residual,
+        )
+        return calib.per_row_residual
+
+    def _holdout_fit(
+        self, x_base: pd.DataFrame, y_base: np.ndarray, *, w_base: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Train on a baseline train split, predict a held-out baseline slice (honest fit quality).
 
         The held-out slice is **time-blocked** (fold 0 of the shared split shape), not shuffled — a
@@ -818,7 +1107,7 @@ class PowerModelMethod:
         """
         n = len(y_base)
         if n < _MIN_HOLDOUT_ROWS:
-            models = self._fit_models(x_base, y_base)
+            models = self._fit_models(x_base, y_base, weights=w_base)
             pred = _clip_predictions(
                 self._predict_mean(models, x_base),
                 y_train=y_base,
@@ -826,7 +1115,9 @@ class PowerModelMethod:
             )
             return y_base, pred, np.arange(n)
         valid = time_block_folds(n, n_folds=_N_FOLDS, n_blocks=_N_BLOCKS) == 0
-        models = self._fit_models(x_base.iloc[~valid], y_base[~valid])
+        models = self._fit_models(
+            x_base.iloc[~valid], y_base[~valid], weights=w_base[~valid] if w_base is not None else None
+        )
         pred_valid = _clip_predictions(
             self._predict_mean(models, x_base.iloc[valid]),
             y_train=y_base[~valid],
@@ -986,4 +1277,7 @@ class PowerModelMethod:
             "n_seed_ensemble": self.n_seed_ensemble,
             "early_stopping": self.early_stopping,
             "calibrate_slope": self.calibrate_slope,
+            "calibrate_residuals": self.calibrate_residuals,
+            "time_decay_half_life_days": self.time_decay_half_life_days,
+            "toggle_estimator": self.toggle_estimator,
         }

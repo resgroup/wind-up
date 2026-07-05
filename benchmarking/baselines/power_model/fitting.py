@@ -89,6 +89,75 @@ def fit_calibration_line(y: np.ndarray, predicted: np.ndarray) -> CalibrationLin
     return CalibrationLine(intercept=float(intercept), slope=float(slope))
 
 
+@dataclass(frozen=True)
+class ResidualCellCalibration:
+    """Per-target-row residual corrections from **centred** cell-mean baseline residuals (Issue 13).
+
+    :param per_row_residual: one value per target row — its cell's mean baseline residual minus the
+        global mean residual (the mix-shift differential), or 0 where the cell was unseen in
+        baseline (or the row's cell is invalid)
+    :param global_mean_residual: mean residual over all finite baseline residuals (the centring
+        level; reported for diagnostics, deliberately **not** applied — see below)
+    :param n_target_unseen: target rows that fell back to 0 (no differential information)
+    :param n_cells: baseline cells with a residual estimate
+    """
+
+    per_row_residual: np.ndarray
+    global_mean_residual: float
+    n_target_unseen: int
+    n_cells: int
+
+
+def cell_residual_calibration(
+    *, codes_baseline: np.ndarray, residuals: np.ndarray, codes_target: np.ndarray
+) -> ResidualCellCalibration:
+    """Estimate each target row's expected model residual **differential** from baseline residuals.
+
+    The counterfactual model's conditional bias ``b(x)`` integrates to ~0 over the *training*
+    (baseline) covariate mix but the headline evaluates it over the *target* (upgraded) mix — any
+    shift between the two converts conditional bias into headline bias. This estimates that term on
+    untreated data: mean **out-of-fold** residual (``y - prediction``) per coarsened covariate cell
+    over the baseline rows, **centred by the global mean residual**, read out under the target
+    rows' cell occupancy. Adding the returned per-row values to the target predictions removes the
+    mix-shift headline bias.
+
+    The centring is the F14 lesson applied: the out-of-fold *level* (fold models see only ~80% of
+    an already-finite fit, so their residuals carry a small global offset the final 100% fit does
+    not have) is an artefact of the OOF basis and must not be transferred to the final model's
+    predictions; only the between-cell *differential* is the mix-shift term. A model that is
+    level-unbiased over its own training mix therefore gets a correction that integrates to ~0
+    under the baseline mix, exactly as ``b(x)`` does.
+
+    ``codes_baseline`` / ``codes_target`` are integer cell codes per (row, var) from
+    :func:`~benchmarking.baselines.power_model.matching.cell_codes`; a row with any ``-1`` (NaN /
+    out-of-range) belongs to no cell. Cells unseen in baseline — and invalid rows — get 0 (no
+    differential information), so the correction is always defined.
+    """
+    import pandas as pd  # noqa: PLC0415 - keep the module import-light like the factories
+
+    residuals = np.asarray(residuals, dtype=float)
+    finite = np.isfinite(residuals)
+    global_mean = float(residuals[finite].mean()) if finite.any() else 0.0
+
+    n_vars = codes_baseline.shape[1]
+    key_cols = list(range(n_vars))
+    valid_b = (codes_baseline >= 0).all(axis=1) & finite
+    base = pd.DataFrame(codes_baseline[valid_b], columns=key_cols)
+    base["residual"] = residuals[valid_b]
+    cell_means = base.groupby(key_cols, sort=False)["residual"].mean().rename("cell_mean").reset_index()
+
+    target = pd.DataFrame(codes_target, columns=key_cols)
+    mapped = target.merge(cell_means, on=key_cols, how="left")["cell_mean"].to_numpy(dtype=float)
+    mapped[~(codes_target >= 0).all(axis=1)] = np.nan
+    unseen = ~np.isfinite(mapped)
+    return ResidualCellCalibration(
+        per_row_residual=np.where(unseen, 0.0, mapped - global_mean),
+        global_mean_residual=global_mean,
+        n_target_unseen=int(unseen.sum()),
+        n_cells=len(cell_means),
+    )
+
+
 def early_stopped_n_estimators(
     make_model: Callable[[], Any],
     x: Any,  # noqa: ANN401 - pd.DataFrame
