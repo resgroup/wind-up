@@ -249,8 +249,8 @@ class TestModelFundamentals:
         # campaign interval [index[2], index[3]]: inside weighs 1, outside decays both ways
         weights = method._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3])  # noqa: SLF001
         np.testing.assert_allclose(weights, [0.25, 0.5, 1.0, 1.0, 0.5])
-        off = _fundamentals_method()._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3])  # noqa: SLF001
-        assert off is None
+        no_decay = _fundamentals_method(time_decay_half_life_days=None)
+        assert no_decay._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3]) is None  # noqa: SLF001
 
     def test_issue13_config_conflicts_raise(self) -> None:
         mi, _ = _prepost_case(n=200)
@@ -273,6 +273,32 @@ class TestModelFundamentals:
         )
         assert mask(index, upgrade_timing=pd.Timestamp(index[2])).all()  # prepost: all-True
         assert mask(index, upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=4))).all()  # no start
+
+    @pytest.mark.parametrize("uplift", [0.04, 0.0])
+    def test_double_ratio_toggle_recovers_uplift(self, uplift: float) -> None:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=4))
+        treated = np.asarray((((idx - idx.min()) // (schedule.period / 2)).astype(int) % 2) == 1)
+        scada = _toy_scada(n, uplift=uplift, treated=treated)
+        method = _fundamentals_method(model_params=_FAST_PARAMS, toggle_estimator="double_ratio")
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        out = method.estimate(mi)
+        assert out.p50_overall == pytest.approx(uplift, abs=0.02)
+
+    def test_double_ratio_ignored_for_prepost(self) -> None:
+        mi, _ = _prepost_case()
+        out = _fundamentals_method(model_params=_FAST_PARAMS, toggle_estimator="double_ratio").estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+
+    def test_toggle_estimator_guards(self) -> None:
+        mi, _ = _prepost_case(n=200)
+        with pytest.raises(ValueError, match="unknown toggle_estimator"):
+            _fundamentals_method(toggle_estimator="nope").estimate(mi)
+        with pytest.raises(ValueError, match="fold-basis calibration"):
+            _fundamentals_method(toggle_estimator="double_ratio", calibrate_slope=True).estimate(mi)
+        with pytest.raises(ValueError, match="fold-basis calibration"):
+            _fundamentals_method(toggle_estimator="double_ratio", n_seed_ensemble=2).estimate(mi)
 
     def test_toggle_all_data_with_conditional_recovers_uplift(self) -> None:
         n = 4000
