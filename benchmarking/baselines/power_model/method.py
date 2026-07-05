@@ -249,20 +249,26 @@ class PowerModelMethod:
     :param early_stopping: pick the LightGBM tree count by early stopping on a time-blocked
         validation split, then refit on all training rows at that capacity — data-size-adaptive
         capacity instead of one fixed ``n_estimators`` for every fit size (default ``False``)
-    :param calibrate_slope: post-hoc calibration-slope correction (Issue 12): fit
-        ``actual ~ a + b * predicted`` on time-blocked out-of-fold baseline predictions and apply
-        the line to the counterfactual predictions before the energy ratio (default ``False``).
-        Applies to the overall headline only — the conditional two-direction step cancels its
-        per-bin shrinkage by construction. The line is fit with single-seed, non-early-stopped
-        models, so it cannot be combined with ``early_stopping`` or ``n_seed_ensemble > 1``.
-    :param calibrate_residuals: ERA5-cell residual calibration (Issue 13): the model's conditional
-        bias integrates to ~0 over the *baseline* covariate mix but the headline evaluates it over
-        the *upgraded* mix. When on, estimate the mean out-of-fold baseline residual per coarsened
-        ERA5 cell (the ``matching_vars`` / F6 CEM coarsening), **centred by the global mean
-        residual** so only the mix-shift differential transfers (the OOF *level* is an artefact of
-        the fold basis — the F14 lesson), and add each upgraded row's centred cell mean (0 for
-        cells unseen in baseline) to its counterfactual prediction before the energy ratio.
-        Requires ``era5_hourly_df``; mutually exclusive with ``calibrate_slope`` and, like it, with
+    :param calibrate_slope: post-hoc calibration-slope correction (Issue 12). **Measured and
+        rejected as a default (findings F14): the line is fit on out-of-fold predictions from
+        ~80%-sized fits, which shrink more than the final 100% fit it corrects, so it overcorrects
+        exactly where the correction is largest (small fits) — keep off unless researching that
+        mechanism.** When on: fit ``actual ~ a + b * predicted`` on time-blocked out-of-fold
+        baseline predictions and apply the line to the counterfactual predictions before the
+        energy ratio. Applies to the overall headline only — the conditional two-direction step
+        cancels its per-bin shrinkage by construction. The line is fit with single-seed,
+        non-early-stopped models, so it cannot be combined with ``early_stopping`` or
+        ``n_seed_ensemble > 1``.
+    :param calibrate_residuals: ERA5-cell residual calibration (Issue 13). **Measured and rejected
+        as a default (findings F15): out-of-fold residuals transfer to the final refit model in
+        neither level nor conditional shape — the estimated correction had the wrong sign vs the
+        observed placebo bias — so this knob is retained for research only.** When on: estimate
+        the mean out-of-fold baseline residual per coarsened ERA5 cell (the ``matching_vars`` / F6
+        CEM coarsening), **centred by the global mean residual** so only the mix-shift
+        differential transfers (the OOF *level* artefact, the F14 lesson — necessary but, per F15,
+        not sufficient), and add each upgraded row's centred cell mean (0 for cells unseen in
+        baseline) to its counterfactual prediction before the energy ratio. Requires
+        ``era5_hourly_df``; mutually exclusive with ``calibrate_slope`` and, like it, with
         ``early_stopping`` / ``n_seed_ensemble > 1`` (the out-of-fold basis must match the final
         model configuration).
     :param time_decay_half_life_days: training rows are sample-weighted by their proximity in
