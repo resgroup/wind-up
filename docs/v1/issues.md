@@ -558,6 +558,14 @@ config behaves identically to the benchmarked configuration; `study_power_model_
 scores 1/2/3/6/12-month campaigns in both modes with naive computed fresh where the reference
 lacks it; the benchmark JSON is regenerated on the new grid.
 
+*Shipped 2026-07-08 (findings F17): count floor (`_MIN_BIN_MATCHED_COUNT=50`) + physics imputation +
+corrected pinned-imputed re-level — overall P50 bit-identical, conditional score −3.7 pp prepost /
+−2.6 pp toggle, sparse-extreme "worse" bins eliminated (0 worse). Coverage kept method-internal (per-run
+CSV), not surfaced to the leaderboard (user decision). Per-bin balance **deferred** — floor cleared the
+done-when, so adopt-only-if-it-helps left it unbuilt (follow-up). Defaults promoted to the class; grid
+1–12 months both modes with fresh naive; benchmark regenerated. Note: the frozen 30-June reference dir is
+stale (its v0 needs regenerating on current code — see F17).*
+
 ---
 
 ## Issue 15 — The headline estimator configures itself: regime-adaptive training window and estimator (WS2)

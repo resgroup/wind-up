@@ -32,6 +32,7 @@ from benchmarking.baselines.era5_sync import sync_era5
 from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.baselines.naive_ratio import restrict_to_campaign
 from benchmarking.baselines.power_model import diagnostics as diag
+from benchmarking.baselines.power_model.conditional import impute_uncovered_bins, relevel_conditional
 from benchmarking.baselines.power_model.features import (
     build_reference_features,
     check_reference_only,
@@ -98,6 +99,15 @@ CURATED_ERA5_EXCLUDE: tuple[str, ...] = (
 # ``make_outcome_model`` (shared with the R-learner) are unchanged; drivers pass this instead.
 TUNED_MODEL_PARAMS: dict[str, Any] = {"min_child_samples": 50}
 
+# Per-reporting-bin matched-count floor for the two-direction conditional combine (Issue 14). Below this
+# many matched rows *per side* in a ws/TI reporting bin, the combine overshoots — the F7/F9 sparse-extreme
+# tail (e.g. TI (0.45,0.50] swinging -77 to +93 pp between replicates) — so the bin is marked uncovered and
+# filled by the physics-informed imputer instead of trusting its noisy shape. Compared against the raw
+# per-side matched count today; if the per-bin balance reweighting (A5) is adopted it becomes the Kish
+# ESS. The value is chosen on placebo/benchmark evidence across many bins (findings F17), not tuned to the
+# one known bad TI bin.
+_MIN_BIN_MATCHED_COUNT = 50
+
 # F6 matching set + bin widths for the bias-cancellation correction, verified on real HoT by the CEM
 # coverage sweep (docs/v1/findings.md F6). wind_speed_100m (dominant) is binned finest, wind_gusts_10m
 # coarser, and wind_direction_100m in 20° sectors (a reanalysis direction — finer is finer than the
@@ -128,25 +138,6 @@ def _combine_uplift(r_fwd: np.ndarray, r_rev: np.ndarray) -> np.ndarray:
     valid = (a > 0) & (b > 0)
     frac = np.divide(a, b, out=np.full(np.broadcast(a, b).shape, np.nan), where=valid)
     return np.sqrt(frac, out=np.full_like(frac, np.nan), where=np.isfinite(frac)) - 1.0
-
-
-def _relevel_conditional(sum_actual_b: np.ndarray, one_plus_u_b: np.ndarray, *, one_plus_overall: float) -> np.ndarray:
-    """Rescale a per-bin corrected shape by one factor so its energy aggregation equals the overall.
-
-    The per-bin two-direction combine gives the *shape* of the uplift across bins but not a level tied
-    to the headline. This scales every bin's ``(1+u_b)`` by ``λ = one_plus_overall / (1+u_agg)``, where
-    ``1+u_agg = Σactual / Σ(actual/(1+u_b))`` is the ratio-of-sums the shape currently aggregates to, so
-    the re-leveled bins' total MWh uplift equals ``one_plus_overall`` exactly (the "overall = aggregation"
-    self-consistency target). Bins with non-finite ``(1+u_b)`` are left NaN and excluded from the sums.
-    """
-    a = np.asarray(sum_actual_b, dtype=float)
-    u1 = np.asarray(one_plus_u_b, dtype=float)
-    finite = np.isfinite(a) & np.isfinite(u1) & (u1 != 0)
-    cf = np.divide(a, u1, out=np.full(a.shape, np.nan), where=finite)
-    denom = float(cf[finite].sum()) if finite.any() else 0.0
-    one_plus_u_agg = float(a[finite].sum()) / denom if denom != 0 else float("nan")
-    lam = one_plus_overall / one_plus_u_agg if np.isfinite(one_plus_u_agg) and one_plus_u_agg != 0 else float("nan")
-    return lam * u1
 
 
 def _implied_shrinkage(r_fwd: np.ndarray, r_rev: np.ndarray) -> np.ndarray:
@@ -209,7 +200,10 @@ class PowerModelMethod:
     :param save_plots: also write the diagnostic plots
     :param seed: seed for the baseline holdout split and the LightGBM ``random_state`` (a caller-supplied
         ``random_state`` in ``model_params`` still wins)
-    :param model_params: LightGBM overrides passed to the outcome model
+    :param model_params: LightGBM overrides passed to the outcome model; merged **over** the tuned
+        default ``TUNED_MODEL_PARAMS`` (``min_child_samples=50``, F14), so a bare method already carries
+        the accepted capacity and any key here wins. Left empty by default so the ``model_factory`` vs
+        ``model_params`` guard still distinguishes "user set params" from "default"
     :param timebase: analysis timebase; inferred from the data when ``None``
     :param toggle_campaign_only: for a toggle campaign, fit only on the interleaved on/off blocks
         (drop the pre-campaign baseline); no-op for prepost. Default ``False`` since Issue 13
@@ -236,9 +230,12 @@ class PowerModelMethod:
         active-power max/min/SD companion statistics)
     :param era5_exclude: raw ERA5 columns to drop from the model features (removal-ablation knob;
         a dropped direction column also loses its sin/cos companions). Columns used as
-        ``matching_vars`` cannot be excluded while ``conditional_uplift`` is on.
-    :param availability_feature: when ``False``, drop the per-reference availability *feature*
-        (removal-ablation knob); ``availability_col`` itself stays required for the downtime filter
+        ``matching_vars`` cannot be excluded while ``conditional_uplift`` is on. Defaults to the
+        accepted ``CURATED_ERA5_EXCLUDE`` set (F13); the **untouched default** is drop-if-present (so a
+        non-Open-Meteo ERA5 frame lacking those columns is not broken), while an **explicitly-set**
+        value keeps the strict raise-on-unknown-column typo guard.
+    :param availability_feature: when ``False`` (the accepted default, F13), drop the per-reference
+        availability *feature*; ``availability_col`` itself stays required for the downtime filter
     :param model_factory: the outcome-model seam (Issue 12): a registered factory name (see
         :data:`~benchmarking.baselines.power_model.fitting.OUTCOME_MODEL_FACTORIES`) or a callable
         ``seed -> unfitted sklearn-style regressor``. ``None`` (default) keeps the design-note
@@ -317,8 +314,8 @@ class PowerModelMethod:
     latitude: float | None = None
     longitude: float | None = None
     reference_stat_cols: tuple[str, ...] = ()
-    era5_exclude: tuple[str, ...] = ()
-    availability_feature: bool = True
+    era5_exclude: tuple[str, ...] = CURATED_ERA5_EXCLUDE
+    availability_feature: bool = False
     model_factory: str | Callable[[int], Any] | None = None
     n_seed_ensemble: int = 1
     early_stopping: bool = False
@@ -572,14 +569,18 @@ class PowerModelMethod:
         actual_full: np.ndarray,
         overall_ratio: float,
     ) -> pd.DataFrame | None:
-        """Per-(ws, TI)-bin two-direction uplift *shape*, re-leveled so each marginal aggregates to overall.
+        """Per-(ws, TI)-bin two-direction uplift, imputed where uncovered and re-leveled onto the headline.
 
-        The **shape** ``1+u_b = sqrt((1+r_fwd_b)/(1+r_rev_b))`` comes from the matched forward/reverse fits
-        (NaN for a degenerate non-positive-ratio bin). The re-level **weights** are the *full-upgraded* actual
-        energy per bin (``actual_full`` over ``upgraded_pos``), so a single per-condition factor pins the
-        decomposition's energy aggregation to ``1 + overall_ratio`` — the reported per-bin MWh then partitions
-        the full-data headline (F8). Matched forward/reverse stay in-distribution; the full-upgraded energy
-        makes the decomposition add up to the full-data overall.
+        The measured **shape** ``1+u_b = sqrt((1+r_fwd_b)/(1+r_rev_b))`` comes from the matched
+        forward/reverse fits; a bin is ``covered`` (trusted) only when that shape is finite (Issue 14 adds
+        the per-bin matched-count floor to this test). Uncovered bins are filled by
+        :func:`~benchmarking.baselines.power_model.conditional.impute_uncovered_bins` (ws: bfill then 0 at
+        rated; ti: the overall uplift) so every bin carries a best estimate rather than a bare NaN. The
+        re-level **weights** are the *full-upgraded* actual energy per bin (``actual_full`` over
+        ``upgraded_pos``): imputed bins are pinned and one λ scales the measured bins so measured + imputed
+        together energy-aggregate to ``1 + overall_ratio`` exactly (F8, corrected for uncovered-bin energy).
+        The returned frame carries a ``covered`` flag (a per-run diagnostic — the harness seam only sees
+        ``p50_uplift``).
         """
         if self.wind_speed_col is None:
             return None
@@ -593,6 +594,7 @@ class PowerModelMethod:
         cond_up = conditions.iloc[mu].reset_index(drop=True)  # matched-upgraded (forward binning)
         cond_base = conditions.iloc[mb].reset_index(drop=True)  # matched-baseline (reverse binning)
         cond_full = conditions.iloc[upgraded_pos].reset_index(drop=True)  # all upgraded (re-level weights)
+        one_plus_overall = 1.0 + overall_ratio
         frames = []
         for name in [c for c in ("ws", "ti") if c in conditions.columns]:
             fwd = energy_ratio_by_bin(cond_up[name].to_numpy(), y[mu], pred_up, bins=CONDITION_BINS[name])
@@ -603,26 +605,40 @@ class PowerModelMethod:
                 full[["condition_bin", "sum_actual"]].rename(columns={"sum_actual": "sum_actual_full"}),
                 on="condition_bin",
             )
+            # impute_uncovered_bins needs ascending bin order (low ws/TI first); the merges above do not
+            # guarantee it, so pin the canonical CONDITION_BINS order before imputing / re-leveling.
+            order = pd.cut([], bins=CONDITION_BINS[name]).categories.astype(str)
+            merged["condition_bin"] = pd.Categorical(merged["condition_bin"], categories=order, ordered=True)
+            merged = merged.sort_values("condition_bin").reset_index(drop=True)
+
             r_fwd = merged["p50_uplift_fwd"].to_numpy()  # per-bin energy ratio IS the per-bin r
             r_rev = merged["p50_uplift_rev"].to_numpy()
-            one_plus_u = 1.0 + _combine_uplift(r_fwd, r_rev)  # shrinkage-free shape (NaN if degenerate)
+            shape = 1.0 + _combine_uplift(r_fwd, r_rev)  # shrinkage-free shape (NaN if degenerate)
             sum_actual_full = merged["sum_actual_full"].to_numpy()
-            releveled = _relevel_conditional(sum_actual_full, one_plus_u, one_plus_overall=1.0 + overall_ratio)
-            lam = np.divide(releveled, one_plus_u, out=np.full(one_plus_u.shape, np.nan), where=np.isfinite(one_plus_u))
+            # A bin is covered only if its shape is finite AND both directions have enough matched rows;
+            # below the floor the two-direction combine overshoots, so the bin is imputed instead (F7/F9).
+            per_side = np.minimum(merged["n_records_fwd"].to_numpy(), merged["n_records_rev"].to_numpy())
+            measured = np.isfinite(shape) & (per_side >= _MIN_BIN_MATCHED_COUNT)
+            imputed_shape = impute_uncovered_bins(
+                shape, condition=name, measured=measured, one_plus_overall=one_plus_overall
+            )
+            releveled = relevel_conditional(
+                sum_actual_full, imputed_shape, measured=measured, one_plus_overall=one_plus_overall
+            )
             frames.append(
                 pd.DataFrame(
                     {
                         "condition": name,
-                        "condition_bin": merged["condition_bin"],
+                        "condition_bin": merged["condition_bin"].astype(str),
                         "n_records_fwd": merged["n_records_fwd"],
                         "n_records_rev": merged["n_records_rev"],
                         "sum_actual": sum_actual_full,  # full-upgraded energy per bin (the MWh re-level weight)
                         "r_fwd": r_fwd,
                         "r_rev": r_rev,
                         "implied_shrinkage": _implied_shrinkage(r_fwd, r_rev),
-                        "u_b": one_plus_u - 1.0,  # per-bin corrected shape, before re-leveling
-                        "lambda": lam,  # the condition's re-level factor (constant within a condition)
-                        "p50_uplift": releveled - 1.0,  # re-leveled per-bin uplift (aggregates to overall)
+                        "u_b": shape - 1.0,  # measured two-direction shape (NaN where uncovered)
+                        "covered": measured,  # per-run diagnostic: measured vs imputed
+                        "p50_uplift": releveled - 1.0,  # measured-or-imputed, re-leveled to the headline
                     }
                 )
             )
@@ -704,7 +720,10 @@ class PowerModelMethod:
         era5_features = era5_feature_frame(result.aligned)
         if self.era5_exclude:
             missing = sorted(set(self.era5_exclude) - set(era5_features.columns))
-            if missing:
+            # An explicitly-set era5_exclude keeps the strict typo guard; the promoted class default
+            # (CURATED_ERA5_EXCLUDE) is drop-if-present, so a non-Open-Meteo ERA5 frame lacking those
+            # columns is not broken by an exclusion it never had. Identity check = "untouched default".
+            if missing and self.era5_exclude is not CURATED_ERA5_EXCLUDE:
                 msg = f"era5_exclude names columns not in the ERA5 features: {missing}"
                 raise ValueError(msg)
             blocked = sorted(set(self.era5_exclude) & set(self.matching_vars))
@@ -989,7 +1008,9 @@ class PowerModelMethod:
                 else self.model_factory
             )
             return factory(s)
-        return make_outcome_model(**{"random_state": s, **self.model_params, **(extra_params or {})})
+        return make_outcome_model(
+            **{"random_state": s, **TUNED_MODEL_PARAMS, **self.model_params, **(extra_params or {})}
+        )
 
     def _fit_models(
         self, x_train: pd.DataFrame, y_train: np.ndarray, *, weights: np.ndarray | None = None
@@ -1272,7 +1293,7 @@ class PowerModelMethod:
             "reference_stat_cols": list(self.reference_stat_cols),
             "era5_exclude": list(self.era5_exclude),
             "availability_feature": self.availability_feature,
-            "model_params": self.model_params,
+            "model_params": {**TUNED_MODEL_PARAMS, **self.model_params} if self.model_factory is None else {},
             "model_factory": self._model_factory_label(),
             "n_seed_ensemble": self.n_seed_ensemble,
             "early_stopping": self.early_stopping,

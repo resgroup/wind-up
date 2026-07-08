@@ -3,24 +3,25 @@
 Iterative-development helper. The overnight v0 runs are very slow, so they are computed once
 (:mod:`benchmarking.baselines.study_overnight_prepost` / ``study_overnight_toggle`` with
 ``include_v0=True``) and kept on disk. As ``power_model`` is improved you only want to re-run the
-cheap method and re-draw the comparison plots, reusing the frozen v0 (and naive) numbers. That is
-what this script does:
+cheap methods and re-draw the comparison plots, reusing the frozen v0 numbers. That is what this
+script does:
 
-1. **Run** ``power_model`` **only** over the *exact* current overnight prepost + toggle configs —
-   same seven :func:`~benchmarking.baselines.overnight_profiles.overnight_profiles`, same campaign
-   grids, ``n_replicates=4``, ``seed=0`` — so every ``(profile, turbine, treatment-start, campaign)``
-   case matches the frozen overnight run. v0 and naive are *not* recomputed (v0 is very slow and
-   both are already frozen in the reference run).
-2. **Merge** each fresh ``power_model`` result with the ``v0_binned`` and ``naive_ratio`` rows
-   pulled from the reference overnight directory.
+1. **Run** ``power_model`` **and** ``naive_ratio`` over the *exact* current overnight prepost + toggle
+   configs — same seven :func:`~benchmarking.baselines.overnight_profiles.overnight_profiles`, same
+   campaign grids (Issue 14: 1/2/3/6/12 months both modes), ``n_replicates=4``, ``seed=0``. naive is
+   very cheap (no wind_up pipeline) so it is recomputed fresh here rather than pulled from the reference
+   run — which is what lets the grid extend to 1/2 months, where the frozen reference has no naive
+   either. Only v0 is *not* recomputed (it is very slow and already frozen in the reference run; it is
+   simply absent below 3 months).
+2. **Merge** each fresh ``power_model`` + ``naive_ratio`` result with the ``v0_binned`` rows pulled
+   from the reference overnight directory.
 3. **Plot** a three-method campaign-length comparison (``naive_ratio``, ``v0_binned``,
    ``power_model``) per profile, and write merged per-profile + all-profiles leaderboards.
 
-An alignment guard checks that the method-independent ground ``truth`` of every fresh case equals
-the reference run's truth for the same key; a mismatch means the configs have drifted and the
-merge would be comparing different cases, so it fails loudly rather than plotting nonsense. (The
-``truth`` column the harness attaches to every ``power_model`` row is itself the cross-check, so
-re-running the oracle/naive anchors purely to validate the line-up is unnecessary.)
+An alignment guard checks that the method-independent ground ``truth`` of the fresh cases equals the
+reference run's truth on the campaign lengths they share; a mismatch there means the configs have
+drifted and the merge would be comparing different cases, so it fails loudly. Fresh cases the
+reference never covered (1/2 months) are expected and skipped by the guard.
 
 **Benchmark regression tracking.** ``power_model``'s bias/spread/score per
 ``(mode, profile, campaign_months)`` at a known-good commit is frozen in a committed JSON benchmark
@@ -86,8 +87,9 @@ from benchmarking.baselines.example_prepost_study import (
 )
 from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_PERIOD
 from benchmarking.baselines.hot_context import build_hot_v0_context
+from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.overnight_profiles import overnight_profiles
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
+from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.harness import (
     StudyConfig,
     conditional_leaderboard,
@@ -103,11 +105,13 @@ logger = logging.getLogger(__name__)
 
 # The three methods compared in the merged plots (oracle is dropped: it is only a truth anchor).
 COMPARE_METHODS = ["naive_ratio", "v0_binned", "power_model"]
-REUSED_METHODS = ["naive_ratio", "v0_binned"]  # taken from the reference run, not recomputed
+REUSED_METHODS = ["v0_binned"]  # only v0 is reused from the reference run; naive is recomputed fresh
 
-# Match study_overnight_prepost.py / study_overnight_toggle.py exactly.
-PREPOST_CAMPAIGN_MONTHS = [3, 6, 12]
-TOGGLE_CAMPAIGN_MONTHS = [3, 6, 9, 12]
+# Issue 14: the out-of-the-box method is scored across the full 1-12-month range in both modes, so the
+# short-campaign regime (F16) is part of every A/B. v0 is only frozen in the reference run at 3/6/(9)/12,
+# so it is simply absent below 3 months — naive (recomputed fresh here) is the bar to beat there.
+PREPOST_CAMPAIGN_MONTHS = [1, 2, 3, 6, 12]
+TOGGLE_CAMPAIGN_MONTHS = [1, 2, 3, 6, 12]
 N_REPLICATES = 4
 SEED = 0
 
@@ -187,6 +191,11 @@ def _make_power_model(
     protocol), e.g. ``{"era5_derivations": ["gust_ratio"]}``; unknown field names fail loudly and
     JSON lists are coerced to the tuples the dataclass fields expect.
     """
+    # Only data-schema description is passed here now: the accepted behaviour defaults (F13
+    # availability_feature/era5_exclude, F14 min_child_samples) live on the PowerModelMethod class
+    # (Issue 14), so a bare method already *is* the benchmarked config. reference_stat_cols stays
+    # driver-level because it names a source-specific SCADA tag (wtc_ActPower_min) — schema
+    # description, not tuning — so it belongs with the other HoT column names, not on the class.
     kwargs: dict[str, Any] = {
         "active_power_col": HOT_COLUMNS.active_power,
         "wind_speed_col": HOT_COLUMNS.wind_speed,
@@ -194,15 +203,7 @@ def _make_power_model(
         "wind_speed_sd_col": HOT_COLUMNS.wind_speed_sd,
         "baseline_rated_power_kw": HOT_RATED_POWER_KW,
         "era5_hourly_df": era5_hourly_df,
-        # Issue 11 accepted default (findings F12): each reference's within-period active-power
-        # minimum. Better on every benchmark gate in both modes; max/SD were rejected.
-        "reference_stat_cols": ("wtc_ActPower_min",),
-        # Removal-ablation accepted defaults (findings F13): drop the availability feature and the
-        # redundant thermodynamic/precipitation ERA5 columns.
-        "availability_feature": False,
-        "era5_exclude": CURATED_ERA5_EXCLUDE,
-        # Issue 12 accepted default (findings F14): looser leaf capacity.
-        "model_params": dict(TUNED_MODEL_PARAMS),
+        "reference_stat_cols": ("wtc_ActPower_min",),  # Issue 11 accepted feature (F12); a HoT SCADA tag
         "out_dir": out_dir / "power_model_runs",
     }
     if overrides:
@@ -222,14 +223,16 @@ def run_power_model(
     profiles: list[str] | None = None,
     method_overrides: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
-    """Score **only** ``power_model`` over the overnight cases for one mode (no v0/naive/oracle).
+    """Score ``power_model`` **and** ``naive_ratio`` over the overnight cases for one mode (no v0/oracle).
 
     ``profiles`` restricts to a subset of :func:`overnight_profiles` (default: all) for fast feedback on
     a power_model change. power_model runs at its default (conditional uplift on), so every case also
-    emits the per-bin conditional cells the benchmark tracks. Each fresh row still carries the harness's
-    method-independent ground ``truth`` (so the merge's alignment guard has its cross-check without
-    recomputing any anchor). Writes a per-profile ``results_*.csv`` and per-profile ``power_model`` curve
-    under ``out_dir``, and returns the concatenated tidy results.
+    emits the per-bin conditional cells the benchmark tracks. naive is recomputed fresh here (it is very
+    cheap and has no wind_up pipeline) so the merge no longer depends on the reference run's naive rows —
+    which matters at 1/2 months, where the frozen reference run has no naive either. Each fresh row still
+    carries the harness's method-independent ground ``truth`` (so the merge's alignment guard has its
+    cross-check against v0). Writes a per-profile ``results_*.csv`` and per-profile method curves under
+    ``out_dir``, and returns the concatenated tidy results.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     scada_df, _ = load_hot_scada(
@@ -250,11 +253,16 @@ def run_power_model(
             era5_hourly_df=context.reanalysis_datasets[0].data,
             overrides=method_overrides,
         )
-        logger.info("Scoring %s profile %s with power_model", mode, profile_name)
+        naive = NaiveRatioMethod(
+            active_power_col=HOT_COLUMNS.active_power,
+            availability_col=HOT_COLUMNS.availability,
+            out_dir=out_dir / profile_name / "naive_runs",
+        )
+        logger.info("Scoring %s profile %s with power_model + naive_ratio", mode, profile_name)
         results = score_study(
             scada_df,
             profile=profile,
-            methods=[method],
+            methods=[naive, method],
             study=study,
             profile_name=profile_name,
             on_method_complete=partial(save_per_method_curve, out_dir, profile_name),
@@ -301,20 +309,19 @@ def _case_key(df: pd.DataFrame) -> pd.Series:
 
 
 def _check_alignment(fresh: pd.DataFrame, reference: pd.DataFrame) -> None:
-    """Fail loudly if the fresh cases do not line up case-for-case with the reference run.
+    """Fail loudly if the fresh and reference runs disagree on ground truth where they overlap.
 
     Ground ``truth`` is method-independent and deterministic in the study config + seed, so equal
-    keys must carry equal truth. Mismatched keys or truths mean the configs drifted.
+    keys must carry equal truth. Since Issue 14 the fresh grid (1-12 months) extends past the frozen
+    reference run (3/6/(9)/12), so fresh cases absent from the reference are expected (e.g. 1/2 months)
+    and not an error — only the fresh ∩ reference intersection is truth-checked; a mismatch *there*
+    still means the configs drifted and the merge would compare different cases.
     """
     f_overall = fresh[fresh["condition"] == "overall"].copy()
     r_overall = reference[reference["condition"] == "overall"].copy()
     f_truth = f_overall.assign(key=_case_key(f_overall)).groupby("key")["truth"].first()
     r_truth = r_overall.assign(key=_case_key(r_overall)).groupby("key")["truth"].first()
 
-    missing = sorted(set(f_truth.index) - set(r_truth.index))
-    if missing:
-        msg = f"{len(missing)} fresh case(s) have no reference match, e.g. {missing[:3]}"
-        raise ValueError(msg)
     common = f_truth.index.intersection(r_truth.index)
     bad = ~np.isclose(f_truth.loc[common].to_numpy(), r_truth.loc[common].to_numpy(), rtol=1e-6, atol=1e-9)
     if bad.any():
@@ -677,8 +684,11 @@ def merge_and_plot(mode: str, fresh: pd.DataFrame, reference_mode_dir: Path, out
     reference = _load_reference_methods(reference_mode_dir, profiles, REUSED_METHODS)
     _check_alignment(fresh, reference)
 
-    power_model = fresh[fresh["method"] == "power_model"]
-    merged = pd.concat([reference, power_model], ignore_index=True)
+    # v0 comes from the frozen reference run (slow, reference-only, absent below 3 months); power_model
+    # and the freshly-recomputed naive come from this run. Concatenating both gives the three-method
+    # comparison, with v0 simply missing at the campaign lengths the reference never covered.
+    fresh_compare = fresh[fresh["method"].isin(COMPARE_METHODS) & (fresh["method"] != "v0_binned")]
+    merged = pd.concat([reference, fresh_compare], ignore_index=True)
     merged = merged[merged["method"].isin(COMPARE_METHODS)]
 
     merged.to_csv(comparison_dir / f"merged_results_{mode}.csv", index=False)
