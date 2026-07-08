@@ -11,9 +11,13 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
+from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS
 from benchmarking.baselines.study_power_model_compare import (
     _BASELINE_SCHEMA,
     _MATERIAL_PP,
+    PREPOST_CAMPAIGN_MONTHS,
+    TOGGLE_CAMPAIGN_MONTHS,
+    _check_alignment,
     _conditional_plot_subset,
     _load_baseline_cells,
     _make_power_model,
@@ -35,6 +39,52 @@ def test_make_power_model_defaults_to_conditional_on(tmp_path: Path) -> None:
     # the compare sweep runs power_model at its default: conditional uplift on, matching on the F6 set
     assert method.conditional_uplift is True
     assert method.matching_vars == ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
+
+
+def test_thinned_driver_matches_promoted_defaults(tmp_path: Path) -> None:
+    # the driver now passes only data-schema config; the F13/F14 behaviour lives on the class, so the
+    # constructed method must still carry the benchmarked defaults (Issue 14 promotion).
+    era5 = pd.DataFrame({"wind_speed_100m": [1.0]})
+    method = _make_power_model(tmp_path, era5_hourly_df=era5)
+    assert method.availability_feature is False
+    assert method.era5_exclude == CURATED_ERA5_EXCLUDE
+    assert method._make_model().get_params()["min_child_samples"] == TUNED_MODEL_PARAMS["min_child_samples"]  # noqa: SLF001
+    assert method.reference_stat_cols == ("wtc_ActPower_min",)  # schema description stays driver-level
+
+
+def _overall_rows(truth: float, *, months: list[int], method: str = "power_model") -> pd.DataFrame:
+    """Minimal tidy overall-condition rows for the alignment guard (one case per campaign length)."""
+    return pd.DataFrame(
+        {
+            "method": method,
+            "profile": "cp_0pct",
+            "test_wtg": "T1",
+            "campaign_months": months,
+            "treatment_start": "2020-01-01 00:00:00+00:00",
+            "condition": "overall",
+            "truth": truth,
+        }
+    )
+
+
+def test_campaign_grids_are_the_extended_range() -> None:
+    assert PREPOST_CAMPAIGN_MONTHS == [1, 2, 3, 6, 12]
+    assert TOGGLE_CAMPAIGN_MONTHS == [1, 2, 3, 6, 12]
+
+
+def test_alignment_ignores_fresh_cases_absent_from_reference() -> None:
+    # fresh spans 1-12 months; the frozen reference only has 3/6/12 — the extra short campaigns must
+    # not trip the guard, which now checks truth only on the intersection.
+    fresh = _overall_rows(0.05, months=[1, 2, 3, 6, 12])
+    reference = _overall_rows(0.05, months=[3, 6, 12], method="v0_binned")
+    _check_alignment(fresh, reference)  # must not raise
+
+
+def test_alignment_still_fails_on_truth_mismatch_in_intersection() -> None:
+    fresh = _overall_rows(0.05, months=[1, 2, 3, 6, 12])
+    reference = _overall_rows(0.09, months=[3, 6, 12], method="v0_binned")  # same keys, different truth
+    with pytest.raises(ValueError, match="disagree on ground truth"):
+        _check_alignment(fresh, reference)
 
 
 def test_power_model_leaderboard_includes_overall_and_conditional_cells() -> None:

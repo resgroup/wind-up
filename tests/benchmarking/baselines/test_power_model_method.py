@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.power_model import PowerModelMethod
+from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelMethod
 from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 
 if TYPE_CHECKING:
@@ -23,7 +23,6 @@ from benchmarking.baselines.power_model.method import (
     _clip_predictions,
     _combine_uplift,
     _implied_shrinkage,
-    _relevel_conditional,
 )
 from benchmarking.harness.method import MethodInput
 from benchmarking.synthetic import ToggleSchedule
@@ -416,6 +415,59 @@ class TestConditionalUplift:
         bc = out.p50_by_condition
         assert list(bc.columns) == ["condition", "condition_bin", "p50_uplift"]
         assert set(bc["condition"]) == {"ws", "ti"}
+        # Issue 14: imputation fills every uncovered bin, so the reported per-bin estimate is never NaN
+        # (a bare NaN would let abstention game the conditional score, which drops non-finite errors).
+        assert bc["p50_uplift"].notna().all()
+
+    def test_conditional_csv_carries_covered_flag(self, tmp_path: Path) -> None:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        treated = np.asarray(idx >= changeover)
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            wind_speed_sd_col=_WS_SD,
+            era5_hourly_df=_toy_era5(idx),
+            model_params=_FAST_PARAMS,
+            out_dir=tmp_path,
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        method.estimate(mi)
+        files = sorted(tmp_path.rglob("*_conditional_by_bin_*.csv"))
+        assert files, "no conditional_by_bin CSV written"
+        per_bin = pd.read_csv(files[0])
+        assert "covered" in per_bin.columns
+        assert per_bin["covered"].dtype == bool
+        assert per_bin["covered"].any()  # well-populated toy data has at least some measured bins
+        assert per_bin["p50_uplift"].notna().all()  # measured-or-imputed, never bare NaN
+
+    def test_count_floor_marks_sparse_bins_uncovered(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # force every bin below an impossibly-high floor (string target avoids a function-level import)
+        monkeypatch.setattr("benchmarking.baselines.power_model.method._MIN_BIN_MATCHED_COUNT", 10**9)
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        treated = np.asarray(idx >= changeover)
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        method = PowerModelMethod(
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            baseline_rated_power_kw=2300.0,
+            wind_speed_col=_WS,
+            wind_speed_sd_col=_WS_SD,
+            era5_hourly_df=_toy_era5(idx),
+            model_params=_FAST_PARAMS,
+            out_dir=tmp_path,
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        method.estimate(mi)
+        per_bin = pd.read_csv(sorted(tmp_path.rglob("*_conditional_by_bin_*.csv"))[0])
+        assert (~per_bin["covered"]).all()  # nothing clears an impossibly-high floor
+        assert per_bin["p50_uplift"].notna().all()  # all imputed, still never NaN
 
     def test_ws_only_when_no_sd_column_configured(self) -> None:
         n = 4000
@@ -635,31 +687,32 @@ class TestFeatureConfig:
             method.estimate(self._prepost_mi(n=300))
 
 
-class TestRelevelConditional:
-    def test_releveled_bins_aggregate_to_overall(self) -> None:
-        # a per-bin corrected *shape* is rescaled by one factor so its energy-weighted aggregation
-        # (ratio-of-sums Σactual / Σ(actual/(1+u_b))) equals a target overall ratio.
-        sum_actual = np.array([1000.0, 2000.0, 500.0])
-        one_plus_u = np.array([1.10, 0.95, 1.30])
-        final = _relevel_conditional(sum_actual, one_plus_u, one_plus_overall=1.05)
-        agg = sum_actual.sum() / (sum_actual / final).sum()
-        assert agg == pytest.approx(1.05)
+class TestPromotedDefaults:
+    def test_effective_lgbm_params_include_tuned_min_child_samples(self) -> None:
+        m = PowerModelMethod(active_power_col="p", availability_col="a", baseline_rated_power_kw=2300.0)
+        assert m._make_model().get_params()["min_child_samples"] == 50  # noqa: SLF001
 
-    def test_identity_when_already_aggregated(self) -> None:
-        # bins that already aggregate to the overall need no re-level (λ = 1)
-        sum_actual = np.array([1000.0, 1000.0])
-        one_plus_u = np.array([1.1, 1.1])  # aggregates to 1.1
-        final = _relevel_conditional(sum_actual, one_plus_u, one_plus_overall=1.1)
-        assert final == pytest.approx(one_plus_u)
+    def test_explicit_model_params_override_the_tuned_default(self) -> None:
+        m = PowerModelMethod(
+            active_power_col="p",
+            availability_col="a",
+            baseline_rated_power_kw=2300.0,
+            model_params={"min_child_samples": 123},
+        )
+        assert m._make_model().get_params()["min_child_samples"] == 123  # noqa: SLF001
 
-    def test_nan_bin_excluded_but_others_still_aggregate(self) -> None:
-        sum_actual = np.array([1000.0, 0.0, 500.0])
-        one_plus_u = np.array([1.1, np.nan, 0.9])
-        final = _relevel_conditional(sum_actual, one_plus_u, one_plus_overall=1.05)
-        assert np.isnan(final[1])
-        finite = np.isfinite(final)
-        agg = sum_actual[finite].sum() / (sum_actual[finite] / final[finite]).sum()
-        assert agg == pytest.approx(1.05)
+    def test_availability_feature_defaults_off(self) -> None:
+        m = PowerModelMethod(active_power_col="p", availability_col="a", baseline_rated_power_kw=2300.0)
+        assert m.availability_feature is False
+
+    def test_era5_exclude_defaults_to_curated_set(self) -> None:
+        m = PowerModelMethod(active_power_col="p", availability_col="a", baseline_rated_power_kw=2300.0)
+        assert m.era5_exclude == CURATED_ERA5_EXCLUDE
+
+
+# The re-level is now the pinned-imputed ``relevel_conditional`` in power_model.conditional; its unit
+# coverage lives in test_power_model_conditional.py (TestRelevelConditionalPinned). Kept here only:
+# the direction-combine helpers, still in method.py.
 
 
 class TestCombineDirections:
