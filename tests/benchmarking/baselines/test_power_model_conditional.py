@@ -34,6 +34,10 @@ class TestImputeUncoveredBins:
         out = impute_uncovered_bins(one_plus_u, condition="ws", measured=measured, one_plus_overall=1.03)
         assert out.tolist() == pytest.approx([1.20, 1.05, 1.10])
 
+    def test_unknown_condition_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown condition"):
+            impute_uncovered_bins(np.array([1.1]), condition="wd", measured=np.array([True]), one_plus_overall=1.0)
+
     def test_measured_bin_with_nan_shape_is_not_trusted(self) -> None:
         # a bin flagged measured but carrying a NaN shape (shouldn't happen, but be defensive) is filled
         one_plus_u = np.array([1.05, np.nan, 1.02])

@@ -31,9 +31,13 @@ def impute_uncovered_bins(
       prior is wrong for uprating / power-boost upgrades; it is a documented, replaceable default.
     - ``ti``: no ordering physics, so uncovered bins take the overall uplift (``one_plus_overall``).
 
-    Returns an all-finite array provided at least one bin is measured (ws) / ``one_plus_overall`` is
-    finite (ti).
+    The result is always all-finite: ws falls back to ``1.0`` (even with no measured bins), ti to
+    ``one_plus_overall``. Raises for a ``condition`` other than ``"ws"`` / ``"ti"`` so a mistyped axis
+    fails loudly rather than silently taking the ti branch.
     """
+    if condition not in ("ws", "ti"):
+        msg = f"unknown condition {condition!r}; expected 'ws' or 'ti'"
+        raise ValueError(msg)
     s = pd.Series(np.asarray(one_plus_u, dtype=float))
     s[~np.asarray(measured, dtype=bool)] = np.nan
     s = s.bfill().fillna(1.0) if condition == "ws" else s.fillna(float(one_plus_overall))
