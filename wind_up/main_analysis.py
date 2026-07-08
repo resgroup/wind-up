@@ -296,8 +296,8 @@ def _toggle_pairing_filter(
     else:
         msg = f"pairing_filter_method {pairing_filter_method} not recognised"
         raise ValueError(msg)
-    len_pre_after = len(filt_pre_df)
-    len_post_after = len(filt_post_df)
+    len_pre_after = len(filt_pre_df.dropna(subset=required_cols))
+    len_post_after = len(filt_post_df.dropna(subset=required_cols))
     logger.info(
         f"removed {len_pre_before - len_pre_after} [{100 * (len_pre_before - len_pre_after) / len_pre_before:.1f}%] "
         f"rows from pre_df using {pairing_filter_method} pairing filter",
