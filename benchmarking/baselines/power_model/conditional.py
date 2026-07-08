@@ -13,23 +13,6 @@ import numpy as np
 import pandas as pd
 
 
-def intersect_cell_support(fwd_cell_ids: np.ndarray, rev_cell_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Masks keeping only rows whose ERA5 cell is present on *both* directions (Issue 14 per-bin balance).
-
-    Within one reporting bin the forward (matched-upgraded) and reverse (matched-baseline) row sets can
-    still carry different ERA5-weather mixes — the shrinkage-cancellation premise is per bin, but CEM only
-    equalises the cell mix globally. Post-stratifying both sides to the **intersection** of their ERA5-cell
-    supports removes that residual within-bin imbalance without any new model fit; it thins sparse bins
-    (which the count floor then catches). ``*_cell_ids`` are 1-D integer cell keys (the caller collapses
-    the multi-variable cell codes to a single id per row). Returns ``(fwd_mask, rev_mask)`` over the two
-    inputs; both are all-False when the two supports do not overlap at all.
-    """
-    fwd = np.asarray(fwd_cell_ids)
-    rev = np.asarray(rev_cell_ids)
-    common = np.intersect1d(fwd, rev)
-    return np.isin(fwd, common), np.isin(rev, common)
-
-
 def impute_uncovered_bins(
     one_plus_u: np.ndarray,
     *,

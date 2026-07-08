@@ -5,11 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from benchmarking.baselines.power_model.conditional import (
-    impute_uncovered_bins,
-    intersect_cell_support,
-    relevel_conditional,
-)
+from benchmarking.baselines.power_model.conditional import impute_uncovered_bins, relevel_conditional
 
 
 class TestImputeUncoveredBins:
@@ -44,26 +40,6 @@ class TestImputeUncoveredBins:
         measured = np.array([True, True, True])
         out = impute_uncovered_bins(one_plus_u, condition="ti", measured=measured, one_plus_overall=1.04)
         assert out.tolist() == pytest.approx([1.05, 1.04, 1.02])
-
-
-class TestIntersectCellSupport:
-    def test_restricts_both_sides_to_common_cells(self) -> None:
-        # fwd rows sit in cells {0, 1}; rev rows only in cell {0} -> intersection {0}
-        fwd = np.array([0, 0, 1, 1])
-        rev = np.array([0, 0, 0])
-        fwd_mask, rev_mask = intersect_cell_support(fwd, rev)
-        assert fwd_mask.tolist() == [True, True, False, False]
-        assert rev_mask.tolist() == [True, True, True]
-
-    def test_all_false_when_supports_disjoint(self) -> None:
-        fwd_mask, rev_mask = intersect_cell_support(np.array([0, 1]), np.array([2, 3]))
-        assert not fwd_mask.any()
-        assert not rev_mask.any()
-
-    def test_identity_when_supports_equal(self) -> None:
-        fwd_mask, rev_mask = intersect_cell_support(np.array([5, 6, 7]), np.array([7, 5, 6]))
-        assert fwd_mask.all()
-        assert rev_mask.all()
 
 
 def _agg(sum_actual: np.ndarray, one_plus_u: np.ndarray) -> float:

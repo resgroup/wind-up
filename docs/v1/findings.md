@@ -7,6 +7,98 @@ from, not just conclusions.
 
 ---
 
+## F17 — conditional decomposition hardened (count floor + physics imputation + corrected re-level); out-of-the-box method promoted onto the class and scored 1–12 months; the frozen reference is stale (Issue 14)
+
+*2026-07-08 — Issue 14, both efforts. New module
+`benchmarking/baselines/power_model/conditional.py` (`impute_uncovered_bins`, `relevel_conditional`).
+New `PowerModelMethod` internals: the per-reporting-bin count floor `_MIN_BIN_MATCHED_COUNT = 50`,
+imputation + corrected re-level wired into `_conditional_by_bin`, and a `covered` flag on the per-run
+`conditional/` CSV. Class defaults promoted (see below). `study_power_model_compare.py` now scores
+1/2/3/6/12 months in both modes with `naive_ratio` recomputed fresh; benchmark JSON regenerated on the
+new grid under the new conditional default. A/B'd on the covered profiles (`cp_0pct`,
+`ti_dependent_cp`, `ws_dependent_cp`) against the pure-B benchmark; full 7-profile regen for the ship.*
+
+### Effort B — the benchmarked config is now the out-of-the-box config, scored 1–12 months
+- **Defaults promoted onto the class** so a bare `PowerModelMethod` *is* the benchmarked method:
+  `min_child_samples=50` (F14, merged under user `model_params` on the LightGBM path), 
+  `availability_feature=False` (F13), and `era5_exclude=CURATED_ERA5_EXCLUDE` (F13) with the **untouched
+  default** applied drop-if-present (a non-Open-Meteo frame is not broken; an explicitly-set exclude
+  keeps the strict typo guard). `reference_stat_cols` stays driver-level — it names a source-specific
+  SCADA tag (`wtc_ActPower_min`), i.e. schema description, not tuning.
+- **Grid extended to 1/2/3/6/12 months both modes**; `naive_ratio` recomputed fresh (cheap, no wind_up
+  pipeline) so the merge no longer depends on the reference run's naive; v0 stays reference-only and is
+  simply absent below 3 months; the alignment guard now checks truth on the fresh∩reference
+  intersection only.
+- **Out-of-the-box power_model, overall P50, mean over 7 profiles [pp]** (regenerated benchmark). The
+  short-campaign regime (F16) is now visible in the committed benchmark:
+  | months | prepost bias / spread / score | toggle bias / spread / score |
+  | --- | --- | --- |
+  | 1 | −0.56 / 1.00 / 1.15 | −0.57 / 0.50 / 0.76 |
+  | 2 | +0.04 / 0.53 / 0.54 | −0.17 / 0.30 / 0.35 |
+  | 3 | +0.14 / 0.23 / 0.27 | +0.11 / 0.21 / 0.23 |
+  | 6 | +0.44 / 0.20 / 0.49 | +0.15 / 0.16 / 0.22 |
+  | 12 | +0.12 / 0.34 / 0.36 | +0.08 / 0.17 / 0.19 |
+
+### Effort A — the conditional decomposition, hardened
+- **Every per-bin number is now a trustworthy measured value or a flagged, physics-informed
+  imputation.** A bin is `covered` only if its two-direction shape is finite **and** both directions
+  have `≥ _MIN_BIN_MATCHED_COUNT` matched rows; otherwise it is imputed (ws: bfill from the nearest
+  covered bin above, then 0 uplift above the last covered bin — 0-at-rated; ti: the overall uplift) and
+  flagged `covered=False`. Never a bare NaN, so `summarize_errors` (which drops non-finite errors)
+  cannot be gamed by abstention, and the imputation prior is itself benchmarked.
+- **Corrected re-level (the pure-bug fix).** `relevel_conditional` pins imputed bins at their imputed
+  uplift and solves one λ over the **measured** bins only
+  (`λ = S_m / (Σactual/one_plus_overall − C_i)`), so measured + imputed together energy-aggregate to the
+  headline **exactly** even when coverage is imperfect (the old re-level solved λ over covered bins only
+  and silently absorbed the uncovered bins' MWh). Guards: no measured bins or a non-positive denominator
+  → overall uplift in every bin.
+- **Result (A/B vs the pure-B benchmark, 309/321 conditional cells over all lengths + covered
+  profiles):** overall P50 **bit-identical** (Δbias/Δspread/Δscore = 0.000 pp — the headline is the
+  single full-window fit, untouched by construction); conditional mean **Δscore −3.7 pp prepost / −2.6 pp
+  toggle** (Δbias −2.0/−1.4, Δspread −2.7/−2.0). The before/after view (longest campaign, covered
+  profiles) reads **12 better / 57 ~ / 0 worse** prepost and **15 better / 54 ~ / 0 worse** toggle — the
+  F7/F9 sparse-extreme "worse" bins are gone.
+- **Floor value chosen on evidence, not the one bad bin** (`floor_threshold_evidence.py`, 14.6k bins
+  from the A/B run): the raw two-direction shape `|u_b|` p90 by per-side matched count is 13 pp (<10,
+  mostly degenerate → imputed anyway), **60 pp (10–25), 55 pp (25–50)**, 52 pp (50–100), then falls to
+  25 pp (100–200), 13 pp (200–500), 10 pp (500+). The combine is untrustworthy below ~50 (a floor of 25
+  would leave the wild 25–50 bucket unfloored); 50 is the smallest value that catches it, and raising
+  higher would impute away ~940 moderately-populated 50–100 bins for no done-when gain. Kish ESS was not
+  needed (no balance reweighting shipped — see below), so the floor compares raw per-side counts.
+
+### Decisions
+- **Coverage stays method-internal (user decision, trims the issue's "coverage in the leaderboard"
+  bullet).** The `covered` flag lives only on the per-run `conditional/` CSV and drives the re-level;
+  the harness seam (`MethodOutput.p50_by_condition`) is unchanged `[condition, condition_bin,
+  p50_uplift]`. Rationale: once imputation makes every bin finite, `summarize_errors` drops nothing, so
+  the F16 "deltas dominated by a few exploding cells" problem — the reason a coverage view was wanted —
+  is dissolved by the imputation itself. The method reports its single best per-bin estimate; the
+  leaderboard scores that.
+- **Per-bin balance (post-stratify each reporting bin to the intersection of the two directions'
+  ERA5-cell supports) — DEFERRED, not shipped.** The floor + imputation + corrected re-level already
+  clear every Issue-14 done-when with margin (0 worse bins, conditional score materially better, overall
+  unchanged), so per the adopt-only-if-it-helps protocol the extra within-bin reweighting is not built —
+  it would thread ERA5 cell codes and a custom per-bin reduction into the core conditional path for a
+  residual imbalance the floor already tames (YAGNI). Tracked as a follow-up; the design is a pure
+  intersect-cell-support mask over the matched fwd/rev rows within each reporting bin, with the floor
+  switching to Kish ESS `(Σw)²/Σw²` if it is ever adopted.
+
+### The frozen reference dir is stale (flagged for regeneration)
+- The naive-consistency check (`naive_consistency_check.py`, requested to run once before trusting the
+  reference) **failed**, but in the *good* direction: current-code `naive_ratio` on the `cp_0pct`
+  placebo has a **much tighter prepost spread** than the frozen 30-June reference (3-mo score 1.91 vs
+  7.19, spread 1.57 vs 7.15; 6/12-mo better too), toggle essentially identical. Every input to naive —
+  `naive_ratio.py`, `filtering.py`, the study config, the turbine set, the data span, and (via the
+  passing alignment guard) the ground truth — is byte-identical between the reference era and HEAD, and
+  the reference predates power_model (methods `[naive, oracle, rlearner, v0]`, ~26–30 June), so the
+  30-June run was produced by a **local/uncommitted state** git can't reproduce. The committed benchmark
+  is power_model-only and alignment-guarded, so this does not affect it; naive is now recomputed fresh
+  (the correct, current-code bar). **The frozen v0 in that reference is from the same stale state** and
+  should be regenerated (run `study_overnight_prepost` / `study_overnight_toggle`, both `include_v0=True`,
+  on current committed code) before v0 comparison numbers are trusted.
+
+---
+
 ## F16 — a finite time-decay half-life (548 d) is the default, applied to the headline fit only; the double-ratio toggle estimator validated as opt-in; the 1–2-month regime flips the training-window verdict (Issue 13 extension)
 
 *2026-07-04/05 — three user-directed follow-ups to F15, A/B'd against the post-F15 benchmark.
