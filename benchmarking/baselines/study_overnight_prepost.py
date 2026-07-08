@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 # --- tune these two for the runtime budget -------------------------------------------------
 N_REPLICATES = 4  # (turbine, treatment-start) draws per profile; the precision axis
-CAMPAIGN_MONTHS = [3, 6, 12]  # campaign-length sweep grid
+CAMPAIGN_MONTHS = [1, 2, 3, 6, 12]  # campaign-length sweep grid (matches study_power_model_compare, Issue 14)
 # -------------------------------------------------------------------------------------------
 
 

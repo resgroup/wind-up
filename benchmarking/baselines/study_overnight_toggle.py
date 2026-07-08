@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # --- tune these two for the runtime budget -------------------------------------------------
 N_REPLICATES = 4  # (turbine, treatment-start) draws per profile; the precision axis
-CAMPAIGN_MONTHS = [3, 6, 9, 12]  # toggling-duration sweep grid
+CAMPAIGN_MONTHS = [1, 2, 3, 6, 12]  # toggling-duration grid (matches compare grid, Issue 14; drops 9)
 # -------------------------------------------------------------------------------------------
 
 
