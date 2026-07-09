@@ -153,6 +153,7 @@ module = [
     "pandas.testing",
     "ruptures.*",
     "scipy.interpolate",
+    "scipy.ndimage",
     "scipy.stats",
     "seaborn",
     "utm",
