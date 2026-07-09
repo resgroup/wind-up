@@ -10,9 +10,8 @@ script does:
    configs — same seven :func:`~benchmarking.baselines.overnight_profiles.overnight_profiles`, same
    campaign grids (Issue 14: 1/2/3/6/12 months both modes), ``n_replicates=4``, ``seed=0``. naive is
    very cheap (no wind_up pipeline) so it is recomputed fresh here rather than pulled from the reference
-   run — which is what lets the grid extend to 1/2 months, where the frozen reference has no naive
-   either. Only v0 is *not* recomputed (it is very slow and already frozen in the reference run; it is
-   simply absent below 3 months).
+   run — that keeps naive on current code and independent of the reference. Only v0 is *not* recomputed
+   (it is very slow and already frozen in the reference run, which now covers the full 1-12-month grid).
 2. **Merge** each fresh ``power_model`` + ``naive_ratio`` result with the ``v0_binned`` rows pulled
    from the reference overnight directory.
 3. **Plot** a three-method campaign-length comparison (``naive_ratio``, ``v0_binned``,
@@ -20,8 +19,9 @@ script does:
 
 An alignment guard checks that the method-independent ground ``truth`` of the fresh cases equals the
 reference run's truth on the campaign lengths they share; a mismatch there means the configs have
-drifted and the merge would be comparing different cases, so it fails loudly. Fresh cases the
-reference never covered (1/2 months) are expected and skipped by the guard.
+drifted and the merge would be comparing different cases, so it fails loudly. The current reference
+covers the full 1-12-month grid, so every fresh case normally has a reference match; any fresh case a
+reference does not cover is expected and skipped by the guard.
 
 **Benchmark regression tracking.** ``power_model``'s bias/spread/score per
 ``(mode, profile, campaign_months)`` at a known-good commit is frozen in a committed JSON benchmark
@@ -50,7 +50,7 @@ tally and the per-bin verdict use one materiality band (:data:`_MATERIAL_PP`).
 Run from the repo root::
 
     uv run python -m benchmarking.baselines.study_power_model_compare \
-        --reference-dir "~/temp/wind-up-benchmarking/badass overnight runs 30 June"
+        --reference-dir "~/temp/wind-up-benchmarking/badass overnight 20260708"
 
 For fast feedback on a power_model change, restrict to one mode and one profile — e.g.
 ``--modes prepost --profiles cp_0pct`` fits a single case in ~minutes (vs ~30 for the full sweep) and
@@ -108,8 +108,8 @@ COMPARE_METHODS = ["naive_ratio", "v0_binned", "power_model"]
 REUSED_METHODS = ["v0_binned"]  # only v0 is reused from the reference run; naive is recomputed fresh
 
 # Issue 14: the out-of-the-box method is scored across the full 1-12-month range in both modes, so the
-# short-campaign regime (F16) is part of every A/B. v0 is only frozen in the reference run at 3/6/(9)/12,
-# so it is simply absent below 3 months — naive (recomputed fresh here) is the bar to beat there.
+# short-campaign regime (F16) is part of every A/B. The current reference run freezes v0 across the whole
+# 1-12-month grid; naive is recomputed fresh here (current code) rather than reused from the reference.
 PREPOST_CAMPAIGN_MONTHS = [1, 2, 3, 6, 12]
 TOGGLE_CAMPAIGN_MONTHS = [1, 2, 3, 6, 12]
 N_REPLICATES = 4
@@ -117,7 +117,7 @@ SEED = 0
 
 # Keys that identify one scored case independently of the method.
 _CASE_KEYS = ["profile", "test_wtg", "campaign_months", "treatment_start"]
-_DEFAULT_REFERENCE_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "badass overnight runs 30 June"
+_DEFAULT_REFERENCE_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "badass overnight 20260708"
 _DEFAULT_OUTPUT_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "power_model_compare"
 
 # The committed power_model benchmark: its bias/spread/score per (mode, profile, campaign) frozen at
@@ -228,8 +228,8 @@ def run_power_model(
     ``profiles`` restricts to a subset of :func:`overnight_profiles` (default: all) for fast feedback on
     a power_model change. power_model runs at its default (conditional uplift on), so every case also
     emits the per-bin conditional cells the benchmark tracks. naive is recomputed fresh here (it is very
-    cheap and has no wind_up pipeline) so the merge no longer depends on the reference run's naive rows —
-    which matters at 1/2 months, where the frozen reference run has no naive either. Each fresh row still
+    cheap and has no wind_up pipeline) so the merge does not depend on the reference run's naive rows and
+    naive always reflects current code. Each fresh row still
     carries the harness's method-independent ground ``truth`` (so the merge's alignment guard has its
     cross-check against v0). Writes a per-profile ``results_*.csv`` and per-profile method curves under
     ``out_dir``, and returns the concatenated tidy results.
@@ -281,11 +281,37 @@ def _load_fresh_results(mode_out_dir: Path) -> pd.DataFrame:
     return pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
 
 
+def _resolve_results_dir(reference_mode_dir: Path) -> Path:
+    """Return the directory that actually holds the reference ``results_*.csv`` for a mode.
+
+    ``study_overnight_prepost`` / ``study_overnight_toggle`` (via ``start_overnight_run``) write each run
+    into a timestamped subdir ``<mode>/<YYYYmmdd_HHMMSS>/``, so a reference dir points at ``<run>/<mode>/``
+    with one such subdir inside. Accept either layout: the ``results_*.csv`` directly under
+    ``reference_mode_dir`` (flat, as older hand-assembled references were), or a single timestamped subdir
+    holding them. Two or more candidate subdirs is ambiguous (which run?) and fails loudly.
+    """
+    if list(reference_mode_dir.glob("results_*.csv")):
+        return reference_mode_dir
+    candidates = sorted(d for d in reference_mode_dir.iterdir() if d.is_dir() and list(d.glob("results_*.csv")))
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        msg = f"no results_*.csv under {reference_mode_dir} or a single timestamped subdir of it"
+        raise FileNotFoundError(msg)
+    names = [d.name for d in candidates]
+    msg = (
+        f"multiple run subdirs with results_*.csv under {reference_mode_dir} ({names}); "
+        f"point --reference-dir at one run"
+    )
+    raise ValueError(msg)
+
+
 def _load_reference_methods(reference_mode_dir: Path, profiles: list[str], methods: list[str]) -> pd.DataFrame:
     """Load the requested methods' rows for the given profiles from the reference run directory."""
+    results_dir = _resolve_results_dir(reference_mode_dir)
     frames = []
     for profile in profiles:
-        path = reference_mode_dir / f"results_{profile}.csv"
+        path = results_dir / f"results_{profile}.csv"
         if not path.exists():
             msg = f"reference results missing for profile {profile!r}: {path}"
             raise FileNotFoundError(msg)
@@ -312,9 +338,9 @@ def _check_alignment(fresh: pd.DataFrame, reference: pd.DataFrame) -> None:
     """Fail loudly if the fresh and reference runs disagree on ground truth where they overlap.
 
     Ground ``truth`` is method-independent and deterministic in the study config + seed, so equal
-    keys must carry equal truth. Since Issue 14 the fresh grid (1-12 months) extends past the frozen
-    reference run (3/6/(9)/12), so fresh cases absent from the reference are expected (e.g. 1/2 months)
-    and not an error — only the fresh ∩ reference intersection is truth-checked; a mismatch *there*
+    keys must carry equal truth. The current reference run covers the full 1-12-month grid, so the fresh
+    cases normally all have a reference match; any fresh case a reference does not cover is expected and
+    not an error — only the fresh ∩ reference intersection is truth-checked; a mismatch *there*
     still means the configs drifted and the merge would compare different cases.
     """
     f_overall = fresh[fresh["condition"] == "overall"].copy()
@@ -684,9 +710,9 @@ def merge_and_plot(mode: str, fresh: pd.DataFrame, reference_mode_dir: Path, out
     reference = _load_reference_methods(reference_mode_dir, profiles, REUSED_METHODS)
     _check_alignment(fresh, reference)
 
-    # v0 comes from the frozen reference run (slow, reference-only, absent below 3 months); power_model
-    # and the freshly-recomputed naive come from this run. Concatenating both gives the three-method
-    # comparison, with v0 simply missing at the campaign lengths the reference never covered.
+    # v0 comes from the frozen reference run (slow, reference-only, now covering the full 1-12-month grid);
+    # power_model and the freshly-recomputed naive come from this run. Concatenating both gives the
+    # three-method comparison across every campaign length the reference covers.
     fresh_compare = fresh[fresh["method"].isin(COMPARE_METHODS) & (fresh["method"] != "v0_binned")]
     merged = pd.concat([reference, fresh_compare], ignore_index=True)
     merged = merged[merged["method"].isin(COMPARE_METHODS)]

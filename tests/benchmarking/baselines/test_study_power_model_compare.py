@@ -22,6 +22,7 @@ from benchmarking.baselines.study_power_model_compare import (
     _load_baseline_cells,
     _make_power_model,
     _overlay_frame,
+    _resolve_results_dir,
     _select_profiles,
     _tally,
     accept_candidate,
@@ -341,6 +342,34 @@ def test_conditional_before_after_no_baseline_is_noop(tmp_path: Path) -> None:
     # No baseline file -> warn and return without writing anything (mirrors compare_to_benchmark).
     conditional_before_after("prepost", _fresh_results(), tmp_path / "missing.json", comparison_dir)
     assert not list(comparison_dir.iterdir())
+
+
+def test_resolve_results_dir_flat_layout(tmp_path: Path) -> None:
+    # results_*.csv directly under the mode dir (older hand-assembled reference) resolve to that dir.
+    (tmp_path / "results_cp_0pct.csv").write_text("method\n")
+    assert _resolve_results_dir(tmp_path) == tmp_path
+
+
+def test_resolve_results_dir_timestamped_subdir(tmp_path: Path) -> None:
+    # start_overnight_run nests each run under <mode>/<timestamp>/; that single subdir must be found.
+    run = tmp_path / "20260708_140325"
+    run.mkdir()
+    (run / "results_cp_0pct.csv").write_text("method\n")
+    assert _resolve_results_dir(tmp_path) == run
+
+
+def test_resolve_results_dir_no_results_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match=r"no results_.*csv"):
+        _resolve_results_dir(tmp_path)
+
+
+def test_resolve_results_dir_multiple_runs_is_ambiguous(tmp_path: Path) -> None:
+    for ts in ("20260708_140325", "20260709_090000"):
+        run = tmp_path / ts
+        run.mkdir()
+        (run / "results_cp_0pct.csv").write_text("method\n")
+    with pytest.raises(ValueError, match="multiple run subdirs"):
+        _resolve_results_dir(tmp_path)
 
 
 def test_select_profiles_none_returns_all() -> None:

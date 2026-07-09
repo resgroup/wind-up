@@ -7,6 +7,63 @@ from, not just conclusions.
 
 ---
 
+## F18 — the frozen reference dir regenerated on current code and verified; the compare default repointed at it; a clean four-method bias/spread read (F17 stale-reference follow-up)
+
+*2026-07-09 — the F17 stale-reference flag closed out. A full overnight run
+(`study_overnight_prepost` + `study_overnight_toggle`, both `include_v0=True`, seed 0, 4 replicates,
+1/2/3/6/12 months, all seven `overnight_profiles`) was produced on current committed code as
+`~/temp/wind-up-benchmarking/badass overnight 20260708/`. `study_power_model_compare.py` now defaults
+`_DEFAULT_REFERENCE_DIR` to it (was the unreproducible "30 June" run) and its `_load_reference_methods`
+tolerates the timestamped `<mode>/<YYYYmmdd_HHMMSS>/` subdir that `start_overnight_run` writes, so an
+overnight run drops in as a reference with no manual flattening.*
+
+### Consistency verified (the run is safe to use as the frozen reference)
+- **Config is identical** to the compare grid and the committed benchmark: `campaign_months=[1,2,3,6,12]`,
+  `n_replicates=4`, `seed=0`, all seven profiles, both modes.
+- **v0 now spans the whole grid.** `v0_binned` is present at all of 1/2/3/6/12 months × 4 replicates in
+  both modes — fuller than the 30-June reference, which had no v0 below 3 months. The compare script
+  reuses only v0 (`REUSED_METHODS = ["v0_binned"]`), so this is exactly what it needs.
+- **power_model matches the committed benchmark within noise.** Reproducing `power_model_leaderboard`
+  from the run and diffing against `study_power_model_compare_baseline.json`: **toggle** bit-identical
+  (max |Δ| < 1e-6 on bias/spread/score), **prepost** max |Δbias| = 0.019 pp — well under the 0.1 pp
+  materiality band. (The reference run's own power_model carries only `overall`+`ws` conditional cells,
+  no `ti`, because the overnight driver `example_prepost_study.py` omits `wind_speed_sd_col`; irrelevant
+  to the compare workflow, which recomputes power_model fresh with TI and only reuses v0.)
+- Ground truth is method-independent, shared across all four methods per case, so the compare script's
+  `_check_alignment` guard passes on the full intersection.
+
+### The four-method P50 read (overall condition, pooled 7 profiles × 5 lengths × 4 reps; pp)
+`oracle` = 0.00 bias / 0.00 spread in both modes, confirming the truth anchor.
+
+| method | prepost bias | prepost spread | toggle bias | toggle spread |
+|---|---|---|---|---|
+| naive_ratio | −1.02 | 1.78 | +0.14 | 0.44 |
+| v0_binned | −0.96 | 1.01 | −0.06 | 0.37 |
+| power_model | +0.04 | 0.64 | −0.08 | 0.40 |
+
+- **Prepost is the hard regime; toggle is easy.** Every method is several-fold tighter and less biased in
+  toggle. power_model dominates prepost on both axes; in toggle v0 (0.37) and power_model (0.40) are
+  comparable and naive (0.44) is only slightly behind.
+- **naive and v0 under-report by ~1 pp in prepost**, and that negative bias is roughly *constant across
+  upgrade size* (naive −0.8…−1.3 pp, v0 −0.5…−1.4 pp over all seven profiles) — a floor/detrend offset,
+  not a scaling error. **power_model removes it** (+0.04 pp, uniform across every upgrade incl. the
+  `cp_0pct` placebo) — the key robustness result.
+- **naive's toggle bias scales with the true uplift** (`cp_plus_10pct` +0.44, `cp_minus_10pct` −0.27 pp):
+  a proportional over-read the ratio estimator has and the two models do not.
+- **`rated_plus_5pct` is v0's consistent weak spot** — its largest |bias| in both modes (prepost −1.44,
+  toggle −0.69 pp).
+- **Precision improves with campaign length** for all methods, most steeply for power_model in prepost
+  (1 mo 1.00 → 3 mo 0.23 → 6 mo 0.20 pp); at 12 months toggle spreads fall to ~0.14–0.17 pp across the
+  board. The 1-month prepost cell is where everyone struggles (naive 1.76, v0 1.06, power_model 1.00 pp).
+
+### Implications
+- v0 comparison numbers are now trustworthy (F17's blocker cleared); the leaderboard's v0-vs-power_model
+  gap in prepost is a genuine current-code result, not a stale-reference artefact.
+- Any future overnight run is a drop-in reference (loader handles the timestamp subdir); pointing
+  `--reference-dir` at a run holding two-or-more run subdirs per mode fails loudly rather than guessing.
+
+---
+
 ## F17 — conditional decomposition hardened (count floor + physics imputation + corrected re-level); out-of-the-box method promoted onto the class and scored 1–12 months; the frozen reference is stale (Issue 14)
 
 *2026-07-08 — Issue 14, both efforts. New module
@@ -96,6 +153,8 @@ new grid under the new conditional default. A/B'd on the covered profiles (`cp_0
   (the correct, current-code bar). **The frozen v0 in that reference is from the same stale state** and
   should be regenerated (run `study_overnight_prepost` / `study_overnight_toggle`, both `include_v0=True`,
   on current committed code) before v0 comparison numbers are trusted.
+- **Resolved in F18** — the reference was regenerated on current code and verified consistent; the
+  compare script now defaults to it.
 
 ---
 
