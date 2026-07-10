@@ -303,7 +303,7 @@ class PowerModelMethod:
     :param rho_off_scope: **temporary Issue 15 A/B knob** for ``toggle_estimator="double_ratio"``
         (ignored otherwise): which off rows the calibration ratio ``rho_off = Σy_off/Σpred_off`` is
         measured over. ``"campaign"`` (default) uses the campaign-window off rows only, ``"all"``
-        the reproduces the pre-Issue-15 behaviour of measuring over every off row. The ON window
+        this reproduces the pre-Issue-15 behaviour of measuring over every off row. The ON window
         lives entirely in the campaign, so with all-data training (``toggle_campaign_only=False``)
         an ``"all"`` ratio straddles the stale pre-campaign era and subtracts the wrong era's
         miscalibration at short campaigns (F16); ``"campaign"`` keeps numerator and denominator in
