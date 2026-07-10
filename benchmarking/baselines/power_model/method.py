@@ -78,6 +78,12 @@ _MIN_HOLDOUT_ROWS = 20  # below this, report the in-sample fit (no point splitti
 _N_FOLDS = 5
 _N_BLOCKS = 25
 _MIN_EARLY_STOPPING_ROWS = 200  # below this a valid split is too small for early stopping to mean anything
+# Adaptive time-decay half-life = this multiple of the campaign's own duration (Issue 15 / F20): a
+# scale-free "trust pre-campaign data within ~k campaign-durations" rule that gives a short half-life
+# for a short campaign (drift protection) and a long one for a long campaign (use the plentiful recent
+# data), reproducing F16's regime map with one mechanism-anchored constant. k=2 -> 1mo~60d, 12mo~730d.
+_TIME_DECAY_CAMPAIGN_MULTIPLE = 2.0
+_MIN_TIME_DECAY_DURATION_DAYS = 1.0  # floor the campaign duration so the half-life can't degenerate to 0
 _EARLY_STOPPING_CEILING = 3000  # capacity ceiling when early stopping picks the tree count
 
 # The removal-ablation verdict (findings F13): raw Open-Meteo columns the curated feature set does
@@ -268,16 +274,21 @@ class PowerModelMethod:
         ``era5_hourly_df``; mutually exclusive with ``calibrate_slope`` and, like it, with
         ``early_stopping`` / ``n_seed_ensemble > 1`` (the out-of-fold basis must match the final
         model configuration).
-    :param time_decay_half_life_days: training rows are sample-weighted by their proximity in
-        time to the campaign data: ``0.5 ** (days_outside_campaign / half_life)``. Rows inside
-        the campaign interval (for toggle, the interleaved on and off rows) weigh 1; rows outside
-        decay with their distance to it — so distant history informs the fit without dominating
-        it (Issue 13's recency weighting; the alternative to the rejected F11 drift *feature*).
-        Default **548 days (1.5 years)**: finite by design so an arbitrarily long SCADA history
-        cannot dominate the campaign era (year-old data still weighs ~63%, decade-old ~1%); on
-        the 2.5-year benchmark dataset it is neutral-to-slightly-better at every campaign length
-        (findings F16). Shorter half-lives (~90 days) measurably help 1-3-month campaigns at a
-        small long-prepost bias cost; ``None`` disables the weighting.
+    :param adaptive_time_decay: when ``True`` (**default**, the Issue 15 self-configuring behaviour)
+        the headline fit's time-decay half-life is set automatically to
+        ``_TIME_DECAY_CAMPAIGN_MULTIPLE * campaign_duration_days`` — a short half-life for a short
+        campaign (down-weight the stale pre-campaign era that dominates a sliver campaign) and a long
+        one for a long campaign (use the plentiful recent data). This subsumes the fixed default:
+        the best half-life is regime-dependent (F16 — short helps 1-3-month campaigns in both modes,
+        long is safe at 12 months), and a campaign-proportional half-life gets both ends right with no
+        manual tuning. When ``True``, ``time_decay_half_life_days`` must be left ``None``.
+    :param time_decay_half_life_days: **expert override** (used only when ``adaptive_time_decay=False``):
+        a *fixed* half-life for the campaign-proximity training weights
+        ``0.5 ** (days_outside_campaign / half_life)``. Rows inside the campaign interval (for toggle,
+        the interleaved on and off rows) weigh 1; rows outside decay with their distance to it — so
+        distant history informs the fit without dominating it (Issue 13's recency weighting; the
+        alternative to the rejected F11 drift *feature*). ``None`` disables the weighting entirely.
+        The default self-configuring behaviour is ``adaptive_time_decay=True`` (this left ``None``).
     :param toggle_estimator: how a **toggle** headline is estimated (ignored for prepost).
         ``"counterfactual"`` (default): ``Σactual/Σprediction - 1`` — needs the model to be
         absolutely calibrated. ``"double_ratio"``: the naive-adoption hybrid — the model only
@@ -289,6 +300,15 @@ class PowerModelMethod:
         ``counterfactual = fold_ensemble_prediction * rho_off`` so every downstream sum and the
         conditional re-level stay self-consistent. Cannot be combined with the calibrations
         (it *is* one) or ``early_stopping`` / ``n_seed_ensemble > 1``.
+    :param rho_off_scope: **temporary Issue 15 A/B knob** for ``toggle_estimator="double_ratio"``
+        (ignored otherwise): which off rows the calibration ratio ``rho_off = Σy_off/Σpred_off`` is
+        measured over. ``"campaign"`` (default) uses the campaign-window off rows only, ``"all"``
+        the reproduces the pre-Issue-15 behaviour of measuring over every off row. The ON window
+        lives entirely in the campaign, so with all-data training (``toggle_campaign_only=False``)
+        an ``"all"`` ratio straddles the stale pre-campaign era and subtracts the wrong era's
+        miscalibration at short campaigns (F16); ``"campaign"`` keeps numerator and denominator in
+        the same era. With ``toggle_campaign_only=True`` every off row is already in-campaign, so
+        the two scopes coincide. To be removed once the era-local default is confirmed.
     """
 
     active_power_col: str
@@ -321,8 +341,10 @@ class PowerModelMethod:
     early_stopping: bool = False
     calibrate_slope: bool = False
     calibrate_residuals: bool = False
-    time_decay_half_life_days: float | None = 548.0
+    adaptive_time_decay: bool = True
+    time_decay_half_life_days: float | None = None
     toggle_estimator: str = "counterfactual"
+    rho_off_scope: str = "campaign"  # temporary Issue 15 A/B knob; see :attr:`toggle_estimator`
     # Not configuration: latches the missing-sample_weight warning so it fires once per instance.
     _warned_no_sample_weight: bool = field(default=False, init=False, repr=False, compare=False)
 
@@ -382,6 +404,7 @@ class PowerModelMethod:
             upgraded_sel=upgraded_sel,
             weights=weights,
             double_ratio=double_ratio,
+            campaign_mask=self._campaign_mask(index, upgrade_timing=mi.upgrade_timing),
         )
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
@@ -771,6 +794,18 @@ class PowerModelMethod:
             frames.append(solar_altitude_azimuth(index, latitude=self.latitude, longitude=self.longitude))
         return pd.concat(frames, axis=1)
 
+    def _effective_half_life(self, *, campaign_start: pd.Timestamp, campaign_end: pd.Timestamp) -> float | None:
+        """Return the time-decay half-life (days) for this campaign, or ``None`` when decay is off.
+
+        ``adaptive_time_decay`` (the default) sets it to ``_TIME_DECAY_CAMPAIGN_MULTIPLE`` times the
+        campaign's own duration (Issue 15 / F20); otherwise the fixed ``time_decay_half_life_days``
+        expert override is used verbatim.
+        """
+        if not self.adaptive_time_decay:
+            return self.time_decay_half_life_days
+        duration_days = max((campaign_end - campaign_start).total_seconds() / 86400.0, _MIN_TIME_DECAY_DURATION_DAYS)
+        return _TIME_DECAY_CAMPAIGN_MULTIPLE * duration_days
+
     def _time_decay_weights(
         self, index: pd.DatetimeIndex, *, campaign_start: pd.Timestamp, campaign_end: pd.Timestamp
     ) -> np.ndarray | None:
@@ -781,13 +816,15 @@ class PowerModelMethod:
         the interleaved on **and** off rows) weighs exactly 1, and rows outside decay with their
         distance to it — so distant history still informs the fit without dominating it. With
         today's flows only pre-campaign rows exist outside the interval, but the definition is
-        two-sided on purpose.
+        two-sided on purpose. The half-life is the ``adaptive_time_decay`` campaign-proportional
+        value by default (:meth:`_effective_half_life`).
         """
-        if self.time_decay_half_life_days is None:
+        half_life = self._effective_half_life(campaign_start=campaign_start, campaign_end=campaign_end)
+        if half_life is None:
             return None
         seconds_outside = np.maximum((campaign_start - index).total_seconds(), (index - campaign_end).total_seconds())
         days_outside = np.maximum(seconds_outside / 86400.0, 0.0)
-        return np.asarray(0.5 ** (days_outside / self.time_decay_half_life_days), dtype=float)
+        return np.asarray(0.5 ** (days_outside / half_life), dtype=float)
 
     def _select_rows(
         self, scada: pd.DataFrame, *, mi: MethodInput, index: pd.DatetimeIndex, y: pd.Series, timebase: pd.Timedelta
@@ -811,6 +848,7 @@ class PowerModelMethod:
         upgraded_sel: np.ndarray,
         weights: np.ndarray | None = None,
         double_ratio: bool = False,
+        campaign_mask: np.ndarray | None = None,
     ) -> dict[str, Any]:
         """Fit on baseline, predict the upgraded counterfactual; also a held-out baseline fit metric.
 
@@ -834,8 +872,15 @@ class PowerModelMethod:
                     f"out-of-fold basis, got {len(y_base)}."
                 )
                 raise ValueError(msg)
+            campaign_off = campaign_mask[baseline_sel] if campaign_mask is not None else None
             return self._fit_predict_double_ratio(
-                x_base, y_base=y_base, x_up=x_up, y_up=y_up, baseline_sel=baseline_sel, w_base=w_base
+                x_base,
+                y_base=y_base,
+                x_up=x_up,
+                y_up=y_up,
+                baseline_sel=baseline_sel,
+                w_base=w_base,
+                campaign_off=campaign_off,
             )
 
         y_valid, pred_valid, valid_local = self._holdout_fit(x_base, y_base, w_base=w_base)
@@ -871,6 +916,7 @@ class PowerModelMethod:
         y_up: np.ndarray,
         baseline_sel: np.ndarray,
         w_base: np.ndarray | None,
+        campaign_off: np.ndarray | None = None,
     ) -> dict[str, Any]:
         """Estimate via the toggle ratio-of-ratios: a model-normalised naive comparison (Issue 13 hybrid).
 
@@ -885,6 +931,10 @@ class PowerModelMethod:
         (The scaled counterfactual may exceed the clip ceiling by the ~0-3 % calibration factor;
         that is deliberate — re-clipping after scaling would break the identity.) The full
         out-of-fold off-row predictions double as the held-out fit-quality diagnostic.
+
+        ``rho_off`` is measured over the ``rho_off_scope`` off rows (``campaign_off`` marks the
+        campaign-window subset among the fitted-on off rows): Issue 15's era-local default keeps it
+        in the ON window's era, while the models still train on every off row (see :attr:`rho_off_scope`).
         """
         n = len(y_base)
         folds = time_block_folds(n, n_folds=_N_FOLDS, n_blocks=_N_BLOCKS)
@@ -903,16 +953,19 @@ class PowerModelMethod:
             preds_on.append(np.asarray(model.predict(x_up), dtype=float))
             models.append(model)
         pred_off = _clip_predictions(oof, y_train=y_base, rated_power_kw=self.baseline_rated_power_kw)
-        rho_off = _ratio(y_base, pred_off) + 1.0
+        rho_scope = self._rho_off_mask(campaign_off, n_off=n)
+        rho_off = _ratio(y_base[rho_scope], pred_off[rho_scope]) + 1.0
         pred_up = (
             _clip_predictions(np.mean(preds_on, axis=0), y_train=y_base, rated_power_kw=self.baseline_rated_power_kw)
             * rho_off
         )
         logger.info(
-            "%s double-ratio toggle estimator: rho_off=%.5f over %d off rows (%d folds)",
+            "%s double-ratio toggle estimator: rho_off=%.5f over %d of %d off rows (scope=%s, %d folds)",
             self.name,
             rho_off,
+            int(rho_scope.sum()),
             n,
+            self.rho_off_scope,
             _N_FOLDS,
         )
         return {
@@ -924,6 +977,24 @@ class PowerModelMethod:
             "baseline_valid_pos": np.flatnonzero(baseline_sel),
             "calibration": IDENTITY_CALIBRATION,
         }
+
+    def _rho_off_mask(self, campaign_off: np.ndarray | None, *, n_off: int) -> np.ndarray:
+        """Which off rows the double-ratio ``rho_off`` is measured over (Issue 15 ``rho_off_scope``).
+
+        ``"all"`` → every off row; ``"campaign"`` → the campaign-window off rows only. Falls back to
+        all rows (with a warning) if the campaign subset is unavailable or empty, so ``rho_off`` is
+        never taken over zero rows.
+        """
+        if self.rho_off_scope == "all" or campaign_off is None:
+            return np.ones(n_off, dtype=bool)
+        if not campaign_off.any():
+            logger.warning(
+                "%s double-ratio: no campaign-window off rows for rho_off_scope='campaign'; "
+                "falling back to all off rows.",
+                self.name,
+            )
+            return np.ones(n_off, dtype=bool)
+        return campaign_off
 
     def _validate_model_config(self) -> None:
         """Fail loudly on model-fundamentals config combinations that would silently misbehave."""
@@ -958,8 +1029,22 @@ class PowerModelMethod:
         if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
             msg = f"time_decay_half_life_days must be positive, got {self.time_decay_half_life_days}"
             raise ValueError(msg)
+        if self.adaptive_time_decay and self.time_decay_half_life_days is not None:
+            msg = (
+                "adaptive_time_decay sets the half-life from the campaign duration; a fixed "
+                "time_decay_half_life_days is only used with adaptive_time_decay=False. Set "
+                "adaptive_time_decay=False to use the fixed override, or leave time_decay_half_life_days=None."
+            )
+            raise ValueError(msg)
+        self._validate_toggle_config()
+
+    def _validate_toggle_config(self) -> None:
+        """Fail loudly on toggle-estimator config that would silently misbehave."""
         if self.toggle_estimator not in ("counterfactual", "double_ratio"):
             msg = f"unknown toggle_estimator {self.toggle_estimator!r}; expected 'counterfactual' or 'double_ratio'"
+            raise ValueError(msg)
+        if self.rho_off_scope not in ("campaign", "all"):
+            msg = f"unknown rho_off_scope {self.rho_off_scope!r}; expected 'campaign' or 'all'"
             raise ValueError(msg)
         if self.toggle_estimator == "double_ratio" and (
             self.calibrate_slope or self.calibrate_residuals or self.early_stopping or self.n_seed_ensemble > 1
@@ -987,7 +1072,7 @@ class PowerModelMethod:
                 self._warned_no_sample_weight = True
                 logger.warning(
                     "%s: outcome model %s does not accept sample_weight; time-decay weights are ignored "
-                    "for its fits (set time_decay_half_life_days=None to silence this).",
+                    "for its fits (set adaptive_time_decay=False and time_decay_half_life_days=None to silence).",
                     self.name,
                     type(model).__name__,
                 )
@@ -1299,6 +1384,8 @@ class PowerModelMethod:
             "early_stopping": self.early_stopping,
             "calibrate_slope": self.calibrate_slope,
             "calibrate_residuals": self.calibrate_residuals,
+            "adaptive_time_decay": self.adaptive_time_decay,
             "time_decay_half_life_days": self.time_decay_half_life_days,
             "toggle_estimator": self.toggle_estimator,
+            "rho_off_scope": self.rho_off_scope,
         }

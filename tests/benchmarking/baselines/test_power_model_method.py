@@ -20,6 +20,7 @@ from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 if TYPE_CHECKING:
     from pathlib import Path
 from benchmarking.baselines.power_model.method import (
+    _TIME_DECAY_CAMPAIGN_MULTIPLE,
     _clip_predictions,
     _combine_uplift,
     _implied_shrinkage,
@@ -239,17 +240,53 @@ class TestModelFundamentals:
 
     def test_time_decay_weights_recover_uplift(self) -> None:
         mi, _ = _prepost_case()
-        out = _fundamentals_method(model_params=_FAST_PARAMS, time_decay_half_life_days=30.0).estimate(mi)
+        out = _fundamentals_method(
+            model_params=_FAST_PARAMS, adaptive_time_decay=False, time_decay_half_life_days=30.0
+        ).estimate(mi)
         assert out.p50_overall == pytest.approx(0.05, abs=0.02)
 
     def test_time_decay_weight_values(self) -> None:
-        method = _fundamentals_method(time_decay_half_life_days=10.0)
+        # the expert fixed-half-life path (adaptive_time_decay=False)
+        method = _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=10.0)
         index = pd.date_range("2019-01-01", periods=5, freq="10D", tz="UTC")
         # campaign interval [index[2], index[3]]: inside weighs 1, outside decays both ways
         weights = method._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3])  # noqa: SLF001
         np.testing.assert_allclose(weights, [0.25, 0.5, 1.0, 1.0, 0.5])
-        no_decay = _fundamentals_method(time_decay_half_life_days=None)
+        no_decay = _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=None)
         assert no_decay._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3]) is None  # noqa: SLF001
+
+    def test_adaptive_time_decay_half_life_scales_with_campaign_duration(self) -> None:
+        # the self-configuring default: half_life = k * campaign_duration_days, in both modes
+        method = _fundamentals_method()  # adaptive_time_decay defaults to True
+        assert method.adaptive_time_decay is True
+        start = pd.Timestamp("2019-04-01", tz="UTC")
+        for duration_days in (30.0, 90.0, 365.0):
+            end = start + pd.Timedelta(days=duration_days)
+            hl = method._effective_half_life(campaign_start=start, campaign_end=end)  # noqa: SLF001
+            assert hl == pytest.approx(_TIME_DECAY_CAMPAIGN_MULTIPLE * duration_days)
+
+    def test_adaptive_time_decay_weight_values(self) -> None:
+        method = _fundamentals_method()  # adaptive default
+        index = pd.date_range("2019-01-01", periods=5, freq="10D", tz="UTC")
+        start, end = index[2], index[3]  # 10-day campaign -> half_life = k * 10
+        hl = _TIME_DECAY_CAMPAIGN_MULTIPLE * 10.0
+        days_outside = np.array([20.0, 10.0, 0.0, 0.0, 10.0])  # distance to [index[2], index[3]]
+        expected = 0.5 ** (days_outside / hl)
+        weights = method._time_decay_weights(index, campaign_start=start, campaign_end=end)  # noqa: SLF001
+        np.testing.assert_allclose(weights, expected)
+
+    def test_effective_half_life_fixed_and_off(self) -> None:
+        start = pd.Timestamp("2019-04-01", tz="UTC")
+        end = start + pd.Timedelta(days=90)
+        fixed = _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=42.0)
+        assert fixed._effective_half_life(campaign_start=start, campaign_end=end) == 42.0  # noqa: SLF001
+        off = _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=None)
+        assert off._effective_half_life(campaign_start=start, campaign_end=end) is None  # noqa: SLF001
+
+    def test_adaptive_with_explicit_half_life_conflict_raises(self) -> None:
+        mi, _ = _prepost_case(n=200)
+        with pytest.raises(ValueError, match="adaptive_time_decay"):
+            _fundamentals_method(adaptive_time_decay=True, time_decay_half_life_days=90.0).estimate(mi)
 
     def test_issue13_config_conflicts_raise(self) -> None:
         mi, _ = _prepost_case(n=200)
@@ -261,7 +298,7 @@ class TestModelFundamentals:
         with pytest.raises(ValueError, match="out-of-fold basis"):
             _fundamentals_method(calibrate_residuals=True, n_seed_ensemble=2, era5_hourly_df=era5).estimate(mi)
         with pytest.raises(ValueError, match="must be positive"):
-            _fundamentals_method(time_decay_half_life_days=0.0).estimate(mi)
+            _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=0.0).estimate(mi)
 
     def test_campaign_mask_bites_only_for_started_toggle(self) -> None:
         index = pd.date_range("2019-01-01", periods=4, freq="10D", tz="UTC")
@@ -311,6 +348,54 @@ class TestModelFundamentals:
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
         with pytest.raises(ValueError, match=r"double_ratio.*off rows"):
             method.estimate(mi)
+
+    def test_double_ratio_era_local_rho_off_beats_all_under_era_drift(self) -> None:
+        # A pre-campaign era effect the references do not explain (Issue 15 mechanism): the
+        # double-ratio cancels the model's miscalibration between the on/off sides, but rho_off
+        # measured over *all* off rows straddles the stale pre-campaign era while the ON window is
+        # a campaign-only sliver, so it subtracts the wrong era's miscalibration. Measuring rho_off
+        # on the campaign-window off rows only (rho_off_scope="campaign") keeps the placebo at ~0.
+        n = 6000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        start = idx[n // 2]  # first half pre-campaign off; second half interleaved toggle
+        within = (((idx - start) // (pd.Timedelta(hours=4) / 2)).astype(int) % 2) == 1
+        treated = np.asarray((idx >= start) & within)
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=4), start=start)
+        scada = _toy_scada(n, uplift=0.0, treated=treated)  # placebo: true uplift is 0
+        # inflate the test turbine's pre-campaign power by 20% — a level shift the reference
+        # features cannot see, i.e. a stale-era miscalibration the model averages over
+        pre = (scada.index < start) & (scada[_TURBINE] == "T1")
+        scada.loc[pre, _POWER] *= 1.20
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        era_local = _fundamentals_method(
+            model_params=_FAST_PARAMS, toggle_estimator="double_ratio", rho_off_scope="campaign"
+        ).estimate(mi)
+        all_scope = _fundamentals_method(
+            model_params=_FAST_PARAMS, toggle_estimator="double_ratio", rho_off_scope="all"
+        ).estimate(mi)
+        assert era_local.p50_overall == pytest.approx(0.0, abs=0.02)
+        assert all_scope.p50_overall < -0.04  # the stale pre-campaign era biases the all-rows rho_off
+
+    def test_double_ratio_rho_off_scope_moot_when_campaign_only(self) -> None:
+        # with toggle_campaign_only the pre-campaign rows are dropped, so every off row is already
+        # in-campaign and the two scopes must give bit-identical results.
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        start = idx[n // 2]
+        within = (((idx - start) // (pd.Timedelta(hours=4) / 2)).astype(int) % 2) == 1
+        treated = np.asarray((idx >= start) & within)
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=4), start=start)
+        scada = _toy_scada(n, uplift=0.04, treated=treated)
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        common = {"model_params": _FAST_PARAMS, "toggle_estimator": "double_ratio", "toggle_campaign_only": True}
+        campaign = _fundamentals_method(**common, rho_off_scope="campaign").estimate(mi)
+        all_scope = _fundamentals_method(**common, rho_off_scope="all").estimate(mi)
+        assert campaign.p50_overall == pytest.approx(all_scope.p50_overall, abs=1e-9)
+
+    def test_rho_off_scope_guard(self) -> None:
+        mi, _ = _prepost_case(n=200)
+        with pytest.raises(ValueError, match="rho_off_scope"):
+            _fundamentals_method(rho_off_scope="nope").estimate(mi)
 
     def test_toggle_all_data_with_conditional_recovers_uplift(self) -> None:
         n = 4000

@@ -63,8 +63,8 @@ _DEFAULT_OUTPUT_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "short_cam
 # the decay weights.
 VARIANTS: dict[str, tuple[tuple[str, ...], dict[str, Any]]] = {
     "default": (("prepost", "toggle"), {}),
-    "hl90": (("prepost", "toggle"), {"time_decay_half_life_days": 90}),
-    "hl365": (("prepost", "toggle"), {"time_decay_half_life_days": 365}),
+    "hl90": (("prepost", "toggle"), {"adaptive_time_decay": False, "time_decay_half_life_days": 90}),
+    "hl365": (("prepost", "toggle"), {"adaptive_time_decay": False, "time_decay_half_life_days": 365}),
     "mcs200": (("toggle",), {"model_params": {"min_child_samples": 200}}),
     "tco_true": (("toggle",), {"toggle_campaign_only": True}),
     "double_ratio": (("toggle",), {"toggle_estimator": "double_ratio"}),
