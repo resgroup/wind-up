@@ -430,7 +430,7 @@ display item; estimates unchanged). Candidates A/B'd per the Issue 9 protocol:
   quantile-0.5 — estimate the median and bias the energy sum. The F5 shrinkage is a
   *regularisation* artefact, not a loss artefact; changing objective does not fix it. Legitimate
   within the mean family: Tweedie / variance-weighted L2 (efficiency candidates, untried).
-  Quantile objectives are out of scope for the point estimate (they return in Issue 17/WS4).
+  Quantile objectives are out of scope for the point estimate (they return in Issue 19/WS4).
 - **Tune on uplift metrics, never on prediction RMSE.** More regularisation can improve held-out
   RMSE while worsening shrinkage. Yardsticks: placebo bias on the harness, per-bin residual
   flatness, the predicted-vs-actual **calibration slope** (target ≈ 1) on a time-blocked held-out
