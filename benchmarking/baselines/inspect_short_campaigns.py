@@ -10,8 +10,7 @@ Which choices can even flip at short campaigns:
   full pre-changeover baseline) is unchanged, so the fit-side choices (capacity, features) cannot
   flip. Only the time-decay weights act on the training side, so prepost trials just those.
 * **toggle** — the campaign length scales the training data itself, so capacity
-  (``min_child_samples``), the training window (``toggle_campaign_only``), the decay weights and
-  the ``double_ratio`` estimator are all genuinely in play.
+  (``min_child_samples``) and the decay weights are genuinely in play.
 
 Run from the repo root (defaults: both modes, all variants)::
 
@@ -66,9 +65,6 @@ VARIANTS: dict[str, tuple[tuple[str, ...], dict[str, Any]]] = {
     "hl90": (("prepost", "toggle"), {"adaptive_time_decay": False, "time_decay_half_life_days": 90}),
     "hl365": (("prepost", "toggle"), {"adaptive_time_decay": False, "time_decay_half_life_days": 365}),
     "mcs200": (("toggle",), {"model_params": {"min_child_samples": 200}}),
-    "tco_true": (("toggle",), {"toggle_campaign_only": True}),
-    "double_ratio": (("toggle",), {"toggle_estimator": "double_ratio"}),
-    "double_ratio_tco_true": (("toggle",), {"toggle_estimator": "double_ratio", "toggle_campaign_only": True}),
 }
 
 

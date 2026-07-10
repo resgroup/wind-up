@@ -188,7 +188,7 @@ def _make_power_model(
     """Construct the HoT-configured ``power_model`` method (its default: conditional uplift on).
 
     ``overrides`` are ``PowerModelMethod`` field overrides for candidate A/B runs (the Issue 9/10/11
-    protocol), e.g. ``{"era5_derivations": ["gust_ratio"]}``; unknown field names fail loudly and
+    protocol), e.g. ``{"matching_vars": ["wind_speed_100m"]}``; unknown field names fail loudly and
     JSON lists are coerced to the tuples the dataclass fields expect.
     """
     # Only data-schema description is passed here now: the accepted behaviour defaults (F13
@@ -793,7 +793,7 @@ def main() -> None:
         type=str,
         default=None,
         help="JSON dict of PowerModelMethod field overrides for a candidate A/B run, e.g. "
-        '\'{"era5_derivations": ["gust_ratio"]}\'. The run is diffed against the benchmark as usual '
+        '\'{"matching_vars": ["wind_speed_100m"]}\'. The run is diffed against the benchmark as usual '
         "but no candidate baseline is written (the overridden config is not the committed default).",
     )
     parser.add_argument(

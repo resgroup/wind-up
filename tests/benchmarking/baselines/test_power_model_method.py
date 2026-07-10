@@ -15,7 +15,6 @@ import pandas as pd
 import pytest
 
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelMethod
-from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -177,66 +176,7 @@ def _fundamentals_method(**overrides: object) -> PowerModelMethod:
 
 
 class TestModelFundamentals:
-    """Issue 12 knobs: model factory, seed ensemble, early stopping, calibration slope."""
-
-    @pytest.mark.parametrize("factory", ["hgb", "linear"])
-    def test_registered_factories_recover_uplift(self, factory: str) -> None:
-        mi, _ = _prepost_case()
-        out = _fundamentals_method(model_factory=factory).estimate(mi)
-        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-
-    def test_callable_factory_recovers_uplift(self) -> None:
-        mi, _ = _prepost_case()
-        method = _fundamentals_method(model_factory=lambda seed: make_outcome_model(random_state=seed, **_FAST_PARAMS))
-        out = method.estimate(mi)
-        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-
-    def test_seed_ensemble_recovers_uplift(self) -> None:
-        mi, _ = _prepost_case()
-        out = _fundamentals_method(model_params=_FAST_PARAMS, n_seed_ensemble=3).estimate(mi)
-        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-
-    def test_early_stopping_recovers_uplift(self) -> None:
-        mi, _ = _prepost_case()
-        # n_estimators in model_params is the early-stopping ceiling (keeps the probe fit fast)
-        out = _fundamentals_method(model_params=dict(_FAST_PARAMS), early_stopping=True).estimate(mi)
-        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-
-    def test_calibrate_slope_recovers_uplift_and_placebo(self) -> None:
-        mi, _ = _prepost_case()
-        out = _fundamentals_method(model_params=_FAST_PARAMS, calibrate_slope=True).estimate(mi)
-        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-        mi0, _ = _prepost_case(uplift=0.0)
-        out0 = _fundamentals_method(model_params=_FAST_PARAMS, calibrate_slope=True).estimate(mi0)
-        assert out0.p50_overall == pytest.approx(0.0, abs=0.02)
-
-    def test_config_conflicts_raise(self) -> None:
-        mi, _ = _prepost_case(n=200)
-        with pytest.raises(ValueError, match="unknown model_factory"):
-            _fundamentals_method(model_factory="not_a_factory").estimate(mi)
-        with pytest.raises(ValueError, match="model_params"):
-            _fundamentals_method(model_factory="linear", model_params=_FAST_PARAMS).estimate(mi)
-        with pytest.raises(ValueError, match="early_stopping"):
-            _fundamentals_method(model_factory="linear", early_stopping=True).estimate(mi)
-        with pytest.raises(ValueError, match="n_seed_ensemble"):
-            _fundamentals_method(n_seed_ensemble=0).estimate(mi)
-        with pytest.raises(ValueError, match="random_state"):
-            _fundamentals_method(model_params={"random_state": 1}, n_seed_ensemble=2).estimate(mi)
-        with pytest.raises(ValueError, match="calibrate_slope"):
-            _fundamentals_method(calibrate_slope=True, early_stopping=True).estimate(mi)
-        with pytest.raises(ValueError, match="calibrate_slope"):
-            _fundamentals_method(calibrate_slope=True, n_seed_ensemble=2).estimate(mi)
-
-    def test_calibrate_residuals_recovers_uplift_and_placebo(self) -> None:
-        for uplift in (0.05, 0.0):
-            mi, _ = _prepost_case(uplift=uplift)
-            method = _fundamentals_method(
-                model_params=_FAST_PARAMS,
-                calibrate_residuals=True,
-                era5_hourly_df=_toy_era5(pd.DatetimeIndex(pd.unique(mi.scada_df.index))),
-            )
-            out = method.estimate(mi)
-            assert out.p50_overall == pytest.approx(uplift, abs=0.02)
+    """The self-configuring time-decay weighting and the toggle campaign mask."""
 
     def test_time_decay_weights_recover_uplift(self) -> None:
         mi, _ = _prepost_case()
@@ -288,15 +228,8 @@ class TestModelFundamentals:
         with pytest.raises(ValueError, match="adaptive_time_decay"):
             _fundamentals_method(adaptive_time_decay=True, time_decay_half_life_days=90.0).estimate(mi)
 
-    def test_issue13_config_conflicts_raise(self) -> None:
+    def test_time_decay_half_life_must_be_positive(self) -> None:
         mi, _ = _prepost_case(n=200)
-        era5 = _toy_era5(pd.DatetimeIndex(pd.unique(mi.scada_df.index)))
-        with pytest.raises(ValueError, match="requires ERA5"):
-            _fundamentals_method(calibrate_residuals=True).estimate(mi)
-        with pytest.raises(ValueError, match="competing headline corrections"):
-            _fundamentals_method(calibrate_residuals=True, calibrate_slope=True, era5_hourly_df=era5).estimate(mi)
-        with pytest.raises(ValueError, match="out-of-fold basis"):
-            _fundamentals_method(calibrate_residuals=True, n_seed_ensemble=2, era5_hourly_df=era5).estimate(mi)
         with pytest.raises(ValueError, match="must be positive"):
             _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=0.0).estimate(mi)
 
@@ -310,94 +243,9 @@ class TestModelFundamentals:
         assert mask(index, upgrade_timing=pd.Timestamp(index[2])).all()  # prepost: all-True
         assert mask(index, upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=4))).all()  # no start
 
-    @pytest.mark.parametrize("uplift", [0.04, 0.0])
-    def test_double_ratio_toggle_recovers_uplift(self, uplift: float) -> None:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        schedule = ToggleSchedule(period=pd.Timedelta(hours=4))
-        treated = np.asarray((((idx - idx.min()) // (schedule.period / 2)).astype(int) % 2) == 1)
-        scada = _toy_scada(n, uplift=uplift, treated=treated)
-        method = _fundamentals_method(model_params=_FAST_PARAMS, toggle_estimator="double_ratio")
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
-        out = method.estimate(mi)
-        assert out.p50_overall == pytest.approx(uplift, abs=0.02)
-
-    def test_double_ratio_ignored_for_prepost(self) -> None:
-        mi, _ = _prepost_case()
-        out = _fundamentals_method(model_params=_FAST_PARAMS, toggle_estimator="double_ratio").estimate(mi)
-        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-
-    def test_toggle_estimator_guards(self) -> None:
-        mi, _ = _prepost_case(n=200)
-        with pytest.raises(ValueError, match="unknown toggle_estimator"):
-            _fundamentals_method(toggle_estimator="nope").estimate(mi)
-        with pytest.raises(ValueError, match="fold-basis calibration"):
-            _fundamentals_method(toggle_estimator="double_ratio", calibrate_slope=True).estimate(mi)
-        with pytest.raises(ValueError, match="fold-basis calibration"):
-            _fundamentals_method(toggle_estimator="double_ratio", n_seed_ensemble=2).estimate(mi)
-
-    def test_double_ratio_too_few_off_rows_raises(self) -> None:
-        # 36 rows, half toggled on -> ~18 off rows after filtering, below the fold-basis minimum;
-        # the requested estimator must fail loudly, not silently fall back to the counterfactual.
-        n = 36
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        schedule = ToggleSchedule(period=pd.Timedelta(minutes=20))
-        treated = np.asarray((((idx - idx.min()) // (schedule.period / 2)).astype(int) % 2) == 1)
-        scada = _toy_scada(n, uplift=0.0, treated=treated)
-        method = _fundamentals_method(model_params=_FAST_PARAMS, toggle_estimator="double_ratio")
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
-        with pytest.raises(ValueError, match=r"double_ratio.*off rows"):
-            method.estimate(mi)
-
-    def test_double_ratio_era_local_rho_off_beats_all_under_era_drift(self) -> None:
-        # A pre-campaign era effect the references do not explain (Issue 15 mechanism): the
-        # double-ratio cancels the model's miscalibration between the on/off sides, but rho_off
-        # measured over *all* off rows straddles the stale pre-campaign era while the ON window is
-        # a campaign-only sliver, so it subtracts the wrong era's miscalibration. Measuring rho_off
-        # on the campaign-window off rows only (rho_off_scope="campaign") keeps the placebo at ~0.
-        n = 6000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        start = idx[n // 2]  # first half pre-campaign off; second half interleaved toggle
-        within = (((idx - start) // (pd.Timedelta(hours=4) / 2)).astype(int) % 2) == 1
-        treated = np.asarray((idx >= start) & within)
-        schedule = ToggleSchedule(period=pd.Timedelta(hours=4), start=start)
-        scada = _toy_scada(n, uplift=0.0, treated=treated)  # placebo: true uplift is 0
-        # inflate the test turbine's pre-campaign power by 20% — a level shift the reference
-        # features cannot see, i.e. a stale-era miscalibration the model averages over
-        pre = (scada.index < start) & (scada[_TURBINE] == "T1")
-        scada.loc[pre, _POWER] *= 1.20
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
-        era_local = _fundamentals_method(
-            model_params=_FAST_PARAMS, toggle_estimator="double_ratio", rho_off_scope="campaign"
-        ).estimate(mi)
-        all_scope = _fundamentals_method(
-            model_params=_FAST_PARAMS, toggle_estimator="double_ratio", rho_off_scope="all"
-        ).estimate(mi)
-        assert era_local.p50_overall == pytest.approx(0.0, abs=0.02)
-        assert all_scope.p50_overall < -0.04  # the stale pre-campaign era biases the all-rows rho_off
-
-    def test_double_ratio_rho_off_scope_moot_when_campaign_only(self) -> None:
-        # with toggle_campaign_only the pre-campaign rows are dropped, so every off row is already
-        # in-campaign and the two scopes must give bit-identical results.
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        start = idx[n // 2]
-        within = (((idx - start) // (pd.Timedelta(hours=4) / 2)).astype(int) % 2) == 1
-        treated = np.asarray((idx >= start) & within)
-        schedule = ToggleSchedule(period=pd.Timedelta(hours=4), start=start)
-        scada = _toy_scada(n, uplift=0.04, treated=treated)
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
-        common = {"model_params": _FAST_PARAMS, "toggle_estimator": "double_ratio", "toggle_campaign_only": True}
-        campaign = _fundamentals_method(**common, rho_off_scope="campaign").estimate(mi)
-        all_scope = _fundamentals_method(**common, rho_off_scope="all").estimate(mi)
-        assert campaign.p50_overall == pytest.approx(all_scope.p50_overall, abs=1e-9)
-
-    def test_rho_off_scope_guard(self) -> None:
-        mi, _ = _prepost_case(n=200)
-        with pytest.raises(ValueError, match="rho_off_scope"):
-            _fundamentals_method(rho_off_scope="nope").estimate(mi)
-
     def test_toggle_all_data_with_conditional_recovers_uplift(self) -> None:
+        # A toggle whose headline fit trains on the pre-campaign baseline too (the adaptive default,
+        # no campaign-only restriction): the conditional step still matches within the campaign only.
         n = 4000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         start = idx[n // 2]  # first half pre-campaign baseline, second half interleaved toggle
@@ -407,7 +255,6 @@ class TestModelFundamentals:
         scada = _toy_scada(n, uplift=0.04, treated=treated)
         method = _fundamentals_method(
             model_params=_FAST_PARAMS,
-            toggle_campaign_only=False,
             conditional_uplift=True,
             era5_hourly_df=_toy_era5(idx),
         )
@@ -415,17 +262,6 @@ class TestModelFundamentals:
         out = method.estimate(mi)
         assert out.p50_overall == pytest.approx(0.04, abs=0.02)
         assert out.p50_by_condition is not None
-
-    def test_model_factory_config_label_is_stable(self) -> None:
-        def label_for(**overrides: object) -> str | None:
-            return _fundamentals_method(**overrides)._config_params()["model_factory"]  # noqa: SLF001
-
-        assert label_for() is None
-        assert label_for(model_factory="hgb") == "hgb"
-        expected = f"{make_outcome_model.__module__}.{make_outcome_model.__qualname__}"
-        assert label_for(model_factory=make_outcome_model) == expected
-        # a lambda's repr embeds a memory address; the label must not (it goes in the run-config YAML)
-        assert "0x" not in str(label_for(model_factory=lambda s: s))
 
 
 class TestReferenceOnly:
@@ -603,7 +439,8 @@ def _toy_era5(scada_idx: pd.DatetimeIndex, *, seed: int = 0) -> pd.DataFrame:
 
 
 class TestFeatureConfig:
-    """The Issue 9/10/11 opt-in feature config: columns reach the model and estimates stay sound."""
+    """The surviving feature config (Issue 11 reference stats, era5_exclude, availability): columns
+    reach the model and estimates stay sound."""
 
     def _prepost_mi(self, n: int = 4000, *, uplift: float = 0.05) -> MethodInput:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
@@ -617,51 +454,6 @@ class TestFeatureConfig:
         files = sorted(out_dir.rglob("*_feature_importance_*.csv"))
         assert files, f"no feature-importance CSV under {out_dir}"
         return set(pd.read_csv(files[-1])["feature"])
-
-    def test_era5_derivations_reach_model_and_recovery_holds(self, tmp_path: Path) -> None:
-        mi = self._prepost_mi()
-        method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
-            baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
-            conditional_uplift=False,
-            model_params=_FAST_PARAMS,
-            era5_derivations=("shear_exponent", "wind_speed_hub", "gust_ratio", "veer", "air_density"),
-            hub_height_m=59.0,
-            out_dir=tmp_path,
-        )
-        out = method.estimate(mi)
-        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-        fitted = self._fitted_feature_names(tmp_path)
-        assert {"shear_exponent", "wind_speed_hub", "gust_ratio", "veer", "air_density"} <= fitted
-
-    def test_time_features_reach_model_and_recovery_holds(self, tmp_path: Path) -> None:
-        mi = self._prepost_mi()
-        method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
-            baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            conditional_uplift=False,
-            model_params=_FAST_PARAMS,
-            time_features=("days_since_campaign_start", "season", "solar"),
-            latitude=57.5,
-            longitude=-3.25,
-            out_dir=tmp_path,
-        )
-        out = method.estimate(mi)
-        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-        fitted = self._fitted_feature_names(tmp_path)
-        assert {
-            "days_since_campaign_start",
-            "season_sin",
-            "season_cos",
-            "solar_altitude",
-            "solar_azimuth_sin",
-            "solar_azimuth_cos",
-        } <= fitted
 
     def test_reference_stat_cols_reach_model_and_recovery_holds(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
@@ -738,39 +530,6 @@ class TestFeatureConfig:
         fitted = self._fitted_feature_names(tmp_path)
         assert not any(name.startswith(_AVAIL) for name in fitted)
         assert f"{_POWER} @ R1" in fitted
-
-    def test_era5_derivations_without_era5_raises(self) -> None:
-        method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
-            baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            era5_derivations=("gust_ratio",),
-        )
-        with pytest.raises(ValueError, match="need ERA5"):
-            method.estimate(self._prepost_mi(n=300))
-
-    def test_unknown_time_feature_raises(self) -> None:
-        method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
-            baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            time_features=("hour_of_week",),
-        )
-        with pytest.raises(ValueError, match="unknown time feature"):
-            method.estimate(self._prepost_mi(n=300))
-
-    def test_solar_requires_lat_long(self) -> None:
-        method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
-            baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            time_features=("solar",),
-        )
-        with pytest.raises(ValueError, match="latitude and longitude"):
-            method.estimate(self._prepost_mi(n=300))
 
 
 class TestPromotedDefaults:

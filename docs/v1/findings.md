@@ -7,6 +7,69 @@ from, not just conclusions.
 
 ---
 
+## F21 — prune the historic opt-in knobs: `power_model` now presents only the winning configuration (Issue 16)
+
+*2026-07-10 — code hygiene, not a methodology change. Every removed knob lost its A/B and was off/absent
+in the shipped default, so the committed benchmark is unchanged (the acceptance test: a default-config
+`study_power_model_compare.py` sweep reproduces `study_power_model_compare_baseline.json` bit-identically,
+no `--update-baseline`). The point is a smaller surface, less overfit temptation, and code that reads as
+the successful approach.*
+
+### Removed (each off/absent in the default; the findings verdict that retired it in brackets)
+- `calibrate_slope` [F14], `calibrate_residuals` [F15] — headline calibrations that never transferred;
+  with them go `fitting.py`'s `fit_calibration_line` / `cell_residual_calibration` / `CalibrationLine` /
+  `early_stopped_n_estimators` and the method's `_oof_baseline_predictions` / `_fit_calibration` /
+  `_residual_corrections`.
+- `early_stopping` [F14 — neutral, +15% runtime], `n_seed_ensemble` [F14 — spread is weather-sampling,
+  not seed noise, +75% runtime].
+- `toggle_estimator="double_ratio"` **and** the temporary `rho_off_scope` knob [F16/F19 — never beats the
+  counterfactual on score]. With `double_ratio` gone, `toggle_estimator` was single-valued → dropped; the
+  counterfactual energy ratio is the sole toggle headline (`_fit_predict_double_ratio` / `_rho_off_mask`
+  removed).
+- `time_features` (+ `latitude`, `longitude`) [F11 — all rejected], `era5_derivations` (+ `hub_height_m`)
+  [F10 — all rejected *as model features*]. `era5_derived.py` and `time_features.py` **stay as utilities**
+  (CEM matching / `inspect_era5_matching_importance.py` use the derivations); only the model-feature wiring
+  and the method-surface knobs went.
+- The injectable **`model_factory` seam** and its `OUTCOME_MODEL_FACTORIES` (`hgb`/`linear`) registry —
+  removed entirely: **no driver, example or inspection script used it** (the issue's "if nothing uses it,
+  remove it too"). LightGBM `make_outcome_model` is the sole outcome model; a future Phase-2 learner
+  re-introduces a seam when a driver actually needs one. `fitting.py` thinned to just `time_block_folds`.
+
+### Kept (so it isn't re-litigated)
+Settled defaults: `era5_exclude=CURATED_ERA5_EXCLUDE` (F13), `availability_feature=False` (F13),
+`reference_stat_cols` (schema), `matching_vars`/`matching_bin_edges` (F6), the adaptive time-decay default
+and its `time_decay_half_life_days` expert override (F20), `_MIN_BIN_MATCHED_COUNT` conditional floor (F17).
+
+### `toggle_campaign_only` — confirmed redundant, removed from `power_model`
+The F20 adaptive half-life is a *soft* campaign-only at short campaigns, so the hard knob was expected
+redundant. One cheap A/B settled it (`inspect_short_campaigns.py`, toggle 1–2 mo, placebo `cp_0pct` +
+recovery `cp_plus_3pct`, 4 replicates): adaptive default (`tco=False`) vs adaptive + `tco=True`, overall
+score pp:
+
+| profile | mo | default | tco_true |
+| --- | --- | --- | --- |
+| cp_0pct | 1 | 0.380 | 0.334 |
+| cp_0pct | 2 | 0.201 | 0.191 |
+| cp_plus_3pct | 1 | 0.391 | 0.343 |
+| cp_plus_3pct | 2 | 0.206 | 0.194 |
+
+Campaign-only is marginally better at 1–2 mo (≤0.05 pp, near-noise on 4 replicates; the default carries a
+small −0.3 pp bias, campaign-only near-zero bias but higher spread), and the committed benchmark already
+shows all-data winning decisively at 3–12 mo — where a hard `tco=True` would hurt. The soft adaptive
+window captures the short-campaign benefit without the long-campaign cost, so the knob does not earn its
+place: **removed from `PowerModelMethod`** (always all-data; the conditional step still matches within the
+campaign via `_campaign_mask`). `naive_ratio` keeps its own `toggle_campaign_only` — a different method,
+untouched.
+
+### Mechanics
+Deleted the knobs, their config-validation branches, their `_config_params` entries and plumbing, and
+their unit tests; thinned `fitting.py`; the run-config YAML loses the removed keys (a per-run diagnostic,
+not the committed benchmark). `inspect_short_campaigns.py` lost its `double_ratio*`/`tco_true` arms;
+`study_power_model_compare.py` help/docstring examples updated off the removed `era5_derivations`. Public
+`PowerModelMethod` surface dropped from 30 to 21 constructor params. `poe all-fast` green.
+
+---
+
 ## F20 — the headline training window self-configures: an adaptive time-decay half-life (2 × campaign duration) is the new default, subsuming the fixed 548 d; big short-campaign wins, tied long, in both modes (Issue 15 deliverable 2)
 
 *2026-07-10 — Issue 15's mechanism-justified fallback after F19 ruled out the `double_ratio` path. New
