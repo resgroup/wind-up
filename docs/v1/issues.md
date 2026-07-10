@@ -10,13 +10,14 @@ conditional P50, then extending the measurement to AEP uplift and starting the
 uncertainty (Phase 3 / WS4) work.
 
 Suggested order of execution: #1 → #2 → #3 → #4 → #5 (done), then
-#9 → #10 → #11 → #12 → #13 (done) → #14 → #15 → #16 → #17. (#9–#12 are independent
-input-data and model trials sharing one evaluation protocol — many ideas, each tested
-one by one; #14 is small and independent, so it can be pulled earlier — and #15's
-adaptive rule wants #14's hardened conditional scoring in place; #17 builds on #16's
-AEP machinery, so it goes last.) (Issue 4 was originally a data contract +
-method-selector issue; it has been re-scoped to a naive energy-ratio method — see
-Issue 4 below for why.)
+#9 → #10 → #11 → #12 → #13 → #14 → #15 (done) → #16 → #17 → #18 → #19. (#9–#12 are
+independent input-data and model trials sharing one evaluation protocol — many ideas,
+each tested one by one; #14 is small and independent, so it can be pulled earlier — and
+#15's adaptive rule wants #14's hardened conditional scoring in place; #16/#17 are the
+`power_model` hygiene + consistency follow-ups that fall out of #15 and are best done
+before the AEP/uncertainty work builds on the conditional path; #19 builds on #18's AEP
+machinery, so it goes last.) (Issue 4 was originally a data contract + method-selector
+issue; it has been re-scoped to a naive energy-ratio method — see Issue 4 below for why.)
 
 ---
 
@@ -390,7 +391,7 @@ early stopping, and identical whether the fit has ~13k training rows (3-month to
   shrinkage-free, valuable as a cross-check on the tree models' conditional bias even if
   its overall accuracy is worse.
 - **Quantile objectives are out of scope for the point estimate** (median ≠ mean under
-  skew → biased energy). Quantile models return in Issue 17 / WS4 for conformal OOD
+  skew → biased energy). Quantile models return in Issue 19 / WS4 for conformal OOD
   filtering and diagnostics — not as the uplift estimator.
 
 **Done when:** a findings entry records the verdict per candidate against the uplift
@@ -593,7 +594,7 @@ configuration is regime-dependent, with a crossover near ~3 months.
   one estimator may dominate everywhere and become the toggle default outright — no
   selection machinery needed. Test at 1, 2, 3, 6, 12 months in both framings.
 - **Adaptive training window / half-life as fallback.** If no single configuration
-  dominates: derive the switch (or a blended weight) from the campaign's own observables
+  dominates: derive a blended weight from the campaign's own observables
   — campaign length, campaign-row count vs pre-campaign-row count — never from the
   benchmark truth. Prefer a smooth blend (e.g. weight the campaign-only and all-data
   estimates by a logistic in log(campaign rows)) over a hard threshold, so estimates
@@ -617,7 +618,108 @@ the dominance of the single configuration); benchmark regenerated.
 
 ---
 
-## Issue 16 — AEP uplift: long-term extrapolation design + harness scoring (WS1/WS4)
+## Issue 16 — Prune the historic opt-ins: orient `power_model` to the winning configuration (power_model)
+
+**Goal:** the accumulated development knobs on `PowerModelMethod` are almost all opt-ins that
+**lost their A/B and are off in the shipped default**. Remove the dead ones so the code presents
+only the successful approach — smaller surface, less overfit temptation, easier to reason about.
+This is code hygiene, not a methodology change: the default configuration is unchanged, so the
+committed benchmark must come out **bit-identical** (the acceptance test). Also finishes the
+Issue 15 knob cleanup.
+
+**The removal set (each off/absent in the default; findings verdict in brackets)**
+- `calibrate_slope` [F14 — toggle overcorrects; OOF-vs-final shrinkage gap is structural],
+  `calibrate_residuals` [F15 — OOF residuals don't transfer to a refit model in level or shape].
+- `early_stopping` [F14 — neutral even in its target 3mo-toggle regime, +15% runtime],
+  `n_seed_ensemble` [F14 — spread is weather-sampling not seed noise, +75% runtime].
+- `toggle_estimator="double_ratio"` **and** the temporary `rho_off_scope` knob [F16/F19 — never
+  beats the counterfactual default on score; boxed between "nothing to correct" (all-data →
+  `rho_off`≈1) and "too noisy to correct" (campaign-only)]. Removing `double_ratio` makes
+  `toggle_estimator` a single-value knob → drop it entirely; the counterfactual is the sole
+  headline estimator.
+- `time_features` (+ `latitude`, `longitude`) [F11 — all rejected: prepost drift import, calendar
+  proxy], `era5_derivations` (+ `hub_height_m`) [F10 — all rejected *as model features*].
+
+**Keep (with rationale, so it isn't re-litigated)**
+- The **injectable `model_factory` seam** (roadmap Phase-2 learners) *may* stay, but drop the dead
+  `hgb`/`linear` registry entries and the calibration/early-stop/seed plumbing in `fitting.py`,
+  keeping only the shared `time_block_folds`. Decide seam-stays-vs-goes on whether any driver needs
+  it; if nothing uses it, remove it too.
+- **`era5_derived.py` and `time_features.py` stay as utilities** — CEM matching / the inspection
+  scripts use the derivations even though the *feature knobs* are removed. Only the model-feature
+  wiring and the method-surface knobs go.
+- Settled defaults stay: `era5_exclude=CURATED_ERA5_EXCLUDE` (F13), `availability_feature=False`
+  (F13), `reference_stat_cols` (schema), `matching_vars`/`matching_bin_edges` (F6), the adaptive
+  time-decay default and its `time_decay_half_life_days` expert override (F20).
+
+**`toggle_campaign_only` — confirm then likely remove.** The adaptive half-life (F20) is a *soft*
+campaign-only at short campaigns, so `toggle_campaign_only=True` is probably now redundant for
+`power_model`. One cheap A/B (adaptive vs adaptive+campaign-only, toggle 1–3mo, both placebo and a
+recovery profile) settles it; remove the knob if redundant, keep with fresh evidence if not.
+(`naive_ratio` keeps its own campaign-only restriction — a different method, untouched.)
+
+**Scope**
+- Delete the dead knobs, their config-validation branches, their `_config_params` entries, their
+  plumbing, and their unit tests; thin `fitting.py`; update any driver/inspection script that set a
+  removed knob (e.g. `inspect_short_campaigns.py`'s `double_ratio*` arms).
+- Re-run `study_power_model_compare.py` on the default config and assert the benchmark is
+  bit-identical (no `--update-baseline` needed — nothing should change).
+
+**Done when:** the removed knobs are gone with their tests; `poe all-fast` green; a default-config
+run of `study_power_model_compare.py` reproduces the committed benchmark bit-identically; a short
+findings entry records the pruned set and the `toggle_campaign_only` verdict.
+
+---
+
+## Issue 17 — Make the conditional estimator consistent with the headline (power_model)
+
+**Goal:** the per-bin conditional uplift and the overall headline currently use **different data and
+weighting**, an asymmetry that grew up historically (F8/F15/F16) and is now partly obsolete. Reconcile
+them — either unify the data/weighting path, or keep the asymmetry only where fresh evidence still
+demands it and document why.
+
+**The current asymmetry (`method.py:_estimate_conditional`)**
+| aspect | headline (overall) | conditional (per-bin) |
+| --- | --- | --- |
+| training data | **all** baseline | campaign-window rows **only** (F15) |
+| recency weighting | **adaptive half-life** (F20) | **none** (F16) |
+| estimator | single full-window fit | two-direction CEM-matched cross-prediction, re-levelled to the headline |
+
+The re-level (F8/F14) keeps the *aggregate* consistent; the *inputs* diverge.
+
+**Why this is an investigation, not a one-liner**
+- **The missing half-life is downstream of the campaign-only matching.** The conditional already
+  excludes pre-campaign rows, so a decay weight has little to act on — adding the half-life is only
+  meaningful *if* the conditional also starts using pre-campaign data like the headline.
+- **F15 localised the all-data damage to the *matching*, not the fits** (matching pre-campaign rows
+  against campaign on-rows reads reference/era drift as per-bin uplift). So naive unification
+  (feed it all-data + decay) is known to fail; genuine unification needs *weighted or restricted*
+  matching — design work.
+- **But the narrow version is now unblocked:** Issue 14 deferred lifting the "weights are
+  headline-fit-only" restriction until the per-bin count floor existed ("the floor should make the
+  conditional path robust enough to lift that restriction"); the floor shipped in **F17**. So
+  re-trialling recency weighting on the conditional path is ready.
+
+**Scope (per the Issue 9 A/B protocol, one change at a time)**
+- **Re-trial recency weighting on the conditional fits** now the F17 count floor is in place — the
+  specific F14/F16-flagged item. Watch the sparse extreme-TI/ws tail bins that destabilised before
+  the floor.
+- **Trial unifying the training window**: let the conditional use all-data with the adaptive half-life
+  *and* an appropriately weighted/restricted CEM match, vs today's campaign-only match. The win
+  condition is the F15 drift bias staying cancelled while the extra data cuts per-bin spread.
+- **Preserve the exact energy-aggregation identity** (measured + pinned-imputed bins aggregate to the
+  headline) throughout — it is the one consistency property already correct and must not regress.
+- Evaluate on the conditional benchmark (`conditional_benchmark_comparison`) across profiles and
+  campaign lengths; gate on conditional |bias| no worse (ideally better) and overall P50 unchanged.
+
+**Done when:** either the conditional and headline share one data/weighting path (with the energy
+identity intact and conditional |bias| no worse), **or** each surviving asymmetry is deliberately
+documented with fresh post-floor evidence for why it must remain; benchmark regenerated if any default
+changes; findings entry records the verdict.
+
+---
+
+## Issue 18 — AEP uplift: long-term extrapolation design + harness scoring (WS1/WS4)
 
 **Goal:** turn the campaign conditional uplift into an **AEP uplift** — the long-term
 annual energy benefit, PR #100's third metric — and score it in the harness against known
@@ -665,7 +767,7 @@ beats the naive extrapolation baseline on condition-dependent profiles.
 
 ---
 
-## Issue 17 — Uncertainty: campaign & AEP P50 uncertainty with harness coverage scoring (WS4)
+## Issue 19 — Uncertainty: campaign & AEP P50 uncertainty with harness coverage scoring (WS4)
 
 **Goal:** start Phase 3 — report an uncertainty (σ / P95) on the campaign overall P50 and
 the AEP P50, and verify it in the harness per PR #100: the campaign-uplift P95 should sit
@@ -708,7 +810,7 @@ agreed tolerance of nominal on the placebo and the standard profiles.
 
 ## Not in the first wave (tracked for later phases)
 
-- Uncertainty / P95 model beyond Issue 17's first cut: conformal OOD filtering,
+- Uncertainty / P95 model beyond Issue 19's first cut: conformal OOD filtering,
   density-ratio long-term weighting in place of hard CEM subsampling (WS4, Phase 3).
   Density-ratio weighting also reclaims the short-campaign matched-set size the CEM
   subsample throws away (F7 follow-up).

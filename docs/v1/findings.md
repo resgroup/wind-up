@@ -7,6 +7,116 @@ from, not just conclusions.
 
 ---
 
+## F20 — the headline training window self-configures: an adaptive time-decay half-life (2 × campaign duration) is the new default, subsuming the fixed 548 d; big short-campaign wins, tied long, in both modes (Issue 15 deliverable 2)
+
+*2026-07-10 — Issue 15's mechanism-justified fallback after F19 ruled out the `double_ratio` path. New
+`PowerModelMethod` default `adaptive_time_decay: bool = True`; the headline fit's time-decay half-life
+is now `_TIME_DECAY_CAMPAIGN_MULTIPLE (=2.0) × campaign_duration_days` via a new
+`_effective_half_life`. `time_decay_half_life_days` is demoted to an **expert override** (default flipped
+548.0 → `None`, used only when `adaptive_time_decay=False`; a guard forbids setting both). Conditional
+two-direction fits stay unweighted (F16). A/B'd via `study_power_model_compare.py` (plain run =
+adaptive-default vs the fixed-548 committed benchmark), placebo `cp_0pct` both modes for the coarse `k`
+sweep, then the full 7-profile both-mode sweep for the ship.*
+
+### Mechanism — a scale-free "trust window", not a lookup
+The best fixed half-life is regime-dependent (F16: ~90 d helps short campaigns in **both** modes; ≥1 yr
+is safe long; 548 d fixed was a compromise). Making the half-life **proportional to the campaign's own
+duration** — `k × campaign_days` — gives a short half-life for a short campaign (down-weight the stale
+pre-campaign era that dominates a sliver campaign → less bias *and*, in toggle, less spread) and a long
+one for a long campaign (use the plentiful recent data). One dimensionless `k` = "trust pre-campaign
+data within ~k campaign-durations". A scale-free multiple is chosen over a length→half-life lookup
+precisely to avoid benchmark overfitting: it is mechanism-anchored and generalises to any campaign
+length or dataset span, including F16's "20 yr of SCADA, 1-month campaign" case by construction.
+`k=2` → 1mo≈60 d, 3mo≈182 d, 12mo≈730 d (≈ today's 548 d regime at 12 months, so a strict
+generalisation of the accepted default).
+
+### Coarse `k` sweep (placebo `cp_0pct`, both modes, overall score pp; all vs fixed-548 benchmark)
+All three adaptive `k` beat fixed-548 on pooled mean in **both** modes (prepost 0.55 → ~0.50, toggle
+0.34 → ~0.25). Per-length the best `k` is scattered across {1.5, 2, 3} — the signature of a flat region
+where finer tuning would fit placebo noise. **k=2 chosen**: best prepost pooled mean (0.493), 2nd toggle
+(0.248, a hair behind k1.5's 0.232), and it wins the headline **toggle-1mo** case (0.380 vs k1.5 0.400,
+k3 0.482). It is the middle of the bracket (least overfit-prone) and matches the a-priori mechanism
+anchor; chasing k1.5's toggle-2mo edge would cost prepost-1mo/6mo. `k` lives as the module constant
+`_TIME_DECAY_CAMPAIGN_MULTIPLE`, **not** a user knob, so it is documented without inviting per-dataset
+tuning.
+
+### Full 7-profile sweep verdict (overall P50, pooled per length, dScore pp; <0 = adaptive better)
+| mo | prepost Δ | toggle Δ | cells worse >0.1pp |
+| --- | --- | --- | --- |
+| 1 | +0.067 | **−0.368** (all 7) | 0 |
+| 2 | **−0.338** (all 7) | **−0.144** (all 7) | 0 |
+| 3 | +0.014 | +0.024 | 0 |
+| 6 | −0.027 | −0.005 | 0 |
+| 12 | −0.005 | +0.003 | 0 |
+
+Pooled mean score **prepost 0.559 → 0.501, toggle 0.350 → 0.252**. **Zero cells regress by >0.1 pp**
+anywhere; the only positive deltas (prepost-1mo +0.067, 3mo +0.01–0.02) are uniform across profiles and
+inside the 0.1 pp materiality band — i.e. tied. The prepost-1mo +0.067 is a spread effect (the shortest
+prepost campaign wants maximal baseline; a 60 d half-life thins it) and neither a longer `k=3` (+0.084)
+nor shorter `k=1.5` (+0.114) helps it — an inherent short-prepost tension the adaptive rule accepts to
+buy the large toggle short-campaign gains. Conditional decomposition (re-levels to the now-adaptive
+headline; the two-direction shape is unweighted and unchanged) is neutral-to-better: prepost mean
+|bias| −0.87 pp (46 better/17 worse of 69), toggle −0.10 pp (32/32), no cell flagged a material
+regression. Benchmark JSON regenerated on the new default.
+
+### Decisions / follow-ups
+- `adaptive_time_decay=True` is the shipped default; the fixed half-life is the expert escape hatch.
+- **`toggle_campaign_only` demotion not yet decided** — the adaptive half-life is a *soft* campaign-only
+  at short campaigns, so whether `toggle_campaign_only` is now redundant is a separate confirmation
+  (tracked, not done here).
+- The temporary `double_ratio` `rho_off_scope` knob (F19) is still present; removing it (shipping
+  era-local as `double_ratio`'s behaviour) is the remaining knob-cleanup deliverable.
+- `inspect_short_campaigns.py`'s `hl90`/`hl365` arms updated to set `adaptive_time_decay=False`.
+
+---
+
+## F19 — the era-local `double_ratio` gate: no `double_ratio` variant beats the counterfactual default, so the self-configuring toggle default is not an estimator swap (Issue 15 deliverable 1)
+
+*2026-07-10 — Issue 15's first, gated step. New temporary A/B knob `PowerModelMethod.rho_off_scope`
+(`"campaign"` default / `"all"`): `double_ratio`'s calibration ratio `rho_off = Σy_off/Σpred_off` is now
+measured over the **campaign-window off rows only** (era-local), the fold models still training on all
+off rows; `"all"` reproduces the pre-Issue-15 behaviour. New `_rho_off_mask` + threaded campaign mask;
+to be removed with the knob cleanup. A/B'd on the toggle `cp_0pct` placebo at 1/2/3/6/12 months via
+`study_power_model_compare.py --method-overrides`.*
+
+### Result — era-local fixes the 1-month bias but does not dominate
+Toggle `cp_0pct` placebo, score = √(bias²+spread²) pp (cf = counterfactual default = the committed
+benchmark; gl = global-`rho_off` DR; el = era-local `rho_off` DR):
+
+| mo | bias cf/gl/el | spread cf/gl/el | score cf/gl/el |
+| --- | --- | --- | --- |
+| 1 | −0.56 / −0.71 / **+0.04** | 0.49 / 0.69 / 0.81 | **0.74** / 0.99 / 0.81 |
+| 2 | −0.17 / −0.24 / −0.22 | 0.30 / 0.50 / **0.25** | 0.34 / 0.56 / **0.34** |
+| 3 | +0.11 / **−0.01** / +0.41 | 0.20 / 0.31 / 0.34 | **0.23** / 0.31 / 0.53 |
+| 6 | +0.15 / **+0.07** / +0.16 | 0.15 / 0.22 / 0.26 | **0.22** / 0.24 / 0.31 |
+| 12 | +0.08 / −0.03 / −0.01 | 0.17 / 0.24 / **0.11** | 0.19 / 0.25 / **0.11** |
+
+Era-local fixes `double_ratio`'s 1-month **bias** (−0.71 → +0.04) by keeping `rho_off` in the ON
+window's era, but the campaign-window off set is tiny (**2150 of 101532 rows at 1mo**), so `rho_off`
+becomes a noisy ±0.5 % multiplier (1.004/1.009/0.994 across replicates vs the stable global 0.99934)
+and **spread balloons**. On the composite score it does **not** dominate: the plain counterfactual
+default is best-or-tied at 1/2/3/6 months; era-local only wins at 12mo; global-`rho_off` DR is dominated
+almost everywhere. Prepost is untouched (the overrides are toggle-only). Verified on current code, not
+just F16's recorded numbers.
+
+### Root cause — a well-calibrated model leaves `double_ratio` nothing to do
+`double_ratio` = `rho_on/rho_off − 1`; its value is cancelling model *miscalibration* shared between
+the on/off sides. But with **all-data training the model is already well-calibrated** (logged
+`rho_off = 0.99934` ≈ 1), so the ratio-of-ratios only **injects estimation noise** — visible in the
+spreads (global-DR spread exceeds the plain counterfactual sum's at every length ≥2mo). `double_ratio`
+only earns its keep when the model *is* miscalibrated — i.e. campaign-only / small fits — but F16 found
+campaign-only `double_ratio` overcorrects and its 3-month spread balloons. It is boxed between "nothing
+to correct" (all-data) and "too noisy to correct" (campaign-only); a smoother `rho_off` does not free it.
+
+### Decision
+No `double_ratio` variant beats the counterfactual default on score → the self-configuring toggle
+default is **not** an estimator swap. The mechanism-justified lever is the training window
+(drift-vs-shrinkage; F16's crossover), pursued as the adaptive time-decay half-life (**F20**). Era-local
+`rho_off` is kept as `double_ratio`'s behaviour (a strict fix to the opt-in); the `rho_off_scope` knob is
+temporary and slated for removal in the knob-cleanup deliverable.
+
+---
+
 ## F18 — the frozen reference dir regenerated on current code and verified; the compare default repointed at it; a clean four-method bias/spread read (F17 stale-reference follow-up)
 
 *2026-07-09 — the F17 stale-reference flag closed out. A full overnight run
@@ -320,7 +430,7 @@ display item; estimates unchanged). Candidates A/B'd per the Issue 9 protocol:
   quantile-0.5 — estimate the median and bias the energy sum. The F5 shrinkage is a
   *regularisation* artefact, not a loss artefact; changing objective does not fix it. Legitimate
   within the mean family: Tweedie / variance-weighted L2 (efficiency candidates, untried).
-  Quantile objectives are out of scope for the point estimate (they return in Issue 17/WS4).
+  Quantile objectives are out of scope for the point estimate (they return in Issue 19/WS4).
 - **Tune on uplift metrics, never on prediction RMSE.** More regularisation can improve held-out
   RMSE while worsening shrinkage. Yardsticks: placebo bias on the harness, per-bin residual
   flatness, the predicted-vs-actual **calibration slope** (target ≈ 1) on a time-blocked held-out
