@@ -54,8 +54,8 @@ logger = logging.getLogger(__name__)
 
 _MIN_BASELINE_ROWS = 10
 _MIN_HOLDOUT_ROWS = 20  # below this, report the in-sample fit (no point splitting off a tiny valid set)
-# Time-blocked split shape shared by the holdout diagnostic, the early-stopping valid set and the
-# calibration OOF: 25 contiguous blocks round-robin over 5 folds, so each fold is ~20% of the rows
+# Time-blocked split shape for the baseline holdout diagnostic (``_holdout_fit`` takes fold 0 as the
+# held-out slice): 25 contiguous blocks round-robin over 5 folds, so each fold is ~20% of the rows
 # spread across the whole window (seasonally balanced) while staying contiguous at the block scale.
 _N_FOLDS = 5
 _N_BLOCKS = 25
