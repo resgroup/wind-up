@@ -10,12 +10,12 @@ conditional P50, then extending the measurement to AEP uplift and starting the
 uncertainty (Phase 3 / WS4) work.
 
 Suggested order of execution: #1 → #2 → #3 → #4 → #5 (done), then
-#9 → #10 → #11 → #12 → #13 → #14 → #15 (done) → #18 → #19 → #16 → #17. (#9–#12 are
+#9 → #10 → #11 → #12 → #13 → #14 → #15 (done) → #16 → #17 → #18 → #19. (#9–#12 are
 independent input-data and model trials sharing one evaluation protocol — many ideas,
 each tested one by one; #14 is small and independent, so it can be pulled earlier — and
-#15's adaptive rule wants #14's hardened conditional scoring in place; #18/#19 are the
+#15's adaptive rule wants #14's hardened conditional scoring in place; #16/#17 are the
 `power_model` hygiene + consistency follow-ups that fall out of #15 and are best done
-before the AEP/uncertainty work builds on the conditional path; #17 builds on #16's AEP
+before the AEP/uncertainty work builds on the conditional path; #19 builds on #18's AEP
 machinery, so it goes last.) (Issue 4 was originally a data contract + method-selector
 issue; it has been re-scoped to a naive energy-ratio method — see Issue 4 below for why.)
 
@@ -391,7 +391,7 @@ early stopping, and identical whether the fit has ~13k training rows (3-month to
   shrinkage-free, valuable as a cross-check on the tree models' conditional bias even if
   its overall accuracy is worse.
 - **Quantile objectives are out of scope for the point estimate** (median ≠ mean under
-  skew → biased energy). Quantile models return in Issue 17 / WS4 for conformal OOD
+  skew → biased energy). Quantile models return in Issue 19 / WS4 for conformal OOD
   filtering and diagnostics — not as the uplift estimator.
 
 **Done when:** a findings entry records the verdict per candidate against the uplift
@@ -618,96 +618,7 @@ the dominance of the single configuration); benchmark regenerated.
 
 ---
 
-## Issue 16 — AEP uplift: long-term extrapolation design + harness scoring (WS1/WS4)
-
-**Goal:** turn the campaign conditional uplift into an **AEP uplift** — the long-term
-annual energy benefit, PR #100's third metric — and score it in the harness against known
-ground truth. The core idea: choose the condition axes from the nature of the upgrade
-(wind speed only for most upgrades; add wind direction etc. for complex upgrades like
-wake steering), estimate the **long-term MWh distribution** over those condition bins,
-and take the energy-weighted sum of the conditional uplift:
-`AEP uplift = Σ_b E_b^LT · (1+u_b) / Σ_b E_b^LT − 1`.
-
-**Scope**
-- **Upgrade-nature-driven condition axes.** A config on the method/driver naming the
-  binning axes for extrapolation (default `("ws",)`; wake steering `("ws", "wd")`, …).
-  Generalise the Issue 8 conditional machinery to produce `u_b` on those axes (today it
-  emits ws and TI *marginals*; direction and joint axes need the same treatment).
-- **Long-term energy distribution `E_b^LT`.** Two candidate sources, decided in design:
-  (a) long on-site SCADA history binned on measured conditions (simple, but needs years
-  of history and stationary sensors); (b) long-term ERA5 (10–20 y) driven through the
-  campaign-learned relation between ERA5 and the test turbine's conditions/energy — e.g.
-  the baseline counterfactual model evaluated over the long-term ERA5 record, or an
-  ERA5-cell occupancy map × per-cell mean energy from the campaign. (b) is preferred
-  (works for any site, matches the WS4 density-ratio framing).
-- **The axis-consistency question (design decision).** Conditional uplift is binned on
-  test-measured ws/TI, but the long-term record is ERA5 — either learn the ERA5→test-axis
-  transfer on the campaign overlap, or run the AEP path end-to-end on the ERA5 axis
-  (matching, uplift bins and long-term weights all on the same treatment-invariant axis).
-  Sketch both in a short design note section before coding; the ERA5-axis route avoids a
-  post-treatment reporting axis entirely and is likely cleaner for AEP.
-- **Coverage fallback.** Long-term bins with no measured `u_b` (or floored by Issue 14)
-  take Issue 14's imputed values (bfill-then-0 on the ws axis — the 0-at-rated prior
-  matters even more here, since long-term energy concentrates in high-ws bins that an
-  overall-uplift fallback would over-credit); report the coverage fraction (share of
-  long-term energy in bins with a measured uplift) as a headline diagnostic.
-- **Harness truth + scoring.** The generator knows the true uplift function, so the true
-  AEP uplift per replicate is the injected profile applied over the **full multi-year
-  dataset** (not just the campaign window); score `estimate − truth` with the same
-  bias/spread/score metrics and campaign-length sweep. Include a naive extrapolation
-  baseline (`AEP uplift = campaign overall uplift`) — the bar to beat, which only a
-  condition-dependent profile can separate from the real thing.
-- **A direction-dependent (wake-steering-shaped) profile** in the generator, so the
-  "bin by direction" path is actually exercised (listed in Issue 1, never implemented).
-
-**Done when:** the design decision (axis strategy) is recorded; the harness emits AEP
-truth and scores; `power_model` produces an AEP estimate on at least the ws axis and
-beats the naive extrapolation baseline on condition-dependent profiles.
-
----
-
-## Issue 17 — Uncertainty: campaign & AEP P50 uncertainty with harness coverage scoring (WS4)
-
-**Goal:** start Phase 3 — report an uncertainty (σ / P95) on the campaign overall P50 and
-the AEP P50, and verify it in the harness per PR #100: the campaign-uplift P95 should sit
-below the true uplift ~95% of the time. (P50 accuracy work stays the priority; this issue
-establishes the machinery and a first honest number, not the final uncertainty model.)
-
-**Scope**
-- **Method-side estimator: circular block bootstrap** over time blocks of the baseline
-  and upgraded rows (block length ≥ the residual autocorrelation scale, likely ~1 day).
-  Two variants to compare on a small grid: *cheap* (fix the fitted model, resample the
-  (actual, counterfactual) pairs → distribution of the energy ratio) and *full* (refit the
-  model per resample — captures model-fit noise, ~50–100× the cost). Emit σ and empirical
-  quantiles; P95 = P50 − 1.645σ under normality or the empirical quantile, whichever the
-  data supports.
-- **Seam extension (additive).** Optional uncertainty fields on `MethodOutput`
-  (e.g. `sigma_overall`, `p95_overall`, per-bin σ) — `None` for methods that don't emit
-  them, no breaking change to existing methods.
-- **Harness scoring.** Coverage = fraction of (replicate × campaign) cases with
-  `truth ≥ P95` (target 0.95), plus a calibration read at 2–3 more quantiles using the
-  replicate ensemble, plus mean interval width — so a method cannot win coverage by
-  inflating σ. Validate first on the placebo (truth 0), where miscalibration is most
-  visible.
-- **Why not quantile regression for P95:** per-row predictive quantiles describe
-  single-timestamp scatter and do not aggregate into a quantile of the campaign *ratio*
-  without independence assumptions the autocorrelated 10-min data violates — hence the
-  block bootstrap. Quantile models stay on the WS4 list for conformal OOD filtering and
-  diagnostics.
-- **AEP P95.** Combine the campaign sampling uncertainty (bootstrap above) with the
-  long-term-distribution uncertainty (resample ERA5 *years* to get the inter-annual
-  variability of `E_b^LT`). Document explicitly what is in and out of scope of the
-  reported number (e.g. model-form error and sensor drift are out, for now).
-- Cross-check the block bootstrap design against v0's existing bootstrap (`wind_up`
-  uncertainty machinery) — same idea, method-appropriate implementation; no v0 import.
-
-**Done when:** `power_model` emits σ/P95 for campaign and AEP uplift; the harness reports
-coverage and interval width per profile × campaign length; observed coverage is within an
-agreed tolerance of nominal on the placebo and the standard profiles.
-
----
-
-## Issue 18 — Prune the historic opt-ins: orient `power_model` to the winning configuration (power_model)
+## Issue 16 — Prune the historic opt-ins: orient `power_model` to the winning configuration (power_model)
 
 **Goal:** the accumulated development knobs on `PowerModelMethod` are almost all opt-ins that
 **lost their A/B and are off in the shipped default**. Remove the dead ones so the code presents
@@ -760,7 +671,7 @@ findings entry records the pruned set and the `toggle_campaign_only` verdict.
 
 ---
 
-## Issue 19 — Make the conditional estimator consistent with the headline (power_model)
+## Issue 17 — Make the conditional estimator consistent with the headline (power_model)
 
 **Goal:** the per-bin conditional uplift and the overall headline currently use **different data and
 weighting**, an asymmetry that grew up historically (F8/F15/F16) and is now partly obsolete. Reconcile
@@ -808,9 +719,98 @@ changes; findings entry records the verdict.
 
 ---
 
+## Issue 18 — AEP uplift: long-term extrapolation design + harness scoring (WS1/WS4)
+
+**Goal:** turn the campaign conditional uplift into an **AEP uplift** — the long-term
+annual energy benefit, PR #100's third metric — and score it in the harness against known
+ground truth. The core idea: choose the condition axes from the nature of the upgrade
+(wind speed only for most upgrades; add wind direction etc. for complex upgrades like
+wake steering), estimate the **long-term MWh distribution** over those condition bins,
+and take the energy-weighted sum of the conditional uplift:
+`AEP uplift = Σ_b E_b^LT · (1+u_b) / Σ_b E_b^LT − 1`.
+
+**Scope**
+- **Upgrade-nature-driven condition axes.** A config on the method/driver naming the
+  binning axes for extrapolation (default `("ws",)`; wake steering `("ws", "wd")`, …).
+  Generalise the Issue 8 conditional machinery to produce `u_b` on those axes (today it
+  emits ws and TI *marginals*; direction and joint axes need the same treatment).
+- **Long-term energy distribution `E_b^LT`.** Two candidate sources, decided in design:
+  (a) long on-site SCADA history binned on measured conditions (simple, but needs years
+  of history and stationary sensors); (b) long-term ERA5 (10–20 y) driven through the
+  campaign-learned relation between ERA5 and the test turbine's conditions/energy — e.g.
+  the baseline counterfactual model evaluated over the long-term ERA5 record, or an
+  ERA5-cell occupancy map × per-cell mean energy from the campaign. (b) is preferred
+  (works for any site, matches the WS4 density-ratio framing).
+- **The axis-consistency question (design decision).** Conditional uplift is binned on
+  test-measured ws/TI, but the long-term record is ERA5 — either learn the ERA5→test-axis
+  transfer on the campaign overlap, or run the AEP path end-to-end on the ERA5 axis
+  (matching, uplift bins and long-term weights all on the same treatment-invariant axis).
+  Sketch both in a short design note section before coding; the ERA5-axis route avoids a
+  post-treatment reporting axis entirely and is likely cleaner for AEP.
+- **Coverage fallback.** Long-term bins with no measured `u_b` (or floored by Issue 14)
+  take Issue 14's imputed values (bfill-then-0 on the ws axis — the 0-at-rated prior
+  matters even more here, since long-term energy concentrates in high-ws bins that an
+  overall-uplift fallback would over-credit); report the coverage fraction (share of
+  long-term energy in bins with a measured uplift) as a headline diagnostic.
+- **Harness truth + scoring.** The generator knows the true uplift function, so the true
+  AEP uplift per replicate is the injected profile applied over the **full multi-year
+  dataset** (not just the campaign window); score `estimate − truth` with the same
+  bias/spread/score metrics and campaign-length sweep. Include a naive extrapolation
+  baseline (`AEP uplift = campaign overall uplift`) — the bar to beat, which only a
+  condition-dependent profile can separate from the real thing.
+- **A direction-dependent (wake-steering-shaped) profile** in the generator, so the
+  "bin by direction" path is actually exercised (listed in Issue 1, never implemented).
+
+**Done when:** the design decision (axis strategy) is recorded; the harness emits AEP
+truth and scores; `power_model` produces an AEP estimate on at least the ws axis and
+beats the naive extrapolation baseline on condition-dependent profiles.
+
+---
+
+## Issue 19 — Uncertainty: campaign & AEP P50 uncertainty with harness coverage scoring (WS4)
+
+**Goal:** start Phase 3 — report an uncertainty (σ / P95) on the campaign overall P50 and
+the AEP P50, and verify it in the harness per PR #100: the campaign-uplift P95 should sit
+below the true uplift ~95% of the time. (P50 accuracy work stays the priority; this issue
+establishes the machinery and a first honest number, not the final uncertainty model.)
+
+**Scope**
+- **Method-side estimator: circular block bootstrap** over time blocks of the baseline
+  and upgraded rows (block length ≥ the residual autocorrelation scale, likely ~1 day).
+  Two variants to compare on a small grid: *cheap* (fix the fitted model, resample the
+  (actual, counterfactual) pairs → distribution of the energy ratio) and *full* (refit the
+  model per resample — captures model-fit noise, ~50–100× the cost). Emit σ and empirical
+  quantiles; P95 = P50 − 1.645σ under normality or the empirical quantile, whichever the
+  data supports.
+- **Seam extension (additive).** Optional uncertainty fields on `MethodOutput`
+  (e.g. `sigma_overall`, `p95_overall`, per-bin σ) — `None` for methods that don't emit
+  them, no breaking change to existing methods.
+- **Harness scoring.** Coverage = fraction of (replicate × campaign) cases with
+  `truth ≥ P95` (target 0.95), plus a calibration read at 2–3 more quantiles using the
+  replicate ensemble, plus mean interval width — so a method cannot win coverage by
+  inflating σ. Validate first on the placebo (truth 0), where miscalibration is most
+  visible.
+- **Why not quantile regression for P95:** per-row predictive quantiles describe
+  single-timestamp scatter and do not aggregate into a quantile of the campaign *ratio*
+  without independence assumptions the autocorrelated 10-min data violates — hence the
+  block bootstrap. Quantile models stay on the WS4 list for conformal OOD filtering and
+  diagnostics.
+- **AEP P95.** Combine the campaign sampling uncertainty (bootstrap above) with the
+  long-term-distribution uncertainty (resample ERA5 *years* to get the inter-annual
+  variability of `E_b^LT`). Document explicitly what is in and out of scope of the
+  reported number (e.g. model-form error and sensor drift are out, for now).
+- Cross-check the block bootstrap design against v0's existing bootstrap (`wind_up`
+  uncertainty machinery) — same idea, method-appropriate implementation; no v0 import.
+
+**Done when:** `power_model` emits σ/P95 for campaign and AEP uplift; the harness reports
+coverage and interval width per profile × campaign length; observed coverage is within an
+agreed tolerance of nominal on the placebo and the standard profiles.
+
+---
+
 ## Not in the first wave (tracked for later phases)
 
-- Uncertainty / P95 model beyond Issue 17's first cut: conformal OOD filtering,
+- Uncertainty / P95 model beyond Issue 19's first cut: conformal OOD filtering,
   density-ratio long-term weighting in place of hard CEM subsampling (WS4, Phase 3).
   Density-ratio weighting also reclaims the short-campaign matched-set size the CEM
   subsample throws away (F7 follow-up).
