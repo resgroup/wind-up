@@ -17,6 +17,7 @@ from benchmarking.harness.conditions import (
     CONDITIONS,
     TI_BINS,
     WS_BINS,
+    condition_bins,
     energy_ratio_by_bin,
 )
 from benchmarking.harness.leaderboard import conditional_leaderboard, leaderboard
@@ -40,6 +41,7 @@ __all__ = [
     "StudyConfig",
     "build_replicates",
     "campaign_windows",
+    "condition_bins",
     "conditional_leaderboard",
     "energy_ratio_by_bin",
     "leaderboard",

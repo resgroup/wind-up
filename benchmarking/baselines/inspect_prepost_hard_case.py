@@ -48,7 +48,7 @@ from benchmarking.baselines.overnight_profiles import overnight_profiles
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import (
-    CONDITION_BINS,
+    CONDITIONS,
     CampaignWindow,
     Method,
     MethodInput,
@@ -56,6 +56,7 @@ from benchmarking.harness import (
     StudyConfig,
     build_replicates,
     campaign_windows,
+    condition_bins,
     plot_conditional_uplift,
     treated_activity_mask,
     window_row_mask,
@@ -247,7 +248,8 @@ def _plot_conditional_uplift(
     test_index = rep.synthetic_df.loc[rep.synthetic_df[HOT_COLUMNS.turbine] == rep.test_wtg].index
     mask = treated_activity_mask(test_index, rep.upgrade_timing, window=window)
     truth_by_condition = {
-        c: rep.true_uplift(mask=mask, by=c, bins=CONDITION_BINS[c]).by_condition for c in ("ws", "ti")
+        c: rep.true_uplift(mask=mask, by=c, bins=condition_bins(c, rated_power_kw=HOT_RATED_POWER_KW)).by_condition
+        for c in CONDITIONS
     }
     # Filter out conditions where true_uplift returned None (should not happen when bins given)
     truth_by_condition_clean: dict[str, pd.DataFrame] = {
