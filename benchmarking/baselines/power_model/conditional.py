@@ -25,22 +25,23 @@ def impute_uncovered_bins(
     Bins **must** be in ascending bin order (low ws / low TI first). ``measured`` is the trust mask
     (``True`` = keep the two-direction shape). Uncovered bins:
 
-    - ``ws``: backward-fill from the nearest covered bin above (uplift-vs-ws is Cp-shaped, so a low
-      gap looks most like the next covered bin up), then any bins above the last covered one take
-      ``1.0`` — 0 uplift, since at rated both baseline and upgraded hit rated power. This 0-at-rated
-      prior is wrong for uprating / power-boost upgrades; it is a documented, replaceable default.
+    - ``ws`` / ``power``: backward-fill from the nearest covered bin above (uplift is Cp-shaped and
+      monotone-saturating in both, so a low gap looks most like the next covered bin up), then any
+      bins above the last covered one take ``1.0`` — 0 uplift, since at rated both baseline and
+      upgraded hit rated power. This 0-at-rated prior is wrong for uprating / power-boost upgrades; it
+      is a documented, replaceable default.
     - ``ti``: no ordering physics, so uncovered bins take the overall uplift (``one_plus_overall``).
 
-    The result is always all-finite: ws falls back to ``1.0`` (even with no measured bins), ti to
-    ``one_plus_overall``. Raises for a ``condition`` other than ``"ws"`` / ``"ti"`` so a mistyped axis
-    fails loudly rather than silently taking the ti branch.
+    The result is always all-finite: ws/power fall back to ``1.0`` (even with no measured bins), ti to
+    ``one_plus_overall``. Raises for a ``condition`` other than ``"ws"`` / ``"ti"`` / ``"power"`` so a
+    mistyped axis fails loudly rather than silently taking the ti branch.
     """
-    if condition not in ("ws", "ti"):
-        msg = f"unknown condition {condition!r}; expected 'ws' or 'ti'"
+    if condition not in ("ws", "ti", "power"):
+        msg = f"unknown condition {condition!r}; expected 'ws', 'ti' or 'power'"
         raise ValueError(msg)
     s = pd.Series(np.asarray(one_plus_u, dtype=float))
     s[~np.asarray(measured, dtype=bool)] = np.nan
-    s = s.bfill().fillna(1.0) if condition == "ws" else s.fillna(float(one_plus_overall))
+    s = s.bfill().fillna(1.0) if condition in ("ws", "power") else s.fillna(float(one_plus_overall))
     return s.to_numpy()
 
 

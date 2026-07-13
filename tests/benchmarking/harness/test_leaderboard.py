@@ -125,6 +125,24 @@ def test_conditional_leaderboard_groups_by_condition_bin() -> None:
     assert row["spread"] == pytest.approx(0.01)
 
 
+def test_conditional_leaderboard_summarises_power_condition() -> None:
+    df = pd.DataFrame(
+        {
+            "method": "m",
+            "profile": "p",
+            "campaign_months": 6,
+            "condition": ["power", "power"],
+            "condition_bin": ["(230.0, 690.0]", "(230.0, 690.0]"],
+            "estimate": [0.06, 0.04],
+            "truth": [0.05, 0.05],
+            "signed_error": [0.01, -0.01],
+        }
+    )
+    lb = conditional_leaderboard(df)
+    assert set(lb["condition"]) == {"power"}
+    assert lb.iloc[0]["spread"] == pytest.approx(0.01)
+
+
 def test_conditional_leaderboard_ignores_overall_rows() -> None:
     df = pd.DataFrame(
         {

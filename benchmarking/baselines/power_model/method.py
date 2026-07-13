@@ -43,7 +43,7 @@ from benchmarking.baselines.power_model.fitting import time_block_folds
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
 from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
-from benchmarking.harness.conditions import CONDITION_BINS, energy_ratio_by_bin
+from benchmarking.harness.conditions import CONDITION_BINS, condition_bins, energy_ratio_by_bin
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
 
@@ -134,6 +134,71 @@ def _implied_shrinkage(r_fwd: np.ndarray, r_rev: np.ndarray) -> np.ndarray:
     prod = np.multiply(a, b, out=np.full(np.broadcast(a, b).shape, np.nan), where=valid)
     root = np.sqrt(prod, out=np.full_like(prod, np.nan), where=np.isfinite(prod))
     return np.divide(1.0, root, out=np.full_like(root, np.nan), where=np.isfinite(root) & (root != 0))
+
+
+def _condition_frame(
+    name: str,
+    *,
+    fwd_cond: np.ndarray,
+    rev_cond: np.ndarray,
+    full_cond: np.ndarray,
+    y_fwd: np.ndarray,
+    pred_fwd: np.ndarray,
+    y_rev: np.ndarray,
+    pred_rev: np.ndarray,
+    actual_full: np.ndarray,
+    bins: list[float],
+    one_plus_overall: float,
+) -> pd.DataFrame:
+    """One condition axis' per-bin two-direction uplift, imputed where uncovered and re-leveled to the headline.
+
+    The three ``*_cond`` arrays label each side's rows by the reporting axis: for ws/TI they are the same
+    signal read off every side; for power they differ (forward = counterfactual, reverse = actual baseline,
+    full = full-fit counterfactual). The forward/reverse energy ratios give the shrinkage-free per-bin
+    shape; uncovered bins are imputed (``impute_uncovered_bins``) and the whole thing is re-leveled onto the
+    headline by full-upgraded energy so measured + imputed aggregate to ``one_plus_overall`` (F8/F14).
+    """
+    fwd = energy_ratio_by_bin(fwd_cond, y_fwd, pred_fwd, bins=bins)
+    rev = energy_ratio_by_bin(rev_cond, y_rev, pred_rev, bins=bins)
+    # full-upgraded actual energy per bin (counterfactual arg unused — only sum_actual is taken)
+    full = energy_ratio_by_bin(full_cond, actual_full, actual_full, bins=bins)
+    merged = fwd.merge(rev, on="condition_bin", suffixes=("_fwd", "_rev")).merge(
+        full[["condition_bin", "sum_actual"]].rename(columns={"sum_actual": "sum_actual_full"}),
+        on="condition_bin",
+    )
+    # impute_uncovered_bins needs ascending bin order (low ws/TI/power first); the merges above do not
+    # guarantee it, so pin the canonical bin order before imputing / re-leveling.
+    order = pd.cut([], bins=bins).categories.astype(str)
+    merged["condition_bin"] = pd.Categorical(merged["condition_bin"], categories=order, ordered=True)
+    merged = merged.sort_values("condition_bin").reset_index(drop=True)
+
+    r_fwd = merged["p50_uplift_fwd"].to_numpy()  # per-bin energy ratio IS the per-bin r
+    r_rev = merged["p50_uplift_rev"].to_numpy()
+    shape = 1.0 + _combine_uplift(r_fwd, r_rev)  # shrinkage-free shape (NaN if degenerate)
+    sum_actual_full = merged["sum_actual_full"].to_numpy()
+    # A bin is covered only if its shape is finite AND both directions have enough matched rows;
+    # below the floor the two-direction combine overshoots, so the bin is imputed instead (F7/F9).
+    per_side = np.minimum(merged["n_records_fwd"].to_numpy(), merged["n_records_rev"].to_numpy())
+    measured = np.isfinite(shape) & (per_side >= _MIN_BIN_MATCHED_COUNT)
+    imputed_shape = impute_uncovered_bins(shape, condition=name, measured=measured, one_plus_overall=one_plus_overall)
+    releveled = relevel_conditional(
+        sum_actual_full, imputed_shape, measured=measured, one_plus_overall=one_plus_overall
+    )
+    return pd.DataFrame(
+        {
+            "condition": name,
+            "condition_bin": merged["condition_bin"].astype(str),
+            "n_records_fwd": merged["n_records_fwd"],
+            "n_records_rev": merged["n_records_rev"],
+            "sum_actual": sum_actual_full,  # full-upgraded energy per bin (the MWh re-level weight)
+            "r_fwd": r_fwd,
+            "r_rev": r_rev,
+            "implied_shrinkage": _implied_shrinkage(r_fwd, r_rev),
+            "u_b": shape - 1.0,  # measured two-direction shape (NaN where uncovered)
+            "covered": measured,  # per-run diagnostic: measured vs imputed
+            "p50_uplift": releveled - 1.0,  # measured-or-imputed, re-leveled to the headline
+        }
+    )
 
 
 def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
@@ -439,6 +504,7 @@ class PowerModelMethod:
             pred_base=pred_base,
             upgraded_pos=np.flatnonzero(upgraded_sel),
             actual_full=fit["y_upgraded"],
+            pred_upgraded=fit["pred_upgraded"],
             overall_ratio=overall_ratio,
         )
         by_condition = per_bin[["condition", "condition_bin", "p50_uplift"]].copy() if per_bin is not None else None
@@ -485,9 +551,10 @@ class PowerModelMethod:
         pred_base: np.ndarray,
         upgraded_pos: np.ndarray,
         actual_full: np.ndarray,
+        pred_upgraded: np.ndarray,
         overall_ratio: float,
     ) -> pd.DataFrame | None:
-        """Per-(ws, TI)-bin two-direction uplift, imputed where uncovered and re-leveled onto the headline.
+        """Per-(ws, TI, power)-bin two-direction uplift, imputed where uncovered and re-leveled onto the headline.
 
         The measured **shape** ``1+u_b = sqrt((1+r_fwd_b)/(1+r_rev_b))`` comes from the matched
         forward/reverse fits; a bin is ``covered`` (trusted) only when that shape is finite (Issue 14 adds
@@ -513,53 +580,43 @@ class PowerModelMethod:
         cond_base = conditions.iloc[mb].reset_index(drop=True)  # matched-baseline (reverse binning)
         cond_full = conditions.iloc[upgraded_pos].reset_index(drop=True)  # all upgraded (re-level weights)
         one_plus_overall = 1.0 + overall_ratio
-        frames = []
-        for name in [c for c in ("ws", "ti") if c in conditions.columns]:
-            fwd = energy_ratio_by_bin(cond_up[name].to_numpy(), y[mu], pred_up, bins=CONDITION_BINS[name])
-            rev = energy_ratio_by_bin(cond_base[name].to_numpy(), y[mb], pred_base, bins=CONDITION_BINS[name])
-            # full-upgraded actual energy per bin (counterfactual arg unused — only sum_actual is taken)
-            full = energy_ratio_by_bin(cond_full[name].to_numpy(), actual_full, actual_full, bins=CONDITION_BINS[name])
-            merged = fwd.merge(rev, on="condition_bin", suffixes=("_fwd", "_rev")).merge(
-                full[["condition_bin", "sum_actual"]].rename(columns={"sum_actual": "sum_actual_full"}),
-                on="condition_bin",
+        frames = [
+            _condition_frame(
+                name,
+                fwd_cond=cond_up[name].to_numpy(),
+                rev_cond=cond_base[name].to_numpy(),
+                full_cond=cond_full[name].to_numpy(),
+                y_fwd=y[mu],
+                pred_fwd=pred_up,
+                y_rev=y[mb],
+                pred_rev=pred_base,
+                actual_full=actual_full,
+                bins=CONDITION_BINS[name],
+                one_plus_overall=one_plus_overall,
             )
-            # impute_uncovered_bins needs ascending bin order (low ws/TI first); the merges above do not
-            # guarantee it, so pin the canonical CONDITION_BINS order before imputing / re-leveling.
-            order = pd.cut([], bins=CONDITION_BINS[name]).categories.astype(str)
-            merged["condition_bin"] = pd.Categorical(merged["condition_bin"], categories=order, ordered=True)
-            merged = merged.sort_values("condition_bin").reset_index(drop=True)
-
-            r_fwd = merged["p50_uplift_fwd"].to_numpy()  # per-bin energy ratio IS the per-bin r
-            r_rev = merged["p50_uplift_rev"].to_numpy()
-            shape = 1.0 + _combine_uplift(r_fwd, r_rev)  # shrinkage-free shape (NaN if degenerate)
-            sum_actual_full = merged["sum_actual_full"].to_numpy()
-            # A bin is covered only if its shape is finite AND both directions have enough matched rows;
-            # below the floor the two-direction combine overshoots, so the bin is imputed instead (F7/F9).
-            per_side = np.minimum(merged["n_records_fwd"].to_numpy(), merged["n_records_rev"].to_numpy())
-            measured = np.isfinite(shape) & (per_side >= _MIN_BIN_MATCHED_COUNT)
-            imputed_shape = impute_uncovered_bins(
-                shape, condition=name, measured=measured, one_plus_overall=one_plus_overall
+            for name in ("ws", "ti")
+            if name in conditions.columns
+        ]
+        # power: the untreated operating point. Forward (upgraded) rows are labelled by their
+        # counterfactual prediction ``pred_up``; reverse (baseline) rows by their actual, already-untreated
+        # power ``y[mb]`` (not ``pred_base``, a treated estimate); the full re-level weights by the full-fit
+        # counterfactual ``pred_upgraded`` — so every side labels the same untreated power. Edges scale with
+        # the baseline rating (§2 of the design), so power is not in the fixed ``CONDITION_BINS``.
+        frames.append(
+            _condition_frame(
+                "power",
+                fwd_cond=pred_up,
+                rev_cond=y[mb],
+                full_cond=pred_upgraded,
+                y_fwd=y[mu],
+                pred_fwd=pred_up,
+                y_rev=y[mb],
+                pred_rev=pred_base,
+                actual_full=actual_full,
+                bins=condition_bins("power", rated_power_kw=self.baseline_rated_power_kw),
+                one_plus_overall=one_plus_overall,
             )
-            releveled = relevel_conditional(
-                sum_actual_full, imputed_shape, measured=measured, one_plus_overall=one_plus_overall
-            )
-            frames.append(
-                pd.DataFrame(
-                    {
-                        "condition": name,
-                        "condition_bin": merged["condition_bin"].astype(str),
-                        "n_records_fwd": merged["n_records_fwd"],
-                        "n_records_rev": merged["n_records_rev"],
-                        "sum_actual": sum_actual_full,  # full-upgraded energy per bin (the MWh re-level weight)
-                        "r_fwd": r_fwd,
-                        "r_rev": r_rev,
-                        "implied_shrinkage": _implied_shrinkage(r_fwd, r_rev),
-                        "u_b": shape - 1.0,  # measured two-direction shape (NaN where uncovered)
-                        "covered": measured,  # per-run diagnostic: measured vs imputed
-                        "p50_uplift": releveled - 1.0,  # measured-or-imputed, re-leveled to the headline
-                    }
-                )
-            )
+        )
         return pd.concat(frames, ignore_index=True) if frames else None
 
     def _write_conditional(

@@ -19,6 +19,7 @@ from benchmarking.baselines.study_power_model_compare import (
     TOGGLE_CAMPAIGN_MONTHS,
     _check_alignment,
     _conditional_plot_subset,
+    _covered_longest,
     _load_baseline_cells,
     _make_power_model,
     _overlay_frame,
@@ -174,6 +175,25 @@ def _baseline_cells() -> pd.DataFrame:
             "score": [0.02, 0.03],
         }
     )
+
+
+def test_covered_longest_keeps_power_condition() -> None:
+    # power is a first-class conditional axis, so the before/after overlay subset must not drop it.
+    cond_lb = pd.DataFrame(
+        {
+            "method": "power_model",
+            "profile": "ws_dependent_cp",
+            "condition": ["ws", "ti", "power", "overall"],
+            "campaign_months": 12,
+            "condition_bin": ["(4.0, 6.0]", "(0.1, 0.15]", "(230.0, 690.0]", "overall"],
+            "mean_truth": [0.10, 0.05, 0.06, 0.05],
+            "mean_estimate": [0.10, 0.05, 0.06, 0.05],
+            "bias": [0.0, 0.0, 0.0, 0.0],
+            "spread": [0.01, 0.005, 0.004, 0.003],
+        }
+    )
+    kept = _covered_longest(cond_lb)
+    assert set(kept["condition"]) == {"ws", "ti", "power"}  # every axis kept, overall dropped
 
 
 def test_conditional_before_after_reconstructs_est_before_and_verdict() -> None:

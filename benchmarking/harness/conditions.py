@@ -13,8 +13,33 @@ import pandas as pd
 
 WS_BINS: list[float] = [float(x) for x in np.arange(0.0, 28.0, 2.0)]  # 0,2,…,26
 TI_BINS: list[float] = [round(float(x), 2) for x in np.arange(0.0, 0.55, 0.05)]  # 0,0.05,…,0.50
-CONDITIONS: tuple[str, ...] = ("ws", "ti")
+CONDITIONS: tuple[str, ...] = ("ws", "ti", "power")
 CONDITION_BINS: dict[str, list[float]] = {"ws": WS_BINS, "ti": TI_BINS}
+
+# ``power`` edges are a fraction of rated (so they scale with the turbine), unlike the fixed ws/ti
+# edges, hence they live in ``condition_bins()`` not ``CONDITION_BINS``. The outer edges sit just
+# below 0 and just above rated so the six bins center on 0,0.2,…,1.0 of rated and ``pd.cut`` keeps
+# untreated-power values that fall slightly negative (cut-in noise) or slightly over rated
+# (counterfactual prediction noise) rather than dropping them to NaN.
+POWER_FRACTION_EDGES: list[float] = [-0.1, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1]
+
+
+def condition_bins(name: str, *, rated_power_kw: float | None = None) -> list[float]:
+    """Bin edges for a condition axis. ws/ti are fixed; power scales with ``rated_power_kw``.
+
+    ws/ti accept ``rated_power_kw`` but ignore it (they are treatment-invariant fixed edges). power
+    requires it — its edges are ``POWER_FRACTION_EDGES`` times the rating (in kW). Raises for an
+    unknown condition so a mistyped axis fails loudly.
+    """
+    if name in CONDITION_BINS:
+        return CONDITION_BINS[name]
+    if name == "power":
+        if rated_power_kw is None:
+            msg = "rated_power_kw is required for the 'power' condition (edges scale with rating)"
+            raise ValueError(msg)
+        return [round(f * float(rated_power_kw), 6) for f in POWER_FRACTION_EDGES]
+    msg = f"unknown condition {name!r}; expected one of {CONDITIONS}"
+    raise ValueError(msg)
 
 
 def energy_ratio_by_bin(

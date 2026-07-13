@@ -716,6 +716,7 @@ The re-level (F8/F14) keeps the *aggregate* consistent; the *inputs* diverge.
 identity intact and conditional |bias| no worse), **or** each surviving asymmetry is deliberately
 documented with fresh post-floor evidence for why it must remain; benchmark regenerated if any default
 changes; findings entry records the verdict.
+Campaign curve plots for the winning approach are re-generated for user inspection.
 
 ---
 

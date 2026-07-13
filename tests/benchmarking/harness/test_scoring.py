@@ -188,11 +188,12 @@ def test_conditional_rows_are_emitted_with_truth_and_near_zero_error() -> None:
     assert "condition_bin" in results.columns
     overall = results[results["condition"] == "overall"]
     assert (overall["condition_bin"] == "overall").all()
-    cond = results[results["condition"].isin(["ws", "ti"])]
-    assert set(cond["condition"]) == {"ws", "ti"}
-    # populated bins: a per-bin oracle must match per-bin truth
+    cond = results[results["condition"].isin(["ws", "ti", "power"])]
+    assert set(cond["condition"]) == {"ws", "ti", "power"}
+    # populated bins: a per-bin oracle must match per-bin truth (power too, via the rating-scaled edges)
     populated = cond[cond["truth"].notna() & cond["estimate"].notna()]
     assert len(populated) > 0
+    assert (populated["condition"] == "power").any()
     assert np.allclose(populated["signed_error"].to_numpy(), 0.0, atol=1e-9)
 
 
