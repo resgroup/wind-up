@@ -12,10 +12,60 @@ from benchmarking.baselines.power_model.diagnostics import (
     DiagnosticData,
     _as_percent_of_power,
     _binned_stats,
+    _condition_diagnostic_figure,
     _plot_residual_binned,
     _set_ylim_from_inliers,
+    plot_conditional_diagnostics,
 )
 from benchmarking.diagnostics import stages
+
+
+def _toy_per_bin() -> pd.DataFrame:
+    """A per-bin conditional frame spanning ws, ti and power with a covered/imputed mix."""
+    rows = []
+    specs = {
+        "ws": ["(4.0, 6.0]", "(6.0, 8.0]", "(8.0, 10.0]"],
+        "ti": ["(0.05, 0.1]", "(0.1, 0.15]"],
+        "power": ["(230.0, 690.0]", "(690.0, 1150.0]"],
+    }
+    for cond, bins in specs.items():
+        for i, b in enumerate(bins):
+            rows.append(
+                {
+                    "condition": cond,
+                    "condition_bin": b,
+                    "r_fwd": 0.05 + 0.01 * i,
+                    "r_rev": -0.04 + 0.01 * i,
+                    "implied_shrinkage": 0.98 + 0.01 * i,
+                    "p50_uplift": 0.05 + 0.005 * i,
+                    "covered": i % 2 == 0,  # alternate covered / imputed
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_plot_conditional_diagnostics_writes_a_figure_per_condition(tmp_path: Path) -> None:
+    plot_conditional_diagnostics(tmp_path, _toy_per_bin(), test_wtg="T07")
+    for cond in ("ws", "ti", "power"):
+        assert (tmp_path / f"conditional_{cond}.png").exists()
+
+
+def test_condition_diagnostic_figure_has_four_panels() -> None:
+    sub = _toy_per_bin().query("condition == 'power'")
+    fig = _condition_diagnostic_figure(sub, condition="power", test_wtg="T07")
+    assert len(fig.axes) == 4
+    plt.close(fig)
+
+
+def test_condition_diagnostic_figure_shades_covered_and_imputed_distinctly() -> None:
+    # the uplift panel must visually separate measured (covered) bins from imputed ones
+    sub = _toy_per_bin().query("condition == 'ws'")  # covered = [True, False, True]
+    fig = _condition_diagnostic_figure(sub, condition="ws", test_wtg="T07")
+    uplift_ax = fig.axes[2]  # panels: fwd, rev, uplift, shrinkage
+    facecolors = {tuple(patch.get_facecolor()) for patch in uplift_ax.patches}
+    assert len(facecolors) >= 2  # covered and imputed bins are not the same colour
+    plt.close(fig)
+
 
 if TYPE_CHECKING:
     from pathlib import Path

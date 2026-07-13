@@ -650,7 +650,9 @@ class PowerModelMethod:
         }
         diag.write_conditional_csvs(conditional_dir, run_name, ts, overall=overall, per_bin=per_bin, match=match)
         if self.save_plots and per_bin is not None:
-            diag.plot_implied_shrinkage(run_dir / "plots" / stages.CONDITIONAL_UPLIFT, per_bin, test_wtg=mi.test_wtg)
+            diag.plot_conditional_diagnostics(
+                run_dir / "plots" / stages.CONDITIONAL_UPLIFT, per_bin, test_wtg=mi.test_wtg
+            )
 
     def _default_bin_edges(self) -> dict[str, list[float]]:
         """Per-variable CEM edges for ``matching_vars`` from the F6 defaults; raise on an unknown var."""

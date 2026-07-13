@@ -21,12 +21,13 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 from matplotlib.colors import Normalize
+from matplotlib.patches import Patch
 
 from benchmarking.baselines.power_model.features import QUALIFIER
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.style import apply_grid, save_fig
-from benchmarking.harness.conditions import TI_BINS, WS_BINS
+from benchmarking.harness.conditions import CONDITIONS, TI_BINS, WS_BINS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -243,27 +244,88 @@ def write_conditional_csvs(
     match.per_cell.to_csv(run_dir / f"{run_name}_cem_cells_{ts}.csv", index=False)
 
 
-def plot_implied_shrinkage(plots_dir: Path, per_bin: pd.DataFrame, *, test_wtg: str) -> None:
-    """Bar of the implied shrinkage ``s`` per (ws, TI) bin — how much conditional bias each bin carried.
+# covered (measured two-direction shape) vs imputed bins on the uplift panel.
+_COVERED_COLOR = "C0"
+_IMPUTED_COLOR = "0.7"
 
-    ``s`` = 1 means the two directions agree (no shrinkage to cancel); ``s`` < 1 is the multiplicative
-    compression the correction removed, and a slope across bins is the F5 signature.
+
+def _condition_diagnostic_figure(sub: pd.DataFrame, *, condition: str, test_wtg: str) -> plt.Figure:
+    """Build a four-panel per-condition diagnostic: forward + reverse measurement, uplift, implied shrinkage.
+
+    ``sub`` is the per-bin rows for one condition (ascending bin order). The uplift panel shades each bar
+    by ``covered``: a measured (two-direction) bin vs an imputed one, so it is clear which per-bin uplifts
+    are backed by data. Implied shrinkage carries the ``s = 1`` reference (agreement / nothing to cancel).
     """
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    conditions = [c for c in ("ws", "ti") if c in set(per_bin["condition"])]
-    fig, axes = plt.subplots(1, max(1, len(conditions)), figsize=(7.5 * max(1, len(conditions)), 5), squeeze=False)
-    for ax, cond in zip(axes[0], conditions, strict=False):
-        sub = per_bin[per_bin["condition"] == cond]
-        ax.bar(sub["condition_bin"].astype(str), sub["implied_shrinkage"], color="C2")
-        ax.axhline(1.0, color="k", linewidth=1, linestyle="--", label="s = 1 (no shrinkage)")
-        ax.set_xlabel(f"{cond} bin")
-        ax.set_ylabel("implied shrinkage s")
-        ax.set_title(f"{cond}: implied shrinkage cancelled")
+    labels = sub["condition_bin"].astype(str).to_numpy()
+    covered = sub["covered"].to_numpy(dtype=bool)
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+
+    def _bars(ax: plt.Axes, values: npt.ArrayLike, *, title: str, ylabel: str, color: Any, baseline: float) -> None:  # noqa: ANN401
+        ax.bar(labels, np.asarray(values, dtype=float), color=color)
+        ax.axhline(baseline, color="k", linewidth=1, linestyle="--")
+        ax.set_title(title)
+        ax.set_xlabel(f"{condition} bin")
+        ax.set_ylabel(ylabel)
         ax.tick_params(axis="x", labelrotation=90)
-        ax.legend(loc="lower right")
         apply_grid(ax)
-    fig.suptitle(f"{test_wtg}: two-direction implied shrinkage per bin")
-    save_fig(fig, plots_dir / "implied_shrinkage.png")
+
+    _bars(
+        axes[0][0],
+        sub["r_fwd"],
+        title="forward measurement",
+        ylabel="forward energy ratio r_fwd",
+        color="C0",
+        baseline=0.0,
+    )
+    _bars(
+        axes[0][1],
+        sub["r_rev"],
+        title="reverse measurement",
+        ylabel="reverse energy ratio r_rev",
+        color="C1",
+        baseline=0.0,
+    )
+
+    # uplift panel: shade covered (measured) vs imputed bins.
+    uplift_colors = [_COVERED_COLOR if c else _IMPUTED_COLOR for c in covered]
+    _bars(
+        axes[1][0],
+        sub["p50_uplift"],
+        title="uplift (measured / imputed)",
+        ylabel="p50 uplift",
+        color=uplift_colors,
+        baseline=0.0,
+    )
+    handles = [
+        Patch(facecolor=_COVERED_COLOR, label="measured (covered)"),
+        Patch(facecolor=_IMPUTED_COLOR, label="imputed"),
+    ]
+    axes[1][0].legend(handles=handles, loc="best")
+
+    _bars(
+        axes[1][1],
+        sub["implied_shrinkage"],
+        title="implied shrinkage cancelled",
+        ylabel="implied shrinkage s",
+        color="C2",
+        baseline=1.0,
+    )
+    axes[1][1].axhline(1.0, color="k", linewidth=1, linestyle="--", label="s = 1 (no shrinkage)")
+    axes[1][1].legend(loc="lower right")
+
+    fig.suptitle(f"{test_wtg} — {condition}: conditional two-direction diagnostics")
+    fig.tight_layout()
+    return fig
+
+
+def plot_conditional_diagnostics(plots_dir: Path, per_bin: pd.DataFrame, *, test_wtg: str) -> None:
+    """Write one four-panel diagnostic figure per condition (ws, ti, power) present in ``per_bin``."""
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    present = set(per_bin["condition"])
+    for cond in [c for c in CONDITIONS if c in present]:
+        sub = per_bin[per_bin["condition"] == cond]
+        fig = _condition_diagnostic_figure(sub, condition=cond, test_wtg=test_wtg)
+        save_fig(fig, plots_dir / f"conditional_{cond}.png")
 
 
 def save_plots(plots_dir: Path, data: DiagnosticData, importance: pd.DataFrame) -> None:
