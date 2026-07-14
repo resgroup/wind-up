@@ -260,9 +260,18 @@ def _condition_diagnostic_figure(sub: pd.DataFrame, *, condition: str, test_wtg:
     covered = sub["covered"].to_numpy(dtype=bool)
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
 
-    def _bars(ax: plt.Axes, values: npt.ArrayLike, *, title: str, ylabel: str, color: Any, baseline: float) -> None:  # noqa: ANN401
+    def _bars(
+        ax: plt.Axes,
+        values: npt.ArrayLike,
+        *,
+        title: str,
+        ylabel: str,
+        color: Any,  # noqa: ANN401
+        baseline: float,
+        baseline_label: str | None = None,
+    ) -> None:
         ax.bar(labels, np.asarray(values, dtype=float), color=color)
-        ax.axhline(baseline, color="k", linewidth=1, linestyle="--")
+        ax.axhline(baseline, color="k", linewidth=1, linestyle="--", label=baseline_label)
         ax.set_title(title)
         ax.set_xlabel(f"{condition} bin")
         ax.set_ylabel(ylabel)
@@ -309,8 +318,8 @@ def _condition_diagnostic_figure(sub: pd.DataFrame, *, condition: str, test_wtg:
         ylabel="implied shrinkage s",
         color="C2",
         baseline=1.0,
+        baseline_label="s = 1 (no shrinkage)",
     )
-    axes[1][1].axhline(1.0, color="k", linewidth=1, linestyle="--", label="s = 1 (no shrinkage)")
     axes[1][1].legend(loc="lower right")
 
     fig.suptitle(f"{test_wtg} — {condition}: conditional two-direction diagnostics")
