@@ -15,6 +15,7 @@ from benchmarking.baselines import v0_binned
 from benchmarking.baselines.hot_context import HotV0Context
 from benchmarking.baselines.v0_binned import V0BinnedMethod, _extract_p50, _subset_turbines
 from benchmarking.harness.method import MethodInput, MethodOutput
+from benchmarking.harness.toggle import build_toggle_df
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
 from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format
 
@@ -111,7 +112,7 @@ class TestBuildToggleDf:
         idx = pd.date_range(UPGRADE - pd.Timedelta(minutes=30), periods=9, freq="10min", tz="UTC")
         scada = _dense_scada(["a", "b"], start=idx[0], end=idx[-1], freq="10min")
         schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=UPGRADE)
-        df = v0_binned._build_toggle_df(scada, schedule)  # noqa: SLF001
+        df = build_toggle_df(scada.index, schedule)
 
         before = df.index < UPGRADE
         assert not df.loc[before, "toggle_on"].any()

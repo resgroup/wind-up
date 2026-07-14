@@ -34,11 +34,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import numpy as np
 import pandas as pd
 
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.synthetic import ToggleSchedule, treated_mask
+from benchmarking.harness.toggle import build_toggle_df, is_toggle
+from benchmarking.synthetic import ToggleSchedule
 from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format
 from wind_up.combine_results import combine_results
 from wind_up.interface import AssessmentInputs
@@ -97,20 +97,6 @@ asset: !include {asset_yaml}
 """
 
 
-def _build_toggle_df(scada_df: pd.DataFrame, schedule: ToggleSchedule) -> pd.DataFrame:
-    """Build wind_up's toggle signal (``toggle_on``/``toggle_off``) from a ``ToggleSchedule``.
-
-    Realistic toggle-signal semantics: before the campaign start both flags are False (no signal
-    yet), and from the start onward exactly one is True per record (``toggle_on`` = treated,
-    ``toggle_off`` = the interleaved off-blocks). Indexed by the data's unique timestamps so
-    ``add_toggle_signals`` can merge it onto every turbine.
-    """
-    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
-    toggle_on = np.asarray(treated_mask(index, schedule))
-    toggle_off = (~toggle_on) & np.asarray(index >= schedule.start) if schedule.start is not None else ~toggle_on
-    return pd.DataFrame({"toggle_on": toggle_on, "toggle_off": toggle_off}, index=index)
-
-
 def _subset_turbines(scada_df: pd.DataFrame, turbine_col: str) -> list[str]:
     """Return the sorted unique turbine names present in ``scada_df``."""
     return sorted(scada_df[turbine_col].unique().tolist())
@@ -161,8 +147,13 @@ class V0BinnedMethod:
             "reanalysis_datasets": self.context.reanalysis_datasets,
             "cache_dir": None,
         }
-        if isinstance(mi.upgrade_timing, ToggleSchedule):
-            from_cfg_kwargs["toggle_df"] = _build_toggle_df(mi.scada_df, mi.upgrade_timing)
+        if is_toggle(mi.upgrade_timing):
+            # A ToggleSchedule is turned into the canonical toggle_df; an explicit toggle_df passes through.
+            from_cfg_kwargs["toggle_df"] = (
+                mi.upgrade_timing
+                if isinstance(mi.upgrade_timing, pd.DataFrame)
+                else build_toggle_df(mi.scada_df.index, mi.upgrade_timing)
+            )
         inputs = AssessmentInputs.from_cfg(**from_cfg_kwargs)
         trdf = run_wind_up_analysis(inputs)
         tdf = combine_results(trdf, auto_choose_refs=False, plot_config=None)
@@ -182,11 +173,14 @@ class V0BinnedMethod:
                 f"{subset}. The v0 binned method needs at least one reference turbine."
             )
             raise ValueError(msg)
-        is_toggle = isinstance(mi.upgrade_timing, ToggleSchedule)
-        if is_toggle:
+        toggle_mode = is_toggle(mi.upgrade_timing)
+        if isinstance(mi.upgrade_timing, ToggleSchedule):
             upgrade = pd.Timestamp(
                 mi.upgrade_timing.start if mi.upgrade_timing.start is not None else mi.scada_df.index.min()
             )
+        elif isinstance(mi.upgrade_timing, pd.DataFrame):
+            on = mi.upgrade_timing.index[mi.upgrade_timing["toggle_on"].to_numpy(dtype=bool)]
+            upgrade = pd.Timestamp(on.min() if len(on) else mi.scada_df.index.min())
         else:
             upgrade = pd.Timestamp(mi.upgrade_timing)
         analysis_last = pd.Timestamp(mi.scada_df.index.max())
@@ -194,7 +188,7 @@ class V0BinnedMethod:
 
         scratch = Path(self.scratch_dir) if self.scratch_dir is not None else Path(tempfile.mkdtemp(prefix="v0_"))
         scratch.mkdir(parents=True, exist_ok=True)
-        template = _TOGGLE_YAML_TEMPLATE if is_toggle else _CAMPAIGN_YAML_TEMPLATE
+        template = _TOGGLE_YAML_TEMPLATE if toggle_mode else _CAMPAIGN_YAML_TEMPLATE
         yaml_text = template.format(
             assessment_name=assessment_name,
             test_wtg=mi.test_wtg,
