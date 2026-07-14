@@ -130,10 +130,12 @@ class TestDowntimeFilter:
         with pytest.raises(TypeError):
             NaiveRatioMethod()  # type: ignore[call-arg]
 
-    def test_blank_availability_role_raises(self) -> None:
-        # A schema that leaves the availability role blank would silently skip downtime filtering.
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_availability_role_raises(self, blank: str) -> None:
+        # A schema that leaves the availability role blank (empty or whitespace) would silently skip
+        # downtime filtering, so construction must reject it.
         with pytest.raises(ValueError, match="availability"):
-            NaiveRatioMethod(columns=replace(_COLUMNS, availability=""))
+            NaiveRatioMethod(columns=replace(_COLUMNS, availability=blank))
 
     def test_missing_availability_column_raises(self) -> None:
         idx = _index(20)

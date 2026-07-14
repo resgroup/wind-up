@@ -63,13 +63,14 @@ class ColumnSchema:
     ambient_temp: str | None = None
 
     def require_roles(self, roles: Iterable[str]) -> None:
-        """Raise ``ValueError`` if any named role is unset or blank.
+        """Raise ``ValueError`` if any named role is unset or blank (``None``, empty, or whitespace).
 
         The estimation methods take their column names *only* from a ``ColumnSchema`` (rather than
         separate per-column arguments that could disagree with it), so each validates on construction
-        that the schema actually names every role it reads.
+        that the schema actually names every role it reads. ``roles`` are field names — an unknown one
+        is a programming error and raises ``AttributeError`` (the call sites pass literal role names).
         """
-        missing = [role for role in roles if not getattr(self, role)]
+        missing = [role for role in roles if not (getattr(self, role) or "").strip()]
         if missing:
             msg = f"columns is missing required role(s) {missing}: {self}"
             raise ValueError(msg)

@@ -313,8 +313,8 @@ class PowerModelMethod:
         scada = mi.scada_df
         if self.columns.availability not in scada.columns:
             msg = (
-                f"availability_col {self.columns.availability!r} is not in scada_df; the downtime filter is "
-                f"required for the power model and cannot be skipped."
+                f"the availability column {self.columns.availability!r} (columns.availability) is not in "
+                f"scada_df; the downtime filter is required for the power model and cannot be skipped."
             )
             raise ValueError(msg)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()

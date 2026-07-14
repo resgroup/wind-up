@@ -132,8 +132,8 @@ class NaiveRatioMethod:
 
         if self.columns.availability not in mi.scada_df.columns:
             msg = (
-                f"availability_col {self.columns.availability!r} is not in scada_df; the downtime filter is "
-                f"required for the naive method and cannot be skipped."
+                f"the availability column {self.columns.availability!r} (columns.availability) is not in "
+                f"scada_df; the downtime filter is required for the naive method and cannot be skipped."
             )
             raise ValueError(msg)
 
@@ -273,14 +273,11 @@ class NaiveRatioMethod:
         used_series = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
         used = used_series.reindex(index, fill_value=False).to_numpy()
         treated = resolve_toggle(mi.upgrade_timing, index).upgraded.astype(bool)
-        # Align the schema's active-power role to the column this method was configured to read,
-        # so the shared power plots use the right column even if it differs from the schema default.
-        columns = self.columns
         ctx = DiagnosticContext(
             run_dir=run_dir,
             test_wtg=mi.test_wtg,
             turbine_col=mi.turbine_col,
-            columns=columns,
+            columns=self.columns,
             scada_df=mi.scada_df,
             treated_ts=treated,
             used_ts=used,
