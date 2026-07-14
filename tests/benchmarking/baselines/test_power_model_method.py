@@ -25,6 +25,7 @@ from benchmarking.baselines.power_model.method import (
     _implied_shrinkage,
 )
 from benchmarking.harness.method import MethodInput
+from benchmarking.harness.toggle import resolve_toggle
 from benchmarking.synthetic import ToggleSchedule
 
 _TURBINE = "TurbineName"
@@ -233,15 +234,19 @@ class TestModelFundamentals:
         with pytest.raises(ValueError, match="must be positive"):
             _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=0.0).estimate(mi)
 
-    def test_campaign_mask_bites_only_for_started_toggle(self) -> None:
+    def test_started_toggle_baselines_split_pre_campaign_from_off_blocks(self) -> None:
+        # The old ``_campaign_mask`` folded into the shared ``resolve_toggle``: the strict
+        # campaign_baseline (the conditional matching's off rows) excludes pre-campaign, while the
+        # lenient training_baseline (the headline fit's rows) includes them. period=20D, half=10D.
         index = pd.date_range("2019-01-01", periods=4, freq="10D", tz="UTC")
-        mask = PowerModelMethod._campaign_mask  # noqa: SLF001
-        np.testing.assert_array_equal(
-            mask(index, upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=4), start=index[2])),
-            [False, False, True, True],
-        )
-        assert mask(index, upgrade_timing=pd.Timestamp(index[2])).all()  # prepost: all-True
-        assert mask(index, upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=4))).all()  # no start
+        rows = resolve_toggle(ToggleSchedule(period=pd.Timedelta(days=20), start=index[2]), index)
+        pre = np.asarray(index < index[2])  # index[0], index[1]
+        assert not rows.campaign_baseline[pre].any()  # off-only baseline drops pre-campaign
+        assert rows.training_baseline[pre].all()  # fitting baseline keeps pre-campaign
+        # prepost: both baselines are exactly the pre-changeover rows (no pre-campaign concept).
+        prepost = resolve_toggle(pd.Timestamp(index[2]), index)
+        np.testing.assert_array_equal(prepost.campaign_baseline, ~prepost.upgraded)
+        np.testing.assert_array_equal(prepost.training_baseline, ~prepost.upgraded)
 
     def test_toggle_all_data_with_conditional_recovers_uplift(self) -> None:
         # A toggle whose headline fit trains on the pre-campaign baseline too (the adaptive default,

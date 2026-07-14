@@ -29,13 +29,16 @@ class MethodInput:
 
     :param scada_df: windowed synthetic SCADA (all subset turbines, baseline + activity)
     :param test_wtg: the upgraded turbine to estimate
-    :param upgrade_timing: changeover timestamp (prepost) or schedule (toggle)
+    :param upgrade_timing: changeover timestamp (prepost); a periodic ``ToggleSchedule`` or an
+        explicit, possibly irregular ``toggle_df`` (a ``pd.DataFrame`` with boolean
+        ``toggle_on``/``toggle_off`` on a ``DatetimeIndex``) for toggle. See
+        :mod:`benchmarking.harness.toggle`.
     :param turbine_col: the turbine-identifier column in ``scada_df``
     """
 
     scada_df: pd.DataFrame
     test_wtg: str
-    upgrade_timing: pd.Timestamp | ToggleSchedule
+    upgrade_timing: pd.Timestamp | ToggleSchedule | pd.DataFrame
     turbine_col: str = "TurbineName"
 
 

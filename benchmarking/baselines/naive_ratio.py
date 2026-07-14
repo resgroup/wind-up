@@ -41,7 +41,8 @@ from matplotlib.ticker import PercentFormatter
 from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
+from benchmarking.harness.toggle import ToggleRowSets, is_toggle, resolve_toggle, toggle_upgrade_start
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -70,13 +71,6 @@ def _wide_column(scada_df: pd.DataFrame, *, turbine_col: str, value_col: str) ->
         values=value_col,
         aggfunc="first",
     )
-
-
-def _upgrade_start(upgrade_timing: pd.Timestamp | ToggleSchedule, index: pd.DatetimeIndex) -> pd.Timestamp:
-    """Return the upgrade-start timestamp (changeover for prepost; toggle origin for toggle)."""
-    if isinstance(upgrade_timing, ToggleSchedule):
-        return upgrade_timing.start if upgrade_timing.start is not None else index.min()
-    return pd.Timestamp(upgrade_timing)
 
 
 def restrict_to_campaign(mi: MethodInput, *, toggle_campaign_only: bool) -> MethodInput:
@@ -143,13 +137,14 @@ class NaiveRatioMethod:
             raise ValueError(msg)
 
         timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
-        ts_treated = np.asarray(treated_mask(wide.index, mi.upgrade_timing))
+        rows = resolve_toggle(mi.upgrade_timing, wide.index)
+        baseline = rows.campaign_baseline if self.toggle_campaign_only else rows.training_baseline
         test_pw = wide[test].to_numpy(dtype=float)
         ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
         used = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase).to_numpy()
 
-        rho_base = _rho(test_pw, ref_total, used & ~ts_treated)
-        rho_up = _rho(test_pw, ref_total, used & ts_treated)
+        rho_base = _rho(test_pw, ref_total, used & baseline)
+        rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
         recoverable = np.isfinite(rho_base) and rho_base != 0 and np.isfinite(rho_up)
         uplift = rho_up / rho_base - 1.0 if recoverable else np.nan
 
@@ -157,7 +152,8 @@ class NaiveRatioMethod:
             mi,
             wide=wide,
             used=used,
-            ts_treated=ts_treated,
+            toggle_rows=rows,
+            toggle_campaign_only=self.toggle_campaign_only,
             refs=refs,
             timebase=timebase,
             active_power_col=self.active_power_col,
@@ -221,7 +217,7 @@ class NaiveRatioMethod:
         timebase: pd.Timedelta,
     ) -> None:
         """Write the data-stats CSV, the headline results CSV and (optionally) the plots."""
-        upgrade_start = _upgrade_start(mi.upgrade_timing, wide.index)
+        upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
         last_dt = wide.index.max()
         run_name = f"naive_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{last_dt:%Y%m%d}"
         out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="naive_"))
@@ -231,7 +227,7 @@ class NaiveRatioMethod:
 
         stats.to_csv(run_dir / f"{run_name}_data_stats_{ts}.csv", index=False)
 
-        mode = "toggle" if isinstance(mi.upgrade_timing, ToggleSchedule) else "prepost"
+        mode = "toggle" if is_toggle(mi.upgrade_timing) else "prepost"
         used_base = int(stats.loc[stats["segment"] == "baseline", "n_used_timestamps"].iloc[0])
         used_up = int(stats.loc[stats["segment"] == "upgraded", "n_used_timestamps"].iloc[0])
         results = pd.DataFrame(
@@ -261,6 +257,7 @@ class NaiveRatioMethod:
                 used=used,
                 timebase=timebase,
                 active_power_col=self.active_power_col,
+                toggle_campaign_only=self.toggle_campaign_only,
             )
             self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, timebase=timebase)
 
@@ -274,7 +271,7 @@ class NaiveRatioMethod:
         test, refs = mi.test_wtg, [c for c in wide.columns if c != mi.test_wtg]
         used_series = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
         used = used_series.reindex(index, fill_value=False).to_numpy()
-        treated = np.asarray(treated_mask(index, mi.upgrade_timing)).astype(bool)
+        treated = resolve_toggle(mi.upgrade_timing, index).upgraded.astype(bool)
         # Align the schema's active-power role to the column this method was configured to read,
         # so the shared power plots use the right column even if it differs from the schema default.
         columns = replace(self.columns, active_power=self.active_power_col)
@@ -287,7 +284,7 @@ class NaiveRatioMethod:
             treated_ts=treated,
             used_ts=used,
             timebase=timebase,
-            mode="toggle" if isinstance(mi.upgrade_timing, ToggleSchedule) else "prepost",
+            mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
             era5_df=None,
         )
         write_common_diagnostics(ctx)
@@ -314,7 +311,8 @@ def _segment_stats(
     *,
     wide: pd.DataFrame,
     used: npt.NDArray[np.bool_],
-    ts_treated: npt.NDArray[np.bool_],
+    toggle_rows: ToggleRowSets,
+    toggle_campaign_only: bool,
     refs: list[str],
     timebase: pd.Timedelta,
     active_power_col: str,
@@ -326,11 +324,13 @@ def _segment_stats(
     n_turbines = wide.shape[1]
     timebase_hours = timebase / pd.Timedelta(hours=1)
 
-    row_treated = np.asarray(treated_mask(mi.scada_df.index, mi.upgrade_timing))
+    row_rows = resolve_toggle(mi.upgrade_timing, mi.scada_df.index)
     row_power = mi.scada_df[active_power_col].to_numpy(dtype=float)
 
-    ts_masks = {"all": np.ones(len(wide), dtype=bool), "baseline": ~ts_treated, "upgraded": ts_treated}
-    row_masks = {"all": np.ones(len(mi.scada_df), dtype=bool), "baseline": ~row_treated, "upgraded": row_treated}
+    ts_baseline = toggle_rows.campaign_baseline if toggle_campaign_only else toggle_rows.training_baseline
+    row_baseline = row_rows.campaign_baseline if toggle_campaign_only else row_rows.training_baseline
+    ts_masks = {"all": np.ones(len(wide), dtype=bool), "baseline": ts_baseline, "upgraded": toggle_rows.upgraded}
+    row_masks = {"all": np.ones(len(mi.scada_df), dtype=bool), "baseline": row_baseline, "upgraded": row_rows.upgraded}
 
     rows = []
     for segment in _SEGMENTS:
@@ -427,18 +427,25 @@ def _save_plots(
     used: np.ndarray,
     timebase: pd.Timedelta,
     active_power_col: str,
+    toggle_campaign_only: bool,
 ) -> None:
     """Write the scatter, ratio-timeseries and used-coverage-timeseries diagnostic plots (by stage).
 
     ``used`` is the method's real downtime-filtered mask (test + every reference passing the
     availability/finite filter), so the scatter shows only the rows the estimate actually uses.
+    ``toggle_campaign_only`` picks the same baseline the estimate used (strict off-blocks when set,
+    the lenient pre-campaign U off baseline when not), so the plots never disagree with the headline.
     """
     refs = [c for c in wide.columns if c != test]
-    ts_treated = np.asarray(treated_mask(wide.index, mi.upgrade_timing))
+    toggle_rows = resolve_toggle(mi.upgrade_timing, wide.index)
+    baseline_mask = toggle_rows.campaign_baseline if toggle_campaign_only else toggle_rows.training_baseline
     test_pw = wide[test].to_numpy(dtype=float)
     ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
-    upgrade_start = _upgrade_start(mi.upgrade_timing, wide.index)
-    segments = (("baseline", used & ~ts_treated, "C0"), ("upgraded", used & ts_treated, "C1"))
+    upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
+    segments = (
+        ("baseline", used & baseline_mask, "C0"),
+        ("upgraded", used & toggle_rows.upgraded, "C1"),
+    )
 
     # 1) scatter of test vs reference-total power, baseline/upgraded coloured, with rho slopes.
     fig, ax = plt.subplots(figsize=(7, 7))
@@ -479,7 +486,7 @@ def _save_plots(
     expected_per_day = _expected_per_day(wide.index, timebase)
     fig, ax = plt.subplots(figsize=(10, 5))
     for label, _seg, color in segments:
-        seg_mask = ~ts_treated if label == "baseline" else ts_treated
+        seg_mask = baseline_mask if label == "baseline" else toggle_rows.upgraded
         daily = _daily_segment_coverage(wide.index, used, seg_mask, expected_per_day)
         ax.plot(daily.index.to_numpy(), daily.to_numpy(), marker=".", linewidth=0.8, color=color, label=label)
     ax.axvline(upgrade_start, color="k", linestyle="--", label="upgrade start")
