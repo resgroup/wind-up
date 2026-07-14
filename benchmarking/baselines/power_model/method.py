@@ -938,7 +938,7 @@ class PowerModelMethod:
         importance = diag.write_csvs(run_dir, run_name, ts, data)
         diag.log_top_features(importance)
         logger.info(
-            "%s %s: uplift=%+.3f%%  (Σactual=%.1f MWh, Σcounterfactual=%.1f MWh, n_up=%d)",
+            "%s %s: uplift=%+.3f%%  (sum_actual=%.1f MWh, sum_counterfactual=%.1f MWh, n_up=%d)",
             self.name,
             mi.test_wtg,
             100 * uplift,
