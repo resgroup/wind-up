@@ -356,9 +356,7 @@ class TestDiagnostics:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.06)
-        method = NaiveRatioMethod(
-            columns=_COLUMNS, out_dir=tmp_path, save_plots=save_plots
-        )
+        method = NaiveRatioMethod(columns=_COLUMNS, out_dir=tmp_path, save_plots=save_plots)
         out = method.estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
         )
@@ -440,7 +438,5 @@ class TestToggleCampaignOnly:
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
         a = NaiveRatioMethod(columns=_COLUMNS).estimate(mi)
-        b = NaiveRatioMethod(
-            columns=_COLUMNS, toggle_campaign_only=False
-        ).estimate(mi)
+        b = NaiveRatioMethod(columns=_COLUMNS, toggle_campaign_only=False).estimate(mi)
         assert a.p50_overall == pytest.approx(b.p50_overall)
