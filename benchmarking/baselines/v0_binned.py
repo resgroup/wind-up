@@ -37,8 +37,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.toggle import build_toggle_df, is_toggle
-from benchmarking.synthetic import ToggleSchedule
+from benchmarking.harness.toggle import build_toggle_df, is_toggle, toggle_upgrade_start
 from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format
 from wind_up.combine_results import combine_results
 from wind_up.interface import AssessmentInputs
@@ -174,15 +173,7 @@ class V0BinnedMethod:
             )
             raise ValueError(msg)
         toggle_mode = is_toggle(mi.upgrade_timing)
-        if isinstance(mi.upgrade_timing, ToggleSchedule):
-            upgrade = pd.Timestamp(
-                mi.upgrade_timing.start if mi.upgrade_timing.start is not None else mi.scada_df.index.min()
-            )
-        elif isinstance(mi.upgrade_timing, pd.DataFrame):
-            on = mi.upgrade_timing.index[mi.upgrade_timing["toggle_on"].to_numpy(dtype=bool)]
-            upgrade = pd.Timestamp(on.min() if len(on) else mi.scada_df.index.min())
-        else:
-            upgrade = pd.Timestamp(mi.upgrade_timing)
+        upgrade = toggle_upgrade_start(mi.upgrade_timing, mi.scada_df.index)
         analysis_last = pd.Timestamp(mi.scada_df.index.max())
         assessment_name = f"v0_{mi.test_wtg}_{upgrade:%Y%m%d}_{analysis_last:%Y%m%d}"
 

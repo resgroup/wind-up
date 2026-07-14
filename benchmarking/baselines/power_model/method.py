@@ -45,8 +45,8 @@ from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import CONDITION_BINS, condition_bins, energy_ratio_by_bin
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.toggle import is_toggle, resolve_toggle
-from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrade_start
+from benchmarking.synthetic import HOT_COLUMNS
 
 if TYPE_CHECKING:
     from benchmarking.synthetic import ColumnSchema
@@ -210,18 +210,6 @@ def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
     return pd.Timedelta(np.median(np.diff(unique.to_numpy())))
 
 
-def _upgrade_start(
-    upgrade_timing: pd.Timestamp | ToggleSchedule | pd.DataFrame, index: pd.DatetimeIndex
-) -> pd.Timestamp:
-    """Return the upgrade-start timestamp (changeover for prepost; first upgraded row for toggle)."""
-    if isinstance(upgrade_timing, ToggleSchedule):
-        return upgrade_timing.start if upgrade_timing.start is not None else index.min()
-    if isinstance(upgrade_timing, pd.DataFrame):
-        on = upgrade_timing.index[upgrade_timing["toggle_on"].to_numpy(dtype=bool)]
-        return on.min() if len(on) else index.min()
-    return pd.Timestamp(upgrade_timing)
-
-
 def _clip_predictions(pred: np.ndarray, *, y_train: np.ndarray, rated_power_kw: float) -> np.ndarray:
     """Clip boosted predictions to the physically plausible range of the fitted-on outcome.
 
@@ -366,7 +354,7 @@ class PowerModelMethod:
 
         y_arr = y.to_numpy(dtype=float)
         weights = self._time_decay_weights(
-            index, campaign_start=_upgrade_start(mi.upgrade_timing, index), campaign_end=index.max()
+            index, campaign_start=toggle_upgrade_start(mi.upgrade_timing, index), campaign_end=index.max()
         )
         fit = self._fit_predict(
             features,
@@ -875,7 +863,7 @@ class PowerModelMethod:
         Computed once per ``estimate`` and shared by the overall diagnostics and the optional conditional
         step so both write into the *same* run folder.
         """
-        upgrade_start = _upgrade_start(mi.upgrade_timing, index)
+        upgrade_start = toggle_upgrade_start(mi.upgrade_timing, index)
         run_name = f"power_model_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{index.max():%Y%m%d}"
         out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="power_model_"))
         run_dir = out_root / run_name

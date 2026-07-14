@@ -41,7 +41,7 @@ from matplotlib.ticker import PercentFormatter
 from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.toggle import ToggleRowSets, is_toggle, resolve_toggle
+from benchmarking.harness.toggle import ToggleRowSets, is_toggle, resolve_toggle, toggle_upgrade_start
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
 if TYPE_CHECKING:
@@ -71,18 +71,6 @@ def _wide_column(scada_df: pd.DataFrame, *, turbine_col: str, value_col: str) ->
         values=value_col,
         aggfunc="first",
     )
-
-
-def _upgrade_start(
-    upgrade_timing: pd.Timestamp | ToggleSchedule | pd.DataFrame, index: pd.DatetimeIndex
-) -> pd.Timestamp:
-    """Return the upgrade-start timestamp (changeover for prepost; first upgraded row for toggle)."""
-    if isinstance(upgrade_timing, ToggleSchedule):
-        return upgrade_timing.start if upgrade_timing.start is not None else index.min()
-    if isinstance(upgrade_timing, pd.DataFrame):
-        on = upgrade_timing.index[upgrade_timing["toggle_on"].to_numpy(dtype=bool)]
-        return on.min() if len(on) else index.min()
-    return pd.Timestamp(upgrade_timing)
 
 
 def restrict_to_campaign(mi: MethodInput, *, toggle_campaign_only: bool) -> MethodInput:
@@ -229,7 +217,7 @@ class NaiveRatioMethod:
         timebase: pd.Timedelta,
     ) -> None:
         """Write the data-stats CSV, the headline results CSV and (optionally) the plots."""
-        upgrade_start = _upgrade_start(mi.upgrade_timing, wide.index)
+        upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
         last_dt = wide.index.max()
         run_name = f"naive_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{last_dt:%Y%m%d}"
         out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="naive_"))
@@ -269,6 +257,7 @@ class NaiveRatioMethod:
                 used=used,
                 timebase=timebase,
                 active_power_col=self.active_power_col,
+                toggle_campaign_only=self.toggle_campaign_only,
             )
             self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, timebase=timebase)
 
@@ -438,19 +427,23 @@ def _save_plots(
     used: np.ndarray,
     timebase: pd.Timedelta,
     active_power_col: str,
+    toggle_campaign_only: bool,
 ) -> None:
     """Write the scatter, ratio-timeseries and used-coverage-timeseries diagnostic plots (by stage).
 
     ``used`` is the method's real downtime-filtered mask (test + every reference passing the
     availability/finite filter), so the scatter shows only the rows the estimate actually uses.
+    ``toggle_campaign_only`` picks the same baseline the estimate used (strict off-blocks when set,
+    the lenient pre-campaign U off baseline when not), so the plots never disagree with the headline.
     """
     refs = [c for c in wide.columns if c != test]
     toggle_rows = resolve_toggle(mi.upgrade_timing, wide.index)
+    baseline_mask = toggle_rows.campaign_baseline if toggle_campaign_only else toggle_rows.training_baseline
     test_pw = wide[test].to_numpy(dtype=float)
     ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
-    upgrade_start = _upgrade_start(mi.upgrade_timing, wide.index)
+    upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
     segments = (
-        ("baseline", used & toggle_rows.campaign_baseline, "C0"),
+        ("baseline", used & baseline_mask, "C0"),
         ("upgraded", used & toggle_rows.upgraded, "C1"),
     )
 
@@ -493,7 +486,7 @@ def _save_plots(
     expected_per_day = _expected_per_day(wide.index, timebase)
     fig, ax = plt.subplots(figsize=(10, 5))
     for label, _seg, color in segments:
-        seg_mask = toggle_rows.campaign_baseline if label == "baseline" else toggle_rows.upgraded
+        seg_mask = baseline_mask if label == "baseline" else toggle_rows.upgraded
         daily = _daily_segment_coverage(wide.index, used, seg_mask, expected_per_day)
         ax.plot(daily.index.to_numpy(), daily.to_numpy(), marker=".", linewidth=0.8, color=color, label=label)
     ax.axvline(upgrade_start, color="k", linestyle="--", label="upgrade start")

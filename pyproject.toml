@@ -90,9 +90,10 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-# `benchmarking*` is included temporarily so downstream consumers can import the
-# benchmarking methods from an editable/path install; wind_up itself is unaffected. v1 is
-# unreleased, so this does not change any published artifact.
+# `benchmarking*` is included temporarily so downstream consumers can import the benchmarking
+# methods from an editable/path install. This DOES add `benchmarking` to any wheel/sdist built
+# from this repo; it is acceptable only because v1 is unreleased (nothing is published yet). It
+# MUST be removed before v1 is released so the package is not shipped.
 # TODO clean up the benchmarking package and remove this once v1 is ready for release.
 include = ["wind_up*", "benchmarking*"]
 

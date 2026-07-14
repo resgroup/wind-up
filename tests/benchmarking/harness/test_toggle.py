@@ -13,7 +13,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.harness.toggle import ToggleRowSets, build_toggle_df, is_toggle, resolve_toggle
+from benchmarking.harness.toggle import (
+    ToggleRowSets,
+    build_toggle_df,
+    is_toggle,
+    resolve_toggle,
+    toggle_upgrade_start,
+)
 from benchmarking.synthetic import ToggleSchedule, treated_mask
 
 
@@ -65,6 +71,21 @@ def test_resolve_toggle_rejects_simultaneous_on_and_off() -> None:
     bad = _toggle_df(index, on=[True, False], off=[True, False])
     with pytest.raises(ValueError, match="toggle_on and toggle_off"):
         resolve_toggle(bad, index)
+
+
+def test_resolve_toggle_rejects_toggle_df_missing_a_flag_column() -> None:
+    index = pd.date_range("2025-01-01", periods=2, freq="10min")
+    missing_off = pd.DataFrame({"toggle_on": [True, False]}, index=index)
+    with pytest.raises(ValueError, match=r"missing.*toggle_off"):
+        resolve_toggle(missing_off, index)
+
+
+def test_resolve_toggle_rejects_toggle_df_with_duplicate_timestamps() -> None:
+    """A downstream frame with duplicate timestamps fails with a clear error, not pandas' opaque one."""
+    ts = pd.Timestamp("2025-01-01")
+    dup = _toggle_df(pd.DatetimeIndex([ts, ts]), on=[True, False], off=[False, True])
+    with pytest.raises(ValueError, match="index must be unique"):
+        resolve_toggle(dup, pd.date_range("2025-01-01", periods=2, freq="10min"))
 
 
 def test_resolve_toggle_reindexes_onto_a_repeated_long_frame_index() -> None:
@@ -131,3 +152,29 @@ def test_resolve_toggle_returns_row_sets_dataclass() -> None:
     index = pd.date_range("2025-01-01", periods=2, freq="10min")
     rows = resolve_toggle(_toggle_df(index, [True, False], [False, True]), index)
     assert isinstance(rows, ToggleRowSets)
+
+
+def test_toggle_upgrade_start_prepost_is_the_changeover() -> None:
+    index = pd.date_range("2025-01-01", periods=4, freq="10min")
+    assert toggle_upgrade_start(index[2], index) == index[2]
+
+
+def test_toggle_upgrade_start_schedule_is_its_start() -> None:
+    index = pd.date_range("2025-01-01", periods=48, freq="30min")
+    schedule = ToggleSchedule(period=pd.Timedelta(hours=2), start=index[12])
+    assert toggle_upgrade_start(schedule, index) == index[12]
+
+
+def test_toggle_upgrade_start_frame_is_first_upgraded_row_within_index() -> None:
+    """The start aligns to the analysis index: on-rows the analysis never sees do not count."""
+    index = pd.date_range("2025-01-01", periods=4, freq="10min")
+    # An earlier on-row before the analysis window would win a raw ``.min()``, but is not in ``index``.
+    frame_index = pd.DatetimeIndex([pd.Timestamp("2024-12-31"), *index])
+    toggle_df = _toggle_df(frame_index, on=[True, False, True, False, False], off=[False, True, False, True, True])
+    assert toggle_upgrade_start(toggle_df, index) == index[1]
+
+
+def test_toggle_upgrade_start_frame_never_on_falls_back_to_index_min() -> None:
+    index = pd.date_range("2025-01-01", periods=3, freq="10min")
+    toggle_df = _toggle_df(index, on=[False, False, False], off=[True, True, True])
+    assert toggle_upgrade_start(toggle_df, index) == index.min()
