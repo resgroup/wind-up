@@ -7,6 +7,54 @@ from, not just conclusions.
 
 ---
 
+## F22 — for toggle, a campaign-only `power_model` *headline* (drop pre-campaign data entirely) is neutral-to-better and leaves the conditional shape unchanged — bears on Issue 17
+
+*2026-07-14 — a throwaway A/B while scoping Issue 17 (reconciling the conditional estimator's data
+path with the headline). Reproduce: `benchmarking.harness.score_study`, toggle, profiles
+`cp_0pct`/`ws_dependent_cp`/`ti_dependent_cp`, campaigns {1, 12} mo, 4 replicates, seed 0; default
+`PowerModelMethod` vs the same method wrapped to drop rows before the toggle start first (reusing
+`naive_ratio.restrict_to_campaign`). The "default" arm reproduced the committed toggle cells in
+`study_power_model_compare_baseline.json` bit-identically, so the A/B is trustworthy.*
+
+**Where pre-campaign data enters `power_model` at all (toggle):** only the **headline** counterfactual
+fit (`baseline_sel` = pre-campaign rows + campaign-off rows, adaptive-half-life weighted, F20). The
+**conditional** step already excludes pre-campaign rows (`baseline_sel & _campaign_mask`), so dropping
+pre-campaign data only touches the headline.
+
+**Overall P50** (pp; score = √(bias²+spread²), lower better), mean over the three profiles:
+
+| campaign | arm | bias | spread | score |
+| --- | --- | --- | --- | --- |
+| 1 mo | default (all-data) | **−0.31** | 0.23 | 0.39 |
+| 1 mo | campaign-only | **+0.02** | 0.34 | 0.34 |
+| 12 mo | default (all-data) | +0.07 | **0.18** | 0.19 |
+| 12 mo | campaign-only | +0.07 | **0.11** | 0.13 |
+
+- **1 mo:** dropping pre-campaign data removes a small negative bias (~−0.3 pp → ~0) but raises spread
+  (0.23→0.34) — the pre-campaign rows stabilise a data-starved short campaign at the cost of pulling
+  the estimate down. Net score slightly better without them.
+- **12 mo:** bias identical; campaign-only has **lower spread** (0.18→0.11) and better score
+  (0.19→0.13). With a full campaign the extra history buys no bias reduction and only injects
+  across-replicate variance (each replicate's pre-campaign window differs).
+
+**Conditional distributions: essentially unchanged** — per-bin |bias| moved ≤ ~0.04 pp (noise) in
+every ws/TI bin across all three profiles. Expected from the code: the two-direction CEM fits already
+run on campaign-only matched data in both arms, so their *shape* is identical; only the re-level anchor
+(the headline) moves, and at 12 mo the headline barely moves.
+
+**Implication for Issue 17.** Issue 17 frames unification as pushing the *conditional* toward the
+headline (all-data + adaptive half-life + weighted/restricted matching). This probe shows the
+**opposite direction is also on the table and looks cleaner for toggle**: make the *headline*
+campaign-only (matching the conditional), which unifies the data path, is neutral-to-better on overall
+P50, and leaves the conditional untouched. It also **qualifies F21's parenthetical** ("the committed
+benchmark already shows all-data winning decisively at 3–12 mo"): that was an inference from the F16
+regime map, not a direct all-data-vs-campaign-only-drop A/B — measured directly here, campaign-only
+*improves* toggle spread at 12 mo rather than hurting. Caveats: narrow probe (toggle only, 3 profiles,
+2 campaign lengths, 4 replicates); prepost is untouched (its baseline *is* the pre-campaign data, so
+there is no such knob there).
+
+---
+
 ## F21 — prune the historic opt-in knobs: `power_model` now presents only the winning configuration (Issue 16)
 
 *2026-07-10 — code hygiene, not a methodology change. Every removed knob lost its A/B and was off/absent
