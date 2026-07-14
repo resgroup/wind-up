@@ -6,8 +6,9 @@ toggle inputs and raises on a prepost changeover.
 
 **Used timestamps** require every turbine (test and references) to be available (an availability
 counter at a full period) and have finite power — a down turbine on either side of the ratio would
-otherwise bias it. The availability column is therefore **required**. Only the active-power column enters the ``rho`` *computation*; the
-availability column is used solely for row selection (cause, not effect), so the estimate still
+otherwise bias it. The availability column is therefore **required**. Only the active-power column
+enters the ``rho`` *computation*; the availability column is used solely for row selection (cause,
+not effect), so the estimate still
 never conditions on the test turbine's post-treatment wind speed (design-note §3). It speaks the
 data source's own column names and has no wind_up dependency.
 
