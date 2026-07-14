@@ -127,8 +127,7 @@ def run_prepost_study(
             methods.append(OracleMethod(base_scada))
         methods.append(
             NaiveRatioMethod(
-                active_power_col=HOT_COLUMNS.active_power,
-                availability_col=HOT_COLUMNS.availability,
+                columns=HOT_COLUMNS,
                 out_dir=out_dir / "naive_runs",
             )
         )
@@ -140,13 +139,9 @@ def run_prepost_study(
         # finite-power rule also apply.
         methods.append(
             PowerModelMethod(
-                active_power_col=HOT_COLUMNS.active_power,
-                wind_speed_col=HOT_COLUMNS.wind_speed,
-                availability_col=HOT_COLUMNS.availability,
+                columns=HOT_COLUMNS,
                 baseline_rated_power_kw=HOT_RATED_POWER_KW,
                 era5_hourly_df=context.reanalysis_datasets[0].data,
-                # Issue 11 accepted default (findings F12): reference active-power minimum feature.
-                reference_stat_cols=("wtc_ActPower_min",),
                 # Removal-ablation accepted defaults (findings F13).
                 availability_feature=False,
                 era5_exclude=CURATED_ERA5_EXCLUDE,

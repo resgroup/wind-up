@@ -156,14 +156,9 @@ def _pin_case(
 def _power_model(out_dir: Path, era5_hourly_df: pd.DataFrame, *, save_plots: bool) -> PowerModelMethod:
     """Construct the HoT-configured power model (its default: conditional uplift on)."""
     return PowerModelMethod(
-        active_power_col=HOT_COLUMNS.active_power,
-        wind_speed_col=HOT_COLUMNS.wind_speed,
-        wind_speed_sd_col=HOT_COLUMNS.wind_speed_sd,
-        availability_col=HOT_COLUMNS.availability,
+        columns=HOT_COLUMNS,
         baseline_rated_power_kw=HOT_RATED_POWER_KW,
         era5_hourly_df=era5_hourly_df,
-        # Issue 11 accepted default (findings F12): reference active-power minimum feature.
-        reference_stat_cols=("wtc_ActPower_min",),
         # Removal-ablation accepted defaults (findings F13).
         availability_feature=False,
         era5_exclude=CURATED_ERA5_EXCLUDE,
@@ -184,8 +179,7 @@ def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
     era5 = context.reanalysis_datasets[0].data
     methods: list[Method] = [
         NaiveRatioMethod(
-            active_power_col=HOT_COLUMNS.active_power,
-            availability_col=HOT_COLUMNS.availability,
+            columns=HOT_COLUMNS,
             out_dir=out_dir / "naive",
             save_plots=True,
         ),

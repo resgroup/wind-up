@@ -42,7 +42,7 @@ from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.toggle import ToggleRowSets, is_toggle, resolve_toggle, toggle_upgrade_start
-from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from benchmarking.synthetic import ToggleSchedule
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -92,34 +92,35 @@ def restrict_to_campaign(mi: MethodInput, *, toggle_campaign_only: bool) -> Meth
 class NaiveRatioMethod:
     """Pluggable naive energy-ratio baseline (prepost and toggle).
 
-    :param active_power_col: the source-native active-power column (the only signal in the ``rho``
-        computation); the turbine-identifier column comes from the seam (``MethodInput``)
-    :param availability_col: **required** "ready to operate" counter for the downtime filter,
-        applied to the test turbine and every reference; rows below a full period of availability
-        are dropped. Required so downtime filtering can never be silently skipped.
+    :param columns: **required** source-native column schema — the single source of the method's
+        column names. It reads the ``active_power`` role (the only signal in the ``rho`` computation;
+        the turbine identifier comes from the seam, ``MethodInput``) and the ``availability`` role
+        (the required downtime filter, applied to the test turbine and every reference; rows below a
+        full period of availability are dropped, so downtime filtering can never be silently skipped).
+        The remaining roles feed only the diagnostics, never the ``rho`` computation.
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param save_plots: also write the diagnostic plots under ``<run>/plots``
     :param timebase: analysis timebase; inferred from the data when ``None``
     :param toggle_campaign_only: for a toggle campaign, fit only on the interleaved on/off blocks
         (drop the pre-campaign baseline) so on and off share a wind distribution; no-op for prepost
-    :param columns: source-native column schema (the wind-speed column feeds the stuck filter's
-        calm exemption and the diagnostics; never the ``rho`` computation)
     """
 
-    active_power_col: str
-    availability_col: str
+    columns: ColumnSchema
     name: str = "naive_ratio"
     out_dir: Path | None = None
     save_plots: bool = False
     timebase: pd.Timedelta | None = None
     toggle_campaign_only: bool = True
-    columns: ColumnSchema = HOT_COLUMNS
+
+    def __post_init__(self) -> None:
+        """Validate ``columns`` names every role this method reads."""
+        self.columns.require_roles(("active_power", "availability"))
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
         mi = restrict_to_campaign(mi, toggle_campaign_only=self.toggle_campaign_only)
-        wide = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.active_power_col)
+        wide = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.active_power)
         test = mi.test_wtg
         refs = [c for c in wide.columns if c != test]
         if not refs:
@@ -129,9 +130,9 @@ class NaiveRatioMethod:
             )
             raise ValueError(msg)
 
-        if self.availability_col not in mi.scada_df.columns:
+        if self.columns.availability not in mi.scada_df.columns:
             msg = (
-                f"availability_col {self.availability_col!r} is not in scada_df; the downtime filter is "
+                f"availability_col {self.columns.availability!r} is not in scada_df; the downtime filter is "
                 f"required for the naive method and cannot be skipped."
             )
             raise ValueError(msg)
@@ -156,7 +157,7 @@ class NaiveRatioMethod:
             toggle_campaign_only=self.toggle_campaign_only,
             refs=refs,
             timebase=timebase,
-            active_power_col=self.active_power_col,
+            active_power_col=self.columns.active_power,
         )
         self._write_outputs(
             mi,
@@ -186,7 +187,7 @@ class NaiveRatioMethod:
         complete = wide[turbines].notna().all(axis=1)
 
         full = timebase.total_seconds()
-        avail = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.availability_col).reindex(
+        avail = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.availability).reindex(
             index=wide.index, columns=turbines
         )
         all_available = (avail >= full).all(axis=1)
@@ -194,8 +195,8 @@ class NaiveRatioMethod:
         test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]
         test_keep = (
             NormalOperationFilter(
-                active_power_col=self.active_power_col,
-                availability_col=self.availability_col,
+                active_power_col=self.columns.active_power,
+                availability_col=self.columns.availability,
                 apply_stuck_filter=False,
             )
             .keep_mask(test_rows, timebase=timebase)
@@ -256,7 +257,7 @@ class NaiveRatioMethod:
                 test=mi.test_wtg,
                 used=used,
                 timebase=timebase,
-                active_power_col=self.active_power_col,
+                active_power_col=self.columns.active_power,
                 toggle_campaign_only=self.toggle_campaign_only,
             )
             self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, timebase=timebase)
@@ -274,7 +275,7 @@ class NaiveRatioMethod:
         treated = resolve_toggle(mi.upgrade_timing, index).upgraded.astype(bool)
         # Align the schema's active-power role to the column this method was configured to read,
         # so the shared power plots use the right column even if it differs from the schema default.
-        columns = replace(self.columns, active_power=self.active_power_col)
+        columns = self.columns
         ctx = DiagnosticContext(
             run_dir=run_dir,
             test_wtg=mi.test_wtg,
@@ -289,8 +290,8 @@ class NaiveRatioMethod:
         )
         write_common_diagnostics(ctx)
         params = {
-            "active_power_col": self.active_power_col,
-            "availability_col": self.availability_col,
+            "active_power_col": self.columns.active_power,
+            "availability_col": self.columns.availability,
             "toggle_campaign_only": self.toggle_campaign_only,
         }
         write_run_config(ctx, method_name=self.name, method_params=params)

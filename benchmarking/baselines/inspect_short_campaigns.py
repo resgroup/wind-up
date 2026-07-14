@@ -99,8 +99,7 @@ def run_variant(
             methods.append(OracleMethod(scada_df))
             methods.append(
                 NaiveRatioMethod(
-                    active_power_col=HOT_COLUMNS.active_power,
-                    availability_col=HOT_COLUMNS.availability,
+                    columns=HOT_COLUMNS,
                     out_dir=out_dir / "naive_runs",
                 )
             )

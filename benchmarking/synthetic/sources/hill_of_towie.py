@@ -407,6 +407,7 @@ HOT_TURBINE_COL = "TurbineName"
 HOT_COLUMNS = ColumnSchema(
     turbine=HOT_TURBINE_COL,
     active_power=_TAG_ACTIVE_POWER_MEAN,
+    active_power_min=_TAG_ACTIVE_POWER_MIN,
     wind_speed=_TAG_WIND_SPEED_MEAN,
     wind_speed_sd=_TAG_WIND_SPEED_SD,
     gen_rpm=_TAG_GEN_RPM_MEAN,

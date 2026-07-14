@@ -193,17 +193,13 @@ def _make_power_model(
     """
     # Only data-schema description is passed here now: the accepted behaviour defaults (F13
     # availability_feature/era5_exclude, F14 min_child_samples) live on the PowerModelMethod class
-    # (Issue 14), so a bare method already *is* the benchmarked config. reference_stat_cols stays
-    # driver-level because it names a source-specific SCADA tag (wtc_ActPower_min) — schema
-    # description, not tuning — so it belongs with the other HoT column names, not on the class.
+    # (Issue 14), so a bare method already *is* the benchmarked config. The Issue 11 / F12 reference
+    # active-power minimum is carried by HOT_COLUMNS' active_power_min role, so no specialist config
+    # is needed here either.
     kwargs: dict[str, Any] = {
-        "active_power_col": HOT_COLUMNS.active_power,
-        "wind_speed_col": HOT_COLUMNS.wind_speed,
-        "availability_col": HOT_COLUMNS.availability,
-        "wind_speed_sd_col": HOT_COLUMNS.wind_speed_sd,
+        "columns": HOT_COLUMNS,
         "baseline_rated_power_kw": HOT_RATED_POWER_KW,
         "era5_hourly_df": era5_hourly_df,
-        "reference_stat_cols": ("wtc_ActPower_min",),  # Issue 11 accepted feature (F12); a HoT SCADA tag
         "out_dir": out_dir / "power_model_runs",
     }
     if overrides:
@@ -254,8 +250,7 @@ def run_power_model(
             overrides=method_overrides,
         )
         naive = NaiveRatioMethod(
-            active_power_col=HOT_COLUMNS.active_power,
-            availability_col=HOT_COLUMNS.availability,
+            columns=HOT_COLUMNS,
             out_dir=out_dir / profile_name / "naive_runs",
         )
         logger.info("Scoring %s profile %s with power_model + naive_ratio", mode, profile_name)
