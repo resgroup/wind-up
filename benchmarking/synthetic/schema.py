@@ -14,6 +14,10 @@ v0 baseline (which converts the source-native frame to wind-up format on the way
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,10 @@ class ColumnSchema:
     :param availability: a "ready to operate" counter (e.g. seconds available in the period).
         **Required**: the methods use it for downtime filtering, which must never be silently
         skipped, so every source must supply it.
+    :param active_power_min: the per-reference active-power **minimum** companion column (Issue 11 /
+        F12). Optional on the schema, but ``PowerModelMethod`` **requires** it — each reference's
+        power minimum is a standard model feature, not a per-driver opt-in — and validates its
+        presence on construction. Sources without it can still drive the lighter methods.
 
     The remaining roles are **diagnostics-only**: they name extra signals the shared per-run
     diagnostics plot, never estimation inputs. Each defaults to ``None`` so a source that lacks a
@@ -48,7 +56,21 @@ class ColumnSchema:
     wind_speed_sd: str
     gen_rpm: str
     availability: str
+    active_power_min: str | None = None
     pitch: str | None = None
     reactive_power: str | None = None
     nacelle_position: str | None = None
     ambient_temp: str | None = None
+
+    def require_roles(self, roles: Iterable[str]) -> None:
+        """Raise ``ValueError`` if any named role is unset or blank (``None``, empty, or whitespace).
+
+        The estimation methods take their column names *only* from a ``ColumnSchema`` (rather than
+        separate per-column arguments that could disagree with it), so each validates on construction
+        that the schema actually names every role it reads. ``roles`` are field names — an unknown one
+        is a programming error and raises ``AttributeError`` (the call sites pass literal role names).
+        """
+        missing = [role for role in roles if not (getattr(self, role) or "").strip()]
+        if missing:
+            msg = f"columns is missing required role(s) {missing}: {self}"
+            raise ValueError(msg)

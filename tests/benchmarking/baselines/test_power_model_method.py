@@ -8,6 +8,7 @@ recovers the uplift — for both prepost and toggle. Also checks the reference-o
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -26,7 +27,7 @@ from benchmarking.baselines.power_model.method import (
 )
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.toggle import resolve_toggle
-from benchmarking.synthetic import ToggleSchedule
+from benchmarking.synthetic import ColumnSchema, ToggleSchedule
 
 _TURBINE = "TurbineName"
 _POWER = "wtc_ActPower_mean"
@@ -36,6 +37,15 @@ _WS_SD = "wtc_AcWindSp_stddev"
 _POWER_MAX = "wtc_ActPower_max"
 _POWER_MIN = "wtc_ActPower_min"
 _POWER_SD = "wtc_ActPower_stddev"
+_COLUMNS = ColumnSchema(
+    turbine=_TURBINE,
+    active_power=_POWER,
+    active_power_min=_POWER_MIN,
+    wind_speed=_WS,
+    wind_speed_sd=_WS_SD,
+    gen_rpm="wtc_GenRpm_mean",
+    availability=_AVAIL,
+)
 
 # Small/fast LightGBM so the toy data (a few thousand rows) is fit well.
 _FAST_PARAMS = {"n_estimators": 120, "learning_rate": 0.1, "num_leaves": 31, "min_child_samples": 20}
@@ -88,10 +98,8 @@ class TestRecovery:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
             conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
@@ -106,10 +114,8 @@ class TestRecovery:
         treated = np.asarray((((idx - idx.min()) // (schedule.period / 2)).astype(int) % 2) == 1)
         scada = _toy_scada(n, uplift=0.04, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
             conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
@@ -124,10 +130,8 @@ class TestRecovery:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.0, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
             conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
@@ -143,10 +147,8 @@ class TestConfigGuards:
         treated = np.asarray(idx >= idx[n // 2])
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=replace(_COLUMNS, wind_speed="not_a_real_column"),
             baseline_rated_power_kw=2300.0,
-            wind_speed_col="not_a_real_column",
             era5_hourly_df=pd.DataFrame({"wind_speed_100m": [1.0]}),
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
@@ -166,10 +168,8 @@ def _prepost_case(n: int = 4000, *, uplift: float = 0.05) -> tuple[MethodInput, 
 
 def _fundamentals_method(**overrides: object) -> PowerModelMethod:
     kwargs: dict[str, object] = {
-        "active_power_col": _POWER,
-        "availability_col": _AVAIL,
+        "columns": _COLUMNS,
         "baseline_rated_power_kw": 2300.0,
-        "wind_speed_col": _WS,
         "conditional_uplift": False,
         **overrides,
     }
@@ -277,10 +277,8 @@ class TestReferenceOnly:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
             conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
@@ -328,11 +326,8 @@ class TestConditionalUplift:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)  # now includes _WS_SD
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            wind_speed_sd_col=_WS_SD,
             era5_hourly_df=_toy_era5(idx),  # conditional uplift (default on) matches on ERA5 weather
             model_params=_FAST_PARAMS,
         )
@@ -354,11 +349,8 @@ class TestConditionalUplift:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            wind_speed_sd_col=_WS_SD,
             era5_hourly_df=_toy_era5(idx),
             model_params=_FAST_PARAMS,
             out_dir=tmp_path,
@@ -383,11 +375,8 @@ class TestConditionalUplift:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            wind_speed_sd_col=_WS_SD,
             era5_hourly_df=_toy_era5(idx),
             model_params=_FAST_PARAMS,
             out_dir=tmp_path,
@@ -397,25 +386,6 @@ class TestConditionalUplift:
         per_bin = pd.read_csv(sorted(tmp_path.rglob("*_conditional_by_bin_*.csv"))[0])
         assert (~per_bin["covered"]).all()  # nothing clears an impossibly-high floor
         assert per_bin["p50_uplift"].notna().all()  # all imputed, still never NaN
-
-    def test_ws_only_when_no_sd_column_configured(self) -> None:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        treated = np.asarray(idx >= changeover)
-        scada = _toy_scada(n, uplift=0.05, treated=treated)
-        method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
-            baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            era5_hourly_df=_toy_era5(idx),  # conditional uplift (default on) matches on ERA5 weather
-            model_params=_FAST_PARAMS,
-        )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        out = method.estimate(mi)
-        # power does not depend on the SD column, so it is still emitted; only ti drops out.
-        assert set(out.p50_by_condition["condition"]) == {"ws", "power"}
 
 
 def _toy_era5(scada_idx: pd.DatetimeIndex, *, seed: int = 0) -> pd.DataFrame:
@@ -466,10 +436,8 @@ class TestFeatureConfig:
     def test_reference_stat_cols_reach_model_and_recovery_holds(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
             conditional_uplift=False,
             model_params=_FAST_PARAMS,
             reference_stat_cols=(_POWER_MAX, _POWER_MIN, _POWER_SD),
@@ -484,10 +452,8 @@ class TestFeatureConfig:
     def test_era5_exclude_drops_column_and_direction_companions(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
             era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
             conditional_uplift=False,
             model_params=_FAST_PARAMS,
@@ -511,10 +477,8 @@ class TestFeatureConfig:
     def test_era5_exclude_of_matching_var_raises_with_conditional_on(self) -> None:
         mi = self._prepost_mi(n=300)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
             era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
             era5_exclude=("wind_gusts_10m",),
         )
@@ -524,10 +488,8 @@ class TestFeatureConfig:
     def test_availability_feature_off_removes_availability_columns(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
             conditional_uplift=False,
             model_params=_FAST_PARAMS,
             availability_feature=False,
@@ -542,24 +504,23 @@ class TestFeatureConfig:
 
 class TestPromotedDefaults:
     def test_effective_lgbm_params_include_tuned_min_child_samples(self) -> None:
-        m = PowerModelMethod(active_power_col="p", availability_col="a", baseline_rated_power_kw=2300.0)
+        m = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
         assert m._make_model().get_params()["min_child_samples"] == 50  # noqa: SLF001
 
     def test_explicit_model_params_override_the_tuned_default(self) -> None:
         m = PowerModelMethod(
-            active_power_col="p",
-            availability_col="a",
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             model_params={"min_child_samples": 123},
         )
         assert m._make_model().get_params()["min_child_samples"] == 123  # noqa: SLF001
 
     def test_availability_feature_defaults_off(self) -> None:
-        m = PowerModelMethod(active_power_col="p", availability_col="a", baseline_rated_power_kw=2300.0)
+        m = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
         assert m.availability_feature is False
 
     def test_era5_exclude_defaults_to_curated_set(self) -> None:
-        m = PowerModelMethod(active_power_col="p", availability_col="a", baseline_rated_power_kw=2300.0)
+        m = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
         assert m.era5_exclude == CURATED_ERA5_EXCLUDE
 
 
@@ -591,10 +552,8 @@ class TestConditional:
         treated = np.asarray(idx >= idx[n // 2])
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
             model_params=_FAST_PARAMS,  # conditional on by default, but no era5_hourly_df -> must raise
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
@@ -608,11 +567,8 @@ class TestConditional:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            wind_speed_sd_col=_WS_SD,
             era5_hourly_df=_toy_era5(idx),
             model_params=_FAST_PARAMS,
         )
@@ -630,11 +586,8 @@ class TestConditional:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.03, treated=treated)
         config = {
-            "active_power_col": _POWER,
-            "availability_col": _AVAIL,
+            "columns": _COLUMNS,
             "baseline_rated_power_kw": 2300.0,
-            "wind_speed_col": _WS,
-            "wind_speed_sd_col": _WS_SD,
             "era5_hourly_df": _toy_era5(idx),  # same features both ways, so the headline is comparable
             "model_params": _FAST_PARAMS,
         }
@@ -660,11 +613,8 @@ class TestConditional:
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            wind_speed_col=_WS,
-            wind_speed_sd_col=_WS_SD,
             era5_hourly_df=_toy_era5(idx),
             out_dir=tmp_path,
             model_params=_FAST_PARAMS,
@@ -704,11 +654,33 @@ def _shrinkage_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 
     w = rng.uniform(3.0, 12.0, n)  # latent wind speed, i.i.d. -> matched across periods
     curve = 20.0 * w**2  # steep power curve (≈180..2880 kW), so per-ws-bin compression is visible
     test_power = np.where(treated, curve * (1.0 + uplift), curve) + rng.normal(0.0, 20.0, n)
-    parts = [pd.DataFrame({_TURBINE: "T1", _POWER: test_power, _AVAIL: 600.0, _WS: w, _WS_SD: 0.05 * w}, index=idx)]
+    parts = [
+        pd.DataFrame(
+            {
+                _TURBINE: "T1",
+                _POWER: test_power,
+                _POWER_MIN: test_power * 0.85,
+                _AVAIL: 600.0,
+                _WS: w,
+                _WS_SD: 0.05 * w,
+            },
+            index=idx,
+        )
+    ]
     for i in range(1, 4):
         ref_power = curve + rng.normal(0.0, 500.0, n)  # noisy proxy of the curve -> attenuation shrinkage
         parts.append(
-            pd.DataFrame({_TURBINE: f"R{i}", _POWER: ref_power, _AVAIL: 600.0, _WS: w, _WS_SD: 0.05 * w}, index=idx)
+            pd.DataFrame(
+                {
+                    _TURBINE: f"R{i}",
+                    _POWER: ref_power,
+                    _POWER_MIN: ref_power * 0.85,
+                    _AVAIL: 600.0,
+                    _WS: w,
+                    _WS_SD: 0.05 * w,
+                },
+                index=idx,
+            )
         )
     return pd.concat(parts)
 
@@ -732,11 +704,8 @@ class TestConditionalRegression:
         scada = _shrinkage_scada(n, uplift=0.0, treated=treated)  # placebo: true uplift 0 in every bin
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         method = PowerModelMethod(
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
+            columns=_COLUMNS,
             baseline_rated_power_kw=6000.0,
-            wind_speed_col=_WS,
-            wind_speed_sd_col=_WS_SD,
             era5_hourly_df=_toy_era5(idx),
             model_params=_FAST_PARAMS,
         )
