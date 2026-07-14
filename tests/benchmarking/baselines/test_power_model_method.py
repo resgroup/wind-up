@@ -316,7 +316,7 @@ class TestClipPredictions:
 
 
 class TestConditionalUplift:
-    def test_emits_conditional_uplift_by_ws_and_ti(self) -> None:
+    def test_emits_conditional_uplift_by_ws_ti_and_power(self) -> None:
         n = 4000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = idx[n // 2]
@@ -335,7 +335,9 @@ class TestConditionalUplift:
         out = method.estimate(mi)
         bc = out.p50_by_condition
         assert list(bc.columns) == ["condition", "condition_bin", "p50_uplift"]
-        assert set(bc["condition"]) == {"ws", "ti"}
+        assert set(bc["condition"]) == {"ws", "ti", "power"}
+        # power uses the 6 fraction-of-rated bins
+        assert (bc["condition"] == "power").sum() == 6
         # Issue 14: imputation fills every uncovered bin, so the reported per-bin estimate is never NaN
         # (a bare NaN would let abstention game the conditional score, which drops non-finite errors).
         assert bc["p50_uplift"].notna().all()
@@ -407,7 +409,8 @@ class TestConditionalUplift:
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         out = method.estimate(mi)
-        assert set(out.p50_by_condition["condition"]) == {"ws"}
+        # power does not depend on the SD column, so it is still emitted; only ti drops out.
+        assert set(out.p50_by_condition["condition"]) == {"ws", "power"}
 
 
 def _toy_era5(scada_idx: pd.DatetimeIndex, *, seed: int = 0) -> pd.DataFrame:
@@ -612,7 +615,7 @@ class TestConditional:
         out = method.estimate(mi)
         # matched i.i.d. weather -> shrinkage ~1, forward-only overall recovers the true uplift
         assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-        assert set(out.p50_by_condition["condition"]) == {"ws", "ti"}
+        assert set(out.p50_by_condition["condition"]) == {"ws", "ti", "power"}
         assert list(out.p50_by_condition.columns) == ["condition", "condition_bin", "p50_uplift"]
 
     def test_overall_matches_conditional_off_and_bins_aggregate_to_it(self, tmp_path: Path) -> None:

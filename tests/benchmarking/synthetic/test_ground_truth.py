@@ -97,3 +97,18 @@ def test_per_condition_breakdown_by_wind_speed() -> None:
     assert by_condition is not None
     assert len(by_condition) == 2
     np.testing.assert_allclose(by_condition["true_uplift"].to_numpy(), [0.10, 0.02])
+
+
+def test_per_condition_breakdown_by_power_uses_original_untreated_power() -> None:
+    """A by='power' breakdown bins on the ORIGINAL (untreated) power, not the treated synthetic power.
+
+    The first record's original power (990) sits below the 1000 edge while its synthetic power (1010)
+    sits above it: binning on original keeps it in the low bin, so that bin is populated (a synthetic-
+    power binning would leave it empty).
+    """
+    original, synthetic = _paired([990.0, 1800.0], [1010.0, 1836.0])
+    result = true_uplift(synthetic, original, test_wtg="T01", by="power", bins=[0.0, 1000.0, 2000.0])
+    by_condition = result.by_condition
+    assert by_condition is not None
+    assert by_condition["n_records"].to_numpy().tolist() == [1, 1]
+    np.testing.assert_allclose(by_condition["true_uplift"].to_numpy(), [1010.0 / 990.0 - 1.0, 0.02])

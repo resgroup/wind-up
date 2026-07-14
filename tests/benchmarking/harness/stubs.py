@@ -11,9 +11,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.conditions import CONDITION_BINS, energy_ratio_by_bin
+from benchmarking.harness.conditions import CONDITION_BINS, condition_bins, energy_ratio_by_bin
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, treated_mask
+from benchmarking.synthetic.sources.hill_of_towie import HOT_RATED_POWER_KW
 
 
 def oracle_overall_uplift(mi: MethodInput, original_df: pd.DataFrame) -> float:
@@ -99,9 +100,16 @@ def conditional_oracle_by_condition(mi: MethodInput, original_df: pd.DataFrame) 
     ws = treated_rows[HOT_COLUMNS.wind_speed].to_numpy(dtype=float)
     sd = treated_rows[HOT_COLUMNS.wind_speed_sd].to_numpy(dtype=float)
     ti = np.divide(sd, ws, out=np.full_like(sd, np.nan), where=ws != 0)
+    # power bins on the untreated operating point; for the oracle the counterfactual IS the original
+    # power, so binning on it matches the truth's original-power binning (near-zero error end-to-end).
+    axes = (
+        ("ws", ws, CONDITION_BINS["ws"]),
+        ("ti", ti, CONDITION_BINS["ti"]),
+        ("power", counterfactual, condition_bins("power", rated_power_kw=HOT_RATED_POWER_KW)),
+    )
     frames = []
-    for name, values in (("ws", ws), ("ti", ti)):
-        table = energy_ratio_by_bin(values, actual, counterfactual, bins=CONDITION_BINS[name])
+    for name, values, bins in axes:
+        table = energy_ratio_by_bin(values, actual, counterfactual, bins=bins)
         table.insert(0, "condition", name)
         frames.append(table[["condition", "condition_bin", "p50_uplift"]])
     return pd.concat(frames, ignore_index=True)

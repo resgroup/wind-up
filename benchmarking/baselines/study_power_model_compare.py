@@ -503,9 +503,9 @@ _MERGE_KEYS = ["profile", "campaign_months", "condition", "condition_bin"]
 
 
 def _covered_longest(fresh_cond_lb: pd.DataFrame) -> pd.DataFrame:
-    """Fresh conditional rows restricted to the covered profiles' ws/ti bins at their longest campaign."""
+    """Fresh conditional rows restricted to the covered profiles' per-condition bins at their longest campaign."""
     fresh = fresh_cond_lb[
-        fresh_cond_lb["profile"].isin(COVERED_PROFILES) & fresh_cond_lb["condition"].isin(["ws", "ti"])
+        fresh_cond_lb["profile"].isin(COVERED_PROFILES) & (fresh_cond_lb["condition"] != "overall")
     ].copy()
     if fresh.empty:
         return fresh

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from benchmarking.harness.campaign import campaign_windows, treated_activity_mask, window_row_mask
-from benchmarking.harness.conditions import CONDITION_BINS
+from benchmarking.harness.conditions import condition_bins
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.replicates import build_replicates
 from benchmarking.synthetic import HOT_COLUMNS
@@ -159,8 +159,11 @@ def _conditional_rows(
 ) -> list[dict[str, object]]:
     """Join each method per-bin estimate to per-bin truth for every condition present."""
     rows: list[dict[str, object]] = []
+    # power edges scale with the source's baseline rating; ws/ti ignore it (fixed edges).
+    rated_power_kw = float(replicate.dataset.run_metadata["rated_power_kw"])
     for condition, est in by_condition.groupby("condition"):
-        truth_df = replicate.true_uplift(mask=mask, by=condition, bins=CONDITION_BINS[str(condition)]).by_condition
+        bins = condition_bins(str(condition), rated_power_kw=rated_power_kw)
+        truth_df = replicate.true_uplift(mask=mask, by=condition, bins=bins).by_condition
         if truth_df is None:  # always set when by= is passed; guard for type narrowing
             continue  # pragma: no cover
         truth_series = truth_df.assign(condition_bin=truth_df["condition_bin"].astype(str)).set_index("condition_bin")[

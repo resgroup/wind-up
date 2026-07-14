@@ -34,6 +34,14 @@ class TestImputeUncoveredBins:
         out = impute_uncovered_bins(one_plus_u, condition="ws", measured=measured, one_plus_overall=1.03)
         assert out.tolist() == pytest.approx([1.20, 1.05, 1.10])
 
+    def test_power_behaves_like_ws_bfill_then_zero_at_rated(self) -> None:
+        # power is monotone-saturating like ws: low holes bfill from the covered bin above, and the
+        # trailing (near-rated) hole takes 1.0 (0 uplift at rated).
+        one_plus_u = np.array([np.nan, 1.08, 1.06, np.nan])
+        measured = np.array([False, True, True, False])
+        out = impute_uncovered_bins(one_plus_u, condition="power", measured=measured, one_plus_overall=1.03)
+        assert out.tolist() == pytest.approx([1.08, 1.08, 1.06, 1.0])
+
     def test_unknown_condition_raises(self) -> None:
         with pytest.raises(ValueError, match="unknown condition"):
             impute_uncovered_bins(np.array([1.1]), condition="wd", measured=np.array([True]), one_plus_overall=1.0)

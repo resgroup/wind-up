@@ -62,13 +62,13 @@ def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
 def conditional_leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
     """Per-(method, profile, campaign, condition, bin) bias/spread/score over the conditional rows.
 
-    Only per-condition rows (``condition`` in ["ws", "ti"]) are summarised; overall rows
+    Every per-condition axis (``ws``, ``ti``, ``power``, …) is summarised; only overall rows
     (``condition == "overall"``) are excluded. Returns one row per group with ``bias``,
     ``spread``, ``score``, the mean recovered and true uplift (``mean_estimate`` /
     ``mean_truth``, when those columns are present in the input), and ``n_replicates``,
     sorted by method, profile, campaign length, condition, then condition_bin.
     """
-    cond = results_df[results_df["condition"].isin(["ws", "ti"])] if "condition" in results_df else results_df.iloc[:0]
+    cond = results_df[results_df["condition"] != "overall"] if "condition" in results_df else results_df.iloc[:0]
 
     records = []
     for keys, group in cond.groupby(_CONDITION_GROUP_KEYS, sort=True):

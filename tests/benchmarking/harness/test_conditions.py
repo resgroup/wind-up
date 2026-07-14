@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from benchmarking.harness.conditions import (
     CONDITION_BINS,
     CONDITIONS,
+    POWER_FRACTION_EDGES,
     TI_BINS,
     WS_BINS,
+    condition_bins,
     energy_ratio_by_bin,
 )
 
@@ -20,8 +23,36 @@ def test_bin_edges_have_expected_width() -> None:
     assert TI_BINS[0] == 0.0
     assert TI_BINS[-1] == 0.5
     assert np.allclose(np.diff(TI_BINS), 0.05)
-    assert CONDITIONS == ("ws", "ti")
+    assert CONDITIONS == ("ws", "ti", "power")
     assert CONDITION_BINS == {"ws": WS_BINS, "ti": TI_BINS}
+
+
+def test_power_fraction_edges_center_bins_on_round_fractions() -> None:
+    # 6 bins whose midpoints are 0, 0.2, ..., 1.0 of rated; outer edges pushed just beyond
+    # [0, rated] so pd.cut keeps slightly-negative (cut-in) and slightly-over-rated (noise) power.
+    assert POWER_FRACTION_EDGES == [-0.1, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1]
+    midpoints = (np.array(POWER_FRACTION_EDGES[:-1]) + np.array(POWER_FRACTION_EDGES[1:])) / 2
+    assert np.allclose(midpoints, [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+
+
+def test_condition_bins_returns_fixed_edges_for_ws_and_ti() -> None:
+    # ws/ti are treatment-invariant fixed edges; the rating is accepted but ignored.
+    assert condition_bins("ws", rated_power_kw=2300.0) == WS_BINS
+    assert condition_bins("ti", rated_power_kw=2300.0) == TI_BINS
+
+
+def test_condition_bins_scales_power_edges_by_rating() -> None:
+    assert condition_bins("power", rated_power_kw=2300.0) == [-230.0, 230.0, 690.0, 1150.0, 1610.0, 2070.0, 2530.0]
+
+
+def test_condition_bins_requires_rating_for_power() -> None:
+    with pytest.raises(ValueError, match="rated_power_kw"):
+        condition_bins("power")
+
+
+def test_condition_bins_rejects_unknown_condition() -> None:
+    with pytest.raises(ValueError, match="unknown condition"):
+        condition_bins("gustiness", rated_power_kw=2300.0)
 
 
 def test_energy_ratio_by_bin_computes_per_bin_ratio() -> None:

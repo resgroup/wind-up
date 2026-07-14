@@ -66,7 +66,9 @@ Deleted the knobs, their config-validation branches, their `_config_params` entr
 their unit tests; thinned `fitting.py`; the run-config YAML loses the removed keys (a per-run diagnostic,
 not the committed benchmark). `inspect_short_campaigns.py` lost its `double_ratio*`/`tco_true` arms;
 `study_power_model_compare.py` help/docstring examples updated off the removed `era5_derivations`. Public
-`PowerModelMethod` surface dropped from 30 to 21 constructor params. `poe all-fast` green.
+`PowerModelMethod` surface dropped from 30 to 21 constructor params. `poe all-fast` green. Acceptance test
+passed: the full default-config sweep is bit-identical to the committed benchmark — **0 better / 0 worse of
+819 prepost + 791 toggle conditional cells** on spread, score and |bias|, leaderboard deltas all zero.
 
 ---
 
