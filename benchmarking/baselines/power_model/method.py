@@ -45,7 +45,8 @@ from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import CONDITION_BINS, condition_bins, energy_ratio_by_bin
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
+from benchmarking.harness.toggle import is_toggle, resolve_toggle
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
 if TYPE_CHECKING:
     from benchmarking.synthetic import ColumnSchema
@@ -114,7 +115,7 @@ def _ratio(actual: np.ndarray, counterfactual: np.ndarray) -> float:
 
 
 def _combine_uplift(r_fwd: np.ndarray, r_rev: np.ndarray) -> np.ndarray:
-    """Two-direction uplift ``sqrt((1+r_fwd)/(1+r_rev)) - 1`` (shrinkage cancels); NaN if either 1+r ≤ 0.
+    """Two-direction uplift ``sqrt((1+r_fwd)/(1+r_rev)) - 1`` (shrinkage cancels); NaN if either 1+r <= 0.
 
     Under a common per-bin multiplicative shrinkage the forward/reverse ratios are ``(1+u)/s`` and
     ``1/(s(1+u))``, so their geometric contrast recovers ``u`` with ``s`` cancelled (design/F5).
@@ -209,10 +210,15 @@ def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
     return pd.Timedelta(np.median(np.diff(unique.to_numpy())))
 
 
-def _upgrade_start(upgrade_timing: pd.Timestamp | ToggleSchedule, index: pd.DatetimeIndex) -> pd.Timestamp:
-    """Return the upgrade-start timestamp (changeover for prepost; toggle origin for toggle)."""
+def _upgrade_start(
+    upgrade_timing: pd.Timestamp | ToggleSchedule | pd.DataFrame, index: pd.DatetimeIndex
+) -> pd.Timestamp:
+    """Return the upgrade-start timestamp (changeover for prepost; first upgraded row for toggle)."""
     if isinstance(upgrade_timing, ToggleSchedule):
         return upgrade_timing.start if upgrade_timing.start is not None else index.min()
+    if isinstance(upgrade_timing, pd.DataFrame):
+        on = upgrade_timing.index[upgrade_timing["toggle_on"].to_numpy(dtype=bool)]
+        return on.min() if len(on) else index.min()
     return pd.Timestamp(upgrade_timing)
 
 
@@ -343,9 +349,13 @@ class PowerModelMethod:
         features, era5 = self._add_era5(scada, features, mi=mi, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
 
-        t = np.asarray(treated_mask(index, mi.upgrade_timing)).astype(bool)
+        toggle_rows = resolve_toggle(mi.upgrade_timing, index)
+        t = toggle_rows.upgraded
         selected = self._select_rows(scada, mi=mi, index=index, y=y, timebase=timebase)
-        baseline_sel = selected & ~t
+        # The counterfactual is fitted on the lenient training baseline (pre-campaign U off-blocks);
+        # more upgrade-invariant data helps. The conditional matching step below instead uses the
+        # strict campaign_baseline (off-blocks only), so it never matches pre-campaign against on rows.
+        baseline_sel = selected & toggle_rows.training_baseline
         upgraded_sel = selected & t
         if int(baseline_sel.sum()) < _MIN_BASELINE_ROWS:
             msg = f"too few normally-operating baseline rows ({int(baseline_sel.sum())}) to fit the power model."
@@ -415,8 +425,8 @@ class PowerModelMethod:
         if self.conditional_uplift and self.wind_speed_col is not None:
             # The conditional two-direction step matches untreated against treated rows and relies on
             # them sharing a distribution *and era* — for a toggle whose headline fit also trains on the
-            # pre-campaign baseline, only the interleaved campaign off rows qualify (``_campaign_mask``
-            # on ``baseline_sel``): matching pre-campaign rows against campaign on rows would read
+            # pre-campaign baseline, only the interleaved campaign off rows qualify (the strict
+            # ``campaign_baseline``): matching pre-campaign rows against campaign on rows would read
             # reference/era drift as per-bin uplift. The extra pre-campaign rows serve only the headline
             # fit's training data.
             # No time-decay weights here either (F16): the matched contrast is already
@@ -428,24 +438,13 @@ class PowerModelMethod:
                 mi=mi,
                 features=features,
                 y=y_arr,
-                baseline_sel=baseline_sel & self._campaign_mask(index, upgrade_timing=mi.upgrade_timing),
+                baseline_sel=selected & toggle_rows.campaign_baseline,
                 upgraded_sel=upgraded_sel,
                 fit=fit,
                 overall_ratio=uplift,
                 run_dir=run_dir,
             )
         return MethodOutput(p50_overall=uplift, p50_by_condition=by_condition)
-
-    @staticmethod
-    def _campaign_mask(index: pd.DatetimeIndex, *, upgrade_timing: pd.Timestamp | ToggleSchedule) -> np.ndarray:
-        """Boolean over ``index``: rows at/after the campaign start (all-True for prepost).
-
-        Prepost has no pre-campaign data beyond its baseline (which *is* the training era), so the
-        mask only bites for a toggle whose input still carries pre-campaign rows.
-        """
-        if isinstance(upgrade_timing, ToggleSchedule) and upgrade_timing.start is not None:
-            return np.asarray(index >= upgrade_timing.start)
-        return np.ones(len(index), dtype=bool)
 
     def _estimate_conditional(
         self,
@@ -642,7 +641,7 @@ class PowerModelMethod:
         ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
         overall = {
             "test_wtg": mi.test_wtg,
-            "mode": "toggle" if isinstance(mi.upgrade_timing, ToggleSchedule) else "prepost",
+            "mode": "toggle" if is_toggle(mi.upgrade_timing) else "prepost",
             "r_fwd": r_fwd,
             "r_rev": r_rev,
             "uplift_frc": uplift,
@@ -911,7 +910,7 @@ class PowerModelMethod:
         x_sel = features.iloc[selected]
         data = diag.DiagnosticData(
             test_wtg=mi.test_wtg,
-            mode="toggle" if isinstance(mi.upgrade_timing, ToggleSchedule) else "prepost",
+            mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
             index=index,
             treated_all=t,
             selected_all=selected,
@@ -974,7 +973,7 @@ class PowerModelMethod:
             treated_ts=t.astype(bool),
             used_ts=np.asarray(selected, dtype=bool),
             timebase=timebase,
-            mode="toggle" if isinstance(mi.upgrade_timing, ToggleSchedule) else "prepost",
+            mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
             era5_df=era5.aligned if era5 is not None else None,
         )
         write_common_diagnostics(ctx)
