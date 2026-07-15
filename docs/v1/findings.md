@@ -7,6 +7,177 @@ from, not just conclusions.
 
 ---
 
+## F26 — Issue 17: unifying the toggle conditional onto the all-data training window (from campaign-only) blows up the tail bins — the campaign-only restriction is confirmed necessary; both conditional asymmetries are deliberately retained
+
+*2026-07-14 (Issue 17, scope item 2 — training-window unification). Reproduce:
+`study_power_model_compare --modes toggle --profiles cp_0pct ti_dependent_cp ws_dependent_cp` with the toggle
+conditional match's `baseline_sel` switched from `campaign_baseline` (strict interleaved off-rows) to
+`training_baseline` (pre-campaign + off-rows), vs the committed campaign-only; diffed against the committed
+baseline (before = campaign-only, after = all-data). Separate output dir; no baseline change. Prepost is
+unaffected by construction (there `campaign_baseline == training_baseline`), so this is a toggle-only test.*
+
+**Result — a clear regression, worst in the tails.**
+- **Overall P50: bit-identical** (the change touches only the conditional match) — correctness check passed.
+- **Every conditional axis got worse in both |bias| and spread:** mean |bias| Δ ti **+2.12**, ws **+1.76**,
+  power **+0.10** pp; mean spread Δ ti +1.57, ws +1.98, power +0.40 pp.
+- **The tails explode.** Highest-TI `(0.4,0.45]` went from ~5–9 pp to **60–97 pp** bias; lowest-ws cut-in
+  `(0,2]`/`(2,4]` swung to **−15…−21 pp**. These are exactly the drift-contaminated bins F15 warned about:
+  matching temporally-distant pre-campaign rows against campaign on-rows reads reference/era drift as per-bin
+  uplift.
+
+**Root cause / why the F17 floor doesn't rescue it (and why decay wouldn't either).** Adding pre-campaign rows
+*increases per-bin counts*, so tail bins that were below the F17 count floor — and therefore safely **imputed** —
+now clear the floor and are **trusted** with a drift-contaminated two-direction shape. More data makes it worse
+by promoting garbage bins from imputed to trusted. Adaptive-half-life decay (the issue's proposed mitigation)
+would downweight those rows in the *fit* but they still *count* toward the floor and still populate the matched
+pairs, so it would not remove the promotion mechanism. This matches the issue's own note that the genuine fix is
+"weighted **or restricted** matching" — and the *restricted* matching is precisely what `campaign_baseline`
+already does.
+
+**Decision: rejected — keep the toggle conditional on `campaign_baseline`.** Combined with F25, **Issue 17
+closes via its second branch:** both conditional/headline asymmetries are *deliberately retained*, each with
+fresh post-floor evidence for why —
+1. *Conditional match is campaign-only (toggle), not all-data* — because unifying it reads drift as uplift and
+   the count floor amplifies rather than fixes it (this finding).
+2. *Conditional fits are unweighted, headline is decay-weighted* — because recency weighting on the conditional
+   only churns negligible tail bins (F25).
+
+The energy-aggregation identity and overall P50 were preserved throughout (both bit-identical in every A/B).
+**A better unification direction remains open and is the recommended next step:** F22 showed the *opposite* move —
+make the toggle **headline** campaign-only (pull it toward the conditional) — is neutral-to-better on overall P50
+and unifies the data path from the other side; that is genuine design work for a supervised session, not tried
+here.
+
+---
+
+## F25 — Issue 17 re-trial: recency-weighting the conditional direction fits (now the F17 count floor exists) is a no-op for toggle and only churns negligible extreme-tail bins for prepost — rejected
+
+*2026-07-14 (Issue 17, scope item 1 — the specific F14/F16-flagged re-trial). Reproduce:
+`study_power_model_compare --modes prepost toggle --profiles cp_0pct ti_dependent_cp ws_dependent_cp` with the
+adaptive-half-life time-decay `weights` threaded into `_fit_direction` (the matched forward/reverse conditional
+fits), vs the committed unweighted conditional; diffed against the committed baseline (before = unweighted,
+after = weighted). Separate output dir; no baseline change.*
+
+**Context.** F16 held time-decay weights off the conditional direction fits because pre-floor they destabilised
+sparse extreme-condition bins (a degenerate tail fit could read three-digit per-bin uplift). Issue 14 deferred
+lifting that until the per-bin count floor existed; the floor shipped in F17, so this re-trials the weighting.
+
+**Result.**
+- **Overall P50: bit-identical** in both modes (weighting touches only the conditional fits, not the headline) —
+  a correctness check that passed.
+- **Toggle: every conditional cell bit-identical.** As predicted from the code: the conditional match is
+  campaign-only, and those rows all sit *inside* the campaign interval where the decay weight is exactly 1, so
+  weighting is a no-op for toggle.
+- **Prepost: change confined to extreme sparse tail bins.** Mean |bias| moved only marginally (ti −0.28, ws
+  −0.05, power −0.04 pp), but per-bin swings were large (ti −11.6→+1.6, ws −7.4→+2.5 pp) and **entirely in the
+  tails**: the biggest "improvements" are the highest-TI `(0.4,0.45]` bins dropping from ~54 pp bias to ~42 pp
+  (both garbage, negligible energy) and the lowest-ws cut-in bins `(0,2]`/`(2,4]` with ±7–16 pp ratio-instability
+  bias (F5's second failure mode). Meaningful populated bins are essentially unchanged, and **ws spread got
+  worse** (+0.37 pp mean).
+
+**Decision: rejected — keep the conditional fits unweighted (F16 stands, now with post-floor evidence).** The
+floor removes the three-digit blowups, but weighting still only reshuffles negligible-energy tail bins in both
+directions; it buys no accuracy on the bins that carry the energy and costs a little ws spread. Closes Issue 17
+scope item 1: the missing half-life on the conditional path is deliberately retained as an asymmetry, because
+adding it does nothing useful. The plumbing (`weights=` on `_fit_direction`/`_estimate_conditional`) was reverted
+along with this rejection.
+
+---
+
+## F24 — binning *both* conditional directions on real power (instead of on the prediction) is a wash vs the F23 fix on the tested profiles, and is theoretically less robust — rejected
+
+*2026-07-14 (Issue 17, follow-up A/B to F23). Reproduce: `study_power_model_compare --modes prepost toggle
+--profiles cp_0pct ti_dependent_cp ws_dependent_cp` with the power frame's bin labels temporarily set to
+`fwd_cond=y[mu]`, `rev_cond=y[mb]` (both real power) vs the committed F23 default (`pred_up`/`pred_base`); scored
+by `conditional_benchmark_comparison` against the accepted baseline, so before = F23 prediction-based, after =
+both-real-power. Separate output dir; no baseline change.*
+
+**Motivation.** With F23 fixed by moving the *reverse* label off its own numerator (`y[mb]`→`pred_base`), an
+alternative symmetry is to move the *forward* label onto real power too (`pred_up`→`y[mu]`), i.e. bin both
+directions by actual power. A-priori concern: the forward side's real power `y[mu]` is **post-treatment** (design
+§3) and is *also the forward ratio's numerator*, so this re-introduces regression-to-the-mean on the forward side
+and makes the forward axis shift with the treatment.
+
+**Result — a wash.** Mean per-bin |bias| change across the power axis was **−0.00 pp in both modes** (prepost:
+4 bins better / 5 worse / 9 neutral; toggle: 6 / 4 / 8), with only scattered ±0.3 pp per-bin moves and no
+systematic winner. The predicted §3 degradation did **not** appear: on `cp_0pct`/`ti_dependent_cp`/`ws_dependent_cp`
+the uplift is 0–small, so treated vs untreated power seldom crosses a 20%-of-rated bin edge and the
+post-treatment bin-reassignment smearing is second-order. The one visible tell in the predicted direction: the
+placebo's lowest-power bin got *worse* under both-real-power in prepost (−0.25→+0.53 pp), consistent with RTM
+leaking back on the forward side.
+
+**Decision: rejected — keep the F23 prediction-based labelling.** It is empirically no worse here and
+theoretically more robust: no RTM on either side, and a treatment-invariant axis. **Caveat / where the difference
+should actually show:** the covered profiles are exactly the low/zero-uplift cases; the profiles where §3
+smearing would be largest — `rated_plus_5pct` (uprate) and `cp_plus_10pct` — are not in `COVERED_PROFILES`, so
+this A/B cannot see them. The theoretical edge of prediction-based is expected to matter there, not on these
+three. Worth a targeted check if a future cycle extends the conditional before/after view to a large-uplift
+profile.
+
+---
+
+## F23 — the `power`-axis conditional uplift's "positive at low power, negative at high power" tilt was regression-to-the-mean from binning the reverse direction on its own noisy numerator; labelling both directions by the counterfactual prediction removes it
+
+*2026-07-14 (Issue 17, power-axis correctness). Reproduce: `benchmarking.baselines.study_power_model_compare`
+(`conditional_benchmark_comparison_<mode>.csv` + `benchmark_comparison_<mode>.csv`); first isolated on the
+`cp_0pct` placebo prepost, then confirmed on the full both-mode sweep (7 profiles, campaigns {1,2,3,6,12} mo,
+4 replicates, seed 0). One-line change in `method.py:_conditional_by_bin`'s power frame: the reverse-direction
+bin label `rev_cond` moved from `y[mb]` to `pred_base`.*
+
+**Observation.** On `cp_0pct` (true uplift 0 in every bin, so per-bin estimate = pure bias) the `power`-axis
+conditional uplift ran monotonically **positive at low power, negative at high** — at 12 mo prepost: `(-230,230]`
+**+8.24 pp**, `(230,690]` +2.52, `(690,1150]` +0.77, `(1150,1610]` −0.59, `(1610,2070]` −1.32, `(2070,2530]`
+−0.98. A flat-zero truth read as a strong slope; the same shape appeared on the real-uplift profiles and in
+toggle.
+
+**Root cause — binning the reverse ratio on its own numerator.** A condition axis' per-bin shape is
+`1+u_b = sqrt((1+r_fwd)/(1+r_rev))` (`_combine_uplift`), which cancels a *common* per-bin multiplicative
+shrinkage `s` — valid only when both directions bin a given operating point into the same bin. For ws/TI both
+directions read the same treatment-invariant signal, so `s` cancels. The `power` frame instead labelled the
+**forward** side by its counterfactual prediction `pred_up` (a regressor) but the **reverse** side by the actual
+baseline power `y[mb]` — which is *also the reverse energy ratio's numerator* (`Σy[mb]/Σpred_base`). Binning a
+ratio on its own numerator selects each bin on that variable's noise: a low-power bin over-selects downward
+noise (`Σy[mb] < Σpred_base` → `r_rev < 0`), a high-power bin over-selects upward noise (`r_rev > 0`). So
+`r_rev` tilts negative→positive across power. The forward side, binned on a prediction, carries no matching
+tilt, so nothing cancels it; and because `r_rev` sits in the **denominator** of the combine, the tilt inverts:
+low power `1+r_rev<1 → shape>1 → +uplift`, high power `shape<1 → −uplift`. It is classic regression to the mean,
+the same model-error signature F5 saw in the residual-vs-actual-power diagnostic — surfaced into the estimate
+once `power` became a scored conditional axis (F17).
+
+**Fix.** Label the reverse side by its counterfactual prediction `pred_base` too, so both directions bin on a
+(treatment-invariant) *prediction of the same untreated power*: neither side bins on its own noisy numerator (no
+RTM), and the per-bin shrinkage is common again so it cancels in the combine — which is exactly what the combine
+was designed to assume. The old comment's objection (`pred_base` is "a treated estimate") does not bite:
+`pred_base` carries the same shrinkage the forward side does, and cancelling that shrinkage is the whole point of
+the two-direction combine. The bin label changed; the ratio contents (`y[mu]/pred_up`, `y[mb]/pred_base`) did not.
+
+**Evidence.**
+- *Placebo, isolated.* `cp_0pct` 12 mo prepost power bins collapsed to truth: `(-230,230]` +8.24→**−0.25 pp**,
+  `(230,690]` +2.52→+0.09, `(690,1150]` +0.77→+0.18, `(1150,1610]` −0.59→+0.08, `(1610,2070]` −1.32→+0.23,
+  `(2070,2530]` −0.98→−0.02. Every bin `better`; all six within ±0.25 pp of 0.
+- *Full both-mode sweep, benchmark diff (mean per-cell |bias| change vs the pre-fix committed baseline, pp;
+  Δ<0 = better):*
+
+  | mode | overall | ws | ti | power |
+  | --- | --- | --- | --- | --- |
+  | prepost | 0.000 | −0.000 | 0.000 | **−2.177** |
+  | toggle | −0.000 | −0.000 | −0.000 | **−1.665** |
+
+  The change is fully isolated: overall/ws/ti move ≤0.005 pp (float noise) in both modes, so **overall P50 is
+  unchanged** and the energy-aggregation identity is preserved. On `power`, 149/210 prepost cells improved by
+  >0.5 pp, 11 worsened.
+
+**Residual (not fixed, documented).** The worsening concentrates in one bin, `(1610,2070]` (≈0.7–0.9 of rated —
+the power-curve knee), which moved from ~0 to **~+2 pp** across several profiles. This is genuine model
+conditional-calibration error at the rated ceiling (asymmetric residuals where predictions clip), previously
+*masked* by the larger RTM tilt — not a new artifact. It is a candidate for the F5 baseline-residual calibration
+idea; left for a later cycle since the net axis |bias| still dropped ~2 pp.
+
+**Decision: accepted.** `rev_cond=pred_base` is committed as the default; `study_power_model_compare_baseline.json`
+regenerated from the full sweep (both modes) and promoted via `--accept-candidate`. Uncommitted (user does git).
+
+---
+
 ## F22 — for toggle, a campaign-only `power_model` *headline* (drop pre-campaign data entirely) is neutral-to-better and leaves the conditional shape unchanged — bears on Issue 17
 
 *2026-07-14 — a throwaway A/B while scoping Issue 17 (reconciling the conditional estimator's data

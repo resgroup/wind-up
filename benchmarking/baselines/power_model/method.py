@@ -153,8 +153,11 @@ def _condition_frame(
     """One condition axis' per-bin two-direction uplift, imputed where uncovered and re-leveled to the headline.
 
     The three ``*_cond`` arrays label each side's rows by the reporting axis: for ws/TI they are the same
-    signal read off every side; for power they differ (forward = counterfactual, reverse = actual baseline,
-    full = full-fit counterfactual). The forward/reverse energy ratios give the shrinkage-free per-bin
+    signal read off every side; for power they are each side's counterfactual prediction (forward =
+    ``pred_up``, reverse = ``pred_base``, full = the full-fit counterfactual). Labelling every power side by
+    its prediction — never by the actual outcome that also sits in that side's ratio numerator — is what
+    keeps the reverse ratio free of a regression-to-the-mean tilt (see the power-frame note in
+    ``_conditional_by_bin``). The forward/reverse energy ratios give the shrinkage-free per-bin
     shape; uncovered bins are imputed (``impute_uncovered_bins``) and the whole thing is re-leveled onto the
     headline by full-upgraded energy so measured + imputed aggregate to ``one_plus_overall`` (F8/F14).
     """
@@ -413,11 +416,13 @@ class PowerModelMethod:
             # pre-campaign baseline, only the interleaved campaign off rows qualify (the strict
             # ``campaign_baseline``): matching pre-campaign rows against campaign on rows would read
             # reference/era drift as per-bin uplift. The extra pre-campaign rows serve only the headline
-            # fit's training data.
-            # No time-decay weights here either (F16): the matched contrast is already
-            # era-insensitive (its common shrinkage cancels), and weighting the direction fits
-            # destabilises the sparse extreme-condition bins (a degenerate tail fit in one
-            # replicate can read three-digit per-bin uplift).
+            # fit's training data. (F26 re-confirmed this post-floor: unifying onto ``training_baseline``
+            # blew up tail-bin |bias|/spread — the added rows promote drift-contaminated bins past the count
+            # floor from imputed to trusted.)
+            # No time-decay weights here either (F16, re-confirmed post-floor in F25): the matched contrast
+            # is already era-insensitive (its common shrinkage cancels), and weighting the direction fits
+            # only churns the sparse extreme-condition tail bins (and slightly worsens ws spread) without
+            # helping the populated bins — so the corrections are spent on the overall headline instead.
             by_condition = self._estimate_conditional(
                 scada,
                 mi=mi,
@@ -513,8 +518,9 @@ class PowerModelMethod:
         """Fit the outcome model(s) on ``train`` rows and return clipped predictions for ``predict`` rows.
 
         No calibration and no time-decay weights here: the two-direction combine cancels the common
-        per-bin shrinkage by construction, and weighting the matched fits only destabilises sparse
-        extreme-condition bins (F16) — the corrections are spent on the overall headline instead.
+        per-bin shrinkage by construction, and weighting the matched fits only churns sparse
+        extreme-condition bins (F16; re-confirmed post-floor in F25) — the corrections are spent on the
+        overall headline instead.
         """
         models = self._fit_models(features.iloc[train], y[train])
         return _clip_predictions(
@@ -579,16 +585,20 @@ class PowerModelMethod:
             for name in ("ws", "ti")
             if name in conditions.columns
         ]
-        # power: the untreated operating point. Forward (upgraded) rows are labelled by their
-        # counterfactual prediction ``pred_up``; reverse (baseline) rows by their actual, already-untreated
-        # power ``y[mb]`` (not ``pred_base``, a treated estimate); the full re-level weights by the full-fit
-        # counterfactual ``pred_upgraded`` — so every side labels the same untreated power. Edges scale with
-        # the baseline rating (§2 of the design), so power is not in the fixed ``CONDITION_BINS``.
+        # power: the untreated operating point, and every side is labelled by its *counterfactual
+        # prediction* — forward (upgraded) rows by ``pred_up``, reverse (baseline) rows by ``pred_base``,
+        # the full re-level weights by ``pred_upgraded``. The reverse side must NOT be labelled by its
+        # actual power ``y[mb]``: ``y[mb]`` is also the reverse ratio's numerator, so binning on it selects
+        # each bin on its own noise and pulls in a regression-to-the-mean tilt (spuriously positive uplift
+        # at low power, negative at high — flat truth reads as a slope). Labelling both sides by the
+        # prediction keeps the per-bin shrinkage common so it cancels in the two-direction combine, which is
+        # the whole premise of ``_combine_uplift``. Edges scale with the baseline rating (§2 of the design),
+        # so power is not in the fixed ``CONDITION_BINS``.
         frames.append(
             _condition_frame(
                 "power",
                 fwd_cond=pred_up,
-                rev_cond=y[mb],
+                rev_cond=pred_base,
                 full_cond=pred_upgraded,
                 y_fwd=y[mu],
                 pred_fwd=pred_up,
