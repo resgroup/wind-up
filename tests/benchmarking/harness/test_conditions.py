@@ -13,7 +13,33 @@ from benchmarking.harness.conditions import (
     WS_BINS,
     condition_bins,
     energy_ratio_by_bin,
+    validate_conditions,
 )
+
+
+class TestValidateConditions:
+    """The shared check each method runs on its caller-supplied ``conditions``."""
+
+    def test_supported_conditions_pass(self) -> None:
+        validate_conditions(("ws", "power"), supported=("ws", "ti", "power"), method_name="power_model")
+
+    def test_empty_conditions_pass(self) -> None:
+        # opting out of conditional reporting entirely is legitimate
+        validate_conditions((), supported=("power",), method_name="toggle_specialist")
+
+    def test_unknown_condition_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown condition"):
+            validate_conditions(("bogus",), supported=("ws", "ti", "power"), method_name="power_model")
+
+    def test_known_but_unsupported_condition_raises(self) -> None:
+        # "ws" is a real axis, just not one toggle_specialist can offer -- a different error from a typo
+        with pytest.raises(ValueError, match="does not support"):
+            validate_conditions(("ws",), supported=("power",), method_name="toggle_specialist")
+
+    def test_unsupported_error_names_the_method_and_what_it_supports(self) -> None:
+        with pytest.raises(ValueError, match="toggle_specialist") as excinfo:
+            validate_conditions(("ti",), supported=("power",), method_name="toggle_specialist")
+        assert "power" in str(excinfo.value)
 
 
 def test_bin_edges_have_expected_width() -> None:

@@ -25,6 +25,7 @@ from benchmarking.baselines.toggle_specialist import (
     _expected_per_day,
     _infer_timebase,
 )
+from benchmarking.harness.conditions import condition_bins
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
 
@@ -119,6 +120,203 @@ class TestRecovery:
         assert isinstance(out, MethodOutput)
         assert out.p50_overall == pytest.approx(0.03)
         assert out.p50_by_condition is None
+
+
+# --- per-power-bin conditional reporting -------------------------------------------------------
+
+_RATED_KW = 1200.0
+
+
+def _varying_rho_scada(
+    index: pd.DatetimeIndex,
+    *,
+    treated: np.ndarray,
+    uplift: float = 0.0,
+    noise_frac: float = 0.0,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """SCADA whose test/reference ratio **varies with power** — the case that separates the estimators.
+
+    ``k`` (the untreated test/ref_total ratio) falls from 0.9 at low power to 0.7 at high power, as a
+    real test-vs-reference ratio does (different turbines, different wakes, saturation near rated).
+    Any per-bin estimator that assumes one global ratio will read this structure as uplift.
+    """
+    ref1 = np.linspace(100.0, 1000.0, len(index))
+    ref2 = np.linspace(50.0, 500.0, len(index))
+    ref_total = ref1 + ref2
+    span = (ref_total - ref_total.min()) / (ref_total.max() - ref_total.min())
+    k = 0.9 - 0.2 * span
+    test = k * ref_total * np.where(treated, 1.0 + uplift, 1.0)
+    if noise_frac:
+        rng = np.random.default_rng(seed)
+        test = test * (1.0 + rng.normal(0.0, noise_frac, len(index)))
+    return _scada({"T1": test, "R1": ref1, "R2": ref2}, index)
+
+
+def _varying_rho_case(
+    n: int = 600, *, uplift: float = 0.0, noise_frac: float = 0.0
+) -> tuple[pd.DataFrame, ToggleSchedule]:
+    idx = _index(n)
+    schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=idx[0])
+    treated = np.asarray(treated_mask(idx, schedule))
+    return _varying_rho_scada(idx, treated=treated, uplift=uplift, noise_frac=noise_frac), schedule
+
+
+def _per_bin(scada: pd.DataFrame, schedule: ToggleSchedule) -> pd.DataFrame:
+    """Run the method with power conditioning on and return its populated per-bin rows."""
+    out = ToggleSpecialistMethod(columns=_COLUMNS, conditions=("power",), rated_power_kw=_RATED_KW).estimate(
+        MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+    )
+    assert out.p50_by_condition is not None
+    frame = out.p50_by_condition
+    return frame[frame["n_records"] > 0]
+
+
+class TestPerBinIsNotBiasedByTheBaselineRatio:
+    """The two tests that earn the per-bin `rho_base` design.
+
+    Both rejected estimators fail here:
+
+    - a **global** ``rho_base`` denominator reads the power-dependence of ``k`` as uplift, tilting
+      the per-bin curve (positive where ``k`` is above its average, negative where below);
+    - binning on the **test turbine's own power** labels each bin with a treated quantity, so with a
+      real uplift the treated rows in a bin correspond to *lower* untreated power than the baseline
+      rows in it — against a varying ``k`` that mismatch becomes bias.
+    """
+
+    def test_flat_zero_truth_reads_zero_in_every_bin(self) -> None:
+        # the placebo: k varies strongly with power but no treatment is applied, so a correct
+        # estimator reports 0 everywhere. A global-rho_base estimator reports a slope instead.
+        scada, schedule = _varying_rho_case(uplift=0.0)
+        per_bin = _per_bin(scada, schedule)
+        assert len(per_bin) >= 3  # several populated bins, or the test proves little
+        assert per_bin["p50_uplift"].abs().max() < 0.005
+
+    def test_constant_uplift_reads_that_uplift_in_every_bin(self) -> None:
+        # strictly stronger than the placebo: a real uplift shifts the test turbine's power, so an
+        # estimator that bins on that power mis-assigns treated rows relative to baseline rows. With
+        # k varying, that mismatch shows up as a per-bin error rather than cancelling.
+        scada, schedule = _varying_rho_case(uplift=0.05)
+        per_bin = _per_bin(scada, schedule)
+        assert len(per_bin) >= 3
+        assert per_bin["p50_uplift"].to_numpy() == pytest.approx(0.05, abs=0.005)
+
+    def test_holds_with_noise(self) -> None:
+        scada, schedule = _varying_rho_case(uplift=0.05, noise_frac=0.02)
+        per_bin = _per_bin(scada, schedule)
+        assert per_bin["p50_uplift"].to_numpy() == pytest.approx(0.05, abs=0.01)
+
+
+class TestPerBinLocalisesUplift:
+    def test_uplift_confined_to_high_power_shows_only_there(self) -> None:
+        # a bin-local treatment must not smear across bins: only the treated bins move.
+        idx = _index(600)
+        schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=idx[0])
+        treated = np.asarray(treated_mask(idx, schedule))
+        ref1 = np.linspace(100.0, 1000.0, len(idx))
+        ref2 = np.linspace(50.0, 500.0, len(idx))
+        ref_total = ref1 + ref2
+        test = 0.8 * ref_total
+        # +10% only where the untreated test power is high
+        high = test > 700.0
+        test = np.where(treated & high, test * 1.10, test)
+        scada = _scada({"T1": test, "R1": ref1, "R2": ref2}, idx)
+
+        per_bin = _per_bin(scada, schedule)
+        low_bins = per_bin[per_bin["sum_counterfactual"] > 0].iloc[:2]
+        assert low_bins["p50_uplift"].abs().max() < 0.005
+        assert per_bin["p50_uplift"].max() == pytest.approx(0.10, abs=0.01)
+
+
+class TestConditionsConfiguration:
+    def test_default_reports_no_conditions(self) -> None:
+        # back-compat: existing callers get exactly today's behaviour and need no rating
+        scada, schedule, _ = _toggle_case(uplift=0.03)
+        out = ToggleSpecialistMethod(columns=_COLUMNS).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert out.p50_by_condition is None
+
+    def test_power_conditioning_does_not_move_the_headline(self) -> None:
+        # the per-bin decomposition is additional reporting, never a change to the estimate
+        scada, schedule, _ = _toggle_case(uplift=0.03)
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        plain = ToggleSpecialistMethod(columns=_COLUMNS).estimate(mi)
+        conditioned = ToggleSpecialistMethod(
+            columns=_COLUMNS, conditions=("power",), rated_power_kw=_RATED_KW
+        ).estimate(mi)
+        assert conditioned.p50_overall == plain.p50_overall
+
+    def test_frame_is_labelled_with_the_power_condition(self) -> None:
+        scada, schedule = _varying_rho_case(uplift=0.05)
+        out = ToggleSpecialistMethod(columns=_COLUMNS, conditions=("power",), rated_power_kw=_RATED_KW).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert out.p50_by_condition is not None
+        assert set(out.p50_by_condition["condition"]) == {"power"}
+        for col in ("condition_bin", "p50_uplift", "n_records", "sum_actual", "sum_counterfactual"):
+            assert col in out.p50_by_condition.columns
+
+    def test_ws_condition_raises_citing_the_method_limit(self) -> None:
+        with pytest.raises(ValueError, match="does not support"):
+            ToggleSpecialistMethod(columns=_COLUMNS, conditions=("ws",), rated_power_kw=_RATED_KW)
+
+    def test_unknown_condition_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown condition"):
+            ToggleSpecialistMethod(columns=_COLUMNS, conditions=("bogus",), rated_power_kw=_RATED_KW)
+
+    def test_power_without_a_rating_raises(self) -> None:
+        with pytest.raises(ValueError, match="rated_power_kw"):
+            ToggleSpecialistMethod(columns=_COLUMNS, conditions=("power",))
+
+
+class TestPerBinSparseData:
+    def test_bins_with_no_data_are_nan_not_imputed(self) -> None:
+        # a sparse bin must read "no answer", not an invented one: downstream consumers decide what
+        # to do about it, and an imputed prior would manufacture false confidence.
+        scada, schedule = _varying_rho_case(uplift=0.05)
+        out = ToggleSpecialistMethod(columns=_COLUMNS, conditions=("power",), rated_power_kw=_RATED_KW).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert out.p50_by_condition is not None
+        empty = out.p50_by_condition[out.p50_by_condition["n_records"] == 0]
+        assert not empty.empty  # the fixture's power range does not fill every bin
+        assert empty["p50_uplift"].isna().all()
+
+    def test_every_bin_is_represented(self) -> None:
+        scada, schedule = _varying_rho_case(uplift=0.05)
+        out = ToggleSpecialistMethod(columns=_COLUMNS, conditions=("power",), rated_power_kw=_RATED_KW).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert out.p50_by_condition is not None
+        assert len(out.p50_by_condition) == len(condition_bins("power", rated_power_kw=_RATED_KW)) - 1
+
+
+class TestPerBinDiagnostics:
+    def test_per_bin_csv_is_written(self, tmp_path: Path) -> None:
+        scada, schedule = _varying_rho_case(uplift=0.05)
+        ToggleSpecialistMethod(
+            columns=_COLUMNS, conditions=("power",), rated_power_kw=_RATED_KW, out_dir=tmp_path
+        ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
+        assert list(tmp_path.rglob("*_by_power_bin_*.csv"))
+
+    def test_no_per_bin_csv_when_conditioning_is_off(self, tmp_path: Path) -> None:
+        scada, schedule, _ = _toggle_case(uplift=0.03)
+        ToggleSpecialistMethod(columns=_COLUMNS, out_dir=tmp_path).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert not list(tmp_path.rglob("*_by_power_bin_*.csv"))
+
+    def test_per_bin_plot_written_with_save_plots(self, tmp_path: Path) -> None:
+        scada, schedule = _varying_rho_case(uplift=0.05)
+        ToggleSpecialistMethod(
+            columns=_COLUMNS,
+            conditions=("power",),
+            rated_power_kw=_RATED_KW,
+            out_dir=tmp_path,
+            save_plots=True,
+        ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
+        assert list(tmp_path.rglob("*per_bin_uplift.png"))
 
 
 class TestPrepostRejected:
