@@ -253,13 +253,17 @@ def methods_leaderboard(results: pd.DataFrame) -> pd.DataFrame:
     return stacked.sort_values(_MERGE_KEYS).reset_index(drop=True)
 
 
-def record_baseline(lb: pd.DataFrame, *, study: StudyConfig, path: Path) -> None:
-    """Write the benchmark: every scored cell plus the provenance needed to interpret it."""
-    commit = _git_commit()
+def record_baseline(lb: pd.DataFrame, *, study: StudyConfig, path: Path, git_commit: str) -> None:
+    """Write the benchmark: every scored cell plus the provenance needed to interpret it.
+
+    ``git_commit`` is passed in rather than read here: it must be captured **before** the run, since a
+    sweep takes ~15 minutes and a commit landing mid-run would otherwise stamp the baseline with a
+    commit whose code never produced it.
+    """
     doc = {
         "schema": _BASELINE_SCHEMA,
         "recorded_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "git_commit": commit,
+        "git_commit": git_commit,
         "n_replicates": study.n_replicates,
         "seed": study.seed,
         "campaign_weeks": list(study.campaign_lengths),
@@ -269,7 +273,7 @@ def record_baseline(lb: pd.DataFrame, *, study: StudyConfig, path: Path) -> None
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=2) + "\n")
-    logger.info("Recorded toggle-methods benchmark at %s (commit %s). Commit the JSON.", path, commit)
+    logger.info("Recorded toggle-methods benchmark at %s (commit %s). Commit the JSON.", path, git_commit)
 
 
 def _load_baseline(path: Path) -> tuple[pd.DataFrame, dict[str, Any]] | None:
@@ -322,9 +326,11 @@ def compare_to_benchmark(lb: pd.DataFrame, *, baseline_path: Path, comparison_di
         }
     ).round(6)
     logger.info(
-        "Toggle methods vs benchmark (recorded %s, commit %s) [pp]; an unchanged method reads d_*=0.0 exactly:\n%s",
+        "Toggle methods vs benchmark (recorded %s, commit %s) [pp]; unchanged = within each method's "
+        "band (%s), reported per method below:\n%s",
         prov.get("recorded_utc", "?"),
         prov.get("git_commit", "?"),
+        ", ".join(f"{m} {b * _PP:g} pp" for m, b in _UNCHANGED_ATOL.items()),
         show.to_string(index=False),
     )
     _log_unchanged_verdict(merged)
@@ -419,6 +425,19 @@ def main() -> None:
         # from the committed benchmark. Refuse rather than silently corrupt it.
         parser.error("--update-baseline needs the full profile set; do not combine it with --profiles")
 
+    # Captured *before* the sweep: the run takes ~15 min, so reading HEAD afterwards would stamp the
+    # baseline with whatever was committed meanwhile rather than the code that actually ran.
+    git_commit = _git_commit()
+    if args.update_baseline and git_commit.endswith("-dirty"):
+        # The committed benchmark is only worth anything if a reader can check out the commit and
+        # reproduce it. Recording from a dirty tree bakes in changes that commit does not contain, so
+        # refuse rather than write an untraceable baseline. Commit first, then record, then commit the
+        # JSON. (Without --update-baseline a dirty tree is fine — that run only reports.)
+        parser.error(
+            f"refusing to --update-baseline from a dirty tree (commit {git_commit}): the committed "
+            f"benchmark must be reproducible from its commit. Commit your changes first, then re-run."
+        )
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
     output_dir = args.output_dir.expanduser()
     baseline_path = args.baseline_path.expanduser()
@@ -438,7 +457,7 @@ def main() -> None:
     comparison_dir = output_dir / "comparison"
     plot_results(lb, comparison_dir)
     if args.update_baseline:
-        record_baseline(lb, study=toggle_study(), path=baseline_path)
+        record_baseline(lb, study=toggle_study(), path=baseline_path, git_commit=git_commit)
     else:
         compare_to_benchmark(lb, baseline_path=baseline_path, comparison_dir=comparison_dir)
     logger.info("All done. Outputs under %s", output_dir)

@@ -122,7 +122,7 @@ def test_wall_time_is_not_diffed(tmp_path: Path) -> None:
     # it is machine- and load-dependent, so diffing it would trip the unchanged verdict every run
     lb = methods_leaderboard(_results())
     path = tmp_path / "baseline.json"
-    record_baseline(lb, study=toggle_study(), path=path)
+    record_baseline(lb, study=toggle_study(), path=path, git_commit="abc1234")
 
     slower = lb.assign(wall_time_s_mean=lb["wall_time_s_mean"] * 10)
     merged = compare_to_benchmark(slower, baseline_path=path, comparison_dir=tmp_path / "comparison")
@@ -134,7 +134,7 @@ def test_wall_time_is_not_diffed(tmp_path: Path) -> None:
 def test_baseline_round_trips(tmp_path: Path) -> None:
     lb = methods_leaderboard(_results())
     path = tmp_path / "baseline.json"
-    record_baseline(lb, study=toggle_study(), path=path)
+    record_baseline(lb, study=toggle_study(), path=path, git_commit="abc1234")
 
     loaded = _load_baseline(path)
     assert loaded is not None
@@ -143,6 +143,18 @@ def test_baseline_round_trips(tmp_path: Path) -> None:
     assert provenance["methods"] == sorted(COMPARE_METHODS)
     assert provenance["seed"] == toggle_study().seed
     assert len(cells) == len(lb)
+
+
+def test_baseline_records_the_commit_it_was_given_not_the_current_head(tmp_path: Path) -> None:
+    # the commit must be captured before the sweep and threaded in: a ~15-min run can straddle a
+    # commit, and reading HEAD at write time would stamp a commit whose code never produced these
+    # numbers (which is exactly what happened once).
+    path = tmp_path / "baseline.json"
+    record_baseline(methods_leaderboard(_results()), study=toggle_study(), path=path, git_commit="deadbee")
+
+    loaded = _load_baseline(path)
+    assert loaded is not None
+    assert loaded[1]["git_commit"] == "deadbee"
 
 
 def test_load_baseline_returns_none_when_absent(tmp_path: Path) -> None:
@@ -162,7 +174,7 @@ def test_unchanged_method_diffs_within_the_band(tmp_path: Path) -> None:
     # version of this test fell into.
     lb = methods_leaderboard(_results(bias_shift=0.0123456789012345))
     path = tmp_path / "baseline.json"
-    record_baseline(lb, study=toggle_study(), path=path)
+    record_baseline(lb, study=toggle_study(), path=path, git_commit="abc1234")
 
     merged = compare_to_benchmark(lb, baseline_path=path, comparison_dir=tmp_path / "comparison")
     assert not merged.empty
@@ -178,7 +190,7 @@ def test_round_trip_leaves_a_nonzero_residual_from_baseline_rounding(tmp_path: P
     # nondeterminism is the larger, and cannot be exercised in a unit test).
     lb = methods_leaderboard(_results(bias_shift=0.0123456789012345))
     path = tmp_path / "baseline.json"
-    record_baseline(lb, study=toggle_study(), path=path)
+    record_baseline(lb, study=toggle_study(), path=path, git_commit="abc1234")
 
     merged = compare_to_benchmark(lb, baseline_path=path, comparison_dir=tmp_path / "comparison")
     assert (merged["d_bias"].abs() > 0).any(), "round(8) should leave a residual; if not, the band can tighten"
@@ -186,7 +198,9 @@ def test_round_trip_leaves_a_nonzero_residual_from_baseline_rounding(tmp_path: P
 
 def test_moved_method_shows_a_nonzero_bias_delta(tmp_path: Path) -> None:
     path = tmp_path / "baseline.json"
-    record_baseline(methods_leaderboard(_results(bias_shift=0.0)), study=toggle_study(), path=path)
+    record_baseline(
+        methods_leaderboard(_results(bias_shift=0.0)), study=toggle_study(), path=path, git_commit="abc1234"
+    )
 
     moved = methods_leaderboard(_results(bias_shift=0.01))
     merged = compare_to_benchmark(moved, baseline_path=path, comparison_dir=tmp_path / "comparison")
@@ -197,7 +211,7 @@ def test_moved_method_shows_a_nonzero_bias_delta(tmp_path: Path) -> None:
 def test_comparison_csv_is_written(tmp_path: Path) -> None:
     lb = methods_leaderboard(_results())
     path = tmp_path / "baseline.json"
-    record_baseline(lb, study=toggle_study(), path=path)
+    record_baseline(lb, study=toggle_study(), path=path, git_commit="abc1234")
     comparison_dir = tmp_path / "comparison"
 
     compare_to_benchmark(lb, baseline_path=path, comparison_dir=comparison_dir)
@@ -216,7 +230,7 @@ def test_compare_without_a_baseline_is_a_noop(tmp_path: Path, caplog: pytest.Log
 def test_unchanged_verdict_is_logged_per_method(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     lb = methods_leaderboard(_results())
     path = tmp_path / "baseline.json"
-    record_baseline(lb, study=toggle_study(), path=path)
+    record_baseline(lb, study=toggle_study(), path=path, git_commit="abc1234")
 
     with caplog.at_level(logging.INFO):
         compare_to_benchmark(lb, baseline_path=path, comparison_dir=tmp_path / "comparison")
@@ -226,7 +240,7 @@ def test_unchanged_verdict_is_logged_per_method(tmp_path: Path, caplog: pytest.L
 
 def test_moved_verdict_warns_and_names_the_cells(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     path = tmp_path / "baseline.json"
-    record_baseline(methods_leaderboard(_results()), study=toggle_study(), path=path)
+    record_baseline(methods_leaderboard(_results()), study=toggle_study(), path=path, git_commit="abc1234")
 
     with caplog.at_level(logging.WARNING):
         compare_to_benchmark(
