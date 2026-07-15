@@ -214,7 +214,13 @@ def run_study(out_dir: Path, *, profiles: list[str] | None = None) -> pd.DataFra
 
 
 def _git_commit() -> str:
-    """Return the short HEAD commit (``-dirty`` if the tree is modified), or ``unknown``."""
+    """Return the short HEAD commit (``-dirty`` if *tracked* files are modified), or ``unknown``.
+
+    ``--untracked-files=no`` is deliberate: only tracked modifications make a run irreproducible from
+    its commit. An untracked file (a scratch script, an editor artifact, a local CLAUDE.md) has no
+    bearing on what ``git checkout <commit>`` would run, and counting it would make ``--update-baseline``
+    unusable for anyone with a stray file in their working copy.
+    """
     repo = Path(__file__).resolve().parent
     try:
         commit = subprocess.run(
@@ -225,7 +231,7 @@ def _git_commit() -> str:
             check=True,
         ).stdout.strip()
         dirty = subprocess.run(
-            ["git", "status", "--porcelain"],  # noqa: S607
+            ["git", "status", "--porcelain", "--untracked-files=no"],  # noqa: S607
             cwd=repo,
             capture_output=True,
             text=True,
