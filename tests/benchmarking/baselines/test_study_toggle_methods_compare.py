@@ -88,7 +88,7 @@ def test_leaderboard_has_one_cell_per_method_and_campaign_length() -> None:
 def test_baseline_round_trips(tmp_path: Path) -> None:
     lb = methods_leaderboard(_results())
     path = tmp_path / "baseline.json"
-    record_baseline(lb, toggle_study(), path)
+    record_baseline(lb, study=toggle_study(), path=path)
 
     loaded = _load_baseline(path)
     assert loaded is not None
@@ -114,9 +114,9 @@ def test_unchanged_method_diffs_to_exactly_zero(tmp_path: Path) -> None:
     # unchanged method re-run must reproduce its cells bit-for-bit, not merely closely.
     lb = methods_leaderboard(_results())
     path = tmp_path / "baseline.json"
-    record_baseline(lb, toggle_study(), path)
+    record_baseline(lb, study=toggle_study(), path=path)
 
-    merged = compare_to_benchmark(lb, path, tmp_path / "comparison")
+    merged = compare_to_benchmark(lb, baseline_path=path, comparison_dir=tmp_path / "comparison")
     assert not merged.empty
     for col in ("d_bias", "d_spread", "d_score"):
         assert (merged[col] == 0.0).all(), f"{col} must be exactly zero for an unchanged method"
@@ -124,26 +124,28 @@ def test_unchanged_method_diffs_to_exactly_zero(tmp_path: Path) -> None:
 
 def test_moved_method_shows_a_nonzero_bias_delta(tmp_path: Path) -> None:
     path = tmp_path / "baseline.json"
-    record_baseline(methods_leaderboard(_results(bias_shift=0.0)), toggle_study(), path)
+    record_baseline(methods_leaderboard(_results(bias_shift=0.0)), study=toggle_study(), path=path)
 
     moved = methods_leaderboard(_results(bias_shift=0.01))
-    merged = compare_to_benchmark(moved, path, tmp_path / "comparison")
+    merged = compare_to_benchmark(moved, baseline_path=path, comparison_dir=tmp_path / "comparison")
     assert np.allclose(merged["d_bias"].to_numpy(), 0.01)
 
 
 def test_comparison_csv_is_written(tmp_path: Path) -> None:
     lb = methods_leaderboard(_results())
     path = tmp_path / "baseline.json"
-    record_baseline(lb, toggle_study(), path)
+    record_baseline(lb, study=toggle_study(), path=path)
     comparison_dir = tmp_path / "comparison"
 
-    compare_to_benchmark(lb, path, comparison_dir)
+    compare_to_benchmark(lb, baseline_path=path, comparison_dir=comparison_dir)
     assert (comparison_dir / "benchmark_comparison.csv").exists()
 
 
 def test_compare_without_a_baseline_is_a_noop(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
-        merged = compare_to_benchmark(methods_leaderboard(_results()), tmp_path / "absent.json", tmp_path / "cmp")
+        merged = compare_to_benchmark(
+            methods_leaderboard(_results()), baseline_path=tmp_path / "absent.json", comparison_dir=tmp_path / "cmp"
+        )
     assert merged.empty
     assert "No benchmark recorded" in caplog.text
 
@@ -151,20 +153,22 @@ def test_compare_without_a_baseline_is_a_noop(tmp_path: Path, caplog: pytest.Log
 def test_unchanged_verdict_is_logged_per_method(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     lb = methods_leaderboard(_results())
     path = tmp_path / "baseline.json"
-    record_baseline(lb, toggle_study(), path)
+    record_baseline(lb, study=toggle_study(), path=path)
 
     with caplog.at_level(logging.INFO):
-        compare_to_benchmark(lb, path, tmp_path / "comparison")
+        compare_to_benchmark(lb, baseline_path=path, comparison_dir=tmp_path / "comparison")
     for method in COMPARE_METHODS:
         assert f"{method}: UNCHANGED" in caplog.text
 
 
 def test_moved_verdict_warns_and_names_the_cells(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     path = tmp_path / "baseline.json"
-    record_baseline(methods_leaderboard(_results()), toggle_study(), path)
+    record_baseline(methods_leaderboard(_results()), study=toggle_study(), path=path)
 
     with caplog.at_level(logging.WARNING):
-        compare_to_benchmark(methods_leaderboard(_results(bias_shift=0.01)), path, tmp_path / "comparison")
+        compare_to_benchmark(
+            methods_leaderboard(_results(bias_shift=0.01)), baseline_path=path, comparison_dir=tmp_path / "comparison"
+        )
     assert "MOVED" in caplog.text
 
 

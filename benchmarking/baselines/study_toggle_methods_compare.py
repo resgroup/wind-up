@@ -194,7 +194,7 @@ def methods_leaderboard(results: pd.DataFrame) -> pd.DataFrame:
     return lb.sort_values(_MERGE_KEYS).reset_index(drop=True)
 
 
-def record_baseline(lb: pd.DataFrame, study: StudyConfig, path: Path) -> None:
+def record_baseline(lb: pd.DataFrame, *, study: StudyConfig, path: Path) -> None:
     """Write the benchmark: every scored cell plus the provenance needed to interpret it."""
     commit = _git_commit()
     doc = {
@@ -229,7 +229,7 @@ def _load_baseline(path: Path) -> tuple[pd.DataFrame, dict[str, Any]] | None:
     return pd.DataFrame(doc["cells"]), doc
 
 
-def compare_to_benchmark(lb: pd.DataFrame, baseline_path: Path, comparison_dir: Path) -> pd.DataFrame:
+def compare_to_benchmark(lb: pd.DataFrame, *, baseline_path: Path, comparison_dir: Path) -> pd.DataFrame:
     """Diff the fresh cells against the committed benchmark; write the per-cell CSV and log the deltas.
 
     Returns the merged frame (empty if no benchmark is recorded yet). Deltas are raw: an unchanged
@@ -351,9 +351,9 @@ def main() -> None:
     comparison_dir = output_dir / "comparison"
     plot_results(lb, comparison_dir)
     if args.update_baseline:
-        record_baseline(lb, toggle_study(), baseline_path)
+        record_baseline(lb, study=toggle_study(), path=baseline_path)
     else:
-        compare_to_benchmark(lb, baseline_path, comparison_dir)
+        compare_to_benchmark(lb, baseline_path=baseline_path, comparison_dir=comparison_dir)
     logger.info("All done. Outputs under %s", output_dir)
 
 

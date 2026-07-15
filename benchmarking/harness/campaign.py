@@ -73,11 +73,15 @@ class CampaignWindow:
 
 
 def resolve_campaign_grid(
-    campaign_months: list[int] | None, campaign_weeks: list[int] | None
+    *, campaign_months: list[int] | None, campaign_weeks: list[int] | None
 ) -> tuple[list[int], CampaignUnit]:
     """Return the ``(lengths, unit)`` of whichever grid is set. Raises unless exactly one is.
 
     Shared by :func:`campaign_windows` and ``StudyConfig`` so the two agree on the rule.
+
+    Keyword-only deliberately: the two parameters have the same type, so a positional call would give
+    the reader nothing to check against, and transposing them would silently mislabel weeks as months
+    rather than fail.
     """
     if (campaign_months is None) == (campaign_weeks is None):
         msg = (
@@ -108,7 +112,7 @@ def campaign_windows(
     the length. When ``data_start`` / ``data_end`` are given, lengths whose window would fall outside
     the available data are dropped (infeasible ``(replicate, length)`` combinations).
     """
-    lengths, unit = resolve_campaign_grid(campaign_months, campaign_weeks)
+    lengths, unit = resolve_campaign_grid(campaign_months=campaign_months, campaign_weeks=campaign_weeks)
     baseline_start = treatment_start - pd.DateOffset(months=min_pre_months)
     windows = []
     for length in lengths:

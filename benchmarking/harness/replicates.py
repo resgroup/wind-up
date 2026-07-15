@@ -63,17 +63,17 @@ class StudyConfig:
 
     def __post_init__(self) -> None:
         """Validate that exactly one campaign-length grid is set."""
-        resolve_campaign_grid(self.campaign_months, self.campaign_weeks)
+        resolve_campaign_grid(campaign_months=self.campaign_months, campaign_weeks=self.campaign_weeks)
 
     @property
     def campaign_lengths(self) -> list[int]:
         """The campaign-length grid values, whichever unit they are in."""
-        return resolve_campaign_grid(self.campaign_months, self.campaign_weeks)[0]
+        return resolve_campaign_grid(campaign_months=self.campaign_months, campaign_weeks=self.campaign_weeks)[0]
 
     @property
     def campaign_unit(self) -> CampaignUnit:
         """The campaign grid's unit: ``"months"`` or ``"weeks"``."""
-        return resolve_campaign_grid(self.campaign_months, self.campaign_weeks)[1]
+        return resolve_campaign_grid(campaign_months=self.campaign_months, campaign_weeks=self.campaign_weeks)[1]
 
     @property
     def campaign_length_col(self) -> str:
