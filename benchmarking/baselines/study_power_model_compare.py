@@ -31,6 +31,14 @@ negative delta is an improvement; bias: a smaller ``|bias|`` is better) plus a p
 ``benchmark_comparison_<mode>.csv``, so an attempt to improve ``power_model`` is scored objectively
 against where it stands today.
 
+**This benchmark is machine-specific: record and diff it on one machine only.** Every cell here is
+``power_model``, and LightGBM's threaded float reduction order depends on the machine, so a benchmark
+recorded elsewhere reports a permanent false MOVED of ~0.7 pp — 14x the same-machine noise (F30).
+Unlike ``study_toggle_methods_compare``, which splits portable from machine-specific cells across
+files, this script keeps one file because it has no portable cells to split off. The committed
+benchmark is recorded on the Linux laptop; run it there. If that ever stops being true, the
+portable/per-platform mechanism in ``study_toggle_methods_compare`` is the thing to copy.
+
 **Accepting an improvement without a second sweep.** Every full sweep also drops a *candidate*
 baseline (``<output-dir>/candidate_baseline.json``, seeded from the committed baseline so unrun modes
 are preserved) — i.e. exactly what the committed file would become if you accept this run. If the run
@@ -395,12 +403,16 @@ def record_baseline(
     path: Path,
     *,
     seed_path: Path | None = None,
+    git_commit: str | None = None,
 ) -> None:
     """Write/refresh the benchmark for the given modes (other modes in the file are kept).
 
     Sibling modes not in ``lb_by_mode`` are inherited from ``seed_path`` (default: ``path`` itself). A
     *candidate* baseline is written by pointing ``path`` at the candidate file while seeding from the
     committed baseline, so the candidate equals what accepting this run would make the committed file.
+
+    ``git_commit`` should be captured *before* the sweep: this one takes hours, so reading HEAD here
+    would stamp whatever was committed meanwhile rather than the code that produced the numbers.
     """
     seed = seed_path if seed_path is not None else path
     doc: dict[str, Any] = {"schema": _BASELINE_SCHEMA, "modes": {}}
@@ -409,7 +421,7 @@ def record_baseline(
         if loaded.get("schema") == _BASELINE_SCHEMA:
             doc = loaded
             doc.setdefault("modes", {})
-    commit = _git_commit()
+    commit = _git_commit() if git_commit is None else git_commit
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for mode, lb in lb_by_mode.items():
         study = study_by_mode[mode]
@@ -427,6 +439,19 @@ def record_baseline(
     logger.info("Recorded power_model benchmark for %s at %s (commit %s)", list(lb_by_mode), path, commit)
 
 
+def _refuse_dirty_update(parser: argparse.ArgumentParser, *, git_commit: str, update_baseline: bool) -> None:
+    """Refuse to record the committed benchmark from a dirty tree.
+
+    A committed benchmark is only worth anything if a reader can check out its commit and reproduce
+    it. Without ``--update-baseline`` a dirty tree is fine — that run only reports.
+    """
+    if update_baseline and git_commit.endswith("-dirty"):
+        parser.error(
+            f"refusing to --update-baseline from a dirty tree (commit {git_commit}): the committed "
+            f"benchmark must be reproducible from its commit. Commit your changes first, then re-run."
+        )
+
+
 def _candidate_path(output_dir: Path) -> Path:
     """Where a full sweep drops its candidate baseline (promote it with ``--accept-candidate``)."""
     return output_dir / "candidate_baseline.json"
@@ -442,9 +467,24 @@ def accept_candidate(candidate_path: Path, baseline_path: Path) -> None:
         msg = f"no candidate baseline at {candidate_path}; run a full sweep (all profiles) first to produce one."
         raise FileNotFoundError(msg)
     text = candidate_path.read_text()
-    schema = json.loads(text).get("schema")
+    doc = json.loads(text)
+    schema = doc.get("schema")
     if schema != _BASELINE_SCHEMA:
         msg = f"candidate {candidate_path} has schema {schema!r}, expected {_BASELINE_SCHEMA!r}; regenerate it."
+        raise ValueError(msg)
+    # The sweep that produced the candidate may have run from a dirty tree; promoting it would commit a
+    # benchmark no commit reproduces. This is the likeliest way a `-dirty` baseline gets committed,
+    # since accepting is the documented no-re-run path.
+    dirty = {
+        mode: m["git_commit"]
+        for mode, m in doc.get("modes", {}).items()
+        if str(m.get("git_commit", "")).endswith("-dirty")
+    }
+    if dirty:
+        msg = (
+            f"refusing to promote {candidate_path}: it was recorded from a dirty tree ({dirty}). The committed "
+            f"benchmark must be reproducible from its commit. Commit your changes and re-run the sweep first."
+        )
         raise ValueError(msg)
     baseline_path.parent.mkdir(parents=True, exist_ok=True)
     baseline_path.write_text(text)
@@ -824,6 +864,11 @@ def main() -> None:
         # the benchmark freezes the *committed default* config; an overridden run must not be recorded as it
         parser.error("--update-baseline records the default config; do not combine it with --method-overrides")
 
+    # Captured before the sweep: it takes hours, so reading HEAD afterwards would stamp the baseline
+    # with whatever was committed meanwhile rather than the code that actually ran.
+    git_commit = _git_commit()
+    _refuse_dirty_update(parser, git_commit=git_commit, update_baseline=args.update_baseline)
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
     reference_dir = args.reference_dir.expanduser()
     output_dir = args.output_dir.expanduser()
@@ -855,14 +900,14 @@ def main() -> None:
             conditional_before_after(mode, fresh, baseline_path, mode_out_dir / "comparison")
 
     if args.update_baseline:
-        record_baseline(lb_by_mode, study_by_mode, baseline_path)
+        record_baseline(lb_by_mode, study_by_mode, baseline_path, git_commit=git_commit)
     elif method_overrides is not None:
         logger.info("Overridden run (--method-overrides) — no candidate baseline written (not the default config).")
     elif args.profiles is None:
         # A full sweep: drop a candidate baseline (seeded from committed) so an accepted improvement is a
         # near-instant `--accept-candidate` away, with no second sweep. Subset runs are incomplete -> skip.
         candidate = _candidate_path(output_dir)
-        record_baseline(lb_by_mode, study_by_mode, candidate, seed_path=baseline_path)
+        record_baseline(lb_by_mode, study_by_mode, candidate, seed_path=baseline_path, git_commit=git_commit)
         logger.info("Candidate baseline written to %s — accept it with --accept-candidate (no re-run).", candidate)
     else:
         logger.info("Subset run (--profiles) — no candidate baseline written (it would be incomplete).")

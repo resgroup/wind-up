@@ -14,10 +14,10 @@ For each instance the method's estimate and the ground truth are computed over t
 records**, so the signed error is exact at every campaign length. Output is one tidy
 long-format DataFrame, the input to the leaderboard and plots.
 
-:func:`score_one` is the per-``(method, instance)`` unit :func:`score_study` is built from. It is
-public so a caller that cannot afford :func:`score_study`'s materialised ensemble — a large
-replicate ensemble, where holding every replicate at once would exhaust memory — can drive its own
-replicate-outer loop over :func:`iter_replicates` without reimplementing the truth alignment.
+:func:`score_one` is the per-``(method, instance)`` unit :func:`score_study` is built from, public so
+a caller that cannot afford the materialised ensemble (a large replicate ensemble would exhaust
+memory) can drive its own replicate-outer loop over :func:`iter_replicates` without reimplementing
+the truth alignment.
 """
 
 from __future__ import annotations
@@ -128,14 +128,12 @@ def score_one(
 ) -> list[dict[str, object]]:
     """Run one method over one ``(replicate, window)`` instance and return its tidy result rows.
 
-    The unit :func:`score_study` is built from, and the seam through which a caller driving its own
-    loop gets identical rows. Returns the overall row plus one row per condition bin the method
-    reports, each carrying the estimate, ``truth``, their signed error, and the method's ``sigma``
-    (NaN when the method reports no uncertainty).
+    The overall row plus one per condition bin the method reports, each with the estimate, ``truth``,
+    their signed error and the method's ``sigma`` (NaN when it reports no uncertainty).
 
-    ``truth`` and ``mask`` are passed in rather than derived here because they depend only on
-    ``(replicate, window)``: computing them per method would multiply that cost by ``len(methods)``.
-    Build them with :func:`truth_mask` and ``replicate.true_uplift(mask=...)``.
+    ``truth`` and ``mask`` are passed in because they depend only on ``(replicate, window)``;
+    deriving them here would multiply that cost by ``len(methods)``. Build them with
+    :func:`truth_mask` and ``replicate.true_uplift(mask=...)``.
     """
     method_input = _method_input(replicate, window)
     start = time.perf_counter()
@@ -177,13 +175,9 @@ def _optional_float(value: float | None) -> float:
 def _merge_diagnostics(rows: list[dict[str, object]], diagnostics: pd.DataFrame | None) -> None:
     """Merge a method's uncertainty diagnostics onto ``rows`` in place, keyed by condition and bin.
 
-    The harness attaches these columns without interpreting any of them — they are the method's own
-    account of how its uncertainty was reached, carried to the results table so an uncertainty model
-    can be worked on offline against a saved sweep. Rows with no matching diagnostics row are left
-    alone (the column then reads NaN once the frame is built).
-
-    A diagnostics column that collides with a column the harness owns is an error rather than a
-    silent overwrite: it would corrupt the very estimate or truth the row exists to report.
+    Attached without interpretation. Rows with no matching diagnostics row are left alone. A column
+    colliding with one the harness owns raises rather than silently overwriting the estimate or truth
+    the row exists to report.
     """
     if diagnostics is None:
         return

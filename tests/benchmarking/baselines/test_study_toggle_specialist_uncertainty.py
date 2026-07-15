@@ -19,6 +19,7 @@ from benchmarking.baselines.study_toggle_specialist_uncertainty import (
     _focus_block_hours,
     build_methods,
     calibration_tables,
+    independent_draws,
     plot_results,
 )
 from benchmarking.baselines.toggle_specialist import DEFAULT_BLOCK_HOURS
@@ -100,7 +101,7 @@ class TestFocusBlockHours:
 class TestPlotResults:
     def test_all_four_plots_are_written_for_a_grid_containing_the_default(self, tmp_path: Path) -> None:
         cases = _cases([DEFAULT_BLOCK_HOURS, DEFAULT_BLOCK_HOURS * 4])
-        plot_results(cases, calibration_tables(cases, n_independent=8), tmp_path)
+        plot_results(cases, calibration_tables(cases, n_replicates=8), tmp_path)
         assert sorted(p.name for p in tmp_path.iterdir()) == [
             "coverage_by_campaign_length.png",
             "coverage_vs_record_count.png",
@@ -115,7 +116,7 @@ class TestPlotResults:
         empty frame (an all-NaN axis limit) — a run that looked successful but produced junk.
         """
         cases = _cases([DEFAULT_BLOCK_HOURS * 16, DEFAULT_BLOCK_HOURS * 32])
-        plot_results(cases, calibration_tables(cases, n_independent=8), tmp_path)
+        plot_results(cases, calibration_tables(cases, n_replicates=8), tmp_path)
         assert sorted(p.name for p in tmp_path.iterdir()) == [
             "coverage_by_campaign_length.png",
             "coverage_vs_record_count.png",
@@ -126,23 +127,44 @@ class TestPlotResults:
 
 class TestCalibrationTables:
     def test_reports_every_read_keyed_by_block_length(self) -> None:
-        tables = calibration_tables(_cases([6.0, 48.0]), n_independent=8)
+        tables = calibration_tables(_cases([6.0, 48.0]), n_replicates=8)
         assert set(tables) == {
             "headline_by_block",
             "headline_by_block_and_length",
             "headline_by_block_and_profile",
             "per_bin_by_block",
             "per_bin_by_block_and_bin",
+            "per_bin_by_block_and_length",
         }
         assert sorted(tables["headline_by_block"]["block_hours"]) == [6.0, 48.0]
 
     def test_headline_and_per_bin_are_scored_separately(self) -> None:
         """They fail for different reasons, so pooling them would hide both."""
-        tables = calibration_tables(_cases([6.0]), n_independent=8)
+        tables = calibration_tables(_cases([6.0]), n_replicates=8)
         assert tables["headline_by_block"]["n"].iloc[0] == 16  # 8 replicates x 2 campaign lengths
         assert tables["per_bin_by_block"]["n"].iloc[0] == 16
 
-    def test_the_coverage_standard_error_is_quoted_on_independent_draws(self) -> None:
-        """Rows are not evidence: profiles share windows, so SE must come from the replicate count."""
-        tables = calibration_tables(_cases([6.0]), n_independent=64)
-        assert tables["headline_by_block"]["coverage_se_independent"].iloc[0] == pytest.approx(0.058, abs=0.001)
+    def test_the_coverage_standard_error_is_quoted_per_campaign_length(self) -> None:
+        """Rows are not evidence, and long campaigns overlap, so SE must vary with campaign length."""
+        table = calibration_tables(_cases([6.0]), n_replicates=64)["headline_by_block_and_length"]
+        by_len = table.set_index("campaign_weeks")
+        assert by_len.loc[1, "n_independent"] == 64  # short campaigns: positions are not the constraint
+        assert by_len.loc[1, "coverage_se"] == pytest.approx(0.058, abs=0.001)
+
+
+class TestIndependentDraws:
+    def test_short_campaigns_are_capped_by_the_replicate_count(self) -> None:
+        """A 1-week campaign has ~200 positions in a 4-year range; the replicates are the limit."""
+        assert independent_draws(1, n_replicates=64) == 64
+
+    def test_long_campaigns_are_limited_by_overlapping_windows(self) -> None:
+        """The point of this: 64 replicates of a year-long campaign are NOT 64 independent draws."""
+        assert independent_draws(52, n_replicates=64) < 64
+
+    def test_draws_fall_as_campaigns_lengthen(self) -> None:
+        draws = [independent_draws(w, n_replicates=64) for w in (1, 4, 26, 52)]
+        assert draws == sorted(draws, reverse=True)
+        assert draws[-1] < draws[0]
+
+    def test_a_campaign_longer_than_the_start_range_still_has_one_position(self) -> None:
+        assert independent_draws(52 * 10, n_replicates=64) >= 1

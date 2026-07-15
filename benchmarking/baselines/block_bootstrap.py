@@ -1,37 +1,17 @@
 """Circular block bootstrap for a toggle energy-ratio uplift.
 
-The uncertainty component behind :class:`~benchmarking.baselines.toggle_specialist.ToggleSpecialistMethod`,
-kept separate from it because it is a self-contained numerical unit with its own failure modes, and
-because it says nothing about SCADA — it takes paired ``(test, reference)`` sums on a timeline and
-returns a sigma.
+The uncertainty behind ``ToggleSpecialistMethod``, kept separate because it says nothing about
+SCADA: it takes paired ``(test, reference)`` sums on a timeline and returns a sigma.
 
-**What a block is, and why it matters most.** A block is a *wall-clock interval* carrying its
-upgraded ("on") and baseline ("off") rows **together**. Under a fast toggle — Hill of Towie's
-default alternates every 20 minutes — on and off rows interleave under near-identical weather, so
-the estimate is effectively a paired comparison, and that pairing is exactly why the method is
-precise. Resampling on-rows and off-rows independently would break the pairing and inflate sigma
-towards the (much larger) uncertainty of an unpaired comparison. Whole intervals are drawn so the
-pairing survives resampling.
+A block is a wall-clock interval carrying its on- and off-rows **together**, so the on/off pairing
+that makes the estimate precise survives resampling. Blocks start anywhere on the timebase grid and
+wrap past the campaign end. Both ``rho_up`` and ``rho_base`` are recomputed per resample and the
+ratio re-formed, rather than linearised.
 
-**Why circular.** Blocks start anywhere on the timebase grid and wrap past the campaign end back to
-its start. Non-overlapping blocks would under-weight the ends and, at a 1-week campaign with 48h
-blocks, leave only ~3 distinct blocks to draw from. Wrapping splices the campaign's end onto its
-start, which is sound here because what gets resampled is **block sums**, not a series being
-modelled forward in time.
+Block sums come from prefix sums over the records (doubled end-to-end so a wrapped block is still
+two lookups), so a resample is a gather-and-subtract rather than a pass over the data.
 
-**Why starts are drawn in time, not in record index.** With data gaps, an index-based draw
-over-weights densely-recorded periods. A time-based draw makes every moment equally likely to begin
-a block; a block landing in a gap simply contributes few records, which is a real property of the
-campaign rather than something to correct away.
-
-**Why the ratio is re-formed per resample.** Both ``rho_up`` and ``rho_base`` are recomputed from
-each resample's block sums and the ratio-of-ratios rebuilt, rather than propagating variance
-through a linearisation. The estimator is a ratio of ratios of sums; its sampling distribution is
-skewed in sparse cells, and that skew is the thing the sparse-cell uncertainty most needs to see.
-
-Cost is negligible by construction: per ``(cell, segment)`` the block sums come from prefix sums
-over the records (doubled end-to-end so a wrapped block is still two lookups), so a resample is a
-gather-and-subtract rather than a pass over the data.
+Rationale for the design and for the block length: findings F28.
 """
 
 from __future__ import annotations
@@ -48,14 +28,12 @@ if TYPE_CHECKING:
 
     import numpy.typing as npt
 
-# Resamples processed at once. The gather is (chunk, n_draw, n_cells, 4) floats, so chunking keeps
-# peak memory flat (tens of MB) as block length shrinks and the draw count per resample grows.
+# Resamples per chunk; keeps the (chunk, n_draw, n_cells, 4) gather to tens of MB.
 _RESAMPLE_CHUNK = 250
-# Quantities carried per (cell, segment): the numerator and denominator of each segment's rho.
+# Per (cell, segment): the numerator and denominator of each segment's rho.
 _N_QUANTITIES = 4
 _MIN_RESAMPLES_FOR_SPREAD = 2
-# Normal quantiles at -/+1 sigma: (p84 - p16) / 2 is a sigma for a normal, and stays finite for the
-# heavy-tailed resample distributions a sparse cell's ratio produces.
+# Normal quantiles at -/+1 sigma, so (p84 - p16) / 2 is a sigma for a normal.
 _SIGMA_PERCENTILES = (15.865525, 84.134475)
 
 
@@ -64,13 +42,10 @@ class CellUncertainty:
     """The uncertainty of one cell's uplift (the headline, or one condition bin).
 
     :param sigma: std of the resampled uplifts (``ddof=1``) — the reported 1-sigma
-    :param sigma_robust: ``(p84 - p16) / 2`` of the resampled uplifts. Equals ``sigma`` for a
-        normal resample distribution; **diverges from it exactly where the cell is too sparse for
-        the ratio to be well behaved**, which makes the gap between the two a usable warning sign
-        rather than a statistic to choose between.
-    :param frac_resamples_finite: fraction of resamples that produced a finite uplift. Below 1 means
-        resamples drew no baseline rows for this cell (so its ``rho_base`` was undefined) — the
-        direct measure of a cell being too sparse to bootstrap.
+    :param sigma_robust: ``(p84 - p16) / 2`` of the resampled uplifts. Equals ``sigma`` for a normal
+        resample distribution; a large gap between the two flags a cell too sparse to bootstrap well.
+    :param frac_resamples_finite: fraction of resamples with a finite uplift. Below 1 means resamples
+        drew no baseline rows for this cell, so its ``rho_base`` was undefined.
     """
 
     sigma: float
@@ -82,9 +57,7 @@ class CellUncertainty:
 class BootstrapResult:
     """Per-cell uncertainties from one circular block bootstrap.
 
-    :param n_blocks: blocks drawn per resample (``ceil(campaign / block)``) — the count that
-        governs how much the bootstrap has to work with, and the natural covariate for a
-        short-campaign correction
+    :param n_blocks: blocks drawn per resample (``ceil(campaign / block)``)
     :param cells: uncertainty per cell name, keyed as the caller keyed ``cell_membership``
     """
 
@@ -123,19 +96,15 @@ def bootstrap_ratio_uplift(
     :param ref_total: the summed reference power per used record
     :param upgraded: which used records are toggle-on
     :param baseline: which used records are toggle-off
-    :param cell_membership: cell name -> which used records belong to it. A cell is the headline
-        (every record) or one condition bin; membership must be **fixed by the point estimate**, so
-        that resampling cannot move a record between bins and thereby smear the uplift's own
-        definition into its uncertainty.
-    :param campaign_start: the campaign's first timestamp — blocks tile forward from here, so gaps
-        in the used records are covered rather than closed up
+    :param cell_membership: cell name -> which used records belong to it (the headline, or one
+        condition bin). Must be fixed by the point estimate so resampling cannot move a record
+        between bins.
+    :param campaign_start: the campaign's first timestamp; blocks tile forward from here, so gaps in
+        the used records are covered rather than closed up
     :param campaign_end: the campaign's last timestamp
-    :param timebase: the analysis timebase; sets the candidate block-start grid and closes the
-        campaign's final record period
-    :param block_hours: block length. Longer captures more autocorrelation (sigma biased low if too
-        short) but leaves fewer blocks (sigma noisy if too long); a length exceeding the campaign is
-        clamped to it, which makes every resample identical and so reports ``sigma == 0`` — a
-        visible degeneracy rather than a quiet wrong answer.
+    :param timebase: analysis timebase; sets the candidate block-start grid
+    :param block_hours: block length (F28). A length exceeding the campaign is clamped to it, making
+        every resample identical and reporting ``sigma == 0`` — a visible degeneracy.
     :param n_resamples: resamples to draw
     :param seed: RNG seed, so a reported sigma is reproducible
     """
@@ -210,9 +179,8 @@ def _prefix_sums(
 def _uplift_from_totals(totals: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Re-form ``rho_up / rho_base - 1`` per (resample, cell) from resampled sums.
 
-    The degeneracy guards mirror the point estimate's exactly — a zero denominator, or a zero or
-    non-finite ``rho_base``, yields NaN — so a resample fails only where the point estimate would
-    have failed on the same rows.
+    The degeneracy guards mirror the point estimate's, so a resample fails only where the point
+    estimate would have failed on the same rows.
     """
     test_on, ref_on, test_off, ref_off = (totals[..., k] for k in range(_N_QUANTITIES))
     nan = np.full(test_on.shape, np.nan)

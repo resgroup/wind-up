@@ -52,18 +52,14 @@ class MethodOutput:
     :param p50_overall: overall P50 uplift (energy-ratio fraction)
     :param p50_by_condition: optional per-condition estimates (columns ``condition``,
         ``condition_bin``, ``p50_uplift``); ``condition`` ∈ {"ws","ti","power"}; ``None`` when the
-        method produces only an overall number. May also carry a ``sigma_uplift`` column — the
-        per-bin counterpart of ``sigma_overall``, in the same units as ``p50_uplift``.
-    :param sigma_overall: optional 1-sigma uncertainty on ``p50_overall``, as a conventional
-        symmetric delta in energy-ratio fraction. It is a *total* uncertainty: it is scored against
-        the deviation of the estimate from ground truth, so a method whose sigma covers sampling
-        variance alone will under-cover wherever that method is biased.
+        method produces only an overall number. May also carry a ``sigma_uplift`` column, the
+        per-bin counterpart of ``sigma_overall``.
+    :param sigma_overall: optional 1-sigma on ``p50_overall``, a symmetric delta in energy-ratio
+        fraction. Scored against the deviation from ground truth, so it is a *total* uncertainty.
     :param uncertainty_diagnostics: optional tidy frame keyed by ``(condition, condition_bin)``
-        carrying whatever a method wants to say about how its uncertainty was reached (record
-        counts, resample health, alternative scale statistics, ...). **The harness never interprets
-        these columns** — it merges them onto the results rows and carries them to the results
-        table, so an uncertainty model can be developed offline against a saved sweep instead of by
-        re-running one. Use ``("overall", "overall")`` for the headline row.
+        carrying whatever a method wants to say about how its uncertainty was reached. The harness
+        never interprets these columns; it merges them onto the results rows and carries them
+        through. Use ``("overall", "overall")`` for the headline row.
     """
 
     p50_overall: float

@@ -7,37 +7,24 @@ the *total* deviation from truth, bias included; a block bootstrap sees only sam
 where the method is biased the sigma will under-cover, and that is a finding rather than an
 unfairness (see :mod:`benchmarking.harness.calibration`).
 
-The grid deliberately matches ``study_toggle_methods_compare``: the same three profiles, the same
-1/2/4/8-week campaigns, the same turbines and treatment-start range. What differs is what the run
-is *for*, and that drives two departures:
+Three design points, each with evidence behind it in F28-F30:
 
-**Replicates, not cells, are the evidence.** Coverage is a claim about a fraction, and a fraction
-needs independent samples. The three profiles reuse the same ``(turbine, treatment_start)`` draws
-and differ only in the injected Cp delta, so their errors are almost perfectly correlated — the
-committed compare baseline shows a 1-week bias of -0.689 / -0.715 / -0.664 pp across the three,
-which is one number measured three times. Campaign lengths are correlated too, since shorter
-windows are leading prefixes of longer ones. So 3 x 4 x 64 = 768 headline cells carry roughly
-**64** independent draws, and the coverage standard error is quoted on that basis, not on the row
-count. The replicate count is high for exactly this reason.
+**Replicates, not cells, are the evidence.** The three profiles reuse the same
+``(turbine, treatment_start)`` draws, so their errors correlate 0.977-0.995; campaign lengths are
+prefix-nested; long campaigns overlap each other. Coverage SE is therefore quoted on the independent
+draw count, never on the row count — see :func:`~benchmarking.harness.coverage_standard_error`.
 
-**Block length is swept as a method variant.** Uncertainty never changes uplift and an estimate
-costs ~0.2s, so registering one method per block length (:data:`BLOCK_HOURS_GRID`) gets the whole
-sweep from the existing multi-method seam, in one run, with block length as a column. Block length
-is a real trade-off rather than a "longer is safer" knob: too short and sigma is biased low
-(the bootstrap treats correlated blocks as independent), too long and it degrades — see F28, where
-the first 64-replicate sweep measured *which* way it degrades and found the answer counterintuitive.
-Coverage against ground truth, not the shape of the sigma-vs-L curve, is what decides: the sweep
-exists so the default is measured rather than assumed.
+**Block length is swept as a method variant.** Uncertainty never changes uplift and an estimate is
+cheap, so one method per block length (:data:`BLOCK_HOURS_GRID`) gets the sweep from the existing
+multi-method seam. There is no sigma-vs-L plateau to read here; coverage against truth decides.
 
-**Memory forces a streaming loop.** A replicate carries a ``synthetic_df`` *and* the ``original_df``
-its ground truth needs — ~0.5 GB — so 64 of them is ~32 GB and ``score_study``'s materialised
-ensemble would be OOM-killed. This drives its own replicate-outer loop over
-:func:`~benchmarking.harness.iter_replicates`, reusing :func:`~benchmarking.harness.score_one` so
-the truth alignment is shared rather than reimplemented, and holding one replicate at a time.
+**Memory forces a streaming loop.** A replicate carries a ``synthetic_df`` and an ``original_df``
+(~0.5 GB), so ``score_study``'s materialised ensemble would be OOM-killed at this replicate count.
+This drives a replicate-outer loop over :func:`~benchmarking.harness.iter_replicates`, reusing
+:func:`~benchmarking.harness.score_one` so the truth alignment is shared rather than reimplemented.
 
-The output that matters is ``cases.csv``: every scored cell with its estimate, truth, sigma and the
-record counts behind it. **It is the point of the run.** A further uncertainty component — a term
-in the data count, say — can be fitted against it in seconds, with no re-run of the sweep.
+``cases.csv`` is the point of the run: every scored cell with its estimate, truth, sigma and record
+counts, so a further uncertainty component can be fitted offline without re-running the sweep.
 
 Run from the repo root::
 
@@ -59,10 +46,8 @@ import pandas as pd
 from benchmarking.baselines.example_prepost_study import (
     DEFAULT_END_DT_EXCL,
     DEFAULT_START_DT,
-    DEFAULT_TREATMENT_START_RANGE,
     DEFAULT_TURBINE_SUBSET,
     DEFAULT_WTG_NUMBERS,
-    MIN_PRE_MONTHS,
 )
 from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_PERIOD
 from benchmarking.baselines.study_toggle_methods_compare import TOGGLE_PROFILES
@@ -82,9 +67,15 @@ from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
 logger = logging.getLogger(__name__)
 
-CAMPAIGN_WEEKS = [1, 2, 4, 8]
+CAMPAIGN_WEEKS = [1, 2, 4, 8, 26, 52]
 N_REPLICATES = 64
 SEED = 0
+# toggle_specialist drops pre-campaign rows (`restrict_to_campaign`), so a pre-campaign baseline buys
+# it nothing and `min_pre_months` only costs start-range span. Widening the range to the whole dataset
+# doubles the non-overlapping positions available to the long campaigns, which is where independent
+# evidence is scarcest: a 52-week campaign is 364d, so a 730d range holds only ~2 of them.
+TREATMENT_START_RANGE = (DEFAULT_START_DT, pd.Timestamp("2020-01-01", tz="UTC"))
+MIN_PRE_MONTHS_TOGGLE = 0
 # Brackets the default on both sides, because coverage degrades in both directions (F28) and a grid
 # that only reached upwards would hide half of that. The bottom end (1h ~ 1.5 cycles of a 40-minute
 # toggle) over-covers; the top end starves the bootstrap of distinct blocks and biases sigma low.
@@ -100,17 +91,30 @@ _COUNT_BIN_EDGES = (0, 30, 100, 300, 1000, 3000, 10000)
 
 
 def uncertainty_study(n_replicates: int) -> StudyConfig:
-    """Return the study every run scores: the compare script's toggle grid, with more replicates."""
+    """Return the study every run scores: a toggle grid from one week to a year."""
     return StudyConfig(
         mode="toggle",
         turbine_subset=DEFAULT_TURBINE_SUBSET,
-        treatment_start_range=DEFAULT_TREATMENT_START_RANGE,
-        min_pre_months=MIN_PRE_MONTHS,
+        treatment_start_range=TREATMENT_START_RANGE,
+        min_pre_months=MIN_PRE_MONTHS_TOGGLE,
         campaign_weeks=CAMPAIGN_WEEKS,
         toggle_period=DEFAULT_TOGGLE_PERIOD,
         n_replicates=n_replicates,
         seed=SEED,
     )
+
+
+def independent_draws(campaign_weeks: int, *, n_replicates: int, n_turbines: int = len(DEFAULT_TURBINE_SUBSET)) -> int:
+    """Roughly how many *independent* cases a campaign length really has.
+
+    Replicates are only independent while their windows do not overlap. A 52-week campaign drawn from
+    a ~4-year start range has ~4 non-overlapping positions, so 64 replicates carry ~4 x n_turbines
+    draws, not 64 — quoting coverage SE on 64 there would understate it ~2x. Capped at
+    ``n_replicates``, since drawing more positions than replicates buys nothing.
+    """
+    lo, hi = TREATMENT_START_RANGE
+    positions = max((hi - lo) / pd.Timedelta(weeks=campaign_weeks), 1.0)
+    return int(min(n_replicates, round(positions * n_turbines)))
 
 
 def build_methods(block_hours_grid: list[float], out_dir: Path | None = None) -> list[ToggleSpecialistMethod]:
@@ -119,9 +123,8 @@ def build_methods(block_hours_grid: list[float], out_dir: Path | None = None) ->
     They therefore produce identical uplifts and differ only in sigma, which is what makes the
     block-length sweep a method comparison the existing harness already knows how to run.
 
-    ``out_dir`` is left ``None`` by default: at 64 replicates x 4 lengths x 5 variants the per-run
-    diagnostic folders are 1280 directories of CSVs nothing reads, and the sweep's actual output is
-    ``cases.csv``.
+    ``out_dir`` is left ``None`` by default: the sweep would otherwise write thousands of per-run
+    diagnostic folders nothing reads, and its actual output is ``cases.csv``.
     """
     return [
         ToggleSpecialistMethod(
@@ -197,26 +200,28 @@ def _block_hours_of(method_name: str) -> float:
     return float(method_name.rsplit("_bl", 1)[1])
 
 
-def calibration_tables(cases: pd.DataFrame, *, n_independent: int) -> dict[str, pd.DataFrame]:
+def calibration_tables(cases: pd.DataFrame, *, n_replicates: int) -> dict[str, pd.DataFrame]:
     """Reduce the scored cases to the calibration reads worth looking at.
 
-    Split headline from per-bin because they answer different questions and fail for different
-    reasons: the headline is the number a campaign reports, while the bins are where sparsity is
-    expected to break the bootstrap.
+    Headline and per-bin are split because they fail for different reasons. The by-length table also
+    carries its own ``n_independent`` / ``coverage_se``, since long campaigns overlap and are far
+    weaker evidence than their row count suggests (:func:`independent_draws`).
     """
     headline = cases[cases["condition"] == "overall"]
     per_bin = cases[cases["condition"] != "overall"]
-    tables = {
+    by_length = summarize_calibration(headline, group_keys=["block_hours", _LENGTH_COL])
+    # Per-length SE, because the independent-draw count collapses as campaigns lengthen and overlap:
+    # a flat SE would make the 52-week reads look far firmer than they are.
+    draws = by_length[_LENGTH_COL].map(lambda w: independent_draws(int(w), n_replicates=n_replicates))
+    by_length = by_length.assign(n_independent=draws, coverage_se=draws.map(coverage_standard_error))
+    return {
         "headline_by_block": summarize_calibration(headline, group_keys=["block_hours"]),
-        "headline_by_block_and_length": summarize_calibration(headline, group_keys=["block_hours", _LENGTH_COL]),
+        "headline_by_block_and_length": by_length,
         "headline_by_block_and_profile": summarize_calibration(headline, group_keys=["block_hours", "profile"]),
         "per_bin_by_block": summarize_calibration(per_bin, group_keys=["block_hours"]),
         "per_bin_by_block_and_bin": summarize_calibration(per_bin, group_keys=["block_hours", "condition_bin"]),
+        "per_bin_by_block_and_length": summarize_calibration(per_bin, group_keys=["block_hours", _LENGTH_COL]),
     }
-    tables["headline_by_block"] = tables["headline_by_block"].assign(
-        coverage_se_independent=coverage_standard_error(n_independent)
-    )
-    return tables
 
 
 def plot_results(cases: pd.DataFrame, tables: dict[str, pd.DataFrame], out_dir: Path) -> None:
@@ -259,12 +264,8 @@ def _plot_coverage_by_length(table: pd.DataFrame, path: Path) -> None:
 def _plot_sigma_plateau(cases: pd.DataFrame, path: Path) -> None:
     """Mean headline sigma against block length, one line per campaign length.
 
-    Textbook block-bootstrap practice reads the block length off this curve: sigma climbs while the
-    block is shorter than the residual's correlation scale, then plateaus. **On this estimator it
-    does not** (F28) — the curve is flat to slightly falling, because the 20-minute toggle's pairing
-    leaves the residual with almost no autocorrelation to capture, and because past ~24h the
-    circular blocks overlap enough to collapse the resample spread. The measured RMS error is drawn
-    alongside as the level sigma should reach, which is what makes the collapse legible.
+    There is no plateau to read here (F28): the curve is flat to falling. The measured RMS error is
+    drawn alongside as the level sigma should reach, which makes the long-block collapse legible.
     """
     headline = cases[cases["condition"] == "overall"]
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -352,18 +353,19 @@ def _save(fig: plt.Figure, path: Path) -> None:
     plt.close(fig)
 
 
-def _log_tables(tables: dict[str, pd.DataFrame], *, n_independent: int) -> None:
-    """Log every calibration table, with the coverage target and its standard error in context."""
-    se = coverage_standard_error(n_independent)
+def _log_tables(tables: dict[str, pd.DataFrame], *, n_replicates: int) -> None:
+    """Log every calibration table, with the coverage target and per-length standard errors."""
+    per_length = ", ".join(
+        f"{w}w ~{independent_draws(w, n_replicates=n_replicates)} draws "
+        f"(SE {coverage_standard_error(independent_draws(w, n_replicates=n_replicates)):.3f})"
+        for w in CAMPAIGN_WEEKS
+    )
     logger.info(
-        "Target coverage %.3f. With ~%d independent replicate draws the binomial standard error is "
-        "%.3f, so treat anything within +/-%.3f of target as indistinguishable from calibrated. Row "
-        "counts below are cells, NOT independent samples: profiles share campaign windows and "
-        "campaign lengths are prefixes of one another.",
+        "Target coverage %.3f. Row counts below are cells, NOT independent samples: profiles share "
+        "campaign windows, campaign lengths are prefix-nested, and long campaigns overlap each other. "
+        "Independent draws per campaign length: %s.",
         TARGET_COVERAGE_1SIGMA,
-        n_independent,
-        se,
-        2 * se,
+        per_length,
     )
     for name, table in tables.items():
         logger.info("%s:\n%s", name, table.round(4).to_string(index=False))
@@ -418,10 +420,10 @@ def main() -> None:
     cases.to_csv(cases_path, index=False)
     logger.info("Wrote %d scored cells to %s", len(cases), cases_path)
 
-    tables = calibration_tables(cases, n_independent=args.replicates)
+    tables = calibration_tables(cases, n_replicates=args.replicates)
     for name, table in tables.items():
         table.to_csv(output_dir / f"calibration_{name}.csv", index=False)
-    _log_tables(tables, n_independent=args.replicates)
+    _log_tables(tables, n_replicates=args.replicates)
     plot_results(cases, tables, output_dir / "plots")
     logger.info("All done. Outputs under %s", output_dir)
 

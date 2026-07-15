@@ -12,16 +12,11 @@ not effect), so the estimate still
 never conditions on the test turbine's post-treatment wind speed (design-note §3). It speaks the
 data source's own column names and has no wind_up dependency.
 
-Every uplift this method reports — the headline and each power bin — **comes with a 1-sigma
-uncertainty**, from a circular block bootstrap (see :mod:`benchmarking.baselines.block_bootstrap`).
-Uncertainty is not optional: an uplift without a statement of how much to trust it is not a usable
-input to a decision. It is computed strictly *after* the uplift, from the uplift's own frozen row
-selection and bin assignment, and only when the uplift is finite — so it cannot change any uplift
-result, and there is nothing to qualify when the estimate itself failed.
-
-The bootstrap measures **sampling variability**, which is not the whole of the error: it cannot see
-a bias that is common to every resample. Where this method is biased, the reported sigma will
-therefore under-cover, and closing that gap needs a further component rather than a longer block.
+Every uplift — the headline and each power bin — comes with a non-optional 1-sigma uncertainty from
+a circular block bootstrap (:mod:`benchmarking.baselines.block_bootstrap`). It is computed after the
+uplift, from the uplift's own frozen row selection and bin assignment, and only when the uplift is
+finite, so it cannot change any uplift result. The bootstrap sees sampling variability only, so
+sigma under-covers where the method is biased (F29).
 
 Each run writes a per-run folder ``toggle_specialist_<test>_<upgradestart>_<lastdate>/``
 (v0-style naming) under ``out_dir`` (a temp dir by default), holding a per-segment data-stats CSV,
@@ -60,23 +55,10 @@ _SEGMENTS = ("all", "baseline", "upgraded")
 _MIN_POINTS_FOR_TIMEBASE = 2
 # The cell name (and the ``(condition, condition_bin)`` key) of the headline uplift.
 _OVERALL = "overall"
-# Default circular-block length for the uncertainty bootstrap, in hours. Public so a study sweeping
-# block length can report which variant is the method's own default rather than restating the number.
-#
-# **Measured, not assumed (F28).** The intuitive choice is ~48h, the autocorrelation scale of a raw
-# turbine-to-turbine relationship. That is the wrong quantity: the bootstrap resamples the residual
-# of the *paired* on/off comparison, and under a fast toggle on and off ride the same weather, so the
-# slow structure cancels. The paired residual's measured autocorrelation is 0.18 at 1h but **0.003 at
-# 48h** — there is nothing at 48h to capture, and a block that long only starves the bootstrap of
-# distinct blocks, which biases sigma low (see :mod:`benchmarking.baselines.block_bootstrap`).
-# Measured 1-sigma coverage over 64 replicates, against a 0.683 target: 48h gives 0.622 pooled and
-# 0.557 at 1 week (-2.2 SE), and 0.422 on sparse power bins (-3.1 SE); 6h gives 0.672 / 0.672 / 0.576.
-#
-# 2h/3h/6h are statistically indistinguishable (mean |coverage - target| 0.046/0.047/0.049), so 6h is
-# chosen for robustness rather than score: it spans 9 cycles of a 40-minute toggle (coverage degrades
-# below ~2 cycles — 1h over-covers at 0.775), still leaves 28 blocks in a 1-week campaign, and stays
-# sane for a slower toggle where 2h would be a single cycle. A campaign whose toggle period is a
-# large fraction of 6h should raise this: the block must hold several complete on/off cycles.
+# Default circular-block length for the uncertainty bootstrap, in hours. Chosen by measured coverage,
+# not by the autocorrelation of the raw turbine relationship — the paired on/off residual decorrelates
+# in ~1-3h, so a longer block captures nothing and biases sigma low (F28). The block must hold several
+# complete on/off cycles, so raise it for a campaign with a slow toggle period.
 DEFAULT_BLOCK_HOURS = 6.0
 # ``power`` is the only axis this method can offer: it is derived from the references, so the
 # treatment cannot move a row between bins. Binning by the test turbine's ws/TI would condition on
@@ -294,11 +276,8 @@ class ToggleSpecialistMethod:
     ) -> dict[str, npt.NDArray[np.bool_]]:
         """Which **used** records belong to each bootstrap cell: the headline, plus each power bin.
 
-        Bin membership reuses the point estimate's own label — ``rho_base * ref_total``, the
-        reference-derived predicted baseline power of :meth:`_conditional_frame` — and its bin
-        edges, so a record's cell is fixed by the uplift computation and cannot move under
-        resampling. That is what keeps the uncertainty a statement about the uplift as reported,
-        rather than about some neighbouring partition.
+        Reuses :meth:`_conditional_frame`'s own label and edges, so a record's cell is fixed by the
+        uplift computation and cannot move under resampling.
         """
         used_idx = np.flatnonzero(used)
         membership: dict[str, npt.NDArray[np.bool_]] = {_OVERALL: np.ones(len(used_idx), dtype=bool)}
@@ -564,14 +543,10 @@ def _uncertainty_diagnostics(
 ) -> pd.DataFrame:
     """Per-cell account of how the uncertainty was reached, keyed by ``(condition, condition_bin)``.
 
-    Carried through the harness seam uninterpreted, so that an uncertainty model — a term in the
-    data count, say — can be developed against a saved sweep instead of by re-running one. Emitted
-    even when the bootstrap did not run, because the record counts are exactly what explains *why*
-    it could not.
-
-    The two counts are the cell's own data on each side of its ratio: ``n_upgraded_records`` feeds
-    ``rho_up``, ``n_baseline_records`` feeds ``rho_base``. Both are reported because a cell fails
-    when *either* side runs out, and a single total would hide which.
+    Carried through the harness seam uninterpreted, so an uncertainty model can be developed against
+    a saved sweep rather than by re-running one. Emitted even when the bootstrap did not run: the
+    counts are what explain why. Both counts are reported because a cell fails when either side of
+    its ratio runs out, and a single total would hide which.
     """
     used_idx = np.flatnonzero(used)
     up_used = upgraded[used_idx]

@@ -1,33 +1,16 @@
 """Score an uncertainty: whether a reported sigma matches the error it claims to describe.
 
-The P50 metrics in :mod:`benchmarking.harness.metrics` ask how close an estimate lands to truth.
-These ask a different question: **was the method right about how close it would land?** The
-statistic is the standardised error
+The metrics in :mod:`benchmarking.harness.metrics` ask how close an estimate lands to truth; these
+ask whether the method was right about how close it would land. The statistic is the standardised
+error ``z = signed_error / sigma``, which a calibrated 1-sigma makes a standard normal: ~68.3%
+within 1 sigma, ``std(z) == 1``.
 
-    z = (estimate - truth) / sigma = signed_error / sigma
+Sigma is scored against the deviation from **ground truth**, which includes the method's bias. A
+sigma covering only sampling variance will under-cover wherever the method is biased — that is a
+finding about the uncertainty, not an unfairness in the metric.
 
-and a well-calibrated 1-sigma uncertainty makes ``z`` a standard normal: ~68.3% of estimates
-within 1 sigma of truth, ``std(z) == 1``.
-
-Note what this scores sigma *against*: the deviation from **ground truth**, which contains the
-method's bias as well as its sampling scatter. A sigma covering sampling variance alone (a
-bootstrap sees nothing else) will therefore under-cover wherever the method is biased, and that is
-a real finding about the uncertainty rather than an unfairness in the metric — a reported
-uncertainty is a claim about how much to trust the number, and a biased number is not more
-trustworthy for being reliably biased.
-
-Three reads, deliberately, because they fail differently:
-
-- :attr:`~CalibrationSummary.coverage_1sigma` is the headline and the most interpretable, but it
-  only asks a yes/no question per case and so wastes the magnitude of each miss.
-- :attr:`~CalibrationSummary.z_spread` uses the magnitudes and is much more sensitive, but one wild
-  case (a sparse bin whose ratio bootstrap went heavy-tailed) can dominate it.
-- :attr:`~CalibrationSummary.z_robust` is the outlier-resistant companion. **z_spread >> z_robust
-  says the miscalibration lives in the tails**, not in the typical case, which points at a
-  different fix than a uniformly-too-small sigma.
-
-All three are reported together because agreeing on a verdict is informative and disagreeing is
-more so.
+Coverage, ``z_spread`` and ``z_robust`` are reported together because they fail differently, and
+disagreement localises the problem (``z_spread >> z_robust`` means the tails, not the typical case).
 """
 
 from __future__ import annotations
@@ -56,13 +39,12 @@ class CalibrationSummary:
     :param coverage_1sigma: fraction of cases with ``|z| <= 1``; target :data:`TARGET_COVERAGE_1SIGMA`
     :param z_spread: population std of ``z``; target 1.0. Above 1 means sigma was too small.
     :param z_robust: ``1.4826 * MAD(z)``; target 1.0. The outlier-resistant counterpart of ``z_spread``.
-    :param mean_sigma: mean reported sigma — the interval width, so a method cannot win coverage by
-        inflating sigma without that showing up here
+    :param mean_sigma: mean reported sigma — the interval width, so inflating sigma to win coverage
+        shows up here
     :param rms_error: RMS of the signed errors; the scale ``mean_sigma`` should be near
     :param n: usable cases (finite error, finite and strictly positive sigma)
-    :param n_unusable: cases dropped for a non-finite or non-positive sigma despite a finite error.
-        Counted rather than silently discarded: a collapsed sigma is an uncertainty failure, and
-        dropping those cases quietly would flatter exactly the bins most likely to produce them.
+    :param n_unusable: cases with a finite error but an unusable sigma. Counted, not silently
+        dropped: a collapsed sigma is an uncertainty failure.
     """
 
     coverage_1sigma: float
@@ -77,10 +59,9 @@ class CalibrationSummary:
 def calibration_summary(signed_errors: npt.ArrayLike, sigmas: npt.ArrayLike) -> CalibrationSummary:
     """Summarise how well ``sigmas`` describe ``signed_errors``.
 
-    Cases with a non-finite error (no estimate, or no truth) are ignored entirely — there is
-    nothing to calibrate against. Cases with a finite error but an unusable sigma (NaN, inf, zero
-    or negative) are excluded from the statistics but counted in ``n_unusable``. An empty or fully
-    unusable input yields a NaN summary with ``n == 0``.
+    A non-finite error is ignored (nothing to calibrate against). A finite error with an unusable
+    sigma is excluded but counted in ``n_unusable``. Empty or fully unusable input gives a NaN
+    summary with ``n == 0``.
     """
     errors = np.asarray(signed_errors, dtype=float).ravel()
     sigma = np.asarray(sigmas, dtype=float).ravel()
@@ -152,10 +133,9 @@ def summarize_calibration(
 def coverage_standard_error(n: int, *, coverage: float = TARGET_COVERAGE_1SIGMA) -> float:
     """Binomial standard error of a coverage estimate from ``n`` **independent** cases.
 
-    The caller's job is ``n``: a sweep's row count is not its independent-case count. Replicates
-    sharing a campaign window across profiles, or campaign lengths that are leading prefixes of one
-    another, produce strongly correlated errors — pooling them multiplies rows without adding
-    independent evidence, and passing that row count here would understate the error by a lot.
+    Supplying ``n`` is the caller's job, and a sweep's row count is not it: profiles sharing campaign
+    windows, prefix-nested campaign lengths, and overlapping long campaigns all multiply rows without
+    adding independent evidence. Passing a row count here understates the error badly.
     """
     if n <= 0:
         return float("nan")

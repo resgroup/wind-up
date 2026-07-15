@@ -128,11 +128,10 @@ def iter_replicates(
 ) -> Iterator[Replicate]:
     """Yield ``study.n_replicates`` replicates of ``profile`` one at a time.
 
-    The streaming counterpart of :func:`build_replicates`, yielding exactly the same replicates in
-    the same order. A replicate carries a full ``synthetic_df`` *and* the ``original_df`` its ground
-    truth needs — around half a gigabyte for a multi-year, few-turbine dataset — so a caller that
-    only needs one at a time (a large ensemble, where holding every replicate would exhaust memory)
-    should iterate here and let each be freed after use.
+    The streaming counterpart of :func:`build_replicates`, yielding the same replicates in the same
+    order. A replicate carries a ``synthetic_df`` *and* the ``original_df`` its ground truth needs
+    (~0.5 GB for a multi-year, few-turbine dataset), so a large ensemble must iterate here and let
+    each be freed rather than materialising them all.
 
     :param columns: the source-native column schema ``base_scada`` is keyed by
     """

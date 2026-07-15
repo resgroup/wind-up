@@ -12,29 +12,29 @@ The cases are deliberately small-signal and short:
 - **Campaign grid:** 1/2/4/8 **weeks**. A real toggle campaign runs for weeks, and the short end is
   where these methods are hardest pressed.
 
-Each run diffs the fresh bias/spread/score per ``(method, profile, campaign_weeks)`` against the
-committed benchmark (``study_toggle_methods_compare_baseline.json``, next to this script) and logs
-the deltas plus a per-cell ``benchmark_comparison.csv``.
+Each run diffs the fresh bias/spread/score per ``(method, profile, campaign_weeks, condition, bin)``
+against the committed benchmark and logs the deltas plus a per-cell ``benchmark_comparison.csv``.
 
-**Deltas are reported raw, and "unchanged" is judged per method** (see :data:`_UNCHANGED_ATOL`), because
-the two methods' reproducibility differs by four orders of magnitude — a fact measured on two runs of
-identical code, not assumed:
+**Deltas are raw, and "unchanged" is judged per method** (:data:`_REPRODUCIBILITY`), because the two
+methods' reproducibility differs by four orders of magnitude — measured, not assumed.
+``toggle_specialist`` is pure arithmetic and reproduces exactly; ``power_model`` does not, despite
+its ``seed``, because LightGBM's threaded float reduction order varies (~0.05 pp same-machine). The
+max observed delta is logged every run, so a cell just inside its band stays visible.
 
-- ``toggle_specialist`` reproduces **exactly** (max |delta| 0.0 across every cell), so it is held to an
-  effectively bit-exact band. That makes it a genuinely strict regression detector.
-- ``power_model`` does **not**, despite its ``seed``: LightGBM's threaded float reduction order varies,
-  and the seed governs sampling rather than that. Measured: **0.05 pp at campaign_weeks=1, exactly 0.0
-  at 2 and 8 weeks** — the noise is sparsity-driven, since with a week of data the model sits near a
-  split boundary and a tiny float difference flips a tree.
-
-The max observed delta is logged every run, so a cell sitting just inside its band stays visible.
+**The benchmark is split across files because that reproducibility is also machine-dependent** (F30).
+LightGBM's reduction order depends on the machine, so ``power_model`` scores ~0.7 pp against a
+benchmark recorded elsewhere — 14x its same-machine noise, and a permanent false MOVED. Its cells
+therefore live in a per-platform file (``..._baseline_<sys.platform>.json``), while
+``toggle_specialist``, which is portable (~5e-07 pp across machines), lives in the shared
+``..._baseline_portable.json``. A run diffs the two merged.
 
 Run from the repo root::
 
     uv run python -m benchmarking.baselines.study_toggle_methods_compare
 
-Restrict to one profile for fast feedback with ``--profiles cp_0pct``. Record the benchmark with
-``--update-baseline`` (deliberately — only when a change is accepted), then commit the JSON.
+Restrict to one profile for fast feedback with ``--profiles cp_0pct``. Record with
+``--update-baseline`` (deliberately — only when a change is accepted), then commit the JSON(s); it
+writes this machine's platform file and, only when they actually change, the portable one.
 """
 
 from __future__ import annotations
@@ -42,7 +42,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import platform as platform_module
 import subprocess
+import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -92,11 +96,10 @@ SEED = 0
 
 _LENGTH_COL = "campaign_weeks"
 _DEFAULT_OUTPUT_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "toggle_methods_compare"
-_BASELINE_PATH = Path(__file__).resolve().parent / "study_toggle_methods_compare_baseline.json"
-# v2 adds the per-power-bin cells alongside the headline, so every cell gained condition /
-# condition_bin. A v1 file cannot be diffed against a v2 run (its cells carry no condition), so the
-# bump makes an old baseline read as stale rather than silently mis-merge.
-_BASELINE_SCHEMA = "toggle_methods_compare_baseline_v2"
+_BASELINE_DIR = Path(__file__).resolve().parent
+_BASELINE_STEM = "study_toggle_methods_compare_baseline"
+# v3 splits the single file into a portable baseline plus one per platform (F30).
+_BASELINE_SCHEMA = "toggle_methods_compare_baseline_v3"
 # Per-cell metrics recorded and **diffed**. spread/score: lower is better; bias: |bias| nearer 0 is better.
 _METRIC_COLS = ["bias", "spread", "score"]
 # Recorded per cell but never diffed: wall time is machine- and load-dependent, so diffing it would
@@ -106,24 +109,55 @@ _WALL_TIME_COLS = ["wall_time_s_sum", "wall_time_s_mean"]
 _CELL_COLS = [*_METRIC_COLS, "mean_estimate", "mean_truth", "n_replicates"]
 _MERGE_KEYS = ["method", "profile", _LENGTH_COL, "condition", "condition_bin"]
 _PP = 100.0  # fraction -> percentage points
-# How close a re-run must land to the benchmark to read "unchanged" (fraction). **Per method, because
-# the two methods' reproducibility differs by four orders of magnitude — measured, not assumed:**
-#
-# - `toggle_specialist` is pure arithmetic. Two runs of identical code reproduce **exactly** (max
-#   |delta| = 0.0 across every cell). Its band only has to clear `record_baseline`'s `round(8)`
-#   residual (~1e-9), so 1e-7 holds it to what is effectively a bit-exact standard.
-# - `power_model` is **not** reproducible run to run despite `seed`: LightGBM's threaded float
-#   reduction order varies, and the seed governs sampling rather than that. Measured on two runs of
-#   identical code: **5e-4 (0.05 pp) at campaign_weeks=1, and exactly 0.0 at 2 and 8 weeks.** The
-#   noise is sparsity-driven — with a week of data the model sits near a split boundary, so a tiny
-#   float difference flips a tree and moves the estimate. 1e-3 sits at 2x that measured floor, and
-#   matches study_power_model_compare's 0.1 pp band (which this now explains rather than copies).
-#
-# Holding toggle_specialist to power_model's band would discard a much stronger regression detector,
-# which is the whole reason these are separate. The max observed delta is always logged, so a cell
-# sitting just inside its band stays visible instead of hiding behind the verdict.
-_UNCHANGED_ATOL: dict[str, float] = {"toggle_specialist": 1e-7, "power_model": 1e-3}
-_DEFAULT_UNCHANGED_ATOL = 1e-3  # a method not named above gets the conservative band
+
+
+@dataclass(frozen=True)
+class MethodReproducibility:
+    """How reproducible a method is, and under what conditions (F30).
+
+    :param band: how close a re-run must land to the benchmark to read "unchanged" (fraction)
+    :param portable: whether its numbers survive a change of machine, and so whether its cells live
+        in the shared baseline or in a per-platform one
+    """
+
+    band: float
+    portable: bool
+
+
+# Measured, not assumed. `toggle_specialist` is pure arithmetic: two runs reproduce exactly, and it
+# matches a baseline recorded on another machine to ~5e-07 pp, so 1e-7 holds it to an effectively
+# bit-exact standard. `power_model` is not reproducible even run to run (LightGBM's threaded float
+# reduction order; the seed governs sampling, not that): ~0.05 pp same-machine, but ~0.7 pp against a
+# baseline from another machine — hence portable=False.
+_REPRODUCIBILITY: dict[str, MethodReproducibility] = {
+    "toggle_specialist": MethodReproducibility(band=1e-7, portable=True),
+    "power_model": MethodReproducibility(band=1e-3, portable=False),
+}
+# An unclassified method is assumed machine-specific: the safe side, since wrongly calling one
+# portable produces a permanent, confusing failure on the other machine.
+_DEFAULT_REPRODUCIBILITY = MethodReproducibility(band=1e-3, portable=False)
+
+
+def _reproducibility(method: str) -> MethodReproducibility:
+    """Return ``method``'s reproducibility facts, defaulting to the conservative assumption."""
+    return _REPRODUCIBILITY.get(method, _DEFAULT_REPRODUCIBILITY)
+
+
+def _portable_methods() -> set[str]:
+    """Return the methods whose cells belong in the shared, cross-machine baseline."""
+    return {name for name, repro in _REPRODUCIBILITY.items() if repro.portable}
+
+
+def baseline_paths(baseline_dir: Path | None = None, platform: str | None = None) -> tuple[Path, Path]:
+    """Return ``(portable_path, platform_path)`` for this machine.
+
+    ``sys.platform`` is a proxy for *the machine*, which is only sound while there is one machine per
+    platform; a second box on the same platform would silently share a file. The recorded fingerprint
+    (see :func:`_provenance`) is what would expose that.
+    """
+    directory = _BASELINE_DIR if baseline_dir is None else baseline_dir
+    key = sys.platform if platform is None else platform
+    return directory / f"{_BASELINE_STEM}_portable.json", directory / f"{_BASELINE_STEM}_{key}.json"
 
 
 def toggle_study() -> StudyConfig:
@@ -259,31 +293,121 @@ def methods_leaderboard(results: pd.DataFrame) -> pd.DataFrame:
     return stacked.sort_values(_MERGE_KEYS).reset_index(drop=True)
 
 
-def record_baseline(lb: pd.DataFrame, *, study: StudyConfig, path: Path, git_commit: str) -> None:
-    """Write the benchmark: every scored cell plus the provenance needed to interpret it.
+def _provenance(study: StudyConfig, lb: pd.DataFrame, *, git_commit: str) -> dict[str, Any]:
+    """Return the context needed to interpret a recorded baseline, including which machine made it.
 
-    ``git_commit`` is passed in rather than read here: it must be captured **before** the run, since a
-    sweep takes ~15 minutes and a commit landing mid-run would otherwise stamp the baseline with a
-    commit whose code never produced it.
+    The machine fingerprint exists because a ``power_model`` MOVED against a baseline from another
+    machine is expected rather than a regression, and without this the file cannot say so (F30).
     """
-    doc = {
+    return {
         "schema": _BASELINE_SCHEMA,
         "recorded_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "git_commit": git_commit,
+        "platform": sys.platform,
+        "cpu_count": os.cpu_count(),
+        "python_version": platform_module.python_version(),
+        "lightgbm_version": _lightgbm_version(),
         "n_replicates": study.n_replicates,
         "seed": study.seed,
         "campaign_weeks": list(study.campaign_lengths),
         "profiles": sorted(lb["profile"].unique()),
-        "methods": sorted(lb["method"].unique()),
-        "cells": lb.round(8).to_dict(orient="records"),
     }
+
+
+def _lightgbm_version() -> str | None:
+    """LightGBM's version, or ``None`` when it is not installed (it is an optional dependency)."""
+    try:
+        import lightgbm  # noqa: PLC0415
+    except ImportError:
+        return None
+    return str(lightgbm.__version__)
+
+
+def _write_baseline(path: Path, *, cells: pd.DataFrame, provenance: dict[str, Any], methods: list[str]) -> None:
+    """Write one baseline file: its cells plus provenance."""
+    doc = {**provenance, "methods": sorted(methods), "cells": cells.round(8).to_dict(orient="records")}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=2) + "\n")
-    logger.info("Recorded toggle-methods benchmark at %s (commit %s). Commit the JSON.", path, git_commit)
+
+
+def record_baselines(
+    lb: pd.DataFrame, *, study: StudyConfig, git_commit: str, baseline_dir: Path | None = None
+) -> None:
+    """Record this machine's baselines: the portable cells (shared) and the rest (per platform).
+
+    ``git_commit`` is captured *before* the run, so a commit landing mid-sweep cannot stamp the
+    baseline with code that never produced it.
+
+    The portable file is only rewritten when it has to be. Its cells are the same on every machine by
+    definition, so an unchanged recording leaves the file — and its provenance — untouched, which
+    keeps the two laptops from fighting over it. Its ``git_commit`` therefore records when those
+    numbers were last *established*, not who last ran a recording.
+    """
+    portable_path, platform_path = baseline_paths(baseline_dir)
+    provenance = _provenance(study, lb, git_commit=git_commit)
+    portable_names = _portable_methods()
+    portable = lb[lb["method"].isin(portable_names)]
+    machine_specific = lb[~lb["method"].isin(portable_names)]
+
+    _check_portable_or_raise(portable, path=portable_path, git_commit=git_commit)
+    if portable.empty:
+        pass
+    elif _portable_cells_unchanged(portable, path=portable_path):
+        logger.info("Portable baseline unchanged at %s — portability confirmed, not rewritten.", portable_path)
+    else:
+        _write_baseline(
+            portable_path, cells=portable, provenance=provenance, methods=sorted(portable["method"].unique())
+        )
+        logger.info("Recorded portable benchmark at %s (commit %s).", portable_path, git_commit)
+
+    _write_baseline(
+        platform_path,
+        cells=machine_specific,
+        provenance=provenance,
+        methods=sorted(machine_specific["method"].unique()),
+    )
+    logger.info("Recorded %s benchmark at %s (commit %s). Commit the JSON(s).", sys.platform, platform_path, git_commit)
+
+
+def _portable_cells_unchanged(portable: pd.DataFrame, *, path: Path) -> bool:
+    """Whether the fresh portable cells already match the committed portable baseline exactly."""
+    loaded = _load_baseline(path)
+    if loaded is None:
+        return False
+    base, _ = loaded
+    fresh = portable.round(8).reset_index(drop=True).sort_values(_MERGE_KEYS).reset_index(drop=True)
+    old = base.reset_index(drop=True).sort_values(_MERGE_KEYS).reset_index(drop=True)
+    if list(fresh.columns) != list(old.columns) or len(fresh) != len(old):
+        return False
+    return fresh.equals(old)
+
+
+def _check_portable_or_raise(portable: pd.DataFrame, *, path: Path, git_commit: str) -> None:
+    """Refuse to record when a portable method's cells moved **at the same commit**.
+
+    From one machine "the numbers moved" is ambiguous: it means either the method changed (which is
+    what --update-baseline is for) or portability broke. The commit disambiguates — same code
+    producing different numbers on a different machine is a portability break, and since
+    ``--update-baseline`` refuses a dirty tree the commit is trustworthy enough to lean on.
+    """
+    loaded = _load_baseline(path)
+    if loaded is None or portable.empty:
+        return
+    _, prov = loaded
+    if prov.get("git_commit") != git_commit or _portable_cells_unchanged(portable, path=path):
+        return
+    msg = (
+        f"portable baseline {path.name} was recorded at this same commit ({git_commit}) on "
+        f"{prov.get('platform')}, but this machine ({sys.platform}) produces different cells for "
+        f"{sorted(portable['method'].unique())}. Same code, different numbers, different machine: either a "
+        f"method marked portable=True is not (check _REPRODUCIBILITY), or that file's commit is wrong. "
+        f"Refusing to overwrite — this is the check the portable/per-platform split exists to make."
+    )
+    raise ValueError(msg)
 
 
 def _load_baseline(path: Path) -> tuple[pd.DataFrame, dict[str, Any]] | None:
-    """Load the recorded benchmark cells (+ provenance), or ``None`` if absent/stale."""
+    """Load one baseline's cells (+ provenance), or ``None`` if absent/stale."""
     if not path.exists():
         return None
     doc = json.loads(path.read_text())
@@ -298,16 +422,61 @@ def _load_baseline(path: Path) -> tuple[pd.DataFrame, dict[str, Any]] | None:
     return pd.DataFrame(doc["cells"]), doc
 
 
-def compare_to_benchmark(lb: pd.DataFrame, *, baseline_path: Path, comparison_dir: Path) -> pd.DataFrame:
-    """Diff the fresh cells against the committed benchmark; write the per-cell CSV and log the deltas.
+def _warn_on_fingerprint_mismatch(prov: dict[str, Any], *, path: Path) -> None:
+    """Warn when a baseline was recorded somewhere unlike this machine. Never fatal.
 
-    Returns the merged frame (empty if no benchmark is recorded yet). Deltas are raw; the
-    unchanged/moved verdict applies :data:`_UNCHANGED_ATOL`, whose size is set by ``power_model``'s
-    run-to-run nondeterminism rather than chosen.
+    Recorded fields that are absent (an older file, or a value that could not be recovered when the
+    v2 file was migrated) make no claim and are skipped.
     """
-    loaded = _load_baseline(baseline_path)
+    current = {"platform": sys.platform, "cpu_count": os.cpu_count(), "lightgbm_version": _lightgbm_version()}
+    differing = {k: (prov.get(k), v) for k, v in current.items() if prov.get(k) is not None and prov.get(k) != v}
+    if differing:
+        detail = ", ".join(f"{k}: recorded {was!r}, now {now!r}" for k, (was, now) in differing.items())
+        logger.warning(
+            "%s was recorded on a machine unlike this one (%s). A power_model MOVED may be that rather "
+            "than your change — see F30.",
+            path.name,
+            detail,
+        )
+
+
+def load_merged_baseline(baseline_dir: Path | None = None) -> tuple[pd.DataFrame, dict[str, Any]] | None:
+    """Load the portable + this-platform baselines merged, or ``None`` when neither is recorded.
+
+    Either half missing is a warning, not an error: a fresh machine with no platform file still gets
+    its portable regression check for free.
+    """
+    portable_path, platform_path = baseline_paths(baseline_dir)
+    frames, provenance = [], {}
+    for path in (portable_path, platform_path):
+        loaded = _load_baseline(path)
+        if loaded is None:
+            logger.warning(
+                "No usable benchmark at %s — %s. Run --update-baseline on this machine to record it.",
+                path.name,
+                "portable cells will not be diffed"
+                if path == portable_path
+                else f"{sys.platform} cells will not be diffed",
+            )
+            continue
+        cells, prov = loaded
+        _warn_on_fingerprint_mismatch(prov, path=path)
+        frames.append(cells)
+        provenance[path.name] = prov
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True), provenance
+
+
+def compare_to_benchmark(lb: pd.DataFrame, *, comparison_dir: Path, baseline_dir: Path | None = None) -> pd.DataFrame:
+    """Diff the fresh cells against the committed benchmarks; write the per-cell CSV and log the deltas.
+
+    Returns the merged frame (empty if nothing is recorded yet). Deltas are raw; the unchanged/moved
+    verdict applies each method's band from :data:`_REPRODUCIBILITY`.
+    """
+    loaded = load_merged_baseline(baseline_dir)
     if loaded is None:
-        logger.warning("No benchmark recorded at %s yet — run with --update-baseline to set it.", baseline_path)
+        logger.warning("No benchmark recorded for this machine yet — run with --update-baseline to set it.")
         return pd.DataFrame()
     base, prov = loaded
     base = base[base["profile"].isin(lb["profile"].unique())]  # scope to the profiles actually run
@@ -332,11 +501,11 @@ def compare_to_benchmark(lb: pd.DataFrame, *, baseline_path: Path, comparison_di
         }
     ).round(6)
     logger.info(
-        "Toggle methods vs benchmark (recorded %s, commit %s) [pp]; unchanged = within each method's "
-        "band (%s), reported per method below:\n%s",
-        prov.get("recorded_utc", "?"),
-        prov.get("git_commit", "?"),
-        ", ".join(f"{m} {b * _PP:g} pp" for m, b in _UNCHANGED_ATOL.items()),
+        "Toggle methods vs benchmark (%s) [pp]; unchanged = within each method's band (%s):\n%s",
+        "; ".join(
+            f"{name} recorded {p.get('recorded_utc', '?')} at {p.get('git_commit', '?')}" for name, p in prov.items()
+        ),
+        ", ".join(f"{m} {r.band * _PP:g} pp" for m, r in _REPRODUCIBILITY.items()),
         show.to_string(index=False),
     )
     _log_unchanged_verdict(merged)
@@ -347,16 +516,17 @@ def _log_unchanged_verdict(merged: pd.DataFrame, *, atol: dict[str, float] | Non
     """Log, per method, whether every diffed cell matches the benchmark within that method's band.
 
     The max observed delta is always reported, so "unchanged" never hides a cell sitting just inside
-    the band — the margin against :data:`_UNCHANGED_ATOL` is the reader's evidence, not the verdict.
+    its band.
     """
-    bands = _UNCHANGED_ATOL if atol is None else atol
     delta_cols = [f"d_{col}" for col in _METRIC_COLS]
     for method, group in merged.groupby("method"):
         comparable = group.dropna(subset=delta_cols)
         if comparable.empty:
             logger.info("%s: no cells line up with the benchmark (new method or new cells).", method)
             continue
-        band = bands.get(str(method), _DEFAULT_UNCHANGED_ATOL)
+        band = (
+            _reproducibility(str(method)).band if atol is None else atol.get(str(method), _DEFAULT_REPRODUCIBILITY.band)
+        )
         worst = float(comparable[delta_cols].abs().to_numpy().max())
         moved = comparable[(comparable[delta_cols].abs() > band).any(axis=1)]
         if moved.empty:
@@ -414,21 +584,21 @@ def main() -> None:
         "Cannot be combined with --update-baseline.",
     )
     parser.add_argument(
-        "--baseline-path",
+        "--baseline-dir",
         type=Path,
-        default=_BASELINE_PATH,
-        help="the committed benchmark JSON to diff against (and to --update-baseline)",
+        default=None,
+        help="directory holding the committed benchmark JSONs (default: next to this script)",
     )
     parser.add_argument(
         "--update-baseline",
         action="store_true",
-        help="overwrite the recorded benchmark with this run (do this deliberately, only when a change "
-        "is accepted); without it, the run is diffed against the benchmark",
+        help="overwrite this machine's recorded benchmark with this run (do this deliberately, only when "
+        "a change is accepted); without it, the run is diffed against the benchmark",
     )
     args = parser.parse_args()
     if args.profiles is not None and args.update_baseline:
-        # record_baseline rewrites the cells wholesale, so a subset run would drop the other profiles
-        # from the committed benchmark. Refuse rather than silently corrupt it.
+        # A recording rewrites the cells wholesale, so a subset run would drop the other profiles from
+        # the committed benchmark. Refuse rather than silently corrupt it.
         parser.error("--update-baseline needs the full profile set; do not combine it with --profiles")
 
     # Captured *before* the sweep: the run takes ~15 min, so reading HEAD afterwards would stamp the
@@ -446,7 +616,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", force=True)
     output_dir = args.output_dir.expanduser()
-    baseline_path = args.baseline_path.expanduser()
+    baseline_dir = args.baseline_dir.expanduser() if args.baseline_dir is not None else None
 
     results = run_study(output_dir, profiles=args.profiles)
     lb = methods_leaderboard(results)
@@ -463,9 +633,9 @@ def main() -> None:
     comparison_dir = output_dir / "comparison"
     plot_results(lb, comparison_dir)
     if args.update_baseline:
-        record_baseline(lb, study=toggle_study(), path=baseline_path, git_commit=git_commit)
+        record_baselines(lb, study=toggle_study(), git_commit=git_commit, baseline_dir=baseline_dir)
     else:
-        compare_to_benchmark(lb, baseline_path=baseline_path, comparison_dir=comparison_dir)
+        compare_to_benchmark(lb, comparison_dir=comparison_dir, baseline_dir=baseline_dir)
     logger.info("All done. Outputs under %s", output_dir)
 
 

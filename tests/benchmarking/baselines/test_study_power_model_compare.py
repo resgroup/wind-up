@@ -619,12 +619,30 @@ def test_record_baseline_seeds_siblings_from_seed_path(tmp_path: Path) -> None:
 def test_accept_candidate_promotes_candidate_to_baseline(tmp_path: Path) -> None:
     candidate = tmp_path / "candidate.json"
     baseline = tmp_path / "baseline.json"
-    record_baseline({"prepost": _minimal_leaderboard()}, {"prepost": _minimal_study()}, candidate)
+    record_baseline({"prepost": _minimal_leaderboard()}, {"prepost": _minimal_study()}, candidate, git_commit="abc1234")
 
     accept_candidate(candidate, baseline)
 
     assert baseline.read_text() == candidate.read_text()
     assert _load_baseline_cells("prepost", baseline) is not None
+
+
+def test_accept_candidate_refuses_a_candidate_recorded_from_a_dirty_tree(tmp_path: Path) -> None:
+    """Promoting is the documented no-re-run path, so it is the likeliest way a -dirty baseline lands."""
+    candidate = tmp_path / "candidate.json"
+    record_baseline(
+        {"prepost": _minimal_leaderboard()}, {"prepost": _minimal_study()}, candidate, git_commit="abc1234-dirty"
+    )
+
+    with pytest.raises(ValueError, match="recorded from a dirty tree"):
+        accept_candidate(candidate, tmp_path / "baseline.json")
+
+
+def test_record_baseline_stamps_the_commit_it_was_given(tmp_path: Path) -> None:
+    """The sweep takes hours, so reading HEAD at write time could stamp code that never ran."""
+    path = tmp_path / "baseline.json"
+    record_baseline({"prepost": _minimal_leaderboard()}, {"prepost": _minimal_study()}, path, git_commit="deadbee")
+    assert json.loads(path.read_text())["modes"]["prepost"]["git_commit"] == "deadbee"
 
 
 def test_accept_candidate_missing_candidate_raises(tmp_path: Path) -> None:
