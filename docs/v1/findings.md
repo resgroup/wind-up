@@ -7,6 +7,130 @@ from, not just conclusions.
 
 ---
 
+## F29 — The anticipated failures of a bootstrap-only uncertainty did not appear: at a well-chosen block length `toggle_specialist`'s sigma is statistically indistinguishable from calibrated everywhere, and the sparse-bin failure was mostly F28's block-length artefact
+
+*2026-07-15 (toggle-specialist uncertainty, round 1). Reproduce:
+`uv run python -m benchmarking.baselines.study_toggle_specialist_uncertainty` — 64 replicates x 3
+profiles x 1/2/4/8 weeks x 5 block lengths; the per-cell table is its `cases.csv` and the reads are
+its `calibration_*.csv`. Coverage target 0.683; **binomial SE on 64 independent draws = 0.058**.*
+
+The prior going in was that a block bootstrap would work for long campaigns and well-populated bins
+and fail for short campaigns and sparse bins, so a **data-count term** would be needed. Measured, at
+6h blocks, headline coverage by campaign length is **1w 0.672, 2w 0.724, 4w 0.693, 8w 0.599** — every
+one within 1.5 SE of target (`-0.19`, `+0.70`, `+0.17`, `-1.44` SE). Per-bin coverage by record
+count is **0.576 / 0.667 / 0.648 / 0.662 / 0.672** for `<=30 / 30-100 / 100-300 / 300-1k / >1k`
+upgraded records — no significant count trend.
+
+**The count effect was mostly F28 in disguise.** Sparse-bin (`<=30` records) coverage runs
+**0.422 at 48h blocks → 0.606 at 1h**. A sparse bin at a long block length is short of records *and*
+of blocks; shorten the block and the bootstrap recovers. The count term is not (yet) justified: the
+block length was.
+
+**The anticipated short-campaign bias was an artefact of 4 replicates.** The committed compare
+baseline (n=4) shows a 1-week bias of ~-0.7 pp, which motivated a bias component. At n=64 the 1-week
+bias is **-0.15 pp** against a 1.29 pp spread (bias is 12% of RMS). Removing the bias entirely
+*lowers* 1-week coverage (0.557 → 0.510 at 48h), so it is not what limits coverage. The n=4 figure
+was noise, and this is the concrete payoff of the replicate count.
+
+**Two real, smaller effects remain open.**
+
+1. **The error distribution is platykurtic, not normal** — kurtosis `-0.59 / -0.59 / -0.35 / -0.76`
+   at 1/2/4/8 weeks, Shapiro p < 0.05 at every length. It is flatter than a Gaussian, so coverage
+   sits *below* what the scale alone predicts: at 8 weeks `std(z) = 1.03` implies 0.668 under
+   normality but 0.599 is observed. A 1-sigma coverage target assumes a shape the errors do not have.
+2. **8 weeks is the weak end, not 1 week** — coverage 0.56-0.60 at every block length, with
+   `rms/mean_sigma` = 1.08-1.16. This is the *opposite* of the prior. It is only -1.44 SE, so it is
+   suggestive rather than established. A campaign-level systematic (something constant within a
+   campaign, which a within-campaign bootstrap is structurally blind to) would explain both this and
+   the platykurtosis; the seasonal read is consistent (campaigns starting Jul/Aug are biased
+   -0.31/-0.35 pp, Dec/Feb +0.09/+0.10 pp) but not established. Adding a floor `f` in quadrature
+   lands pooled coverage at 0.685 for `f = 0.10 pp`, but the per-length implied floors are
+   inconsistent (0.52 / 0.00 / 0.00 / 0.16 pp at 1/2/4/8 weeks), so **no floor is proposed on this
+   evidence** — it would be fitting a term to 1.4 SE of noise.
+
+**Design implications.** Do not add the count term. Fix the block length (F28) first and re-measure.
+The residual candidates, in the order the evidence supports them, are: (1) a campaign-level
+systematic floor, if a larger ensemble confirms the 8-week gap; (2) a shape correction, since the
+platykurtosis is the most reproducible non-normality here.
+
+**Method note.** The three profiles are near-redundant for calibration: their signed errors correlate
+**0.977-0.995** (they reuse the same `(turbine, treatment_start)` draws and differ only in injected
+Cp). 768 headline cells are ~64 independent draws. Quote coverage SE on replicates, never on rows.
+
+---
+
+## F28 — The 48h block prior is wrong for a fast toggle: the *paired* residual's correlation scale is ~1-3h, and a 48h block under-covers (0.622 pooled, 0.557 at 1 week) by starving the bootstrap of blocks
+
+*2026-07-15 (toggle-specialist uncertainty, round 1). Reproduce:
+`uv run python -m benchmarking.baselines.study_toggle_specialist_uncertainty --block-hours 1 2 3 6 12`
+plus the default grid; 64 replicates x 3 profiles x 1/2/4/8 weeks. Coverage target 0.683, SE 0.058.*
+
+`block_hours` defaulted to 48 on the prior that turbine-to-turbine relationships autocorrelate on
+roughly that scale. **That prior is about the wrong quantity.** The bootstrap resamples the residual
+of the *paired on-vs-off comparison*, and Hill of Towie's toggle alternates every 20 minutes
+(`DEFAULT_TOGGLE_PERIOD` = 40 min), so on and off ride the same weather and nearly all the slow
+structure — direction, wake state, density, season — cancels between numerator and denominator.
+
+**Measured autocorrelation of the paired hourly test/reference ratio residual** (8 replicates,
+8-week placebo campaigns), mean over replicates:
+
+| lag | 1h | 3h | 6h | 12h | 24h | 48h |
+|---|---|---|---|---|---|---|
+| autocorr | 0.181 | 0.065 | 0.047 | 0.034 | 0.032 | **0.003** |
+
+The correlation scale is **~1-3 hours**. At 48h there is nothing left to capture.
+
+**Headline coverage is monotone decreasing in block length**, crossing the target at ~2-3h:
+
+| block | 1h | 2h | 3h | 6h | 12h | 24h | 48h | 96h |
+|---|---|---|---|---|---|---|---|---|
+| pooled coverage | 0.775 | 0.695 | 0.707 | 0.672 | 0.665 | 0.642 | **0.622** | 0.577 |
+| 1-week coverage | 0.766 | 0.719 | 0.724 | 0.672 | 0.667 | 0.620 | **0.557** | 0.438 |
+
+**Root cause of the long-block failure: circular-block overlap collapse, not noise.** A long block
+does not merely make sigma noisy — it biases it **low**. With `n_draw = ceil(T/L)` blocks drawn from
+starts anywhere in the campaign, a large `L/T` makes every resample overlap almost completely, so
+the resample spread collapses. It is worst where `T/L` is small: at 1 week with 96h blocks
+`T/L = 1.75`, mean sigma 0.86 pp against an actual RMS error of 1.30 pp, coverage **0.438**. At 8
+weeks the same 96h block gives `T/L = 14` and sigma falls only ~7% from its 6h value. A synthetic
+control (iid noise, 8-week campaign, so `T/L >= 28` throughout) reproduces the expected flat
+sigma-vs-L to within ±5%, confirming the collapse is a small-`T/L` effect rather than a bug.
+
+**Consequence: there is no plateau to read.** Standard practice picks the block length where
+sigma-vs-L flattens. Here sigma is flat-to-falling across the whole range, because there is no
+autocorrelation to capture and the only remaining gradient is the collapse. **Block length must be
+chosen by coverage against truth, not by the sigma curve** — which is why the sweep is scored rather
+than plotted alone.
+
+**Coverage degrades in _both_ directions, so the good region is bounded.** Below ~2h the bootstrap
+**over-covers** (1h: headline 0.775, sigma ~1.2x the 12h value). The cause is not established: an
+on/off imbalance hypothesis (a 1h block spans only 1.5 cycles of the 40-minute toggle) was **not**
+reproduced by synthetic controls with either a constant or a varying reference. So 1h is not adopted
+on the strength of its score alone.
+
+**Applied: `DEFAULT_BLOCK_HOURS` 48 → 6.** The data does **not** distinguish 2h/3h/6h — mean
+|coverage - 0.683| across the four reads (headline pooled, headline 1-week, per-bin pooled, per-bin
+sparse) is **0.046 / 0.047 / 0.049**. The pick is therefore on robustness, not score: 6h spans 9
+toggle cycles (the most margin from the ~2-cycle edge where the over-coverage sets in), is ~2-6x the
+measured correlation scale, still leaves 28 distinct blocks in a 1-week campaign, and stays sane for
+a slower toggle where 2h would be a single cycle. **The default is only a default**: block length is
+properly a function of the toggle period and campaign length, so a campaign whose toggle period is a
+large fraction of 6h must raise it.
+
+Changing it does not touch any uplift: `study_toggle_methods_compare` still reports
+`toggle_specialist: UNCHANGED` (max delta 5e-07 pp), and
+`TestUncertaintyDoesNotChangeUplift::test_block_length_moves_sigma_and_nothing_else` asserts the
+point estimate is bit-identical across block lengths.
+
+**Generalisation.** The right block length is set by the toggle period and the campaign length, not
+by an absolute number of hours: enough cycles per block that on/off stay balanced, and enough blocks
+per campaign that circular overlap does not collapse the spread. A downstream project with a slower
+toggle needs a proportionally longer block, so a rule of the form `L = k x toggle_period` (with a
+guard on `T/L`) would travel better than any fixed default. Not implemented — it needs its own
+evidence.
+
+---
+
 ## F27 — `toggle_specialist` can report a per-power-bin uplift without a model, but only with a **per-bin** `rho_base` and a reference-derived bin label; the global-`rho_base` shortcut is ~17 pp wrong
 
 *2026-07-15 (per-power-bin uplift for the toggle specialist). Reproduce: the estimator comparison is
