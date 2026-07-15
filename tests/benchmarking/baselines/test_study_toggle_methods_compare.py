@@ -1,0 +1,174 @@
+"""Tests for the toggle-methods regression harness (profile selection, benchmark record/diff)."""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import TYPE_CHECKING
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from benchmarking.baselines.study_toggle_methods_compare import (
+    CAMPAIGN_WEEKS,
+    COMPARE_METHODS,
+    TOGGLE_PROFILES,
+    _load_baseline,
+    _select_profiles,
+    compare_to_benchmark,
+    methods_leaderboard,
+    plot_results,
+    record_baseline,
+    toggle_study,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def test_study_is_toggle_over_the_weeks_grid() -> None:
+    study = toggle_study()
+    assert study.mode == "toggle"
+    assert study.campaign_lengths == CAMPAIGN_WEEKS == [1, 2, 4, 8]
+    assert study.campaign_length_col == "campaign_weeks"
+    assert study.toggle_period is not None  # toggle mode requires it
+
+
+def test_profiles_are_a_placebo_plus_a_symmetric_pair() -> None:
+    # the symmetric +/-2% pair is what lets a sign error show up as an asymmetry between them
+    assert sorted(TOGGLE_PROFILES) == ["cp_0pct", "cp_minus_2pct", "cp_plus_2pct"]
+    deltas = {name: profile[0].delta for name, profile in TOGGLE_PROFILES.items()}
+    assert deltas == {"cp_0pct": 0.0, "cp_plus_2pct": 0.02, "cp_minus_2pct": -0.02}
+
+
+def test_select_profiles_none_returns_all() -> None:
+    assert _select_profiles(None) == TOGGLE_PROFILES
+
+
+def test_select_profiles_restricts_to_the_named_subset() -> None:
+    assert list(_select_profiles(["cp_0pct"])) == ["cp_0pct"]
+
+
+def test_select_profiles_rejects_unknown_name() -> None:
+    with pytest.raises(ValueError, match="unknown profile"):
+        _select_profiles(["cp_plus_99pct"])
+
+
+def _results(*, bias_shift: float = 0.0) -> pd.DataFrame:
+    """Tidy overall rows for both methods over the weeks grid; truth 0, error = ``bias_shift``."""
+    rows = []
+    for method in COMPARE_METHODS:
+        for weeks in CAMPAIGN_WEEKS:
+            for replicate in range(2):
+                rows.append(  # noqa: PERF401
+                    {
+                        "method": method,
+                        "profile": "cp_0pct",
+                        "campaign_weeks": weeks,
+                        "replicate": replicate,
+                        "condition": "overall",
+                        "condition_bin": "overall",
+                        "estimate": bias_shift,
+                        "truth": 0.0,
+                        "signed_error": bias_shift,
+                        "wall_time_s": 1.0,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def test_leaderboard_has_one_cell_per_method_and_campaign_length() -> None:
+    lb = methods_leaderboard(_results())
+    assert len(lb) == len(COMPARE_METHODS) * len(CAMPAIGN_WEEKS)
+    assert set(lb["method"]) == set(COMPARE_METHODS)
+    assert sorted(lb["campaign_weeks"].unique()) == CAMPAIGN_WEEKS
+
+
+def test_baseline_round_trips(tmp_path: Path) -> None:
+    lb = methods_leaderboard(_results())
+    path = tmp_path / "baseline.json"
+    record_baseline(lb, toggle_study(), path)
+
+    loaded = _load_baseline(path)
+    assert loaded is not None
+    cells, provenance = loaded
+    assert provenance["campaign_weeks"] == CAMPAIGN_WEEKS
+    assert provenance["methods"] == sorted(COMPARE_METHODS)
+    assert provenance["seed"] == toggle_study().seed
+    assert len(cells) == len(lb)
+
+
+def test_load_baseline_returns_none_when_absent(tmp_path: Path) -> None:
+    assert _load_baseline(tmp_path / "nope.json") is None
+
+
+def test_load_baseline_returns_none_for_wrong_schema(tmp_path: Path) -> None:
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"schema": "something_older", "cells": []}))
+    assert _load_baseline(path) is None
+
+
+def test_unchanged_method_diffs_to_exactly_zero(tmp_path: Path) -> None:
+    # the property the whole script rests on: ground truth is deterministic in (config, seed), so an
+    # unchanged method re-run must reproduce its cells bit-for-bit, not merely closely.
+    lb = methods_leaderboard(_results())
+    path = tmp_path / "baseline.json"
+    record_baseline(lb, toggle_study(), path)
+
+    merged = compare_to_benchmark(lb, path, tmp_path / "comparison")
+    assert not merged.empty
+    for col in ("d_bias", "d_spread", "d_score"):
+        assert (merged[col] == 0.0).all(), f"{col} must be exactly zero for an unchanged method"
+
+
+def test_moved_method_shows_a_nonzero_bias_delta(tmp_path: Path) -> None:
+    path = tmp_path / "baseline.json"
+    record_baseline(methods_leaderboard(_results(bias_shift=0.0)), toggle_study(), path)
+
+    moved = methods_leaderboard(_results(bias_shift=0.01))
+    merged = compare_to_benchmark(moved, path, tmp_path / "comparison")
+    assert np.allclose(merged["d_bias"].to_numpy(), 0.01)
+
+
+def test_comparison_csv_is_written(tmp_path: Path) -> None:
+    lb = methods_leaderboard(_results())
+    path = tmp_path / "baseline.json"
+    record_baseline(lb, toggle_study(), path)
+    comparison_dir = tmp_path / "comparison"
+
+    compare_to_benchmark(lb, path, comparison_dir)
+    assert (comparison_dir / "benchmark_comparison.csv").exists()
+
+
+def test_compare_without_a_baseline_is_a_noop(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING):
+        merged = compare_to_benchmark(methods_leaderboard(_results()), tmp_path / "absent.json", tmp_path / "cmp")
+    assert merged.empty
+    assert "No benchmark recorded" in caplog.text
+
+
+def test_unchanged_verdict_is_logged_per_method(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    lb = methods_leaderboard(_results())
+    path = tmp_path / "baseline.json"
+    record_baseline(lb, toggle_study(), path)
+
+    with caplog.at_level(logging.INFO):
+        compare_to_benchmark(lb, path, tmp_path / "comparison")
+    for method in COMPARE_METHODS:
+        assert f"{method}: UNCHANGED" in caplog.text
+
+
+def test_moved_verdict_warns_and_names_the_cells(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    path = tmp_path / "baseline.json"
+    record_baseline(methods_leaderboard(_results()), toggle_study(), path)
+
+    with caplog.at_level(logging.WARNING):
+        compare_to_benchmark(methods_leaderboard(_results(bias_shift=0.01)), path, tmp_path / "comparison")
+    assert "MOVED" in caplog.text
+
+
+def test_plot_results_writes_one_curve_per_profile(tmp_path: Path) -> None:
+    lb = methods_leaderboard(_results())
+    plot_results(lb, tmp_path)
+    assert (tmp_path / "campaign_curves_cp_0pct.png").exists()

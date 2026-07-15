@@ -418,7 +418,7 @@ def record_baseline(
             "git_commit": commit,
             "n_replicates": study.n_replicates,
             "seed": study.seed,
-            "campaign_months": list(study.campaign_months),
+            "campaign_months": list(study.campaign_lengths),  # months-only study; see _prepost_study/_toggle_study
             "profiles": sorted(lb["profile"].unique()),
             "cells": lb.round(8).to_dict(orient="records"),
         }

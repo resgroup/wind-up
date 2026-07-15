@@ -86,7 +86,7 @@ def score_study(
                 "profile": profile_name,
                 "replicate": replicate.replicate_id,
                 "test_wtg": replicate.test_wtg,
-                "campaign_months": window.months,
+                window.length_col: window.length,
                 "treatment_start": window.treatment_start,
                 "baseline_start": window.baseline_start,
                 "activity_end": window.activity_end,
@@ -124,6 +124,7 @@ def _materialise_instances(
             replicate.treatment_start,
             min_pre_months=study.min_pre_months,
             campaign_months=study.campaign_months,
+            campaign_weeks=study.campaign_weeks,
             data_start=data_start,
             data_end=data_end,
         )

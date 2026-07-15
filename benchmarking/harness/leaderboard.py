@@ -1,8 +1,12 @@
 """Leaderboard: summarise tidy scoring results into a side-by-side comparison.
 
-Groups the tidy results by ``(method, profile, campaign_months)`` and reduces each group's
+Groups the tidy results by ``(method, profile, <campaign-length column>)`` and reduces each group's
 signed errors to bias, spread and the combined RMSE score via :func:`metrics.summarize_errors`.
 A pure consumer of the results table; lower ``score`` is better.
+
+The campaign-length column is ``campaign_months`` by default and ``campaign_weeks`` for a weeks-grid
+study (see :class:`~benchmarking.harness.replicates.StudyConfig`); pass ``length_col`` to match the
+results being summarised.
 """
 
 from __future__ import annotations
@@ -11,11 +15,18 @@ import pandas as pd
 
 from benchmarking.harness.metrics import summarize_errors
 
-_GROUP_KEYS = ["method", "profile", "campaign_months"]
-_CONDITION_GROUP_KEYS = ["method", "profile", "campaign_months", "condition", "condition_bin"]
+DEFAULT_LENGTH_COL = "campaign_months"
 
 
-def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
+def _group_keys(length_col: str) -> list[str]:
+    return ["method", "profile", length_col]
+
+
+def _condition_group_keys(length_col: str) -> list[str]:
+    return ["method", "profile", length_col, "condition", "condition_bin"]
+
+
+def leaderboard(results_df: pd.DataFrame, *, length_col: str = DEFAULT_LENGTH_COL) -> pd.DataFrame:
     """Summarise scoring results into per-(method, profile, campaign-length) bias/spread/score.
 
     Only overall-uplift rows (``condition == "overall"``) are summarised; per-condition rows are
@@ -24,15 +35,19 @@ def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
     input), ``n_replicates``, and the group's wall time (``wall_time_s_sum`` total and
     ``wall_time_s_mean`` per run, when ``wall_time_s`` is present), sorted by method, profile then
     campaign length.
+
+    :param length_col: the campaign-length column in ``results_df`` (``campaign_months`` /
+        ``campaign_weeks``)
     """
+    group_keys = _group_keys(length_col)
     overall = results_df[results_df["condition"] == "overall"] if "condition" in results_df else results_df
 
     records = []
-    for keys, group in overall.groupby(_GROUP_KEYS, sort=True):
+    for keys, group in overall.groupby(group_keys, sort=True):
         summary = summarize_errors(group["signed_error"].to_numpy())
         records.append(
             {
-                **dict(zip(_GROUP_KEYS, keys, strict=True)),
+                **dict(zip(group_keys, keys, strict=True)),
                 "bias": summary.bias,
                 "spread": summary.spread,
                 "score": summary.score,
@@ -46,7 +61,7 @@ def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
             }
         )
     columns = [
-        *_GROUP_KEYS,
+        *group_keys,
         "bias",
         "spread",
         "score",
@@ -59,7 +74,7 @@ def leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(records, columns=columns)
 
 
-def conditional_leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
+def conditional_leaderboard(results_df: pd.DataFrame, *, length_col: str = DEFAULT_LENGTH_COL) -> pd.DataFrame:
     """Per-(method, profile, campaign, condition, bin) bias/spread/score over the conditional rows.
 
     Every per-condition axis (``ws``, ``ti``, ``power``, …) is summarised; only overall rows
@@ -67,15 +82,19 @@ def conditional_leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
     ``spread``, ``score``, the mean recovered and true uplift (``mean_estimate`` /
     ``mean_truth``, when those columns are present in the input), and ``n_replicates``,
     sorted by method, profile, campaign length, condition, then condition_bin.
+
+    :param length_col: the campaign-length column in ``results_df`` (``campaign_months`` /
+        ``campaign_weeks``)
     """
+    group_keys = _condition_group_keys(length_col)
     cond = results_df[results_df["condition"] != "overall"] if "condition" in results_df else results_df.iloc[:0]
 
     records = []
-    for keys, group in cond.groupby(_CONDITION_GROUP_KEYS, sort=True):
+    for keys, group in cond.groupby(group_keys, sort=True):
         summary = summarize_errors(group["signed_error"].to_numpy())
         records.append(
             {
-                **dict(zip(_CONDITION_GROUP_KEYS, keys, strict=True)),
+                **dict(zip(group_keys, keys, strict=True)),
                 "bias": summary.bias,
                 "spread": summary.spread,
                 "score": summary.score,
@@ -84,5 +103,5 @@ def conditional_leaderboard(results_df: pd.DataFrame) -> pd.DataFrame:
                 "n_replicates": summary.n,
             }
         )
-    columns = [*_CONDITION_GROUP_KEYS, "bias", "spread", "score", "mean_estimate", "mean_truth", "n_replicates"]
+    columns = [*group_keys, "bias", "spread", "score", "mean_estimate", "mean_truth", "n_replicates"]
     return pd.DataFrame(records, columns=columns)

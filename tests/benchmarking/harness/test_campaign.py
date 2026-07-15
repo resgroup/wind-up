@@ -6,6 +6,7 @@ from itertools import pairwise
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from benchmarking.harness.campaign import (
     CampaignWindow,
@@ -92,3 +93,67 @@ def test_infeasible_lengths_are_dropped_when_data_bounds_given() -> None:
         data_end=T0 + pd.DateOffset(months=4),
     )
     assert [w.months for w in windows] == [3]
+
+
+class TestCampaignWeeks:
+    """A weeks grid: the same window machinery on a ``DateOffset(weeks=...)`` activity length."""
+
+    def test_window_bounds_use_week_activity_length(self) -> None:
+        [window] = campaign_windows(T0, min_pre_months=12, campaign_weeks=[2])
+        assert window.treatment_start == T0
+        assert window.baseline_start == T0 - pd.DateOffset(months=12)  # baseline stays months-based
+        assert window.activity_end == T0 + pd.DateOffset(weeks=2)
+        assert window.length == 2
+        assert window.unit == "weeks"
+        assert window.length_col == "campaign_weeks"
+
+    def test_one_window_per_campaign_length(self) -> None:
+        windows = campaign_windows(T0, min_pre_months=12, campaign_weeks=[1, 2, 4, 8])
+        assert [w.length for w in windows] == [1, 2, 4, 8]
+
+    def test_shorter_windows_are_prefixes_of_longer_ones(self) -> None:
+        index = pd.date_range("2016-06-01", "2018-06-01", freq="6h", tz="UTC")
+        windows = campaign_windows(T0, min_pre_months=12, campaign_weeks=[1, 2, 4, 8])
+        masks = [window_row_mask(index, w) for w in windows]
+        for shorter, longer in pairwise(masks):
+            assert np.all(longer[shorter])
+            assert longer.sum() > shorter.sum()
+
+    def test_infeasible_lengths_are_dropped(self) -> None:
+        windows = campaign_windows(
+            T0,
+            min_pre_months=12,
+            campaign_weeks=[1, 2, 4, 8],
+            data_start=pd.Timestamp("2016-01-01", tz="UTC"),
+            data_end=T0 + pd.DateOffset(weeks=3),
+        )
+        assert [w.length for w in windows] == [1, 2]
+
+    def test_months_property_raises_on_a_weeks_window(self) -> None:
+        # the months-only inspect_* scripts read ``window.months``; a weeks window must fail loudly
+        # there rather than silently reporting a week count as a month count.
+        [window] = campaign_windows(T0, min_pre_months=12, campaign_weeks=[2])
+        with pytest.raises(ValueError, match="unit='weeks'"):
+            _ = window.months
+
+
+class TestCampaignLengthValidation:
+    """Exactly one of the two grids must be given."""
+
+    def test_neither_grid_raises(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            campaign_windows(T0, min_pre_months=12)
+
+    def test_both_grids_raise(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            campaign_windows(T0, min_pre_months=12, campaign_months=[3], campaign_weeks=[2])
+
+
+def test_months_window_still_reports_months_unit() -> None:
+    # back-compat: the months path is unchanged, so ``months`` keeps working and the length column
+    # keeps its existing name.
+    [window] = campaign_windows(T0, min_pre_months=12, campaign_months=[6])
+    assert window.unit == "months"
+    assert window.length == 6
+    assert window.months == 6
+    assert window.length_col == "campaign_months"
