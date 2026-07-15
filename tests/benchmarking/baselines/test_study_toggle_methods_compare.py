@@ -208,6 +208,33 @@ class TestPortabilityInvariant:
         _record(lb, tmp_path, git_commit="bbb")  # later commit, same portable numbers
         assert portable_path.read_bytes() == before
 
+    def test_differing_wall_time_alone_does_not_rewrite_the_portable_file(self, tmp_path: Path) -> None:
+        """Wall time is recorded per cell and differs every run, but is not a number under test.
+
+        Comparing it would rewrite the shared file on every recording — churning provenance and
+        handing the two laptops a conflict on the one file they both touch.
+        """
+        lb = methods_leaderboard(_results(bias_shift=0.0123456789012345))
+        _record(lb, tmp_path, git_commit="aaa")
+        portable_path, _ = baseline_paths(tmp_path)
+        before = portable_path.read_bytes()
+
+        slower = lb.assign(wall_time_s_sum=lb["wall_time_s_sum"] * 7, wall_time_s_mean=lb["wall_time_s_mean"] * 7)
+        _record(slower, tmp_path, git_commit="aaa")
+        assert portable_path.read_bytes() == before
+
+    def test_a_portable_difference_inside_the_band_does_not_rewrite(self, tmp_path: Path) -> None:
+        """Portability is a claim at the band's precision, not bit-exactness."""
+        lb = methods_leaderboard(_results(bias_shift=0.01))
+        _record(lb, tmp_path, git_commit="aaa")
+        portable_path, _ = baseline_paths(tmp_path)
+        before = portable_path.read_bytes()
+
+        band = _reproducibility("toggle_specialist").band
+        nudged = lb.assign(bias=lb["bias"] + band / 10)
+        _record(nudged, tmp_path, git_commit="aaa")  # inside the band: not a break, not a change
+        assert portable_path.read_bytes() == before
+
     def test_differing_portable_cells_at_the_same_commit_raise(self, tmp_path: Path) -> None:
         """Same code, different machine, different numbers => portability broke."""
         _record(methods_leaderboard(_results(bias_shift=0.0)), tmp_path, git_commit="samecommit")

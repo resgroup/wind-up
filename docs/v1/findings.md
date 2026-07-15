@@ -7,6 +7,86 @@ from, not just conclusions.
 
 ---
 
+## F30 — `power_model`'s benchmark is **machine-specific** (~0.7 pp cross-machine, 14x its same-machine noise); `toggle_specialist`'s is portable to 5e-07 pp, so the toggle benchmark splits into a shared file plus one per platform
+
+*2026-07-15. Reproduce: `study_toggle_methods_compare` on a machine that did not record the
+benchmark. The LightGBM behaviour is visible by fitting any `make_outcome_model` at `verbose=1`.*
+
+**Observation.** Running the toggle compare on the Linux laptop against a benchmark recorded on the
+Windows laptop, `power_model` reports **MOVED — 25 of 84 cells, max ~0.70 pp** — permanently, and
+regardless of the code under test. `toggle_specialist` reports UNCHANGED at **5e-07 pp** on the same
+run, against the same foreign benchmark.
+
+**This is not run-to-run noise, and reading it as a stale baseline is wrong (I did).** The evidence
+that looks damning:
+
+- two runs of identical code on one machine agree with **each other** to **0.045 pp** — matching the
+  ~0.05 pp the script documents;
+- yet both deviate from the foreign benchmark by ~0.7 pp with their delta patterns correlated
+  **0.994**;
+- and a clean `git archive HEAD` extract, containing no local changes at all, reproduces the same
+  0.697 pp.
+
+That reads as "same deltas every run ⇒ deterministic ⇒ the code changed", and the conclusion drawn
+was "the committed baseline does not reproduce on its own commit; regenerate it". **Wrong.** It is
+deterministic **per machine**, not per code: both runs share this machine's LightGBM reduction order,
+so both depart from the recording machine's identically. The disconfirming evidence was available and
+ignored — the input data was three weeks stale and unchanged, and the recording predated the run by
+40 minutes on nominally identical code. One question ("whose machine recorded it?") settled it.
+
+**Mechanism**, confirmed live rather than inferred:
+
+1. **LightGBM times the machine and picks its histogram strategy from the result** —
+   `[LightGBM] [Info] Auto-choosing col-wise multi-threading, the overhead of testing was 0.000365
+   seconds.` `force_row_wise`/`force_col_wise` are unset in `_COMMON`, and row-wise and col-wise
+   accumulate gradient/hessian histograms in **different orders**.
+2. **Floating-point addition is not associative**, so a different order changes the last bits.
+3. **`num_threads` is unset**, defaulting to all cores (12 here), and the thread count partitions the
+   histogram reduction — another order change.
+4. **Windows vs Linux** compounds it: different wheel, compiler (MSVC vs GCC), OpenMP runtime (vcomp
+   vs libgomp), SIMD codegen, libm.
+
+Then it **amplifies**: a split is an `argmax` over candidate gains, so a ~1e-16 difference flips a
+near-tied split, changes a tree, and 600 boosted trees compound it into ~0.7 pp.
+`toggle_specialist` is immune because it is a sum and a divide — no trees, no threads, no argmax.
+
+**Resolution: split the benchmark by portability, not by machine.**
+`study_toggle_methods_compare_baseline.json` (v2) becomes three v3 files — `..._portable.json`
+(`toggle_specialist`), `..._linux.json` and `..._win32.json` (`power_model`) — keyed on
+`sys.platform`. A run diffs portable + this platform, merged. Each laptop writes only its own platform
+file plus the shared one, so they never conflict in git. Portability is a per-method fact
+(`_REPRODUCIBILITY`) sitting beside the band it already had, defaulting to `portable=False` because
+wrongly claiming portability is a permanent, confusing failure on the other machine.
+
+**The portability invariant, and why the obvious version of it is wrong.** From one machine "the
+numbers moved" is ambiguous: it means either the method changed or portability broke. Refusing on any
+difference would block every legitimate re-record; a `--force` escape would just train the user past
+the check. **The commit is the discriminator** — differ at the *same* commit ⇒ portability broke
+(refuse); differ at a *different* commit ⇒ an accepted change (rewrite). The dirty-tree guard is what
+makes the commit trustworthy enough to lean on. Two further subtleties, both found before they bit:
+
+- the comparison must use the **band**, not bit-equality: recorded cells carry wall time (differs
+  every run, so an exact test rewrites the shared file every recording and creates the very conflict
+  the split avoids), and `round(8)`'s 1e-8 resolution is only 2x the measured 5e-9 cross-machine
+  difference;
+- the portable file's `git_commit` therefore records **when those numbers were last established**,
+  not who last ran a recording. An unchanged re-record leaves the file untouched, commit and all.
+
+**Provenance.** Each file now records `platform` / `cpu_count` / `python_version` /
+`lightgbm_version`, and a mismatch warns (never fails). This is the direct fix for the hole above:
+the file could not say where it came from, so the only way to find out was to ask a human.
+
+**Also fixed in `study_power_model_compare`, which had the same disease untreated.** It *labelled* a
+dirty tree but never refused one — which is why its committed baseline reads `e2e21b0-dirty` and is
+reproducible from no commit at all. Its `--accept-candidate` path (the documented no-re-run accept)
+promoted candidates without checking they were recorded clean, which is the likeliest way that
+`-dirty` landed; and `record_baseline` read HEAD at *write* time, so an hours-long sweep straddling a
+commit would stamp code that never ran. All three now guarded. That script stays **single-machine by
+design**: every cell in it is `power_model`, so there is nothing portable to split off, and it is
+always run on the Linux laptop.
+
+---
+
 ## F29 — The anticipated failures of a bootstrap-only uncertainty did not appear: at a well-chosen block length `toggle_specialist`'s sigma is statistically indistinguishable from calibrated everywhere, and the sparse-bin failure was mostly F28's block-length artefact
 
 *2026-07-15 (toggle-specialist uncertainty, round 1). Reproduce:

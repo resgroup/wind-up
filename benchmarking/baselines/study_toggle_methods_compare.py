@@ -352,7 +352,7 @@ def record_baselines(
     _check_portable_or_raise(portable, path=portable_path, git_commit=git_commit)
     if portable.empty:
         pass
-    elif _portable_cells_unchanged(portable, path=portable_path):
+    elif _portable_cells_match(portable, path=portable_path):
         logger.info("Portable baseline unchanged at %s — portability confirmed, not rewritten.", portable_path)
     else:
         _write_baseline(
@@ -369,17 +369,30 @@ def record_baselines(
     logger.info("Recorded %s benchmark at %s (commit %s). Commit the JSON(s).", sys.platform, platform_path, git_commit)
 
 
-def _portable_cells_unchanged(portable: pd.DataFrame, *, path: Path) -> bool:
-    """Whether the fresh portable cells already match the committed portable baseline exactly."""
+def _portable_cells_match(portable: pd.DataFrame, *, path: Path) -> bool:
+    """Whether the fresh portable cells match the committed ones **within each method's band**.
+
+    Not a bit-exact comparison, for two reasons. Portability is a claim at the band's precision
+    (measured ~5e-07 pp), and `round(8)`'s 1e-8 resolution is close enough to that to flip a last
+    digit. And the recorded cells carry wall time, which differs every run by construction — an exact
+    comparison would rewrite the shared file on every recording and hand the two laptops a conflict.
+    """
     loaded = _load_baseline(path)
     if loaded is None:
         return False
     base, _ = loaded
-    fresh = portable.round(8).reset_index(drop=True).sort_values(_MERGE_KEYS).reset_index(drop=True)
-    old = base.reset_index(drop=True).sort_values(_MERGE_KEYS).reset_index(drop=True)
-    if list(fresh.columns) != list(old.columns) or len(fresh) != len(old):
-        return False
-    return fresh.equals(old)
+    merged = portable.merge(base, on=_MERGE_KEYS, how="outer", suffixes=("", "_base"), indicator=True)
+    if (merged["_merge"] != "both").any():
+        return False  # a cell appeared or vanished: not the same set of numbers
+    for method, group in merged.groupby("method"):
+        band = _reproducibility(str(method)).band
+        for col in _METRIC_COLS:
+            fresh, old = group[col], group[f"{col}_base"]
+            delta = (fresh - old).abs()
+            both_nan = fresh.isna() & old.isna()  # an empty bin is NaN in both and matches
+            if ((delta > band) | (~both_nan & delta.isna())).any():
+                return False
+    return True
 
 
 def _check_portable_or_raise(portable: pd.DataFrame, *, path: Path, git_commit: str) -> None:
@@ -394,7 +407,7 @@ def _check_portable_or_raise(portable: pd.DataFrame, *, path: Path, git_commit: 
     if loaded is None or portable.empty:
         return
     _, prov = loaded
-    if prov.get("git_commit") != git_commit or _portable_cells_unchanged(portable, path=path):
+    if prov.get("git_commit") != git_commit or _portable_cells_match(portable, path=path):
         return
     msg = (
         f"portable baseline {path.name} was recorded at this same commit ({git_commit}) on "
