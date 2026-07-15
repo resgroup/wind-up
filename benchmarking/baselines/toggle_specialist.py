@@ -216,19 +216,13 @@ class ToggleSpecialistMethod:
         baseline: npt.NDArray[np.bool_],
         upgraded: npt.NDArray[np.bool_],
     ) -> pd.DataFrame:
-        """Per-power-bin uplift: ``rho_up(b) / rho_base(b) - 1``, on bins of the untreated operating point.
+        """Per-power-bin uplift: ``rho_up(b) / rho_base(b) - 1``, on bins of the baseline operating point.
 
         Two decisions carry this, and both are needed:
 
-        **The bin label is** ``rho_base * ref_total`` — the test turbine's *predicted untreated* power.
-        It is reference-derived, so the treatment cannot move a row between bins; and it is on the test
-        turbine's own kW scale, so the bins mean what a reader expects. Labelling by the test turbine's
-        measured power instead would put a treated quantity on the axis: with a real uplift the treated
-        rows in a bin correspond to lower untreated power than the baseline rows in it, which against a
-        power-dependent ratio becomes bias (the same regression-to-the-mean family as F23/F24, and why
-        ``power_model`` labels both its directions by the counterfactual prediction). Labelling by the
-        test turbine's wind speed would break this method's standing property of never conditioning on
-        post-treatment signals at all — hence ``power`` is the only supported axis.
+        **The bin label is** ``rho_base * ref_total`` — the test turbine's *predicted baseline* power.
+        It is reference-derived, so the upgrade cannot move a row between bins; and it is on the test
+        turbine's own kW scale, so the bins mean what a reader expects.
 
         **The denominator is the per-bin** ``rho_base(b)``, not the global one. The test-to-reference
         ratio genuinely varies with power (different turbines, different wakes, saturation near rated),
@@ -630,7 +624,7 @@ def _save_per_bin_plot(path: Path, *, per_bin: pd.DataFrame, test: str, active_p
 
     ax_n.bar(x, per_bin["n_records"].to_numpy(), color="C0", alpha=0.7)
     ax_n.set_ylabel("used records")
-    ax_n.set_xlabel(f"{active_power_col} bin [kW] (predicted untreated)")
+    ax_n.set_xlabel(f"{active_power_col} bin [kW] (predicted baseline)")
     ax_n.set_xticks(x)
     ax_n.set_xticklabels(per_bin["condition_bin"].astype(str), rotation=20, ha="right", fontsize=8)
     ax_n.grid(visible=True, alpha=0.3)

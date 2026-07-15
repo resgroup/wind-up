@@ -423,7 +423,7 @@ class PowerModelMethod:
         # it (eventually AEP extrapolation will). Skipped when no conditions are requested.
         by_condition: pd.DataFrame | None = None
         if self.conditions:
-            # The conditional two-direction step matches untreated against treated rows and relies on
+            # The conditional two-direction step matches baseline against upgraded rows and relies on
             # them sharing a distribution *and era* — for a toggle whose headline fit also trains on the
             # pre-campaign baseline, only the interleaved campaign off rows qualify (the strict
             # ``campaign_baseline``): matching pre-campaign rows against campaign on rows would read
@@ -600,7 +600,7 @@ class PowerModelMethod:
             for name in ("ws", "ti")
             if name in conditions.columns and name in self.conditions
         ]
-        # power: the untreated operating point, and every side is labelled by its *counterfactual
+        # power: the baseline operating point, and every side is labelled by its *counterfactual
         # prediction* — forward (upgraded) rows by ``pred_up``, reverse (baseline) rows by ``pred_base``,
         # the full re-level weights by ``pred_upgraded``. The reverse side must NOT be labelled by its
         # actual power ``y[mb]``: ``y[mb]`` is also the reverse ratio's numerator, so binning on it selects

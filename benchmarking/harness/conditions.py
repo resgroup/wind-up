@@ -24,7 +24,7 @@ CONDITION_BINS: dict[str, list[float]] = {"ws": WS_BINS, "ti": TI_BINS}
 # ``power`` edges are a fraction of rated (so they scale with the turbine), unlike the fixed ws/ti
 # edges, hence they live in ``condition_bins()`` not ``CONDITION_BINS``. The outer edges sit just
 # below 0 and just above rated so the six bins center on 0,0.2,…,1.0 of rated and ``pd.cut`` keeps
-# untreated-power values that fall slightly negative (cut-in noise) or slightly over rated
+# baseline power values that fall slightly negative (cut-in noise) or slightly over rated
 # (counterfactual prediction noise) rather than dropping them to NaN.
 POWER_FRACTION_EDGES: list[float] = [-0.1, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1]
 
