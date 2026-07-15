@@ -48,10 +48,12 @@ was noise, and this is the concrete payoff of the replicate count.
    inconsistent (0.52 / 0.00 / 0.00 / 0.16 pp at 1/2/4/8 weeks), so **no floor is proposed on this
    evidence** — it would be fitting a term to 1.4 SE of noise.
 
-**Design implications.** Do not add the count term. Fix the block length (F28) first and re-measure.
-The residual candidates, in the order the evidence supports them, are: (1) a campaign-level
-systematic floor, if a larger ensemble confirms the 8-week gap; (2) a shape correction, since the
-platykurtosis is the most reproducible non-normality here.
+**Design implications.** Do not add the count term: at the block length now defaulted to (F28) there
+is no count trend left for it to correct. The residual candidates, in the order the evidence supports
+them, are: (1) a campaign-level systematic floor, if a larger ensemble confirms the 8-week gap —
+which needs replicates, since 64 leaves it at only -1.44 SE; (2) a shape correction, since the
+platykurtosis is the most reproducible non-normality here and it caps achievable 1-sigma coverage
+even when the scale is right.
 
 **Method note.** The three profiles are near-redundant for calibration: their signed errors correlate
 **0.977-0.995** (they reuse the same `(turbine, treatment_start)` draws and differ only in injected
