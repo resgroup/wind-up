@@ -56,34 +56,79 @@ def test_select_profiles_rejects_unknown_name() -> None:
         _select_profiles(["cp_plus_99pct"])
 
 
+_POWER_BINS = ["(-230.0, 230.0]", "(230.0, 690.0]"]
+
+
 def _results(*, bias_shift: float = 0.0) -> pd.DataFrame:
-    """Tidy overall rows for both methods over the weeks grid; truth 0, error = ``bias_shift``."""
+    """Tidy rows for both methods over the weeks grid: the headline plus per-power-bin rows.
+
+    Truth is 0 and every estimate is ``bias_shift``, so each cell's bias is ``bias_shift`` exactly.
+    """
     rows = []
+    cells = [("overall", "overall"), *[("power", b) for b in _POWER_BINS]]
     for method in COMPARE_METHODS:
         for weeks in CAMPAIGN_WEEKS:
             for replicate in range(2):
-                rows.append(  # noqa: PERF401
-                    {
-                        "method": method,
-                        "profile": "cp_0pct",
-                        "campaign_weeks": weeks,
-                        "replicate": replicate,
-                        "condition": "overall",
-                        "condition_bin": "overall",
-                        "estimate": bias_shift,
-                        "truth": 0.0,
-                        "signed_error": bias_shift,
-                        "wall_time_s": 1.0,
-                    }
-                )
+                for condition, condition_bin in cells:
+                    rows.append(
+                        {
+                            "method": method,
+                            "profile": "cp_0pct",
+                            "campaign_weeks": weeks,
+                            "replicate": replicate,
+                            "condition": condition,
+                            "condition_bin": condition_bin,
+                            "estimate": bias_shift,
+                            "truth": 0.0,
+                            "signed_error": bias_shift,
+                            "wall_time_s": 1.0,
+                        }
+                    )
     return pd.DataFrame(rows)
 
 
-def test_leaderboard_has_one_cell_per_method_and_campaign_length() -> None:
+def test_leaderboard_records_the_headline_and_the_power_bins() -> None:
+    # the point of recording per-bin cells: a change can leave the headline untouched and wreck a bin,
+    # so the benchmark must carry both.
     lb = methods_leaderboard(_results())
-    assert len(lb) == len(COMPARE_METHODS) * len(CAMPAIGN_WEEKS)
+    per_method_cells = len(CAMPAIGN_WEEKS) * (1 + len(_POWER_BINS))  # overall + each power bin
+    assert len(lb) == len(COMPARE_METHODS) * per_method_cells
     assert set(lb["method"]) == set(COMPARE_METHODS)
     assert sorted(lb["campaign_weeks"].unique()) == CAMPAIGN_WEEKS
+    assert set(lb["condition"]) == {"overall", "power"}
+
+
+def test_leaderboard_records_power_bins_for_both_methods() -> None:
+    lb = methods_leaderboard(_results())
+    power = lb[lb["condition"] == "power"]
+    for method in COMPARE_METHODS:
+        bins = set(power[power["method"] == method]["condition_bin"])
+        assert bins == set(_POWER_BINS), f"{method} must contribute per-power-bin cells"
+
+
+def test_wall_time_is_recorded_on_the_headline_rows_only() -> None:
+    # wall time is per estimate, not per bin, and it is what makes "this change made the method 2x
+    # slower" visible. Stacking the conditional rows must not silently drop it (it did once).
+    lb = methods_leaderboard(_results())
+    headline = lb[lb["condition"] == "overall"]
+    per_bin = lb[lb["condition"] == "power"]
+    for col in ("wall_time_s_sum", "wall_time_s_mean"):
+        assert col in lb.columns
+        assert headline[col].notna().all(), f"{col} must be recorded on the headline rows"
+        assert per_bin[col].isna().all(), f"{col} is meaningless per bin and must be NaN there"
+
+
+def test_wall_time_is_not_diffed(tmp_path: Path) -> None:
+    # it is machine- and load-dependent, so diffing it would trip the unchanged verdict every run
+    lb = methods_leaderboard(_results())
+    path = tmp_path / "baseline.json"
+    record_baseline(lb, study=toggle_study(), path=path)
+
+    slower = lb.assign(wall_time_s_mean=lb["wall_time_s_mean"] * 10)
+    merged = compare_to_benchmark(slower, baseline_path=path, comparison_dir=tmp_path / "comparison")
+    assert "d_wall_time_s_mean" not in merged.columns
+    for col in ("d_bias", "d_spread", "d_score"):
+        assert (merged[col].abs() < max(_UNCHANGED_ATOL.values())).all()
 
 
 def test_baseline_round_trips(tmp_path: Path) -> None:

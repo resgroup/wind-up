@@ -61,7 +61,13 @@ from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_PERIOD
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.baselines.toggle_specialist import ToggleSpecialistMethod
-from benchmarking.harness import StudyConfig, leaderboard, plot_campaign_curves, score_study
+from benchmarking.harness import (
+    StudyConfig,
+    conditional_leaderboard,
+    leaderboard,
+    plot_campaign_curves,
+    score_study,
+)
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW, ConstantCpChange
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
@@ -87,10 +93,18 @@ SEED = 0
 _LENGTH_COL = "campaign_weeks"
 _DEFAULT_OUTPUT_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "toggle_methods_compare"
 _BASELINE_PATH = Path(__file__).resolve().parent / "study_toggle_methods_compare_baseline.json"
-_BASELINE_SCHEMA = "toggle_methods_compare_baseline_v1"
-# Per-cell metrics recorded and diffed. spread/score: lower is better; bias: |bias| nearer 0 is better.
+# v2 adds the per-power-bin cells alongside the headline, so every cell gained condition /
+# condition_bin. A v1 file cannot be diffed against a v2 run (its cells carry no condition), so the
+# bump makes an old baseline read as stale rather than silently mis-merge.
+_BASELINE_SCHEMA = "toggle_methods_compare_baseline_v2"
+# Per-cell metrics recorded and **diffed**. spread/score: lower is better; bias: |bias| nearer 0 is better.
 _METRIC_COLS = ["bias", "spread", "score"]
-_MERGE_KEYS = ["method", "profile", _LENGTH_COL]
+# Recorded per cell but never diffed: wall time is machine- and load-dependent, so diffing it would
+# trip the unchanged verdict on every run. Kept because a change that makes a method dramatically
+# slower is a regression worth seeing, and because it is the record of what a method actually costs.
+_WALL_TIME_COLS = ["wall_time_s_sum", "wall_time_s_mean"]
+_CELL_COLS = [*_METRIC_COLS, "mean_estimate", "mean_truth", "n_replicates"]
+_MERGE_KEYS = ["method", "profile", _LENGTH_COL, "condition", "condition_bin"]
 _PP = 100.0  # fraction -> percentage points
 # How close a re-run must land to the benchmark to read "unchanged" (fraction). **Per method, because
 # the two methods' reproducibility differs by four orders of magnitude — measured, not assumed:**
@@ -143,9 +157,11 @@ def _select_profiles(requested: list[str] | None) -> dict[str, list]:
 def _build_methods(out_dir: Path, *, era5_hourly_df: pd.DataFrame) -> list:
     """Construct the HoT-configured toggle methods, fastest first.
 
-    Both report their per-power-bin uplift so the benchmark tracks per-bin behaviour, not just the
-    headline — a change can leave the headline untouched and still wreck a bin. ``toggle_specialist``
-    supports only the ``power`` axis; ``power_model`` reports its full default set (ws/TI/power).
+    Both report the **power** axis and only that, so the benchmark tracks per-bin behaviour (a change
+    can leave the headline untouched and still wreck a bin) and so the two methods are compared on a
+    common axis — ``power`` is the only one ``toggle_specialist`` can offer. ``power_model``'s ws/TI
+    conditional is deliberately not duplicated here: ``study_power_model_compare`` already tracks it,
+    and recording it for one method only would make this study's table asymmetric for no gain.
     """
     return [
         ToggleSpecialistMethod(
@@ -157,6 +173,7 @@ def _build_methods(out_dir: Path, *, era5_hourly_df: pd.DataFrame) -> list:
         PowerModelMethod(
             columns=HOT_COLUMNS,
             baseline_rated_power_kw=HOT_RATED_POWER_KW,
+            conditions=("power",),
             era5_hourly_df=era5_hourly_df,
             out_dir=out_dir / "power_model_runs",
         ),
@@ -220,9 +237,20 @@ def _git_commit() -> str:
 
 
 def methods_leaderboard(results: pd.DataFrame) -> pd.DataFrame:
-    """One row per (method, profile, campaign_weeks) of bias/spread/score over the overall rows."""
-    lb = leaderboard(results, length_col=_LENGTH_COL)
-    return lb.sort_values(_MERGE_KEYS).reset_index(drop=True)
+    """One row per (method, profile, campaign_weeks, condition, bin) of bias/spread/score.
+
+    Both the headline (``condition == "overall"``) and the per-power-bin cells are recorded. Tracking
+    only the headline would miss the failure mode this study most needs to catch: a change can leave
+    the overall number untouched and still wreck an individual bin.
+    """
+    overall = leaderboard(results, length_col=_LENGTH_COL).assign(condition="overall", condition_bin="overall")
+    conditional = conditional_leaderboard(results, length_col=_LENGTH_COL)
+    stacked = pd.concat([overall[[*_MERGE_KEYS, *_CELL_COLS]], conditional[[*_MERGE_KEYS, *_CELL_COLS]]])
+    # Wall time is per *estimate*, so only the headline rows carry it (a per-bin row has no fit of its
+    # own and gets NaN). It is recorded but never diffed — see _METRIC_COLS — because it is machine-
+    # and load-dependent; it exists so a change that makes a method dramatically slower is visible.
+    stacked = stacked.merge(overall[[*_MERGE_KEYS, *_WALL_TIME_COLS]], on=_MERGE_KEYS, how="left")
+    return stacked.sort_values(_MERGE_KEYS).reset_index(drop=True)
 
 
 def record_baseline(lb: pd.DataFrame, *, study: StudyConfig, path: Path) -> None:
@@ -340,11 +368,16 @@ def _log_unchanged_verdict(merged: pd.DataFrame, *, atol: dict[str, float] | Non
 
 
 def plot_results(lb: pd.DataFrame, comparison_dir: Path) -> None:
-    """Write one campaign-length curve per profile (both methods overlaid)."""
+    """Write one campaign-length curve per profile (both methods overlaid), from the headline rows.
+
+    Restricted to ``condition == "overall"``: the leaderboard now also carries per-bin rows, and a
+    campaign curve drawn over both would silently average the headline together with six power bins.
+    """
     comparison_dir.mkdir(parents=True, exist_ok=True)
-    for profile in sorted(lb["profile"].unique()):
+    headline = lb[lb["condition"] == "overall"]
+    for profile in sorted(headline["profile"].unique()):
         plot_campaign_curves(
-            lb[lb["profile"] == profile],
+            headline[headline["profile"] == profile],
             save_path=comparison_dir / f"campaign_curves_{profile}.png",
             title=f"toggle - {profile} (toggle_specialist vs power_model)",
             length_col=_LENGTH_COL,
@@ -393,7 +426,14 @@ def main() -> None:
     results = run_study(output_dir, profiles=args.profiles)
     lb = methods_leaderboard(results)
     lb.to_csv(output_dir / "leaderboard.csv", index=False)
-    logger.info("Leaderboard:\n%s", lb[[*_MERGE_KEYS, *_METRIC_COLS]].to_string(index=False))
+    # The headline goes to the log; the per-bin rows are ~6x more numerous and would bury it. They are
+    # all in leaderboard.csv, and the benchmark diff reports any that move.
+    headline = lb[lb["condition"] == "overall"]
+    logger.info(
+        "Leaderboard (headline; %d per-bin rows also recorded, see leaderboard.csv):\n%s",
+        len(lb) - len(headline),
+        headline[["method", "profile", _LENGTH_COL, *_METRIC_COLS]].to_string(index=False),
+    )
 
     comparison_dir = output_dir / "comparison"
     plot_results(lb, comparison_dir)
