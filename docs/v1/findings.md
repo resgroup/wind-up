@@ -7,6 +7,87 @@ from, not just conclusions.
 
 ---
 
+## F27 — `toggle_specialist` can report a per-power-bin uplift without a model, but only with a **per-bin** `rho_base` and a reference-derived bin label; the global-`rho_base` shortcut is ~17 pp wrong
+
+*2026-07-15 (per-power-bin uplift for the toggle specialist). Reproduce: the estimator comparison is
+`TestPerBinIsNotBiasedByTheBaselineRatio` in `tests/benchmarking/baselines/test_toggle_specialist.py`;
+the regression baseline is `study_toggle_methods_compare --update-baseline`.*
+
+`toggle_specialist` now accepts `conditions=("power",)` + `rated_power_kw` and returns a per-power-bin
+uplift alongside its headline. Getting there required rejecting two estimators that both look
+reasonable, and the F23/F24 reasoning for `power_model` carries over almost unchanged.
+
+**The estimator.** Bin **both** segments on `rho_base_global * ref_total` — the test turbine's
+*predicted untreated* power — then report `rho_up(b) / rho_base(b) - 1` per bin.
+
+**Why not the global `rho_base`.** Using one global denominator, `u(b) = rho_up(b)/rho_base_global - 1`,
+has an attractive property: the per-bin numbers then aggregate back to the headline exactly. It is also
+badly wrong. The test-to-reference ratio genuinely varies with power (different turbines, different
+wakes, saturation near rated), so the estimator reads that structure as uplift. Measured on a synthetic
+case where `k = test/ref_total` falls 0.9 → 0.7 across the power range: **worst per-bin error 16.5 pp on
+a placebo, 17.3 pp at a true +5%**. The exact aggregation is bought by smearing the baseline's
+power-dependence across the bins.
+
+**Why not the test turbine's own power as the bin label.** This is the direct analogue of F23/F24, and
+its failure mode is instructive: it scores **0.05 pp on a placebo** — i.e. the obvious zero-uplift test
+*passes it* — and only breaks once a real uplift exists, at **1.22 pp on a true +5%** (a 24% relative
+error). The mechanism: a real uplift shifts the test turbine's power, so the treated rows in a bin
+correspond to *lower* untreated power than the baseline rows in it; against a power-dependent `k` that
+mismatch becomes bias. **A placebo cannot discriminate these estimators** — the discriminating test is a
+*constant non-zero* uplift, which must read that same uplift in every bin. Worth remembering for any
+future per-bin work.
+
+**The chosen estimator scores 0.05 pp in both cases**, and holds under 2% noise.
+
+**Two deliberate departures from `power_model`'s conditional.**
+- **No re-levelling.** Per-bin numbers do not aggregate exactly to the headline, and are not rescaled to.
+  `power_model` needs its λ because its per-bin shape comes from a `sqrt` of two fits that does not
+  aggregate; here the per-bin numbers are direct energy ratios, and rescaling them onto an identity that
+  the per-bin `rho_base` deliberately broke would be a fiction. `sum_actual` / `sum_counterfactual` are
+  returned so the gap stays inspectable.
+- **No imputation.** An uncovered bin reports NaN with `n_records = 0`, not a bfill-then-0-at-rated
+  prior. This falls out by construction (no baseline rows → no `rho_base(b)` → NaN counterfactual). A
+  downstream per-bin decision rule wants a sparse bin to land on "keep going"; an imputed value would
+  manufacture confidence that is not in the data.
+
+**`power` is the only axis this method will ever support.** It is reference-derived, so the treatment
+cannot move a row between bins. Binning by the test turbine's ws/TI would condition on post-treatment
+signals, which is exactly the property this method exists to keep (`conditions=("ws",)` raises).
+
+### Side observations
+- **A new regression harness:** `study_toggle_methods_compare.py` scores `toggle_specialist` +
+  `power_model` on HoT over a placebo and a symmetric +/-2% Cp pair × 1/2/4/8 **weeks**, against a
+  committed baseline. The per-bin change diffed clean on it: `toggle_specialist`'s 12 cells all moved by
+  **~1e-9** (i.e. unchanged), confirming the per-bin work left the headline alone.
+- **`power_model` is not reproducible run to run, despite `seed` — and this sets a floor on every A/B
+  against it.** Measured directly (two runs of *identical* code, `--profiles cp_0pct`, separate output
+  dirs): `power_model`'s bias moved **5.0e-4 (0.05 pp) at campaign_weeks=1**, and **exactly 0.0 at 2
+  and 8 weeks**. `toggle_specialist` moved **exactly 0.0 in every cell**.
+  - **Mechanism:** `seed` governs sampling, not LightGBM's threaded float reduction order. The noise is
+    **sparsity-driven**, not uniform: with a week of data the model sits near a split boundary, so a
+    tiny float difference flips a tree and visibly moves the estimate; with 8 weeks the split decisions
+    are far from the margin and the result is bit-identical. Hence the noise appears *only* at the short
+    campaigns — the very regime this study exists to probe.
+  - **This retroactively explains `study_power_model_compare`'s `_MATERIAL_PP = 0.1`**: it is not an
+    arbitrary comfort band, it sits at ~2x this measured floor.
+  - **Consequence for the harness:** bands are **per method** (`_UNCHANGED_ATOL`): `toggle_specialist`
+    1e-7 (effectively bit-exact), `power_model` 1e-3. A single shared band would either cry wolf on
+    every power_model re-run or throw away toggle_specialist's much stronger detector.
+  - **Process note:** the design asserted "an unchanged method must diff to **exactly 0.0**". That was
+    wrong on two counts (this nondeterminism, plus `record_baseline` storing cells rounded to 8 dp), and
+    the first real before/after run disproved it. The first correction guessed the floor at 1e-4 from
+    indirect evidence — also wrong, by 5x, and only caught by running the same code twice. **Measure the
+    noise floor before setting a band.**
+- **`toggle_specialist` has a real short-campaign bias:** at 1 week its bias is ≈ **−0.7 pp** with ~1 pp
+  spread, consistently across all three profiles (vs ≤0.2 pp at 2+ weeks). Systematic, not noise; it sets
+  a floor on what a 1-week toggle campaign can resolve. Not investigated here.
+- **Provenance flaw in both study scripts:** `_git_commit()` stamps HEAD when the baseline is *written*,
+  not when the run *started*. On a ~20-minute sweep a commit landing mid-run mislabels the record (the
+  first toggle baseline stamped `04f36d6-dirty` though it measured `f6b509b`'s method code). Worth
+  capturing the commit at run start.
+
+---
+
 ## F26 — Issue 17: unifying the toggle conditional onto the all-data training window (from campaign-only) blows up the tail bins — the campaign-only restriction is confirmed necessary; both conditional asymmetries are deliberately retained
 
 *2026-07-14 (Issue 17, scope item 2 — training-window unification). Reproduce:

@@ -16,12 +16,18 @@ Each run diffs the fresh bias/spread/score per ``(method, profile, campaign_week
 committed benchmark (``study_toggle_methods_compare_baseline.json``, next to this script) and logs
 the deltas plus a per-cell ``benchmark_comparison.csv``.
 
-**Deltas are reported raw, and an unchanged method must read exactly 0.0.** Ground truth is
-deterministic in the study config + seed, so an unchanged method re-run on the same commit produces
-identical numbers — not merely similar ones. This script is therefore a strict regression detector:
-any non-zero delta means the change under test moved the method, and the size of the move is the
-thing to judge. (Contrast ``study_power_model_compare``, whose neutral band exists to absorb
-cross-run noise it cannot avoid.)
+**Deltas are reported raw, and "unchanged" is judged per method** (see :data:`_UNCHANGED_ATOL`), because
+the two methods' reproducibility differs by four orders of magnitude — a fact measured on two runs of
+identical code, not assumed:
+
+- ``toggle_specialist`` reproduces **exactly** (max |delta| 0.0 across every cell), so it is held to an
+  effectively bit-exact band. That makes it a genuinely strict regression detector.
+- ``power_model`` does **not**, despite its ``seed``: LightGBM's threaded float reduction order varies,
+  and the seed governs sampling rather than that. Measured: **0.05 pp at campaign_weeks=1, exactly 0.0
+  at 2 and 8 weeks** — the noise is sparsity-driven, since with a week of data the model sits near a
+  split boundary and a tiny float difference flips a tree.
+
+The max observed delta is logged every run, so a cell sitting just inside its band stays visible.
 
 Run from the repo root::
 
@@ -86,6 +92,24 @@ _BASELINE_SCHEMA = "toggle_methods_compare_baseline_v1"
 _METRIC_COLS = ["bias", "spread", "score"]
 _MERGE_KEYS = ["method", "profile", _LENGTH_COL]
 _PP = 100.0  # fraction -> percentage points
+# How close a re-run must land to the benchmark to read "unchanged" (fraction). **Per method, because
+# the two methods' reproducibility differs by four orders of magnitude — measured, not assumed:**
+#
+# - `toggle_specialist` is pure arithmetic. Two runs of identical code reproduce **exactly** (max
+#   |delta| = 0.0 across every cell). Its band only has to clear `record_baseline`'s `round(8)`
+#   residual (~1e-9), so 1e-7 holds it to what is effectively a bit-exact standard.
+# - `power_model` is **not** reproducible run to run despite `seed`: LightGBM's threaded float
+#   reduction order varies, and the seed governs sampling rather than that. Measured on two runs of
+#   identical code: **5e-4 (0.05 pp) at campaign_weeks=1, and exactly 0.0 at 2 and 8 weeks.** The
+#   noise is sparsity-driven — with a week of data the model sits near a split boundary, so a tiny
+#   float difference flips a tree and moves the estimate. 1e-3 sits at 2x that measured floor, and
+#   matches study_power_model_compare's 0.1 pp band (which this now explains rather than copies).
+#
+# Holding toggle_specialist to power_model's band would discard a much stronger regression detector,
+# which is the whole reason these are separate. The max observed delta is always logged, so a cell
+# sitting just inside its band stays visible instead of hiding behind the verdict.
+_UNCHANGED_ATOL: dict[str, float] = {"toggle_specialist": 1e-7, "power_model": 1e-3}
+_DEFAULT_UNCHANGED_ATOL = 1e-3  # a method not named above gets the conservative band
 
 
 def toggle_study() -> StudyConfig:
@@ -117,10 +141,17 @@ def _select_profiles(requested: list[str] | None) -> dict[str, list]:
 
 
 def _build_methods(out_dir: Path, *, era5_hourly_df: pd.DataFrame) -> list:
-    """Construct the HoT-configured toggle methods, fastest first."""
+    """Construct the HoT-configured toggle methods, fastest first.
+
+    Both report their per-power-bin uplift so the benchmark tracks per-bin behaviour, not just the
+    headline — a change can leave the headline untouched and still wreck a bin. ``toggle_specialist``
+    supports only the ``power`` axis; ``power_model`` reports its full default set (ws/TI/power).
+    """
     return [
         ToggleSpecialistMethod(
             columns=HOT_COLUMNS,
+            conditions=("power",),
+            rated_power_kw=HOT_RATED_POWER_KW,
             out_dir=out_dir / "toggle_specialist_runs",
         ),
         PowerModelMethod(
@@ -232,8 +263,9 @@ def _load_baseline(path: Path) -> tuple[pd.DataFrame, dict[str, Any]] | None:
 def compare_to_benchmark(lb: pd.DataFrame, *, baseline_path: Path, comparison_dir: Path) -> pd.DataFrame:
     """Diff the fresh cells against the committed benchmark; write the per-cell CSV and log the deltas.
 
-    Returns the merged frame (empty if no benchmark is recorded yet). Deltas are raw: an unchanged
-    method must read exactly 0.0, so any non-zero value is a real move to judge, not noise.
+    Returns the merged frame (empty if no benchmark is recorded yet). Deltas are raw; the
+    unchanged/moved verdict applies :data:`_UNCHANGED_ATOL`, whose size is set by ``power_model``'s
+    run-to-run nondeterminism rather than chosen.
     """
     loaded = _load_baseline(baseline_path)
     if loaded is None:
@@ -271,23 +303,38 @@ def compare_to_benchmark(lb: pd.DataFrame, *, baseline_path: Path, comparison_di
     return merged
 
 
-def _log_unchanged_verdict(merged: pd.DataFrame) -> None:
-    """Log, per method, whether every diffed cell is bit-identical to the benchmark."""
+def _log_unchanged_verdict(merged: pd.DataFrame, *, atol: dict[str, float] | None = None) -> None:
+    """Log, per method, whether every diffed cell matches the benchmark within that method's band.
+
+    The max observed delta is always reported, so "unchanged" never hides a cell sitting just inside
+    the band — the margin against :data:`_UNCHANGED_ATOL` is the reader's evidence, not the verdict.
+    """
+    bands = _UNCHANGED_ATOL if atol is None else atol
     delta_cols = [f"d_{col}" for col in _METRIC_COLS]
     for method, group in merged.groupby("method"):
         comparable = group.dropna(subset=delta_cols)
         if comparable.empty:
             logger.info("%s: no cells line up with the benchmark (new method or new cells).", method)
             continue
-        moved = comparable[(comparable[delta_cols] != 0.0).any(axis=1)]
+        band = bands.get(str(method), _DEFAULT_UNCHANGED_ATOL)
+        worst = float(comparable[delta_cols].abs().to_numpy().max())
+        moved = comparable[(comparable[delta_cols].abs() > band).any(axis=1)]
         if moved.empty:
-            logger.info("%s: UNCHANGED — all %d cells identical to the benchmark.", method, len(comparable))
+            logger.info(
+                "%s: UNCHANGED — all %d cells within +/-%.3g pp of the benchmark (max delta %.3g pp).",
+                method,
+                len(comparable),
+                band * _PP,
+                worst * _PP,
+            )
         else:
             logger.warning(
-                "%s: MOVED — %d of %d cells differ from the benchmark:\n%s",
+                "%s: MOVED — %d of %d cells differ by more than +/-%.3g pp (max delta %.3g pp):\n%s",
                 method,
                 len(moved),
                 len(comparable),
+                band * _PP,
+                worst * _PP,
                 moved[[*_MERGE_KEYS, *delta_cols]].to_string(index=False),
             )
 

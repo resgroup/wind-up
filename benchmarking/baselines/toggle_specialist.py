@@ -34,6 +34,7 @@ from matplotlib.ticker import PercentFormatter
 
 from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
+from benchmarking.harness.conditions import condition_bins, energy_ratio_by_bin, validate_conditions
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.toggle import ToggleRowSets, is_toggle, resolve_toggle, toggle_upgrade_start
 from benchmarking.synthetic import ToggleSchedule
@@ -45,6 +46,10 @@ if TYPE_CHECKING:
 
 _SEGMENTS = ("all", "baseline", "upgraded")
 _MIN_POINTS_FOR_TIMEBASE = 2
+# ``power`` is the only axis this method can offer: it is derived from the references, so the
+# treatment cannot move a row between bins. Binning by the test turbine's ws/TI would condition on
+# post-treatment signals, which this method exists not to do (see the module docstring).
+_SUPPORTED_CONDITIONS: tuple[str, ...] = ("power",)
 
 
 def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
@@ -99,6 +104,13 @@ class ToggleSpecialistMethod:
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param save_plots: also write the diagnostic plots under ``<run>/plots``
     :param timebase: analysis timebase; inferred from the data when ``None``
+    :param conditions: which condition axes to report a per-bin uplift over. Only ``"power"`` is
+        supported — see :meth:`_conditional_frame` for why ws/TI cannot be. Defaults to ``()``
+        (report none), which is the behaviour of every caller that predates the option.
+    :param rated_power_kw: the test turbine's rated power, **required** when ``"power"`` is in
+        ``conditions`` because the power bin edges scale with the rating. Named without a
+        ``baseline_`` qualifier (unlike ``PowerModelMethod``): this method has no fitted baseline
+        model, and the rating cannot differ between the toggle states.
     """
 
     columns: ColumnSchema
@@ -106,10 +118,19 @@ class ToggleSpecialistMethod:
     out_dir: Path | None = None
     save_plots: bool = False
     timebase: pd.Timedelta | None = None
+    conditions: tuple[str, ...] = ()
+    rated_power_kw: float | None = None
 
     def __post_init__(self) -> None:
-        """Validate ``columns`` names every role this method reads."""
+        """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
         self.columns.require_roles(("active_power", "availability"))
+        validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
+        if "power" in self.conditions and self.rated_power_kw is None:
+            msg = (
+                f"{self.name}: rated_power_kw is required when 'power' is in conditions — the power bin "
+                f"edges are fractions of the turbine's rating."
+            )
+            raise ValueError(msg)
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one toggle campaign and write diagnostics."""
@@ -151,6 +172,18 @@ class ToggleSpecialistMethod:
         recoverable = np.isfinite(rho_base) and rho_base != 0 and np.isfinite(rho_up)
         uplift = rho_up / rho_base - 1.0 if recoverable else np.nan
 
+        per_bin = (
+            self._conditional_frame(
+                test_pw=test_pw,
+                ref_total=ref_total,
+                rho_base=rho_base,
+                baseline=used & baseline,
+                upgraded=used & rows.upgraded,
+            )
+            if "power" in self.conditions
+            else None
+        )
+
         stats = _segment_stats(
             mi,
             wide=wide,
@@ -170,8 +203,54 @@ class ToggleSpecialistMethod:
             uplift=uplift,
             n_refs=len(refs),
             timebase=timebase,
+            per_bin=per_bin,
         )
-        return MethodOutput(p50_overall=float(uplift))
+        return MethodOutput(p50_overall=float(uplift), p50_by_condition=per_bin)
+
+    def _conditional_frame(
+        self,
+        *,
+        test_pw: npt.NDArray[np.float64],
+        ref_total: npt.NDArray[np.float64],
+        rho_base: float,
+        baseline: npt.NDArray[np.bool_],
+        upgraded: npt.NDArray[np.bool_],
+    ) -> pd.DataFrame:
+        """Per-power-bin uplift: ``rho_up(b) / rho_base(b) - 1``, on bins of the untreated operating point.
+
+        Two decisions carry this, and both are needed:
+
+        **The bin label is** ``rho_base * ref_total`` — the test turbine's *predicted untreated* power.
+        It is reference-derived, so the treatment cannot move a row between bins; and it is on the test
+        turbine's own kW scale, so the bins mean what a reader expects. Labelling by the test turbine's
+        measured power instead would put a treated quantity on the axis: with a real uplift the treated
+        rows in a bin correspond to lower untreated power than the baseline rows in it, which against a
+        power-dependent ratio becomes bias (the same regression-to-the-mean family as F23/F24, and why
+        ``power_model`` labels both its directions by the counterfactual prediction). Labelling by the
+        test turbine's wind speed would break this method's standing property of never conditioning on
+        post-treatment signals at all — hence ``power`` is the only supported axis.
+
+        **The denominator is the per-bin** ``rho_base(b)``, not the global one. The test-to-reference
+        ratio genuinely varies with power (different turbines, different wakes, saturation near rated),
+        so a global denominator reads that structure as uplift — a large, purely artefactual tilt. The
+        per-bin ratio cancels it where it arises. The price is that the per-bin numbers no longer
+        aggregate exactly to ``p50_overall``; that is deliberate and un-relevelled, since rescaling
+        honest measurements to satisfy an identity this design intentionally broke would be a fiction.
+        ``sum_actual`` / ``sum_counterfactual`` are returned so the gap stays inspectable.
+
+        Sparse bins fall out as NaN rather than being imputed: no baseline rows means no ``rho_base(b)``,
+        so the counterfactual is NaN and the reducer drops those rows, leaving ``n_records = 0``. A bin
+        with no data reports "no answer", which is the honest input to a downstream decision.
+        """
+        assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
+        bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
+        label = rho_base * ref_total
+        counterfactual = _per_bin_counterfactual(
+            label=label, test_pw=test_pw, ref_total=ref_total, baseline=baseline, bins=bins
+        )
+        frame = energy_ratio_by_bin(label[upgraded], test_pw[upgraded], counterfactual[upgraded], bins=bins)
+        frame.insert(0, "condition", "power")
+        return frame
 
     def _used_mask(
         self, mi: MethodInput, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
@@ -217,8 +296,9 @@ class ToggleSpecialistMethod:
         uplift: float,
         n_refs: int,
         timebase: pd.Timedelta,
+        per_bin: pd.DataFrame | None = None,
     ) -> None:
-        """Write the data-stats CSV, the headline results CSV and (optionally) the plots."""
+        """Write the data-stats CSV, the headline results CSV, the per-bin CSV and (optionally) the plots."""
         upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
         last_dt = wide.index.max()
         run_name = f"toggle_specialist_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{last_dt:%Y%m%d}"
@@ -251,6 +331,9 @@ class ToggleSpecialistMethod:
         )
         results.to_csv(run_dir / f"{run_name}_results_{ts}.csv", index=False)
 
+        if per_bin is not None:
+            per_bin.to_csv(run_dir / f"{run_name}_by_power_bin_{ts}.csv", index=False)
+
         if self.save_plots:
             _save_plots(
                 run_dir / "plots",
@@ -261,6 +344,13 @@ class ToggleSpecialistMethod:
                 timebase=timebase,
                 active_power_col=self.columns.active_power,
             )
+            if per_bin is not None:
+                _save_per_bin_plot(
+                    run_dir / "plots" / stages.CONDITIONAL_UPLIFT / f"{mi.test_wtg}_per_bin_uplift.png",
+                    per_bin=per_bin,
+                    test=mi.test_wtg,
+                    active_power_col=self.columns.active_power,
+                )
             self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, timebase=timebase)
 
     def _write_shared_diagnostics(
@@ -292,6 +382,29 @@ class ToggleSpecialistMethod:
             "availability_col": self.columns.availability,
         }
         write_run_config(ctx, method_name=self.name, method_params=params)
+
+
+def _per_bin_counterfactual(
+    *,
+    label: npt.NDArray[np.float64],
+    test_pw: npt.NDArray[np.float64],
+    ref_total: npt.NDArray[np.float64],
+    baseline: npt.NDArray[np.bool_],
+    bins: list[float],
+) -> npt.NDArray[np.float64]:
+    """Each row's counterfactual test power: its own bin's baseline ratio times its reference total.
+
+    ``rho_base(b)`` is measured over the baseline rows of bin ``b``; every row (of either segment) then
+    takes the ``rho_base`` of the bin its ``label`` falls in. Rows in a bin with no baseline rows get
+    NaN, which is what makes an uncovered bin report NaN rather than an imputed value.
+    """
+    assigned = pd.cut(label, bins=bins)
+    rho_by_bin = {
+        category: _rho(test_pw, ref_total, baseline & np.asarray(assigned == category))
+        for category in assigned.categories
+    }
+    rho_row = np.asarray(pd.Series(assigned).map(rho_by_bin).astype(float))
+    return rho_row * ref_total
 
 
 def _rho(test_pw: npt.NDArray[np.float64], ref_total: npt.NDArray[np.float64], mask: npt.NDArray[np.bool_]) -> float:
@@ -495,6 +608,34 @@ def _save_plots(
     ax.legend()
     fig.tight_layout()
     _save(fig, plots_dir / stages.FILTER / f"{test}_coverage_timeseries.png")
+
+
+def _save_per_bin_plot(path: Path, *, per_bin: pd.DataFrame, test: str, active_power_col: str) -> None:
+    """Plot the per-power-bin uplift with each bin's used-record count underneath.
+
+    The record count is the point of the second panel: a per-bin uplift is only as trustworthy as the
+    data behind it, and the sparse bins are exactly where a reader must not over-read the top panel.
+    Empty bins are gaps, never plotted as zero.
+    """
+    populated = per_bin["n_records"].to_numpy() > 0
+    x = np.arange(len(per_bin))
+    uplift = np.where(populated, per_bin["p50_uplift"].to_numpy() * 100.0, np.nan)
+
+    fig, (ax_uplift, ax_n) = plt.subplots(2, 1, sharex=True, figsize=(9, 7), height_ratios=[2, 1])
+    ax_uplift.plot(x, uplift, marker="o", color="C1")
+    ax_uplift.axhline(0.0, color="k", linewidth=0.8)
+    ax_uplift.set_ylabel("uplift [pp]")
+    ax_uplift.set_title(f"{test}: uplift by {active_power_col} bin")
+    ax_uplift.grid(visible=True, alpha=0.3)
+
+    ax_n.bar(x, per_bin["n_records"].to_numpy(), color="C0", alpha=0.7)
+    ax_n.set_ylabel("used records")
+    ax_n.set_xlabel(f"{active_power_col} bin [kW] (predicted untreated)")
+    ax_n.set_xticks(x)
+    ax_n.set_xticklabels(per_bin["condition_bin"].astype(str), rotation=20, ha="right", fontsize=8)
+    ax_n.grid(visible=True, alpha=0.3)
+    fig.tight_layout()
+    _save(fig, path)
 
 
 def _save(fig: plt.Figure, path: Path) -> None:

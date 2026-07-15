@@ -202,7 +202,10 @@ class TestPerBinIsNotBiasedByTheBaselineRatio:
         assert per_bin["p50_uplift"].to_numpy() == pytest.approx(0.05, abs=0.005)
 
     def test_holds_with_noise(self) -> None:
-        scada, schedule = _varying_rho_case(uplift=0.05, noise_frac=0.02)
+        # this checks bias, not variance, so it needs enough rows that per-bin sampling noise cannot
+        # explain a miss: at 2% noise over 6 bins x 2 segments, 2000 rows puts the per-bin standard
+        # error near 0.2 pp, so the 1 pp bound is a genuine bias test rather than a coin flip.
+        scada, schedule = _varying_rho_case(n=2000, uplift=0.05, noise_frac=0.02)
         per_bin = _per_bin(scada, schedule)
         assert per_bin["p50_uplift"].to_numpy() == pytest.approx(0.05, abs=0.01)
 
@@ -272,15 +275,16 @@ class TestConditionsConfiguration:
 
 class TestPerBinSparseData:
     def test_bins_with_no_data_are_nan_not_imputed(self) -> None:
-        # a sparse bin must read "no answer", not an invented one: downstream consumers decide what
-        # to do about it, and an imputed prior would manufacture false confidence.
+        # a sparse bin must read "no answer", not an invented one: downstream consumers decide what to
+        # do about it, and an imputed prior would manufacture false confidence. Rating the turbine far
+        # above the data's power range guarantees empty upper bins rather than hoping for them.
         scada, schedule = _varying_rho_case(uplift=0.05)
-        out = ToggleSpecialistMethod(columns=_COLUMNS, conditions=("power",), rated_power_kw=_RATED_KW).estimate(
+        out = ToggleSpecialistMethod(columns=_COLUMNS, conditions=("power",), rated_power_kw=4000.0).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert out.p50_by_condition is not None
         empty = out.p50_by_condition[out.p50_by_condition["n_records"] == 0]
-        assert not empty.empty  # the fixture's power range does not fill every bin
+        assert not empty.empty
         assert empty["p50_uplift"].isna().all()
 
     def test_every_bin_is_represented(self) -> None:

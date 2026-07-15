@@ -25,6 +25,7 @@ from benchmarking.baselines.power_model.method import (
     _combine_uplift,
     _implied_shrinkage,
 )
+from benchmarking.harness.conditions import CONDITIONS
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.toggle import resolve_toggle
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
@@ -100,7 +101,7 @@ class TestRecovery:
         method = PowerModelMethod(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
+            conditions=(),  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -116,7 +117,7 @@ class TestRecovery:
         method = PowerModelMethod(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
+            conditions=(),  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
@@ -132,7 +133,7 @@ class TestRecovery:
         method = PowerModelMethod(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
+            conditions=(),  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -170,7 +171,7 @@ def _fundamentals_method(**overrides: object) -> PowerModelMethod:
     kwargs: dict[str, object] = {
         "columns": _COLUMNS,
         "baseline_rated_power_kw": 2300.0,
-        "conditional_uplift": False,
+        "conditions": (),
         **overrides,
     }
     return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
@@ -260,7 +261,7 @@ class TestModelFundamentals:
         scada = _toy_scada(n, uplift=0.04, treated=treated)
         method = _fundamentals_method(
             model_params=_FAST_PARAMS,
-            conditional_uplift=True,
+            conditions=CONDITIONS,
             era5_hourly_df=_toy_era5(idx),
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
@@ -279,7 +280,7 @@ class TestReferenceOnly:
         method = PowerModelMethod(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            conditional_uplift=False,  # overall-only; the conditional path needs ERA5 (not supplied here)
+            conditions=(),  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
@@ -316,6 +317,47 @@ class TestClipPredictions:
         # min(0, min(y_train)) never clips a genuinely-negative observation up to 0
         clipped = _clip_predictions(np.array([-100.0]), y_train=np.array([-30.0, 100.0]), rated_power_kw=2300.0)
         assert clipped.tolist() == [-30.0]
+
+
+class TestConditionsSelection:
+    """``conditions`` selects which axes are reported; ``()`` skips the conditional step entirely."""
+
+    def _run(self, **kwargs: object) -> MethodInput:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        treated = np.asarray(idx >= changeover)
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        method = PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            era5_hourly_df=_toy_era5(idx),
+            model_params=_FAST_PARAMS,
+            **kwargs,  # type: ignore[arg-type]
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        return method.estimate(mi)  # type: ignore[return-value]
+
+    def test_power_only_reports_power_alone(self) -> None:
+        out = self._run(conditions=("power",))
+        assert set(out.p50_by_condition["condition"]) == {"power"}
+
+    def test_ws_only_reports_ws_alone(self) -> None:
+        out = self._run(conditions=("ws",))
+        assert set(out.p50_by_condition["condition"]) == {"ws"}
+
+    def test_default_reports_all_three(self) -> None:
+        # back-compat: the promoted default is unchanged for every existing caller
+        out = self._run()
+        assert set(out.p50_by_condition["condition"]) == {"ws", "ti", "power"}
+
+    def test_empty_conditions_skips_the_conditional_step(self) -> None:
+        out = self._run(conditions=())
+        assert out.p50_by_condition is None
+
+    def test_unknown_condition_raises(self) -> None:
+        with pytest.raises(ValueError, match="unknown condition"):
+            PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=("bogus",))
 
 
 class TestConditionalUplift:
@@ -438,7 +480,7 @@ class TestFeatureConfig:
         method = PowerModelMethod(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            conditional_uplift=False,
+            conditions=(),
             model_params=_FAST_PARAMS,
             reference_stat_cols=(_POWER_MAX, _POWER_MIN, _POWER_SD),
             out_dir=tmp_path,
@@ -455,7 +497,7 @@ class TestFeatureConfig:
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
-            conditional_uplift=False,
+            conditions=(),
             model_params=_FAST_PARAMS,
             era5_exclude=("wind_speed_10m", "wind_direction_10m"),
             out_dir=tmp_path,
@@ -490,7 +532,7 @@ class TestFeatureConfig:
         method = PowerModelMethod(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            conditional_uplift=False,
+            conditions=(),
             model_params=_FAST_PARAMS,
             availability_feature=False,
             out_dir=tmp_path,
@@ -592,7 +634,7 @@ class TestConditional:
             "model_params": _FAST_PARAMS,
         }
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        overall_only = PowerModelMethod(**config, conditional_uplift=False).estimate(mi).p50_overall
+        overall_only = PowerModelMethod(**config, conditions=()).estimate(mi).p50_overall
         method = PowerModelMethod(**config, out_dir=tmp_path)  # conditional on by default
         out = method.estimate(mi)
 

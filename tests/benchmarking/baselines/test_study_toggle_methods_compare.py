@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from benchmarking.baselines.study_toggle_methods_compare import (
+    _UNCHANGED_ATOL,
     CAMPAIGN_WEEKS,
     COMPARE_METHODS,
     TOGGLE_PROFILES,
@@ -109,17 +110,33 @@ def test_load_baseline_returns_none_for_wrong_schema(tmp_path: Path) -> None:
     assert _load_baseline(path) is None
 
 
-def test_unchanged_method_diffs_to_exactly_zero(tmp_path: Path) -> None:
-    # the property the whole script rests on: ground truth is deterministic in (config, seed), so an
-    # unchanged method re-run must reproduce its cells bit-for-bit, not merely closely.
-    lb = methods_leaderboard(_results())
+def test_unchanged_method_diffs_within_the_band(tmp_path: Path) -> None:
+    # the property the whole script rests on: an unchanged method reproduces its cells to numerical
+    # noise. Use a bias with many significant digits, so record_baseline's round(8) actually bites --
+    # a round number here would pass even if the rounding were broken, which is the trap the first
+    # version of this test fell into.
+    lb = methods_leaderboard(_results(bias_shift=0.0123456789012345))
     path = tmp_path / "baseline.json"
     record_baseline(lb, study=toggle_study(), path=path)
 
     merged = compare_to_benchmark(lb, baseline_path=path, comparison_dir=tmp_path / "comparison")
     assert not merged.empty
     for col in ("d_bias", "d_spread", "d_score"):
-        assert (merged[col] == 0.0).all(), f"{col} must be exactly zero for an unchanged method"
+        for method, group in merged.groupby("method"):
+            band = _UNCHANGED_ATOL[str(method)]
+            assert (group[col].abs() < band).all(), f"{col} must be within {method}'s band when unchanged"
+
+
+def test_round_trip_leaves_a_nonzero_residual_from_baseline_rounding(tmp_path: Path) -> None:
+    # documents *why* the band is not zero: the stored baseline is rounded, so even an identical
+    # re-run differs in the last digit. This is the smaller of the two reasons (power_model's
+    # nondeterminism is the larger, and cannot be exercised in a unit test).
+    lb = methods_leaderboard(_results(bias_shift=0.0123456789012345))
+    path = tmp_path / "baseline.json"
+    record_baseline(lb, study=toggle_study(), path=path)
+
+    merged = compare_to_benchmark(lb, baseline_path=path, comparison_dir=tmp_path / "comparison")
+    assert (merged["d_bias"].abs() > 0).any(), "round(8) should leave a residual; if not, the band can tighten"
 
 
 def test_moved_method_shows_a_nonzero_bias_delta(tmp_path: Path) -> None:
@@ -129,6 +146,7 @@ def test_moved_method_shows_a_nonzero_bias_delta(tmp_path: Path) -> None:
     moved = methods_leaderboard(_results(bias_shift=0.01))
     merged = compare_to_benchmark(moved, baseline_path=path, comparison_dir=tmp_path / "comparison")
     assert np.allclose(merged["d_bias"].to_numpy(), 0.01)
+    assert (merged["d_bias"].abs() > max(_UNCHANGED_ATOL.values())).all()  # 1 pp is far outside any band
 
 
 def test_comparison_csv_is_written(tmp_path: Path) -> None:
