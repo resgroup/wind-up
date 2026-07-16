@@ -858,3 +858,20 @@ agreed tolerance of nominal on the placebo and the standard profiles.
   Pairs naturally with the long-term ERA5 extrapolation work (representativeness weighting, WS4).
 - ~~**Derived ERA5 atmospheric features.**~~ Promoted into **Issue 9** (air density, shear
   exponent, veer, stability indicators as a shared ERA5-derivation utility).
+
+---
+
+## Future work
+
+- **Uncertainty is validated only on 10-minute data.** The `toggle_specialist` block-bootstrap
+  uncertainty (F28-F33) has been calibrated exclusively against Hill of Towie 10-minute SCADA — the
+  only timebase available to test against. Two pieces carry timebase assumptions that a coarser or
+  finer feed would disturb and that nothing currently re-checks:
+  - the **6-hour default block length** (F28) is tuned to the ~1-3h autocorrelation of the 10-minute
+    paired residual and the 40-minute toggle period; a different sampling rate or toggle cadence
+    shifts both;
+  - the **record-count blend range** (`_BLEND_LO_RECORDS=3`, `_BLEND_HI_RECORDS=7`, F33) is in units
+    of records, so its wall-clock meaning scales inversely with the timebase.
+  When non-10-minute data becomes available, re-run the calibration sweep on it and confirm (or
+  re-derive) these constants; consider expressing block length and the blend range in time units
+  rather than record counts so they travel across timebases by construction.

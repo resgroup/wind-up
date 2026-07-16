@@ -262,33 +262,47 @@ class TestTooFewRecordsToFallBackOn:
         cells = _run(self._sparse_case(1)).cells
         assert cells["sparse"].sigma > 10 * cells["overall"].sigma
 
-    def test_sigma_narrows_as_records_are_added(self) -> None:
-        """The fallback scales as sqrt(1/n_on + 1/n_off), so more data must mean less uncertainty."""
-        sigmas = [_run(self._sparse_case(n)).cells["sparse"].sigma for n in (1, 2, 4, 8)]
-        assert sigmas == sorted(sigmas, reverse=True)
+    def test_the_fallback_narrows_as_records_are_added(self) -> None:
+        """The fallback scales as sqrt(1/n_on + 1/n_off), so more data must mean less of it.
 
-    def test_a_well_populated_cell_keeps_its_bootstrap(self) -> None:
-        """The fallback must not disturb the regime the bootstrap already covers (F32)."""
+        Asserted on the fallback component, not the reported sigma: the report switches to the
+        bootstrap once the cell is populated enough (the floor), so it is not monotone by design.
+        """
+        fallbacks = [_run(self._sparse_case(n)).cells["sparse"].sigma_fallback for n in (1, 2, 4, 8)]
+        assert fallbacks == sorted(fallbacks, reverse=True)
+
+    def test_a_well_populated_cell_reports_its_bootstrap_alone(self) -> None:
+        """The load-bearing guarantee of the selection rule: no fallback contamination of the covered
+        regime (F32/F33). It reports the bootstrap *even when the fallback is larger* — a ``max`` would
+        inflate it here, over-covering, and a max tuned on this farm could over-inflate on another.
+        """
         cell = _run(self._sparse_case(1)).cells["overall"]
         assert np.isfinite(cell.sigma_bootstrap)
         assert cell.sigma == cell.sigma_bootstrap
-        assert cell.sigma_bootstrap > cell.sigma_fallback, "the bootstrap sees structure the fallback cannot"
 
     def test_both_components_are_always_reported(self) -> None:
         """So a blend rule can be re-judged from a saved sweep without re-running it."""
         for cell in _run(self._sparse_case(1)).cells.values():
             assert np.isfinite(cell.sigma_fallback)
 
-    def test_the_reported_sigma_is_the_larger_of_the_two(self) -> None:
-        for cell in _run(self._sparse_case(4)).cells.values():
-            expected = np.nanmax([cell.sigma_bootstrap, cell.sigma_fallback])
-            assert cell.sigma == pytest.approx(expected)
+    def test_the_report_ramps_between_the_two_across_the_transition(self) -> None:
+        """A gradual blend, not a cliff: a mid-transition cell lies strictly between the components."""
+        cell = _run(self._sparse_case(5)).cells["sparse"]  # min 5 -> weight 0.5
+        lo, hi = sorted((cell.sigma_bootstrap, cell.sigma_fallback))
+        assert lo < cell.sigma < hi
 
-    def test_the_fallback_never_reduces_the_bootstrap(self) -> None:
-        """max() is the safe direction for a reliability indicator."""
-        for cell in _run(_case()).cells.values():
-            if np.isfinite(cell.sigma_bootstrap):
-                assert cell.sigma >= cell.sigma_bootstrap
+    def test_the_reported_sigma_moves_monotonically_from_fallback_to_bootstrap(self) -> None:
+        """As records grow, the report leaves the fallback and reaches the bootstrap, no jump."""
+        by_n = {n: _run(self._sparse_case(n)).cells["sparse"] for n in (3, 4, 5, 6, 7)}
+        assert by_n[3].sigma == pytest.approx(by_n[3].sigma_fallback), "pure fallback at the low end"
+        assert by_n[7].sigma == pytest.approx(by_n[7].sigma_bootstrap), "pure bootstrap by the high end"
+        sigmas = [by_n[n].sigma for n in (3, 4, 5, 6, 7)]
+        assert sigmas == sorted(sigmas, reverse=True), "narrows monotonically, no cliff"
+
+    def test_a_fully_populated_cell_is_pure_bootstrap(self) -> None:
+        """The load-bearing guarantee: no fallback contamination of the covered regime (F32)."""
+        cell = _run(self._sparse_case(1)).cells["overall"]
+        assert cell.sigma == cell.sigma_bootstrap
 
     def test_the_finite_fraction_is_still_reported_so_the_reason_is_visible(self) -> None:
         cell = _run(self._sparse_case(1)).cells["sparse"]

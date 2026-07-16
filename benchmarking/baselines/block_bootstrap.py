@@ -42,29 +42,24 @@ _SIGMA_PERCENTILES = (15.865525, 84.134475)
 # record a side has no scatter of its own, so df=1 is the widest t the convention allows.
 _MIN_FALLBACK_DF = 1
 # Fewest records a segment needs before its own scatter is worth measuring, for `relative_scatter`.
-# The reported sigma has no such threshold: max(bootstrap, fallback) covers the sparse regime without
-# one (F33), and a cliff would preclude a legitimately zero sigma on perfect data.
 _MIN_RECORDS_PER_SIDE = 3
+# Records per side over which the report ramps linearly from the fallback to the bootstrap (F33):
+# pure fallback at/below LO, pure bootstrap at/above HI.
+_BLEND_LO_RECORDS = 3
+_BLEND_HI_RECORDS = 7
 
 
 @dataclass(frozen=True)
 class CellUncertainty:
     """The uncertainty of one cell's uplift (the headline, or one condition bin).
 
-    Both components are kept, not just the reported ``sigma``, so a blend rule can be re-judged
-    against a saved sweep rather than by re-running one.
-
-    :param sigma: the reported 1-sigma — ``max(sigma_bootstrap, sigma_fallback)`` (F33). May be 0 on
-        perfect data, deliberately: nothing here imposes a floor.
-    :param sigma_bootstrap: std of the resampled uplifts (``ddof=1``); NaN only when there were fewer
-        than two finite resamples. Near-zero where a cell's records share a block and the ratio cannot
-        move, which is why it is blended with the fallback rather than reported alone.
-    :param sigma_fallback: the t-inflated per-record-scatter estimate, which stays finite where the
-        bootstrap collapses — and vanishes with the noise, so it imposes no floor either
-    :param sigma_robust: ``(p84 - p16) / 2`` of the resampled uplifts. Equals ``sigma_bootstrap`` for
-        a normal resample distribution; a large gap flags a cell too sparse to bootstrap well.
-    :param frac_resamples_finite: fraction of resamples with a finite uplift. Below 1 means resamples
-        drew no baseline rows for this cell, so its ``rho_base`` was undefined.
+    :param sigma: the reported 1-sigma: a records-weighted ramp between the two components below (F33).
+    :param sigma_bootstrap: std of the resampled uplifts (``ddof=1``); NaN when there were fewer than
+        two finite resamples
+    :param sigma_fallback: the t-inflated per-record-scatter estimate; finite even for a sparse cell
+    :param sigma_robust: ``(p84 - p16) / 2`` of the resampled uplifts
+    :param frac_resamples_finite: fraction of resamples with a finite uplift; below 1 means some
+        resamples drew no baseline rows for this cell
     """
 
     sigma: float
@@ -229,7 +224,17 @@ def bootstrap_ratio_uplift(
         return BootstrapResult(n_blocks=n_blocks, cells=_fallback_only_cells(names, fallback=fallback))
 
     uplift = _uplift_from_totals(totals)
-    return BootstrapResult(n_blocks=n_blocks, cells=_summarise(uplift, names=names, fallback=fallback))
+    boot_weight = {name: _bootstrap_weight(min(on, off)) for name, (on, off) in counts.items()}
+    return BootstrapResult(
+        n_blocks=n_blocks,
+        cells=_summarise(uplift, names=names, fallback=fallback, boot_weight=boot_weight),
+    )
+
+
+def _bootstrap_weight(n_min: int) -> float:
+    """Weight on the bootstrap for a cell with ``n_min`` records on its thinner side (F33)."""
+    span = _BLEND_HI_RECORDS - _BLEND_LO_RECORDS
+    return float(np.clip((n_min - _BLEND_LO_RECORDS) / span, 0.0, 1.0))
 
 
 def _fallback_only_cells(names: list[str], *, fallback: dict[str, float]) -> dict[str, CellUncertainty]:
@@ -291,23 +296,17 @@ def _uplift_from_totals(totals: npt.NDArray[np.float64]) -> npt.NDArray[np.float
 
 
 def _summarise(
-    uplift: npt.NDArray[np.float64], *, names: list[str], fallback: dict[str, float]
+    uplift: npt.NDArray[np.float64],
+    *,
+    names: list[str],
+    fallback: dict[str, float],
+    boot_weight: dict[str, float],
 ) -> dict[str, CellUncertainty]:
-    """Reduce each cell's resampled uplifts to a bootstrap sigma, and blend it with the fallback.
+    """Reduce each cell's resamples to a bootstrap sigma, and ramp between it and the fallback.
 
-    The reported sigma is ``max(bootstrap, fallback)``, and that single rule is all the protection
-    needed. The bootstrap sees autocorrelation and block structure the per-record fallback cannot, so
-    it dominates wherever it is valid; the fallback dominates where the bootstrap collapses, which is
-    exactly the sparse-cell regime (F33). Neither component can *reduce* the other.
-
-    **Nothing here precludes a zero sigma**, deliberately. With perfect input data the uplift really
-    is determined: ``s_rel -> 0`` so the fallback vanishes, the resamples agree so the bootstrap
-    vanishes, and ``max`` reports 0 — the correct answer. An earlier version NaN-ed a zero spread to
-    trap the 1-record artefact; that punished the legitimate case to catch the artefact, and F31 found
-    no irreducible floor to justify it. The fallback stops the artefact reaching 0 on its own.
-
-    The bootstrap reports NaN only when it genuinely has nothing to say: fewer than two finite
-    resamples.
+    The reported sigma is ``w*bootstrap + (1-w)*fallback`` where ``w`` is ``boot_weight`` (0 at the
+    sparse end, 1 once the cell is well populated), or whichever component is finite when the other is
+    not. The bootstrap reports NaN when there are fewer than two finite resamples.
     """
     cells = {}
     for i, name in enumerate(names):
@@ -319,12 +318,20 @@ def _summarise(
         usable = n_finite >= _MIN_RESAMPLES_FOR_SPREAD
         boot = float(kept.std(ddof=1)) if usable else float("nan")
         robust = float(np.subtract(*np.percentile(kept, _SIGMA_PERCENTILES[::-1])) / 2.0) if usable else float("nan")
-        both_nan = not math.isfinite(boot) and not math.isfinite(fallback[name])
         cells[name] = CellUncertainty(
-            sigma=float("nan") if both_nan else float(np.nanmax([boot, fallback[name]])),
+            sigma=_blend(boot, fallback[name], boot_weight[name]),
             sigma_bootstrap=boot,
             sigma_fallback=fallback[name],
             sigma_robust=robust,
             frac_resamples_finite=frac,
         )
     return cells
+
+
+def _blend(bootstrap: float, fallback: float, weight: float) -> float:
+    """Linear ramp ``weight*bootstrap + (1-weight)*fallback``, using whichever side is finite."""
+    if math.isfinite(bootstrap) and math.isfinite(fallback):
+        return weight * bootstrap + (1.0 - weight) * fallback
+    if math.isfinite(bootstrap):
+        return bootstrap
+    return fallback

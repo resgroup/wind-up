@@ -7,7 +7,7 @@ from, not just conclusions.
 
 ---
 
-## F33 — A per-bin cell with 1-2 records reports a **confidently wrong** sigma (coverage 0.158, and one cell reported sigma **exactly 0** while being 14 pp out). The bootstrap cannot estimate a variance from records that share a block — so below 3 records per side it must report NaN, not a number
+## F33 — A per-bin cell with 1-2 records reports a **confidently wrong** sigma (coverage 0.158, and one cell reported sigma **exactly 0** while being 14 pp out). Fixed with a t-inflated per-record-scatter fallback, *selected* below a 3-record floor (not blended) so the calibrated bootstrap regime is untouched
 
 *2026-07-16. Prompted by the question "what does a bin with only one or two data points do?" — a case
 F29/F31/F32 had all bucketed away. Reproduce: the 256-replicate `cases.csv`, per-bin cells binned on
@@ -32,35 +32,74 @@ identical uplift, so the spread is zero. The bootstrap does not lose precision h
 certainty. That is the worst possible failure mode for a number whose entire job is to say how much
 to trust an estimate.
 
+**The fix: a fallback, *selected* below a floor — not NaN, not a blend.** The path here is worth
+recording because two earlier versions were wrong in instructive ways.
+
+*First attempt — report NaN below the floor.* Rejected on the user's push: "NaN is not good enough".
+Correct. "This bin has too little data to quantify" is more honest than "±0.0%", but a *number* the
+consumer can act on is better than either, and there is a real per-record scatter to estimate from.
+
+*The estimator.* `sigma_fallback = s_rel * sqrt(1/n_on + 1/n_off) * t.ppf(norm.cdf(1), df)`, where
+`s_rel` is the campaign's own relative scatter about its test/reference ratio (a ratio of sums, so it
+does not explode near cut-in), and the `scipy.stats.t` multiplier is `wind_up`'s own convention from
+`pp_analysis` — the 1-sigma-equivalent quantile, `-> 1.0` as data grows, keyed off the *thinner* side
+via `clip(lower=2)`. The `sqrt(1/n_on + 1/n_off)` shape is the load-bearing part (the `t` factor is
+only 1.84x at df=1, against the 8x shortfall); it is validated directly — implied `s_rel` is constant
+(~12-17%) across a 13x range of that shape statistic.
+
+*Second attempt — `max(bootstrap, fallback)` everywhere.* Rejected, on evidence and on the user's
+guidance ("avoid `max` where the bootstrap performs well; it might mess up another farm"). Measured
+under `max`, the well-covered regime **degrades**: solid-bin (min>10) coverage 0.681 -> 0.770,
+headline 0.682 -> 0.733. The fallback is comparable to the bootstrap even at n~100 (`s_rel` ~15%), so
+`max` inflates cells that were already right — and a `max` tuned here could over-inflate elsewhere.
+
+*Third attempt — hard selection at a floor.* Bootstrap where `min(n_on, n_off) >= 3`, else fallback.
+This is `below_floor` in the pre-registered comparison and leaves the covered regime **untouched**
+(solid 0.681, headline 0.682, to three decimals). But it swaps a ~7.5x **cliff** in the reported
+sigma at the boundary (median 36 pp at min 2 -> 4.8 pp at min 3), which the user objected to.
+
+*The rule that ships — a linear ramp across the floor.* The report is
+`w*bootstrap + (1-w)*fallback` with `w = clip((min_side - 3)/4, 0, 1)`: pure fallback at
+`min_side <= 3`, pure bootstrap at `>= 7`, and `1/4, 1/2, 3/4` at 4, 5, 6. Constants
+`_BLEND_LO_RECORDS = 3`, `_BLEND_HI_RECORDS = 7`. The endpoints are not arbitrary: the ramp *starts*
+where the bootstrap first becomes computable (min 3) and *ends* where it becomes trustworthy — its
+own coverage is ~0.58-0.62 through min 3-6 and only reaches ~0.68+ by min 7. So the fallback carries
+the cell through exactly the band where the bootstrap under-covers.
+
+| metric | hard selection | **linear ramp (shipped)** |
+|---|---|---|
+| solid (min>10) coverage | 0.681 | **0.681** (pure bootstrap) |
+| headline coverage | 0.682 | **0.682** (pure bootstrap) |
+| cliff at min 2->3 (sigma ratio) | 7.5x | **1.8x** |
+| min 3->7 sigma ramp (pp) | 36 -> 4.8 (jump) | **20 -> 14 -> 10 -> 7.6 -> 4.3** |
+
+The sparse cells still **over**-cover (~1.0 at min<=2, where only the wide fallback exists). That is
+the safe direction — a too-wide uncertainty on a one-point bin is honest, where the old sigma=0 was a
+lie — and the price of having no better estimator there.
+
+The `1/4, 1/2, 3/4` shape is the user's own default ("no strong data guidance, so ramp at ∓1 around
+the threshold"); the data set the *placement* (LO/HI = the bootstrap's computable and trustworthy
+points) rather than the shape.
+
+**Nothing precludes a zero sigma** (the user's separate philosophical point, and correct): on perfect
+data `s_rel -> 0` and the resamples agree, so both components -> 0 and the report is 0. F31 found no
+irreducible floor to justify banning it. An interim version NaN-ed a zero spread to trap the
+1-record artefact; that punished the legitimate zero to catch the artefact, and the fallback removes
+the need — the artefact is a sparse cell, so the floor sends it to the fallback before the zero ever
+surfaces.
+
+**Both components are emitted per cell** (`sigma_bootstrap`, `sigma_fallback`), so the selection rule
+itself can be re-judged from a saved sweep without re-running one — as it was here.
+
 **Why the earlier rounds missed it, which is the more useful lesson.** F29/F31/F32 all bucketed
 per-bin coverage at `(0, 30]` records, which averages to a reassuring **0.623** and hides a 0.158
-subset inside it. Worse, `calibration_summary` requires `sigma > 0`, so it counted the exact-zero
-cells as `n_unusable` and **excluded the very worst cases from the coverage metric** — the statistic
-was structurally blind to the failure it most needed to see. `n_unusable` was reported in every table
-and never analysed. **A metric that drops its own pathological cases will always look calibrated.**
+subset. Worse, `calibration_summary` requires `sigma > 0`, so it counted the exact-zero cells as
+`n_unusable` and **excluded the very worst cases from the coverage metric**. `n_unusable` was reported
+in every table and never analysed. **A metric that drops its own pathological cases will always look
+calibrated** — check the sparsest bucket explicitly.
 
-**The fix: a validity floor, not an additive term.** This *is* the data-count effect anticipated at
-design time (and repeatedly "rejected" in F29/F31 by looking at the wrong resolution), but it is not
-a term to add in quadrature — below the floor there is no variance estimate to correct, so the honest
-output is NaN. Two complementary guards, both in `block_bootstrap`:
-
-1. `min_records = 3` per side (`_MIN_RECORDS_PER_SIDE`) — set where coverage recovers: 1-2 are
-   -2.5..-3.0 SE, 3-4 is -0.7 SE, 5+ is at target.
-2. a degeneracy check — a resample spread of exactly zero, or a single block spanning the campaign
-   (`n_blocks < 2`, which previously returned ~1e-15 float residue and reads as "±0.0 pp"), also
-   reports NaN. This catches the pathology even if the floor is lowered.
-
-`frac_resamples_finite` is still reported alongside, so NaN says "no" and the diagnostic says why.
-
-**Scope: 1,917 of 82,944 per-bin cells (2.3%), of which 603 previously reported a finite — and
-false — sigma. Zero headline cells are affected**, and no uplift changes (verified: the compare
-reports both methods UNCHANGED).
-
-**A tension worth naming.** The brief was that uncertainty is never optional. A NaN sigma is
-formally "no uncertainty" — but the alternative here is a *lie*, and "this bin has too little data to
-quantify" is an actionable input to a decision in a way that "±0.0%" is not. The point estimate for
-such a bin is equally meaningless; leaving it in place while NaN-ing its sigma is deliberate (uplift
-must not change), but a future issue could reasonably suppress both.
+**Scope:** the ramp changes the reported sigma only on per-bin cells with `min_side < 7` (a few
+percent), zero headline cells, and no uplift (verified: the compare reports both methods UNCHANGED).
 
 ---
 
@@ -113,9 +152,10 @@ calibrated from one week to one year across placebo and +/-2% profiles.
 > including the low-count term. That was wrong, and wrong for an instructive reason: every coverage
 > read here pools per-bin cells at `(0, 30]` records, which averages a broken 0.158 subset (1-2
 > records) into a reassuring 0.623 — and `calibration_summary` excludes `sigma <= 0` cells as
-> `n_unusable`, so the metric structurally dropped the worst cases. A **validity floor** at 3 records
-> per side *is* justified. The claim that survives is narrower and still holds: no *scale* correction
-> is justified where a sigma is estimable at all.
+> `n_unusable`, so the metric structurally dropped the worst cases. A **fallback below a 3-record
+> floor** *is* justified. The claim that survives is narrower and still holds: no correction is
+> justified in the regime the bootstrap already covers — which is exactly why F33 ships a *selection*
+> at the floor rather than a `max` that would have contaminated it.
 
 The residual caveats are honest and small: 52-week coverage rests on only ~16 independent draws
 (SE 0.116), and ~1.6% of 1-week campaigns report a very large sigma where the reference denominator
