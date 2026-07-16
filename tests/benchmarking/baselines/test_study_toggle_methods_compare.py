@@ -300,7 +300,7 @@ class TestLoadMerged:
     def test_none_when_nothing_is_recorded(self, tmp_path: Path) -> None:
         assert load_merged_baseline(tmp_path) is None
 
-    def test_a_foreign_fingerprint_warns_but_does_not_fail(
+    def test_a_foreign_fingerprint_on_the_platform_file_warns_but_does_not_fail(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The hole that caused a wrong 'stale baseline' conclusion: the file could not say where it came from."""
@@ -313,7 +313,27 @@ class TestLoadMerged:
         with caplog.at_level(logging.WARNING):
             loaded = load_merged_baseline(tmp_path)
         assert loaded is not None  # a warning, never fatal
-        assert "recorded on a machine unlike this one" in caplog.text
+        assert "machine unlike this one" in caplog.text
+
+    def test_a_foreign_fingerprint_on_the_portable_file_does_not_warn(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The portable file is *meant* to come from the other laptop — that is the point of it.
+
+        This fired on every real run and blamed a machine-specific method the portable file does not
+        even contain.
+        """
+        _record(methods_leaderboard(_results()), tmp_path)
+        portable_path, _ = baseline_paths(tmp_path)
+        doc = json.loads(portable_path.read_text())
+        doc["platform"] = "some_other_os"
+        doc["cpu_count"] = (doc["cpu_count"] or 0) + 99
+        portable_path.write_text(json.dumps(doc))
+
+        with caplog.at_level(logging.WARNING):
+            loaded = load_merged_baseline(tmp_path)
+        assert loaded is not None
+        assert "machine unlike this one" not in caplog.text
 
     def test_null_fingerprint_fields_make_no_claim(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """The migrated v2 file cannot recover the recording machine's cpu_count; null must not warn."""
@@ -424,3 +444,18 @@ def test_unchanged_verdict_is_logged_per_method(tmp_path: Path, caplog: pytest.L
 def test_plots_are_written_per_profile(tmp_path: Path) -> None:
     plot_results(methods_leaderboard(_results()), tmp_path)
     assert (tmp_path / "campaign_curves_cp_0pct.png").exists()
+
+
+def test_a_run_scoring_no_machine_specific_methods_does_not_destroy_the_platform_baseline(tmp_path: Path) -> None:
+    """Overwriting a good baseline with zero cells would silently destroy it.
+
+    --update-baseline guards the profile set but not the method set, so a run that scored only
+    portable methods must leave the platform file alone rather than emptying it.
+    """
+    _record(methods_leaderboard(_results()), tmp_path, git_commit="aaa")
+    _, platform_path = baseline_paths(tmp_path)
+    before = platform_path.read_bytes()
+
+    portable_only = methods_leaderboard(_results(methods=["toggle_specialist"]))
+    _record(portable_only, tmp_path, git_commit="aaa")
+    assert platform_path.read_bytes() == before, "a portable-only run must not empty the platform baseline"

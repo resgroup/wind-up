@@ -365,7 +365,14 @@ def _check_alignment(fresh: pd.DataFrame, reference: pd.DataFrame) -> None:
 
 
 def _git_commit() -> str:
-    """Return the short HEAD commit (``-dirty`` if the tree is modified), or ``unknown``."""
+    """Return the short HEAD commit (``-dirty`` if *tracked* files are modified), or ``unknown``.
+
+    ``--untracked-files=no`` matches ``study_toggle_methods_compare`` and is the point: only tracked
+    modifications make a run irreproducible from its commit. Counting untracked files (a scratch
+    script, a local CLAUDE.md) made ``--update-baseline`` impossible for anyone with a stray file, and
+    is the likeliest reason the committed baseline is stamped ``e2e21b0-dirty`` despite reproducing
+    exactly (F30).
+    """
     repo = Path(__file__).resolve().parent
     try:
         commit = subprocess.run(
@@ -376,7 +383,7 @@ def _git_commit() -> str:
             check=True,
         ).stdout.strip()
         dirty = subprocess.run(
-            ["git", "status", "--porcelain"],  # noqa: S607
+            ["git", "status", "--porcelain", "--untracked-files=no"],  # noqa: S607
             cwd=repo,
             capture_output=True,
             text=True,

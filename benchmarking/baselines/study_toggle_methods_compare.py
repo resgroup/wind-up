@@ -323,11 +323,20 @@ def _lightgbm_version() -> str | None:
     return str(lightgbm.__version__)
 
 
-def _write_baseline(path: Path, *, cells: pd.DataFrame, provenance: dict[str, Any], methods: list[str]) -> None:
-    """Write one baseline file: its cells plus provenance."""
-    doc = {**provenance, "methods": sorted(methods), "cells": cells.round(8).to_dict(orient="records")}
+def _write_baseline(path: Path, *, cells: pd.DataFrame, provenance: dict[str, Any]) -> None:
+    """Write one baseline file: its cells plus provenance.
+
+    A no-op when there are no cells, rather than writing an empty file: a run that scored none of this
+    file's methods knows nothing about them, and overwriting a good baseline with zero cells would
+    silently destroy it.
+    """
+    if cells.empty:
+        logger.info("No cells for %s in this run — leaving it alone.", path.name)
+        return
+    doc = {**provenance, "methods": sorted(cells["method"].unique()), "cells": cells.round(8).to_dict(orient="records")}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc, indent=2) + "\n")
+    logger.info("Recorded %s (%d cells, methods %s).", path.name, len(cells), doc["methods"])
 
 
 def record_baselines(
@@ -350,23 +359,12 @@ def record_baselines(
     machine_specific = lb[~lb["method"].isin(portable_names)]
 
     _check_portable_or_raise(portable, path=portable_path, git_commit=git_commit)
-    if portable.empty:
-        pass
-    elif _portable_cells_match(portable, path=portable_path):
+    if _portable_cells_match(portable, path=portable_path):
         logger.info("Portable baseline unchanged at %s — portability confirmed, not rewritten.", portable_path)
     else:
-        _write_baseline(
-            portable_path, cells=portable, provenance=provenance, methods=sorted(portable["method"].unique())
-        )
-        logger.info("Recorded portable benchmark at %s (commit %s).", portable_path, git_commit)
-
-    _write_baseline(
-        platform_path,
-        cells=machine_specific,
-        provenance=provenance,
-        methods=sorted(machine_specific["method"].unique()),
-    )
-    logger.info("Recorded %s benchmark at %s (commit %s). Commit the JSON(s).", sys.platform, platform_path, git_commit)
+        _write_baseline(portable_path, cells=portable, provenance=provenance)
+    _write_baseline(platform_path, cells=machine_specific, provenance=provenance)
+    logger.info("Recorded benchmark(s) at commit %s on %s. Commit the JSON(s).", git_commit, sys.platform)
 
 
 def _portable_cells_match(portable: pd.DataFrame, *, path: Path) -> bool:
@@ -436,18 +434,20 @@ def _load_baseline(path: Path) -> tuple[pd.DataFrame, dict[str, Any]] | None:
 
 
 def _warn_on_fingerprint_mismatch(prov: dict[str, Any], *, path: Path) -> None:
-    """Warn when a baseline was recorded somewhere unlike this machine. Never fatal.
+    """Warn when the **platform** baseline was recorded somewhere unlike this machine. Never fatal.
 
-    Recorded fields that are absent (an older file, or a value that could not be recovered when the
-    v2 file was migrated) make no claim and are skipped.
+    Only meaningful for the platform file, whose methods are machine-specific by definition. The
+    portable file is *expected* to come from the other laptop — that is the point of it — so warning
+    there would be noise on every run. Fields recorded as ``None`` (unrecoverable when the v2 file was
+    migrated) make no claim and are skipped.
     """
     current = {"platform": sys.platform, "cpu_count": os.cpu_count(), "lightgbm_version": _lightgbm_version()}
     differing = {k: (prov.get(k), v) for k, v in current.items() if prov.get(k) is not None and prov.get(k) != v}
     if differing:
         detail = ", ".join(f"{k}: recorded {was!r}, now {now!r}" for k, (was, now) in differing.items())
         logger.warning(
-            "%s was recorded on a machine unlike this one (%s). A power_model MOVED may be that rather "
-            "than your change — see F30.",
+            "%s holds machine-specific cells but was recorded on a machine unlike this one (%s). A MOVED "
+            "verdict may be that rather than your change — see F30.",
             path.name,
             detail,
         )
@@ -473,7 +473,8 @@ def load_merged_baseline(baseline_dir: Path | None = None) -> tuple[pd.DataFrame
             )
             continue
         cells, prov = loaded
-        _warn_on_fingerprint_mismatch(prov, path=path)
+        if path == platform_path:  # the portable file is meant to come from the other machine
+            _warn_on_fingerprint_mismatch(prov, path=path)
         frames.append(cells)
         provenance[path.name] = prov
     if not frames:

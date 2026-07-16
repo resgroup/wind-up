@@ -7,6 +7,129 @@ from, not just conclusions.
 
 ---
 
+## F32 — At 256 replicates the bootstrap-only sigma is **calibrated**: pooled coverage 0.682 vs a 0.683 target at 6h blocks, every campaign length from 1 week to 1 year within 0.5 SE. No further uncertainty component is justified, and the 6h default is confirmed rather than merely safe
+
+*2026-07-16 (toggle-specialist uncertainty, round 3 — the power run F31 asked for). Reproduce:
+`uv run python -m benchmarking.baselines.study_toggle_specialist_uncertainty --replicates 256
+--block-hours 1 3 6` — 96,768 cells. **The decision rule below was fixed before looking at the
+data**, so this is a test rather than a search for a justification.*
+
+**The question F31 left open.** Coverage sat consistently at ~0.65 against 0.683 — never significant
+(-1.26 SE), never above target either. That is the shape of either a real ~5% optimism or noise, and
+64 replicates could not tell them apart. Guessing would have meant fitting noise; the fix is power,
+not modelling.
+
+**The decision rule, pre-registered:** an inflation `k` is justified only if it is *consistent* — it
+must bring **every** campaign length closer to target (`n_worse == 0`) and lower the worst deviation.
+Trading one length for another is not an improvement.
+
+**Result: the bootstrap-only sigma is calibrated.** Pooled over 1-52 weeks (~873 independent draws,
+SE 0.016):
+
+| block | pooled coverage | SE from target |
+|---|---|---|
+| 1h | 0.758 | **+4.76** |
+| 3h | 0.701 | +1.15 |
+| **6h** | **0.682** | **-0.09** |
+
+Per campaign length at 6h: **0.689 / 0.684 / 0.698 / 0.668 / 0.663 / 0.689** for 1/2/4/8/26/52 weeks
+— every one within **0.5 SE** of target, worst deviation **0.020**. `std(z)` agrees independently at
+**1.013 / 0.975 / 0.950 / 1.028 / 1.041 / 0.927** (target 1.0), and `median|z|` at 0.61-0.74 against
+the 0.674 a calibrated normal gives. Coverage and the magnitude-sensitive read concur.
+
+**No inflation is justified — `k = 1.0` is optimal.** It is the only value with `n_worse == 0`; every
+`k >= 1.05` moves 4-6 of the 6 lengths away from target and raises the worst deviation from 0.020 to
+0.045+. **F31's ~0.65 was noise**, confirmed at 4x the power.
+
+**The 6h default is confirmed, not merely safe.** F28 chose it on robustness grounds when 2h/3h/6h
+were statistically indistinguishable. At 256 replicates they are distinguishable and 6h is right:
+**1h over-covers significantly (+4.76 SE)** and 3h is drifting high (+1.15 SE). The robustness
+argument (9 toggle cycles per block; enough blocks even at 1 week) picked the value the data now
+independently endorses.
+
+**Where this leaves the uncertainty work.** Every component anticipated at design time is now
+rejected on evidence — the low-count term (F29, F31), the campaign-level systematic floor (F31), and
+the shape correction (F31, itself an artefact). What remains is a plain circular block bootstrap at
+6h blocks, calibrated from one week to one year across placebo and +/-2% profiles. **The right move
+is to add nothing.** The residual caveats are honest and small: 52-week coverage rests on only ~16
+independent draws (SE 0.116), and ~1.6% of 1-week campaigns report a very large sigma where the
+reference denominator nears zero — correct behaviour, but it makes `mean_sigma` a misleading summary
+(use medians or coverage).
+
+---
+
+## F31 — Extending the campaign grid to a year kills F29's leading hypothesis: there is **no campaign-level systematic floor**, and the platykurtosis was an artefact of a narrow start range. The bootstrap-only sigma keeps working on ample data, and **no further component is justified**
+
+*2026-07-15 (toggle-specialist uncertainty, round 2). Reproduce:
+`uv run python -m benchmarking.baselines.study_toggle_specialist_uncertainty` — now 64 replicates x 3
+profiles x **1/2/4/8/26/52 weeks** x 7 block lengths (56,448 cells). Two config changes from F28/F29,
+both deliberate: the grid reaches a year, and `min_pre_months=0` with the start range widened to the
+whole dataset (2016-01-01..2020-01-01).*
+
+**Why the config changed.** `toggle_specialist` drops pre-campaign rows (`restrict_to_campaign`), so
+`min_pre_months` buys it nothing and only costs start-range span — and span is exactly what long
+campaigns need, because **replicates stop being independent once their windows overlap**. A 52-week
+campaign is 364d, so the old 730d range held only ~2 non-overlapping positions. Widening to 1461d
+doubles that. `independent_draws()` now reports the honest count per length and the SE is quoted on
+it: **1-8wk ~64 draws (SE 0.058), 26wk ~32 (0.082), 52wk ~16 (0.116)**. A 52-week coverage anywhere
+in **0.45..0.92** is indistinguishable from calibrated — long campaigns are precise but their
+*uncertainty* is weakly evidenced, because 5 years of SCADA holds few independent year-long windows.
+
+**Long campaigns are the discriminating test, and they kill the floor.** F29's lead candidate was an
+irreducible campaign-level systematic that a within-campaign bootstrap cannot see. `sigma_boot`
+shrinks with data, so any such floor **must dominate** once sigma is small enough. It does not:
+
+| campaign | 1w | 2w | 4w | 8w | 26w | 52w |
+|---|---|---|---|---|---|---|
+| median sigma [pp] | 1.156 | 0.784 | 0.549 | 0.387 | 0.197 | **0.135** |
+| median \|error\| [pp] | 0.733 | 0.476 | 0.310 | 0.216 | 0.157 | **0.110** |
+| coverage | 0.599 | 0.646 | 0.698 | 0.724 | 0.594 | **0.635** |
+| implied floor [pp] | 0.00 | 0.60 | 0.00 | 0.18 | 0.18 | **0.07** |
+
+At 52 weeks sigma is 0.135 pp. A 0.2 pp floor would swamp it and drive coverage to ~0.4; observed
+**0.635**. The implied floor does not persist — it is *smaller* at 52wk (0.07) than at 8wk (0.18),
+which is the signature of noise, not of a floor. **Hypothesis rejected.** Short campaigns could never
+have decided this, because `sigma_boot` swamps any floor there.
+
+**The platykurtosis was an artefact of the narrow start range.** F29 measured kurtosis -0.35..-0.76
+(Shapiro p<0.05 everywhere) and read it as a real shape problem capping achievable coverage. With the
+widened range it is **~0** (-0.25/-0.36/+0.04/-0.02/+0.08/-0.09). Drawing 64 windows from only 2
+years clustered them; the flat-topped error distribution was the clustering, not the estimator.
+**Hypothesis rejected** — and a caution that F29's shape reasoning was over-read.
+
+**No count term, confirmed again.** Per-bin coverage by record-count decade at 6h blocks:
+0.623 / 0.728 / 0.674 / 0.713 / 0.654 / 0.674 for `<=30 / 30-100 / 100-300 / 300-1k / 1k-3k / 3k-10k`.
+No trend.
+
+**`mean_sigma` is a trap here; use medians or coverage.** 1-week `mean_sigma` reads 3.39 pp against an
+RMS error of 1.64 pp — apparently 2x too wide — while coverage says 0.599, slightly too *narrow*. The
+mean is dominated by **3 cases of 192 (1.6%)** with sigma up to **203 pp**. Those are not a defect:
+they are 1-week campaigns whose reference denominator approaches zero in a low-wind week, and the
+ratio estimator is genuinely unstable there, so sigma correctly says "no idea". They are also **not**
+from the newly-added years (all three start in 2018), and 2016 campaigns look like every other year
+(median 2668 used records, median sigma 0.414 pp, coverage 0.611) — the widening introduced no junk.
+
+**Block length matters less than F28 implied, once the grid reaches a year.** Pooled over 1-52wk
+(~304 independent draws, SE 0.027): 1h **0.720**, 2h 0.657, 3h 0.661, 6h 0.649, 12h 0.656, 24h 0.649,
+48h 0.641. Everything from 2h to 48h is flat within noise; only 1h stands out, by over-covering. F28's
+sharp block-length gradient was real but **specific to a grid of only short campaigns**: at 26/52wk
+`T/L` is large enough that block length is irrelevant, which dilutes it. The 6h default stands (F28's
+short-campaign case is unaffected and 48h is still worst at 1 week, 0.573 vs 0.651), but the margin is
+narrower than F28 suggested.
+
+**Verdict: no further uncertainty component is justified by this data.** Every candidate either fits
+noise or fixes one campaign length while breaking another — a floor of 0.10 pp lifts pooled coverage
+to 0.674 but pushes 52wk to 0.729 while leaving 1wk at 0.599; a 1.10x inflation reaches 0.686 pooled
+but spreads 0.609..0.776 across lengths. Nothing anywhere is more than 1.6 SE from target.
+
+**The one open question is power, not modelling — and F32 settled it.** Coverage sits consistently at
+~0.65 against 0.683 here: never significant, but never above target either, which is the shape of
+either a real ~5% optimism or noise. This ensemble cannot tell them apart, so adding an inflation on
+this evidence would be fitting noise. **F32 ran it at 256 replicates: it was noise** (pooled 0.682 at
+6h blocks, -0.09 SE), and no inflation is justified.
+
+---
+
 ## F30 — `power_model`'s benchmark is **machine-specific** (~0.7 pp cross-machine, 14x its same-machine noise); `toggle_specialist`'s is portable to 5e-07 pp, so the toggle benchmark splits into a shared file plus one per platform
 
 *2026-07-15. Reproduce: `study_toggle_methods_compare` on a machine that did not record the
@@ -76,14 +199,30 @@ makes the commit trustworthy enough to lean on. Two further subtleties, both fou
 `lightgbm_version`, and a mismatch warns (never fails). This is the direct fix for the hole above:
 the file could not say where it came from, so the only way to find out was to ask a human.
 
-**Also fixed in `study_power_model_compare`, which had the same disease untreated.** It *labelled* a
-dirty tree but never refused one — which is why its committed baseline reads `e2e21b0-dirty` and is
-reproducible from no commit at all. Its `--accept-candidate` path (the documented no-re-run accept)
-promoted candidates without checking they were recorded clean, which is the likeliest way that
-`-dirty` landed; and `record_baseline` read HEAD at *write* time, so an hours-long sweep straddling a
-commit would stamp code that never ran. All three now guarded. That script stays **single-machine by
-design**: every cell in it is `power_model`, so there is nothing portable to split off, and it is
-always run on the Linux laptop.
+**`study_power_model_compare`'s benchmark: the numbers were never the problem.** A full read-only
+re-run on the Linux laptop (the machine that records it) reproduces it exactly — **2030 of 2030 cells
+neutral across both modes**. Its `e2e21b0-dirty` stamp is **very likely a false alarm**: its
+`_git_commit()` counted **untracked** files as dirty, unlike `study_toggle_methods_compare`, which
+deliberately passes `--untracked-files=no` because an untracked file cannot make a run irreproducible
+from its commit — `git checkout <commit>` would not have it. With a local `CLAUDE.md` sitting
+untracked, that definition also made `--update-baseline` **impossible on this machine**, permanently.
+Now aligned to the toggle script's definition, with tests pinning both directions.
+
+Three further guards ported to it, all previously absent:
+
+- it *labelled* a dirty tree but never **refused** one;
+- `--accept-candidate` — the documented no-re-run accept, and so the likeliest route for a bad stamp
+  — promoted candidates without checking they were recorded clean;
+- `record_baseline` read HEAD at *write* time, so an hours-long sweep straddling a commit would stamp
+  code that never ran. The commit is now captured before the sweep, as the toggle script already did.
+
+That script stays **single-machine by design**: every cell in it is `power_model`, so there is nothing
+portable to split off, and it is always run on the Linux laptop.
+
+**Recording the Linux half of the toggle benchmark exercised the invariant for real, and it passed:**
+`Portable baseline unchanged — portability confirmed, not rewritten`. `toggle_specialist`'s cells,
+recorded on the Windows laptop, matched the Linux run within band, so the shared file was left
+untouched — no churn, no conflict, and a live cross-machine confirmation rather than an assumption.
 
 ---
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -20,6 +21,7 @@ from benchmarking.baselines.study_power_model_compare import (
     _check_alignment,
     _conditional_plot_subset,
     _covered_longest,
+    _git_commit,
     _load_baseline_cells,
     _make_power_model,
     _overlay_frame,
@@ -655,3 +657,32 @@ def test_accept_candidate_rejects_wrong_schema(tmp_path: Path) -> None:
     candidate.write_text(json.dumps({"schema": "power_model_compare_baseline_v1", "modes": {}}))
     with pytest.raises(ValueError, match="schema"):
         accept_candidate(candidate, tmp_path / "baseline.json")
+
+
+def test_git_commit_ignores_untracked_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An untracked file must not read as dirty (F30).
+
+    It cannot make a run irreproducible from its commit — `git checkout <commit>` would not have it.
+    Counting it made --update-baseline impossible for anyone with a stray CLAUDE.md, and is the
+    likeliest reason the committed baseline is stamped `-dirty` while reproducing exactly.
+    """
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        out = "abc1234" if "rev-parse" in cmd else ""  # status: clean
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _git_commit() == "abc1234"
+    status = next(cmd for cmd in seen if "status" in cmd)
+    assert "--untracked-files=no" in status, "untracked files must not count towards dirtiness"
+
+
+def test_git_commit_marks_modified_tracked_files_dirty(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        out = "abc1234" if "rev-parse" in cmd else " M benchmarking/baselines/power_model/method.py"
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert _git_commit() == "abc1234-dirty"
