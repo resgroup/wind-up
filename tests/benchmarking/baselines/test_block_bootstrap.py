@@ -247,11 +247,16 @@ class TestTooFewRecordsToFallBackOn:
         return case
 
     def test_a_one_record_cell_gets_a_finite_sigma_from_the_fallback(self) -> None:
-        """The headline fix: 0 or NaN would both be worse answers than a wide number."""
+        """The headline fix: 0 or NaN would both be worse answers than a wide number.
+
+        The bootstrap still *reports* its collapsed value rather than hiding it behind NaN — that is
+        an honest diagnostic, and ``max`` is what stops it reaching the caller.
+        """
         cells = _run(self._sparse_case(1)).cells
-        assert np.isnan(cells["sparse"].sigma_bootstrap), "the bootstrap cannot estimate this cell"
-        assert np.isfinite(cells["sparse"].sigma)
-        assert cells["sparse"].sigma == cells["sparse"].sigma_fallback
+        sparse = cells["sparse"]
+        assert sparse.sigma_bootstrap < sparse.sigma_fallback, "the bootstrap collapses on one record"
+        assert np.isfinite(sparse.sigma)
+        assert sparse.sigma == sparse.sigma_fallback
 
     def test_the_sparse_sigma_is_much_wider_than_the_well_populated_one(self) -> None:
         cells = _run(self._sparse_case(1)).cells
@@ -315,3 +320,49 @@ class TestRelativeScatter:
             case["test_power"], case["ref_total"], upgraded=case["upgraded"], baseline=case["baseline"]
         )
         assert np.isfinite(s_rel)
+
+
+class TestPerfectDataMayReportZero:
+    """Nothing may preclude a zero sigma by construction.
+
+    With noiseless, perfectly-matched data the uplift really is determined, so 0 is the correct
+    answer and a model that cannot express it is mis-specified. There is no irreducible floor to
+    justify one either: F31 tested exactly that hypothesis over campaigns up to a year and found
+    sigma kept shrinking and kept tracking the error down to 0.135 pp.
+
+    An earlier version NaN-ed a zero spread to trap the 1-record artefact. That punished this
+    legitimate case to catch that one; the fallback traps the artefact without the collateral.
+    """
+
+    def _noiseless(self) -> dict:
+        case = _case(noise=0.0)
+        # exactly k * ref, times (1 + uplift) when on: no scatter at all
+        case["test_power"] = 0.8 * case["ref_total"] * np.where(case["upgraded"], 1.03, 1.0)
+        return case
+
+    def test_both_components_vanish_on_noiseless_data(self) -> None:
+        cell = _run(self._noiseless()).cells["overall"]
+        assert cell.sigma_bootstrap == pytest.approx(0.0, abs=1e-9)
+        assert cell.sigma_fallback == pytest.approx(0.0, abs=1e-9)
+
+    def test_the_reported_sigma_reaches_zero(self) -> None:
+        cell = _run(self._noiseless()).cells["overall"]
+        assert cell.sigma == pytest.approx(0.0, abs=1e-9)
+        assert not np.isnan(cell.sigma), "0 is the right answer here, not 'cannot estimate'"
+
+    def test_the_scatter_measure_itself_vanishes(self) -> None:
+        """The fallback is proportional to s_rel, so it can only reach 0 if this does."""
+        case = self._noiseless()
+        s_rel = relative_scatter(
+            case["test_power"], case["ref_total"], upgraded=case["upgraded"], baseline=case["baseline"]
+        )
+        assert s_rel == pytest.approx(0.0, abs=1e-9)
+
+    def test_sigma_scales_down_smoothly_as_noise_falls(self) -> None:
+        """Approaching zero continuously, not hitting a floor."""
+        sigmas = []
+        for noise in (0.10, 0.05, 0.02, 0.005):
+            case = _case(noise=noise)
+            sigmas.append(_run(case).cells["overall"].sigma)
+        assert sigmas == sorted(sigmas, reverse=True)
+        assert sigmas[-1] < sigmas[0] / 10, "no floor is arresting the descent"

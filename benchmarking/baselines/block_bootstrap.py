@@ -41,11 +41,9 @@ _SIGMA_PERCENTILES = (15.865525, 84.134475)
 # Floor on the fallback's degrees of freedom, mirroring wind_up's `clip(lower=2)`: with one
 # record a side has no scatter of its own, so df=1 is the widest t the convention allows.
 _MIN_FALLBACK_DF = 1
-# Fewest records a cell needs on *each* side of its ratio for its sigma to mean anything (F33).
-# Below this the bootstrap does not merely lose precision, it reports a confidently wrong answer:
-# resampling draws whole blocks, so if a cell's records sit in one block, every resample scales the
-# numerator and denominator together (rho = k*test / k*ref) and the ratio never moves. Measured
-# coverage by min(n_on, n_off): 1 -> 0.158, 2 -> 0.237, 3-4 -> 0.579, 5+ -> ~0.68 (target 0.683).
+# Fewest records a segment needs before its own scatter is worth measuring, for `relative_scatter`.
+# The reported sigma has no such threshold: max(bootstrap, fallback) covers the sparse regime without
+# one (F33), and a cliff would preclude a legitimately zero sigma on perfect data.
 _MIN_RECORDS_PER_SIDE = 3
 
 
@@ -56,11 +54,13 @@ class CellUncertainty:
     Both components are kept, not just the reported ``sigma``, so a blend rule can be re-judged
     against a saved sweep rather than by re-running one.
 
-    :param sigma: the reported 1-sigma — ``max(sigma_bootstrap, sigma_fallback)`` (F33)
-    :param sigma_bootstrap: std of the resampled uplifts (``ddof=1``); NaN where the bootstrap cannot
-        estimate one (too few records, too few finite resamples, or a degenerate zero spread)
+    :param sigma: the reported 1-sigma — ``max(sigma_bootstrap, sigma_fallback)`` (F33). May be 0 on
+        perfect data, deliberately: nothing here imposes a floor.
+    :param sigma_bootstrap: std of the resampled uplifts (``ddof=1``); NaN only when there were fewer
+        than two finite resamples. Near-zero where a cell's records share a block and the ratio cannot
+        move, which is why it is blended with the fallback rather than reported alone.
     :param sigma_fallback: the t-inflated per-record-scatter estimate, which stays finite where the
-        bootstrap collapses
+        bootstrap collapses — and vanishes with the noise, so it imposes no floor either
     :param sigma_robust: ``(p84 - p16) / 2`` of the resampled uplifts. Equals ``sigma_bootstrap`` for
         a normal resample distribution; a large gap flags a cell too sparse to bootstrap well.
     :param frac_resamples_finite: fraction of resamples with a finite uplift. Below 1 means resamples
@@ -157,7 +157,6 @@ def bootstrap_ratio_uplift(
     block_hours: float,
     n_resamples: int,
     seed: int,
-    min_records: int = _MIN_RECORDS_PER_SIDE,
 ) -> BootstrapResult:
     """Bootstrap the 1-sigma uncertainty of ``rho_up / rho_base - 1`` for every cell.
 
@@ -180,9 +179,6 @@ def bootstrap_ratio_uplift(
         nothing can vary, so every cell reports NaN rather than a spurious near-zero sigma.
     :param n_resamples: resamples to draw
     :param seed: RNG seed, so a reported sigma is reproducible
-    :param min_records: a cell with fewer than this on *either* side reports NaN rather than a sigma
-        (F33). Below it the bootstrap cannot estimate a variance and silently reports a far too small
-        one — see :data:`_MIN_RECORDS_PER_SIDE`.
     """
     names = list(cell_membership)
     n_records = len(times)
@@ -233,9 +229,7 @@ def bootstrap_ratio_uplift(
         return BootstrapResult(n_blocks=n_blocks, cells=_fallback_only_cells(names, fallback=fallback))
 
     uplift = _uplift_from_totals(totals)
-    estimable = {name: min(on, off) >= min_records for name, (on, off) in counts.items()}
-    cells = _summarise(uplift, names=names, estimable=estimable, fallback=fallback)
-    return BootstrapResult(n_blocks=n_blocks, cells=cells)
+    return BootstrapResult(n_blocks=n_blocks, cells=_summarise(uplift, names=names, fallback=fallback))
 
 
 def _fallback_only_cells(names: list[str], *, fallback: dict[str, float]) -> dict[str, CellUncertainty]:
@@ -297,22 +291,23 @@ def _uplift_from_totals(totals: npt.NDArray[np.float64]) -> npt.NDArray[np.float
 
 
 def _summarise(
-    uplift: npt.NDArray[np.float64],
-    *,
-    names: list[str],
-    estimable: dict[str, bool],
-    fallback: dict[str, float],
+    uplift: npt.NDArray[np.float64], *, names: list[str], fallback: dict[str, float]
 ) -> dict[str, CellUncertainty]:
     """Reduce each cell's resampled uplifts to a bootstrap sigma, and blend it with the fallback.
 
-    The bootstrap's own sigma is NaN where it would be meaningless: too few records to estimate one
-    (``estimable``), too few finite resamples, or a resample spread of exactly zero — which is not a
-    certainty but a sign that every resample returned the same uplift, so the bootstrap could not move
-    this cell at all (F33).
+    The reported sigma is ``max(bootstrap, fallback)``, and that single rule is all the protection
+    needed. The bootstrap sees autocorrelation and block structure the per-record fallback cannot, so
+    it dominates wherever it is valid; the fallback dominates where the bootstrap collapses, which is
+    exactly the sparse-cell regime (F33). Neither component can *reduce* the other.
 
-    The reported sigma is ``max(bootstrap, fallback)``. The bootstrap sees autocorrelation and block
-    structure the per-record fallback cannot, so it dominates wherever it is valid; the fallback only
-    bites where the bootstrap collapses, and can never *reduce* a reported uncertainty.
+    **Nothing here precludes a zero sigma**, deliberately. With perfect input data the uplift really
+    is determined: ``s_rel -> 0`` so the fallback vanishes, the resamples agree so the bootstrap
+    vanishes, and ``max`` reports 0 — the correct answer. An earlier version NaN-ed a zero spread to
+    trap the 1-record artefact; that punished the legitimate case to catch the artefact, and F31 found
+    no irreducible floor to justify it. The fallback stops the artefact reaching 0 on its own.
+
+    The bootstrap reports NaN only when it genuinely has nothing to say: fewer than two finite
+    resamples.
     """
     cells = {}
     for i, name in enumerate(names):
@@ -321,19 +316,15 @@ def _summarise(
         n_finite = int(finite.sum())
         frac = n_finite / len(values)
         kept = values[finite]
-        usable = n_finite >= _MIN_RESAMPLES_FOR_SPREAD and estimable[name] and kept.std(ddof=1) > 0
+        usable = n_finite >= _MIN_RESAMPLES_FOR_SPREAD
         boot = float(kept.std(ddof=1)) if usable else float("nan")
         robust = float(np.subtract(*np.percentile(kept, _SIGMA_PERCENTILES[::-1])) / 2.0) if usable else float("nan")
+        both_nan = not math.isfinite(boot) and not math.isfinite(fallback[name])
         cells[name] = CellUncertainty(
-            sigma=float(np.nanmax([boot, fallback[name]])) if not _all_nan(boot, fallback[name]) else float("nan"),
+            sigma=float("nan") if both_nan else float(np.nanmax([boot, fallback[name]])),
             sigma_bootstrap=boot,
             sigma_fallback=fallback[name],
             sigma_robust=robust,
             frac_resamples_finite=frac,
         )
     return cells
-
-
-def _all_nan(*values: float) -> bool:
-    """Whether every value is NaN (so there is no sigma to report at all)."""
-    return all(not math.isfinite(v) for v in values)
