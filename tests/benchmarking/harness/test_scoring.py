@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from benchmarking.harness.replicates import StudyConfig
-from benchmarking.harness.scoring import score_study
+from benchmarking.harness.campaign import campaign_windows
+from benchmarking.harness.replicates import StudyConfig, build_replicates
+from benchmarking.harness.scoring import _merge_diagnostics, score_one, score_study, truth_mask
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.constants import TIMESTAMP_COL
 
-from .stubs import BiasedMethod, ConditionalOracleMethod, OracleMethod, RecordingMethod
+from .stubs import BiasedMethod, ConditionalOracleMethod, OracleMethod, RecordingMethod, UncertainMethod
 
 PROFILE = [ConstantCpChange(delta=0.05)]
 
@@ -201,3 +203,89 @@ def test_overall_only_method_emits_no_conditional_rows() -> None:
     base = _base_scada()
     results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1))
     assert set(results["condition"]) == {"overall"}
+
+
+# --- uncertainty passthrough -------------------------------------------------------------------
+
+
+def test_sigma_is_nan_for_a_method_that_reports_no_uncertainty() -> None:
+    base = _base_scada()
+    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1))
+    assert "sigma" in results.columns
+    assert results["sigma"].isna().all()
+
+
+def test_sigma_reaches_the_results_for_overall_and_per_bin_rows() -> None:
+    base = _base_scada()
+    results = score_study(
+        base, profile=PROFILE, methods=[UncertainMethod(base, sigma=0.03)], study=_study(n_replicates=1)
+    )
+    overall = results[results["condition"] == "overall"]
+    per_bin = results[results["condition"] != "overall"]
+    assert (overall["sigma"] == 0.03).all()
+    # the stub reports twice the overall sigma per bin, so the two channels are told apart
+    assert (per_bin["sigma"] == 0.06).all()
+
+
+def test_uncertainty_diagnostics_are_carried_to_every_row() -> None:
+    base = _base_scada()
+    results = score_study(
+        base,
+        profile=PROFILE,
+        methods=[UncertainMethod(base, diagnostic_columns={"n_blocks": 7.0, "frac_resamples_finite": 0.5})],
+        study=_study(n_replicates=1),
+    )
+    assert (results["n_blocks"] == 7.0).all()
+    assert (results["frac_resamples_finite"] == 0.5).all()
+
+
+def test_a_diagnostics_column_clashing_with_a_harness_column_raises() -> None:
+    """Silently overwriting `estimate` or `truth` would corrupt the very thing the row reports."""
+    base = _base_scada()
+    with pytest.raises(ValueError, match="clash with columns the harness owns"):
+        score_study(
+            base,
+            profile=PROFILE,
+            methods=[UncertainMethod(base, diagnostic_columns={"estimate": 0.0})],
+            study=_study(n_replicates=1),
+        )
+
+
+def test_diagnostics_missing_a_key_column_raises_a_clear_error() -> None:
+    """A method returning a frame not keyed by (condition, condition_bin) gets a contract error,
+    not an opaque KeyError from the row lookup.
+    """
+    diagnostics = pd.DataFrame([{"condition": "overall", "n_blocks": 7}])  # no condition_bin
+    with pytest.raises(ValueError, match="must be keyed by"):
+        _merge_diagnostics([], diagnostics)
+
+
+# --- score_one is the unit score_study is built from -------------------------------------------
+
+
+def test_score_one_reproduces_score_study_row_for_row() -> None:
+    base = _base_scada()
+    study = _study(n_replicates=2)
+    method = UncertainMethod(base)
+    from_study = score_study(base, profile=PROFILE, methods=[method], study=study, profile_name="p")
+
+    replicates = build_replicates(base, profile=PROFILE, study=study)
+    rows: list[dict] = []
+    for replicate in replicates:
+        for window in campaign_windows(
+            replicate.treatment_start,
+            min_pre_months=study.min_pre_months,
+            campaign_months=study.campaign_months,
+            campaign_weeks=study.campaign_weeks,
+            data_start=base.index.min(),
+            data_end=base.index.max(),
+        ):
+            mask = truth_mask(replicate, window)
+            truth = replicate.true_uplift(mask=mask).overall
+            rows.extend(score_one(method, replicate=replicate, window=window, truth=truth, mask=mask, profile_name="p"))
+    from_one = pd.DataFrame(rows)
+
+    drop = ["wall_time_s"]  # measured per call, so it differs between two runs
+    pd.testing.assert_frame_equal(
+        from_study.drop(columns=drop).reset_index(drop=True), from_one.drop(columns=drop).reset_index(drop=True)
+    )

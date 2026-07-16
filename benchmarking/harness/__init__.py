@@ -6,6 +6,13 @@ generator, reporting accuracy (bias) and precision (spread) as a function of cam
 
 from __future__ import annotations
 
+from benchmarking.harness.calibration import (
+    TARGET_COVERAGE_1SIGMA,
+    CalibrationSummary,
+    calibration_summary,
+    coverage_standard_error,
+    summarize_calibration,
+)
 from benchmarking.harness.campaign import (
     CampaignWindow,
     campaign_windows,
@@ -24,14 +31,16 @@ from benchmarking.harness.leaderboard import conditional_leaderboard, leaderboar
 from benchmarking.harness.method import Method, MethodInput, MethodOutput
 from benchmarking.harness.metrics import ErrorSummary, summarize_errors
 from benchmarking.harness.plots import plot_campaign_curves, plot_conditional_uplift
-from benchmarking.harness.replicates import Replicate, StudyConfig, build_replicates
-from benchmarking.harness.scoring import score_study
+from benchmarking.harness.replicates import Replicate, StudyConfig, build_replicates, iter_replicates
+from benchmarking.harness.scoring import score_one, score_study, truth_mask
 
 __all__ = [
     "CONDITIONS",
     "CONDITION_BINS",
+    "TARGET_COVERAGE_1SIGMA",
     "TI_BINS",
     "WS_BINS",
+    "CalibrationSummary",
     "CampaignWindow",
     "ErrorSummary",
     "Method",
@@ -40,15 +49,21 @@ __all__ = [
     "Replicate",
     "StudyConfig",
     "build_replicates",
+    "calibration_summary",
     "campaign_windows",
     "condition_bins",
     "conditional_leaderboard",
+    "coverage_standard_error",
     "energy_ratio_by_bin",
+    "iter_replicates",
     "leaderboard",
     "plot_campaign_curves",
     "plot_conditional_uplift",
+    "score_one",
     "score_study",
+    "summarize_calibration",
     "summarize_errors",
     "treated_activity_mask",
+    "truth_mask",
     "window_row_mask",
 ]

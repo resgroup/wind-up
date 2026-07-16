@@ -21,6 +21,8 @@ from benchmarking.harness.campaign import resolve_campaign_grid
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, generate_dataset
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import numpy.typing as npt
     import pandas as pd
 
@@ -117,17 +119,19 @@ class Replicate:
         return self.dataset.true_uplift(**kwargs)  # type: ignore[arg-type]
 
 
-def build_replicates(
+def iter_replicates(
     base_scada: pd.DataFrame,
     *,
     profile: list,
     study: StudyConfig,
     columns: ColumnSchema = HOT_COLUMNS,
-) -> list[Replicate]:
-    """Draw ``study.n_replicates`` replicates of ``profile`` from ``base_scada``.
+) -> Iterator[Replicate]:
+    """Yield ``study.n_replicates`` replicates of ``profile`` one at a time.
 
-    Subsets the data to ``turbine_subset``, then draws ``(test turbine, treatment_start)`` pairs
-    deterministically from ``seed`` and injects the profile via the synthetic generator.
+    The streaming counterpart of :func:`build_replicates`, yielding the same replicates in the same
+    order. A replicate carries a ``synthetic_df`` *and* the ``original_df`` its ground truth needs
+    (~0.5 GB for a multi-year, few-turbine dataset), so a large ensemble must iterate here and let
+    each be freed rather than materialising them all.
 
     :param columns: the source-native column schema ``base_scada`` is keyed by
     """
@@ -136,7 +140,6 @@ def build_replicates(
 
     rng = np.random.default_rng(study.seed)
     turbines = np.asarray(study.turbine_subset)
-    replicates = []
     for replicate_id in range(study.n_replicates):
         test_wtg = str(rng.choice(turbines))
         treatment_start = candidates[int(rng.integers(len(candidates)))]
@@ -150,16 +153,33 @@ def build_replicates(
             columns=columns,
             seed=study.seed,
         )
-        replicates.append(
-            Replicate(
-                dataset=dataset,
-                test_wtg=test_wtg,
-                treatment_start=treatment_start,
-                upgrade_timing=upgrade_timing,
-                replicate_id=replicate_id,
-            )
+        yield Replicate(
+            dataset=dataset,
+            test_wtg=test_wtg,
+            treatment_start=treatment_start,
+            upgrade_timing=upgrade_timing,
+            replicate_id=replicate_id,
         )
-    return replicates
+
+
+def build_replicates(
+    base_scada: pd.DataFrame,
+    *,
+    profile: list,
+    study: StudyConfig,
+    columns: ColumnSchema = HOT_COLUMNS,
+) -> list[Replicate]:
+    """Draw ``study.n_replicates`` replicates of ``profile`` from ``base_scada``.
+
+    Subsets the data to ``turbine_subset``, then draws ``(test turbine, treatment_start)`` pairs
+    deterministically from ``seed`` and injects the profile via the synthetic generator.
+
+    Materialises every replicate at once; see :func:`iter_replicates` to stream them instead when
+    the ensemble is large enough for that to matter.
+
+    :param columns: the source-native column schema ``base_scada`` is keyed by
+    """
+    return list(iter_replicates(base_scada, profile=profile, study=study, columns=columns))
 
 
 def _candidate_starts(

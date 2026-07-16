@@ -12,6 +12,12 @@ not effect), so the estimate still
 never conditions on the test turbine's post-treatment wind speed (design-note §3). It speaks the
 data source's own column names and has no wind_up dependency.
 
+Every uplift — the headline and each power bin — comes with a non-optional 1-sigma uncertainty from
+a circular block bootstrap (:mod:`benchmarking.baselines.block_bootstrap`). It is computed after the
+uplift, from the uplift's own frozen row selection and bin assignment, and only when the uplift is
+finite, so it cannot change any uplift result. The bootstrap sees sampling variability only, so
+sigma under-covers where the method is biased (F29).
+
 Each run writes a per-run folder ``toggle_specialist_<test>_<upgradestart>_<lastdate>/``
 (v0-style naming) under ``out_dir`` (a temp dir by default), holding a per-segment data-stats CSV,
 a headline results CSV, and -- when ``save_plots`` -- three diagnostic plots (a test-vs-reference
@@ -32,6 +38,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
+from benchmarking.baselines.block_bootstrap import BootstrapResult, bootstrap_ratio_uplift
 from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import condition_bins, energy_ratio_by_bin, validate_conditions
@@ -46,6 +53,11 @@ if TYPE_CHECKING:
 
 _SEGMENTS = ("all", "baseline", "upgraded")
 _MIN_POINTS_FOR_TIMEBASE = 2
+# The cell name (and the ``(condition, condition_bin)`` key) of the headline uplift.
+_OVERALL = "overall"
+# Circular-block length for the uncertainty bootstrap, in hours. Must hold several on/off toggle
+# cycles, so raise it for a campaign with a slow toggle period.
+DEFAULT_BLOCK_HOURS = 6.0
 # ``power`` is the only axis this method can offer: it is derived from the references, so the
 # treatment cannot move a row between bins. Binning by the test turbine's ws/TI would condition on
 # post-treatment signals, which this method exists not to do (see the module docstring).
@@ -111,6 +123,14 @@ class ToggleSpecialistMethod:
         ``conditions`` because the power bin edges scale with the rating. Named without a
         ``baseline_`` qualifier (unlike ``PowerModelMethod``): this method has no fitted baseline
         model, and the rating cannot differ between the toggle states.
+    :param block_hours: circular-block length for the uncertainty bootstrap. It must hold several
+        complete on/off toggle cycles (so the pairing survives) and stay a small fraction of the
+        campaign (so the resampled blocks do not all overlap). :data:`DEFAULT_BLOCK_HOURS` suits a
+        toggle of tens of minutes; **raise it for a campaign whose toggle period is slow enough that
+        the default spans only a cycle or two.**
+    :param n_resamples: bootstrap resamples. The block sums are precomputed, so a resample is a
+        gather rather than a pass over the data and this can be generous.
+    :param bootstrap_seed: RNG seed for the bootstrap, so a reported sigma is reproducible.
     """
 
     columns: ColumnSchema
@@ -120,6 +140,9 @@ class ToggleSpecialistMethod:
     timebase: pd.Timedelta | None = None
     conditions: tuple[str, ...] = ()
     rated_power_kw: float | None = None
+    block_hours: float = DEFAULT_BLOCK_HOURS
+    n_resamples: int = 1000
+    bootstrap_seed: int = 0
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -184,6 +207,33 @@ class ToggleSpecialistMethod:
             else None
         )
 
+        # Uncertainty runs strictly after the uplift, off the same frozen row selection and bin
+        # assignment, and only when there is a finite uplift to qualify.
+        membership = self._cell_membership(rho_base=rho_base, ref_total=ref_total, used=used)
+        boot = (
+            self._bootstrap(
+                index=wide.index,
+                test_pw=test_pw,
+                ref_total=ref_total,
+                used=used,
+                upgraded=rows.upgraded,
+                baseline=baseline,
+                membership=membership,
+                timebase=timebase,
+            )
+            if np.isfinite(uplift)
+            else None
+        )
+        if per_bin is not None:
+            per_bin["sigma_uplift"] = [_cell_sigma(boot, str(b)) for b in per_bin["condition_bin"]]
+        diagnostics = _uncertainty_diagnostics(
+            boot,
+            membership=membership,
+            upgraded=used & rows.upgraded,
+            baseline=used & baseline,
+            used=used,
+        )
+
         stats = _segment_stats(
             mi,
             wide=wide,
@@ -193,6 +243,7 @@ class ToggleSpecialistMethod:
             timebase=timebase,
             active_power_col=self.columns.active_power,
         )
+        sigma_overall = _cell_sigma(boot, _OVERALL)
         self._write_outputs(
             mi,
             wide=wide,
@@ -201,11 +252,76 @@ class ToggleSpecialistMethod:
             rho_base=rho_base,
             rho_up=rho_up,
             uplift=uplift,
+            sigma_overall=sigma_overall,
             n_refs=len(refs),
             timebase=timebase,
             per_bin=per_bin,
+            diagnostics=diagnostics,
         )
-        return MethodOutput(p50_overall=float(uplift), p50_by_condition=per_bin)
+        return MethodOutput(
+            p50_overall=float(uplift),
+            p50_by_condition=per_bin,
+            sigma_overall=sigma_overall,
+            uncertainty_diagnostics=diagnostics,
+        )
+
+    def _cell_membership(
+        self,
+        *,
+        rho_base: float,
+        ref_total: npt.NDArray[np.float64],
+        used: npt.NDArray[np.bool_],
+    ) -> dict[str, npt.NDArray[np.bool_]]:
+        """Which **used** records belong to each bootstrap cell: the headline, plus each power bin.
+
+        Reuses :meth:`_conditional_frame`'s own label and edges, so a record's cell is fixed by the
+        uplift computation and cannot move under resampling.
+        """
+        used_idx = np.flatnonzero(used)
+        membership: dict[str, npt.NDArray[np.bool_]] = {_OVERALL: np.ones(len(used_idx), dtype=bool)}
+        if "power" not in self.conditions or not np.isfinite(rho_base):
+            return membership
+        assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
+        bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
+        assigned = pd.cut(rho_base * ref_total[used_idx], bins=bins)
+        for category in assigned.categories:
+            membership[str(category)] = np.asarray(assigned == category)
+        return membership
+
+    def _bootstrap(
+        self,
+        *,
+        index: pd.DatetimeIndex,
+        test_pw: npt.NDArray[np.float64],
+        ref_total: npt.NDArray[np.float64],
+        used: npt.NDArray[np.bool_],
+        upgraded: npt.NDArray[np.bool_],
+        baseline: npt.NDArray[np.bool_],
+        membership: dict[str, npt.NDArray[np.bool_]],
+        timebase: pd.Timedelta,
+    ) -> BootstrapResult:
+        """Run the circular block bootstrap over the used records of the campaign.
+
+        The campaign span is taken from the on/off rows rather than from ``index``, so blocks tile
+        the campaign itself even when the caller's window carries pre-campaign rows the estimate
+        never used.
+        """
+        used_idx = np.flatnonzero(used)
+        campaign = upgraded | baseline
+        return bootstrap_ratio_uplift(
+            times=index[used_idx],
+            test_power=test_pw[used_idx],
+            ref_total=ref_total[used_idx],
+            upgraded=upgraded[used_idx],
+            baseline=baseline[used_idx],
+            cell_membership=membership,
+            campaign_start=index[campaign].min(),
+            campaign_end=index[campaign].max(),
+            timebase=timebase,
+            block_hours=self.block_hours,
+            n_resamples=self.n_resamples,
+            seed=self.bootstrap_seed,
+        )
 
     def _conditional_frame(
         self,
@@ -288,9 +404,11 @@ class ToggleSpecialistMethod:
         rho_base: float,
         rho_up: float,
         uplift: float,
+        sigma_overall: float,
         n_refs: int,
         timebase: pd.Timedelta,
         per_bin: pd.DataFrame | None = None,
+        diagnostics: pd.DataFrame | None = None,
     ) -> None:
         """Write the data-stats CSV, the headline results CSV, the per-bin CSV and (optionally) the plots."""
         upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
@@ -317,6 +435,9 @@ class ToggleSpecialistMethod:
                     "ratio_baseline": rho_base,
                     "ratio_upgraded": rho_up,
                     "uplift_frc": uplift,
+                    "uplift_sigma_frc": sigma_overall,
+                    "block_hours": self.block_hours,
+                    "n_resamples": self.n_resamples,
                     "n_used_timestamps_baseline": used_base,
                     "n_used_timestamps_upgraded": used_up,
                     "time_calculated": pd.Timestamp.utcnow(),
@@ -327,6 +448,8 @@ class ToggleSpecialistMethod:
 
         if per_bin is not None:
             per_bin.to_csv(run_dir / f"{run_name}_by_power_bin_{ts}.csv", index=False)
+        if diagnostics is not None:
+            diagnostics.to_csv(run_dir / f"{run_name}_uncertainty_{ts}.csv", index=False)
 
         if self.save_plots:
             _save_plots(
@@ -399,6 +522,53 @@ def _per_bin_counterfactual(
     }
     rho_row = np.asarray(pd.Series(assigned).map(rho_by_bin).astype(float))
     return rho_row * ref_total
+
+
+def _cell_sigma(boot: BootstrapResult | None, cell: str) -> float:
+    """Return one cell's 1-sigma, or NaN when the bootstrap did not run or never saw that cell."""
+    if boot is None or cell not in boot.cells:
+        return float("nan")
+    return boot.cells[cell].sigma
+
+
+def _uncertainty_diagnostics(
+    boot: BootstrapResult | None,
+    *,
+    membership: dict[str, npt.NDArray[np.bool_]],
+    upgraded: npt.NDArray[np.bool_],
+    baseline: npt.NDArray[np.bool_],
+    used: npt.NDArray[np.bool_],
+) -> pd.DataFrame:
+    """Per-cell account of how the uncertainty was reached, keyed by ``(condition, condition_bin)``.
+
+    Carried through the harness seam uninterpreted, so an uncertainty model can be developed against
+    a saved sweep rather than by re-running one. Emitted even when the bootstrap did not run: the
+    counts are what explain why. Both counts are reported because a cell fails when either side of
+    its ratio runs out, and a single total would hide which.
+    """
+    used_idx = np.flatnonzero(used)
+    up_used = upgraded[used_idx]
+    base_used = baseline[used_idx]
+    nan = float("nan")
+    rows = []
+    for cell, member in membership.items():
+        cell_boot = boot.cells[cell] if boot is not None and cell in boot.cells else None
+        rows.append(
+            {
+                "condition": _OVERALL if cell == _OVERALL else "power",
+                "condition_bin": cell,
+                "n_upgraded_records": int((member & up_used).sum()),
+                "n_baseline_records": int((member & base_used).sum()),
+                "n_blocks": boot.n_blocks if boot is not None else 0,
+                # Both components, not just the reported max: a blend rule can then be re-judged from
+                # a saved sweep rather than by re-running one.
+                "sigma_bootstrap": cell_boot.sigma_bootstrap if cell_boot is not None else nan,
+                "sigma_fallback": cell_boot.sigma_fallback if cell_boot is not None else nan,
+                "sigma_robust": cell_boot.sigma_robust if cell_boot is not None else nan,
+                "frac_resamples_finite": cell_boot.frac_resamples_finite if cell_boot is not None else nan,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _rho(test_pw: npt.NDArray[np.float64], ref_total: npt.NDArray[np.float64], mask: npt.NDArray[np.bool_]) -> float:

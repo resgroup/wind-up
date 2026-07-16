@@ -590,3 +590,156 @@ class TestCampaignOnly:
         baseline = _read_only_csv(tmp_path, "data_stats").set_index("segment").loc["baseline"]
         # the baseline class starts at/after the campaign start; the pre-campaign rows are excluded.
         assert pd.Timestamp(baseline["first_timestamp"]) >= start
+
+
+# --- uncertainty (non-optional, computed after the uplift) --------------------------------------
+
+
+def _noisy_toggle_case(n: int = 2016, *, uplift: float = 0.03, noise_frac: float = 0.05) -> tuple:
+    """A campaign long enough to bootstrap, with per-record noise so sigma has something to find."""
+    idx = _index(n)
+    schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=idx[0])
+    treated = np.asarray(treated_mask(idx, schedule))
+    scada = _varying_rho_scada(idx, treated=treated, uplift=uplift, noise_frac=noise_frac)
+    return scada, schedule
+
+
+def _estimate(scada: pd.DataFrame, schedule: ToggleSchedule, **kwargs: object) -> MethodOutput:
+    return ToggleSpecialistMethod(columns=_COLUMNS, **kwargs).estimate(
+        MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+    )
+
+
+class TestUncertaintyIsAlwaysReported:
+    def test_overall_sigma_is_reported_without_being_asked_for(self) -> None:
+        """Uncertainty is not an opt-in: an uplift with no sigma is not a usable answer."""
+        out = _estimate(*_noisy_toggle_case())
+        assert out.sigma_overall is not None
+        assert np.isfinite(out.sigma_overall)
+        assert out.sigma_overall > 0
+
+    def test_every_reported_bin_carries_a_sigma(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
+        assert out.p50_by_condition is not None
+        assert "sigma_uplift" in out.p50_by_condition.columns
+        populated = out.p50_by_condition[out.p50_by_condition["n_records"] > 0]
+        assert len(populated) > 0
+        assert populated["sigma_uplift"].notna().all()
+
+    def test_diagnostics_cover_the_headline_and_every_bin(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
+        diag = out.uncertainty_diagnostics
+        assert diag is not None
+        assert (diag["condition"] == "overall").sum() == 1
+        assert set(diag.columns) >= {
+            "condition",
+            "condition_bin",
+            "n_upgraded_records",
+            "n_baseline_records",
+            "n_blocks",
+            "sigma_robust",
+            "frac_resamples_finite",
+        }
+        overall = diag[diag["condition"] == "overall"].iloc[0]
+        assert overall["n_upgraded_records"] > 0
+        assert overall["n_baseline_records"] > 0
+
+
+class TestUncertaintyDoesNotChangeUplift:
+    def test_block_length_moves_the_bootstrap_and_nothing_else(self) -> None:
+        """The session's hard constraint, at the method's own seam.
+
+        Asserted on the *bootstrap* component, not the reported sigma: the reported value is
+        ``max(bootstrap, fallback)``, and the fallback does not depend on block length — so on data
+        where it wins at both lengths it would mask the difference this test exists to check.
+        """
+        scada, schedule = _noisy_toggle_case()
+        a = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW, block_hours=6.0)
+        b = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW, block_hours=96.0)
+        assert a.p50_overall == b.p50_overall
+        pd.testing.assert_series_equal(
+            a.p50_by_condition["p50_uplift"],
+            b.p50_by_condition["p50_uplift"],  # type: ignore[index]
+        )
+        boots = [
+            out.uncertainty_diagnostics.set_index("condition_bin").loc["overall", "sigma_bootstrap"]  # type: ignore[union-attr]
+            for out in (a, b)
+        ]
+        assert boots[0] != boots[1]
+
+    def test_uplift_matches_a_run_with_the_bootstrap_reduced_to_nothing(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        full = _estimate(scada, schedule, n_resamples=1000)
+        minimal = _estimate(scada, schedule, n_resamples=2)
+        assert full.p50_overall == minimal.p50_overall
+
+
+class TestUncertaintyRunsOnlyWhenThereIsAnUpliftToQualify:
+    def test_a_nan_uplift_reports_a_nan_sigma(self) -> None:
+        """No baseline rows means no uplift; there is nothing for an uncertainty to describe."""
+        idx = _index(40)
+        # every row treated -> no off rows -> rho_base is NaN
+        scada = _recovery_scada(idx, treated=np.ones(len(idx), dtype=bool))
+        out = ToggleSpecialistMethod(columns=_COLUMNS).estimate(
+            MethodInput(
+                scada_df=scada,
+                test_wtg="T1",
+                upgrade_timing=pd.DataFrame({"toggle_on": True, "toggle_off": False}, index=idx),
+                turbine_col=_TURBINE_COL,
+            )
+        )
+        assert np.isnan(out.p50_overall)
+        assert out.sigma_overall is not None
+        assert np.isnan(out.sigma_overall)
+
+    def test_the_bootstrap_is_not_run_when_the_uplift_is_nan(self) -> None:
+        """Diagnostics still report the counts: they are what explains why there was no answer."""
+        idx = _index(40)
+        scada = _recovery_scada(idx, treated=np.ones(len(idx), dtype=bool))
+        out = ToggleSpecialistMethod(columns=_COLUMNS, conditions=("power",), rated_power_kw=_RATED_KW).estimate(
+            MethodInput(
+                scada_df=scada,
+                test_wtg="T1",
+                upgrade_timing=pd.DataFrame({"toggle_on": True, "toggle_off": False}, index=idx),
+                turbine_col=_TURBINE_COL,
+            )
+        )
+        diag = out.uncertainty_diagnostics
+        assert diag is not None
+        assert (diag["n_blocks"] == 0).all()
+        assert diag["frac_resamples_finite"].isna().all()
+        assert (diag["n_baseline_records"] == 0).all()
+
+
+class TestUncertaintyReproducibility:
+    def test_the_same_seed_gives_the_same_sigma(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        a = _estimate(scada, schedule, bootstrap_seed=3)
+        b = _estimate(scada, schedule, bootstrap_seed=3)
+        assert a.sigma_overall == b.sigma_overall
+
+    def test_a_longer_campaign_reports_a_smaller_sigma(self) -> None:
+        short = _estimate(*_noisy_toggle_case(n=1008))
+        long = _estimate(*_noisy_toggle_case(n=8064))
+        assert long.sigma_overall < short.sigma_overall  # type: ignore[operator]
+
+
+class TestUncertaintyInTheWrittenOutputs:
+    def test_results_csv_records_the_sigma_and_the_bootstrap_config(self, tmp_path: Path) -> None:
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, out_dir=tmp_path, block_hours=24.0)
+        results = pd.concat([pd.read_csv(p) for p in tmp_path.glob("*/*_results_*.csv")])
+        assert results["uplift_sigma_frc"].iloc[0] == pytest.approx(out.sigma_overall)
+        assert results["block_hours"].iloc[0] == 24.0
+        assert results["n_resamples"].iloc[0] == 1000
+
+    def test_an_uncertainty_csv_is_written(self, tmp_path: Path) -> None:
+        scada, schedule = _noisy_toggle_case()
+        _estimate(scada, schedule, out_dir=tmp_path, conditions=("power",), rated_power_kw=_RATED_KW)
+        written = list(tmp_path.glob("*/*_uncertainty_*.csv"))
+        assert len(written) == 1
+        frame = pd.read_csv(written[0])
+        assert "n_upgraded_records" in frame.columns
+        assert len(frame) == 7  # overall + six power bins

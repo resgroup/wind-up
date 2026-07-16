@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.harness.replicates import Replicate, StudyConfig, build_replicates
+from benchmarking.harness.replicates import Replicate, StudyConfig, build_replicates, iter_replicates
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange, ToggleSchedule
 from wind_up.constants import TIMESTAMP_COL
 
@@ -185,3 +185,28 @@ def test_injected_upgrade_actually_changed_the_test_turbine() -> None:
     test_syn = syn[syn[HOT_COLUMNS.turbine] == r.test_wtg][HOT_COLUMNS.active_power].to_numpy()
     test_orig = orig[orig[HOT_COLUMNS.turbine] == r.test_wtg][HOT_COLUMNS.active_power].to_numpy()
     assert np.any(test_syn != test_orig)  # the profile left a mark
+
+
+# --- streaming ---------------------------------------------------------------------------------
+
+
+def test_iter_replicates_yields_the_same_replicates_as_build_replicates() -> None:
+    base = _base_scada()
+    study = _study(n_replicates=4)
+    built = build_replicates(base, profile=PROFILE, study=study)
+    streamed = list(iter_replicates(base, profile=PROFILE, study=study))
+
+    assert len(streamed) == len(built)
+    for a, b in zip(built, streamed, strict=True):
+        assert a.test_wtg == b.test_wtg
+        assert a.treatment_start == b.treatment_start
+        assert a.replicate_id == b.replicate_id
+        pd.testing.assert_frame_equal(a.synthetic_df, b.synthetic_df)
+
+
+def test_iter_replicates_is_lazy() -> None:
+    """The point of streaming: nothing is generated until asked for, so memory stays bounded."""
+    base = _base_scada()
+    stream = iter_replicates(base, profile=PROFILE, study=_study(n_replicates=100))
+    first = next(stream)  # would be unusably slow and huge if all 100 were built up front
+    assert first.replicate_id == 0
