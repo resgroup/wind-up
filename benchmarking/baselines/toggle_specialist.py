@@ -551,6 +551,7 @@ def _uncertainty_diagnostics(
     used_idx = np.flatnonzero(used)
     up_used = upgraded[used_idx]
     base_used = baseline[used_idx]
+    nan = float("nan")
     rows = []
     for cell, member in membership.items():
         cell_boot = boot.cells[cell] if boot is not None and cell in boot.cells else None
@@ -561,8 +562,12 @@ def _uncertainty_diagnostics(
                 "n_upgraded_records": int((member & up_used).sum()),
                 "n_baseline_records": int((member & base_used).sum()),
                 "n_blocks": boot.n_blocks if boot is not None else 0,
-                "sigma_robust": cell_boot.sigma_robust if cell_boot is not None else float("nan"),
-                "frac_resamples_finite": cell_boot.frac_resamples_finite if cell_boot is not None else float("nan"),
+                # Both components, not just the reported max: a blend rule can then be re-judged from
+                # a saved sweep rather than by re-running one.
+                "sigma_bootstrap": cell_boot.sigma_bootstrap if cell_boot is not None else nan,
+                "sigma_fallback": cell_boot.sigma_fallback if cell_boot is not None else nan,
+                "sigma_robust": cell_boot.sigma_robust if cell_boot is not None else nan,
+                "frac_resamples_finite": cell_boot.frac_resamples_finite if cell_boot is not None else nan,
             }
         )
     return pd.DataFrame(rows)

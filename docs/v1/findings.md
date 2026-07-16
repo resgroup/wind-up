@@ -7,6 +7,63 @@ from, not just conclusions.
 
 ---
 
+## F33 — A per-bin cell with 1-2 records reports a **confidently wrong** sigma (coverage 0.158, and one cell reported sigma **exactly 0** while being 14 pp out). The bootstrap cannot estimate a variance from records that share a block — so below 3 records per side it must report NaN, not a number
+
+*2026-07-16. Prompted by the question "what does a bin with only one or two data points do?" — a case
+F29/F31/F32 had all bucketed away. Reproduce: the 256-replicate `cases.csv`, per-bin cells binned on
+`min(n_upgraded_records, n_baseline_records)`.*
+
+**The failure.** Measured coverage by the cell's *thinner* side (either side starves the ratio):
+
+| min(n_on, n_off) | 1 | 2 | 3-4 | 5-7 | 8-11 | 12-20 | 21-50 | >50 |
+|---|---|---|---|---|---|---|---|---|
+| coverage | **0.158** | **0.237** | 0.579 | 0.656 | 0.718 | 0.724 | 0.676 | 0.680 |
+| SE from target | **-3.0** | **-2.5** | -0.7 | -0.2 | +0.3 | +0.6 | -0.2 | -0.3 |
+| median sigma [pp] | 0.90 | 2.34 | 3.82 | 4.88 | 4.90 | 3.95 | 3.01 | 1.07 |
+| median \|error\| [pp] | 7.18 | 4.16 | 2.77 | 2.89 | 2.31 | 2.09 | 1.78 | 0.63 |
+
+At one record per side sigma is **8x too small**; **8 cells reported sigma exactly 0.0** with a median
+error of 10 pp and a worst of 22.6 pp. A reader would see "uplift -14.3% ± 0.0%".
+
+**Why, and why it is not merely imprecision.** The bootstrap resamples whole **blocks**. If a cell's
+records sit inside one block, a resample either includes that block `k` times or not at all — and the
+ratio is `k*test / k*ref`, which is **independent of `k`**. Every finite resample returns the
+identical uplift, so the spread is zero. The bootstrap does not lose precision here; it reports
+certainty. That is the worst possible failure mode for a number whose entire job is to say how much
+to trust an estimate.
+
+**Why the earlier rounds missed it, which is the more useful lesson.** F29/F31/F32 all bucketed
+per-bin coverage at `(0, 30]` records, which averages to a reassuring **0.623** and hides a 0.158
+subset inside it. Worse, `calibration_summary` requires `sigma > 0`, so it counted the exact-zero
+cells as `n_unusable` and **excluded the very worst cases from the coverage metric** — the statistic
+was structurally blind to the failure it most needed to see. `n_unusable` was reported in every table
+and never analysed. **A metric that drops its own pathological cases will always look calibrated.**
+
+**The fix: a validity floor, not an additive term.** This *is* the data-count effect anticipated at
+design time (and repeatedly "rejected" in F29/F31 by looking at the wrong resolution), but it is not
+a term to add in quadrature — below the floor there is no variance estimate to correct, so the honest
+output is NaN. Two complementary guards, both in `block_bootstrap`:
+
+1. `min_records = 3` per side (`_MIN_RECORDS_PER_SIDE`) — set where coverage recovers: 1-2 are
+   -2.5..-3.0 SE, 3-4 is -0.7 SE, 5+ is at target.
+2. a degeneracy check — a resample spread of exactly zero, or a single block spanning the campaign
+   (`n_blocks < 2`, which previously returned ~1e-15 float residue and reads as "±0.0 pp"), also
+   reports NaN. This catches the pathology even if the floor is lowered.
+
+`frac_resamples_finite` is still reported alongside, so NaN says "no" and the diagnostic says why.
+
+**Scope: 1,917 of 82,944 per-bin cells (2.3%), of which 603 previously reported a finite — and
+false — sigma. Zero headline cells are affected**, and no uplift changes (verified: the compare
+reports both methods UNCHANGED).
+
+**A tension worth naming.** The brief was that uncertainty is never optional. A NaN sigma is
+formally "no uncertainty" — but the alternative here is a *lie*, and "this bin has too little data to
+quantify" is an actionable input to a decision in a way that "±0.0%" is not. The point estimate for
+such a bin is equally meaningless; leaving it in place while NaN-ing its sigma is deliberate (uplift
+must not change), but a future issue could reasonably suppress both.
+
+---
+
 ## F32 — At 256 replicates the bootstrap-only sigma is **calibrated**: pooled coverage 0.682 vs a 0.683 target at 6h blocks, every campaign length from 1 week to 1 year within 0.5 SE. No further uncertainty component is justified, and the 6h default is confirmed rather than merely safe
 
 *2026-07-16 (toggle-specialist uncertainty, round 3 — the power run F31 asked for). Reproduce:
@@ -47,14 +104,23 @@ were statistically indistinguishable. At 256 replicates they are distinguishable
 argument (9 toggle cycles per block; enough blocks even at 1 week) picked the value the data now
 independently endorses.
 
-**Where this leaves the uncertainty work.** Every component anticipated at design time is now
-rejected on evidence — the low-count term (F29, F31), the campaign-level systematic floor (F31), and
-the shape correction (F31, itself an artefact). What remains is a plain circular block bootstrap at
-6h blocks, calibrated from one week to one year across placebo and +/-2% profiles. **The right move
-is to add nothing.** The residual caveats are honest and small: 52-week coverage rests on only ~16
-independent draws (SE 0.116), and ~1.6% of 1-week campaigns report a very large sigma where the
-reference denominator nears zero — correct behaviour, but it makes `mean_sigma` a misleading summary
-(use medians or coverage).
+**Where this leaves the uncertainty work.** The *scale* corrections anticipated at design time are
+rejected on evidence — an inflation (above), the campaign-level systematic floor (F31), and the shape
+correction (F31, itself an artefact). What remains is a plain circular block bootstrap at 6h blocks,
+calibrated from one week to one year across placebo and +/-2% profiles.
+
+> **Corrected by F33.** This section originally concluded "the right move is to add nothing",
+> including the low-count term. That was wrong, and wrong for an instructive reason: every coverage
+> read here pools per-bin cells at `(0, 30]` records, which averages a broken 0.158 subset (1-2
+> records) into a reassuring 0.623 — and `calibration_summary` excludes `sigma <= 0` cells as
+> `n_unusable`, so the metric structurally dropped the worst cases. A **validity floor** at 3 records
+> per side *is* justified. The claim that survives is narrower and still holds: no *scale* correction
+> is justified where a sigma is estimable at all.
+
+The residual caveats are honest and small: 52-week coverage rests on only ~16 independent draws
+(SE 0.116), and ~1.6% of 1-week campaigns report a very large sigma where the reference denominator
+nears zero — correct behaviour, but it makes `mean_sigma` a misleading summary (use medians or
+coverage).
 
 ---
 

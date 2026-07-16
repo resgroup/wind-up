@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.block_bootstrap import bootstrap_ratio_uplift
+from benchmarking.baselines.block_bootstrap import bootstrap_ratio_uplift, relative_scatter
 
 _TIMEBASE = pd.Timedelta(minutes=10)
 
@@ -59,8 +59,8 @@ def _case(
     }
 
 
-def _run(case: dict, *, block_hours: float = 48.0, n_resamples: int = 400, seed: int = 0):  # noqa: ANN202
-    return bootstrap_ratio_uplift(**case, block_hours=block_hours, n_resamples=n_resamples, seed=seed)
+def _run(case: dict, *, block_hours: float = 48.0, n_resamples: int = 400, seed: int = 0, **kw: object):  # noqa: ANN202
+    return bootstrap_ratio_uplift(**case, block_hours=block_hours, n_resamples=n_resamples, seed=seed, **kw)
 
 
 class TestSigma:
@@ -128,15 +128,18 @@ class TestBlockLength:
         assert _run(_case(n=2016), block_hours=48.0).n_blocks == 7
         assert _run(_case(n=2016), block_hours=24.0).n_blocks == 14
 
-    def test_a_block_longer_than_the_campaign_reports_a_degenerate_zero_sigma(self) -> None:
-        """Clamped to the campaign, so every resample is the whole campaign and sigma collapses.
+    def test_a_block_longer_than_the_campaign_falls_back_rather_than_claiming_certainty(self) -> None:
+        """One block spans the campaign, so no resample can vary: the bootstrap has nothing to say.
 
-        Reported rather than hidden: a zero sigma is visibly degenerate downstream, where a quietly
-        small one would not be.
+        It used to return ~1e-15 — float residue, which a reader sees as "+/-0.0 pp" and reads as
+        certainty. Now the bootstrap reports NaN and the fallback carries the cell.
         """
         result = _run(_case(n=1008), block_hours=1000.0)
         assert result.n_blocks == 1
-        assert result.cells["overall"].sigma == pytest.approx(0.0, abs=1e-12)
+        cell = result.cells["overall"]
+        assert np.isnan(cell.sigma_bootstrap)
+        assert np.isfinite(cell.sigma)
+        assert cell.sigma == cell.sigma_fallback
 
 
 class TestReproducibility:
@@ -221,3 +224,94 @@ class TestDegenerate:
         shuffled["cell_membership"] = {k: v[shuffle] for k, v in case["cell_membership"].items()}
 
         assert _run(shuffled, n_resamples=800).cells["overall"].sigma == pytest.approx(ordered)
+
+
+class TestTooFewRecordsToFallBackOn:
+    """A cell too sparse to bootstrap must still get an honest, wide sigma — not 0, and not NaN (F33).
+
+    Resampling draws whole *blocks*, so if a cell's records sit in one block, every resample scales
+    numerator and denominator together (rho = k*test / k*ref) and the ratio never moves: the bootstrap
+    returns near-total confidence in a number built from one or two points. Measured on real
+    campaigns: coverage 0.158 at one record per side and 0.237 at two (target 0.683), with one cell
+    reporting sigma exactly 0 while being 14 pp wrong. The fallback is what covers that regime.
+    """
+
+    def _sparse_case(self, n_per_side: int) -> dict:
+        """A case whose 'sparse' cell holds exactly ``n_per_side`` records on each side."""
+        case = _case(n=2016)
+        n = len(case["times"])
+        sparse = np.zeros(n, dtype=bool)
+        sparse[np.flatnonzero(case["upgraded"])[:n_per_side]] = True
+        sparse[np.flatnonzero(case["baseline"])[:n_per_side]] = True
+        case["cell_membership"] = {"overall": np.ones(n, dtype=bool), "sparse": sparse}
+        return case
+
+    def test_a_one_record_cell_gets_a_finite_sigma_from_the_fallback(self) -> None:
+        """The headline fix: 0 or NaN would both be worse answers than a wide number."""
+        cells = _run(self._sparse_case(1)).cells
+        assert np.isnan(cells["sparse"].sigma_bootstrap), "the bootstrap cannot estimate this cell"
+        assert np.isfinite(cells["sparse"].sigma)
+        assert cells["sparse"].sigma == cells["sparse"].sigma_fallback
+
+    def test_the_sparse_sigma_is_much_wider_than_the_well_populated_one(self) -> None:
+        cells = _run(self._sparse_case(1)).cells
+        assert cells["sparse"].sigma > 10 * cells["overall"].sigma
+
+    def test_sigma_narrows_as_records_are_added(self) -> None:
+        """The fallback scales as sqrt(1/n_on + 1/n_off), so more data must mean less uncertainty."""
+        sigmas = [_run(self._sparse_case(n)).cells["sparse"].sigma for n in (1, 2, 4, 8)]
+        assert sigmas == sorted(sigmas, reverse=True)
+
+    def test_a_well_populated_cell_keeps_its_bootstrap(self) -> None:
+        """The fallback must not disturb the regime the bootstrap already covers (F32)."""
+        cell = _run(self._sparse_case(1)).cells["overall"]
+        assert np.isfinite(cell.sigma_bootstrap)
+        assert cell.sigma == cell.sigma_bootstrap
+        assert cell.sigma_bootstrap > cell.sigma_fallback, "the bootstrap sees structure the fallback cannot"
+
+    def test_both_components_are_always_reported(self) -> None:
+        """So a blend rule can be re-judged from a saved sweep without re-running it."""
+        for cell in _run(self._sparse_case(1)).cells.values():
+            assert np.isfinite(cell.sigma_fallback)
+
+    def test_the_reported_sigma_is_the_larger_of_the_two(self) -> None:
+        for cell in _run(self._sparse_case(4)).cells.values():
+            expected = np.nanmax([cell.sigma_bootstrap, cell.sigma_fallback])
+            assert cell.sigma == pytest.approx(expected)
+
+    def test_the_fallback_never_reduces_the_bootstrap(self) -> None:
+        """max() is the safe direction for a reliability indicator."""
+        for cell in _run(_case()).cells.values():
+            if np.isfinite(cell.sigma_bootstrap):
+                assert cell.sigma >= cell.sigma_bootstrap
+
+    def test_the_finite_fraction_is_still_reported_so_the_reason_is_visible(self) -> None:
+        cell = _run(self._sparse_case(1)).cells["sparse"]
+        assert np.isfinite(cell.frac_resamples_finite)
+
+
+class TestRelativeScatter:
+    def test_it_recovers_a_known_per_record_noise_level(self) -> None:
+        """The fallback is only as good as this: it is the campaign's own measured scatter."""
+        case = _case(noise=0.05)
+        s_rel = relative_scatter(
+            case["test_power"], case["ref_total"], upgraded=case["upgraded"], baseline=case["baseline"]
+        )
+        assert s_rel == pytest.approx(0.05, rel=0.15)
+
+    def test_it_tracks_the_noise(self) -> None:
+        cases = [_case(noise=x) for x in (0.02, 0.05, 0.10)]
+        scatters = [
+            relative_scatter(c["test_power"], c["ref_total"], upgraded=c["upgraded"], baseline=c["baseline"])
+            for c in cases
+        ]
+        assert scatters == sorted(scatters)
+
+    def test_it_survives_reference_power_near_zero(self) -> None:
+        """A per-record ratio would explode near cut-in; the ratio-of-sums form does not."""
+        case = _case()
+        case["ref_total"][:100] = 1e-9  # a near-cut-in stretch
+        s_rel = relative_scatter(
+            case["test_power"], case["ref_total"], upgraded=case["upgraded"], baseline=case["baseline"]
+        )
+        assert np.isfinite(s_rel)

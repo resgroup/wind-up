@@ -648,8 +648,13 @@ class TestUncertaintyIsAlwaysReported:
 
 
 class TestUncertaintyDoesNotChangeUplift:
-    def test_block_length_moves_sigma_and_nothing_else(self) -> None:
-        """The session's hard constraint, at the method's own seam."""
+    def test_block_length_moves_the_bootstrap_and_nothing_else(self) -> None:
+        """The session's hard constraint, at the method's own seam.
+
+        Asserted on the *bootstrap* component, not the reported sigma: the reported value is
+        ``max(bootstrap, fallback)``, and the fallback does not depend on block length — so on data
+        where it wins at both lengths it would mask the difference this test exists to check.
+        """
         scada, schedule = _noisy_toggle_case()
         a = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW, block_hours=6.0)
         b = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW, block_hours=96.0)
@@ -658,7 +663,11 @@ class TestUncertaintyDoesNotChangeUplift:
             a.p50_by_condition["p50_uplift"],
             b.p50_by_condition["p50_uplift"],  # type: ignore[index]
         )
-        assert a.sigma_overall != b.sigma_overall
+        boots = [
+            out.uncertainty_diagnostics.set_index("condition_bin").loc["overall", "sigma_bootstrap"]  # type: ignore[union-attr]
+            for out in (a, b)
+        ]
+        assert boots[0] != boots[1]
 
     def test_uplift_matches_a_run_with_the_bootstrap_reduced_to_nothing(self) -> None:
         scada, schedule = _noisy_toggle_case()
