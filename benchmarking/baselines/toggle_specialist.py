@@ -55,10 +55,8 @@ _SEGMENTS = ("all", "baseline", "upgraded")
 _MIN_POINTS_FOR_TIMEBASE = 2
 # The cell name (and the ``(condition, condition_bin)`` key) of the headline uplift.
 _OVERALL = "overall"
-# Default circular-block length for the uncertainty bootstrap, in hours. Chosen by measured coverage,
-# not by the autocorrelation of the raw turbine relationship — the paired on/off residual decorrelates
-# in ~1-3h, so a longer block captures nothing and biases sigma low (F28). The block must hold several
-# complete on/off cycles, so raise it for a campaign with a slow toggle period.
+# Circular-block length for the uncertainty bootstrap, in hours. Must hold several on/off toggle
+# cycles, so raise it for a campaign with a slow toggle period.
 DEFAULT_BLOCK_HOURS = 6.0
 # ``power`` is the only axis this method can offer: it is derived from the references, so the
 # treatment cannot move a row between bins. Binning by the test turbine's ws/TI would condition on

@@ -181,6 +181,10 @@ def _merge_diagnostics(rows: list[dict[str, object]], diagnostics: pd.DataFrame 
     """
     if diagnostics is None:
         return
+    missing = [c for c in _DIAGNOSTIC_KEYS if c not in diagnostics.columns]
+    if missing:
+        msg = f"uncertainty_diagnostics must be keyed by {list(_DIAGNOSTIC_KEYS)}; missing {missing}"
+        raise ValueError(msg)
     extra_cols = [c for c in diagnostics.columns if c not in _DIAGNOSTIC_KEYS]
     clashes = sorted(set(extra_cols) & _RESERVED_COLUMNS)
     if clashes:

@@ -8,7 +8,7 @@ import pytest
 
 from benchmarking.harness.campaign import campaign_windows
 from benchmarking.harness.replicates import StudyConfig, build_replicates
-from benchmarking.harness.scoring import score_one, score_study, truth_mask
+from benchmarking.harness.scoring import _merge_diagnostics, score_one, score_study, truth_mask
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.constants import TIMESTAMP_COL
 
@@ -249,6 +249,15 @@ def test_a_diagnostics_column_clashing_with_a_harness_column_raises() -> None:
             methods=[UncertainMethod(base, diagnostic_columns={"estimate": 0.0})],
             study=_study(n_replicates=1),
         )
+
+
+def test_diagnostics_missing_a_key_column_raises_a_clear_error() -> None:
+    """A method returning a frame not keyed by (condition, condition_bin) gets a contract error,
+    not an opaque KeyError from the row lookup.
+    """
+    diagnostics = pd.DataFrame([{"condition": "overall", "n_blocks": 7}])  # no condition_bin
+    with pytest.raises(ValueError, match="must be keyed by"):
+        _merge_diagnostics([], diagnostics)
 
 
 # --- score_one is the unit score_study is built from -------------------------------------------

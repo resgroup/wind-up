@@ -36,8 +36,8 @@ _N_QUANTITIES = 4
 _MIN_RESAMPLES_FOR_SPREAD = 2
 # With one block covering the whole campaign, every resample is that campaign: nothing varies.
 _MIN_BLOCKS_FOR_SPREAD = 2
-# Normal quantiles at -/+1 sigma, so (p84 - p16) / 2 is a sigma for a normal.
-_SIGMA_PERCENTILES = (15.865525, 84.134475)
+# Normal -/+1 sigma percentiles, so (p84 - p16) / 2 is a sigma for a normal.
+_SIGMA_PERCENTILES = (100.0 * norm.cdf(-1.0), 100.0 * norm.cdf(1.0))
 # Floor on the fallback's degrees of freedom, mirroring wind_up's `clip(lower=2)`: with one
 # record a side has no scatter of its own, so df=1 is the widest t the convention allows.
 _MIN_FALLBACK_DF = 1
@@ -53,7 +53,8 @@ _BLEND_HI_RECORDS = 7
 class CellUncertainty:
     """The uncertainty of one cell's uplift (the headline, or one condition bin).
 
-    :param sigma: the reported 1-sigma: a records-weighted ramp between the two components below (F33).
+    :param sigma: the reported 1-sigma: a records-weighted ramp from ``sigma_fallback`` (sparse cell)
+        to ``sigma_bootstrap`` (well-populated cell)
     :param sigma_bootstrap: std of the resampled uplifts (``ddof=1``); NaN when there were fewer than
         two finite resamples
     :param sigma_fallback: the t-inflated per-record-scatter estimate; finite even for a sparse cell
@@ -319,7 +320,7 @@ def _summarise(
         boot = float(kept.std(ddof=1)) if usable else float("nan")
         robust = float(np.subtract(*np.percentile(kept, _SIGMA_PERCENTILES[::-1])) / 2.0) if usable else float("nan")
         cells[name] = CellUncertainty(
-            sigma=_blend(boot, fallback[name], boot_weight[name]),
+            sigma=_blend(bootstrap=boot, fallback=fallback[name], weight=boot_weight[name]),
             sigma_bootstrap=boot,
             sigma_fallback=fallback[name],
             sigma_robust=robust,
@@ -328,7 +329,7 @@ def _summarise(
     return cells
 
 
-def _blend(bootstrap: float, fallback: float, weight: float) -> float:
+def _blend(*, bootstrap: float, fallback: float, weight: float) -> float:
     """Linear ramp ``weight*bootstrap + (1-weight)*fallback``, using whichever side is finite."""
     if math.isfinite(bootstrap) and math.isfinite(fallback):
         return weight * bootstrap + (1.0 - weight) * fallback

@@ -320,11 +320,12 @@ def _plot_coverage_vs_count(cases: pd.DataFrame, path: Path, *, block_hours: flo
     # not reach the upper decades, and a fixed edge above the data makes pd.cut non-monotonic.
     largest = int(usable["n_upgraded_records"].max())
     edges = [e for e in _COUNT_BIN_EDGES if e < largest] + [largest + 1]
-    usable = usable.assign(count_bin=pd.cut(usable["n_upgraded_records"], bins=edges))
-    grouped = usable.groupby("count_bin", observed=True)
-    coverage = grouped.apply(
-        lambda g: float(np.mean((g["signed_error"] / g["sigma"]).abs() <= 1.0)), include_groups=False
+    usable = usable.assign(
+        count_bin=pd.cut(usable["n_upgraded_records"], bins=edges),
+        covered=(usable["signed_error"] / usable["sigma"]).abs() <= 1.0,
     )
+    grouped = usable.groupby("count_bin", observed=True)
+    coverage = grouped["covered"].mean()
     counts = grouped.size()
 
     fig, (ax, ax_n) = plt.subplots(2, 1, sharex=True, figsize=(9, 7), height_ratios=[2, 1])
