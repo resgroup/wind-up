@@ -44,16 +44,38 @@ class MethodInput:
 
 @dataclass
 class MethodOutput:
-    """A method's P50 uplift estimate.
+    """A method's P50 uplift estimate, and optionally its uncertainty.
+
+    The uncertainty fields are **additive**: they default to ``None``, so a method that reports
+    only a P50 is unchanged and the harness records a NaN uncertainty for it.
 
     :param p50_overall: overall P50 uplift (energy-ratio fraction)
     :param p50_by_condition: optional per-condition estimates (columns ``condition``,
-        ``condition_bin``, ``p50_uplift``); ``condition`` ∈ {"ws","ti"}; ``None`` when the
-        method produces only an overall number
+        ``condition_bin``, ``p50_uplift``); ``condition`` ∈ {"ws","ti","power"}; ``None`` when the
+        method produces only an overall number. May also carry a ``sigma_uplift`` column, the
+        per-bin counterpart of ``sigma_overall``.
+    :param sigma_overall: optional 1-sigma on ``p50_overall``, a symmetric delta in energy-ratio
+        fraction. Scored against the deviation from ground truth, so it is a *total* uncertainty.
+    :param uncertainty_diagnostics: optional tidy frame keyed by ``(condition, condition_bin)``
+        carrying whatever a method wants to say about how its uncertainty was reached. The harness
+        never interprets these columns; it merges them onto the results rows and carries them
+        through. Use ``("overall", "overall")`` for the headline row.
+    :param labeled_rows: optional per-record frame exposing the row selection the estimate was
+        actually built from: the test turbine's original SCADA columns, plus ``used`` (did the row
+        survive the method's filtering), ``segment`` (``baseline`` / ``upgraded`` / ``excluded``),
+        and one ``<condition>_bin`` column per condition the method was asked for. It lets a
+        consumer compute a per-bin quantity the method does not itself report -- a mean pitch, say
+        -- over exactly the rows and bins the uplift used, instead of re-deriving the filtering and
+        binning and hoping the two agree. Deliberately row-level rather than pre-aggregated, so it
+        serves consumers whose desired aggregate is not known here. The harness never interprets
+        it.
     """
 
     p50_overall: float
     p50_by_condition: pd.DataFrame | None = None
+    sigma_overall: float | None = None
+    uncertainty_diagnostics: pd.DataFrame | None = None
+    labeled_rows: pd.DataFrame | None = None
 
 
 @runtime_checkable

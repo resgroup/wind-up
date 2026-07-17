@@ -43,7 +43,13 @@ from benchmarking.baselines.power_model.fitting import time_block_folds
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
 from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
-from benchmarking.harness.conditions import CONDITION_BINS, condition_bins, energy_ratio_by_bin
+from benchmarking.harness.conditions import (
+    CONDITION_BINS,
+    CONDITIONS,
+    condition_bins,
+    energy_ratio_by_bin,
+    validate_conditions,
+)
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrade_start
 
@@ -99,6 +105,10 @@ _MIN_BIN_MATCHED_COUNT = 50
 # coarser, and wind_direction_100m in 20° sectors (a reanalysis direction — finer is finer than the
 # signal). Fixed sectors, no wraparound (adjacent sectors are just separate cells, per the CEM utility).
 _DEFAULT_MATCHING_VARS: tuple[str, ...] = ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
+# This method can report every condition axis: its ws/TI come from the test turbine's own measurements
+# (post-treatment, accepted per design-note §3) and its power axis is labelled by the counterfactual
+# prediction (F23). The default reports all three, preserving the behaviour of every existing caller.
+_SUPPORTED_CONDITIONS: tuple[str, ...] = CONDITIONS
 _DEFAULT_MATCHING_BIN_EDGES: dict[str, list[float]] = {
     "wind_speed_100m": [float(x) for x in np.arange(0.0, 34.0, 2.0)],  # 0,2,…,32
     "wind_gusts_10m": [float(x) for x in np.arange(0.0, 48.0, 3.0)],  # 0,3,…,45
@@ -153,8 +163,11 @@ def _condition_frame(
     """One condition axis' per-bin two-direction uplift, imputed where uncovered and re-leveled to the headline.
 
     The three ``*_cond`` arrays label each side's rows by the reporting axis: for ws/TI they are the same
-    signal read off every side; for power they differ (forward = counterfactual, reverse = actual baseline,
-    full = full-fit counterfactual). The forward/reverse energy ratios give the shrinkage-free per-bin
+    signal read off every side; for power they are each side's counterfactual prediction (forward =
+    ``pred_up``, reverse = ``pred_base``, full = the full-fit counterfactual). Labelling every power side by
+    its prediction — never by the actual outcome that also sits in that side's ratio numerator — is what
+    keeps the reverse ratio free of a regression-to-the-mean tilt (see the power-frame note in
+    ``_conditional_by_bin``). The forward/reverse energy ratios give the shrinkage-free per-bin
     shape; uncovered bins are imputed (``impute_uncovered_bins``) and the whole thing is re-leveled onto the
     headline by full-upgraded energy so measured + imputed aggregate to ``one_plus_overall`` (F8/F14).
     """
@@ -247,11 +260,12 @@ class PowerModelMethod:
         default ``TUNED_MODEL_PARAMS`` (``min_child_samples=50``, F14), so a bare method already carries
         the accepted capacity and any key here wins
     :param timebase: analysis timebase; inferred from the data when ``None``
-    :param conditional_uplift: compute the per-(ws, TI)-bin conditional uplift distribution (default
-        ``True``). The overall P50 is a single baseline→upgraded fit either way; when this is ``True``
-        an extra two-direction, ERA5-weather-matched (CEM) cross-prediction runs **last** to estimate
-        the conditional shape (its common per-bin shrinkage cancels), then re-levels onto the headline.
-        It **requires ERA5** (the matching axis is the ERA5 columns). Set ``False`` to skip that
+    :param conditions: which condition axes to report a per-bin conditional uplift over — any of
+        ``"ws"`` / ``"ti"`` / ``"power"`` (default: all three). The overall P50 is a single
+        baseline→upgraded fit regardless; when ``conditions`` is non-empty an extra two-direction,
+        ERA5-weather-matched (CEM) cross-prediction runs **last** to estimate the conditional shape
+        (its common per-bin shrinkage cancels), then re-levels onto the headline. That step
+        **requires ERA5** (the matching axis is the ERA5 columns). Pass ``()`` to skip that
         cross-prediction — the expensive part — and return only the overall P50.
     :param matching_vars: ERA5 columns matched on for the conditional step (default: the F6 set)
     :param matching_bin_edges: per-variable CEM bin edges; the F6 defaults are used when ``None``
@@ -260,7 +274,7 @@ class PowerModelMethod:
         role (Issue 11 / F12 — the max/SD companions stay opt-in here; a repeat of the min is deduped)
     :param era5_exclude: raw ERA5 columns to drop from the model features (removal-ablation knob;
         a dropped direction column also loses its sin/cos companions). Columns used as
-        ``matching_vars`` cannot be excluded while ``conditional_uplift`` is on. Defaults to the
+        ``matching_vars`` cannot be excluded while any ``conditions`` are requested. Defaults to the
         accepted ``CURATED_ERA5_EXCLUDE`` set (F13); the **untouched default** is drop-if-present (so a
         non-Open-Meteo ERA5 frame lacking those columns is not broken), while an **explicitly-set**
         value keeps the strict raise-on-unknown-column typo guard.
@@ -294,7 +308,7 @@ class PowerModelMethod:
     seed: int = 0
     model_params: dict[str, Any] = field(default_factory=dict)
     timebase: pd.Timedelta | None = None
-    conditional_uplift: bool = True
+    conditions: tuple[str, ...] = _SUPPORTED_CONDITIONS
     matching_vars: tuple[str, ...] = _DEFAULT_MATCHING_VARS
     matching_bin_edges: dict[str, list[float]] | None = None
     reference_stat_cols: tuple[str, ...] = ()
@@ -304,8 +318,9 @@ class PowerModelMethod:
     time_decay_half_life_days: float | None = None
 
     def __post_init__(self) -> None:
-        """Validate ``columns`` names every role this method reads."""
+        """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
         self.columns.require_roles(("active_power", "active_power_min", "availability", "wind_speed", "wind_speed_sd"))
+        validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
@@ -405,19 +420,21 @@ class PowerModelMethod:
         )
 
         # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
-        # it (eventually AEP extrapolation will). Skipped when conditional_uplift is off.
+        # it (eventually AEP extrapolation will). Skipped when no conditions are requested.
         by_condition: pd.DataFrame | None = None
-        if self.conditional_uplift:
-            # The conditional two-direction step matches untreated against treated rows and relies on
+        if self.conditions:
+            # The conditional two-direction step matches baseline against upgraded rows and relies on
             # them sharing a distribution *and era* — for a toggle whose headline fit also trains on the
             # pre-campaign baseline, only the interleaved campaign off rows qualify (the strict
             # ``campaign_baseline``): matching pre-campaign rows against campaign on rows would read
             # reference/era drift as per-bin uplift. The extra pre-campaign rows serve only the headline
-            # fit's training data.
-            # No time-decay weights here either (F16): the matched contrast is already
-            # era-insensitive (its common shrinkage cancels), and weighting the direction fits
-            # destabilises the sparse extreme-condition bins (a degenerate tail fit in one
-            # replicate can read three-digit per-bin uplift).
+            # fit's training data. (F26 re-confirmed this post-floor: unifying onto ``training_baseline``
+            # blew up tail-bin |bias|/spread — the added rows promote drift-contaminated bins past the count
+            # floor from imputed to trusted.)
+            # No time-decay weights here either (F16, re-confirmed post-floor in F25): the matched contrast
+            # is already era-insensitive (its common shrinkage cancels), and weighting the direction fits
+            # only churns the sparse extreme-condition tail bins (and slightly worsens ws spread) without
+            # helping the populated bins — so the corrections are spent on the overall headline instead.
             by_condition = self._estimate_conditional(
                 scada,
                 mi=mi,
@@ -454,7 +471,10 @@ class PowerModelMethod:
         p50_uplift]`` frame (or ``None`` when no wind-speed column), and writes the per-run diagnostics.
         """
         if self.era5_hourly_df is None:
-            msg = "conditional_uplift requires ERA5 (era5_hourly_df): the matching axis is the ERA5 weather columns."
+            msg = (
+                "the conditional step requires ERA5 (era5_hourly_df): the matching axis is the ERA5 weather "
+                "columns. Supply era5_hourly_df, or pass conditions=() for an overall-only estimate."
+            )
             raise ValueError(msg)
 
         # Matched two-direction fits, for the per-bin shape only. Matching is required: without it the reverse
@@ -513,8 +533,9 @@ class PowerModelMethod:
         """Fit the outcome model(s) on ``train`` rows and return clipped predictions for ``predict`` rows.
 
         No calibration and no time-decay weights here: the two-direction combine cancels the common
-        per-bin shrinkage by construction, and weighting the matched fits only destabilises sparse
-        extreme-condition bins (F16) — the corrections are spent on the overall headline instead.
+        per-bin shrinkage by construction, and weighting the matched fits only churns sparse
+        extreme-condition bins (F16; re-confirmed post-floor in F25) — the corrections are spent on the
+        overall headline instead.
         """
         models = self._fit_models(features.iloc[train], y[train])
         return _clip_predictions(
@@ -577,28 +598,33 @@ class PowerModelMethod:
                 one_plus_overall=one_plus_overall,
             )
             for name in ("ws", "ti")
-            if name in conditions.columns
+            if name in conditions.columns and name in self.conditions
         ]
-        # power: the untreated operating point. Forward (upgraded) rows are labelled by their
-        # counterfactual prediction ``pred_up``; reverse (baseline) rows by their actual, already-untreated
-        # power ``y[mb]`` (not ``pred_base``, a treated estimate); the full re-level weights by the full-fit
-        # counterfactual ``pred_upgraded`` — so every side labels the same untreated power. Edges scale with
-        # the baseline rating (§2 of the design), so power is not in the fixed ``CONDITION_BINS``.
-        frames.append(
-            _condition_frame(
-                "power",
-                fwd_cond=pred_up,
-                rev_cond=y[mb],
-                full_cond=pred_upgraded,
-                y_fwd=y[mu],
-                pred_fwd=pred_up,
-                y_rev=y[mb],
-                pred_rev=pred_base,
-                actual_full=actual_full,
-                bins=condition_bins("power", rated_power_kw=self.baseline_rated_power_kw),
-                one_plus_overall=one_plus_overall,
+        # power: the baseline operating point, and every side is labelled by its *counterfactual
+        # prediction* — forward (upgraded) rows by ``pred_up``, reverse (baseline) rows by ``pred_base``,
+        # the full re-level weights by ``pred_upgraded``. The reverse side must NOT be labelled by its
+        # actual power ``y[mb]``: ``y[mb]`` is also the reverse ratio's numerator, so binning on it selects
+        # each bin on its own noise and pulls in a regression-to-the-mean tilt (spuriously positive uplift
+        # at low power, negative at high — flat truth reads as a slope). Labelling both sides by the
+        # prediction keeps the per-bin shrinkage common so it cancels in the two-direction combine, which is
+        # the whole premise of ``_combine_uplift``. Edges scale with the baseline rating (§2 of the design),
+        # so power is not in the fixed ``CONDITION_BINS``.
+        if "power" in self.conditions:
+            frames.append(
+                _condition_frame(
+                    "power",
+                    fwd_cond=pred_up,
+                    rev_cond=pred_base,
+                    full_cond=pred_upgraded,
+                    y_fwd=y[mu],
+                    pred_fwd=pred_up,
+                    y_rev=y[mb],
+                    pred_rev=pred_base,
+                    actual_full=actual_full,
+                    bins=condition_bins("power", rated_power_kw=self.baseline_rated_power_kw),
+                    one_plus_overall=one_plus_overall,
+                )
             )
-        )
         return pd.concat(frames, ignore_index=True) if frames else None
 
     def _write_conditional(
@@ -680,10 +706,10 @@ class PowerModelMethod:
                 msg = f"era5_exclude names columns not in the ERA5 features: {missing}"
                 raise ValueError(msg)
             blocked = sorted(set(self.era5_exclude) & set(self.matching_vars))
-            if blocked and self.conditional_uplift:
+            if blocked and self.conditions:
                 msg = (
                     f"era5_exclude {blocked} are matching_vars; excluding them as model features would "
-                    f"break the CEM matching cells. Turn conditional_uplift off or re-pick matching_vars first."
+                    f"break the CEM matching cells. Pass conditions=() or re-pick matching_vars first."
                 )
                 raise ValueError(msg)
             drop = [

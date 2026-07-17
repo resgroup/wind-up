@@ -7,9 +7,14 @@ same energy ratio as the overall number, taken within each bin: ``Σactual / Σc
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 WS_BINS: list[float] = [float(x) for x in np.arange(0.0, 28.0, 2.0)]  # 0,2,…,26
 TI_BINS: list[float] = [round(float(x), 2) for x in np.arange(0.0, 0.55, 0.05)]  # 0,0.05,…,0.50
@@ -19,9 +24,30 @@ CONDITION_BINS: dict[str, list[float]] = {"ws": WS_BINS, "ti": TI_BINS}
 # ``power`` edges are a fraction of rated (so they scale with the turbine), unlike the fixed ws/ti
 # edges, hence they live in ``condition_bins()`` not ``CONDITION_BINS``. The outer edges sit just
 # below 0 and just above rated so the six bins center on 0,0.2,…,1.0 of rated and ``pd.cut`` keeps
-# untreated-power values that fall slightly negative (cut-in noise) or slightly over rated
+# baseline power values that fall slightly negative (cut-in noise) or slightly over rated
 # (counterfactual prediction noise) rather than dropping them to NaN.
 POWER_FRACTION_EDGES: list[float] = [-0.1, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1]
+
+
+def validate_conditions(conditions: Iterable[str], *, supported: Iterable[str], method_name: str) -> None:
+    """Raise if any requested condition is unknown, or known but unsupported by this method.
+
+    The two failures are distinguished deliberately: an unknown axis is a typo, while a known axis a
+    method cannot offer is a design limit of that method (e.g. ``toggle_specialist`` reports only
+    ``power`` — binning it by the test turbine's wind speed would break the property that it never
+    conditions on post-treatment signals). Conflating them would send the reader hunting for a
+    spelling mistake that is not there.
+
+    An empty ``conditions`` is valid: it means "report no per-condition breakdown".
+    """
+    supported = tuple(supported)
+    for name in conditions:
+        if name not in CONDITIONS:
+            msg = f"unknown condition {name!r}; expected one of {CONDITIONS}"
+            raise ValueError(msg)
+        if name not in supported:
+            msg = f"{method_name} does not support the {name!r} condition; it supports {supported}"
+            raise ValueError(msg)
 
 
 def condition_bins(name: str, *, rated_power_kw: float | None = None) -> list[float]:

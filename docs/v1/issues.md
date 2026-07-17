@@ -770,6 +770,32 @@ beats the naive extrapolation baseline on condition-dependent profiles.
 
 ## Issue 19 — Uncertainty: campaign & AEP P50 uncertainty with harness coverage scoring (WS4)
 
+> **Partly delivered ahead of this issue, for `toggle_specialist` only (2026-07-15).** A
+> toggle-first slice built the machinery this issue describes: the additive seam extension
+> (`MethodOutput.sigma_overall` / `uncertainty_diagnostics`), the circular block bootstrap
+> (`benchmarking/baselines/block_bootstrap.py`), harness calibration scoring
+> (`benchmarking/harness/calibration.py`), and a 64-replicate coverage study
+> (`study_toggle_specialist_uncertainty.py`). `toggle_specialist` now reports a **non-optional**
+> 1σ on the headline and every power bin. **Read F28/F29 in `findings.md` before planning the
+> rest** — they change three assumptions written below:
+>
+> - **"block length ≥ the residual autocorrelation scale, likely ~1 day" is wrong for a fast
+>   toggle.** The *paired* on/off residual decorrelates in ~1-3h (autocorr 0.003 at 48h), so a
+>   day-scale block captures nothing and biases σ **low** via circular-overlap collapse. There is
+>   no σ-vs-L plateau to read; block length must be picked by coverage against truth.
+> - **The scored quantity should be 1σ coverage (~68.3%), not only P95.** A one-sided P95 check
+>   is a weak instrument: it tests one tail at 95%, so it needs ~4x the ensemble to resolve the
+>   same miscalibration, and it cannot distinguish a scale error from a shape error. The measured
+>   errors are **platykurtic** (kurtosis -0.35..-0.76), which means P95 ≠ P50 − 1.645σ even when σ
+>   is correctly scaled — so the normality shortcut below must be checked, not assumed.
+> - **"Validate first on the placebo" buys little.** The three profiles' errors correlate
+>   0.977-0.995, so the placebo is not an independent test; replicates are the only real evidence
+>   axis, and the ensemble must be sized on them (n=4 produced a phantom -0.7 pp bias that
+>   vanished at n=64).
+>
+> Still open here: the *cheap vs full* bootstrap comparison, `power_model` uncertainty, AEP σ, and
+> P95 itself.
+
 **Goal:** start Phase 3 — report an uncertainty (σ / P95) on the campaign overall P50 and
 the AEP P50, and verify it in the harness per PR #100: the campaign-uplift P95 should sit
 below the true uplift ~95% of the time. (P50 accuracy work stays the priority; this issue
@@ -832,3 +858,20 @@ agreed tolerance of nominal on the placebo and the standard profiles.
   Pairs naturally with the long-term ERA5 extrapolation work (representativeness weighting, WS4).
 - ~~**Derived ERA5 atmospheric features.**~~ Promoted into **Issue 9** (air density, shear
   exponent, veer, stability indicators as a shared ERA5-derivation utility).
+
+---
+
+## Future work
+
+- **Uncertainty is validated only on 10-minute data.** The `toggle_specialist` block-bootstrap
+  uncertainty (F28-F33) has been calibrated exclusively against Hill of Towie 10-minute SCADA — the
+  only timebase available to test against. Two pieces carry timebase assumptions that a coarser or
+  finer feed would disturb and that nothing currently re-checks:
+  - the **6-hour default block length** (F28) is tuned to the ~1-3h autocorrelation of the 10-minute
+    paired residual and the 40-minute toggle period; a different sampling rate or toggle cadence
+    shifts both;
+  - the **record-count blend range** (`_BLEND_LO_RECORDS=3`, `_BLEND_HI_RECORDS=7`, F33) is in units
+    of records, so its wall-clock meaning scales inversely with the timebase.
+  When non-10-minute data becomes available, re-run the calibration sweep on it and confirm (or
+  re-derive) these constants; consider expressing block length and the blend range in time units
+  rather than record counts so they travel across timebases by construction.

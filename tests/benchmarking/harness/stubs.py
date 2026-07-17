@@ -127,3 +127,38 @@ class ConditionalOracleMethod:
             p50_overall=oracle_overall_uplift(mi, self._original),
             p50_by_condition=conditional_oracle_by_condition(mi, self._original),
         )
+
+
+class UncertainMethod:
+    """Reports a fixed sigma and diagnostics, for exercising the seam's uncertainty passthrough.
+
+    Deliberately dumb: the numbers mean nothing, they only have to arrive intact and in the right
+    place. ``diagnostic_columns`` lets a test drive the clash guard in ``_merge_diagnostics``.
+    """
+
+    def __init__(
+        self,
+        original_df: pd.DataFrame,
+        sigma: float = 0.01,
+        name: str = "uncertain",
+        diagnostic_columns: dict[str, float] | None = None,
+    ) -> None:
+        self._original = original_df
+        self._sigma = sigma
+        self._diagnostics = {"n_blocks": 7.0} if diagnostic_columns is None else diagnostic_columns
+        self.name = name
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:
+        by_condition = conditional_oracle_by_condition(mi, self._original)
+        by_condition["sigma_uplift"] = self._sigma * 2.0
+        rows = [{"condition": "overall", "condition_bin": "overall", **self._diagnostics}]
+        rows += [
+            {"condition": c, "condition_bin": b, **self._diagnostics}
+            for c, b in zip(by_condition["condition"], by_condition["condition_bin"], strict=True)
+        ]
+        return MethodOutput(
+            p50_overall=oracle_overall_uplift(mi, self._original),
+            p50_by_condition=by_condition,
+            sigma_overall=self._sigma,
+            uncertainty_diagnostics=pd.DataFrame(rows),
+        )

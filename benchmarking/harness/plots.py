@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 
+from benchmarking.harness.leaderboard import DEFAULT_LENGTH_COL
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -36,13 +38,17 @@ def plot_campaign_curves(
     *,
     save_path: str | Path | None = None,
     title: str | None = None,
+    length_col: str = DEFAULT_LENGTH_COL,
 ) -> Figure:
     """Plot uplift recovery, bias/spread and score vs campaign length, per method.
 
-    :param summary_df: a leaderboard summary (columns ``method``, ``campaign_months``, ``bias``,
-        ``spread``, ``score``, and optionally ``mean_estimate`` / ``mean_truth`` for the top panel)
+    :param summary_df: a leaderboard summary (columns ``method``, the campaign-length column,
+        ``bias``, ``spread``, ``score``, and optionally ``mean_estimate`` / ``mean_truth`` for the
+        top panel)
     :param save_path: if given, the figure is written here (PNG)
     :param title: optional title for the top panel
+    :param length_col: the campaign-length column in ``summary_df`` (``campaign_months`` /
+        ``campaign_weeks``); also names the x axis
     :return: the matplotlib Figure
     """
     methods = sorted(summary_df["method"].unique())
@@ -52,25 +58,25 @@ def plot_campaign_curves(
 
     # Top panel: the true uplift (method-independent) and each method's mean recovered uplift.
     if "mean_truth" in summary_df.columns:
-        truth = summary_df.groupby("campaign_months")["mean_truth"].mean().sort_index()
+        truth = summary_df.groupby(length_col)["mean_truth"].mean().sort_index()
         ax_uplift.plot(
             truth.index.to_numpy(), truth.to_numpy() * _FRACTION_TO_PP, "--", marker="s", color="k", label="true uplift"
         )
 
     for method in methods:
-        group = summary_df[summary_df["method"] == method].sort_values("campaign_months")
-        months = group["campaign_months"].to_numpy()
+        group = summary_df[summary_df["method"] == method].sort_values(length_col)
+        lengths = group[length_col].to_numpy()
         color = colors[method]
         bias = group["bias"].to_numpy() * _FRACTION_TO_PP
         spread = group["spread"].to_numpy() * _FRACTION_TO_PP
 
         if "mean_estimate" in summary_df.columns:
             estimate = group["mean_estimate"].to_numpy() * _FRACTION_TO_PP
-            ax_uplift.plot(months, estimate, marker="o", color=color, label=method)
-            ax_uplift.fill_between(months, estimate - spread, estimate + spread, alpha=0.15, color=color)
-        ax_band.plot(months, bias, marker="o", color=color, label=method)
-        ax_band.fill_between(months, bias - spread, bias + spread, alpha=0.15, color=color)
-        ax_score.plot(months, group["score"].to_numpy() * _FRACTION_TO_PP, marker="o", color=color, label=method)
+            ax_uplift.plot(lengths, estimate, marker="o", color=color, label=method)
+            ax_uplift.fill_between(lengths, estimate - spread, estimate + spread, alpha=0.15, color=color)
+        ax_band.plot(lengths, bias, marker="o", color=color, label=method)
+        ax_band.fill_between(lengths, bias - spread, bias + spread, alpha=0.15, color=color)
+        ax_score.plot(lengths, group["score"].to_numpy() * _FRACTION_TO_PP, marker="o", color=color, label=method)
 
     ax_uplift.set_ylabel("Measured uplift [pp]")
     ax_uplift.set_title(title if title is not None else "P50 uplift recovery vs campaign length")
@@ -81,7 +87,7 @@ def plot_campaign_curves(
     ax_band.set_ylabel("Bias +/- spread [pp]")
     ax_band.grid(visible=True, alpha=0.3)
 
-    ax_score.set_xlabel("Campaign length [months]")
+    ax_score.set_xlabel(f"Campaign length [{length_col.removeprefix('campaign_')}]")
     ax_score.set_ylabel("Score / RMSE [pp]")
     ax_score.grid(visible=True, alpha=0.3)
     ax_score.set_xlim(left=0.0)

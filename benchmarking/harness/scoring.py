@@ -13,6 +13,11 @@ properties follow structurally:
 For each instance the method's estimate and the ground truth are computed over the **same
 records**, so the signed error is exact at every campaign length. Output is one tidy
 long-format DataFrame, the input to the leaderboard and plots.
+
+:func:`score_one` is the per-``(method, instance)`` unit :func:`score_study` is built from, public so
+a caller that cannot afford the materialised ensemble (a large replicate ensemble would exhaust
+memory) can drive its own replicate-outer loop over :func:`iter_replicates` without reimplementing
+the truth alignment.
 """
 
 from __future__ import annotations
@@ -38,6 +43,32 @@ if TYPE_CHECKING:
     from benchmarking.harness.method import Method
     from benchmarking.harness.replicates import Replicate, StudyConfig
     from benchmarking.synthetic import ColumnSchema
+
+# The columns a method's ``uncertainty_diagnostics`` keys on, and therefore does not contribute.
+_DIAGNOSTIC_KEYS = ("condition", "condition_bin")
+# Columns the harness itself writes on every result row. A method's diagnostics may not use these
+# names — see :func:`_merge_diagnostics`. The campaign-length column is study-dependent
+# (``campaign_months`` / ``campaign_weeks``), so both are reserved regardless of the study's unit.
+_RESERVED_COLUMNS = frozenset(
+    {
+        "method",
+        "profile",
+        "replicate",
+        "test_wtg",
+        "campaign_months",
+        "campaign_weeks",
+        "treatment_start",
+        "baseline_start",
+        "activity_end",
+        "condition",
+        "condition_bin",
+        "estimate",
+        "truth",
+        "signed_error",
+        "sigma",
+        "wall_time_s",
+    }
+)
 
 
 def score_study(
@@ -70,44 +101,111 @@ def score_study(
     instances = _materialise_instances(replicates, study, data_start=data_start, data_end=data_end)
     # Truth depends only on ``(replicate, window)``, so compute it once here rather than once
     # per method (it would otherwise carry an avoidable ``len(methods)`` multiplier).
-    truth_masks = [_truth_mask(r, w) for r, w in instances]
+    truth_masks = [truth_mask(r, w) for r, w in instances]
     truths = [r.true_uplift(mask=m).overall for (r, _), m in zip(instances, truth_masks, strict=True)]
 
     rows = []
     for method in methods:
         method_rows: list[dict[str, object]] = []
         for (replicate, window), truth, mask in zip(instances, truths, truth_masks, strict=True):
-            method_input = _method_input(replicate, window)
-            start = time.perf_counter()
-            output = method.estimate(method_input)
-            wall_time_s = time.perf_counter() - start
-            base_fields: dict[str, object] = {
-                "method": method.name,
-                "profile": profile_name,
-                "replicate": replicate.replicate_id,
-                "test_wtg": replicate.test_wtg,
-                "campaign_months": window.months,
-                "treatment_start": window.treatment_start,
-                "baseline_start": window.baseline_start,
-                "activity_end": window.activity_end,
-            }
-            method_rows.append(
-                {
-                    **base_fields,
-                    "condition": "overall",
-                    "condition_bin": "overall",
-                    "estimate": output.p50_overall,
-                    "truth": truth,
-                    "signed_error": output.p50_overall - truth,
-                    "wall_time_s": wall_time_s,
-                }
+            method_rows.extend(
+                score_one(method, replicate=replicate, window=window, truth=truth, mask=mask, profile_name=profile_name)
             )
-            if output.p50_by_condition is not None:
-                method_rows.extend(_conditional_rows(output.p50_by_condition, replicate, window, mask, base_fields))
         if on_method_complete is not None:
             on_method_complete(method.name, pd.DataFrame(method_rows))
         rows.extend(method_rows)
     return pd.DataFrame(rows)
+
+
+def score_one(
+    method: Method,
+    *,
+    replicate: Replicate,
+    window: CampaignWindow,
+    truth: float,
+    mask: npt.NDArray[np.bool_],
+    profile_name: str = "profile",
+) -> list[dict[str, object]]:
+    """Run one method over one ``(replicate, window)`` instance and return its tidy result rows.
+
+    The overall row plus one per condition bin the method reports, each with the estimate, ``truth``,
+    their signed error and the method's ``sigma`` (NaN when it reports no uncertainty).
+
+    ``truth`` and ``mask`` are passed in because they depend only on ``(replicate, window)``;
+    deriving them here would multiply that cost by ``len(methods)``. Build them with
+    :func:`truth_mask` and ``replicate.true_uplift(mask=...)``.
+    """
+    method_input = _method_input(replicate, window)
+    start = time.perf_counter()
+    output = method.estimate(method_input)
+    wall_time_s = time.perf_counter() - start
+    base_fields: dict[str, object] = {
+        "method": method.name,
+        "profile": profile_name,
+        "replicate": replicate.replicate_id,
+        "test_wtg": replicate.test_wtg,
+        window.length_col: window.length,
+        "treatment_start": window.treatment_start,
+        "baseline_start": window.baseline_start,
+        "activity_end": window.activity_end,
+    }
+    rows: list[dict[str, object]] = [
+        {
+            **base_fields,
+            "condition": "overall",
+            "condition_bin": "overall",
+            "estimate": output.p50_overall,
+            "truth": truth,
+            "signed_error": output.p50_overall - truth,
+            "sigma": _optional_float(output.sigma_overall),
+            "wall_time_s": wall_time_s,
+        }
+    ]
+    if output.p50_by_condition is not None:
+        rows.extend(_conditional_rows(output.p50_by_condition, replicate, window, mask, base_fields))
+    _merge_diagnostics(rows, output.uncertainty_diagnostics)
+    return rows
+
+
+def _optional_float(value: float | None) -> float:
+    """Return ``value`` as a float, with ``None`` (no uncertainty reported) becoming NaN."""
+    return float("nan") if value is None else float(value)
+
+
+def _merge_diagnostics(rows: list[dict[str, object]], diagnostics: pd.DataFrame | None) -> None:
+    """Merge a method's uncertainty diagnostics onto ``rows`` in place, keyed by condition and bin.
+
+    Attached without interpretation. Rows with no matching diagnostics row are left alone. A column
+    colliding with one the harness owns raises rather than silently overwriting the estimate or truth
+    the row exists to report.
+    """
+    if diagnostics is None:
+        return
+    missing = [c for c in _DIAGNOSTIC_KEYS if c not in diagnostics.columns]
+    if missing:
+        msg = f"uncertainty_diagnostics must be keyed by {list(_DIAGNOSTIC_KEYS)}; missing {missing}"
+        raise ValueError(msg)
+    extra_cols = [c for c in diagnostics.columns if c not in _DIAGNOSTIC_KEYS]
+    clashes = sorted(set(extra_cols) & _RESERVED_COLUMNS)
+    if clashes:
+        msg = (
+            f"uncertainty_diagnostics columns {clashes} clash with columns the harness owns "
+            f"({sorted(_RESERVED_COLUMNS)}); rename them in the method"
+        )
+        raise ValueError(msg)
+    keys = [(str(row["condition"]), str(row["condition_bin"])) for _, row in diagnostics.iterrows()]
+    duplicates = sorted({k for k in keys if keys.count(k) > 1})
+    if duplicates:
+        msg = (
+            f"uncertainty_diagnostics has duplicate {list(_DIAGNOSTIC_KEYS)} keys {duplicates}; "
+            f"the frame must hold one row per key"
+        )
+        raise ValueError(msg)
+    by_key = {
+        key: {col: row[col] for col in extra_cols} for key, (_, row) in zip(keys, diagnostics.iterrows(), strict=True)
+    }
+    for row in rows:
+        row.update(by_key.get((str(row["condition"]), str(row["condition_bin"])), {}))
 
 
 def _materialise_instances(
@@ -124,6 +222,7 @@ def _materialise_instances(
             replicate.treatment_start,
             min_pre_months=study.min_pre_months,
             campaign_months=study.campaign_months,
+            campaign_weeks=study.campaign_weeks,
             data_start=data_start,
             data_end=data_end,
         )
@@ -143,8 +242,12 @@ def _method_input(replicate: Replicate, window: CampaignWindow) -> MethodInput:
     )
 
 
-def _truth_mask(replicate: Replicate, window: CampaignWindow) -> npt.NDArray[np.bool_]:
-    """Return the treated-activity mask over the test turbine's rows for this window."""
+def truth_mask(replicate: Replicate, window: CampaignWindow) -> npt.NDArray[np.bool_]:
+    """Return the treated-activity mask over the test turbine's rows for this window.
+
+    The mask ``replicate.true_uplift(mask=...)`` and :func:`score_one` must agree on, so a caller
+    driving its own loop scores against the same records :func:`score_study` would.
+    """
     synthetic = replicate.synthetic_df
     test_index = synthetic.loc[synthetic[replicate.dataset.columns.turbine] == replicate.test_wtg].index
     return treated_activity_mask(test_index, replicate.upgrade_timing, window=window)
@@ -157,10 +260,15 @@ def _conditional_rows(
     mask: npt.NDArray[np.bool_],
     base_fields: dict[str, object],
 ) -> list[dict[str, object]]:
-    """Join each method per-bin estimate to per-bin truth for every condition present."""
+    """Join each method per-bin estimate to per-bin truth for every condition present.
+
+    A ``sigma_uplift`` column on ``by_condition`` is carried through as the row's ``sigma``; a
+    method that reports per-bin P50s without per-bin uncertainty simply omits it and reads NaN.
+    """
     rows: list[dict[str, object]] = []
     # power edges scale with the source's baseline rating; ws/ti ignore it (fixed edges).
     rated_power_kw = float(replicate.dataset.run_metadata["rated_power_kw"])
+    has_sigma = "sigma_uplift" in by_condition.columns
     for condition, est in by_condition.groupby("condition"):
         bins = condition_bins(str(condition), rated_power_kw=rated_power_kw)
         truth_df = replicate.true_uplift(mask=mask, by=condition, bins=bins).by_condition
@@ -181,6 +289,7 @@ def _conditional_rows(
                     "estimate": e,
                     "truth": t,
                     "signed_error": e - t,
+                    "sigma": float(r["sigma_uplift"]) if has_sigma else float("nan"),
                     "wall_time_s": float("nan"),
                 }
             )

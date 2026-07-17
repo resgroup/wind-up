@@ -32,8 +32,8 @@ def _condition_series(rows: pd.DataFrame, by: str, columns: ColumnSchema) -> npt
     if by == "ws":
         return rows[columns.wind_speed].to_numpy(dtype=float)
     if by == "power":
-        # The untreated operating point: bin on the ORIGINAL (pre-upgrade) active power so the axis is
-        # treatment-invariant, matching the method's counterfactual-power binning.
+        # The baseline operating point: bin on the ORIGINAL (pre-upgrade) active power so the axis is
+        # upgrade-invariant.
         return rows[columns.active_power].to_numpy(dtype=float)
     return rows[by].to_numpy(dtype=float)
 

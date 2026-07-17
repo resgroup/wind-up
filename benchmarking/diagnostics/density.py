@@ -2,8 +2,8 @@
 
 wind-up datasets are large, so plain scatter plots saturate and the eye cannot tell where the
 bulk of the data sits versus a handful of outliers. Colouring each point by the local 2-D
-histogram density fixes that. Adapted from ``tuneup-ml``'s ``plotting/density.py`` (the user's
-own code, offered for reuse), with a fallback for small/degenerate inputs so it never raises.
+histogram density fixes that. Small and degenerate inputs fall back to a flat colour rather than
+raising, so a diagnostic plot never brings a run down.
 
 The density field is a fine 2-D histogram smoothed with a gaussian before it is sampled back onto
 the points, giving a KDE-like gradient at O(n) cost (no per-point ``gaussian_kde``, which is
