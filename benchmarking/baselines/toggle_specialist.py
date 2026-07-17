@@ -422,7 +422,21 @@ class ToggleSpecialistMethod:
             .keep_mask(test_rows, timebase=timebase)
             .reindex(wide.index, fill_value=False)
         )
-        return complete & all_available & test_keep
+        return complete & all_available & test_keep & ~self._test_excluded(mi, test=test, index=wide.index)
+
+    def _test_excluded(self, mi: MethodInput, *, test: str, index: pd.DatetimeIndex) -> pd.Series:
+        """Boolean mask on *index*: the test turbine's caller-flagged rows to drop (empty when unused).
+
+        Reads the ``columns.exclude_row`` column of the test turbine's rows; references are never
+        excluded here (their special modes still carry information for the ratio). Absent column or
+        unset role -> nothing excluded. Reindex fills missing timestamps with ``False`` so an expanded
+        index never becomes an exclusion.
+        """
+        col = self.columns.exclude_row
+        if not col or col not in mi.scada_df.columns:
+            return pd.Series(data=False, index=index)
+        test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]
+        return test_rows[col].astype(bool).reindex(index, fill_value=False)
 
     def _write_outputs(
         self,
@@ -498,6 +512,12 @@ class ToggleSpecialistMethod:
                     test=mi.test_wtg,
                     active_power_col=self.columns.active_power,
                 )
+            _save_exclude_plot(
+                run_dir / "plots" / stages.FILTER / f"{mi.test_wtg}_excluded_rows.png",
+                mi=mi,
+                test=mi.test_wtg,
+                columns=self.columns,
+            )
             self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, timebase=timebase)
 
     def _write_shared_diagnostics(
@@ -837,6 +857,49 @@ def _save_per_bin_plot(path: Path, *, per_bin: pd.DataFrame, test: str, active_p
     ax_n.set_xticks(x)
     ax_n.set_xticklabels(per_bin["condition_bin"].astype(str), rotation=20, ha="right", fontsize=8)
     ax_n.grid(visible=True, alpha=0.3)
+    fig.tight_layout()
+    _save(fig, path)
+
+
+def _save_exclude_plot(path: Path, *, mi: MethodInput, test: str, columns: ColumnSchema) -> None:
+    """Show the test turbine's ``exclude_row`` rows so the reader sees exactly what was dropped.
+
+    Left: a signal (pitch if the schema names one, else active power) against active power, kept rows
+    grey and excluded rows red, so a special-mode band stands out against the operating cloud. Right:
+    the daily fraction of test rows excluded. Skipped entirely when the role is unset, the column is
+    absent, or nothing is excluded (a clean campaign should not sprout an empty plot).
+    """
+    col = columns.exclude_row
+    if not col or col not in mi.scada_df.columns:
+        return
+    test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]
+    excluded = test_rows[col].astype(bool)
+    n_excl = int(excluded.to_numpy().sum())
+    if n_excl == 0:
+        return
+
+    power = test_rows[columns.active_power]
+    y_col = columns.pitch or columns.active_power
+    y = test_rows[y_col]
+    frac = 100.0 * n_excl / len(test_rows)
+
+    fig, (ax_scatter, ax_daily) = plt.subplots(1, 2, figsize=(13, 5))
+    ax_scatter.scatter(power[~excluded], y[~excluded], s=6, alpha=0.4, color="0.6", label="kept")
+    ax_scatter.scatter(power[excluded], y[excluded], s=8, alpha=0.6, color="tab:red", label=f"excluded ({n_excl})")
+    ax_scatter.set_xlabel(f"{columns.active_power} [kW]")
+    ax_scatter.set_ylabel(y_col)
+    ax_scatter.set_title(f"{test}: rows excluded by {col!r} ({frac:.1f}% of test rows)")
+    ax_scatter.grid(visible=True, alpha=0.3)
+    ax_scatter.legend()
+
+    daily = excluded.groupby(excluded.index.floor("D")).mean()
+    ax_daily.plot(daily.index.to_numpy(), daily.to_numpy(), marker=".", linewidth=0.8, color="tab:red")
+    ax_daily.set_ylim(0.0, 1.0)
+    ax_daily.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+    ax_daily.set_xlabel("date")
+    ax_daily.set_ylabel("excluded fraction of test rows")
+    ax_daily.set_title(f"{test}: daily excluded-row fraction")
+    ax_daily.grid(visible=True, alpha=0.3)
     fig.tight_layout()
     _save(fig, path)
 
