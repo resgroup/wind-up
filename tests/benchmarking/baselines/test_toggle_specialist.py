@@ -20,6 +20,7 @@ import pytest
 from benchmarking.baselines import toggle_specialist
 from benchmarking.baselines.toggle_specialist import (
     ToggleSpecialistMethod,
+    restrict_to_campaign,
     _daily_segment_coverage,
     _daily_segment_ratio,
     _expected_per_day,
@@ -27,6 +28,7 @@ from benchmarking.baselines.toggle_specialist import (
 )
 from benchmarking.harness.conditions import condition_bins
 from benchmarking.harness.method import MethodInput, MethodOutput
+from benchmarking.harness.toggle import resolve_toggle
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
 
 # Deliberately non-v0 column names: the method is source-agnostic, so the active-power column
@@ -743,3 +745,126 @@ class TestUncertaintyInTheWrittenOutputs:
         frame = pd.read_csv(written[0])
         assert "n_upgraded_records" in frame.columns
         assert len(frame) == 7  # overall + six power bins
+
+
+# --- labeled_rows: the row selection the estimate actually used ---------------------------------
+
+
+class TestLabeledRows:
+    """``labeled_rows`` exposes the method's own used/segment/bin labels, per test-turbine record.
+
+    A consumer that wants a per-bin quantity the method does not report (a mean pitch, say) must be
+    able to compute it over *exactly* the rows and bins the uplift used. These tests pin that the
+    labels reproduce the method's internal masks rather than a plausible re-derivation of them.
+    """
+
+    def test_labeled_rows_is_populated_for_a_toggle_campaign(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
+        assert out.labeled_rows is not None
+        assert set(out.labeled_rows.columns) >= {"used", "segment", "power_bin"}
+
+    def test_carries_the_original_test_turbine_scada_columns(self) -> None:
+        """The consumer aggregates the source columns, so they must survive unmodified."""
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
+        assert out.labeled_rows is not None
+        test_rows = scada[scada[_TURBINE_COL] == "T1"]
+        for col in test_rows.columns:
+            assert col in out.labeled_rows.columns
+        pd.testing.assert_series_equal(out.labeled_rows[_POWER_COL], test_rows[_POWER_COL])
+
+    def test_one_row_per_test_turbine_record(self) -> None:
+        """Not the long frame, and not the references: exactly the test turbine's own rows."""
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
+        assert out.labeled_rows is not None
+        assert len(out.labeled_rows) == (scada[_TURBINE_COL] == "T1").sum()
+        assert out.labeled_rows.index.is_unique
+
+    def test_used_reproduces_the_methods_own_used_mask(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        method = ToggleSpecialistMethod(columns=_COLUMNS, conditions=("power",), rated_power_kw=_RATED_KW)
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        out = method.estimate(mi)
+        assert out.labeled_rows is not None
+
+        mi_restricted = restrict_to_campaign(mi)
+        wide = toggle_specialist._wide_column(  # noqa: SLF001
+            mi_restricted.scada_df, turbine_col=_TURBINE_COL, value_col=_POWER_COL
+        )
+        expected = method._used_mask(  # noqa: SLF001
+            mi_restricted,
+            wide=wide,
+            test="T1",
+            refs=[c for c in wide.columns if c != "T1"],
+            timebase=pd.Timedelta(minutes=10),
+        )
+        assert out.labeled_rows["used"].to_numpy().tolist() == expected.to_numpy().tolist()
+
+    def test_a_downtime_row_is_labelled_unused(self) -> None:
+        """The label tracks the filter: knock one record's availability out and it drops out of `used`."""
+        scada, schedule = _noisy_toggle_case()
+        victim = scada.index[scada[_TURBINE_COL] == "T1"][100]
+        scada.loc[(scada.index == victim) & (scada[_TURBINE_COL] == "T1"), _AVAIL_COL] = 0.0
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
+        assert out.labeled_rows is not None
+        assert not out.labeled_rows.loc[victim, "used"]
+        assert out.labeled_rows["used"].sum() > 0
+
+    def test_segment_partitions_rows_into_baseline_upgraded_excluded(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
+        assert out.labeled_rows is not None
+        assert set(out.labeled_rows["segment"]) <= {"baseline", "upgraded", "excluded"}
+
+    def test_segment_reproduces_the_resolved_toggle_rows(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
+        assert out.labeled_rows is not None
+        rows = resolve_toggle(schedule, pd.DatetimeIndex(out.labeled_rows.index))
+        assert (out.labeled_rows["segment"] == "upgraded").to_numpy().tolist() == list(rows.upgraded)
+        assert (out.labeled_rows["segment"] == "baseline").to_numpy().tolist() == list(rows.campaign_baseline)
+
+    def test_power_bin_uses_the_same_edges_as_the_uplift(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
+        assert out.labeled_rows is not None
+        assert out.p50_by_condition is not None
+        labelled = set(out.labeled_rows["power_bin"].dropna().astype(str))
+        reported = set(out.p50_by_condition["condition_bin"].astype(str))
+        assert labelled <= reported
+
+    def test_upgraded_rows_per_bin_match_the_reported_counts(self) -> None:
+        """The point of the frame: aggregate it and you land on the method's own population.
+
+        ``n_records`` counts the *upgraded* rows a bin's ratio consumed, so that is what the labels
+        must reproduce -- for every bin the method returned a finite uplift for.
+        """
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
+        assert out.labeled_rows is not None
+        assert out.p50_by_condition is not None
+
+        rows = out.labeled_rows
+        counted = (
+            rows[rows["used"] & (rows["segment"] == "upgraded")]
+            .groupby(rows["power_bin"].astype(str), observed=True)
+            .size()
+        )
+        reported = out.p50_by_condition[np.isfinite(out.p50_by_condition["p50_uplift"])]
+        assert not reported.empty
+        for _, row in reported.iterrows():
+            assert counted.get(str(row["condition_bin"]), 0) == row["n_records"]
+
+    def test_rows_outside_the_bin_edges_have_no_bin(self) -> None:
+        """A row off the end of the bins is NaN, not silently folded into the edge bin.
+
+        The bin edges scale with the declared rating, so rating the turbine well below the power the
+        fixture actually reaches pushes its top rows past the outermost edge.
+        """
+        scada, schedule = _noisy_toggle_case()
+        out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW / 4)
+        assert out.labeled_rows is not None
+        assert out.labeled_rows["power_bin"].isna().any()
+        assert out.labeled_rows["power_bin"].notna().any()

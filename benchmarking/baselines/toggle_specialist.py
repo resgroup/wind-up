@@ -55,6 +55,13 @@ _SEGMENTS = ("all", "baseline", "upgraded")
 _MIN_POINTS_FOR_TIMEBASE = 2
 # The cell name (and the ``(condition, condition_bin)`` key) of the headline uplift.
 _OVERALL = "overall"
+
+# The ``segment`` labels in ``MethodOutput.labeled_rows``: which side of the toggle a record sits on.
+# "excluded" covers rows the toggle resolution claims for neither side (e.g. before the campaign
+# starts), and is distinct from a row that is in a segment but failed the filters (``used`` is False).
+_BASELINE = "baseline"
+_UPGRADED = "upgraded"
+_EXCLUDED = "excluded"
 # Circular-block length for the uncertainty bootstrap, in hours. Must hold several on/off toggle
 # cycles, so raise it for a campaign with a slow toggle period.
 DEFAULT_BLOCK_HOURS = 6.0
@@ -263,7 +270,50 @@ class ToggleSpecialistMethod:
             p50_by_condition=per_bin,
             sigma_overall=sigma_overall,
             uncertainty_diagnostics=diagnostics,
+            labeled_rows=self._labeled_rows(
+                mi, wide=wide, test=test, used=used, rows=rows, rho_base=rho_base, ref_total=ref_total
+            ),
         )
+
+    def _labeled_rows(
+        self,
+        mi: MethodInput,
+        *,
+        wide: pd.DataFrame,
+        test: str,
+        used: npt.NDArray[np.bool_],
+        rows: ToggleRowSets,
+        rho_base: float,
+        ref_total: npt.NDArray[np.float64],
+    ) -> pd.DataFrame:
+        """The test turbine's own records, tagged with the labels this estimate was built from.
+
+        Every label is taken from the arrays the uplift and bootstrap already used, reindexed onto
+        the test turbine's rows -- not recomputed. A consumer aggregating this frame therefore lands
+        on the same rows and the same bins by construction, which is the whole point: a re-derived
+        selection that drifts from the method's is worse than no frame at all.
+
+        The frame is one turbine over one campaign window, so it is cheap enough to populate
+        unconditionally rather than behind a flag.
+        """
+        labeled = mi.scada_df[mi.scada_df[mi.turbine_col] == test].copy()
+
+        def _on_test_rows(values: npt.NDArray[np.generic]) -> npt.NDArray[np.generic]:
+            return pd.Series(values, index=wide.index).reindex(labeled.index).to_numpy()
+
+        labeled["used"] = _on_test_rows(used)
+        labeled["segment"] = _on_test_rows(
+            np.where(rows.upgraded, _UPGRADED, np.where(rows.campaign_baseline, _BASELINE, _EXCLUDED))
+        )
+
+        # The bin label is the same reference-derived baseline power the uplift binned on, so a row
+        # cannot sit in one bin here and another there. Outside the outer edges pd.cut gives NaN,
+        # which is carried through as "this row belongs to no bin" rather than clipped to an edge.
+        if "power" in self.conditions and np.isfinite(rho_base):
+            assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
+            bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
+            labeled["power_bin"] = _on_test_rows(np.asarray(pd.cut(rho_base * ref_total, bins=bins)))
+        return labeled
 
     def _cell_membership(
         self,
