@@ -202,8 +202,7 @@ def _merge_diagnostics(rows: list[dict[str, object]], diagnostics: pd.DataFrame 
         )
         raise ValueError(msg)
     by_key = {
-        key: {col: row[col] for col in extra_cols}
-        for key, (_, row) in zip(keys, diagnostics.iterrows(), strict=True)
+        key: {col: row[col] for col in extra_cols} for key, (_, row) in zip(keys, diagnostics.iterrows(), strict=True)
     }
     for row in rows:
         row.update(by_key.get((str(row["condition"]), str(row["condition_bin"])), {}))
