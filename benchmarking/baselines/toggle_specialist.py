@@ -56,9 +56,8 @@ _MIN_POINTS_FOR_TIMEBASE = 2
 # The cell name (and the ``(condition, condition_bin)`` key) of the headline uplift.
 _OVERALL = "overall"
 
-# The ``segment`` labels in ``MethodOutput.labeled_rows``: which side of the toggle a record sits on.
-# "excluded" covers rows the toggle resolution claims for neither side (e.g. before the campaign
-# starts), and is distinct from a row that is in a segment but failed the filters (``used`` is False).
+# ``MethodOutput.labeled_rows`` segment labels. "excluded" = claimed by neither side (e.g.
+# pre-campaign), which is distinct from a row in a segment that failed the filters (``used`` False).
 _BASELINE = "baseline"
 _UPGRADED = "upgraded"
 _EXCLUDED = "excluded"
@@ -109,34 +108,24 @@ def restrict_to_campaign(mi: MethodInput) -> MethodInput:
 class ToggleSpecialistMethod:
     """Pluggable toggle-only energy-ratio baseline.
 
-    Accepts only toggle campaigns; ``estimate`` raises on a prepost changeover. The fit always uses
-    the interleaved campaign on/off blocks (any pre-campaign baseline is dropped), so on and off
-    share a wind distribution — the setting to reach for when pre-campaign data is unusable.
+    Accepts only toggle campaigns; ``estimate`` raises on a prepost changeover. Always fits on the
+    interleaved campaign on/off blocks, so on and off share a wind distribution.
 
-    :param columns: **required** source-native column schema — the single source of the method's
-        column names. It reads the ``active_power`` role (the only signal in the ``rho`` computation;
-        the turbine identifier comes from the seam, ``MethodInput``) and the ``availability`` role
-        (the required downtime filter, applied to the test turbine and every reference; rows below a
-        full period of availability are dropped, so downtime filtering can never be silently skipped).
-        The remaining roles feed only the diagnostics, never the ``rho`` computation.
+    :param columns: **required** source-native column schema. Reads the ``active_power`` role (the
+        only signal in the ``rho`` computation) and the ``availability`` role (the required downtime
+        filter, applied to the test turbine and every reference); other roles feed diagnostics only.
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param save_plots: also write the diagnostic plots under ``<run>/plots``
     :param timebase: analysis timebase; inferred from the data when ``None``
-    :param conditions: which condition axes to report a per-bin uplift over. Only ``"power"`` is
-        supported — see :meth:`_conditional_frame` for why ws/TI cannot be. Defaults to ``()``
-        (report none), which is the behaviour of every caller that predates the option.
+    :param conditions: condition axes to report a per-bin uplift over. Only ``"power"`` is supported
+        (see :meth:`_conditional_frame`); defaults to reporting none.
     :param rated_power_kw: the test turbine's rated power, **required** when ``"power"`` is in
-        ``conditions`` because the power bin edges scale with the rating. Named without a
-        ``baseline_`` qualifier (unlike ``PowerModelMethod``): this method has no fitted baseline
-        model, and the rating cannot differ between the toggle states.
-    :param block_hours: circular-block length for the uncertainty bootstrap. It must hold several
-        complete on/off toggle cycles (so the pairing survives) and stay a small fraction of the
-        campaign (so the resampled blocks do not all overlap). :data:`DEFAULT_BLOCK_HOURS` suits a
-        toggle of tens of minutes; **raise it for a campaign whose toggle period is slow enough that
-        the default spans only a cycle or two.**
-    :param n_resamples: bootstrap resamples. The block sums are precomputed, so a resample is a
-        gather rather than a pass over the data and this can be generous.
+        ``conditions``, since the power bin edges scale with the rating.
+    :param block_hours: circular-block length for the uncertainty bootstrap. Must hold several on/off
+        toggle cycles and stay a small fraction of the campaign; **raise it for a slow toggle
+        period**, for which :data:`DEFAULT_BLOCK_HOURS` may span only a cycle or two.
+    :param n_resamples: bootstrap resamples; block sums are precomputed, so this can be generous.
     :param bootstrap_seed: RNG seed for the bootstrap, so a reported sigma is reproducible.
     """
 
@@ -289,13 +278,8 @@ class ToggleSpecialistMethod:
     ) -> pd.DataFrame:
         """Return the test turbine's own records, tagged with the labels this estimate was built from.
 
-        Every label is taken from the arrays the uplift and bootstrap already used, reindexed onto
-        the test turbine's rows -- not recomputed. A consumer aggregating this frame therefore lands
-        on the same rows and the same bins by construction, which is the whole point: a re-derived
-        selection that drifts from the method's is worse than no frame at all.
-
-        The frame is one turbine over one campaign window, so it is cheap enough to populate
-        unconditionally rather than behind a flag.
+        Labels are reindexed from the arrays the uplift and bootstrap used, not recomputed, so an
+        aggregation of this frame lands on the same rows and bins the estimate did.
         """
         labeled = mi.scada_df[mi.scada_df[mi.turbine_col] == test].copy()
 
@@ -387,23 +371,16 @@ class ToggleSpecialistMethod:
 
         Two decisions carry this, and both are needed:
 
-        **The bin label is** ``rho_label * ref_total`` — the test turbine's predicted power at the
-        campaign's mean operating point (see :func:`_rho_label`). It is reference-derived, so the
-        upgrade cannot move a row between bins; it is on the test turbine's own kW scale, so the bins
-        mean what a reader expects; and it is state-neutral, so relabelling which state is the
-        baseline cannot move a row either.
+        **The bin label is** ``rho_label * ref_total`` (see :func:`_rho_label`): reference-derived and
+        state-neutral, so neither the upgrade nor which state is called baseline can move a row
+        between bins, and it is on the test turbine's own kW scale.
 
-        **The denominator is the per-bin** ``rho_base(b)``, not the global one. The test-to-reference
-        ratio genuinely varies with power (different turbines, different wakes, saturation near rated),
-        so a global denominator reads that structure as uplift — a large, purely artefactual tilt. The
-        per-bin ratio cancels it where it arises. The price is that the per-bin numbers no longer
-        aggregate exactly to ``p50_overall``; that is deliberate and un-relevelled, since rescaling
-        honest measurements to satisfy an identity this design intentionally broke would be a fiction.
-        ``sum_actual`` / ``sum_counterfactual`` are returned so the gap stays inspectable.
+        **The denominator is the per-bin** ``rho_base(b)``, not the global one: the test-to-reference
+        ratio varies with power, and a global denominator would read that structure as uplift. The
+        price is that the per-bin numbers no longer aggregate exactly to ``p50_overall``, which is
+        deliberate and un-relevelled; ``sum_actual`` / ``sum_counterfactual`` expose the gap.
 
-        Sparse bins fall out as NaN rather than being imputed: no baseline rows means no ``rho_base(b)``,
-        so the counterfactual is NaN and the reducer drops those rows, leaving ``n_records = 0``. A bin
-        with no data reports "no answer", which is the honest input to a downstream decision.
+        Sparse bins report NaN with ``n_records = 0`` rather than being imputed.
         """
         assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
         bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
@@ -637,13 +614,8 @@ def _rho(test_pw: npt.NDArray[np.float64], ref_total: npt.NDArray[np.float64], m
 def _rho_label(rho_base: float, rho_up: float) -> float:
     """Return the test-to-reference ratio used to *label* bins: the mean of the two states.
 
-    Deliberately not ``rho_base``. Which state is called the baseline is a naming choice, so a label
-    derived from it shifts by the whole uplift when the states are swapped, migrating rows across bin
-    edges and moving per-bin estimates for no physical reason. The mean is invariant under that swap
-    by construction, and equally weighted so an on/off imbalance in row counts cannot tilt it either.
-
-    Still a campaign-level scalar times each row's reference power, so the property that earns this
-    design survives: the label is reference-derived, and the upgrade cannot move a row between bins.
+    State-neutral by construction, so relabelling which state is the baseline cannot move a row
+    between bins. Still a campaign-level scalar, so the upgrade cannot move a row either.
     """
     return 0.5 * (rho_base + rho_up)
 

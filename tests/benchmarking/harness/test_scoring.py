@@ -289,3 +289,15 @@ def test_score_one_reproduces_score_study_row_for_row() -> None:
     pd.testing.assert_frame_equal(
         from_study.drop(columns=drop).reset_index(drop=True), from_one.drop(columns=drop).reset_index(drop=True)
     )
+
+
+def test_duplicate_diagnostics_keys_raise_rather_than_silently_win() -> None:
+    """Keeping the last row would drop a diagnostic without a word; the frame is keyed, so say so."""
+    diagnostics = pd.DataFrame(
+        [
+            {"condition": "power", "condition_bin": "(0, 100]", "n_blocks": 7},
+            {"condition": "power", "condition_bin": "(0, 100]", "n_blocks": 9},
+        ]
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        _merge_diagnostics([], diagnostics)

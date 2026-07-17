@@ -193,9 +193,17 @@ def _merge_diagnostics(rows: list[dict[str, object]], diagnostics: pd.DataFrame 
             f"({sorted(_RESERVED_COLUMNS)}); rename them in the method"
         )
         raise ValueError(msg)
+    keys = [(str(row["condition"]), str(row["condition_bin"])) for _, row in diagnostics.iterrows()]
+    duplicates = sorted({k for k in keys if keys.count(k) > 1})
+    if duplicates:
+        msg = (
+            f"uncertainty_diagnostics has duplicate {list(_DIAGNOSTIC_KEYS)} keys {duplicates}; "
+            f"the frame must hold one row per key"
+        )
+        raise ValueError(msg)
     by_key = {
-        (str(row["condition"]), str(row["condition_bin"])): {col: row[col] for col in extra_cols}
-        for _, row in diagnostics.iterrows()
+        key: {col: row[col] for col in extra_cols}
+        for key, (_, row) in zip(keys, diagnostics.iterrows(), strict=True)
     }
     for row in rows:
         row.update(by_key.get((str(row["condition"]), str(row["condition_bin"])), {}))
