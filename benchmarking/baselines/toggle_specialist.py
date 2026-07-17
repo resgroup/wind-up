@@ -201,12 +201,13 @@ class ToggleSpecialistMethod:
         rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
         recoverable = np.isfinite(rho_base) and rho_base != 0 and np.isfinite(rho_up)
         uplift = rho_up / rho_base - 1.0 if recoverable else np.nan
+        rho_label = _rho_label(rho_base, rho_up)
 
         per_bin = (
             self._conditional_frame(
                 test_pw=test_pw,
                 ref_total=ref_total,
-                rho_base=rho_base,
+                rho_label=rho_label,
                 baseline=used & baseline,
                 upgraded=used & rows.upgraded,
             )
@@ -216,7 +217,7 @@ class ToggleSpecialistMethod:
 
         # Uncertainty runs strictly after the uplift, off the same frozen row selection and bin
         # assignment, and only when there is a finite uplift to qualify.
-        membership = self._cell_membership(rho_base=rho_base, ref_total=ref_total, used=used)
+        membership = self._cell_membership(rho_label=rho_label, ref_total=ref_total, used=used)
         boot = (
             self._bootstrap(
                 index=wide.index,
@@ -271,7 +272,7 @@ class ToggleSpecialistMethod:
             sigma_overall=sigma_overall,
             uncertainty_diagnostics=diagnostics,
             labeled_rows=self._labeled_rows(
-                mi, wide=wide, test=test, used=used, rows=rows, rho_base=rho_base, ref_total=ref_total
+                mi, wide=wide, test=test, used=used, rows=rows, rho_label=rho_label, ref_total=ref_total
             ),
         )
 
@@ -283,10 +284,10 @@ class ToggleSpecialistMethod:
         test: str,
         used: npt.NDArray[np.bool_],
         rows: ToggleRowSets,
-        rho_base: float,
+        rho_label: float,
         ref_total: npt.NDArray[np.float64],
     ) -> pd.DataFrame:
-        """The test turbine's own records, tagged with the labels this estimate was built from.
+        """Return the test turbine's own records, tagged with the labels this estimate was built from.
 
         Every label is taken from the arrays the uplift and bootstrap already used, reindexed onto
         the test turbine's rows -- not recomputed. A consumer aggregating this frame therefore lands
@@ -309,16 +310,16 @@ class ToggleSpecialistMethod:
         # The bin label is the same reference-derived baseline power the uplift binned on, so a row
         # cannot sit in one bin here and another there. Outside the outer edges pd.cut gives NaN,
         # which is carried through as "this row belongs to no bin" rather than clipped to an edge.
-        if "power" in self.conditions and np.isfinite(rho_base):
+        if "power" in self.conditions and np.isfinite(rho_label):
             assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
             bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
-            labeled["power_bin"] = _on_test_rows(np.asarray(pd.cut(rho_base * ref_total, bins=bins)))
+            labeled["power_bin"] = _on_test_rows(np.asarray(pd.cut(rho_label * ref_total, bins=bins)))
         return labeled
 
     def _cell_membership(
         self,
         *,
-        rho_base: float,
+        rho_label: float,
         ref_total: npt.NDArray[np.float64],
         used: npt.NDArray[np.bool_],
     ) -> dict[str, npt.NDArray[np.bool_]]:
@@ -329,11 +330,11 @@ class ToggleSpecialistMethod:
         """
         used_idx = np.flatnonzero(used)
         membership: dict[str, npt.NDArray[np.bool_]] = {_OVERALL: np.ones(len(used_idx), dtype=bool)}
-        if "power" not in self.conditions or not np.isfinite(rho_base):
+        if "power" not in self.conditions or not np.isfinite(rho_label):
             return membership
         assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
         bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
-        assigned = pd.cut(rho_base * ref_total[used_idx], bins=bins)
+        assigned = pd.cut(rho_label * ref_total[used_idx], bins=bins)
         for category in assigned.categories:
             membership[str(category)] = np.asarray(assigned == category)
         return membership
@@ -378,17 +379,19 @@ class ToggleSpecialistMethod:
         *,
         test_pw: npt.NDArray[np.float64],
         ref_total: npt.NDArray[np.float64],
-        rho_base: float,
+        rho_label: float,
         baseline: npt.NDArray[np.bool_],
         upgraded: npt.NDArray[np.bool_],
     ) -> pd.DataFrame:
-        """Per-power-bin uplift: ``rho_up(b) / rho_base(b) - 1``, on bins of the baseline operating point.
+        """Per-power-bin uplift: ``rho_up(b) / rho_base(b) - 1``, on bins of the mean operating point.
 
         Two decisions carry this, and both are needed:
 
-        **The bin label is** ``rho_base * ref_total`` — the test turbine's *predicted baseline* power.
-        It is reference-derived, so the upgrade cannot move a row between bins; and it is on the test
-        turbine's own kW scale, so the bins mean what a reader expects.
+        **The bin label is** ``rho_label * ref_total`` — the test turbine's predicted power at the
+        campaign's mean operating point (see :func:`_rho_label`). It is reference-derived, so the
+        upgrade cannot move a row between bins; it is on the test turbine's own kW scale, so the bins
+        mean what a reader expects; and it is state-neutral, so relabelling which state is the
+        baseline cannot move a row either.
 
         **The denominator is the per-bin** ``rho_base(b)``, not the global one. The test-to-reference
         ratio genuinely varies with power (different turbines, different wakes, saturation near rated),
@@ -404,7 +407,7 @@ class ToggleSpecialistMethod:
         """
         assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
         bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
-        label = rho_base * ref_total
+        label = rho_label * ref_total
         counterfactual = _per_bin_counterfactual(
             label=label, test_pw=test_pw, ref_total=ref_total, baseline=baseline, bins=bins
         )
@@ -629,6 +632,20 @@ def _rho(test_pw: npt.NDArray[np.float64], ref_total: npt.NDArray[np.float64], m
     if denom == 0:
         return float("nan")
     return float(test_pw[mask].sum() / denom)
+
+
+def _rho_label(rho_base: float, rho_up: float) -> float:
+    """Return the test-to-reference ratio used to *label* bins: the mean of the two states.
+
+    Deliberately not ``rho_base``. Which state is called the baseline is a naming choice, so a label
+    derived from it shifts by the whole uplift when the states are swapped, migrating rows across bin
+    edges and moving per-bin estimates for no physical reason. The mean is invariant under that swap
+    by construction, and equally weighted so an on/off imbalance in row counts cannot tilt it either.
+
+    Still a campaign-level scalar times each row's reference power, so the property that earns this
+    design survives: the label is reference-derived, and the upgrade cannot move a row between bins.
+    """
+    return 0.5 * (rho_base + rho_up)
 
 
 def _segment_stats(

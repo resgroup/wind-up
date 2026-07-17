@@ -20,15 +20,15 @@ import pytest
 from benchmarking.baselines import toggle_specialist
 from benchmarking.baselines.toggle_specialist import (
     ToggleSpecialistMethod,
-    restrict_to_campaign,
     _daily_segment_coverage,
     _daily_segment_ratio,
     _expected_per_day,
     _infer_timebase,
+    restrict_to_campaign,
 )
 from benchmarking.harness.conditions import condition_bins
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.toggle import resolve_toggle
+from benchmarking.harness.toggle import build_toggle_df, resolve_toggle
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
 
 # Deliberately non-v0 column names: the method is source-agnostic, so the active-power column
@@ -127,6 +127,8 @@ class TestRecovery:
 # --- per-power-bin conditional reporting -------------------------------------------------------
 
 _RATED_KW = 1200.0
+# Rows a bin needs before its estimate is precise enough to test for bias rather than for luck.
+_MIN_RECORDS_FOR_BIAS_TEST = 50
 
 
 def _varying_rho_scada(
@@ -207,9 +209,14 @@ class TestPerBinIsNotBiasedByTheBaselineRatio:
         # this checks bias, not variance, so it needs enough rows that per-bin sampling noise cannot
         # explain a miss: at 2% noise over 6 bins x 2 segments, 2000 rows puts the per-bin standard
         # error near 0.2 pp, so the 1 pp bound is a genuine bias test rather than a coin flip.
+        # That standard error assumes a *populated* bin. The extreme bins of this fixture hold a
+        # handful of rows (the lowest, one), where the method itself reports a sigma of ~14 pp -- a
+        # 1 pp bound there tests the random number generator, not the estimator.
         scada, schedule = _varying_rho_case(n=2000, uplift=0.05, noise_frac=0.02)
         per_bin = _per_bin(scada, schedule)
-        assert per_bin["p50_uplift"].to_numpy() == pytest.approx(0.05, abs=0.01)
+        populated = per_bin[per_bin["n_records"] >= _MIN_RECORDS_FOR_BIAS_TEST]
+        assert len(populated) >= 3
+        assert populated["p50_uplift"].to_numpy() == pytest.approx(0.05, abs=0.01)
 
 
 class TestPerBinLocalisesUplift:
@@ -868,3 +875,55 @@ class TestLabeledRows:
         assert out.labeled_rows is not None
         assert out.labeled_rows["power_bin"].isna().any()
         assert out.labeled_rows["power_bin"].notna().any()
+
+
+# --- reversal symmetry -------------------------------------------------------------------------
+
+
+def _swap_states(toggle_df: pd.DataFrame) -> pd.DataFrame:
+    """Relabel which state is 'on': the same campaign, described from the other side."""
+    return toggle_df.rename(columns={"toggle_on": "toggle_off", "toggle_off": "toggle_on"})
+
+
+class TestReversalSymmetry:
+    """Which of two toggle states is *called* the baseline is a naming choice, not a measurement.
+
+    The bin label must therefore not depend on it. It used to: the label was the baseline state's
+    predicted power, so renaming the states shifted every label by the uplift and migrated rows
+    across bin edges -- moving per-bin estimates by an appreciable fraction of their own sigma for
+    no physical reason.
+    """
+
+    def _pair(self) -> tuple[MethodOutput, MethodOutput]:
+        scada, schedule = _varying_rho_case(n=600, uplift=0.05)
+        index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
+        toggle_df = build_toggle_df(index, schedule)
+        forward = _estimate(scada, toggle_df, conditions=("power",), rated_power_kw=_RATED_KW)
+        reversed_ = _estimate(scada, _swap_states(toggle_df), conditions=("power",), rated_power_kw=_RATED_KW)
+        return forward, reversed_
+
+    def test_every_row_keeps_its_power_bin_when_the_states_are_swapped(self) -> None:
+        forward, reversed_ = self._pair()
+        assert forward.labeled_rows is not None
+        assert reversed_.labeled_rows is not None
+        fwd_bins = forward.labeled_rows["power_bin"].astype(str)
+        rev_bins = reversed_.labeled_rows["power_bin"].astype(str)
+        assert (fwd_bins == rev_bins).all(), f"{(fwd_bins != rev_bins).sum()} rows changed bin under reversal"
+
+    def test_the_segments_simply_trade_places(self) -> None:
+        """Corroborates the bins are fixed: each bin's baseline rows become its upgraded rows."""
+        forward, reversed_ = self._pair()
+        assert forward.labeled_rows is not None
+        assert reversed_.labeled_rows is not None
+        fwd, rev = forward.labeled_rows, reversed_.labeled_rows
+        assert (fwd["used"] == rev["used"]).all()
+        assert (fwd["segment"] == "upgraded").sum() == (rev["segment"] == "baseline").sum()
+        assert ((fwd["segment"] == "upgraded") == (rev["segment"] == "baseline")).all()
+
+    def test_the_same_bins_are_reported_either_way(self) -> None:
+        forward, reversed_ = self._pair()
+        assert forward.p50_by_condition is not None
+        assert reversed_.p50_by_condition is not None
+        fwd = forward.p50_by_condition.set_index(forward.p50_by_condition["condition_bin"].astype(str))
+        rev = reversed_.p50_by_condition.set_index(reversed_.p50_by_condition["condition_bin"].astype(str))
+        assert set(fwd.index) == set(rev.index)
