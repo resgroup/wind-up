@@ -17,6 +17,7 @@ import yaml
 
 from benchmarking.diagnostics import write_common_diagnostics, write_run_config
 from benchmarking.diagnostics.context import ERA5_WD_COL, ERA5_WS_COL, DiagnosticContext
+from benchmarking.diagnostics.coverage import exclusion_bucket, plot_excluded_fraction
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.synthetic import ColumnSchema
 
@@ -63,7 +64,13 @@ def _long_scada(index: pd.DatetimeIndex, turbines: list[str], *, rng: np.random.
     return pd.concat(frames)
 
 
-def _context(tmp_path: Path, *, columns: ColumnSchema = _FULL_COLUMNS, with_era5: bool = True) -> DiagnosticContext:
+def _context(
+    tmp_path: Path,
+    *,
+    columns: ColumnSchema = _FULL_COLUMNS,
+    with_era5: bool = True,
+    excluded: np.ndarray | None = None,
+) -> DiagnosticContext:
     rng = np.random.default_rng(0)
     index = pd.date_range("2020-01-01", periods=300, freq="10min", tz="UTC")
     scada = _long_scada(index, ["T1", "T2", "T3"], rng=rng)
@@ -85,7 +92,66 @@ def _context(tmp_path: Path, *, columns: ColumnSchema = _FULL_COLUMNS, with_era5
         timebase=pd.Timedelta(minutes=10),
         mode="prepost",
         era5_df=era5,
+        excluded_ts=excluded,
     )
+
+
+# --- caller-flagged row exclusions --------------------------------------------------------------
+
+
+def _excluded_mask(n: int = 300, *, every: int = 5) -> np.ndarray:
+    return np.arange(n) % every == 0
+
+
+class TestExclusionTimelineBucket:
+    """A single averaged dot is not a timeline: the bucket has to suit the campaign's length."""
+
+    def test_short_campaign_buckets_daily(self) -> None:
+        index = pd.date_range("2020-01-01", periods=300, freq="10min", tz="UTC")
+        assert exclusion_bucket(index) == "1D"
+
+    def test_long_campaign_buckets_weekly(self) -> None:
+        index = pd.date_range("2020-01-01", periods=3 * 365 * 24, freq="h", tz="UTC")
+        assert exclusion_bucket(index) == "7D"
+
+    def test_a_short_campaign_gets_more_than_one_point(self, tmp_path: Path) -> None:
+        ctx = _context(tmp_path, excluded=_excluded_mask())  # the fixture spans ~2 days
+        line = plot_excluded_fraction(ctx)
+        assert line is not None
+        assert len(pd.Series(_excluded_mask(), index=ctx.index).resample(exclusion_bucket(ctx.index)).mean()) > 1
+
+
+class TestExcludedRowPlots:
+    """The exclusion view is the *usual* 2x3 operating-curve figure, coloured kept vs excluded."""
+
+    def test_written_when_rows_are_excluded(self, tmp_path: Path) -> None:
+        ctx = _context(tmp_path, excluded=_excluded_mask())
+        names = {p.name for p in write_common_diagnostics(ctx)}
+        assert "ops_curves_excluded.png" in names
+        assert "excluded_row_fraction.png" in names
+
+    def test_lands_in_the_filter_stage_folder(self, tmp_path: Path) -> None:
+        ctx = _context(tmp_path, excluded=_excluded_mask())
+        written = {p.name: p for p in write_common_diagnostics(ctx)}
+        assert written["ops_curves_excluded.png"].parent.name == written["filter_coverage.png"].parent.name
+
+    def test_skipped_when_the_method_excludes_nothing(self, tmp_path: Path) -> None:
+        """A clean campaign must not sprout an empty plot."""
+        ctx = _context(tmp_path, excluded=np.zeros(300, dtype=bool))
+        names = {p.name for p in write_common_diagnostics(ctx)}
+        assert "ops_curves_excluded.png" not in names
+        assert "excluded_row_fraction.png" not in names
+
+    def test_skipped_when_the_method_has_no_exclusion_concept(self, tmp_path: Path) -> None:
+        ctx = _context(tmp_path)
+        assert ctx.excluded_ts is None
+        names = {p.name for p in write_common_diagnostics(ctx)}
+        assert "ops_curves_excluded.png" not in names
+
+    def test_a_misaligned_exclusion_mask_skips_every_diagnostic(self, tmp_path: Path) -> None:
+        """Same contract as the other masks: a length mismatch is a caller bug, not a partial plot."""
+        ctx = _context(tmp_path, excluded=np.zeros(7, dtype=bool))
+        assert write_common_diagnostics(ctx) == []
 
 
 def test_common_diagnostics_writes_expected_plots(tmp_path: Path) -> None:

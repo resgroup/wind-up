@@ -52,7 +52,7 @@ class ColumnSchema:
         selection (e.g. special operating modes the treatment cannot affect). Optional and off by
         default; when set, a method that honours it excludes the *test* turbine's flagged rows
         alongside the downtime filter. Must be all-``False`` where unknown (never NaN) so an expanded
-        time index never turns a gap into an exclusion.
+        time index never turns a gap into an exclusion; a method honouring the role raises on NaN.
     """
 
     turbine: str

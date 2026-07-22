@@ -927,3 +927,121 @@ class TestReversalSymmetry:
         fwd = forward.p50_by_condition.set_index(forward.p50_by_condition["condition_bin"].astype(str))
         rev = reversed_.p50_by_condition.set_index(reversed_.p50_by_condition["condition_bin"].astype(str))
         assert set(fwd.index) == set(rev.index)
+
+
+# --- caller-supplied row exclusion (ColumnSchema.exclude_row) -----------------------------------
+
+_EXCLUDE_COL = "special_mode"
+_EXCLUDE_COLUMNS = replace(_COLUMNS, exclude_row=_EXCLUDE_COL)
+
+
+def _flag(scada: pd.DataFrame, *, turbine: str, every: int, value: object = True) -> pd.DataFrame:
+    """Return a copy of ``scada`` carrying an all-False exclude column with every Nth ``turbine`` row set."""
+    out = scada.copy()
+    # object dtype so a non-bool ``value`` (the NaN case) can be written without an upcast warning
+    out[_EXCLUDE_COL] = pd.Series(data=False, index=out.index, dtype=object if value is not True else bool)
+    is_turbine = (out[_TURBINE_COL] == turbine).to_numpy()
+    position = np.cumsum(is_turbine) - 1
+    out.loc[is_turbine & (position % every == 0), _EXCLUDE_COL] = value
+    return out
+
+
+class TestExcludeRow:
+    """``columns.exclude_row`` drops caller-flagged **test** turbine rows from the estimate."""
+
+    def test_flagged_test_rows_are_not_used(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        flagged = _flag(scada, turbine="T1", every=5)
+        out = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS).estimate(
+            MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert out.labeled_rows is not None
+        excluded = out.labeled_rows[_EXCLUDE_COL].to_numpy(dtype=bool)
+        assert excluded.any()
+        assert not out.labeled_rows.loc[excluded, "used"].to_numpy().any()
+        assert out.labeled_rows.loc[~excluded, "used"].to_numpy().any()
+
+    def test_excluding_corrupted_rows_restores_the_known_uplift(self) -> None:
+        """The point of the feature: flagged special-mode rows stop biasing the ratio."""
+        scada, schedule, _ = _toggle_case(n=400, uplift=0.05)
+        corrupted = _flag(scada, turbine="T1", every=4)
+        spoiled = corrupted[_EXCLUDE_COL].to_numpy(dtype=bool) & (corrupted[_TURBINE_COL] == "T1").to_numpy()
+        corrupted.loc[spoiled, _POWER_COL] *= 0.5
+
+        naive = ToggleSpecialistMethod(columns=_COLUMNS).estimate(
+            MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        filtered = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS).estimate(
+            MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert filtered.p50_overall == pytest.approx(0.05, abs=1e-9)
+        assert abs(naive.p50_overall - 0.05) > abs(filtered.p50_overall - 0.05)
+
+    def test_flagged_reference_rows_are_kept(self) -> None:
+        """References are never excluded here: their special modes still carry ratio information."""
+        scada, schedule = _noisy_toggle_case()
+        flagged = _flag(scada, turbine="R1", every=3)
+        baseline = ToggleSpecialistMethod(columns=_COLUMNS).estimate(
+            MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        with_role = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS).estimate(
+            MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert with_role.p50_overall == pytest.approx(baseline.p50_overall)
+        assert with_role.labeled_rows is not None
+        assert with_role.labeled_rows["used"].to_numpy().any()
+
+    def test_nan_in_the_exclude_column_is_rejected(self) -> None:
+        """NaN is not "excluded": the schema contract says the column is never NaN, so say so loudly."""
+        scada, schedule = _noisy_toggle_case()
+        flagged = _flag(scada, turbine="T1", every=7, value=np.nan)
+        with pytest.raises(ValueError, match=_EXCLUDE_COL):
+            ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS).estimate(
+                MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+            )
+
+    def test_unset_role_excludes_nothing(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        flagged = _flag(scada, turbine="T1", every=5)
+        out = ToggleSpecialistMethod(columns=_COLUMNS).estimate(
+            MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert out.labeled_rows is not None
+        excluded = out.labeled_rows[_EXCLUDE_COL].to_numpy(dtype=bool)
+        assert out.labeled_rows.loc[excluded, "used"].to_numpy().any()
+
+    def test_absent_column_excludes_nothing(self) -> None:
+        """The role names a column the frame does not carry: skip, do not raise."""
+        scada, schedule = _noisy_toggle_case()
+        out = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert out.labeled_rows is not None
+        assert out.labeled_rows["used"].to_numpy().any()
+
+    def test_exclusions_reach_the_shared_diagnostics(self, tmp_path: Path) -> None:
+        """The exclusion mask is handed to the shared diagnostics rather than plotted bespokely.
+
+        The 2x3 operating-curve view of the same mask needs a wind-speed column this fixture does
+        not carry, so it is exercised in the diagnostics tests; here the timeline is the evidence
+        that ``excluded_ts`` is threaded through.
+        """
+        scada, schedule = _noisy_toggle_case()
+        flagged = _flag(scada, turbine="T1", every=5)
+        ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, out_dir=tmp_path, save_plots=True).estimate(
+            MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        run_dir = next(p for p in Path(tmp_path).iterdir() if p.is_dir())
+        names = {p.name for p in (run_dir / "plots").rglob("*.png")}
+        assert "excluded_row_fraction.png" in names
+        assert "T1_excluded_rows.png" not in names, "the bespoke plot was replaced by the shared views"
+
+    def test_no_exclusion_plots_when_nothing_is_excluded(self, tmp_path: Path) -> None:
+        scada, schedule = _noisy_toggle_case()
+        ToggleSpecialistMethod(columns=_COLUMNS, out_dir=tmp_path, save_plots=True).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        run_dir = next(p for p in Path(tmp_path).iterdir() if p.is_dir())
+        names = {p.name for p in (run_dir / "plots").rglob("*.png")}
+        assert "ops_curves_excluded.png" not in names
+        assert "excluded_row_fraction.png" not in names

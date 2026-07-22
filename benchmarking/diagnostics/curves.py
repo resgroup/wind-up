@@ -8,6 +8,7 @@ source-native names.
 * :func:`plot_ops_curves` — a 2x3 figure (power curve; pitch/rpm vs power; pitch/rpm vs wind
   speed) coloured kept vs removed, so it is both the operating-curve view and the filter check
   (stage: filter).
+* :func:`plot_ops_curves_excluded` — the same figure coloured kept vs caller-excluded (stage: filter).
 * :func:`plot_curves_by_upgrade` — pitch/rpm/power vs wind speed split baseline vs upgraded
   (stage: uplift inputs).
 * :func:`plot_reactive_vs_active` / :func:`plot_power_factor` — reactive-power behaviour, per
@@ -139,6 +140,25 @@ def plot_ops_curves_kept(ctx: DiagnosticContext) -> Path | None:
         segments=segments,
         title="operating curves (used rows only)",
         filename="ops_curves_kept_only.png",
+        stage=stages.FILTER,
+    )
+
+
+def plot_ops_curves_excluded(ctx: DiagnosticContext) -> Path | None:
+    """Draw the operating-curve figure coloured kept vs caller-excluded (``ColumnSchema.exclude_row``).
+
+    The same view as :func:`plot_ops_curves`, so a special operating mode reads as a band in
+    pitch/rpm. ``None`` when the method has no exclusion mask or excluded nothing.
+    """
+    excluded = ctx.excluded_mask()
+    if excluded is None:
+        return None
+    segments: Segments = [("kept", ~excluded, "C0"), ("excluded", excluded, "C3")]
+    return _ops_curve_figure(
+        ctx,
+        segments=segments,
+        title=f"operating curves (kept vs excluded by the caller's flag; {excluded.sum()} rows excluded)",
+        filename="ops_curves_excluded.png",
         stage=stages.FILTER,
     )
 
