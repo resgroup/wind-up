@@ -48,6 +48,11 @@ class ColumnSchema:
     :param reactive_power: mean reactive power
     :param nacelle_position: nacelle/yaw position (wind-direction proxy; diagnostics only)
     :param ambient_temp: ambient temperature
+    :param exclude_row: names a caller-supplied **boolean** column marking rows to drop from row
+        selection (e.g. special operating modes the treatment cannot affect). Optional and off by
+        default; when set, a method that honours it excludes the *test* turbine's flagged rows
+        alongside the downtime filter. Must be all-``False`` where unknown (never NaN) so an expanded
+        time index never turns a gap into an exclusion; a method honouring the role raises on NaN.
     """
 
     turbine: str
@@ -61,6 +66,7 @@ class ColumnSchema:
     reactive_power: str | None = None
     nacelle_position: str | None = None
     ambient_temp: str | None = None
+    exclude_row: str | None = None
 
     def require_roles(self, roles: Iterable[str]) -> None:
         """Raise ``ValueError`` if any named role is unset or blank (``None``, empty, or whitespace).

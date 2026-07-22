@@ -422,7 +422,29 @@ class ToggleSpecialistMethod:
             .keep_mask(test_rows, timebase=timebase)
             .reindex(wide.index, fill_value=False)
         )
-        return complete & all_available & test_keep
+        return complete & all_available & test_keep & ~self._test_excluded(mi, test=test, index=wide.index)
+
+    def _test_excluded(self, mi: MethodInput, *, test: str, index: pd.DatetimeIndex) -> pd.Series:
+        """Boolean mask on *index*: the test turbine's caller-flagged rows to drop (empty when unused).
+
+        Reads the ``columns.exclude_row`` column of the test turbine's rows; references are never
+        excluded here (their special modes still carry information for the ratio). Absent column or
+        unset role -> nothing excluded. Reindex fills missing timestamps with ``False`` so an expanded
+        index never becomes an exclusion. NaN raises rather than coercing: ``astype(bool)`` reads a
+        missing flag as ``True`` and drops the row, the opposite of the safe default.
+        """
+        col = self.columns.exclude_row
+        if not col or col not in mi.scada_df.columns:
+            return pd.Series(data=False, index=index, dtype=bool)
+        test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]
+        flags = test_rows[col]
+        if flags.isna().any():
+            msg = (
+                f"exclude_row column {col!r} has {int(flags.isna().sum())} NaN value(s) for turbine {test!r}; "
+                f"it must be boolean with no missing values (fill unknown rows with False explicitly)"
+            )
+            raise ValueError(msg)
+        return flags.astype(bool).reindex(index, fill_value=False)
 
     def _write_outputs(
         self,
@@ -522,6 +544,8 @@ class ToggleSpecialistMethod:
             timebase=timebase,
             mode="toggle",
             era5_df=None,
+            # the exclusion alone, so the plots show what the flag removed that downtime did not
+            excluded_ts=self._test_excluded(mi, test=test, index=index).to_numpy(),
         )
         write_common_diagnostics(ctx)
         params = {

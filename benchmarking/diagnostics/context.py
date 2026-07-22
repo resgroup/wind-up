@@ -55,6 +55,8 @@ class DiagnosticContext:
     :param mode: ``"prepost"`` or ``"toggle"``
     :param era5_df: optional ERA5 aligned to the unique index (columns :data:`ERA5_WS_COL` /
         :data:`ERA5_WD_COL`)
+    :param excluded_ts: optional per-timestamp ``ColumnSchema.exclude_row`` mask (``None`` for a
+        method with no exclusion concept). Separate from ``used_ts``, which also folds in downtime.
     """
 
     run_dir: Path
@@ -67,6 +69,7 @@ class DiagnosticContext:
     timebase: pd.Timedelta
     mode: str
     era5_df: pd.DataFrame | None = None
+    excluded_ts: npt.NDArray[np.bool_] | None = None
 
     @property
     def index(self) -> pd.DatetimeIndex:
@@ -93,6 +96,13 @@ class DiagnosticContext:
     def upgraded_ts(self) -> npt.NDArray[np.bool_]:
         """Per-timestamp mask of upgraded slots."""
         return np.asarray(self.treated_ts, dtype=bool)
+
+    def excluded_mask(self) -> npt.NDArray[np.bool_] | None:
+        """Caller-flagged exclusions as a bool mask; ``None`` when unset or empty (nothing to draw)."""
+        if self.excluded_ts is None:
+            return None
+        mask = np.asarray(self.excluded_ts, dtype=bool)
+        return mask if mask.any() else None
 
     def references(self) -> list[str]:
         """Sorted reference turbine names (every turbine present except the test turbine)."""

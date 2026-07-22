@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from benchmarking.diagnostics.context import DiagnosticContext
 
 _COVERAGE_BUCKET = "7D"  # weekly buckets keep a multi-year window legible
+_WEEKLY_BUCKET_FROM = pd.Timedelta(days=60)  # below this a weekly timeline is too few points to read
 
 
 def _present_runs(index: pd.DatetimeIndex, present: np.ndarray) -> list[tuple[float, float]]:
@@ -135,5 +136,41 @@ def plot_filter_coverage(ctx: DiagnosticContext) -> Path:
     apply_grid(ax)
     ax.legend()
     path = ctx.stage_dir(stages.FILTER) / "filter_coverage.png"
+    save_fig(fig, path)
+    return path
+
+
+def exclusion_bucket(index: pd.DatetimeIndex) -> str:
+    """Resample rule for the exclusion timeline: a short campaign is one weekly dot, so bucket daily."""
+    span = index.max() - index.min() if len(index) else pd.Timedelta(0)
+    return _COVERAGE_BUCKET if span > _WEEKLY_BUCKET_FROM else "1D"
+
+
+def plot_excluded_fraction(ctx: DiagnosticContext) -> Path | None:
+    """%-share of the test turbine's timestamps removed by the caller's exclusion flag, over time.
+
+    A flag firing in concentrated blocks can coincide with a toggle state and bias the ratio, which
+    the curves cannot show. ``None`` when the method has no exclusion mask or excluded nothing.
+    """
+    excluded = ctx.excluded_mask()
+    if excluded is None:
+        return None
+    bucket = exclusion_bucket(ctx.index)
+    flagged = pd.Series(excluded, index=ctx.index)
+    share = 100.0 * flagged.astype(float).resample(bucket).mean()
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    shade_segments(ax, ctx)
+    ax.plot(share.index.to_numpy(), share.to_numpy(), linewidth=1.2, color="C3", marker=".")
+    ax.set_ylim(0, 105)
+    ax.yaxis.set_major_formatter(PercentFormatter())
+    ax.set_xlabel("date")
+    ax.set_ylabel(f"timestamps excluded per {bucket} [%]")
+    ax.set_title(
+        f"{ctx.test_wtg}: rows excluded by the caller's flag "
+        f"({excluded.sum()} of {len(excluded)}, {100.0 * excluded.mean():.1f}%)"
+    )
+    apply_grid(ax)
+    path = ctx.stage_dir(stages.FILTER) / "excluded_row_fraction.png"
     save_fig(fig, path)
     return path
