@@ -36,6 +36,8 @@ The public examples cover several realistic analysis shapes, including
 SMARTEOLE toggle data, Kelmarsh turbine data, and WeDoWind challenge-style
 pre/post assessments.
 
+Further example useage can be seen in the [Hill of Towie open analysis repo](https://github.com/resgroup/hill-of-towie-open-source-analysis).
+
 ## Methodology
 
 The validation methodology that `wind-up` implements is described in detail in
