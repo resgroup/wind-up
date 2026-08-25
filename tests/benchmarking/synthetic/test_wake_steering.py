@@ -199,7 +199,7 @@ def test_is_waked_per_row_matches_iec_sector() -> None:
     coords = {**COORDS, "BLOCK": (57.4985, -3.250)}
     north = [*NORTH_OFFSETS, ("BLOCK", T0, 0.0)]
     ws = WakeSteering(coords=coords, test_wtgs=[UP, DOWN], north_offsets=north)
-    waked = ws._is_waked(UP, np.array([180.0, 90.0]))
+    waked = ws._is_waked(UP, np.array([180.0, 90.0]))  # noqa: SLF001
     assert bool(waked[0]) is True
     assert bool(waked[1]) is False
 
