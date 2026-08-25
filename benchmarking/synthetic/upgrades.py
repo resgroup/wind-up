@@ -6,24 +6,28 @@ turbine's treated rows. Upgrades compose: ``apply_upgrades`` resolves a list aga
 Cp core, then a rated-power change, then a nacelle wind-speed change), so the result does
 not depend on list order in surprising ways.
 
-Phase 1 implements the four profiles Issue 1 names: constant, wind-speed-dependent and
-condition (turbulence-intensity) dependent Cp changes, and rated-power change. Pitch,
-rpm, yaw and wake-steering upgrades are future work.
+Phase 1 implements the four Issue 1 profiles (constant, wind-speed-dependent and
+condition-dependent Cp changes, and rated-power change) plus :class:`WakeSteering`, a
+geometry-driven two-turbine wake-steering upgrade.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
+import pandas as pd
 
 from benchmarking.synthetic.cp_core import power_from_cp_change, region2_fraction, rpm_from_power_change
-from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
+from benchmarking.synthetic.geometry import WakePair, bearing_deg, derive_wake_steering_pairs, distance_m, wrap180
+from benchmarking.synthetic.solar import diurnal_factor
+from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS, HOT_LAT, HOT_LON
+from wind_up.waking_state import iec_disturbed_sector_deg
 
 if TYPE_CHECKING:
-    import pandas as pd
+    from collections.abc import Mapping, Sequence
 
     from benchmarking.synthetic.cp_core import CpCore
     from benchmarking.synthetic.schema import ColumnSchema
@@ -34,13 +38,16 @@ class UpgradeEffect:
     """One upgrade's contribution, resolved against the original baseline rows.
 
     :param cp_ratio: per-row (or scalar) multiplicative Cp ratio, e.g. 1.02 for +2% Cp
-    :param ws_factor: multiplicative change to the nacelle wind speed, e.g. 1.01 for +1%
+    :param ws_factor: per-row (or scalar) multiplicative change to the nacelle wind speed
     :param new_rated_power_kw: rated-power override, or None to leave rated unchanged
+    :param nacelle_position_delta: per-row (or scalar) additive change to the nacelle position
+        (compass degrees), applied mod 360; e.g. a wake-steering yaw offset
     """
 
     cp_ratio: npt.ArrayLike = 1.0
-    ws_factor: float = 1.0
+    ws_factor: npt.ArrayLike = 1.0
     new_rated_power_kw: float | None = None
+    nacelle_position_delta: npt.ArrayLike = 0.0
 
 
 @dataclass(frozen=True)
@@ -157,6 +164,230 @@ class RatedPowerChange:
         return UpgradeEffect(new_rated_power_kw=self.new_rated_power_kw)
 
 
+def _north_offset_values(
+    index: pd.DatetimeIndex, *, turbine: str, north_offsets: Sequence[tuple[str, pd.Timestamp, float]]
+) -> npt.NDArray[np.float64]:
+    """Per-row north offset (deg) for ``turbine``, step-applied from time-stamped corrections.
+
+    Each correction holds from its timestamp until the next one for that turbine; rows before the
+    first correction take the first (earliest) value. Timestamps are compared in UTC.
+    """
+    entries = sorted(((ts, off) for (t, ts, off) in north_offsets if t == turbine), key=lambda e: e[0])
+    if not entries:
+        msg = f"no northing correction for turbine {turbine!r}"
+        raise KeyError(msg)
+    times = _as_utc_naive(pd.DatetimeIndex([ts for ts, _ in entries]))
+    offsets = np.array([off for _, off in entries], dtype=float)
+    pos = np.searchsorted(times.to_numpy(), _as_utc_naive(index).to_numpy(), side="right") - 1
+    return offsets[np.clip(pos, 0, len(offsets) - 1)]
+
+
+def _as_utc_naive(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Return ``index`` as a tz-naive UTC DatetimeIndex so timestamps compare consistently."""
+    idx = pd.DatetimeIndex(index)
+    return idx.tz_convert("UTC").tz_localize(None) if idx.tz is not None else idx
+
+
+def north_calibrated_direction(
+    index: pd.DatetimeIndex,
+    nacelle_position: npt.NDArray[np.float64],
+    *,
+    turbine: str,
+    north_offsets: Sequence[tuple[str, pd.Timestamp, float]],
+) -> npt.NDArray[np.float64]:
+    """North-calibrated wind direction: ``(nacelle_position + north_offset) % 360`` (deg).
+
+    Matches ``wind_up.northing`` (offset added, then wrapped). Used both to gate the injected
+    wake-steering effect and to reconstruct the calibrated direction for the diagnostic plots.
+    """
+    offset = _north_offset_values(index, turbine=turbine, north_offsets=north_offsets)
+    return (np.asarray(nacelle_position, dtype=float) + offset) % 360.0
+
+
+@dataclass(frozen=True)
+class WakeSteering:
+    """A geometry-driven two-turbine wake-steering upgrade (prepost or toggle).
+
+    Applied to the participating turbines (``test_wtgs``, the same set passed to
+    ``generate_dataset``). On construction it derives the directed steering pairs among the
+    participants within ``max_separation_d`` rotor diameters. For each turbine it injects, from
+    that turbine's north-calibrated direction and the static pair geometry, a cosine yaw **loss**
+    (when it is a pair's upstream/steering turbine) and a wake-recovery **gain** (when it is a
+    pair's downstream/benefitting turbine); a turbine can hold either role in different wind
+    directions. The steering turbine's nacelle position is offset by the commanded yaw and its read
+    wind speed is nudged (flow distortion); the benefitting turbine's nacelle wind speed is inflated
+    (post-treatment). The downstream gain and ws inflation are scaled by a diurnal factor (stronger
+    at night). References (turbines absent from ``test_wtgs``) are never touched.
+
+    The yaw schedule is a trapezoid: full ``max_offset_deg`` within ``plateau_half_deg`` of the wake
+    nadir, ramping linearly to zero at ``wd_width / 2``, with the sign flipping through the nadir.
+    Offsets are authored in the FLORIS convention (CCW positive) to match published lookup tables;
+    the applied nacelle change is compass (CW positive), i.e. the negation.
+
+    A turbine only steers when its own inflow is wake-free: if any other turbine in ``coords`` sits
+    upwind of it within the IEC 61400-12-1 disturbed sector (``iec_disturbed_sector_deg`` — wide when
+    close, narrowing to zero by 20 diameters), its inflow is too turbulent to steer and the whole
+    pair effect (loss and the partner's gain) is suppressed for those timestamps.
+
+    :param coords: ``(lat, lon)`` in degrees for every turbine (participants and references)
+    :param test_wtgs: participants that may steer or benefit; pairs are formed among these
+    :param north_offsets: ``(turbine, timestamp, offset_deg)`` corrections, step-applied like wind_up
+    :param rotor_diameter_m: rotor diameter for the proximity / disturbed-sector limits
+    :param max_separation_d: maximum upstream-downstream separation, in rotor diameters
+    :param wd_width: full steering sector width about each nadir (deg)
+    :param plateau_half_deg: half-width of the max-amplitude plateau about the nadir (deg)
+    :param max_offset_deg: peak yaw-offset magnitude (deg)
+    :param cos_power: exponent in the ``cos(offset)^p`` upstream-loss shape
+    :param steer_loss_scale: fraction of the cosine yaw-loss actually applied (keeps the loss shape
+        but scales its energy impact to realistic levels)
+    :param steer_ws_gain: peak upstream read-ws fractional change (may be negative)
+    :param peak_gain: peak downstream Cp gain fraction at the nadir
+    :param peak_ws_gain: peak downstream nacelle-ws inflation fraction at the nadir
+    :param night_factor: downstream multiplier deep at night
+    :param day_factor: downstream multiplier at high sun
+    :param site_lat: latitude for the solar/diurnal model (deg)
+    :param site_lon: longitude for the solar/diurnal model (deg, east +)
+    """
+
+    coords: Mapping[str, tuple[float, float]]
+    test_wtgs: Sequence[str]
+    north_offsets: Sequence[tuple[str, pd.Timestamp, float]]
+    rotor_diameter_m: float = 82.0
+    max_separation_d: float = 7.0
+    wd_width: float = 30.0
+    plateau_half_deg: float = 5.0
+    max_offset_deg: float = 20.0
+    cos_power: float = 1.5
+    steer_loss_scale: float = 0.12
+    steer_ws_gain: float = -0.02
+    peak_gain: float = 0.09
+    peak_ws_gain: float = 0.02
+    night_factor: float = 1.3
+    day_factor: float = 0.6
+    site_lat: float = HOT_LAT
+    site_lon: float = HOT_LON
+    pairs: tuple[WakePair, ...] = field(init=False, default=())
+    wake_neighbours: dict[str, tuple[tuple[float, float], ...]] = field(init=False, default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Derive the steering pairs and per-turbine wake neighbours; validate coords and northing."""
+        missing_coords = [w for w in self.test_wtgs if w not in self.coords]
+        if missing_coords:
+            msg = f"coords is missing participant(s) {missing_coords}"
+            raise ValueError(msg)
+        offset_turbines = {t for (t, _, _) in self.north_offsets}
+        missing_north = [w for w in self.test_wtgs if w not in offset_turbines]
+        if missing_north:
+            msg = f"north_offsets is missing correction(s) for participant(s) {missing_north}"
+            raise ValueError(msg)
+        pairs = tuple(
+            derive_wake_steering_pairs(
+                self.coords,
+                test_wtgs=self.test_wtgs,
+                rotor_diameter_m=self.rotor_diameter_m,
+                max_separation_d=self.max_separation_d,
+            )
+        )
+        object.__setattr__(self, "pairs", pairs)
+
+        # Precompute, for each participant, the (bearing-to-neighbour, disturbed-half-angle) of every
+        # other turbine that could wake it (IEC sector non-zero, i.e. within 20 diameters).
+        neighbours: dict[str, tuple[tuple[float, float], ...]] = {}
+        for wtg in {p.upstream for p in pairs}:
+            entries = []
+            for other, other_latlon in self.coords.items():
+                if other == wtg:
+                    continue
+                dn = distance_m(self.coords[wtg], other_latlon) / self.rotor_diameter_m
+                half_angle = float(iec_disturbed_sector_deg(dn)) / 2.0
+                if half_angle > 0.0:
+                    entries.append((bearing_deg(self.coords[wtg], other_latlon), half_angle))
+            neighbours[wtg] = tuple(entries)
+        object.__setattr__(self, "wake_neighbours", neighbours)
+
+    @property
+    def description(self) -> dict:
+        """Return serialisable provenance describing this upgrade."""
+        return {
+            "kind": "wake_steering",
+            "pairs": [
+                {"upstream": p.upstream, "downstream": p.downstream, "nadir_bearing": p.nadir_bearing}
+                for p in self.pairs
+            ],
+            "north_offsets": [[t, ts, off] for (t, ts, off) in self.north_offsets],
+            "wd_width": self.wd_width,
+            "plateau_half_deg": self.plateau_half_deg,
+            "max_offset_deg": self.max_offset_deg,
+            "cos_power": self.cos_power,
+            "steer_loss_scale": self.steer_loss_scale,
+            "steer_ws_gain": self.steer_ws_gain,
+            "peak_gain": self.peak_gain,
+            "peak_ws_gain": self.peak_ws_gain,
+            "night_factor": self.night_factor,
+            "day_factor": self.day_factor,
+            "site_lat": self.site_lat,
+            "site_lon": self.site_lon,
+            "rotor_diameter_m": self.rotor_diameter_m,
+            "max_separation_d": self.max_separation_d,
+        }
+
+    def _envelope(self, view_angle: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """Trapezoidal envelope in [0, 1]: flat within the plateau, linear to 0 at the sector edge."""
+        av = np.abs(view_angle)
+        half = self.wd_width / 2.0
+        ramp = (half - av) / (half - self.plateau_half_deg)
+        env = np.where(av <= self.plateau_half_deg, 1.0, ramp)
+        return np.clip(env, 0.0, 1.0)
+
+    def _is_waked(self, steering_wtg: str, wind_from: npt.NDArray[np.float64]) -> npt.NDArray[np.bool_]:
+        """Per-row mask where ``steering_wtg`` is itself inside another turbine's IEC disturbed sector."""
+        waked = np.zeros(len(wind_from), dtype=bool)
+        for neighbour_bearing, half_angle in self.wake_neighbours.get(steering_wtg, ()):
+            waked |= np.abs(wrap180(neighbour_bearing - wind_from)) < half_angle
+        return waked
+
+    def __call__(self, rows: pd.DataFrame, columns: ColumnSchema) -> UpgradeEffect:
+        """Return this turbine's combined steering loss and/or wake-recovery gain for these rows."""
+        if columns.nacelle_position is None:
+            msg = "WakeSteering requires columns.nacelle_position (the wind-direction gate)"
+            raise ValueError(msg)
+        turbine = str(rows[columns.turbine].iloc[0])
+        index = pd.DatetimeIndex(rows.index)
+        nacelle = rows[columns.nacelle_position].to_numpy(dtype=float)
+        cal = north_calibrated_direction(index, nacelle, turbine=turbine, north_offsets=self.north_offsets)
+
+        n = len(rows)
+        cp_ratio = np.ones(n)
+        ws_factor = np.ones(n)
+        nacelle_delta = np.zeros(n)
+        diurnal: npt.NDArray[np.float64] | None = None
+        for pair in self.pairs:
+            if turbine not in (pair.upstream, pair.downstream):
+                continue
+            view = wrap180(cal - pair.nadir_bearing)
+            # The steering turbine only steers where its own inflow is wake-free; suppress the whole
+            # pair effect (loss and the partner's gain) where the upstream turbine is itself waked.
+            env = np.where(self._is_waked(pair.upstream, cal), 0.0, self._envelope(view))
+            if turbine == pair.upstream:
+                gamma_floris = np.sign(view) * self.max_offset_deg * env
+                cos_deficit = 1.0 - np.maximum(np.cos(np.radians(gamma_floris)), 0.0) ** self.cos_power
+                cp_ratio = cp_ratio * (1.0 - self.steer_loss_scale * cos_deficit)
+                ws_factor = ws_factor * (1.0 + self.steer_ws_gain * env)
+                nacelle_delta = nacelle_delta - gamma_floris
+            if turbine == pair.downstream:
+                if diurnal is None:
+                    diurnal = diurnal_factor(
+                        index,
+                        lat=self.site_lat,
+                        lon=self.site_lon,
+                        night_factor=self.night_factor,
+                        day_factor=self.day_factor,
+                    )
+                cp_ratio = cp_ratio * (1.0 + self.peak_gain * env * diurnal)
+                ws_factor = ws_factor * (1.0 + self.peak_ws_gain * env * diurnal)
+        return UpgradeEffect(cp_ratio=cp_ratio, ws_factor=ws_factor, nacelle_position_delta=nacelle_delta)
+
+
 def apply_rated_change(
     power_kw: npt.NDArray[np.float64],
     *,
@@ -201,12 +432,14 @@ def apply_upgrades(
     baseline_ws = rows[columns.wind_speed].to_numpy(dtype=float)
 
     cp_ratio = np.ones(n)
-    ws_factor = 1.0
+    ws_factor = np.ones(n)
+    nacelle_delta = np.zeros(n)
     new_rated_power_kw: float | None = None
     for upgrade in upgrades:
         effect = upgrade(rows, columns)
         cp_ratio = cp_ratio * np.asarray(effect.cp_ratio, dtype=float)
-        ws_factor *= effect.ws_factor
+        ws_factor = ws_factor * np.asarray(effect.ws_factor, dtype=float)
+        nacelle_delta = nacelle_delta + np.asarray(effect.nacelle_position_delta, dtype=float)
         if effect.new_rated_power_kw is not None:
             new_rated_power_kw = effect.new_rated_power_kw
 
@@ -223,4 +456,7 @@ def apply_upgrades(
     out[columns.active_power] = new_power
     out[columns.gen_rpm] = new_rpm
     out[columns.wind_speed] = baseline_ws * ws_factor
+    if columns.nacelle_position is not None and np.any(nacelle_delta != 0.0):
+        baseline_nacelle = rows[columns.nacelle_position].to_numpy(dtype=float)
+        out[columns.nacelle_position] = (baseline_nacelle + nacelle_delta) % 360.0
     return out

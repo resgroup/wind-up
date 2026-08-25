@@ -425,6 +425,11 @@ HOT_RATED_POWER_KW = 2300.0
 # Hub height of the Hill of Towie turbines (m); feeds the ERA5 hub-height wind-speed derivation.
 HOT_HUB_HEIGHT_M = 59.0
 
+# Approximate Hill of Towie site coordinates (deg, east-positive longitude); used as the default
+# site for the wake-steering solar/diurnal model.
+HOT_LAT = 57.50
+HOT_LON = -3.25
+
 # The reference active-power companion statistics (max/min/SD) a method may opt into as features.
 HOT_ACTIVE_POWER_STAT_COLS: tuple[str, ...] = (
     _TAG_ACTIVE_POWER_MAX,

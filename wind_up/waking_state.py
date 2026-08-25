@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from geographiclib.geodesic import Geodesic
 from tabulate import tabulate
@@ -161,6 +162,20 @@ def get_distance_and_bearing(*, lat1: float, long1: float, lat2: float, long2: f
     return distance_m, bearing_deg
 
 
+def iec_disturbed_sector_deg(distance_diameters: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    """IEC 61400-12-1 disturbed-sector full width (deg) vs upwind separation in rotor diameters.
+
+    Below 2 diameters the whole 180 deg upwind is disturbed; from 2 to 20 diameters the sector is
+    ``1.3 * atan(2.5 / Dn + 0.15) + 10``; beyond 20 diameters the wake has dissipated (sector 0).
+    """
+    dn = np.asarray(distance_diameters, dtype=float)
+    sector = np.full(dn.shape, 180.0)
+    ge_2 = dn >= 2  # noqa: PLR2004
+    sector[ge_2] = 1.3 * np.rad2deg(np.arctan(2.5 / dn[ge_2] + 0.15)) + 10
+    sector[dn > 20] = 0.0  # noqa: PLR2004
+    return sector
+
+
 def calc_iec_upwind_turbines(*, lat: float, long: float, wind_direction: float, cfg: WindUpConfig) -> list[str]:
     """Find all turbines in cfg which are upwind of location (`lat`, `long`).
 
@@ -191,13 +206,7 @@ def calc_iec_upwind_turbines(*, lat: float, long: float, wind_direction: float, 
             "distance_diameters": wtg_d_norms,
         },
     )
-    upwind_df["disturbed_sector"] = 180.0
-    ge_2_diameters = upwind_df["distance_diameters"] >= 2  # noqa PLR2004
-    upwind_df.loc[ge_2_diameters, "disturbed_sector"] = (
-        1.3 * np.rad2deg(np.arctan(2.5 / upwind_df.loc[ge_2_diameters, "distance_diameters"] + 0.15)) + 10
-    )
-    gt_20_diameters = upwind_df["distance_diameters"] > 20  # noqa PLR2004
-    upwind_df.loc[gt_20_diameters, "disturbed_sector"] = 0
+    upwind_df["disturbed_sector"] = iec_disturbed_sector_deg(upwind_df["distance_diameters"])
 
     upwind_df["relative_bearing"] = circ_diff(upwind_df["bearing"], wind_direction)
     upwind_df["iec_upwind"] = abs(upwind_df["relative_bearing"]) < upwind_df["disturbed_sector"] / 2

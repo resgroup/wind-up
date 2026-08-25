@@ -14,15 +14,23 @@ from typing import Literal
 import pandas as pd
 
 from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
 from benchmarking.synthetic.upgrades import (
     ConditionCpChange,
     ConstantCpChange,
     RatedPowerChange,
+    WakeSteering,
     WindSpeedCpChange,
 )
 
 logger = logging.getLogger(__name__)
+
+# A real Hill of Towie steering cluster (the campaign's south-west pairs T03->T07 and T02->T05).
+# North offsets are the latest values from the published optimized_northing_corrections.yaml
+# (resgroup/hill-of-towie-open-source-analysis), valid for the 2020 example window; they are step
+# corrections added to the raw nacelle position (deg).
+WAKE_STEERING_CLUSTER = ("T02", "T03", "T05", "T07")
+WAKE_STEERING_NORTH_OFFSETS_DEG = {"T02": 8.57, "T03": -1.90, "T05": 13.18, "T07": -16.49}
 
 # A stable, no-upgrade Hill of Towie window: comfortably before the real T13 AeroUp
 # (installed Sep 2021)
@@ -120,6 +128,70 @@ def _save_power_curve_plots(dataset: SyntheticDataset, dataset_dir: Path, *, pro
         plt.close(fig)
 
 
+def generate_wake_steering_example(
+    *,
+    scada_df: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+    start_dt: pd.Timestamp,
+    out_root: str | Path | None = None,
+    cluster: tuple[str, ...] = WAKE_STEERING_CLUSTER,
+    seed: int = 0,
+    save_plots: bool = True,
+) -> SyntheticDataset:
+    """Generate (and optionally save) one synthetic wake-steering dataset for a real HoT cluster.
+
+    A 50 min on / 50 min off toggle campaign is injected into ``cluster``; steering pairs are
+    derived from the turbines' coordinates. When saving, writes the dataset plus a
+    steer-angle/uplift-vs-direction plot for each derived pair.
+
+    :param scada_df: wind-up-format real SCADA (all turbines), the no-upgrade baseline
+    :param metadata_df: per-turbine metadata with Name, Latitude, Longitude
+    :param start_dt: campaign/toggle origin (rows before it are untreated baseline)
+    :param out_root: if given, the dataset and plots are saved under ``out_root / "wake_steering"``
+    :param cluster: the participating (steering/benefitting) turbines
+    :param seed: recorded for provenance
+    :param save_plots: also write the per-pair direction plots when saving
+    """
+    # Pass every turbine's coordinates (not just the cluster) so wake-blocking can see any upwind
+    # turbine; only the cluster participates in steering.
+    coords = {str(row.Name): (float(row.Latitude), float(row.Longitude)) for row in metadata_df.itertuples()}
+    north_offsets = [(wtg, start_dt, WAKE_STEERING_NORTH_OFFSETS_DEG[wtg]) for wtg in cluster]
+    steering = WakeSteering(coords=coords, test_wtgs=list(cluster), north_offsets=north_offsets)
+    schedule = ToggleSchedule(period=pd.Timedelta(minutes=100), start=start_dt)
+    dataset = generate_dataset(
+        scada_df=scada_df,
+        test_wtgs=list(cluster),
+        upgrades=[steering],
+        mode="toggle",
+        upgrade_timing=schedule,
+        seed=seed,
+    )
+    if out_root is not None:
+        dataset_dir = Path(out_root) / "wake_steering"
+        dataset.save(dataset_dir)
+        if save_plots:
+            _save_wake_steering_plots(dataset, dataset_dir, pairs=steering.pairs)
+    return dataset
+
+
+def _save_wake_steering_plots(dataset: SyntheticDataset, dataset_dir: Path, *, pairs: tuple) -> None:
+    """Write a steer-angle/uplift-vs-direction PNG for each derived steering pair."""
+    import matplotlib.pyplot as plt  # noqa: PLC0415
+
+    from benchmarking.synthetic.plots import plot_wake_steering_by_direction  # noqa: PLC0415
+
+    for pair in pairs:
+        net = dataset.true_net_uplift(upstream=pair.upstream, downstream=pair.downstream)
+        fig = plot_wake_steering_by_direction(
+            dataset,
+            upstream=pair.upstream,
+            downstream=pair.downstream,
+            save_path=dataset_dir / f"steering_{pair.upstream}_to_{pair.downstream}.png",
+            title=f"Wake steering {pair.upstream} -> {pair.downstream} (net {net:+.2%})",
+        )
+        plt.close(fig)
+
+
 def main(
     *,
     out_root: str | Path | None = None,
@@ -168,6 +240,32 @@ def main(
     )
 
 
+def main_wake_steering(
+    *,
+    out_root: str | Path | None = None,
+    data_dir: str | Path | None = None,
+    start_dt: pd.Timestamp = DEFAULT_START_DT,
+    end_dt_excl: pd.Timestamp = DEFAULT_END_DT_EXCL,
+    seed: int = 0,
+) -> SyntheticDataset:
+    """Produce one synthetic wake-steering dataset from real Hill of Towie data.
+
+    Loads (and caches) the open Hill of Towie SCADA and metadata for a stable, no-upgrade window,
+    then injects a 50/50 toggle wake-steering campaign into the south-west cluster with the toggle
+    starting mid-window, and saves the dataset and per-pair plots under ``out_root``.
+    """
+    out_root = Path(out_root) if out_root is not None else default_output_root()
+    resolved_data_dir = Path(data_dir) if data_dir is not None else None
+    scada_df, _ = load_hot_scada(start_dt=start_dt, end_dt_excl=end_dt_excl, data_dir=resolved_data_dir)
+    metadata_df = load_hot_metadata(data_dir=resolved_data_dir)
+    toggle_start = start_dt + (end_dt_excl - start_dt) / 2
+    logger.info("Generating wake-steering example over %s..%s into %s", start_dt, end_dt_excl, out_root)
+    return generate_wake_steering_example(
+        scada_df=scada_df, metadata_df=metadata_df, start_dt=toggle_start, out_root=out_root, seed=seed
+    )
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     main()
+    main_wake_steering()

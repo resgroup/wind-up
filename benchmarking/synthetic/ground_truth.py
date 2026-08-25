@@ -98,6 +98,41 @@ def true_uplift(
     return UpliftResult(overall=float(overall), by_condition=by_condition)
 
 
+def true_net_uplift(
+    synthetic_df: pd.DataFrame,
+    original_df: pd.DataFrame,
+    *,
+    upstream: str,
+    downstream: str,
+    mask: npt.ArrayLike | None = None,
+    columns: ColumnSchema = HOT_COLUMNS,
+) -> float:
+    """Production-weighted net uplift of a wake-steering upstream/downstream pair.
+
+    Energy ratio over the union of both turbines' changed (or ``mask``-selected) finite records:
+    ``(Σ syn_up + Σ syn_down) / (Σ orig_up + Σ orig_down) - 1``. This weights each turbine by its
+    production (the campaign "average power of the pair" net), so a small loss on the windier
+    steering turbine and a larger gain on the waked downstream turbine combine correctly.
+
+    :param synthetic_df: method-facing synthetic SCADA
+    :param original_df: untouched original SCADA (ground-truth reference)
+    :param upstream: steering turbine name
+    :param downstream: benefitting turbine name
+    :param mask: optional boolean selection over each turbine's rows (time order); default is each
+        turbine's changed records
+    :param columns: the source-native column schema the frames are keyed by
+    """
+    syn_num = orig_den = 0.0
+    for wtg in (upstream, downstream):
+        syn = synthetic_df.loc[synthetic_df[columns.turbine] == wtg, columns.active_power].to_numpy(dtype=float)
+        orig = original_df.loc[original_df[columns.turbine] == wtg, columns.active_power].to_numpy(dtype=float)
+        row_mask = changed_record_mask(syn, orig) if mask is None else np.asarray(mask, dtype=bool)
+        effective = row_mask & np.isfinite(syn) & np.isfinite(orig)
+        syn_num += syn[effective].sum()
+        orig_den += orig[effective].sum()
+    return float(syn_num / orig_den - 1.0) if orig_den else float("nan")
+
+
 def changed_record_mask(
     synthetic_power: npt.NDArray[np.float64], original_power: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.bool_]:
