@@ -280,20 +280,17 @@ class WakeSteering:
         if missing_north:
             msg = f"north_offsets is missing correction(s) for participant(s) {missing_north}"
             raise ValueError(msg)
-        pairs = tuple(
-            derive_wake_steering_pairs(
-                self.coords,
-                test_wtgs=self.test_wtgs,
-                rotor_diameter_m=self.rotor_diameter_m,
-                max_separation_d=self.max_separation_d,
-            )
+        candidates = derive_wake_steering_pairs(
+            self.coords,
+            test_wtgs=self.test_wtgs,
+            rotor_diameter_m=self.rotor_diameter_m,
+            max_separation_d=self.max_separation_d,
         )
-        object.__setattr__(self, "pairs", pairs)
 
-        # Precompute, for each participant, the (bearing-to-neighbour, disturbed-half-angle) of every
-        # other turbine that could wake it (IEC sector non-zero, i.e. within 20 diameters).
+        # Precompute, for each candidate upstream, the (bearing-to-neighbour, disturbed-half-angle) of
+        # every other turbine that could wake it (IEC sector non-zero, i.e. within 20 diameters).
         neighbours: dict[str, tuple[tuple[float, float], ...]] = {}
-        for wtg in {p.upstream for p in pairs}:
+        for wtg in {p.upstream for p in candidates}:
             entries = []
             for other, other_latlon in self.coords.items():
                 if other == wtg:
@@ -304,6 +301,12 @@ class WakeSteering:
                     entries.append((bearing_deg(self.coords[wtg], other_latlon), half_angle))
             neighbours[wtg] = tuple(entries)
         object.__setattr__(self, "wake_neighbours", neighbours)
+
+        # Drop pairs whose upstream is itself waked across its whole steering sector: it can never be
+        # the front turbine for that partner, so the steer never happens.
+        sector = np.arange(-self.wd_width / 2.0, self.wd_width / 2.0 + 1.0, 1.0)
+        pairs = tuple(p for p in candidates if not self._is_waked(p.upstream, p.nadir_bearing + sector).all())
+        object.__setattr__(self, "pairs", pairs)
 
     @property
     def description(self) -> dict:

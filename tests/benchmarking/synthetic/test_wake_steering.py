@@ -172,24 +172,36 @@ def test_construction_validates_schema_and_northing() -> None:
         WakeSteering(coords=COORDS, test_wtgs=[UP, DOWN], north_offsets=[(UP, T0, 0.0)])
 
 
-def test_waked_upstream_does_not_steer() -> None:
-    """When a turbine sits in another's IEC disturbed sector upwind, it is blocked from steering.
+def test_pair_dropped_when_upstream_waked_across_whole_sector() -> None:
+    """A pair whose upstream is inside another turbine's disturbed sector across its whole steering
+    sector is dropped (that steer can never happen); moving the blocker away restores the pair.
 
-    BLOCK sits just south of UP, so UP is inside BLOCK's disturbed sector for southerly wind (~180) --
-    exactly UP's steering direction for DOWN -- and must not steer there. Moving BLOCK far away
-    restores steering, isolating the wake-block as the cause.
+    BLOCK sits just south of UP, so UP is inside BLOCK's disturbed sector for all of UP's southerly
+    (~180) steering sector for DOWN.
     """
     coords = {**COORDS, "BLOCK": (57.4985, -3.250)}  # ~170 m due south of UP (upwind at ~180 deg)
     north = [*NORTH_OFFSETS, ("BLOCK", T0, 0.0)]
-    rows = _one_turbine(UP, nacelle=[183.0])
 
-    blocked = WakeSteering(coords=coords, test_wtgs=[UP, DOWN], north_offsets=north)(rows, HOT_COLUMNS)
-    assert np.asarray(blocked.cp_ratio, dtype=float)[0] == pytest.approx(1.0)  # waked -> no steering loss
-    assert np.asarray(blocked.nacelle_position_delta, dtype=float)[0] == pytest.approx(0.0)
+    blocked = WakeSteering(coords=coords, test_wtgs=[UP, DOWN], north_offsets=north)
+    assert (UP, DOWN) not in [(p.upstream, p.downstream) for p in blocked.pairs]
+    effect = blocked(_one_turbine(UP, nacelle=[183.0]), HOT_COLUMNS)
+    assert np.asarray(effect.cp_ratio, dtype=float)[0] == pytest.approx(1.0)  # no steering loss
 
     far = {**coords, "BLOCK": (57.400, -3.100)}  # relocate the blocker well outside 20 D
-    unblocked = WakeSteering(coords=far, test_wtgs=[UP, DOWN], north_offsets=north)(rows, HOT_COLUMNS)
-    assert np.asarray(unblocked.cp_ratio, dtype=float)[0] < 1.0  # now free to steer -> loss returns
+    unblocked = WakeSteering(coords=far, test_wtgs=[UP, DOWN], north_offsets=north)
+    assert (UP, DOWN) in [(p.upstream, p.downstream) for p in unblocked.pairs]
+
+
+def test_is_waked_per_row_matches_iec_sector() -> None:
+    """``_is_waked`` flags exactly the rows whose wind comes from within a neighbour's IEC sector."""
+    # BLOCK is due south of UP (~2 D): a wide IEC sector centred on 180 deg. Wind from 180 -> waked;
+    # wind from 90 (neighbour off to the side) -> not waked.
+    coords = {**COORDS, "BLOCK": (57.4985, -3.250)}
+    north = [*NORTH_OFFSETS, ("BLOCK", T0, 0.0)]
+    ws = WakeSteering(coords=coords, test_wtgs=[UP, DOWN], north_offsets=north)
+    waked = ws._is_waked(UP, np.array([180.0, 90.0]))
+    assert bool(waked[0]) is True
+    assert bool(waked[1]) is False
 
 
 # --- mechanism ----------------------------------------------------------------------------------
