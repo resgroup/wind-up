@@ -357,6 +357,10 @@ class WakeSteering:
         turbine = str(rows[columns.turbine].iloc[0])
         index = pd.DatetimeIndex(rows.index)
         nacelle = rows[columns.nacelle_position].to_numpy(dtype=float)
+        # Each turbine is gated on its OWN calibrated direction (the seam passes one turbine's rows
+        # at a time). Upstream and downstream both track the same ambient wind, so their gates nearly
+        # coincide; a few-degrees nacelle difference can decouple loss and gain on a few edge rows.
+        # ``true_net_uplift`` sums the pair over the union of changed records, so the net is unbiased.
         cal = north_calibrated_direction(index, nacelle, turbine=turbine, north_offsets=self.north_offsets)
 
         n = len(rows)

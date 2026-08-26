@@ -18,8 +18,13 @@ if TYPE_CHECKING:
 
 
 def sin_solar_elevation(index: pd.DatetimeIndex, *, lat: float, lon: float) -> npt.NDArray[np.float64]:
-    """Sine of the solar elevation at each (UTC) timestamp for a site at ``(lat, lon)`` degrees."""
+    """Sine of the solar elevation at each (UTC) timestamp for a site at ``(lat, lon)`` degrees.
+
+    Timezone-aware inputs are converted to UTC first; naive inputs are assumed to be UTC.
+    """
     idx = pd.DatetimeIndex(index)
+    if idx.tz is not None:
+        idx = idx.tz_convert("UTC")
     day = idx.dayofyear.to_numpy(dtype=float)
     utc_hour = idx.hour.to_numpy(dtype=float) + idx.minute.to_numpy(dtype=float) / 60.0
     declination = np.radians(23.45 * np.sin(np.radians(360.0 * (284.0 + day) / 365.0)))

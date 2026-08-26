@@ -249,6 +249,26 @@ def test_true_net_uplift_closed_form() -> None:
     assert net == pytest.approx((900.0 + 1100.0) / (1000.0 + 1000.0) - 1.0)
 
 
+def test_true_net_uplift_uses_union_of_changed_records() -> None:
+    """Both turbines are summed over the union of changed timestamps, not each over its own.
+
+    Row 0 (nadir-like): only the downstream changes; row 1: only the upstream changes. Both rows must
+    count for both turbines, so the upstream's row-0 baseline energy is not dropped (which would
+    inflate the net).
+    """
+    synthetic = pd.concat(
+        [_one_turbine(UP, nacelle=[0.0, 0.0], power=1000.0), _one_turbine(DOWN, nacelle=[0.0, 0.0], power=1000.0)]
+    )
+    synthetic.loc[(synthetic[HOT_COLUMNS.turbine] == DOWN), HOT_COLUMNS.active_power] = [1100.0, 1000.0]
+    synthetic.loc[(synthetic[HOT_COLUMNS.turbine] == UP), HOT_COLUMNS.active_power] = [1000.0, 950.0]
+    original = pd.concat(
+        [_one_turbine(UP, nacelle=[0.0, 0.0], power=1000.0), _one_turbine(DOWN, nacelle=[0.0, 0.0], power=1000.0)]
+    )
+    net = true_net_uplift(synthetic, original, upstream=UP, downstream=DOWN)
+    # Union of both rows: (1000+1100 + 950+1000) / (4 * 1000) - 1 = +1.25%, not the +2.5% each-own-mask gives.
+    assert net == pytest.approx((1000.0 + 1100.0 + 950.0 + 1000.0) / 4000.0 - 1.0)
+
+
 # --- end to end ---------------------------------------------------------------------------------
 
 

@@ -9,9 +9,12 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
@@ -134,7 +137,8 @@ def generate_wake_steering_example(
     metadata_df: pd.DataFrame,
     start_dt: pd.Timestamp,
     out_root: str | Path | None = None,
-    cluster: tuple[str, ...] = WAKE_STEERING_CLUSTER,
+    north_offsets_deg: Mapping[str, float] = WAKE_STEERING_NORTH_OFFSETS_DEG,
+    cluster: tuple[str, ...] | None = None,
     seed: int = 0,
     save_plots: bool = True,
 ) -> SyntheticDataset:
@@ -148,14 +152,21 @@ def generate_wake_steering_example(
     :param metadata_df: per-turbine metadata with Name, Latitude, Longitude
     :param start_dt: campaign/toggle origin (rows before it are untreated baseline)
     :param out_root: if given, the dataset and plots are saved under ``out_root / "wake_steering"``
-    :param cluster: the participating (steering/benefitting) turbines
+    :param north_offsets_deg: per-turbine north offset (deg) for every participant
+    :param cluster: the participating (steering/benefitting) turbines; defaults to the keys of
+        ``north_offsets_deg``. Every cluster turbine must have a north offset.
     :param seed: recorded for provenance
     :param save_plots: also write the per-pair direction plots when saving
     """
+    cluster = tuple(north_offsets_deg) if cluster is None else cluster
+    missing = [w for w in cluster if w not in north_offsets_deg]
+    if missing:
+        msg = f"north_offsets_deg is missing offsets for cluster turbine(s) {missing}"
+        raise ValueError(msg)
     # Pass every turbine's coordinates (not just the cluster) so wake-blocking can see any upwind
     # turbine; only the cluster participates in steering.
     coords = {str(row.Name): (float(row.Latitude), float(row.Longitude)) for row in metadata_df.itertuples()}
-    north_offsets = [(wtg, start_dt, WAKE_STEERING_NORTH_OFFSETS_DEG[wtg]) for wtg in cluster]
+    north_offsets = [(wtg, start_dt, north_offsets_deg[wtg]) for wtg in cluster]
     steering = WakeSteering(coords=coords, test_wtgs=list(cluster), north_offsets=north_offsets)
     schedule = ToggleSchedule(period=pd.Timedelta(minutes=100), start=start_dt)
     dataset = generate_dataset(
