@@ -10,7 +10,12 @@ from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams, cp_su
 from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset, treated_mask
 from benchmarking.synthetic.geometry import WakePair, bearing_deg, derive_wake_steering_pairs, distance_m, wrap180
 from benchmarking.synthetic.ground_truth import UpliftResult, true_net_uplift, true_uplift
-from benchmarking.synthetic.plots import plot_power_curve_comparison, plot_wake_steering_by_direction
+from benchmarking.synthetic.plots import (
+    plot_power_curve_comparison,
+    plot_wake_steering_by_direction,
+    plot_wake_steering_heatmaps,
+    plot_wake_steering_stability,
+)
 from benchmarking.synthetic.schema import ColumnSchema
 from benchmarking.synthetic.solar import diurnal_factor, sin_solar_elevation
 from benchmarking.synthetic.sources.hill_of_towie import (
@@ -63,6 +68,8 @@ __all__ = [
     "north_calibrated_direction",
     "plot_power_curve_comparison",
     "plot_wake_steering_by_direction",
+    "plot_wake_steering_heatmaps",
+    "plot_wake_steering_stability",
     "sin_solar_elevation",
     "treated_mask",
     "true_net_uplift",

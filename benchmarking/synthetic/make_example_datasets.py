@@ -186,21 +186,46 @@ def generate_wake_steering_example(
 
 
 def _save_wake_steering_plots(dataset: SyntheticDataset, dataset_dir: Path, *, pairs: tuple) -> None:
-    """Write a steer-angle/uplift-vs-direction PNG for each derived steering pair."""
+    """Write the per-pair steering diagnostics: direction, power-vs-direction heat maps and stability."""
     import matplotlib.pyplot as plt  # noqa: PLC0415
 
-    from benchmarking.synthetic.plots import plot_wake_steering_by_direction  # noqa: PLC0415
+    from benchmarking.synthetic.plots import (  # noqa: PLC0415
+        plot_wake_steering_by_direction,
+        plot_wake_steering_heatmaps,
+        plot_wake_steering_stability,
+    )
 
     for pair in pairs:
-        net = dataset.true_net_uplift(upstream=pair.upstream, downstream=pair.downstream)
-        fig = plot_wake_steering_by_direction(
-            dataset,
-            upstream=pair.upstream,
-            downstream=pair.downstream,
-            save_path=dataset_dir / f"steering_{pair.upstream}_to_{pair.downstream}.png",
-            title=f"Wake steering {pair.upstream} -> {pair.downstream} (net {net:+.2%})",
+        up, down = pair.upstream, pair.downstream
+        net = dataset.true_net_uplift(upstream=up, downstream=down)
+        suffix = f"{up}_to_{down}"
+        plt.close(
+            plot_wake_steering_by_direction(
+                dataset,
+                upstream=up,
+                downstream=down,
+                save_path=dataset_dir / f"steering_{suffix}.png",
+                title=f"Wake steering {up} -> {down} (net {net:+.2%})",
+            )
         )
-        plt.close(fig)
+        plt.close(
+            plot_wake_steering_heatmaps(
+                dataset,
+                upstream=up,
+                downstream=down,
+                save_path=dataset_dir / f"heatmaps_{suffix}.png",
+                title=f"Wake steering {up} -> {down}: heat maps (net {net:+.2%})",
+            )
+        )
+        plt.close(
+            plot_wake_steering_stability(
+                dataset,
+                upstream=up,
+                downstream=down,
+                save_path=dataset_dir / f"stability_{suffix}.png",
+                title=f"Wake steering {up} -> {down}: stability modulation (net {net:+.2%})",
+            )
+        )
 
 
 def main(

@@ -220,9 +220,21 @@ class WakeSteering:
     at night). References (turbines absent from ``test_wtgs``) are never touched.
 
     The yaw schedule is a trapezoid: full ``max_offset_deg`` within ``plateau_half_deg`` of the wake
-    nadir, ramping linearly to zero at ``wd_width / 2``, with the sign flipping through the nadir.
-    Offsets are authored in the FLORIS convention (CCW positive) to match published lookup tables;
-    the applied nacelle change is compass (CW positive), i.e. the negation.
+    nadir, ramping linearly to zero at ``wd_width / 2``. Near the nadir a deadband applies: within
+    ``crossover_half_deg`` the wind direction is too uncertain to pick a steer sign, so the applied yaw
+    ramps linearly to zero at the nadir instead of flipping sharply. Because the turbine barely steers
+    there, the **whole pair effect** (upstream loss, downstream gain and the reported yaw) shrinks
+    toward the nadir even though the wake is strongest there. Offsets are authored in the FLORIS
+    convention (CCW positive); the applied nacelle change is compass (CW positive), i.e. the negation.
+
+    Steering availability is also gated on power: the steer magnitude is clipped to a limit that is a
+    trapezoid in the **upstream** turbine's original power — zero at/below ``steer_cutin_power_kw`` (a
+    parked upstream never steers), the full ``max_offset_deg`` between ``steer_low_full_power_kw`` and
+    ``steer_full_power_kw``, and back to zero at ``steer_zero_power_kw`` (rated) — so the whole pair
+    effect vanishes at both ends. The downstream gain is driven by the same upstream envelope: when
+    ``generate_dataset`` runs it calls :meth:`prepare` first, which precomputes each pair's upstream
+    steer signal so the benefitting turbine is gated on the **upstream's** direction and power rather
+    than its own. A direct :meth:`__call__` without :meth:`prepare` falls back to per-turbine gating.
 
     A turbine only steers when its own inflow is wake-free: if any other turbine in ``coords`` sits
     upwind of it within the IEC 61400-12-1 disturbed sector (``iec_disturbed_sector_deg`` — wide when
@@ -237,6 +249,18 @@ class WakeSteering:
     :param wd_width: full steering sector width about each nadir (deg)
     :param plateau_half_deg: half-width of the max-amplitude plateau about the nadir (deg)
     :param max_offset_deg: peak yaw-offset magnitude (deg)
+    :param crossover_half_deg: half-width (deg) of the near-nadir steering deadband. The applied yaw
+        ramps linearly to zero at the nadir over ``+/-`` this angle (full past it), and the whole pair
+        effect (loss, gain and reported yaw) shrinks with it, modelling the controller's inability to
+        pick a steer sign when the direction is within this band of the nadir
+    :param steer_cutin_power_kw: at/below this upstream power no steering happens (a parked/idling
+        upstream never steers); the steer limit rises linearly from here to ``steer_low_full_power_kw``
+    :param steer_low_full_power_kw: at/above this upstream power (and below ``steer_full_power_kw``) the
+        full steer offset is allowed
+    :param steer_full_power_kw: upper power at/below which the full steer offset is allowed
+    :param steer_zero_power_kw: at/above this upstream power (rated) no steering happens; the steer
+        limit falls linearly from ``max_offset_deg`` to 0 between ``steer_full_power_kw`` and here. The
+        limit is a trapezoid in power and clips the steer magnitude (it does not scale the ramp)
     :param cos_power: exponent in the ``cos(offset)^p`` upstream-loss shape
     :param steer_loss_scale: fraction of the cosine yaw-loss actually applied (keeps the loss shape
         but scales its energy impact to realistic levels)
@@ -257,6 +281,11 @@ class WakeSteering:
     wd_width: float = 30.0
     plateau_half_deg: float = 5.0
     max_offset_deg: float = 20.0
+    crossover_half_deg: float = 2.5
+    steer_cutin_power_kw: float = 0.0
+    steer_low_full_power_kw: float = 230.0
+    steer_full_power_kw: float = 1610.0
+    steer_zero_power_kw: float = 2300.0
     cos_power: float = 1.5
     steer_loss_scale: float = 0.12
     steer_ws_gain: float = -0.02
@@ -268,12 +297,31 @@ class WakeSteering:
     site_lon: float = HOT_LON
     pairs: tuple[WakePair, ...] = field(init=False, default=())
     wake_neighbours: dict[str, tuple[tuple[float, float], ...]] = field(init=False, default_factory=dict)
+    # Populated by ``prepare``: (upstream, downstream) -> per-timestamp upstream steer envelope + sign.
+    _upstream_steer_by_pair: dict[tuple[str, str], pd.DataFrame] = field(
+        init=False, default_factory=dict, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         """Derive the steering pairs and per-turbine wake neighbours; validate coords and northing."""
         missing_coords = [w for w in self.test_wtgs if w not in self.coords]
         if missing_coords:
             msg = f"coords is missing participant(s) {missing_coords}"
+            raise ValueError(msg)
+        powers = (
+            self.steer_cutin_power_kw,
+            self.steer_low_full_power_kw,
+            self.steer_full_power_kw,
+            self.steer_zero_power_kw,
+        )
+        if not (0.0 <= powers[0] < powers[1] <= powers[2] < powers[3]):
+            msg = (
+                "require 0 <= steer_cutin_power_kw < steer_low_full_power_kw "
+                "<= steer_full_power_kw < steer_zero_power_kw"
+            )
+            raise ValueError(msg)
+        if not 0.0 < self.crossover_half_deg <= self.wd_width / 2.0:
+            msg = "require 0 < crossover_half_deg <= wd_width / 2"
             raise ValueError(msg)
         offset_turbines = {t for (t, _, _) in self.north_offsets}
         missing_north = [w for w in self.test_wtgs if w not in offset_turbines]
@@ -321,6 +369,11 @@ class WakeSteering:
             "wd_width": self.wd_width,
             "plateau_half_deg": self.plateau_half_deg,
             "max_offset_deg": self.max_offset_deg,
+            "crossover_half_deg": self.crossover_half_deg,
+            "steer_cutin_power_kw": self.steer_cutin_power_kw,
+            "steer_low_full_power_kw": self.steer_low_full_power_kw,
+            "steer_full_power_kw": self.steer_full_power_kw,
+            "steer_zero_power_kw": self.steer_zero_power_kw,
             "cos_power": self.cos_power,
             "steer_loss_scale": self.steer_loss_scale,
             "steer_ws_gain": self.steer_ws_gain,
@@ -342,12 +395,95 @@ class WakeSteering:
         env = np.where(av <= self.plateau_half_deg, 1.0, ramp)
         return np.clip(env, 0.0, 1.0)
 
+    def _power_availability(self, power_kw: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """Steering availability in ``[0, 1]``: a trapezoid in the upstream turbine's original power.
+
+        0 at/below ``steer_cutin_power_kw`` (not generating), rising to 1 by ``steer_low_full_power_kw``,
+        full through ``steer_full_power_kw``, then falling to 0 at ``steer_zero_power_kw`` (rated).
+        Non-finite (downtime) power counts as not generating, i.e. availability 0.
+        """
+        power = np.asarray(power_kw, dtype=float)
+        rise = (power - self.steer_cutin_power_kw) / (self.steer_low_full_power_kw - self.steer_cutin_power_kw)
+        fall = (self.steer_zero_power_kw - power) / (self.steer_zero_power_kw - self.steer_full_power_kw)
+        avail = np.minimum(np.clip(rise, 0.0, 1.0), np.clip(fall, 0.0, 1.0))
+        return np.where(np.isfinite(power), avail, 0.0)
+
     def _is_waked(self, steering_wtg: str, wind_from: npt.NDArray[np.float64]) -> npt.NDArray[np.bool_]:
         """Per-row mask where ``steering_wtg`` is itself inside another turbine's IEC disturbed sector."""
         waked = np.zeros(len(wind_from), dtype=bool)
         for neighbour_bearing, half_angle in self.wake_neighbours.get(steering_wtg, ()):
             waked |= np.abs(wrap180(neighbour_bearing - wind_from)) < half_angle
         return waked
+
+    def _steer_envelope(
+        self,
+        index: pd.DatetimeIndex,
+        *,
+        nacelle: npt.NDArray[np.float64],
+        power: npt.NDArray[np.float64],
+        pair: WakePair,
+        turbine: str,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Per-row steer envelope (magnitude) and yaw sign for ``pair`` from ``turbine``'s direction and power.
+
+        The envelope in ``[0, 1]`` is ``min(direction env, power availability)`` reduced near the nadir
+        by a linear deadband ramp (0 at the nadir, full past ``crossover_half_deg``): near the nadir the
+        wind direction is too uncertain to pick a steer sign, so the turbine barely steers there and the
+        whole pair effect shrinks. Evaluated on the upstream turbine (by :meth:`prepare`) it is the
+        physical steer signal; on another turbine it is the per-turbine fallback.
+        """
+        cal = north_calibrated_direction(index, nacelle, turbine=turbine, north_offsets=self.north_offsets)
+        view = wrap180(cal - pair.nadir_bearing)
+        env = np.where(self._is_waked(pair.upstream, cal), 0.0, self._envelope(view))
+        deadband = np.clip(np.abs(view) / self.crossover_half_deg, 0.0, 1.0)
+        return np.minimum(env, self._power_availability(power)) * deadband, np.sign(view)
+
+    def prepare(self, scada_df: pd.DataFrame, *, columns: ColumnSchema = HOT_COLUMNS) -> None:
+        """Precompute each pair's upstream steer envelope and yaw sign over the full timestamp index.
+
+        Called once by ``generate_dataset`` before the per-turbine application so the whole pair effect
+        (the upstream loss and the downstream gain) is gated on the **upstream's** direction and power.
+        Without it a direct :meth:`__call__` falls back to gating each turbine on its own rows.
+        """
+        if columns.nacelle_position is None:
+            return
+        store: dict[tuple[str, str], pd.DataFrame] = {}
+        for pair in self.pairs:
+            upstream = scada_df[scada_df[columns.turbine] == pair.upstream]
+            index = pd.DatetimeIndex(upstream.index)
+            steer_env, sign = self._steer_envelope(
+                index,
+                nacelle=upstream[columns.nacelle_position].to_numpy(dtype=float),
+                power=upstream[columns.active_power].to_numpy(dtype=float),
+                pair=pair,
+                turbine=pair.upstream,
+            )
+            store[(pair.upstream, pair.downstream)] = pd.DataFrame(
+                {"env": np.nan_to_num(steer_env), "sign": np.nan_to_num(sign)}, index=index
+            )
+        object.__setattr__(self, "_upstream_steer_by_pair", store)
+
+    def _pair_steer(
+        self, pair: WakePair, *, index: pd.DatetimeIndex, rows: pd.DataFrame, columns: ColumnSchema, turbine: str
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Align the pair's upstream steer envelope and yaw sign to ``rows``.
+
+        Uses the precomputed upstream signal when :meth:`prepare` has run, else the per-turbine
+        fallback computed from ``rows`` themselves.
+        """
+        precomputed = self._upstream_steer_by_pair.get((pair.upstream, pair.downstream))
+        if precomputed is not None:
+            aligned = precomputed.reindex(index)  # timestamps with no upstream row -> no steer
+            return np.nan_to_num(aligned["env"].to_numpy(dtype=float)), np.nan_to_num(
+                aligned["sign"].to_numpy(dtype=float)
+            )
+        return self._steer_envelope(
+            index,
+            nacelle=rows[columns.nacelle_position].to_numpy(dtype=float),
+            power=rows[columns.active_power].to_numpy(dtype=float),
+            pair=pair,
+            turbine=turbine,
+        )
 
     def __call__(self, rows: pd.DataFrame, columns: ColumnSchema) -> UpgradeEffect:
         """Return this turbine's combined steering loss and/or wake-recovery gain for these rows."""
@@ -356,12 +492,6 @@ class WakeSteering:
             raise ValueError(msg)
         turbine = str(rows[columns.turbine].iloc[0])
         index = pd.DatetimeIndex(rows.index)
-        nacelle = rows[columns.nacelle_position].to_numpy(dtype=float)
-        # Each turbine is gated on its OWN calibrated direction (the seam passes one turbine's rows
-        # at a time). Upstream and downstream both track the same ambient wind, so their gates nearly
-        # coincide; a few-degrees nacelle difference can decouple loss and gain on a few edge rows.
-        # ``true_net_uplift`` sums the pair over the union of changed records, so the net is unbiased.
-        cal = north_calibrated_direction(index, nacelle, turbine=turbine, north_offsets=self.north_offsets)
 
         n = len(rows)
         cp_ratio = np.ones(n)
@@ -371,16 +501,16 @@ class WakeSteering:
         for pair in self.pairs:
             if turbine not in (pair.upstream, pair.downstream):
                 continue
-            view = wrap180(cal - pair.nadir_bearing)
-            # The steering turbine only steers where its own inflow is wake-free; suppress the whole
-            # pair effect (loss and the partner's gain) where the upstream turbine is itself waked.
-            env = np.where(self._is_waked(pair.upstream, cal), 0.0, self._envelope(view))
+            # The steer envelope and sign are the UPSTREAM turbine's (via ``prepare``), so the loss and the
+            # partner's gain share one arbiter: the upstream's actual steer. ``steer_env`` already folds in
+            # the near-nadir deadband, so the loss, gain, ws and reported yaw all shrink together there.
+            steer_env, sign = self._pair_steer(pair, index=index, rows=rows, columns=columns, turbine=turbine)
             if turbine == pair.upstream:
-                gamma_floris = np.sign(view) * self.max_offset_deg * env
-                cos_deficit = 1.0 - np.maximum(np.cos(np.radians(gamma_floris)), 0.0) ** self.cos_power
+                yaw_magnitude = self.max_offset_deg * steer_env
+                cos_deficit = 1.0 - np.maximum(np.cos(np.radians(yaw_magnitude)), 0.0) ** self.cos_power
                 cp_ratio = cp_ratio * (1.0 - self.steer_loss_scale * cos_deficit)
-                ws_factor = ws_factor * (1.0 + self.steer_ws_gain * env)
-                nacelle_delta = nacelle_delta - gamma_floris
+                ws_factor = ws_factor * (1.0 + self.steer_ws_gain * steer_env)
+                nacelle_delta = nacelle_delta - sign * yaw_magnitude
             if turbine == pair.downstream:
                 if diurnal is None:
                     diurnal = diurnal_factor(
@@ -390,8 +520,8 @@ class WakeSteering:
                         night_factor=self.night_factor,
                         day_factor=self.day_factor,
                     )
-                cp_ratio = cp_ratio * (1.0 + self.peak_gain * env * diurnal)
-                ws_factor = ws_factor * (1.0 + self.peak_ws_gain * env * diurnal)
+                cp_ratio = cp_ratio * (1.0 + self.peak_gain * steer_env * diurnal)
+                ws_factor = ws_factor * (1.0 + self.peak_ws_gain * steer_env * diurnal)
         return UpgradeEffect(cp_ratio=cp_ratio, ws_factor=ws_factor, nacelle_position_delta=nacelle_delta)
 
 

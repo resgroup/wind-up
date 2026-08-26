@@ -136,16 +136,123 @@ def test_upstream_cosine_loss_in_sector_only() -> None:
 
 
 def test_downstream_gain_and_ws_inflation_in_sector() -> None:
-    """The benefitting turbine gains power and reads higher wind speed near the nadir."""
-    rows = _one_turbine(DOWN, nacelle=[180.0, 100.0])
+    """The benefitting turbine gains power and reads higher wind speed in-sector (past the deadband)."""
+    # 184 is in-sector and past the near-nadir deadband; the exact nadir would give no effect.
+    rows = _one_turbine(DOWN, nacelle=[184.0, 100.0])
     effect = _steering()(rows, HOT_COLUMNS)
     cp = np.asarray(effect.cp_ratio, dtype=float)
     ws = np.asarray(effect.ws_factor, dtype=float)
     nacelle = np.asarray(effect.nacelle_position_delta, dtype=float)
-    assert cp[0] > 1.0  # near nadir: wake-recovery gain
+    assert cp[0] > 1.0  # in-sector: wake-recovery gain
     assert ws[0] > 1.0  # post-treatment nacelle-ws inflation
     assert cp[1] == pytest.approx(1.0)
     assert np.allclose(nacelle, 0.0)  # the benefitting turbine does not steer
+
+
+def test_steer_magnitude_clipped_by_power() -> None:
+    """The upstream steer is clipped to a power-dependent limit: the full offset at/below the
+    full-steer power, zero at the zero-steer (rated) power, linear between (and so is the loss)."""
+    steering = _steering(max_offset_deg=20.0, steer_full_power_kw=1610.0, steer_zero_power_kw=2300.0)
+    powers = [1000.0, 1610.0, 1955.0, 2300.0]  # availability 1, 1, 0.5, 0
+    index = pd.date_range("2020-06-01", periods=len(powers), freq="10min", tz="UTC")
+    rows = pd.DataFrame(
+        {
+            HOT_COLUMNS.turbine: UP,
+            HOT_COLUMNS.active_power: np.array(powers, dtype=float),
+            HOT_COLUMNS.wind_speed: 9.0,
+            HOT_COLUMNS.wind_speed_sd: 0.8,
+            HOT_COLUMNS.gen_rpm: 1400.0,
+            HOT_COLUMNS.nacelle_position: NADIR + 4.0,  # in the plateau, past the sign crossover
+        },
+        index=index,
+    )
+    rows.index.name = TIMESTAMP_COL
+    effect = steering(rows, HOT_COLUMNS)
+    assert np.abs(effect.nacelle_position_delta) == pytest.approx([20.0, 20.0, 10.0, 0.0])
+    cp = np.asarray(effect.cp_ratio, dtype=float)
+    assert cp[0] == pytest.approx(cp[1])  # no clip below the full-steer power
+    assert cp[1] < cp[2] < cp[3]  # loss shrinks as steering fades with power
+    assert cp[3] == pytest.approx(1.0)  # no steering, no loss at rated
+
+
+def test_low_power_clip_zero_at_no_generation() -> None:
+    """The steer limit is a trapezoid in power: 0 at 0 kW, rising to full by the low-full power."""
+    steering = _steering(max_offset_deg=20.0, steer_cutin_power_kw=0.0, steer_low_full_power_kw=230.0)
+    powers = [0.0, 115.0, 230.0, 800.0]  # availability 0, 0.5, 1, 1
+    index = pd.date_range("2020-06-01", periods=len(powers), freq="10min", tz="UTC")
+    rows = pd.DataFrame(
+        {
+            HOT_COLUMNS.turbine: UP,
+            HOT_COLUMNS.active_power: np.array(powers, dtype=float),
+            HOT_COLUMNS.wind_speed: 9.0,
+            HOT_COLUMNS.wind_speed_sd: 0.8,
+            HOT_COLUMNS.gen_rpm: 1400.0,
+            HOT_COLUMNS.nacelle_position: NADIR + 4.0,  # in the plateau, past the sign crossover
+        },
+        index=index,
+    )
+    rows.index.name = TIMESTAMP_COL
+    effect = steering(rows, HOT_COLUMNS)
+    assert np.abs(effect.nacelle_position_delta) == pytest.approx([0.0, 10.0, 20.0, 20.0])
+
+
+def test_steer_and_effect_fade_through_the_nadir_deadband() -> None:
+    """Near the nadir the applied yaw ramps to zero (a deadband), and the loss fades with it: the whole
+    steering effect shrinks toward the nadir instead of the yaw flipping sign sharply."""
+    steering = _steering(max_offset_deg=20.0, crossover_half_deg=2.5)
+    offsets = [-5.0, -2.5, -1.25, 0.0, 1.25, 2.5, 5.0]  # deg from nadir, all inside the plateau
+    index = pd.date_range("2020-06-01", periods=len(offsets), freq="10min", tz="UTC")
+    rows = pd.DataFrame(
+        {
+            HOT_COLUMNS.turbine: UP,
+            HOT_COLUMNS.active_power: 1000.0,
+            HOT_COLUMNS.wind_speed: 9.0,
+            HOT_COLUMNS.wind_speed_sd: 0.8,
+            HOT_COLUMNS.gen_rpm: 1400.0,
+            HOT_COLUMNS.nacelle_position: NADIR + np.array(offsets, dtype=float),
+        },
+        index=index,
+    )
+    rows.index.name = TIMESTAMP_COL
+    effect = steering(rows, HOT_COLUMNS)
+    # Applied compass yaw: +max left of nadir, linear through 0 at the nadir, -max right of it.
+    assert effect.nacelle_position_delta == pytest.approx([20.0, 20.0, 10.0, 0.0, -10.0, -20.0, -20.0])
+    cp = np.asarray(effect.cp_ratio, dtype=float)
+    assert cp[3] == pytest.approx(1.0)  # nadir: no steer -> no loss
+    assert cp[1] < cp[2] < cp[3]  # loss fades from full (band edge) to none (nadir)
+    assert cp[0] == pytest.approx(cp[1])  # full loss at/past the band edge
+
+
+def test_downstream_gain_gated_on_upstream_via_prepare() -> None:
+    """After ``prepare`` the downstream gain follows the UPSTREAM's direction and power: it applies
+    when the upstream steers even if the downstream is out of its own sector, and vanishes when the
+    upstream is not generating even though the downstream itself is in sector and generating."""
+    index = pd.date_range("2020-06-01", periods=2, freq="10min", tz="UTC")
+
+    def frame(wtg: str, *, power: list[float], nacelle: list[float]) -> pd.DataFrame:
+        df = pd.DataFrame(
+            {
+                HOT_COLUMNS.turbine: wtg,
+                HOT_COLUMNS.active_power: np.array(power, dtype=float),
+                HOT_COLUMNS.wind_speed: 8.0,
+                HOT_COLUMNS.wind_speed_sd: 0.8,
+                HOT_COLUMNS.gen_rpm: 1400.0,
+                HOT_COLUMNS.nacelle_position: np.array(nacelle, dtype=float),
+            },
+            index=index,
+        )
+        df.index.name = TIMESTAMP_COL
+        return df
+
+    # t0: upstream in-sector + generating, downstream pointing OUT of its own sector.
+    # t1: upstream parked (0 kW), downstream in-sector + generating.
+    upstream = frame(UP, power=[1000.0, 0.0], nacelle=[NADIR + 4.0, NADIR + 4.0])
+    downstream = frame(DOWN, power=[900.0, 900.0], nacelle=[100.0, NADIR + 4.0])
+    steering = _steering()
+    steering.prepare(pd.concat([upstream, downstream]), columns=HOT_COLUMNS)
+    cp = np.asarray(steering(downstream, HOT_COLUMNS).cp_ratio, dtype=float)
+    assert cp[0] > 1.0  # gated on the upstream: gain despite the downstream being out of its own sector
+    assert cp[1] == pytest.approx(1.0)  # upstream not generating: no gain
 
 
 def test_time_stepped_northing_shifts_the_gate() -> None:

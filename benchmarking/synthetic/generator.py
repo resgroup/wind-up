@@ -184,6 +184,13 @@ def generate_dataset(
         # Wake steering also steers the nacelle; other upgrades leave it unchanged (a no-op write-back).
         modified_columns.append(columns.nacelle_position)
 
+    # Cross-turbine upgrades (wake steering) precompute here from the full farm, so a per-turbine
+    # effect can be gated on another turbine (the upstream). Simple per-turbine upgrades have no hook.
+    for upgrade in upgrades:
+        prepare = getattr(upgrade, "prepare", None)
+        if callable(prepare):
+            prepare(scada_df, columns=columns)
+
     treated = _treated_mask(synthetic_df.index, mode=mode, upgrade_timing=upgrade_timing)
     for wtg in test_wtgs:
         is_test = (synthetic_df[columns.turbine] == wtg).to_numpy()
