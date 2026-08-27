@@ -98,6 +98,51 @@ def true_uplift(
     return UpliftResult(overall=float(overall), by_condition=by_condition)
 
 
+def true_net_uplift(
+    synthetic_df: pd.DataFrame,
+    original_df: pd.DataFrame,
+    *,
+    upstream: str,
+    downstream: str,
+    mask: npt.ArrayLike | None = None,
+    columns: ColumnSchema = HOT_COLUMNS,
+) -> float:
+    """Production-weighted net uplift of a wake-steering upstream/downstream pair.
+
+    Energy ratio over the union of both turbines' changed (or ``mask``-selected) finite records:
+    ``(Σ syn_up + Σ syn_down) / (Σ orig_up + Σ orig_down) - 1``. This weights each turbine by its
+    production (the campaign "average power of the pair" net), so a small loss on the windier
+    steering turbine and a larger gain on the waked downstream turbine combine correctly.
+
+    :param synthetic_df: method-facing synthetic SCADA
+    :param original_df: untouched original SCADA (ground-truth reference)
+    :param upstream: steering turbine name
+    :param downstream: benefitting turbine name
+    :param mask: optional boolean selection over the pair's timestamps (time order); default is the
+        union of the two turbines' changed records
+    :param columns: the source-native column schema the frames are keyed by
+    """
+
+    def _power(df: pd.DataFrame, wtg: str) -> npt.NDArray[np.float64]:
+        return df.loc[df[columns.turbine] == wtg, columns.active_power].to_numpy(dtype=float)
+
+    syn_up, orig_up = _power(synthetic_df, upstream), _power(original_df, upstream)
+    syn_dn, orig_dn = _power(synthetic_df, downstream), _power(original_df, downstream)
+
+    if mask is None:
+        row_mask = changed_record_mask(syn_up, orig_up) | changed_record_mask(syn_dn, orig_dn)
+    else:
+        row_mask = np.asarray(mask, dtype=bool)
+    # Both turbines are summed over the SAME timestamps so the pair energy ratio stays balanced;
+    # require every power finite there (a NaN on either side would drop that timestamp for both).
+    finite = np.isfinite(syn_up) & np.isfinite(orig_up) & np.isfinite(syn_dn) & np.isfinite(orig_dn)
+    effective = row_mask & finite
+
+    orig_den = orig_up[effective].sum() + orig_dn[effective].sum()
+    syn_num = syn_up[effective].sum() + syn_dn[effective].sum()
+    return float(syn_num / orig_den - 1.0) if orig_den else float("nan")
+
+
 def changed_record_mask(
     synthetic_power: npt.NDArray[np.float64], original_power: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.bool_]:

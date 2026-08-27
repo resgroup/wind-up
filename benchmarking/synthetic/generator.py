@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams
-from benchmarking.synthetic.ground_truth import UpliftResult, true_uplift
+from benchmarking.synthetic.ground_truth import UpliftResult, true_net_uplift, true_uplift
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
 from benchmarking.synthetic.upgrades import apply_upgrades
 
@@ -69,6 +69,17 @@ class SyntheticDataset:
             test_wtg = self.run_metadata["test_wtgs"][0]
         return true_uplift(
             self.synthetic_df, self.original_df, test_wtg=test_wtg, mask=mask, by=by, bins=bins, columns=self.columns
+        )
+
+    def true_net_uplift(self, *, upstream: str, downstream: str, mask: np.ndarray | None = None) -> float:
+        """Derive the production-weighted net uplift of a wake-steering pair (synthetic vs original)."""
+        return true_net_uplift(
+            self.synthetic_df,
+            self.original_df,
+            upstream=upstream,
+            downstream=downstream,
+            mask=mask,
+            columns=self.columns,
         )
 
     def save(self, out_dir: str | Path) -> Path:
@@ -168,7 +179,17 @@ def generate_dataset(
     """
     original_df = scada_df.copy()
     synthetic_df = scada_df.copy()
-    modified_columns = (columns.active_power, columns.gen_rpm, columns.wind_speed)
+    modified_columns = [columns.active_power, columns.gen_rpm, columns.wind_speed]
+    if columns.nacelle_position is not None and columns.nacelle_position in scada_df.columns:
+        # Wake steering also steers the nacelle; other upgrades leave it unchanged (a no-op write-back).
+        modified_columns.append(columns.nacelle_position)
+
+    # Cross-turbine upgrades (wake steering) precompute here from the full farm, so a per-turbine
+    # effect can be gated on another turbine (the upstream). Simple per-turbine upgrades have no hook.
+    for upgrade in upgrades:
+        prepare = getattr(upgrade, "prepare", None)
+        if callable(prepare):
+            prepare(scada_df, columns=columns)
 
     treated = _treated_mask(synthetic_df.index, mode=mode, upgrade_timing=upgrade_timing)
     for wtg in test_wtgs:

@@ -100,6 +100,26 @@ class TestBuildConfig:
         with pytest.raises(ValueError, match="no reference turbines"):
             method._build_config(_method_input(["T01"], "T01"))  # noqa: SLF001
 
+    def test_filter_all_defaults_false(self, tmp_path) -> None:  # noqa: ANN001
+        method = V0BinnedMethod(_context(), scratch_dir=tmp_path)
+        cfg = method._build_config(_method_input(["T01", "T02", "T03"], "T01"))  # noqa: SLF001
+        assert cfg.filter_all_test_wtgs_together is False
+
+    def test_multi_test_wtgs_excludes_all_participants_from_refs_and_sets_flag(self, tmp_path) -> None:  # noqa: ANN001
+        method = V0BinnedMethod(_context(), scratch_dir=tmp_path, filter_all_test_wtgs_together=True)
+        cfg = method._build_config(  # noqa: SLF001
+            _method_input(["T01", "T02", "T04", "T07"], "T01"), test_wtgs=["T01", "T04"]
+        )
+        assert sorted(w.name for w in cfg.test_wtgs) == ["T01", "T04"]
+        assert sorted(w.name for w in cfg.ref_wtgs) == ["T02", "T07"]  # both participants excluded
+        assert cfg.filter_all_test_wtgs_together is True
+
+    def test_require_ref_wake_free_defaults_false_and_configurable(self, tmp_path) -> None:  # noqa: ANN001
+        mi = _method_input(["T01", "T02", "T03"], "T01")
+        assert V0BinnedMethod(_context(), scratch_dir=tmp_path)._build_config(mi).require_ref_wake_free is False  # noqa: SLF001
+        method = V0BinnedMethod(_context(), scratch_dir=tmp_path, require_ref_wake_free=True)
+        assert method._build_config(mi).require_ref_wake_free is True  # noqa: SLF001
+
 
 def _dense_scada(turbines: list[str], *, start: pd.Timestamp, end: pd.Timestamp, freq: str = "1D") -> pd.DataFrame:
     """Source-native long scada on a regular grid (enough rows for a toggle split)."""
@@ -134,7 +154,25 @@ class TestBuildConfigToggle:
         assert cfg.prepost is None
         assert cfg.toggle.detrend_data_selection == "use_toggle_off_data"
         assert cfg.toggle.toggle_change_settling_filter_seconds == 0
+        assert cfg.toggle.pairing_filter_method == "none"  # default: no pairing filter
         assert pd.Timestamp(cfg.upgrade_first_dt_utc_start) == UPGRADE
+
+    def test_toggle_pairing_and_settling_configurable(self, tmp_path) -> None:  # noqa: ANN001
+        method = V0BinnedMethod(
+            _context(),
+            scratch_dir=tmp_path,
+            pairing_filter_method="any_within_timedelta",
+            pairing_filter_timedelta_seconds=3000,
+            toggle_change_settling_filter_seconds=300,
+        )
+        scada = _dense_scada(
+            ["T01", "T02", "T03", "T04"], start=UPGRADE - pd.DateOffset(years=1), end=UPGRADE + pd.DateOffset(months=6)
+        )
+        schedule = ToggleSchedule(period=pd.Timedelta(days=2), start=UPGRADE)
+        cfg = method._build_config(MethodInput(scada_df=scada, test_wtg="T01", upgrade_timing=schedule))  # noqa: SLF001
+        assert cfg.toggle.pairing_filter_method == "any_within_timedelta"
+        assert cfg.toggle.pairing_filter_timedelta_seconds == 3000
+        assert cfg.toggle.toggle_change_settling_filter_seconds == 300
 
 
 class TestEstimateToggle:
@@ -229,3 +267,37 @@ class TestEstimateWiring:
         assert plot_cfg.save_plots is True
         assert plot_cfg.plots_dir.parent == tmp_path / "v0_T01_20180101_20180701"
         assert plot_cfg.plots_dir.name == "plots"
+
+
+class TestEstimateMulti:
+    def test_single_run_returns_p50_per_test_turbine(self, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+        captured: dict[str, object] = {}
+        calls = {"from_cfg": 0}
+
+        class FakeInputs:
+            @staticmethod
+            def from_cfg(**kwargs: object) -> str:
+                calls["from_cfg"] += 1
+                captured["from_cfg_kwargs"] = kwargs
+                return "inputs-sentinel"
+
+        def fake_combine(trdf: object, **kwargs: object) -> pd.DataFrame:  # noqa: ARG001
+            return pd.DataFrame(
+                {
+                    "test_wtg": ["T01", "T04", "T02"],
+                    "p50_uplift": [-0.012, 0.026, 0.0],
+                    "is_ref": [False, False, True],
+                }
+            )
+
+        monkeypatch.setattr(v0_binned, "AssessmentInputs", FakeInputs)
+        monkeypatch.setattr(v0_binned, "run_wind_up_analysis", lambda inputs: "trdf")  # noqa: ARG005
+        monkeypatch.setattr(v0_binned, "combine_results", fake_combine)
+
+        method = V0BinnedMethod(_context(), scratch_dir=tmp_path, filter_all_test_wtgs_together=True)
+        outs = method.estimate_multi(_method_input(["T01", "T02", "T04", "T07"], "T01"), test_wtgs=["T01", "T04"])
+
+        assert set(outs) == {"T01", "T04"}
+        assert outs["T01"].p50_overall == pytest.approx(-0.012)
+        assert outs["T04"].p50_overall == pytest.approx(0.026)
+        assert calls["from_cfg"] == 1  # both turbines analysed in a single wind_up run

@@ -1,5 +1,10 @@
 # wind-up v1 — findings log
 
+> **Back-burnered (2026-08-27).** These findings come from the earlier
+> [issues.md](issues.md) effort, now paused in favour of the realistic whole-farm
+> campaigns tranche ([issues_campaigns.md](issues_campaigns.md)). They stay a
+> valuable reference for later phases.
+
 Empirical findings from the v1 benchmarking work. Newest first. Each entry records what was
 observed, the evidence, the root cause, and what (if anything) it implies for the method design
 or the issues list. Keep entries reproducible: name the study driver and the diagnostics they came
