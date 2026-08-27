@@ -231,7 +231,11 @@ class WakeSteering:
     trapezoid in the **upstream** turbine's original power — zero at/below ``steer_cutin_power_kw`` (a
     parked upstream never steers), the full ``max_offset_deg`` between ``steer_low_full_power_kw`` and
     ``steer_full_power_kw``, and back to zero at ``steer_zero_power_kw`` (rated) — so the whole pair
-    effect vanishes at both ends. The downstream gain is driven by the same upstream envelope: when
+    effect vanishes at both ends. A separate high-wind-speed gate clips it too: full at/below
+    ``steer_ws_fade_start_mps``, ramping linearly to zero at ``steer_ws_zero_mps`` (and above) of the
+    upstream's original wind speed. The applied envelope is the **minimum** of the direction, power and
+    wind-speed gates, so the most conservative one wins and steering stops in high wind regardless of
+    the reported power. The downstream gain is driven by the same upstream envelope: when
     ``generate_dataset`` runs it calls :meth:`prepare` first, which precomputes each pair's upstream
     steer signal so the benefitting turbine is gated on the **upstream's** direction and power rather
     than its own. A direct :meth:`__call__` without :meth:`prepare` falls back to per-turbine gating.
@@ -261,6 +265,10 @@ class WakeSteering:
     :param steer_zero_power_kw: at/above this upstream power (rated) no steering happens; the steer
         limit falls linearly from ``max_offset_deg`` to 0 between ``steer_full_power_kw`` and here. The
         limit is a trapezoid in power and clips the steer magnitude (it does not scale the ramp)
+    :param steer_ws_fade_start_mps: upstream wind speed at/below which the wind-speed gate is full; the
+        gate falls linearly from here to 0 at ``steer_ws_zero_mps``
+    :param steer_ws_zero_mps: upstream wind speed at/above which the wind-speed gate is 0 (no steering
+        in high wind); the gate is combined with the power gate by taking the minimum of the two
     :param cos_power: exponent in the ``cos(offset)^p`` upstream-loss shape
     :param steer_loss_scale: fraction of the cosine yaw-loss actually applied (keeps the loss shape
         but scales its energy impact to realistic levels)
@@ -286,6 +294,8 @@ class WakeSteering:
     steer_low_full_power_kw: float = 230.0
     steer_full_power_kw: float = 1610.0
     steer_zero_power_kw: float = 2300.0
+    steer_ws_fade_start_mps: float = 12.0
+    steer_ws_zero_mps: float = 14.0
     cos_power: float = 1.5
     steer_loss_scale: float = 0.12
     steer_ws_gain: float = -0.02
@@ -319,6 +329,9 @@ class WakeSteering:
                 "require 0 <= steer_cutin_power_kw < steer_low_full_power_kw "
                 "<= steer_full_power_kw < steer_zero_power_kw"
             )
+            raise ValueError(msg)
+        if not 0.0 < self.steer_ws_fade_start_mps < self.steer_ws_zero_mps:
+            msg = "require 0 < steer_ws_fade_start_mps < steer_ws_zero_mps"
             raise ValueError(msg)
         if not 0.0 < self.crossover_half_deg <= self.wd_width / 2.0:
             msg = "require 0 < crossover_half_deg <= wd_width / 2"
@@ -374,6 +387,8 @@ class WakeSteering:
             "steer_low_full_power_kw": self.steer_low_full_power_kw,
             "steer_full_power_kw": self.steer_full_power_kw,
             "steer_zero_power_kw": self.steer_zero_power_kw,
+            "steer_ws_fade_start_mps": self.steer_ws_fade_start_mps,
+            "steer_ws_zero_mps": self.steer_ws_zero_mps,
             "cos_power": self.cos_power,
             "steer_loss_scale": self.steer_loss_scale,
             "steer_ws_gain": self.steer_ws_gain,
@@ -408,6 +423,16 @@ class WakeSteering:
         avail = np.minimum(np.clip(rise, 0.0, 1.0), np.clip(fall, 0.0, 1.0))
         return np.where(np.isfinite(power), avail, 0.0)
 
+    def _ws_availability(self, wind_speed_mps: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        """Steering availability in ``[0, 1]`` from the upstream turbine's original wind speed.
+
+        Full at/below ``steer_ws_fade_start_mps``, ramping to 0 at ``steer_ws_zero_mps`` (and above).
+        Non-finite (missing) wind speed counts as high wind, i.e. availability 0.
+        """
+        ws = np.asarray(wind_speed_mps, dtype=float)
+        fall = (self.steer_ws_zero_mps - ws) / (self.steer_ws_zero_mps - self.steer_ws_fade_start_mps)
+        return np.where(np.isfinite(ws), np.clip(fall, 0.0, 1.0), 0.0)
+
     def _is_waked(self, steering_wtg: str, wind_from: npt.NDArray[np.float64]) -> npt.NDArray[np.bool_]:
         """Per-row mask where ``steering_wtg`` is itself inside another turbine's IEC disturbed sector."""
         waked = np.zeros(len(wind_from), dtype=bool)
@@ -421,22 +446,24 @@ class WakeSteering:
         *,
         nacelle: npt.NDArray[np.float64],
         power: npt.NDArray[np.float64],
+        wind_speed: npt.NDArray[np.float64],
         pair: WakePair,
         turbine: str,
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-        """Per-row steer envelope (magnitude) and yaw sign for ``pair`` from ``turbine``'s direction and power.
+        """Per-row steer envelope (magnitude) and yaw sign for ``pair`` from ``turbine``'s inputs.
 
-        The envelope in ``[0, 1]`` is ``min(direction env, power availability)`` reduced near the nadir
-        by a linear deadband ramp (0 at the nadir, full past ``crossover_half_deg``): near the nadir the
-        wind direction is too uncertain to pick a steer sign, so the turbine barely steers there and the
-        whole pair effect shrinks. Evaluated on the upstream turbine (by :meth:`prepare`) it is the
-        physical steer signal; on another turbine it is the per-turbine fallback.
+        The envelope in ``[0, 1]`` is ``min(direction env, power availability, wind-speed availability)``
+        reduced near the nadir by a linear deadband ramp (0 at the nadir, full past ``crossover_half_deg``):
+        near the nadir the wind direction is too uncertain to pick a steer sign, so the turbine barely
+        steers there and the whole pair effect shrinks. Evaluated on the upstream turbine (by
+        :meth:`prepare`) it is the physical steer signal; on another turbine it is the per-turbine fallback.
         """
         cal = north_calibrated_direction(index, nacelle, turbine=turbine, north_offsets=self.north_offsets)
         view = wrap180(cal - pair.nadir_bearing)
         env = np.where(self._is_waked(pair.upstream, cal), 0.0, self._envelope(view))
         deadband = np.clip(np.abs(view) / self.crossover_half_deg, 0.0, 1.0)
-        return np.minimum(env, self._power_availability(power)) * deadband, np.sign(view)
+        availability = np.minimum(self._power_availability(power), self._ws_availability(wind_speed))
+        return np.minimum(env, availability) * deadband, np.sign(view)
 
     def prepare(self, scada_df: pd.DataFrame, *, columns: ColumnSchema = HOT_COLUMNS) -> None:
         """Precompute each pair's upstream steer envelope and yaw sign over the full timestamp index.
@@ -455,6 +482,7 @@ class WakeSteering:
                 index,
                 nacelle=upstream[columns.nacelle_position].to_numpy(dtype=float),
                 power=upstream[columns.active_power].to_numpy(dtype=float),
+                wind_speed=upstream[columns.wind_speed].to_numpy(dtype=float),
                 pair=pair,
                 turbine=pair.upstream,
             )
@@ -481,6 +509,7 @@ class WakeSteering:
             index,
             nacelle=rows[columns.nacelle_position].to_numpy(dtype=float),
             power=rows[columns.active_power].to_numpy(dtype=float),
+            wind_speed=rows[columns.wind_speed].to_numpy(dtype=float),
             pair=pair,
             turbine=turbine,
         )

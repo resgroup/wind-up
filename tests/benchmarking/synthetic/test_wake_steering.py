@@ -196,6 +196,84 @@ def test_low_power_clip_zero_at_no_generation() -> None:
     assert np.abs(effect.nacelle_position_delta) == pytest.approx([0.0, 10.0, 20.0, 20.0])
 
 
+def test_steer_magnitude_clipped_by_wind_speed() -> None:
+    """The upstream steer is also clipped by a high-wind-speed gate: full at/below 12 m/s, zero at/above
+    14 m/s, linear between (so the loss fades with it), independent of the power gate."""
+    steering = _steering(max_offset_deg=20.0)  # ws gate defaults: fade 12 -> 0 by 14 m/s
+    winds = [8.0, 12.0, 13.0, 14.0, 20.0]  # ws availability 1, 1, 0.5, 0, 0
+    index = pd.date_range("2020-06-01", periods=len(winds), freq="10min", tz="UTC")
+    rows = pd.DataFrame(
+        {
+            HOT_COLUMNS.turbine: UP,
+            HOT_COLUMNS.active_power: 1000.0,  # power availability 1 throughout
+            HOT_COLUMNS.wind_speed: np.array(winds, dtype=float),
+            HOT_COLUMNS.wind_speed_sd: 0.8,
+            HOT_COLUMNS.gen_rpm: 1400.0,
+            HOT_COLUMNS.nacelle_position: NADIR + 4.0,  # in the plateau, past the sign crossover
+        },
+        index=index,
+    )
+    rows.index.name = TIMESTAMP_COL
+    effect = steering(rows, HOT_COLUMNS)
+    assert np.abs(effect.nacelle_position_delta) == pytest.approx([20.0, 20.0, 10.0, 0.0, 0.0])
+    cp = np.asarray(effect.cp_ratio, dtype=float)
+    assert cp[0] == pytest.approx(cp[1])  # no clip at/below the fade-start wind speed
+    assert cp[1] < cp[2] < cp[3]  # loss shrinks as steering fades with wind speed
+    assert cp[3] == pytest.approx(1.0)  # at 14 m/s: no steering, no loss
+    assert cp[4] == pytest.approx(1.0)  # above 14 m/s: still none
+
+
+def test_gate_is_min_of_power_and_wind_speed() -> None:
+    """The steer envelope is the minimum of the power and wind-speed gates: the more conservative wins."""
+    steering = _steering(max_offset_deg=20.0, steer_full_power_kw=1610.0, steer_zero_power_kw=2300.0)
+    # Row 0: power-limited (1955 kW -> power gate 0.5) while ws is low (gate 1) -> min 0.5.
+    # Row 1: ws-limited (13.5 m/s -> ws gate 0.25) while power is full (gate 1) -> min 0.25.
+    index = pd.date_range("2020-06-01", periods=2, freq="10min", tz="UTC")
+    rows = pd.DataFrame(
+        {
+            HOT_COLUMNS.turbine: UP,
+            HOT_COLUMNS.active_power: np.array([1955.0, 1000.0], dtype=float),
+            HOT_COLUMNS.wind_speed: np.array([8.0, 13.5], dtype=float),
+            HOT_COLUMNS.wind_speed_sd: 0.8,
+            HOT_COLUMNS.gen_rpm: 1400.0,
+            HOT_COLUMNS.nacelle_position: NADIR + 4.0,
+        },
+        index=index,
+    )
+    rows.index.name = TIMESTAMP_COL
+    effect = steering(rows, HOT_COLUMNS)
+    assert np.abs(effect.nacelle_position_delta) == pytest.approx([10.0, 5.0])  # 20*0.5, 20*0.25
+
+
+def test_high_wind_speed_suppresses_downstream_gain_via_prepare() -> None:
+    """After ``prepare`` a high upstream wind speed removes the downstream gain (gated on the upstream),
+    even where direction and power would otherwise allow it -- so no steering effect at high wind."""
+    index = pd.date_range("2020-06-01", periods=2, freq="10min", tz="UTC")
+
+    def frame(wtg: str, *, wind: list[float]) -> pd.DataFrame:
+        df = pd.DataFrame(
+            {
+                HOT_COLUMNS.turbine: wtg,
+                HOT_COLUMNS.active_power: 1000.0,
+                HOT_COLUMNS.wind_speed: np.array(wind, dtype=float),
+                HOT_COLUMNS.wind_speed_sd: 0.8,
+                HOT_COLUMNS.gen_rpm: 1400.0,
+                HOT_COLUMNS.nacelle_position: NADIR + 4.0,
+            },
+            index=index,
+        )
+        df.index.name = TIMESTAMP_COL
+        return df
+
+    upstream = frame(UP, wind=[8.0, 20.0])  # t0 low wind, t1 high wind (> gate zero)
+    downstream = frame(DOWN, wind=[8.0, 8.0])
+    steering = _steering()
+    steering.prepare(pd.concat([upstream, downstream]), columns=HOT_COLUMNS)
+    cp = np.asarray(steering(downstream, HOT_COLUMNS).cp_ratio, dtype=float)
+    assert cp[0] > 1.0  # low upstream wind: gain applies
+    assert cp[1] == pytest.approx(1.0)  # high upstream wind: no gain
+
+
 def test_steer_and_effect_fade_through_the_nadir_deadband() -> None:
     """Near the nadir the applied yaw ramps to zero (a deadband), and the loss fades with it: the whole
     steering effect shrinks toward the nadir instead of the yaw flipping sign sharply."""
