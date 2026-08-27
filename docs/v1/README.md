@@ -8,8 +8,11 @@ v1 is developed on the `v1` branch; feature PRs target `v1` rather than `main`.
 - **[goals.md](goals.md)** — the north-star vision and goals for v1 (the "why").
 - **[roadmap.md](roadmap.md)** — workstreams (epics), phasing, and how the work is
   managed (the "what" and "in what order").
-- **[issues.md](issues.md)** — drafts of the first concrete issues. These are
-  refined here before being created as GitHub issues.
+- **[issues_campaigns.md](issues_campaigns.md)** — **the current tranche**:
+  realistic whole-farm campaigns and self-configuring methods (C0–C7). Start here.
+- **[issues.md](issues.md)** — drafts of the earlier issues (Issues 1–19).
+  **Back-burnered** in favour of `issues_campaigns.md`; still valuable for later.
+- **[findings.md](findings.md)** — empirical findings log from the earlier work.
 - **[references.md](references.md)** — related open-source tools (FLASC, OpenOA,
   DSWE) and key methodology references (Kanev TNO report) to investigate later.
 

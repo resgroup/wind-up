@@ -88,6 +88,8 @@ from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from benchmarking.baselines.hot_context import HotV0Context
+
 logger = logging.getLogger(__name__)
 
 # The T01 -> T04 steering pair plus the four references, and their Hill of Towie turbine numbers.
@@ -193,15 +195,71 @@ def _power_model(out_dir: Path, era5_hourly_df: pd.DataFrame) -> PowerModelMetho
     )
 
 
-def _build_methods(out_dir: Path, era5_hourly_df: pd.DataFrame, context: object, *, include_v0: bool) -> list[Method]:
-    """Return the methods to run for one test turbine, each writing plots into its own subfolder."""
-    methods: list[Method] = [
+def _fast_methods(out_dir: Path, era5_hourly_df: pd.DataFrame) -> list[Method]:
+    """Return the fast per-turbine methods (naive + power_model), each writing plots into a subfolder."""
+    return [
         NaiveRatioMethod(columns=HOT_COLUMNS, out_dir=out_dir / "naive", save_plots=True),
         _power_model(out_dir / "power_model", era5_hourly_df),
     ]
-    if include_v0:
-        methods.append(V0BinnedMethod(context, scratch_dir=out_dir / "v0", save_plots=True))  # type: ignore[arg-type]
-    return methods
+
+
+def _run_v0_pair(
+    context: HotV0Context,
+    *,
+    dataset: SyntheticDataset,
+    schedule: ToggleSchedule,
+    truths: dict[str, float],
+    out_dir: Path,
+) -> pd.DataFrame:
+    """Run v0 **once** over both steering participants together and return their tidy comparison rows.
+
+    Both turbines are the run's test turbines (so neither is a reference for the other), with the
+    wake-steering settings on: ``filter_all_test_wtgs_together`` (shared filtered timebase),
+    ``require_ref_wake_free`` (a reference behind a steering turbine would bias the contrast), and a
+    realistic on/off-block pairing filter matched to the toggle half-period.
+    """
+    v0 = V0BinnedMethod(
+        context,
+        scratch_dir=out_dir,
+        save_plots=True,
+        filter_all_test_wtgs_together=True,
+        require_ref_wake_free=True,
+        pairing_filter_method="any_within_timedelta",
+        pairing_filter_timedelta_seconds=int(TOGGLE_PERIOD.total_seconds() // 2),
+    )
+    mi = MethodInput(
+        scada_df=dataset.synthetic_df,
+        test_wtg=PARTICIPANTS[0],
+        upgrade_timing=schedule,
+        turbine_col=HOT_COLUMNS.turbine,
+    )
+    start = time.perf_counter()
+    outputs = v0.estimate_multi(mi, test_wtgs=list(PARTICIPANTS))
+    wall_time_s = time.perf_counter() - start  # a single shared run; recorded on each turbine's row
+    rows = []
+    for wtg in PARTICIPANTS:
+        estimate = outputs[wtg].p50_overall
+        truth = truths[wtg]
+        logger.info(
+            "%-12s %s estimate %+.3f%%  truth %+.3f%%  error %+.3f%%  (single co-run, %.1fs)",
+            v0.name,
+            wtg,
+            100 * estimate,
+            100 * truth,
+            100 * (estimate - truth),
+            wall_time_s,
+        )
+        rows.append(
+            {
+                "test_wtg": wtg,
+                "method": v0.name,
+                "estimate": estimate,
+                "truth": truth,
+                "signed_error": estimate - truth,
+                "wall_time_s": wall_time_s,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _truth(dataset: SyntheticDataset, *, test_wtg: str, schedule: ToggleSchedule) -> float:
@@ -404,7 +462,9 @@ def inspect_wake_steering_case(
         # Structural ground-truth plots always show the full (unfiltered) dataset.
         _write_ground_truth_plots(full_dataset, out_dir=run_dir / "ground_truth")
 
+        # Fast methods run per turbine; v0 runs once over BOTH participants (single co-run below).
         summaries = []
+        truths: dict[str, float] = {}
         for wtg in PARTICIPANTS:
             out_dir = run_dir / wtg
             mi = MethodInput(
@@ -413,9 +473,8 @@ def inspect_wake_steering_case(
                 upgrade_timing=schedule,
                 turbine_col=HOT_COLUMNS.turbine,
             )
-            truth = _truth(analysis_dataset, test_wtg=wtg, schedule=schedule)
-            methods = _build_methods(out_dir, era5, context, include_v0=include_v0)
-            summary, outputs = _run_methods(methods, mi=mi, truth=truth)
+            truths[wtg] = _truth(analysis_dataset, test_wtg=wtg, schedule=schedule)
+            summary, outputs = _run_methods(_fast_methods(out_dir, era5), mi=mi, truth=truths[wtg])
             _plot_conditional_uplift(
                 analysis_dataset,
                 outputs["power_model"],
@@ -424,6 +483,13 @@ def inspect_wake_steering_case(
                 out_dir=out_dir / "power_model",
             )
             summaries.append(summary)
+
+        if include_v0:
+            summaries.append(
+                _run_v0_pair(
+                    context, dataset=analysis_dataset, schedule=schedule, truths=truths, out_dir=run_dir / "v0"
+                )
+            )
 
         combined = pd.concat(summaries, ignore_index=True)
         summary_path = run_dir / "comparison_summary.csv"

@@ -1,5 +1,9 @@
 # wind-up v1 — first issues (drafts)
 
+> **Back-burnered (2026-08-27).** The current focus is the realistic whole-farm
+> campaigns tranche in **[issues_campaigns.md](issues_campaigns.md)**. The issues
+> below (1–19) remain valuable for later phases but are not the active work.
+
 Drafts of the concrete issues, to be refined here and then created as GitHub
 issues on `resgroup/wind-up`. Issues 1–8 cover **Phase 1** (see
 [roadmap.md](roadmap.md)): the public evaluation harness, the v0 baseline, the

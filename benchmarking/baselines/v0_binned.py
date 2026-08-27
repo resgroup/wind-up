@@ -45,14 +45,18 @@ from wind_up.main_analysis import run_wind_up_analysis
 from wind_up.models import PlotConfig, WindUpConfig
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from benchmarking.baselines.hot_context import HotV0Context
 
 _CAMPAIGN_YAML_TEMPLATE = """\
 assessment_name: {assessment_name}
 test_wtgs:
-  - {test_wtg}
+{test_lines}
 ref_wtgs:
 {ref_lines}
+filter_all_test_wtgs_together: {filter_all}
+require_ref_wake_free: {require_ref_wake_free}
 upgrade_first_dt_utc_start: {upgrade}
 analysis_last_dt_utc_start: {analysis_last}
 years_offset_for_pre_period: 1
@@ -71,13 +75,16 @@ asset: !include {asset_yaml}
 # campaign data; long-term/detrend windows still reach back into pre-campaign data. The toggle
 # signal is supplied directly as a ``toggle_df`` (see ``_build_toggle_df``), so ``toggle_filename``
 # is a never-read placeholder. The settling filter is 0 because the synthetic toggle blocks are
-# short and have no real settling transient.
+# short and have no real settling transient (the settling filter defaults to 0). The pairing filter
+# defaults off; the wake-steering driver turns it on for a realistic on/off-block pairing.
 _TOGGLE_YAML_TEMPLATE = """\
 assessment_name: {assessment_name}
 test_wtgs:
-  - {test_wtg}
+{test_lines}
 ref_wtgs:
 {ref_lines}
+filter_all_test_wtgs_together: {filter_all}
+require_ref_wake_free: {require_ref_wake_free}
 upgrade_first_dt_utc_start: {upgrade}
 analysis_last_dt_utc_start: {analysis_last}
 years_for_lt_distribution: 1
@@ -90,7 +97,9 @@ toggle:
   toggle_file_per_turbine: false
   toggle_filename: not_used.parquet
   detrend_data_selection: use_toggle_off_data
-  toggle_change_settling_filter_seconds: 0
+  pairing_filter_method: {pairing_filter_method}
+  pairing_filter_timedelta_seconds: {pairing_filter_timedelta_seconds}
+  toggle_change_settling_filter_seconds: {toggle_change_settling_filter_seconds}
 northing_corrections_utc: !include {northing_yaml}
 asset: !include {asset_yaml}
 """
@@ -122,6 +131,18 @@ class V0BinnedMethod:
     :param save_plots: if True, save wind_up's per-campaign plots under ``<out_dir>/plots`` (each
         campaign has its own unique out dir); off by default since plots are slow and unused for
         scoring, but useful for manually inspecting a run
+    :param filter_all_test_wtgs_together: pass through to wind_up's ``filter_all_test_wtgs_together``
+        (recommended for wake steering): when several turbines are analysed together via
+        :meth:`estimate_multi`, a timestamp filtered for one is filtered for all. A no-op for a
+        single test turbine.
+    :param require_ref_wake_free: pass through to wind_up's ``require_ref_wake_free`` (recommended for
+        wake steering): drop reference data where the reference has any upwind turbine, so a reference
+        sitting behind a steering turbine does not bias the comparison.
+    :param pairing_filter_method: toggle-only; wind_up's on/off block pairing method (``"none"`` by
+        default, e.g. ``"any_within_timedelta"`` for a realistic temporally-local pairing)
+    :param pairing_filter_timedelta_seconds: toggle-only; window for ``any_within_timedelta`` pairing
+    :param toggle_change_settling_filter_seconds: toggle-only; data dropped after each toggle change
+        (0 by default, since the synthetic toggle has no settling transient)
     """
 
     context: HotV0Context
@@ -130,10 +151,24 @@ class V0BinnedMethod:
     reanalysis_method: str = "node_with_best_ws_corr"
     scratch_dir: Path | None = None
     save_plots: bool = False
+    filter_all_test_wtgs_together: bool = False
+    require_ref_wake_free: bool = False
+    pairing_filter_method: str = "none"
+    pairing_filter_timedelta_seconds: int = 3000
+    toggle_change_settling_filter_seconds: int = 0
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Run a faithful v0 power-performance analysis (prepost or toggle) and return its P50 uplift."""
-        cfg = self._build_config(mi)
+        return self.estimate_multi(mi, test_wtgs=[mi.test_wtg])[mi.test_wtg]
+
+    def estimate_multi(self, mi: MethodInput, *, test_wtgs: Sequence[str]) -> dict[str, MethodOutput]:
+        """Analyse several turbines in a **single** wind_up run and return a P50 output for each.
+
+        All of ``test_wtgs`` are the run's test turbines (so none is used as a reference for another)
+        and, with ``filter_all_test_wtgs_together``, they share one filtered timestamp set -- the
+        recommended setup for a wake-steering pair. ``estimate`` is the single-turbine case.
+        """
+        cfg = self._build_config(mi, test_wtgs=list(test_wtgs))
         plot_cfg = PlotConfig(show_plots=False, save_plots=self.save_plots, plots_dir=cfg.out_dir / "plots")
         from_cfg_kwargs: dict = {
             "cfg": cfg,
@@ -160,30 +195,40 @@ class V0BinnedMethod:
             cfg.out_dir
             / f"{cfg.assessment_name}_combined_results_{pd.Timestamp.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
         )
-        return MethodOutput(p50_overall=_extract_p50(tdf, mi.test_wtg))
+        return {w: MethodOutput(p50_overall=_extract_p50(tdf, w)) for w in test_wtgs}
 
-    def _build_config(self, mi: MethodInput) -> WindUpConfig:
-        """Render and load the per-campaign WindUpConfig, with the asset filtered to the subset."""
+    def _build_config(self, mi: MethodInput, *, test_wtgs: Sequence[str] | None = None) -> WindUpConfig:
+        """Render and load the WindUpConfig, with the asset filtered to the subset.
+
+        ``test_wtgs`` defaults to ``[mi.test_wtg]``; pass several to co-analyse them in one run.
+        """
+        test_names = [mi.test_wtg] if test_wtgs is None else list(test_wtgs)
         subset = _subset_turbines(mi.scada_df, mi.turbine_col)
-        refs = [t for t in subset if t != mi.test_wtg]
+        test_set = set(test_names)
+        refs = [t for t in subset if t not in test_set]
         if not refs:
             msg = (
-                f"no reference turbines available for test_wtg {mi.test_wtg!r}: scada_df contains only "
+                f"no reference turbines available for test_wtg(s) {test_names}: scada_df contains only "
                 f"{subset}. The v0 binned method needs at least one reference turbine."
             )
             raise ValueError(msg)
         toggle_mode = is_toggle(mi.upgrade_timing)
         upgrade = toggle_upgrade_start(mi.upgrade_timing, mi.scada_df.index)
         analysis_last = pd.Timestamp(mi.scada_df.index.max())
-        assessment_name = f"v0_{mi.test_wtg}_{upgrade:%Y%m%d}_{analysis_last:%Y%m%d}"
+        assessment_name = f"v0_{'_'.join(test_names)}_{upgrade:%Y%m%d}_{analysis_last:%Y%m%d}"
 
         scratch = Path(self.scratch_dir) if self.scratch_dir is not None else Path(tempfile.mkdtemp(prefix="v0_"))
         scratch.mkdir(parents=True, exist_ok=True)
         template = _TOGGLE_YAML_TEMPLATE if toggle_mode else _CAMPAIGN_YAML_TEMPLATE
         yaml_text = template.format(
             assessment_name=assessment_name,
-            test_wtg=mi.test_wtg,
+            test_lines="\n".join(f"  - {t}" for t in test_names),
             ref_lines="\n".join(f"  - {r}" for r in refs),
+            filter_all=str(self.filter_all_test_wtgs_together).lower(),
+            require_ref_wake_free=str(self.require_ref_wake_free).lower(),
+            pairing_filter_method=self.pairing_filter_method,
+            pairing_filter_timedelta_seconds=self.pairing_filter_timedelta_seconds,
+            toggle_change_settling_filter_seconds=self.toggle_change_settling_filter_seconds,
             upgrade=upgrade.strftime("%Y-%m-%d %H:%M:%S"),
             analysis_last=analysis_last.strftime("%Y-%m-%d %H:%M:%S"),
             ws_bin_width=self.ws_bin_width,
