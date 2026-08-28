@@ -187,6 +187,14 @@ estimates track truth; the rated-power behaviour is visible in the report.
 
 ## C7 — Disentangle and remove `rlearner`
 
+**Status:** ✅ Done (2026-08-28). `make_outcome_model` relocated into
+`power_model/fitting.py` (with its dedicated unit test carried over); the `rlearner`
+package, its tests, and `inspect_prepost_feature_ablation.py` removed;
+`inspect_era5_matching_importance.py` repointed (it had no rlearner-specific arm to
+strip). `poe all-fast` green; `power_model` reads UNCHANGED against both committed
+benchmarks (toggle-compare max 0.06 pp; power-model-compare 0 material moves), i.e.
+identical to within LightGBM's same-machine noise floor.
+
 **Goal:** drop `rlearner` entirely, carrying forward only the shared pieces
 `power_model` needs.
 

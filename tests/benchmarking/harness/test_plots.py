@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 def _summary() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "method": ["v0", "v0", "rlearner", "rlearner"],
+            "method": ["v0", "v0", "power_model", "power_model"],
             "profile": "p",
             "campaign_months": [3, 6, 3, 6],
             "bias": [0.02, 0.01, 0.0, 0.0],
@@ -45,13 +45,13 @@ def test_three_panels() -> None:
 def test_one_line_per_method_in_bias_panel() -> None:
     fig = plot_campaign_curves(_summary())
     _, labels = fig.axes[_BAND].get_legend_handles_labels()
-    assert set(labels) == {"v0", "rlearner"}
+    assert set(labels) == {"v0", "power_model"}
 
 
 def test_top_panel_shows_true_uplift_and_each_method() -> None:
     fig = plot_campaign_curves(_summary())
     _, labels = fig.axes[_UPLIFT].get_legend_handles_labels()
-    assert set(labels) == {"true uplift", "v0", "rlearner"}
+    assert set(labels) == {"true uplift", "v0", "power_model"}
     true_line = next(line for line in fig.axes[_UPLIFT].get_lines() if line.get_label() == "true uplift")
     assert true_line.get_ydata().tolist() == [5.0, 5.0]  # 0.05 fraction -> 5.0 pp
 
@@ -82,7 +82,7 @@ def test_y_axis_in_percentage_points() -> None:
 
 def test_score_y_axis_floor_below_zero_so_zero_points_show() -> None:
     summary = _summary()
-    summary.loc[summary["method"] == "rlearner", "score"] = 0.0  # an oracle-like method at 0
+    summary.loc[summary["method"] == "power_model", "score"] = 0.0  # an oracle-like method at 0
     fig = plot_campaign_curves(summary)
     assert fig.axes[_SCORE].get_ylim()[0] < 0.0
 

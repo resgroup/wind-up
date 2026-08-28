@@ -61,7 +61,7 @@ from benchmarking.baselines.power_model.features import (
     extract_outcome,
     reference_mean_wind_speed,
 )
-from benchmarking.baselines.rlearner.nuisance import make_outcome_model
+from benchmarking.baselines.power_model.fitting import make_outcome_model
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.style import apply_grid, save_fig
 from benchmarking.synthetic import HOT_COLUMNS
