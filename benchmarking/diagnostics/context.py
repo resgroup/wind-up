@@ -3,8 +3,8 @@
 A method adapts its internals to a :class:`DiagnosticContext` (the test turbine, the long SCADA
 slice, per-timestamp treatment/used masks, the timebase, optional aligned ERA5) and the shared
 plotting functions take it from there. This keeps the plot code method-agnostic: it knows
-nothing about R-learner folds or the naive ratio, only the common picture of "which turbine,
-which rows, used or not, baseline or upgraded".
+nothing about a method's internal folds or reference selection, only the common picture of
+"which turbine, which rows, used or not, baseline or upgraded".
 
 The few computed views the plots need (the unique index, the test turbine's rows aligned to it,
 a wide per-turbine pivot, a reference-mean signal) live here so the plotting modules stay lean.
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
     from benchmarking.synthetic import ColumnSchema
 
-# Column names the optional ``era5_df`` is expected to carry (the R-learner's ERA5 sync output).
+# Column names the optional ``era5_df`` is expected to carry (the shared ERA5 sync output).
 ERA5_WS_COL = "era5_ws"
 ERA5_WD_COL = "era5_wd"
 

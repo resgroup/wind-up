@@ -1,6 +1,6 @@
 """Manual inspection driver: run a few naive-ratio replicates (prepost and toggle) with plots on.
 
-A runnable companion to :mod:`benchmarking.baselines.inspect_v0_run`, but for
+A runnable companion to :mod:`benchmarking.baselines.old.inspect_v0_run`, but for
 :class:`benchmarking.baselines.naive_ratio.NaiveRatioMethod`. It runs a handful of replicates in
 each mode with ``save_plots=True``, each in its **own output directory**, so the naive method's
 diagnostics (the per-run data-stats / results CSVs and the scatter, ratio-timeseries and
@@ -13,7 +13,7 @@ Each replicate is built and scored exactly as :func:`benchmarking.harness.score_
 
 Run it::
 
-    uv run python -m benchmarking.baselines.inspect_naive
+    uv run python -m benchmarking.baselines.old.inspect_naive
 
 First run downloads and caches the Hill of Towie v2 SCADA (Zenodo). Each replicate's outputs land
 under ``<out_root>/inspection_naive/<mode>/replicate_<id>_<wtg>/naive_<wtg>_<dates>/`` (with a

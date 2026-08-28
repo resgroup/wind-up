@@ -1,6 +1,6 @@
 """Northing-error timeline (feedback 2026-06-26, item 15).
 
-The R-learner gets reference nacelle positions as raw features with **no** northing correction;
+Reference nacelle positions may enter a method as raw features with **no** northing correction;
 an offset or jumps in a turbine's yaw zero distorts the direction signal the model sees. This
 plots, per turbine, the **monthly circular mean** of (nacelle position - ERA5 wind direction) over
 time, so a drift or step in the offset stands out. Only rows where the turbine is generating

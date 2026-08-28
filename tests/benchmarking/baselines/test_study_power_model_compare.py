@@ -41,14 +41,14 @@ from benchmarking.harness.conditions import CONDITIONS
 def test_make_power_model_defaults_to_conditional_on(tmp_path: Path) -> None:
     era5 = pd.DataFrame({"wind_speed_100m": [1.0]})
     method = _make_power_model(tmp_path, era5_hourly_df=era5)
-    # the compare sweep runs power_model at its default: conditional uplift on, matching on the F6 set
+    # the compare sweep runs power_model at its default: conditional uplift on, matching on the curated set
     assert method.conditions == CONDITIONS
     assert method.matching_vars == ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
 
 
 def test_thinned_driver_matches_promoted_defaults(tmp_path: Path) -> None:
-    # the driver now passes only data-schema config; the F13/F14 behaviour lives on the class, so the
-    # constructed method must still carry the benchmarked defaults (Issue 14 promotion).
+    # the driver now passes only data-schema config; the accepted defaults live on the class, so the
+    # constructed method must still carry the benchmarked defaults.
     era5 = pd.DataFrame({"wind_speed_100m": [1.0]})
     method = _make_power_model(tmp_path, era5_hourly_df=era5)
     assert method.availability_feature is False
@@ -660,7 +660,7 @@ def test_accept_candidate_rejects_wrong_schema(tmp_path: Path) -> None:
 
 
 def test_git_commit_ignores_untracked_files(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An untracked file must not read as dirty (F30).
+    """An untracked file must not read as dirty.
 
     It cannot make a run irreproducible from its commit — `git checkout <commit>` would not have it.
     Counting it made --update-baseline impossible for anyone with a stray CLAUDE.md, and is the

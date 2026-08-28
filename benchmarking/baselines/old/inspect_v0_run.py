@@ -12,7 +12,7 @@ Each replicate is built and scored exactly as :func:`benchmarking.harness.score_
 
 Run it::
 
-    uv run python -m benchmarking.baselines.inspect_v0_run
+    uv run python -m benchmarking.baselines.old.inspect_v0_run
 
 First run downloads and caches the Hill of Towie v2 SCADA (Zenodo) and ERA5 (Open-Meteo; needs
 the ``era5`` optional dependency group). Each replicate's plots land under

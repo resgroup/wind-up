@@ -180,7 +180,7 @@ class NaiveRatioMethod:
         Returns a bool Series on ``wide.index``. Every turbine (test and references) must be
         available (counter >= a full period) and have finite power — a down turbine on either side
         of the ratio is therefore excluded. The test turbine additionally goes through the shared
-        :class:`NormalOperationFilter` (the same downtime + finite-power logic the R-learner uses;
+        :class:`NormalOperationFilter` (the same downtime + finite-power logic the power model uses;
         the stuck filter is left off here as the ratio sums raw power rather than fitting a model).
         """
         turbines = [test, *refs]

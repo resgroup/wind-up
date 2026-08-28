@@ -4,7 +4,7 @@ The outcome is the test turbine's power, so abnormal operation unrelated to the 
 downtime, curtailment, frozen/stuck sensors — would otherwise be attributed to the upgrade (a
 downward bias, worst when it clusters in the upgrade period). Every method must select the
 normally-operating test-turbine rows the same way, so this filter lives in one shared place
-(the R-learner and the naive ratio both use it; it has no ``wind_up`` dependency).
+(the benchmarking methods all use it; it has no ``wind_up`` dependency).
 
 Three checks:
 
@@ -19,7 +19,7 @@ The central rule is **filter on cause, not effect**: selection uses operational 
 power, never "power lower than expected" — that would drop genuine low-uplift records and bias the
 estimate. This is row selection, not a feature rule, so using the test turbine's own operational
 signals here does not violate the upgrade-invariant feature rule. References are deliberately not
-filtered (the R-learner learns their operating modes; the naive ratio keeps complete-case refs).
+filtered (the naive ratio keeps complete-case refs; the power model learns their operating modes).
 """
 
 from __future__ import annotations

@@ -7,7 +7,7 @@ the *total* deviation from truth, bias included; a block bootstrap sees only sam
 where the method is biased the sigma will under-cover, and that is a finding rather than an
 unfairness (see :mod:`benchmarking.harness.calibration`).
 
-Three design points, each with evidence behind it in F28-F30:
+Three design points:
 
 **Replicates, not cells, are the evidence.** The three profiles reuse the same
 ``(turbine, treatment_start)`` draws, so their errors correlate 0.977-0.995; campaign lengths are
@@ -76,7 +76,7 @@ SEED = 0
 # evidence is scarcest: a 52-week campaign is 364d, so a 730d range holds only ~2 of them.
 TREATMENT_START_RANGE = (DEFAULT_START_DT, pd.Timestamp("2020-01-01", tz="UTC"))
 MIN_PRE_MONTHS_TOGGLE = 0
-# Brackets the default on both sides, because coverage degrades in both directions (F28) and a grid
+# Brackets the default on both sides, because coverage degrades in both directions and a grid
 # that only reached upwards would hide half of that. The bottom end (1h ~ 1.5 cycles of a 40-minute
 # toggle) over-covers; the top end starves the bootstrap of distinct blocks and biases sigma low.
 # 96h is dropped: at 1 week it is ~2 blocks and its verdict (coverage 0.438) is already recorded.
@@ -264,7 +264,7 @@ def _plot_coverage_by_length(table: pd.DataFrame, path: Path) -> None:
 def _plot_sigma_plateau(cases: pd.DataFrame, path: Path) -> None:
     """Mean headline sigma against block length, one line per campaign length.
 
-    There is no plateau to read here (F28): the curve is flat to falling. The measured RMS error is
+    There is no plateau to read here: the curve is flat to falling. The measured RMS error is
     drawn alongside as the level sigma should reach, which makes the long-block collapse legible.
     """
     headline = cases[cases["condition"] == "overall"]

@@ -6,7 +6,7 @@ direction, temperature, turbulence, and the time-of-day / month structure — so
 see exactly where the two segments differ.
 
 Hour-of-day and month are derived from the timestamp index and are **diagnostics only**: they
-are deliberately not model features (the R-learner uses shuffled K-fold cross-fitting, which
+are deliberately not model features (the models use shuffled K-fold cross-fitting, which
 assumes no timestamp features — design-note §3/§4). Weather conditions use reference-derived
 (treatment-invariant) signals so the comparison is honest for the upgraded segment too.
 """

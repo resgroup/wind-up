@@ -2,8 +2,8 @@
 
 The discipline (design note §3): every model feature must be *upgrade-invariant* — derived from
 reference turbines (or ERA5), never the test turbine's own signals, which the upgrade distorts.
-Unlike the R-learner's *maximal* feature builder, this matrix is deliberately **curated** to
-features known to relate to the *cause* of the test turbine's power — weather and wakes:
+This matrix is deliberately **curated** to features known to relate to the *cause* of the test
+turbine's power — weather and wakes:
 
 * per **reference turbine**: active power (the primary stable weather-driven measurement) and the
   availability counter (whether the reference is operating, hence whether it is making a wake);

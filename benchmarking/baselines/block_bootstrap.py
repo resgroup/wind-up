@@ -10,8 +10,6 @@ ratio re-formed, rather than linearised.
 
 Block sums come from prefix sums over the records (doubled end-to-end so a wrapped block is still
 two lookups), so a resample is a gather-and-subtract rather than a pass over the data.
-
-Rationale for the design and for the block length: findings F28.
 """
 
 from __future__ import annotations
@@ -43,7 +41,7 @@ _SIGMA_PERCENTILES = (100.0 * norm.cdf(-1.0), 100.0 * norm.cdf(1.0))
 _MIN_FALLBACK_DF = 1
 # Fewest records a segment needs before its own scatter is worth measuring, for `relative_scatter`.
 _MIN_RECORDS_PER_SIDE = 3
-# Records per side over which the report ramps linearly from the fallback to the bootstrap (F33):
+# Records per side over which the report ramps linearly from the fallback to the bootstrap:
 # pure fallback at/below LO, pure bootstrap at/above HI.
 _BLEND_LO_RECORDS = 3
 _BLEND_HI_RECORDS = 7
@@ -125,7 +123,7 @@ def relative_scatter(
 
 
 def _fallback_sigma(*, n_on: int, n_off: int, s_rel: float) -> float:
-    """Return a t-inflated per-record-scatter uncertainty for one cell (F33).
+    """Return a t-inflated per-record-scatter uncertainty for one cell.
 
     ``s_rel * sqrt(1/n_on + 1/n_off)`` is the standard ratio-estimator error under multiplicative
     per-record noise, propagated through ``rho_up / rho_base``. The ``scipy.stats.t`` multiplier is
@@ -171,7 +169,7 @@ def bootstrap_ratio_uplift(
         the used records are covered rather than closed up
     :param campaign_end: the campaign's last timestamp
     :param timebase: analysis timebase; sets the candidate block-start grid
-    :param block_hours: block length (F28). A length at or beyond the campaign leaves one block, which
+    :param block_hours: block length. A length at or beyond the campaign leaves one block, which
         nothing can vary, so every cell reports NaN rather than a spurious near-zero sigma.
     :param n_resamples: resamples to draw
     :param seed: RNG seed, so a reported sigma is reproducible
@@ -233,7 +231,7 @@ def bootstrap_ratio_uplift(
 
 
 def _bootstrap_weight(n_min: int) -> float:
-    """Weight on the bootstrap for a cell with ``n_min`` records on its thinner side (F33)."""
+    """Weight on the bootstrap for a cell with ``n_min`` records on its thinner side."""
     span = _BLEND_HI_RECORDS - _BLEND_LO_RECORDS
     return float(np.clip((n_min - _BLEND_LO_RECORDS) / span, 0.0, 1.0))
 

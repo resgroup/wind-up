@@ -10,7 +10,7 @@ in-sample leakage to correct for.
 The feature set is curated to the *causes* of test-turbine power — weather (all raw ERA5) and
 wakes (each reference's active power + availability). Expressing expected power *through the
 references* forms the test-vs-reference contrast that cancels common-mode seasonal/long-term
-drift (the lever the R-learner lacks; findings F1).
+drift.
 
 It is v0-independent — ERA5 is supplied as a plain hourly DataFrame (the driver fetches it), so
 this package imports nothing from ``wind_up``.
@@ -64,14 +64,14 @@ _MIN_HOLDOUT_ROWS = 20  # below this, report the in-sample fit (no point splitti
 # spread across the whole window (seasonally balanced) while staying contiguous at the block scale.
 _N_FOLDS = 5
 _N_BLOCKS = 25
-# Adaptive time-decay half-life = this multiple of the campaign's own duration (Issue 15 / F20): a
+# Adaptive time-decay half-life = this multiple of the campaign's own duration (Issue 15): a
 # scale-free "trust pre-campaign data within ~k campaign-durations" rule that gives a short half-life
 # for a short campaign (drift protection) and a long one for a long campaign (use the plentiful recent
-# data), reproducing F16's regime map with one mechanism-anchored constant. k=2 -> 1mo~60d, 12mo~730d.
+# data), reproducing the earlier regime map with one mechanism-anchored constant. k=2 -> 1mo~60d, 12mo~730d.
 _TIME_DECAY_CAMPAIGN_MULTIPLE = 2.0
 _MIN_TIME_DECAY_DURATION_DAYS = 1.0  # floor the campaign duration so the half-life can't degenerate to 0
 
-# The removal-ablation verdict (findings F13): raw Open-Meteo columns the curated feature set does
+# Removal-ablation verdict: raw Open-Meteo columns the curated feature set does
 # better without — redundant thermodynamic derivatives of temperature/humidity and the precipitation
 # trio. HoT drivers pass this (with availability_feature=False) as the accepted default; kept here,
 # not baked into ``era5_exclude``'s dataclass default, so a non-Open-Meteo ERA5 frame is not broken
@@ -84,29 +84,29 @@ CURATED_ERA5_EXCLUDE: tuple[str, ...] = (
     "snowfall",
 )
 
-# The Issue 12 capacity verdict (findings F14): loosening min_child_samples 200 -> 50 materially
+# Capacity verdict: loosening min_child_samples 200 -> 50 materially
 # improves prepost spread/score (placebo ALL Δscore -0.62 pp) at neutral overall P50; 20 overshoots
 # into overfit. A power_model-specific tuning — the common params in ``make_outcome_model`` are
 # unchanged; drivers pass this instead.
 TUNED_MODEL_PARAMS: dict[str, Any] = {"min_child_samples": 50}
 
 # Per-reporting-bin matched-count floor for the two-direction conditional combine (Issue 14). Below this
-# many matched rows *per side* in a ws/TI reporting bin, the combine overshoots — the F7/F9 sparse-extreme
+# many matched rows *per side* in a ws/TI reporting bin, the combine overshoots — the sparse-extreme
 # tail (e.g. TI (0.45,0.50] swinging -77 to +93 pp between replicates) — so the bin is marked uncovered and
 # filled by the physics-informed imputer instead of trusting its noisy shape. Compared against the raw
 # per-side matched count today; if the per-bin balance reweighting (A5) is adopted it becomes the Kish
-# ESS. The value is chosen on placebo/benchmark evidence across many bins (findings F17), not tuned to the
+# ESS. The value is chosen on placebo/benchmark evidence across many bins, not tuned to the
 # one known bad TI bin.
 _MIN_BIN_MATCHED_COUNT = 50
 
-# F6 matching set + bin widths for the bias-cancellation correction, verified on real HoT by the CEM
-# coverage sweep (docs/v1/findings.md F6). wind_speed_100m (dominant) is binned finest, wind_gusts_10m
+# Matching set + bin widths for the bias-cancellation correction, verified on real HoT by the CEM
+# coverage sweep (docs/v1/findings.md). wind_speed_100m (dominant) is binned finest, wind_gusts_10m
 # coarser, and wind_direction_100m in 20° sectors (a reanalysis direction — finer is finer than the
 # signal). Fixed sectors, no wraparound (adjacent sectors are just separate cells, per the CEM utility).
 _DEFAULT_MATCHING_VARS: tuple[str, ...] = ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
 # This method can report every condition axis: its ws/TI come from the test turbine's own measurements
 # (post-treatment, accepted per design-note §3) and its power axis is labelled by the counterfactual
-# prediction (F23). The default reports all three, preserving the behaviour of every existing caller.
+# prediction. The default reports all three, preserving the behaviour of every existing caller.
 _SUPPORTED_CONDITIONS: tuple[str, ...] = CONDITIONS
 _DEFAULT_MATCHING_BIN_EDGES: dict[str, list[float]] = {
     "wind_speed_100m": [float(x) for x in np.arange(0.0, 34.0, 2.0)],  # 0,2,…,32
@@ -126,7 +126,7 @@ def _combine_uplift(r_fwd: np.ndarray, r_rev: np.ndarray) -> np.ndarray:
     """Two-direction uplift ``sqrt((1+r_fwd)/(1+r_rev)) - 1`` (shrinkage cancels); NaN if either 1+r <= 0.
 
     Under a common per-bin multiplicative shrinkage the forward/reverse ratios are ``(1+u)/s`` and
-    ``1/(s(1+u))``, so their geometric contrast recovers ``u`` with ``s`` cancelled (design/F5).
+    ``1/(s(1+u))``, so their geometric contrast recovers ``u`` with ``s`` cancelled (by design).
     """
     a = 1.0 + np.asarray(r_fwd, dtype=float)
     b = 1.0 + np.asarray(r_rev, dtype=float)
@@ -168,7 +168,7 @@ def _condition_frame(
     keeps the reverse ratio free of a regression-to-the-mean tilt (see the power-frame note in
     ``_conditional_by_bin``). The forward/reverse energy ratios give the shrinkage-free per-bin
     shape; uncovered bins are imputed (``impute_uncovered_bins``) and the whole thing is re-leveled onto the
-    headline by full-upgraded energy so measured + imputed aggregate to ``one_plus_overall`` (F8/F14).
+    headline by full-upgraded energy so measured + imputed aggregate to ``one_plus_overall``.
     """
     fwd = energy_ratio_by_bin(fwd_cond, y_fwd, pred_fwd, bins=bins)
     rev = energy_ratio_by_bin(rev_cond, y_rev, pred_rev, bins=bins)
@@ -189,7 +189,7 @@ def _condition_frame(
     shape = 1.0 + _combine_uplift(r_fwd, r_rev)  # shrinkage-free shape (NaN if degenerate)
     sum_actual_full = merged["sum_actual_full"].to_numpy()
     # A bin is covered only if its shape is finite AND both directions have enough matched rows;
-    # below the floor the two-direction combine overshoots, so the bin is imputed instead (F7/F9).
+    # below the floor the two-direction combine overshoots, so the bin is imputed instead.
     per_side = np.minimum(merged["n_records_fwd"].to_numpy(), merged["n_records_rev"].to_numpy())
     measured = np.isfinite(shape) & (per_side >= _MIN_BIN_MATCHED_COUNT)
     imputed_shape = impute_uncovered_bins(shape, condition=name, measured=measured, one_plus_overall=one_plus_overall)
@@ -256,7 +256,7 @@ class PowerModelMethod:
     :param seed: seed for the baseline holdout split and the LightGBM ``random_state`` (a caller-supplied
         ``random_state`` in ``model_params`` still wins)
     :param model_params: LightGBM overrides passed to the outcome model; merged **over** the tuned
-        default ``TUNED_MODEL_PARAMS`` (``min_child_samples=50``, F14), so a bare method already carries
+        default ``TUNED_MODEL_PARAMS`` (``min_child_samples=50``), so a bare method already carries
         the accepted capacity and any key here wins
     :param timebase: analysis timebase; inferred from the data when ``None``
     :param conditions: which condition axes to report a per-bin conditional uplift over — any of
@@ -266,25 +266,25 @@ class PowerModelMethod:
         (its common per-bin shrinkage cancels), then re-levels onto the headline. That step
         **requires ERA5** (the matching axis is the ERA5 columns). Pass ``()`` to skip that
         cross-prediction — the expensive part — and return only the overall P50.
-    :param matching_vars: ERA5 columns matched on for the conditional step (default: the F6 set)
-    :param matching_bin_edges: per-variable CEM bin edges; the F6 defaults are used when ``None``
+    :param matching_vars: ERA5 columns matched on for the conditional step (default: the curated set)
+    :param matching_bin_edges: per-variable CEM bin edges; the curated defaults are used when ``None``
     :param reference_stat_cols: *extra* per-reference value columns to carry as features beyond the
         active-power minimum, which is always carried via the ``columns`` schema's ``active_power_min``
-        role (Issue 11 / F12 — the max/SD companions stay opt-in here; a repeat of the min is deduped)
+        role (Issue 11 — the max/SD companions stay opt-in here; a repeat of the min is deduped)
     :param era5_exclude: raw ERA5 columns to drop from the model features (removal-ablation knob;
         a dropped direction column also loses its sin/cos companions). Columns used as
         ``matching_vars`` cannot be excluded while any ``conditions`` are requested. Defaults to the
-        accepted ``CURATED_ERA5_EXCLUDE`` set (F13); the **untouched default** is drop-if-present (so a
+        accepted ``CURATED_ERA5_EXCLUDE`` set; the **untouched default** is drop-if-present (so a
         non-Open-Meteo ERA5 frame lacking those columns is not broken), while an **explicitly-set**
         value keeps the strict raise-on-unknown-column typo guard.
-    :param availability_feature: when ``False`` (the accepted default, F13), drop the per-reference
+    :param availability_feature: when ``False`` (the accepted default), drop the per-reference
         availability *feature*; the ``availability`` role itself stays required for the downtime filter
     :param adaptive_time_decay: when ``True`` (**default**, the Issue 15 self-configuring behaviour)
         the headline fit's time-decay half-life is set automatically to
         ``_TIME_DECAY_CAMPAIGN_MULTIPLE * campaign_duration_days`` — a short half-life for a short
         campaign (down-weight the stale pre-campaign era that dominates a sliver campaign) and a long
         one for a long campaign (use the plentiful recent data). This subsumes the fixed default:
-        the best half-life is regime-dependent (F16 — short helps 1-3-month campaigns in both modes,
+        the best half-life is regime-dependent (short helps 1-3-month campaigns in both modes,
         long is safe at 12 months), and a campaign-proportional half-life gets both ends right with no
         manual tuning. When ``True``, ``time_decay_half_life_days`` must be left ``None``.
     :param time_decay_half_life_days: **expert override** (used only when ``adaptive_time_decay=False``):
@@ -292,7 +292,7 @@ class PowerModelMethod:
         ``0.5 ** (days_outside_campaign / half_life)``. Rows inside the campaign interval (for toggle,
         the interleaved on and off rows) weigh 1; rows outside decay with their distance to it — so
         distant history informs the fit without dominating it (Issue 13's recency weighting; the
-        alternative to the rejected F11 drift *feature*). ``None`` disables the weighting entirely.
+        alternative to the rejected drift *feature*). ``None`` disables the weighting entirely.
         The default self-configuring behaviour is ``adaptive_time_decay=True`` (this left ``None``).
 
     The toggle headline is always the counterfactual energy ratio ``Σactual/Σprediction - 1``.
@@ -338,7 +338,7 @@ class PowerModelMethod:
         y = extract_outcome(
             scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, active_power_col=self.columns.active_power
         )
-        # The per-reference active-power minimum (Issue 11 / F12) is a standard feature carried by the
+        # The per-reference active-power minimum (Issue 11) is a standard feature carried by the
         # schema, so it is always present without per-driver ``reference_stat_cols`` config; extra
         # stat columns still append after it (deduped, so a caller repeating the min is harmless).
         extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
@@ -427,10 +427,10 @@ class PowerModelMethod:
             # pre-campaign baseline, only the interleaved campaign off rows qualify (the strict
             # ``campaign_baseline``): matching pre-campaign rows against campaign on rows would read
             # reference/era drift as per-bin uplift. The extra pre-campaign rows serve only the headline
-            # fit's training data. (F26 re-confirmed this post-floor: unifying onto ``training_baseline``
+            # fit's training data. (Re-confirmed post-floor: unifying onto ``training_baseline``
             # blew up tail-bin |bias|/spread — the added rows promote drift-contaminated bins past the count
             # floor from imputed to trusted.)
-            # No time-decay weights here either (F16, re-confirmed post-floor in F25): the matched contrast
+            # No time-decay weights here either (re-confirmed post-floor): the matched contrast
             # is already era-insensitive (its common shrinkage cancels), and weighting the direction fits
             # only churns the sparse extreme-condition tail bins (and slightly worsens ws spread) without
             # helping the populated bins — so the corrections are spent on the overall headline instead.
@@ -463,9 +463,9 @@ class PowerModelMethod:
         """Per-(ws, TI)-bin conditional uplift via a two-direction, ERA5-weather-matched cross-prediction.
 
         Match the baseline and upgraded periods on ERA5 weather, then fit/predict in both directions and
-        combine so the common per-bin shrinkage cancels (design/F5); the decomposition is re-leveled onto the
+        combine so the common per-bin shrinkage cancels (by design); the decomposition is re-leveled onto the
         already-computed overall headline (``overall_ratio``, from the single full fit ``fit``) so the per-bin
-        MWh partitions it (F8). Requires ERA5 — the matching axis is the synced ERA5 columns, which live in
+        MWh partitions it. Requires ERA5 — the matching axis is the synced ERA5 columns, which live in
         ``features`` (``era5_feature_frame`` passes them through). Returns the ``[condition, condition_bin,
         p50_uplift]`` frame (or ``None`` when no wind-speed column), and writes the per-run diagnostics.
         """
@@ -533,7 +533,7 @@ class PowerModelMethod:
 
         No calibration and no time-decay weights here: the two-direction combine cancels the common
         per-bin shrinkage by construction, and weighting the matched fits only churns sparse
-        extreme-condition bins (F16; re-confirmed post-floor in F25) — the corrections are spent on the
+        extreme-condition bins (re-confirmed post-floor) — the corrections are spent on the
         overall headline instead.
         """
         models = self._fit_models(features.iloc[train], y[train])
@@ -567,7 +567,7 @@ class PowerModelMethod:
         rated; ti: the overall uplift) so every bin carries a best estimate rather than a bare NaN. The
         re-level **weights** are the *full-upgraded* actual energy per bin (``actual_full`` over
         ``upgraded_pos``): imputed bins are pinned and one λ scales the measured bins so measured + imputed
-        together energy-aggregate to ``1 + overall_ratio`` exactly (F8, corrected for uncovered-bin energy).
+        together energy-aggregate to ``1 + overall_ratio`` exactly (corrected for uncovered-bin energy).
         The returned frame carries a ``covered`` flag (a per-run diagnostic — the harness seam only sees
         ``p50_uplift``).
         """
@@ -662,7 +662,7 @@ class PowerModelMethod:
             )
 
     def _default_bin_edges(self) -> dict[str, list[float]]:
-        """Per-variable CEM edges for ``matching_vars`` from the F6 defaults; raise on an unknown var."""
+        """Per-variable CEM edges for ``matching_vars`` from the curated defaults; raise on an unknown var."""
         missing = [v for v in self.matching_vars if v not in _DEFAULT_MATCHING_BIN_EDGES]
         if missing:
             msg = (
@@ -723,7 +723,7 @@ class PowerModelMethod:
         """Return the time-decay half-life (days) for this campaign, or ``None`` when decay is off.
 
         ``adaptive_time_decay`` (the default) sets it to ``_TIME_DECAY_CAMPAIGN_MULTIPLE`` times the
-        campaign's own duration (Issue 15 / F20); otherwise the fixed ``time_decay_half_life_days``
+        campaign's own duration (Issue 15); otherwise the fixed ``time_decay_half_life_days``
         expert override is used verbatim.
         """
         if not self.adaptive_time_decay:

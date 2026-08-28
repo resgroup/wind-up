@@ -1,4 +1,4 @@
-"""One-off: split the single v2 toggle benchmark into a portable + a per-platform v3 pair (F30).
+"""One-off: split the single v2 toggle benchmark into a portable + a per-platform v3 pair.
 
 The v2 file was recorded on a Windows laptop and holds both methods. ``power_model``'s cells are
 machine-specific, so they can only ever be re-derived on that machine — hence a split rather than a
@@ -7,7 +7,7 @@ become the shared baseline unchanged.
 
 Delete this script once both platform baselines are recorded and committed.
 
-    uv run python -m benchmarking.baselines.migrate_toggle_baseline_v2_to_v3
+    uv run python -m benchmarking.baselines.old.migrate_toggle_baseline_v2_to_v3
 """
 
 from __future__ import annotations

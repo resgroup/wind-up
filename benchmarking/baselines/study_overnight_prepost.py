@@ -1,4 +1,4 @@
-"""Longer (overnight) PREPOST study: oracle + naive + R-learner + v0 over seven upgrade profiles.
+"""Longer (overnight) PREPOST study: oracle + naive + power_model + v0 over seven upgrade profiles.
 
 Run on a server from the repo root::
 
@@ -9,10 +9,10 @@ per-replicate results, per-method campaign-length curves, and each method's per-
 diagnostics) are written under ``WIND_UP_BENCHMARKING_OUTPUT_DIR`` (default
 ``~/temp/wind-up-benchmarking/prepost``). The first run downloads + caches the Hill of Towie
 SCADA (Zenodo) and ERA5 (Open-Meteo, needs the ``era5`` group); install the ``ml`` group too
-for the R-learner (lightgbm).
+for ``power_model`` (lightgbm).
 
 Tune runtime vs precision with the two constants below. v0 (a full wind_up run per campaign)
-and the R-learner are the cost; oracle and naive are ~free.
+and ``power_model`` are the cost; oracle and naive are ~free.
 """
 
 from __future__ import annotations

@@ -142,10 +142,10 @@ def run_prepost_study(
                 columns=HOT_COLUMNS,
                 baseline_rated_power_kw=HOT_RATED_POWER_KW,
                 era5_hourly_df=context.reanalysis_datasets[0].data,
-                # Removal-ablation accepted defaults (findings F13).
+                # Accepted defaults: no availability feature, curated ERA5 exclusions.
                 availability_feature=False,
                 era5_exclude=CURATED_ERA5_EXCLUDE,
-                # Issue 12 accepted default (findings F14): looser leaf capacity.
+                # Accepted default: looser leaf capacity.
                 model_params=dict(TUNED_MODEL_PARAMS),
                 out_dir=out_dir / "power_model_runs",
             )

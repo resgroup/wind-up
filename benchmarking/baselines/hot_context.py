@@ -5,9 +5,8 @@ the harness's thin ``MethodInput`` does not carry: per-turbine metadata (lat/lon
 reanalysis, and the paths to the vendored asset and northing-corrections YAMLs. It is loaded
 once and reused across every campaign a method scores.
 
-This is a benchmarking helper, not a harness-enforced contract: future methods (e.g. the
-Issue 5 R-learner) reuse it by calling it from their own constructor. Keeping it here lets the
-harness seam stay thin until the Issue 4 contract has two real consumers to design against.
+This is a benchmarking helper, not a harness-enforced contract: methods reuse it by calling it
+from their own constructor, keeping the harness seam thin.
 """
 
 from __future__ import annotations

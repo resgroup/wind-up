@@ -1,4 +1,4 @@
-"""Longer (overnight) TOGGLE study: oracle + naive + R-learner + v0 over seven upgrade profiles.
+"""Longer (overnight) TOGGLE study: oracle + naive + power_model + v0 over seven upgrade profiles.
 
 Run on a server from the repo root::
 
@@ -7,9 +7,8 @@ Run on a server from the repo root::
 Same seven profiles and outputs as the prepost study (see
 :mod:`benchmarking.baselines.study_overnight_prepost`), but with a 20-min-on / 20-min-off
 toggle. Outputs go under ``WIND_UP_BENCHMARKING_OUTPUT_DIR/toggle`` (default
-``~/temp/wind-up-benchmarking/toggle``). The naive and R-learner methods fit the interleaved
-on/off campaign window only (``toggle_campaign_only`` default), so on and off share a wind
-distribution.
+``~/temp/wind-up-benchmarking/toggle``). The naive and power_model methods fit the interleaved
+on/off campaign window only, so on and off share a wind distribution.
 
 Tune runtime vs precision with the two constants below.
 """

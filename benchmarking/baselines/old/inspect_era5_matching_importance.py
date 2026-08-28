@@ -2,7 +2,7 @@
 
 The bias-cancellation correction (Issue 8) matches the baseline and upgraded periods on **ERA5-only**
 weather so a common per-bin multiplicative shrinkage cancels between the two train/predict directions
-(design + ``docs/v1/findings.md`` F5). CEM cell count explodes with dimension, so we can only afford to
+(design + ``docs/v1/findings.md``). CEM cell count explodes with dimension, so we can only afford to
 match on a *few* ERA5 variables — and they must be the ones that actually drive the test turbine's
 power, or the matched shrinkage factor is not the one that distorts the estimate.
 
@@ -24,13 +24,13 @@ Outputs (under ``<out-root>/inspection_era5_matching``):
   **gate**: if ERA5 predicts test power poorly the whole ranking is suspect, not just imprecise.
 * ``era5_matching_importance.csv`` — the merged ranking table.
 
-The chosen matching set + rationale (citing these metrics) is recorded as **F6** in
+The chosen matching set + rationale (citing these metrics) is recorded in
 ``docs/v1/findings.md`` and hard-coded as the method default; this script does not edit anything.
 
 Run from the repo root::
 
-    uv run python -m benchmarking.baselines.inspect_era5_matching_importance
-    uv run python -m benchmarking.baselines.inspect_era5_matching_importance --test-wtg T07
+    uv run python -m benchmarking.baselines.old.inspect_era5_matching_importance
+    uv run python -m benchmarking.baselines.old.inspect_era5_matching_importance --test-wtg T07
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def add_shear_exponent(features: pd.DataFrame) -> pd.DataFrame:
     permutation discounts whichever is redundant — neither view then cleanly reflects the *shear* they
     jointly encode. The power-law exponent (see
     :func:`benchmarking.baselines.era5_derived.shear_exponent`, the shared Issue 9 utility) captures
-    that shear in a single column (a stability / turbulence proxy that directly attacks the F5 cause),
+    that shear in a single column (a stability / turbulence proxy that directly attacks the cause),
     so we keep ``wind_speed_100m`` as the magnitude and drop the now-redundant ``wind_speed_10m``.
     """
     alpha = shear_exponent(features["wind_speed_10m"], features["wind_speed_100m"])
@@ -276,7 +276,7 @@ def run(*, test_wtg: str, out_root: Path | None, seed: int) -> pd.DataFrame:
     )
     logger.info(
         "Suggested matching set (gain >= %.0f%% of top, capped at %d): %s — verify against the cell budget "
-        "(Component 2) before hard-coding as the F6 default.",
+        "(Component 2) before hard-coding as the default.",
         100 * _SELECTION_FLOOR_FRAC,
         _PREFERRED_N,
         _select_matching_vars(table),
