@@ -81,6 +81,8 @@ output/
 /tests/**/*.log
 /tests/test_data/wedowind/Pitch Angle/
 /tests/test_data/wedowind/Vortex Generator/
+# smarteole example notebook downloads this from Zenodo at runtime
+/tests/test_data/smarteole/SMARTEOLE-WFC-open-dataset.zip
 # matplotlib testing
 **/result_images/
 /docs/v1/extra_docs/

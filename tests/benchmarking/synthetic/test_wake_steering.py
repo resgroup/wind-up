@@ -31,7 +31,7 @@ from benchmarking.synthetic import (
 )
 from benchmarking.synthetic.cp_core import CpCore
 from benchmarking.synthetic.upgrades import UpgradeEffect
-from wind_up.constants import TIMESTAMP_COL
+from wind_up_v0.constants import TIMESTAMP_COL
 
 if TYPE_CHECKING:
     from pathlib import Path

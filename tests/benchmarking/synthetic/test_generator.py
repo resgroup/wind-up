@@ -18,7 +18,7 @@ from benchmarking.synthetic.generator import (
     treated_mask,
 )
 from benchmarking.synthetic.upgrades import ConstantCpChange
-from wind_up.constants import TIMESTAMP_COL
+from wind_up_v0.constants import TIMESTAMP_COL
 
 if TYPE_CHECKING:
     from pathlib import Path

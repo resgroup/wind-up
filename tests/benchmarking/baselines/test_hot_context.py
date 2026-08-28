@@ -10,7 +10,7 @@ import yaml
 
 from benchmarking.baselines import hot_context
 from benchmarking.baselines.hot_context import ASSET_YAML, NORTHING_YAML, HotV0Context, build_hot_v0_context
-from wind_up.yaml_loader import Loader, construct_include
+from wind_up_v0.yaml_loader import Loader, construct_include
 
 
 def _load_yaml_with_includes(path):  # noqa: ANN001, ANN202

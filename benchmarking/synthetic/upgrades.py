@@ -24,7 +24,7 @@ from benchmarking.synthetic.cp_core import power_from_cp_change, region2_fractio
 from benchmarking.synthetic.geometry import WakePair, bearing_deg, derive_wake_steering_pairs, distance_m, wrap180
 from benchmarking.synthetic.solar import diurnal_factor
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS, HOT_LAT, HOT_LON
-from wind_up.waking_state import iec_disturbed_sector_deg
+from wind_up_v0.waking_state import iec_disturbed_sector_deg
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -366,7 +366,11 @@ class WakeSteering:
         # Drop pairs whose upstream is itself waked across its whole steering sector: it can never be
         # the front turbine for that partner, so the steer never happens.
         sector = np.arange(-self.wd_width / 2.0, self.wd_width / 2.0 + 1.0, 1.0)
-        pairs = tuple(p for p in candidates if not self._is_waked(p.upstream, p.nadir_bearing + sector).all())
+        pairs = tuple(
+            p
+            for p in candidates
+            if not self._is_waked(p.upstream, np.asarray(p.nadir_bearing + sector, dtype=np.float64)).all()
+        )
         object.__setattr__(self, "pairs", pairs)
 
     @property
@@ -523,9 +527,9 @@ class WakeSteering:
         index = pd.DatetimeIndex(rows.index)
 
         n = len(rows)
-        cp_ratio = np.ones(n)
-        ws_factor = np.ones(n)
-        nacelle_delta = np.zeros(n)
+        cp_ratio: npt.NDArray[np.float64] = np.ones(n)
+        ws_factor: npt.NDArray[np.float64] = np.ones(n)
+        nacelle_delta: npt.NDArray[np.float64] = np.zeros(n)
         diurnal: npt.NDArray[np.float64] | None = None
         for pair in self.pairs:
             if turbine not in (pair.upstream, pair.downstream):

@@ -15,7 +15,7 @@ from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.generator import generate_dataset
 from benchmarking.synthetic.plots import plot_power_curve_comparison
 from benchmarking.synthetic.upgrades import ConstantCpChange
-from wind_up.constants import TIMESTAMP_COL
+from wind_up_v0.constants import TIMESTAMP_COL
 
 if TYPE_CHECKING:
     from pathlib import Path

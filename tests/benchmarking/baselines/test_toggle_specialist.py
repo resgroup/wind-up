@@ -105,12 +105,12 @@ class TestInferTimebase:
 
 
 def test_toggle_specialist_shares_no_wind_up_code() -> None:
-    """The method is an independent, source-native baseline: it must not import wind_up."""
+    """The method is an independent, source-native baseline: it must not import wind_up or wind_up_v0."""
     tree = ast.parse(Path(toggle_specialist.__file__).read_text())
     modules = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
     modules |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
-    offenders = {m for m in modules if m == "wind_up" or m.startswith("wind_up.")}
-    assert not offenders, f"toggle_specialist must not depend on wind_up, found imports: {offenders}"
+    offenders = {m for m in modules if m.split(".", 1)[0] in {"wind_up", "wind_up_v0"}}
+    assert not offenders, f"toggle_specialist must not depend on wind_up or wind_up_v0, found imports: {offenders}"
 
 
 class TestRecovery:

@@ -22,7 +22,7 @@ from benchmarking.synthetic.sources.hill_of_towie import (
     long_to_wind_up_format,
     scada_wide_to_long,
 )
-from wind_up.constants import TIMESTAMP_COL, DataColumns
+from wind_up_v0.constants import TIMESTAMP_COL, DataColumns
 
 if TYPE_CHECKING:
     from pathlib import Path

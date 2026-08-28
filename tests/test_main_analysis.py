@@ -6,8 +6,8 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.constants import TIMESTAMP_COL
-from wind_up.main_analysis import _toggle_pairing_filter
+from wind_up_v0.constants import TIMESTAMP_COL
+from wind_up_v0.main_analysis import _toggle_pairing_filter
 
 
 def test_toggle_pairing_filter_method_none() -> None:
@@ -66,7 +66,7 @@ def test_toggle_pairing_filter_method_none_reports_zero_removed(caplog: pytest.L
         },
         index=tstamps,
     )
-    with caplog.at_level(logging.INFO, logger="wind_up.main_analysis"):
+    with caplog.at_level(logging.INFO, logger="wind_up_v0.main_analysis"):
         _toggle_pairing_filter(
             pre_df=df,
             post_df=df,

@@ -9,7 +9,10 @@ v1 is developed on the `v1` branch; feature PRs target `v1` rather than `main`.
 - **[roadmap.md](roadmap.md)** — workstreams (epics), phasing, and how the work is
   managed (the "what" and "in what order").
 - **[issues_campaigns.md](issues_campaigns.md)** — **the current tranche**:
-  realistic whole-farm campaigns and self-configuring methods (C0–C7). Start here.
+  rounding out v1 for real-world use — realistic whole-farm campaigns with
+  self-configuring methods (C-series), robustness to synthesized failure modes
+  (R-series), and a productized `wind-up` method released as v1.0.0 (W-series). Start
+  here.
 - **[issues.md](issues.md)** — drafts of the earlier issues (Issues 1–19).
   **Back-burnered** in favour of `issues_campaigns.md`; still valuable for later.
 - **[findings.md](findings.md)** — empirical findings log from the earlier work.

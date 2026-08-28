@@ -7,9 +7,9 @@ import pandas as pd
 import pytest
 from matplotlib.testing.decorators import image_comparison
 
-from wind_up.constants import DataColumns
-from wind_up.models import PlotConfig
-from wind_up.plots import scada_funcs_plots
+from wind_up_v0.constants import DataColumns
+from wind_up_v0.models import PlotConfig
+from wind_up_v0.plots import scada_funcs_plots
 
 
 class TestAxisLabelFromFieldName:

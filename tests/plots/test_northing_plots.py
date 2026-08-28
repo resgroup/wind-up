@@ -4,15 +4,15 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from wind_up.constants import (
+from wind_up_v0.constants import (
     RAW_DOWNTIME_S_COL,
     RAW_POWER_COL,
     RAW_YAWDIR_COL,
     REANALYSIS_WD_COL,
 )
-from wind_up.models import PlotConfig, WindUpConfig
-from wind_up.northing import calc_northed_col_name
-from wind_up.plots import northing_plots
+from wind_up_v0.models import PlotConfig, WindUpConfig
+from wind_up_v0.northing import calc_northed_col_name
+from wind_up_v0.plots import northing_plots
 
 if TYPE_CHECKING:
     from pathlib import Path

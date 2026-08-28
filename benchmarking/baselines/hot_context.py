@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata
-from wind_up.era5 import get_era5_hourly_df
-from wind_up.reanalysis_data import ReanalysisDataset
+from wind_up_v0.era5 import get_era5_hourly_df
+from wind_up_v0.reanalysis_data import ReanalysisDataset
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

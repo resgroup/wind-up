@@ -3,11 +3,11 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from wind_up.circular_math import circ_median
-from wind_up.constants import REANALYSIS_WD_COL
-from wind_up.models import WindUpConfig
-from wind_up.northing import _calc_max_abs_north_errs, apply_northing_corrections
-from wind_up.scada_funcs import _scada_multi_index
+from wind_up_v0.circular_math import circ_median
+from wind_up_v0.constants import REANALYSIS_WD_COL
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.northing import _calc_max_abs_north_errs, apply_northing_corrections
+from wind_up_v0.scada_funcs import _scada_multi_index
 
 
 def test_apply_northing_corrections(test_lsa_t13_config: WindUpConfig) -> None:

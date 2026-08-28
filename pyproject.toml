@@ -89,13 +89,14 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
-# `benchmarking*` is included temporarily so downstream consumers can import the benchmarking
-# methods from an editable/path install. This DOES add `benchmarking` to any wheel/sdist built
-# from this repo; it is acceptable only because v1 is unreleased (nothing is published yet). It
-# MUST be removed before v1 is released so the package is not shipped.
-# TODO clean up the benchmarking package and remove this once v1 is ready for release.
-include = ["wind_up*", "benchmarking*"]
+# src/ holds the shipped packages (`wind_up` = v1, `wind_up_v0` = legacy). `benchmarking`
+# lives at the repo root and is found via the "." root purely so it can still be imported
+# from an editable/path install; it is the eval harness, not the product.
+where = ["src", "."]
+# `benchmarking*` is included temporarily while it is imported by a separate project. This
+# DOES add `benchmarking` to any wheel/sdist built from this repo. It MUST be removed before
+# the v1.0.0 release so the harness is not shipped (tracked as a W2 cleanup item).
+include = ["wind_up*", "wind_up_v0*", "benchmarking*"]
 
 [tool.uv]
 # Dev/CI-only constraint (not part of published metadata, so consumers are unaffected).
@@ -131,7 +132,7 @@ max-statements = 69 # try to bring this down to 50
 max-args = 17 # try to bring this down to 5
 
 [tool.ruff.lint.per-file-ignores]
-"wind_up/models.py" = ["N805", "PERF401"] # try to eliminate this
+"src/wind_up_v0/models.py" = ["N805", "PERF401"] # try to eliminate this
 "tests/**/*.py" = [
     "S101",  # allow `assert`
     "PLR2004",  # allow magic values
@@ -141,8 +142,8 @@ max-args = 17 # try to bring this down to 5
 "**/__init__.py" = ["F401"]  # ignore unused imports in __init__.py
 "examples/**/*.py" = ["T20", "D"]
 "examples/**/kelmarsh_kaggle.py" = ["S101","PLR0915","PD013","N806"]
-"wind_up/smart_data.py" = ["D"]  # RES specific data loading
-"wind_up/plots/*.py" = ["D"]  # TODO: remove this
+"src/wind_up_v0/smart_data.py" = ["D"]  # RES specific data loading
+"src/wind_up_v0/plots/*.py" = ["D"]  # TODO: remove this
 "examples/*.ipynb" = ["D"]  # Jupyter notebooks
 
 [tool.mypy]
@@ -185,7 +186,7 @@ markers = [
 
 [tool.coverage.report]
 omit = [
-    "wind_up/plots/*.py",
+    "src/wind_up_v0/plots/*.py",
 ]
 exclude_lines = ["if __name__ == .__main__.:"]
 
@@ -209,14 +210,14 @@ sequence = [
 [tool.poe.tasks.test-fast]
 help = "Runs tests that are not marked as slow"
 sequence = [
-    { cmd = 'coverage run --source wind_up -m pytest -m "not slow"' },
+    { cmd = 'coverage run --source wind_up_v0 -m pytest -m "not slow"' },
     { cmd = "coverage report -m" },
 ]
 
 [tool.poe.tasks.test]
 help = "Runs unit tests and show coverage"
 sequence = [
-    { cmd = "coverage run --source wind_up -m pytest ./tests" },
+    { cmd = "coverage run --source wind_up_v0 -m pytest ./tests" },
     { cmd = "coverage report -m" },
 ]
 

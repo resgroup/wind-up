@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import pytest
 
-from wind_up.constants import RAW_POWER_COL, REANALYSIS_WD_COL, WINDFARM_YAWDIR_COL
-from wind_up.models import PlotConfig, WindUpConfig
-from wind_up.plots import optimize_northing_plots
+from wind_up_v0.constants import RAW_POWER_COL, REANALYSIS_WD_COL, WINDFARM_YAWDIR_COL
+from wind_up_v0.models import PlotConfig, WindUpConfig
+from wind_up_v0.plots import optimize_northing_plots
 
 if TYPE_CHECKING:
     from pathlib import Path

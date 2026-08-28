@@ -6,7 +6,7 @@ import pytest
 from pandas.testing import assert_series_equal
 from scipy.stats import circmean
 
-from wind_up.circular_math import rolling_circ_mean
+from wind_up_v0.circular_math import rolling_circ_mean
 
 
 @pytest.mark.parametrize("range_360", [True, False])

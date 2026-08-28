@@ -8,7 +8,7 @@ import pytest
 
 from benchmarking.harness.replicates import Replicate, StudyConfig, build_replicates, iter_replicates
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange, ToggleSchedule
-from wind_up.constants import TIMESTAMP_COL
+from wind_up_v0.constants import TIMESTAMP_COL
 
 PROFILE = [ConstantCpChange(delta=0.05)]
 

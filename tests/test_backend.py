@@ -5,12 +5,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-_PRINT_BACKEND = "import wind_up, matplotlib; print(matplotlib.get_backend())"
+_PRINT_BACKEND = "import wind_up_v0, matplotlib; print(matplotlib.get_backend())"
 # import pyplot (selecting a non-interactive backend) *before* wind_up, as an interactive
 # notebook session would
 _PYPLOT_THEN_WIND_UP = (
     "import matplotlib; matplotlib.use('pdf'); import matplotlib.pyplot;"
-    " import wind_up; print(matplotlib.get_backend())"
+    " import wind_up_v0; print(matplotlib.get_backend())"
 )
 
 

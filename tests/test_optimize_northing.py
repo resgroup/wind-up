@@ -6,11 +6,11 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from tests.conftest import TEST_DATA_FLD
-from wind_up.circular_math import circ_median
-from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_YAWDIR_COL, TIMESTAMP_COL
-from wind_up.models import WindUpConfig
-from wind_up.optimize_northing import _clip_wtg_north_table, auto_northing_corrections
-from wind_up.reanalysis_data import ReanalysisDataset, add_reanalysis_data
+from wind_up_v0.circular_math import circ_median
+from wind_up_v0.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_YAWDIR_COL, TIMESTAMP_COL
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.optimize_northing import _clip_wtg_north_table, auto_northing_corrections
+from wind_up_v0.reanalysis_data import ReanalysisDataset, add_reanalysis_data
 
 
 def test_clip_wtg_north_table_entries_before() -> None:
