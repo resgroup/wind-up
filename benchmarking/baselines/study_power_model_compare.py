@@ -33,7 +33,7 @@ against where it stands today.
 
 **This benchmark is machine-specific: record and diff it on one machine only.** Every cell here is
 ``power_model``, and LightGBM's threaded float reduction order depends on the machine, so a benchmark
-recorded elsewhere reports a permanent false MOVED of ~0.7 pp — 14x the same-machine noise (F30).
+recorded elsewhere reports a permanent false MOVED of ~0.7 pp — 14x the same-machine noise.
 Unlike ``study_toggle_methods_compare``, which splits portable from machine-specific cells across
 files, this script keeps one file because it has no portable cells to split off. The committed
 benchmark is recorded on the Linux laptop; run it there. If that ever stops being true, the
@@ -199,11 +199,10 @@ def _make_power_model(
     protocol), e.g. ``{"matching_vars": ["wind_speed_100m"]}``; unknown field names fail loudly and
     JSON lists are coerced to the tuples the dataclass fields expect.
     """
-    # Only data-schema description is passed here now: the accepted behaviour defaults (F13
-    # availability_feature/era5_exclude, F14 min_child_samples) live on the PowerModelMethod class
-    # (Issue 14), so a bare method already *is* the benchmarked config. The Issue 11 / F12 reference
-    # active-power minimum is carried by HOT_COLUMNS' active_power_min role, so no specialist config
-    # is needed here either.
+    # Only data-schema description is passed here now: the accepted behaviour defaults
+    # (availability_feature/era5_exclude, min_child_samples) live on the PowerModelMethod class,
+    # so a bare method already *is* the benchmarked config. The reference active-power minimum is
+    # carried by HOT_COLUMNS' active_power_min role, so no specialist config is needed here either.
     kwargs: dict[str, Any] = {
         "columns": HOT_COLUMNS,
         "baseline_rated_power_kw": HOT_RATED_POWER_KW,
@@ -371,7 +370,7 @@ def _git_commit() -> str:
     modifications make a run irreproducible from its commit. Counting untracked files (a scratch
     script, a local CLAUDE.md) made ``--update-baseline`` impossible for anyone with a stray file, and
     is the likeliest reason the committed baseline is stamped ``e2e21b0-dirty`` despite reproducing
-    exactly (F30).
+    exactly.
     """
     repo = Path(__file__).resolve().parent
     try:

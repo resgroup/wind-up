@@ -4,7 +4,7 @@ The bias-cancellation correction trains/predicts in two symmetric directions and
 per-bin multiplicative shrinkage* cancelling between them — which only holds if the baseline and
 upgraded periods share a covariate distribution within each reporting bin. This module makes that
 matching explicit and model-free: bin the matching variables into cells, keep only cells present on
-*both* sides (the common-support guard — the exact failure that sank the R-learner in prepost, F1),
+*both* sides (the common-support guard),
 and seeded-subsample the larger side down to the smaller within every retained cell so the two sides
 carry equal weight per cell.
 

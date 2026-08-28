@@ -32,8 +32,8 @@ class ColumnSchema:
     :param availability: a "ready to operate" counter (e.g. seconds available in the period).
         **Required**: the methods use it for downtime filtering, which must never be silently
         skipped, so every source must supply it.
-    :param active_power_min: the per-reference active-power **minimum** companion column (Issue 11 /
-        F12). Optional on the schema, but ``PowerModelMethod`` **requires** it — each reference's
+    :param active_power_min: the per-reference active-power **minimum** companion column.
+        Optional on the schema, but ``PowerModelMethod`` **requires** it — each reference's
         power minimum is a standard model feature, not a per-driver opt-in — and validates its
         presence on construction. Sources without it can still drive the lighter methods.
 

@@ -431,7 +431,7 @@ class TestConditionalUplift:
 
 
 def _toy_era5(scada_idx: pd.DatetimeIndex, *, seed: int = 0) -> pd.DataFrame:
-    """Hourly ERA5 covering the toy window with the three F6 matching columns, i.i.d. over the window.
+    """Hourly ERA5 covering the toy window with the three matching columns, i.i.d. over the window.
 
     Weather is drawn independently per hour, so the baseline and upgraded periods share a distribution
     and CEM finds well-populated two-sided cells. Values sit in modest ranges so the default matching
@@ -688,7 +688,7 @@ def _shrinkage_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 
     power, the counterfactual model learns an attenuated conditional mean — it over-predicts where power
     is low and under-predicts where it is high (multiplicative shrinkage). The test wind speed is the
     *clean* driver, so binning by it exposes that compression as a spurious per-bin uplift tilt even at
-    the placebo (the F5 mechanism). Weather is i.i.d. across the window, so baseline and upgraded are
+    the placebo (the shrinkage mechanism). Weather is i.i.d. across the window, so baseline and upgraded are
     distribution-matched and the shrinkage is common to both cross-predict directions -> it cancels.
     """
     idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC", name="timestamp")
@@ -737,7 +737,7 @@ class TestConditionalRegression:
     def test_conditional_flat_at_shrinkage_placebo(self) -> None:
         # Bias guard (design note §8-analog): on a placebo whose references are noisy proxies of a steep
         # power curve, a single counterfactual fit shrinks and reads a spurious per-ws-bin uplift tilt
-        # (the F5 mechanism). The two-direction matched conditional cancels that common shrinkage, so the
+        # (the shrinkage mechanism). The two-direction matched conditional cancels that common shrinkage, so the
         # (default) conditional uplift must read ~flat-zero in every bin against the flat-0 truth.
         n = 5000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")

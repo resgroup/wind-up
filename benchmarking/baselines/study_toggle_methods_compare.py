@@ -21,7 +21,7 @@ methods' reproducibility differs by four orders of magnitude — measured, not a
 its ``seed``, because LightGBM's threaded float reduction order varies (~0.05 pp same-machine). The
 max observed delta is logged every run, so a cell just inside its band stays visible.
 
-**The benchmark is split across files because that reproducibility is also machine-dependent** (F30).
+**The benchmark is split across files because that reproducibility is also machine-dependent.**
 LightGBM's reduction order depends on the machine, so ``power_model`` scores ~0.7 pp against a
 benchmark recorded elsewhere — 14x its same-machine noise, and a permanent false MOVED. Its cells
 therefore live in a per-platform file (``..._baseline_<sys.platform>.json``), while
@@ -98,7 +98,7 @@ _LENGTH_COL = "campaign_weeks"
 _DEFAULT_OUTPUT_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "toggle_methods_compare"
 _BASELINE_DIR = Path(__file__).resolve().parent
 _BASELINE_STEM = "study_toggle_methods_compare_baseline"
-# v3 splits the single file into a portable baseline plus one per platform (F30).
+# v3 splits the single file into a portable baseline plus one per platform.
 _BASELINE_SCHEMA = "toggle_methods_compare_baseline_v3"
 # Per-cell metrics recorded and **diffed**. spread/score: lower is better; bias: |bias| nearer 0 is better.
 _METRIC_COLS = ["bias", "spread", "score"]
@@ -113,7 +113,7 @@ _PP = 100.0  # fraction -> percentage points
 
 @dataclass(frozen=True)
 class MethodReproducibility:
-    """How reproducible a method is, and under what conditions (F30).
+    """How reproducible a method is, and under what conditions.
 
     :param band: how close a re-run must land to the benchmark to read "unchanged" (fraction)
     :param portable: whether its numbers survive a change of machine, and so whether its cells live
@@ -297,7 +297,7 @@ def _provenance(study: StudyConfig, lb: pd.DataFrame, *, git_commit: str) -> dic
     """Return the context needed to interpret a recorded baseline, including which machine made it.
 
     The machine fingerprint exists because a ``power_model`` MOVED against a baseline from another
-    machine is expected rather than a regression, and without this the file cannot say so (F30).
+    machine is expected rather than a regression, and without this the file cannot say so.
     """
     return {
         "schema": _BASELINE_SCHEMA,
@@ -447,7 +447,7 @@ def _warn_on_fingerprint_mismatch(prov: dict[str, Any], *, path: Path) -> None:
         detail = ", ".join(f"{k}: recorded {was!r}, now {now!r}" for k, (was, now) in differing.items())
         logger.warning(
             "%s holds machine-specific cells but was recorded on a machine unlike this one (%s). A MOVED "
-            "verdict may be that rather than your change — see F30.",
+            "verdict may be that rather than your change.",
             path.name,
             detail,
         )

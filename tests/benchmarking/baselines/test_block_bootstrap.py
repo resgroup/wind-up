@@ -227,7 +227,7 @@ class TestDegenerate:
 
 
 class TestTooFewRecordsToFallBackOn:
-    """A cell too sparse to bootstrap must still get an honest, wide sigma — not 0, and not NaN (F33).
+    """A cell too sparse to bootstrap must still get an honest, wide sigma — not 0, and not NaN.
 
     Resampling draws whole *blocks*, so if a cell's records sit in one block, every resample scales
     numerator and denominator together (rho = k*test / k*ref) and the ratio never moves: the bootstrap
@@ -273,7 +273,7 @@ class TestTooFewRecordsToFallBackOn:
 
     def test_a_well_populated_cell_reports_its_bootstrap_alone(self) -> None:
         """The load-bearing guarantee of the selection rule: no fallback contamination of the covered
-        regime (F32/F33). It reports the bootstrap *even when the fallback is larger* — a ``max`` would
+        regime. It reports the bootstrap *even when the fallback is larger* — a ``max`` would
         inflate it here, over-covering, and a max tuned on this farm could over-inflate on another.
         """
         cell = _run(self._sparse_case(1)).cells["overall"]
@@ -341,8 +341,8 @@ class TestPerfectDataMayReportZero:
 
     With noiseless, perfectly-matched data the uplift really is determined, so 0 is the correct
     answer and a model that cannot express it is mis-specified. There is no irreducible floor to
-    justify one either: F31 tested exactly that hypothesis over campaigns up to a year and found
-    sigma kept shrinking and kept tracking the error down to 0.135 pp.
+    justify one either: testing that hypothesis over campaigns up to a year found sigma kept
+    shrinking and kept tracking the error down to 0.135 pp.
 
     An earlier version NaN-ed a zero spread to trap the 1-record artefact. That punished this
     legitimate case to catch that one; the fallback traps the artefact without the collateral.

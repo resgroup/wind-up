@@ -1,6 +1,6 @@
 """Tests for the toggle-methods regression harness (profile selection, benchmark record/diff).
 
-The benchmark is split into a portable baseline plus one per platform (F30), so these also cover the
+The benchmark is split into a portable baseline plus one per platform, so these also cover the
 routing, the portability invariant and the missing-file paths.
 """
 

@@ -14,7 +14,7 @@ Which choices can even flip at short campaigns:
 
 Run from the repo root (defaults: both modes, all variants)::
 
-    uv run python -m benchmarking.baselines.inspect_short_campaigns
+    uv run python -m benchmarking.baselines.old.inspect_short_campaigns
 
 Outputs one ``results_<mode>_<variant>_<profile>.csv`` per run plus a combined
 ``short_campaign_summary.csv`` / log table of power_model bias/spread/score per

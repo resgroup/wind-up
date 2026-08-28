@@ -1,13 +1,12 @@
 """Inspect one hard PREPOST case across every method, with plots on.
 
-A focused investigation driver (findings F1): replay the **exact** overnight prepost study
+A focused investigation driver: replay the **exact** overnight prepost study
 draws (same ``StudyConfig``/seed/profile), pin a single hard ``(test_wtg, campaign_months)``
 run, and execute naive + power_model (+ v0) on the **identical** ``MethodInput`` with
 ``save_plots=True``, each into its own subfolder of one timestamped run dir. The default case is
-``cp_0pct`` (placebo) on ``T07`` at 6 months — the prepost case where the cross-fit R-learner was
-badly biased (~-14%) while naive (~+2%) and v0 (~0%) are fine. The question here is whether the
-counterfactual power model, which forms the test-vs-reference contrast the R-learner lacked, also
-stays near zero — eyeball the per-method diagnostics side by side to confirm.
+``cp_0pct`` (placebo) on ``T07`` at 6 months — a hard prepost case where the baseline and upgraded
+periods do not share a weather distribution. The question here is whether the counterfactual power
+model stays near zero on it — eyeball the per-method diagnostics side by side to confirm.
 
 Because the draws are a deterministic function of ``(StudyConfig, seed)`` and the harness builds
 one ``MethodInput`` per ``(replicate, window)``, every method here sees the same data the
@@ -73,7 +72,7 @@ logger = logging.getLogger(__name__)
 N_REPLICATES = 4
 CAMPAIGN_MONTHS = [3, 6, 12]
 
-# The default hard case (see module docstring / findings F1).
+# The default hard case (see module docstring).
 DEFAULT_PROFILE = "cp_0pct"
 DEFAULT_TEST_WTG = "T07"
 DEFAULT_CAMPAIGN_MONTHS = 6
@@ -159,10 +158,10 @@ def _power_model(out_dir: Path, era5_hourly_df: pd.DataFrame, *, save_plots: boo
         columns=HOT_COLUMNS,
         baseline_rated_power_kw=HOT_RATED_POWER_KW,
         era5_hourly_df=era5_hourly_df,
-        # Removal-ablation accepted defaults (findings F13).
+        # Accepted defaults: no availability feature, curated ERA5 exclusions.
         availability_feature=False,
         era5_exclude=CURATED_ERA5_EXCLUDE,
-        # Issue 12 accepted default (findings F14): looser leaf capacity.
+        # Accepted default: looser leaf capacity.
         model_params=dict(TUNED_MODEL_PARAMS),
         out_dir=out_dir,
         save_plots=save_plots,

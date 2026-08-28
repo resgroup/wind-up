@@ -16,7 +16,7 @@ Every uplift — the headline and each power bin — comes with a non-optional 1
 a circular block bootstrap (:mod:`benchmarking.baselines.block_bootstrap`). It is computed after the
 uplift, from the uplift's own frozen row selection and bin assignment, and only when the uplift is
 finite, so it cannot change any uplift result. The bootstrap sees sampling variability only, so
-sigma under-covers where the method is biased (F29).
+sigma under-covers where the method is biased.
 
 Each run writes a per-run folder ``toggle_specialist_<test>_<upgradestart>_<lastdate>/``
 (v0-style naming) under ``out_dir`` (a temp dir by default), holding a per-segment data-stats CSV,
@@ -400,7 +400,7 @@ class ToggleSpecialistMethod:
         Returns a bool Series on ``wide.index``. Every turbine (test and references) must be
         available (counter >= a full period) and have finite power — a down turbine on either side
         of the ratio is therefore excluded. The test turbine additionally goes through the shared
-        :class:`NormalOperationFilter` (the same downtime + finite-power logic the R-learner uses;
+        :class:`NormalOperationFilter` (the same downtime + finite-power logic the power model uses;
         the stuck filter is left off here as the ratio sums raw power rather than fitting a model).
         """
         turbines = [test, *refs]

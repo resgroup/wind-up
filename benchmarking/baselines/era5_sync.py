@@ -6,9 +6,9 @@ which are private there) but kept local so the methods stay v0-independent:
 
 1. :func:`upsample_era5_to_timebase` resamples ERA5 onto the analysis timebase and
    forward-fills within each hour. **Every raw column is passed through under its original
-   Open-Meteo name** (no renaming); for back-compat with the R-learner and the shared
-   diagnostics, neutral ``era5_ws`` / ``era5_wd`` *aliases* of wind speed / direction are
-   added alongside the raw columns.
+   Open-Meteo name** (no renaming); for the feature builders and the shared diagnostics,
+   neutral ``era5_ws`` / ``era5_wd`` *aliases* of wind speed / direction are added alongside
+   the raw columns.
 2. :func:`find_best_lag` sweeps the integer row-shift that maximises the correlation
    between ERA5 wind speed and a reference (wind-farm) wind speed, recovering the lag
    between the reanalysis and the site.
@@ -28,7 +28,7 @@ import pandas as pd
 _MIN_OVERLAP = 3
 
 # Neutral, source-agnostic aliases (no wind_up / v0 vocabulary) added alongside the raw columns
-# so the R-learner's ``era5_features`` and the shared diagnostics keep a stable ws/wd handle.
+# so the feature builders and the shared diagnostics keep a stable ws/wd handle.
 ERA5_WS = "era5_ws"
 ERA5_WD = "era5_wd"
 
