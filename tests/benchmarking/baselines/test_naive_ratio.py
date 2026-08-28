@@ -91,12 +91,12 @@ class TestInferTimebase:
 
 
 def test_naive_ratio_shares_no_wind_up_code() -> None:
-    """The naive method is an independent, source-native baseline: it must not import wind_up_v0."""
+    """The naive method is an independent, source-native baseline: it must not import wind_up or wind_up_v0."""
     tree = ast.parse(Path(naive_ratio.__file__).read_text())
     modules = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
     modules |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
-    offenders = {m for m in modules if m == "wind_up_v0" or m.startswith("wind_up_v0.")}
-    assert not offenders, f"naive_ratio must not depend on wind_up_v0, found imports: {offenders}"
+    offenders = {m for m in modules if m.split(".", 1)[0] in {"wind_up", "wind_up_v0"}}
+    assert not offenders, f"naive_ratio must not depend on wind_up or wind_up_v0, found imports: {offenders}"
 
 
 class TestRecovery:
