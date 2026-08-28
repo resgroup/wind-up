@@ -4,9 +4,9 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
-from wind_up.models import WindUpConfig
-from wind_up.smart_data import add_smart_lat_long_to_cfg
+from wind_up_v0.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.smart_data import add_smart_lat_long_to_cfg
 
 
 def test_apply_wsratio_v_wd_scen_pre() -> None:

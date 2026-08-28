@@ -11,7 +11,7 @@ import pytest
 import benchmarking.synthetic.make_example_datasets as driver
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.make_example_datasets import example_profiles, generate_example_datasets, main
-from wind_up.constants import TIMESTAMP_COL
+from wind_up_v0.constants import TIMESTAMP_COL
 
 if TYPE_CHECKING:
     from pathlib import Path

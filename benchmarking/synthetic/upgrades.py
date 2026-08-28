@@ -24,7 +24,7 @@ from benchmarking.synthetic.cp_core import power_from_cp_change, region2_fractio
 from benchmarking.synthetic.geometry import WakePair, bearing_deg, derive_wake_steering_pairs, distance_m, wrap180
 from benchmarking.synthetic.solar import diurnal_factor
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS, HOT_LAT, HOT_LON
-from wind_up.waking_state import iec_disturbed_sector_deg
+from wind_up_v0.waking_state import iec_disturbed_sector_deg
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

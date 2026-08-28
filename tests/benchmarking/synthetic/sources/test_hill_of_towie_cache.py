@@ -18,7 +18,7 @@ from zipfile import ZipFile
 import pandas as pd
 
 from benchmarking.synthetic.sources import hill_of_towie as hot
-from wind_up.constants import DataColumns
+from wind_up_v0.constants import DataColumns
 
 if TYPE_CHECKING:
     from pathlib import Path

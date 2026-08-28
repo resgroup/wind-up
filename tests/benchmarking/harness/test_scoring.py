@@ -10,7 +10,7 @@ from benchmarking.harness.campaign import campaign_windows
 from benchmarking.harness.replicates import StudyConfig, build_replicates
 from benchmarking.harness.scoring import _merge_diagnostics, score_one, score_study, truth_mask
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
-from wind_up.constants import TIMESTAMP_COL
+from wind_up_v0.constants import TIMESTAMP_COL
 
 from .stubs import BiasedMethod, ConditionalOracleMethod, OracleMethod, RecordingMethod, UncertainMethod
 

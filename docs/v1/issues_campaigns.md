@@ -1,17 +1,33 @@
-# wind-up v1 — realistic-campaigns issues (drafts)
+# wind-up v1 — real-world-readiness issues (drafts)
 
-A **fresh tranche** of v1 work: simulate a few realistic, whole-farm campaigns —
-modelled on the real Hill of Towie open-source analyses
-(`resgroup/hill-of-towie-open-source-analysis`) — and mature the v1 methods so a
-user **declares a short campaign brief and the method does the right thing**
-(role assignment, northing, filtering, data split, reference selection and
-validity), automatically. Then compare the v1 methods and v0 on these campaigns.
+A **fresh tranche** of v1 work whose ambition is to **round out v1 so it is usable in
+the real world**. Three pillars:
+
+1. **Realism (C-series).** Simulate a few realistic, whole-farm campaigns — modelled
+   on the real Hill of Towie open-source analyses
+   (`resgroup/hill-of-towie-open-source-analysis`) — and mature the v1 methods so a
+   user **declares a short campaign brief and the method does the right thing** (role
+   assignment, northing, filtering, data split, reference selection and validity),
+   automatically. Then compare the v1 methods and v0 on these campaigns.
+2. **Robustness (R-series).** Simulate, with known ground truth, the data pathologies
+   real SCADA throws at wind-up — bad northing, unstable sensors, invalid references,
+   missing data — and mature the methods (chiefly `power_model`) so wind-up **handles
+   them on its own**. Because each failure mode is *synthesized*, we can measure
+   exactly how much it degrades a method and prove a fix closes the gap.
+3. **Productized release (W-series).** Compose the winning pieces into a single
+   headline method named **`wind-up`**, restructure the package so the v1 tool claims
+   the `wind_up` import name (legacy retained as `wind_up_v0`, `src/` layout), and
+   bring the methodology doc, examples, and README up to v1 — so the tranche ends in a
+   coherent **v1.0.0** release on PyPI.
 
 **Relationship to the earlier v1 issues.** The prior effort in
 [issues.md](issues.md) (Issues 1–19) and its [findings.md](findings.md) are on the
 **back-burner** for this tranche — still valuable for later phases, not the current
-focus. Design spec for this tranche:
-`docs/superpowers/specs/2026-08-27-realistic-campaigns-design.md`.
+focus. Design specs for this tranche:
+`docs/superpowers/specs/2026-08-27-realistic-campaigns-design.md` (realism),
+`docs/superpowers/specs/2026-08-28-robustness-failure-modes-design.md` (robustness),
+and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
+(productized release).
 
 ## Ground rules for this tranche
 
@@ -28,10 +44,42 @@ focus. Design spec for this tranche:
 - **Both outputs per campaign:** a farm-wide inspection report (per-turbine + rollup
   vs truth) **and** the campaign through the harness scoring path at n=1.
 
+## Ground rules for the robustness (R) issues
+
+- **Isolated tiny fixtures.** Each fault is developed on a **tiny purpose-built
+  fixture** — one treated turbine + ~3 references, a simple known AeroUp-shaped uplift
+  — so the fault signal is isolated and iteration is fast. Reuses the C1 declaration /
+  runner plumbing.
+- **Success = invariance, not a race against v0.** The baseline for each fault is
+  `power_model`'s **own** error on the *clean* fixture; the target is that injecting
+  the fault degrades it by little (`power_model`-under-fault ≈ `power_model`-clean).
+- **v0 is skipped** where possible (slow, and never developed against these
+  synthesized faults); an optional one-off sniff is allowed, never the yardstick.
+- **The fault must bite.** Every R-issue first calibrates the fault magnitude until it
+  **significantly** throws off `power_model` on the clean fixture — otherwise there is
+  nothing to fix. Making it bite may take iteration and is part of "done".
+- **Both modes.** Every fault is evaluated in **both prepost and toggle**; the "bites"
+  check is **per-mode**. A toggle campaign's rapid on/off switching can partly or
+  wholly **cancel** a fault present in both periods, so a fault biting hard in prepost
+  may bite little or not at all in toggle. Apply mitigation **where it bites**; where it
+  does not bite (e.g. in toggle), still apply it if it is already part of the method,
+  cheap to run, and harmless — determined empirically, never assumed.
+- **Fix location follows how the concern is shared:** northing (R1) is a **shared**
+  feature-engineering step every method inherits; the other three are
+  **`power_model`-internal** (reference selection especially, since each method uses
+  references differently).
+- **Then re-verify on campaigns.** The best faults are re-injected into the relevant
+  whole-farm campaigns (R1/R3 ↔ C3/C5) as an in-context check.
+
 ## Suggested order
 
-C0 → C1 → C2 → C3 → C4 → C5 → C6. C7 (drop `rlearner`) is independent and can be
-scheduled at any time.
+`C0 → [W0 early] → C1 → C2 → [R1 R2 R3 R4] → C3 → C4 → C5 → C6 → W1 → W2.` The R-series
+lands after the C1/C2 foundation: **R1 (northing) before C3** so the prepost campaign
+inherits the shared northing step; R2–R4 are independent `power_model` work, any order
+within the block. **W0** (package restructure) is independent and runs **early** (after
+C0) so later code lands in the new layout; **W1/W2** are **terminal** (after C6 + R4)
+because the composed `wind-up` method needs the robustness and campaign pieces first.
+C7 (drop `rlearner`, ✅ done) was independent.
 
 ---
 
@@ -122,6 +170,9 @@ where reference selection, the prepost split and northing all follow from the br
 estimates track truth; the report shows how each method used references and the
 prepost split.
 
+**Re-verifies:** the shared northing step (R1) and the reference-validity screen (R3),
+now in-context on a realistic prepost campaign.
+
 ---
 
 ## C4 — TuneUp (controller), toggle, multi-turbine
@@ -165,6 +216,9 @@ logic, and excluded turbines.
 **Done when:** the wake-steering campaign is declared once and run whole-farm with
 no manual per-pair/sector wiring; reference validity is handled automatically;
 per-turbine and net-farm estimates track truth.
+
+**Re-verifies:** the shared northing step (R1, replacing the `wd_filter` hack) and the
+reference-validity screen (R3), now in-context under wake-changed references.
 
 ---
 
@@ -217,3 +271,170 @@ be relocated first.
 **Done when:** `rlearner` is gone with its tests; `power_model` and the surviving
 inspection scripts run unchanged; `poe all-fast` green; the `power_model` benchmark
 is bit-identical.
+
+---
+
+# Robustness issues (R-series)
+
+Failure modes real SCADA throws at wind-up, synthesized with known ground truth so we
+can measure the degradation and prove a fix closes it. See the ground rules above and
+the design spec
+`docs/superpowers/specs/2026-08-28-robustness-failure-modes-design.md`.
+
+Every R-issue shares a two-phase acceptance, run in **both prepost and toggle**:
+1. **Bites (per-mode)** — the fault, calibrated on the clean tiny fixture,
+   **significantly** throws off `power_model` (otherwise there is nothing to fix). A
+   fault that does not bite in a mode (toggle may cancel it) needs no mitigation there
+   — recorded explicitly.
+2. **Fixed** — where it bites, the fix restores `power_model`-under-fault ≈
+   `power_model`-clean.
+
+---
+
+## R1 — Northing errors (shared fix)
+
+**Goal:** wind-up recovers a known uplift despite a turbine's direction reference
+carrying a **step change** in its offset partway through the record.
+
+**Scope**
+- **Fault (generator):** inject a known **step** in reported wind direction for some
+  turbine(s) at a date (a recalibration / sensor swap). **Steps only — no drifts.**
+- **Fix:** a **shared northing-correction feature-engineering step** in the runner /
+  preprocessing, upstream of every method, so every method inherits it.
+- Develop on the tiny fixture; land before C3 so the prepost campaign inherits it.
+
+**Done when:** the step bites `power_model` on the clean fixture, then the shared
+northing step restores invariance; C3/C5 drop their bespoke northing wiring in favour
+of this step.
+
+---
+
+## R2 — Unstable sensors (`power_model`-internal fix)
+
+**Goal:** `power_model` is unmoved when a per-turbine sensor channel it might key on
+is unstable across the baseline↔treatment boundary.
+
+**Scope**
+- **Fault (generator):** inject time instability — **both step changes and slow
+  drifts** — into a per-turbine anemometer channel (primary) and temperature
+  (secondary), differing across the baseline↔treatment boundary.
+- **Fix:** `power_model` prefers **stable cross-turbine signals (power)** and
+  avoids / downweights unstable per-turbine sensor features — hardening the standing
+  "no reference-anemometer features" stance into a defended rule.
+
+**Done when:** the injected instability bites, then feature hardening restores
+invariance (injecting sensor drift/steps barely moves `power_model`'s error).
+
+---
+
+## R3 — Invalid references (`power_model`-internal fix)
+
+**Goal:** a reference turbine with its **own** performance shift, unrelated to the
+tested upgrade, no longer biases `power_model`.
+
+**Scope**
+- **Fault (generator):** give a reference turbine an independent performance shift
+  (degradation / curtailment change) appearing during the campaign window.
+- **Fix:** a **method-internal reference-validity screen** — `power_model` detects and
+  downweights / drops the bad reference across the pool it uses at once (its analogue
+  of v0's one-at-a-time round robin, kept internal because each method uses references
+  differently).
+
+**Done when:** the bad reference bites, then the validity screen restores invariance;
+re-verified in-context on C3/C5.
+
+---
+
+## R4 — Missing data (`power_model`-internal fix)
+
+**Goal:** `power_model` adapts to whatever signals are present instead of assuming a
+fixed feature set.
+
+**Scope**
+- **Fault (generator):** remove channels / turbines from the fixture — a reference
+  offline for part of the window, an absent signal — so the input no longer matches a
+  hardcoded feature list.
+- **Fix:** `power_model` **discovers available signals** and builds features from what
+  is present; degrades gracefully rather than crashing or silently collapsing.
+
+**Done when:** the missing-data case bites (or would crash) the current fixed-feature
+`power_model`, then signal discovery restores a run that stays accurate under missing
+channels / gaps.
+
+---
+
+# Productization issues (W-series)
+
+Turn the winning pieces into a shippable **v1.0.0**: one headline method named
+`wind-up`, a restructured package that claims the `wind_up` import name, and v1-current
+methodology / examples / README. Design spec:
+`docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`.
+
+---
+
+## W0 — Repo restructure: `src/` layout + rename legacy to `wind_up_v0` (early)
+
+**Goal:** the new v1 tool claims the `wind_up` import name while the legacy tool is
+retained, done **early** so all later code lands in the new layout.
+
+**Scope**
+- Move legacy `wind_up` → `src/wind_up_v0/`; stand up `src/wind_up/` as the v1
+  package's home (a skeleton W1 fills). Adopt the conventional `src/` layout.
+- Repoint every importer (notably the `v0_binned` baseline), tests, `pyproject`
+  packaging, and examples. Distribution name **stays `res-wind-up`**; only import names
+  change (`wind_up` = v1, `wind_up_v0` = legacy).
+- Decide `benchmarking/`'s final home and confirm it is **excluded from the v1.0.0
+  release artifact** (it is the eval harness, not the product).
+
+**Done when:** the repo builds and tests pass under the new layout; v0 still runs as
+`wind_up_v0` and its committed benchmark is **unchanged** (behaviour-preserving); no
+importer still references the old `wind_up` path for the legacy tool.
+
+---
+
+## W1 — The composed `wind-up` method (terminal)
+
+**Goal:** a single headline method named **`wind-up`** — the v1 deliverable — that
+composes the winning pieces and self-configures from a `CampaignBrief`.
+
+**Scope**
+- Build `wind-up` in `benchmarking/baselines` (like every v1 method), composing
+  **`power_model` (definite) + the shared northing step (R1) + the reference-validity
+  screen (R3) + missing-data adaptation (R4)**. `toggle_specialist` inclusion is
+  **TBD, settled with evidence** (it may be the toggle arm, or the composed
+  `power_model` path may suffice).
+- Validate `wind-up` as the headline method across the campaigns (C1–C6) and the
+  failure modes (R1–R4), in **both prepost and toggle**.
+
+**Done when:** `wind-up` runs self-configured from a brief, tracks truth on the
+campaigns, and stays invariant under the failure modes in both modes; the exact
+composition (including the `toggle_specialist` decision) is settled and recorded.
+
+---
+
+## W2 — Productization & v1.0.0 release (terminal)
+
+**Goal:** a coherent v1.0.0 release where package, method, docs, and examples all line
+up.
+
+**Scope**
+- Promote the composed method into the public `src/wind_up` v1 API (decide what moves
+  out of `benchmarking/` vs is re-exported).
+- Replace the opaque `docs/wind-up uplift validation methodology v3.pdf` with a
+  tracked **`docs/methodology.md`** describing the v1 method (the new source of truth;
+  the PDF is exported from it at release).
+- Migrate or remove every example (`examples/`) to the v1 API; rewrite `README.md` for
+  v1.
+- **Drop `benchmarking*` from packaging** (deferred from W0, where it stayed packaged
+  only for a separate project that imports `toggle_specialist`): once that external
+  dependency is gone, remove `benchmarking*` from `[tool.setuptools.packages.find]`
+  `include` and confirm the harness is **excluded from the v1.0.0 release artifact**.
+- **Delete the `config/`, `input_data/`, `cache/` root folders** — legacy artefacts
+  from before env-vars / `Path.home()` were used — and rework `wind_up_v0/constants.py`
+  path handling accordingly (env vars / `Path.home()` instead of `PROJECTROOT_DIR`-
+  relative, so nothing depends on those root folders).
+
+**Done when:** a user installs `res-wind-up`, imports `wind_up`, and runs the v1
+`wind-up` method end-to-end from the examples and README; `docs/methodology.md`
+describes it; `benchmarking` is no longer packaged and the legacy root folders are gone;
+the branch is ready to tag **v1.0.0**.

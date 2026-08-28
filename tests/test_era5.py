@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wind_up import era5
-from wind_up.era5 import _build_era5_df
+from wind_up_v0 import era5
+from wind_up_v0.era5 import _build_era5_df
 
 
 def _make_mock_response(n_hours: int = 3) -> MagicMock:

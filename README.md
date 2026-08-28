@@ -181,6 +181,12 @@ This project uses `uv` for dependency management, `poethepoet` for task running,
 Ruff for formatting/linting, mypy for type checking, and pytest with coverage for
 tests.
 
+> [!IMPORTANT]
+> The test data (SCADA, reanalysis) is stored with [Git LFS](https://git-lfs.com/).
+> Install it **before cloning** — or, in an existing clone, run
+> `git lfs install && git lfs pull` once — otherwise those files check out as small
+> pointer stubs and the data-backed tests and example notebooks will fail.
+
 Create the development environment:
 
 ```bash

@@ -8,7 +8,7 @@ import pytest
 
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.ground_truth import true_uplift
-from wind_up.constants import TIMESTAMP_COL
+from wind_up_v0.constants import TIMESTAMP_COL
 
 
 def _paired(

@@ -6,7 +6,7 @@ import pytest
 from pandas.testing import assert_series_equal
 from scipy.stats import circmean
 
-from wind_up.circular_math import circ_diff, circ_median
+from wind_up_v0.circular_math import circ_diff, circ_median
 
 test_circ_diff_data = [
     (0, 0, 0),

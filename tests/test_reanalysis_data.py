@@ -4,8 +4,8 @@ import pandas as pd
 import pytest
 
 from tests.conftest import TEST_DATA_FLD
-from wind_up.models import WindUpConfig
-from wind_up.reanalysis_data import (
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.reanalysis_data import (
     ReanalysisDataset,
     add_reanalysis_data,
     get_dsid_and_dates_from_filename,
