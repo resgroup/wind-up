@@ -15,9 +15,6 @@ which are private there) but kept local so the methods stay v0-independent:
 
 :func:`sync_era5` combines both and returns the aligned ERA5 (all columns), plus the chosen
 lag and the correlation-vs-lag sweep for diagnostics.
-
-This module was promoted out of ``benchmarking.baselines.rlearner.era5_sync`` once a second
-method (``power_model``) needed it; that module now re-exports from here for back-compat.
 """
 
 from __future__ import annotations

@@ -39,9 +39,8 @@ from benchmarking.baselines.power_model.features import (
     reference_mean_wind_speed,
     test_condition_signals,
 )
-from benchmarking.baselines.power_model.fitting import time_block_folds
+from benchmarking.baselines.power_model.fitting import make_outcome_model, time_block_folds
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
-from benchmarking.baselines.rlearner.nuisance import make_outcome_model
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import (
     CONDITION_BINS,
@@ -87,8 +86,8 @@ CURATED_ERA5_EXCLUDE: tuple[str, ...] = (
 
 # The Issue 12 capacity verdict (findings F14): loosening min_child_samples 200 -> 50 materially
 # improves prepost spread/score (placebo ALL Δscore -0.62 pp) at neutral overall P50; 20 overshoots
-# into overfit. A power_model-specific tuning — the design-note common params in
-# ``make_outcome_model`` (shared with the R-learner) are unchanged; drivers pass this instead.
+# into overfit. A power_model-specific tuning — the common params in ``make_outcome_model`` are
+# unchanged; drivers pass this instead.
 TUNED_MODEL_PARAMS: dict[str, Any] = {"min_child_samples": 50}
 
 # Per-reporting-bin matched-count floor for the two-direction conditional combine (Issue 14). Below this
