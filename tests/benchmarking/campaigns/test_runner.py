@@ -143,3 +143,32 @@ def test_a_campaign_with_no_methods_still_returns_an_indexable_farm_table() -> N
     result = run([])
     assert list(result.farm.columns) == ["method", "estimate", "truth", "signed_error", "uplift_spread", "n_guarded"]
     assert result.farm.empty
+
+
+class GuardedMethod:
+    """Reports a usable uplift for one turbine and a non-finite one for the other."""
+
+    name = "guarded"
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:
+        """Return NaN for T1 so farm_uplift drops it, and 0 for everything else."""
+        return MethodOutput(p50_overall=float("nan") if mi.test_wtg == "T1" else 0.0)
+
+
+def test_a_dropped_turbine_is_excluded_from_that_methods_truth() -> None:
+    # the estimate covers only the used turbines, so the truth it is compared with must too
+    result = run([GuardedMethod()])
+    detail = result.farm_uplifts["guarded"].turbines.set_index("turbine")
+    assert not detail.loc["T1", "used"]
+    assert detail.loc["T2", "used"]
+
+    row = result.farm.set_index("method").loc["guarded"]
+    assert row["n_guarded"] == 1
+    # placebo truth is 0 whichever turbines are pooled, so the error stays exact rather than
+    # mixing a one-turbine estimate against a two-turbine truth
+    assert abs(row["signed_error"]) < TOLERANCE
+
+
+def test_the_campaign_truth_still_covers_every_upgraded_turbine() -> None:
+    result = run([GuardedMethod()])
+    assert abs(result.truth_farm_uplift) < TOLERANCE

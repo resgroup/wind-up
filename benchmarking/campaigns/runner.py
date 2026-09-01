@@ -133,14 +133,7 @@ class CampaignRunner:
         farm_uplifts = {name: farm_uplift(rows) for name, rows in estimates.items()}
         farm = pd.DataFrame(
             [
-                {
-                    "method": name,
-                    "estimate": result.uplift,
-                    "truth": truth_farm,
-                    "signed_error": result.uplift - truth_farm,
-                    "uplift_spread": result.uplift_spread,
-                    "n_guarded": int((result.turbines["guard"] != "").sum()),
-                }
+                self._farm_row(name, result, visible=visible, masks=truth_masks)
                 for name, result in farm_uplifts.items()
             ],
             columns=_FARM_COLUMNS,
@@ -153,6 +146,32 @@ class CampaignRunner:
             truth_farm_uplift=truth_farm,
             outputs=outputs,
         )
+
+    def _farm_row(
+        self,
+        method: str,
+        result: FarmUplift,
+        *,
+        visible: SyntheticDataset,
+        masks: dict[str, np.ndarray],
+    ) -> dict[str, object]:
+        """One method's farm row, with its truth pooled over the turbines it actually used.
+
+        A guard can drop a turbine from a method's estimate; pooling the truth over every
+        upgraded turbine would then compare two different estimands. ``n_guarded`` flags the rows
+        where that happened, since a method that dropped turbines is not directly comparable with
+        one that used them all.
+        """
+        used = [str(w) for w in result.turbines.loc[result.turbines["used"], "turbine"]]
+        truth = visible.true_farm_uplift(test_wtgs=used, masks={w: masks[w] for w in used})
+        return {
+            "method": method,
+            "estimate": result.uplift,
+            "truth": truth,
+            "signed_error": result.uplift - truth,
+            "uplift_spread": result.uplift_spread,
+            "n_guarded": int((result.turbines["guard"] != "").sum()),
+        }
 
     def _visible_dataset(self) -> SyntheticDataset:
         """Return the dataset cut to what a method may see: analysis period, usable turbines only."""
