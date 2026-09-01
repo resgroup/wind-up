@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pandas as pd
 
+from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import Method, MethodInput, MethodOutput
 
 
@@ -39,3 +42,44 @@ def test_a_conforming_class_satisfies_the_method_protocol() -> None:
 
 def test_a_non_conforming_object_is_not_a_method() -> None:
     assert not isinstance(object(), Method)
+
+
+def _long_scada() -> pd.DataFrame:
+    index = pd.date_range("2020-01-01", periods=3, freq="10min", tz="UTC")
+    frames = [pd.DataFrame({"TurbineName": t, "x": 1.0}, index=index) for t in ("T1", "T2", "T3")]
+    return pd.concat(frames).sort_index()
+
+
+class TestContext:
+    def test_defaults_to_the_frames_own_implicit_contract(self) -> None:
+        mi = MethodInput(scada_df=_long_scada(), test_wtg="T1", upgrade_timing=pd.Timestamp("2020-01-01", tz="UTC"))
+        assert mi.context.candidate_references == ["T2", "T3"]
+        assert mi.context.valid_for_uplift.to_numpy().all()
+
+    def test_a_supplied_context_is_the_source_of_timing_and_turbine_col(self) -> None:
+        timing = pd.Timestamp("2021-05-05", tz="UTC")
+        context = CampaignContext.from_frame(_long_scada(), test_wtg="T1", timing=timing, turbine_col="TurbineName")
+        mi = MethodInput(scada_df=_long_scada(), test_wtg="T1", campaign_context=context)
+        assert mi.context is context
+        assert mi.upgrade_timing == timing
+        assert mi.turbine_col == "TurbineName"
+
+    def test_a_frame_without_a_turbine_column_still_constructs(self) -> None:
+        # The default context is built lazily, so a degenerate frame is only a problem if used.
+        MethodInput(
+            scada_df=pd.DataFrame({"x": [1.0]}, index=pd.date_range("2020-01-01", periods=1, tz="UTC")),
+            test_wtg="T1",
+            upgrade_timing=pd.Timestamp("2020-01-01", tz="UTC"),
+        )
+
+    def test_narrowing_the_frame_keeps_a_supplied_context(self) -> None:
+        # restrict_to_campaign narrows the frame with dataclasses.replace; the campaign's declared
+        # facts must survive that, so valid_for_uplift still covers what the method then asks for.
+        scada = _long_scada()
+        context = CampaignContext.from_frame(
+            scada, test_wtg="T1", timing=pd.Timestamp("2020-01-01", tz="UTC"), turbine_col="TurbineName"
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
+        narrowed = replace(mi, scada_df=scada.loc[scada.index >= scada.index[-1]])
+        assert narrowed.context is context
+        assert narrowed.context.valid_over(pd.DatetimeIndex(narrowed.scada_df.index.unique())).to_numpy().all()

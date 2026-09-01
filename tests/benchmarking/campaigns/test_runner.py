@@ -172,3 +172,21 @@ def test_a_dropped_turbine_is_excluded_from_that_methods_truth() -> None:
 def test_the_campaign_truth_still_covers_every_upgraded_turbine() -> None:
     result = run([GuardedMethod()])
     assert abs(result.truth_farm_uplift) < TOLERANCE
+
+
+class TestCampaignContext:
+    def test_the_method_sees_the_declared_references_not_every_turbine_present(self) -> None:
+        # T2 is upgraded and in the frame, but the campaign does not offer it as a reference;
+        # T5 is declared but excluded, so the runner never shows it.
+        recorder = RecordingMethod()
+        run([recorder])
+        contexts = {mi.test_wtg: mi.context for mi in recorder.seen}
+        assert contexts["T1"].candidate_references == ["T3", "T4"]
+        assert contexts["T2"].candidate_references == ["T3", "T4"]
+
+    def test_the_context_covers_the_windowed_rows_the_method_is_given(self) -> None:
+        recorder = RecordingMethod()
+        run([recorder])
+        for mi in recorder.seen:
+            given = pd.DatetimeIndex(mi.scada_df.index.unique())
+            assert mi.context.valid_over(given).to_numpy().all()

@@ -159,6 +159,15 @@ default context it is behaviour-identical by construction.
 context — `power_model` sorts, the others follow wide-column order. LightGBM feature
 order depends on it, so changing it would move the frozen benchmarks.
 
+**`candidate_references` goes live in C2**, which is the one deliberate behaviour change.
+The placebo declares six upgraded turbines (`T07, T11, T12, T06, T16, T19`) and a
+`candidate_references` list that excludes them, yet today's implicit rule means
+estimating `T07` uses the other five *upgraded* turbines as references. Honouring the
+declaration drops them. C3 still owns automatic reference selection as a feature; what
+C2 does is stop the declaration being ignored, because shipping the channel with
+nothing flowing through it would repeat exactly the C1 shape this issue exists to fix —
+and a reference that is itself upgraded biases every campaign that has real uplift.
+
 The consumption contract:
 
 - A turbine in the frame but not in `candidate_references` is not a reference, even
@@ -257,6 +266,14 @@ use*. Every existing path builds the default context, whose `candidate_reference
 every other turbine and whose `valid_for_uplift` is all `True`, so every number must
 come out where it is today. **Any movement in a frozen benchmark is a bug in the
 re-plumbing, not a result.**
+
+**Scope of the claim: the study path.** Both frozen benchmarks are driven by
+`score_study` over replicates and profiles, which builds the *default* context, so they
+must not move at all. The **campaign** path does move, by design and only where the
+declaration was previously ignored (§6): the placebo's per-turbine and farm numbers
+change because the other upgraded turbines leave the reference set. That makes CF1-CF5
+in `findings_campaigns.md` stale; re-recording them is not part of C2 and must be
+flagged rather than quietly left.
 
 Two committed benchmarks, both diffed on the machine that recorded them:
 

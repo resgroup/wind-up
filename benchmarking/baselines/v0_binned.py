@@ -169,6 +169,7 @@ class V0BinnedMethod:
         recommended setup for a wake-steering pair. ``estimate`` is the single-turbine case.
         """
         cfg = self._build_config(mi, test_wtgs=list(test_wtgs))
+        selected = mi.context.select(mi.scada_df, also=test_wtgs)
         plot_cfg = PlotConfig(show_plots=False, save_plots=self.save_plots, plots_dir=cfg.out_dir / "plots")
         from_cfg_kwargs: dict = {
             "cfg": cfg,
@@ -176,17 +177,16 @@ class V0BinnedMethod:
             # The harness hands us source-native SCADA; v0 needs wind-up format, so convert here
             # (the v0 baseline is the only place that knows v0's column names). The conversion
             # returns a fresh frame, so there is no in-place mutation of the harness's slice.
-            "scada_df": long_to_wind_up_format(mi.scada_df),
+            "scada_df": long_to_wind_up_format(selected),
             "metadata_df": self.context.metadata_df,
             "reanalysis_datasets": self.context.reanalysis_datasets,
             "cache_dir": None,
         }
-        if is_toggle(mi.upgrade_timing):
+        timing = mi.context.timing
+        if mi.context.mode == "toggle":
             # A ToggleSchedule is turned into the canonical toggle_df; an explicit toggle_df passes through.
             from_cfg_kwargs["toggle_df"] = (
-                mi.upgrade_timing
-                if isinstance(mi.upgrade_timing, pd.DataFrame)
-                else build_toggle_df(mi.scada_df.index, mi.upgrade_timing)
+                timing if isinstance(timing, pd.DataFrame) else build_toggle_df(selected.index, timing)
             )
         inputs = AssessmentInputs.from_cfg(**from_cfg_kwargs)
         trdf = run_wind_up_analysis(inputs)
@@ -205,7 +205,7 @@ class V0BinnedMethod:
         test_names = [mi.test_wtg] if test_wtgs is None else list(test_wtgs)
         subset = _subset_turbines(mi.scada_df, mi.turbine_col)
         test_set = set(test_names)
-        refs = [t for t in subset if t not in test_set]
+        refs = [t for t in mi.context.references_among(subset) if t not in test_set]
         if not refs:
             msg = (
                 f"no reference turbines available for test_wtg(s) {test_names}: scada_df contains only "

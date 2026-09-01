@@ -324,7 +324,9 @@ class PowerModelMethod:
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
         self._validate_model_config()
-        scada = mi.scada_df
+        # The campaign decides which turbines are references and which rows they may contribute;
+        # everything below -- outcome, features, ERA5, diagnostics -- works from this selection.
+        scada = mi.context.select(mi.scada_df)
         if self.columns.availability not in scada.columns:
             msg = (
                 f"the availability column {self.columns.availability!r} (columns.availability) is not in "
