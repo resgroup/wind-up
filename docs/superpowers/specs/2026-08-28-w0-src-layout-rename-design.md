@@ -49,7 +49,7 @@ A blanket token rename **`wind_up` → `wind_up_v0`** applied to every reference
   and `smarteole_example.ipynb`;
 - `tests/`: every importer, `tests/conftest.py`, and `tests/test_data/hot/*`;
 - the self-import at `main_analysis.py:13` (`import wind_up` → `import wind_up_v0`)
-  and the bare-attribute usages in `tests/test_wedowind.py` and `tests/test_version.py`.https://github.com/resgroup/wind-up/pull/135
+  and the bare-attribute usages in `tests/test_wedowind.py` and `tests/test_version.py`.
 
 **Two things that must NOT change** (behaviour-preserving):
 
