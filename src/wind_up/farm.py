@@ -54,8 +54,9 @@ def farm_uplift(turbines: Sequence[TurbineUplift]) -> FarmUplift:
 
     Each turbine's counterfactual energy is estimated as ``actual_energy / (1 + uplift)`` and
     guarded: a turbine is dropped when its uplift is non-finite or ``<= -1``, when its actual
-    energy is negative, or when it has no records; a counterfactual implying a mean power above
-    ``rated_power_kw`` is clipped to that rating.
+    energy is non-finite or negative, when its rated power is not a positive finite number, or
+    when it has no records; a counterfactual implying a mean power above ``rated_power_kw`` is
+    clipped to that rating.
     """
     if not turbines:
         msg = "farm_uplift needs at least one turbine"
@@ -94,13 +95,17 @@ def _evaluate(turbine: TurbineUplift) -> dict[str, object]:
 
 
 def _drop_reason(turbine: TurbineUplift) -> str:
-    """Name the guard that removes ``turbine`` from the weighting, or ``""`` to keep it."""
-    if not math.isfinite(turbine.uplift):
-        return "non_finite_uplift"
-    if turbine.n_records <= 0:
-        return "no_records"
-    if turbine.actual_energy < 0:
-        return "negative_energy"
-    if 1.0 + turbine.uplift <= 0:
-        return "negative_counterfactual"
-    return ""
+    """Name the guard that removes ``turbine`` from the weighting, or ``""`` to keep it.
+
+    Non-finite inputs are dropped explicitly rather than left to propagate: a NaN energy would
+    otherwise be skipped by the summation and vanish from the result with nothing reported.
+    """
+    checks = (
+        ("non_finite_uplift", not math.isfinite(turbine.uplift)),
+        ("non_finite_energy", not math.isfinite(turbine.actual_energy)),
+        ("invalid_rating", not math.isfinite(turbine.rated_power_kw) or turbine.rated_power_kw <= 0),
+        ("no_records", turbine.n_records <= 0),
+        ("negative_energy", turbine.actual_energy < 0),
+        ("negative_counterfactual", 1.0 + turbine.uplift <= 0),
+    )
+    return next((reason for reason, failed in checks if failed), "")

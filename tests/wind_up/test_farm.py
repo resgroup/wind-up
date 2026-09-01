@@ -101,3 +101,34 @@ def test_empty_input_raises() -> None:
 
 def test_result_is_a_farm_uplift() -> None:
     assert isinstance(farm_uplift([_t("T1")]), FarmUplift)
+
+
+def test_non_finite_energy_is_dropped_rather_than_silently_summed_away() -> None:
+    # a NaN would otherwise be skipped by the sum and vanish with used=True and no guard
+    result = farm_uplift([_t("T1", actual_energy=float("nan")), _t("T2", actual_energy=2000.0)])
+    row = result.turbines.set_index("turbine").loc["T1"]
+    assert not row["used"]
+    assert row["guard"] == "non_finite_energy"
+    assert result.uplift == pytest.approx(0.05)
+
+
+def test_infinite_energy_is_dropped_rather_than_producing_an_infinite_result() -> None:
+    result = farm_uplift([_t("T1", actual_energy=float("inf")), _t("T2", actual_energy=2000.0)])
+    assert result.turbines.set_index("turbine").loc["T1", "guard"] == "non_finite_energy"
+    assert math.isfinite(result.uplift)
+
+
+@pytest.mark.parametrize("rating", [-100.0, 0.0, float("nan"), float("inf")])
+def test_an_unusable_rating_is_dropped(rating: float) -> None:
+    # a negative rating would make the capacity cap produce a negative counterfactual
+    result = farm_uplift([_t("T1", rated_power_kw=rating), _t("T2", actual_energy=2000.0)])
+    row = result.turbines.set_index("turbine").loc["T1"]
+    assert not row["used"]
+    assert row["guard"] == "invalid_rating"
+    assert result.uplift == pytest.approx(0.05)
+
+
+def test_counterfactual_energy_is_never_negative() -> None:
+    result = farm_uplift([_t("T1", rated_power_kw=-100.0), _t("T2")])
+    used = result.turbines[result.turbines["used"]]
+    assert (used["counterfactual_energy"] >= 0).all()
