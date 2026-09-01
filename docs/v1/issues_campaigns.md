@@ -313,13 +313,20 @@ cannot express:
   all-or-nothing `excluded_turbines`.
 - **Optional naming, neutral fallback.** A change may be named (e.g. `"TuneUp"`) and
   the name flows into report and plot titles. Naming is **optional**: unnamed, wind-up
-  falls back to neutral language ("the change", "treated period") and never asserts an
-  upgrade.
+  falls back to neutral language ("the change") and never asserts an upgrade.
 - **Settle the neutral vocabulary** (a naming decision in its own right). C1–C7 bake
   "upgrade" into `upgraded_turbines`, `upgrade_timing`, `SyntheticCampaign.upgrades`
   and `UpgradeEffect`. Candidate umbrella terms: **change** (leaning — plain,
   international, covers upgrade / downrate / degradation / no change), *event*,
-  *intervention*. Decide once and rename throughout.
+  *intervention*. Decide once and rename throughout. The same sweep retires "treated"
+  from the benchmarking layer (443 uses, 64 of them the shared `treated_mask` /
+  `treated_activity_mask` helpers); `src/` is already clear of it.
+- **Disambiguate "window" in the harness.** `benchmarking/harness/campaign.py` uses it
+  for two different spans in one docstring: `CampaignWindow` is the whole
+  baseline-plus-activity span, while its prose says "post window", "activity window" and
+  "shorter windows" for the *treated* part alone. That is the ambiguity C1 renamed
+  `analysis_period` to escape, so a reader who knows the harness will misread the spec
+  field. Settle one term for each span and apply it.
 - **Migrate C1–C6 campaigns** onto the general model; the placebo becomes a campaign
   whose turbines have an empty change history.
 
@@ -332,7 +339,8 @@ note in the C1 design).
 **Done when:** a campaign with staggered per-turbine dates and a reference that changes
 mid-period is declared and run end-to-end, using each reference only over its valid
 records; a named change appears in report and plot titles and an unnamed one falls back
-to neutral language; the neutral vocabulary decision is recorded and applied.
+to neutral language; the neutral vocabulary decision is recorded and applied, with
+"window" left meaning one thing in the harness.
 
 ---
 
