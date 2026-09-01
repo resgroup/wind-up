@@ -107,8 +107,8 @@ one.
 ## C1 — Campaign declaration + runner + farm uplift + placebo campaign
 
 **Goal:** stand up the whole pipeline on the simplest case — a **placebo** (zero
-injected uplift) whole-farm campaign — proving every method (and v0) reports ~0 and
-that a campaign can be *declared* rather than hand-wired.
+injected uplift) whole-farm campaign — proving every method reports ~0 and that a
+campaign can be *declared* rather than hand-wired.
 
 **Scope**
 - **`SyntheticCampaign`** — the private, generator-facing declaration: turbines and
@@ -130,7 +130,10 @@ that a campaign can be *declared* rather than hand-wired.
   tables and diagnostic plots vs truth, the whole-farm analogue of
   `inspect_wake_steering_case`), and the campaign fed through the existing harness
   scoring path at n=1.
-- v0 included but optional (slow).
+- **v0 is out of scope for the placebo.** The placebo is a whole-farm campaign, and v0
+  enumerates test/reference combinations per turbine, so a whole-farm v0 run is not
+  tractable. The seam still accepts `V0BinnedMethod` unchanged; a later campaign that
+  needs v0 can run it over a small turbine subset.
 
 **Done when:** a placebo whole-farm campaign is declared once and run end-to-end;
 every method's per-turbine and farm-uplift estimate is ~0 within tolerance; both the

@@ -12,7 +12,7 @@ hand-wired (`benchmarking/baselines/inspect_wake_steering_case.py` hard-codes ro
 loads northing by hand, loops participants manually). C1 stands up the whole
 declaration → runner → farm-uplift → reporting pipeline on the simplest case — a
 **placebo** (zero injected uplift) whole-farm campaign — so a campaign is *declared*
-rather than wired, and every method (and v0) is shown to report ~0.
+rather than wired, and every method is shown to report ~0.
 
 ## Scope
 
@@ -144,7 +144,9 @@ Then:
   `CampaignWindow` spanning it and calling `score_one` per upgraded turbine — reusing
   the harness's truth alignment, no new scoring code.
 
-v0 is included but optional (slow).
+**v0 is not run by the placebo.** It enumerates test/reference combinations per turbine,
+which does not scale to a whole-farm campaign. The seam accepts it unchanged, so a later,
+smaller campaign can include it.
 
 ### 5. Two output shapes
 
