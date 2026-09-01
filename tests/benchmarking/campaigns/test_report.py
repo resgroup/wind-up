@@ -87,6 +87,29 @@ def test_no_conditional_plots_when_no_method_reports_conditions(tmp_path: Path) 
     assert not (tmp_path / "conditional").exists()
 
 
+class PowerOnlyMethod:
+    """Reports a per-condition breakdown on the power axis only, as toggle_specialist does."""
+
+    name = "power_only"
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:  # noqa: ARG002
+        """Return zero overall and per-power-bin estimates, and nothing on ws or ti."""
+        edges = condition_bins("power", rated_power_kw=2300.0)
+        bins = pd.IntervalIndex.from_breaks(np.asarray(edges, dtype=float))
+        frame = pd.DataFrame({"condition": "power", "condition_bin": [str(b) for b in bins], "p50_uplift": 0.0})
+        return MethodOutput(p50_overall=0.0, p50_by_condition=frame)
+
+
+def test_only_the_conditions_a_method_reports_are_plotted(tmp_path: Path) -> None:
+    # a ws or ti plot for this method would have an all-NaN estimate series
+    result, dataset = _result([PowerOnlyMethod()])
+    out = write_campaign_report(result, dataset, out_dir=tmp_path)
+    plots = sorted(p.name for p in (out / "conditional").glob("*.png"))
+    assert len(plots) == 2  # one per upgraded turbine, power only
+    assert all("power" in name for name in plots)
+    assert not any("_ws_" in name or "_ti_" in name for name in plots)
+
+
 def test_conditional_plots_are_written_per_condition_and_turbine(tmp_path: Path) -> None:
     result, dataset = _result([ConditionalZeroMethod()])
     out = write_campaign_report(result, dataset, out_dir=tmp_path)

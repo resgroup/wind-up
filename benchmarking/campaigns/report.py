@@ -56,6 +56,9 @@ def _write_conditional_plots(result: CampaignResult, dataset: SyntheticDataset, 
     for (method_name, wtg), output in result.outputs.items():
         if output.p50_by_condition is None:
             continue
+        # only the conditions the method actually reported: plotting the others would draw a
+        # method-vs-truth chart whose method series is entirely NaN
+        reported = set(output.p50_by_condition["condition"].astype(str))
         rows = dataset.synthetic_df[dataset.synthetic_df[spec.turbine_col] == wtg]
         mask = treated_mask(pd.DatetimeIndex(rows.index), spec.timing_for(wtg))
         truth_by_condition = {
@@ -66,6 +69,7 @@ def _write_conditional_plots(result: CampaignResult, dataset: SyntheticDataset, 
                 bins=condition_bins(condition, rated_power_kw=spec.rated_power_kw),
             ).by_condition
             for condition in CONDITIONS
+            if condition in reported
         }
         clean = {c: frame for c, frame in truth_by_condition.items() if frame is not None}
         if not clean:
