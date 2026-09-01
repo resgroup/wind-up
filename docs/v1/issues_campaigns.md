@@ -76,19 +76,26 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
 
 ## Suggested order
 
-`C0 → [W0 early] → C1 → C2 → [R1 R2 R3 R4] → C3 → C4 → C5 → C6 → C8 → W1 → W2.` The R-series
-lands after the C1/C2 foundation: **R1 (northing) before C3** so the prepost campaign
-inherits the shared northing step; R2–R4 are independent `power_model` work, any order
-within the block. **W0** (package restructure) is independent and runs **early** (after
-C0) so later code lands in the new layout; **W1/W2** are **terminal** (after C6 + R4)
-because the composed `wind-up` method needs the robustness and campaign pieces first.
-**C8** (per-turbine change histories) lands **before W1** so the generalized declaration
-is what gets promoted to public API, not the flat one. C7 (drop `rlearner`, ✅ done) was
-independent.
+`C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 → [R1 R2 R3 R4] → C3 → C4 → C5 → C6 → C8 → W1 → W2.`
+The R-series lands after the C1/C2 foundation: **R1 (northing) before C3** so the
+prepost campaign inherits the shared northing step; R2–R4 are independent
+`power_model` work, any order within the block. **W0** (package restructure) is
+independent and runs **early** (after C0) so later code lands in the new layout;
+**W1/W2** are **terminal** (after C6 + R4) because the composed `wind-up` method needs
+the robustness and campaign pieces first. **C8** (per-turbine change histories) lands
+**before W1** so the generalized declaration is what gets promoted to public API, not
+the flat one. C7 (drop `rlearner`, ✅ done) was independent.
+
+**Done so far:** C0, W0, C7 and C1. **Next: C2** — with C1 in hand, decide how the
+`CampaignSpec` reaches the methods before the demanding campaigns build on the seam.
 
 ---
 
 ## C0 — Housekeeping: start the new issues list, back-burner the old
+
+**Status:** ✅ Done (2026-08-27). This file exists and is linked from
+`docs/v1/README.md`; `issues.md` and `findings.md` both carry a back-burner banner
+pointing here.
 
 **Goal:** make the new tranche the visible source of truth without losing the old
 one.
@@ -105,6 +112,14 @@ one.
 ---
 
 ## C1 — Campaign declaration + runner + farm uplift + placebo campaign
+
+**Status:** ✅ Done (2026-09-01, PR #136). `SyntheticCampaign` → `CampaignSpec`,
+`CampaignRunner`, the report and both placebo campaigns landed in
+`benchmarking/campaigns/`, with the pure `farm_uplift` in `src/wind_up/farm.py` and
+`true_farm_uplift` alongside the other ground truth. Results are logged as CF1–CF5 in
+[findings_campaigns.md](findings_campaigns.md): truth is exactly 0 in both modes; toggle
+beats prepost by an order of magnitude; the farm result reaches +0.148% with six test
+turbines and fifteen references. v0 was taken out of scope (see below).
 
 **Goal:** stand up the whole pipeline on the simplest case — a **placebo** (zero
 injected uplift) whole-farm campaign — proving every method reports ~0 and that a
@@ -443,6 +458,11 @@ methodology / examples / README. Design spec:
 ---
 
 ## W0 — Repo restructure: `src/` layout + rename legacy to `wind_up_v0` (early)
+
+**Status:** ✅ Done (2026-08-28, PR #135). `src/wind_up/` (v1) and `src/wind_up_v0/`
+(legacy) with every importer repointed; examples byte- and pixel-identical.
+`benchmarking*` is still packaged — dropping it from the release artifact is deferred to
+W2, which already carries that item.
 
 **Goal:** the new v1 tool claims the `wind_up` import name while the legacy tool is
 retained, done **early** so all later code lands in the new layout.
