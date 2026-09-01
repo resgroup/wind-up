@@ -9,7 +9,7 @@ from __future__ import annotations
 from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams, cp_surface
 from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset, treated_mask
 from benchmarking.synthetic.geometry import WakePair, bearing_deg, derive_wake_steering_pairs, distance_m, wrap180
-from benchmarking.synthetic.ground_truth import UpliftResult, true_net_uplift, true_uplift
+from benchmarking.synthetic.ground_truth import UpliftResult, true_farm_uplift, true_net_uplift, true_uplift
 from benchmarking.synthetic.plots import (
     plot_power_curve_comparison,
     plot_wake_steering_by_direction,
@@ -72,6 +72,7 @@ __all__ = [
     "plot_wake_steering_stability",
     "sin_solar_elevation",
     "treated_mask",
+    "true_farm_uplift",
     "true_net_uplift",
     "true_uplift",
     "wrap180",

@@ -15,6 +15,8 @@ v1 is developed on the `v1` branch; feature PRs target `v1` rather than `main`.
   here.
 - **[issues.md](issues.md)** — drafts of the earlier issues (Issues 1–19).
   **Back-burnered** in favour of `issues_campaigns.md`; still valuable for later.
+- **[findings_campaigns.md](findings_campaigns.md)** — empirical findings log for the
+  current tranche (CF-numbered).
 - **[findings.md](findings.md)** — empirical findings log from the earlier work.
 - **[references.md](references.md)** — related open-source tools (FLASC, OpenOA,
   DSWE) and key methodology references (Kanev TNO report) to investigate later.

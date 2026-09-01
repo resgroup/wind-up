@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams
-from benchmarking.synthetic.ground_truth import UpliftResult, true_net_uplift, true_uplift
+from benchmarking.synthetic.ground_truth import UpliftResult, true_farm_uplift, true_net_uplift, true_uplift
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
 from benchmarking.synthetic.upgrades import apply_upgrades
 
@@ -80,6 +80,12 @@ class SyntheticDataset:
             downstream=downstream,
             mask=mask,
             columns=self.columns,
+        )
+
+    def true_farm_uplift(self, *, test_wtgs: list[str], masks: dict[str, np.ndarray] | None = None) -> float:
+        """Derive the pooled farm uplift across ``test_wtgs`` (synthetic vs original)."""
+        return true_farm_uplift(
+            self.synthetic_df, self.original_df, test_wtgs=test_wtgs, masks=masks, columns=self.columns
         )
 
     def save(self, out_dir: str | Path) -> Path:

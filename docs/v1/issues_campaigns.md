@@ -1,12 +1,15 @@
 # wind-up v1 — real-world-readiness issues (drafts)
 
+Empirical results from this tranche are logged in
+[findings_campaigns.md](findings_campaigns.md).
+
 A **fresh tranche** of v1 work whose ambition is to **round out v1 so it is usable in
 the real world**. Three pillars:
 
 1. **Realism (C-series).** Simulate a few realistic, whole-farm campaigns — modelled
    on the real Hill of Towie open-source analyses
    (`resgroup/hill-of-towie-open-source-analysis`) — and mature the v1 methods so a
-   user **declares a short campaign brief and the method does the right thing** (role
+   user **declares a short campaign spec and the method does the right thing** (role
    assignment, northing, filtering, data split, reference selection and validity),
    automatically. Then compare the v1 methods and v0 on these campaigns.
 2. **Robustness (R-series).** Simulate, with known ground truth, the data pathologies
@@ -37,11 +40,11 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
   headline campaign number, as the real HoT analyses report).
 - **One simulated instance per campaign, no replicates.** This tranche is about
   realism and ease-of-use, not sampling statistics.
-- **Two declarations, one source:** a private `CampaignDefinition` (drives the
+- **Two declarations, one source:** a private `SyntheticCampaign` (drives the
   generator; holds the injected-upgrade physics = ground truth) and the public
-  `CampaignBrief` derived from it (the facts an analyst would know; **never** the
-  truth). Methods only see the brief.
-- **Both outputs per campaign:** a farm-wide inspection report (per-turbine + rollup
+  `CampaignSpec` derived from it (the facts an analyst would know; **never** the
+  truth). Methods only see the spec.
+- **Both outputs per campaign:** a farm-wide inspection report (per-turbine + farm uplift
   vs truth) **and** the campaign through the harness scoring path at n=1.
 
 ## Ground rules for the robustness (R) issues
@@ -73,13 +76,15 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
 
 ## Suggested order
 
-`C0 → [W0 early] → C1 → C2 → [R1 R2 R3 R4] → C3 → C4 → C5 → C6 → W1 → W2.` The R-series
+`C0 → [W0 early] → C1 → C2 → [R1 R2 R3 R4] → C3 → C4 → C5 → C6 → C8 → W1 → W2.` The R-series
 lands after the C1/C2 foundation: **R1 (northing) before C3** so the prepost campaign
 inherits the shared northing step; R2–R4 are independent `power_model` work, any order
 within the block. **W0** (package restructure) is independent and runs **early** (after
 C0) so later code lands in the new layout; **W1/W2** are **terminal** (after C6 + R4)
 because the composed `wind-up` method needs the robustness and campaign pieces first.
-C7 (drop `rlearner`, ✅ done) was independent.
+**C8** (per-turbine change histories) lands **before W1** so the generalized declaration
+is what gets promoted to public API, not the flat one. C7 (drop `rlearner`, ✅ done) was
+independent.
 
 ---
 
@@ -99,51 +104,54 @@ one.
 
 ---
 
-## C1 — Campaign declaration + runner + farm rollup + placebo campaign
+## C1 — Campaign declaration + runner + farm uplift + placebo campaign
 
 **Goal:** stand up the whole pipeline on the simplest case — a **placebo** (zero
-injected uplift) whole-farm campaign — proving every method (and v0) reports ~0 and
-that a campaign can be *declared* rather than hand-wired.
+injected uplift) whole-farm campaign — proving every method reports ~0 and that a
+campaign can be *declared* rather than hand-wired.
 
 **Scope**
-- **`CampaignDefinition`** — the private, generator-facing declaration: turbines and
+- **`SyntheticCampaign`** — the private, generator-facing declaration: turbines and
   their roles (upgraded / reference / excluded), upgrade timing (prepost changeover
   or `ToggleSchedule`), the injected upgrade(s) (here: none / a no-op), site context
-  (coords, northing corrections, ERA5 handle), window.
-- **`CampaignBrief`** — derived from the definition, public facts only: upgraded
+  (coords, northing corrections, ERA5 handle), analysis period.
+- **`CampaignSpec`** — derived from the campaign, public facts only: upgraded
   turbines, timing, mode, site coords + northing, candidate references, exclusions.
   No injected-upgrade physics.
-- **`CampaignRunner`** — brief → for each upgraded turbine, construct the applicable
+- **`CampaignRunner`** — spec → for each upgraded turbine, construct the applicable
   carried-forward methods (skip `toggle_specialist` on prepost) + a per-turbine
   `MethodInput`, run, collect `MethodOutput`s. Keep the thin seam for now;
   orchestration lives in the runner (C2 revisits this).
-- **Farm rollup** — energy-weighted aggregation of per-turbine uplift to one
+- **Farm uplift** — energy-weighted aggregation of per-turbine uplift to one
   campaign headline; the generator supplies the matching farm-level ground truth
-  (upgraded synthetic energy vs counterfactual baseline energy over the campaign
-  window). Pin the exact weighting definition here.
-- **Both output shapes** — a per-campaign inspection report (per-turbine + rollup
+  (upgraded synthetic energy vs counterfactual baseline energy over the treated
+  records). Pin the exact weighting definition here.
+- **Both output shapes** — a per-campaign inspection report (per-turbine + farm-uplift
   tables and diagnostic plots vs truth, the whole-farm analogue of
   `inspect_wake_steering_case`), and the campaign fed through the existing harness
   scoring path at n=1.
-- v0 included but optional (slow).
+- **v0 is out of scope for the placebo.** The placebo is a whole-farm campaign, and v0
+  enumerates test/reference combinations per turbine, so a whole-farm v0 run is not
+  tractable. The seam still accepts `V0BinnedMethod` unchanged; a later campaign that
+  needs v0 can run it over a small turbine subset.
 
 **Done when:** a placebo whole-farm campaign is declared once and run end-to-end;
-every method's per-turbine and farm-rollup estimate is ~0 within tolerance; both the
+every method's per-turbine and farm-uplift estimate is ~0 within tolerance; both the
 inspection report and the n=1 harness number are produced.
 
 ---
 
 ## C2 — Seam / campaign-context decision
 
-**Goal:** decide how the `CampaignBrief` should reach the methods so they
+**Goal:** decide how the `CampaignSpec` should reach the methods so they
 self-configure (northing, filtering, data split, role assignment, reference
 validity) — the question deliberately deferred at design time.
 
 **Scope**
 - Weigh the options with C1 in hand and the later campaigns' needs visible:
   (a) keep the thin `MethodInput`/`MethodOutput` seam with the runner orchestrating;
-  (b) enrich `MethodInput` to carry the brief so methods read it at estimate time;
-  (c) a hybrid (brief both builds methods and rides on the input).
+  (b) enrich `MethodInput` to carry the spec so methods read it at estimate time;
+  (c) a hybrid (spec both builds methods and rides on the input).
 - Record the decision and its rationale; refactor C1's runner/seam to match before
   the demanding campaigns build on it.
 
@@ -155,18 +163,18 @@ the chosen shape.
 ## C3 — Blade enhancement (AeroUp), prepost
 
 **Goal:** a realistic **prepost** single-/few-turbine blade-enhancement campaign
-where reference selection, the prepost split and northing all follow from the brief.
+where reference selection, the prepost split and northing all follow from the `CampaignSpec`.
 
 **Scope**
-- `CampaignDefinition` using a region-2 Cp gain tailing to 0 at rated (AeroUp shape)
+- `SyntheticCampaign` using a region-2 Cp gain tailing to 0 at rated (AeroUp shape)
   on the upgraded turbine(s); other farm turbines as candidate references.
-- **Automatic reference selection** from the brief (exclude other upgraded / excluded
+- **Automatic reference selection** from the `CampaignSpec` (exclude other upgraded / excluded
   turbines; honour candidate list).
 - Prepost data split and northing applied by the method/runner without hand-wiring.
 - Report + n=1 score for all applicable methods (`toggle_specialist` N/A here) and
   v0.
 
-**Done when:** the campaign is declared and run whole-farm; per-turbine and rollup
+**Done when:** the campaign is declared and run whole-farm; per-turbine and farm-uplift
 estimates track truth; the report shows how each method used references and the
 prepost split.
 
@@ -178,18 +186,18 @@ now in-context on a realistic prepost campaign.
 ## C4 — TuneUp (controller), toggle, multi-turbine
 
 **Goal:** a realistic **toggle** campaign with ~9 upgraded turbines and a
-TI/stability-shaped effect, exercising multi-turbine toggle handling and the rollup
+TI/stability-shaped effect, exercising multi-turbine toggle handling and the farm uplift
 at scale.
 
 **Scope**
-- `CampaignDefinition` with a condition-dependent (stability/TI-shaped) Cp change on
+- `SyntheticCampaign` with a condition-dependent (stability/TI-shaped) Cp change on
   ~9 turbines, a `ToggleSchedule` (~50-min period, per the real trial), ~10
   references.
 - Multi-turbine toggle: per-turbine estimates across many upgraded turbines, the
-  campaign-only data split, and the energy-weighted rollup across them.
-- `toggle_specialist` and the other methods self-configure from the brief.
+  campaign-only data split, and the energy-weighted farm uplift across them.
+- `toggle_specialist` and the other methods self-configure from the `CampaignSpec`.
 
-**Done when:** the campaign runs whole-farm; per-turbine + rollup estimates track
+**Done when:** the campaign runs whole-farm; per-turbine + farm-uplift estimates track
 truth for all methods and v0; the report scales to many upgraded turbines.
 
 ---
@@ -202,15 +210,15 @@ dependencies, references whose validity changes with wind direction, northing-se
 logic, and excluded turbines.
 
 **Scope**
-- `CampaignDefinition` using the existing `WakeSteering` upgrade across the farm
+- `SyntheticCampaign` using the existing `WakeSteering` upgrade across the farm
   (plus a collective-control component if in scope), a `ToggleSchedule`, and an
   excluded turbine (e.g. T07).
 - **Wake-aware reference validity:** the method must gate references by direction so
   a reference sitting in an upgraded turbine's changed wake is dropped for those
-  timestamps — declared from geometry in the brief, not a script-level filter.
+  timestamps — declared from geometry in the `CampaignSpec`, not a script-level filter.
 - Northing-sector handling folded into the method/runner (replacing the
   `wd_filter` hack), so no bespoke driver code.
-- Report + n=1 score; the farm rollup nets upstream steering losses against
+- Report + n=1 score; the farm uplift nets upstream steering losses against
   downstream gains.
 
 **Done when:** the wake-steering campaign is declared once and run whole-farm with
@@ -228,13 +236,13 @@ reference-validity screen (R3), now in-context under wake-changed references.
 reach.
 
 **Scope**
-- `CampaignDefinition` using `RatedPowerChange` (an uprate and/or a downrate) on a
+- `SyntheticCampaign` using `RatedPowerChange` (an uprate and/or a downrate) on a
   set of turbines, prepost or toggle.
 - Confirm the methods behave sensibly when the effect is concentrated at/around
   rated power (where baseline and upgraded both clip), including the conditional /
   per-bin views.
 
-**Done when:** the rated-change campaign runs whole-farm; per-turbine and rollup
+**Done when:** the rated-change campaign runs whole-farm; per-turbine and farm-uplift
 estimates track truth; the rated-power behaviour is visible in the report.
 
 ---
@@ -271,6 +279,68 @@ be relocated first.
 **Done when:** `rlearner` is gone with its tests; `power_model` and the surviving
 inspection scripts run unchanged; `poe all-fast` green; the `power_model` benchmark
 is bit-identical.
+
+---
+
+## C8 — Per-turbine change histories (generalize the campaign declaration)
+
+**Goal:** replace the campaign-wide "one upgrade, one date" declaration with a
+**per-turbine timeline of changes**, so wind-up handles the campaign shapes that are
+currently awkward to express, and can name what it is assessing.
+
+**Motivation** — three situations seen on real campaigns that C1's flat declaration
+cannot express:
+
+- **Staggered dates.** Turbines are upgraded on different dates, not one changeover.
+  Very common with aerodynamic upgrades, where a farm is worked through over weeks or
+  months. Today this forces either one conservative shared date (throwing away data)
+  or one hand-wired run per turbine.
+- **References with their own history.** A reference turbine may itself have been
+  changed during or shortly before the analysis period — e.g. a TuneUp campaign on a
+  farm that recently had blade upgrades. Its data is then valid for part of the period
+  and invalid for the rest. Today the only lever is `excluded_turbines`, which is
+  all-or-nothing per turbine and discards usable data.
+- **Not always an upgrade.** Some analyses confirm *stable* performance, or quantify a
+  production-loss event. The declaration should describe "what changed, on which
+  turbines, when" without presuming an improvement.
+
+**Scope**
+- **Per-turbine timeline.** Each turbine carries its own ordered changes, each with a
+  date (or toggle schedule) — including reference turbines. The campaign-wide
+  changeover becomes the degenerate case, not the model.
+- **Usability follows from the timeline.** Which of a reference's records are usable is
+  *derived* from its own changes, per turbine and per time range, replacing the
+  all-or-nothing `excluded_turbines`.
+- **Optional naming, neutral fallback.** A change may be named (e.g. `"TuneUp"`) and
+  the name flows into report and plot titles. Naming is **optional**: unnamed, wind-up
+  falls back to neutral language ("the change") and never asserts an upgrade.
+- **Settle the neutral vocabulary** (a naming decision in its own right). C1–C7 bake
+  "upgrade" into `upgraded_turbines`, `upgrade_timing`, `SyntheticCampaign.upgrades`
+  and `UpgradeEffect`. Candidate umbrella terms: **change** (leaning — plain,
+  international, covers upgrade / downrate / degradation / no change), *event*,
+  *intervention*. Decide once and rename throughout. The same sweep retires "treated"
+  from the benchmarking layer (443 uses, 64 of them the shared `treated_mask` /
+  `treated_activity_mask` helpers); `src/` is already clear of it.
+- **Disambiguate "window" in the harness.** `benchmarking/harness/campaign.py` uses it
+  for two different spans in one docstring: `CampaignWindow` is the whole
+  baseline-plus-activity span, while its prose says "post window", "activity window" and
+  "shorter windows" for the *treated* part alone. That is the ambiguity C1 renamed
+  `analysis_period` to escape, so a reader who knows the harness will misread the spec
+  field. Settle one term for each span and apply it.
+- **Migrate C1–C6 campaigns** onto the general model; the placebo becomes a campaign
+  whose turbines have an empty change history.
+
+**Ordering:** must land **before W1/W2**. W1's composed `wind-up` method
+self-configures from a `CampaignSpec` and W2 promotes that type into the public
+`src/wind_up` API — generalizing after that point means breaking published API. C1
+keeps the flat model but must not let consumers depend on it (see the future-proofing
+note in the C1 design).
+
+**Done when:** a campaign with staggered per-turbine dates and a reference that changes
+mid-period is declared and run end-to-end, using each reference only over its valid
+records; a named change appears in report and plot titles and an unnamed one falls back
+to neutral language; the neutral vocabulary decision is recorded and applied, with
+"window" left meaning one thing in the harness.
 
 ---
 
@@ -334,7 +404,7 @@ tested upgrade, no longer biases `power_model`.
 
 **Scope**
 - **Fault (generator):** give a reference turbine an independent performance shift
-  (degradation / curtailment change) appearing during the campaign window.
+  (degradation / curtailment change) appearing during the analysis period.
 - **Fix:** a **method-internal reference-validity screen** — `power_model` detects and
   downweights / drops the bad reference across the pool it uses at once (its analogue
   of v0's one-at-a-time round robin, kept internal because each method uses references
@@ -352,7 +422,7 @@ fixed feature set.
 
 **Scope**
 - **Fault (generator):** remove channels / turbines from the fixture — a reference
-  offline for part of the window, an absent signal — so the input no longer matches a
+  offline for part of the analysis period, an absent signal — so the input no longer matches a
   hardcoded feature list.
 - **Fix:** `power_model` **discovers available signals** and builds features from what
   is present; degrades gracefully rather than crashing or silently collapsing.
@@ -395,7 +465,7 @@ importer still references the old `wind_up` path for the legacy tool.
 ## W1 — The composed `wind-up` method (terminal)
 
 **Goal:** a single headline method named **`wind-up`** — the v1 deliverable — that
-composes the winning pieces and self-configures from a `CampaignBrief`.
+composes the winning pieces and self-configures from a `CampaignSpec`.
 
 **Scope**
 - Build `wind-up` in `benchmarking/baselines` (like every v1 method), composing
@@ -406,7 +476,7 @@ composes the winning pieces and self-configures from a `CampaignBrief`.
 - Validate `wind-up` as the headline method across the campaigns (C1–C6) and the
   failure modes (R1–R4), in **both prepost and toggle**.
 
-**Done when:** `wind-up` runs self-configured from a brief, tracks truth on the
+**Done when:** `wind-up` runs self-configured from a `CampaignSpec`, tracks truth on the
 campaigns, and stays invariant under the failure modes in both modes; the exact
 composition (including the `toggle_specialist` decision) is settled and recorded.
 

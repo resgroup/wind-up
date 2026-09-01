@@ -17,6 +17,8 @@ import pandas as pd
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     import numpy.typing as npt
 
     from benchmarking.synthetic.schema import ColumnSchema
@@ -141,6 +143,47 @@ def true_net_uplift(
     orig_den = orig_up[effective].sum() + orig_dn[effective].sum()
     syn_num = syn_up[effective].sum() + syn_dn[effective].sum()
     return float(syn_num / orig_den - 1.0) if orig_den else float("nan")
+
+
+def true_farm_uplift(
+    synthetic_df: pd.DataFrame,
+    original_df: pd.DataFrame,
+    *,
+    test_wtgs: Sequence[str],
+    masks: Mapping[str, npt.ArrayLike] | None = None,
+    columns: ColumnSchema = HOT_COLUMNS,
+) -> float:
+    """Pooled energy-ratio uplift across several upgraded turbines.
+
+    ``(sum synthetic energy) / (sum original energy) - 1`` over each turbine's own selected finite
+    records -- the N-turbine form of :func:`true_net_uplift`.
+
+    :param synthetic_df: method-facing synthetic SCADA
+    :param original_df: untouched original SCADA (ground-truth reference)
+    :param test_wtgs: the upgraded turbines to pool
+    :param masks: per-turbine boolean selections over that turbine's rows (time order); a turbine
+        absent from the mapping, or ``masks=None``, uses the records the upgrade actually changed
+    :param columns: the source-native column schema the frames are keyed by
+    """
+    synthetic_total = 0.0
+    original_total = 0.0
+    for wtg in test_wtgs:
+        synthetic_power = synthetic_df.loc[synthetic_df[columns.turbine] == wtg, columns.active_power].to_numpy(
+            dtype=float
+        )
+        original_power = original_df.loc[original_df[columns.turbine] == wtg, columns.active_power].to_numpy(
+            dtype=float
+        )
+        selection = None if masks is None else masks.get(wtg)
+        row_mask = (
+            changed_record_mask(synthetic_power, original_power)
+            if selection is None
+            else np.asarray(selection, dtype=bool)
+        )
+        effective = row_mask & np.isfinite(synthetic_power) & np.isfinite(original_power)
+        synthetic_total += synthetic_power[effective].sum()
+        original_total += original_power[effective].sum()
+    return float(synthetic_total / original_total - 1.0) if original_total else float("nan")
 
 
 def changed_record_mask(
