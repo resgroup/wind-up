@@ -20,14 +20,16 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from benchmarking.harness.leaderboard import DEFAULT_LENGTH_COL
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pandas as pd
     from matplotlib.figure import Figure
+
+    from benchmarking.harness.method import MethodOutput
 
 # Uplift quantities are stored as fractions; plot them as percentage points.
 _FRACTION_TO_PP = 100.0
@@ -149,3 +151,30 @@ def plot_conditional_uplift(
     if save_path is not None:
         fig.savefig(save_path, dpi=120)
     return fig
+
+
+def conditional_truth_vs_estimate(
+    output: MethodOutput, truth_by_condition: dict[str, pd.DataFrame], *, method_name: str
+) -> pd.DataFrame:
+    """Shape a method's p50_by_condition + per-condition truth into a plot_conditional_uplift frame."""
+    if output.p50_by_condition is None:
+        msg = "output.p50_by_condition must not be None"
+        raise ValueError(msg)
+    frames = []
+    bc = output.p50_by_condition
+    for condition, truth in truth_by_condition.items():
+        est = bc[bc["condition"] == condition].set_index("condition_bin")["p50_uplift"]
+        t = truth.assign(condition_bin=truth["condition_bin"].astype(str)).set_index("condition_bin")["true_uplift"]
+        bins = est.index.union(t.index)
+        frames.append(
+            pd.DataFrame(
+                {
+                    "method": method_name,
+                    "condition": condition,
+                    "condition_bin": bins,
+                    "mean_estimate": est.reindex(bins).to_numpy(),
+                    "mean_truth": t.reindex(bins).to_numpy(),
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)

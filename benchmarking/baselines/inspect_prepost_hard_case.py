@@ -56,6 +56,7 @@ from benchmarking.harness import (
     build_replicates,
     campaign_windows,
     condition_bins,
+    conditional_truth_vs_estimate,
     plot_conditional_uplift,
     treated_activity_mask,
     window_row_mask,
@@ -261,33 +262,6 @@ def _plot_conditional_uplift(
             title=f"Conditional uplift ({c}) — profile={profile_name}, wtg={test_wtg} (power_model vs truth)",
         )
     logger.info("Wrote conditional uplift plots (power_model vs truth) to %s", out_dir)
-
-
-def conditional_truth_vs_estimate(
-    output: MethodOutput, truth_by_condition: dict[str, pd.DataFrame], *, method_name: str
-) -> pd.DataFrame:
-    """Shape a method's p50_by_condition + per-condition truth into a plot_conditional_uplift frame."""
-    if output.p50_by_condition is None:
-        msg = "output.p50_by_condition must not be None"
-        raise ValueError(msg)
-    frames = []
-    bc = output.p50_by_condition
-    for condition, truth in truth_by_condition.items():
-        est = bc[bc["condition"] == condition].set_index("condition_bin")["p50_uplift"]
-        t = truth.assign(condition_bin=truth["condition_bin"].astype(str)).set_index("condition_bin")["true_uplift"]
-        bins = est.index.union(t.index)
-        frames.append(
-            pd.DataFrame(
-                {
-                    "method": method_name,
-                    "condition": condition,
-                    "condition_bin": bins,
-                    "mean_estimate": est.reindex(bins).to_numpy(),
-                    "mean_truth": t.reindex(bins).to_numpy(),
-                }
-            )
-        )
-    return pd.concat(frames, ignore_index=True)
 
 
 def inspect_prepost_hard_case(

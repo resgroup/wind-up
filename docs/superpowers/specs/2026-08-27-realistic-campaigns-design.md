@@ -15,7 +15,7 @@ participants by hand, and bespoke-configures v0. Nothing about a campaign is
 
 The next step to mature v1 is to **simulate a few realistic, whole-farm campaigns**
 — modelled on the real Hill of Towie open-source analyses — and mature the v1
-methods so that a user **declares a short campaign brief and the method does the
+methods so that a user **declares a short campaign spec and the method does the
 right thing**: role assignment, northing, filtering, data split, reference
 selection and reference validity, all automatically. Then we can see how the v1
 methods and v0 compare on realistic campaigns.
@@ -44,34 +44,34 @@ with `power_model` and needs disentangling first).
 
 ## Key decisions (from brainstorming)
 
-1. **Estimand: per-turbine estimates + a farm-level energy-weighted rollup.** Each
+1. **Estimand: per-turbine estimates + a farm-level energy-weighted uplift.** Each
    upgraded turbine gets its own uplift estimate and truth (as today), and each
-   campaign additionally yields **one headline farm number** via an energy-weighted
-   rollup — matching how the real HoT analyses report a single P50. For wake
-   steering the rollup naturally nets upstream steering losses against downstream
+   campaign additionally yields **one headline farm number**, energy-weighted —
+   matching how the real HoT analyses report a single P50. For wake
+   steering the farm uplift naturally nets upstream steering losses against downstream
    gains.
 
-2. **Two declarations, one source of truth.** A full **`CampaignDefinition`** drives
+2. **Two declarations, one source of truth.** A full **`SyntheticCampaign`** drives
    the synthetic generator and includes the *secret* injected-upgrade physics (the
-   ground truth). The **`CampaignBrief`** is *derived* from it and carries only the
+   ground truth). The **`CampaignSpec`** is *derived* from it and carries only the
    *public* facts a real analyst would have — upgraded turbines, upgrade timing,
    mode (prepost/toggle), site coords + northing, candidate references, exclusions —
-   and **never the truth**. Methods only ever see the brief.
+   and **never the truth**. Methods only ever see the spec.
 
-3. **A campaign runner** turns a brief into results: for each upgraded turbine it
+3. **A campaign runner** turns a spec into results: for each upgraded turbine it
    constructs the applicable carried-forward methods (skipping `toggle_specialist`
    on prepost, etc.) and a per-turbine `MethodInput`, runs them, collects the
-   per-turbine `MethodOutput`s, computes the **farm rollup**, and emits both output
+   per-turbine `MethodOutput`s, computes the **farm uplift**, and emits both output
    shapes. v0 is included in the comparison but optional (it is slow).
 
 4. **Both output shapes per campaign.** (a) A farm-wide **inspection report** —
-   per-turbine + rollup tables and diagnostic plots vs the single ground truth, the
+   per-turbine + farm-uplift tables and diagnostic plots vs the single ground truth, the
    whole-farm analogue of `inspect_wake_steering_case` — as the human-facing
    artefact; **and** (b) the single campaign wired through the existing harness
    scoring path at **n=1** for a comparable, leaderboard-style number.
 
-5. **How the brief reaches the methods is deliberately left open.** Whether the
-   brief drives an orchestration layer above today's thin `MethodInput`/`MethodOutput`
+5. **How the spec reaches the methods is deliberately left open.** Whether the
+   spec drives an orchestration layer above today's thin `MethodInput`/`MethodOutput`
    seam, enriches `MethodInput` directly, or a hybrid, is its **own investigation
    issue (C2)**, decided once the placebo pipeline exists (C1) and the demanding
    campaigns have surfaced their real needs (northing, wake-free reference gating).
@@ -82,7 +82,7 @@ Modelled on the three real Hill of Towie trials, plus a rated-power case and a
 placebo:
 
 1. **Placebo** — whole farm, **zero injected uplift**. The starting point: it forces
-   the whole declaration → runner → farm-rollup → reporting pipeline into existence
+   the whole declaration → runner → farm-uplift → reporting pipeline into existence
    on the simplest possible case, and is a real honesty check (every method, and
    v0, must report ~0 with no false uplift).
 2. **Blade enhancement (AeroUp)** — **prepost**, some upgraded turbine(s),
@@ -90,7 +90,7 @@ placebo:
    the prepost data split, and northing.
 3. **TuneUp (controller)** — **toggle**, ~9 upgraded turbines, a TI/stability-shaped
    effect. Forces multi-turbine toggle handling, the campaign-only split, and the
-   rollup at scale.
+   farm uplift at scale.
 4. **Dynamic Yaw (wake steering + collective control)** — **toggle**, whole farm.
    The hard one: inter-turbine wake dependencies, **references whose validity
    changes with wind direction** (wake-aware reference selection / wake-free
@@ -102,14 +102,14 @@ placebo:
 ## Architecture sketch
 
 ```
-CampaignDefinition  (private: injected-upgrade physics = ground truth)
+SyntheticCampaign  (private: injected-upgrade physics = ground truth)
         │  generate_dataset(...)
         ▼
    SyntheticDataset  ──────────────► true per-turbine & farm uplift
         │                                     ▲
         │ derive                               │ score
         ▼                                      │
-   CampaignBrief  (public facts only) ─► CampaignRunner
+   CampaignSpec  (public facts only) ─► CampaignRunner
                                             │  per upgraded turbine:
                                             │    build method(s) + MethodInput
                                             │    run → MethodOutput
@@ -117,7 +117,7 @@ CampaignDefinition  (private: injected-upgrade physics = ground truth)
                                    per-turbine results
                                             │  energy-weighted
                                             ▼
-                                     farm rollup (headline)
+                                     farm uplift (headline)
                                             │
                          ┌──────────────────┴──────────────────┐
                          ▼                                      ▼
@@ -126,12 +126,12 @@ CampaignDefinition  (private: injected-upgrade physics = ground truth)
 ```
 
 - The **runner** owns method selection by mode, per-turbine input construction, and
-  the rollup; it is where "the method does the right thing" is orchestrated until
+  the farm uplift; it is where "the method does the right thing" is orchestrated until
   C2 decides how much of that moves onto the seam.
-- **Farm rollup** is an energy-weighted aggregation of per-turbine uplift to a
+- **Farm uplift** is an energy-weighted aggregation of per-turbine uplift to a
   single campaign number; the generator provides the matching farm-level ground
   truth (upgraded-turbine synthetic energy vs counterfactual baseline energy over the
-  campaign window).
+  treated records).
 
 ## Issue decomposition
 
@@ -139,14 +139,14 @@ Tracked in `docs/v1/issues_campaigns.md`. Summary and ordering:
 
 - **C0 — Housekeeping (first, small, standalone).** Create the new issues doc; mark
   the old `issues.md`/`findings.md` back-burnered with a pointer forward.
-- **C1 — Campaign declaration + runner + farm rollup + placebo campaign.** The
-  foundation: `CampaignDefinition`/`CampaignBrief`, the runner, the rollup, both
+- **C1 — Campaign declaration + runner + farm uplift + placebo campaign.** The
+  foundation: `SyntheticCampaign`/`CampaignSpec`, the runner, the farm uplift, both
   output shapes, all four carried-forward methods, v0 optional, on the placebo.
 - **C2 — Seam / campaign-context decision.** The deferred architecture question,
   decided using C1's experience and the later campaigns' needs.
 - **C3 — Blade enhancement (prepost):** automatic reference selection + prepost
   split + northing.
-- **C4 — TuneUp (toggle, multi-turbine):** multi-turbine toggle + rollup at scale.
+- **C4 — TuneUp (toggle, multi-turbine):** multi-turbine toggle + farm uplift at scale.
 - **C5 — Dynamic Yaw (wake steering):** wake-aware reference validity + northing
   sector + exclusions.
 - **C6 — Rated-power up/downrate:** the region-3 / rated path.
@@ -172,7 +172,7 @@ foundation → C7 slots in whenever.
   is not enough when the upgrade itself changes wakes; the method must gate
   references by direction. This is the least-understood piece and may itself spawn
   follow-up issues.
-- **Farm rollup weighting.** Energy-weighting is the obvious default; the exact
+- **Farm uplift weighting.** Energy-weighting is the obvious default; the exact
   definition (per-turbine campaign MWh, counterfactual vs actual) is a C1 design
   detail to pin against the generator's farm-level truth.
 - **`rlearner` disentangle (C7).** The shared `make_outcome_model` must move without

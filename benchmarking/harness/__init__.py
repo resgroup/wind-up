@@ -30,7 +30,11 @@ from benchmarking.harness.conditions import (
 from benchmarking.harness.leaderboard import conditional_leaderboard, leaderboard
 from benchmarking.harness.method import Method, MethodInput, MethodOutput
 from benchmarking.harness.metrics import ErrorSummary, summarize_errors
-from benchmarking.harness.plots import plot_campaign_curves, plot_conditional_uplift
+from benchmarking.harness.plots import (
+    conditional_truth_vs_estimate,
+    plot_campaign_curves,
+    plot_conditional_uplift,
+)
 from benchmarking.harness.replicates import Replicate, StudyConfig, build_replicates, iter_replicates
 from benchmarking.harness.scoring import score_one, score_study, truth_mask
 
@@ -53,6 +57,7 @@ __all__ = [
     "campaign_windows",
     "condition_bins",
     "conditional_leaderboard",
+    "conditional_truth_vs_estimate",
     "coverage_standard_error",
     "energy_ratio_by_bin",
     "iter_replicates",
