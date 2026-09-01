@@ -126,11 +126,11 @@ def test_farm_table_reports_the_spread_and_guard_count() -> None:
     assert result.farm.set_index("method").loc["zero", "n_guarded"] == 0
 
 
-def test_treated_energy_covers_the_records_the_truth_uses() -> None:
+def test_actual_energy_covers_the_records_the_truth_uses() -> None:
     result = run([ZeroMethod()])
     detail = result.farm_uplifts["zero"].turbines
     assert (detail["n_records"] > 0).all()
-    assert np.isfinite(detail["treated_energy"]).all()
+    assert np.isfinite(detail["actual_energy"]).all()
 
 
 def test_toggle_treats_fewer_records_than_prepost_over_the_same_period() -> None:

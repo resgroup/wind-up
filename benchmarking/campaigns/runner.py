@@ -101,7 +101,7 @@ class CampaignRunner:
             mask = truth_mask(replicate, window)
             truth_masks[wtg] = mask
             truth = replicate.true_uplift(mask=mask).overall
-            energy, n_records = self._treated_energy(visible, turbine=wtg, mask=mask)
+            energy, n_records = self._actual_energy(visible, turbine=wtg, mask=mask)
 
             for method in self._build_methods(wtg):
                 capturing = _Capturing(method)
@@ -123,7 +123,7 @@ class CampaignRunner:
                     TurbineUplift(
                         turbine=wtg,
                         uplift=capturing.output.p50_overall,
-                        treated_energy=energy,
+                        actual_energy=energy,
                         n_records=n_records,
                         rated_power_kw=spec.rated_power_kw,
                     )
@@ -193,8 +193,11 @@ class CampaignRunner:
             activity_end=end,
         )
 
-    def _treated_energy(self, dataset: SyntheticDataset, *, turbine: str, mask: np.ndarray) -> tuple[float, int]:
-        """Observed treated-period energy and record count for one turbine, finite records only."""
+    def _actual_energy(self, dataset: SyntheticDataset, *, turbine: str, mask: np.ndarray) -> tuple[float, int]:
+        """Return the energy one turbine actually produced over its upgraded records.
+
+        Finite records only, with the record count that sum covers.
+        """
         columns = dataset.columns
         frame = dataset.synthetic_df
         power = frame.loc[frame[columns.turbine] == turbine, columns.active_power].to_numpy(dtype=float)
