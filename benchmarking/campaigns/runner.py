@@ -132,10 +132,7 @@ class CampaignRunner:
         truth_farm = visible.true_farm_uplift(test_wtgs=list(spec.upgraded_turbines), masks=truth_masks)
         farm_uplifts = {name: farm_uplift(rows) for name, rows in estimates.items()}
         farm = pd.DataFrame(
-            [
-                self._farm_row(name, result, visible=visible, masks=truth_masks)
-                for name, result in farm_uplifts.items()
-            ],
+            [self._farm_row(name, result, visible=visible, masks=truth_masks) for name, result in farm_uplifts.items()],
             columns=_FARM_COLUMNS,
         )
         return CampaignResult(

@@ -119,6 +119,13 @@ def test_an_excluded_turbine_is_carried_onto_the_spec() -> None:
     assert not set(spec.upgraded_turbines) & {"T21"}
 
 
+def test_an_excluded_turbine_is_not_also_offered_as_a_reference() -> None:
+    # the spec would otherwise declare contradictory roles for the same turbine
+    spec = placebo_campaign("prepost", excluded=["T21"]).spec()
+    assert "T21" not in spec.candidate_references
+    assert not set(spec.candidate_references) & set(spec.excluded_turbines)
+
+
 @pytest.mark.parametrize("mode", ["prepost", "toggle"])
 def test_placebo_runs_end_to_end_to_zero(mode: str) -> None:
     declared = placebo_campaign(mode, upgraded=TEST_TURBINES, turbines=TEST_PARTICIPANTS)

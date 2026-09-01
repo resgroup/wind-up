@@ -132,7 +132,7 @@ def placebo_campaign(
     return SyntheticCampaign(
         upgraded_turbines=list(upgraded),
         upgrade_timing=timing,
-        candidate_references=[w for w in participating if w not in upgraded],
+        candidate_references=[w for w in participating if w not in upgraded and w not in excluded],
         excluded_turbines=list(excluded),
         upgrades=[],
         coords=coords if coords is not None else dict.fromkeys(participating, (0.0, 0.0)),
@@ -175,7 +175,9 @@ def run_placebo(
     campaign = placebo_campaign(mode, upgraded=upgraded, turbines=participating, coords=_coords(participating))
     dataset = campaign.generate(scada_df)
     spec = campaign.spec()
-    era5 = build_hot_v0_context(wtg_names=participating).reanalysis_datasets[0].data
+    # only the power model reads ERA5, and building the context fetches it, so the fast path
+    # stays free of the network dependency
+    era5 = build_hot_v0_context(wtg_names=participating).reanalysis_datasets[0].data if include_power_model else None
 
     runner = CampaignRunner(
         spec,
