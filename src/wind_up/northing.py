@@ -59,6 +59,15 @@ _MIN_ROWS_PER_SECTOR = 50
 # A step larger than this is a recalibration whatever else the record does, so it is never ironed
 # out as wander -- real ones do sometimes reverse later.
 _MAX_TRANSIENT_STEP_DEG = 10.0
+
+
+# A consensus needs a strict majority of the farm reporting. Below that the median is over an
+# unrepresentative few, whose own veer moves the reference rather than the farm's.
+def _farm_quorum(n_devices: int, *, floor: int) -> int:
+    """Return how many devices must report for their median to stand for the farm's consensus."""
+    return max(floor, n_devices // 2 + 1)
+
+
 # The span either side of a changepoint at which ``min_step_deg`` applies unmodified. With less
 # record than this the level is veer-limited rather than sample-limited, so a bigger step is
 # needed to tell a recalibration from the wander.
@@ -112,8 +121,29 @@ class NorthingSettings:
 # consensus shares that common-mode error, so against one a residual step really is the
 # turbine's. See :func:`against_reanalysis`.
 REANALYSIS_MIN_STEP_DEG = 10.0
+# The first pass may only act on a *gross* recalibration -- one large enough that leaving it
+# uncorrected would drag the farm consensus the second pass depends on. Reanalysis' own
+# direction-dependent bias moves every turbine together by up to ~20 degrees during a spell of
+# unusual wind, so the bar sits above that.
+ANCHORING_MIN_STEP_DEG = 30.0
 
 DEFAULT_NORTHING = NorthingSettings()
+
+
+def anchoring_only(settings: NorthingSettings) -> NorthingSettings:
+    """Return ``settings`` reduced to what the first pass is for: anchoring, not changepoint work.
+
+    The first pass exists to fix the farm in absolute terms against reanalysis. Reanalysis has its
+    own direction-dependent bias, so a spell of unusual wind moves every turbine's residual
+    against it together, by tens of degrees -- and acting on that writes the artefact into the
+    corrected directions and from there into the farm consensus the second pass trusts.
+
+    So only a **gross** step is acted on here (:data:`ANCHORING_MIN_STEP_DEG`): large enough that
+    leaving it would drag the consensus, and larger than reanalysis' own excursions. Everything
+    finer is left to the second pass, which works against the farm consensus and estimates from
+    the **raw** direction, so nothing is lost by deferring it.
+    """
+    return replace(against_reanalysis(settings), min_step_deg=ANCHORING_MIN_STEP_DEG)
 
 
 def against_reanalysis(settings: NorthingSettings) -> NorthingSettings:
@@ -212,23 +242,46 @@ def veer_normalised(
         sector levels are measured on it rather than on ``residual``, so a large step cannot leak
         into the veer signature. Defaults to ``residual`` itself.
     """
-    finite = np.isfinite(residual) & np.isfinite(reference_deg)
+    signature = sector_signature(
+        residual if de_stepped is None else de_stepped,
+        reference_deg=reference_deg,
+        sector_deg=sector_deg,
+        min_rows_per_sector=min_rows_per_sector,
+    )
+    finite = np.isfinite(residual) & np.isfinite(signature)
+    out = residual.copy()
+    out[finite] = np.asarray(circ_diff(residual[finite], signature[finite]), dtype=float)
+    return out
+
+
+def sector_signature(
+    values_deg: npt.NDArray[np.float64],
+    *,
+    reference_deg: npt.NDArray[np.float64],
+    sector_deg: float,
+    min_rows_per_sector: int = _MIN_ROWS_PER_SECTOR,
+) -> npt.NDArray[np.float64]:
+    """Return the long-run level of ``values_deg`` in each row's direction sector, per row.
+
+    This is the veer signature: how far this device sits from the reference when the wind comes
+    from each direction. Sectors with too little data fall back to the overall level; rows with
+    no usable direction get NaN.
+    """
+    finite = np.isfinite(values_deg) & np.isfinite(reference_deg)
     if not finite.any():
-        return residual
-    measured_on = residual if de_stepped is None else de_stepped
+        return np.full(len(values_deg), np.nan)
     n_sectors = max(1, int(np.ceil(360.0 / sector_deg)))
-    sector = np.zeros(len(residual), dtype=int)
+    sector = np.zeros(len(values_deg), dtype=int)
     sector[finite] = (np.mod(reference_deg[finite], 360.0) // sector_deg).astype(int) % n_sectors
 
-    overall = float(circ_median(measured_on[finite], range_360=False))
+    overall = float(circ_median(values_deg[finite], range_360=False))
     level = np.full(n_sectors, overall)
     for s in range(n_sectors):
-        rows = finite & (sector == s) & np.isfinite(measured_on)
+        rows = finite & (sector == s)
         if int(rows.sum()) >= min_rows_per_sector:
-            level[s] = float(circ_median(measured_on[rows], range_360=False))
-
-    out = residual.copy()
-    out[finite] = np.asarray(circ_diff(residual[finite], level[sector[finite]]), dtype=float)
+            level[s] = float(circ_median(values_deg[rows], range_360=False))
+    out = np.full(len(values_deg), np.nan)
+    out[np.isfinite(reference_deg)] = level[sector[np.isfinite(reference_deg)]]
     return out
 
 
@@ -656,27 +709,14 @@ def apply_north_table(
     return np.where(np.isfinite(direction), (direction + offsets[which]) % 360.0, np.nan)
 
 
-def _farm_direction(
-    northed: Mapping[str, npt.NDArray[np.float64]],
-    *,
-    usable: Mapping[str, npt.NDArray[np.bool_]],
-    min_devices: int,
-) -> npt.NDArray[np.float64]:
-    """Per-timestamp circular median of the devices' northed directions, NaN where too few."""
-    stack = np.vstack(
-        [np.where(usable[name] & np.isfinite(values), values, np.nan) for name, values in northed.items()]
-    )
-    present = np.isfinite(stack).sum(axis=0)
+def _median_across(stack: npt.NDArray[np.float64], *, enough: npt.NDArray[np.bool_]) -> npt.NDArray[np.float64]:
+    """Per-timestamp circular median down a devices x time stack, NaN where ``enough`` is False."""
     farm = np.full(stack.shape[1], np.nan)
-    enough = present >= min_devices
     if not enough.any():
         return farm
-
     columns = stack[:, enough]
     rad = np.deg2rad(columns)
-    # nan-aware circular mean, then the median of the values centred on it
-    finite = np.isfinite(columns)
-    counts = finite.sum(axis=0)
+    counts = np.isfinite(columns).sum(axis=0)
     mean = np.degrees(
         np.arctan2(
             np.nansum(np.sin(rad), axis=0) / counts,
@@ -687,6 +727,26 @@ def _farm_direction(
     # every retained column has at least ``min_devices`` finite entries, so no all-NaN slice
     farm[enough] = (np.nanmedian(centred, axis=0) + mean) % 360.0
     return farm
+
+
+def _farm_direction(
+    northed: Mapping[str, npt.NDArray[np.float64]],
+    *,
+    usable: Mapping[str, npt.NDArray[np.bool_]],
+    min_devices: int,
+) -> npt.NDArray[np.float64]:
+    """Per-timestamp circular median of the devices' northed directions, NaN where too few report.
+
+    ``min_devices`` is what keeps this trustworthy. Devices differ from the consensus by their own
+    direction-dependent veer, so a median over only a few of them is not the farm's consensus --
+    and when an outage coincides with an unusual wind direction, every device appears to step at
+    once and back again. The guard is a quorum rather than a floor: see :func:`north_farm`.
+    """
+    stack = np.vstack(
+        [np.where(usable[name] & np.isfinite(values), values, np.nan) for name, values in northed.items()]
+    )
+    enough = np.isfinite(stack).sum(axis=0) >= min_devices
+    return _median_across(stack, enough=enough)
 
 
 def north_farm(
@@ -712,8 +772,12 @@ def north_farm(
     :param direction_deg: device name to its raw direction signal
     :param usable: device name to the rows usable for northing it
     :param reanalysis_deg: the absolute direction reference, on ``index``
-    :param min_devices_for_farm_reference: devices that must report at a timestamp for the
-        consensus to be defined there; also the minimum farm size
+    :param min_devices_for_farm_reference: the floor on how many devices must report at a
+        timestamp for the consensus to be defined there, and the minimum farm size. The effective
+        requirement is the larger of this and a strict majority of the farm: a median over an
+        unrepresentative few
+        carries their veer rather than the farm's, which is what makes an outage look like every
+        turbine stepping at once.
     """
     devices = sorted(direction_deg)
     if len(devices) < min_devices_for_farm_reference:
@@ -729,7 +793,7 @@ def north_farm(
 
     # Pass 1's reference is reanalysis, so it may only attribute large steps; pass 2's farm
     # consensus is clean enough for the caller's chosen threshold.
-    anchoring = against_reanalysis(settings)
+    anchoring = anchoring_only(settings)
     first_pass = {
         name: estimate_north_table(
             index,
@@ -741,7 +805,8 @@ def north_farm(
         for name in devices
     }
     northed = {name: apply_north_table(index, direction_deg[name], north_table=first_pass[name]) for name in devices}
-    farm = _farm_direction(northed, usable=usable, min_devices=min_devices_for_farm_reference)
+    quorum = _farm_quorum(len(devices), floor=min_devices_for_farm_reference)
+    farm = _farm_direction(northed, usable=usable, min_devices=quorum)
     if not np.isfinite(farm).any():
         logger.warning("farm reference is empty; keeping the reanalysis-only north tables")
         return first_pass

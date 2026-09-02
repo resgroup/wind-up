@@ -536,3 +536,85 @@ class TestNearTheRecordEdge:
     def test_the_same_small_step_well_inside_the_record_is_reported(self) -> None:
         """The step is identical; only the evidence behind it differs."""
         assert self._n_changepoints(4.0, days_after=300.0) == 1
+
+
+class TestFarmReferenceComposition:
+    """The farm reference must not depend on *which* devices happened to report.
+
+    Turbines sit at different long-run offsets from the farm consensus -- site veer. A plain
+    median over whoever is reporting therefore moves when the reporting set changes, so an
+    outage, or simply analysing a subset of the farm, looks like every turbine stepping at once.
+    Nothing about any turbine's north calibration has changed, so nothing should be found.
+    """
+
+    @staticmethod
+    def _farm(index: pd.DatetimeIndex, *, veer: dict[str, float]) -> tuple[dict, np.ndarray]:
+        """Devices whose veer offset **depends on wind direction**, as real site veer does.
+
+        A fixed per-device offset reproduces nothing: the first pass norths every device to
+        reanalysis and removes it, which is why an early attempt at this test passed against the
+        very bug it was written for. What survives that pass is the direction-dependent *shape*,
+        and that is what moves the reference when the reporting set and the wind direction change
+        together.
+        """
+        reference = _true_direction(index, seed=3)
+        reported = {}
+        for i, (name, amplitude) in enumerate(veer.items()):
+            shape = amplitude * np.cos(np.deg2rad(reference - 60.0 * i))
+            scatter = np.random.default_rng(200 + i).normal(0.0, 5.0, len(index))
+            reported[name] = (reference + shape + scatter) % 360.0
+        return reported, reference
+
+    def test_no_changepoint_when_an_outage_coincides_with_an_unusual_wind_direction(self) -> None:
+        """The Hill of Towie failure, in miniature.
+
+        For one week most of the farm is down and the wind sits in a sector it rarely occupies.
+        The few devices still reporting have their own veer in that sector, so a median over them
+        is not the farm's consensus -- and every device appears to step together and back.
+        """
+        index = _index(days=700)
+        veer = {"T01": 5.0, "T02": 4.0, "T03": 3.0, "T04": 4.5, "T05": 5.5, "T06": 3.5}
+        reported, reference = self._farm(index, veer=veer)
+        outage = (index >= index.min() + pd.Timedelta(days=350)) & (index < index.min() + pd.Timedelta(days=357))
+        still_on = ("T01", "T02", "T03")
+        usable = {name: np.asarray(~outage | np.isin(name, still_on), dtype=bool) for name in reported}
+
+        tables = north_farm(
+            index, direction_deg=reported, usable=usable, reanalysis_deg=reference, settings=DEFAULT_NORTHING
+        )
+
+        # Nothing may be attributed to the outage. A marginal detection elsewhere in the record is
+        # ordinary veer sensitivity, not this failure, so the assertion is placed where the bug is.
+        window = pd.Timedelta(days=14)
+        near = {
+            name: [
+                c.strftime("%Y-%m-%d")
+                for c in pd.DatetimeIndex(table["timestamp"])[1:]
+                if index.min() + pd.Timedelta(days=350) - window <= c <= index.min() + pd.Timedelta(days=357) + window
+            ]
+            for name, table in tables.items()
+        }
+        offenders = {name: found for name, found in near.items() if found}
+        assert offenders == {}, f"the reporting set changed, not the turbines: {offenders}"
+
+    def test_the_reference_gives_the_same_answer_for_a_subset_of_the_farm(self) -> None:
+        """Northing three of six devices must agree with northing all six."""
+        index = _index(days=700)
+        veer = {"T01": 5.0, "T02": 4.0, "T03": 3.0, "T04": 4.5, "T05": 5.5, "T06": 3.5}
+        reported, reference = self._farm(index, veer=veer)
+        usable = {name: _all_usable(index) for name in reported}
+        subset = ("T01", "T02", "T03")
+
+        whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference)
+        part = north_farm(
+            index,
+            direction_deg={k: reported[k] for k in subset},
+            usable={k: usable[k] for k in subset},
+            reanalysis_deg=reference,
+        )
+
+        for name in subset:
+            assert len(part[name]) == len(whole[name]), name
+            assert part[name]["north_offset"].iloc[0] == pytest.approx(whole[name]["north_offset"].iloc[0], abs=2.0), (
+                name
+            )

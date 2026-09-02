@@ -261,7 +261,80 @@ real detection**: T16's genuine +9.0° step on 2017-06-18 has only 30 days befor
 The scaled rule requires 5.2° there and keeps it, requires 8.2° at T13's twelve days and drops it.
 The cap at `max_transient_step_deg` keeps a large late jump findable, which a unit test pins.
 
-### The outage artefact (documented, not fixed)
+### The outage artefact (fixed) -- and it was in the first pass all along
+
+Over 2016-2024 nearly every turbine gained changepoint pairs at **2019-11-11/19**, **2020-06-12/19**
+and **2023-06** -- steps of 12-22 degrees, farm-wide, synchronous, self-cancelling within about
+eight days. **143 changepoints against v0's 28**, with 111 of the 127 extras in just three months.
+They survived the excursion filter because their size is above `max_transient_step_deg`.
+
+Three hypotheses were tested and two were wrong, which is worth recording because each looked
+convincing:
+
+1. **Silent reference substitution.** v0's `add_wf_yawdir` fills a missing farm direction with
+   reanalysis, and in the excursion weeks 35% and 51% of rows are that fallback. Excluding them
+   removes the August 2020 pair and **nothing else**.
+2. **Changing reference composition.** Plausible -- turbines have different veer, so a median over
+   a shrinking subset should drift. Measured and **false**: after the first pass every device's
+   long-run offset from the farm median is within -0.3 to +0.5 degrees, and centring the devices
+   moves the median by 0.00 degrees in every window.
+3. **The first pass.** During the June 2020 excursion `northed - farm` is ~0 for every turbine
+   while the *raw* residual is +20 -- so the correction the first pass applied *is* the excursion.
+   It had inserted 2-6 changepoints per turbine across 2020.
+
+The cause is that **reanalysis has its own direction-dependent bias**. A spell of unusual wind --
+the June 2020 week was easterly, a sector Hill of Towie rarely sees -- moves every turbine's
+residual against reanalysis together, by tens of degrees. The first pass corrected for that, which
+wrote the excursion into the northed directions and from there into the farm consensus the second
+pass trusts. The outage correlates only because both are weather.
+
+**Fix: the first pass may act only on a gross recalibration** (`ANCHORING_MIN_STEP_DEG`, 30
+degrees). Its job is to fix the farm in absolute terms, and a step smaller than that is better
+left to the second pass, which works against the clean farm consensus and estimates from the raw
+direction so nothing is lost by deferring it. The bar sits above reanalysis' own excursions
+(~20 degrees) and below a real gross recalibration (Hill of Towie's are 36-177 degrees).
+
+Blocking the first pass entirely was tried and **rejected**: with only four devices, one
+uncorrected 40-degree step drags the median enough to break a real detection.
+
+A quorum was added alongside -- the consensus needs a strict majority of the farm reporting, not
+a floor of three -- because a median over a handful of devices is not the farm's. On its own it
+moved the farm total by 3 (143 to 140); it earns its place for the subset case rather than this one.
+
+### Measured effect of the two fixes
+
+Hill of Towie, all 21 turbines, **2016-2024**, against v0's published table:
+
+| | before | after |
+|---|---|---|
+| changepoints found | 143 | **19** (v0: 28) |
+| of which not in v0's table | **127** | **2** |
+| v0's changepoints recovered | 16/28 | 17/28 |
+
+Across a 99-case subset sweep (3 turbine groups x 33 windows, 3 months to 9 years, definitions in
+`study/subsets.py` so it re-runs after any change):
+
+| | before | after |
+|---|---|---|
+| cases finding changepoints the full run does not | 40/98 | **19/98** |
+| total such extras | 287 | **32** |
+
+The eleven v0 entries not recovered are all small (1.2-8.6 degrees) and mostly one sequence --
+T01's four sub-2.5-degree steps in early 2016 -- which has the signature of veer being chased
+rather than a recalibration.
+
+### What is still imperfect
+
+`west__year_2021` finds six changepoints the full run does not, and windows starting immediately
+after a recalibration (`edge_after_t16_recal`) disagree in both directions. These are recorded
+rather than fixed: the analyst inspects the northing result and can supply a hand-corrected
+table, so the corrector does not have to be right every time -- it has to be right usually, and
+**visible** when it is not, which is what the plots are for.
+
+### The earlier framing (superseded)
+
+Kept because the reasoning is instructive, not because it was right: it named the outage as the
+cause and the first pass as innocent, and both were wrong.
 
 Over 2016–2020 nearly every turbine gains changepoint pairs at **2019-11-11/19** and
 **2020-06-12/19** — steps of ~±12° and ~±16°, farm-wide, synchronous, self-cancelling within
