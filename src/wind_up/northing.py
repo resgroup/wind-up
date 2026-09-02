@@ -24,6 +24,7 @@ import itertools
 import logging
 import math
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -32,7 +33,7 @@ import pandas as pd
 from wind_up.circular_math import circ_diff, circ_median
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     import numpy.typing as npt
 
@@ -59,13 +60,6 @@ _MIN_ROWS_PER_SECTOR = 50
 # A step larger than this is a recalibration whatever else the record does, so it is never ironed
 # out as wander -- real ones do sometimes reverse later.
 _MAX_TRANSIENT_STEP_DEG = 10.0
-
-
-# A consensus needs a strict majority of the farm reporting. Below that the median is over an
-# unrepresentative few, whose own veer moves the reference rather than the farm's.
-def _farm_quorum(n_devices: int, *, floor: int) -> int:
-    """Return how many devices must report for their median to stand for the farm's consensus."""
-    return max(floor, n_devices // 2 + 1)
 
 
 # The span either side of a changepoint at which ``min_step_deg`` applies unmodified. With less
@@ -143,7 +137,7 @@ def anchoring_only(settings: NorthingSettings) -> NorthingSettings:
     finer is left to the second pass, which works against the farm consensus and estimates from
     the **raw** direction, so nothing is lost by deferring it.
     """
-    return replace(against_reanalysis(settings), min_step_deg=ANCHORING_MIN_STEP_DEG)
+    return replace(settings, min_step_deg=ANCHORING_MIN_STEP_DEG)
 
 
 def against_reanalysis(settings: NorthingSettings) -> NorthingSettings:
@@ -242,7 +236,7 @@ def veer_normalised(
         sector levels are measured on it rather than on ``residual``, so a large step cannot leak
         into the veer signature. Defaults to ``residual`` itself.
     """
-    signature = sector_signature(
+    signature = _sector_signature(
         residual if de_stepped is None else de_stepped,
         reference_deg=reference_deg,
         sector_deg=sector_deg,
@@ -254,7 +248,7 @@ def veer_normalised(
     return out
 
 
-def sector_signature(
+def _sector_signature(
     values_deg: npt.NDArray[np.float64],
     *,
     reference_deg: npt.NDArray[np.float64],
@@ -472,36 +466,84 @@ def _persistence(offsets: list[float], *, durations: npt.NDArray[np.float64]) ->
     )
 
 
-def _prune_transient_steps(
+def _prune_while(
+    changepoints: list[pd.Timestamp],
+    offsets: list[float],
+    *,
+    start: pd.Timestamp,
+    residual: npt.NDArray[np.float64],
+    index: pd.DatetimeIndex,
+    worst: Callable[[list[pd.Timestamp], list[float]], int | None],
+) -> tuple[list[pd.Timestamp], list[float]]:
+    """Drop whichever changepoint ``worst`` names, re-estimating offsets, until it names none.
+
+    Offsets must be re-estimated after every merge: joining two segments changes the level of the
+    result, which can in turn change which of the survivors looks weakest.
+    """
+    while changepoints:
+        drop = worst(changepoints, offsets)
+        if drop is None:
+            return changepoints, offsets
+        changepoints = [c for i, c in enumerate(changepoints) if i != drop]
+        offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
+    return changepoints, offsets
+
+
+def _steps(offsets: list[float]) -> npt.NDArray[np.float64]:
+    """Return the size of the step at each changepoint, in degrees."""
+    return np.abs(circ_diff(np.array(offsets[1:]), np.array(offsets[:-1])))
+
+
+def _worst_transient(
     changepoints: list[pd.Timestamp],
     offsets: list[float],
     *,
     start: pd.Timestamp,
     end: pd.Timestamp,
-    residual: npt.NDArray[np.float64],
-    index: pd.DatetimeIndex,
     min_step_deg: float,
     max_transient_step_deg: float,
-) -> tuple[list[pd.Timestamp], list[float]]:
-    """Iron out small excursions -- site veer wandering away and back, rather than a recalibration.
+) -> int | None:
+    """Return the least persistent **small** changepoint -- site veer wandering away and back.
 
-    Repeatedly removes the least persistent changepoint while any **small** one fails to move the
-    long-run level by ``min_step_deg``, re-estimating the offsets after each merge. Steps larger
-    than ``max_transient_step_deg`` are never removed: a real recalibration is sometimes reversed
-    later, and its size is the evidence that it happened.
+    Steps larger than ``max_transient_step_deg`` are never named: a real recalibration is
+    sometimes reversed later, and its size is the evidence that it happened.
     """
-    while len(changepoints) > 0:
-        edges = [start, *changepoints, end]
-        durations = np.array([max((b - a).total_seconds(), 1.0) for a, b in itertools.pairwise(edges)], dtype=float)
-        persistence = _persistence(offsets, durations=durations)
-        steps = np.abs(circ_diff(np.array(offsets[1:]), np.array(offsets[:-1])))
-        candidates = np.flatnonzero((steps < max_transient_step_deg) & (persistence < min_step_deg))
-        if len(candidates) == 0:
-            break
-        weakest = int(candidates[np.argmin(persistence[candidates])])
-        changepoints = [c for i, c in enumerate(changepoints) if i != weakest]
-        offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
-    return changepoints, offsets
+    edges = [start, *changepoints, end]
+    durations = np.array([max((b - a).total_seconds(), 1.0) for a, b in itertools.pairwise(edges)], dtype=float)
+    persistence = _persistence(offsets, durations=durations)
+    candidates = np.flatnonzero((_steps(offsets) < max_transient_step_deg) & (persistence < min_step_deg))
+    if len(candidates) == 0:
+        return None
+    return int(candidates[np.argmin(persistence[candidates])])
+
+
+def _worst_unsupported(
+    changepoints: list[pd.Timestamp],
+    offsets: list[float],
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    min_step_deg: float,
+    max_transient_step_deg: float,
+    confident_segment: pd.Timedelta,
+) -> int | None:
+    """Return the changepoint whose step falls furthest short of what its record can support.
+
+    This is what makes ``min_step_deg`` mean what it says: a step smaller than it is never
+    reported. Near the start or end of a record -- or squeezed between two other changepoints --
+    more is required, because there is less data with which to tell a step from veer.
+    """
+    required = _required_step(
+        changepoints,
+        start=start,
+        end=end,
+        min_step_deg=min_step_deg,
+        max_transient_step_deg=max_transient_step_deg,
+        confident_segment=confident_segment,
+    )
+    shortfall = required - _steps(offsets)
+    weakest = int(np.argmax(shortfall))
+    return weakest if shortfall[weakest] > 0 else None
 
 
 def _required_step(
@@ -524,44 +566,6 @@ def _required_step(
     spans = np.array([max((b - a) / confident_segment, 1e-9) for a, b in itertools.pairwise(edges)])
     support = np.minimum(spans[:-1], spans[1:])
     return np.clip(min_step_deg / np.sqrt(np.minimum(support, 1.0)), min_step_deg, max_transient_step_deg)
-
-
-def _prune_small_steps(
-    changepoints: list[pd.Timestamp],
-    offsets: list[float],
-    *,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    residual: npt.NDArray[np.float64],
-    index: pd.DatetimeIndex,
-    min_step_deg: float,
-    max_transient_step_deg: float,
-    confident_segment: pd.Timedelta,
-) -> tuple[list[pd.Timestamp], list[float]]:
-    """Drop changepoints whose step is too small for the record supporting them.
-
-    This is what makes ``min_step_deg`` mean what it says: a step smaller than it is never
-    reported. Near the start or end of a record -- or squeezed between two other changepoints --
-    more is required, because there is less data to tell a step from veer. Offsets are
-    re-estimated after each merge, since merging two segments changes the level of the result.
-    """
-    while changepoints:
-        steps = np.abs(circ_diff(np.array(offsets[1:]), np.array(offsets[:-1])))
-        required = _required_step(
-            changepoints,
-            start=start,
-            end=end,
-            min_step_deg=min_step_deg,
-            max_transient_step_deg=max_transient_step_deg,
-            confident_segment=confident_segment,
-        )
-        shortfall = required - steps
-        weakest = int(np.argmax(shortfall))
-        if shortfall[weakest] <= 0:
-            break
-        changepoints = [c for i, c in enumerate(changepoints) if i != weakest]
-        offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
-    return changepoints, offsets
 
 
 def estimate_north_table(
@@ -663,26 +667,21 @@ def estimate_north_table(
         )
 
     offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
-    changepoints, offsets = _prune_transient_steps(
+    bounds = {"start": start, "residual": residual, "index": index}
+    rule = {
+        "start": start,
+        "end": end,
+        "min_step_deg": settings.min_step_deg,
+        "max_transient_step_deg": settings.max_transient_step_deg,
+    }
+    # First iron out excursions, then drop what the record cannot support. Order matters: a step
+    # only looks unsupported once the excursion around it has gone.
+    changepoints, offsets = _prune_while(changepoints, offsets, **bounds, worst=partial(_worst_transient, **rule))
+    changepoints, offsets = _prune_while(
         changepoints,
         offsets,
-        start=start,
-        end=end,
-        residual=residual,
-        index=index,
-        min_step_deg=settings.min_step_deg,
-        max_transient_step_deg=settings.max_transient_step_deg,
-    )
-    changepoints, offsets = _prune_small_steps(
-        changepoints,
-        offsets,
-        start=start,
-        end=end,
-        residual=residual,
-        index=index,
-        min_step_deg=settings.min_step_deg,
-        max_transient_step_deg=settings.max_transient_step_deg,
-        confident_segment=settings.confident_segment,
+        **bounds,
+        worst=partial(_worst_unsupported, **rule, confident_segment=settings.confident_segment),
     )
     return _table([start, *changepoints], offsets)
 
@@ -727,6 +726,13 @@ def _median_across(stack: npt.NDArray[np.float64], *, enough: npt.NDArray[np.boo
     # every retained column has at least ``min_devices`` finite entries, so no all-NaN slice
     farm[enough] = (np.nanmedian(centred, axis=0) + mean) % 360.0
     return farm
+
+
+# A consensus needs a strict majority of the farm reporting. Below that the median is over an
+# unrepresentative few, whose own veer moves the reference rather than the farm's.
+def _farm_quorum(n_devices: int, *, floor: int) -> int:
+    """Return how many devices must report for their median to stand for the farm's consensus."""
+    return max(floor, n_devices // 2 + 1)
 
 
 def _farm_direction(

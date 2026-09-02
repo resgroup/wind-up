@@ -22,6 +22,7 @@ from wind_up.northing import (
     NORTH_OFFSET_COL,
     NorthingSettings,
     against_reanalysis,
+    anchoring_only,
     apply_north_table,
     estimate_north_table,
     yaw_usable,
@@ -249,7 +250,7 @@ def auto_northing_corrections(
     wf_df = wf_df.copy()
 
     reanalysis_wf_north_table = _north_wf_table(
-        wf_df, north_ref_wd_col=REANALYSIS_WD_COL, cfg=cfg, plot_cfg=plot_cfg, settings=against_reanalysis(settings)
+        wf_df, north_ref_wd_col=REANALYSIS_WD_COL, cfg=cfg, plot_cfg=plot_cfg, settings=anchoring_only(settings)
     )
     if plot_cfg is not None:
         reanalysis_wf_north_table.to_csv(cfg.out_dir / "reanalysis_wf_north_table.csv")
