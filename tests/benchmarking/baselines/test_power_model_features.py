@@ -182,3 +182,99 @@ class TestOutcomeAndGuard:
 
     def test_guard_passes_for_reference_only_features(self) -> None:
         check_reference_only([f"{_POWER}{QUALIFIER}R1", "temperature_2m"], test_wtg="T1")
+
+
+_NORTHED_DIR = "northed_wtc_NacPos_mean"
+_RAW_DIR = "wtc_NacPos_mean"
+
+
+def _scada_with_direction(idx: pd.DatetimeIndex) -> pd.DataFrame:
+    """The long SCADA above, plus a raw nacelle position and its northed counterpart."""
+    scada = _scada(idx)
+    rng = np.random.default_rng(1)
+    scada[_RAW_DIR] = rng.uniform(0, 360, len(scada))
+    scada[_NORTHED_DIR] = (scada[_RAW_DIR] + 30.0) % 360.0
+    return scada
+
+
+class TestReferenceDirectionFeature:
+    """Each reference's northed direction enters as sin/cos; the raw column never does."""
+
+    def test_direction_enters_as_sin_and_cos_per_reference(self) -> None:
+        idx = _index(12)
+        feats = build_reference_features(
+            _scada_with_direction(idx),
+            test_wtg="T1",
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            direction_col=_NORTHED_DIR,
+        )
+        for ref in ("R1", "R2", "R3"):
+            assert f"{_NORTHED_DIR}_sin{QUALIFIER}{ref}" in feats.columns
+            assert f"{_NORTHED_DIR}_cos{QUALIFIER}{ref}" in feats.columns
+        # the raw degree column is not a feature: LightGBM cannot see that 359 deg is next to 1 deg
+        assert not any(c.startswith(f"{_NORTHED_DIR}{QUALIFIER}") for c in feats.columns)
+        assert not any(c.startswith(_RAW_DIR) for c in feats.columns)
+
+    def test_sin_cos_values_are_the_direction_on_the_unit_circle(self) -> None:
+        idx = _index(6)
+        scada = _scada_with_direction(idx)
+        feats = build_reference_features(
+            scada,
+            test_wtg="T1",
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            direction_col=_NORTHED_DIR,
+        )
+        expected = scada[scada[_TURBINE] == "R1"][_NORTHED_DIR].to_numpy(dtype=float)
+        assert feats[f"{_NORTHED_DIR}_sin{QUALIFIER}R1"].to_numpy() == pytest.approx(np.sin(np.deg2rad(expected)))
+        assert feats[f"{_NORTHED_DIR}_cos{QUALIFIER}R1"].to_numpy() == pytest.approx(np.cos(np.deg2rad(expected)))
+
+    def test_test_turbine_direction_is_never_a_feature(self) -> None:
+        idx = _index(12)
+        feats = build_reference_features(
+            _scada_with_direction(idx),
+            test_wtg="T1",
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            direction_col=_NORTHED_DIR,
+        )
+        assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
+
+    def test_missing_northed_column_raises_naming_the_shared_step(self) -> None:
+        idx = _index(12)
+        with pytest.raises(ValueError, match=_NORTHED_DIR):
+            build_reference_features(
+                _scada(idx),  # no direction columns at all
+                test_wtg="T1",
+                turbine_col=_TURBINE,
+                active_power_col=_POWER,
+                availability_col=_AVAIL,
+                direction_col=_NORTHED_DIR,
+            )
+
+    def test_a_raw_direction_in_extra_cols_is_dropped_for_the_northed_one(self) -> None:
+        idx = _index(12)
+        feats = build_reference_features(
+            _scada_with_direction(idx),
+            test_wtg="T1",
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            extra_cols=(_RAW_DIR,),
+            direction_col=_NORTHED_DIR,
+        )
+        assert not any(c.startswith(_RAW_DIR) for c in feats.columns)
+        assert any(c.startswith(f"{_NORTHED_DIR}_sin") for c in feats.columns)
+
+    def test_omitting_direction_col_keeps_the_previous_feature_set(self) -> None:
+        idx = _index(12)
+        scada = _scada_with_direction(idx)
+        without = build_reference_features(
+            scada, test_wtg="T1", turbine_col=_TURBINE, active_power_col=_POWER, availability_col=_AVAIL
+        )
+        assert len(without.columns) == 6
+        assert not any("northed" in c for c in without.columns)

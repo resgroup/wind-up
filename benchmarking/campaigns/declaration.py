@@ -32,7 +32,10 @@ class CampaignSpec:
     :param candidate_references: turbines a method may use as references
     :param excluded_turbines: turbines whose data must not be used at all
     :param coords: turbine name to ``(latitude, longitude)`` in degrees
-    :param north_offsets: step-applied northing corrections, ``(turbine, from, offset_deg)``
+    :param north_offsets: step-applied northing corrections, ``(turbine, from, offset_deg)``.
+        ``None`` (the default) means the analyst supplied none and the shared northing step
+        discovers them from the data -- the usual case. A list, **including an empty one**,
+        is applied exactly as given and nothing is discovered.
     :param rated_power_kw: the turbines' rated power
     :param analysis_period: ``(start, end)`` of the whole record, end exclusive
     :param turbine_col: the turbine-identifier column of the SCADA frame
@@ -43,7 +46,7 @@ class CampaignSpec:
     candidate_references: list[str]
     excluded_turbines: list[str]
     coords: dict[str, tuple[float, float]]
-    north_offsets: list[tuple[str, pd.Timestamp, float]]
+    north_offsets: list[tuple[str, pd.Timestamp, float]] | None
     rated_power_kw: float
     analysis_period: tuple[pd.Timestamp, pd.Timestamp]
     turbine_col: str = HOT_COLUMNS.turbine
@@ -86,8 +89,12 @@ class SyntheticCampaign:
     :param upgrade_timing: changeover timestamp (prepost) or ``ToggleSchedule`` (toggle)
     :param candidate_references: turbines offered to methods as references
     :param upgrades: the upgrade callables to inject; empty for a placebo
+    :param faults: measurement corruptions to inject after the upgrades (an R-series fault such
+        as :class:`~benchmarking.synthetic.faults.NorthingStep`). Private ground truth like
+        ``upgrades``: ``CampaignSpec`` never carries them, so a method must cope undeclared.
     :param coords: turbine name to ``(latitude, longitude)`` in degrees
-    :param north_offsets: step-applied northing corrections, ``(turbine, from, offset_deg)``
+    :param north_offsets: step-applied northing corrections, ``(turbine, from, offset_deg)``;
+        ``None`` leaves them to be discovered (see :class:`CampaignSpec`)
     :param rated_power_kw: the turbines' rated power
     :param analysis_period: ``(start, end)`` of the whole record, end exclusive
     :param excluded_turbines: turbines whose data must not be used
@@ -100,9 +107,10 @@ class SyntheticCampaign:
     candidate_references: list[str]
     upgrades: list
     coords: dict[str, tuple[float, float]]
-    north_offsets: list[tuple[str, pd.Timestamp, float]]
+    north_offsets: list[tuple[str, pd.Timestamp, float]] | None
     rated_power_kw: float
     analysis_period: tuple[pd.Timestamp, pd.Timestamp]
+    faults: list = field(default_factory=list)
     excluded_turbines: list[str] = field(default_factory=list)
     columns: ColumnSchema = HOT_COLUMNS
     seed: int = 0
@@ -123,7 +131,7 @@ class SyntheticCampaign:
             candidate_references=list(self.candidate_references),
             excluded_turbines=list(self.excluded_turbines),
             coords=dict(self.coords),
-            north_offsets=list(self.north_offsets),
+            north_offsets=None if self.north_offsets is None else list(self.north_offsets),
             rated_power_kw=self.rated_power_kw,
             analysis_period=self.analysis_period,
             turbine_col=self.columns.turbine,
@@ -140,6 +148,7 @@ class SyntheticCampaign:
             upgrades=list(self.upgrades),
             mode="toggle" if isinstance(self.upgrade_timing, ToggleSchedule) else "prepost",
             upgrade_timing=self.upgrade_timing,
+            faults=list(self.faults),
             rated_power_kw=self.rated_power_kw,
             columns=self.columns,
             seed=self.seed,

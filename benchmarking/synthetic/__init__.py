@@ -7,6 +7,7 @@ derivable ground-truth uplift, for objectively evaluating uplift methods.
 from __future__ import annotations
 
 from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams, cp_surface
+from benchmarking.synthetic.faults import Fault, NorthingStep
 from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset, treated_mask
 from benchmarking.synthetic.geometry import WakePair, bearing_deg, derive_wake_steering_pairs, distance_m, wrap180
 from benchmarking.synthetic.ground_truth import UpliftResult, true_farm_uplift, true_net_uplift, true_uplift
@@ -50,6 +51,8 @@ __all__ = [
     "ConstantCpChange",
     "CpCore",
     "CpParams",
+    "Fault",
+    "NorthingStep",
     "RatedPowerChange",
     "SyntheticDataset",
     "ToggleSchedule",

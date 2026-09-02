@@ -279,6 +279,11 @@ class PowerModelMethod:
         value keeps the strict raise-on-unknown-column typo guard.
     :param availability_feature: when ``False`` (the accepted default), drop the per-reference
         availability *feature*; the ``availability`` role itself stays required for the downtime filter
+    :param direction_feature: when ``True``, each reference contributes its **north-calibrated**
+        direction as ``sin``/``cos``. Requires the shared northing step to have written
+        ``columns.northed("nacelle_position")`` into the frame, and raises naming that column when
+        it has not; the raw nacelle position is never used, northed or not. The test turbine's own
+        direction stays barred (design-note §3): northing does not make a post-treatment signal safe.
     :param adaptive_time_decay: when ``True`` (**default**, the Issue 15 self-configuring behaviour)
         the headline fit's time-decay half-life is set automatically to
         ``_TIME_DECAY_CAMPAIGN_MULTIPLE * campaign_duration_days`` — a short half-life for a short
@@ -313,12 +318,15 @@ class PowerModelMethod:
     reference_stat_cols: tuple[str, ...] = ()
     era5_exclude: tuple[str, ...] = CURATED_ERA5_EXCLUDE
     availability_feature: bool = False
+    direction_feature: bool = False
     adaptive_time_decay: bool = True
     time_decay_half_life_days: float | None = None
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
         self.columns.require_roles(("active_power", "active_power_min", "availability", "wind_speed", "wind_speed_sd"))
+        if self.direction_feature:
+            self.columns.require_roles(("nacelle_position",))
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
@@ -352,6 +360,7 @@ class PowerModelMethod:
             availability_col=self.columns.availability,
             extra_cols=extra_cols,
             include_availability=self.availability_feature,
+            direction_col=self.columns.northed("nacelle_position") if self.direction_feature else None,
         )
         features, era5 = self._add_era5(scada, features, mi=mi, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
@@ -1000,6 +1009,7 @@ class PowerModelMethod:
             "reference_stat_cols": list(self.reference_stat_cols),
             "era5_exclude": list(self.era5_exclude),
             "availability_feature": self.availability_feature,
+            "direction_feature": self.direction_feature,
             "model_params": {**TUNED_MODEL_PARAMS, **self.model_params},
             "adaptive_time_decay": self.adaptive_time_decay,
             "time_decay_half_life_days": self.time_decay_half_life_days,

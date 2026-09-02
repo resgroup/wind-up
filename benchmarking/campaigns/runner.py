@@ -9,16 +9,19 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.campaigns.context import context_for
+from benchmarking.campaigns.northing import DEFAULT_NORTHING_ROLES, north_campaign_scada
 from benchmarking.harness import CampaignWindow, Replicate, score_one, truth_mask
 from wind_up import TurbineUplift, farm_uplift
+from wind_up.northing import DEFAULT_NORTHING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from benchmarking.campaigns.declaration import CampaignSpec
     from benchmarking.harness import Method, MethodInput, MethodOutput
     from benchmarking.synthetic import SyntheticDataset
     from wind_up import FarmUplift
+    from wind_up.northing import NorthingSettings
 
 
 # The farm table's columns, named here so a campaign with nothing to aggregate still returns a
@@ -67,6 +70,12 @@ class CampaignRunner:
     :param spec: the public campaign facts; methods see nothing else
     :param dataset: the generated dataset, whose ``original_df`` supplies the truth
     :param build_methods: given an upgraded turbine's name, the methods to run for it
+    :param era5_wd: reanalysis wind direction covering the campaign. Supplying it turns on the
+        shared northing step, which writes a ``northed_`` companion for each direction role
+        upstream of every method. Required when ``spec.north_offsets`` is ``None`` and northing
+        is wanted; without it the step is skipped and methods see no northed column.
+    :param northing_roles: the direction roles the shared step corrects
+    :param northing_settings: how the shared step's changepoint search is bounded
     """
 
     def __init__(
@@ -75,11 +84,17 @@ class CampaignRunner:
         dataset: SyntheticDataset,
         *,
         build_methods: Callable[[str], list[Method]],
+        era5_wd: pd.Series | None = None,
+        northing_roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
+        northing_settings: NorthingSettings = DEFAULT_NORTHING,
     ) -> None:
         """Store the campaign, its data and the per-turbine method factory."""
         self._spec = spec
         self._dataset = dataset
         self._build_methods = build_methods
+        self._era5_wd = era5_wd
+        self._northing_roles = tuple(northing_roles)
+        self._northing_settings = northing_settings
 
     def run(self) -> CampaignResult:
         """Run every applicable method on every upgraded turbine and aggregate to one headline."""
@@ -174,14 +189,32 @@ class CampaignRunner:
         }
 
     def _visible_dataset(self) -> SyntheticDataset:
-        """Return the dataset cut to what a method may see: analysis period, usable turbines only."""
+        """Return the dataset cut to what a method may see: analysis period, usable turbines only.
+
+        The shared northing step runs here, so every method downstream inherits the north-calibrated
+        direction rather than each hand-rolling one.
+        """
         synthetic = self._dataset.synthetic_df
         keep = self._visible_mask(synthetic)
+        visible = synthetic[keep]
+        if self._should_north():
+            visible = north_campaign_scada(
+                visible,
+                spec=self._spec,
+                columns=self._dataset.columns,
+                era5_wd=self._era5_wd,
+                roles=self._northing_roles,
+                settings=self._northing_settings,
+            )
         return replace(
             self._dataset,
-            synthetic_df=synthetic[keep],
+            synthetic_df=visible,
             original_df=self._dataset.original_df[self._visible_mask(self._dataset.original_df)],
         )
+
+    def _should_north(self) -> bool:
+        """Whether the shared step can run: a declared table needs nothing, discovery needs ERA5."""
+        return self._spec.north_offsets is not None or self._era5_wd is not None
 
     def _visible_mask(self, frame: pd.DataFrame) -> np.ndarray:
         """Rows of ``frame`` inside the analysis period whose turbine may be used."""

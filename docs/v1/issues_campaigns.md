@@ -408,18 +408,29 @@ Every R-issue shares a two-phase acceptance, run in **both prepost and toggle**:
 ## R1 — Northing errors (shared fix)
 
 **Goal:** wind-up recovers a known uplift despite a turbine's direction reference
-carrying a **step change** in its offset partway through the record.
+carrying a **step change** in its north calibration partway through the record.
 
 **Scope**
-- **Fault (generator):** inject a known **step** in reported wind direction for some
+- **Fault (generator):** inject a known **step** in reported yaw angle or wind direction for some
   turbine(s) at a date (a recalibration / sensor swap). **Steps only — no drifts.**
 - **Fix:** a **shared northing-correction feature-engineering step** in the runner /
   preprocessing, upstream of every method, so every method inherits it.
-- Develop on the tiny fixture; land before C3 so the prepost campaign inherits it.
+- Develop on a tiny fixture; land before C3 so the prepost campaign inherits it.
 
-**Done when:** the step bites `power_model` on the clean fixture, then the shared
+Notes on potential test turbines:
+T06 is thought to be the best, however its likely best reference T05 has natural step changes in its yaw direction already in 2017 and 2018. That is not necessarily a problem but it means we are not working from a clean slate. But as a starting point could try running v0 on T06 for pre-post 2017-2018 with and without northing correction to see sensitivity of this naturally occuring example of the failure mode.
+T11's surrounding turbines all have stable northing in 2017 and 2018 according to HOT open optimized_northing_corrections.yaml
+
+other notes:
+- `power_model` might need a little development if it does not use reference turbine yaw/wind direction at all yet (I think it does not, precisely because it could not see north calibrated versions up till now)
+- reference turbine yaw direction is generally preferred over wind direction for the same reasons power is preferred over wind speed.
+- `naive_ratio` and `toggle_specialist` do not use wind direction so are out of scope in this issue
+
+**Done when:**
+the step bites `v0` and `power_model` on the clean fixture, then the shared
 northing step restores invariance; C3/C5 drop their bespoke northing wiring in favour
 of this step.
+the developed solution can be a drop-in replacement for the existing src/wind_up_v0/optimize_northing.py. Same or better performance is proven and useful test cases are ported. It should run MUCH faster (the old solution is a hand-rolled optimizer) and not require exotic dependencies (drop `ruptures`)
 
 ---
 
