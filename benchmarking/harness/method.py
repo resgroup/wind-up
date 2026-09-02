@@ -1,16 +1,19 @@
-"""The thin method seam the harness scores against.
+"""The method seam the harness scores against: ``MethodInput -> MethodOutput``.
 
-Deliberately minimal: the harness only ever sees ``MethodInput -> MethodOutput``. The mode is
-inferred from ``upgrade_timing``'s type (a timestamp is prepost; a ``ToggleSchedule`` is
-toggle). Reference selection and method-specific config are baked into each ``Method``, not
-carried on the input, so the seam bakes in no method assumptions. The Issue 4 data contract
-later enriches this behind the same seam.
+The input carries the data plus a :class:`~benchmarking.harness.context.CampaignContext` -- the
+campaign facts for one test turbine, which is where a method learns its candidate references and
+which rows are valid for uplift. Method-specific config (models, bin widths, plots) stays on the
+``Method`` itself, so the seam carries answers rather than configuration. An input built without
+a context uses the frame's own implicit contract: every other turbine is a candidate reference
+and every row is valid.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+from benchmarking.harness.context import CampaignContext
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -34,12 +37,53 @@ class MethodInput:
         ``toggle_on``/``toggle_off`` on a ``DatetimeIndex``) for toggle. See
         :mod:`benchmarking.harness.toggle`.
     :param turbine_col: the turbine-identifier column in ``scada_df``
+    :param campaign_context: the constructor slot for a campaign-derived
+        :class:`~benchmarking.harness.context.CampaignContext`. Read :attr:`context` instead --
+        it supplies the frame's own implicit contract when nothing was passed here. When it *is*
+        passed, it is the source of ``upgrade_timing`` and ``turbine_col``, which are reconciled
+        to it on construction.
     """
 
     scada_df: pd.DataFrame
     test_wtg: str
-    upgrade_timing: pd.Timestamp | ToggleSchedule | pd.DataFrame
+    upgrade_timing: pd.Timestamp | ToggleSchedule | pd.DataFrame | None = None
     turbine_col: str = "TurbineName"
+    campaign_context: CampaignContext | None = None
+
+    def __post_init__(self) -> None:
+        """Reconcile the timing and turbine-column shorthands to a supplied context, and validate."""
+        if self.campaign_context is None:
+            if self.upgrade_timing is None:
+                msg = (
+                    "MethodInput needs either campaign_context or upgrade_timing: with neither there is "
+                    "no changeover or schedule to estimate against."
+                )
+                raise ValueError(msg)
+            return
+        if self.campaign_context.test_wtg != self.test_wtg:
+            msg = (
+                f"campaign_context is for test_wtg {self.campaign_context.test_wtg!r} but this input estimates "
+                f"{self.test_wtg!r}; the method would read another turbine's references and row validity."
+            )
+            raise ValueError(msg)
+        self.upgrade_timing = self.campaign_context.timing
+        self.turbine_col = self.campaign_context.turbine_col
+
+    @property
+    def context(self) -> CampaignContext:
+        """The campaign facts for this turbine; the frame's own implicit contract by default.
+
+        Built on first read rather than on construction, so an input that never consults it costs
+        nothing and a frame without a turbine column is only a problem for a method that uses it.
+        """
+        if self.campaign_context is None:
+            self.campaign_context = CampaignContext.from_frame(
+                self.scada_df,
+                test_wtg=self.test_wtg,
+                timing=self.upgrade_timing,
+                turbine_col=self.turbine_col,
+            )
+        return self.campaign_context
 
 
 @dataclass

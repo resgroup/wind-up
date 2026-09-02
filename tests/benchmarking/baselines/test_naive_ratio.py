@@ -24,6 +24,7 @@ from benchmarking.baselines.naive_ratio import (
     _expected_per_day,
     _infer_timebase,
 )
+from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
 
@@ -440,3 +441,65 @@ class TestToggleCampaignOnly:
         a = NaiveRatioMethod(columns=_COLUMNS).estimate(mi)
         b = NaiveRatioMethod(columns=_COLUMNS, toggle_campaign_only=False).estimate(mi)
         assert a.p50_overall == pytest.approx(b.p50_overall)
+
+
+class TestCampaignContext:
+    """The method takes reference membership and row validity from the campaign context."""
+
+    @staticmethod
+    def _scada_three() -> tuple[pd.DataFrame, pd.Timestamp]:
+        # Time-varying power throughout: with constant power the ratio-of-ratios cancels and
+        # neither manipulation below could change the answer.
+        index = _index(48)
+        upgrade = index[24]
+        rng = np.random.default_rng(0)
+        counterfactual = 100.0 + rng.uniform(0.0, 50.0, 48)
+        test = counterfactual.copy()
+        test[24:] *= 1.1
+        return (
+            _scada(
+                {
+                    "T1": test,
+                    "T2": 100.0 + rng.uniform(0.0, 50.0, 48),
+                    "T3": 400.0 + rng.uniform(0.0, 200.0, 48),
+                },
+                index,
+            ),
+            upgrade,
+        )
+
+    @staticmethod
+    def _estimate(scada: pd.DataFrame, **kwargs: object) -> float:
+        return NaiveRatioMethod(columns=_COLUMNS).estimate(MethodInput(scada_df=scada, **kwargs)).p50_overall
+
+    def test_only_offered_references_are_used(self) -> None:
+        scada, upgrade = self._scada_three()
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=upgrade, turbine_col=_TURBINE_COL)
+        object.__setattr__(context, "candidate_references", ["T2"])
+        offered_t2_only = self._estimate(scada, test_wtg="T1", campaign_context=context)
+
+        # The same answer as simply not having T3 in the data at all...
+        without_t3 = self._estimate(
+            scada[scada[_TURBINE_COL] != "T3"], test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL
+        )
+        assert offered_t2_only == pytest.approx(without_t3)
+        # ...and not the answer T3 would have given, so the fixture really does discriminate.
+        with_t3 = self._estimate(scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        assert offered_t2_only != pytest.approx(with_t3)
+
+    def test_rows_a_reference_may_not_contribute_are_dropped(self) -> None:
+        scada, upgrade = self._scada_three()
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=upgrade, turbine_col=_TURBINE_COL)
+        valid = context.valid_for_uplift.copy()
+        valid.loc[valid.index[:12], "T2"] = False
+        object.__setattr__(context, "valid_for_uplift", valid)
+        with_holes = self._estimate(scada, test_wtg="T1", campaign_context=context)
+
+        # Those baseline rows leave the ratio, exactly as if T2's data were missing there.
+        holed = scada.copy()
+        holed.loc[(holed.index < valid.index[12]) & (holed[_TURBINE_COL] == "T2"), _POWER_COL] = np.nan
+        assert with_holes == pytest.approx(
+            self._estimate(holed, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        )
+        untouched = self._estimate(scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        assert with_holes != pytest.approx(untouched)

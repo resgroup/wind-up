@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from benchmarking.campaigns.context import context_for
 from benchmarking.harness import CampaignWindow, Replicate, score_one, truth_mask
 from wind_up import TurbineUplift, farm_uplift
 
@@ -103,6 +104,7 @@ class CampaignRunner:
             truth = replicate.true_uplift(mask=mask).overall
             energy, n_records = self._actual_energy(visible, turbine=wtg, mask=mask)
 
+            context = context_for(spec, turbine=wtg, scada_df=visible.synthetic_df)
             for method in self._build_methods(wtg):
                 capturing = _Capturing(method)
                 score_rows.extend(
@@ -113,6 +115,7 @@ class CampaignRunner:
                         truth=truth,
                         mask=mask,
                         profile_name=spec.change_label(),
+                        context=context,
                     )
                 )
                 if capturing.output is None:  # pragma: no cover - score_one always estimates

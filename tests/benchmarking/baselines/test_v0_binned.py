@@ -14,6 +14,7 @@ import pytest
 from benchmarking.baselines import v0_binned
 from benchmarking.baselines.hot_context import HotV0Context
 from benchmarking.baselines.v0_binned import V0BinnedMethod, _extract_p50, _subset_turbines
+from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.toggle import build_toggle_df
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
@@ -301,3 +302,15 @@ class TestEstimateMulti:
         assert outs["T01"].p50_overall == pytest.approx(-0.012)
         assert outs["T04"].p50_overall == pytest.approx(0.026)
         assert calls["from_cfg"] == 1  # both turbines analysed in a single wind_up run
+
+
+class TestCampaignContextRefs:
+    def test_config_references_come_from_the_campaign(self, tmp_path) -> None:  # noqa: ANN001
+        method = V0BinnedMethod(_context(), scratch_dir=tmp_path)
+        scada = _dense_scada(
+            ["T01", "T02", "T03", "T04"], start=UPGRADE - pd.DateOffset(years=1), end=UPGRADE + pd.DateOffset(months=6)
+        )
+        campaign = CampaignContext.from_frame(scada, test_wtg="T01", timing=UPGRADE, turbine_col=HOT_COLUMNS.turbine)
+        object.__setattr__(campaign, "candidate_references", ["T02", "T03"])
+        cfg = method._build_config(MethodInput(scada_df=scada, test_wtg="T01", campaign_context=campaign))  # noqa: SLF001
+        assert sorted(w.name for w in cfg.ref_wtgs) == ["T02", "T03"]

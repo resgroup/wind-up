@@ -83,6 +83,7 @@ class RecordingMethod:
             test_wtg=mi.test_wtg,
             upgrade_timing=mi.upgrade_timing,
             turbine_col=mi.turbine_col,
+            campaign_context=mi.campaign_context,
         )
         self.seen.append(captured)
         return MethodOutput(p50_overall=0.0)

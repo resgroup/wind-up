@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from benchmarking.harness.campaign import CampaignWindow
+    from benchmarking.harness.context import CampaignContext
     from benchmarking.harness.method import Method
     from benchmarking.harness.replicates import Replicate, StudyConfig
     from benchmarking.synthetic import ColumnSchema
@@ -125,6 +126,7 @@ def score_one(
     truth: float,
     mask: npt.NDArray[np.bool_],
     profile_name: str = "profile",
+    context: CampaignContext | None = None,
 ) -> list[dict[str, object]]:
     """Run one method over one ``(replicate, window)`` instance and return its tidy result rows.
 
@@ -135,7 +137,7 @@ def score_one(
     deriving them here would multiply that cost by ``len(methods)``. Build them with
     :func:`truth_mask` and ``replicate.true_uplift(mask=...)``.
     """
-    method_input = _method_input(replicate, window)
+    method_input = _method_input(replicate, window, context=context)
     start = time.perf_counter()
     output = method.estimate(method_input)
     wall_time_s = time.perf_counter() - start
@@ -230,8 +232,14 @@ def _materialise_instances(
     return instances
 
 
-def _method_input(replicate: Replicate, window: CampaignWindow) -> MethodInput:
-    """Return the method-facing rows: all subset turbines within ``[baseline_start, activity_end)``."""
+def _method_input(
+    replicate: Replicate, window: CampaignWindow, *, context: CampaignContext | None = None
+) -> MethodInput:
+    """Return the method-facing rows: all subset turbines within ``[baseline_start, activity_end)``.
+
+    ``context`` is a campaign-derived context covering at least these rows; without one the input
+    falls back to the frame's own implicit contract.
+    """
     synthetic = replicate.synthetic_df
     row_mask = window_row_mask(synthetic.index, window)
     return MethodInput(
@@ -239,6 +247,7 @@ def _method_input(replicate: Replicate, window: CampaignWindow) -> MethodInput:
         test_wtg=replicate.test_wtg,
         upgrade_timing=replicate.upgrade_timing,
         turbine_col=replicate.dataset.columns.turbine,
+        campaign_context=context,
     )
 
 

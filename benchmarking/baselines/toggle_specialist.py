@@ -164,13 +164,17 @@ class ToggleSpecialistMethod:
         mi = restrict_to_campaign(mi)
         wide = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.active_power)
         test = mi.test_wtg
-        refs = [c for c in wide.columns if c != test]
+        refs = mi.context.references_among(wide.columns)
         if not refs:
             msg = (
                 f"no reference turbines available for test_wtg {test!r}: scada_df contains only "
                 f"{list(wide.columns)}. The toggle specialist method needs at least one reference turbine."
             )
             raise ValueError(msg)
+        # Narrow to the campaign's turbines and blank the cells it says may not contribute, so the
+        # estimate and every diagnostic below see one consistent selection.
+        ref_set = set(refs)
+        wide = mi.context.mask_invalid(wide[[c for c in wide.columns if c == test or c in ref_set]])
 
         if self.columns.availability not in mi.scada_df.columns:
             msg = (

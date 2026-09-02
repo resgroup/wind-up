@@ -27,6 +27,7 @@ from benchmarking.baselines.toggle_specialist import (
     restrict_to_campaign,
 )
 from benchmarking.harness.conditions import condition_bins
+from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.toggle import build_toggle_df, resolve_toggle
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
@@ -1045,3 +1046,64 @@ class TestExcludeRow:
         names = {p.name for p in (run_dir / "plots").rglob("*.png")}
         assert "ops_curves_excluded.png" not in names
         assert "excluded_row_fraction.png" not in names
+
+
+class TestCampaignContext:
+    """The method takes reference membership and row validity from the campaign context."""
+
+    @staticmethod
+    def _fixture() -> tuple[pd.DataFrame, ToggleSchedule]:
+        # Time-varying power throughout: with constant power the ratio-of-ratios cancels and
+        # neither manipulation below could change the answer.
+        index = _index(96)
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=4), start=index[0])
+        treated = treated_mask(index, schedule)
+        rng = np.random.default_rng(0)
+        counterfactual = 100.0 + rng.uniform(0.0, 50.0, len(index))
+        test = np.where(treated, counterfactual * 1.05, counterfactual)
+        return (
+            _scada(
+                {
+                    "T1": test,
+                    "T2": 100.0 + rng.uniform(0.0, 50.0, len(index)),
+                    "T3": 400.0 + rng.uniform(0.0, 200.0, len(index)),
+                },
+                index,
+            ),
+            schedule,
+        )
+
+    @staticmethod
+    def _estimate(scada: pd.DataFrame, **kwargs: object) -> float:
+        method = ToggleSpecialistMethod(columns=_COLUMNS)
+        return method.estimate(MethodInput(scada_df=scada, **kwargs)).p50_overall
+
+    def test_only_offered_references_are_used(self) -> None:
+        scada, schedule = self._fixture()
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=schedule, turbine_col=_TURBINE_COL)
+        object.__setattr__(context, "candidate_references", ["T2"])
+        offered_t2_only = self._estimate(scada, test_wtg="T1", campaign_context=context)
+
+        assert offered_t2_only == pytest.approx(
+            self._estimate(
+                scada[scada[_TURBINE_COL] != "T3"], test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL
+            )
+        )
+        with_t3 = self._estimate(scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        assert offered_t2_only != pytest.approx(with_t3)
+
+    def test_rows_a_reference_may_not_contribute_are_dropped(self) -> None:
+        scada, schedule = self._fixture()
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=schedule, turbine_col=_TURBINE_COL)
+        valid = context.valid_for_uplift.copy()
+        valid.loc[valid.index[:24], "T2"] = False
+        object.__setattr__(context, "valid_for_uplift", valid)
+        with_holes = self._estimate(scada, test_wtg="T1", campaign_context=context)
+
+        holed = scada.copy()
+        holed.loc[(holed.index < valid.index[24]) & (holed[_TURBINE_COL] == "T2"), _POWER_COL] = np.nan
+        assert with_holes == pytest.approx(
+            self._estimate(holed, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        untouched = self._estimate(scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        assert with_holes != pytest.approx(untouched)

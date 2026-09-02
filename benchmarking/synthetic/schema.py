@@ -68,6 +68,15 @@ class ColumnSchema:
     ambient_temp: str | None = None
     exclude_row: str | None = None
 
+    def northed(self, role: str) -> str:
+        """Return the derived north-calibrated column name for ``role``, e.g. ``northed_YawAngleMean``.
+
+        The shared northing step writes this column alongside the untouched original, so plots and
+        diagnostics of the raw signal keep meaning what they say. Raises if ``role`` is unset.
+        """
+        self.require_roles([role])
+        return f"northed_{getattr(self, role)}"
+
     def require_roles(self, roles: Iterable[str]) -> None:
         """Raise ``ValueError`` if any named role is unset or blank (``None``, empty, or whitespace).
 

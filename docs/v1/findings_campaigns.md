@@ -12,9 +12,85 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF6 — Honouring the declared `candidate_references` moves the prepost farm number 4x closer to truth (+0.148% → +0.039%), but *per-turbine* accuracy is marginally worse: the farm gain is cancellation, not better estimates
+
+*2026-09-02. Reproduce: `uv run python -m benchmarking.campaigns.placebo`, Hill of Towie, both
+modes, defaults (six upgraded turbines T07/T11/T12/T06/T16/T19 of 21, `upgrades=[]` so truth is 0
+by construction). Controlled against the same driver run from the pre-C2 commit `a1f96af`.*
+
+**Why re-recorded.** Before C2 the campaign path ignored `candidate_references` and every method
+took "every turbine in the frame except the test one" as its references — so estimating T07 used
+the other five *upgraded* turbines as references, which the declaration explicitly excludes. C2
+made the path honour the declaration, dropping the reference pool from 20 to 15.
+
+**Truth is still exactly 0.0 in both modes.**
+
+**Prepost, pre-C2 → C2 (%), truth 0:**
+
+| wtg | `power_model` pre | `power_model` C2 | `naive_ratio` pre | `naive_ratio` C2 |
+|---|---|---|---|---|
+| T06 | +0.305 | +0.616 | +7.807 | +7.412 |
+| T07 | +0.684 | +0.462 | −1.678 | −1.604 |
+| T11 | +0.184 | +0.188 | −2.199 | −1.574 |
+| T12 | +0.617 | +0.337 | +0.047 | +0.555 |
+| T16 | −0.442 | −0.721 | +0.638 | −0.152 |
+| T19 | −0.658 | −0.769 | −0.508 | −1.155 |
+| **mean abs** | **0.481** | **0.515** | **2.146** | **2.076** |
+| **farm** | **+0.1485** | **+0.0390** | **+0.2330** | **+0.2027** |
+
+**The control reproduces CF3.** The pre-C2 run reads **+0.1485%**, matching the **+0.148%** CF3
+recorded for six test turbines. The comparison is therefore a like-for-like A/B of the reference
+rule, not a config difference.
+
+**The farm improves; the turbines do not.** `power_model`'s farm error falls from +0.148% to
++0.039%, but its mean per-turbine absolute error *rises* (0.481 → 0.515 pp) and its spread widens
+slightly (1.341 → 1.385 pp). So the headline gain is **better cancellation across turbines**, not
+better individual estimates — unsurprising given five references were removed, which costs a
+little per-turbine precision. Why the residuals cancel better under the declared pool is **not
+established here**; a plausible reading is that referencing turbines that are themselves under
+test induces a shared error the farm aggregate cannot cancel, but this run does not demonstrate
+that mechanism.
+
+**Toggle (%), truth 0** — no pre-C2 control was run for toggle, so these are recorded, not
+compared:
+
+| wtg | `power_model` | `naive_ratio` | `toggle_specialist` |
+|---|---|---|---|
+| T06 | +0.087 | −0.191 | −0.191 |
+| T07 | −0.151 | +0.239 | +0.239 |
+| T11 | +0.197 | +0.338 | +0.338 |
+| T12 | −0.224 | −0.196 | −0.196 |
+| T16 | −0.753 | −0.683 | −0.683 |
+| T19 | −0.558 | −0.561 | −0.561 |
+| **mean abs** | **0.328** | **0.368** | **0.368** |
+| **farm** | **−0.2186** | **−0.1425** | **−0.1425** |
+
+**`naive_ratio` and `toggle_specialist` agree exactly, by construction.** Both compute the same
+headline `rho_up / rho_base − 1` over the same complete-case, availability-filtered selection;
+with `naive_ratio`'s default `toggle_campaign_only=True` both also restrict to the interleaved
+blocks. What the specialist adds is the non-optional bootstrap sigma and the per-bin conditional
+decomposition, not a different P50. This identity predates C2 (the 2026-09-01 runs show it too)
+and is expected, not a defect.
+
+**CF1's order-of-magnitude claim does not survive this configuration.** CF1 measured prepost
+against toggle on the old two-turbine T01/T04 setup. On the current six-turbine config
+`power_model` reads 0.515 pp prepost against 0.328 pp toggle — toggle still wins, but by a third,
+not an order of magnitude. That is a configuration difference, **not** an effect of C2: both
+CF1's and this run's prepost/toggle gap are measured within one code version.
+
+**Implication.** The declaration is worth honouring on the farm number, which is the headline the
+real campaigns report. The per-turbine cost is small but real and worth watching in C3+, where
+reference pools are smaller than 15 and losing five references will hurt more.
+
 ## CF5 — T06 is the failure-mode fixture turbine: `power_model` holds it to 0.34% mean error with a 0.72 pp swing across seven windows while `naive_ratio` averages 3.3% and swings **13.3 pp**. T12 is the trap — stable but biased, with no headroom at all
 
 *2026-09-01. Reproduce: `placebo_campaign(mode="prepost", upgraded=..., turbines=HOT_TURBINES)`
+
+> **Predates the C2 reference rule (noted 2026-09-02).** C2 made the campaign path honour the
+> declared `candidate_references`, so the six upgraded turbines no longer serve as each other's
+> references. The sweep behind this entry has **not** been re-run and is not reproducible as
+> written: the reproduce line above now yields a different reference set. Treat the numbers as a
+> record of what was observed under the old rule. Re-running the sweep is a separate exercise.
 swept over seven windows (12- and 24-month baselines into post years 2017–2020), all 21 HoT
 turbines, the six test candidates T07/T11/T12/T06/T16/T19. Truth is 0 by construction, so every
 reading is method error.*
@@ -68,6 +144,12 @@ size. T06's margin is large enough to act on; the T07/T16/T12 ordering is not.
 
 *2026-09-01. Same sweep as CF5, read per window rather than per turbine.*
 
+> **Predates the C2 reference rule (noted 2026-09-02).** C2 made the campaign path honour the
+> declared `candidate_references`, so the six upgraded turbines no longer serve as each other's
+> references. The sweep behind this entry has **not** been re-run and is not reproducible as
+> written: the reproduce line above now yields a different reference set. Treat the numbers as a
+> record of what was observed under the old rule. Re-running the sweep is a separate exercise.
+
 | window | max abs | mean abs | spread |
 |---|---|---|---|
 | **24mo→2018** | 0.674 | 0.437 | 1.15 pp |
@@ -94,6 +176,12 @@ when a window looks unexpectedly bad.
 ## CF3 — Reaching the ±0.2% farm target is mostly about **reference count**, not test count: going from 3 to 20 references halved `power_model`'s error before any cancellation, and six test turbines then took the farm result to **+0.148%**
 
 *2026-09-01. Reproduce: prepost placebo, 12 months of 2017 into 12 months of 2018, test turbines
+
+> **Predates the C2 reference rule (noted 2026-09-02).** C2 made the campaign path honour the
+> declared `candidate_references`, so the six upgraded turbines no longer serve as each other's
+> references. The sweep behind this entry has **not** been re-run and is not reproducible as
+> written: the reproduce line above now yields a different reference set. Treat the numbers as a
+> record of what was observed under the old rule. Re-running the sweep is a separate exercise.
 taken as the first n of (T07, T11, T12, T06, T16, T19), every remaining turbine a reference.*
 
 | n_test | 1 | 2 | 3 | 4 | 5 | **6** |
@@ -126,6 +214,12 @@ luck. +0.148% should be read as "inside target at this window", not as a settled
 ## CF2 — `naive_ratio`'s prepost placebo bias is **inherent, not fixable by window choice**: every turbine reads ±0.6–3.2% with no step change anywhere, driven by inter-annual wind-direction shift redistributing wake exposure
 
 *2026-09-01. Reproduce: 2017 vs 2018 energy ratio of each turbine against the sum of the others,
+
+> **Predates the C2 reference rule (noted 2026-09-02).** C2 made the campaign path honour the
+> declared `candidate_references`, so the six upgraded turbines no longer serve as each other's
+> references. The sweep behind this entry has **not** been re-run and is not reproducible as
+> written: the reproduce line above now yields a different reference set. Treat the numbers as a
+> record of what was observed under the old rule. Re-running the sweep is a separate exercise.
 availability-filtered, on the six-turbine (T01–T05, T07) configuration.*
 
 **Per-turbine naive prepost estimate, truth 0:** T01 −0.68%, T02 −0.58%, T03 −3.16%, T04 +2.52%,
@@ -152,6 +246,11 @@ a measure of how much work conditioning has to do on this site, not a defect to 
 ## CF1 — The placebo separates prepost from toggle by an order of magnitude, and seasonal composition explains part of the prepost gap: matching baseline and post to the same twelve months cut the per-turbine spread from 5.4 pp to 3.1 pp
 
 *2026-09-01. Reproduce: `uv run python -m benchmarking.campaigns.placebo`, Hill of Towie, both
+
+> **Numbers superseded (2026-09-02).** C2 made the campaign path honour the declared
+> `candidate_references`, so the six upgraded turbines no longer serve as each other's
+> references. The same driver re-run under that rule is recorded as **CF6**; the readings below
+> are what the old rule produced.
 modes, `upgrades=[]` so truth is 0 by construction.*
 
 **Truth is exactly 0.0 in both modes** — the C1 pipeline's first end-to-end confirmation on real

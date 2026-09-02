@@ -26,6 +26,7 @@ from benchmarking.baselines.power_model.method import (
     _implied_shrinkage,
 )
 from benchmarking.harness.conditions import CONDITIONS
+from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.toggle import resolve_toggle
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
@@ -759,3 +760,47 @@ class TestConditionalRegression:
         # matched cancellation (which would let the shrinkage tilt back in) will trip them.
         assert on_bias < 0.025
         assert on_ws.loc[bins].abs().max() < 0.05
+
+
+class TestCampaignContext:
+    """The model takes reference membership and row validity from the campaign context."""
+
+    @staticmethod
+    def _fixture() -> tuple[pd.DataFrame, pd.Timestamp]:
+        n = 2000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        return _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover)), pd.Timestamp(changeover)
+
+    @staticmethod
+    def _estimate(scada: pd.DataFrame, **kwargs: object) -> float:
+        method = PowerModelMethod(
+            columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(), model_params=_FAST_PARAMS
+        )
+        return method.estimate(MethodInput(scada_df=scada, **kwargs)).p50_overall
+
+    def test_only_offered_references_become_features(self) -> None:
+        scada, changeover = self._fixture()
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        object.__setattr__(context, "candidate_references", ["R1", "R2"])
+        offered = self._estimate(scada, test_wtg="T1", campaign_context=context)
+
+        # Identical to R3 simply not being in the data.
+        assert offered == pytest.approx(
+            self._estimate(
+                scada[scada[_TURBINE] != "R3"], test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE
+            )
+        )
+
+    def test_rows_a_reference_may_not_contribute_are_dropped(self) -> None:
+        scada, changeover = self._fixture()
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        valid = context.valid_for_uplift.copy()
+        valid.loc[valid.index[:200], "R1"] = False
+        object.__setattr__(context, "valid_for_uplift", valid)
+        with_holes = self._estimate(scada, test_wtg="T1", campaign_context=context)
+
+        holed = scada[~((scada.index < valid.index[200]) & (scada[_TURBINE] == "R1"))]
+        assert with_holes == pytest.approx(
+            self._estimate(holed, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+        )
