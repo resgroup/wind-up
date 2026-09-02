@@ -59,6 +59,10 @@ _MIN_ROWS_PER_SECTOR = 50
 # A step larger than this is a recalibration whatever else the record does, so it is never ironed
 # out as wander -- real ones do sometimes reverse later.
 _MAX_TRANSIENT_STEP_DEG = 10.0
+# The span either side of a changepoint at which ``min_step_deg`` applies unmodified. With less
+# record than this the level is veer-limited rather than sample-limited, so a bigger step is
+# needed to tell a recalibration from the wander.
+_DEFAULT_CONFIDENT_SEGMENT = pd.Timedelta(days=90)
 
 
 @dataclass(frozen=True)
@@ -84,7 +88,12 @@ class NorthingSettings:
         ``None`` searches the raw residual.
     :param max_transient_step_deg: the largest step that may be ironed out as wander. Above it a
         step is treated as a recalibration however the record behaves afterwards, since real ones
-        are sometimes reversed later.
+        are sometimes reversed later. Also the ceiling on the support-scaled threshold, so a big
+        enough step is credible however little record sits either side of it.
+    :param confident_segment: the span either side of a changepoint at which ``min_step_deg``
+        applies as written; with less record than that the required step grows as
+        ``sqrt(confident_segment / span)``, since the level is veer-limited and veer averages out
+        no faster than that.
     """
 
     changepoints_per_year: float = 12.0
@@ -95,6 +104,7 @@ class NorthingSettings:
     min_segment: pd.Timedelta = _DEFAULT_MIN_SEGMENT
     veer_sector_deg: float | None = _DEFAULT_VEER_SECTOR_DEG
     max_transient_step_deg: float = _MAX_TRANSIENT_STEP_DEG
+    confident_segment: pd.Timedelta = _DEFAULT_CONFIDENT_SEGMENT
 
 
 # Reanalysis is a modelled, drift-prone direction: a shift in it looks exactly like a shift in
@@ -441,27 +451,62 @@ def _prune_transient_steps(
     return changepoints, offsets
 
 
+def _required_step(
+    changepoints: list[pd.Timestamp],
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    min_step_deg: float,
+    max_transient_step_deg: float,
+    confident_segment: pd.Timedelta,
+) -> npt.NDArray[np.float64]:
+    """Return the step size each changepoint must reach, given the record supporting it.
+
+    A segment's level is limited by site veer rather than by sampling noise, and veer averages out
+    no faster than ``1/sqrt(span)``. So with less than ``confident_segment`` either side the
+    required step grows accordingly, capped at ``max_transient_step_deg`` -- above which a step is
+    credible however little record sits around it.
+    """
+    edges = [start, *changepoints, end]
+    spans = np.array([max((b - a) / confident_segment, 1e-9) for a, b in itertools.pairwise(edges)])
+    support = np.minimum(spans[:-1], spans[1:])
+    return np.clip(min_step_deg / np.sqrt(np.minimum(support, 1.0)), min_step_deg, max_transient_step_deg)
+
+
 def _prune_small_steps(
     changepoints: list[pd.Timestamp],
     offsets: list[float],
     *,
     start: pd.Timestamp,
+    end: pd.Timestamp,
     residual: npt.NDArray[np.float64],
     index: pd.DatetimeIndex,
     min_step_deg: float,
+    max_transient_step_deg: float,
+    confident_segment: pd.Timedelta,
 ) -> tuple[list[pd.Timestamp], list[float]]:
-    """Drop changepoints whose estimated step is below ``min_step_deg``, smallest first.
+    """Drop changepoints whose step is too small for the record supporting them.
 
     This is what makes ``min_step_deg`` mean what it says: a step smaller than it is never
-    reported, however much data supports it. Offsets are re-estimated after each merge, since
-    merging two segments changes the level of the result.
+    reported. Near the start or end of a record -- or squeezed between two other changepoints --
+    more is required, because there is less data to tell a step from veer. Offsets are
+    re-estimated after each merge, since merging two segments changes the level of the result.
     """
     while changepoints:
         steps = np.abs(circ_diff(np.array(offsets[1:]), np.array(offsets[:-1])))
-        smallest = int(np.argmin(steps))
-        if steps[smallest] >= min_step_deg:
+        required = _required_step(
+            changepoints,
+            start=start,
+            end=end,
+            min_step_deg=min_step_deg,
+            max_transient_step_deg=max_transient_step_deg,
+            confident_segment=confident_segment,
+        )
+        shortfall = required - steps
+        weakest = int(np.argmax(shortfall))
+        if shortfall[weakest] <= 0:
             break
-        changepoints = [c for i, c in enumerate(changepoints) if i != smallest]
+        changepoints = [c for i, c in enumerate(changepoints) if i != weakest]
         offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
     return changepoints, offsets
 
@@ -579,9 +624,12 @@ def estimate_north_table(
         changepoints,
         offsets,
         start=start,
+        end=end,
         residual=residual,
         index=index,
         min_step_deg=settings.min_step_deg,
+        max_transient_step_deg=settings.max_transient_step_deg,
+        confident_segment=settings.confident_segment,
     )
     return _table([start, *changepoints], offsets)
 

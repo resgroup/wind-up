@@ -502,3 +502,37 @@ class TestTransientPruning:
         steps.extend((when, 7.0 if i % 2 == 0 else 0.0) for i, when in enumerate(dates))
         kept = self._n_changepoints(steps)
         assert 0 < kept < len(steps) - 1
+
+
+class TestNearTheRecordEdge:
+    """How much data sits either side of a changepoint decides how big a step is credible.
+
+    A step with little record after it is estimated from little data, so a small one is as
+    likely to be veer as a recalibration. A large one is not: no amount of veer moves a
+    turbine's yaw by tens of degrees, so it must still be found however late it lands.
+    """
+
+    @staticmethod
+    def _n_changepoints(step_deg: float, *, days_after: float, days: float = 700.0) -> int:
+        index = _index(days=days)
+        when = (index.max() - pd.Timedelta(days=days_after)).strftime("%Y-%m-%d")
+        reported, reference = _reported(index, steps=[("2017-01-01", 0.0), (when, step_deg)])
+        table = estimate_north_table(index, reported, reference_deg=reference, usable=_all_usable(index))
+        return len(table) - 1
+
+    def test_a_large_jump_ten_days_before_the_end_is_still_found(self) -> None:
+        assert self._n_changepoints(60.0, days_after=10.0) == 1
+
+    def test_a_large_jump_ten_days_after_the_start_is_still_found(self) -> None:
+        index = _index(days=700)
+        when = (index.min() + pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+        reported, reference = _reported(index, steps=[("2017-01-01", 0.0), (when, 60.0)])
+        table = estimate_north_table(index, reported, reference_deg=reference, usable=_all_usable(index))
+        assert len(table) - 1 == 1
+
+    def test_a_small_step_ten_days_before_the_end_is_not_reported(self) -> None:
+        assert self._n_changepoints(4.0, days_after=10.0) == 0
+
+    def test_the_same_small_step_well_inside_the_record_is_reported(self) -> None:
+        """The step is identical; only the evidence behind it differs."""
+        assert self._n_changepoints(4.0, days_after=300.0) == 1

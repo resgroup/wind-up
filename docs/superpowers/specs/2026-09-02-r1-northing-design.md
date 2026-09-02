@@ -222,6 +222,69 @@ On the fixture the effect is starker still: the clean arms now discover **0** ch
 faulted arms exactly **1** — the injected fault and nothing else, where the first implementation
 found 7–11 spurious ones per run.
 
+## Evidence: what the record's edges do, and what an outage does
+
+Two further artefacts, both found by comparing against v0's published table on Hill of Towie
+rather than by reasoning.
+
+### The edge artefact (fixed)
+
+The estimator reported a +3.5° step on T13 at **2018-12-20** that v0's table does not have. A
+window sweep settled it: the step exists **only when the record ends on 2019-01-01**, twelve days
+later. Extend the record by two days and it is gone; every window not ending there is clean.
+
+| window | T13 changepoints |
+|---|---|
+| 2016-01-01 → 2018-01-01 | none |
+| 2017-01-01 → **2019-01-01** | **2018-12-20, +3.36°** |
+| 2017-01-01 → **2019-01-03** | none |
+| 2017-01-01 → 2019-08-17 | none |
+
+A step in the data does not care where the record happens to stop, so this is the estimator, not
+the turbine. The cause is the persistence test: with twelve days after it, the "after" level is a
+veer-dominated estimate that came out 3.36° from the "before" level, scraping over the 3.0°
+threshold.
+
+**The fix is to scale the required step with the record supporting it.** A segment's level is
+limited by site veer rather than by sampling noise, and veer averages out no faster than
+`1/sqrt(span)`, so:
+
+```
+required = clip(min_step_deg * sqrt(confident_segment / span), min_step_deg, max_transient_step_deg)
+```
+
+with `span` the shorter side of the changepoint and `confident_segment` 90 days — roughly the
+record needed to average over veer's monthly wander.
+
+A flat "near an edge, demand more than 10°" rule was tried first and **rejected because it broke a
+real detection**: T16's genuine +9.0° step on 2017-06-18 has only 30 days before it and 52 after.
+The scaled rule requires 5.2° there and keeps it, requires 8.2° at T13's twelve days and drops it.
+The cap at `max_transient_step_deg` keeps a large late jump findable, which a unit test pins.
+
+### The outage artefact (documented, not fixed)
+
+Over 2016–2020 nearly every turbine gains changepoint pairs at **2019-11-11/19** and
+**2020-06-12/19** — steps of ~±12° and ~±16°, farm-wide, synchronous, self-cancelling within
+about eight days. They survive the excursion filter because their size is above
+`max_transient_step_deg`.
+
+Those weeks are farm outages. Two mechanisms, and only the first is fixable at the seam:
+
+1. **Silent reference substitution.** v0's `add_wf_yawdir` fills a missing farm direction with
+   reanalysis, which sits degrees away from the farm consensus. In the excursion weeks 35% and
+   51% of rows are that fallback, and the turbine count falls to a median of **2** against the
+   ≥3 rule. Rows where the reference silently changed identity must not be used; excluding them
+   removes the August 2020 pair. **The v1 path is already correct here** — `_farm_direction`
+   returns NaN below `min_devices_for_farm_reference` and `yaw_usable` requires a finite
+   reference, so only the v0 adapter inherits the fallback.
+
+2. **Changing reference composition.** Excluding the fallback rows does *not* remove the November
+   2019 or June 2020 pairs, because the fallback never triggers for them: three turbines still
+   report, just not the usual three. Turbines have different veer signatures, so a farm median
+   over a different subset is a different quantity. This is the same root cause as veer, one
+   level up, and it is **not fixed**: a strict-`xfail` test records it so it announces itself when
+   it is.
+
 ## Prior art
 
 **HOGER** (Homogenization Of GEneral Regressions), Engie + CENER, merged into FLASC as

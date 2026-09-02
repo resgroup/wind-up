@@ -431,6 +431,13 @@ the step bites `v0` and `power_model` on the clean fixture, then the shared
 northing step restores invariance; C3/C5 drop their bespoke northing wiring in favour
 of this step.
 the developed solution can be a drop-in replacement for the existing src/wind_up_v0/optimize_northing.py. Same or better performance is proven and useful test cases are ported. It should run MUCH faster (the old solution is a hand-rolled optimizer) and not require exotic dependencies (drop `ruptures`)
+`power_model`'s reference-direction feature is **on by default**, not opt-in. That means the
+shared northing step has to reach the study path too (it currently runs only in
+`CampaignRunner`, so the study drivers behind the frozen benchmarks have no northed column),
+and `study_power_model_compare_baseline.json` is regenerated.
+the northing tool **shows its working**: per-turbine plots of the time-averaged residual
+against the reference with the fitted step function overlaid, before and after correction, so
+a user can see what was changed and judge it. Time averaging is what smears out veer.
 
 ---
 
