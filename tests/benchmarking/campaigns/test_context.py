@@ -48,9 +48,11 @@ class TestCandidateReferences:
 
 
 class TestValidForUplift:
-    def test_covers_the_test_turbine_and_its_references(self) -> None:
+    def test_covers_every_declared_turbine_present_not_just_the_references(self) -> None:
+        # A co-analysed turbine (v0's estimate_multi passes other upgraded turbines via
+        # select(also=...)) must be covered, or its rows would bypass declared validity.
         valid = context_for(_spec(), turbine="T1", scada_df=_scada()).valid_for_uplift
-        assert list(valid.columns) == ["T1", "T3", "T4"]
+        assert list(valid.columns) == ["T1", "T2", "T3", "T4"]
         assert valid.index.equals(_INDEX)
         assert valid.to_numpy().all()
 

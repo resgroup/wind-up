@@ -51,10 +51,23 @@ class MethodInput:
     campaign_context: CampaignContext | None = None
 
     def __post_init__(self) -> None:
-        """Reconcile the timing and turbine-column shorthands to a supplied context."""
-        if self.campaign_context is not None:
-            self.upgrade_timing = self.campaign_context.timing
-            self.turbine_col = self.campaign_context.turbine_col
+        """Reconcile the timing and turbine-column shorthands to a supplied context, and validate."""
+        if self.campaign_context is None:
+            if self.upgrade_timing is None:
+                msg = (
+                    "MethodInput needs either campaign_context or upgrade_timing: with neither there is "
+                    "no changeover or schedule to estimate against."
+                )
+                raise ValueError(msg)
+            return
+        if self.campaign_context.test_wtg != self.test_wtg:
+            msg = (
+                f"campaign_context is for test_wtg {self.campaign_context.test_wtg!r} but this input estimates "
+                f"{self.test_wtg!r}; the method would read another turbine's references and row validity."
+            )
+            raise ValueError(msg)
+        self.upgrade_timing = self.campaign_context.timing
+        self.turbine_col = self.campaign_context.turbine_col
 
     @property
     def context(self) -> CampaignContext:

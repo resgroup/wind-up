@@ -46,6 +46,14 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
   truth). Methods only see the spec.
 - **Both outputs per campaign:** a farm-wide inspection report (per-turbine + farm uplift
   vs truth) **and** the campaign through the harness scoring path at n=1.
+- **Run the real HoT campaign alongside the synthetic one.** Each C-issue that has a
+  real counterpart in `resgroup/hill-of-towie-open-source-analysis` runs that campaign
+  too. There is no ground truth for the real one, so it is **not** scored — it tests the
+  *shape* of the solution: can the campaign be declared at all, does the declaration
+  survive contact with real roles, exclusions, northing and reference validity, and does
+  wind-up reach a sensible answer without bespoke driver code? The synthetic twin keeps
+  accuracy honest; the real one keeps the declaration honest. Gaps found this way belong
+  to the issue that hits them, not to a running list here.
 
 ## Ground rules for the robustness (R) issues
 
@@ -171,11 +179,21 @@ validity) — the question deliberately deferred at design time.
   the demanding campaigns build on it.
 
 **Done when:** a documented decision exists and the code reflects it; C3+ build on
-the chosen shape.
+the chosen shape; the frozen `power_model` benchmark reads `UNCHANGED` (the study path
+is untouched by the re-plumbing); and, as the **closing step**, the placebo campaigns
+are re-run and **CF1-CF5 in [findings_campaigns.md](findings_campaigns.md) re-recorded**
+— C2 makes the campaign path honour the declared `candidate_references`, so the six
+upgraded turbines stop serving as each other's references and the recorded placebo
+numbers no longer describe the code.
 
 ---
 
 ## C3 — Blade enhancement (AeroUp), prepost
+
+**Real counterpart:** `scripts/uplift_analysis_2025/aero_up.py`
+(`HoT_AeroUp_T13.yaml`) — a single upgraded turbine, four references, and exclusion
+periods covering the install itself, a farm-wide curtailment spell, and each
+reference's own later AeroUp.
 
 **Goal:** a realistic **prepost** single-/few-turbine blade-enhancement campaign
 where reference selection, the prepost split and northing all follow from the `CampaignSpec`.
@@ -200,6 +218,10 @@ now in-context on a realistic prepost campaign.
 
 ## C4 — TuneUp (controller), toggle, multi-turbine
 
+**Real counterpart:** `scripts/uplift_analysis_2025/tune_up.py`
+(`HoT_PitchTuneUp2024_{east,north,south}.yaml`) — the farm split into zones, each with
+its own test set and references.
+
 **Goal:** a realistic **toggle** campaign with ~9 upgraded turbines and a
 TI/stability-shaped effect, exercising multi-turbine toggle handling and the farm uplift
 at scale.
@@ -218,6 +240,13 @@ truth for all methods and v0; the report scales to many upgraded turbines.
 ---
 
 ## C5 — Dynamic Yaw (wake steering + collective control), toggle
+
+**Real counterpart:** `scripts/wfc_analysis_2026` (`uplift_ws.py`, `uplift_cc.py`,
+combined by `total_uplift.py`) — the hardest of the three. Two open questions to settle
+here, both surfaced by reading that driver: **non-turbine references** (it uses a LiDAR,
+`non_wtg_ref_names`, which the turbine-keyed `candidate_references` cannot express), and
+**one campaign fanning out into many sub-analyses** (it runs one wind-up per steering
+window x reference, varying the test set per window, then combines).
 
 **Goal:** the hard campaign — generalise today's manual
 `inspect_wake_steering_case` hacks into **declared** behaviour: inter-turbine wake
@@ -524,7 +553,21 @@ up.
   path handling accordingly (env vars / `Path.home()` instead of `PROJECTROOT_DIR`-
   relative, so nothing depends on those root folders).
 
+- **A campaign is declared, not scripted.** `CampaignSpec` gains a simple
+  user-facing declaration — a YAML file it initializes from — so an analyst describes
+  turbine roles, timing, exclusions and northing without writing Python. This is the
+  v0 `WindUpConfig.from_yaml` ergonomics carried into v1, with the method config that
+  v0 mixes into the same file kept on the method instead.
+
 **Done when:** a user installs `res-wind-up`, imports `wind_up`, and runs the v1
 `wind-up` method end-to-end from the examples and README; `docs/methodology.md`
 describes it; `benchmarking` is no longer packaged and the legacy root folders are gone;
 the branch is ready to tag **v1.0.0**.
+
+**Also done when:** each of the **three real Hill of Towie campaigns** — AeroUp and
+TuneUp (`scripts/uplift_analysis_2025`) and Dynamic Yaw (`scripts/wfc_analysis_2026`) in
+`resgroup/hill-of-towie-open-source-analysis` — can be **declared in a short YAML file**
+and re-run through v1, with no bespoke driver code for role assignment, exclusions,
+northing or reference validity. That repo is the acceptance test for "easy to use": if
+re-doing those analyses still needs a hand-written script per steering window, the
+declaration is not finished.

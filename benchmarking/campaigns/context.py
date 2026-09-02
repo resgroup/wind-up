@@ -30,9 +30,14 @@ def context_for(spec: CampaignSpec, *, turbine: str, scada_df: pd.DataFrame) -> 
     """
     present = {str(t) for t in scada_df[spec.turbine_col].unique()}
     references = sorted((set(spec.candidate_references) & present) - {turbine})
+    # Validity covers every declared turbine with data, not just this estimate's references: a
+    # method co-analysing several upgraded turbines keeps them via ``select(also=...)`` and their
+    # rows must be screened too.
+    declared = sorted((set(spec.upgraded_turbines) | set(spec.candidate_references)) & present)
+    covered = sorted({turbine, *references, *declared})
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
     valid = pd.DataFrame(
-        {wtg: spec.usable_mask(wtg, index) for wtg in [turbine, *references]},
+        {wtg: spec.usable_mask(wtg, index) for wtg in covered},
         index=index,
         dtype=bool,
     )

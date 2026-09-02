@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pandas as pd
+import pytest
 
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import Method, MethodInput, MethodOutput
@@ -83,3 +84,15 @@ class TestContext:
         narrowed = replace(mi, scada_df=scada.loc[scada.index >= scada.index[-1]])
         assert narrowed.context is context
         assert narrowed.context.valid_over(pd.DatetimeIndex(narrowed.scada_df.index.unique())).to_numpy().all()
+
+    def test_rejects_an_input_with_neither_a_context_nor_a_timing(self) -> None:
+        with pytest.raises(ValueError, match="upgrade_timing"):
+            MethodInput(scada_df=_long_scada(), test_wtg="T1")
+
+    def test_rejects_a_context_built_for_a_different_turbine(self) -> None:
+        # Otherwise a method estimates one turbine while reading another's references and validity.
+        context = CampaignContext.from_frame(
+            _long_scada(), test_wtg="T2", timing=pd.Timestamp("2020-01-01", tz="UTC"), turbine_col="TurbineName"
+        )
+        with pytest.raises(ValueError, match=r"'T2'.*'T1'"):
+            MethodInput(scada_df=_long_scada(), test_wtg="T1", campaign_context=context)

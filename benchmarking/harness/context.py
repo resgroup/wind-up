@@ -32,8 +32,10 @@ class CampaignContext:
     :param turbine_col: the turbine-identifier column of the SCADA frame
     :param candidate_references: the turbines a method may use as references. A turbine present
         in the frame but absent here is not a reference, whatever its data looks like.
-    :param valid_for_uplift: boolean, timestamps x ``[test_wtg, *candidate_references]`` -- may
-        this turbine's data at this timestamp contribute to the uplift estimate? A ``False``
+    :param valid_for_uplift: boolean, timestamps x the turbines this context screens (the test
+        turbine and its candidate references, plus any other turbine the campaign declares, so a
+        method co-analysing several is covered too) -- may this turbine's data at this timestamp
+        contribute to the uplift estimate? A ``False``
         reference cell drops that reference for that row only, leaving the row usable; a
         ``False`` test-turbine cell drops the row outright. Deliberately named for its purpose:
         a curtailed record is invalid for uplift while staying valid for a northing analysis.
@@ -97,8 +99,14 @@ class CampaignContext:
             is_turbine = turbines == wtg
             if not is_turbine.any():
                 continue
+            if wtg not in valid.columns:
+                msg = (
+                    f"{wtg!r} has no validity in this context (covers {list(valid.columns)}); keeping its rows "
+                    f"would bypass the campaign's declared validity."
+                )
+                raise ValueError(msg)
             rows = pd.DatetimeIndex(scada_df.index[is_turbine])
-            keep[is_turbine] = valid[wtg].reindex(rows).to_numpy() if wtg in valid.columns else True
+            keep[is_turbine] = valid[wtg].reindex(rows).to_numpy()
         return scada_df[keep]
 
     @classmethod
@@ -122,5 +130,5 @@ class CampaignContext:
             timing=timing,
             turbine_col=turbine_col,
             candidate_references=references,
-            valid_for_uplift=pd.DataFrame(data=True, index=index, columns=[test_wtg, *references]),
+            valid_for_uplift=pd.DataFrame(data=True, index=index, columns=sorted({test_wtg, *references})),
         )

@@ -173,7 +173,8 @@ class ToggleSpecialistMethod:
             raise ValueError(msg)
         # Narrow to the campaign's turbines and blank the cells it says may not contribute, so the
         # estimate and every diagnostic below see one consistent selection.
-        wide = mi.context.mask_invalid(wide[[c for c in wide.columns if c == test or c in set(refs)]])
+        ref_set = set(refs)
+        wide = mi.context.mask_invalid(wide[[c for c in wide.columns if c == test or c in ref_set]])
 
         if self.columns.availability not in mi.scada_df.columns:
             msg = (

@@ -124,3 +124,11 @@ class TestSelect:
         object.__setattr__(context, "candidate_references", ["T2"])
         selected = context.select(_scada(), also=["T3"])
         assert sorted(selected[_TURBINE_COL].unique()) == ["T1", "T2", "T3"]
+
+    def test_raises_for_an_also_turbine_present_but_not_covered_by_validity(self) -> None:
+        # Silently keeping every row of an uncovered turbine would bypass declared validity.
+        context = _context()
+        object.__setattr__(context, "candidate_references", ["T2"])
+        object.__setattr__(context, "valid_for_uplift", context.valid_for_uplift[["T1", "T2"]])
+        with pytest.raises(ValueError, match="T3"):
+            context.select(_scada(), also=["T3"])
