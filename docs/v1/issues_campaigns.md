@@ -82,6 +82,47 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
 - **Then re-verify on campaigns.** The best faults are re-injected into the relevant
   whole-farm campaigns (R1/R3 ↔ C3/C5) as an in-context check.
 
+## Updating the frozen benchmarks
+
+Learned the hard way while landing R1, which changed a **shared** feature-engineering step and
+so moved every frozen artefact at once. Read this before accepting any benchmark change.
+
+- **There are four frozen baselines, not one.** `study_power_model_compare_baseline.json` plus
+  `study_toggle_methods_compare_baseline_{linux,portable,win32}.json`. A method-internal change
+  usually touches one; a change to a shared step touches all of them, because every study driver
+  inherits it.
+- **Commit before running a sweep.** `--accept-candidate` refuses a candidate recorded from a
+  dirty tree, and rightly so: the artefact would be stamped with a commit that cannot reproduce
+  it. `study_power_model_compare` captures HEAD *before* the sweep, so committing while it runs
+  is safe. Untracked files do not count as dirty.
+- **Isolate the change before accepting it.** Diffing a fresh run against a baseline recorded
+  weeks ago measures every commit since, not your change. Re-run with the change disabled
+  (`--method-overrides '{"<flag>": false}'`, which deliberately writes no candidate) and diff the
+  two runs. On R1 this took under an hour and showed the intervening seven weeks of work
+  contributed under 0.0002 pp — so the whole movement was attributable, and a real worry was
+  retired rather than carried.
+- **The MOVED / UNCHANGED verdict is a blunt instrument.** Split by condition and by bin before
+  believing it. Degenerate bins — near-zero power, TI 0.4–0.5, wind speed 0–2 m/s — dominate the
+  means while their medians sit at zero. On R1's toggle diff the whole "62 of 84 cells MOVED,
+  max 2.96 pp" verdict came from the near-zero-power bin; the twelve headline cells moved
+  +0.005 pp.
+- **Mind the units.** `benchmark_comparison.csv` is in **fractions**; the logs print **percentage
+  points**. The logged "max delta" is the largest of bias/spread/score, not score alone. Compare
+  like for like or you will chase a factor of 100.
+- **The two scripts have different accept mechanics.** `study_power_model_compare` writes a
+  candidate every full sweep, so `--accept-candidate` promotes it with no re-run.
+  `study_toggle_methods_compare` has no candidate: `--update-baseline` re-runs the whole sweep.
+  Budget for that.
+- **A method that should not move is a free control.** `toggle_specialist` reads no direction
+  signal, so R1 predicted its portable baseline would not move, and it did not (max 5e-07 pp).
+  The toggle script rewrites the portable file *only when it actually changes*, so "portable
+  baseline unchanged" in the log is a real check, not boilerplate. Predict which cells must be
+  untouched and treat a violation as a bug in the change.
+- **The `power_model` baselines are machine-specific but not load-sensitive.** LightGBM's
+  threaded reduction order depends on the machine, so record and diff on one box. It does *not*
+  depend on machine load: R1 ran sweeps concurrently with the full test suite and still
+  reproduced a baseline to 1e-6, so there is no need to keep the machine idle.
+
 ## Suggested order
 
 `C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 → [R1 R2 R3 R4] → C3 → C4 → C5 → C6 → C8 → W1 → W2.`
@@ -92,7 +133,8 @@ independent and runs **early** (after C0) so later code lands in the new layout;
 **W1/W2** are **terminal** (after C6 + R4) because the composed `wind-up` method needs
 the robustness and campaign pieces first. **C8** (per-turbine change histories) lands
 **before W1** so the generalized declaration is what gets promoted to public API, not
-the flat one. C7 (drop `rlearner`, ✅ done) was independent.
+the flat one. C7 (drop `rlearner`, ✅ done) was independent. **R5** (northing refinement)
+is deliberately outside this order: it is future work R1 identified but does not need.
 
 **Done so far:** C0, W0, C7 and C1. **Next: C2** — with C1 in hand, decide how the
 `CampaignSpec` reaches the methods before the demanding campaigns build on the seam.
@@ -495,6 +537,68 @@ fixed feature set.
 **Done when:** the missing-data case bites (or would crash) the current fixed-feature
 `power_model`, then signal discovery restores a run that stays accurate under missing
 channels / gaps.
+
+---
+
+## R5 — Northing refinement: small-N devices, and absolute accuracy from wake nadirs
+
+**Status:** future work, not blocking. R1 delivered a norther good enough to ship; these are
+the two places it is known to fall short, both identified while doing R1.
+
+**Goal:** north devices a farm consensus cannot reach, and improve the *absolute* accuracy of
+the answer rather than only its internal consistency.
+
+### Part A — north one or two devices with pass 1 alone
+
+`north_farm` refuses below `min_devices_for_farm_reference=3`, so a **two-device campaign
+cannot use farm-consensus northing at all** (measured during R1's natural probe). At exactly
+three the quorum is every device. Small campaigns are common, so this is a real gap, not a
+corner.
+
+Pass 1 already norths each device against reanalysis on its own, so the machinery exists; what
+limits it is accuracy. `REANALYSIS_MIN_STEP_DEG = 10` exists because reanalysis carries its own
+direction-dependent bias, and a spell of unusual wind moves every turbine's residual against it
+together. Against a farm consensus that common-mode error cancels; against reanalysis it does
+not. So a single-device answer is currently trustworthy only for gross recalibrations.
+
+**Why this is tractable:** the development loop is unusually good. Hill of Towie has 21 turbines
+with a published, independently-derived northing table, so pass 1 can be run **one turbine at a
+time** and scored directly against a known answer, 21 times over, without any synthetic data.
+`tests/wind_up/test_northing_real_data.py::TestSingleTurbineAgainstReanalysis` is the seed of
+this; it currently asserts only that a lone turbine finds its *large* recalibration.
+
+**Done when:** a single device is northed to a stated accuracy against the published HoT table
+across all 21 turbines; `REANALYSIS_MIN_STEP_DEG` is lowered by evidence rather than assertion;
+challenging synthetic cases (small steps, steps near the record edge, steps during an outage)
+pass; and `north_farm`'s three-device floor is either removed or documented as the deliberate
+boundary between two supported regimes.
+
+### Part B — pass 3: nudge to absolute truth using apparent wake nadirs
+
+Passes 1 and 2 fix the farm relative to reanalysis and then to itself. Neither has a *physical*
+absolute reference. Wake nadirs do: when the wind blows along the line joining two turbines, the
+downstream one sits in the upstream one's wake and its power dips, and the direction at which
+that dip occurs is known from the layout geometry alone. Matching measured nadirs to geometric
+bearings gives an absolute anchor that owes nothing to a reanalysis model.
+
+**This is a third pass, not a replacement.** It runs only once the changepoints and their
+relative steps are settled, because it estimates a single absolute shift per segment; asking it
+to find changepoints as well would be a different and much harder problem. Order:
+reanalysis anchor, farm consensus, then wake-nadir refinement.
+
+**Existing machinery to build from:** the synthetic generator's `WakeSteering` upgrade already
+derives directed pairs from geometry, and `inspect_wake_steering_case.py` computes a pair's
+nadir and sector. What is missing is the inverse — *measuring* an apparent nadir from a real
+power-deficit-versus-direction curve, and turning a set of those into one offset per segment.
+
+**Done when:** measured nadirs recover a known injected absolute offset on synthetic data; on
+Hill of Towie the pass-3 correction is small (it should be, since pass 1/2 already agree with
+the published table to ~1°) and does not disturb the changepoints; and it degrades gracefully
+where geometry gives too few usable pairs.
+
+**Gotcha to design around:** a turbine's own wake-affected rows are exactly the rows an uplift
+method wants to treat carefully, so pass 3 must not quietly change which rows downstream
+analysis considers valid. It outputs an offset, nothing else.
 
 ---
 
