@@ -435,6 +435,9 @@ the developed solution can be a drop-in replacement for the existing src/wind_up
 shared northing step has to reach the study path too (it currently runs only in
 `CampaignRunner`, so the study drivers behind the frozen benchmarks have no northed column),
 and `study_power_model_compare_baseline.json` is regenerated.
+The study path norths **per replicate**, discovering for itself rather than being handed a prior
+table — the benchmark has to measure wind-up running unaided. The step therefore lives in
+`benchmarking/harness/northing.py`, which both paths can reach, rather than under `campaigns/`.
 the northing tool **shows its working**: per-turbine plots of the time-averaged residual
 against the reference with the fitted step function overlaid, before and after correction, so
 a user can see what was changed and judge it. Time averaging is what smears out veer.
@@ -570,6 +573,11 @@ up.
   from before env-vars / `Path.home()` were used — and rework `wind_up_v0/constants.py`
   path handling accordingly (env vars / `Path.home()` instead of `PROJECTROOT_DIR`-
   relative, so nothing depends on those root folders).
+- **Shore up `power_model` unit coverage.** R1 flipped `direction_feature` on by
+  default; the existing suite was recovered by fixture edits rather than deletions, but
+  it is thin in places the benchmarks cannot reach — error paths, the `CampaignContext`
+  seam, and the reference-only (design note §3) guard. A released package should not
+  rest on the benchmarks alone for those.
 - **Clean up the development-phase documentation.** `docs/superpowers/` (design notes
   and plans) and `CLAUDE.md` are untracked and git-ignored as of 2026-09-03, so tracked
   files that cite them — `docs/v1/issues_campaigns.md`, `docs/v1/findings_campaigns.md`

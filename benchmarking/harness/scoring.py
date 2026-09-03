@@ -80,6 +80,7 @@ def score_study(
     study: StudyConfig,
     profile_name: str = "profile",
     columns: ColumnSchema = HOT_COLUMNS,
+    era5_wd: pd.Series | None = None,
     on_method_complete: Callable[[str, pd.DataFrame], None] | None = None,
 ) -> pd.DataFrame:
     """Score ``methods`` on ``study`` over ``profile`` injected into ``base_scada``.
@@ -90,13 +91,15 @@ def score_study(
     ``baseline_start`` and ``activity_end`` — so a result is self-describing.
 
     :param columns: the source-native column schema ``base_scada`` is keyed by
+    :param era5_wd: reanalysis wind direction; supplying it runs the shared northing step on each
+        replicate, so methods reading a northed direction find one. See :func:`iter_replicates`.
     :param on_method_complete: optional hook called as each method finishes its full instance
         sweep, with ``(method_name, that_method's_rows)`` (the same rows it contributes to the
         returned frame). Lets a caller act on a method's results early — e.g. plot them — instead
         of waiting for every method, useful when a slow method runs last. It never changes the
         returned frame; order methods fastest-first to get the earliest feedback.
     """
-    replicates = build_replicates(base_scada, profile=profile, study=study, columns=columns)
+    replicates = build_replicates(base_scada, profile=profile, study=study, columns=columns, era5_wd=era5_wd)
     data_start = base_scada.index.min()
     data_end = base_scada.index.max()
     instances = _materialise_instances(replicates, study, data_start=data_start, data_end=data_end)

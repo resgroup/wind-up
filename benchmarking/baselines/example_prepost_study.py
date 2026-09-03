@@ -41,6 +41,7 @@ from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import Method, StudyConfig, leaderboard, plot_campaign_curves, score_study
 from benchmarking.harness.example_hot_study import OracleMethod
+from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
 from benchmarking.synthetic.make_example_datasets import example_profiles
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
@@ -116,6 +117,11 @@ def run_prepost_study(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     context = build_hot_v0_context(data_dir=data_dir, wtg_names=DEFAULT_TURBINE_SUBSET)
+    # The shared northing step runs per replicate, so every method sees a north-calibrated
+    # direction that wind-up discovered for itself rather than one supplied to it.
+    era5_wd = era5_direction(
+        context.reanalysis_datasets[0].data, pd.DatetimeIndex(base_scada.index.unique()).sort_values()
+    )
     scratch_dir = out_dir / "windup_runs"
 
     all_results = []
@@ -159,6 +165,7 @@ def run_prepost_study(
             methods=methods,
             study=study,
             profile_name=profile_name,
+            era5_wd=era5_wd,
             on_method_complete=partial(save_per_method_curve, out_dir, profile_name),
         )
         summary = leaderboard(results)

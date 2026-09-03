@@ -39,6 +39,8 @@ _WS_SD = "wtc_AcWindSp_stddev"
 _POWER_MAX = "wtc_ActPower_max"
 _POWER_MIN = "wtc_ActPower_min"
 _POWER_SD = "wtc_ActPower_stddev"
+_YAW = "wtc_NacelPos_mean"
+_NORTHED_YAW = f"northed_{_YAW}"
 _COLUMNS = ColumnSchema(
     turbine=_TURBINE,
     active_power=_POWER,
@@ -47,7 +49,11 @@ _COLUMNS = ColumnSchema(
     wind_speed_sd=_WS_SD,
     gen_rpm="wtc_GenRpm_mean",
     availability=_AVAIL,
+    nacelle_position=_YAW,
 )
+
+# Per-turbine north miscalibration the northed column removes.
+_YAW_OFFSETS = {"T1": 0.0, "R1": 7.0, "R2": -5.0, "R3": 3.0}
 
 # Small/fast LightGBM so the toy data (a few thousand rows) is fit well.
 _FAST_PARAMS = {"n_estimators": 120, "learning_rate": 0.1, "num_leaves": 31, "min_child_samples": 20}
@@ -66,6 +72,9 @@ def _toy_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0) -> 
     r3 = rng.normal(800, 150, n)
     base_test = 0.4 * r1 + 0.35 * r2 + 0.25 * r3 + rng.normal(0, 15, n)
     test_power = np.where(treated, base_test * (1.0 + uplift), base_test)
+    # One site-wide direction every turbine sees, so the direction features are plausible rather
+    # than noise; each turbine reports it through its own north miscalibration.
+    wind_direction = 180.0 + 60.0 * np.sin(2.0 * np.pi * np.arange(n) / 1000.0)
     frames = {
         "T1": test_power,
         "R1": r1,
@@ -84,6 +93,8 @@ def _toy_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0) -> 
                 _POWER_MAX: power * 1.15,
                 _POWER_MIN: power * 0.85,
                 _POWER_SD: np.abs(power) / 20.0,
+                _YAW: (wind_direction + _YAW_OFFSETS[name]) % 360.0,
+                _NORTHED_YAW: wind_direction % 360.0,
             },
             index=idx,
         )
@@ -697,6 +708,7 @@ def _shrinkage_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 
     w = rng.uniform(3.0, 12.0, n)  # latent wind speed, i.i.d. -> matched across periods
     curve = 20.0 * w**2  # steep power curve (≈180..2880 kW), so per-ws-bin compression is visible
     test_power = np.where(treated, curve * (1.0 + uplift), curve) + rng.normal(0.0, 20.0, n)
+    wind_direction = 180.0 + 60.0 * np.sin(2.0 * np.pi * np.arange(n) / 1000.0)
     parts = [
         pd.DataFrame(
             {
@@ -706,6 +718,8 @@ def _shrinkage_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 
                 _AVAIL: 600.0,
                 _WS: w,
                 _WS_SD: 0.05 * w,
+                _YAW: (wind_direction + _YAW_OFFSETS["T1"]) % 360.0,
+                _NORTHED_YAW: wind_direction % 360.0,
             },
             index=idx,
         )
@@ -721,6 +735,8 @@ def _shrinkage_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 
                     _AVAIL: 600.0,
                     _WS: w,
                     _WS_SD: 0.05 * w,
+                    _YAW: (wind_direction + _YAW_OFFSETS[f"R{i}"]) % 360.0,
+                    _NORTHED_YAW: wind_direction % 360.0,
                 },
                 index=idx,
             )

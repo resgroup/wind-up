@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.campaigns.declaration import CampaignSpec
-from benchmarking.campaigns.northing import north_campaign_scada
-from benchmarking.synthetic import HOT_COLUMNS
+from benchmarking.harness.northing import north_scada
+from benchmarking.harness.replicates import StudyConfig, iter_replicates
+from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.circular_math import circ_diff
 
 _COLUMNS = HOT_COLUMNS
@@ -51,17 +51,10 @@ def _scada(
     return pd.concat(frames), site_wd
 
 
-def _spec(north_offsets: list[tuple[str, pd.Timestamp, float]] | None) -> CampaignSpec:
-    return CampaignSpec(
-        upgraded_turbines=["T01"],
-        upgrade_timing=_START + pd.Timedelta(days=60),
-        candidate_references=[t for t in _TURBINES if t != "T01"],
-        excluded_turbines=[],
-        coords=dict.fromkeys(_TURBINES, (0.0, 0.0)),
-        north_offsets=north_offsets,
-        rated_power_kw=_RATED,
-        analysis_period=(_START, _START + pd.Timedelta(days=120)),
-    )
+def _spread_across_turbines(directions: np.ndarray) -> float:
+    """Median absolute disagreement between each turbine's direction and the first turbine's."""
+    reference = np.repeat(directions[:, [0]], directions.shape[1], axis=1)
+    return float(np.nanmedian(np.abs(circ_diff(directions, reference))))
 
 
 def _northed(frame: pd.DataFrame, turbine: str) -> np.ndarray:
@@ -78,7 +71,7 @@ class TestDiscovery:
         scada, site_wd = _scada(index, offsets)
         era5 = pd.Series(site_wd, index=index)
 
-        out = north_campaign_scada(scada, spec=_spec(None), columns=_COLUMNS, era5_wd=era5)
+        out = north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, era5_wd=era5)
 
         assert _COLUMNS.northed("nacelle_position") in out.columns
         assert np.allclose(
@@ -92,7 +85,7 @@ class TestDiscovery:
         scada, site_wd = _scada(index, offsets)
         era5 = pd.Series(site_wd, index=index)
 
-        out = north_campaign_scada(scada, spec=_spec(None), columns=_COLUMNS, era5_wd=era5)
+        out = north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, era5_wd=era5)
 
         for turbine in _TURBINES:
             assert circ_diff(_northed(out, turbine), site_wd).mean() == pytest.approx(0.0, abs=2.0), turbine
@@ -105,7 +98,7 @@ class TestDiscovery:
         scada, site_wd = _scada(index, offsets)
         era5 = pd.Series(site_wd, index=index)
 
-        out = north_campaign_scada(scada, spec=_spec(None), columns=_COLUMNS, era5_wd=era5)
+        out = north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, era5_wd=era5)
 
         assert circ_diff(_northed(out, "T03"), site_wd).mean() == pytest.approx(0.0, abs=2.0)
 
@@ -113,7 +106,7 @@ class TestDiscovery:
         index = _index(days=30)
         scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
         with pytest.raises(ValueError, match="era5_wd"):
-            north_campaign_scada(scada, spec=_spec(None), columns=_COLUMNS, era5_wd=None)
+            north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, era5_wd=None)
 
 
 class TestDeclared:
@@ -124,7 +117,7 @@ class TestDeclared:
         scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
         declared = [("T02", _START, 33.0)]
 
-        out = north_campaign_scada(scada, spec=_spec(declared), columns=_COLUMNS, era5_wd=None)
+        out = north_scada(scada, columns=_COLUMNS, north_offsets=declared, rated_power_kw=_RATED, era5_wd=None)
 
         raw = scada[scada[_COLUMNS.turbine] == "T02"][_COLUMNS.nacelle_position].to_numpy(dtype=float)
         assert _northed(out, "T02") == pytest.approx((raw + 33.0) % 360.0)
@@ -137,7 +130,7 @@ class TestDeclared:
         offsets = {t: [(_START, 30.0)] for t in _TURBINES}
         scada, _ = _scada(index, offsets)
 
-        out = north_campaign_scada(scada, spec=_spec([]), columns=_COLUMNS, era5_wd=None)
+        out = north_scada(scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, era5_wd=None)
 
         assert _COLUMNS.northed("nacelle_position") in out.columns
         for turbine in _TURBINES:
@@ -148,4 +141,58 @@ class TestDeclared:
         index = _index(days=30)
         scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
         # would raise if this branch tried to discover
-        north_campaign_scada(scada, spec=_spec([]), columns=_COLUMNS, era5_wd=None)
+        north_scada(scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, era5_wd=None)
+
+
+class TestStudyPath:
+    """The study path norths every replicate, so a method sees a table wind-up worked out itself."""
+
+    @staticmethod
+    def _study() -> StudyConfig:
+        return StudyConfig(
+            mode="prepost",
+            turbine_subset=list(_TURBINES),
+            treatment_start_range=(_START + pd.Timedelta(days=55), _START + pd.Timedelta(days=65)),
+            min_pre_months=1,
+            campaign_months=[1],
+            n_replicates=1,
+            seed=0,
+        )
+
+    @staticmethod
+    def _replicate(*, era5_wd: pd.Series | None) -> pd.DataFrame:
+        index = _index()
+        offsets = {t: [(_START, 25.0 * i)] for i, t in enumerate(_TURBINES)}
+        scada, site_wd = _scada(index, offsets)
+        reanalysis = pd.Series(site_wd, index=index) if era5_wd is None else era5_wd
+        replicates = list(
+            iter_replicates(
+                scada,
+                profile=[ConstantCpChange(delta=0.05)],
+                study=TestStudyPath._study(),
+                columns=_COLUMNS,
+                era5_wd=None if era5_wd is None else reanalysis,
+                rated_power_kw=_RATED,
+            )
+        )
+        return replicates[0].synthetic_df
+
+    def test_no_reanalysis_means_no_northed_column(self) -> None:
+        assert _COLUMNS.northed("nacelle_position") not in self._replicate(era5_wd=None).columns
+
+    def test_reanalysis_norths_each_replicate(self) -> None:
+        index = _index()
+        _, site_wd = _scada(index, {t: [(_START, 25.0 * i)] for i, t in enumerate(_TURBINES)})
+        synthetic = self._replicate(era5_wd=pd.Series(site_wd, index=index))
+
+        assert _COLUMNS.northed("nacelle_position") in synthetic.columns
+        # Each turbine reports the site direction behind its own offset; northing removes the
+        # spread between them, which the raw readings still carry.
+        raw = np.column_stack(
+            [
+                synthetic[synthetic[_COLUMNS.turbine] == t][_COLUMNS.nacelle_position].to_numpy(dtype=float)
+                for t in _TURBINES
+            ]
+        )
+        northed = np.column_stack([_northed(synthetic, t) for t in _TURBINES])
+        assert _spread_across_turbines(northed) < 0.25 * _spread_across_turbines(raw)

@@ -24,7 +24,6 @@ def carried_forward_methods(
     out_dir: Path,
     era5_hourly_df: pd.DataFrame | None = None,
     include_power_model: bool = True,
-    direction_feature: bool = False,
 ) -> list[Method]:
     """Build the methods applicable to ``spec``, each writing into its own subfolder of ``out_dir``.
 
@@ -36,9 +35,6 @@ def carried_forward_methods(
     :param out_dir: the turbine's output folder; each method gets a subfolder named after it
     :param era5_hourly_df: reanalysis for the power model; omit to run it without ERA5 features
     :param include_power_model: build the power model (needs the ``ml`` dependency group)
-    :param direction_feature: give the power model each reference's north-calibrated direction.
-        Requires the shared northing step to have run over the frame, so it is off unless the
-        caller knows the runner northed.
     """
     methods: list[Method] = [NaiveRatioMethod(columns=HOT_COLUMNS, out_dir=out_dir / "naive_ratio", save_plots=True)]
     if spec.mode == "toggle":
@@ -59,7 +55,6 @@ def carried_forward_methods(
                 era5_hourly_df=era5_hourly_df,
                 conditions=PowerModelMethod.conditions if era5_hourly_df is not None else (),
                 availability_feature=False,
-                direction_feature=direction_feature,
                 era5_exclude=CURATED_ERA5_EXCLUDE,
                 model_params=dict(TUNED_MODEL_PARAMS),
                 out_dir=out_dir / "power_model",

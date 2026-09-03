@@ -1,14 +1,14 @@
 """The shared northing step: north-calibrate every turbine's direction, upstream of every method.
 
-Runs in the campaign runner, which holds the :class:`~benchmarking.campaigns.declaration.CampaignSpec`,
-so every method inherits the correction rather than each hand-rolling one. The step writes
+Runs on both paths that feed methods -- the campaign runner and the study replicates -- so every
+method inherits the correction rather than each hand-rolling one. The step writes
 ``columns.northed(role)`` alongside the untouched original, so plots and diagnostics of the raw
 signal keep meaning what they say; whether it has run is written in the frame as the presence of
 that column, with no separate flag to disagree with it.
 
-``spec.north_offsets`` decides which of two things happens:
+``north_offsets`` decides which of two things happens:
 
-* ``None`` (the default) -- discover the corrections from the data;
+* ``None`` -- discover the corrections from the data;
 * a list (possibly empty) -- apply exactly those, discovering nothing.
 """
 
@@ -25,7 +25,6 @@ from wind_up.northing import DEFAULT_NORTHING, NorthingSettings, apply_north_tab
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from benchmarking.campaigns.declaration import CampaignSpec
     from benchmarking.synthetic import ColumnSchema
 
 logger = logging.getLogger(__name__)
@@ -33,6 +32,15 @@ logger = logging.getLogger(__name__)
 # The direction roles corrected by default. One table per turbine is derived from its nacelle
 # position and may be applied to further direction channels of the same turbine.
 DEFAULT_NORTHING_ROLES: tuple[str, ...] = ("nacelle_position",)
+
+# Open-Meteo's hub-height wind direction, the reanalysis anchor discovery is measured against.
+ERA5_WD_COL = "wind_direction_100m"
+
+
+def era5_direction(era5_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
+    """Return the hourly ERA5 wind direction carried onto ``index``, held within each hour."""
+    hourly = era5_df[ERA5_WD_COL]
+    return hourly.reindex(hourly.index.union(index)).ffill(limit=6).reindex(index)
 
 
 def _north_table_from_offsets(
@@ -87,11 +95,12 @@ def _directions(
     return out
 
 
-def north_campaign_scada(
+def north_scada(
     scada_df: pd.DataFrame,
     *,
-    spec: CampaignSpec,
     columns: ColumnSchema,
+    north_offsets: Sequence[tuple[str, pd.Timestamp, float]] | None,
+    rated_power_kw: float,
     era5_wd: pd.Series | None = None,
     roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
     settings: NorthingSettings = DEFAULT_NORTHING,
@@ -102,10 +111,11 @@ def north_campaign_scada(
     requested role, so a turbine's channels stay mutually consistent. The originals are untouched.
 
     :param scada_df: long-format SCADA, timestamps indexed, turbines in ``columns.turbine``
-    :param spec: the campaign, read for ``north_offsets``, ``rated_power_kw`` and the turbine column
-    :param columns: the source-native schema naming the direction role(s)
+    :param columns: the source-native schema naming the turbine and direction role(s)
+    :param north_offsets: ``None`` to discover the corrections, or the exact table to apply
+    :param rated_power_kw: turbine rating, for deciding which rows are usable for northing
     :param era5_wd: reanalysis wind direction (deg) covering the frame, the absolute anchor for
-        discovery. Required when ``spec.north_offsets`` is ``None``.
+        discovery. Required when ``north_offsets`` is ``None``.
     :param roles: the direction roles to write a ``northed_`` companion for
     :param settings: how the changepoint search is bounded, when discovering
     :return: a copy of ``scada_df`` with ``columns.northed(role)`` added for each role
@@ -124,17 +134,15 @@ def north_campaign_scada(
         return scada_df
     roles = present
 
-    if spec.north_offsets is not None:
-        tables = {
-            wtg: _north_table_from_offsets(spec.north_offsets, turbine=wtg, start=index.min()) for wtg in turbines
-        }
-        logger.info("applying %d declared northing correction(s); discovering none", len(spec.north_offsets))
+    if north_offsets is not None:
+        tables = {wtg: _north_table_from_offsets(north_offsets, turbine=wtg, start=index.min()) for wtg in turbines}
+        logger.info("applying %d declared northing correction(s); discovering none", len(north_offsets))
     else:
         if era5_wd is None:
             msg = (
-                "north_campaign_scada needs era5_wd to discover northing corrections: reanalysis is the "
+                "north_scada needs era5_wd to discover northing corrections: reanalysis is the "
                 "absolute anchor, without which a farm that is uniformly wrong looks self-consistent. "
-                "Supply era5_wd, or declare spec.north_offsets to apply a known table instead."
+                "Supply era5_wd, or declare north_offsets to apply a known table instead."
             )
             raise ValueError(msg)
         reference = era5_wd.reindex(index).to_numpy(dtype=float)
@@ -155,7 +163,7 @@ def north_campaign_scada(
                 turbines=turbines,
                 index=index,
                 reference_deg=reference,
-                rated_power_kw=spec.rated_power_kw,
+                rated_power_kw=rated_power_kw,
                 timebase_s=timebase_s,
             ),
             reanalysis_deg=reference,

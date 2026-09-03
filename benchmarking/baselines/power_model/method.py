@@ -318,7 +318,7 @@ class PowerModelMethod:
     reference_stat_cols: tuple[str, ...] = ()
     era5_exclude: tuple[str, ...] = CURATED_ERA5_EXCLUDE
     availability_feature: bool = False
-    direction_feature: bool = False
+    direction_feature: bool = True
     adaptive_time_decay: bool = True
     time_decay_half_life_days: float | None = None
 

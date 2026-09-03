@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.campaigns.context import context_for
-from benchmarking.campaigns.northing import DEFAULT_NORTHING_ROLES, north_campaign_scada
 from benchmarking.harness import CampaignWindow, Replicate, score_one, truth_mask
+from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
 from wind_up import TurbineUplift, farm_uplift
 from wind_up.northing import DEFAULT_NORTHING
 
@@ -198,10 +198,11 @@ class CampaignRunner:
         keep = self._visible_mask(synthetic)
         visible = synthetic[keep]
         if self._should_north():
-            visible = north_campaign_scada(
+            visible = north_scada(
                 visible,
-                spec=self._spec,
                 columns=self._dataset.columns,
+                north_offsets=self._spec.north_offsets,
+                rated_power_kw=self._spec.rated_power_kw,
                 era5_wd=self._era5_wd,
                 roles=self._northing_roles,
                 settings=self._northing_settings,

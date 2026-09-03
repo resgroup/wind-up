@@ -106,6 +106,7 @@ from benchmarking.harness import (
     plot_conditional_uplift,
     score_study,
 )
+from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
@@ -245,6 +246,11 @@ def run_power_model(
         wtg_names=DEFAULT_TURBINE_SUBSET,
     )
     context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
+    # The shared northing step runs per replicate, so every method sees a north-calibrated
+    # direction that wind-up discovered for itself rather than one supplied to it.
+    era5_wd = era5_direction(
+        context.reanalysis_datasets[0].data, pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+    )
     study = _prepost_study() if mode == "prepost" else _toggle_study()
 
     all_results = []
@@ -267,6 +273,7 @@ def run_power_model(
             methods=[naive, method],
             study=study,
             profile_name=profile_name,
+            era5_wd=era5_wd,
             on_method_complete=partial(save_per_method_curve, out_dir, profile_name),
         )
         results.to_csv(out_dir / f"results_{profile_name}.csv", index=False)

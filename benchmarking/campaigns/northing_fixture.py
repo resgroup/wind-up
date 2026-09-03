@@ -37,6 +37,7 @@ from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.campaigns.declaration import SyntheticCampaign
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.runner import CampaignRunner
+from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_RATED_POWER_KW, NorthingStep, ToggleSchedule, WindSpeedCpChange
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
 
@@ -66,8 +67,6 @@ UPLIFT = (WindSpeedCpChange(ws_points=(5.0, 12.0), deltas=(0.10, 0.0)),)
 # where a direction corruption does most damage.
 FAULT_TURBINE = "T15"
 FAULT_OFFSET_DEG = 40.0
-
-ERA5_WD_COL = "wind_direction_100m"
 
 
 def analysis_period(mode: Literal["prepost", "toggle"]) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -138,12 +137,6 @@ def fixture_campaign(
     )
 
 
-def _era5_direction(era5_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
-    """Return the hourly ERA5 wind direction carried onto ``index``, held within each hour."""
-    hourly = era5_df[ERA5_WD_COL]
-    return hourly.reindex(hourly.index.union(index)).ffill(limit=6).reindex(index)
-
-
 def run_cell(
     *,
     mode: Literal["prepost", "toggle"],
@@ -167,10 +160,8 @@ def run_cell(
             out_dir=out_dir / wtg,
             era5_hourly_df=era5_df if include_power_model else None,
             include_power_model=include_power_model,
-            # the runner norths below, so the northed column the feature needs is always present
-            direction_feature=True,
         ),
-        era5_wd=_era5_direction(era5_df, index),
+        era5_wd=era5_direction(era5_df, index),
     )
     return runner.run()
 

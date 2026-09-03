@@ -69,6 +69,7 @@ from benchmarking.harness import (
     condition_bins,
     plot_conditional_uplift,
 )
+from benchmarking.harness.northing import era5_direction, north_scada
 from benchmarking.synthetic import (
     HOT_COLUMNS,
     HOT_RATED_POWER_KW,
@@ -438,6 +439,18 @@ def inspect_wake_steering_case(
         era5 = context.reanalysis_datasets[0].data
 
         full_dataset, steering = _build_dataset(scada_df, metadata_df)
+        # The shared northing step, discovering as it does on every other path -- the methods read
+        # a north-calibrated direction wind-up worked out, not the table the injection was gated on.
+        full_dataset = replace(
+            full_dataset,
+            synthetic_df=north_scada(
+                full_dataset.synthetic_df,
+                columns=HOT_COLUMNS,
+                north_offsets=None,
+                rated_power_kw=HOT_RATED_POWER_KW,
+                era5_wd=era5_direction(era5, pd.DatetimeIndex(full_dataset.synthetic_df.index.unique()).sort_values()),
+            ),
+        )
         schedule = ToggleSchedule(period=TOGGLE_PERIOD, start=TOGGLE_START)
 
         nadir, half_width = _pair_sector(steering, margin_deg=wd_margin_deg)
