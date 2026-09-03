@@ -570,6 +570,12 @@ up.
   from before env-vars / `Path.home()` were used — and rework `wind_up_v0/constants.py`
   path handling accordingly (env vars / `Path.home()` instead of `PROJECTROOT_DIR`-
   relative, so nothing depends on those root folders).
+- **Clean up the development-phase documentation.** `docs/superpowers/` (design notes
+  and plans) and `CLAUDE.md` are untracked and git-ignored as of 2026-09-03, so tracked
+  files that cite them — `docs/v1/issues_campaigns.md`, `docs/v1/findings_campaigns.md`
+  — now point at paths a fresh clone will not have. Decide per document what a released
+  v1 should carry: fold what is still true into `docs/methodology.md` or `docs/v1/`, and
+  drop the citations that are only development history.
 
 - **A campaign is declared, not scripted.** `CampaignSpec` gains a simple
   user-facing declaration — a YAML file it initializes from — so an analyst describes
