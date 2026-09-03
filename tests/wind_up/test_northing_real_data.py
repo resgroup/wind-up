@@ -125,6 +125,7 @@ class TestKnownChangepoints:
     """All 21 turbines over two-year windows: v0's changepoints, and no others."""
 
     @pytest.mark.parametrize(("window", "turbine"), _CASES, ids=lambda v: v if isinstance(v, str) else v[0])
+    @pytest.mark.slow
     def test_a_turbines_known_recalibrations_are_found(
         self, hot: pd.DataFrame, window: tuple[str, str], turbine: str
     ) -> None:
@@ -136,6 +137,7 @@ class TestKnownChangepoints:
             assert circ_diff(step, expected_step) == pytest.approx(0.0, abs=3.0), _describe(found)
 
     @pytest.mark.parametrize(("window", "turbine"), _QUIET, ids=lambda v: v if isinstance(v, str) else v[0])
+    @pytest.mark.slow
     def test_every_other_turbine_is_left_alone(self, hot: pd.DataFrame, window: tuple[str, str], turbine: str) -> None:
         found = run_farm(hot, ALL_TURBINES, *window)[turbine]
         assert found == [], f"{turbine}: {_describe(found)}"
@@ -189,6 +191,7 @@ class TestEdgeArtefacts:
     """
 
     @pytest.mark.parametrize("end", ["2019-01-01", "2019-01-03", "2019-02-01"])
+    @pytest.mark.slow
     def test_t13_is_clean_wherever_the_record_stops(self, hot: pd.DataFrame, end: str) -> None:
         found = run_farm(hot, ALL_TURBINES, "2017-01-01", end)["T13"]
         assert found == [], _describe(found)
@@ -201,6 +204,7 @@ class TestSubsetConsistency:
     EAST = tuple(f"T{n:02d}" for n in range(16, 22))
 
     @pytest.mark.parametrize("half", ["west", "east"])
+    @pytest.mark.slow
     def test_half_the_farm_agrees_with_the_whole(self, hot: pd.DataFrame, half: str) -> None:
         turbines = self.WEST if half == "west" else self.EAST
         tables = run_farm(hot, turbines, *EARLY)

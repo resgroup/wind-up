@@ -512,6 +512,7 @@ def test_end_to_end_ground_truth_naive_and_plot(tmp_path: Path) -> None:
     assert save_path.exists()
 
 
+@pytest.mark.slow
 def test_wake_steering_example_driver_saves_dataset_and_plots(tmp_path: Path) -> None:
     """The HoT wake-steering driver builds coords from metadata and writes a dataset plus plots."""
     from benchmarking.synthetic.make_example_datasets import (  # noqa: PLC0415

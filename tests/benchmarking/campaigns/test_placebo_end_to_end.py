@@ -22,6 +22,10 @@ from benchmarking.campaigns import CampaignRunner, carried_forward_methods, per_
 from benchmarking.campaigns.placebo import placebo_analysis_period, placebo_campaign
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
 
+# End-to-end campaign runs; the fast gate covers the pieces individually.
+pytestmark = pytest.mark.slow
+
+
 if TYPE_CHECKING:
     from pathlib import Path
 
