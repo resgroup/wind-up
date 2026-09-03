@@ -5,8 +5,8 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_series_equal
 
-from tests.test_math_funcs import circ_median_exact
-from wind_up_v0.circular_math import circ_diff, rolling_circ_median_approx
+from tests.wind_up.test_circular_math import circ_median_exact
+from wind_up.circular_math import circ_diff, rolling_circ_median_approx
 
 
 @pytest.mark.parametrize("range_360", [True, False])

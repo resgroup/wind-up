@@ -6,7 +6,7 @@ import pytest
 from pandas.testing import assert_series_equal
 from scipy.stats import circmean
 
-from wind_up_v0.circular_math import circ_diff, circ_median
+from wind_up.circular_math import circ_diff, circ_median
 
 test_circ_diff_data = [
     (0, 0, 0),
@@ -184,3 +184,25 @@ def test_circ_median_range_conversion() -> None:
     # They should represent the same angle
     abs_circ_distance = abs(circ_diff(result_360, result_180))
     assert abs_circ_distance < 1e-3
+
+
+@pytest.mark.parametrize("range_360", [True, False])
+def test_circ_median_along_axis(*, range_360: bool) -> None:
+    """Reducing along an axis matches reducing each slice, and stays circular."""
+    # the first row straddles 0/360, where an ordinary median would land near 180
+    angles = np.array([[350.0, 355.0, 5.0, 10.0], [90.0, 92.0, 94.0, 96.0]])
+
+    result = circ_median(angles, axis=1, range_360=range_360)
+
+    assert result == pytest.approx([0.0, 93.0])
+    rowwise = [circ_median(row, range_360=range_360) for row in angles]
+    assert result == pytest.approx(rowwise)
+
+
+def test_circ_median_along_axis_zero() -> None:
+    """``axis=0`` reduces down the columns."""
+    angles = np.array([[350.0, 355.0], [10.0, 5.0]])
+
+    result = circ_median(angles, axis=0, range_360=False)
+
+    assert result == pytest.approx([0.0, 0.0])

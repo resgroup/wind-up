@@ -1,13 +1,11 @@
 """Show what the northing estimator did, so a user can judge it rather than trust it.
 
-Two views per device, because a northing error and site veer look alike in either one alone:
+Two views per device, since a northing error and site veer look alike in either one alone:
 
-* **over time** -- the residual against the reference, time-averaged so veer is smeared out,
-  before and after correction, with the fitted step function and its changepoints drawn on. This
-  is the view that answers "is the corrected direction believable to a degree?".
-* **against direction** -- the same residual binned by the reference direction. What is left
-  after correction is site veer: the wind direction genuinely differs across a site, and no
-  north offset can remove it. A tilt here is expected; a vertical shift is not.
+* over time -- the residual against the reference, time-averaged, before and after correction,
+  with the fitted step function and its changepoints drawn on.
+* against direction -- the same residual binned by the reference direction. What is left after
+  correction is site veer: a tilt here is expected, a vertical shift is not.
 """
 
 from __future__ import annotations
@@ -75,7 +73,7 @@ def plot_northing(
     """Plot one device's northing: the residual over time, and against direction.
 
     :param index: timestamps of every array
-    :param direction_deg: the **raw** direction signal, before correction
+    :param direction_deg: the raw direction signal, before correction
     :param reference_deg: the direction it was northed against
     :param usable: the rows the estimate was allowed to use
     :param north_table: the estimated table, as returned by
@@ -250,11 +248,11 @@ def plot_residual_conditions(
 ) -> Figure:
     """Mean and spread of the northing residual against direction, wind speed and power.
 
-    The question these answer is whether the residual should be **weighted**: if its spread
-    blows up at low power or low wind speed, those records tell you less about where north is
-    and should count for less. A flat spread says an unweighted estimate is fine.
+    Shows whether the residual should be weighted: a spread that blows up at low power or low
+    wind speed says those records count for less, a flat spread that an unweighted estimate is
+    fine.
 
-    Pass the residual **after** northing, over the rows the estimate was allowed to use.
+    Pass the residual after northing, over the rows the estimate was allowed to use.
     """
     fraction = np.asarray(power, dtype=float) / rated_power
     panels = (

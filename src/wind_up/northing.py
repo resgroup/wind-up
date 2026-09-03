@@ -1,21 +1,14 @@
 """Estimate and apply north-calibration corrections for a direction signal.
 
-A turbine's reported yaw direction carries an unknown offset from true north that changes in
-**steps** when the sensor is recalibrated or replaced. :func:`estimate_north_table` recovers
-those steps by comparing the signal with a reference direction, and returns a table of
-``(timestamp, north_offset)`` that :func:`apply_north_table` steps onto the raw signal.
-
-Offsets are always **absolute** -- relative to the raw field, never to an already-corrected
-one -- so a supplied table and an estimated one are directly comparable and repeated runs
-compose.
+:func:`estimate_north_table` compares a direction signal with a reference and returns a table of
+``(timestamp, north_offset)`` describing the steps it found; :func:`apply_north_table` steps that
+table onto the raw signal. Offsets are absolute -- relative to the raw field, never to an
+already-corrected one -- so a supplied table and an estimated one are directly comparable.
 
 :func:`north_farm` runs the two-pass farm workflow: north every device to reanalysis, build a
-farm consensus direction from the results, then north every device to that. The second pass is
-the more precise one; the first is what anchors the farm in absolute terms, without which a
-farm that is uniformly wrong looks perfectly self-consistent.
+farm consensus direction from the results, then north every device to that.
 
-The estimator works on any direction field. Only :func:`yaw_usable` is turbine-specific -- a
-mast or LiDAR needs a wind-speed-based mask instead, which is not wired up yet.
+The estimator works on any direction field. Only :func:`yaw_usable` is turbine-specific.
 """
 
 from __future__ import annotations
@@ -42,13 +35,10 @@ logger = logging.getLogger(__name__)
 TIMESTAMP_COL = "timestamp"
 NORTH_OFFSET_COL = "north_offset"
 
-# A turbine's yaw reading is only meaningful when it is generating; below this fraction of
-# rated power it often points away from the wind.
+# Yaw is read only above this fraction of rated power.
 YAW_OK_POWER_FRACTION = 0.05
-# Above this many aggregation bins the cost matrix gets large (it is O(bins^2)); warn rather
-# than fail, since the result is still correct.
+# Above this many aggregation bins the search warns; it still returns a correct result.
 _BIN_COUNT_WARN = 3000
-# Search-shape defaults, as constants so the dataclass defaults are not function calls.
 _DEFAULT_GRID = pd.Timedelta(days=1)
 _DEFAULT_MIN_SEGMENT = pd.Timedelta(days=7)
 # A segment needs a row either side of a candidate split for the split to mean anything.
@@ -57,14 +47,12 @@ _MIN_ROWS_TO_SPLIT = 2
 _DEFAULT_VEER_SECTOR_DEG = 30.0
 # A sector with fewer usable rows than this has no trustworthy level of its own.
 _MIN_ROWS_PER_SECTOR = 50
-# A step larger than this is a recalibration whatever else the record does, so it is never ironed
-# out as wander -- real ones do sometimes reverse later.
+# Steps larger than this are never ironed out as wander.
 _MAX_TRANSIENT_STEP_DEG = 10.0
 
 
-# The span either side of a changepoint at which ``min_step_deg`` applies unmodified. With less
-# record than this the level is veer-limited rather than sample-limited, so a bigger step is
-# needed to tell a recalibration from the wander.
+# The span either side of a changepoint at which ``min_step_deg`` applies unmodified; a shorter
+# segment needs a larger step.
 _DEFAULT_CONFIDENT_SEGMENT = pd.Timedelta(days=90)
 
 
@@ -110,20 +98,13 @@ class NorthingSettings:
     confident_segment: pd.Timedelta = _DEFAULT_CONFIDENT_SEGMENT
 
 
-# Reanalysis is a modelled, drift-prone direction: a shift in it looks exactly like a shift in
-# every turbine at once, so only large steps may be attributed to a turbine against it. A farm
-# consensus shares that common-mode error, so against one a residual step really is the
-# turbine's. See :func:`against_reanalysis`.
+# Minimum step attributable to a turbine when northing against reanalysis rather than a farm
+# consensus. See :func:`against_reanalysis`.
 REANALYSIS_MIN_STEP_DEG = 10.0
-# The first pass may only act on a *gross* recalibration -- one large enough that leaving it
-# uncorrected would drag the farm consensus the second pass depends on. Reanalysis' own
-# direction-dependent bias moves every turbine together by up to ~20 degrees during a spell of
-# unusual wind, so the bar sits above that.
+# Minimum step the first pass may act on. See :func:`anchoring_only`.
 ANCHORING_MIN_STEP_DEG = 30.0
-# Only a step this large is taken out of the residual before the veer signature is measured. The
-# de-stepping exists so a real recalibration cannot leak into the signature, but a speculative
-# split takes the sector level with it -- and the signature is then measured on a residual that no
-# longer carries the veer it is meant to describe. See :func:`_confident_steps`.
+# Minimum step taken out of the residual before the veer signature is measured.
+# See :func:`_confident_steps`.
 VEER_SIGNATURE_MIN_STEP_DEG = 10.0
 
 DEFAULT_NORTHING = NorthingSettings()
@@ -132,15 +113,8 @@ DEFAULT_NORTHING = NorthingSettings()
 def anchoring_only(settings: NorthingSettings) -> NorthingSettings:
     """Return ``settings`` reduced to what the first pass is for: anchoring, not changepoint work.
 
-    The first pass exists to fix the farm in absolute terms against reanalysis. Reanalysis has its
-    own direction-dependent bias, so a spell of unusual wind moves every turbine's residual
-    against it together, by tens of degrees -- and acting on that writes the artefact into the
-    corrected directions and from there into the farm consensus the second pass trusts.
-
-    So only a **gross** step is acted on here (:data:`ANCHORING_MIN_STEP_DEG`): large enough that
-    leaving it would drag the consensus, and larger than reanalysis' own excursions. Everything
-    finer is left to the second pass, which works against the farm consensus and estimates from
-    the **raw** direction, so nothing is lost by deferring it.
+    Only steps of at least :data:`ANCHORING_MIN_STEP_DEG` are acted on; finer structure is left
+    to the second pass, which works against the farm consensus.
     """
     return replace(settings, min_step_deg=ANCHORING_MIN_STEP_DEG)
 
@@ -251,10 +225,9 @@ def veer_normalised(
     level without anything at the turbine changing, and a changepoint search reads that as a step.
 
     Subtracting each sector's whole-record median removes it: a genuine north offset shifts every
-    sector alike and so survives, while a change in the mix cannot move the level at all. Sectors
-    with too little data fall back to the overall level.
+    sector alike and so survives. Sectors with too little data fall back to the overall level.
 
-    Use this for **detection only** -- segment offsets are estimated from the raw residual, so the
+    Use this for detection only -- segment offsets are estimated from the raw residual, so the
     correction stays absolute.
 
     :param de_stepped: the residual with a first-pass estimate of the step structure removed. The
@@ -528,10 +501,9 @@ def _worst_transient(
     min_step_deg: float,
     max_transient_step_deg: float,
 ) -> int | None:
-    """Return the least persistent **small** changepoint -- site veer wandering away and back.
+    """Return the least persistent small changepoint -- site veer wandering away and back.
 
-    Steps larger than ``max_transient_step_deg`` are never named: a real recalibration is
-    sometimes reversed later, and its size is the evidence that it happened.
+    Steps larger than ``max_transient_step_deg`` are never named.
     """
     edges = [start, *changepoints, end]
     durations = np.array([max((b - a).total_seconds(), 1.0) for a, b in itertools.pairwise(edges)], dtype=float)
@@ -605,7 +577,7 @@ def estimate_north_table(
 
     Compares ``direction_deg`` with ``reference_deg`` over the rows ``usable`` allows, finds
     the step changes in their circular difference, and returns the offset that corrects each
-    resulting period. Offsets are absolute: adding one to the **raw** signal norths it.
+    resulting period. Offsets are absolute: adding one to the raw signal norths it.
 
     :param index: timestamps of every array; need not be sorted
     :param direction_deg: the signal to north, in degrees
@@ -688,12 +660,9 @@ def estimate_north_table(
                 de_stepped=de_stepped,
             )
 
-        # Search in the veer-normalised residual, so a shift in the direction mix cannot look like
-        # a step. The signature is measured twice: first assuming no step structure, then around
-        # the confident steps that search found. Measuring it around a *speculative* split instead
-        # would remove the sector level along with the split, leaving the veer in place and the
-        # split with it. Offsets come from the raw residual either way, so the correction stays
-        # absolute.
+        # Search the veer-normalised residual, measuring the sector signature twice: first assuming
+        # no step structure, then around only the steps that search was confident of. Offsets come
+        # from the raw residual either way, so the correction stays absolute.
         provisional = detect(normalised(None))
         confident = _confident_steps(provisional, start=start, residual=residual, index=index)
         changepoints = (
@@ -731,9 +700,8 @@ def apply_north_table(
     """North a direction signal: ``(direction + offset) % 360``, offsets step-applied.
 
     Each row of ``north_table`` holds from its timestamp until the next; rows before the first
-    timestamp take the first offset. Takes a single array so **one table can north several
-    fields of the same device** -- derive the correction from yaw position, then apply it to
-    yaw position and to a measured wind-direction channel. NaNs are preserved.
+    timestamp take the first offset. Takes a single array, so one table can north several
+    fields of the same device. NaNs are preserved.
     """
     index = pd.DatetimeIndex(index)
     direction = np.asarray(direction_deg, dtype=float)
@@ -764,8 +732,6 @@ def _median_across(stack: npt.NDArray[np.float64], *, enough: npt.NDArray[np.boo
     return farm
 
 
-# A consensus needs a strict majority of the farm reporting. Below that the median is over an
-# unrepresentative few, whose own veer moves the reference rather than the farm's.
 def _farm_quorum(n_devices: int, *, floor: int) -> int:
     """Return how many devices must report for their median to stand for the farm's consensus."""
     return max(floor, n_devices // 2 + 1)
@@ -803,10 +769,8 @@ def north_farm(
     """North a whole farm in two passes, returning one absolute table per device.
 
     Pass 1 norths each device to ``reanalysis_deg``; the northed directions give a farm
-    consensus direction, and pass 2 norths each device's **raw** signal to that. Pass 2 is the
-    more precise of the two, but pass 1 is what fixes the farm in absolute terms: a farm whose
-    devices are all wrong by the same amount agrees with itself perfectly, so a farm-relative
-    pass alone cannot see it.
+    consensus direction, and pass 2 norths each device's raw signal to that. Pass 1 is what
+    fixes the farm in absolute terms; pass 2 is the more precise.
 
     Every device's arrays are positional on the shared ``index``, which is what lets the farm
     consensus be taken across devices at each timestamp.
