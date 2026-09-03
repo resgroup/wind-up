@@ -46,6 +46,7 @@ POWER = "Power (kW)"
 NACELLE_POSITION = "Nacelle position (°)"
 WIND_SPEED = "Wind speed (m/s)"
 WIND_SPEED_SD = "Wind speed, Standard deviation (m/s)"
+GEN_RPM = "Generator RPM (RPM)"
 AVAILABILITY = "availability_s"
 TURBINE = "TurbineName"
 
@@ -54,7 +55,7 @@ GREENBYTE_COLUMNS = ColumnSchema(
     active_power=POWER,
     wind_speed=WIND_SPEED,
     wind_speed_sd=WIND_SPEED_SD,
-    gen_rpm="Generator RPM (RPM)",
+    gen_rpm=GEN_RPM,
     availability=AVAILABILITY,
     nacelle_position=NACELLE_POSITION,
 )
@@ -131,7 +132,7 @@ def load_greenbyte_scada(
     *,
     years: Sequence[int],
     data_dir: Path | None = None,
-    columns: Sequence[str] = (POWER, NACELLE_POSITION, WIND_SPEED, WIND_SPEED_SD),
+    columns: Sequence[str] = (POWER, NACELLE_POSITION, WIND_SPEED, WIND_SPEED_SD, GEN_RPM),
 ) -> pd.DataFrame:
     """Return long, timestamp-indexed SCADA for ``farm`` over ``years``.
 

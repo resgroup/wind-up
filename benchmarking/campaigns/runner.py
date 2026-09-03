@@ -70,10 +70,9 @@ class CampaignRunner:
     :param spec: the public campaign facts; methods see nothing else
     :param dataset: the generated dataset, whose ``original_df`` supplies the truth
     :param build_methods: given an upgraded turbine's name, the methods to run for it
-    :param era5_wd: reanalysis wind direction covering the campaign. Supplying it turns on the
-        shared northing step, which writes a ``northed_`` companion for each direction role
-        upstream of every method. Required when ``spec.north_offsets`` is ``None`` and northing
-        is wanted; without it the step is skipped and methods see no northed column.
+    :param era5_wd: reanalysis wind direction covering the campaign, the anchor the shared northing
+        step discovers against. Required when ``spec.north_offsets`` is ``None``; a declared table
+        needs none.
     :param northing_roles: the direction roles the shared step corrects
     :param northing_settings: how the shared step's changepoint search is bounded
     """
@@ -196,26 +195,20 @@ class CampaignRunner:
         """
         synthetic = self._dataset.synthetic_df
         keep = self._visible_mask(synthetic)
-        visible = synthetic[keep]
-        if self._should_north():
-            visible = north_scada(
-                visible,
-                columns=self._dataset.columns,
-                north_offsets=self._spec.north_offsets,
-                rated_power_kw=self._spec.rated_power_kw,
-                era5_wd=self._era5_wd,
-                roles=self._northing_roles,
-                settings=self._northing_settings,
-            )
+        visible = north_scada(
+            synthetic[keep],
+            columns=self._dataset.columns,
+            north_offsets=self._spec.north_offsets,
+            rated_power_kw=self._spec.rated_power_kw,
+            era5_wd=self._era5_wd,
+            roles=self._northing_roles,
+            settings=self._northing_settings,
+        )
         return replace(
             self._dataset,
             synthetic_df=visible,
             original_df=self._dataset.original_df[self._visible_mask(self._dataset.original_df)],
         )
-
-    def _should_north(self) -> bool:
-        """Whether the shared step can run: a declared table needs nothing, discovery needs ERA5."""
-        return self._spec.north_offsets is not None or self._era5_wd is not None
 
     def _visible_mask(self, frame: pd.DataFrame) -> np.ndarray:
         """Rows of ``frame`` inside the analysis period whose turbine may be used."""

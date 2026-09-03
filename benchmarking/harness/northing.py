@@ -46,10 +46,21 @@ def era5_direction(era5_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
 def _north_table_from_offsets(
     offsets: Sequence[tuple[str, pd.Timestamp, float]], *, turbine: str, start: pd.Timestamp
 ) -> pd.DataFrame:
-    """Return one turbine's declared north table, or a zero-offset table when none is declared."""
+    """Return one turbine's declared north table, or a zero-offset table when none is declared.
+
+    :raises ValueError: if the turbine's first declared offset begins after ``start``, which would
+        leave the earliest rows to be corrected by a later offset
+    """
     rows = sorted(((ts, off) for (t, ts, off) in offsets if t == turbine), key=lambda e: e[0])
     if not rows:
         return pd.DataFrame({"timestamp": pd.DatetimeIndex([start]), "north_offset": [0.0]})
+    if rows[0][0] > start:
+        msg = (
+            f"the declared north offsets for {turbine!r} begin at {rows[0][0]}, after the data starts at "
+            f"{start}; rows before the first offset would be corrected by a later one. Declare an offset "
+            f"covering the start of the data."
+        )
+        raise ValueError(msg)
     return pd.DataFrame(
         {"timestamp": pd.DatetimeIndex([ts for ts, _ in rows]), "north_offset": [off for _, off in rows]}
     )

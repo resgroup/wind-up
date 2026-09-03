@@ -143,6 +143,24 @@ class TestDeclared:
         # would raise if this branch tried to discover
         north_scada(scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, era5_wd=None)
 
+    def test_a_table_starting_after_the_data_raises(self) -> None:
+        index = _index(days=30)
+        scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
+        late = [("T01", _START + pd.Timedelta(days=5), 12.0)]
+
+        with pytest.raises(ValueError, match="after the data starts"):
+            north_scada(scada, columns=_COLUMNS, north_offsets=late, rated_power_kw=_RATED, era5_wd=None)
+
+    def test_a_turbine_with_no_declared_offset_is_left_alone(self) -> None:
+        index = _index(days=30)
+        scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
+        only_t01 = [("T01", _START, 12.0)]
+
+        out = north_scada(scada, columns=_COLUMNS, north_offsets=only_t01, rated_power_kw=_RATED, era5_wd=None)
+
+        raw = scada[scada[_COLUMNS.turbine] == "T02"][_COLUMNS.nacelle_position].to_numpy(dtype=float)
+        assert _northed(out, "T02") == pytest.approx(raw % 360.0)
+
 
 class TestStudyPath:
     """The study path norths every replicate, so a method sees a table wind-up worked out itself."""

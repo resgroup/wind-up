@@ -33,8 +33,18 @@ from wind_up.northing import estimate_north_table, north_farm
 FIXTURE = Path(__file__).parents[1] / "test_data" / "hot" / "northing" / "northing_inputs.parquet"
 ALL_TURBINES = tuple(f"T{n:02d}" for n in range(1, 22))
 
+
+def _is_parquet(path: Path) -> bool:
+    """Whether ``path`` holds real Parquet rather than an unsmudged git-lfs pointer."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) == b"PAR1"
+    except OSError:
+        return False
+
+
 pytestmark = pytest.mark.skipif(
-    not FIXTURE.exists(), reason="Hill of Towie northing fixture not available (git-lfs not pulled)"
+    not _is_parquet(FIXTURE), reason="Hill of Towie northing fixture not available (git-lfs not pulled)"
 )
 
 
