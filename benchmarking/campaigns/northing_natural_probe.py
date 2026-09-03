@@ -47,11 +47,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PROBE_TEST_WTG = "T06"
-# T05 is T06's nearest neighbour and carries real northing steps in 2017-2018. Alone it drives the
-# reference direction entirely; alongside the fixture's stable references its effect is diluted,
-# which is the contrast the probe reports.
+# T05 is T06's nearest neighbour and carries real northing steps in 2017-2018. How much it moves
+# the answer depends on how far it is diluted by stable references, which is the contrast the probe
+# reports. T05 alone is not available: the farm consensus needs at least three devices, and the
+# test turbine plus one reference is two.
 REFERENCE_SETS: dict[str, tuple[str, ...]] = {
-    "t05_only": ("T05",),
+    "t05_and_t15": ("T05", "T15"),
     "t05_plus_stable": ("T05", "T15", "T10", "T08"),
 }
 CAMPAIGN_MONTHS = 12
