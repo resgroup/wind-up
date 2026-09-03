@@ -120,6 +120,11 @@ REANALYSIS_MIN_STEP_DEG = 10.0
 # direction-dependent bias moves every turbine together by up to ~20 degrees during a spell of
 # unusual wind, so the bar sits above that.
 ANCHORING_MIN_STEP_DEG = 30.0
+# Only a step this large is taken out of the residual before the veer signature is measured. The
+# de-stepping exists so a real recalibration cannot leak into the signature, but a speculative
+# split takes the sector level with it -- and the signature is then measured on a residual that no
+# longer carries the veer it is meant to describe. See :func:`_confident_steps`.
+VEER_SIGNATURE_MIN_STEP_DEG = 10.0
 
 DEFAULT_NORTHING = NorthingSettings()
 
@@ -208,6 +213,26 @@ def _de_stepped(
             continue
         out[rows] = np.asarray(circ_diff(values, circ_median(finite, range_360=False)), dtype=float)
     return out
+
+
+def _confident_steps(
+    changepoints: list[pd.Timestamp],
+    *,
+    start: pd.Timestamp,
+    residual: npt.NDArray[np.float64],
+    index: pd.DatetimeIndex,
+    min_step_deg: float = VEER_SIGNATURE_MIN_STEP_DEG,
+) -> list[pd.Timestamp]:
+    """Return the changepoints whose step is large enough to be a real recalibration.
+
+    What the veer signature may be measured around. A search over a strongly veering residual
+    proposes splits that are the veer itself; de-stepping those would remove the signature.
+    """
+    if not changepoints:
+        return []
+    offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
+    steps = _steps(offsets)
+    return [when for when, step in zip(changepoints, steps, strict=True) if step >= min_step_deg]
 
 
 def veer_normalised(
@@ -651,19 +676,30 @@ def estimate_north_table(
             )
         return found
 
-    changepoints = detect(residual)
-    if settings.veer_sector_deg is not None:
-        # Search again in the veer-normalised residual, so a shift in the direction mix cannot look
-        # like a step. The first pass exists only to take the step structure out of the way while
-        # the veer signature is measured; offsets come from the raw residual either way, so the
-        # correction stays absolute.
-        changepoints = detect(
-            veer_normalised(
+    if settings.veer_sector_deg is None:
+        changepoints = detect(residual)
+    else:
+
+        def normalised(de_stepped: npt.NDArray[np.float64] | None) -> npt.NDArray[np.float64]:
+            return veer_normalised(
                 residual,
                 reference_deg=reference,
-                sector_deg=settings.veer_sector_deg,
-                de_stepped=_de_stepped(residual, index=index, edges=[start, *changepoints, end]),
+                sector_deg=settings.veer_sector_deg,  # type: ignore[arg-type]
+                de_stepped=de_stepped,
             )
+
+        # Search in the veer-normalised residual, so a shift in the direction mix cannot look like
+        # a step. The signature is measured twice: first assuming no step structure, then around
+        # the confident steps that search found. Measuring it around a *speculative* split instead
+        # would remove the sector level along with the split, leaving the veer in place and the
+        # split with it. Offsets come from the raw residual either way, so the correction stays
+        # absolute.
+        provisional = detect(normalised(None))
+        confident = _confident_steps(provisional, start=start, residual=residual, index=index)
+        changepoints = (
+            detect(normalised(_de_stepped(residual, index=index, edges=[start, *confident, end])))
+            if confident
+            else provisional
         )
 
     offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)

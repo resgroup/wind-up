@@ -364,6 +364,39 @@ class TestNorthFarm:
             circ_diff(one_pass["north_offset"].iloc[0], truth)
         )
 
+    @pytest.mark.xfail(
+        reason="a device is part of the consensus it is northed against; see findings_campaigns.md CF7",
+        strict=True,
+    )
+    def test_pass_two_refines_every_device_on_an_odd_sized_farm(self) -> None:
+        """A device may not be part of the consensus it is northed against.
+
+        With an odd device count the per-timestamp median *is* one of the devices, so a device
+        that is its own reference scores an exact ``-offset`` residual on those rows. Those rows
+        are algebra rather than measurement, and they mass on one value at the centre of the
+        distribution, which pins the median to whatever pass 1 already said.
+        """
+        index = _index()
+        names = ("T01", "T02", "T03", "T04", "T05")
+        offsets = {name: [("2017-01-01", 20.0)] for name in names}
+        reported, reference = self._farm(index, offsets)
+        rng = np.random.default_rng(11)
+        reanalysis = (reference + rng.normal(0.0, 25.0, size=len(index))) % 360.0
+        usable = {name: _all_usable(index) for name in names}
+
+        two_pass = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reanalysis)
+
+        one_pass_errors, two_pass_errors = [], []
+        for name in names:
+            one = estimate_north_table(index, reported[name], reference_deg=reanalysis, usable=usable[name])
+            first, second = one["north_offset"].iloc[0], two_pass[name]["north_offset"].iloc[0]
+            assert second != pytest.approx(first, abs=1e-9), f"{name}: pass 2 merely repeated pass 1"
+            one_pass_errors.append(abs(circ_diff(first, 20.0)))
+            two_pass_errors.append(abs(circ_diff(second, 20.0)))
+        # a device pass 1 happened to get right can still move slightly the wrong way; the farm is
+        # what has to improve
+        assert np.mean(two_pass_errors) < np.mean(one_pass_errors)
+
     def test_raises_when_too_few_devices_for_a_farm_reference(self) -> None:
         index = _index(days=30)
         offsets = {"T01": [("2017-01-01", 0.0)], "T02": [("2017-01-01", 5.0)]}
@@ -462,6 +495,26 @@ class TestVeerNormalisation:
         table = estimate_north_table(index, reported, reference_deg=reference, usable=_all_usable(index))
 
         assert len(table) == 1, f"veer mistaken for a step: {table}"
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize("veer_amplitude", [6.0, 8.0])
+    def test_veer_strong_enough_to_over_detect_is_still_absorbed(self, veer_amplitude: float, seed: int) -> None:
+        """Smoothly direction-dependent veer, no true step: nothing may be found.
+
+        The sector levels are measured on a residual de-stepped by the first detection pass. Veer
+        this strong makes that pass split the record, and de-stepping those splits takes the very
+        sector levels the signature is meant to capture -- so the splits survive the second pass
+        that exists to remove them. Only steps large enough to be real may be de-stepped.
+        """
+        index = _index(days=700)
+        rng = np.random.default_rng(seed)
+        reference = np.cumsum(rng.normal(0.0, 2.0, size=len(index))) % 360.0
+        scatter = np.random.default_rng(500 + seed).normal(0.0, 6.0, len(index))
+        reported = (reference + veer_amplitude * np.cos(np.deg2rad(reference - 40.0)) + scatter) % 360.0
+
+        table = estimate_north_table(index, reported, reference_deg=reference, usable=_all_usable(index))
+
+        assert len(table) == 1, f"veer mistaken for {len(table) - 1} step(s): {table}"
 
 
 class TestTransientPruning:

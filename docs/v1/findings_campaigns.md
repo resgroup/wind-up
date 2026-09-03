@@ -12,6 +12,79 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF8 — Veer normalisation was being defeated by its own de-stepping: measuring the sector signature around a *speculative* split removes the very veer it should describe, so the split survives. Measuring it on the normalised residual instead cut the subset study's spurious changepoints 32 → 27, left every genuine one, and ran 34% faster
+
+*2026-09-03. Reproduce: `uv run python -m benchmarking.baselines.study_northing_subsets` (99 cases,
+Hill of Towie 2016–2024), before and after the change to `estimate_north_table`. Synthetic
+counterpart: `tests/wind_up/test_northing.py::TestVeerNormalisation`.*
+
+**Observed.** `veer_normalised` works exactly as designed — on a residual with 4° of
+direction-dependent veer it takes the sector spread from 10–13° to **0.00°** and the day-to-day
+wander of the daily level from 4.04° to 1.19°, the no-veer baseline. And it changed **nothing**: the
+same changepoints were found with it on, off, and at every `veer_sector_deg` from 45° down to 10°
+(false-positive counts 33/31/31/31/31).
+
+**Root cause.** The sector signature is measured on a residual de-stepped by the first detection
+pass, so a real recalibration cannot leak into it. But under veer that pass *over-detects* — it hits
+the `max_k` cap. De-stepping then removes each spurious segment's level, and those levels **are** the
+veer signature. The signature is measured on a residual that no longer carries the veer, subtracts
+almost nothing, and the second pass re-finds the same splits. The false positives immunise
+themselves against the mechanism built to remove them.
+
+**Fix.** Search the veer-normalised residual first, with no step structure assumed, then re-measure
+the signature around only the *confident* steps that search found (`_confident_steps`,
+`VEER_SIGNATURE_MIN_STEP_DEG = 10.0`). Same number of searches as before. A genuine recalibration
+still dominates the first search, so it is still de-stepped; a speculative split is not.
+
+**Evidence.** On the 99-case subset study: `extra` 32 → **27**, `matched` 211 → **211**, `missing`
+8 → 8, runtime 820 s → **541 s**. The reference case (`all__full_2016_2024`, 19 changepoints) is
+**byte-identical**. Every one of the 97 other cases is unchanged; the entire improvement is
+`west__year_2021`, where **T11** goes from a self-cancelling cluster of six
+(−12.6, +10.8, −10.4, +11.2, +8.1, −4.4) to a single 3.95° step. That is the window-dependence R1
+recorded as unresolved and left as genuine ambiguity — it was this bug.
+
+**Implication.** Veer normalisation is load-bearing and should be kept, not dropped: its apparent
+weakness was this defeat, not the mechanism. Its effect is only visible once the de-stepping stops
+hiding it.
+
+---
+
+## CF7 — A turbine is part of the farm consensus it is northed against, which pins pass 2 to pass 1 on small odd farms; leave-one-out fixes that and detects much smaller steps, but costs more spurious ones, so it is **not** adopted
+
+*2026-09-03. Reproduce: SMARTEOLE example run with `optimize_northing_corrections=True`; synthetic
+sweep in the session scratch; `study_northing_subsets` for the real-data cost. The regression test is
+`test_pass_two_refines_every_device_on_an_odd_sized_farm`, **xfail(strict)** — it documents the
+defect rather than a pending fix.*
+
+**Observed.** On SMARTEOLE (7 turbines, 3 months) the discovered north table is **byte-identical to
+the pass-1 table on all seven turbines**, though pass 2's reference differs from reanalysis by 8.8°
+mean absolute over the same rows. Pass 2 is an exact no-op.
+
+**Root cause.** `_farm_direction` takes a per-timestamp circular median across devices. With an odd
+count the median **is** one of the devices, so wherever it is device *j*'s own reading the residual
+is `raw_j − (raw_j + off_j)` — algebra, not measurement, identical on every such row. That point mass
+(~10–15% of the sample) sits at the centre of the distribution and straddles the 50th percentile
+(below 0.42–0.48, atom 0.10–0.15), so the median snaps to it and the other ~88% of genuine
+measurements cannot move the answer.
+
+**Leave-one-out was built, measured and reverted.** It removes the atom entirely and is much better
+at what pass 2 is *for*: detection floor ~4° against ~8°, and step **sizing** 0.3–0.4° error against
+1.6–3.2° — self-inclusion attenuates the step because a stepping device drags the consensus with it.
+The user's alternative, averaging the three values nearest the median, removes the atom but keeps the
+attenuation, so it tracks the incumbent at every farm size tried. But on the 99-case study LOO scored
+`extra` 32 → **42** for one recovered changepoint, and it needs a 4-device minimum farm. Not adopted:
+the cost is real and the benefit is largest exactly where farms are smallest.
+
+**Scale.** The pin is severe only on small odd farms. Hill of Towie's 21 turbines dilute the atom to
+3.3%, where leave-one-out moves offsets by 0.15° mean / 0.21° max and changes no changepoint; an even
+count interpolates between two members and forms no atom at all.
+
+**Left open.** Whether to revisit LOO now that **CF8** removes most of its false-positive cost — with
+the de-stepping fixed, its synthetic penalty falls to 1 spurious against 0 while it keeps +3
+detections and 4x better sizing. Not re-measured on the 99-case study.
+
+---
+
 ## CF6 — Honouring the declared `candidate_references` moves the prepost farm number 4x closer to truth (+0.148% → +0.039%), but *per-turbine* accuracy is marginally worse: the farm gain is cancellation, not better estimates
 
 *2026-09-02. Reproduce: `uv run python -m benchmarking.campaigns.placebo`, Hill of Towie, both
