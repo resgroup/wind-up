@@ -16,6 +16,7 @@ from wind_up.northing import DEFAULT_NORTHING
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from pathlib import Path
 
     from benchmarking.campaigns.declaration import CampaignSpec
     from benchmarking.harness import Method, MethodInput, MethodOutput
@@ -75,6 +76,7 @@ class CampaignRunner:
         needs none.
     :param northing_roles: the direction roles the shared step corrects
     :param northing_settings: how the shared step's changepoint search is bounded
+    :param northing_out_dir: where the shared step writes its plots when it discovers corrections
     """
 
     def __init__(
@@ -86,6 +88,7 @@ class CampaignRunner:
         era5_wd: pd.Series | None = None,
         northing_roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
         northing_settings: NorthingSettings = DEFAULT_NORTHING,
+        northing_out_dir: Path | None = None,
     ) -> None:
         """Store the campaign, its data and the per-turbine method factory."""
         self._spec = spec
@@ -94,6 +97,7 @@ class CampaignRunner:
         self._era5_wd = era5_wd
         self._northing_roles = tuple(northing_roles)
         self._northing_settings = northing_settings
+        self._northing_out_dir = northing_out_dir
 
     def run(self) -> CampaignResult:
         """Run every applicable method on every upgraded turbine and aggregate to one headline."""
@@ -203,6 +207,7 @@ class CampaignRunner:
             era5_wd=self._era5_wd,
             roles=self._northing_roles,
             settings=self._northing_settings,
+            out_dir=self._northing_out_dir,
         )
         return replace(
             self._dataset,

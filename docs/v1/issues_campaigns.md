@@ -452,7 +452,9 @@ Every R-issue shares a two-phase acceptance, run in **both prepost and toggle**:
 **Status:** ✅ Done (2026-09-03, PR #138). Shared step in `benchmarking/harness/northing.py`,
 reached by both the campaign runner and the study path (which norths per replicate, discovering
 for itself). `power_model`'s direction feature is on by default; all four frozen baselines
-re-recorded. Two Done-when items were closed by decision rather than built, both recorded here:
+re-recorded. The northing plots are wired into the shared step and written whenever it discovers
+(`north_scada(out_dir=...)`); the placebo is the demonstration, since it now supplies no prior
+table. Two Done-when items were closed by decision rather than built, both recorded here:
 
 * **v0's arm is dropped.** The fixture never ran `V0BinnedMethod`, so "the step bites v0" is not
   demonstrated. Accepted because the norther has been shown to track v0 three other ways: the

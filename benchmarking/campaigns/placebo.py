@@ -27,13 +27,13 @@ import matplotlib as mpl
 mpl.use("Agg")  # headless: the report writes plots without a display
 
 import pandas as pd
-import yaml
 
-from benchmarking.baselines.hot_context import NORTHING_YAML, build_hot_v0_context
+from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.campaigns.declaration import SyntheticCampaign
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.report import write_campaign_report
 from benchmarking.campaigns.runner import CampaignRunner
+from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_RATED_POWER_KW, ToggleSchedule
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
 
@@ -81,16 +81,6 @@ def default_output_root() -> Path:
     return root / "placebo"
 
 
-def _north_offsets(turbines: Sequence[str]) -> list[tuple[str, pd.Timestamp, float]]:
-    """Step-applied north offsets for ``turbines`` from the vendored northing YAML (UTC)."""
-    data = yaml.safe_load(NORTHING_YAML.read_text())
-    return [
-        (str(name), pd.Timestamp(ts, tz="UTC"), float(offset))
-        for (name, ts, offset) in data
-        if str(name) in set(turbines)
-    ]
-
-
 def _coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
     """Hill of Towie coordinates for ``turbines``."""
     metadata = load_hot_metadata()
@@ -136,7 +126,8 @@ def placebo_campaign(
         excluded_turbines=list(excluded),
         upgrades=[],
         coords=coords if coords is not None else dict.fromkeys(participating, (0.0, 0.0)),
-        north_offsets=_north_offsets(participating),
+        # discovered by the shared northing step, not supplied: the placebo exercises the norther
+        north_offsets=None,
         rated_power_kw=HOT_RATED_POWER_KW,
         analysis_period=placebo_analysis_period(mode),
     )
@@ -175,9 +166,10 @@ def run_placebo(
     campaign = placebo_campaign(mode, upgraded=upgraded, turbines=participating, coords=_coords(participating))
     dataset = campaign.generate(scada_df)
     spec = campaign.spec()
-    # only the power model reads ERA5, and building the context fetches it, so the fast path
-    # stays free of the network dependency
-    era5 = build_hot_v0_context(wtg_names=participating).reanalysis_datasets[0].data if include_power_model else None
+    # ERA5 is needed whether or not the power model runs: it is the anchor the shared northing
+    # step discovers against.
+    era5 = build_hot_v0_context(wtg_names=participating).reanalysis_datasets[0].data
+    index = pd.DatetimeIndex(dataset.synthetic_df.index.unique()).sort_values()
 
     runner = CampaignRunner(
         spec,
@@ -185,9 +177,11 @@ def run_placebo(
         build_methods=lambda wtg: carried_forward_methods(
             spec,
             out_dir=run_dir / wtg,
-            era5_hourly_df=era5,
+            era5_hourly_df=era5 if include_power_model else None,
             include_power_model=include_power_model,
         ),
+        era5_wd=era5_direction(era5, index),
+        northing_out_dir=run_dir / "northing",
     )
     result = runner.run()
     write_campaign_report(result, dataset, out_dir=run_dir)

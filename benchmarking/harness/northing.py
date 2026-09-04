@@ -17,13 +17,16 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 from wind_up.northing import DEFAULT_NORTHING, NorthingSettings, apply_north_table, north_farm, yaw_usable
+from wind_up.northing_plots import plot_northing, plot_northing_farm
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
     from benchmarking.synthetic import ColumnSchema
 
@@ -32,6 +35,10 @@ logger = logging.getLogger(__name__)
 # The direction roles corrected by default. One table per turbine is derived from its nacelle
 # position and may be applied to further direction channels of the same turbine.
 DEFAULT_NORTHING_ROLES: tuple[str, ...] = ("nacelle_position",)
+
+# The plots show the residual against reanalysis: it is the anchor available here, whereas the
+# farm consensus pass 2 uses is internal to north_farm.
+_PLOT_REFERENCE_NAME = "reanalysis"
 
 # Open-Meteo's hub-height wind direction, the reanalysis anchor discovery is measured against.
 ERA5_WD_COL = "wind_direction_100m"
@@ -115,6 +122,7 @@ def north_scada(
     era5_wd: pd.Series | None = None,
     roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
     settings: NorthingSettings = DEFAULT_NORTHING,
+    out_dir: Path | None = None,
 ) -> pd.DataFrame:
     """Return ``scada_df`` with a north-calibrated companion column for each direction role.
 
@@ -129,6 +137,8 @@ def north_scada(
         discovery. Required when ``north_offsets`` is ``None``.
     :param roles: the direction roles to write a ``northed_`` companion for
     :param settings: how the changepoint search is bounded, when discovering
+    :param out_dir: when given and corrections are discovered, the farm overview and one plot per
+        device are written here, so the correction can be judged rather than trusted
     :return: a copy of ``scada_df`` with ``columns.northed(role)`` added for each role
     """
     columns.require_roles(roles)
@@ -165,23 +175,23 @@ def north_scada(
                 f"the north table for every role is derived from it. Columns present: {sorted(scada_df.columns)}"
             )
             raise ValueError(msg)
-        tables = north_farm(
-            index,
-            direction_deg=_directions(scada_df, columns=columns, turbines=turbines, index=index, col=source),
-            usable=_usable_masks(
-                scada_df,
-                columns=columns,
-                turbines=turbines,
-                index=index,
-                reference_deg=reference,
-                rated_power_kw=rated_power_kw,
-                timebase_s=timebase_s,
-            ),
-            reanalysis_deg=reference,
-            settings=settings,
+        directions = _directions(scada_df, columns=columns, turbines=turbines, index=index, col=source)
+        usable = _usable_masks(
+            scada_df,
+            columns=columns,
+            turbines=turbines,
+            index=index,
+            reference_deg=reference,
+            rated_power_kw=rated_power_kw,
+            timebase_s=timebase_s,
         )
+        tables = north_farm(index, direction_deg=directions, usable=usable, reanalysis_deg=reference, settings=settings)
         found = sum(len(t) - 1 for t in tables.values())
         logger.info("discovered %d northing changepoint(s) across %d turbines", found, len(turbines))
+        if out_dir is not None:
+            _write_northing_plots(
+                index, directions=directions, usable=usable, reference=reference, tables=tables, out_dir=out_dir
+            )
 
     turbine_of = scada_df[columns.turbine].to_numpy()
     row_index = pd.DatetimeIndex(scada_df.index)
@@ -196,6 +206,42 @@ def north_scada(
             values[rows] = apply_north_table(row_index[rows], values[rows], north_table=table)
         scada_df[target] = values
     return scada_df
+
+
+def _write_northing_plots(
+    index: pd.DatetimeIndex,
+    *,
+    directions: dict[str, np.ndarray],
+    usable: dict[str, np.ndarray],
+    reference: np.ndarray,
+    tables: dict[str, pd.DataFrame],
+    out_dir: Path,
+) -> None:
+    """Write the farm overview and one plot per device, then close the figures."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    figure = plot_northing_farm(
+        index,
+        direction_deg=directions,
+        reference_deg=reference,
+        usable=usable,
+        north_tables=tables,
+        reference_name=_PLOT_REFERENCE_NAME,
+        out_dir=out_dir,
+    )
+    plt.close(figure)
+    for device in sorted(directions):
+        figure = plot_northing(
+            index,
+            directions[device],
+            reference_deg=reference,
+            usable=usable[device],
+            north_table=tables[device],
+            device=device,
+            reference_name=_PLOT_REFERENCE_NAME,
+            out_dir=out_dir,
+        )
+        plt.close(figure)
+    logger.info("wrote northing plots for %d device(s) to %s", len(directions), out_dir)
 
 
 def _timebase_seconds(index: pd.DatetimeIndex) -> float:
