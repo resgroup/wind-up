@@ -4,9 +4,6 @@ A thin v0 adapter over :mod:`wind_up.northing`: this module supplies v0's vocabu
 MultiIndex wind-farm frame, a :class:`~wind_up_v0.models.WindUpConfig`, the ``raw_`` column
 names) and its reporting -- logging, plots and the corrections YAML -- while the estimation
 itself is the shared v1 core.
-
-The two-pass structure is unchanged: north every turbine to reanalysis wind direction, derive
-the wind-farm yaw direction from the result, then north every turbine to that.
 """
 
 from __future__ import annotations
