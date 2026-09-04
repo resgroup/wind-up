@@ -12,6 +12,66 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF9 — R1 improved `power_model` on the real placebo in both modes: mean per-turbine error 0.515% → 0.312% prepost and 0.328% → 0.255% toggle, with `naive_ratio` and `toggle_specialist` unmoved to three decimals, so the gain is attributable to the direction feature and discovered northing alone
+
+*2026-09-04. Reproduce: `uv run python -m benchmarking.campaigns.placebo`, Hill of Towie, both
+modes, defaults (six upgraded turbines T07/T11/T12/T06/T16/T19 of 21, `upgrades=[]` so truth is 0
+by construction). Compared against CF6, recorded 2026-09-02 on the same configuration before R1.
+Two things changed between the runs, both of them what v1 wind-up now is: `power_model` reads each
+reference's north-calibrated direction, and the placebo no longer supplies the vendored Hill of
+Towie north table -- it declares `north_offsets=None` and the shared step discovers.*
+
+**The controls are exact, so this is a clean A/B.** `naive_ratio` reads no direction signal and
+`toggle_specialist` reads none either; both reproduce CF6 to every digit recorded, on every
+turbine, in both modes. Nothing but `power_model` moved.
+
+**Prepost, error % (truth 0):**
+
+| wtg | CF6 | now | Δ |
+|---|---|---|---|
+| T06 | +0.616 | **+0.044** | −0.572 |
+| T07 | +0.462 | +0.420 | −0.042 |
+| T11 | +0.188 | +0.328 | +0.140 |
+| T12 | +0.337 | +0.242 | −0.095 |
+| T16 | −0.721 | −0.728 | −0.007 |
+| T19 | −0.769 | **−0.110** | +0.659 |
+| **mean abs** | **0.515** | **0.312** | **−0.203** |
+| spread | 1.385 | 1.148 | −0.237 |
+| farm | +0.0390 | +0.0759 | +0.037 |
+
+**Toggle, error % (truth 0):**
+
+| wtg | CF6 | now | Δ |
+|---|---|---|---|
+| T06 | +0.087 | +0.007 | −0.080 |
+| T07 | −0.151 | −0.119 | +0.032 |
+| T11 | +0.197 | +0.242 | +0.045 |
+| T12 | −0.224 | −0.139 | +0.085 |
+| T16 | −0.753 | −0.694 | +0.059 |
+| T19 | −0.558 | −0.329 | +0.229 |
+| **mean abs** | **0.328** | **0.255** | **−0.073** |
+| farm | −0.2186 | −0.1516 | −0.067 |
+
+**A 39% cut in prepost per-turbine error, 22% in toggle.** The prepost gain is concentrated:
+T06 and T19 account for nearly all of it, and only T11 got worse. That T06 lands at +0.044%
+matters beyond the average -- it is the R-series fixture turbine, chosen in CF5 for being the
+most accurate and stable on site, and it is now essentially exact on a real placebo.
+
+**Per-turbine and farm move in opposite directions in prepost, the mirror of CF6.** CF6 found the
+farm improving 4x while per-turbine accuracy slipped, and read that as better cancellation rather
+than better estimates. Here the estimates genuinely improve and the farm number drifts from
++0.039% to +0.076% -- there is less residual left to cancel. Both are well inside the ±0.2% farm
+target, and the per-turbine figure is the one that says the method got better. Toggle improves on
+both axes.
+
+**Implication.** The direction feature earns its place on real data, which the frozen benchmarks
+could not show: there it was neutral on the headline (−0.024 pp prepost, +0.016 pp toggle over the
+`overall` cells). The benchmark measures synthetic campaigns on four turbines; the placebo is 21
+real turbines with real northing faults in the record, which is where a north-calibrated direction
+has something to contribute. Worth remembering when a change reads flat on the benchmark.
+
+---
+
 ## CF8 — Veer normalisation was being defeated by its own de-stepping: measuring the sector signature around a *speculative* split removes the very veer it should describe, so the split survives. Measuring it on the normalised residual instead cut the subset study's spurious changepoints 32 → 27, left every genuine one, and ran 34% faster
 
 *2026-09-03. Reproduce: `uv run python -m benchmarking.baselines.study_northing_subsets` (99 cases,
