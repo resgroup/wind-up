@@ -121,6 +121,9 @@ def run_toggle_study(
                 era5_exclude=CURATED_ERA5_EXCLUDE,
                 # Accepted default: looser leaf capacity.
                 model_params=dict(TUNED_MODEL_PARAMS),
+                # A sweep scores estimators rather than reporting campaigns, so the per-reference
+                # uplift report is skipped: it costs a model fit per reference and moves no estimate.
+                report_reference_uplifts=False,
                 out_dir=out_dir / "power_model_runs",
             )
         )

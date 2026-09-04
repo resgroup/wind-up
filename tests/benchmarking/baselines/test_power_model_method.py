@@ -20,6 +20,7 @@ from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelM
 if TYPE_CHECKING:
     from pathlib import Path
 from benchmarking.baselines.power_model.method import (
+    _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
     _TIME_DECAY_CAMPAIGN_MULTIPLE,
     _clip_predictions,
     _combine_uplift,
@@ -846,11 +847,18 @@ def _screen_case(*, step: float, n: int = 4000) -> tuple[MethodInput, pd.Timesta
 
 
 def _screen_method(**overrides: object) -> PowerModelMethod:
+    """A screening method for the toy cases below.
+
+    ``screen_min_campaign_days=0`` because these toy campaigns are a fortnight long and exist to
+    exercise the outlier rule, not the minimum-data gate — which has its own tests, at realistic
+    campaign lengths, in :class:`TestScreenNeedsEnoughCampaign`.
+    """
     kwargs: dict[str, object] = {
         "columns": _COLUMNS,
         "baseline_rated_power_kw": 2300.0,
         "conditions": (),
         "screen_floor": 0.01,
+        "screen_min_campaign_days": 0.0,
         **overrides,
     }
     return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
@@ -1079,19 +1087,49 @@ class TestScreenNeedsEnoughCampaign:
         scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=0.08)
         return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
 
+    def _gated_method(self, **overrides: object) -> PowerModelMethod:
+        """The screening method with the real minimum-campaign default, which is what is under test."""
+        return _screen_method(**{"screen_min_campaign_days": _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS, **overrides})
+
     def test_a_short_campaign_is_not_screened(self) -> None:
-        result = _screen_method().screen_references(self._prepost_days(30))
+        result = self._gated_method().screen_references(self._prepost_days(30))
         assert result.screened == ()
         assert not result.screenable
 
     def test_a_long_enough_campaign_is_screened(self) -> None:
-        result = _screen_method().screen_references(self._prepost_days(120))
+        result = self._gated_method().screen_references(self._prepost_days(120))
         assert result.screenable
 
     def test_the_threshold_is_configurable(self) -> None:
         mi = self._prepost_days(30)
-        assert _screen_method(screen_min_campaign_days=10.0).screen_references(mi).screenable
+        assert self._gated_method(screen_min_campaign_days=10.0).screen_references(mi).screenable
 
     def test_the_default_is_ninety_days(self) -> None:
         """Below three months the clean spread overlaps the floor, so no floor can separate."""
         assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_min_campaign_days == 90.0
+
+
+class TestReferenceUpliftReportingIsOptional:
+    """The reference pass costs N fits per estimate; a method sweep does not need it."""
+
+    def test_it_is_reported_by_default(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        assert _screen_method().estimate(mi).reference_uplifts is not None
+
+    def test_it_can_be_skipped(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        assert _screen_method(report_reference_uplifts=False).estimate(mi).reference_uplifts is None
+
+    def test_skipping_it_does_not_change_the_estimate(self) -> None:
+        """It is a report, not an input: turning it off must not move the headline."""
+        mi, _ = _screen_case(step=0.0)
+        on = _screen_method(report_reference_uplifts=True).estimate(mi).p50_overall
+        off = _screen_method(report_reference_uplifts=False).estimate(mi).p50_overall
+        assert on == pytest.approx(off)
+
+    def test_the_screen_still_runs_and_is_still_reported(self) -> None:
+        """Skipping the report must not silently skip the screening that changes the estimate."""
+        mi, _ = _screen_case(step=0.08)
+        out = _screen_method(report_reference_uplifts=False).estimate(mi)
+        assert out.screen_passes is not None
+        assert bool(out.screen_passes["dropped"].any())

@@ -40,7 +40,7 @@ from benchmarking.baselines.power_model.features import (
     reference_mean_wind_speed,
     test_condition_signals,
 )
-from benchmarking.baselines.power_model.fitting import make_outcome_model, time_block_folds
+from benchmarking.baselines.power_model.fitting import make_outcome_model, model_safe_features, time_block_folds
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
 from benchmarking.baselines.power_model.screening import (
     ScreenResult,
@@ -363,6 +363,10 @@ class PowerModelMethod:
         references to form a majority; below that it is skipped.
     :param screen_floor: deviation from the screened pool's median, in uplift fraction, at which a
         reference is ruled out
+    :param report_reference_uplifts: report each candidate reference's own uplift, the standard
+        campaign sanity check (a healthy campaign's references read near 0%). Costs one extra model
+        fit per reference, so a method sweep that scores estimators rather than reporting campaigns
+        turns it off. It is a report, not an input: turning it off never moves the headline
     :param screen_min_campaign_days: skip the screen when the campaign holds less than this much
         upgraded data. A screening estimate over a short campaign is too noisy to separate a bad
         reference from a good one at any floor, and ruling out a good reference costs more than
@@ -392,6 +396,7 @@ class PowerModelMethod:
     reference_screen: bool = True
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
+    report_reference_uplifts: bool = True
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -522,7 +527,9 @@ class PowerModelMethod:
             )
         # Reported post-screen: the sanity check asks what the *final* analysis says its references
         # did, so a ruled-out reference is listed but does not drag the headline.
-        references = self.reference_uplifts(mi, screened=power_free, screen=screen) if self.reference_screen else None
+        references = (
+            self.reference_uplifts(mi, screened=power_free, screen=screen) if self.report_reference_uplifts else None
+        )
         return MethodOutput(
             p50_overall=uplift,
             p50_by_condition=by_condition,
@@ -1109,13 +1116,14 @@ class PowerModelMethod:
         fit when given. Returns a single-element list so :meth:`_predict_mean` stays uniform.
         """
         model = self._make_model(seed=self.seed)
-        model.fit(x_train, y_train, **self._fit_kwargs(weights))
+        model.fit(model_safe_features(x_train), y_train, **self._fit_kwargs(weights))
         return [model]
 
     @staticmethod
     def _predict_mean(models: list[Any], x: pd.DataFrame) -> np.ndarray:
         """Mean prediction over the fitted model(s) (unclipped)."""
-        return np.mean([np.asarray(m.predict(x), dtype=float) for m in models], axis=0)
+        safe = model_safe_features(x)
+        return np.mean([np.asarray(m.predict(safe), dtype=float) for m in models], axis=0)
 
     def _holdout_fit(
         self, x_base: pd.DataFrame, y_base: np.ndarray, *, w_base: np.ndarray | None = None
