@@ -10,6 +10,7 @@ from wind_up_v0.northing import _calc_max_abs_north_errs, apply_northing_correct
 from wind_up_v0.scada_funcs import _scada_multi_index
 
 
+@pytest.mark.slow
 def test_apply_northing_corrections(test_lsa_t13_config: WindUpConfig) -> None:
     cfg = test_lsa_t13_config
     test_df = pd.read_parquet(Path(__file__).parents[0] / "test_data/LSA_T13_test_df.parquet")

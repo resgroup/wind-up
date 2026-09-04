@@ -34,7 +34,9 @@ def carried_forward_methods(
     :param spec: the campaign being run
     :param out_dir: the turbine's output folder; each method gets a subfolder named after it
     :param era5_hourly_df: reanalysis for the power model; omit to run it without ERA5 features
-    :param include_power_model: build the power model (needs the ``ml`` dependency group)
+    :param include_power_model: build the power model. It is the method under test, so this is
+        off only to avoid the ``ml`` dependency group -- a campaign without it is not testing
+        v1 wind-up
     """
     methods: list[Method] = [NaiveRatioMethod(columns=HOT_COLUMNS, out_dir=out_dir / "naive_ratio", save_plots=True)]
     if spec.mode == "toggle":

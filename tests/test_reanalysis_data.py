@@ -20,6 +20,7 @@ def test_get_dsid_and_dates_from_filename() -> None:
     )
 
 
+@pytest.mark.slow
 def test_add_reanalysis_data(test_homer_config: WindUpConfig) -> None:
     cfg = test_homer_config
     cfg.lt_first_dt_utc_start = pd.Timestamp("2023-07-01 00:00:00", tz="UTC")

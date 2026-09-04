@@ -29,7 +29,6 @@ dependencies = [
     'pydantic >= 2.0.0',
     'python-dotenv',
     'pyyaml',
-    'ruptures',
     'scipy',
     'seaborn',
     'tabulate',
@@ -157,7 +156,6 @@ module = [
     "geographiclib.geodesic",
     "pandas",
     "pandas.testing",
-    "ruptures.*",
     "scipy.interpolate",
     "scipy.ndimage",
     "scipy.stats",
@@ -187,6 +185,7 @@ markers = [
 [tool.coverage.report]
 omit = [
     "src/wind_up_v0/plots/*.py",
+    "src/wind_up/northing_plots.py",
 ]
 exclude_lines = ["if __name__ == .__main__.:"]
 
@@ -210,14 +209,14 @@ sequence = [
 [tool.poe.tasks.test-fast]
 help = "Runs tests that are not marked as slow"
 sequence = [
-    { cmd = 'coverage run --source wind_up_v0 -m pytest -m "not slow"' },
+    { cmd = 'coverage run --source wind_up_v0,wind_up -m pytest -m "not slow"' },
     { cmd = "coverage report -m" },
 ]
 
 [tool.poe.tasks.test]
 help = "Runs unit tests and show coverage"
 sequence = [
-    { cmd = "coverage run --source wind_up_v0 -m pytest ./tests" },
+    { cmd = "coverage run --source wind_up_v0,wind_up -m pytest ./tests" },
     { cmd = "coverage report -m" },
 ]
 

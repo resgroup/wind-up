@@ -12,6 +12,154 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF10 — A low-effort `NorthingSettings` tier was measured and dropped: the changepoint search is a small part of the runtime (a whole farm-year differs by ~2 seconds) and a smaller changepoint budget cost real detections, so there is one setting rather than a menu
+
+*2026-09-04. Recorded when the justification was removed from the `NorthingSettings` docstring
+under the `src/` "behaviour, not justification" rule; the measurement itself was made during R1.*
+
+**Observed.** A reduced tier (smaller `changepoints_per_year`, coarser `grid`) was built and run
+against the same cases as the default. It saved ~2 seconds on a whole farm-year — the search is
+not where the runtime goes — and it lost genuine detections, because the changepoint budget is
+what lets a long record hold every recalibration it actually contains.
+
+**Decision.** `NorthingSettings` ships as a single default, `DEFAULT_NORTHING`. Construct one
+only to tune deliberately; there is no tier to choose between. The two derived settings that do
+exist — `anchoring_only` and `against_reanalysis` — are not tiers: each raises `min_step_deg`
+for a reference that cannot support finer attribution.
+
+## CF9 — R1 improved `power_model` on the real placebo in both modes: mean per-turbine error 0.515% → 0.312% prepost and 0.328% → 0.255% toggle, with `naive_ratio` and `toggle_specialist` unmoved to three decimals, so the gain is attributable to the direction feature and discovered northing alone
+
+*2026-09-04. Reproduce: `uv run python -m benchmarking.campaigns.placebo`, Hill of Towie, both
+modes, defaults (six upgraded turbines T07/T11/T12/T06/T16/T19 of 21, `upgrades=[]` so truth is 0
+by construction). Compared against CF6, recorded 2026-09-02 on the same configuration before R1.
+Two things changed between the runs, both of them what v1 wind-up now is: `power_model` reads each
+reference's north-calibrated direction, and the placebo no longer supplies the vendored Hill of
+Towie north table -- it declares `north_offsets=None` and the shared step discovers.*
+
+**The controls are exact, so this is a clean A/B.** `naive_ratio` reads no direction signal and
+`toggle_specialist` reads none either; both reproduce CF6 to every digit recorded, on every
+turbine, in both modes. Nothing but `power_model` moved.
+
+**Prepost, error % (truth 0):**
+
+| wtg | CF6 | now | Δ |
+|---|---|---|---|
+| T06 | +0.616 | **+0.044** | −0.572 |
+| T07 | +0.462 | +0.420 | −0.042 |
+| T11 | +0.188 | +0.328 | +0.140 |
+| T12 | +0.337 | +0.242 | −0.095 |
+| T16 | −0.721 | −0.728 | −0.007 |
+| T19 | −0.769 | **−0.110** | +0.659 |
+| **mean abs** | **0.515** | **0.312** | **−0.203** |
+| spread | 1.385 | 1.148 | −0.237 |
+| farm | +0.0390 | +0.0759 | +0.037 |
+
+**Toggle, error % (truth 0):**
+
+| wtg | CF6 | now | Δ |
+|---|---|---|---|
+| T06 | +0.087 | +0.007 | −0.080 |
+| T07 | −0.151 | −0.119 | +0.032 |
+| T11 | +0.197 | +0.242 | +0.045 |
+| T12 | −0.224 | −0.139 | +0.085 |
+| T16 | −0.753 | −0.694 | +0.059 |
+| T19 | −0.558 | −0.329 | +0.229 |
+| **mean abs** | **0.328** | **0.255** | **−0.073** |
+| farm | −0.2186 | −0.1516 | −0.067 |
+
+**A 39% cut in prepost per-turbine error, 22% in toggle.** The prepost gain is concentrated:
+T06 and T19 account for nearly all of it, and only T11 got worse. That T06 lands at +0.044%
+matters beyond the average -- it is the R-series fixture turbine, chosen in CF5 for being the
+most accurate and stable on site, and it is now essentially exact on a real placebo.
+
+**Per-turbine and farm move in opposite directions in prepost, the mirror of CF6.** CF6 found the
+farm improving 4x while per-turbine accuracy slipped, and read that as better cancellation rather
+than better estimates. Here the estimates genuinely improve and the farm number drifts from
++0.039% to +0.076% -- there is less residual left to cancel. Both are well inside the ±0.2% farm
+target, and the per-turbine figure is the one that says the method got better. Toggle improves on
+both axes.
+
+**Implication.** The direction feature earns its place on real data, which the frozen benchmarks
+could not show: there it was neutral on the headline (−0.024 pp prepost, +0.016 pp toggle over the
+`overall` cells). The benchmark measures synthetic campaigns on four turbines; the placebo is 21
+real turbines with real northing faults in the record, which is where a north-calibrated direction
+has something to contribute. Worth remembering when a change reads flat on the benchmark.
+
+---
+
+## CF8 — Veer normalisation was being defeated by its own de-stepping: measuring the sector signature around a *speculative* split removes the very veer it should describe, so the split survives. Measuring it on the normalised residual instead cut the subset study's spurious changepoints 32 → 27, left every genuine one, and ran 34% faster
+
+*2026-09-03. Reproduce: `uv run python -m benchmarking.baselines.study_northing_subsets` (99 cases,
+Hill of Towie 2016–2024), before and after the change to `estimate_north_table`. Synthetic
+counterpart: `tests/wind_up/test_northing.py::TestVeerNormalisation`.*
+
+**Observed.** `veer_normalised` works exactly as designed — on a residual with 4° of
+direction-dependent veer it takes the sector spread from 10–13° to **0.00°** and the day-to-day
+wander of the daily level from 4.04° to 1.19°, the no-veer baseline. And it changed **nothing**: the
+same changepoints were found with it on, off, and at every `veer_sector_deg` from 45° down to 10°
+(false-positive counts 33/31/31/31/31).
+
+**Root cause.** The sector signature is measured on a residual de-stepped by the first detection
+pass, so a real recalibration cannot leak into it. But under veer that pass *over-detects* — it hits
+the `max_k` cap. De-stepping then removes each spurious segment's level, and those levels **are** the
+veer signature. The signature is measured on a residual that no longer carries the veer, subtracts
+almost nothing, and the second pass re-finds the same splits. The false positives immunise
+themselves against the mechanism built to remove them.
+
+**Fix.** Search the veer-normalised residual first, with no step structure assumed, then re-measure
+the signature around only the *confident* steps that search found (`_confident_steps`,
+`VEER_SIGNATURE_MIN_STEP_DEG = 10.0`). Same number of searches as before. A genuine recalibration
+still dominates the first search, so it is still de-stepped; a speculative split is not.
+
+**Evidence.** On the 99-case subset study: `extra` 32 → **27**, `matched` 211 → **211**, `missing`
+8 → 8, runtime 820 s → **541 s**. The reference case (`all__full_2016_2024`, 19 changepoints) is
+**byte-identical**. Every one of the 97 other cases is unchanged; the entire improvement is
+`west__year_2021`, where **T11** goes from a self-cancelling cluster of six
+(−12.6, +10.8, −10.4, +11.2, +8.1, −4.4) to a single 3.95° step. That is the window-dependence R1
+recorded as unresolved and left as genuine ambiguity — it was this bug.
+
+**Implication.** Veer normalisation is load-bearing and should be kept, not dropped: its apparent
+weakness was this defeat, not the mechanism. Its effect is only visible once the de-stepping stops
+hiding it.
+
+---
+
+## CF7 — A turbine is part of the farm consensus it is northed against, which pins pass 2 to pass 1 on small odd farms; leave-one-out fixes that and detects much smaller steps, but costs more spurious ones, so it is **not** adopted
+
+*2026-09-03. Reproduce: SMARTEOLE example run with `optimize_northing_corrections=True`; synthetic
+sweep in the session scratch; `study_northing_subsets` for the real-data cost. The regression test is
+`test_pass_two_refines_every_device_on_an_odd_sized_farm`, **xfail(strict)** — it documents the
+defect rather than a pending fix.*
+
+**Observed.** On SMARTEOLE (7 turbines, 3 months) the discovered north table is **byte-identical to
+the pass-1 table on all seven turbines**, though pass 2's reference differs from reanalysis by 8.8°
+mean absolute over the same rows. Pass 2 is an exact no-op.
+
+**Root cause.** `_farm_direction` takes a per-timestamp circular median across devices. With an odd
+count the median **is** one of the devices, so wherever it is device *j*'s own reading the residual
+is `raw_j − (raw_j + off_j)` — algebra, not measurement, identical on every such row. That point mass
+(~10–15% of the sample) sits at the centre of the distribution and straddles the 50th percentile
+(below 0.42–0.48, atom 0.10–0.15), so the median snaps to it and the other ~88% of genuine
+measurements cannot move the answer.
+
+**Leave-one-out was built, measured and reverted.** It removes the atom entirely and is much better
+at what pass 2 is *for*: detection floor ~4° against ~8°, and step **sizing** 0.3–0.4° error against
+1.6–3.2° — self-inclusion attenuates the step because a stepping device drags the consensus with it.
+The user's alternative, averaging the three values nearest the median, removes the atom but keeps the
+attenuation, so it tracks the incumbent at every farm size tried. But on the 99-case study LOO scored
+`extra` 32 → **42** for one recovered changepoint, and it needs a 4-device minimum farm. Not adopted:
+the cost is real and the benefit is largest exactly where farms are smallest.
+
+**Scale.** The pin is severe only on small odd farms. Hill of Towie's 21 turbines dilute the atom to
+3.3%, where leave-one-out moves offsets by 0.15° mean / 0.21° max and changes no changepoint; an even
+count interpolates between two members and forms no atom at all.
+
+**Left open.** Whether to revisit LOO now that **CF8** removes most of its false-positive cost — with
+the de-stepping fixed, its synthetic penalty falls to 1 spurious against 0 while it keeps +3
+detections and 4x better sizing. Not re-measured on the 99-case study.
+
+---
+
 ## CF6 — Honouring the declared `candidate_references` moves the prepost farm number 4x closer to truth (+0.148% → +0.039%), but *per-turbine* accuracy is marginally worse: the farm gain is cancellation, not better estimates
 
 *2026-09-02. Reproduce: `uv run python -m benchmarking.campaigns.placebo`, Hill of Towie, both

@@ -34,8 +34,21 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
 
 ## Ground rules for this tranche
 
-- **Methods carried forward:** `oracle`, `naive_ratio`, `power_model`,
-  `toggle_specialist`. **`rlearner` is dropped** (see C7).
+- **What the campaigns are testing is v1 wind-up, not a field of methods.** The C-series
+  exists to exercise the thing being shipped, so a campaign must run it as a user would
+  get it. Concretely that means **`power_model` on, and northing discovered rather than
+  supplied** (`north_offsets=None`, the shared step doing the work). A campaign that
+  turns either off is testing something other than v1 wind-up, and any result from it
+  should be read that way. Tests may switch `power_model` off to avoid the `ml`
+  dependency; drivers should not.
+  - **In v1 wind-up:** `power_model` (definite) and the shared northing step (R1).
+    `toggle_specialist` is **TBD**, to be settled with evidence in W1.
+  - **Alongside, for comparison only:** `naive_ratio` (a deliberately simple yardstick,
+    never a candidate for the shipped method) and `oracle` (a sanity anchor that returns
+    the injected truth).
+  - **`rlearner` is dropped** (see C7).
+  The composition itself is W1's business; this rule is only about how the campaigns
+  must be run so their results speak about the deliverable.
 - **Estimand:** per-turbine uplift **plus a result representative of the upgrade using the whole farm data** (one
   headline campaign number, as the real HoT analyses report).
 - **One simulated instance per campaign, no replicates.** This tranche is about
@@ -82,6 +95,47 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
 - **Then re-verify on campaigns.** The best faults are re-injected into the relevant
   whole-farm campaigns (R1/R3 ↔ C3/C5) as an in-context check.
 
+## Updating the frozen benchmarks
+
+Learned the hard way while landing R1, which changed a **shared** feature-engineering step and
+so moved every frozen artefact at once. Read this before accepting any benchmark change.
+
+- **There are four frozen baselines, not one.** `study_power_model_compare_baseline.json` plus
+  `study_toggle_methods_compare_baseline_{linux,portable,win32}.json`. A method-internal change
+  usually touches one; a change to a shared step touches all of them, because every study driver
+  inherits it.
+- **Commit before running a sweep.** `--accept-candidate` refuses a candidate recorded from a
+  dirty tree, and rightly so: the artefact would be stamped with a commit that cannot reproduce
+  it. `study_power_model_compare` captures HEAD *before* the sweep, so committing while it runs
+  is safe. Untracked files do not count as dirty.
+- **Isolate the change before accepting it.** Diffing a fresh run against a baseline recorded
+  weeks ago measures every commit since, not your change. Re-run with the change disabled
+  (`--method-overrides '{"<flag>": false}'`, which deliberately writes no candidate) and diff the
+  two runs. On R1 this took under an hour and showed the intervening seven weeks of work
+  contributed under 0.0002 pp — so the whole movement was attributable, and a real worry was
+  retired rather than carried.
+- **The MOVED / UNCHANGED verdict is a blunt instrument.** Split by condition and by bin before
+  believing it. Degenerate bins — near-zero power, TI 0.4–0.5, wind speed 0–2 m/s — dominate the
+  means while their medians sit at zero. On R1's toggle diff the whole "62 of 84 cells MOVED,
+  max 2.96 pp" verdict came from the near-zero-power bin; the twelve headline cells moved
+  +0.005 pp.
+- **Mind the units.** `benchmark_comparison.csv` is in **fractions**; the logs print **percentage
+  points**. The logged "max delta" is the largest of bias/spread/score, not score alone. Compare
+  like for like or you will chase a factor of 100.
+- **The two scripts have different accept mechanics.** `study_power_model_compare` writes a
+  candidate every full sweep, so `--accept-candidate` promotes it with no re-run.
+  `study_toggle_methods_compare` has no candidate: `--update-baseline` re-runs the whole sweep.
+  Budget for that.
+- **A method that should not move is a free control.** `toggle_specialist` reads no direction
+  signal, so R1 predicted its portable baseline would not move, and it did not (max 5e-07 pp).
+  The toggle script rewrites the portable file *only when it actually changes*, so "portable
+  baseline unchanged" in the log is a real check, not boilerplate. Predict which cells must be
+  untouched and treat a violation as a bug in the change.
+- **The `power_model` baselines are machine-specific but not load-sensitive.** LightGBM's
+  threaded reduction order depends on the machine, so record and diff on one box. It does *not*
+  depend on machine load: R1 ran sweeps concurrently with the full test suite and still
+  reproduced a baseline to 1e-6, so there is no need to keep the machine idle.
+
 ## Suggested order
 
 `C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 → [R1 R2 R3 R4] → C3 → C4 → C5 → C6 → C8 → W1 → W2.`
@@ -92,10 +146,11 @@ independent and runs **early** (after C0) so later code lands in the new layout;
 **W1/W2** are **terminal** (after C6 + R4) because the composed `wind-up` method needs
 the robustness and campaign pieces first. **C8** (per-turbine change histories) lands
 **before W1** so the generalized declaration is what gets promoted to public API, not
-the flat one. C7 (drop `rlearner`, ✅ done) was independent.
+the flat one. C7 (drop `rlearner`, ✅ done) was independent. **R5** (northing refinement)
+is deliberately outside this order: it is future work R1 identified but does not need.
 
-**Done so far:** C0, W0, C7 and C1. **Next: C2** — with C1 in hand, decide how the
-`CampaignSpec` reaches the methods before the demanding campaigns build on the seam.
+**Done so far:** C0, W0, C7, C1, C2 and R1. **Next: R2–R4**, then C3, which inherits the
+shared northing step R1 landed.
 
 ---
 
@@ -262,6 +317,21 @@ logic, and excluded turbines.
   timestamps — declared from geometry in the `CampaignSpec`, not a script-level filter.
 - Northing-sector handling folded into the method/runner (replacing the
   `wd_filter` hack), so no bespoke driver code.
+- **Decide what the shared northing step fits on when the upgrade itself steers the yaw.**
+  `WakeSteering` moves the reported nacelle position on treated rows, and `yaw_usable`
+  screens on power and downtime only, so those deliberately steered rows currently enter
+  the northing fit and the correction can absorb part of the intervention. Two things
+  limit the damage today and neither is a defence: the search needs a segment of at least
+  seven days, so rapid toggling cannot forge a changepoint, and the offsets are circular
+  medians, which shrug off a displaced minority. It is a level bias, unmeasured.
+  **The obvious fix — exclude treated rows while fitting — is wrong as a general rule**:
+  in prepost the treated rows are half the record, and a north step occurring inside the
+  campaign is exactly R1's fault, so excluding them would make it undiscoverable. So the
+  exclusion has to be specific to upgrades known to move the direction channel, which the
+  runner cannot infer from a `CampaignSpec` that deliberately carries no truth — though a
+  real analyst running a steering campaign would know. Settle it here: measure the bias
+  first, then decide whether the spec should carry "this upgrade steers yaw" or the step
+  should screen the rows some other way. Raised by review on PR 138.
 - Report + n=1 score; the farm uplift nets upstream steering losses against
   downstream gains.
 
@@ -407,19 +477,60 @@ Every R-issue shares a two-phase acceptance, run in **both prepost and toggle**:
 
 ## R1 — Northing errors (shared fix)
 
+**Status:** ✅ Done (2026-09-03, PR #138). Shared step in `benchmarking/harness/northing.py`,
+reached by both the campaign runner and the study path (which norths per replicate, discovering
+for itself). `power_model`'s direction feature is on by default; all four frozen baselines
+re-recorded. The northing plots are wired into the shared step and written whenever it discovers
+(`north_scada(out_dir=...)`); the placebo is the demonstration, since it now supplies no prior
+table. Two Done-when items were closed by decision rather than built, both recorded here:
+
+* **v0's arm is dropped.** The fixture never ran `V0BinnedMethod`, so "the step bites v0" is not
+  demonstrated. Accepted because the norther has been shown to track v0 three other ways: the
+  21-turbine HoT farm-scale comparison, the SMARTEOLE road-test (uplift moves 0.05 pp / 0.01 pp),
+  and the natural probe, which rediscovered v0's published T05 table from the data.
+* **The examples are not re-run with auto-northing.** Both ship
+  `optimize_northing_corrections=False`, and flipping it would add nothing: v0's auto path is
+  already covered by `tests/test_optimize_northing.py` (six tests through the adapter, including
+  injected changepoints) plus the three comparisons above, and the supplied-table path the
+  examples actually use is covered by the SMARTEOLE and WeDoWind end-to-end tests. W2 migrates
+  the examples to the v1 API, at which point `optimize_northing_corrections` ceases to exist for
+  them.
+
+
 **Goal:** wind-up recovers a known uplift despite a turbine's direction reference
-carrying a **step change** in its offset partway through the record.
+carrying a **step change** in its north calibration partway through the record.
 
 **Scope**
-- **Fault (generator):** inject a known **step** in reported wind direction for some
+- **Fault (generator):** inject a known **step** in reported yaw angle or wind direction for some
   turbine(s) at a date (a recalibration / sensor swap). **Steps only — no drifts.**
 - **Fix:** a **shared northing-correction feature-engineering step** in the runner /
   preprocessing, upstream of every method, so every method inherits it.
-- Develop on the tiny fixture; land before C3 so the prepost campaign inherits it.
+- Develop on a tiny fixture; land before C3 so the prepost campaign inherits it.
 
-**Done when:** the step bites `power_model` on the clean fixture, then the shared
+Notes on potential test turbines:
+T06 is thought to be the best, however its likely best reference T05 has natural step changes in its yaw direction already in 2017 and 2018. That is not necessarily a problem but it means we are not working from a clean slate. But as a starting point could try running v0 on T06 for pre-post 2017-2018 with and without northing correction to see sensitivity of this naturally occuring example of the failure mode.
+T11's surrounding turbines all have stable northing in 2017 and 2018 according to HOT open optimized_northing_corrections.yaml
+
+other notes:
+- `power_model` might need a little development if it does not use reference turbine yaw/wind direction at all yet (I think it does not, precisely because it could not see north calibrated versions up till now)
+- reference turbine yaw direction is generally preferred over wind direction for the same reasons power is preferred over wind speed.
+- `naive_ratio` and `toggle_specialist` do not use wind direction so are out of scope in this issue
+
+**Done when:**
+the step bites `v0` and `power_model` on the clean fixture, then the shared
 northing step restores invariance; C3/C5 drop their bespoke northing wiring in favour
 of this step.
+the developed solution can be a drop-in replacement for the existing src/wind_up_v0/optimize_northing.py. Same or better performance is proven and useful test cases are ported. It should run MUCH faster (the old solution is a hand-rolled optimizer) and not require exotic dependencies (drop `ruptures`)
+`power_model`'s reference-direction feature is **on by default**, not opt-in. That means the
+shared northing step has to reach the study path too (it currently runs only in
+`CampaignRunner`, so the study drivers behind the frozen benchmarks have no northed column),
+and `study_power_model_compare_baseline.json` is regenerated.
+The study path norths **per replicate**, discovering for itself rather than being handed a prior
+table — the benchmark has to measure wind-up running unaided. The step therefore lives in
+`benchmarking/harness/northing.py`, which both paths can reach, rather than under `campaigns/`.
+the northing tool **shows its working**: per-turbine plots of the time-averaged residual
+against the reference with the fitted step function overlaid, before and after correction, so
+a user can see what was changed and judge it. Time averaging is what smears out veer.
 
 ---
 
@@ -474,6 +585,68 @@ fixed feature set.
 **Done when:** the missing-data case bites (or would crash) the current fixed-feature
 `power_model`, then signal discovery restores a run that stays accurate under missing
 channels / gaps.
+
+---
+
+## R5 — Northing refinement: small-N devices, and absolute accuracy from wake nadirs
+
+**Status:** future work, not blocking. R1 delivered a norther good enough to ship; these are
+the two places it is known to fall short, both identified while doing R1.
+
+**Goal:** north devices a farm consensus cannot reach, and improve the *absolute* accuracy of
+the answer rather than only its internal consistency.
+
+### Part A — north one or two devices with pass 1 alone
+
+`north_farm` refuses below `min_devices_for_farm_reference=3`, so a **two-device campaign
+cannot use farm-consensus northing at all** (measured during R1's natural probe). At exactly
+three the quorum is every device. Small campaigns are common, so this is a real gap, not a
+corner.
+
+Pass 1 already norths each device against reanalysis on its own, so the machinery exists; what
+limits it is accuracy. `REANALYSIS_MIN_STEP_DEG = 10` exists because reanalysis carries its own
+direction-dependent bias, and a spell of unusual wind moves every turbine's residual against it
+together. Against a farm consensus that common-mode error cancels; against reanalysis it does
+not. So a single-device answer is currently trustworthy only for gross recalibrations.
+
+**Why this is tractable:** the development loop is unusually good. Hill of Towie has 21 turbines
+with a published, independently-derived northing table, so pass 1 can be run **one turbine at a
+time** and scored directly against a known answer, 21 times over, without any synthetic data.
+`tests/wind_up/test_northing_real_data.py::TestSingleTurbineAgainstReanalysis` is the seed of
+this; it currently asserts only that a lone turbine finds its *large* recalibration.
+
+**Done when:** a single device is northed to a stated accuracy against the published HoT table
+across all 21 turbines; `REANALYSIS_MIN_STEP_DEG` is lowered by evidence rather than assertion;
+challenging synthetic cases (small steps, steps near the record edge, steps during an outage)
+pass; and `north_farm`'s three-device floor is either removed or documented as the deliberate
+boundary between two supported regimes.
+
+### Part B — pass 3: nudge to absolute truth using apparent wake nadirs
+
+Passes 1 and 2 fix the farm relative to reanalysis and then to itself. Neither has a *physical*
+absolute reference. Wake nadirs do: when the wind blows along the line joining two turbines, the
+downstream one sits in the upstream one's wake and its power dips, and the direction at which
+that dip occurs is known from the layout geometry alone. Matching measured nadirs to geometric
+bearings gives an absolute anchor that owes nothing to a reanalysis model.
+
+**This is a third pass, not a replacement.** It runs only once the changepoints and their
+relative steps are settled, because it estimates a single absolute shift per segment; asking it
+to find changepoints as well would be a different and much harder problem. Order:
+reanalysis anchor, farm consensus, then wake-nadir refinement.
+
+**Existing machinery to build from:** the synthetic generator's `WakeSteering` upgrade already
+derives directed pairs from geometry, and `inspect_wake_steering_case.py` computes a pair's
+nadir and sector. What is missing is the inverse — *measuring* an apparent nadir from a real
+power-deficit-versus-direction curve, and turning a set of those into one offset per segment.
+
+**Done when:** measured nadirs recover a known injected absolute offset on synthetic data; on
+Hill of Towie the pass-3 correction is small (it should be, since pass 1/2 already agree with
+the published table to ~1°) and does not disturb the changepoints; and it degrades gracefully
+where geometry gives too few usable pairs.
+
+**Gotcha to design around:** a turbine's own wake-affected rows are exactly the rows an uplift
+method wants to treat carefully, so pass 3 must not quietly change which rows downstream
+analysis considers valid. It outputs an offset, nothing else.
 
 ---
 
@@ -543,7 +716,9 @@ up.
   tracked **`docs/methodology.md`** describing the v1 method (the new source of truth;
   the PDF is exported from it at release).
 - Migrate or remove every example (`examples/`) to the v1 API; rewrite `README.md` for
-  v1.
+  v1. Northing changes shape in the move: the v0 examples pin a pre-computed table with
+  `optimize_northing_corrections=False`, whereas v1's shared step discovers by default, so a
+  migrated example should **show discovery** rather than port the pinned table across.
 - **Drop `benchmarking*` from packaging** (deferred from W0, where it stayed packaged
   only for a separate project that imports `toggle_specialist`): once that external
   dependency is gone, remove `benchmarking*` from `[tool.setuptools.packages.find]`
@@ -552,6 +727,17 @@ up.
   from before env-vars / `Path.home()` were used — and rework `wind_up_v0/constants.py`
   path handling accordingly (env vars / `Path.home()` instead of `PROJECTROOT_DIR`-
   relative, so nothing depends on those root folders).
+- **Shore up `power_model` unit coverage.** R1 flipped `direction_feature` on by
+  default; the existing suite was recovered by fixture edits rather than deletions, but
+  it is thin in places the benchmarks cannot reach — error paths, the `CampaignContext`
+  seam, and the reference-only (design note §3) guard. A released package should not
+  rest on the benchmarks alone for those.
+- **Clean up the development-phase documentation.** `docs/superpowers/` (design notes
+  and plans) and `CLAUDE.md` are untracked and git-ignored as of 2026-09-03, so tracked
+  files that cite them — `docs/v1/issues_campaigns.md`, `docs/v1/findings_campaigns.md`
+  — now point at paths a fresh clone will not have. Decide per document what a released
+  v1 should carry: fold what is still true into `docs/methodology.md` or `docs/v1/`, and
+  drop the citations that are only development history.
 
 - **A campaign is declared, not scripted.** `CampaignSpec` gains a simple
   user-facing declaration — a YAML file it initializes from — so an analyst describes

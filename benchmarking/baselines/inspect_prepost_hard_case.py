@@ -40,7 +40,7 @@ from benchmarking.baselines.example_prepost_study import (
     MIN_PRE_MONTHS,
     default_output_root,
 )
-from benchmarking.baselines.hot_context import build_hot_v0_context
+from benchmarking.baselines.hot_context import HotV0Context, build_hot_v0_context
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.overnight_common import start_overnight_run
 from benchmarking.baselines.overnight_profiles import overnight_profiles
@@ -61,6 +61,7 @@ from benchmarking.harness import (
     treated_activity_mask,
     window_row_mask,
 )
+from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
@@ -110,11 +111,17 @@ def _select_replicate(replicates: list[Replicate], test_wtg: str) -> Replicate:
 
 
 def _pin_case(
-    scada_df: pd.DataFrame, *, study: StudyConfig, profile_name: str, test_wtg: str, campaign_months: int
+    scada_df: pd.DataFrame,
+    *,
+    study: StudyConfig,
+    profile_name: str,
+    test_wtg: str,
+    campaign_months: int,
+    era5_wd: pd.Series,
 ) -> tuple[Replicate, MethodInput, float, CampaignWindow]:
     """Build the pinned replicate, its shared ``MethodInput``, the ground-truth uplift, and the window."""
     profile = overnight_profiles()[profile_name]
-    replicates = build_replicates(scada_df, profile=profile, study=study)
+    replicates = build_replicates(scada_df, profile=profile, study=study, era5_wd=era5_wd)
     rep = _select_replicate(replicates, test_wtg)
 
     windows = campaign_windows(
@@ -169,13 +176,12 @@ def _power_model(out_dir: Path, era5_hourly_df: pd.DataFrame, *, save_plots: boo
     )
 
 
-def _build_methods(out_dir: Path, *, include_v0: bool) -> list[Method]:
+def _build_methods(out_dir: Path, *, context: HotV0Context, include_v0: bool) -> list[Method]:
     """Return the methods to inspect, each writing diagnostics (plots on) into its own subfolder.
 
     One ``power_model`` run folder: with conditional uplift on (the default) it carries the overall
     diagnostics plus the conditional CSVs (``conditional/``) and the step-7 implied-shrinkage plot.
     """
-    context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
     era5 = context.reanalysis_datasets[0].data
     methods: list[Method] = [
         NaiveRatioMethod(
@@ -293,10 +299,18 @@ def inspect_prepost_hard_case(
         wtg_names=DEFAULT_TURBINE_SUBSET,
     )
 
+    context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
     rep, mi, truth, window = _pin_case(
-        scada_df, study=study, profile_name=profile_name, test_wtg=test_wtg, campaign_months=campaign_months
+        scada_df,
+        study=study,
+        profile_name=profile_name,
+        test_wtg=test_wtg,
+        campaign_months=campaign_months,
+        era5_wd=era5_direction(
+            context.reanalysis_datasets[0].data, pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+        ),
     )
-    methods = _build_methods(out_dir, include_v0=include_v0)
+    methods = _build_methods(out_dir, context=context, include_v0=include_v0)
     summary, outputs = _run_methods(methods, mi=mi, truth=truth)
 
     _plot_conditional_uplift(

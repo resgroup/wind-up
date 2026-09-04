@@ -124,17 +124,20 @@ class TestExclusionTimelineBucket:
 class TestExcludedRowPlots:
     """The exclusion view is the *usual* 2x3 operating-curve figure, coloured kept vs excluded."""
 
+    @pytest.mark.slow
     def test_written_when_rows_are_excluded(self, tmp_path: Path) -> None:
         ctx = _context(tmp_path, excluded=_excluded_mask())
         names = {p.name for p in write_common_diagnostics(ctx)}
         assert "ops_curves_excluded.png" in names
         assert "excluded_row_fraction.png" in names
 
+    @pytest.mark.slow
     def test_lands_in_the_filter_stage_folder(self, tmp_path: Path) -> None:
         ctx = _context(tmp_path, excluded=_excluded_mask())
         written = {p.name: p for p in write_common_diagnostics(ctx)}
         assert written["ops_curves_excluded.png"].parent.name == written["filter_coverage.png"].parent.name
 
+    @pytest.mark.slow
     def test_skipped_when_the_method_excludes_nothing(self, tmp_path: Path) -> None:
         """A clean campaign must not sprout an empty plot."""
         ctx = _context(tmp_path, excluded=np.zeros(300, dtype=bool))
@@ -142,6 +145,7 @@ class TestExcludedRowPlots:
         assert "ops_curves_excluded.png" not in names
         assert "excluded_row_fraction.png" not in names
 
+    @pytest.mark.slow
     def test_skipped_when_the_method_has_no_exclusion_concept(self, tmp_path: Path) -> None:
         ctx = _context(tmp_path)
         assert ctx.excluded_ts is None
@@ -154,6 +158,7 @@ class TestExcludedRowPlots:
         assert write_common_diagnostics(ctx) == []
 
 
+@pytest.mark.slow
 def test_common_diagnostics_writes_expected_plots(tmp_path: Path) -> None:
     ctx = _context(tmp_path)
     written = write_common_diagnostics(ctx)
@@ -213,6 +218,7 @@ def test_density_scatter_degenerate_input_does_not_raise() -> None:
 
 
 @pytest.mark.parametrize("with_era5", [True, False])
+@pytest.mark.slow
 def test_runs_without_era5(tmp_path: Path, *, with_era5: bool) -> None:
     ctx = _context(tmp_path, with_era5=with_era5)
     written = write_common_diagnostics(ctx)

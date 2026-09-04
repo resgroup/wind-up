@@ -5,8 +5,10 @@ reference turbines (or ERA5), never the test turbine's own signals, which the up
 This matrix is deliberately **curated** to features known to relate to the *cause* of the test
 turbine's power — weather and wakes:
 
-* per **reference turbine**: active power (the primary stable weather-driven measurement) and the
-  availability counter (whether the reference is operating, hence whether it is making a wake);
+* per **reference turbine**: active power (the primary stable weather-driven measurement), the
+  availability counter (whether the reference is operating, hence whether it is making a wake),
+  and optionally the **north-calibrated** direction as ``sin``/``cos`` (where each reference is
+  pointing is much of what resolves who is waking whom);
 * all raw **ERA5** columns, passed through under their original Open-Meteo names (no renaming),
   with derived ``sin``/``cos`` companions for the circular wind-direction fields.
 
@@ -20,6 +22,7 @@ test-turbine-qualified column (the §3 guard).
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -32,6 +35,10 @@ if TYPE_CHECKING:
 
 # Separator between a source-native tag and the turbine it came from in a feature name.
 QUALIFIER = " @ "
+# The prefix the shared northing step puts on a north-calibrated column.
+_NORTHED_PREFIX = "northed_"
+
+logger = logging.getLogger(__name__)
 
 
 def _references(scada_df: pd.DataFrame, *, test_wtg: str, turbine_col: str) -> list[str]:
@@ -55,6 +62,7 @@ def build_reference_features(
     availability_col: str,
     extra_cols: Sequence[str] = (),
     include_availability: bool = True,
+    direction_col: str | None = None,
 ) -> pd.DataFrame:
     """Wide, curated reference features: each reference turbine's active power (+ optional extras).
 
@@ -70,8 +78,16 @@ def build_reference_features(
     :param include_availability: when ``False``, drop the per-reference availability *feature*
         (removal-ablation knob); ``availability_col`` must still exist in ``scada_df`` (the
         downtime filter needs it), so its presence is validated either way
+    :param direction_col: the **north-calibrated** direction column each reference contributes as
+        ``sin``/``cos`` companions (the raw degrees are never a feature: a tree cannot see that
+        359 degrees is next to 1). Must be the column the shared northing step writes; raises
+        naming it when absent. A raw direction listed in ``extra_cols`` is dropped in favour of
+        it, so a reference never contributes both.
     """
     refs = _references(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)
+    extra_cols, direction_frame = _direction_features(
+        scada_df, refs=refs, turbine_col=turbine_col, direction_col=direction_col, extra_cols=extra_cols
+    )
     value_cols = [active_power_col, *([availability_col] if include_availability else []), *extra_cols]
     # availability_col stays validated even when not featured: it is a required input and the
     # docstring contract is that it exists for the downstream downtime filter.
@@ -89,8 +105,49 @@ def build_reference_features(
     features.columns = [f"{col}{QUALIFIER}{r}" for col, r in keep]
     features = features.reindex(index)
     features.index.name = index.name
+    if direction_frame is not None:
+        features = features.join(direction_frame.reindex(index), how="left")
     check_reference_only(features.columns.tolist(), test_wtg=test_wtg)
     return features
+
+
+def _direction_features(
+    scada_df: pd.DataFrame,
+    *,
+    refs: list[str],
+    turbine_col: str,
+    direction_col: str | None,
+    extra_cols: Sequence[str],
+) -> tuple[tuple[str, ...], pd.DataFrame | None]:
+    """Return ``extra_cols`` with raw directions removed, and the per-reference sin/cos frame.
+
+    ``(None, ...)`` in, ``(extra_cols unchanged, None)`` out: a caller that asks for no direction
+    keeps exactly the feature set it had before.
+    """
+    if direction_col is None:
+        return tuple(extra_cols), None
+    if direction_col not in scada_df.columns:
+        msg = (
+            f"the north-calibrated direction column {direction_col!r} is not in scada_df; the shared "
+            f"northing step must run before the power model, which reads the northed direction rather "
+            f"than the raw one. Columns present: {sorted(scada_df.columns)}"
+        )
+        raise ValueError(msg)
+    raw = direction_col.removeprefix(_NORTHED_PREFIX)
+    kept = tuple(c for c in extra_cols if c not in {raw, direction_col})
+    if len(kept) != len(extra_cols):
+        logger.info("dropping raw direction %r from features in favour of %r", raw, direction_col)
+
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    columns = {}
+    for ref in refs:
+        rows = scada_df[scada_df[turbine_col] == ref]
+        series = pd.Series(rows[direction_col].to_numpy(dtype=float), index=pd.DatetimeIndex(rows.index))
+        series = series[~series.index.duplicated()].reindex(index)
+        rad = np.deg2rad(series.to_numpy(dtype=float))
+        columns[f"{direction_col}_sin{QUALIFIER}{ref}"] = np.sin(rad)
+        columns[f"{direction_col}_cos{QUALIFIER}{ref}"] = np.cos(rad)
+    return kept, pd.DataFrame(columns, index=index)
 
 
 def era5_feature_frame(aligned_era5: pd.DataFrame) -> pd.DataFrame:

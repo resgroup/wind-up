@@ -86,3 +86,7 @@ output/
 # matplotlib testing
 **/result_images/
 /docs/v1/extra_docs/
+
+# local working documents, not part of the published project
+/CLAUDE.md
+/docs/superpowers/

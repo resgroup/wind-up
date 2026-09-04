@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams
+from benchmarking.synthetic.faults import apply_faults
 from benchmarking.synthetic.ground_truth import UpliftResult, true_farm_uplift, true_net_uplift, true_uplift
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
 from benchmarking.synthetic.upgrades import apply_upgrades
@@ -164,6 +165,7 @@ def generate_dataset(
     upgrades: list,
     mode: Literal["prepost", "toggle"],
     upgrade_timing: pd.Timestamp | ToggleSchedule,
+    faults: list | None = None,
     cp_params: CpParams = HOT_CP_MODEL,
     rated_power_kw: float = 2300.0,
     columns: ColumnSchema = HOT_COLUMNS,
@@ -176,6 +178,9 @@ def generate_dataset(
     :param upgrades: upgrade callables applied to each test turbine's treated rows
     :param mode: ``"prepost"`` (changeover date) or ``"toggle"``
     :param upgrade_timing: changeover timestamp (prepost) or toggle schedule
+    :param faults: measurement corruptions injected after the upgrades, into the synthetic frame
+        only. They change readings rather than power, so the ground truth derived against
+        ``original_df`` is unaffected -- see :mod:`benchmarking.synthetic.faults`.
     :param cp_params: Cp surface parameters for the test turbines
     :param rated_power_kw: baseline rated power for the test turbines
     :param columns: the source-native column schema ``scada_df`` is keyed by
@@ -208,11 +213,16 @@ def generate_dataset(
         for col in modified_columns:
             synthetic_df.loc[mask, col] = modified[col].to_numpy()
 
+    faults = list(faults or [])
+    if faults:
+        synthetic_df = apply_faults(synthetic_df, faults, columns=columns)
+
     run_metadata = {
         "test_wtgs": list(test_wtgs),
         "mode": mode,
         "upgrade_timing": str(upgrade_timing),
         "upgrades": [u.description for u in upgrades],
+        "faults": [f.description for f in faults],
         "rated_power_kw": rated_power_kw,
         "cp_params": asdict(cp_params),
         "seed": seed,

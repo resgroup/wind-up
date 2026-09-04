@@ -12,13 +12,14 @@ Draws are a pure deterministic function of ``(StudyConfig, seed)``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
 from benchmarking.harness.campaign import resolve_campaign_grid
-from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, generate_dataset
+from benchmarking.harness.northing import north_scada
+from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW, ToggleSchedule, generate_dataset
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -125,6 +126,8 @@ def iter_replicates(
     profile: list,
     study: StudyConfig,
     columns: ColumnSchema = HOT_COLUMNS,
+    era5_wd: pd.Series | None = None,
+    rated_power_kw: float = HOT_RATED_POWER_KW,
 ) -> Iterator[Replicate]:
     """Yield ``study.n_replicates`` replicates of ``profile`` one at a time.
 
@@ -134,6 +137,12 @@ def iter_replicates(
     each be freed rather than materialising them all.
 
     :param columns: the source-native column schema ``base_scada`` is keyed by
+    :param era5_wd: reanalysis wind direction covering ``base_scada``. Supplying it runs the shared
+        northing step on each replicate, so methods reading ``columns.northed(role)`` find it;
+        without it no replicate is northed. Each replicate norths its own generated frame rather
+        than sharing a table discovered once, so the step has to find the corrections unaided and a
+        direction-moving upgrade in ``profile`` stays consistent with its northed companion.
+    :param rated_power_kw: turbine rating, passed to the generator and to the northing step
     """
     subset = base_scada[base_scada[columns.turbine].isin(study.turbine_subset)]
     candidates = _candidate_starts(subset.index, study.treatment_start_range)
@@ -151,8 +160,20 @@ def iter_replicates(
             mode=study.mode,
             upgrade_timing=upgrade_timing,
             columns=columns,
+            rated_power_kw=rated_power_kw,
             seed=study.seed,
         )
+        if era5_wd is not None:
+            dataset = replace(
+                dataset,
+                synthetic_df=north_scada(
+                    dataset.synthetic_df,
+                    columns=columns,
+                    north_offsets=None,
+                    rated_power_kw=rated_power_kw,
+                    era5_wd=era5_wd,
+                ),
+            )
         yield Replicate(
             dataset=dataset,
             test_wtg=test_wtg,
@@ -168,6 +189,8 @@ def build_replicates(
     profile: list,
     study: StudyConfig,
     columns: ColumnSchema = HOT_COLUMNS,
+    era5_wd: pd.Series | None = None,
+    rated_power_kw: float = HOT_RATED_POWER_KW,
 ) -> list[Replicate]:
     """Draw ``study.n_replicates`` replicates of ``profile`` from ``base_scada``.
 
@@ -178,8 +201,19 @@ def build_replicates(
     the ensemble is large enough for that to matter.
 
     :param columns: the source-native column schema ``base_scada`` is keyed by
+    :param era5_wd: reanalysis wind direction; see :func:`iter_replicates`
+    :param rated_power_kw: turbine rating, passed to the generator and to the northing step
     """
-    return list(iter_replicates(base_scada, profile=profile, study=study, columns=columns))
+    return list(
+        iter_replicates(
+            base_scada,
+            profile=profile,
+            study=study,
+            columns=columns,
+            era5_wd=era5_wd,
+            rated_power_kw=rated_power_kw,
+        )
+    )
 
 
 def _candidate_starts(
