@@ -75,6 +75,10 @@ SECOND_BAD_REFERENCE = REFERENCES_3[1]
 # two to see, since the Cp core clips at rated and attenuates it.
 UP_DELTA = 0.05
 DOWN_DELTA = -0.04
+# Two references moving together drag the pool median toward themselves, roughly halving every
+# deviation the screen sees (one at -4% reads 3.48 pp, two read 1.81 pp), so the multi-reference
+# arm needs about double the magnitude to clear the same floor.
+MULTI_DOWN_DELTA = -0.08
 
 
 def _pct(delta: float) -> str:
@@ -149,11 +153,11 @@ def fixture_arms(mode: Literal["prepost", "toggle"]) -> list[Arm]:
         ),
         Arm(name="5ref_clean", pool=5),
         Arm(
-            name=f"5ref_{BAD_REFERENCE}_{SECOND_BAD_REFERENCE}_{_pct(DOWN_DELTA)}",
+            name=f"5ref_{BAD_REFERENCE}_{SECOND_BAD_REFERENCE}_{_pct(MULTI_DOWN_DELTA)}",
             pool=5,
             changes=(
-                ReferenceCpChange(turbine=BAD_REFERENCE, at=at, delta=DOWN_DELTA),
-                ReferenceCpChange(turbine=SECOND_BAD_REFERENCE, at=at, delta=DOWN_DELTA),
+                ReferenceCpChange(turbine=BAD_REFERENCE, at=at, delta=MULTI_DOWN_DELTA),
+                ReferenceCpChange(turbine=SECOND_BAD_REFERENCE, at=at, delta=MULTI_DOWN_DELTA),
             ),
         ),
     ]

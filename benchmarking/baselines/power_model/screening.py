@@ -99,7 +99,7 @@ def screen_references(
             len(remaining),
             MIN_POOL_TO_SCREEN,
         )
-        return ScreenResult(screened=(), passes=_empty_passes(), screenable=False)
+        return ScreenResult(screened=(), passes=empty_screen_passes(), screenable=False)
 
     allowance = max_screenable(len(remaining))
     screened: list[str] = []
@@ -148,6 +148,6 @@ def _pass_rows(estimates: Mapping[str, float], *, dropped: str | None, n_pass: i
     ]
 
 
-def _empty_passes() -> pd.DataFrame:
+def empty_screen_passes() -> pd.DataFrame:
     """Return the empty per-pass frame, with the columns a screen that never ran would have."""
     return pd.DataFrame(columns=["pass", "turbine", "estimate", "deviation", "dropped"])

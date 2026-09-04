@@ -1036,3 +1036,31 @@ class TestReferenceUpliftReuse:
         first = screen.passes[screen.passes["pass"] == 1].set_index("turbine")["estimate"]
         survivor = refits[refits["turbine"] == "R2"].iloc[0]
         assert survivor["uplift"] != pytest.approx(first["R2"])
+
+
+class TestScreenIsPrepostOnly:
+    """Toggle is not vulnerable to this failure mode, and the screen cannot see it there anyway."""
+
+    def _toggle_mi(self, n: int = 2000) -> MethodInput:
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        start = pd.Timestamp(idx[n // 4])
+        schedule = ToggleSchedule(period=pd.Timedelta(minutes=100), start=start)
+        treated = np.asarray(resolve_toggle(schedule, pd.DatetimeIndex(idx)).upgraded)
+        scada = _toy_scada(n, uplift=0.0, treated=treated)
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+
+    def test_a_toggle_campaign_screens_nobody(self) -> None:
+        result = _screen_method().screen_references(self._toggle_mi())
+        assert result.screened == ()
+        assert not result.screenable
+
+    def test_a_toggle_campaign_still_reports_reference_uplifts(self) -> None:
+        """The sanity check is not the screen: references should read ~0 in toggle too."""
+        out = _screen_method().estimate(self._toggle_mi())
+        assert out.reference_uplifts is not None
+        assert set(out.reference_uplifts["turbine"]) == {"R1", "R2", "R3"}
+        assert not out.reference_uplifts["screened"].any()
+
+    def test_a_prepost_campaign_still_screens(self) -> None:
+        mi, _ = _screen_case(step=0.08)
+        assert _screen_method().screen_references(mi).screened == ("R1",)

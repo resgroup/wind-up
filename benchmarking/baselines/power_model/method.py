@@ -42,7 +42,13 @@ from benchmarking.baselines.power_model.features import (
 )
 from benchmarking.baselines.power_model.fitting import make_outcome_model, time_block_folds
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
-from benchmarking.baselines.power_model.screening import ScreenResult, screen_references
+from benchmarking.baselines.power_model.screening import (
+    ScreenResult,
+    screen_references,
+)
+from benchmarking.baselines.power_model.screening import (
+    empty_screen_passes as _empty_screen_passes,
+)
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import (
     CONDITION_BINS,
@@ -123,8 +129,11 @@ _DEFAULT_MATCHING_BIN_EDGES: dict[str, list[float]] = {
 # Reference-validity screen (R3). A reference whose own performance shifts across the campaign
 # boundary biases the counterfactual, so each candidate is estimated against the others and clear
 # outliers are made power-free. The floor is a deviation from the pool's median, in uplift
-# fraction; it is calibrated on clean data rather than chosen.
-_DEFAULT_SCREEN_FLOOR = 0.01
+# fraction, calibrated on clean placebo pools rather than chosen: those spread up to 1.19 pp with
+# nothing injected, so 2.5 pp leaves roughly a factor of two before a healthy reference is at risk.
+# Set high deliberately -- ruling out a good reference costs more than leaving a mild bad one in
+# (on the clean fixture a false positive moved the estimate 0.88 pp).
+_DEFAULT_SCREEN_FLOOR = 0.025
 # Active power, as a fraction of rated, at or above which a power-free reference counts as waking
 # its neighbours. Low by design: thrust is already a large fraction of maximum well below rated,
 # so this separates waking from parked while leaking almost none of the power level.
@@ -988,6 +997,14 @@ class PowerModelMethod:
         prepost contrast :meth:`screening_timing` picks.
         """
         context = mi.context
+        if is_toggle(context.timing):
+            # Toggle is not vulnerable to this failure mode: a reference change before the test is
+            # common-mode across every on and off block. The screen cannot see one there either --
+            # the on/off contrast is blind to it, and splitting the test in half leaves ~3 seasonal
+            # months a side, whose noise swamps the signal. Screening out a good reference costs
+            # more than leaving a mild bad one in, so it does not run.
+            logger.info("%s %s: reference screen skipped, campaign is toggle", self.name, mi.test_wtg)
+            return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
         clone = dataclasses.replace(
             self, reference_screen=False, conditions=(), save_plots=False, out_dir=None, name=f"{self.name}_screen"

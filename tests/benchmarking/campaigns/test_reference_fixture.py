@@ -15,6 +15,7 @@ from benchmarking.campaigns.reference_fixture import (
     BAD_REFERENCE,
     DOWN_DELTA,
     FIXTURE_TEST_WTG,
+    MULTI_DOWN_DELTA,
     REFERENCES_3,
     REFERENCES_5,
     SECOND_BAD_REFERENCE,
@@ -65,7 +66,8 @@ class TestFixtureArms:
         """A reference is far likelier to pick up a problem of its own than an unannounced upgrade."""
         assert DOWN_DELTA < 0 < UP_DELTA
         deltas = {c.delta for a in fixture_arms("prepost") if a.pool == 5 for c in a.changes}
-        assert deltas == {DOWN_DELTA}
+        assert deltas == {MULTI_DOWN_DELTA}
+        assert MULTI_DOWN_DELTA < DOWN_DELTA < 0
 
     def test_the_five_reference_pool_carries_two_bad_references(self) -> None:
         """Two of five keeps the good references in the majority, which is what the fix relies on."""
