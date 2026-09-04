@@ -142,16 +142,15 @@ class TestScreenReferences:
             screen_references(["T15", "T10", "T08", "T04", "T02"], estimate_one=_estimator(truth), floor=0.01)
 
     def test_each_pass_is_recorded_for_inspection(self) -> None:
-        result = screen_references(
-            ["T15", "T10", "T08"], estimate_one=_estimator({"T15": 0.03, "T10": 0.0, "T08": 0.0}), floor=0.01
-        )
+        """A five-reference pool still has a majority after one drop, so it re-screens."""
+        truth = {"T15": 0.03, "T10": 0.0, "T08": 0.0, "T04": 0.0, "T02": 0.0}
+        result = screen_references(["T15", "T10", "T08", "T04", "T02"], estimate_one=_estimator(truth), floor=0.01)
         assert set(result.passes.columns) >= {"pass", "turbine", "estimate", "deviation", "dropped"}
         assert result.passes["pass"].nunique() == 2
 
     def test_a_screened_reference_is_not_re_estimated_afterwards(self) -> None:
-        result = screen_references(
-            ["T15", "T10", "T08"], estimate_one=_estimator({"T15": 0.03, "T10": 0.0, "T08": 0.0}), floor=0.01
-        )
+        truth = {"T15": 0.03, "T10": 0.0, "T08": 0.0, "T04": 0.0, "T02": 0.0}
+        result = screen_references(["T15", "T10", "T08", "T04", "T02"], estimate_one=_estimator(truth), floor=0.01)
         final = result.passes[result.passes["pass"] == result.passes["pass"].max()]
         assert "T15" not in set(final["turbine"])
 
@@ -161,3 +160,27 @@ class TestScreenReferences:
         )
         assert isinstance(result, ScreenResult)
         assert result.screenable
+
+
+class TestPoolShrinksBelowAMajority:
+    """Screening must stop when a drop leaves too few references to vote, not keep going."""
+
+    def test_a_pool_of_three_stops_after_one_drop(self) -> None:
+        """Two references are always equidistant from their own midpoint, so the rule is degenerate."""
+        result = screen_references(
+            ["T15", "T10", "T08"], estimate_one=_estimator({"T15": 0.05, "T10": 0.0, "T08": 0.0}), floor=0.01
+        )
+        assert result.screened == ("T15",)
+
+    def test_it_does_not_raise_when_the_remaining_pair_disagrees(self) -> None:
+        """The old loop re-screened the pair, flagged one arbitrarily and hit the majority guard."""
+        truth = {"T15": 0.05, "T10": 0.004, "T08": -0.004}
+        result = screen_references(["T15", "T10", "T08"], estimate_one=_estimator(truth), floor=0.01)
+        assert result.screened == ("T15",)
+
+    def test_the_final_pass_does_not_re_estimate_a_pair(self) -> None:
+        result = screen_references(
+            ["T15", "T10", "T08"], estimate_one=_estimator({"T15": 0.05, "T10": 0.0, "T08": 0.0}), floor=0.01
+        )
+        sizes = result.passes.groupby("pass")["turbine"].nunique()
+        assert (sizes >= 3).all()

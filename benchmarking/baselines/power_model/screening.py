@@ -105,6 +105,15 @@ def screen_references(
     screened: list[str] = []
     rows: list[dict[str, object]] = []
     for n_pass in range(1, allowance + 2):
+        if len(remaining) < MIN_POOL_TO_SCREEN:
+            # A drop can leave too few to vote. Two references are always equidistant from their
+            # own midpoint, so the rule would flag one of them arbitrarily.
+            logger.info(
+                "reference screen stopping: %d reference(s) remain, fewer than the %d needed to form a majority",
+                len(remaining),
+                MIN_POOL_TO_SCREEN,
+            )
+            break
         estimates = {wtg: estimate_one(wtg, [r for r in remaining if r != wtg]) for wtg in remaining}
         worst = worst_outlier(estimates, floor=floor)
         rows.extend(_pass_rows(estimates, dropped=worst, n_pass=n_pass))
