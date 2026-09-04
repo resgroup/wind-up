@@ -12,6 +12,73 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF12 — An undeclared reference upgrade bites `power_model` hard in prepost (−0.69 to −1.14 pp from a 3% Cp change) and, unexpectedly, **also in toggle** (−0.31 to −0.52 pp) — toggle's alternation cancels it for `naive_ratio` but not for `power_model`, whose fit still reaches into the pre-campaign baseline
+
+*2026-09-04. R3, Phase A (the bite; the screen is not built yet). Driver:
+`benchmarking.campaigns.reference_fixture` — T06 declared through `placebo_campaign` (no upgrade
+injected, so truth is exactly 0), 12-month baseline plus 12 months prepost / 6 months toggle.
+Five arms x both modes: a 3-reference pool (T15/T10/T08, the CF5 set) clean, with T15 at +3% Cp
+and with T15 at −3% Cp; and a 5-reference pool (+T04/T02) clean and with both T15 and T10 at +3%.
+Every change is a `ReferenceCpChange` landing at the campaign changeover and staying on — a
+reference retrofitted in the same programme as the test turbine. Movement is measured against the
+clean cell of the same pool size, since a 3-reference and a 5-reference estimate differ in their
+own right (prepost clean: +0.343% vs +0.453%).*
+
+**Observed — it bites in every arm, in both modes.** `power_model` headline movement, against a
+0.25 pp materiality bar:
+
+| pool | arm | prepost | toggle |
+|---|---|---|---|
+| 3 refs | T15 +3% | 0.343% → −0.350% (**−0.692 pp**) | 0.082% → −0.227% (**−0.309 pp**) |
+| 3 refs | T15 −3% | 0.343% → +1.174% (**+0.831 pp**) | 0.082% → +0.431% (**+0.349 pp**) |
+| 5 refs | T15+T10 +3% | 0.453% → −0.691% (**−1.144 pp**) | 0.358% → −0.165% (**−0.523 pp**) |
+
+Signs are as expected and roughly symmetric: an improving reference raises the counterfactual and
+drags the estimate down; a degrading one lifts it. 3% was enough on the first attempt, so no
+escalation was needed. Two bad references out of five moved the estimate *more* than one out of
+three (−1.14 vs −0.69 pp) despite a similar poisoned fraction (0.40 vs 0.33).
+
+**The surprise is toggle.** R2's lesson, and the prior expectation recorded in the design, was
+that toggle's rapid alternation cancels a fault present in both periods. It does — for
+`naive_ratio`, which moved **0.006 pp** in toggle against 0.68 pp in prepost. It does not for
+`power_model`, which retains ~45% of its prepost movement.
+
+**Root cause of the toggle residual.** `naive_ratio` calls `restrict_to_campaign`, which drops the
+pre-campaign rows, so both sides of its ratio sit entirely after the step and the reference's new
+performance is common-mode. `power_model` has no such restriction: under `adaptive_time_decay` its
+toggle fit still draws on the pre-campaign baseline, which straddles the step, so the model learns
+a reference relationship partly from before the change and applies it after. That is the only
+asymmetry between the two methods here, and it predicts the sign and rough size of what is left.
+
+**`toggle_specialist` is structurally identical to `naive_ratio` on a headline P50.** Both compute
+`rho_up / rho_base − 1` with `rho = Σ test_power / Σ ref_total`, and their `_used_mask`
+implementations are line-for-line the same (`NormalOperationFilter`, `apply_stuck_filter=False`,
+same completeness and availability terms); `toggle_specialist` adds only `& ~self._test_excluded(…)`,
+a no-op under a schema with no `exclude_row` role. Their toggle estimates agree bit-for-bit here
+and in the R2 run (CF11), which is expected rather than a defect — `toggle_specialist`'s distinct
+value is its block-bootstrap sigma, its per-power-bin conditional frame and that exclusion filter,
+none of which a headline comparison exercises. It also settles R3's scope question: at 0.006 pp,
+`toggle_specialist` needs no defence against this failure mode.
+
+**Implications.**
+- The R-series "fault must bite" gate is cleared **per mode**, so the Phase B screen must be
+  applied in both, not prepost only.
+- Before building the screen, test the cheaper rival hypothesis the root cause suggests: if the
+  toggle residual is purely the pre-campaign baseline in the fit, restricting `power_model`'s
+  toggle fit to campaign rows removes it with no screen at all. Note this re-opens the
+  `toggle_campaign_only` knob pruned as dead in Issue 16, so it needs its own evidence.
+- The screen's decision rule must be **relative** (outlier against the pack), not a test against
+  zero: screening each reference against a pool that still contains the bad one gives every good
+  reference a common negative offset.
+
+**Known artefact to watch.** `apply_upgrades` writes back `active_power`, `gen_rpm` and
+`wind_speed` only, so a reference whose mean power moves 3% keeps its original `active_power_min`,
+which `power_model` carries as a per-reference feature. Every *declared* upgrade behaves the same
+way, so the fixture stays internally comparable — but a Phase B screen that turns out to key on
+the mean/min inconsistency is detecting an artefact, not the performance change.
+
+---
+
 ## CF11 — An unstable anemometer costs `power_model`'s headline almost nothing as it ships (max 0.21 pp, and exactly zero in toggle), because the standing "no reference-anemometer features" rule already closes the pathway — turning that rule on is worth **34 pp** of error
 
 *2026-09-04. R2. Driver: `benchmarking.campaigns.sensor_fixture` — T06 plus T15/T10/T08,

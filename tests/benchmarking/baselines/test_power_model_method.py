@@ -820,3 +820,116 @@ class TestCampaignContext:
         assert with_holes == pytest.approx(
             self._estimate(holed, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
         )
+
+
+def _scada_with_a_stepped_reference(n: int, *, changeover: pd.Timestamp, step: float) -> pd.DataFrame:
+    """Toy placebo SCADA in which reference R1 alone changes performance at the changeover.
+
+    The test turbine's power is built from the clean references first, so R1's step is a genuine
+    change in R1 and not something the test turbine followed -- exactly the R3 failure mode.
+    """
+    scada = _toy_scada(n, uplift=0.0, treated=np.zeros(n, dtype=bool))
+    is_r1 = scada[_TURBINE] == "R1"
+    stepped = is_r1 & (scada.index >= changeover)
+    for col in (_POWER, _POWER_MIN, _POWER_MAX):
+        scada.loc[stepped, col] = scada.loc[stepped, col] * (1.0 + step)
+    return scada
+
+
+def _screen_case(*, step: float, n: int = 4000) -> tuple[MethodInput, pd.Timestamp]:
+    idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+    changeover = pd.Timestamp(idx[n // 2])
+    scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=step)
+    mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+    return mi, changeover
+
+
+def _screen_method(**overrides: object) -> PowerModelMethod:
+    kwargs: dict[str, object] = {
+        "columns": _COLUMNS,
+        "baseline_rated_power_kw": 2300.0,
+        "conditions": (),
+        "screen_floor": 0.01,
+        **overrides,
+    }
+    return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
+
+
+class TestReferenceScreen:
+    """The screen finds a reference that changed on its own, and the estimate stops following it."""
+
+    def test_a_clean_pool_screens_nobody(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        assert _screen_method().screen_references(mi).screened == ()
+
+    def test_the_stepped_reference_is_found(self) -> None:
+        mi, _ = _screen_case(step=0.03)
+        assert _screen_method().screen_references(mi).screened == ("R1",)
+
+    def test_a_degrading_reference_is_found_too(self) -> None:
+        mi, _ = _screen_case(step=-0.03)
+        assert _screen_method().screen_references(mi).screened == ("R1",)
+
+    def test_the_screen_removes_most_of_the_bias(self) -> None:
+        """Truth is 0: an unscreened run follows R1's step, a screened one should not."""
+        mi, _ = _screen_case(step=0.03)
+        unscreened = _screen_method(reference_screen=False).estimate(mi).p50_overall
+        screened = _screen_method(reference_screen=True).estimate(mi).p50_overall
+        assert abs(unscreened) > 0.005
+        assert abs(screened) < abs(unscreened) / 2
+
+    def test_a_clean_pool_estimates_identically_screened_or_not(self) -> None:
+        """The screen finding nothing must cost the estimate nothing."""
+        mi, _ = _screen_case(step=0.0)
+        off = _screen_method(reference_screen=False).estimate(mi).p50_overall
+        on = _screen_method(reference_screen=True).estimate(mi).p50_overall
+        assert on == pytest.approx(off)
+
+    def test_the_screened_reference_keeps_its_direction_and_gains_waking(self) -> None:
+        mi, _ = _screen_case(step=0.03)
+        method = _screen_method()
+        features = method.reference_features(mi, power_free=("R1",))
+        assert f"{_POWER} @ R1" not in features.columns
+        assert f"{_NORTHED_YAW}_sin @ R1" in features.columns
+        assert f"waking_{_POWER} @ R1" in features.columns
+
+    def test_the_screen_is_on_by_default(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).reference_screen
+
+
+class TestScreeningContrast:
+    """A reference never toggles, so screening it is always a prepost question."""
+
+    def _toggle_mi(self, n: int = 2000) -> MethodInput:
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        start = pd.Timestamp(idx[n // 4])
+        schedule = ToggleSchedule(period=pd.Timedelta(minutes=100), start=start)
+        treated = np.asarray(resolve_toggle(schedule, pd.DatetimeIndex(idx)).upgraded)
+        scada = _toy_scada(n, uplift=0.0, treated=treated)
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+
+    def test_a_prepost_campaign_screens_at_its_own_changeover(self) -> None:
+        mi, changeover = _screen_case(step=0.0)
+        assert _screen_method().screening_timing(mi) == changeover
+
+    def test_a_toggle_campaign_screens_at_a_timestamp_not_a_schedule(self) -> None:
+        """Handing a reference the toggle schedule asks it an on-vs-off question it cannot answer."""
+        timing = _screen_method().screening_timing(self._toggle_mi())
+        assert isinstance(timing, pd.Timestamp)
+
+    def test_a_toggle_campaign_splits_inside_the_test_period(self) -> None:
+        """The toggle test is the valuable data, so the split protects it rather than straddling it."""
+        mi = self._toggle_mi()
+        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        campaign_start = pd.Timestamp(index[len(index) // 4])
+        timing = _screen_method().screening_timing(mi)
+        assert campaign_start < timing < index.max()
+
+    def test_the_toggle_split_halves_the_campaign_by_data_volume(self) -> None:
+        mi = self._toggle_mi()
+        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        timing = _screen_method().screening_timing(mi)
+        campaign = index[index >= pd.Timestamp(index[len(index) // 4])]
+        before = int((campaign < timing).sum())
+        after = int((campaign >= timing).sum())
+        assert abs(before - after) <= 1

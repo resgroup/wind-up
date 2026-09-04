@@ -278,3 +278,95 @@ class TestReferenceDirectionFeature:
         )
         assert len(without.columns) == 6
         assert not any("northed" in c for c in without.columns)
+
+
+_RATED = 2300.0
+_WAKING_THRESHOLD_KW = 0.05 * _RATED
+
+
+def _scada_spanning_the_waking_threshold(idx: pd.DatetimeIndex) -> pd.DataFrame:
+    """Long SCADA whose power straddles 5% of rated, so the waking boolean is not degenerate."""
+    scada = _scada(idx)
+    ramp = np.linspace(0.0, 4 * _WAKING_THRESHOLD_KW, len(idx))
+    for name in ("T1", "R1", "R2", "R3"):
+        scada.loc[scada[_TURBINE] == name, _POWER] = ramp
+    scada[_RAW_DIR] = 90.0
+    scada[_NORTHED_DIR] = 120.0
+    return scada
+
+
+class TestPowerFreeReferences:
+    """A screened reference keeps its wake geometry but loses the channels a Cp change corrupts."""
+
+    def _features(self, idx: pd.DatetimeIndex, power_free: tuple[str, ...]) -> pd.DataFrame:
+        return build_reference_features(
+            _scada_spanning_the_waking_threshold(idx),
+            test_wtg="T1",
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            direction_col=_NORTHED_DIR,
+            include_availability=False,
+            power_free=power_free,
+            waking_threshold_kw=_WAKING_THRESHOLD_KW,
+        )
+
+    def test_a_power_free_reference_loses_its_power_column(self) -> None:
+        feats = self._features(_index(24), power_free=("R1",))
+        assert f"{_POWER}{QUALIFIER}R1" not in feats.columns
+
+    def test_the_other_references_keep_theirs(self) -> None:
+        feats = self._features(_index(24), power_free=("R1",))
+        for ref in ("R2", "R3"):
+            assert f"{_POWER}{QUALIFIER}{ref}" in feats.columns
+
+    def test_a_power_free_reference_keeps_its_direction(self) -> None:
+        """Whether it is casting a wake on its neighbours is a function of where it points."""
+        feats = self._features(_index(24), power_free=("R1",))
+        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R1" in feats.columns
+        assert f"{_NORTHED_DIR}_cos{QUALIFIER}R1" in feats.columns
+
+    def test_a_power_free_reference_gains_a_waking_boolean(self) -> None:
+        feats = self._features(_index(24), power_free=("R1",))
+        assert f"waking_{_POWER}{QUALIFIER}R1" in feats.columns
+
+    def test_the_waking_boolean_is_true_above_the_threshold_and_false_below(self) -> None:
+        idx = _index(24)
+        feats = self._features(idx, power_free=("R1",))
+        power = _scada_spanning_the_waking_threshold(idx)
+        r1 = power[power[_TURBINE] == "R1"][_POWER].to_numpy()
+        waking = feats[f"waking_{_POWER}{QUALIFIER}R1"].to_numpy()
+        assert (waking == (r1 >= _WAKING_THRESHOLD_KW)).all()
+
+    def test_the_boolean_is_informative_not_degenerate_on_this_fixture(self) -> None:
+        feats = self._features(_index(24), power_free=("R1",))
+        waking = feats[f"waking_{_POWER}{QUALIFIER}R1"]
+        assert 0 < waking.sum() < len(waking)
+
+    def test_good_references_get_no_waking_column(self) -> None:
+        """The boolean replaces power where power was removed; it is not a new default feature."""
+        feats = self._features(_index(24), power_free=("R1",))
+        for ref in ("R2", "R3"):
+            assert f"waking_{_POWER}{QUALIFIER}{ref}" not in feats.columns
+
+    def test_no_power_free_references_leaves_the_matrix_untouched(self) -> None:
+        """The screen finding nothing must cost the feature matrix nothing."""
+        idx = _index(24)
+        unscreened = build_reference_features(
+            _scada_spanning_the_waking_threshold(idx),
+            test_wtg="T1",
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            direction_col=_NORTHED_DIR,
+            include_availability=False,
+        )
+        assert list(self._features(idx, power_free=()).columns) == list(unscreened.columns)
+
+    def test_a_power_free_turbine_that_is_not_a_reference_raises(self) -> None:
+        with pytest.raises(ValueError, match="R9"):
+            self._features(_index(24), power_free=("R9",))
+
+    def test_the_test_turbine_still_contributes_nothing(self) -> None:
+        feats = self._features(_index(24), power_free=("R1",))
+        assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)

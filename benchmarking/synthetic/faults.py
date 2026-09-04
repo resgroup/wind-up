@@ -1,36 +1,50 @@
 """Injected data faults: the pathologies real SCADA carries, with known ground truth.
 
-A fault corrupts what a method **measures**, never what the turbine **produced**. It is applied
-to the synthetic frame after the upgrades, leaving ``original_df`` untouched, so the true uplift
-is unchanged by construction and any movement in an estimate is the fault's doing.
+A fault is injected into the synthetic frame after the upgrades, is invisible to the analyst
+(``CampaignSpec`` never carries it), and never moves the ground truth. ``original_df`` is left
+untouched, so any movement in an estimate is the fault's doing.
 
-That is what separates a fault from an upgrade: an upgrade changes power and moves the truth; a
-fault changes a reading and moves only the estimate.
+That is what separates a fault from an upgrade: an upgrade is declared and moves the truth; a
+fault is undeclared and moves only the estimate.
+
+Most faults hold the truth still by corrupting what a method **measures** rather than what a
+turbine **produced**. :class:`ReferenceCpChange` is the exception -- it changes real power on a
+reference turbine, and stays truth-neutral because the truth is derived per *test* turbine.
+Faults that change power declare ``changes_power``, and the generator refuses to aim one at a
+test turbine.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
 
+from benchmarking.synthetic.upgrades import ConstantCpChange, apply_upgrades
+
 if TYPE_CHECKING:
+    from benchmarking.synthetic.cp_core import CpCore
     from benchmarking.synthetic.schema import ColumnSchema
 
 
 @runtime_checkable
 class Fault(Protocol):
-    """A measurement corruption applied to the synthetic frame."""
+    """An undeclared corruption applied to the synthetic frame."""
 
     @property
     def description(self) -> dict:
         """Serialisable provenance recorded in the dataset's run metadata."""
         ...
 
-    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema) -> pd.DataFrame:
-        """Return ``synthetic_df`` with this fault injected."""
+    @property
+    def changes_power(self) -> bool:
+        """Whether this fault alters active power rather than only a reading."""
+        ...
+
+    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema, cp: CpCore) -> pd.DataFrame:
+        """Return ``synthetic_df`` with this fault injected; ``cp`` converts a Cp change to power."""
         ...
 
 
@@ -52,6 +66,7 @@ class NorthingStep:
     at: pd.Timestamp
     offset_deg: float
     role: str = "nacelle_position"
+    changes_power: ClassVar[bool] = False
 
     @property
     def description(self) -> dict:
@@ -63,7 +78,7 @@ class NorthingStep:
             "offset_deg": float(self.offset_deg),
         }
 
-    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema) -> pd.DataFrame:
+    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema, cp: CpCore) -> pd.DataFrame:  # noqa: ARG002
         """Return ``synthetic_df`` with ``turbine``'s direction stepped by ``offset_deg`` from ``at``."""
         columns.require_roles([self.role])
         column = getattr(columns, self.role)
@@ -149,6 +164,7 @@ class SensorGainStep:
     at: pd.Timestamp
     gain: float
     roles: tuple[str, ...] = WIND_SPEED_ROLES
+    changes_power: ClassVar[bool] = False
 
     @property
     def description(self) -> dict:
@@ -161,7 +177,7 @@ class SensorGainStep:
             "roles": list(self.roles),
         }
 
-    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema) -> pd.DataFrame:
+    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema, cp: CpCore) -> pd.DataFrame:  # noqa: ARG002
         """Return ``synthetic_df`` with ``turbine``'s named channels scaled by ``gain`` from ``at``."""
         fault = "a sensor gain step"
         is_turbine = _turbine_mask(synthetic_df, columns=columns, turbine=self.turbine, fault=fault)
@@ -189,6 +205,7 @@ class SensorGainDrift:
     turbine: str
     gain: float
     roles: tuple[str, ...] = WIND_SPEED_ROLES
+    changes_power: ClassVar[bool] = False
 
     @property
     def description(self) -> dict:
@@ -200,7 +217,7 @@ class SensorGainDrift:
             "roles": list(self.roles),
         }
 
-    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema) -> pd.DataFrame:
+    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema, cp: CpCore) -> pd.DataFrame:  # noqa: ARG002
         """Return ``synthetic_df`` with ``turbine``'s named channels on a 1.0 to ``gain`` ramp."""
         fault = "a sensor gain drift"
         is_turbine = _turbine_mask(synthetic_df, columns=columns, turbine=self.turbine, fault=fault)
@@ -215,8 +232,49 @@ class SensorGainDrift:
         return _scaled(synthetic_df, cols=cols, factor=factor)
 
 
-def apply_faults(synthetic_df: pd.DataFrame, faults: list, *, columns: ColumnSchema) -> pd.DataFrame:
+@dataclass(frozen=True)
+class ReferenceCpChange:
+    """A flat Cp change on one turbine, from ``at`` to the end of the record.
+
+    A reference turbine's own undeclared performance change: its retrofit, a blade repair, a
+    controller change. Unlike the reading-only faults this moves real power, through the same Cp
+    core a declared upgrade uses, so power, generator rpm and wind speed stay consistent.
+
+    Truth-neutral because ground truth is derived per test turbine. The generator refuses to aim
+    this at one.
+
+    :param turbine: the turbine whose performance changes
+    :param at: when the change happens; rows from here on carry it
+    :param delta: the Cp change (0.03 for +3%), applied region-2 weighted
+    """
+
+    turbine: str
+    at: pd.Timestamp
+    delta: float
+    changes_power: ClassVar[bool] = True
+
+    @property
+    def description(self) -> dict:
+        """Return serialisable provenance describing this fault."""
+        return {"kind": "reference_cp_change", "turbine": self.turbine, "at": str(self.at), "delta": float(self.delta)}
+
+    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema, cp: CpCore) -> pd.DataFrame:
+        """Return ``synthetic_df`` with ``turbine``'s power carrying a ``delta`` Cp change from ``at``."""
+        is_turbine = _turbine_mask(synthetic_df, columns=columns, turbine=self.turbine, fault="a reference Cp change")
+        changed = is_turbine & np.asarray(synthetic_df.index >= self.at)
+        if not changed.any():
+            return synthetic_df
+        synthetic_df = synthetic_df.copy()
+        modified = apply_upgrades(
+            synthetic_df.loc[changed], [ConstantCpChange(delta=self.delta)], cp=cp, columns=columns
+        )
+        for col in (columns.active_power, columns.gen_rpm, columns.wind_speed):
+            synthetic_df.loc[changed, col] = modified[col].to_numpy()
+        return synthetic_df
+
+
+def apply_faults(synthetic_df: pd.DataFrame, faults: list, *, columns: ColumnSchema, cp: CpCore) -> pd.DataFrame:
     """Apply every fault to ``synthetic_df`` in order, returning the corrupted frame."""
     for fault in faults:
-        synthetic_df = fault(synthetic_df, columns=columns)
+        synthetic_df = fault(synthetic_df, columns=columns, cp=cp)
     return synthetic_df

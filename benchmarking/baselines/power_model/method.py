@@ -18,6 +18,7 @@ this package imports nothing from ``wind_up``.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import tempfile
 from dataclasses import dataclass, field
@@ -41,6 +42,7 @@ from benchmarking.baselines.power_model.features import (
 )
 from benchmarking.baselines.power_model.fitting import make_outcome_model, time_block_folds
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
+from benchmarking.baselines.power_model.screening import ScreenResult, screen_references
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import (
     CONDITION_BINS,
@@ -53,6 +55,8 @@ from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrade_start
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from benchmarking.synthetic import ColumnSchema
 
 logger = logging.getLogger(__name__)
@@ -113,6 +117,17 @@ _DEFAULT_MATCHING_BIN_EDGES: dict[str, list[float]] = {
     "wind_gusts_10m": [float(x) for x in np.arange(0.0, 48.0, 3.0)],  # 0,3,…,45
     "wind_direction_100m": [float(x) for x in np.arange(0.0, 380.0, 20.0)],  # 0,20,…,360
 }
+
+
+# Reference-validity screen (R3). A reference whose own performance shifts across the campaign
+# boundary biases the counterfactual, so each candidate is estimated against the others and clear
+# outliers are made power-free. The floor is a deviation from the pool's median, in uplift
+# fraction; it is calibrated on clean data rather than chosen.
+_DEFAULT_SCREEN_FLOOR = 0.01
+# Active power, as a fraction of rated, at or above which a power-free reference counts as waking
+# its neighbours. Low by design: thrust is already a large fraction of maximum well below rated,
+# so this separates waking from parked while leaking almost none of the power level.
+WAKING_RATED_FRACTION = 0.05
 
 
 def _ratio(actual: np.ndarray, counterfactual: np.ndarray) -> float:
@@ -299,6 +314,13 @@ class PowerModelMethod:
         distant history informs the fit without dominating it (Issue 13's recency weighting; the
         alternative to the rejected drift *feature*). ``None`` disables the weighting entirely.
         The default self-configuring behaviour is ``adaptive_time_decay=True`` (this left ``None``).
+    :param reference_screen: when ``True`` (**default**), estimate each candidate reference as if it
+        were a test turbine against the others, and make clear outliers **power-free** -- they keep
+        their direction features and gain a ``waking`` boolean, so their wake information is retained
+        while the channels a performance change corrupts are not. Needs at least 3 candidate
+        references to form a majority; below that it is skipped.
+    :param screen_floor: deviation from the screened pool's median, in uplift fraction, at which a
+        reference is ruled out
 
     The toggle headline is always the counterfactual energy ratio ``Σactual/Σprediction - 1``.
     """
@@ -321,6 +343,8 @@ class PowerModelMethod:
     direction_feature: bool = True
     adaptive_time_decay: bool = True
     time_decay_half_life_days: float | None = None
+    reference_screen: bool = True
+    screen_floor: float = _DEFAULT_SCREEN_FLOOR
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -352,16 +376,8 @@ class PowerModelMethod:
         # schema, so it is always present without per-driver ``reference_stat_cols`` config; extra
         # stat columns still append after it (deduped, so a caller repeating the min is harmless).
         extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
-        features = build_reference_features(
-            scada,
-            test_wtg=mi.test_wtg,
-            turbine_col=mi.turbine_col,
-            active_power_col=self.columns.active_power,
-            availability_col=self.columns.availability,
-            extra_cols=extra_cols,
-            include_availability=self.availability_feature,
-            direction_col=self.columns.northed("nacelle_position") if self.direction_feature else None,
-        )
+        power_free = self.screen_references(mi).screened if self.reference_screen else ()
+        features = self._reference_features(scada, mi=mi, extra_cols=extra_cols, power_free=power_free)
         features, era5 = self._add_era5(scada, features, mi=mi, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
 
@@ -812,6 +828,82 @@ class PowerModelMethod:
             "baseline_valid_pos": baseline_valid_pos,  # positions over ``index`` of the held-out rows
         }
 
+    def reference_features(self, mi: MethodInput, *, power_free: Sequence[str] = ()) -> pd.DataFrame:
+        """Build this method's reference feature matrix for ``mi``, optionally power-free for some.
+
+        The same matrix :meth:`estimate` fits on, exposed so a caller can inspect what the screen
+        changed.
+        """
+        scada = mi.context.select(mi.scada_df)
+        extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
+        return self._reference_features(scada, mi=mi, extra_cols=extra_cols, power_free=power_free)
+
+    def _reference_features(
+        self, scada: pd.DataFrame, *, mi: MethodInput, extra_cols: tuple[str, ...], power_free: Sequence[str]
+    ) -> pd.DataFrame:
+        """Return reference features for ``scada``; ``power_free`` references carry no power columns."""
+        return build_reference_features(
+            scada,
+            test_wtg=mi.test_wtg,
+            turbine_col=mi.turbine_col,
+            active_power_col=self.columns.active_power,
+            availability_col=self.columns.availability,
+            extra_cols=extra_cols,
+            include_availability=self.availability_feature,
+            direction_col=self.columns.northed("nacelle_position") if self.direction_feature else None,
+            power_free=power_free,
+            waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+        )
+
+    def screening_timing(self, mi: MethodInput) -> pd.Timestamp:
+        """Return the changeover a reference is screened across -- always a prepost contrast.
+
+        A reference is not the thing being toggled, so asking what its power did between a
+        campaign's on-blocks and its off-blocks answers nothing: a change of its own sits in both
+        alike. The question that matters is whether it changed across a boundary.
+
+        Prepost uses the campaign's own changeover. Toggle splits the test period in half by data
+        volume: within a toggle campaign a reference change predating the test is common-mode
+        across every block and largely cancels, so what corrupts the result is a change *during*
+        the test -- and the test period is the data worth protecting.
+        """
+        timing = mi.context.timing
+        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        if not is_toggle(timing):
+            return pd.Timestamp(timing)  # type: ignore[arg-type]
+        campaign = index[index >= toggle_upgrade_start(timing, index)]
+        return pd.Timestamp(campaign[len(campaign) // 2])
+
+    def screen_references(self, mi: MethodInput) -> ScreenResult:
+        """Estimate each candidate reference against the others and rule out clear outliers.
+
+        Each screening estimate uses this same method with the conditional step and plots off and
+        the screen itself disabled, so it is the method judging its own references, across the
+        prepost contrast :meth:`screening_timing` picks.
+        """
+        context = mi.context
+        timing = self.screening_timing(mi)
+        clone = dataclasses.replace(
+            self, reference_screen=False, conditions=(), save_plots=False, out_dir=None, name=f"{self.name}_screen"
+        )
+
+        def estimate_one(target: str, refs: list[str]) -> float:
+            sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=list(refs), timing=timing)
+            sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
+            return float(clone.estimate(sub_input).p50_overall)
+
+        result = screen_references(
+            list(context.candidate_references), estimate_one=estimate_one, floor=self.screen_floor
+        )
+        if result.screened:
+            logger.info(
+                "%s %s: reference screen ruled out %s; they keep direction + waking features but contribute no power",
+                self.name,
+                mi.test_wtg,
+                list(result.screened),
+            )
+        return result
+
     def _validate_model_config(self) -> None:
         """Fail loudly on config combinations that would silently misbehave."""
         if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
@@ -822,6 +914,21 @@ class PowerModelMethod:
                 "adaptive_time_decay sets the half-life from the campaign duration; a fixed "
                 "time_decay_half_life_days is only used with adaptive_time_decay=False. Set "
                 "adaptive_time_decay=False to use the fixed override, or leave time_decay_half_life_days=None."
+            )
+            raise ValueError(msg)
+        # Hoisted from the conditional step so a misconfiguration is reported as one, rather than
+        # surfacing later as whatever the reference screen or the fit happens to hit first.
+        if self.conditions and self.era5_hourly_df is None:
+            msg = (
+                "the conditional step requires ERA5 (era5_hourly_df): the matching axis is the ERA5 weather "
+                "columns. Supply era5_hourly_df, or pass conditions=() for an overall-only estimate."
+            )
+            raise ValueError(msg)
+        blocked = sorted(set(self.era5_exclude) & set(self.matching_vars))
+        if blocked and self.conditions:
+            msg = (
+                f"era5_exclude {blocked} are matching_vars; excluding them as model features would "
+                f"break the CEM matching cells. Pass conditions=() or re-pick matching_vars first."
             )
             raise ValueError(msg)
 
