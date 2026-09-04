@@ -24,6 +24,7 @@ def carried_forward_methods(
     out_dir: Path,
     era5_hourly_df: pd.DataFrame | None = None,
     include_power_model: bool = True,
+    reference_stat_cols: tuple[str, ...] = (),
 ) -> list[Method]:
     """Build the methods applicable to ``spec``, each writing into its own subfolder of ``out_dir``.
 
@@ -37,6 +38,9 @@ def carried_forward_methods(
     :param include_power_model: build the power model. It is the method under test, so this is
         off only to avoid the ``ml`` dependency group -- a campaign without it is not testing
         v1 wind-up
+    :param reference_stat_cols: extra per-reference channels the power model carries as features.
+        Empty by default: reference anemometry is deliberately not a feature, and the R2 fixture
+        passes it in only to measure what that exclusion is worth.
     """
     methods: list[Method] = [NaiveRatioMethod(columns=HOT_COLUMNS, out_dir=out_dir / "naive_ratio", save_plots=True)]
     if spec.mode == "toggle":
@@ -58,6 +62,7 @@ def carried_forward_methods(
                 conditions=PowerModelMethod.conditions if era5_hourly_df is not None else (),
                 availability_feature=False,
                 era5_exclude=CURATED_ERA5_EXCLUDE,
+                reference_stat_cols=reference_stat_cols,
                 model_params=dict(TUNED_MODEL_PARAMS),
                 out_dir=out_dir / "power_model",
                 save_plots=True,

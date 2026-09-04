@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from benchmarking.campaigns.runner import CampaignResult
+    from benchmarking.synthetic import Fault
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ def placebo_campaign(
     turbines: Sequence[str] | None = None,
     excluded: Sequence[str] | None = None,
     coords: dict[str, tuple[float, float]] | None = None,
+    faults: Sequence[Fault] | None = None,
 ) -> SyntheticCampaign:
     """Declare the placebo campaign for ``mode``: a whole farm with no upgrade injected.
 
@@ -108,6 +110,8 @@ def placebo_campaign(
     :param excluded: turbines whose data must not be used; defaults to :data:`PLACEBO_EXCLUDED`
     :param coords: turbine coordinates; a placeholder is used when omitted, since no declared
         upgrade reads them
+    :param faults: measurement corruptions to inject; none by default, so the placebo stays a
+        clean-data campaign. The R-series fixtures inject one and compare against that.
     """
     upgraded = tuple(PLACEBO_UPGRADED if upgraded is None else upgraded)
     participating = tuple(PLACEBO_TURBINES if turbines is None else turbines)
@@ -125,6 +129,7 @@ def placebo_campaign(
         candidate_references=[w for w in participating if w not in upgraded and w not in excluded],
         excluded_turbines=list(excluded),
         upgrades=[],
+        faults=list(faults) if faults is not None else [],
         coords=coords if coords is not None else dict.fromkeys(participating, (0.0, 0.0)),
         # discovered by the shared northing step, not supplied: the placebo exercises the norther
         north_offsets=None,

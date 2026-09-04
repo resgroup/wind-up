@@ -12,6 +12,67 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF11 — An unstable anemometer costs `power_model`'s headline almost nothing as it ships (max 0.21 pp, and exactly zero in toggle), because the standing "no reference-anemometer features" rule already closes the pathway — turning that rule on is worth **34 pp** of error
+
+*2026-09-04. R2. Driver: `benchmarking.campaigns.sensor_fixture` — T06 plus T15/T10/T08,
+declared through `placebo_campaign` (no upgrade injected, so truth is exactly 0), 12-month
+baseline plus 12 months prepost / 6 months toggle. 28 arms: two fault shapes
+(`SensorGainStep` at the changeover, `SensorGainDrift` ramping over the whole record) x gains
+x1.5 and x0.5 x two targets (the test turbine T06, the nearest reference T15) x both modes,
+plus an exposed set carrying reference anemometry as model features. Both shapes scale
+`wind_speed` and `wind_speed_sd` together, so turbulence intensity is invariant by construction
+and only the wind-speed axis moves.*
+
+**Observed — the headline is effectively immune.** In the shipped configuration, seven of the
+eight prepost fault arms moved `power_model` by at most 1.1e-5 pp. The single exception is a
+**x0.5 gain on the reference T15**, which moved the farm estimate 0.343% -> 0.557%, **+0.214 pp**
+— step and drift alike, to six decimal places. Every toggle arm moved by 1e-13 or less, i.e.
+exactly zero. `naive_ratio` and `toggle_specialist` were unmoved everywhere, as expected: they
+read power only.
+
+**Root cause of the one nonzero result.** The only surviving path from reference anemometry into
+`power_model` is `reference_mean_wind_speed`, which the ERA5 lag sweep locks onto. Measuring
+`sync_era5(...).best_lag_rows` per arm: clean **-3**, `step_x0.5_T15` **-4**, `drift_x0.5_T15`
+**-4**, `step_x1.5_T15` -3, `drift_x1.5_T15` -3. The argmax tips by one row — a **10-minute**
+shift in the reanalysis alignment — which is why the step and the drift give an identical
+estimate: both select the same alternative lag. Both T06 arms returned lag -3 at correlation
+0.87001, bit-identical to clean, confirming the test turbine's anemometer never enters the
+reference side at all.
+
+**The conditional grid moves hard, as expected.** The `ws` conditional axis *is* the test
+turbine's own anemometer, so a gain fault re-bins every row: 42 of 104 prepost `ws` cells and 28
+of 104 toggle cells moved materially, up to **+600 pp** in the degenerate (2, 4] m/s bin (clean
+-12.9% -> +586.7%). The `ti` axis is invariant in toggle (1e-13), as the mean-and-SD-together
+design intends; its prepost movement (max 66 pp, in the degenerate (0.45, 0.5] bin) rides the
+T15/ERA5 route rather than re-binning. The `power` axis moved at most 0.59 pp prepost and zero
+in toggle. **Deliberately not fixed:** the conditional machinery is nascent, and R2 was scoped to
+measure rather than mature it.
+
+**The exposed arm prices the standing rule.** Repeating the clean cell and the steps with
+reference anemometry carried as features (`reference_stat_cols=(wind_speed, wind_speed_sd)`):
+the clean prepost estimate alone degrades **0.343% -> -1.169%**, and the faults then move it
+**-23.07 pp** (x1.5 on T15) and **+34.32 pp** (x0.5 on T15). In toggle the same arms move -0.77
+pp and +0.61 pp. The test-turbine target stays at ~0 throughout, since the test turbine
+contributes no reference features. So the standing exclusion of
+reference anemometry is no longer a stance on principle: it is worth up to 34 percentage points
+of error under a reference calibration fault, and it improves clean data too.
+
+**Toggle cancels almost all of it**, confirming the R-series prediction: the same fault that
+costs 23-34 pp in prepost costs 0.6-0.8 pp in toggle, and in the shipped configuration toggle is
+unmoved outright.
+
+**Implications.**
+- **R2 lands no `power_model` change.** The invariance target is already met by construction;
+  there is nothing to fix in the headline path.
+- The **ERA5 lag sync is the one remaining reference-anemometry pathway**. It is worth 0.21 pp,
+  prepost only, and only at a 50% calibration error. If it ever matters, the fix is to lock the
+  sweep onto reference *power* rather than reference wind speed.
+- The **conditional `ws` axis is built on a post-treatment, drift-prone sensor**. Whoever matures
+  the conditional result should read this first; the fault classes are in place to re-measure.
+- **Temperature was dropped from scope** by inspection, not measurement: `ambient_temp` is a
+  diagnostics-only schema role that reaches `power_model` through nothing, and ERA5 supplies
+  `temperature_2m` independently. There is no pathway for it to bite.
+
 ## CF10 — A low-effort `NorthingSettings` tier was measured and dropped: the changepoint search is a small part of the runtime (a whole farm-year differs by ~2 seconds) and a smaller changepoint budget cost real detections, so there is one setting rather than a menu
 
 *2026-09-04. Recorded when the justification was removed from the `NorthingSettings` docstring
