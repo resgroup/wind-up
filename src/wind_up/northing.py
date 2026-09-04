@@ -61,10 +61,6 @@ _DEFAULT_CONFIDENT_SEGMENT = pd.Timedelta(days=90)
 class NorthingSettings:
     """How the changepoint search is bounded, in physical units.
 
-    There is one setting, not a menu: a low-effort tier was measured and dropped, because the
-    search is a small part of the runtime (a whole farm-year differs by ~2 seconds) and a smaller
-    changepoint budget cost real detections. Construct one of these only to tune deliberately.
-
     :param changepoints_per_year: budget of changepoints per year of record, so a longer
         record is allowed more; the cap is ``max(min_changepoints, ceil(rate * years))``
     :param min_changepoints: floor on that budget, so a short record can still hold several
@@ -161,6 +157,7 @@ def _table(timestamps: list[pd.Timestamp], offsets: list[float]) -> pd.DataFrame
 
 def _residual(
     direction_deg: npt.NDArray[np.float64],
+    *,
     reference_deg: npt.NDArray[np.float64],
     usable: npt.NDArray[np.bool_],
 ) -> npt.NDArray[np.float64]:
@@ -220,20 +217,14 @@ def veer_normalised(
 ) -> npt.NDArray[np.float64]:
     """Remove each direction sector's own long-run level from the residual.
 
-    Across a site the wind direction differs from turbine to turbine -- veer, varying with the
-    bulk direction, stability and wind speed. A turbine's residual therefore has a level that
-    depends on *which* directions the wind blew from, so a shift in the direction mix moves the
-    level without anything at the turbine changing, and a changepoint search reads that as a step.
-
-    Subtracting each sector's whole-record median removes it: a genuine north offset shifts every
-    sector alike and so survives. Sectors with too little data fall back to the overall level.
+    Subtracting each sector's whole-record median leaves a genuine north offset intact, since one
+    shifts every sector alike. Sectors with too little data fall back to the overall level.
 
     Use this for detection only -- segment offsets are estimated from the raw residual, so the
     correction stays absolute.
 
     :param de_stepped: the residual with a first-pass estimate of the step structure removed. The
-        sector levels are measured on it rather than on ``residual``, so a large step cannot leak
-        into the veer signature. Defaults to ``residual`` itself.
+        sector levels are measured on it rather than on ``residual``. Defaults to ``residual``.
     """
     signature = _sector_signature(
         residual if de_stepped is None else de_stepped,
@@ -264,8 +255,9 @@ def _sector_signature(
     if not finite.any():
         return np.full(len(values_deg), np.nan)
     n_sectors = max(1, int(np.ceil(360.0 / sector_deg)))
+    has_reference = np.isfinite(reference_deg)
     sector = np.zeros(len(values_deg), dtype=int)
-    sector[finite] = (np.mod(reference_deg[finite], 360.0) // sector_deg).astype(int) % n_sectors
+    sector[has_reference] = (np.mod(reference_deg[has_reference], 360.0) // sector_deg).astype(int) % n_sectors
 
     overall = float(circ_median(values_deg[finite], range_360=False))
     level = np.full(n_sectors, overall)
@@ -274,7 +266,7 @@ def _sector_signature(
         if int(rows.sum()) >= min_rows_per_sector:
             level[s] = float(circ_median(values_deg[rows], range_360=False))
     out = np.full(len(values_deg), np.nan)
-    out[np.isfinite(reference_deg)] = level[sector[np.isfinite(reference_deg)]]
+    out[has_reference] = level[sector[has_reference]]
     return out
 
 
@@ -527,9 +519,8 @@ def _worst_unsupported(
 ) -> int | None:
     """Return the changepoint whose step falls furthest short of what its record can support.
 
-    This is what makes ``min_step_deg`` mean what it says: a step smaller than it is never
-    reported. Near the start or end of a record -- or squeezed between two other changepoints --
-    more is required, because there is less data with which to tell a step from veer.
+    A step smaller than ``min_step_deg`` is never reported. Near the start or end of a record --
+    or squeezed between two other changepoints -- more is required.
     """
     required = _required_step(
         changepoints,
@@ -586,8 +577,7 @@ def estimate_north_table(
     :param usable: rows whose comparison is meaningful -- see :func:`yaw_usable`. Also the
         place to exclude periods when the direction is deliberately offset, such as a turbine
         steering its wake.
-    :param settings: how the search is bounded; the default suits a farm record and there is no
-        tier to choose between
+    :param settings: how the search is bounded; the default suits a farm record
     :return: columns ``timestamp`` and ``north_offset``, one row per period, the first row at
         the start of ``index``. Always at least one row; all-zero when nothing is usable.
     """
@@ -609,7 +599,7 @@ def estimate_north_table(
         order = np.argsort(index.to_numpy())
         index, direction, reference, ok = index[order], direction[order], reference[order], ok[order]
 
-    residual = _residual(direction, reference, ok)
+    residual = _residual(direction, reference_deg=reference, usable=ok)
     start = index.min()
     if not np.isfinite(residual).any():
         logger.warning("no usable rows to north against; returning a zero offset")
@@ -652,12 +642,13 @@ def estimate_north_table(
     if settings.veer_sector_deg is None:
         changepoints = detect(residual)
     else:
+        sector_deg = settings.veer_sector_deg
 
         def normalised(de_stepped: npt.NDArray[np.float64] | None) -> npt.NDArray[np.float64]:
             return veer_normalised(
                 residual,
                 reference_deg=reference,
-                sector_deg=settings.veer_sector_deg,  # type: ignore[arg-type]
+                sector_deg=sector_deg,
                 de_stepped=de_stepped,
             )
 
@@ -673,21 +664,36 @@ def estimate_north_table(
         )
 
     offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
-    bounds = {"start": start, "residual": residual, "index": index}
-    rule = {
-        "start": start,
-        "end": end,
-        "min_step_deg": settings.min_step_deg,
-        "max_transient_step_deg": settings.max_transient_step_deg,
-    }
     # First iron out excursions, then drop what the record cannot support. Order matters: a step
     # only looks unsupported once the excursion around it has gone.
-    changepoints, offsets = _prune_while(changepoints, offsets, **bounds, worst=partial(_worst_transient, **rule))
     changepoints, offsets = _prune_while(
         changepoints,
         offsets,
-        **bounds,
-        worst=partial(_worst_unsupported, **rule, confident_segment=settings.confident_segment),
+        start=start,
+        residual=residual,
+        index=index,
+        worst=partial(
+            _worst_transient,
+            start=start,
+            end=end,
+            min_step_deg=settings.min_step_deg,
+            max_transient_step_deg=settings.max_transient_step_deg,
+        ),
+    )
+    changepoints, offsets = _prune_while(
+        changepoints,
+        offsets,
+        start=start,
+        residual=residual,
+        index=index,
+        worst=partial(
+            _worst_unsupported,
+            start=start,
+            end=end,
+            min_step_deg=settings.min_step_deg,
+            max_transient_step_deg=settings.max_transient_step_deg,
+            confident_segment=settings.confident_segment,
+        ),
     )
     return _table([start, *changepoints], offsets)
 
@@ -763,10 +769,7 @@ def _farm_direction(
 ) -> npt.NDArray[np.float64]:
     """Per-timestamp circular median of the devices' northed directions, NaN where too few report.
 
-    ``min_devices`` is what keeps this trustworthy. Devices differ from the consensus by their own
-    direction-dependent veer, so a median over only a few of them is not the farm's consensus --
-    and when an outage coincides with an unusual wind direction, every device appears to step at
-    once and back again. The guard is a quorum rather than a floor: see :func:`north_farm`.
+    ``min_devices`` is a quorum, not a fixed floor: see :func:`north_farm`.
     """
     stack = np.vstack(
         [np.where(usable[name] & np.isfinite(values), values, np.nan) for name, values in northed.items()]
@@ -798,10 +801,7 @@ def north_farm(
     :param reanalysis_deg: the absolute direction reference, on ``index``
     :param min_devices_for_farm_reference: the floor on how many devices must report at a
         timestamp for the consensus to be defined there, and the minimum farm size. The effective
-        requirement is the larger of this and a strict majority of the farm: a median over an
-        unrepresentative few
-        carries their veer rather than the farm's, which is what makes an outage look like every
-        turbine stepping at once.
+        requirement is the larger of this and a strict majority of the farm.
     """
     devices = sorted(direction_deg)
     if len(devices) < min_devices_for_farm_reference:

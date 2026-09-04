@@ -12,6 +12,21 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF10 — A low-effort `NorthingSettings` tier was measured and dropped: the changepoint search is a small part of the runtime (a whole farm-year differs by ~2 seconds) and a smaller changepoint budget cost real detections, so there is one setting rather than a menu
+
+*2026-09-04. Recorded when the justification was removed from the `NorthingSettings` docstring
+under the `src/` "behaviour, not justification" rule; the measurement itself was made during R1.*
+
+**Observed.** A reduced tier (smaller `changepoints_per_year`, coarser `grid`) was built and run
+against the same cases as the default. It saved ~2 seconds on a whole farm-year — the search is
+not where the runtime goes — and it lost genuine detections, because the changepoint budget is
+what lets a long record hold every recalibration it actually contains.
+
+**Decision.** `NorthingSettings` ships as a single default, `DEFAULT_NORTHING`. Construct one
+only to tune deliberately; there is no tier to choose between. The two derived settings that do
+exist — `anchoring_only` and `against_reanalysis` — are not tiers: each raises `min_step_deg`
+for a reference that cannot support finer attribution.
+
 ## CF9 — R1 improved `power_model` on the real placebo in both modes: mean per-turbine error 0.515% → 0.312% prepost and 0.328% → 0.255% toggle, with `naive_ratio` and `toggle_specialist` unmoved to three decimals, so the gain is attributable to the direction feature and discovered northing alone
 
 *2026-09-04. Reproduce: `uv run python -m benchmarking.campaigns.placebo`, Hill of Towie, both

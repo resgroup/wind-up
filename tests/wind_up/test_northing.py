@@ -10,10 +10,11 @@ import pandas as pd
 import pytest
 import yaml
 
-from wind_up.circular_math import circ_diff
+from wind_up.circular_math import circ_diff, circ_median
 from wind_up.northing import (
     DEFAULT_NORTHING,
     NorthingSettings,
+    _sector_signature,
     apply_north_table,
     estimate_north_table,
     north_farm,
@@ -758,3 +759,29 @@ class TestNorthTableYaml:
             "2017-01-01 00:00:00",
             "2017-06-30 12:20:00",
         ]
+
+
+class TestSectorSignature:
+    """The level reported for a row must come from that row's own direction sector."""
+
+    def test_a_row_with_no_value_still_reads_its_own_sector(self) -> None:
+        # sector 0 sits at +5 and sector 4 at -8; the rows pointing at 300 deg (sector 10) carry
+        # no value of their own, so they must fall back to the overall level, not to sector 0's
+        reference = np.array([10.0] * 100 + [130.0] * 100 + [300.0] * 100)
+        values = np.array([5.0] * 100 + [-8.0] * 100 + [np.nan] * 100)
+
+        signature = _sector_signature(values, reference_deg=reference, sector_deg=30.0, min_rows_per_sector=50)
+
+        overall = float(circ_median(values[np.isfinite(values)], range_360=False))
+        assert signature[0] == pytest.approx(5.0)
+        assert signature[150] == pytest.approx(-8.0)
+        assert signature[250] == pytest.approx(overall), "a NaN-valued row took sector 0's level by accident"
+
+    def test_each_populated_sector_gets_its_own_level(self) -> None:
+        reference = np.array([10.0] * 100 + [300.0] * 100)
+        values = np.array([5.0] * 100 + [-8.0] * 100)
+
+        signature = _sector_signature(values, reference_deg=reference, sector_deg=30.0, min_rows_per_sector=50)
+
+        assert signature[0] == pytest.approx(5.0)
+        assert signature[150] == pytest.approx(-8.0)
