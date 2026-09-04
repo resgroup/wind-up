@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 from wind_up.circular_math import circ_diff
 from wind_up.northing import (
@@ -16,8 +18,12 @@ from wind_up.northing import (
     estimate_north_table,
     north_farm,
     veer_normalised,
+    write_north_table_yaml,
     yaw_usable,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 TIMEBASE_S = 600
 RATED_POWER = 2300.0
@@ -671,3 +677,84 @@ class TestFarmReferenceComposition:
             assert part[name]["north_offset"].iloc[0] == pytest.approx(whole[name]["north_offset"].iloc[0], abs=2.0), (
                 name
             )
+
+
+class TestFarmNeedsAnAnchor:
+    """Pass 2 alone is blind to a farm that is uniformly wrong, so the anchor must exist."""
+
+    @staticmethod
+    def _farm(index: pd.DatetimeIndex) -> tuple[dict[str, np.ndarray], np.ndarray]:
+        reference = _true_direction(index)
+        offsets = {"A": 0.0, "B": 25.0, "C": -40.0}
+        reported = {
+            name: (reference + np.random.default_rng(10 + i).normal(0.0, 6.0, len(index)) - off) % 360.0
+            for i, (name, off) in enumerate(offsets.items())
+        }
+        return reported, reference
+
+    def test_an_all_nan_reanalysis_raises(self) -> None:
+        index = _index(days=60)
+        reported, _ = self._farm(index)
+        usable = {name: _all_usable(index) for name in reported}
+
+        with pytest.raises(ValueError, match="cannot anchor the farm"):
+            north_farm(
+                index,
+                direction_deg=reported,
+                usable=usable,
+                reanalysis_deg=np.full(len(index), np.nan),
+                settings=DEFAULT_NORTHING,
+            )
+
+    def test_a_reanalysis_that_never_overlaps_usable_rows_raises(self) -> None:
+        index = _index(days=60)
+        reported, reference = self._farm(index)
+        # reanalysis is finite only where no device is usable
+        usable = {name: _all_usable(index) for name in reported}
+        for mask in usable.values():
+            mask[: len(index) // 2] = False
+        blinded = reference.copy()
+        blinded[len(index) // 2 :] = np.nan
+
+        with pytest.raises(ValueError, match="cannot anchor the farm"):
+            north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=blinded, settings=DEFAULT_NORTHING)
+
+    def test_a_healthy_reanalysis_still_norths(self) -> None:
+        index = _index(days=60)
+        reported, reference = self._farm(index)
+        usable = {name: _all_usable(index) for name in reported}
+
+        tables = north_farm(
+            index, direction_deg=reported, usable=usable, reanalysis_deg=reference, settings=DEFAULT_NORTHING
+        )
+
+        assert set(tables) == set(reported)
+        assert float(tables["B"]["north_offset"].iloc[0]) == pytest.approx(25.0, abs=1.0)
+
+
+class TestNorthTableYaml:
+    """The written table is a prior an analyst can hand edit and feed back."""
+
+    def test_round_trips_through_yaml(self, tmp_path: Path) -> None:
+        tables = {
+            "T02": pd.DataFrame(
+                {
+                    "timestamp": pd.DatetimeIndex(["2017-01-01", "2017-06-30 12:20:00"], tz="UTC"),
+                    "north_offset": [1.5, -33.25],
+                }
+            ),
+            "T01": pd.DataFrame({"timestamp": pd.DatetimeIndex(["2017-01-01"], tz="UTC"), "north_offset": [-7.125]}),
+        }
+        path = tmp_path / "northing_corrections.yaml"
+
+        write_north_table_yaml(tables, path=path)
+        parsed = yaml.safe_load(path.read_text())
+
+        # the shape north_offsets and v0's northing_corrections_utc both read
+        assert [row[0] for row in parsed] == ["T01", "T02", "T02"]
+        assert [row[2] for row in parsed] == [-7.125, 1.5, -33.25]
+        assert [pd.Timestamp(row[1]).strftime("%Y-%m-%d %H:%M:%S") for row in parsed] == [
+            "2017-01-01 00:00:00",
+            "2017-01-01 00:00:00",
+            "2017-06-30 12:20:00",
+        ]

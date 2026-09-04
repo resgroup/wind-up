@@ -27,6 +27,7 @@ from wind_up.circular_math import circ_diff, circ_median
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
+    from pathlib import Path
 
     import numpy.typing as npt
 
@@ -732,6 +733,23 @@ def _median_across(stack: npt.NDArray[np.float64], *, enough: npt.NDArray[np.boo
     return farm
 
 
+def write_north_table_yaml(tables: Mapping[str, pd.DataFrame], *, path: Path) -> None:
+    """Write per-device north tables as the YAML list ``north_offsets`` and v0 both read.
+
+    The format matches v0's ``optimized_northing_corrections.yaml``, so the file can be hand
+    edited and supplied back as a prior.
+
+    :param tables: one absolute north table per device
+    :param path: file to write
+    """
+    lines = [
+        f"    - ['{device}', {pd.Timestamp(row.timestamp).strftime('%Y-%m-%d %H:%M:%S')}, {row.north_offset}]"
+        for device in sorted(tables)
+        for row in tables[device].itertuples()
+    ]
+    path.write_text("\n".join(lines) + "\n")
+
+
 def _farm_quorum(n_devices: int, *, floor: int) -> int:
     """Return how many devices must report for their median to stand for the farm's consensus."""
     return max(floor, n_devices // 2 + 1)
@@ -796,6 +814,26 @@ def north_farm(
     if missing:
         msg = f"usable is missing masks for device(s) {missing}"
         raise ValueError(msg)
+
+    finite_reference = np.isfinite(np.asarray(reanalysis_deg, dtype=float))
+    anchorable = {d: int((np.asarray(usable[d], dtype=bool) & finite_reference).sum()) for d in devices}
+    if not any(anchorable.values()):
+        msg = (
+            "no device has a usable row where reanalysis_deg is finite, so pass 1 cannot anchor the farm. "
+            "Pass 2 would still return plausible relative offsets, but a farm that is uniformly wrong "
+            "looks self-consistent, so the result would be unanchored. Check that reanalysis_deg covers "
+            "index and is not all NaN."
+        )
+        raise ValueError(msg)
+    thin = sorted(d for d, n in anchorable.items() if n == 0)
+    if len(devices) - len(thin) < min_devices_for_farm_reference:
+        logger.warning(
+            "only %d of %d devices have a usable row anchored to reanalysis (%s have none); the absolute "
+            "anchor rests on few devices",
+            len(devices) - len(thin),
+            len(devices),
+            thin,
+        )
 
     # Pass 1's reference is reanalysis, so it may only attribute large steps; pass 2's farm
     # consensus is clean enough for the caller's chosen threshold.

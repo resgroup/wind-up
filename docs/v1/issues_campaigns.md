@@ -317,6 +317,21 @@ logic, and excluded turbines.
   timestamps — declared from geometry in the `CampaignSpec`, not a script-level filter.
 - Northing-sector handling folded into the method/runner (replacing the
   `wd_filter` hack), so no bespoke driver code.
+- **Decide what the shared northing step fits on when the upgrade itself steers the yaw.**
+  `WakeSteering` moves the reported nacelle position on treated rows, and `yaw_usable`
+  screens on power and downtime only, so those deliberately steered rows currently enter
+  the northing fit and the correction can absorb part of the intervention. Two things
+  limit the damage today and neither is a defence: the search needs a segment of at least
+  seven days, so rapid toggling cannot forge a changepoint, and the offsets are circular
+  medians, which shrug off a displaced minority. It is a level bias, unmeasured.
+  **The obvious fix — exclude treated rows while fitting — is wrong as a general rule**:
+  in prepost the treated rows are half the record, and a north step occurring inside the
+  campaign is exactly R1's fault, so excluding them would make it undiscoverable. So the
+  exclusion has to be specific to upgrades known to move the direction channel, which the
+  runner cannot infer from a `CampaignSpec` that deliberately carries no truth — though a
+  real analyst running a steering campaign would know. Settle it here: measure the bias
+  first, then decide whether the spec should carry "this upgrade steers yaw" or the step
+  should screen the rows some other way. Raised by review on PR 138.
 - Report + n=1 score; the farm uplift nets upstream steering losses against
   downstream gains.
 

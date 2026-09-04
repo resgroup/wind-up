@@ -21,7 +21,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from wind_up.northing import DEFAULT_NORTHING, NorthingSettings, apply_north_table, north_farm, yaw_usable
+from wind_up.northing import (
+    DEFAULT_NORTHING,
+    NorthingSettings,
+    apply_north_table,
+    north_farm,
+    write_north_table_yaml,
+    yaw_usable,
+)
 from wind_up.northing_plots import plot_northing, plot_northing_farm
 
 if TYPE_CHECKING:
@@ -39,6 +46,10 @@ DEFAULT_NORTHING_ROLES: tuple[str, ...] = ("nacelle_position",)
 # The plots show the residual against reanalysis: it is the anchor available here, whereas the
 # farm consensus pass 2 uses is internal to north_farm.
 _PLOT_REFERENCE_NAME = "reanalysis"
+
+# The discovered table, written in the format ``north_offsets`` and v0's
+# ``northing_corrections_utc`` both read, so it can be hand edited and supplied back as a prior.
+NORTH_TABLE_YAML = "northing_corrections.yaml"
 
 # Open-Meteo's hub-height wind direction, the reanalysis anchor discovery is measured against.
 ERA5_WD_COL = "wind_direction_100m"
@@ -137,8 +148,9 @@ def north_scada(
         discovery. Required when ``north_offsets`` is ``None``.
     :param roles: the direction roles to write a ``northed_`` companion for
     :param settings: how the changepoint search is bounded, when discovering
-    :param out_dir: when given and corrections are discovered, the farm overview and one plot per
-        device are written here, so the correction can be judged rather than trusted
+    :param out_dir: when given and corrections are discovered, the discovered table
+        (:data:`NORTH_TABLE_YAML`, hand-editable and usable as a prior), the farm overview and one
+        plot per device are written here, so the correction can be judged rather than trusted
     :return: a copy of ``scada_df`` with ``columns.northed(role)`` added for each role
     """
     columns.require_roles(roles)
@@ -189,6 +201,8 @@ def north_scada(
         found = sum(len(t) - 1 for t in tables.values())
         logger.info("discovered %d northing changepoint(s) across %d turbines", found, len(turbines))
         if out_dir is not None:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            write_north_table_yaml(tables, path=out_dir / NORTH_TABLE_YAML)
             _write_northing_plots(
                 index, directions=directions, usable=usable, reference=reference, tables=tables, out_dir=out_dir
             )
