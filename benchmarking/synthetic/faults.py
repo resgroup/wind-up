@@ -107,7 +107,9 @@ def _gain_columns(
     synthetic_df: pd.DataFrame, *, columns: ColumnSchema, roles: tuple[str, ...], fault: str
 ) -> list[str]:
     """Column names for ``roles``, skipping those the schema leaves unset; raises on absent columns."""
-    resolved = [name for role in roles if (name := getattr(columns, role))]
+    # dict.fromkeys dedupes while keeping order: roles is public, and two roles may name the
+    # same column, which would otherwise scale that channel twice.
+    resolved = list(dict.fromkeys(name for role in roles if (name := getattr(columns, role))))
     if not resolved:
         msg = f"cannot inject {fault}: the schema leaves every named role {list(roles)} unset"
         raise ValueError(msg)

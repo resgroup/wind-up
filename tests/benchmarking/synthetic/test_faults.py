@@ -231,6 +231,15 @@ class TestSensorGainStep:
         after = _wind_speed(dataset.synthetic_df, "T02").loc[_FAULT_AT:]
         assert after.to_numpy() == pytest.approx(_wind_speed(scada, "T02").loc[_FAULT_AT:].to_numpy() * 1.5)
 
+    def test_a_repeated_role_scales_the_channel_once(self) -> None:
+        """roles is public and a schema may alias two roles onto one column; gain is not squared."""
+        dataset, scada = _generate(
+            [SensorGainStep(turbine="T02", at=_FAULT_AT, gain=1.5, roles=("wind_speed", "wind_speed"))]
+        )
+        after = _wind_speed(dataset.synthetic_df, "T02").loc[_FAULT_AT:]
+        clean_after = _wind_speed(scada, "T02").loc[_FAULT_AT:]
+        assert after.to_numpy() == pytest.approx(clean_after.to_numpy() * 1.5)
+
     def test_is_recorded_in_run_metadata(self) -> None:
         dataset, _ = _generate([SensorGainStep(turbine="T02", at=_FAULT_AT, gain=1.5)])
         assert dataset.run_metadata["faults"] == [
