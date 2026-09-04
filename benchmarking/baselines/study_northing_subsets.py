@@ -139,7 +139,7 @@ def run_case(frame: pd.DataFrame, turbines: Sequence[str], start: pd.Timestamp, 
     index = pd.DatetimeIndex(sorted(rows["timestamp"].unique()))
     direction: dict[str, np.ndarray] = {}
     usable: dict[str, np.ndarray] = {}
-    reanalysis = np.full(len(index), np.nan)
+    reanalysis: np.ndarray = np.full(len(index), np.nan)
     for turbine in sorted(rows["turbine"].unique()):
         one = rows[rows["turbine"] == turbine].drop_duplicates("timestamp").set_index("timestamp").reindex(index)
         wd = one["era5_wd_deg"].to_numpy(dtype=float)

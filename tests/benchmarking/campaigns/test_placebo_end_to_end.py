@@ -37,6 +37,8 @@ NOISY_TOLERANCE = 2e-2
 MIN_POWER_SD_KW = 100.0
 # A small slice of the farm, so the fixtures stay cheap; the production default is all 21 turbines.
 TEST_TURBINES = ("T07", "T11")
+# Float-noise bound for the degenerate (identical-turbine) case; a real bias is many orders larger.
+ZERO_TOLERANCE = 1e-12
 TEST_PARTICIPANTS = ("T07", "T11", "T01", "T02", "T03")
 
 
@@ -88,11 +90,17 @@ def run_placebo_fixture(mode: str, *, wind_noise_sd: float, out_dir: Path) -> Ca
 
 @pytest.mark.parametrize("mode", ["prepost", "toggle"])
 def test_identical_turbines_give_exactly_zero(mode: str, tmp_path: Path) -> None:
+    """Zero to floating-point precision: the ratio of two equal sums can land an ULP off 1.0.
+
+    The tolerance is ten orders of magnitude below any uplift worth reporting, so it still
+    catches a real bias; exact equality instead tracks the summation order of whichever numpy
+    the interpreter resolved.
+    """
     result = run_placebo_fixture(mode, wind_noise_sd=0.0, out_dir=tmp_path)
     per_turbine = per_turbine_table(result)
     assert not per_turbine.empty
-    assert (per_turbine["estimate"] == 0.0).all(), per_turbine.to_string(index=False)
-    assert (result.farm["estimate"] == 0.0).all(), result.farm.to_string(index=False)
+    assert per_turbine["estimate"].abs().max() < ZERO_TOLERANCE, per_turbine.to_string(index=False)
+    assert result.farm["estimate"].abs().max() < ZERO_TOLERANCE, result.farm.to_string(index=False)
 
 
 @pytest.mark.parametrize("mode", ["prepost", "toggle"])
