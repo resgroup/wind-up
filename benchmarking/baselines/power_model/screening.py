@@ -129,7 +129,18 @@ def screen_references(
             raise ValueError(msg)
         screened.append(worst)
         remaining = [r for r in remaining if r != worst]
-        logger.info("reference screen pass %d ruled out %s; %d reference(s) remain", n_pass, worst, len(remaining))
+        deviations = dict(rank_by_deviation(estimates))
+        logger.info(
+            "reference screen pass %d ruled out %s (estimate %+.3f%%, %.3f pp from the pool median of %d, "
+            "floor %.3f pp); %d reference(s) remain",
+            n_pass,
+            worst,
+            estimates[worst] * 100,
+            deviations[worst] * 100,
+            len(estimates),
+            floor * 100,
+            len(remaining),
+        )
     return ScreenResult(screened=tuple(screened), passes=pd.DataFrame(rows), screenable=True)
 
 

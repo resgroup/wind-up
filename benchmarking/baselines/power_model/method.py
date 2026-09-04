@@ -138,6 +138,11 @@ _DEFAULT_SCREEN_FLOOR = 0.025
 # its neighbours. Low by design: thrust is already a large fraction of maximum well below rated,
 # so this separates waking from parked while leaking almost none of the power level.
 WAKING_RATED_FRACTION = 0.05
+# A screening estimate is only as good as the campaign it is measured over. On clean Hill of Towie
+# pools the worst deviation runs 2.87 pp at a 1-month campaign and 2.47 pp at 2 months -- at or
+# above the floor, so no floor separates a bad reference from a good one there -- against 1.51 pp
+# at 3 months and below. Campaigns shorter than this are not screened.
+_DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS = 90.0
 
 
 def reference_overall_uplift(reference_uplifts: pd.DataFrame, *, rated_power_kw: float) -> float:
@@ -358,6 +363,10 @@ class PowerModelMethod:
         references to form a majority; below that it is skipped.
     :param screen_floor: deviation from the screened pool's median, in uplift fraction, at which a
         reference is ruled out
+    :param screen_min_campaign_days: skip the screen when the campaign holds less than this much
+        upgraded data. A screening estimate over a short campaign is too noisy to separate a bad
+        reference from a good one at any floor, and ruling out a good reference costs more than
+        leaving a mild bad one in
 
     The toggle headline is always the counterfactual energy ratio ``Σactual/Σprediction - 1``.
     """
@@ -382,6 +391,7 @@ class PowerModelMethod:
     time_decay_half_life_days: float | None = None
     reference_screen: bool = True
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
+    screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -970,6 +980,17 @@ class PowerModelMethod:
         finite = selected[np.isfinite(selected)]
         return float(finite.sum()), int(finite.size)
 
+    def _campaign_days(self, mi: MethodInput) -> float:
+        """Days of upgraded data the campaign holds, counted from records rather than calendar span.
+
+        A campaign with gaps carries less than its span suggests, and it is the data the screening
+        estimate actually has that decides how noisy it is.
+        """
+        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        upgraded = int(np.count_nonzero(resolve_toggle(mi.upgrade_timing, index).upgraded))
+        timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
+        return upgraded * timebase.total_seconds() / 86400.0
+
     def screening_timing(self, mi: MethodInput) -> pd.Timestamp:
         """Return the changeover a reference is screened across -- always a prepost contrast.
 
@@ -1004,6 +1025,17 @@ class PowerModelMethod:
             # months a side, whose noise swamps the signal. Screening out a good reference costs
             # more than leaving a mild bad one in, so it does not run.
             logger.info("%s %s: reference screen skipped, campaign is toggle", self.name, mi.test_wtg)
+            return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
+        campaign_days = self._campaign_days(mi)
+        if campaign_days < self.screen_min_campaign_days:
+            logger.info(
+                "%s %s: reference screen skipped, campaign holds %.1f days of upgraded data, under the %.1f "
+                "needed for a screening estimate to separate a bad reference from a good one",
+                self.name,
+                mi.test_wtg,
+                campaign_days,
+                self.screen_min_campaign_days,
+            )
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
         clone = dataclasses.replace(

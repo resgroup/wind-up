@@ -1064,3 +1064,34 @@ class TestScreenIsPrepostOnly:
     def test_a_prepost_campaign_still_screens(self) -> None:
         mi, _ = _screen_case(step=0.08)
         assert _screen_method().screen_references(mi).screened == ("R1",)
+
+
+class TestScreenNeedsEnoughCampaign:
+    """A short campaign makes screening estimates too noisy to tell a bad reference from a good one."""
+
+    def _prepost_days(self, days: float, *, baseline_days: int = 120) -> MethodInput:
+        """A prepost case whose campaign holds exactly ``days`` of 10-minute records."""
+        per_day = 144  # 10-minute records
+        n = int(per_day * (baseline_days + days))
+        # _toy_scada builds its own index from 2019-01-01, so the changeover is taken from that.
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = pd.Timestamp(idx[per_day * baseline_days])
+        scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=0.08)
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+
+    def test_a_short_campaign_is_not_screened(self) -> None:
+        result = _screen_method().screen_references(self._prepost_days(30))
+        assert result.screened == ()
+        assert not result.screenable
+
+    def test_a_long_enough_campaign_is_screened(self) -> None:
+        result = _screen_method().screen_references(self._prepost_days(120))
+        assert result.screenable
+
+    def test_the_threshold_is_configurable(self) -> None:
+        mi = self._prepost_days(30)
+        assert _screen_method(screen_min_campaign_days=10.0).screen_references(mi).screenable
+
+    def test_the_default_is_ninety_days(self) -> None:
+        """Below three months the clean spread overlaps the floor, so no floor can separate."""
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_min_campaign_days == 90.0
