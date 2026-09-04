@@ -136,8 +136,8 @@ the robustness and campaign pieces first. **C8** (per-turbine change histories) 
 the flat one. C7 (drop `rlearner`, ✅ done) was independent. **R5** (northing refinement)
 is deliberately outside this order: it is future work R1 identified but does not need.
 
-**Done so far:** C0, W0, C7 and C1. **Next: C2** — with C1 in hand, decide how the
-`CampaignSpec` reaches the methods before the demanding campaigns build on the seam.
+**Done so far:** C0, W0, C7, C1, C2 and R1. **Next: R2–R4**, then C3, which inherits the
+shared northing step R1 landed.
 
 ---
 
@@ -449,6 +449,24 @@ Every R-issue shares a two-phase acceptance, run in **both prepost and toggle**:
 
 ## R1 — Northing errors (shared fix)
 
+**Status:** ✅ Done (2026-09-03, PR #138). Shared step in `benchmarking/harness/northing.py`,
+reached by both the campaign runner and the study path (which norths per replicate, discovering
+for itself). `power_model`'s direction feature is on by default; all four frozen baselines
+re-recorded. Two Done-when items were closed by decision rather than built, both recorded here:
+
+* **v0's arm is dropped.** The fixture never ran `V0BinnedMethod`, so "the step bites v0" is not
+  demonstrated. Accepted because the norther has been shown to track v0 three other ways: the
+  21-turbine HoT farm-scale comparison, the SMARTEOLE road-test (uplift moves 0.05 pp / 0.01 pp),
+  and the natural probe, which rediscovered v0's published T05 table from the data.
+* **The examples are not re-run with auto-northing.** Both ship
+  `optimize_northing_corrections=False`, and flipping it would add nothing: v0's auto path is
+  already covered by `tests/test_optimize_northing.py` (six tests through the adapter, including
+  injected changepoints) plus the three comparisons above, and the supplied-table path the
+  examples actually use is covered by the SMARTEOLE and WeDoWind end-to-end tests. W2 migrates
+  the examples to the v1 API, at which point `optimize_northing_corrections` ceases to exist for
+  them.
+
+
 **Goal:** wind-up recovers a known uplift despite a turbine's direction reference
 carrying a **step change** in its north calibration partway through the record.
 
@@ -668,7 +686,9 @@ up.
   tracked **`docs/methodology.md`** describing the v1 method (the new source of truth;
   the PDF is exported from it at release).
 - Migrate or remove every example (`examples/`) to the v1 API; rewrite `README.md` for
-  v1.
+  v1. Northing changes shape in the move: the v0 examples pin a pre-computed table with
+  `optimize_northing_corrections=False`, whereas v1's shared step discovers by default, so a
+  migrated example should **show discovery** rather than port the pinned table across.
 - **Drop `benchmarking*` from packaging** (deferred from W0, where it stayed packaged
   only for a separate project that imports `toggle_specialist`): once that external
   dependency is gone, remove `benchmarking*` from `[tool.setuptools.packages.find]`
