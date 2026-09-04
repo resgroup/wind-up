@@ -16,7 +16,7 @@ from benchmarking.campaigns.placebo import (
     placebo_campaign,
 )
 from benchmarking.harness import MethodInput, MethodOutput
-from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from benchmarking.synthetic import HOT_COLUMNS, SensorGainStep, ToggleSchedule
 
 TOLERANCE = 1e-9
 # A small slice of the farm, so the fixtures stay cheap; the production default is all 21 turbines.
@@ -139,3 +139,13 @@ def test_placebo_runs_end_to_end_to_zero(mode: str) -> None:
 def test_placebo_rejects_an_unknown_mode() -> None:
     with pytest.raises(ValueError, match="unknown mode"):
         placebo_campaign("sideways")
+
+
+def test_no_faults_are_injected_by_default() -> None:
+    assert placebo_campaign("prepost").faults == []
+
+
+def test_declared_faults_reach_the_campaign() -> None:
+    """R2 runs the placebo with a sensor fault injected, so the declaration has to carry one."""
+    fault = SensorGainStep(turbine="T01", at=PLACEBO_CAMPAIGN_START, gain=1.5)
+    assert placebo_campaign("prepost", faults=[fault]).faults == [fault]

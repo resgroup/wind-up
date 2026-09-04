@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from benchmarking.campaigns.methods import carried_forward_methods
-from benchmarking.synthetic import ToggleSchedule
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
 from .test_declaration import CHANGEOVER, campaign
 
@@ -54,3 +54,20 @@ def test_each_method_writes_into_its_own_subfolder(tmp_path: Path) -> None:
     out_dirs = {m.out_dir for m in methods}
     assert len(out_dirs) == len(methods)
     assert all(d.parent == tmp_path for d in out_dirs)
+
+
+def test_power_model_carries_no_reference_anemometry_by_default(tmp_path: Path) -> None:
+    """The standing rule: reference wind speed never becomes a feature unless a caller asks."""
+    methods = carried_forward_methods(campaign().spec(), out_dir=tmp_path, include_power_model=True)
+    power_model = next(m for m in methods if m.name == "power_model")
+    assert power_model.reference_stat_cols == ()
+
+
+def test_reference_stat_cols_reach_the_power_model(tmp_path: Path) -> None:
+    """The R2 exposed arm deliberately feeds reference anemometry in, to measure what it costs."""
+    exposed = (HOT_COLUMNS.wind_speed, HOT_COLUMNS.wind_speed_sd)
+    methods = carried_forward_methods(
+        campaign().spec(), out_dir=tmp_path, include_power_model=True, reference_stat_cols=exposed
+    )
+    power_model = next(m for m in methods if m.name == "power_model")
+    assert power_model.reference_stat_cols == exposed

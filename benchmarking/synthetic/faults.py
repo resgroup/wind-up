@@ -14,10 +14,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import numpy as np
+import pandas as pd
 
 if TYPE_CHECKING:
-    import pandas as pd
-
     from benchmarking.synthetic.schema import ColumnSchema
 
 
@@ -86,6 +85,134 @@ class NorthingStep:
         values[stepped] = (values[stepped] + self.offset_deg) % 360.0
         synthetic_df[column] = values
         return synthetic_df
+
+
+# The nacelle anemometer channels a gain fault scales together, so turbulence intensity
+# (sd / mean) is unchanged and only the wind-speed axis moves. Roles a schema leaves unset
+# are skipped, so a source carrying min/max companions picks them up by naming them here.
+WIND_SPEED_ROLES = ("wind_speed", "wind_speed_sd")
+
+
+def _turbine_mask(synthetic_df: pd.DataFrame, *, columns: ColumnSchema, turbine: str, fault: str) -> np.ndarray:
+    """Boolean over the frame's rows selecting ``turbine``; raises if it is not present."""
+    is_turbine = (synthetic_df[columns.turbine] == turbine).to_numpy()
+    if not is_turbine.any():
+        present = sorted({str(t) for t in synthetic_df[columns.turbine].unique()})
+        msg = f"cannot inject {fault} into {turbine!r}: it is not in the frame, which has {present}"
+        raise ValueError(msg)
+    return is_turbine
+
+
+def _gain_columns(
+    synthetic_df: pd.DataFrame, *, columns: ColumnSchema, roles: tuple[str, ...], fault: str
+) -> list[str]:
+    """Column names for ``roles``, skipping those the schema leaves unset; raises on absent columns."""
+    # dict.fromkeys dedupes while keeping order: roles is public, and two roles may name the
+    # same column, which would otherwise scale that channel twice.
+    resolved = list(dict.fromkeys(name for role in roles if (name := getattr(columns, role))))
+    if not resolved:
+        msg = f"cannot inject {fault}: the schema leaves every named role {list(roles)} unset"
+        raise ValueError(msg)
+    missing = sorted(c for c in resolved if c not in synthetic_df.columns)
+    if missing:
+        msg = (
+            f"cannot inject {fault}: the columns {missing} are not in the frame. "
+            f"Columns present: {sorted(synthetic_df.columns)}"
+        )
+        raise ValueError(msg)
+    return resolved
+
+
+def _scaled(synthetic_df: pd.DataFrame, *, cols: list[str], factor: np.ndarray) -> pd.DataFrame:
+    """Return ``synthetic_df`` with every column in ``cols`` multiplied row-wise by ``factor``."""
+    synthetic_df = synthetic_df.copy()
+    for col in cols:
+        synthetic_df[col] = synthetic_df[col].to_numpy(dtype=float) * factor
+    return synthetic_df
+
+
+@dataclass(frozen=True)
+class SensorGainStep:
+    """A step change in the gain of one turbine's sensor channels, from ``at`` to the end.
+
+    The signature of a recalibration or a replaced transducer: the readings jump by a constant
+    factor and nothing else changes. Power is untouched, so ground truth is unaffected.
+
+    :param turbine: the turbine whose readings step
+    :param at: when the step happens; rows from here on carry the gain
+    :param gain: the multiplier applied to each named channel (1.5 reads 50% high, 0.5 half)
+    :param roles: the :class:`~benchmarking.synthetic.schema.ColumnSchema` roles to scale; the
+        anemometer channels by default
+    """
+
+    turbine: str
+    at: pd.Timestamp
+    gain: float
+    roles: tuple[str, ...] = WIND_SPEED_ROLES
+
+    @property
+    def description(self) -> dict:
+        """Return serialisable provenance describing this fault."""
+        return {
+            "kind": "sensor_gain_step",
+            "turbine": self.turbine,
+            "at": str(self.at),
+            "gain": float(self.gain),
+            "roles": list(self.roles),
+        }
+
+    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema) -> pd.DataFrame:
+        """Return ``synthetic_df`` with ``turbine``'s named channels scaled by ``gain`` from ``at``."""
+        fault = "a sensor gain step"
+        is_turbine = _turbine_mask(synthetic_df, columns=columns, turbine=self.turbine, fault=fault)
+        cols = _gain_columns(synthetic_df, columns=columns, roles=self.roles, fault=fault)
+        factor = np.ones(len(synthetic_df))
+        factor[is_turbine & np.asarray(synthetic_df.index >= self.at)] = float(self.gain)
+        return _scaled(synthetic_df, cols=cols, factor=factor)
+
+
+@dataclass(frozen=True)
+class SensorGainDrift:
+    """A gain on one turbine's sensor channels ramping linearly from 1.0 to ``gain`` over the record.
+
+    The signature of a slowly degrading or fouling sensor. Because the ramp spans the whole
+    analysis period, the baseline and treated periods sit at different mean gains -- the shape
+    least likely to cancel when a toggle campaign alternates. Power is untouched, so ground truth
+    is unaffected.
+
+    :param turbine: the turbine whose readings drift
+    :param gain: the multiplier reached at the last timestamp of the record
+    :param roles: the :class:`~benchmarking.synthetic.schema.ColumnSchema` roles to scale; the
+        anemometer channels by default
+    """
+
+    turbine: str
+    gain: float
+    roles: tuple[str, ...] = WIND_SPEED_ROLES
+
+    @property
+    def description(self) -> dict:
+        """Return serialisable provenance describing this fault."""
+        return {
+            "kind": "sensor_gain_drift",
+            "turbine": self.turbine,
+            "gain": float(self.gain),
+            "roles": list(self.roles),
+        }
+
+    def __call__(self, synthetic_df: pd.DataFrame, *, columns: ColumnSchema) -> pd.DataFrame:
+        """Return ``synthetic_df`` with ``turbine``'s named channels on a 1.0 to ``gain`` ramp."""
+        fault = "a sensor gain drift"
+        is_turbine = _turbine_mask(synthetic_df, columns=columns, turbine=self.turbine, fault=fault)
+        cols = _gain_columns(synthetic_df, columns=columns, roles=self.roles, fault=fault)
+        index = pd.DatetimeIndex(synthetic_df.index)
+        span = (index.max() - index.min()).total_seconds()
+        # A record spanning no time has no ramp to walk: every row sits at the end of it.
+        progress = (index - index.min()).total_seconds() / span if span > 0 else np.ones(len(index))
+        factor = np.ones(len(synthetic_df))
+        ramp = 1.0 + (float(self.gain) - 1.0) * np.asarray(progress, dtype=float)
+        factor[is_turbine] = ramp[is_turbine]
+        return _scaled(synthetic_df, cols=cols, factor=factor)
 
 
 def apply_faults(synthetic_df: pd.DataFrame, faults: list, *, columns: ColumnSchema) -> pd.DataFrame:

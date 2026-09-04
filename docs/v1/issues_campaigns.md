@@ -149,7 +149,7 @@ the robustness and campaign pieces first. **C8** (per-turbine change histories) 
 the flat one. C7 (drop `rlearner`, ✅ done) was independent. **R5** (northing refinement)
 is deliberately outside this order: it is future work R1 identified but does not need.
 
-**Done so far:** C0, W0, C7, C1, C2 and R1. **Next: R2–R4**, then C3, which inherits the
+**Done so far:** C0, W0, C7, C1, C2, R1 and R2. **Next: R3–R4**, then C3, which inherits the
 shared northing step R1 landed.
 
 ---
@@ -535,6 +535,27 @@ a user can see what was changed and judge it. Time averaging is what smears out 
 ---
 
 ## R2 — Unstable sensors (`power_model`-internal fix)
+
+**Status:** ✅ Done (2026-09-04). Measured, no `power_model` change needed — see CF11 in
+[findings_campaigns.md](findings_campaigns.md). Two fault classes (`SensorGainStep`,
+`SensorGainDrift`) and the `benchmarking.campaigns.sensor_fixture` driver landed; the fault
+scales `wind_speed` and `wind_speed_sd` together, so turbulence intensity is invariant and only
+the wind-speed axis moves. Scope was narrowed by decision to **measure the failure mode rather
+than mitigate it**, on the evidence that the pathway R2 was written to close is already shut:
+
+* **The headline is immune.** Worst case (x0.5 / x1.5 gains, both step and drift, on the test
+  turbine and on the nearest reference) moved `power_model` by at most **0.214 pp** in prepost
+  and **exactly zero** in toggle. The one nonzero result is the ERA5 lag sweep tipping one row
+  (10 minutes); every other arm moved by <= 1.1e-5 pp.
+* **The "fault must bite" gate is not met against the shipped configuration, and that is the
+  finding.** An exposed arm carrying reference anemometry as features — the configuration the
+  standing rule forbids — moves **34 pp**, so the exclusion is now measured rather than assumed.
+* **The conditional grid does move** (the `ws` axis is the test turbine's own anemometer, so a
+  gain re-bins every row: up to 600 pp in a degenerate bin). Left alone deliberately: the
+  conditional machinery is nascent, and the fault classes are in place to re-measure when it
+  matures.
+* **Temperature was dropped** by inspection: `ambient_temp` is a diagnostics-only schema role
+  that reaches `power_model` through nothing, and ERA5 supplies `temperature_2m` independently.
 
 **Goal:** `power_model` is unmoved when a per-turbine sensor channel it might key on
 is unstable across the baseline↔treatment boundary.
