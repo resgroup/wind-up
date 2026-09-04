@@ -34,8 +34,21 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
 
 ## Ground rules for this tranche
 
-- **Methods carried forward:** `oracle`, `naive_ratio`, `power_model`,
-  `toggle_specialist`. **`rlearner` is dropped** (see C7).
+- **What the campaigns are testing is v1 wind-up, not a field of methods.** The C-series
+  exists to exercise the thing being shipped, so a campaign must run it as a user would
+  get it. Concretely that means **`power_model` on, and northing discovered rather than
+  supplied** (`north_offsets=None`, the shared step doing the work). A campaign that
+  turns either off is testing something other than v1 wind-up, and any result from it
+  should be read that way. Tests may switch `power_model` off to avoid the `ml`
+  dependency; drivers should not.
+  - **In v1 wind-up:** `power_model` (definite) and the shared northing step (R1).
+    `toggle_specialist` is **TBD**, to be settled with evidence in W1.
+  - **Alongside, for comparison only:** `naive_ratio` (a deliberately simple yardstick,
+    never a candidate for the shipped method) and `oracle` (a sanity anchor that returns
+    the injected truth).
+  - **`rlearner` is dropped** (see C7).
+  The composition itself is W1's business; this rule is only about how the campaigns
+  must be run so their results speak about the deliverable.
 - **Estimand:** per-turbine uplift **plus a result representative of the upgrade using the whole farm data** (one
   headline campaign number, as the real HoT analyses report).
 - **One simulated instance per campaign, no replicates.** This tranche is about

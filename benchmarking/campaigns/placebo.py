@@ -146,7 +146,8 @@ def run_placebo(
     :param mode: ``"prepost"`` or ``"toggle"``
     :param upgraded: the test turbines; defaults to :data:`PLACEBO_UPGRADED`
     :param turbines: every participating turbine; defaults to :data:`PLACEBO_TURBINES`
-    :param include_power_model: run the power model as well as the fast methods
+    :param include_power_model: run the power model, the method under test. Off only for a quick
+        look or to avoid the ``ml`` dependency; the result is then not about v1 wind-up
     :param out_root: base output dir; defaults to :func:`default_output_root`
     :return: the campaign result, whose estimates should all read ~0
     """
