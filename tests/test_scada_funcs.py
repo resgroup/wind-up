@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
-from wind_up.constants import TIMESTAMP_COL
-from wind_up.models import WindUpConfig
-from wind_up.scada_funcs import (
+from wind_up_v0.constants import TIMESTAMP_COL
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.scada_funcs import (
     _add_pw_clipped,
     _filter_bad_pw_ws,
     _filter_downtime,

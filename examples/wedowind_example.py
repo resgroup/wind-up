@@ -45,12 +45,12 @@ from matplotlib import pyplot as plt
 from pydantic import BaseModel, Field
 
 from examples.helpers import format_and_print_results_table
-from wind_up.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
-from wind_up.interface import AssessmentInputs
-from wind_up.main_analysis import run_wind_up_analysis
-from wind_up.models import Asset, PlotConfig, PrePost, Turbine, WindUpConfig
-from wind_up.reanalysis_data import ReanalysisDataset
-from wind_up.wind_funcs import calc_cp
+from wind_up_v0.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
+from wind_up_v0.interface import AssessmentInputs
+from wind_up_v0.main_analysis import run_wind_up_analysis
+from wind_up_v0.models import Asset, PlotConfig, PrePost, Turbine, WindUpConfig
+from wind_up_v0.reanalysis_data import ReanalysisDataset
+from wind_up_v0.wind_funcs import calc_cp
 
 sys.path.append(str(PROJECTROOT_DIR))
 from examples.helpers import download_zenodo_data, setup_logger

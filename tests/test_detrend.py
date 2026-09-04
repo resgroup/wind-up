@@ -4,9 +4,9 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
-from wind_up.models import WindUpConfig
-from wind_up.smart_data import add_smart_lat_long_to_cfg
+from wind_up_v0.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.smart_data import add_smart_lat_long_to_cfg
 
 
 def test_apply_wsratio_v_wd_scen_pre() -> None:
@@ -66,6 +66,7 @@ def test_check_applied_detrend(test_lsa_t13_config: WindUpConfig) -> None:
     assert detrend_post_r2_improvement == pytest.approx(0.03776561982402227)
 
 
+@pytest.mark.slow
 def test_calc_wsratio_v_wd_scen(test_lsa_t13_config: WindUpConfig) -> None:
     # this test case borrows logic and results from check_applied_detrend where data which has already been detrended
     # is used to calculate the wsratio_v_wd_scen again to check it is flat

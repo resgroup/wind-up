@@ -6,10 +6,10 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, TIMESTAMP_COL
-from wind_up.models import WindUpConfig
-from wind_up.scada_funcs import _scada_multi_index
-from wind_up.waking_state import (
+from wind_up_v0.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, TIMESTAMP_COL
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.scada_funcs import _scada_multi_index
+from wind_up_v0.waking_state import (
     add_waking_scen,
     add_waking_state,
     calc_bearing,
