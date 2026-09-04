@@ -370,3 +370,39 @@ class TestPowerFreeReferences:
     def test_the_test_turbine_still_contributes_nothing(self) -> None:
         feats = self._features(_index(24), power_free=("R1",))
         assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
+
+
+class TestWakingDtype:
+    """The waking column has to survive reindexing onto the full index as a numeric feature."""
+
+    def _features_with_a_gap(self) -> pd.DataFrame:
+        idx = _index(24)
+        scada = _scada_spanning_the_waking_threshold(idx)
+        # R1 misses the last six timestamps, so joining its waking column leaves gaps.
+        drop = (scada[_TURBINE] == "R1") & (scada.index >= idx[-6])
+        return build_reference_features(
+            scada[~drop],
+            test_wtg="T1",
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            direction_col=_NORTHED_DIR,
+            include_availability=False,
+            power_free=("R1",),
+            waking_threshold_kw=_WAKING_THRESHOLD_KW,
+        )
+
+    def test_the_waking_column_is_numeric_not_object(self) -> None:
+        """LightGBM rejects an object column, which is what bool + NaN collapses to."""
+        feats = self._features_with_a_gap()
+        assert feats[f"waking_{_POWER}{QUALIFIER}R1"].dtype.kind == "f"
+
+    def test_a_missing_record_is_nan_rather_than_asserted_not_waking(self) -> None:
+        """No record is no knowledge; NaN is preserved for LightGBM as the rest of the matrix is."""
+        feats = self._features_with_a_gap()
+        assert feats[f"waking_{_POWER}{QUALIFIER}R1"].isna().any()
+
+    def test_every_feature_column_is_numeric(self) -> None:
+        feats = self._features_with_a_gap()
+        bad = [c for c in feats.columns if feats[c].dtype.kind not in "fiub"]
+        assert bad == []

@@ -155,10 +155,14 @@ def _waking_features(
     assert threshold_kw is not None  # validated by _checked_power_free  # noqa: S101
     columns = {}
     for ref in refs:
-        power = wide[(active_power_col, ref)] if (active_power_col, ref) in wide.columns else None
-        if power is None:
+        if (active_power_col, ref) not in wide.columns:
             continue
-        columns[f"waking_{active_power_col}{QUALIFIER}{ref}"] = power >= threshold_kw
+        power = wide[(active_power_col, ref)]
+        # Float, not bool: the column is reindexed onto the full timestamp index downstream, and a
+        # bool column with gaps collapses to object dtype, which the outcome model rejects. A record
+        # the reference does not have is unknown rather than not-waking, so its NaN is preserved.
+        waking = (power >= threshold_kw).astype(float)
+        columns[f"waking_{active_power_col}{QUALIFIER}{ref}"] = waking.where(power.notna())
     return pd.DataFrame(columns, index=wide.index)
 
 

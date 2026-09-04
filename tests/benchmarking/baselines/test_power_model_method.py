@@ -24,6 +24,7 @@ from benchmarking.baselines.power_model.method import (
     _clip_predictions,
     _combine_uplift,
     _implied_shrinkage,
+    reference_overall_uplift,
 )
 from benchmarking.harness.conditions import CONDITIONS
 from benchmarking.harness.context import CampaignContext
@@ -933,3 +934,105 @@ class TestScreeningContrast:
         before = int((campaign < timing).sum())
         after = int((campaign >= timing).sum())
         assert abs(before - after) <= 1
+
+
+class TestReferenceReporting:
+    """power_model reports what the screen did, and what the surviving references read."""
+
+    def test_reference_uplifts_are_reported_for_every_candidate(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        out = _screen_method().estimate(mi)
+        assert out.reference_uplifts is not None
+        assert set(out.reference_uplifts["turbine"]) == {"R1", "R2", "R3"}
+
+    def test_each_reference_carries_its_energy_so_it_can_be_combined_like_a_test_turbine(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        refs = _screen_method().estimate(mi).reference_uplifts
+        assert refs is not None
+        assert set(refs.columns) >= {"turbine", "uplift", "actual_energy", "n_records", "screened"}
+        assert (refs["actual_energy"] > 0).all()
+        assert (refs["n_records"] > 0).all()
+
+    def test_a_healthy_campaign_reads_near_zero_reference_uplift(self) -> None:
+        """The standard sanity check: references should show no uplift of their own."""
+        mi, _ = _screen_case(step=0.0)
+        refs = _screen_method().estimate(mi).reference_uplifts
+        assert refs is not None
+        assert abs(reference_overall_uplift(refs, rated_power_kw=2300.0)) < 0.01
+
+    def test_the_screened_reference_is_reported_but_excluded_from_the_headline(self) -> None:
+        """Post-screen: a ruled-out reference stays visible, and stops dragging the sanity check."""
+        mi, _ = _screen_case(step=0.05)
+        out = _screen_method().estimate(mi)
+        refs = out.reference_uplifts
+        assert refs is not None
+        assert bool(refs.loc[refs["turbine"] == "R1", "screened"].iloc[0])
+        surviving = refs[~refs["screened"]]
+        assert set(surviving["turbine"]) == {"R2", "R3"}
+
+    def test_the_screening_detail_is_reported(self) -> None:
+        """An analyst has to be able to see, and disagree with, what the screen dropped."""
+        mi, _ = _screen_case(step=0.05)
+        passes = _screen_method().estimate(mi).screen_passes
+        assert passes is not None
+        assert set(passes.columns) >= {"pass", "turbine", "estimate", "deviation", "dropped"}
+        assert bool(passes[passes["dropped"]]["turbine"].eq("R1").any())
+
+    def test_nothing_is_reported_when_the_screen_is_off(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        out = _screen_method(reference_screen=False).estimate(mi)
+        assert out.screen_passes is None
+
+
+class TestReferenceOverallUplift:
+    def test_it_combines_by_energy_sums(self) -> None:
+        """A big turbine at +2% and a small one at 0% must not average to +1%."""
+        refs = pd.DataFrame(
+            [
+                {"turbine": "R1", "uplift": 0.02, "actual_energy": 900.0, "n_records": 100, "screened": False},
+                {"turbine": "R2", "uplift": 0.00, "actual_energy": 100.0, "n_records": 100, "screened": False},
+            ]
+        )
+        combined = reference_overall_uplift(refs, rated_power_kw=2300.0)
+        assert 0.015 < combined < 0.02
+
+    def test_screened_references_are_excluded(self) -> None:
+        refs = pd.DataFrame(
+            [
+                {"turbine": "R1", "uplift": 0.50, "actual_energy": 500.0, "n_records": 100, "screened": True},
+                {"turbine": "R2", "uplift": 0.00, "actual_energy": 500.0, "n_records": 100, "screened": False},
+            ]
+        )
+        assert reference_overall_uplift(refs, rated_power_kw=2300.0) == pytest.approx(0.0)
+
+    def test_an_all_screened_pool_has_no_reference_uplift(self) -> None:
+        refs = pd.DataFrame(
+            [{"turbine": "R1", "uplift": 0.5, "actual_energy": 500.0, "n_records": 100, "screened": True}]
+        )
+        assert np.isnan(reference_overall_uplift(refs, rated_power_kw=2300.0))
+
+
+class TestReferenceUpliftReuse:
+    """A healthy prepost campaign must not refit the whole pool twice for the same numbers."""
+
+    def test_a_clean_prepost_pool_reuses_the_screens_final_pass(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        method = _screen_method()
+        screen = method.screen_references(mi)
+        assert screen.screened == ()
+        reused = method.reference_uplifts(mi, screened=(), screen=screen)
+        final = screen.passes[screen.passes["pass"] == screen.passes["pass"].max()]
+        expected = dict(zip(final["turbine"], final["estimate"], strict=True))
+        for row in reused.itertuples():
+            assert row.uplift == pytest.approx(expected[row.turbine])
+
+    def test_a_screened_pool_refits_because_the_pools_changed(self) -> None:
+        """Dropping a reference changes what every survivor reads, so its old estimate is stale."""
+        mi, _ = _screen_case(step=0.05)
+        method = _screen_method()
+        screen = method.screen_references(mi)
+        assert screen.screened == ("R1",)
+        refits = method.reference_uplifts(mi, screened=screen.screened, screen=screen)
+        first = screen.passes[screen.passes["pass"] == 1].set_index("turbine")["estimate"]
+        survivor = refits[refits["turbine"] == "R2"].iloc[0]
+        assert survivor["uplift"] != pytest.approx(first["R2"])
