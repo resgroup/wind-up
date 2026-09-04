@@ -19,14 +19,15 @@ import pandas as pd
 
 from wind_up.northing import (
     DEFAULT_NORTHING,
-    NORTH_OFFSET_COL,
     NorthingSettings,
     against_reanalysis,
     anchoring_only,
     apply_north_table,
     estimate_north_table,
+    write_north_table_yaml,
     yaw_usable,
 )
+from wind_up.northing import TIMESTAMP_COL as NORTHING_TIMESTAMP_COL
 from wind_up_v0.circular_math import circ_diff, rolling_circ_median_approx
 from wind_up_v0.constants import (
     RAW_DOWNTIME_S_COL,
@@ -67,9 +68,7 @@ _SAME_DIRECTION_DEG = 1e-6
 def _farm_reference_is_independent(wf_df: pd.DataFrame) -> bool:
     """Whether the wind-farm yaw direction is genuinely farm-derived rather than reanalysis.
 
-    A farm consensus shares the site's common-mode direction error, which is what makes small
-    steps attributable to a single turbine. Where it has fallen back to reanalysis it carries no
-    such information, and the second pass must stay as conservative as the first.
+    Where it has fallen back to reanalysis the second pass stays as conservative as the first.
     """
     if WINDFARM_YAWDIR_COL not in wf_df.columns:
         return False
@@ -222,14 +221,13 @@ def _north_wf_table(
 
 def _write_northing_yaml(wf_north_table: pd.DataFrame, *, fpath: Path) -> None:
     """Write a wind-farm north table as the YAML list ``northing_corrections_utc`` expects."""
-    north_table_for_yaml = wf_north_table.copy()
-    north_table_for_yaml[TIMESTAMP_COL] = north_table_for_yaml[TIMESTAMP_COL].dt.strftime("%Y-%m-%d %H:%M:%S")
-    yaml_strings = [
-        f"    - ['{row['TurbineName']}', {row[TIMESTAMP_COL]}, {row[NORTH_OFFSET_COL]}]"
-        for _, row in north_table_for_yaml.iterrows()
-    ]
-    with fpath.open(mode="w") as yaml_file:
-        yaml_file.write("\n".join(yaml_strings))
+    write_north_table_yaml(
+        {
+            str(name): rows.rename(columns={TIMESTAMP_COL: NORTHING_TIMESTAMP_COL})
+            for name, rows in wf_north_table.groupby("TurbineName", observed=True)
+        },
+        path=fpath,
+    )
 
 
 def auto_northing_corrections(
@@ -269,9 +267,10 @@ def auto_northing_corrections(
     if plot_cfg is not None:
         plot_wf_yawdir_and_reanalysis_timeseries(wf_df, cfg=cfg, plot_cfg=plot_cfg)
 
-    farm_settings = settings if _farm_reference_is_independent(wf_df) else against_reanalysis(settings)
-    if farm_settings is not settings:
+    farm_reference_is_independent = _farm_reference_is_independent(wf_df)
+    if not farm_reference_is_independent:
         logger.info("wind farm yaw direction fell back to reanalysis; northing conservatively")
+    farm_settings = settings if farm_reference_is_independent else against_reanalysis(settings)
     optimized_northing_corrections = _north_wf_table(
         wf_df, north_ref_wd_col=WINDFARM_YAWDIR_COL, cfg=cfg, plot_cfg=plot_cfg, settings=farm_settings
     )

@@ -177,10 +177,11 @@ class TestOutageArtefacts:
         assert offenders == {}, f"turbines stepped with the outage, not their own calibration: {offenders}"
 
     def test_the_outage_years_are_quiet(self, hot: pd.DataFrame) -> None:
-        """Run 2019-2020 on its own: four changepoints across 21 turbines, all in v0's table."""
+        """Run 2019-2020 on its own: every changepoint across 21 turbines is in v0's table."""
         found = run_farm(hot, ALL_TURBINES, *LATE)
+        expected = sum(len(v) for v in EXPECTED[LATE].values())
         total = sum(len(v) for v in found.values())
-        assert total == 4, {n: _describe(v) for n, v in found.items() if v}
+        assert total == expected, {n: _describe(v) for n, v in found.items() if v}
 
 
 class TestEdgeArtefacts:
