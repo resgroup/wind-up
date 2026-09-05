@@ -25,6 +25,7 @@ def carried_forward_methods(
     era5_hourly_df: pd.DataFrame | None = None,
     include_power_model: bool = True,
     reference_stat_cols: tuple[str, ...] = (),
+    screen_remediation: str = "direction_waking",
 ) -> list[Method]:
     """Build the methods applicable to ``spec``, each writing into its own subfolder of ``out_dir``.
 
@@ -41,6 +42,8 @@ def carried_forward_methods(
     :param reference_stat_cols: extra per-reference channels the power model carries as features.
         Empty by default: reference anemometry is deliberately not a feature, and the R2 fixture
         passes it in only to measure what that exclusion is worth.
+    :param screen_remediation: what the power model does with a reference its screen rules out; the
+        R3 fixture varies it to price the three options against each other.
     """
     methods: list[Method] = [NaiveRatioMethod(columns=HOT_COLUMNS, out_dir=out_dir / "naive_ratio", save_plots=True)]
     if spec.mode == "toggle":
@@ -64,6 +67,7 @@ def carried_forward_methods(
                 era5_exclude=CURATED_ERA5_EXCLUDE,
                 reference_stat_cols=reference_stat_cols,
                 model_params=dict(TUNED_MODEL_PARAMS),
+                screen_remediation=screen_remediation,
                 out_dir=out_dir / "power_model",
                 save_plots=True,
             )

@@ -406,3 +406,37 @@ class TestWakingDtype:
         feats = self._features_with_a_gap()
         bad = [c for c in feats.columns if feats[c].dtype.kind not in "fiub"]
         assert bad == []
+
+
+class TestWakingIsOptional:
+    """The A/B needs a direction-only arm, to price the waking boolean against dropping power."""
+
+    def _features(self, *, include_waking: bool) -> pd.DataFrame:
+        idx = _index(24)
+        return build_reference_features(
+            _scada_spanning_the_waking_threshold(idx),
+            test_wtg="T1",
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            direction_col=_NORTHED_DIR,
+            include_availability=False,
+            power_free=("R1",),
+            waking_threshold_kw=_WAKING_THRESHOLD_KW,
+            include_waking=include_waking,
+        )
+
+    def test_direction_only_drops_the_waking_column(self) -> None:
+        feats = self._features(include_waking=False)
+        assert f"waking_{_POWER}{QUALIFIER}R1" not in feats.columns
+
+    def test_direction_only_still_keeps_the_direction(self) -> None:
+        feats = self._features(include_waking=False)
+        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R1" in feats.columns
+
+    def test_direction_only_still_drops_the_power(self) -> None:
+        feats = self._features(include_waking=False)
+        assert f"{_POWER}{QUALIFIER}R1" not in feats.columns
+
+    def test_waking_is_included_by_default(self) -> None:
+        assert f"waking_{_POWER}{QUALIFIER}R1" in self._features(include_waking=True).columns

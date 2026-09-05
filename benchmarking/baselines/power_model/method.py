@@ -138,6 +138,11 @@ _DEFAULT_SCREEN_FLOOR = 0.025
 # its neighbours. Low by design: thrust is already a large fraction of maximum well below rated,
 # so this separates waking from parked while leaking almost none of the power level.
 WAKING_RATED_FRACTION = 0.05
+# What to do with a reference the screen rules out. "drop" removes it from the feature matrix
+# entirely; "direction" keeps its north-calibrated direction, which a performance change does not
+# corrupt, so its wake geometry survives; "direction_waking" adds a waking boolean, restoring the
+# "is it making a wake at all" signal that its power was carrying. Which is best is empirical.
+SCREEN_REMEDIATIONS = ("drop", "direction", "direction_waking")
 # A screening estimate is only as good as the campaign it is measured over, and the benchmark sweep
 # set this rather than a hand-picked calibration. At 90 days the sweep still produced false
 # positives on 3-month campaigns -- a reference read -2.9%, about 3.1 pp from its pool median, and
@@ -370,6 +375,11 @@ class PowerModelMethod:
         campaign sanity check (a healthy campaign's references read near 0%). Costs one extra model
         fit per reference, so a method sweep that scores estimators rather than reporting campaigns
         turns it off. It is a report, not an input: turning it off never moves the headline
+    :param screen_remediation: what to do with a ruled-out reference -- ``"drop"`` removes it from
+        the features entirely, ``"direction"`` keeps its north-calibrated direction (which a
+        performance change does not corrupt) so its wake geometry survives, and
+        ``"direction_waking"`` (the default) also gives it a waking boolean in place of the power it
+        loses
     :param screen_min_campaign_days: skip the screen when the campaign holds less than this much
         upgraded data. A screening estimate over a short campaign is too noisy to separate a bad
         reference from a good one at any floor, and ruling out a good reference costs more than
@@ -400,6 +410,7 @@ class PowerModelMethod:
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
+    screen_remediation: str = "direction_waking"
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -407,6 +418,9 @@ class PowerModelMethod:
         if self.direction_feature:
             self.columns.require_roles(("nacelle_position",))
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
+        if self.screen_remediation not in SCREEN_REMEDIATIONS:
+            msg = f"unknown screen_remediation {self.screen_remediation!r}; expected one of {SCREEN_REMEDIATIONS}"
+            raise ValueError(msg)
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
@@ -908,6 +922,10 @@ class PowerModelMethod:
         self, scada: pd.DataFrame, *, mi: MethodInput, extra_cols: tuple[str, ...], power_free: Sequence[str]
     ) -> pd.DataFrame:
         """Return reference features for ``scada``; ``power_free`` references carry no power columns."""
+        if power_free and self.screen_remediation == "drop":
+            # Nothing of a dropped reference reaches the model, so its rows leave the frame.
+            scada = scada[~scada[mi.turbine_col].isin(list(power_free))]
+            power_free = ()
         return build_reference_features(
             scada,
             test_wtg=mi.test_wtg,
@@ -919,6 +937,7 @@ class PowerModelMethod:
             direction_col=self.columns.northed("nacelle_position") if self.direction_feature else None,
             power_free=power_free,
             waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+            include_waking=self.screen_remediation == "direction_waking",
         )
 
     def reference_uplifts(

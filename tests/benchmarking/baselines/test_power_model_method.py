@@ -1164,3 +1164,43 @@ class TestCloneRecursionGuards:
         for clone in (method._screening_clone(), method._reference_clone()):  # noqa: SLF001 - as above
             assert clone.name.count("_reference") <= 1
             assert clone.name.count("_screen") <= 1
+
+
+class TestScreenRemediation:
+    """Three ways to act on a ruled-out reference; which one is best is an empirical question."""
+
+    def _method(self, remediation: str) -> PowerModelMethod:
+        return _screen_method(screen_remediation=remediation)
+
+    def test_direction_waking_is_the_default(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_remediation == (
+            "direction_waking"
+        )
+
+    def test_an_unknown_remediation_raises(self) -> None:
+        with pytest.raises(ValueError, match="screen_remediation"):
+            PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, screen_remediation="sideways")
+
+    def test_drop_removes_the_reference_entirely(self) -> None:
+        mi, _ = _screen_case(step=0.08)
+        features = self._method("drop").reference_features(mi, power_free=("R1",))
+        assert not any(c.endswith(" @ R1") for c in features.columns)
+
+    def test_direction_keeps_geometry_but_not_power_or_waking(self) -> None:
+        mi, _ = _screen_case(step=0.08)
+        features = self._method("direction").reference_features(mi, power_free=("R1",))
+        assert f"{_NORTHED_YAW}_sin @ R1" in features.columns
+        assert f"{_POWER} @ R1" not in features.columns
+        assert f"waking_{_POWER} @ R1" not in features.columns
+
+    def test_direction_waking_keeps_geometry_and_waking(self) -> None:
+        mi, _ = _screen_case(step=0.08)
+        features = self._method("direction_waking").reference_features(mi, power_free=("R1",))
+        assert f"{_NORTHED_YAW}_sin @ R1" in features.columns
+        assert f"waking_{_POWER} @ R1" in features.columns
+
+    @pytest.mark.parametrize("remediation", ["drop", "direction", "direction_waking"])
+    def test_every_arm_still_finds_the_bad_reference(self, remediation: str) -> None:
+        """Remediation is what to do after detection; it must not change what is detected."""
+        mi, _ = _screen_case(step=0.08)
+        assert self._method(remediation).screen_references(mi).screened == ("R1",)
