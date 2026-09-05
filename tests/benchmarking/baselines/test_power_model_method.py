@@ -894,13 +894,13 @@ class TestReferenceScreen:
         on = _screen_method(reference_screen=True).estimate(mi).p50_overall
         assert on == pytest.approx(off)
 
-    def test_the_screened_reference_keeps_its_direction_and_gains_waking(self) -> None:
+    def test_the_screened_reference_loses_power_but_keeps_its_direction(self) -> None:
+        """The default remediation: the corrupted channels go, the wake geometry stays."""
         mi, _ = _screen_case(step=0.03)
-        method = _screen_method()
-        features = method.reference_features(mi, power_free=("R1",))
+        features = _screen_method().reference_features(mi, power_free=("R1",))
         assert f"{_POWER} @ R1" not in features.columns
+        assert f"{_POWER_MIN} @ R1" not in features.columns
         assert f"{_NORTHED_YAW}_sin @ R1" in features.columns
-        assert f"waking_{_POWER} @ R1" in features.columns
 
     def test_the_screen_is_on_by_default(self) -> None:
         assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).reference_screen
@@ -1172,10 +1172,9 @@ class TestScreenRemediation:
     def _method(self, remediation: str) -> PowerModelMethod:
         return _screen_method(screen_remediation=remediation)
 
-    def test_direction_waking_is_the_default(self) -> None:
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_remediation == (
-            "direction_waking"
-        )
+    def test_direction_is_the_default(self) -> None:
+        """It won the fixture A/B on mean and worst case; the waking boolean did not earn its place."""
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_remediation == "direction"
 
     def test_an_unknown_remediation_raises(self) -> None:
         with pytest.raises(ValueError, match="screen_remediation"):

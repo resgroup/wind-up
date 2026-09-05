@@ -73,6 +73,32 @@ the 21-turbine farm that is ~30 minutes per test turbine, and it made the frozen
 roughly 12x slower. Acceptable for a campaign, painful for a sweep; whether the reference-uplift
 pass should be skippable in sweeps is not yet decided.
 
+**The remediation A/B: the screen earns its place, the waking boolean does not.** Movement from
+each pool's clean cell on the prepost fixture arms, truth zero, so smaller is better [pp]:
+
+| remediation | T15 +5% | T15 -4% | two at -8% | mean | worst |
+|---|---|---|---|---|---|
+| no screen | 1.185 | 1.137 | 3.198 | 1.840 | 3.198 |
+| drop | 0.376 | 0.276 | 1.332 | 0.661 | 1.332 |
+| **direction** | 0.314 | 0.288 | 1.272 | **0.625** | **1.272** |
+| direction + waking | **0.197** | 0.398 | 1.408 | 0.668 | 1.408 |
+
+Screening cuts mean error from **1.84 pp to 0.63 pp**, a 66% reduction, and recovers up to 3.2 pp
+on the two-bad case. Every arm leaves the clean cells byte-identical (+0.343% / +0.453%), so
+nothing is paid for on a healthy campaign and the choice of remediation cannot move the frozen
+benchmarks, which screen nobody.
+
+**Keeping the ruled-out reference's direction beats dropping it outright** on mean and worst case:
+its wake geometry is uncorrupted by a performance change and worth retaining, which is the point of
+making a bad reference power-free rather than removing it.
+
+**The waking boolean loses.** It has the single best result but is worst on the other two arms and
+has the worst spread. The margin is thin -- 0.625 / 0.661 / 0.668 across three arms on one farm --
+so this is a weak preference, not a strong one; it is taken because `direction` also wins on
+simplicity (no threshold constant, no tri-state feature, no dtype subtlety). F13's lesson repeating:
+a physically-compelling extra feature lost to the data. `direction` is now the default and the
+other two remain available.
+
 **The road test: the calibration transfers to farms it never saw.** Four reference sets, placebo
 campaigns, truth exactly zero, screen on:
 

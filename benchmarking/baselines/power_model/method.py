@@ -140,8 +140,11 @@ _DEFAULT_SCREEN_FLOOR = 0.025
 WAKING_RATED_FRACTION = 0.05
 # What to do with a reference the screen rules out. "drop" removes it from the feature matrix
 # entirely; "direction" keeps its north-calibrated direction, which a performance change does not
-# corrupt, so its wake geometry survives; "direction_waking" adds a waking boolean, restoring the
-# "is it making a wake at all" signal that its power was carrying. Which is best is empirical.
+# corrupt, so its wake geometry survives; "direction_waking" adds a waking boolean in place of the
+# power it loses. Measured on the fixture (mean movement from the clean cell, three arms):
+# direction 0.625 pp, drop 0.661, direction_waking 0.668, against 1.840 unscreened. "direction"
+# wins on mean and worst case and is never worst on an arm, so it is the default; the waking
+# boolean has the single best result but the worst spread and does not earn its place.
 SCREEN_REMEDIATIONS = ("drop", "direction", "direction_waking")
 # A screening estimate is only as good as the campaign it is measured over, and the benchmark sweep
 # set this rather than a hand-picked calibration. At 90 days the sweep still produced false
@@ -378,8 +381,8 @@ class PowerModelMethod:
     :param screen_remediation: what to do with a ruled-out reference -- ``"drop"`` removes it from
         the features entirely, ``"direction"`` keeps its north-calibrated direction (which a
         performance change does not corrupt) so its wake geometry survives, and
-        ``"direction_waking"`` (the default) also gives it a waking boolean in place of the power it
-        loses
+        ``"direction_waking"`` also gives it a waking boolean in place of the power it loses.
+        ``"direction"`` is the default: it wins the fixture A/B on mean and worst case
     :param screen_min_campaign_days: skip the screen when the campaign holds less than this much
         upgraded data. A screening estimate over a short campaign is too noisy to separate a bad
         reference from a good one at any floor, and ruling out a good reference costs more than
@@ -410,7 +413,7 @@ class PowerModelMethod:
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
-    screen_remediation: str = "direction_waking"
+    screen_remediation: str = "direction"
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
