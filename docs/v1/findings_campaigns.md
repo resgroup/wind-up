@@ -73,12 +73,41 @@ the 21-turbine farm that is ~30 minutes per test turbine, and it made the frozen
 roughly 12x slower. Acceptable for a campaign, painful for a sweep; whether the reference-uplift
 pass should be skippable in sweeps is not yet decided.
 
-**Three bugs the runs caught that the unit tests did not.** The `waking` feature was bool, which
+**The road test: the calibration transfers to farms it never saw.** Four reference sets, placebo
+campaigns, truth exactly zero, screen on:
+
+| farm | references | test uplift | reference overall | screened |
+|---|---|---|---|---|
+| Hill of Towie, whole farm | 19 | +0.44% / +0.42% | +0.357% | **T17** |
+| Hill of Towie west (T01-T15) | 13 | +0.46% / +0.39% | +0.385% | none |
+| Kelmarsh | 4 | -0.02% / +0.30% | +0.254% | none |
+| Penmanshiel | 12 | -0.23% / +0.10% | -0.257% | none |
+
+The floor was calibrated on Hill of Towie alone, and it fires on the one farm with a genuinely bad
+turbine while staying silent on three that do not, including two farms it had never seen. The
+reference overall uplift reads -0.26% to +0.39% throughout, so the sanity check behaves everywhere.
+`hot_west` is the control: it excludes T17 and screens nobody while giving essentially the same
+estimate as the whole farm.
+
+**The frozen benchmarks are unchanged.** Zero references ruled out across the sweep, zero MOVED
+verdicts, and every mean-over-profiles delta zero in both modes at every campaign length. Getting
+there took two goes: at a 90-day gate the sweep still false-positived on 3-month campaigns (a
+reference read -2.9%, 3.1 pp from its pool median, and ruling it out moved prepost overall score
+**+0.103 pp and spread +0.126 pp the wrong way**). The same three-reference pool is clean at 6 and
+12 months, where the screen runs and correctly finds nothing, so campaign length is the driver
+rather than pool size, and the gate went to 150 days. The sweep is the better calibration
+instrument than a hand-picked set of windows: four sampled windows had put 3-month campaigns at
+1.51 pp worst, and the sweep's wider sampling found 2.9-3.25 pp.
+
+**Four bugs the runs caught that the unit tests did not.** The `waking` feature was bool, which
 collapses to object dtype once reindexed and the outcome model rejects (now tri-state float, with
 a missing record left unknown rather than asserted not-waking). The screen kept screening a
 two-reference pool after a drop, where deviation-from-median is degenerate and it flagged one
-arbitrarily. And the floor placeholder fired on healthy turbines. Each was found by a real run, not
-a fixture.
+arbitrarily. The floor placeholder fired on healthy turbines. And the reference-uplift pass
+recursed through its own clones once it gained its own flag — the clones had been stopped by the
+screen's flag by accident — turning a 39-minute road test into one still running after nine hours.
+Each was found by a real run, not a fixture: the toy pools are too small for the recursion to bite
+and the sweep disables the pass entirely, so only a large-pool run with reporting on could show it.
 
 ---
 
