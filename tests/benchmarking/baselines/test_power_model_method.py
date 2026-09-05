@@ -1135,3 +1135,32 @@ class TestReferenceUpliftReportingIsOptional:
         out = _screen_method(report_reference_uplifts=False).estimate(mi)
         assert out.screen_passes is not None
         assert bool(out.screen_passes["dropped"].any())
+
+
+class TestCloneRecursionGuards:
+    """A clone must never relaunch the passes that created it, or the work is combinatorial.
+
+    The screen and the reference pass each estimate every candidate reference with a clone of this
+    method. If a clone still has those passes enabled it runs them too, and its clones run them
+    again, down to a pool of one. Setting `reference_screen=False` alone stopped only half of it.
+    """
+
+    def _method(self) -> PowerModelMethod:
+        return PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=())
+
+    def test_the_screening_clone_runs_neither_pass(self) -> None:
+        clone = self._method()._screening_clone()  # noqa: SLF001 - the guard is the private clone
+        assert not clone.reference_screen
+        assert not clone.report_reference_uplifts
+
+    def test_the_reference_clone_runs_neither_pass(self) -> None:
+        clone = self._method()._reference_clone()  # noqa: SLF001 - the guard is the private clone
+        assert not clone.reference_screen
+        assert not clone.report_reference_uplifts
+
+    def test_a_clone_name_never_nests(self) -> None:
+        """The runaway showed up as a name with seventeen `_reference` suffixes."""
+        method = self._method()
+        for clone in (method._screening_clone(), method._reference_clone()):  # noqa: SLF001 - as above
+            assert clone.name.count("_reference") <= 1
+            assert clone.name.count("_screen") <= 1

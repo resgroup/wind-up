@@ -939,9 +939,7 @@ class PowerModelMethod:
         context = mi.context
         ruled_out = set(screened)
         surviving = [r for r in context.candidate_references if r not in ruled_out]
-        clone = dataclasses.replace(
-            self, reference_screen=False, conditions=(), save_plots=False, out_dir=None, name=f"{self.name}_reference"
-        )
+        clone = self._reference_clone()
         reusable = self._reusable_screen_estimates(mi, screen=screen, ruled_out=ruled_out)
         rows: list[dict[str, object]] = []
         for target in context.candidate_references:
@@ -1001,6 +999,31 @@ class PowerModelMethod:
         timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
         return upgraded * timebase.total_seconds() / 86400.0
 
+    def _screening_clone(self) -> PowerModelMethod:
+        """Return this method as it estimates one candidate reference during screening."""
+        return self._pass_clone("screen")
+
+    def _reference_clone(self) -> PowerModelMethod:
+        """Return this method as it estimates one reference for the reference-uplift report."""
+        return self._pass_clone("reference")
+
+    def _pass_clone(self, suffix: str) -> PowerModelMethod:
+        """Return a clone for estimating one reference: no conditional step, no plots, neither pass.
+
+        Both passes must be off, not just the screen. A clone that still reports reference uplifts
+        runs the whole reference pass itself, and its clones run it again, so the work is
+        combinatorial rather than linear.
+        """
+        return dataclasses.replace(
+            self,
+            reference_screen=False,
+            report_reference_uplifts=False,
+            conditions=(),
+            save_plots=False,
+            out_dir=None,
+            name=f"{self.name}_{suffix}",
+        )
+
     def screening_timing(self, mi: MethodInput) -> pd.Timestamp:
         """Return the changeover a reference is screened across -- always a prepost contrast.
 
@@ -1048,9 +1071,7 @@ class PowerModelMethod:
             )
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
-        clone = dataclasses.replace(
-            self, reference_screen=False, conditions=(), save_plots=False, out_dir=None, name=f"{self.name}_screen"
-        )
+        clone = self._screening_clone()
 
         def estimate_one(target: str, refs: list[str]) -> float:
             sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=list(refs), timing=timing)
