@@ -110,8 +110,16 @@ def build_reference_features(
     tmp = scada_df[[turbine_col, *value_cols]].copy()
     tmp["_ts"] = scada_df.index
     wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=value_cols, aggfunc="first")
-    powered = [r for r in refs if r not in set(power_free)]
-    keep = [(col, r) for col in value_cols for r in powered if (col, r) in wide.columns]
+    # power_free removes a reference's *power* channels only: availability is not one, and a
+    # screened reference is still known to be operating or not.
+    free = set(power_free)
+    power_cols = {active_power_col, *extra_cols}
+    keep = [
+        (col, r)
+        for col in value_cols
+        for r in refs
+        if (col, r) in wide.columns and not (r in free and col in power_cols)
+    ]
     features = wide.loc[:, keep]
     features.columns = [f"{col}{QUALIFIER}{r}" for col, r in keep]
     features = features.reindex(index)

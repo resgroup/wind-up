@@ -37,7 +37,8 @@ def _scada(index: pd.DatetimeIndex) -> pd.DataFrame:
             {
                 _COLUMNS.turbine: turbine,
                 _COLUMNS.active_power: rng.uniform(200, 2000, len(index)),
-                _COLUMNS.active_power_min: 100.0,
+                # mixed sign on purpose: a real power minimum is often negative (parasitic draw)
+                _COLUMNS.active_power_min: rng.uniform(-50, 300, len(index)),
                 _COLUMNS.wind_speed: rng.uniform(4, 14, len(index)),
                 _COLUMNS.wind_speed_sd: 1.0,
                 _COLUMNS.gen_rpm: 1400.0,
@@ -334,6 +335,10 @@ def _power(frame: pd.DataFrame, turbine: str) -> pd.Series:
     return rows[_COLUMNS.active_power]
 
 
+def _rows(frame: pd.DataFrame, turbine: str) -> pd.DataFrame:
+    return frame[frame[_COLUMNS.turbine] == turbine]
+
+
 class TestReferenceCpChange:
     def test_raises_the_named_references_power_from_the_change_date(self) -> None:
         dataset, scada = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.03)])
@@ -347,6 +352,28 @@ class TestReferenceCpChange:
         assert (after > clean_after).all()
         # Only the region-2 fraction of each record responds, so the mean gain is under the full 3%.
         assert 1.0 < after.mean() / clean_after.mean() < 1.03
+
+    def test_the_power_minimum_follows_the_mean(self) -> None:
+        """`active_power_min` is an unconditional model feature; leaving it behind fakes a mismatch."""
+        dataset, scada = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.05)])
+        after = _rows(dataset.synthetic_df, "T02").loc[_FAULT_AT:]
+        clean = _rows(scada, "T02").loc[_FAULT_AT:]
+        positive = clean[_COLUMNS.active_power_min] > 0
+        assert positive.any(), "fixture needs positive minima to exercise this"
+        ratio = after.loc[positive, _COLUMNS.active_power] / clean.loc[positive, _COLUMNS.active_power]
+        expected = clean.loc[positive, _COLUMNS.active_power_min] * ratio
+        assert after.loc[positive, _COLUMNS.active_power_min].to_numpy() == pytest.approx(expected.to_numpy())
+
+    def test_a_negative_power_minimum_is_left_alone(self) -> None:
+        """A negative minimum is parasitic consumption, which a Cp change does not scale."""
+        dataset, scada = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.05)])
+        after = _rows(dataset.synthetic_df, "T02").loc[_FAULT_AT:]
+        clean = _rows(scada, "T02").loc[_FAULT_AT:]
+        negative = clean[_COLUMNS.active_power_min] < 0
+        assert negative.any(), "fixture needs negative minima to exercise this"
+        assert after.loc[negative, _COLUMNS.active_power_min].to_numpy() == pytest.approx(
+            clean.loc[negative, _COLUMNS.active_power_min].to_numpy()
+        )
 
     def test_a_negative_delta_lowers_the_references_power(self) -> None:
         dataset, scada = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=-0.03)])

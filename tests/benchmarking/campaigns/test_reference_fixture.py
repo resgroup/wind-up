@@ -28,6 +28,7 @@ from benchmarking.campaigns.reference_fixture import (
     impact_table,
     references,
 )
+from benchmarking.campaigns.screen_calibration import _MODES as _CALIBRATION_MODES
 
 MODES = ["prepost", "toggle"]
 
@@ -267,3 +268,8 @@ class TestConditionalImpactTable:
             _conditional_rows({("3ref_clean", "4-6"): 0.002, ("3ref_T15_up3", "20-22"): 0.050})
         )
         assert impact.empty
+
+
+def test_the_screen_calibration_is_prepost_only() -> None:
+    """The screen does not run in toggle, so a toggle calibration pass would record nothing."""
+    assert tuple(_CALIBRATION_MODES) == ("prepost",)

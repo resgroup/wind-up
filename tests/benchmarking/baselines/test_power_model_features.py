@@ -406,3 +406,33 @@ class TestWakingDtype:
         feats = self._features_with_a_gap()
         bad = [c for c in feats.columns if feats[c].dtype.kind not in "fiub"]
         assert bad == []
+
+
+class TestPowerFreeKeepsAvailability:
+    """`power_free` removes power channels; availability is not one of them."""
+
+    def _features(self, *, include_availability: bool) -> pd.DataFrame:
+        idx = _index(24)
+        return build_reference_features(
+            _scada_spanning_the_waking_threshold(idx),
+            test_wtg="T1",
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+            direction_col=_NORTHED_DIR,
+            include_availability=include_availability,
+            power_free=("R1",),
+            waking_threshold_kw=_WAKING_THRESHOLD_KW,
+        )
+
+    def test_a_power_free_reference_keeps_availability_when_it_is_a_feature(self) -> None:
+        feats = self._features(include_availability=True)
+        assert f"{_AVAIL}{QUALIFIER}R1" in feats.columns
+
+    def test_it_still_loses_its_power(self) -> None:
+        feats = self._features(include_availability=True)
+        assert f"{_POWER}{QUALIFIER}R1" not in feats.columns
+
+    def test_availability_stays_absent_when_it_is_not_a_feature(self) -> None:
+        feats = self._features(include_availability=False)
+        assert not any(c.startswith(_AVAIL) for c in feats.columns)

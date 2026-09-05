@@ -265,12 +265,30 @@ class ReferenceCpChange:
         if not changed.any():
             return synthetic_df
         synthetic_df = synthetic_df.copy()
-        modified = apply_upgrades(
-            synthetic_df.loc[changed], [ConstantCpChange(delta=self.delta)], cp=cp, columns=columns
-        )
+        rows = synthetic_df.loc[changed]
+        modified = apply_upgrades(rows, [ConstantCpChange(delta=self.delta)], cp=cp, columns=columns)
         for col in (columns.active_power, columns.gen_rpm, columns.wind_speed):
             synthetic_df.loc[changed, col] = modified[col].to_numpy()
+        if columns.active_power_min is not None and columns.active_power_min in synthetic_df.columns:
+            synthetic_df.loc[changed, columns.active_power_min] = _scaled_power_minimum(
+                rows[columns.active_power_min].to_numpy(dtype=float),
+                baseline_power=rows[columns.active_power].to_numpy(dtype=float),
+                new_power=modified[columns.active_power].to_numpy(dtype=float),
+            )
         return synthetic_df
+
+
+def _scaled_power_minimum(minimum_kw: np.ndarray, *, baseline_power: np.ndarray, new_power: np.ndarray) -> np.ndarray:
+    """Move a per-record power minimum with its mean, leaving negative minima alone.
+
+    The minimum is a model feature in its own right, so a change that moves the mean and not the
+    minimum invents a channel mismatch no real turbine shows.
+
+    A negative minimum is the turbine drawing power rather than producing it, which a Cp change
+    does not scale, so those records keep their original value.
+    """
+    ratio = np.divide(new_power, baseline_power, out=np.ones_like(baseline_power), where=baseline_power != 0)
+    return np.where(minimum_kw > 0, minimum_kw * ratio, minimum_kw)
 
 
 def apply_faults(synthetic_df: pd.DataFrame, faults: list, *, columns: ColumnSchema, cp: CpCore) -> pd.DataFrame:

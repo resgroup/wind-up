@@ -2,8 +2,9 @@
 
 The screen rules out a reference whose estimate sits ``screen_floor`` or more from its pool's
 median. That constant is only meaningful against the spread a healthy farm already shows, so this
-driver runs a **single screening pass** over placebo campaigns -- nothing injected, so every
-deviation observed is the farm's own noise and drift -- and reports the distribution.
+driver runs a **single screening pass** over prepost placebo campaigns -- nothing injected, so
+every deviation observed is the farm's own noise and drift -- and reports the distribution. Prepost
+only, because the screen does not run for toggle campaigns.
 
 The floor has to sit above that null spread (or the screen fires on good references) and below the
 deviation a bad reference produces, which the R3 fixture measures at roughly 4.5 pp for a 3% Cp
@@ -52,7 +53,9 @@ POOLS: dict[str, tuple[str, tuple[str, ...]]] = {
     "T07_5ref": ("T07", ("T02", "T04", "T08", "T10", "T15")),
     "T11_5ref": ("T11", ("T09", "T12", "T14", "T16", "T17")),
 }
-_MODES = ("prepost", "toggle")
+# Prepost only: the screen does not run for toggle campaigns, so a toggle pass would
+# record nothing at all rather than a toggle calibration.
+_MODES = ("prepost",)
 
 
 def default_output_root() -> Path:

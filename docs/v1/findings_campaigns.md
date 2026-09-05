@@ -12,7 +12,7 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
-## CF13 — The reference screen works where it has data and references, and nowhere else: it needs a campaign of **3+ months** and it finds Hill of Towie's genuinely bad turbine (**T17, +4.7%**) on a 20-reference pool. Two constraints, both measured, decide when it may run at all
+## CF13 — The reference screen works where it has data and references, and nowhere else: it needs a campaign of **150+ days** and it finds Hill of Towie's genuinely bad turbine (**T17, +4.7%**) on a 19-reference pool. Two constraints, both measured, decide when it may run at all
 
 *2026-09-04. R3, Phase B. Drivers: `benchmarking.campaigns.screen_calibration` (clean placebo
 pools, one screening pass at an infinite floor, so every deviation is the farm's own noise),
@@ -23,7 +23,7 @@ from the pool median, worst one per pass; a ruled-out reference is made power-fr
 removed.*
 
 **The screen found a real bad reference nobody was looking for.** On clean Hill of Towie data with
-nothing injected, **T17 reads +4.67%** against a 20-reference pool whose median is +0.26% and whose
+nothing injected, **T17 reads +4.67%** against a 19-reference pool whose median is +0.26% and whose
 next-worst member is 1.49 pp out. It reproduces independently on an unrelated 5-reference pool
 (+4.74%). Checked directly against the SCADA, T17's median power ratio to T09/T12/T14/T16 steps
 from **0.735 across 2017 to 0.804 across 2018**, with two collapsed months in 2017 (Aug 0.44, Nov
@@ -42,8 +42,14 @@ across four treatment-start windows:
 | worst deviation | **2.87 pp** | **2.47 pp** | 1.51 pp | 1.43 pp | 0.95 pp |
 
 At 1-2 months the clean spread reaches the floor, so **no floor separates a bad reference from a
-good one there**. From 3 months it sits 1.65x under. Hence `screen_min_campaign_days = 90`: a
-shorter campaign is not screened at all, rather than screened badly.
+good one there**. So the gate is a minimum-data rule rather than a different floor: a campaign too
+short to screen is not screened at all, rather than screened badly.
+
+These four windows were not enough to set the number. A 90-day gate still false-positived on
+3-month campaigns in the sweep, which samples far more windows and found 2.9-3.25 pp there against
+the 1.51 pp these four suggested. **The shipped value is `screen_min_campaign_days = 150`**, set by
+the sweep -- see the benchmark section below. The lesson is that a hand-picked window sample is a
+weaker calibration instrument than the sweep itself.
 
 **Constraint 2 — the floor is set by clean spread, not by sensitivity.** Clean placebo pools spread
 up to 1.19 pp in prepost with nothing injected, so `screen_floor = 0.025` leaves about a factor of
@@ -70,8 +76,10 @@ toggle contrast would otherwise cancel. That is a fit-window exposure; closing i
 
 **Cost.** Screening plus the post-screen reference-uplift pass adds ~2N model fits per estimate. On
 the 21-turbine farm that is ~30 minutes per test turbine, and it made the frozen benchmark sweep
-roughly 12x slower. Acceptable for a campaign, painful for a sweep; whether the reference-uplift
-pass should be skippable in sweeps is not yet decided.
+roughly 12x slower. **Settled: `report_reference_uplifts` defaults to True and every sweep driver
+passes False.** A sweep scores estimators rather than reporting campaigns, and the report is an
+output, not an input -- turning it off moves no estimate. The screen itself still runs in a sweep,
+since that does change estimates.
 
 **The remediation A/B: the screen earns its place, the waking boolean does not.** Movement from
 each pool's clean cell on the prepost fixture arms, truth zero, so smaller is better [pp]:

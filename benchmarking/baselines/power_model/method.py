@@ -370,6 +370,9 @@ class PowerModelMethod:
         campaign sanity check (a healthy campaign's references read near 0%). Costs one extra model
         fit per reference, so a method sweep that scores estimators rather than reporting campaigns
         turns it off. It is a report, not an input: turning it off never moves the headline
+    :param write_diagnostics: write the per-run diagnostics folder. ``False`` for the clones that
+        estimate one reference during screening or reporting: ``out_dir=None`` does not suppress
+        them, it makes a temp directory per run, and there are O(N) such runs per estimate
     :param screen_min_campaign_days: skip the screen when the campaign holds less than this much
         upgraded data. A screening estimate over a short campaign is too noisy to separate a bad
         reference from a good one at any floor, and ruling out a good reference costs more than
@@ -400,6 +403,7 @@ class PowerModelMethod:
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
+    write_diagnostics: bool = True
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -480,26 +484,29 @@ class PowerModelMethod:
         cond_upgraded = conditions.iloc[upgraded_sel].reset_index(drop=True)
         cond_baseline_valid = conditions.iloc[fit["baseline_valid_pos"]].reset_index(drop=True)
 
-        run_dir = self._run_dir(mi, index)
-        self._write(
-            mi,
-            run_dir=run_dir,
-            index=index,
-            timebase=timebase,
-            t=t,
-            selected=selected,
-            upgraded_sel=upgraded_sel,
-            y=y_arr,
-            features=features,
-            fit=fit,
-            uplift=uplift,
-            sum_actual=sum_actual,
-            sum_counter=sum_counter,
-            n_refs=n_refs,
-            era5=era5,
-            cond_upgraded=cond_upgraded,
-            cond_baseline_valid=cond_baseline_valid,
-        )
+        # A clone that estimates one reference during screening or reporting writes nothing:
+        # out_dir=None does not suppress diagnostics, it makes a temp directory per run.
+        run_dir = self._run_dir(mi, index) if self.write_diagnostics else None
+        if run_dir is not None:
+            self._write(
+                mi,
+                run_dir=run_dir,
+                index=index,
+                timebase=timebase,
+                t=t,
+                selected=selected,
+                upgraded_sel=upgraded_sel,
+                y=y_arr,
+                features=features,
+                fit=fit,
+                uplift=uplift,
+                sum_actual=sum_actual,
+                sum_counter=sum_counter,
+                n_refs=n_refs,
+                era5=era5,
+                cond_upgraded=cond_upgraded,
+                cond_baseline_valid=cond_baseline_valid,
+            )
 
         # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
         # it (eventually AEP extrapolation will). Skipped when no conditions are requested.
@@ -526,7 +533,8 @@ class PowerModelMethod:
                 upgraded_sel=upgraded_sel,
                 fit=fit,
                 overall_ratio=uplift,
-                run_dir=run_dir,
+                # non-None whenever conditions are requested; _validate_model_config enforces it
+                run_dir=run_dir,  # type: ignore[arg-type]
             )
         # Reported post-screen: the sanity check asks what the *final* analysis says its references
         # did, so a ruled-out reference is listed but does not drag the headline.
@@ -989,15 +997,28 @@ class PowerModelMethod:
         return float(finite.sum()), int(finite.size)
 
     def _campaign_days(self, mi: MethodInput) -> float:
-        """Days of upgraded data the campaign holds, counted from records rather than calendar span.
+        """Upgraded days of data the *worst-covered* turbine in the screening pool has.
 
-        A campaign with gaps carries less than its span suggests, and it is the data the screening
-        estimate actually has that decides how noisy it is.
+        Counted from records rather than calendar span, and per turbine rather than over the frame:
+        the frame can span a year while one candidate has a fortnight of campaign data, and that
+        candidate is then estimated in exactly the short-data regime the gate exists to avoid. The
+        pool is judged by its weakest member because every screening estimate uses all of them.
         """
-        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
-        upgraded = int(np.count_nonzero(resolve_toggle(mi.upgrade_timing, index).upgraded))
-        timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
-        return upgraded * timebase.total_seconds() / 86400.0
+        scada = mi.context.select(mi.scada_df)
+        index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
+        upgraded = pd.Series(resolve_toggle(mi.upgrade_timing, index).upgraded, index=index)
+        timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
+        per_day = timebase.total_seconds() / 86400.0
+        covered: list[float] = []
+        for wtg in [mi.test_wtg, *mi.context.candidate_references]:
+            rows = scada[scada[mi.turbine_col] == wtg]
+            if rows.empty:
+                return 0.0
+            # This turbine's own rows: the long frame repeats each timestamp per turbine.
+            in_campaign = upgraded.reindex(pd.DatetimeIndex(rows.index)).fillna(value=False).to_numpy()
+            usable = in_campaign & np.isfinite(rows[self.columns.active_power].to_numpy(dtype=float))
+            covered.append(float(np.count_nonzero(usable)) * per_day)
+        return min(covered) if covered else 0.0
 
     def _screening_clone(self) -> PowerModelMethod:
         """Return this method as it estimates one candidate reference during screening."""
@@ -1020,6 +1041,7 @@ class PowerModelMethod:
             report_reference_uplifts=False,
             conditions=(),
             save_plots=False,
+            write_diagnostics=False,
             out_dir=None,
             name=f"{self.name}_{suffix}",
         )
@@ -1100,6 +1122,12 @@ class PowerModelMethod:
                 "adaptive_time_decay sets the half-life from the campaign duration; a fixed "
                 "time_decay_half_life_days is only used with adaptive_time_decay=False. Set "
                 "adaptive_time_decay=False to use the fixed override, or leave time_decay_half_life_days=None."
+            )
+            raise ValueError(msg)
+        if not self.write_diagnostics and self.conditions:
+            msg = (
+                "write_diagnostics=False needs conditions=(): the conditional step writes its per-bin CSVs "
+                "into the run directory, so there is nowhere for them to go."
             )
             raise ValueError(msg)
         # Hoisted from the conditional step so a misconfiguration is reported as one, rather than
@@ -1307,4 +1335,8 @@ class PowerModelMethod:
             "model_params": {**TUNED_MODEL_PARAMS, **self.model_params},
             "adaptive_time_decay": self.adaptive_time_decay,
             "time_decay_half_life_days": self.time_decay_half_life_days,
+            "reference_screen": self.reference_screen,
+            "screen_floor": self.screen_floor,
+            "screen_min_campaign_days": self.screen_min_campaign_days,
+            "report_reference_uplifts": self.report_reference_uplifts,
         }

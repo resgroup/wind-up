@@ -8,17 +8,15 @@ recovers the uplift — for both prepost and toggle. Also checks the reference-o
 
 from __future__ import annotations
 
+import tempfile
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelMethod
-
-if TYPE_CHECKING:
-    from pathlib import Path
 from benchmarking.baselines.power_model.method import (
     _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
     _TIME_DECAY_CAMPAIGN_MULTIPLE,
@@ -1165,3 +1163,74 @@ class TestCloneRecursionGuards:
         for clone in (method._screening_clone(), method._reference_clone()):  # noqa: SLF001 - as above
             assert clone.name.count("_reference") <= 1
             assert clone.name.count("_screen") <= 1
+
+
+class TestPassClonesWriteNoDiagnostics:
+    """`out_dir=None` does not suppress diagnostics — it makes a temp dir per run, O(N) per estimate.
+
+    A production run of the shipped configuration left 5845 `/tmp/power_model_*` directories
+    totalling 151 MB before this was fixed.
+    """
+
+    def test_a_pass_clone_writes_nothing(self) -> None:
+        method = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=())
+        for clone in (method._screening_clone(), method._reference_clone()):  # noqa: SLF001 - the guard is the clone
+            assert not clone.write_diagnostics
+
+    def test_diagnostics_are_written_by_default(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).write_diagnostics
+
+    def test_screening_leaves_no_temp_directories(self, tmp_path: Path) -> None:
+        before = set(Path(tempfile.gettempdir()).glob("power_model_*"))
+        mi, _ = _screen_case(step=0.08)
+        _screen_method(out_dir=tmp_path).estimate(mi)
+        assert set(Path(tempfile.gettempdir()).glob("power_model_*")) == before
+
+    def test_the_screen_config_reaches_the_run_config(self) -> None:
+        """Without it the run-config YAML cannot reproduce whether screening was on, or at what floor."""
+        params = _screen_method()._config_params()  # noqa: SLF001 - the recorded config is the point
+        assert set(params) >= {
+            "reference_screen",
+            "screen_floor",
+            "screen_min_campaign_days",
+            "report_reference_uplifts",
+        }
+
+
+def test_no_diagnostics_with_conditions_raises() -> None:
+    """The conditional step writes into the run directory, so it needs one."""
+    with pytest.raises(ValueError, match="write_diagnostics"):
+        PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            conditions=("ws",),
+            write_diagnostics=False,
+        ).estimate(_screen_case(step=0.0)[0])
+
+
+class TestGateUsesWorstCandidateCoverage:
+    """The gate must reflect the data each screening estimate actually has, not the frame's span."""
+
+    def _mi_with_a_sparse_reference(self, *, campaign_days: int, sparse_days: int) -> MethodInput:
+        per_day = 144
+        baseline_days = 200
+        n = per_day * (baseline_days + campaign_days)
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = pd.Timestamp(idx[per_day * baseline_days])
+        scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=0.0)
+        # R1 has data for only the first `sparse_days` of the campaign.
+        cutoff = changeover + pd.Timedelta(days=sparse_days)
+        drop = (scada[_TURBINE] == "R1") & (scada.index >= cutoff) & (scada.index >= changeover)
+        scada = scada[~drop]
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+
+    def test_a_sparse_candidate_holds_the_whole_pool_back(self) -> None:
+        """A 200-day frame where one candidate has 10 campaign days is still the short-data regime."""
+        mi = self._mi_with_a_sparse_reference(campaign_days=200, sparse_days=10)
+        method = _screen_method(screen_min_campaign_days=150.0)
+        assert not method.screen_references(mi).screenable
+
+    def test_a_pool_that_all_has_coverage_is_screened(self) -> None:
+        mi = self._mi_with_a_sparse_reference(campaign_days=200, sparse_days=200)
+        method = _screen_method(screen_min_campaign_days=150.0)
+        assert method.screen_references(mi).screenable
