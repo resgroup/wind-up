@@ -92,12 +92,15 @@ benchmarks, which screen nobody.
 its wake geometry is uncorrupted by a performance change and worth retaining, which is the point of
 making a bad reference power-free rather than removing it.
 
-**The waking boolean loses.** It has the single best result but is worst on the other two arms and
-has the worst spread. The margin is thin -- 0.625 / 0.661 / 0.668 across three arms on one farm --
-so this is a weak preference, not a strong one; it is taken because `direction` also wins on
-simplicity (no threshold constant, no tri-state feature, no dtype subtlety). F13's lesson repeating:
-a physically-compelling extra feature lost to the data. `direction` is now the default and the
-other two remain available.
+**The waking boolean is kept, and the A/B is why it *can* be.** It is marginally behind on this
+fixture -- best on one arm, worst on the other two -- but the three remediations sit within
+**0.04 pp** of each other (0.625 / 0.661 / 0.668) across three arms on one farm and one test
+turbine. That is not evidence it costs anything; it is evidence the fixture cannot separate them.
+Against that, it carries information the fixture does not exercise: a reference that stops
+producing entirely still tells the model it has stopped waking its neighbours, which neither
+`drop` nor direction-only can express once the power channel is gone. The decision was taken on
+that basis -- no measurable cost, a clear physical argument -- and the other two options were
+pruned rather than left as dead knobs.
 
 **The road test: the calibration transfers to farms it never saw.** Four reference sets, placebo
 campaigns, truth exactly zero, screen on:

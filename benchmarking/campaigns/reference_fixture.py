@@ -207,7 +207,6 @@ def run_cell(
     era5_df: pd.DataFrame,
     out_dir: Path,
     include_power_model: bool = True,
-    screen_remediation: str = "direction_waking",
 ) -> CampaignResult:
     """Run one arm and return its result."""
     turbines = fixture_turbines(arm.pool)
@@ -223,7 +222,6 @@ def run_cell(
             out_dir=out_dir / wtg,
             era5_hourly_df=era5_df if include_power_model else None,
             include_power_model=include_power_model,
-            screen_remediation=screen_remediation,
         ),
         era5_wd=era5_direction(era5_df, index),
     )
@@ -257,7 +255,6 @@ def run_fixture(
     *,
     modes: Sequence[str] = _MODES,
     include_power_model: bool = True,
-    screen_remediation: str = "direction_waking",
     out_root: str | Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run every arm for each mode and return the headline and per-condition tables.
@@ -292,7 +289,6 @@ def run_fixture(
                 era5_df=era5_df,
                 out_dir=run_dir / f"{mode}_{arm.name}",
                 include_power_model=include_power_model,
-                screen_remediation=screen_remediation,
             )
             headline_rows.extend(
                 {
@@ -301,7 +297,6 @@ def run_fixture(
                     "arm": arm.name,
                     "pool": arm.pool,
                     "faulted": bool(arm.changes),
-                    "remediation": screen_remediation,
                     "estimate": row.estimate,
                     "truth": row.truth,
                     "signed_error": row.signed_error,

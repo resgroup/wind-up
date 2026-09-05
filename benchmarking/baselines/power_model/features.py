@@ -65,7 +65,6 @@ def build_reference_features(
     direction_col: str | None = None,
     power_free: Sequence[str] = (),
     waking_threshold_kw: float | None = None,
-    include_waking: bool = True,
 ) -> pd.DataFrame:
     """Wide, curated reference features: each reference turbine's active power (+ optional extras).
 
@@ -93,8 +92,6 @@ def build_reference_features(
         byte-identical to a caller that never asked.
     :param waking_threshold_kw: active power at or above which a ``power_free`` reference counts as
         waking its neighbours
-    :param include_waking: when ``False``, a ``power_free`` reference contributes its direction and
-        nothing else -- the direction-only arm, which prices what the waking boolean is worth
     """
     refs = _references(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)
     power_free = _checked_power_free(power_free, refs=refs, waking_threshold_kw=waking_threshold_kw)
@@ -121,7 +118,7 @@ def build_reference_features(
     features.index.name = index.name
     if direction_frame is not None:
         features = features.join(direction_frame.reindex(index), how="left")
-    if power_free and include_waking:
+    if power_free:
         waking = _waking_features(
             wide, refs=power_free, active_power_col=active_power_col, threshold_kw=waking_threshold_kw
         )
