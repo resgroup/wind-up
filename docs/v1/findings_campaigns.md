@@ -127,7 +127,14 @@ reference overall uplift reads -0.26% to +0.39% throughout, so the sanity check 
 estimate as the whole farm.
 
 **The frozen benchmarks are unchanged.** Zero references ruled out across the sweep, zero MOVED
-verdicts, and every mean-over-profiles delta zero in both modes at every campaign length. Getting
+verdicts, and every **overall** mean-over-profiles delta zero in both modes at every campaign
+length. The largest movement anywhere is **0.013 pp**, in the degenerate 2-month wind-speed
+conditional cell whose own score is 14.5 pp -- 0.09% relative, inside the sweep's +/-0.1 pp neutral
+band. It is deterministic (identical across two runs), it predates the PR-140 review fixes, and it
+is not the positional feature renaming, which was checked directly and gives bit-identical
+predictions. It is consistent with the known LightGBM thread-order reproduction floor, which
+earlier work put at ~0.7 pp cross-machine. Worth stating precisely rather than rounding to "zero":
+the headline P50 cells are exactly unchanged, the degenerate conditional tail is not quite. Getting
 there took two goes: at a 90-day gate the sweep still false-positived on 3-month campaigns (a
 reference read -2.9%, 3.1 pp from its pool median, and ruling it out moved prepost overall score
 **+0.103 pp and spread +0.126 pp the wrong way**). The same three-reference pool is clean at 6 and
