@@ -1097,16 +1097,18 @@ class TestScreenNeedsEnoughCampaign:
         assert not result.screenable
 
     def test_a_long_enough_campaign_is_screened(self) -> None:
-        result = self._gated_method().screen_references(self._prepost_days(120))
+        result = self._gated_method().screen_references(self._prepost_days(200, baseline_days=200))
         assert result.screenable
 
     def test_the_threshold_is_configurable(self) -> None:
         mi = self._prepost_days(30)
         assert self._gated_method(screen_min_campaign_days=10.0).screen_references(mi).screenable
 
-    def test_the_default_is_ninety_days(self) -> None:
-        """Below three months the clean spread overlaps the floor, so no floor can separate."""
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_min_campaign_days == 90.0
+    def test_the_default_excludes_a_three_month_campaign(self) -> None:
+        """The benchmark sweep set this: at 90 days a 3-month campaign still false-positived."""
+        default = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_min_campaign_days
+        assert default > 92, "a 3-month campaign must not be screened"
+        assert default < 180, "a 6-month campaign must still be screened"
 
 
 class TestReferenceUpliftReportingIsOptional:

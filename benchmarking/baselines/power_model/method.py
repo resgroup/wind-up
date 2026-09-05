@@ -138,11 +138,14 @@ _DEFAULT_SCREEN_FLOOR = 0.025
 # its neighbours. Low by design: thrust is already a large fraction of maximum well below rated,
 # so this separates waking from parked while leaking almost none of the power level.
 WAKING_RATED_FRACTION = 0.05
-# A screening estimate is only as good as the campaign it is measured over. On clean Hill of Towie
-# pools the worst deviation runs 2.87 pp at a 1-month campaign and 2.47 pp at 2 months -- at or
-# above the floor, so no floor separates a bad reference from a good one there -- against 1.51 pp
-# at 3 months and below. Campaigns shorter than this are not screened.
-_DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS = 90.0
+# A screening estimate is only as good as the campaign it is measured over, and the benchmark sweep
+# set this rather than a hand-picked calibration. At 90 days the sweep still produced false
+# positives on 3-month campaigns -- a reference read -2.9%, about 3.1 pp from its pool median, and
+# ruling it out made the benchmark *worse* (score +0.10 pp, spread +0.13 pp). The same three-
+# reference pool is clean at 6 and 12 months, where the screen runs and correctly finds nothing, so
+# the driver is campaign length rather than pool size. 150 days sits clear of both: a 3-month
+# campaign (~90 days of data) is not screened, a 6-month one (~182) is.
+_DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS = 150.0
 
 
 def reference_overall_uplift(reference_uplifts: pd.DataFrame, *, rated_power_kw: float) -> float:
