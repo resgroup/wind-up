@@ -8,22 +8,22 @@ recovers the uplift — for both prepost and toggle. Also checks the reference-o
 
 from __future__ import annotations
 
+import tempfile
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelMethod
-
-if TYPE_CHECKING:
-    from pathlib import Path
 from benchmarking.baselines.power_model.method import (
+    _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
     _TIME_DECAY_CAMPAIGN_MULTIPLE,
     _clip_predictions,
     _combine_uplift,
     _implied_shrinkage,
+    reference_overall_uplift,
 )
 from benchmarking.harness.conditions import CONDITIONS
 from benchmarking.harness.context import CampaignContext
@@ -820,3 +820,417 @@ class TestCampaignContext:
         assert with_holes == pytest.approx(
             self._estimate(holed, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
         )
+
+
+def _scada_with_a_stepped_reference(n: int, *, changeover: pd.Timestamp, step: float) -> pd.DataFrame:
+    """Toy placebo SCADA in which reference R1 alone changes performance at the changeover.
+
+    The test turbine's power is built from the clean references first, so R1's step is a genuine
+    change in R1 and not something the test turbine followed -- exactly the R3 failure mode.
+    """
+    scada = _toy_scada(n, uplift=0.0, treated=np.zeros(n, dtype=bool))
+    is_r1 = scada[_TURBINE] == "R1"
+    stepped = is_r1 & (scada.index >= changeover)
+    for col in (_POWER, _POWER_MIN, _POWER_MAX):
+        scada.loc[stepped, col] = scada.loc[stepped, col] * (1.0 + step)
+    return scada
+
+
+def _screen_case(*, step: float, n: int = 4000) -> tuple[MethodInput, pd.Timestamp]:
+    idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+    changeover = pd.Timestamp(idx[n // 2])
+    scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=step)
+    mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+    return mi, changeover
+
+
+def _screen_method(**overrides: object) -> PowerModelMethod:
+    """A screening method for the toy cases below.
+
+    ``screen_min_campaign_days=0`` because these toy campaigns are a fortnight long and exist to
+    exercise the outlier rule, not the minimum-data gate — which has its own tests, at realistic
+    campaign lengths, in :class:`TestScreenNeedsEnoughCampaign`.
+    """
+    kwargs: dict[str, object] = {
+        "columns": _COLUMNS,
+        "baseline_rated_power_kw": 2300.0,
+        "conditions": (),
+        "screen_floor": 0.01,
+        "screen_min_campaign_days": 0.0,
+        **overrides,
+    }
+    return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
+
+
+class TestReferenceScreen:
+    """The screen finds a reference that changed on its own, and the estimate stops following it."""
+
+    def test_a_clean_pool_screens_nobody(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        assert _screen_method().screen_references(mi).screened == ()
+
+    def test_the_stepped_reference_is_found(self) -> None:
+        mi, _ = _screen_case(step=0.03)
+        assert _screen_method().screen_references(mi).screened == ("R1",)
+
+    def test_a_degrading_reference_is_found_too(self) -> None:
+        mi, _ = _screen_case(step=-0.03)
+        assert _screen_method().screen_references(mi).screened == ("R1",)
+
+    def test_the_screen_removes_most_of_the_bias(self) -> None:
+        """Truth is 0: an unscreened run follows R1's step, a screened one should not."""
+        mi, _ = _screen_case(step=0.03)
+        unscreened = _screen_method(reference_screen=False).estimate(mi).p50_overall
+        screened = _screen_method(reference_screen=True).estimate(mi).p50_overall
+        assert abs(unscreened) > 0.005
+        assert abs(screened) < abs(unscreened) / 2
+
+    def test_a_clean_pool_estimates_identically_screened_or_not(self) -> None:
+        """The screen finding nothing must cost the estimate nothing."""
+        mi, _ = _screen_case(step=0.0)
+        off = _screen_method(reference_screen=False).estimate(mi).p50_overall
+        on = _screen_method(reference_screen=True).estimate(mi).p50_overall
+        assert on == pytest.approx(off)
+
+    def test_the_screened_reference_loses_power_but_keeps_direction_and_waking(self) -> None:
+        """The corrupted channels go; the wake geometry and the is-it-waking signal stay."""
+        mi, _ = _screen_case(step=0.03)
+        features = _screen_method().reference_features(mi, power_free=("R1",))
+        assert f"{_POWER} @ R1" not in features.columns
+        assert f"{_POWER_MIN} @ R1" not in features.columns
+        assert f"{_NORTHED_YAW}_sin @ R1" in features.columns
+        assert f"waking_{_POWER} @ R1" in features.columns
+
+    def test_the_screen_is_on_by_default(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).reference_screen
+
+
+class TestScreeningContrast:
+    """A reference never toggles, so screening it is always a prepost question."""
+
+    def _toggle_mi(self, n: int = 2000) -> MethodInput:
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        start = pd.Timestamp(idx[n // 4])
+        schedule = ToggleSchedule(period=pd.Timedelta(minutes=100), start=start)
+        treated = np.asarray(resolve_toggle(schedule, pd.DatetimeIndex(idx)).upgraded)
+        scada = _toy_scada(n, uplift=0.0, treated=treated)
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+
+    def test_a_prepost_campaign_screens_at_its_own_changeover(self) -> None:
+        mi, changeover = _screen_case(step=0.0)
+        assert _screen_method().screening_timing(mi) == changeover
+
+    def test_a_toggle_campaign_screens_at_a_timestamp_not_a_schedule(self) -> None:
+        """Handing a reference the toggle schedule asks it an on-vs-off question it cannot answer."""
+        timing = _screen_method().screening_timing(self._toggle_mi())
+        assert isinstance(timing, pd.Timestamp)
+
+    def test_a_toggle_campaign_splits_inside_the_test_period(self) -> None:
+        """The toggle test is the valuable data, so the split protects it rather than straddling it."""
+        mi = self._toggle_mi()
+        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        campaign_start = pd.Timestamp(index[len(index) // 4])
+        timing = _screen_method().screening_timing(mi)
+        assert campaign_start < timing < index.max()
+
+    def test_the_toggle_split_halves_the_campaign_by_data_volume(self) -> None:
+        mi = self._toggle_mi()
+        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        timing = _screen_method().screening_timing(mi)
+        campaign = index[index >= pd.Timestamp(index[len(index) // 4])]
+        before = int((campaign < timing).sum())
+        after = int((campaign >= timing).sum())
+        assert abs(before - after) <= 1
+
+
+class TestReferenceReporting:
+    """power_model reports what the screen did, and what the surviving references read."""
+
+    def test_reference_uplifts_are_reported_for_every_candidate(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        out = _screen_method().estimate(mi)
+        assert out.reference_uplifts is not None
+        assert set(out.reference_uplifts["turbine"]) == {"R1", "R2", "R3"}
+
+    def test_each_reference_carries_its_energy_so_it_can_be_combined_like_a_test_turbine(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        refs = _screen_method().estimate(mi).reference_uplifts
+        assert refs is not None
+        assert set(refs.columns) >= {"turbine", "uplift", "actual_energy", "n_records", "screened"}
+        assert (refs["actual_energy"] > 0).all()
+        assert (refs["n_records"] > 0).all()
+
+    def test_a_healthy_campaign_reads_near_zero_reference_uplift(self) -> None:
+        """The standard sanity check: references should show no uplift of their own."""
+        mi, _ = _screen_case(step=0.0)
+        refs = _screen_method().estimate(mi).reference_uplifts
+        assert refs is not None
+        assert abs(reference_overall_uplift(refs, rated_power_kw=2300.0)) < 0.01
+
+    def test_the_screened_reference_is_reported_but_excluded_from_the_headline(self) -> None:
+        """Post-screen: a ruled-out reference stays visible, and stops dragging the sanity check."""
+        mi, _ = _screen_case(step=0.05)
+        out = _screen_method().estimate(mi)
+        refs = out.reference_uplifts
+        assert refs is not None
+        assert bool(refs.loc[refs["turbine"] == "R1", "screened"].iloc[0])
+        surviving = refs[~refs["screened"]]
+        assert set(surviving["turbine"]) == {"R2", "R3"}
+
+    def test_the_screening_detail_is_reported(self) -> None:
+        """An analyst has to be able to see, and disagree with, what the screen dropped."""
+        mi, _ = _screen_case(step=0.05)
+        passes = _screen_method().estimate(mi).screen_passes
+        assert passes is not None
+        assert set(passes.columns) >= {"pass", "turbine", "estimate", "deviation", "dropped"}
+        assert bool(passes[passes["dropped"]]["turbine"].eq("R1").any())
+
+    def test_nothing_is_reported_when_the_screen_is_off(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        out = _screen_method(reference_screen=False).estimate(mi)
+        assert out.screen_passes is None
+
+
+class TestReferenceOverallUplift:
+    def test_it_combines_by_energy_sums(self) -> None:
+        """A big turbine at +2% and a small one at 0% must not average to +1%."""
+        refs = pd.DataFrame(
+            [
+                {"turbine": "R1", "uplift": 0.02, "actual_energy": 900.0, "n_records": 100, "screened": False},
+                {"turbine": "R2", "uplift": 0.00, "actual_energy": 100.0, "n_records": 100, "screened": False},
+            ]
+        )
+        combined = reference_overall_uplift(refs, rated_power_kw=2300.0)
+        assert 0.015 < combined < 0.02
+
+    def test_screened_references_are_excluded(self) -> None:
+        refs = pd.DataFrame(
+            [
+                {"turbine": "R1", "uplift": 0.50, "actual_energy": 500.0, "n_records": 100, "screened": True},
+                {"turbine": "R2", "uplift": 0.00, "actual_energy": 500.0, "n_records": 100, "screened": False},
+            ]
+        )
+        assert reference_overall_uplift(refs, rated_power_kw=2300.0) == pytest.approx(0.0)
+
+    def test_an_all_screened_pool_has_no_reference_uplift(self) -> None:
+        refs = pd.DataFrame(
+            [{"turbine": "R1", "uplift": 0.5, "actual_energy": 500.0, "n_records": 100, "screened": True}]
+        )
+        assert np.isnan(reference_overall_uplift(refs, rated_power_kw=2300.0))
+
+
+class TestReferenceUpliftReuse:
+    """A healthy prepost campaign must not refit the whole pool twice for the same numbers."""
+
+    def test_a_clean_prepost_pool_reuses_the_screens_final_pass(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        method = _screen_method()
+        screen = method.screen_references(mi)
+        assert screen.screened == ()
+        reused = method.reference_uplifts(mi, screened=(), screen=screen)
+        final = screen.passes[screen.passes["pass"] == screen.passes["pass"].max()]
+        expected = dict(zip(final["turbine"], final["estimate"], strict=True))
+        for row in reused.itertuples():
+            assert row.uplift == pytest.approx(expected[row.turbine])
+
+    def test_a_screened_pool_refits_because_the_pools_changed(self) -> None:
+        """Dropping a reference changes what every survivor reads, so its old estimate is stale."""
+        mi, _ = _screen_case(step=0.05)
+        method = _screen_method()
+        screen = method.screen_references(mi)
+        assert screen.screened == ("R1",)
+        refits = method.reference_uplifts(mi, screened=screen.screened, screen=screen)
+        first = screen.passes[screen.passes["pass"] == 1].set_index("turbine")["estimate"]
+        survivor = refits[refits["turbine"] == "R2"].iloc[0]
+        assert survivor["uplift"] != pytest.approx(first["R2"])
+
+
+class TestScreenIsPrepostOnly:
+    """Toggle is not vulnerable to this failure mode, and the screen cannot see it there anyway."""
+
+    def _toggle_mi(self, n: int = 2000) -> MethodInput:
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        start = pd.Timestamp(idx[n // 4])
+        schedule = ToggleSchedule(period=pd.Timedelta(minutes=100), start=start)
+        treated = np.asarray(resolve_toggle(schedule, pd.DatetimeIndex(idx)).upgraded)
+        scada = _toy_scada(n, uplift=0.0, treated=treated)
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+
+    def test_a_toggle_campaign_screens_nobody(self) -> None:
+        result = _screen_method().screen_references(self._toggle_mi())
+        assert result.screened == ()
+        assert not result.screenable
+
+    def test_a_toggle_campaign_still_reports_reference_uplifts(self) -> None:
+        """The sanity check is not the screen: references should read ~0 in toggle too."""
+        out = _screen_method().estimate(self._toggle_mi())
+        assert out.reference_uplifts is not None
+        assert set(out.reference_uplifts["turbine"]) == {"R1", "R2", "R3"}
+        assert not out.reference_uplifts["screened"].any()
+
+    def test_a_prepost_campaign_still_screens(self) -> None:
+        mi, _ = _screen_case(step=0.08)
+        assert _screen_method().screen_references(mi).screened == ("R1",)
+
+
+class TestScreenNeedsEnoughCampaign:
+    """A short campaign makes screening estimates too noisy to tell a bad reference from a good one."""
+
+    def _prepost_days(self, days: float, *, baseline_days: int = 120) -> MethodInput:
+        """A prepost case whose campaign holds exactly ``days`` of 10-minute records."""
+        per_day = 144  # 10-minute records
+        n = int(per_day * (baseline_days + days))
+        # _toy_scada builds its own index from 2019-01-01, so the changeover is taken from that.
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = pd.Timestamp(idx[per_day * baseline_days])
+        scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=0.08)
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+
+    def _gated_method(self, **overrides: object) -> PowerModelMethod:
+        """The screening method with the real minimum-campaign default, which is what is under test."""
+        return _screen_method(**{"screen_min_campaign_days": _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS, **overrides})
+
+    def test_a_short_campaign_is_not_screened(self) -> None:
+        result = self._gated_method().screen_references(self._prepost_days(30))
+        assert result.screened == ()
+        assert not result.screenable
+
+    def test_a_long_enough_campaign_is_screened(self) -> None:
+        result = self._gated_method().screen_references(self._prepost_days(200, baseline_days=200))
+        assert result.screenable
+
+    def test_the_threshold_is_configurable(self) -> None:
+        mi = self._prepost_days(30)
+        assert self._gated_method(screen_min_campaign_days=10.0).screen_references(mi).screenable
+
+    def test_the_default_excludes_a_three_month_campaign(self) -> None:
+        """The benchmark sweep set this: at 90 days a 3-month campaign still false-positived."""
+        default = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_min_campaign_days
+        assert default > 92, "a 3-month campaign must not be screened"
+        assert default < 180, "a 6-month campaign must still be screened"
+
+
+class TestReferenceUpliftReportingIsOptional:
+    """The reference pass costs N fits per estimate; a method sweep does not need it."""
+
+    def test_it_is_reported_by_default(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        assert _screen_method().estimate(mi).reference_uplifts is not None
+
+    def test_it_can_be_skipped(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        assert _screen_method(report_reference_uplifts=False).estimate(mi).reference_uplifts is None
+
+    def test_skipping_it_does_not_change_the_estimate(self) -> None:
+        """It is a report, not an input: turning it off must not move the headline."""
+        mi, _ = _screen_case(step=0.0)
+        on = _screen_method(report_reference_uplifts=True).estimate(mi).p50_overall
+        off = _screen_method(report_reference_uplifts=False).estimate(mi).p50_overall
+        assert on == pytest.approx(off)
+
+    def test_the_screen_still_runs_and_is_still_reported(self) -> None:
+        """Skipping the report must not silently skip the screening that changes the estimate."""
+        mi, _ = _screen_case(step=0.08)
+        out = _screen_method(report_reference_uplifts=False).estimate(mi)
+        assert out.screen_passes is not None
+        assert bool(out.screen_passes["dropped"].any())
+
+
+class TestCloneRecursionGuards:
+    """A clone must never relaunch the passes that created it, or the work is combinatorial.
+
+    The screen and the reference pass each estimate every candidate reference with a clone of this
+    method. If a clone still has those passes enabled it runs them too, and its clones run them
+    again, down to a pool of one. Setting `reference_screen=False` alone stopped only half of it.
+    """
+
+    def _method(self) -> PowerModelMethod:
+        return PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=())
+
+    def test_the_screening_clone_runs_neither_pass(self) -> None:
+        clone = self._method()._screening_clone()  # noqa: SLF001 - the guard is the private clone
+        assert not clone.reference_screen
+        assert not clone.report_reference_uplifts
+
+    def test_the_reference_clone_runs_neither_pass(self) -> None:
+        clone = self._method()._reference_clone()  # noqa: SLF001 - the guard is the private clone
+        assert not clone.reference_screen
+        assert not clone.report_reference_uplifts
+
+    def test_a_clone_name_never_nests(self) -> None:
+        """The runaway showed up as a name with seventeen `_reference` suffixes."""
+        method = self._method()
+        for clone in (method._screening_clone(), method._reference_clone()):  # noqa: SLF001 - as above
+            assert clone.name.count("_reference") <= 1
+            assert clone.name.count("_screen") <= 1
+
+
+class TestPassClonesWriteNoDiagnostics:
+    """`out_dir=None` does not suppress diagnostics — it makes a temp dir per run, O(N) per estimate.
+
+    A production run of the shipped configuration left 5845 `/tmp/power_model_*` directories
+    totalling 151 MB before this was fixed.
+    """
+
+    def test_a_pass_clone_writes_nothing(self) -> None:
+        method = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=())
+        for clone in (method._screening_clone(), method._reference_clone()):  # noqa: SLF001 - the guard is the clone
+            assert not clone.write_diagnostics
+
+    def test_diagnostics_are_written_by_default(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).write_diagnostics
+
+    def test_screening_leaves_no_temp_directories(self, tmp_path: Path) -> None:
+        before = set(Path(tempfile.gettempdir()).glob("power_model_*"))
+        mi, _ = _screen_case(step=0.08)
+        _screen_method(out_dir=tmp_path).estimate(mi)
+        assert set(Path(tempfile.gettempdir()).glob("power_model_*")) == before
+
+    def test_the_screen_config_reaches_the_run_config(self) -> None:
+        """Without it the run-config YAML cannot reproduce whether screening was on, or at what floor."""
+        params = _screen_method()._config_params()  # noqa: SLF001 - the recorded config is the point
+        assert set(params) >= {
+            "reference_screen",
+            "screen_floor",
+            "screen_min_campaign_days",
+            "report_reference_uplifts",
+        }
+
+
+def test_no_diagnostics_with_conditions_raises() -> None:
+    """The conditional step writes into the run directory, so it needs one."""
+    with pytest.raises(ValueError, match="write_diagnostics"):
+        PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            conditions=("ws",),
+            write_diagnostics=False,
+        ).estimate(_screen_case(step=0.0)[0])
+
+
+class TestGateUsesWorstCandidateCoverage:
+    """The gate must reflect the data each screening estimate actually has, not the frame's span."""
+
+    def _mi_with_a_sparse_reference(self, *, campaign_days: int, sparse_days: int) -> MethodInput:
+        per_day = 144
+        baseline_days = 200
+        n = per_day * (baseline_days + campaign_days)
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = pd.Timestamp(idx[per_day * baseline_days])
+        scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=0.0)
+        # R1 has data for only the first `sparse_days` of the campaign.
+        cutoff = changeover + pd.Timedelta(days=sparse_days)
+        drop = (scada[_TURBINE] == "R1") & (scada.index >= cutoff) & (scada.index >= changeover)
+        scada = scada[~drop]
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+
+    def test_a_sparse_candidate_holds_the_whole_pool_back(self) -> None:
+        """A 200-day frame where one candidate has 10 campaign days is still the short-data regime."""
+        mi = self._mi_with_a_sparse_reference(campaign_days=200, sparse_days=10)
+        method = _screen_method(screen_min_campaign_days=150.0)
+        assert not method.screen_references(mi).screenable
+
+    def test_a_pool_that_all_has_coverage_is_screened(self) -> None:
+        mi = self._mi_with_a_sparse_reference(campaign_days=200, sparse_days=200)
+        method = _screen_method(screen_min_campaign_days=150.0)
+        assert method.screen_references(mi).screenable

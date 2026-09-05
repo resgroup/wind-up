@@ -158,6 +158,23 @@ def treated_mask(index: pd.DatetimeIndex, upgrade_timing: pd.Timestamp | ToggleS
     return _treated_mask(index, mode=mode, upgrade_timing=upgrade_timing)
 
 
+def _check_faults_spare_the_test_turbines(faults: list, *, test_wtgs: list[str]) -> None:
+    """Raise if a power-changing fault targets a test turbine.
+
+    Ground truth is derived by comparing a test turbine's synthetic power to its original, so
+    such a fault would be silently absorbed into the truth it is meant to leave alone.
+    """
+    aimed = [f for f in faults if f.changes_power and getattr(f, "turbine", None) in set(test_wtgs)]
+    if aimed:
+        kinds = sorted({str(f.description["kind"]) for f in aimed})
+        turbines = sorted({str(f.turbine) for f in aimed})
+        msg = (
+            f"the power-changing fault(s) {kinds} target the test turbine(s) {turbines}; that would be "
+            f"absorbed into the ground truth derived for them. Aim them at a reference instead."
+        )
+        raise ValueError(msg)
+
+
 def generate_dataset(
     *,
     scada_df: pd.DataFrame,
@@ -215,7 +232,9 @@ def generate_dataset(
 
     faults = list(faults or [])
     if faults:
-        synthetic_df = apply_faults(synthetic_df, faults, columns=columns)
+        _check_faults_spare_the_test_turbines(faults, test_wtgs=test_wtgs)
+        cp = CpCore(rated_power_kw=rated_power_kw, cp_params=cp_params)
+        synthetic_df = apply_faults(synthetic_df, faults, columns=columns, cp=cp)
 
     run_metadata = {
         "test_wtgs": list(test_wtgs),

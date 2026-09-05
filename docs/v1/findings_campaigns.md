@@ -12,6 +12,228 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF13 — The reference screen works where it has data and references, and nowhere else: it needs a campaign of **150+ days** and it finds Hill of Towie's genuinely bad turbine (**T17, +4.7%**) on a 19-reference pool. Two constraints, both measured, decide when it may run at all
+
+*2026-09-04. R3, Phase B. Drivers: `benchmarking.campaigns.screen_calibration` (clean placebo
+pools, one screening pass at an infinite floor, so every deviation is the farm's own noise),
+`benchmarking.campaigns.reference_fixture` (injected changes) and
+`benchmarking.campaigns.screen_roadtest` (four real reference sets). The screen estimates each
+candidate reference as if it were a test turbine against the others and rules out clear outliers
+from the pool median, worst one per pass; a ruled-out reference is made power-free rather than
+removed.*
+
+**The screen found a real bad reference nobody was looking for.** On clean Hill of Towie data with
+nothing injected, **T17 reads +4.67%** against a 19-reference pool whose median is +0.26% and whose
+next-worst member is 1.49 pp out. It reproduces independently on an unrelated 5-reference pool
+(+4.74%). Checked directly against the SCADA, T17's median power ratio to T09/T12/T14/T16 steps
+from **0.735 across 2017 to 0.804 across 2018**, with two collapsed months in 2017 (Aug 0.44, Nov
+0.49 against a ~0.75 norm). Its low absolute ratio is siting; the *step* is the finding. T17 is not
+in the benchmark turbine set (`DEFAULT_WTG_NUMBERS = [1, 3, 4, 7]`).
+
+**Constraint 1 — the campaign must be long enough, and this is not a floor problem.** Running the
+frozen benchmark sweep with the screen on removed references it should not have. The removals were
+not marginal: one read T04 at **-5.902%, 8.02 pp from its pool median** against a 2.5 pp floor,
+with T01 at +2.12% and T03 at +4.24% — a 10 pp spread across three references on a placebo. That
+case held ~4167 upgraded records, about 29 days. The worst clean deviation by campaign length,
+across four treatment-start windows:
+
+| campaign | 1 mo | 2 mo | 3 mo | 6 mo | 12 mo |
+|---|---|---|---|---|---|
+| worst deviation | **2.87 pp** | **2.47 pp** | 1.51 pp | 1.43 pp | 0.95 pp |
+
+At 1-2 months the clean spread reaches the floor, so **no floor separates a bad reference from a
+good one there**. So the gate is a minimum-data rule rather than a different floor: a campaign too
+short to screen is not screened at all, rather than screened badly.
+
+These four windows were not enough to set the number. A 90-day gate still false-positived on
+3-month campaigns in the sweep, which samples far more windows and found 2.9-3.25 pp there against
+the 1.51 pp these four suggested. **The shipped value is `screen_min_campaign_days = 150`**, set by
+the sweep -- see the benchmark section below. The lesson is that a hand-picked window sample is a
+weaker calibration instrument than the sweep itself.
+
+**Constraint 2 — the floor is set by clean spread, not by sensitivity.** Clean placebo pools spread
+up to 1.19 pp in prepost with nothing injected, so `screen_floor = 0.025` leaves about a factor of
+two. An earlier 1 pp placeholder fired on healthy turbines in three separate places, and on the
+clean fixture cell that false positive moved the estimate **0.88 pp** — the screen made a good
+campaign worse. At 2.5 pp the clean cells are unchanged to five decimal places.
+
+**Two bad references halve the signal.** One reference at -4% reads 3.48 pp from the median; two at
+-4% read 1.81 pp, because they drag the median toward themselves. So the majority-vote design
+weakens as more references go bad, quantifiably, and detecting two together takes roughly double
+the magnitude of detecting one.
+
+**Toggle is not screened.** Two contrasts were measured and both fail. The campaign's own toggle
+schedule is blind by construction — a reference is not the thing being toggled, so its change sits
+in the on- and off-blocks alike (injected arms read 0.73-1.27 pp against a 0.77 pp clean baseline,
+and the ranking named the wrong turbine). A mid-campaign prepost split sees a change but cannot
+attribute it: each side holds ~3 months of a 6-month test in different seasons, clean noise rises
+to 2.0-3.9 pp, and the five-reference injected arm read *below* its own clean baseline. Since
+ruling out a good reference costs more than leaving a mild bad one in, the screen does not run in
+toggle. **`power_model` remains exposed there anyway** — its fit reaches into the pre-campaign
+baseline under `adaptive_time_decay`, which straddles a boundary change and reintroduces a bias the
+toggle contrast would otherwise cancel. That is a fit-window exposure; closing it re-opens the
+`toggle_campaign_only` knob Issue 16 pruned, so it is left open deliberately.
+
+**Cost.** Screening plus the post-screen reference-uplift pass adds ~2N model fits per estimate. On
+the 21-turbine farm that is ~30 minutes per test turbine, and it made the frozen benchmark sweep
+roughly 12x slower. **Settled: `report_reference_uplifts` defaults to True and every sweep driver
+passes False.** A sweep scores estimators rather than reporting campaigns, and the report is an
+output, not an input -- turning it off moves no estimate. The screen itself still runs in a sweep,
+since that does change estimates.
+
+**The remediation A/B: the screen earns its place, the waking boolean does not.** Movement from
+each pool's clean cell on the prepost fixture arms, truth zero, so smaller is better [pp]:
+
+| remediation | T15 +5% | T15 -4% | two at -8% | mean | worst |
+|---|---|---|---|---|---|
+| no screen | 1.185 | 1.137 | 3.198 | 1.840 | 3.198 |
+| drop | 0.376 | 0.276 | 1.332 | 0.661 | 1.332 |
+| **direction** | 0.314 | 0.288 | 1.272 | **0.625** | **1.272** |
+| direction + waking | **0.197** | 0.398 | 1.408 | 0.668 | 1.408 |
+
+Screening cuts mean error from **1.84 pp to 0.63 pp**, a 66% reduction, and recovers up to 3.2 pp
+on the two-bad case. Every arm leaves the clean cells byte-identical (+0.343% / +0.453%), so
+nothing is paid for on a healthy campaign and the choice of remediation cannot move the frozen
+benchmarks, which screen nobody.
+
+**Keeping the ruled-out reference's direction beats dropping it outright** on mean and worst case:
+its wake geometry is uncorrupted by a performance change and worth retaining, which is the point of
+making a bad reference power-free rather than removing it.
+
+**The waking boolean is kept, and the A/B is why it *can* be.** It is marginally behind on this
+fixture -- best on one arm, worst on the other two -- but the three remediations sit within
+**0.04 pp** of each other (0.625 / 0.661 / 0.668) across three arms on one farm and one test
+turbine. That is not evidence it costs anything; it is evidence the fixture cannot separate them.
+Against that, it carries information the fixture does not exercise: a reference that stops
+producing entirely still tells the model it has stopped waking its neighbours, which neither
+`drop` nor direction-only can express once the power channel is gone. The decision was taken on
+that basis -- no measurable cost, a clear physical argument -- and the other two options were
+pruned rather than left as dead knobs.
+
+**The road test: the calibration transfers to farms it never saw.** Four reference sets, placebo
+campaigns, truth exactly zero, screen on:
+
+| farm | references | test uplift | reference overall | screened |
+|---|---|---|---|---|
+| Hill of Towie, whole farm | 19 | +0.44% / +0.42% | +0.357% | **T17** |
+| Hill of Towie west (T01-T15) | 13 | +0.46% / +0.39% | +0.385% | none |
+| Kelmarsh | 4 | -0.02% / +0.30% | +0.254% | none |
+| Penmanshiel | 12 | -0.23% / +0.10% | -0.257% | none |
+
+The floor was calibrated on Hill of Towie alone, and it fires on the one farm with a genuinely bad
+turbine while staying silent on three that do not, including two farms it had never seen. The
+reference overall uplift reads -0.26% to +0.39% throughout, so the sanity check behaves everywhere.
+`hot_west` is the control: it excludes T17 and screens nobody while giving essentially the same
+estimate as the whole farm.
+
+**The frozen benchmarks are unchanged.** Zero references ruled out across the sweep, zero MOVED
+verdicts, and every **overall** mean-over-profiles delta zero in both modes at every campaign
+length. The largest movement anywhere is **0.013 pp**, in the degenerate 2-month wind-speed
+conditional cell whose own score is 14.5 pp -- 0.09% relative, inside the sweep's +/-0.1 pp neutral
+band. It is deterministic (identical across two runs), it predates the PR-140 review fixes, and it
+is not the positional feature renaming, which was checked directly and gives bit-identical
+predictions. It is consistent with the known LightGBM thread-order reproduction floor, which
+earlier work put at ~0.7 pp cross-machine. Worth stating precisely rather than rounding to "zero":
+the headline P50 cells are exactly unchanged, the degenerate conditional tail is not quite. Getting
+there took two goes: at a 90-day gate the sweep still false-positived on 3-month campaigns (a
+reference read -2.9%, 3.1 pp from its pool median, and ruling it out moved prepost overall score
+**+0.103 pp and spread +0.126 pp the wrong way**). The same three-reference pool is clean at 6 and
+12 months, where the screen runs and correctly finds nothing, so campaign length is the driver
+rather than pool size, and the gate went to 150 days. The sweep is the better calibration
+instrument than a hand-picked set of windows: four sampled windows had put 3-month campaigns at
+1.51 pp worst, and the sweep's wider sampling found 2.9-3.25 pp.
+
+**The power-minimum artefact, closed.** `ReferenceCpChange` originally moved a reference's mean
+power while leaving `active_power_min` — an unconditional model feature — at its pre-change value,
+an impossible channel mismatch the screen might have keyed on instead of the Cp shift. It now
+scales positive minima with the mean and leaves negative ones alone (a negative minimum is
+parasitic draw, which a Cp change does not scale). Re-running the fixture with it fixed leaves the
+**screened** results identical to three decimal places (+0.197 / +0.398 / +1.408 pp) and the same
+turbines detected, while the unscreened bite strengthens ~4% (-1.185 -> -1.233, +1.137 -> +1.181,
++3.198 -> +3.312) now that the minimum carries the change too. There is a structural reason the
+screened numbers cannot move: a ruled-out reference loses its power columns, mean and minimum
+alike, so the consistency of a channel that is no longer in the matrix cannot matter. The artefact
+could only ever have affected detection, and detection is unchanged.
+
+**Four bugs the runs caught that the unit tests did not.** The `waking` feature was bool, which
+collapses to object dtype once reindexed and the outcome model rejects (now tri-state float, with
+a missing record left unknown rather than asserted not-waking). The screen kept screening a
+two-reference pool after a drop, where deviation-from-median is degenerate and it flagged one
+arbitrarily. The floor placeholder fired on healthy turbines. And the reference-uplift pass
+recursed through its own clones once it gained its own flag — the clones had been stopped by the
+screen's flag by accident — turning a 39-minute road test into one still running after nine hours.
+Each was found by a real run, not a fixture: the toy pools are too small for the recursion to bite
+and the sweep disables the pass entirely, so only a large-pool run with reporting on could show it.
+
+---
+
+## CF12 — An undeclared reference upgrade bites `power_model` hard in prepost (−0.69 to −1.14 pp from a 3% Cp change) and, unexpectedly, **also in toggle** (−0.31 to −0.52 pp) — toggle's alternation cancels it for `naive_ratio` but not for `power_model`, whose fit still reaches into the pre-campaign baseline
+
+*2026-09-04. R3, Phase A (the bite; the screen is not built yet). Driver:
+`benchmarking.campaigns.reference_fixture` — T06 declared through `placebo_campaign` (no upgrade
+injected, so truth is exactly 0), 12-month baseline plus 12 months prepost / 6 months toggle.
+Five arms x both modes: a 3-reference pool (T15/T10/T08, the CF5 set) clean, with T15 at +3% Cp
+and with T15 at −3% Cp; and a 5-reference pool (+T04/T02) clean and with both T15 and T10 at +3%.
+Every change is a `ReferenceCpChange` landing at the campaign changeover and staying on — a
+reference retrofitted in the same programme as the test turbine. Movement is measured against the
+clean cell of the same pool size, since a 3-reference and a 5-reference estimate differ in their
+own right (prepost clean: +0.343% vs +0.453%).*
+
+**Observed — it bites in every arm, in both modes.** `power_model` headline movement, against a
+0.25 pp materiality bar:
+
+| pool | arm | prepost | toggle |
+|---|---|---|---|
+| 3 refs | T15 +3% | 0.343% → −0.350% (**−0.692 pp**) | 0.082% → −0.227% (**−0.309 pp**) |
+| 3 refs | T15 −3% | 0.343% → +1.174% (**+0.831 pp**) | 0.082% → +0.431% (**+0.349 pp**) |
+| 5 refs | T15+T10 +3% | 0.453% → −0.691% (**−1.144 pp**) | 0.358% → −0.165% (**−0.523 pp**) |
+
+Signs are as expected and roughly symmetric: an improving reference raises the counterfactual and
+drags the estimate down; a degrading one lifts it. 3% was enough on the first attempt, so no
+escalation was needed. Two bad references out of five moved the estimate *more* than one out of
+three (−1.14 vs −0.69 pp) despite a similar poisoned fraction (0.40 vs 0.33).
+
+**The surprise is toggle.** R2's lesson, and the prior expectation recorded in the design, was
+that toggle's rapid alternation cancels a fault present in both periods. It does — for
+`naive_ratio`, which moved **0.006 pp** in toggle against 0.68 pp in prepost. It does not for
+`power_model`, which retains ~45% of its prepost movement.
+
+**Root cause of the toggle residual.** `naive_ratio` calls `restrict_to_campaign`, which drops the
+pre-campaign rows, so both sides of its ratio sit entirely after the step and the reference's new
+performance is common-mode. `power_model` has no such restriction: under `adaptive_time_decay` its
+toggle fit still draws on the pre-campaign baseline, which straddles the step, so the model learns
+a reference relationship partly from before the change and applies it after. That is the only
+asymmetry between the two methods here, and it predicts the sign and rough size of what is left.
+
+**`toggle_specialist` is structurally identical to `naive_ratio` on a headline P50.** Both compute
+`rho_up / rho_base − 1` with `rho = Σ test_power / Σ ref_total`, and their `_used_mask`
+implementations are line-for-line the same (`NormalOperationFilter`, `apply_stuck_filter=False`,
+same completeness and availability terms); `toggle_specialist` adds only `& ~self._test_excluded(…)`,
+a no-op under a schema with no `exclude_row` role. Their toggle estimates agree bit-for-bit here
+and in the R2 run (CF11), which is expected rather than a defect — `toggle_specialist`'s distinct
+value is its block-bootstrap sigma, its per-power-bin conditional frame and that exclusion filter,
+none of which a headline comparison exercises. It also settles R3's scope question: at 0.006 pp,
+`toggle_specialist` needs no defence against this failure mode.
+
+**Implications.**
+- The R-series "fault must bite" gate is cleared **per mode**, so the Phase B screen must be
+  applied in both, not prepost only.
+- Before building the screen, test the cheaper rival hypothesis the root cause suggests: if the
+  toggle residual is purely the pre-campaign baseline in the fit, restricting `power_model`'s
+  toggle fit to campaign rows removes it with no screen at all. Note this re-opens the
+  `toggle_campaign_only` knob pruned as dead in Issue 16, so it needs its own evidence.
+- The screen's decision rule must be **relative** (outlier against the pack), not a test against
+  zero: screening each reference against a pool that still contains the bad one gives every good
+  reference a common negative offset.
+
+**Known artefact to watch.** `apply_upgrades` writes back `active_power`, `gen_rpm` and
+`wind_speed` only, so a reference whose mean power moves 3% keeps its original `active_power_min`,
+which `power_model` carries as a per-reference feature. Every *declared* upgrade behaves the same
+way, so the fixture stays internally comparable — but a Phase B screen that turns out to key on
+the mean/min inconsistency is detecting an artefact, not the performance change.
+
+---
+
 ## CF11 — An unstable anemometer costs `power_model`'s headline almost nothing as it ships (max 0.21 pp, and exactly zero in toggle), because the standing "no reference-anemometer features" rule already closes the pathway — turning that rule on is worth **34 pp** of error
 
 *2026-09-04. R2. Driver: `benchmarking.campaigns.sensor_fixture` — T06 plus T15/T10/T08,

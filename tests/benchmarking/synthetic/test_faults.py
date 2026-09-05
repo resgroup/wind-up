@@ -11,7 +11,9 @@ import pytest
 from benchmarking.synthetic import (
     HOT_COLUMNS,
     ConstantCpChange,
+    Fault,
     NorthingStep,
+    ReferenceCpChange,
     SensorGainDrift,
     SensorGainStep,
     generate_dataset,
@@ -35,7 +37,8 @@ def _scada(index: pd.DatetimeIndex) -> pd.DataFrame:
             {
                 _COLUMNS.turbine: turbine,
                 _COLUMNS.active_power: rng.uniform(200, 2000, len(index)),
-                _COLUMNS.active_power_min: 100.0,
+                # mixed sign on purpose: a real power minimum is often negative (parasitic draw)
+                _COLUMNS.active_power_min: rng.uniform(-50, 300, len(index)),
                 _COLUMNS.wind_speed: rng.uniform(4, 14, len(index)),
                 _COLUMNS.wind_speed_sd: 1.0,
                 _COLUMNS.gen_rpm: 1400.0,
@@ -325,3 +328,102 @@ class TestSensorGainDrift:
     def test_an_unknown_turbine_raises(self) -> None:
         with pytest.raises(ValueError, match="T99"):
             _generate([SensorGainDrift(turbine="T99", gain=1.5)])
+
+
+def _power(frame: pd.DataFrame, turbine: str) -> pd.Series:
+    rows = frame[frame[_COLUMNS.turbine] == turbine]
+    return rows[_COLUMNS.active_power]
+
+
+def _rows(frame: pd.DataFrame, turbine: str) -> pd.DataFrame:
+    return frame[frame[_COLUMNS.turbine] == turbine]
+
+
+class TestReferenceCpChange:
+    def test_raises_the_named_references_power_from_the_change_date(self) -> None:
+        dataset, scada = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.03)])
+
+        before = _power(dataset.synthetic_df, "T02").loc[:_FAULT_AT].iloc[:-1]
+        clean_before = _power(scada, "T02").loc[:_FAULT_AT].iloc[:-1]
+        assert before.to_numpy() == pytest.approx(clean_before.to_numpy())
+
+        after = _power(dataset.synthetic_df, "T02").loc[_FAULT_AT:].to_numpy()
+        clean_after = _power(scada, "T02").loc[_FAULT_AT:].to_numpy()
+        assert (after > clean_after).all()
+        # Only the region-2 fraction of each record responds, so the mean gain is under the full 3%.
+        assert 1.0 < after.mean() / clean_after.mean() < 1.03
+
+    def test_the_power_minimum_follows_the_mean(self) -> None:
+        """`active_power_min` is an unconditional model feature; leaving it behind fakes a mismatch."""
+        dataset, scada = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.05)])
+        after = _rows(dataset.synthetic_df, "T02").loc[_FAULT_AT:]
+        clean = _rows(scada, "T02").loc[_FAULT_AT:]
+        positive = clean[_COLUMNS.active_power_min] > 0
+        assert positive.any(), "fixture needs positive minima to exercise this"
+        ratio = after.loc[positive, _COLUMNS.active_power] / clean.loc[positive, _COLUMNS.active_power]
+        expected = clean.loc[positive, _COLUMNS.active_power_min] * ratio
+        assert after.loc[positive, _COLUMNS.active_power_min].to_numpy() == pytest.approx(expected.to_numpy())
+
+    def test_a_negative_power_minimum_is_left_alone(self) -> None:
+        """A negative minimum is parasitic consumption, which a Cp change does not scale."""
+        dataset, scada = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.05)])
+        after = _rows(dataset.synthetic_df, "T02").loc[_FAULT_AT:]
+        clean = _rows(scada, "T02").loc[_FAULT_AT:]
+        negative = clean[_COLUMNS.active_power_min] < 0
+        assert negative.any(), "fixture needs negative minima to exercise this"
+        assert after.loc[negative, _COLUMNS.active_power_min].to_numpy() == pytest.approx(
+            clean.loc[negative, _COLUMNS.active_power_min].to_numpy()
+        )
+
+    def test_a_negative_delta_lowers_the_references_power(self) -> None:
+        dataset, scada = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=-0.03)])
+        after = _power(dataset.synthetic_df, "T02").loc[_FAULT_AT:].to_numpy()
+        clean_after = _power(scada, "T02").loc[_FAULT_AT:].to_numpy()
+        assert (after < clean_after).all()
+
+    def test_leaves_other_turbines_alone(self) -> None:
+        dataset, _ = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.03)])
+        clean_dataset, _ = _generate([])
+        for turbine in ("T01", "T03"):
+            assert _power(dataset.synthetic_df, turbine).to_numpy() == pytest.approx(
+                _power(clean_dataset.synthetic_df, turbine).to_numpy()
+            ), turbine
+
+    def test_leaves_the_test_turbines_true_uplift_untouched(self) -> None:
+        """The change is real power on a reference; the test turbine's ground truth must not move."""
+        clean, _ = _generate([])
+        faulted, _ = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.03)])
+        assert faulted.true_uplift().overall == pytest.approx(clean.true_uplift().overall, abs=1e-12)
+
+    def test_the_untouched_original_never_carries_the_change(self) -> None:
+        dataset, scada = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.03)])
+        assert _power(dataset.original_df, "T02").to_numpy() == pytest.approx(_power(scada, "T02").to_numpy())
+
+    def test_targeting_a_test_turbine_raises(self) -> None:
+        """A power-changing fault on a test turbine would be absorbed into its derived truth."""
+        with pytest.raises(ValueError, match="T01"):
+            _generate([ReferenceCpChange(turbine="T01", at=_FAULT_AT, delta=0.03)])
+
+    def test_an_unknown_turbine_raises(self) -> None:
+        with pytest.raises(ValueError, match="T99"):
+            _generate([ReferenceCpChange(turbine="T99", at=_FAULT_AT, delta=0.03)])
+
+    def test_is_recorded_in_run_metadata(self) -> None:
+        dataset, _ = _generate([ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.03)])
+        assert dataset.run_metadata["faults"] == [
+            {"kind": "reference_cp_change", "turbine": "T02", "at": str(_FAULT_AT), "delta": 0.03}
+        ]
+
+    def test_declares_that_it_changes_power(self) -> None:
+        assert ReferenceCpChange(turbine="T02", at=_FAULT_AT, delta=0.03).changes_power
+
+    @pytest.mark.parametrize(
+        "fault",
+        [
+            NorthingStep(turbine="T02", at=_FAULT_AT, offset_deg=40.0),
+            SensorGainStep(turbine="T02", at=_FAULT_AT, gain=1.5),
+            SensorGainDrift(turbine="T02", gain=1.5),
+        ],
+    )
+    def test_the_reading_only_faults_declare_that_they_do_not(self, fault: Fault) -> None:
+        assert not fault.changes_power

@@ -18,6 +18,7 @@ this package imports nothing from ``wind_up``.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import tempfile
 from dataclasses import dataclass, field
@@ -39,8 +40,15 @@ from benchmarking.baselines.power_model.features import (
     reference_mean_wind_speed,
     test_condition_signals,
 )
-from benchmarking.baselines.power_model.fitting import make_outcome_model, time_block_folds
+from benchmarking.baselines.power_model.fitting import make_outcome_model, model_safe_features, time_block_folds
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
+from benchmarking.baselines.power_model.screening import (
+    ScreenResult,
+    screen_references,
+)
+from benchmarking.baselines.power_model.screening import (
+    empty_screen_passes as _empty_screen_passes,
+)
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import (
     CONDITION_BINS,
@@ -51,8 +59,11 @@ from benchmarking.harness.conditions import (
 )
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrade_start
+from wind_up.farm import TurbineUplift, farm_uplift
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from benchmarking.synthetic import ColumnSchema
 
 logger = logging.getLogger(__name__)
@@ -113,6 +124,55 @@ _DEFAULT_MATCHING_BIN_EDGES: dict[str, list[float]] = {
     "wind_gusts_10m": [float(x) for x in np.arange(0.0, 48.0, 3.0)],  # 0,3,…,45
     "wind_direction_100m": [float(x) for x in np.arange(0.0, 380.0, 20.0)],  # 0,20,…,360
 }
+
+
+# Reference-validity screen (R3). A reference whose own performance shifts across the campaign
+# boundary biases the counterfactual, so each candidate is estimated against the others and clear
+# outliers are made power-free. The floor is a deviation from the pool's median, in uplift
+# fraction, calibrated on clean placebo pools rather than chosen: those spread up to 1.19 pp with
+# nothing injected, so 2.5 pp leaves roughly a factor of two before a healthy reference is at risk.
+# Set high deliberately -- ruling out a good reference costs more than leaving a mild bad one in
+# (on the clean fixture a false positive moved the estimate 0.88 pp).
+_DEFAULT_SCREEN_FLOOR = 0.025
+# Active power, as a fraction of rated, at or above which a power-free reference counts as waking
+# its neighbours. Low by design: thrust is already a large fraction of maximum well below rated,
+# so this separates waking from parked while leaking almost none of the power level.
+WAKING_RATED_FRACTION = 0.05
+# A screening estimate is only as good as the campaign it is measured over, and the benchmark sweep
+# set this rather than a hand-picked calibration. At 90 days the sweep still produced false
+# positives on 3-month campaigns -- a reference read -2.9%, about 3.1 pp from its pool median, and
+# ruling it out made the benchmark *worse* (score +0.10 pp, spread +0.13 pp). The same three-
+# reference pool is clean at 6 and 12 months, where the screen runs and correctly finds nothing, so
+# the driver is campaign length rather than pool size. 150 days sits clear of both: a 3-month
+# campaign (~90 days of data) is not screened, a 6-month one (~182) is.
+_DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS = 150.0
+
+
+def reference_overall_uplift(reference_uplifts: pd.DataFrame, *, rated_power_kw: float) -> float:
+    """Combine surviving references into one energy-weighted uplift -- the campaign sanity check.
+
+    Screened references are excluded: the number answers what the *final* analysis says its
+    references did, and a healthy campaign reads near 0%. NaN when nothing survives.
+
+    Combined through ``farm_uplift``, the same path the test turbines take, so the reference
+    headline and the test headline are the same kind of number.
+    """
+    if reference_uplifts.empty:
+        return float("nan")
+    surviving = reference_uplifts[~reference_uplifts["screened"].astype(bool)]
+    if surviving.empty:
+        return float("nan")
+    turbines = [
+        TurbineUplift(
+            turbine=str(row.turbine),
+            uplift=float(row.uplift),
+            actual_energy=float(row.actual_energy),
+            n_records=int(row.n_records),
+            rated_power_kw=rated_power_kw,
+        )
+        for row in surviving.itertuples()
+    ]
+    return float(farm_uplift(turbines).uplift)
 
 
 def _ratio(actual: np.ndarray, counterfactual: np.ndarray) -> float:
@@ -299,6 +359,24 @@ class PowerModelMethod:
         distant history informs the fit without dominating it (Issue 13's recency weighting; the
         alternative to the rejected drift *feature*). ``None`` disables the weighting entirely.
         The default self-configuring behaviour is ``adaptive_time_decay=True`` (this left ``None``).
+    :param reference_screen: when ``True`` (**default**), estimate each candidate reference as if it
+        were a test turbine against the others, and make clear outliers **power-free** -- they keep
+        their direction features and gain a ``waking`` boolean, so their wake information is retained
+        while the channels a performance change corrupts are not. Needs at least 3 candidate
+        references to form a majority; below that it is skipped.
+    :param screen_floor: deviation from the screened pool's median, in uplift fraction, at which a
+        reference is ruled out
+    :param report_reference_uplifts: report each candidate reference's own uplift, the standard
+        campaign sanity check (a healthy campaign's references read near 0%). Costs one extra model
+        fit per reference, so a method sweep that scores estimators rather than reporting campaigns
+        turns it off. It is a report, not an input: turning it off never moves the headline
+    :param write_diagnostics: write the per-run diagnostics folder. ``False`` for the clones that
+        estimate one reference during screening or reporting: ``out_dir=None`` does not suppress
+        them, it makes a temp directory per run, and there are O(N) such runs per estimate
+    :param screen_min_campaign_days: skip the screen when the campaign holds less than this much
+        upgraded data. A screening estimate over a short campaign is too noisy to separate a bad
+        reference from a good one at any floor, and ruling out a good reference costs more than
+        leaving a mild bad one in
 
     The toggle headline is always the counterfactual energy ratio ``Σactual/Σprediction - 1``.
     """
@@ -321,6 +399,11 @@ class PowerModelMethod:
     direction_feature: bool = True
     adaptive_time_decay: bool = True
     time_decay_half_life_days: float | None = None
+    reference_screen: bool = True
+    screen_floor: float = _DEFAULT_SCREEN_FLOOR
+    screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
+    report_reference_uplifts: bool = True
+    write_diagnostics: bool = True
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -352,16 +435,9 @@ class PowerModelMethod:
         # schema, so it is always present without per-driver ``reference_stat_cols`` config; extra
         # stat columns still append after it (deduped, so a caller repeating the min is harmless).
         extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
-        features = build_reference_features(
-            scada,
-            test_wtg=mi.test_wtg,
-            turbine_col=mi.turbine_col,
-            active_power_col=self.columns.active_power,
-            availability_col=self.columns.availability,
-            extra_cols=extra_cols,
-            include_availability=self.availability_feature,
-            direction_col=self.columns.northed("nacelle_position") if self.direction_feature else None,
-        )
+        screen = self.screen_references(mi) if self.reference_screen else None
+        power_free = screen.screened if screen is not None else ()
+        features = self._reference_features(scada, mi=mi, extra_cols=extra_cols, power_free=power_free)
         features, era5 = self._add_era5(scada, features, mi=mi, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
 
@@ -408,26 +484,29 @@ class PowerModelMethod:
         cond_upgraded = conditions.iloc[upgraded_sel].reset_index(drop=True)
         cond_baseline_valid = conditions.iloc[fit["baseline_valid_pos"]].reset_index(drop=True)
 
-        run_dir = self._run_dir(mi, index)
-        self._write(
-            mi,
-            run_dir=run_dir,
-            index=index,
-            timebase=timebase,
-            t=t,
-            selected=selected,
-            upgraded_sel=upgraded_sel,
-            y=y_arr,
-            features=features,
-            fit=fit,
-            uplift=uplift,
-            sum_actual=sum_actual,
-            sum_counter=sum_counter,
-            n_refs=n_refs,
-            era5=era5,
-            cond_upgraded=cond_upgraded,
-            cond_baseline_valid=cond_baseline_valid,
-        )
+        # A clone that estimates one reference during screening or reporting writes nothing:
+        # out_dir=None does not suppress diagnostics, it makes a temp directory per run.
+        run_dir = self._run_dir(mi, index) if self.write_diagnostics else None
+        if run_dir is not None:
+            self._write(
+                mi,
+                run_dir=run_dir,
+                index=index,
+                timebase=timebase,
+                t=t,
+                selected=selected,
+                upgraded_sel=upgraded_sel,
+                y=y_arr,
+                features=features,
+                fit=fit,
+                uplift=uplift,
+                sum_actual=sum_actual,
+                sum_counter=sum_counter,
+                n_refs=n_refs,
+                era5=era5,
+                cond_upgraded=cond_upgraded,
+                cond_baseline_valid=cond_baseline_valid,
+            )
 
         # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
         # it (eventually AEP extrapolation will). Skipped when no conditions are requested.
@@ -454,9 +533,20 @@ class PowerModelMethod:
                 upgraded_sel=upgraded_sel,
                 fit=fit,
                 overall_ratio=uplift,
-                run_dir=run_dir,
+                # non-None whenever conditions are requested; _validate_model_config enforces it
+                run_dir=run_dir,  # type: ignore[arg-type]
             )
-        return MethodOutput(p50_overall=uplift, p50_by_condition=by_condition)
+        # Reported post-screen: the sanity check asks what the *final* analysis says its references
+        # did, so a ruled-out reference is listed but does not drag the headline.
+        references = (
+            self.reference_uplifts(mi, screened=power_free, screen=screen) if self.report_reference_uplifts else None
+        )
+        return MethodOutput(
+            p50_overall=uplift,
+            p50_by_condition=by_condition,
+            reference_uplifts=references,
+            screen_passes=screen.passes if screen is not None else None,
+        )
 
     def _estimate_conditional(
         self,
@@ -812,6 +902,216 @@ class PowerModelMethod:
             "baseline_valid_pos": baseline_valid_pos,  # positions over ``index`` of the held-out rows
         }
 
+    def reference_features(self, mi: MethodInput, *, power_free: Sequence[str] = ()) -> pd.DataFrame:
+        """Build this method's reference feature matrix for ``mi``, optionally power-free for some.
+
+        The same matrix :meth:`estimate` fits on, exposed so a caller can inspect what the screen
+        changed.
+        """
+        scada = mi.context.select(mi.scada_df)
+        extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
+        return self._reference_features(scada, mi=mi, extra_cols=extra_cols, power_free=power_free)
+
+    def _reference_features(
+        self, scada: pd.DataFrame, *, mi: MethodInput, extra_cols: tuple[str, ...], power_free: Sequence[str]
+    ) -> pd.DataFrame:
+        """Return reference features for ``scada``; ``power_free`` references carry no power columns."""
+        return build_reference_features(
+            scada,
+            test_wtg=mi.test_wtg,
+            turbine_col=mi.turbine_col,
+            active_power_col=self.columns.active_power,
+            availability_col=self.columns.availability,
+            extra_cols=extra_cols,
+            include_availability=self.availability_feature,
+            direction_col=self.columns.northed("nacelle_position") if self.direction_feature else None,
+            power_free=power_free,
+            waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+        )
+
+    def reference_uplifts(
+        self, mi: MethodInput, *, screened: Sequence[str] = (), screen: ScreenResult | None = None
+    ) -> pd.DataFrame:
+        """Return what this campaign's own analysis says each candidate reference did.
+
+        Every reference is estimated under the campaign's own timing against the other surviving
+        references, so the reference headline and the test headline are the same kind of number. A
+        healthy campaign reads near 0% once these are combined by energy.
+
+        Screened references are estimated and reported too, flagged so they stay visible without
+        dragging the headline; they are kept out of every reference pool here.
+
+        When nothing was screened and the screen already ran this exact contrast, its final pass is
+        reused rather than refitting the whole pool.
+        """
+        context = mi.context
+        ruled_out = set(screened)
+        surviving = [r for r in context.candidate_references if r not in ruled_out]
+        clone = self._reference_clone()
+        reusable = self._reusable_screen_estimates(mi, screen=screen, ruled_out=ruled_out)
+        rows: list[dict[str, object]] = []
+        for target in context.candidate_references:
+            refs = [r for r in surviving if r != target]
+            if not refs:
+                continue
+            sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=refs)
+            sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
+            energy, n_records = self._upgraded_energy(sub_input, turbine=target)
+            uplift = reusable[target] if target in reusable else float(clone.estimate(sub_input).p50_overall)
+            rows.append(
+                {
+                    "turbine": target,
+                    "uplift": uplift,
+                    "actual_energy": energy,
+                    "n_records": n_records,
+                    "screened": target in ruled_out,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def _reusable_screen_estimates(
+        self, mi: MethodInput, *, screen: ScreenResult | None, ruled_out: set[str]
+    ) -> dict[str, float]:
+        """Screen estimates that already answer the reference-uplift question, so no refit is needed.
+
+        Only when nothing was ruled out (every pool is the full one) and the screen ran the
+        campaign's own contrast, which is the case for a healthy prepost campaign. Any other
+        combination refits, because the pools or the contrast differ.
+        """
+        if screen is None or ruled_out or screen.passes.empty:
+            return {}
+        if is_toggle(mi.context.timing) or self.screening_timing(mi) != mi.context.timing:
+            return {}
+        final = screen.passes[screen.passes["pass"] == screen.passes["pass"].max()]
+        return {str(r.turbine): float(r.estimate) for r in final.itertuples()}
+
+    def _upgraded_energy(self, mi: MethodInput, *, turbine: str) -> tuple[float, int]:
+        """Energy a turbine produced over the campaign's upgraded rows, and how many records it covers."""
+        scada = mi.context.select(mi.scada_df)
+        rows = scada[scada[mi.turbine_col] == turbine]
+        index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
+        upgraded = pd.Series(resolve_toggle(mi.upgrade_timing, index).upgraded, index=index)
+        power = rows[self.columns.active_power]
+        selected = power[upgraded.reindex(pd.DatetimeIndex(rows.index)).fillna(value=False).to_numpy()]
+        finite = selected[np.isfinite(selected)]
+        return float(finite.sum()), int(finite.size)
+
+    def _campaign_days(self, mi: MethodInput) -> float:
+        """Upgraded days of data the *worst-covered* turbine in the screening pool has.
+
+        Counted from records rather than calendar span, and per turbine rather than over the frame:
+        the frame can span a year while one candidate has a fortnight of campaign data, and that
+        candidate is then estimated in exactly the short-data regime the gate exists to avoid. The
+        pool is judged by its weakest member because every screening estimate uses all of them.
+        """
+        scada = mi.context.select(mi.scada_df)
+        index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
+        upgraded = pd.Series(resolve_toggle(mi.upgrade_timing, index).upgraded, index=index)
+        timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
+        per_day = timebase.total_seconds() / 86400.0
+        covered: list[float] = []
+        for wtg in [mi.test_wtg, *mi.context.candidate_references]:
+            rows = scada[scada[mi.turbine_col] == wtg]
+            if rows.empty:
+                return 0.0
+            # This turbine's own rows: the long frame repeats each timestamp per turbine.
+            in_campaign = upgraded.reindex(pd.DatetimeIndex(rows.index)).fillna(value=False).to_numpy()
+            usable = in_campaign & np.isfinite(rows[self.columns.active_power].to_numpy(dtype=float))
+            covered.append(float(np.count_nonzero(usable)) * per_day)
+        return min(covered) if covered else 0.0
+
+    def _screening_clone(self) -> PowerModelMethod:
+        """Return this method as it estimates one candidate reference during screening."""
+        return self._pass_clone("screen")
+
+    def _reference_clone(self) -> PowerModelMethod:
+        """Return this method as it estimates one reference for the reference-uplift report."""
+        return self._pass_clone("reference")
+
+    def _pass_clone(self, suffix: str) -> PowerModelMethod:
+        """Return a clone for estimating one reference: no conditional step, no plots, neither pass.
+
+        Both passes must be off, not just the screen. A clone that still reports reference uplifts
+        runs the whole reference pass itself, and its clones run it again, so the work is
+        combinatorial rather than linear.
+        """
+        return dataclasses.replace(
+            self,
+            reference_screen=False,
+            report_reference_uplifts=False,
+            conditions=(),
+            save_plots=False,
+            write_diagnostics=False,
+            out_dir=None,
+            name=f"{self.name}_{suffix}",
+        )
+
+    def screening_timing(self, mi: MethodInput) -> pd.Timestamp:
+        """Return the changeover a reference is screened across -- always a prepost contrast.
+
+        A reference is not the thing being toggled, so asking what its power did between a
+        campaign's on-blocks and its off-blocks answers nothing: a change of its own sits in both
+        alike. The question that matters is whether it changed across a boundary.
+
+        Prepost uses the campaign's own changeover. Toggle splits the test period in half by data
+        volume: within a toggle campaign a reference change predating the test is common-mode
+        across every block and largely cancels, so what corrupts the result is a change *during*
+        the test -- and the test period is the data worth protecting.
+        """
+        timing = mi.context.timing
+        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        if not is_toggle(timing):
+            return pd.Timestamp(timing)  # type: ignore[arg-type]
+        campaign = index[index >= toggle_upgrade_start(timing, index)]
+        return pd.Timestamp(campaign[len(campaign) // 2])
+
+    def screen_references(self, mi: MethodInput) -> ScreenResult:
+        """Estimate each candidate reference against the others and rule out clear outliers.
+
+        Each screening estimate uses this same method with the conditional step and plots off and
+        the screen itself disabled, so it is the method judging its own references, across the
+        prepost contrast :meth:`screening_timing` picks.
+        """
+        context = mi.context
+        if is_toggle(context.timing):
+            # Toggle is not vulnerable to this failure mode: a reference change before the test is
+            # common-mode across every on and off block. The screen cannot see one there either --
+            # the on/off contrast is blind to it, and splitting the test in half leaves ~3 seasonal
+            # months a side, whose noise swamps the signal. Screening out a good reference costs
+            # more than leaving a mild bad one in, so it does not run.
+            logger.info("%s %s: reference screen skipped, campaign is toggle", self.name, mi.test_wtg)
+            return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
+        campaign_days = self._campaign_days(mi)
+        if campaign_days < self.screen_min_campaign_days:
+            logger.info(
+                "%s %s: reference screen skipped, campaign holds %.1f days of upgraded data, under the %.1f "
+                "needed for a screening estimate to separate a bad reference from a good one",
+                self.name,
+                mi.test_wtg,
+                campaign_days,
+                self.screen_min_campaign_days,
+            )
+            return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
+        timing = self.screening_timing(mi)
+        clone = self._screening_clone()
+
+        def estimate_one(target: str, refs: list[str]) -> float:
+            sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=list(refs), timing=timing)
+            sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
+            return float(clone.estimate(sub_input).p50_overall)
+
+        result = screen_references(
+            list(context.candidate_references), estimate_one=estimate_one, floor=self.screen_floor
+        )
+        if result.screened:
+            logger.info(
+                "%s %s: reference screen ruled out %s; they keep direction + waking features but contribute no power",
+                self.name,
+                mi.test_wtg,
+                list(result.screened),
+            )
+        return result
+
     def _validate_model_config(self) -> None:
         """Fail loudly on config combinations that would silently misbehave."""
         if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
@@ -822,6 +1122,27 @@ class PowerModelMethod:
                 "adaptive_time_decay sets the half-life from the campaign duration; a fixed "
                 "time_decay_half_life_days is only used with adaptive_time_decay=False. Set "
                 "adaptive_time_decay=False to use the fixed override, or leave time_decay_half_life_days=None."
+            )
+            raise ValueError(msg)
+        if not self.write_diagnostics and self.conditions:
+            msg = (
+                "write_diagnostics=False needs conditions=(): the conditional step writes its per-bin CSVs "
+                "into the run directory, so there is nowhere for them to go."
+            )
+            raise ValueError(msg)
+        # Hoisted from the conditional step so a misconfiguration is reported as one, rather than
+        # surfacing later as whatever the reference screen or the fit happens to hit first.
+        if self.conditions and self.era5_hourly_df is None:
+            msg = (
+                "the conditional step requires ERA5 (era5_hourly_df): the matching axis is the ERA5 weather "
+                "columns. Supply era5_hourly_df, or pass conditions=() for an overall-only estimate."
+            )
+            raise ValueError(msg)
+        blocked = sorted(set(self.era5_exclude) & set(self.matching_vars))
+        if blocked and self.conditions:
+            msg = (
+                f"era5_exclude {blocked} are matching_vars; excluding them as model features would "
+                f"break the CEM matching cells. Pass conditions=() or re-pick matching_vars first."
             )
             raise ValueError(msg)
 
@@ -847,13 +1168,14 @@ class PowerModelMethod:
         fit when given. Returns a single-element list so :meth:`_predict_mean` stays uniform.
         """
         model = self._make_model(seed=self.seed)
-        model.fit(x_train, y_train, **self._fit_kwargs(weights))
+        model.fit(model_safe_features(x_train), y_train, **self._fit_kwargs(weights))
         return [model]
 
     @staticmethod
     def _predict_mean(models: list[Any], x: pd.DataFrame) -> np.ndarray:
         """Mean prediction over the fitted model(s) (unclipped)."""
-        return np.mean([np.asarray(m.predict(x), dtype=float) for m in models], axis=0)
+        safe = model_safe_features(x)
+        return np.mean([np.asarray(m.predict(safe), dtype=float) for m in models], axis=0)
 
     def _holdout_fit(
         self, x_base: pd.DataFrame, y_base: np.ndarray, *, w_base: np.ndarray | None = None
@@ -1013,4 +1335,8 @@ class PowerModelMethod:
             "model_params": {**TUNED_MODEL_PARAMS, **self.model_params},
             "adaptive_time_decay": self.adaptive_time_decay,
             "time_decay_half_life_days": self.time_decay_half_life_days,
+            "reference_screen": self.reference_screen,
+            "screen_floor": self.screen_floor,
+            "screen_min_campaign_days": self.screen_min_campaign_days,
+            "report_reference_uplifts": self.report_reference_uplifts,
         }

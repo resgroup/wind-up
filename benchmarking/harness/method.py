@@ -113,6 +113,13 @@ class MethodOutput:
         binning and hoping the two agree. Deliberately row-level rather than pre-aggregated, so it
         serves consumers whose desired aggregate is not known here. The harness never interprets
         it.
+    :param reference_uplifts: optional per-reference frame (``turbine``, ``uplift``,
+        ``actual_energy``, ``n_records``, ``screened``) carrying what the campaign's own analysis
+        says each candidate reference did. A healthy campaign reads near 0% once these are combined
+        by energy, which is the standard sanity check on the reference set; ``screened`` marks a
+        reference the method ruled out, so it stays visible without dragging that headline.
+    :param screen_passes: optional per-pass frame from a method's reference-validity screen, so an
+        analyst can see, and disagree with, which references it ruled out and why.
     """
 
     p50_overall: float
@@ -120,6 +127,8 @@ class MethodOutput:
     sigma_overall: float | None = None
     uncertainty_diagnostics: pd.DataFrame | None = None
     labeled_rows: pd.DataFrame | None = None
+    reference_uplifts: pd.DataFrame | None = None
+    screen_passes: pd.DataFrame | None = None
 
 
 @runtime_checkable

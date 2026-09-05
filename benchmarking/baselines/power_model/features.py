@@ -63,6 +63,8 @@ def build_reference_features(
     extra_cols: Sequence[str] = (),
     include_availability: bool = True,
     direction_col: str | None = None,
+    power_free: Sequence[str] = (),
+    waking_threshold_kw: float | None = None,
 ) -> pd.DataFrame:
     """Wide, curated reference features: each reference turbine's active power (+ optional extras).
 
@@ -83,8 +85,16 @@ def build_reference_features(
         359 degrees is next to 1). Must be the column the shared northing step writes; raises
         naming it when absent. A raw direction listed in ``extra_cols`` is dropped in favour of
         it, so a reference never contributes both.
+    :param power_free: references that contribute no power columns. They keep their direction
+        features and gain a ``waking_<active_power_col>`` boolean instead, so the wake information
+        their operating state carries is retained while the channels a performance change corrupts
+        are not. Requires ``waking_threshold_kw``. Empty by default, which leaves the matrix
+        byte-identical to a caller that never asked.
+    :param waking_threshold_kw: active power at or above which a ``power_free`` reference counts as
+        waking its neighbours
     """
     refs = _references(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)
+    power_free = _checked_power_free(power_free, refs=refs, waking_threshold_kw=waking_threshold_kw)
     extra_cols, direction_frame = _direction_features(
         scada_df, refs=refs, turbine_col=turbine_col, direction_col=direction_col, extra_cols=extra_cols
     )
@@ -100,15 +110,68 @@ def build_reference_features(
     tmp = scada_df[[turbine_col, *value_cols]].copy()
     tmp["_ts"] = scada_df.index
     wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=value_cols, aggfunc="first")
-    keep = [(col, r) for col in value_cols for r in refs if (col, r) in wide.columns]
+    # power_free removes a reference's *power* channels only: availability is not one, and a
+    # screened reference is still known to be operating or not.
+    free = set(power_free)
+    power_cols = {active_power_col, *extra_cols}
+    keep = [
+        (col, r)
+        for col in value_cols
+        for r in refs
+        if (col, r) in wide.columns and not (r in free and col in power_cols)
+    ]
     features = wide.loc[:, keep]
     features.columns = [f"{col}{QUALIFIER}{r}" for col, r in keep]
     features = features.reindex(index)
     features.index.name = index.name
     if direction_frame is not None:
         features = features.join(direction_frame.reindex(index), how="left")
+    if power_free:
+        waking = _waking_features(
+            wide, refs=power_free, active_power_col=active_power_col, threshold_kw=waking_threshold_kw
+        )
+        features = features.join(waking.reindex(index), how="left")
     check_reference_only(features.columns.tolist(), test_wtg=test_wtg)
     return features
+
+
+def _checked_power_free(
+    power_free: Sequence[str], *, refs: list[str], waking_threshold_kw: float | None
+) -> tuple[str, ...]:
+    """Validate the power-free references against the pool, returning them deduped in pool order."""
+    requested = set(power_free)
+    if not requested:
+        return ()
+    unknown = sorted(requested - set(refs))
+    if unknown:
+        msg = f"power_free names {unknown}, which are not reference turbines of this estimate; have {refs}"
+        raise ValueError(msg)
+    if waking_threshold_kw is None:
+        msg = "power_free needs waking_threshold_kw: without it there is no waking boolean to replace power with"
+        raise ValueError(msg)
+    return tuple(r for r in refs if r in requested)
+
+
+def _waking_features(
+    wide: pd.DataFrame, *, refs: tuple[str, ...], active_power_col: str, threshold_kw: float | None
+) -> pd.DataFrame:
+    """Per-reference ``waking`` booleans: is this turbine producing enough to wake its neighbours.
+
+    A turbine above a few percent of rated already carries a large fraction of its maximum thrust,
+    so a low threshold separates waking from parked while leaking almost none of the power level.
+    """
+    assert threshold_kw is not None  # validated by _checked_power_free  # noqa: S101
+    columns = {}
+    for ref in refs:
+        if (active_power_col, ref) not in wide.columns:
+            continue
+        power = wide[(active_power_col, ref)]
+        # Float, not bool: the column is reindexed onto the full timestamp index downstream, and a
+        # bool column with gaps collapses to object dtype, which the outcome model rejects. A record
+        # the reference does not have is unknown rather than not-waking, so its NaN is preserved.
+        waking = (power >= threshold_kw).astype(float)
+        columns[f"waking_{active_power_col}{QUALIFIER}{ref}"] = waking.where(power.notna())
+    return pd.DataFrame(columns, index=wide.index)
 
 
 def _direction_features(
