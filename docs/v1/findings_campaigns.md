@@ -136,6 +136,18 @@ rather than pool size, and the gate went to 150 days. The sweep is the better ca
 instrument than a hand-picked set of windows: four sampled windows had put 3-month campaigns at
 1.51 pp worst, and the sweep's wider sampling found 2.9-3.25 pp.
 
+**The power-minimum artefact, closed.** `ReferenceCpChange` originally moved a reference's mean
+power while leaving `active_power_min` — an unconditional model feature — at its pre-change value,
+an impossible channel mismatch the screen might have keyed on instead of the Cp shift. It now
+scales positive minima with the mean and leaves negative ones alone (a negative minimum is
+parasitic draw, which a Cp change does not scale). Re-running the fixture with it fixed leaves the
+**screened** results identical to three decimal places (+0.197 / +0.398 / +1.408 pp) and the same
+turbines detected, while the unscreened bite strengthens ~4% (-1.185 -> -1.233, +1.137 -> +1.181,
++3.198 -> +3.312) now that the minimum carries the change too. There is a structural reason the
+screened numbers cannot move: a ruled-out reference loses its power columns, mean and minimum
+alike, so the consistency of a channel that is no longer in the matrix cannot matter. The artefact
+could only ever have affected detection, and detection is unchanged.
+
 **Four bugs the runs caught that the unit tests did not.** The `waking` feature was bool, which
 collapses to object dtype once reindexed and the outcome model rejects (now tri-state float, with
 a missing record left unknown rather than asserted not-waking). The screen kept screening a
