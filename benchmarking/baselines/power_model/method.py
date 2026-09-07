@@ -441,6 +441,15 @@ class PowerModelMethod:
                 f"scada_df; the downtime filter is required for the power model and cannot be skipped."
             )
             raise ValueError(msg)
+        # Checked before the screen, whose gate reads the same normal-operation mask, so a missing
+        # column is reported as the configuration error it is rather than as a bare KeyError.
+        if self.era5_hourly_df is not None and self.columns.wind_speed not in scada.columns:
+            msg = (
+                f"wind_speed_col {self.columns.wind_speed!r} is not in scada_df; it provides the reference wind "
+                f"speed the ERA5 lag sync locks onto. A missing column silently yields an all-NaN reference "
+                f"wind speed and a meaningless lag, so this is treated as a configuration error."
+            )
+            raise ValueError(msg)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
         n_refs = scada[mi.turbine_col].nunique() - 1
@@ -795,13 +804,6 @@ class PowerModelMethod:
         """Sync ERA5 (if supplied) and append its features."""
         if self.era5_hourly_df is None:
             return features, None
-        if self.columns.wind_speed not in scada.columns:
-            msg = (
-                f"wind_speed_col {self.columns.wind_speed!r} is not in scada_df; it provides the reference wind "
-                f"speed the ERA5 lag sync locks onto. A missing column silently yields an all-NaN reference "
-                f"wind speed and a meaningless lag, so this is treated as a configuration error."
-            )
-            raise ValueError(msg)
         reference_ws = reference_mean_wind_speed(
             scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
         )
@@ -1012,27 +1014,38 @@ class PowerModelMethod:
         return float(finite.sum()), int(finite.size)
 
     def _campaign_days(self, mi: MethodInput) -> float:
-        """Upgraded days of data the *worst-covered* turbine has, over the test turbine and the pool.
+        """Upgraded days of *fittable* data the worst-covered turbine has, test turbine included.
 
         Counted from records rather than calendar span, and per turbine rather than over the frame:
         the frame can span a year while one candidate has a fortnight of campaign data, and that
         candidate is then estimated in exactly the short-data regime the gate exists to avoid. The
         weakest member decides, since every screening estimate draws on the whole pool.
+
+        Rows are counted through the same normal-operation mask :meth:`_select_rows` fits on, so a
+        turbine with a year of readings but a fortnight of available ones is judged on the
+        fortnight.
         """
         scada = mi.context.select(mi.scada_df)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         upgraded = pd.Series(resolve_toggle(mi.upgrade_timing, index).upgraded, index=index)
         timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
         per_day = timebase.total_seconds() / 86400.0
+        keep_mask = NormalOperationFilter(
+            active_power_col=self.columns.active_power,
+            wind_speed_col=self.columns.wind_speed,
+            availability_col=self.columns.availability,
+        ).keep_mask
         covered: list[float] = []
         for wtg in [mi.test_wtg, *mi.context.candidate_references]:
-            rows = scada[scada[mi.turbine_col] == wtg]
+            # This turbine's own rows: the long frame repeats each timestamp per turbine.
+            rows = scada[scada[mi.turbine_col] == wtg].sort_index()
+            rows = rows[~rows.index.duplicated()]
             if rows.empty:
                 return 0.0
-            # This turbine's own rows: the long frame repeats each timestamp per turbine.
             in_campaign = upgraded.reindex(pd.DatetimeIndex(rows.index)).fillna(value=False).to_numpy()
-            usable = in_campaign & np.isfinite(rows[self.columns.active_power].to_numpy(dtype=float))
-            covered.append(float(np.count_nonzero(usable)) * per_day)
+            normal = keep_mask(rows, timebase=timebase).to_numpy()
+            finite = np.isfinite(rows[self.columns.active_power].to_numpy(dtype=float))
+            covered.append(float(np.count_nonzero(in_campaign & normal & finite)) * per_day)
         return min(covered) if covered else 0.0
 
     def _screening_clone(self) -> PowerModelMethod:

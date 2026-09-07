@@ -175,7 +175,7 @@ def _download_one_file(
     if cache_overwrite and dst_fpath.is_file():
         dst_fpath.unlink()
 
-    if dst_fpath.is_file() and dst_fpath.stat().st_size >= _file_size:
+    if dst_fpath.is_file() and dst_fpath.stat().st_size == _file_size:
         logger.info("%s File %s already exists. Skipping download.", progress_prefix, dst_fpath)
         return 0
 
@@ -183,6 +183,19 @@ def _download_one_file(
     for attempt in range(1, _MAX_DOWNLOAD_ATTEMPTS + 1):
         is_last_attempt = attempt == _MAX_DOWNLOAD_ATTEMPTS
         existing_size = dst_fpath.stat().st_size if dst_fpath.is_file() else 0
+        if existing_size > _file_size:
+            # Longer than Zenodo records it, so a resume appended bytes the file already had.
+            # Discarded rather than resumed: appending again cannot shorten it, and a Range
+            # request past the end is refused with a 4xx that is not worth retrying.
+            logger.warning(
+                "%s %s is %d bytes against the %d Zenodo records; discarding it and starting afresh.",
+                progress_prefix,
+                dst_fpath,
+                existing_size,
+                _file_size,
+            )
+            dst_fpath.unlink()
+            existing_size = 0
         headers = {"Range": f"bytes={existing_size}-"} if existing_size > 0 else {}
         try:
             # ``with`` on the response so its socket closes on every exit path, including
@@ -219,8 +232,8 @@ def _download_one_file(
                         f.write(chunk)
                         pbar.update(len(chunk))
             written = dst_fpath.stat().st_size
-            if written < _file_size:
-                msg = f"stream ended at {written}/{_file_size} bytes"
+            if written != _file_size:
+                msg = f"stream left {written} bytes on disk against the {_file_size} Zenodo records"
                 raise TruncatedDownloadError(msg)  # noqa: TRY301  (routed through the retry handler below)
         except (requests.RequestException, TruncatedDownloadError) as e:
             if _is_retryable(e) and not is_last_attempt:
@@ -310,15 +323,16 @@ def _cached_file_sizes(target_dir: Path) -> dict[str, int]:
 
 
 def _is_cached_complete(fpath: Path, expected_size: int | None) -> bool:
-    """Whether ``fpath`` holds a whole file: present, and no shorter than Zenodo records.
+    """Whether ``fpath`` holds a whole file: present, and exactly the size Zenodo records.
 
-    A file left short by an interrupted download is not complete, so the caller re-downloads
-    (resuming) rather than handing a truncated zip to the reader. Size is unknown, hence
-    unenforced, when the metadata cache has no entry for the file.
+    A file left short by an interrupted download is not complete, and one left long by a resume
+    that re-appended bytes is corrupt; either way the caller re-downloads rather than handing a
+    broken zip to the reader. Size is unknown, hence unenforced, when the metadata cache has no
+    entry for the file.
     """
     if not fpath.is_file():
         return False
-    return expected_size is None or fpath.stat().st_size >= expected_size
+    return expected_size is None or fpath.stat().st_size == expected_size
 
 
 def _missing_small_files_from_cached_metadata(target_dir: Path) -> list[str]:

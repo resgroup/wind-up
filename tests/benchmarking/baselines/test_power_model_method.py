@@ -1147,6 +1147,19 @@ class TestScreenNeedsEnoughCampaign:
         mi = self._prepost_days(30)
         assert self._gated_method(screen_min_campaign_days=10.0).screen_references(mi).screenable
 
+    def test_a_candidate_short_on_available_data_is_not_screened(self) -> None:
+        """Readings are not fits: a reference available for a fortnight has a fortnight of data."""
+        mi = self._prepost_days(200, baseline_days=200)
+        assert self._gated_method().screen_references(mi).screenable  # the control
+
+        scada = mi.scada_df.copy()
+        in_campaign = np.asarray(scada.index >= pd.Timestamp(mi.upgrade_timing))
+        is_r1 = (scada[_TURBINE] == "R1").to_numpy()
+        starved_rows = np.flatnonzero(is_r1 & in_campaign)[144 * 10 :]  # R1 keeps 10 available days
+        scada.iloc[starved_rows, scada.columns.get_loc(_AVAIL)] = 0.0
+        starved = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=mi.upgrade_timing, turbine_col=_TURBINE)
+        assert not self._gated_method().screen_references(starved).screenable
+
     def test_the_default_excludes_a_three_month_campaign(self) -> None:
         """The benchmark sweep set this: at 90 days a 3-month campaign still false-positived."""
         default = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_min_campaign_days

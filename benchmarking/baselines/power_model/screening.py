@@ -96,8 +96,9 @@ def screen_references(
     :param pool: the candidate references
     :param estimate_one: ``(target, references) -> uplift`` for one screening estimate
     :param floor: deviation from the pack's median at which a reference is ruled out
-    :raises ValueError: when a reference still stands out after a majority's worth have been ruled
-        out -- a farm-wide problem rather than a reference-validity one
+    :raises ValueError: when a reference still stands out, or cannot be estimated at all, after a
+        majority's worth have been ruled out -- a farm-wide problem rather than a
+        reference-validity one
     """
     remaining = list(pool)
     if len(remaining) < MIN_POOL_TO_SCREEN:
@@ -126,6 +127,16 @@ def screen_references(
         rows.extend(_pass_rows(estimates, dropped=worst, n_pass=n_pass))
         if worst is None:
             break
+        # Checked after the drop decision, so an infinite floor still observes without acting.
+        unestimated = sorted(name for name, value in estimates.items() if not np.isfinite(value))
+        if len(screened) + len(unestimated) > allowance:
+            msg = (
+                f"the screen could not estimate {unestimated}, which with {sorted(screened)} already ruled out is "
+                f"more than the {allowance} a majority of {len(pool)} references can outvote. References it cannot "
+                f"estimate are not thereby shown to be good, and dropping only some of them would pick between "
+                f"them on nothing, so no estimate is offered."
+            )
+            raise ValueError(msg)
         if len(screened) >= allowance:
             msg = (
                 f"{worst!r} still stands out after ruling out {sorted(screened)}, which is already the "

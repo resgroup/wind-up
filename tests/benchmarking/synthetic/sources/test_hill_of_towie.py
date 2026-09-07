@@ -244,6 +244,16 @@ class TestZenodoDownloadRetries:
         assert session.get.call_args_list[1].kwargs["headers"] == {"Range": "bytes=5-"}
         assert (tmp_path / "big.bin").read_bytes() == b"0123456789"
 
+    def test_an_oversized_file_is_discarded_and_downloaded_afresh(self, tmp_path: Path) -> None:
+        """A resume that re-appended bytes leaves a longer file, which is corrupt, not complete."""
+        (tmp_path / "big.bin").write_bytes(b"0123456789EXTRA")
+
+        session = _run_download(
+            tmp_path, file_entry=self.file_entry, responses=[_stub_response(chunks=[b"0123456789"])]
+        )
+        assert session.get.call_args_list[0].kwargs["headers"] == {}  # no Range: restarted from 0
+        assert (tmp_path / "big.bin").read_bytes() == b"0123456789"
+
     def test_a_client_error_is_not_retried_and_closes_its_response(self, tmp_path: Path) -> None:
         response = _stub_response(status_code=404)
         with pytest.raises(requests.HTTPError):
@@ -269,6 +279,15 @@ class TestEnsureHotDataFiles:
             ensure_hot_data_files(["2017.zip"], data_dir=tmp_path)
 
         download.assert_not_called()
+
+    def test_an_oversized_file_is_re_downloaded(self, tmp_path: Path) -> None:
+        self._write_metadata(tmp_path)
+        (tmp_path / "2017.zip").write_bytes(b"0123456789EXTRA")  # a resume re-appended bytes
+
+        with patch("benchmarking.synthetic.sources.hill_of_towie.download_zenodo_data") as download:
+            ensure_hot_data_files(["2017.zip"], data_dir=tmp_path)
+
+        assert download.call_args.kwargs["filenames"] == ["2017.zip"]
 
     def test_a_truncated_file_is_re_downloaded(self, tmp_path: Path) -> None:
         self._write_metadata(tmp_path)

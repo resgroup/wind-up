@@ -211,6 +211,7 @@ def run_roadtest(*, names: Sequence[str] | None = None, out_root: str | Path | N
     run_dir = root / f"{pd.Timestamp.now():%Y%m%d_%H%M%S}"
     run_dir.mkdir(parents=True, exist_ok=True)
     frames = []
+    failed: list[str] = []
     for test in road_tests():
         if names is not None and test.name not in names:
             continue
@@ -218,10 +219,17 @@ def run_roadtest(*, names: Sequence[str] | None = None, out_root: str | Path | N
         try:
             frames.append(run_one(test, out_dir=run_dir))
         except Exception:
+            # Caught so one farm's failure does not lose the others' results; re-raised below.
             logger.exception("road test %s failed", test.name)
+            failed.append(test.name)
     results = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     results.to_csv(run_dir / "roadtest.csv", index=False)
     logger.info("wrote the road-test results to %s", run_dir)
+    if failed:
+        # Raised after the partial results are on disk: every farm is attempted so one run shows
+        # every failure, but a partial road test must not read as a completed validation.
+        msg = f"road test failed for {failed}; the {len(frames)} that ran are in {run_dir / 'roadtest.csv'}"
+        raise RuntimeError(msg)
     return results
 
 

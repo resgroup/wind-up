@@ -172,6 +172,17 @@ class TestScreenReferences:
         assert result.screened == ()
         assert result.passes["pass"].nunique() == 1
 
+    def test_more_unestimated_references_than_the_allowance_raises(self) -> None:
+        """Dropping only some of them would be picking between them on nothing."""
+        estimates = {"T1": float("nan"), "T2": float("nan"), "T3": 0.0}
+        with pytest.raises(ValueError, match="could not estimate"):
+            screen_references(list(estimates), estimate_one=lambda target, _refs: estimates[target], floor=0.025)
+
+    def test_unestimated_references_within_the_allowance_are_ruled_out(self) -> None:
+        estimates = {"T1": float("nan"), "T2": float("nan"), "T3": 0.0, "T4": 0.0, "T5": 0.0}
+        result = screen_references(list(estimates), estimate_one=lambda target, _refs: estimates[target], floor=0.025)
+        assert result.screened == ("T1", "T2")
+
     def test_the_result_is_a_screen_result(self) -> None:
         result = screen_references(
             ["T15", "T10", "T08"], estimate_one=_estimator(dict.fromkeys(["T15", "T10", "T08"], 0.0)), floor=0.01
