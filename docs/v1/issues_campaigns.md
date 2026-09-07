@@ -42,12 +42,12 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
   should be read that way. Tests may switch `power_model` off to avoid the `ml`
   dependency; drivers should not.
   - **In v1 wind-up:** `power_model` (definite) and the shared northing step (R1).
-    `toggle_specialist` is **TBD**, to be settled with evidence in W1.
+    `toggle_specialist` is **TBD**, to be settled with evidence in W1b.
   - **Alongside, for comparison only:** `naive_ratio` (a deliberately simple yardstick,
     never a candidate for the shipped method) and `oracle` (a sanity anchor that returns
     the injected truth).
   - **`rlearner` is dropped** (see C7).
-  The composition itself is W1's business; this rule is only about how the campaigns
+  The composition itself is W1a/W1b's business; this rule is only about how the campaigns
   must be run so their results speak about the deliverable.
 - **Estimand:** per-turbine uplift **plus a result representative of the upgrade using the whole farm data** (one
   headline campaign number, as the real HoT analyses report).
@@ -138,16 +138,41 @@ so moved every frozen artefact at once. Read this before accepting any benchmark
 
 ## Suggested order
 
-`C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 → [R1 R2 R3 R4] → C3 → C4 → C5 → C6 → C8 → W1 → W2.`
+`C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4] → W1a → C3 → C4 → R5 →
+C5 → C6 → C8 → W1b → W2`, with **W3 running continuously from W1a onward** rather than at
+one point in the line.
+
 The R-series lands after the C1/C2 foundation: **R1 (northing) before C3** so the
 prepost campaign inherits the shared northing step; R2–R4 are independent
 `power_model` work, any order within the block. **W0** (package restructure) is
-independent and runs **early** (after C0) so later code lands in the new layout;
-**W1/W2** are **terminal** (after C6 + R4) because the composed `wind-up` method needs
-the robustness and campaign pieces first. **C8** (per-turbine change histories) lands
-**before W1** so the generalized declaration is what gets promoted to public API, not
-the flat one. C7 (drop `rlearner`, ✅ done) was independent. **R5** (northing refinement)
-is deliberately outside this order: it is future work R1 identified but does not need.
+independent and runs **early** (after C0) so later code lands in the new layout.
+
+**W1 is split, and only half of it is terminal.** Its interface — composing `wind-up`
+and letting it self-configure from a declared `CampaignSpec` — does not depend on the
+campaign work, but its *validation* is the campaign work: W1's done-criteria are that
+`wind-up` tracks truth across C1–C6 and stays invariant under R1–R4. So **W1a**
+(compose + declare) is hoisted to right after R4, and **W1b** (validate) stays terminal.
+**W2** stays terminal behind W1b.
+
+**W3 (the analyst dry run) is the reason for the split.** It measures whether an analyst
+with the documentation and no access to the source can drive a campaign and read what
+came out — and it needs W1a's declared entry point, nothing more. Running it from W1a
+onward means each C issue's outputs get interpretability-tested as that issue lands, and
+W2's documentation is written against known gaps rather than guesses. Deferring it to
+W2 would mean writing the release documentation blind and only then discovering what it
+failed to explain.
+
+**R5** (northing refinement) lands **before C5**. Everywhere else in this tranche a
+direction error is a nuisance variable, which is why R1's norther is good enough to ship;
+in C5 the treatment *is* a direction offset, so a systematic absolute error moves the
+signal being measured rather than adding noise around it. R5's two known gaps bite
+exactly there — Part B supplies the absolute anchor from wake nadirs that passes 1 and 2
+cannot, and Part A norths the small device counts a geometry-driven steering pair can
+come down to.
+
+**C8** (per-turbine change histories) lands **before W1b** so the generalized
+declaration is what gets frozen as public API at v1.0.0, not the flat one. C7 (drop
+`rlearner`, ✅ done) was independent.
 
 **Done so far:** C0, W0, C7, C1, C2, R1, R2 and R3. **Next: R4**, then C3, which inherits the
 shared northing step R1 landed and the reference screen R3 landed.
@@ -342,6 +367,11 @@ per-turbine and net-farm estimates track truth.
 **Re-verifies:** the shared northing step (R1, replacing the `wd_filter` hack) and the
 reference-validity screen (R3), now in-context under wake-changed references.
 
+**Depends on R5**, which is scheduled immediately before this issue. This is the one
+campaign whose treatment is itself a direction offset, so northing's *absolute* accuracy
+— not just its internal consistency — is load-bearing here in a way it is nowhere else
+in the tranche.
+
 ---
 
 ## C6 — Rated-power up/downrate
@@ -444,9 +474,11 @@ cannot express:
 - **Migrate C1–C6 campaigns** onto the general model; the placebo becomes a campaign
   whose turbines have an empty change history.
 
-**Ordering:** must land **before W1/W2**. W1's composed `wind-up` method
+**Ordering:** must land **before W1b/W2**. W1a's composed `wind-up` method
 self-configures from a `CampaignSpec` and W2 promotes that type into the public
-`src/wind_up` API — generalizing after that point means breaking published API. C1
+`src/wind_up` API — generalizing after that point means breaking published API. W1a is
+hoisted ahead of C8, so its declaration is explicitly *not yet frozen*: C8 generalizes
+it in place, and only W2 publishes it. C1
 keeps the flat model but must not let consumers depend on it (see the future-proofing
 note in the C1 design).
 
@@ -635,8 +667,10 @@ channels / gaps.
 
 ## R5 — Northing refinement: small-N devices, and absolute accuracy from wake nadirs
 
-**Status:** future work, not blocking. R1 delivered a norther good enough to ship; these are
-the two places it is known to fall short, both identified while doing R1.
+**Status:** scheduled **before C5**. R1 delivered a norther good enough to ship, and these are
+the two places it is known to fall short — both identified while doing R1. They are refinements
+everywhere a direction error is only a nuisance variable, and stop being refinements in C5,
+whose treatment is itself a direction offset.
 
 **Goal:** north devices a farm consensus cannot reach, and improve the *absolute* accuracy of
 the answer rather than only its internal consistency.
@@ -716,7 +750,7 @@ retained, done **early** so all later code lands in the new layout.
 
 **Scope**
 - Move legacy `wind_up` → `src/wind_up_v0/`; stand up `src/wind_up/` as the v1
-  package's home (a skeleton W1 fills). Adopt the conventional `src/` layout.
+  package's home (a skeleton W1a fills). Adopt the conventional `src/` layout.
 - Repoint every importer (notably the `v0_binned` baseline), tests, `pyproject`
   packaging, and examples. Distribution name **stays `res-wind-up`**; only import names
   change (`wind_up` = v1, `wind_up_v0` = legacy).
@@ -729,23 +763,49 @@ importer still references the old `wind_up` path for the legacy tool.
 
 ---
 
-## W1 — The composed `wind-up` method (terminal)
+## W1a — The composed `wind-up` method: compose and declare (after R4)
 
 **Goal:** a single headline method named **`wind-up`** — the v1 deliverable — that
-composes the winning pieces and self-configures from a `CampaignSpec`.
+composes the winning pieces and self-configures from a **declared** `CampaignSpec`.
+
+Hoisted ahead of C3–C6 because nothing here depends on them, and because W3 cannot start
+without it. What W1a delivers is the *interface*; W1b settles whether it is *right*.
 
 **Scope**
 - Build `wind-up` in `benchmarking/baselines` (like every v1 method), composing
   **`power_model` (definite) + the shared northing step (R1) + the reference-validity
   screen (R3) + missing-data adaptation (R4)**. `toggle_specialist` inclusion is
-  **TBD, settled with evidence** (it may be the toggle arm, or the composed
-  `power_model` path may suffice).
+  **TBD** and is settled in W1b, not here.
+- **A campaign is declared, not scripted** (moved here from W2, which is too late for
+  W3 to use it). `CampaignSpec` gains a simple user-facing declaration — a YAML file it
+  initializes from — so an analyst describes turbine roles, timing, exclusions and
+  northing without writing Python. This is the v0 `WindUpConfig.from_yaml` ergonomics
+  carried into v1, with the method config that v0 mixes into the same file kept on the
+  method instead.
+- A runner entry point that takes a declaration and writes an output directory, so a
+  campaign can be run without importing anything.
+
+**Done when:** `wind-up` runs self-configured from a YAML-declared `CampaignSpec` on the
+C1/C2 campaigns, and W3 can be attempted against it. The composition is expected to keep
+moving as C3–C6 land — that is W1b's business, and W3 tests documentation and output
+legibility, not API stability.
+
+---
+
+## W1b — The composed `wind-up` method: validate (terminal)
+
+**Goal:** evidence that the composed `wind-up` is the right method, not just a runnable
+one.
+
+**Scope**
 - Validate `wind-up` as the headline method across the campaigns (C1–C6) and the
   failure modes (R1–R4), in **both prepost and toggle**.
+- Settle `toggle_specialist` inclusion **with evidence** — it may be the toggle arm, or
+  the composed `power_model` path may suffice.
 
-**Done when:** `wind-up` runs self-configured from a `CampaignSpec`, tracks truth on the
-campaigns, and stays invariant under the failure modes in both modes; the exact
-composition (including the `toggle_specialist` decision) is settled and recorded.
+**Done when:** `wind-up` tracks truth on the campaigns and stays invariant under the
+failure modes in both modes; the exact composition (including the `toggle_specialist`
+decision) is settled and recorded.
 
 ---
 
@@ -784,11 +844,8 @@ up.
   v1 should carry: fold what is still true into `docs/methodology.md` or `docs/v1/`, and
   drop the citations that are only development history.
 
-- **A campaign is declared, not scripted.** `CampaignSpec` gains a simple
-  user-facing declaration — a YAML file it initializes from — so an analyst describes
-  turbine roles, timing, exclusions and northing without writing Python. This is the
-  v0 `WindUpConfig.from_yaml` ergonomics carried into v1, with the method config that
-  v0 mixes into the same file kept on the method instead.
+- **Document the declaration W1a delivered**, and fold in every gap W3 found — that
+  list, not guesswork, is what the release documentation has to answer.
 
 **Done when:** a user installs `res-wind-up`, imports `wind_up`, and runs the v1
 `wind-up` method end-to-end from the examples and README; `docs/methodology.md`
@@ -802,3 +859,54 @@ and re-run through v1, with no bespoke driver code for role assignment, exclusio
 northing or reference validity. That repo is the acceptance test for "easy to use": if
 re-doing those analyses still needs a hand-written script per steering window, the
 declaration is not finished.
+
+---
+
+## W3 — The analyst dry run: can someone use this from the documentation alone? (continuous, from W1a)
+
+**Goal:** measure whether an analyst holding only the documentation and a campaign prompt
+can run a campaign and correctly say what happened in it — and turn every place they
+cannot into a documentation or output-legibility fix.
+
+The C-series asks whether wind-up *measures* a realistic campaign correctly. This asks
+the separate question of whether anyone can *use* it to do so. Both halves are known by
+construction, because the synthetic generator already records ground truth, so the
+answer is objectively scoreable rather than a matter of opinion.
+
+**Shape**
+- **Generator side.** Build a synthetic dataset from a known upgrade profile and a known
+  fault set, plus a short campaign prompt (campaign brief) written as narrative — the prose an owner would
+  send an analyst. Ground truth is recorded out of band.
+- **Analyst side.** A fresh agent is given the prompt, a YAML declaration to populate
+  (W1a), a runner script, the documentation under test, and — after the run — the output
+  directory. It populates the declaration, runs the campaign, inspects the outputs, and
+  states **(a)** the upgrade class and magnitude and **(b)** which faults were present.
+- **The menu is given, not hidden.** A real analyst knows which upgrade and fault classes
+  exist, so the analyst is told the candidate set. The question is which one and how big,
+  not guessing an unbounded space.
+
+**Isolation is by construction, not by instruction**
+This repo contains its own answer key: `findings_campaigns.md` names the profiles and
+fault classes, `benchmarking/synthetic/` *is* the generator, and the development notes
+describe both. "Not allowed to read the source" is unenforceable for an agent with a
+filesystem. The analyst therefore runs in a directory containing **only** the brief, the
+declaration, the runner, the documentation under test and the output directory — never a
+checkout.
+
+**Scoring separates three different failures**, because they have three different fixes:
+
+| the analyst… | what it means | who fixes it |
+|---|---|---|
+| could not produce a run at all | the declaration or its documentation is unusable | W1a / W2 docs |
+| ran it but could not interpret the outputs | the outputs are not self-explanatory | the C issue that produced them |
+| interpreted them and concluded wrong | the method or its diagnostics mislead | the method |
+
+**The transcript is the deliverable**, as much as the score: where the analyst hesitated,
+what it guessed at, and what it went looking for and did not find, is the requirements
+list for W2's documentation. Runs are stochastic and model-dependent, so conclusions come
+from the pattern across repeats — a single failure is a signal, not a verdict.
+
+**Done when:** the dry run is repeatable on demand, has been run against at least one
+campaign per C issue as that issue lands, and W2's documentation answers every gap it
+found. It **gates W2**: a release whose documentation has never been tested by someone
+who cannot read the source is not ready to tag.
