@@ -175,6 +175,23 @@ def reference_overall_uplift(reference_uplifts: pd.DataFrame, *, rated_power_kw:
     return float(farm_uplift(turbines).uplift)
 
 
+def empty_reference_uplifts() -> pd.DataFrame:
+    """Return the empty reference-uplift frame, typed as a populated one would be.
+
+    A campaign whose pool leaves no reference estimable still reports the documented columns, so a
+    consumer can mask on ``screened`` without special-casing.
+    """
+    return pd.DataFrame(
+        {
+            "turbine": pd.Series(dtype=object),
+            "uplift": pd.Series(dtype=float),
+            "actual_energy": pd.Series(dtype=float),
+            "n_records": pd.Series(dtype=int),
+            "screened": pd.Series(dtype=bool),
+        }
+    )
+
+
 def _ratio(actual: np.ndarray, counterfactual: np.ndarray) -> float:
     """Energy-ratio ``Σactual / Σcounterfactual - 1`` over finite pairs; NaN if the denominator is 0."""
     finite = np.isfinite(actual) & np.isfinite(counterfactual)
@@ -570,13 +587,6 @@ class PowerModelMethod:
         ``features`` (``era5_feature_frame`` passes them through). Returns the ``[condition, condition_bin,
         p50_uplift]`` frame (or ``None`` when no wind-speed column), and writes the per-run diagnostics.
         """
-        if self.era5_hourly_df is None:
-            msg = (
-                "the conditional step requires ERA5 (era5_hourly_df): the matching axis is the ERA5 weather "
-                "columns. Supply era5_hourly_df, or pass conditions=() for an overall-only estimate."
-            )
-            raise ValueError(msg)
-
         # Matched two-direction fits, for the per-bin shape only. Matching is required: without it the reverse
         # model (train upgraded, predict baseline) would extrapolate out-of-distribution across the prepost
         # weather shift.
@@ -805,13 +815,6 @@ class PowerModelMethod:
             if missing and self.era5_exclude is not CURATED_ERA5_EXCLUDE:
                 msg = f"era5_exclude names columns not in the ERA5 features: {missing}"
                 raise ValueError(msg)
-            blocked = sorted(set(self.era5_exclude) & set(self.matching_vars))
-            if blocked and self.conditions:
-                msg = (
-                    f"era5_exclude {blocked} are matching_vars; excluding them as model features would "
-                    f"break the CEM matching cells. Pass conditions=() or re-pick matching_vars first."
-                )
-                raise ValueError(msg)
             drop = [
                 c
                 for c in era5_features.columns
@@ -957,7 +960,7 @@ class PowerModelMethod:
             sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=refs)
             sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
             energy, n_records = self._upgraded_energy(sub_input, turbine=target)
-            uplift = reusable[target] if target in reusable else float(clone.estimate(sub_input).p50_overall)
+            uplift = reusable[target] if target in reusable else self._reference_uplift(clone, sub_input)
             rows.append(
                 {
                     "turbine": target,
@@ -967,7 +970,19 @@ class PowerModelMethod:
                     "screened": target in ruled_out,
                 }
             )
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows) if rows else empty_reference_uplifts()
+
+    def _reference_uplift(self, clone: PowerModelMethod, sub_input: MethodInput) -> float:
+        """One reference's own uplift, or NaN when its data cannot support an estimate.
+
+        This pass runs after the headline is already computed, so a reference too degenerate to
+        estimate is reported as unknown rather than taking a good campaign result down with it.
+        """
+        try:
+            return float(clone.estimate(sub_input).p50_overall)
+        except ValueError as e:
+            logger.warning("%s: no reference uplift for %s (%s)", self.name, sub_input.test_wtg, e)
+            return float("nan")
 
     def _reusable_screen_estimates(
         self, mi: MethodInput, *, screen: ScreenResult | None, ruled_out: set[str]
@@ -997,12 +1012,12 @@ class PowerModelMethod:
         return float(finite.sum()), int(finite.size)
 
     def _campaign_days(self, mi: MethodInput) -> float:
-        """Upgraded days of data the *worst-covered* turbine in the screening pool has.
+        """Upgraded days of data the *worst-covered* turbine has, over the test turbine and the pool.
 
         Counted from records rather than calendar span, and per turbine rather than over the frame:
         the frame can span a year while one candidate has a fortnight of campaign data, and that
         candidate is then estimated in exactly the short-data regime the gate exists to avoid. The
-        pool is judged by its weakest member because every screening estimate uses all of them.
+        weakest member decides, since every screening estimate draws on the whole pool.
         """
         scada = mi.context.select(mi.scada_df)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
@@ -1059,7 +1074,7 @@ class PowerModelMethod:
         the test -- and the test period is the data worth protecting.
         """
         timing = mi.context.timing
-        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        index = pd.DatetimeIndex(pd.unique(mi.context.select(mi.scada_df).index)).sort_values()
         if not is_toggle(timing):
             return pd.Timestamp(timing)  # type: ignore[arg-type]
         campaign = index[index >= toggle_upgrade_start(timing, index)]
@@ -1098,7 +1113,13 @@ class PowerModelMethod:
         def estimate_one(target: str, refs: list[str]) -> float:
             sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=list(refs), timing=timing)
             sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
-            return float(clone.estimate(sub_input).p50_overall)
+            try:
+                return float(clone.estimate(sub_input).p50_overall)
+            except ValueError as e:
+                # NaN ranks worst, so the candidate is ruled out rather than aborting the estimate:
+                # surviving a reference this bad is what the screen is for.
+                logger.warning("%s: reference screen could not estimate %s (%s)", self.name, target, e)
+                return float("nan")
 
         result = screen_references(
             list(context.candidate_references), estimate_one=estimate_one, floor=self.screen_floor
@@ -1130,8 +1151,8 @@ class PowerModelMethod:
                 "into the run directory, so there is nowhere for them to go."
             )
             raise ValueError(msg)
-        # Hoisted from the conditional step so a misconfiguration is reported as one, rather than
-        # surfacing later as whatever the reference screen or the fit happens to hit first.
+        # Checked here rather than in the conditional step so a misconfiguration is reported as
+        # one, rather than surfacing later as whatever the screen or the fit happens to hit first.
         if self.conditions and self.era5_hourly_df is None:
             msg = (
                 "the conditional step requires ERA5 (era5_hourly_df): the matching axis is the ERA5 weather "

@@ -195,9 +195,10 @@ def generate_dataset(
     :param upgrades: upgrade callables applied to each test turbine's treated rows
     :param mode: ``"prepost"`` (changeover date) or ``"toggle"``
     :param upgrade_timing: changeover timestamp (prepost) or toggle schedule
-    :param faults: measurement corruptions injected after the upgrades, into the synthetic frame
-        only. They change readings rather than power, so the ground truth derived against
-        ``original_df`` is unaffected -- see :mod:`benchmarking.synthetic.faults`.
+    :param faults: undeclared corruptions injected after the upgrades, into the synthetic frame
+        only, leaving the ground truth derived against ``original_df`` unaffected. Most change a
+        reading rather than power; one that changes power may only target a reference, which is
+        enforced -- see :mod:`benchmarking.synthetic.faults`.
     :param cp_params: Cp surface parameters for the test turbines
     :param rated_power_kw: baseline rated power for the test turbines
     :param columns: the source-native column schema ``scada_df`` is keyed by

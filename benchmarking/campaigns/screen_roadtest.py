@@ -229,16 +229,18 @@ def summarise(results: pd.DataFrame) -> pd.DataFrame:
     """Per (farm, test turbine): the headline, the reference sanity check and what was screened."""
     if results.empty:
         return results
-    grouped = results.groupby(["farm", "test_wtg"])
+    keys = ["farm", "test_wtg"]
+    grouped = results.groupby(keys)
+    # Aggregated off the screened rows rather than through groupby.apply, whose include_groups
+    # argument needs pandas 2.2 while this project supports 2.0.
+    names = results[results["screened"]].groupby(keys)["reference"].agg(lambda refs: ",".join(sorted(refs)))
     return pd.DataFrame(
         {
             "test_uplift_pct": grouped["test_uplift_pct"].first(),
             "reference_overall_pct": grouped["reference_overall_pct"].first(),
             "n_references": grouped["reference"].nunique(),
             "n_screened": grouped["screened"].sum(),
-            "screened": grouped.apply(
-                lambda g: ",".join(sorted(g.loc[g["screened"], "reference"])) or "-", include_groups=False
-            ),
+            "screened": names.reindex(grouped.size().index).fillna("-"),
         }
     ).reset_index()
 

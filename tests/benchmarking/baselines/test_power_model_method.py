@@ -1045,6 +1045,50 @@ class TestReferenceUpliftReuse:
         assert survivor["uplift"] != pytest.approx(first["R2"])
 
 
+class TestADegenerateReferenceDoesNotSinkTheCampaign:
+    """A reference too poor to estimate is reported as unknown, not raised out of the estimate."""
+
+    def _mi_with_a_dead_reference(self) -> tuple[MethodInput, pd.Timestamp]:
+        mi, changeover = _screen_case(step=0.0)
+        scada = mi.scada_df.copy()
+        scada.loc[scada[_TURBINE] == "R1", _POWER] = np.nan  # R1 never reports power
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE), changeover
+
+    def test_the_headline_still_comes_back(self) -> None:
+        mi, _ = self._mi_with_a_dead_reference()
+        assert np.isfinite(_screen_method().estimate(mi).p50_overall)
+
+    def test_the_dead_reference_is_reported_as_unknown(self) -> None:
+        mi, _ = self._mi_with_a_dead_reference()
+        refs = _screen_method().estimate(mi).reference_uplifts
+        assert refs is not None
+        assert not np.isfinite(refs.loc[refs["turbine"] == "R1", "uplift"]).any()
+        assert np.isfinite(refs.loc[refs["turbine"] != "R1", "uplift"]).all()
+
+    def test_the_screen_rules_it_out_rather_than_failing(self) -> None:
+        """Surviving a reference this bad is the whole point of the screen."""
+        mi, _ = self._mi_with_a_dead_reference()
+        assert _screen_method().screen_references(mi).screened == ("R1",)
+
+
+class TestReferenceUpliftsSchema:
+    """The reported frame keeps its documented columns even when it has no rows."""
+
+    def _single_reference_mi(self) -> MethodInput:
+        mi, changeover = _screen_case(step=0.0)
+        scada = mi.scada_df
+        pair = scada[scada[_TURBINE].isin(["T1", "R1"])]
+        return MethodInput(scada_df=pair, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+
+    def test_a_lone_reference_yields_an_empty_but_typed_frame(self) -> None:
+        """One candidate reference leaves it no pool to be estimated against."""
+        refs = _screen_method().reference_uplifts(self._single_reference_mi())
+        assert refs.empty
+        assert list(refs.columns) == ["turbine", "uplift", "actual_energy", "n_records", "screened"]
+        # the documented mask still works on an empty frame
+        assert refs.loc[refs["screened"], "turbine"].tolist() == []
+
+
 class TestScreenIsPrepostOnly:
     """Toggle is not vulnerable to this failure mode, and the screen cannot see it there anyway."""
 

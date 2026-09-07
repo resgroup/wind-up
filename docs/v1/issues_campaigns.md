@@ -149,8 +149,8 @@ the robustness and campaign pieces first. **C8** (per-turbine change histories) 
 the flat one. C7 (drop `rlearner`, ✅ done) was independent. **R5** (northing refinement)
 is deliberately outside this order: it is future work R1 identified but does not need.
 
-**Done so far:** C0, W0, C7, C1, C2, R1 and R2. **Next: R3–R4**, then C3, which inherits the
-shared northing step R1 landed.
+**Done so far:** C0, W0, C7, C1, C2, R1, R2 and R3. **Next: R4**, then C3, which inherits the
+shared northing step R1 landed and the reference screen R3 landed.
 
 ---
 
@@ -574,6 +574,30 @@ invariance (injecting sensor drift/steps barely moves `power_model`'s error).
 ---
 
 ## R3 — Invalid references (`power_model`-internal fix)
+
+**Status:** ✅ Done (2026-09-07). A method-internal reference-validity screen landed in
+`power_model`, with `ReferenceCpChange` as the generator-side fault and three drivers
+(`screen_calibration`, `reference_fixture`, `screen_roadtest`) behind the numbers — see CF13 in
+[findings_campaigns.md](findings_campaigns.md). Each candidate reference is estimated as if it
+were a test turbine against the others, and a clear outlier from the pool median is made
+**power-free**: it keeps its direction features and gains a `waking` boolean, so its wake
+information survives while the channels a performance change corrupts do not.
+
+* **It found a real one.** On clean Hill of Towie data, T17 reads **+4.67%** against a
+  19-reference pool whose median is +0.26%; its median power ratio to its neighbours steps from
+  0.735 across 2017 to 0.804 across 2018. Nobody was looking for it.
+* **Screening earns its place.** Mean error on the injected prepost fixture arms falls from
+  **1.84 pp to 0.63 pp**, and up to 3.2 pp is recovered on the two-bad-reference case.
+* **Two gates, both measured.** `screen_floor = 0.025` (clean pools spread up to 1.19 pp) and
+  `screen_min_campaign_days = 150`, the latter set by the benchmark sweep after a 90-day gate
+  still false-positived on 3-month campaigns.
+* **Prepost only.** Toggle is not vulnerable to this failure mode and the screen cannot see it
+  there anyway; `power_model` stays exposed via its baseline-reaching fit window, deliberately, as
+  closing that re-opens the `toggle_campaign_only` knob Issue 16 pruned.
+* **Frozen benchmarks unchanged.** Zero references ruled out across the sweep and no MOVED
+  verdicts; the largest movement anywhere is 0.013 pp in a degenerate conditional cell.
+
+**Still open:** the in-context re-verification on C3/C5, which those issues carry.
 
 **Goal:** a reference turbine with its **own** performance shift, unrelated to the
 tested upgrade, no longer biases `power_model`.

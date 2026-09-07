@@ -65,7 +65,14 @@ def rank_by_deviation(estimates: Mapping[str, float]) -> list[tuple[str, float]]
 
 
 def worst_outlier(estimates: Mapping[str, float], *, floor: float) -> str | None:
-    """Return the reference furthest from the median if it is at least ``floor`` away, else None."""
+    """Return the reference furthest from the median if it is at least ``floor`` away, else None.
+
+    A non-finite floor rules nobody out. An unestimated reference's deviation is itself infinite, so
+    without this an infinite floor -- the observe-only idiom that records deviations without acting
+    on them -- would still drop one.
+    """
+    if not np.isfinite(floor):
+        return None
     ranked = rank_by_deviation(estimates)
     if not ranked:
         return None

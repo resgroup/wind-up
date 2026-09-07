@@ -70,6 +70,15 @@ class TestWorstOutlier:
         """A bad reference infects every other estimate, so the pool is re-judged after each drop."""
         assert worst_outlier({"T15": 0.02, "T10": 0.05, "T08": 0.0, "T04": 0.0, "T02": 0.0}, floor=0.01) == "T10"
 
+    def test_an_unestimated_reference_is_ruled_out_at_a_real_floor(self) -> None:
+        """Failing to estimate a reference is not evidence it is good."""
+        assert worst_outlier({"T15": float("nan"), "T10": 0.0, "T08": 0.0}, floor=0.025) == "T15"
+
+    def test_an_infinite_floor_rules_nobody_out(self) -> None:
+        """The observe-only idiom: record every deviation, act on none, including an infinite one."""
+        assert worst_outlier({"T15": float("nan"), "T10": 0.0, "T08": 0.0}, floor=float("inf")) is None
+        assert worst_outlier({"T15": 0.5, "T10": 0.0, "T08": 0.0}, floor=float("inf")) is None
+
 
 class TestMaxScreenable:
     @pytest.mark.parametrize(("pool", "expected"), [(3, 1), (4, 1), (5, 2), (7, 3), (21, 10)])
@@ -153,6 +162,15 @@ class TestScreenReferences:
         result = screen_references(["T15", "T10", "T08", "T04", "T02"], estimate_one=_estimator(truth), floor=0.01)
         final = result.passes[result.passes["pass"] == result.passes["pass"].max()]
         assert "T15" not in set(final["turbine"])
+
+    def test_an_infinite_floor_stops_after_one_pass_even_with_an_unestimated_reference(self) -> None:
+        """What the calibration driver relies on: one pass of the clean pool's own spread."""
+        estimates = {"T1": 0.001, "T2": -0.002, "T3": float("nan"), "T4": 0.0, "T5": 0.001}
+        result = screen_references(
+            list(estimates), estimate_one=lambda target, _refs: estimates[target], floor=float("inf")
+        )
+        assert result.screened == ()
+        assert result.passes["pass"].nunique() == 1
 
     def test_the_result_is_a_screen_result(self) -> None:
         result = screen_references(
