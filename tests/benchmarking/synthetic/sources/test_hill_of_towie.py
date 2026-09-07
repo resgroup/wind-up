@@ -15,10 +15,13 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
+import pytest
+import requests
 
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import (
     download_zenodo_data,
+    ensure_hot_data_files,
     long_to_wind_up_format,
     scada_wide_to_long,
 )
@@ -178,3 +181,100 @@ def test_download_routes_through_one_session_closed_once(tmp_path: Path) -> None
         headers={},
     )
     assert (tmp_path / "small.txt").read_bytes() == b"0123456789"
+
+
+_BIG_FILE_ENTRY = {"key": "big.bin", "size": 10, "links": {"self": "https://zenodo.test/big.bin"}}
+_ZIP_FILE_ENTRY = {"key": "2017.zip", "size": 10, "links": {"self": "https://zenodo.test/2017.zip"}}
+
+
+def _stub_response(*, status_code: int = 200, chunks: list[bytes] | None = None) -> MagicMock:
+    """A context-manager ``requests.Response`` stub streaming ``chunks``."""
+    response = MagicMock()
+    response.status_code = status_code
+    response.iter_content.return_value = list(chunks or [])
+    response.__enter__.return_value = response
+    response.__exit__.return_value = False
+    if status_code >= 400:
+        error = requests.HTTPError(f"{status_code} Error", response=response)
+        response.raise_for_status.side_effect = error
+    else:
+        response.raise_for_status.return_value = None
+    return response
+
+
+def _run_download(tmp_path: Path, *, file_entry: dict, responses: list[MagicMock]) -> MagicMock:
+    """Run ``download_zenodo_data`` offline against a scripted sequence of responses."""
+    (tmp_path / "zenodo_dataset_metadata.json").write_text(json.dumps({"files": [file_entry]}))
+
+    session = MagicMock()
+    session.get.side_effect = responses
+    session.__enter__.return_value = session
+    session.__exit__.return_value = False
+
+    with patch("requests.Session", return_value=session), patch("time.sleep"):
+        download_zenodo_data(record_id="123", output_dir=tmp_path)
+    return session
+
+
+class TestZenodoDownloadRetries:
+    """A required Zenodo file survives the transient failures the real service returns."""
+
+    file_entry = _BIG_FILE_ENTRY
+
+    def test_gateway_timeout_is_retried_then_succeeds(self, tmp_path: Path) -> None:
+        session = _run_download(
+            tmp_path,
+            file_entry=self.file_entry,
+            responses=[_stub_response(status_code=504), _stub_response(chunks=[b"0123456789"])],
+        )
+        assert session.get.call_count == 2
+        assert (tmp_path / "big.bin").read_bytes() == b"0123456789"
+
+    def test_a_truncated_stream_is_retried_and_resumed(self, tmp_path: Path) -> None:
+        session = _run_download(
+            tmp_path,
+            file_entry=self.file_entry,
+            responses=[
+                _stub_response(chunks=[b"01234"]),  # stream ends 5 bytes short
+                _stub_response(status_code=206, chunks=[b"56789"]),
+            ],
+        )
+        assert session.get.call_count == 2
+        # the second attempt resumed from the bytes already on disk
+        assert session.get.call_args_list[1].kwargs["headers"] == {"Range": "bytes=5-"}
+        assert (tmp_path / "big.bin").read_bytes() == b"0123456789"
+
+    def test_a_client_error_is_not_retried_and_closes_its_response(self, tmp_path: Path) -> None:
+        response = _stub_response(status_code=404)
+        with pytest.raises(requests.HTTPError):
+            _run_download(tmp_path, file_entry=self.file_entry, responses=[response])
+
+        # closed even though raise_for_status() failed, so the socket does not linger to GC
+        response.__exit__.assert_called_once()
+
+
+class TestEnsureHotDataFiles:
+    """The cache-hit shortcut only fires for files that are actually whole."""
+
+    file_entry = _ZIP_FILE_ENTRY
+
+    def _write_metadata(self, tmp_path: Path) -> None:
+        (tmp_path / "zenodo_dataset_metadata.json").write_text(json.dumps({"files": [self.file_entry]}))
+
+    def test_a_complete_file_makes_no_network_call(self, tmp_path: Path) -> None:
+        self._write_metadata(tmp_path)
+        (tmp_path / "2017.zip").write_bytes(b"0123456789")
+
+        with patch("benchmarking.synthetic.sources.hill_of_towie.download_zenodo_data") as download:
+            ensure_hot_data_files(["2017.zip"], data_dir=tmp_path)
+
+        download.assert_not_called()
+
+    def test_a_truncated_file_is_re_downloaded(self, tmp_path: Path) -> None:
+        self._write_metadata(tmp_path)
+        (tmp_path / "2017.zip").write_bytes(b"01234")  # interrupted download left it short
+
+        with patch("benchmarking.synthetic.sources.hill_of_towie.download_zenodo_data") as download:
+            ensure_hot_data_files(["2017.zip"], data_dir=tmp_path)
+
+        assert download.call_args.kwargs["filenames"] == ["2017.zip"]
