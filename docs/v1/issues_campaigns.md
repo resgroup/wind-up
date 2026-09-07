@@ -88,10 +88,11 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
   may bite little or not at all in toggle. Apply mitigation **where it bites**; where it
   does not bite (e.g. in toggle), still apply it if it is already part of the method,
   cheap to run, and harmless — determined empirically, never assumed.
-- **Fix location follows how the concern is shared:** northing (R1) is a **shared**
-  feature-engineering step every method inherits; the other three are
+- **Fix location follows how the concern is shared:** northing (R1, refined by R5) is a
+  **shared** feature-engineering step every method inherits; R2–R4 and R6 are
   **`power_model`-internal** (reference selection especially, since each method uses
-  references differently).
+  references differently). R6 additionally carries generator work, because its fixture
+  cannot be built without more realistic upgrade signals.
 - **Then re-verify on campaigns.** The best faults are re-injected into the relevant
   whole-farm campaigns (R1/R3 ↔ C3/C5) as an in-context check.
 
@@ -139,8 +140,8 @@ so moved every frozen artefact at once. Read this before accepting any benchmark
 ## Suggested order
 
 `C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4] → W1a → C3 → C4 → R5 →
-C5 → C6 → C8 → W1b → W2`, with **W3 running continuously from W1a onward** rather than at
-one point in the line.
+C5 → R6 → C6 → C8 → W1b → W2`, with **W3 running continuously from W1a onward** rather
+than at one point in the line.
 
 The R-series lands after the C1/C2 foundation: **R1 (northing) before C3** so the
 prepost campaign inherits the shared northing step; R2–R4 are independent
@@ -169,6 +170,11 @@ signal being measured rather than adding noise around it. R5's two known gaps bi
 exactly there — Part B supplies the absolute anchor from wake nadirs that passes 1 and 2
 cannot, and Part A norths the small device counts a geometry-driven steering pair can
 come down to.
+
+**R6** (abnormal behaviour) lands **after C5** because it needs the signal realism that
+issue's fixtures push toward, and because its detector must not be handed a dataset in
+which only the thing it is looking for ever moves pitch or rpm. It is the last robustness
+issue for a reason: it is the only one that changes what *truth* means.
 
 **C8** (per-turbine change histories) lands **before W1b** so the generalized
 declaration is what gets frozen as public API at v1.0.0, not the flat one. C7 (drop
@@ -726,6 +732,74 @@ where geometry gives too few usable pairs.
 **Gotcha to design around:** a turbine's own wake-affected rows are exactly the rows an uplift
 method wants to treat carefully, so pass 3 must not quietly change which rows downstream
 analysis considers valid. It outputs an offset, nothing else.
+
+---
+
+## R6 — Abnormal turbine behaviour: a one-off curtailment is not the upgrade's doing
+
+**Goal:** an episode of abnormal-but-real operation during the campaign — a grid or noise
+curtailment, a temporary derate, a run on a de-rated controller after a fault — is excluded
+from the analysis, so the reported uplift represents **future normal behaviour** rather than
+the particular incidents this campaign happened to contain.
+
+**This is the only R issue that changes what truth means.** The others hold the truth still by
+construction: R2 corrupts a *reading* and leaves power alone; R3 changes real power but only on
+a *reference*, and truth is derived per test turbine. R6 changes real power **on the test
+turbine**. That energy really was lost, so a naive truth absorbs it — but it is not the
+upgrade's effect and will not recur predictably, so an estimate that includes it answers the
+wrong question. The uplift being estimated is the upgrade's effect *under normal operation*.
+
+**Two things must therefore agree, and neither may be told where the curtailment is:**
+- ground truth is defined over normally-operating rows only, and
+- the method excludes the same rows, having **discovered** them.
+
+That is the invariance test: the estimate on a campaign with a curtailment injected matches the
+estimate on the clean campaign. The analyst-declared escape hatch already exists
+(`ColumnSchema.exclude_row`) and stays as the fallback; R6 is about the automatic case.
+
+**Scope**
+
+- **Generator: the test-turbine guard needs a principled exception, not removal.**
+  `_check_faults_spare_the_test_turbines` (added in R3) refuses any `changes_power` fault aimed
+  at a test turbine, precisely because it would be silently absorbed into the truth. R6 *is*
+  that fault. The exception: a power-changing fault may target a test turbine **iff** it
+  declares the rows it affects, and the generator excludes those rows from the truth mask —
+  `true_uplift` already accepts one. A fault that changes test-turbine power without declaring
+  its rows stays refused, so the guard keeps doing its job for everything else.
+
+- **Generator: a curtailment fault** on a named turbine over a declared window, carrying the
+  signature a real one has — pitched out, rpm down, power capped — so power's standard deviation
+  collapses and its maximum sits near its mean.
+
+- **Generator: more realistic upgrades, which is the bulk of the work and a precondition rather
+  than a nicety.** Today `apply_upgrades` moves `active_power`, `gen_rpm` and `wind_speed` only.
+  `ColumnSchema.pitch` exists but nothing writes it, and the min/max/sd companions move nowhere
+  except where R3's fault scales `active_power_min`. So:
+  - declared upgrades must move **pitch and rpm** consistently with the Cp or rated change they
+    represent;
+  - the **min, max and sd companions** of power — and, where cheap, of wind speed and rpm —
+    must move with their means.
+
+  **Why this gates the issue rather than merely improving it.** If curtailment is the only thing
+  in the dataset that ever moves pitch, then a detector keying on pitch is trivially correct and
+  the fixture has measured nothing. That is the same artefact class R3 hit, where the fixture's
+  mean/min mismatch was an impossible channel relationship the screen could have keyed on instead
+  of the Cp shift it was supposed to detect — caught late, and only by re-running with it fixed.
+  The curtailment signature must differ from the upgrade signature *in kind*, not merely be the
+  only signature present.
+
+- **Method: detection and exclusion.** `NormalOperationFilter`'s docstring already claims
+  curtailment is in scope — "downtime, **curtailment**, frozen/stuck sensors" — but its three
+  checks are finite power, an availability counter and stuck data, none of which catch a turbine
+  that is available, reporting, and simply derated. Either the filter grows a check that does, or
+  the docstring stops claiming it. Filtering stays on **cause, not effect**: the rule may read
+  pitch, rpm and the companion statistics, never "power lower than the model expected", which
+  would drop genuine low-uplift records and bias the estimate toward the upgrade working.
+
+**Done when:** a curtailment episode injected into the test turbine's campaign moves the
+estimate by materially less than it moves an unfiltered one, in **both prepost and toggle**;
+truth is defined over normal operation; the excluded rows are discovered rather than declared;
+and the clean campaigns are unchanged, so nothing is paid for on a campaign with no incident.
 
 ---
 
