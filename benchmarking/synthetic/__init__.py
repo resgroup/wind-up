@@ -11,6 +11,7 @@ from benchmarking.synthetic.faults import (
     WIND_SPEED_ROLES,
     Fault,
     NorthingStep,
+    ReferenceCpChange,
     SensorGainDrift,
     SensorGainStep,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "Fault",
     "NorthingStep",
     "RatedPowerChange",
+    "ReferenceCpChange",
     "SensorGainDrift",
     "SensorGainStep",
     "SyntheticDataset",

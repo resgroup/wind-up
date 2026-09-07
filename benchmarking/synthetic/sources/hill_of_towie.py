@@ -25,7 +25,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 import os
 import time
 from pathlib import Path
@@ -59,9 +58,16 @@ SMALL_FILE_THRESHOLD_BYTES = 2 * BYTES_IN_1MB
 # value is the budget *between* received chunks.
 _CONNECT_TIMEOUT_S = 10
 _READ_TIMEOUT_S = 60
-_MAX_DOWNLOAD_ATTEMPTS = 5
+_MAX_DOWNLOAD_ATTEMPTS = 10
 _BACKOFF_BASE_S = 2.0
+_MAX_BACKOFF_S = 30.0
 _HTTP_PARTIAL_CONTENT = 206
+_HTTP_TOO_MANY_REQUESTS = 429
+_HTTP_SERVER_ERROR = 500
+
+
+class TruncatedDownloadError(Exception):
+    """A streamed download ended before the file's full byte count arrived."""
 
 
 def get_data_dir() -> Path:
@@ -153,18 +159,13 @@ def _download_one_file(
     Uses the caller's :class:`requests.Session` so its connection pool is closed once
     by the caller, releasing every socket deterministically rather than at GC.
 
-    Retries up to ``_MAX_DOWNLOAD_ATTEMPTS`` times on transient network errors with
-    exponential backoff, resuming partial downloads via a ``Range`` header. Required
-    files re-raise after exhausting retries; optional small files warn and clean up.
+    Retries up to ``_MAX_DOWNLOAD_ATTEMPTS`` times on transient network errors, truncated
+    streams and server-side statuses (429, 5xx), with capped exponential backoff and
+    partial downloads resumed via a ``Range`` header. Required files re-raise after
+    exhausting retries; optional small files warn and clean up.
     """
     import requests  # noqa: PLC0415  (lazy: keep network deps out of the import path)
     from tqdm import tqdm  # noqa: PLC0415
-
-    retryable: tuple[type[requests.RequestException], ...] = (
-        requests.ConnectionError,
-        requests.Timeout,
-        requests.exceptions.ChunkedEncodingError,
-    )
 
     _file_name = file_entry["key"]
     _file_size = file_entry["size"]
@@ -174,7 +175,7 @@ def _download_one_file(
     if cache_overwrite and dst_fpath.is_file():
         dst_fpath.unlink()
 
-    if dst_fpath.is_file() and dst_fpath.stat().st_size >= _file_size:
+    if dst_fpath.is_file() and dst_fpath.stat().st_size == _file_size:
         logger.info("%s File %s already exists. Skipping download.", progress_prefix, dst_fpath)
         return 0
 
@@ -182,44 +183,62 @@ def _download_one_file(
     for attempt in range(1, _MAX_DOWNLOAD_ATTEMPTS + 1):
         is_last_attempt = attempt == _MAX_DOWNLOAD_ATTEMPTS
         existing_size = dst_fpath.stat().st_size if dst_fpath.is_file() else 0
+        if existing_size > _file_size:
+            # Longer than Zenodo records it, so a resume appended bytes the file already had.
+            # Discarded rather than resumed: appending again cannot shorten it, and a Range
+            # request past the end is refused with a 4xx that is not worth retrying.
+            logger.warning(
+                "%s %s is %d bytes against the %d Zenodo records; discarding it and starting afresh.",
+                progress_prefix,
+                dst_fpath,
+                existing_size,
+                _file_size,
+            )
+            dst_fpath.unlink()
+            existing_size = 0
         headers = {"Range": f"bytes={existing_size}-"} if existing_size > 0 else {}
         try:
-            result = session.get(
+            # ``with`` on the response so its socket closes on every exit path, including
+            # a raise_for_status() failure, rather than lingering until GC.
+            with session.get(
                 _file_url,
                 stream=True,
                 timeout=(_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S),
                 headers=headers,
-            )
-            result.raise_for_status()
-            # If we requested a Range but the server returned 200, it ignored it.
-            resume = existing_size > 0 and result.status_code == _HTTP_PARTIAL_CONTENT
-            if existing_size > 0 and not resume:
-                logger.info(
-                    "%s Server did not honor Range request (status %s); restarting from byte 0.",
-                    progress_prefix,
-                    result.status_code,
-                )
-                existing_size = 0
-            file_mode = "ab" if resume else "wb"
-            remaining_bytes = max(0, _file_size - existing_size)
-            with (
-                result,  # close the streamed response (and its socket) deterministically, not at GC
-                Path.open(dst_fpath, file_mode) as f,
-                tqdm(
-                    total=remaining_bytes,
-                    unit="B",
-                    unit_scale=True,
-                    unit_divisor=1024,
-                    desc=f"Downloading {_file_name} ({_file_size / BYTES_IN_1MB:.2f} MB)",
-                ) as pbar,
-            ):
-                for chunk in result.iter_content(chunk_size=CHUNK_SIZE):
-                    f.write(chunk)
-                    pbar.update(len(chunk))
-        except retryable as e:
-            if not is_last_attempt:
+            ) as result:
+                result.raise_for_status()
+                # If we requested a Range but the server returned 200, it ignored it.
+                resume = existing_size > 0 and result.status_code == _HTTP_PARTIAL_CONTENT
+                if existing_size > 0 and not resume:
+                    logger.info(
+                        "%s Server did not honor Range request (status %s); restarting from byte 0.",
+                        progress_prefix,
+                        result.status_code,
+                    )
+                    existing_size = 0
+                file_mode = "ab" if resume else "wb"
+                remaining_bytes = max(0, _file_size - existing_size)
+                with (
+                    Path.open(dst_fpath, file_mode) as f,
+                    tqdm(
+                        total=remaining_bytes,
+                        unit="B",
+                        unit_scale=True,
+                        unit_divisor=1024,
+                        desc=f"Downloading {_file_name} ({_file_size / BYTES_IN_1MB:.2f} MB)",
+                    ) as pbar,
+                ):
+                    for chunk in result.iter_content(chunk_size=CHUNK_SIZE):
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+            written = dst_fpath.stat().st_size
+            if written != _file_size:
+                msg = f"stream left {written} bytes on disk against the {_file_size} Zenodo records"
+                raise TruncatedDownloadError(msg)  # noqa: TRY301  (routed through the retry handler below)
+        except (requests.RequestException, TruncatedDownloadError) as e:
+            if _is_retryable(e) and not is_last_attempt:
                 partial_size = dst_fpath.stat().st_size if dst_fpath.is_file() else 0
-                sleep_s = _BACKOFF_BASE_S * (2 ** (attempt - 1))
+                sleep_s = min(_BACKOFF_BASE_S * (2 ** (attempt - 1)), _MAX_BACKOFF_S)
                 logger.warning(
                     "%s Download attempt %d/%d for %s failed (%s). Have %d/%d bytes. Sleeping %.1fs before retrying.",
                     progress_prefix,
@@ -240,15 +259,6 @@ def _download_one_file(
                 is_required=is_required,
                 progress_prefix=progress_prefix,
             )
-        except requests.RequestException as e:
-            # Non-retryable (e.g. 4xx HTTPError). Resolve immediately.
-            return _resolve_download_failure(
-                exc=e,
-                dst_fpath=dst_fpath,
-                file_name=_file_name,
-                is_required=is_required,
-                progress_prefix=progress_prefix,
-            )
         else:
             return 1
 
@@ -256,9 +266,25 @@ def _download_one_file(
     raise RuntimeError(msg)
 
 
+def _is_retryable(exc: Exception) -> bool:
+    """Whether a failed download attempt is worth retrying.
+
+    Retryable: dropped or timed-out connections, truncated streams, and the server-side
+    statuses Zenodo returns under load (429, 5xx). Not retryable: 4xx other than 429.
+    """
+    import requests  # noqa: PLC0415  (lazy: keep network deps out of the import path)
+
+    if isinstance(exc, requests.ConnectionError | requests.Timeout | requests.exceptions.ChunkedEncodingError):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        status = exc.response.status_code if exc.response is not None else None
+        return status is not None and (status >= _HTTP_SERVER_ERROR or status == _HTTP_TOO_MANY_REQUESTS)
+    return isinstance(exc, TruncatedDownloadError)
+
+
 def _resolve_download_failure(
     *,
-    exc: requests.RequestException,
+    exc: Exception,
     dst_fpath: Path,
     file_name: str,
     is_required: bool,
@@ -279,36 +305,56 @@ def _resolve_download_failure(
     return 0
 
 
-def _missing_small_files_from_cached_metadata(target_dir: Path) -> list[str]:
-    """Return small-file keys absent from ``target_dir`` per cached Zenodo metadata.
+def _cached_file_sizes(target_dir: Path) -> dict[str, int]:
+    """Return ``{filename: size}`` from the cached Zenodo metadata in ``target_dir``.
 
-    Empty list when the metadata cache is missing or unreadable; the next successful
-    fetch rewrites the cache.
+    Empty when the metadata cache is missing or unreadable; the next successful fetch
+    rewrites the cache.
     """
     metadata_fpath = target_dir / "zenodo_dataset_metadata.json"
     if not metadata_fpath.is_file():
-        return []
+        return {}
     try:
         with metadata_fpath.open() as f:
             content = json.load(f)
     except (OSError, json.JSONDecodeError):
-        return []
+        return {}
+    return {rf["key"]: rf["size"] for rf in content.get("files", []) if "key" in rf and "size" in rf}
+
+
+def _is_cached_complete(fpath: Path, expected_size: int | None) -> bool:
+    """Whether ``fpath`` holds a whole file: present, and exactly the size Zenodo records.
+
+    A file left short by an interrupted download is not complete, and one left long by a resume
+    that re-appended bytes is corrupt; either way the caller re-downloads rather than handing a
+    broken zip to the reader. Size is unknown, hence unenforced, when the metadata cache has no
+    entry for the file.
+    """
+    if not fpath.is_file():
+        return False
+    return expected_size is None or fpath.stat().st_size == expected_size
+
+
+def _missing_small_files_from_cached_metadata(target_dir: Path) -> list[str]:
+    """Return small-file keys absent from ``target_dir`` per cached Zenodo metadata."""
     return [
-        rf["key"]
-        for rf in content.get("files", [])
-        if rf.get("size", math.inf) < SMALL_FILE_THRESHOLD_BYTES and not (target_dir / rf["key"]).is_file()
+        key
+        for key, size in _cached_file_sizes(target_dir).items()
+        if size < SMALL_FILE_THRESHOLD_BYTES and not (target_dir / key).is_file()
     ]
 
 
 def ensure_hot_data_files(filenames: Collection[str], *, data_dir: Path | None = None) -> None:
     """Download missing Hill of Towie v2 data files from Zenodo.
 
-    Idempotent: makes no network call when every requested file exists locally and
-    cached metadata shows no missing small files.
+    Idempotent: makes no network call when every requested file is present at its full
+    recorded size and cached metadata shows no missing small files. A file left short by
+    an interrupted download counts as missing, so the next call resumes it.
     """
     target_dir = data_dir if data_dir is not None else get_data_dir()
     requested = list(filenames)
-    missing_requested = [f for f in requested if not (target_dir / f).is_file()]
+    cached_sizes = _cached_file_sizes(target_dir)
+    missing_requested = [f for f in requested if not _is_cached_complete(target_dir / f, cached_sizes.get(f))]
     missing_small = _missing_small_files_from_cached_metadata(target_dir)
     if not missing_requested and not missing_small:
         logger.info(

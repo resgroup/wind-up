@@ -210,6 +210,9 @@ def _build_methods(out_dir: Path, *, era5_hourly_df: pd.DataFrame) -> list:
             baseline_rated_power_kw=HOT_RATED_POWER_KW,
             conditions=("power",),
             era5_hourly_df=era5_hourly_df,
+            # A sweep scores estimators rather than reporting campaigns, so the per-reference uplift
+            # report is skipped: it costs a model fit per reference and moves no estimate.
+            report_reference_uplifts=False,
             out_dir=out_dir / "power_model_runs",
         ),
     ]

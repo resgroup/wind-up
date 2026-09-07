@@ -158,6 +158,23 @@ def treated_mask(index: pd.DatetimeIndex, upgrade_timing: pd.Timestamp | ToggleS
     return _treated_mask(index, mode=mode, upgrade_timing=upgrade_timing)
 
 
+def _check_faults_spare_the_test_turbines(faults: list, *, test_wtgs: list[str]) -> None:
+    """Raise if a power-changing fault targets a test turbine.
+
+    Ground truth is derived by comparing a test turbine's synthetic power to its original, so
+    such a fault would be silently absorbed into the truth it is meant to leave alone.
+    """
+    aimed = [f for f in faults if f.changes_power and getattr(f, "turbine", None) in set(test_wtgs)]
+    if aimed:
+        kinds = sorted({str(f.description["kind"]) for f in aimed})
+        turbines = sorted({str(f.turbine) for f in aimed})
+        msg = (
+            f"the power-changing fault(s) {kinds} target the test turbine(s) {turbines}; that would be "
+            f"absorbed into the ground truth derived for them. Aim them at a reference instead."
+        )
+        raise ValueError(msg)
+
+
 def generate_dataset(
     *,
     scada_df: pd.DataFrame,
@@ -178,9 +195,10 @@ def generate_dataset(
     :param upgrades: upgrade callables applied to each test turbine's treated rows
     :param mode: ``"prepost"`` (changeover date) or ``"toggle"``
     :param upgrade_timing: changeover timestamp (prepost) or toggle schedule
-    :param faults: measurement corruptions injected after the upgrades, into the synthetic frame
-        only. They change readings rather than power, so the ground truth derived against
-        ``original_df`` is unaffected -- see :mod:`benchmarking.synthetic.faults`.
+    :param faults: undeclared corruptions injected after the upgrades, into the synthetic frame
+        only, leaving the ground truth derived against ``original_df`` unaffected. Most change a
+        reading rather than power; one that changes power may only target a reference, which is
+        enforced -- see :mod:`benchmarking.synthetic.faults`.
     :param cp_params: Cp surface parameters for the test turbines
     :param rated_power_kw: baseline rated power for the test turbines
     :param columns: the source-native column schema ``scada_df`` is keyed by
@@ -215,7 +233,9 @@ def generate_dataset(
 
     faults = list(faults or [])
     if faults:
-        synthetic_df = apply_faults(synthetic_df, faults, columns=columns)
+        _check_faults_spare_the_test_turbines(faults, test_wtgs=test_wtgs)
+        cp = CpCore(rated_power_kw=rated_power_kw, cp_params=cp_params)
+        synthetic_df = apply_faults(synthetic_df, faults, columns=columns, cp=cp)
 
     run_metadata = {
         "test_wtgs": list(test_wtgs),

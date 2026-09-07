@@ -21,6 +21,7 @@ from benchmarking.synthetic.sources.greenbyte import (
     NACELLE_POSITION,
     PENMANSHIEL,
     POWER,
+    POWER_MIN,
     TIMEBASE_S,
     TURBINE,
     load_greenbyte_metadata,
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
 _PREAMBLE = "\n".join(f"# comment line {i}" for i in range(9))
 _HEADER = (
     "# Date and time,Wind speed (m/s),"
-    '"Wind speed, Standard deviation (m/s)",Power (kW),'
+    '"Wind speed, Standard deviation (m/s)",Power (kW),"Power, Minimum (kW)",'
     "Nacelle position (°),Time-based System Avail.,Generator RPM (RPM)"
 )
 
@@ -41,7 +42,9 @@ _HEADER = (
 def _turbine_csv(*, rows: int, start: str, power: float, nacelle: float, availability: float) -> str:
     """One turbine's data file in the published layout."""
     index = pd.date_range(start=start, periods=rows, freq=f"{TIMEBASE_S}s")
-    body = "\n".join(f"{ts:%Y-%m-%d %H:%M:%S},8.0,0.5,{power},{nacelle},{availability},1500.0" for ts in index)
+    body = "\n".join(
+        f"{ts:%Y-%m-%d %H:%M:%S},8.0,0.5,{power},{power * 0.9},{nacelle},{availability},1500.0" for ts in index
+    )
     return f"{_PREAMBLE}\n{_HEADER}\n{body}\n"
 
 
@@ -182,3 +185,19 @@ class TestFarmDefinitions:
         assert farm.years == tuple(range(2016, 2022))
         assert farm.static_file.endswith("_WT_static.csv")
         assert farm.record.isdigit()
+
+
+class TestActivePowerMinimum:
+    """`power_model` requires the active-power minimum, and the export publishes it."""
+
+    def test_the_schema_names_the_minimum(self) -> None:
+        assert GREENBYTE_COLUMNS.active_power_min == POWER_MIN
+
+    def test_the_minimum_is_loaded(self, kelmarsh_dir: Path) -> None:
+        scada = load_greenbyte_scada(KELMARSH, years=[2017], data_dir=kelmarsh_dir)
+        assert POWER_MIN in scada.columns
+
+    def test_the_minimum_never_exceeds_the_mean(self, kelmarsh_dir: Path) -> None:
+        scada = load_greenbyte_scada(KELMARSH, years=[2017], data_dir=kelmarsh_dir)
+        both = scada[[POWER, POWER_MIN]].dropna()
+        assert (both[POWER_MIN] <= both[POWER] + 1e-6).all()

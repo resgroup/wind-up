@@ -43,6 +43,7 @@ _TIMESTAMP = "# Date and time"
 
 # The source-native names this adapter keeps. Everything else in the 299-column export is dropped.
 POWER = "Power (kW)"
+POWER_MIN = "Power, Minimum (kW)"
 NACELLE_POSITION = "Nacelle position (°)"
 WIND_SPEED = "Wind speed (m/s)"
 WIND_SPEED_SD = "Wind speed, Standard deviation (m/s)"
@@ -53,6 +54,7 @@ TURBINE = "TurbineName"
 GREENBYTE_COLUMNS = ColumnSchema(
     turbine=TURBINE,
     active_power=POWER,
+    active_power_min=POWER_MIN,
     wind_speed=WIND_SPEED,
     wind_speed_sd=WIND_SPEED_SD,
     gen_rpm=GEN_RPM,
@@ -132,7 +134,7 @@ def load_greenbyte_scada(
     *,
     years: Sequence[int],
     data_dir: Path | None = None,
-    columns: Sequence[str] = (POWER, NACELLE_POSITION, WIND_SPEED, WIND_SPEED_SD, GEN_RPM),
+    columns: Sequence[str] = (POWER, POWER_MIN, NACELLE_POSITION, WIND_SPEED, WIND_SPEED_SD, GEN_RPM),
 ) -> pd.DataFrame:
     """Return long, timestamp-indexed SCADA for ``farm`` over ``years``.
 

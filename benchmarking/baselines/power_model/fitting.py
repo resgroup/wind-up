@@ -6,6 +6,9 @@ residuals are optimistic; contiguous blocks confine the leakage to the block edg
 the held-out fit-quality diagnostic honest.
 
 :func:`make_outcome_model` — the L2 LightGBM regressor for the counterfactual power ``E[Y|X]``.
+
+:func:`model_safe_features` — positional column names for the fit, since LightGBM rejects JSON
+special characters and real source tags carry them.
 """
 
 from __future__ import annotations
@@ -15,7 +18,24 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:
+    import pandas as pd
     from lightgbm import LGBMRegressor
+
+
+def model_safe_features(features: pd.DataFrame) -> pd.DataFrame:
+    """Return ``features`` with columns renamed to positional ``f0``, ``f1``, ... names.
+
+    LightGBM refuses feature names containing JSON special characters, which real source tags carry
+    (``Power, Minimum (kW)``, ``Nacelle position (°)``). Renaming positionally sidesteps the whole
+    class of them rather than guessing which characters this version objects to.
+
+    Nothing is lost: importances come back positionally, and the diagnostics carry the original
+    names alongside. Apply it to the training and prediction frames alike, or their columns will
+    not match.
+    """
+    safe = features.copy(deep=False)
+    safe.columns = [f"f{i}" for i in range(features.shape[1])]
+    return safe
 
 
 def time_block_folds(n: int, *, n_folds: int = 5, n_blocks: int = 25) -> np.ndarray:
