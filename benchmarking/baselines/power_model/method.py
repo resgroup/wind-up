@@ -474,6 +474,9 @@ class PowerModelMethod:
         )
         features, era5 = self._add_era5(scada, features, mi=mi, references=references, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
+        # Decided before the fits, so an explicitly-named missing column stops the run at once
+        # rather than after the headline has been paid for.
+        conditional_runnable = self._conditional_is_runnable(features)
 
         toggle_rows = resolve_toggle(mi.upgrade_timing, index)
         t = toggle_rows.upgraded
@@ -545,7 +548,7 @@ class PowerModelMethod:
         # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
         # it (eventually AEP extrapolation will). Skipped when no conditions are requested.
         by_condition: pd.DataFrame | None = None
-        if self.conditions:
+        if self.conditions and conditional_runnable:
             # The conditional two-direction step matches baseline against upgraded rows and relies on
             # them sharing a distribution *and era* — for a toggle whose headline fit also trains on the
             # pre-campaign baseline, only the interleaved campaign off rows qualify (the strict
@@ -788,6 +791,32 @@ class PowerModelMethod:
             diag.plot_conditional_diagnostics(
                 run_dir / "plots" / stages.CONDITIONAL_UPLIFT, per_bin, test_wtg=mi.test_wtg
             )
+
+    def _conditional_is_runnable(self, features: pd.DataFrame) -> bool:
+        """Whether the conditional step has its matching columns; raises when they were named by hand.
+
+        The untouched default set is skip-if-missing, so a partial ERA5 delivery costs the
+        conditional breakdown and leaves the headline standing. An explicitly-set ``matching_vars``
+        keeps the strict guard: a column named there and not present is a configuration error.
+        """
+        if not self.conditions:
+            return False
+        missing = [v for v in self.matching_vars if v not in features.columns]
+        if not missing:
+            return True
+        if self.matching_vars is not _DEFAULT_MATCHING_VARS:
+            msg = (
+                f"matching_vars names {missing}, which the ERA5 features do not carry; the conditional step "
+                f"bins on them. Columns present: {sorted(features.columns)}"
+            )
+            raise ValueError(msg)
+        logger.warning(
+            "%s: no conditional uplift -- the matching column(s) %s are not in the ERA5 features. The overall "
+            "P50 is unaffected.",
+            self.name,
+            missing,
+        )
+        return False
 
     def _default_bin_edges(self) -> dict[str, list[float]]:
         """Per-variable CEM edges for ``matching_vars`` from the curated defaults; raise on an unknown var."""
@@ -1162,6 +1191,10 @@ class PowerModelMethod:
         timing = self.screening_timing(mi)
         clone = self._screening_clone()
 
+        # Why each candidate could not be estimated, so a screen that gives up can say what stopped
+        # it rather than only that it gave up.
+        causes: dict[str, str] = {}
+
         def estimate_one(target: str, refs: list[str]) -> float:
             sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=list(refs), timing=timing)
             sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
@@ -1171,11 +1204,19 @@ class PowerModelMethod:
                 # NaN ranks worst, so the candidate is ruled out rather than aborting the estimate:
                 # surviving a reference this bad is what the screen is for.
                 logger.warning("%s: reference screen could not estimate %s (%s)", self.name, target, e)
+                causes[target] = str(e)
                 return float("nan")
 
-        result = screen_references(
-            list(context.candidate_references), estimate_one=estimate_one, floor=self.screen_floor
-        )
+        try:
+            result = screen_references(
+                list(context.candidate_references), estimate_one=estimate_one, floor=self.screen_floor
+            )
+        except ValueError as e:
+            if not causes:
+                raise
+            detail = "; ".join(f"{target}: {cause}" for target, cause in sorted(causes.items()))
+            msg = f"{e} What stopped each of them: {detail}"
+            raise ValueError(msg) from e
         if result.screened:
             logger.info(
                 "%s %s: reference screen ruled out %s; they keep direction + waking features but contribute no power",

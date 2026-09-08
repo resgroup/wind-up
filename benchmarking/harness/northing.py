@@ -56,7 +56,17 @@ ERA5_WD_COL = "wind_direction_100m"
 
 
 def era5_direction(era5_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
-    """Return the hourly ERA5 wind direction carried onto ``index``, held within each hour."""
+    """Return the hourly ERA5 wind direction carried onto ``index``, held within each hour.
+
+    Raises naming the column when the frame does not carry it: a partial reanalysis delivery is
+    reported as the missing column rather than as a bare KeyError.
+    """
+    if ERA5_WD_COL not in era5_df.columns:
+        msg = (
+            f"the reanalysis frame has no {ERA5_WD_COL!r} column, which is the direction the shared northing "
+            f"step anchors against. Columns present: {sorted(era5_df.columns)}"
+        )
+        raise ValueError(msg)
     hourly = era5_df[ERA5_WD_COL]
     return hourly.reindex(hourly.index.union(index)).ffill(limit=6).reindex(index)
 
@@ -82,6 +92,17 @@ def _north_table_from_offsets(
     return pd.DataFrame(
         {"timestamp": pd.DatetimeIndex([ts for ts, _ in rows]), "north_offset": [off for _, off in rows]}
     )
+
+
+def _require_columns(scada_df: pd.DataFrame, *, columns: ColumnSchema, roles: Sequence[str]) -> None:
+    """Raise naming any role's column that northing discovery reads but ``scada_df`` does not carry."""
+    missing = sorted({str(getattr(columns, r)) for r in roles} - set(scada_df.columns))
+    if missing:
+        msg = (
+            f"northing discovery needs the column(s) {missing}, which are not in scada_df; they decide which "
+            f"rows are usable for northing. Columns present: {sorted(scada_df.columns)}"
+        )
+        raise ValueError(msg)
 
 
 def _usable_masks(
@@ -187,6 +208,7 @@ def north_scada(
                 f"the north table for every role is derived from it. Columns present: {sorted(scada_df.columns)}"
             )
             raise ValueError(msg)
+        _require_columns(scada_df, columns=columns, roles=("active_power", "availability"))
         directions = _directions(scada_df, columns=columns, turbines=turbines, index=index, col=source)
         usable = _usable_masks(
             scada_df,

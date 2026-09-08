@@ -8,6 +8,7 @@ recovers the uplift — for both prepost and toggle. Also checks the reference-o
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -370,6 +371,48 @@ class TestConditionsSelection:
     def test_unknown_condition_raises(self) -> None:
         with pytest.raises(ValueError, match="unknown condition"):
             PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=("bogus",))
+
+
+class TestConditionalWithoutItsMatchingColumns:
+    """A partial reanalysis delivery costs the conditional breakdown, not the headline."""
+
+    def _case(self, **overrides: object) -> tuple[PowerModelMethod, MethodInput]:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        scada = _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover))
+        era5 = _toy_era5(idx).drop(columns=["wind_gusts_10m"])  # a matching axis never arrived
+        kwargs: dict[str, object] = {
+            "columns": _COLUMNS,
+            "baseline_rated_power_kw": 2300.0,
+            "era5_hourly_df": era5,
+            "model_params": _FAST_PARAMS,
+            **overrides,
+        }
+        method = PowerModelMethod(**kwargs)  # type: ignore[arg-type]
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        return method, mi
+
+    def test_the_headline_survives_a_missing_default_matching_column(self) -> None:
+        method, mi = self._case()
+        out = method.estimate(mi)
+        assert np.isfinite(out.p50_overall)
+
+    def test_the_conditional_breakdown_is_dropped_rather_than_guessed(self) -> None:
+        method, mi = self._case()
+        assert method.estimate(mi).p50_by_condition is None
+
+    def test_it_says_so(self, caplog: pytest.LogCaptureFixture) -> None:
+        method, mi = self._case()
+        with caplog.at_level(logging.WARNING):
+            method.estimate(mi)
+        assert "wind_gusts_10m" in caplog.text
+
+    def test_an_explicitly_named_missing_column_raises_instead(self) -> None:
+        """Naming a column that is not there is a configuration error, not a partial delivery."""
+        method, mi = self._case(matching_vars=("wind_speed_100m", "wind_gusts_10m"))
+        with pytest.raises(ValueError, match="wind_gusts_10m"):
+            method.estimate(mi)
 
 
 class TestConditionalUplift:
@@ -1069,6 +1112,30 @@ class TestADegenerateReferenceDoesNotSinkTheCampaign:
         """Surviving a reference this bad is the whole point of the screen."""
         mi, _ = self._mi_with_a_dead_reference()
         assert _screen_method().screen_references(mi).screened == ("R1",)
+
+
+class TestScreenFailureNamesItsCause:
+    """When no reference can be estimated, the raised error carries why, not just the verdict."""
+
+    def _mi_without_the_power_minimum(self) -> MethodInput:
+        """Every reference becomes unestimatable for one reason: a column the features need is gone."""
+        mi, changeover = _screen_case(step=0.0)
+        scada = mi.scada_df.drop(columns=[_COLUMNS.active_power_min])
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+
+    def test_the_error_names_the_missing_column(self) -> None:
+        """Without this the analyst is told the farm is broken when one column is absent."""
+        with pytest.raises(ValueError, match=str(_COLUMNS.active_power_min)):
+            _screen_method().estimate(self._mi_without_the_power_minimum())
+
+    def test_the_error_still_carries_the_screen_s_own_verdict(self) -> None:
+        with pytest.raises(ValueError, match="majority"):
+            _screen_method().estimate(self._mi_without_the_power_minimum())
+
+    def test_the_underlying_cause_is_chained(self) -> None:
+        with pytest.raises(ValueError, match="What stopped each of them") as excinfo:
+            _screen_method().estimate(self._mi_without_the_power_minimum())
+        assert excinfo.value.__cause__ is not None
 
 
 class TestReferenceUpliftsSchema:
