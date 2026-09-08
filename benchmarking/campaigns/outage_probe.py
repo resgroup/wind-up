@@ -336,13 +336,14 @@ def _coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
     }
 
 
-def _power_model_only(spec: object, *, out_dir: Path, era5_hourly_df: pd.DataFrame) -> list[Method]:
+def _power_model_only(spec: object, *, out_dir: Path, era5_hourly_df: pd.DataFrame, seed: int) -> list[Method]:
     """Build just the power model for one turbine: it is the only method R4 is asking about."""
     return [
         PowerModelMethod(
             columns=HOT_COLUMNS,
             baseline_rated_power_kw=spec.rated_power_kw,  # type: ignore[attr-defined]
             era5_hourly_df=era5_hourly_df,
+            seed=seed,
             era5_exclude=CURATED_ERA5_EXCLUDE,
             availability_feature=False,
             model_params=dict(TUNED_MODEL_PARAMS),
@@ -373,8 +374,13 @@ def run_arm(
     scada_df: pd.DataFrame,
     era5_df: pd.DataFrame,
     out_dir: Path,
+    seed: int = 0,
 ) -> ArmOutcome:
-    """Apply ``arm``'s fault, run the campaign, and record the estimate or where it stopped."""
+    """Apply ``arm``'s fault, run the campaign, and record the estimate or where it stopped.
+
+    ``seed`` drives the power model's holdout split and LightGBM state, so repeating an arm across
+    seeds gives the estimator-noise floor a fault's movement has to clear to mean anything.
+    """
     faulted_scada = arm.scada(scada_df)
     faulted_era5 = arm.era5(era5_df)
     try:
@@ -390,7 +396,9 @@ def run_arm(
         runner = CampaignRunner(
             spec,
             dataset,
-            build_methods=lambda wtg: _power_model_only(spec, out_dir=out_dir / wtg, era5_hourly_df=faulted_era5),
+            build_methods=lambda wtg: _power_model_only(
+                spec, out_dir=out_dir / wtg, era5_hourly_df=faulted_era5, seed=seed
+            ),
             era5_wd=era5_direction(faulted_era5, index),
         )
         result = runner.run()
@@ -411,12 +419,15 @@ def run_probe(
     *,
     modes: Sequence[str] = ("prepost",),
     arms: Sequence[str] | None = None,
+    seeds: Sequence[int] = (0,),
     out_root: str | Path | None = None,
 ) -> pd.DataFrame:
-    """Run the matrix and return one row per ``(mode, arm)``.
+    """Run the matrix and return one row per ``(mode, arm, seed)``.
 
     :param modes: the campaign modes to run; stage 1 defaults to prepost alone
     :param arms: run only these arm names (the clean control is always worth keeping); all when None
+    :param seeds: repeat every arm once per seed, which turns the table into a noise floor plus the
+        movement each fault adds to it
     :param out_root: where the run folder is written; the driver's default root when None
     """
     root = Path(out_root) if out_root is not None else default_output_root()
@@ -435,31 +446,34 @@ def run_probe(
             wtg_numbers=[int(w[1:]) for w in PROBE_TURBINES],
             wtg_names=list(PROBE_TURBINES),
         )
-        for arm in selected:
-            logger.info("running %s %s -- %s", mode, arm.name, arm.what)
-            started = pd.Timestamp.now()
-            outcome = run_arm(
-                arm,
-                mode=mode,  # type: ignore[arg-type]
-                scada_df=scada_df,
-                era5_df=era5_df,
-                out_dir=run_dir / f"{mode}_{arm.name}",
-            )
-            rows.append(
-                {
-                    "mode": mode,
-                    "arm": arm.name,
-                    "shape": arm.shape,
-                    "what": arm.what,
-                    "reached_estimate": outcome.reached_estimate,
-                    "estimate": outcome.estimate,
-                    "error_type": outcome.error_type,
-                    "error_message": outcome.error_message,
-                    "failed_in": outcome.failed_in,
-                    "seconds": (pd.Timestamp.now() - started).total_seconds(),
-                }
-            )
-            pd.DataFrame(rows).to_csv(run_dir / "outcomes.csv", index=False)
+        for seed in seeds:
+            for arm in selected:
+                logger.info("running %s %s seed=%d -- %s", mode, arm.name, seed, arm.what)
+                started = pd.Timestamp.now()
+                outcome = run_arm(
+                    arm,
+                    mode=mode,  # type: ignore[arg-type]
+                    scada_df=scada_df,
+                    era5_df=era5_df,
+                    out_dir=run_dir / f"{mode}_{arm.name}_seed{seed}",
+                    seed=seed,
+                )
+                rows.append(
+                    {
+                        "mode": mode,
+                        "seed": seed,
+                        "arm": arm.name,
+                        "shape": arm.shape,
+                        "what": arm.what,
+                        "reached_estimate": outcome.reached_estimate,
+                        "estimate": outcome.estimate,
+                        "error_type": outcome.error_type,
+                        "error_message": outcome.error_message,
+                        "failed_in": outcome.failed_in,
+                        "seconds": (pd.Timestamp.now() - started).total_seconds(),
+                    }
+                )
+                pd.DataFrame(rows).to_csv(run_dir / "outcomes.csv", index=False)
     logger.info("wrote the probe results to %s", run_dir)
     return pd.DataFrame(rows)
 

@@ -1114,6 +1114,33 @@ class TestADegenerateReferenceDoesNotSinkTheCampaign:
         assert _screen_method().screen_references(mi).screened == ("R1",)
 
 
+class TestAShrunkenPoolIsAnnounced:
+    """A candidate reference the campaign offers but the data does not carry is said out loud."""
+
+    def _case(self) -> tuple[PowerModelMethod, MethodInput]:
+        mi, changeover = _screen_case(step=0.0)
+        full = mi.scada_df
+        context = CampaignContext.from_frame(full, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        delivered = full[full[_TURBINE] != "R1"]  # R1 is offered, but never turned up
+        return _screen_method(), MethodInput(scada_df=delivered, test_wtg="T1", campaign_context=context)
+
+    def test_the_absent_reference_is_named(self, caplog: pytest.LogCaptureFixture) -> None:
+        method, mi = self._case()
+        with caplog.at_level(logging.WARNING):
+            method.estimate(mi)
+        assert "R1" in caplog.text
+
+    def test_the_estimate_still_runs_on_what_is_there(self) -> None:
+        method, mi = self._case()
+        assert np.isfinite(method.estimate(mi).p50_overall)
+
+    def test_a_complete_delivery_says_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        mi, _ = _screen_case(step=0.0)
+        with caplog.at_level(logging.WARNING):
+            _screen_method().estimate(mi)
+        assert "carries no data" not in caplog.text
+
+
 class TestScreenFailureNamesItsCause:
     """When no reference can be estimated, the raised error carries why, not just the verdict."""
 

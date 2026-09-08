@@ -949,10 +949,22 @@ class PowerModelMethod:
         """Return the campaign's candidate references that ``scada`` carries data for, sorted.
 
         The pool starts at what the campaign offers: a turbine present in the frame that the
-        campaign does not offer as a reference is not one.
+        campaign does not offer as a reference is not one, and one the campaign offers that the
+        frame has no rows for is dropped with a warning rather than estimated as if it were there.
         """
         present = sorted({str(t) for t in scada[mi.turbine_col].unique()})
         references = mi.context.references_among(present)
+        absent = sorted(set(mi.context.candidate_references) - set(references))
+        if absent:
+            logger.warning(
+                "%s %s: the campaign offers %d candidate reference(s) but scada_df carries no rows for %s, so "
+                "the estimate runs on a pool of %d. Reference count drives accuracy.",
+                self.name,
+                mi.test_wtg,
+                len(mi.context.candidate_references),
+                absent,
+                len(references),
+            )
         if not references:
             msg = (
                 f"no candidate references available for test_wtg {mi.test_wtg!r}: the campaign offers "
@@ -1018,12 +1030,13 @@ class PowerModelMethod:
         reused rather than refitting the whole pool.
         """
         context = mi.context
+        pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
         ruled_out = set(screened)
-        surviving = [r for r in context.candidate_references if r not in ruled_out]
+        surviving = [r for r in pool if r not in ruled_out]
         clone = self._reference_clone()
         reusable = self._reusable_screen_estimates(mi, screen=screen, ruled_out=ruled_out)
         rows: list[dict[str, object]] = []
-        for target in context.candidate_references:
+        for target in pool:
             refs = [r for r in surviving if r != target]
             if not refs:
                 continue
@@ -1189,6 +1202,7 @@ class PowerModelMethod:
             )
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
+        pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
         clone = self._screening_clone()
 
         # Why each candidate could not be estimated, so a screen that gives up can say what stopped
@@ -1208,9 +1222,7 @@ class PowerModelMethod:
                 return float("nan")
 
         try:
-            result = screen_references(
-                list(context.candidate_references), estimate_one=estimate_one, floor=self.screen_floor
-            )
+            result = screen_references(pool, estimate_one=estimate_one, floor=self.screen_floor)
         except ValueError as e:
             if not causes:
                 raise

@@ -12,6 +12,85 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF14 — Missing data is absorbed within estimator noise, with one exception: a reference that **disappears from the delivery** costs **+0.45 pp**, because it shrinks the pool rather than corrupting anything. Every crash named someone else's problem, and the misleading one was **prepost-only**
+
+*2026-09-08. R4, stage 1 + stage 2. Driver: `benchmarking.campaigns.outage_probe` — 19 arms over
+the field failure modes (whole-farm SCADA outage, whole-turbine logging outage, single-signal
+outage, ERA5 columns lost to a download or mapping error, ERA5 holes), each in the two shapes that
+take different code paths: **absent** (the column is not in the frame) and **empty** (the column is
+there and NaN, or the rows are gone). Placebo on T06 + T15/T10/T08, so truth is 0 and any movement
+is the fault's. `run_probe(modes=..., seeds=...)`; the noise floor is `seeds=(0,1,2,3,4)` on
+`clean`, `ref_absent_entirely` and `ref_power_empty`.*
+
+**The absent/empty split is the fault line, exactly.** Every `empty` arm returned a number in both
+modes; four of five `absent` arms raised. An absent column raises because the feature builder
+requires it; a NaN one is handled natively by LightGBM and passes through without comment.
+
+**The noise floor is 0.127 pp, which retires most of the table.** Across five seeds (the seed drives
+the baseline holdout split and LightGBM's `random_state`) the clean prepost placebo reads mean
+**0.423%**, sd **0.048 pp**, range 0.343–0.470. Only two faults clear it:
+
+| arm | mean | Δ vs clean | σ | ranges overlap |
+|---|---|---|---|---|
+| `clean` | 0.423% | — | — | — |
+| `ref_absent_entirely` | 0.873% | **+0.45 pp** | 9.4 | no |
+| `ref_power_empty` | 0.578% | **+0.15 pp** | 3.2 | no |
+
+Single-seed numbers overstated both (+0.53 and +0.31 pp at seed 0, which paired the lowest clean
+with the highest faulted value). `farm_empty`, `farm_rows_gone`, `ref_empty`, `ref_rows_gone`,
+`test_empty`, `ref_direction_empty`, `era5_hole_1mo`, `era5_hole_3mo`, `era5_rows_gone` and
+`era5_matching_absent` all sit inside the floor. `test_empty_upgraded` (+0.20 pp) and
+`era5_incidental_absent` (−0.19 pp) are marginal and **were not seed-swept**; they are unmeasured,
+not cleared.
+
+**The one material effect is pool shrinkage, not corruption.** Compare `ref_empty` (T15 all-NaN for
+30 days — inside the noise) against `ref_absent_entirely` (T15 gone from the whole record —
++0.45 pp). The difference is not damaged data: it is a **2-reference pool instead of 3**, and
+[CF3](#cf3) already establishes reference count as the dominant accuracy driver. So `power_model`
+was reflecting a known effect faithfully; what it never did was **say the pool had shrunk**. The fix
+is announcement, not adaptation — which is why R4's anticipated "discover the available signals and
+adapt" was **not** implemented: it would have converted honest raises into silent estimates.
+
+**Both modes agree on the ranking.** Toggle's clean control is +0.082% and its movements are
+uniformly smaller, but `ref_absent_entirely` tops both (+0.31 pp toggle, +0.45 pp prepost), so it is
+a real effect rather than a one-mode artefact.
+
+**Every crash named someone else's problem.** Five missing-column failures, none of which named its
+cause where the analyst reads it:
+
+| arm | failed in | reported as |
+|---|---|---|
+| `power_min_absent` | `power_model/screening.py` | *"points to a farm-wide problem"* |
+| `nacelle_position_absent` | `power_model/screening.py` | *"points to a farm-wide problem"* |
+| `availability_absent` | `harness/northing.py:_usable_masks` | bare `KeyError` |
+| `era5_sync_absent` | `harness/northing.py:era5_direction` | bare `KeyError` |
+| `era5_matching_absent` | `power_model/method.py:_estimate_conditional` | bare `KeyError`, **after** the headline was computed |
+
+The screen's misdiagnosis is the sharpest of these: every candidate was unestimatable for one
+reason — a column that was not there — and the real cause was logged as a WARNING while the
+misleading verdict was what stopped the run. **It is prepost-only**: the screen does not run in
+toggle, where the same arms raise the correct named error straight from `features.py`.
+
+**Two of five failures were harness-level, not `power_model`-internal**, which contradicts R4's
+scope line in [issues_campaigns.md](issues_campaigns.md); `availability_absent` and
+`era5_sync_absent` both die in the shared northing step before `power_model` runs at all.
+
+**What changed.** `era5_direction` and northing discovery now raise naming the column and what it is
+for. The screen records why each candidate failed and appends those causes to its own verdict,
+chained to the original. The conditional step follows the `era5_exclude` idiom — untouched default
+`matching_vars` is skip-if-missing (warn, drop the breakdown, keep the P50), an explicitly-set one
+keeps the strict guard — and the check runs before the fits, so the raise is immediate rather than
+54 s late. The reference pool is derived once from the campaign's `candidate_references` intersected
+with the turbines the frame carries, shared by the feature builder, the screen and the
+reference-uplift report, and a declared reference with no rows is dropped **with a warning** instead
+of being estimated as if it were there — which previously died as `IndexError: iloc cannot enlarge
+its target object` inside the stuck-sensor filter.
+
+**Limits.** Outage position was held at a 30-day mid-baseline window; position was not varied. The
+0.127 pp floor is this fixture's resolution — a 4-turbine placebo cannot settle anything smaller.
+
+---
+
 ## CF13 — The reference screen works where it has data and references, and nowhere else: it needs a campaign of **150+ days** and it finds Hill of Towie's genuinely bad turbine (**T17, +4.7%**) on a 19-reference pool. Two constraints, both measured, decide when it may run at all
 
 *2026-09-04. R3, Phase B. Drivers: `benchmarking.campaigns.screen_calibration` (clean placebo

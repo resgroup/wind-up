@@ -139,7 +139,7 @@ so moved every frozen artefact at once. Read this before accepting any benchmark
 
 ## Suggested order
 
-`C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4] → W1a → C3 → C4 → R5 →
+`C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4 ✅] → W1a → C3 → C4 → R5 →
 C5 → R6 → C6 → C8 → W1b → W2`, with **W3 running continuously from W1a onward** rather
 than at one point in the line.
 
@@ -180,7 +180,7 @@ issue for a reason: it is the only one that changes what *truth* means.
 declaration is what gets frozen as public API at v1.0.0, not the flat one. C7 (drop
 `rlearner`, ✅ done) was independent.
 
-**Done so far:** C0, W0, C7, C1, C2, R1, R2 and R3. **Next: R4**, then C3, which inherits the
+**Done so far:** C0, W0, C7, C1, C2, R1, R2, R3 and R4. **Next: C3**, which inherits the
 shared northing step R1 landed and the reference screen R3 landed.
 
 ---
@@ -653,7 +653,7 @@ re-verified in-context on C3/C5.
 
 ---
 
-## R4 — Missing data (`power_model`-internal fix)
+## R4 — Missing data ✅ done 2026-09-08
 
 **Goal:** `power_model` adapts to whatever signals are present instead of assuming a
 fixed feature set.
@@ -668,6 +668,27 @@ fixed feature set.
 **Done when:** the missing-data case bites (or would crash) the current fixed-feature
 `power_model`, then signal discovery restores a run that stays accurate under missing
 channels / gaps.
+
+### What actually happened — two corrections to the scope above ([CF14](findings_campaigns.md))
+
+**This was not `power_model`-internal.** Two of the five missing-column failures die in the
+**shared northing step** before `power_model` runs at all, and two of the four fixes landed
+there. The heading above is wrong about where this failure mode lives.
+
+**Signal discovery was measured and deliberately not built.** The probe
+(`benchmarking.campaigns.outage_probe`) showed the absent/empty split *is* the fault line —
+every NaN-shaped outage already returns a number, every absent-column one raises — so
+"discover and adapt" would have converted honest raises into silent estimates, the wrong
+direction. Missing data turned out to be absorbed within a 0.127 pp estimator-noise floor
+in every arm but one: a reference that disappears from the delivery entirely, worth
+**+0.45 pp**, and that is [CF3](findings_campaigns.md)'s reference-count effect rather than
+corruption. What shipped instead is **attribution and announcement**: every failure now names
+the column that caused it, the conditional step degrades instead of taking the headline down
+with it, and a declared reference the data does not carry is dropped with a warning.
+
+**Left undone deliberately:** outage *position* was held at a 30-day mid-baseline window, and
+`test_empty_upgraded` (+0.20 pp) and `era5_incidental_absent` (−0.19 pp) sit just above the
+floor but were not seed-swept, so they are unmeasured rather than cleared.
 
 ---
 
@@ -848,8 +869,9 @@ without it. What W1a delivers is the *interface*; W1b settles whether it is *rig
 **Scope**
 - Build `wind-up` in `benchmarking/baselines` (like every v1 method), composing
   **`power_model` (definite) + the shared northing step (R1) + the reference-validity
-  screen (R3) + missing-data adaptation (R4)**. `toggle_specialist` inclusion is
-  **TBD** and is settled in W1b, not here.
+  screen (R3)**. R4 added no adaptation layer to compose (see its scope correction): what it
+  left behind is attribution and a pool-shrinkage warning, already inside those parts.
+  `toggle_specialist` inclusion is **TBD** and is settled in W1b, not here.
 - **A campaign is declared, not scripted** (moved here from W2, which is too late for
   W3 to use it). `CampaignSpec` gains a simple user-facing declaration — a YAML file it
   initializes from — so an analyst describes turbine roles, timing, exclusions and
