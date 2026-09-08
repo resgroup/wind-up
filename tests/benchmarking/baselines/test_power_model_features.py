@@ -21,6 +21,7 @@ from benchmarking.baselines.power_model.features import (
 )
 
 _TURBINE = "TurbineName"
+_REFS = ("R1", "R2", "R3")
 _POWER = "wtc_ActPower_mean"
 _AVAIL = "wtc_ScReToOp_timeon"
 _WS = "wtc_AcWindSp_mean"
@@ -52,7 +53,12 @@ class TestBuildReferenceFeatures:
     def test_only_active_power_and_availability_per_reference(self) -> None:
         idx = _index(12)
         feats = build_reference_features(
-            _scada(idx), test_wtg="T1", turbine_col=_TURBINE, active_power_col=_POWER, availability_col=_AVAIL
+            _scada(idx),
+            test_wtg="T1",
+            references=_REFS,
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
         )
         # three references x two value columns = six feature columns; none for T1; ws not included
         assert len(feats.columns) == 6
@@ -63,7 +69,12 @@ class TestBuildReferenceFeatures:
     def test_keeps_original_tag_names(self) -> None:
         idx = _index(12)
         feats = build_reference_features(
-            _scada(idx), test_wtg="T1", turbine_col=_TURBINE, active_power_col=_POWER, availability_col=_AVAIL
+            _scada(idx),
+            test_wtg="T1",
+            references=_REFS,
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
         )
         assert f"{_POWER}{QUALIFIER}R1" in feats.columns
         assert f"{_AVAIL}{QUALIFIER}R3" in feats.columns
@@ -73,19 +84,41 @@ class TestBuildReferenceFeatures:
         scada = _scada(idx)
         scada.loc[(scada[_TURBINE] == "R1") & (scada.index == idx[3]), _POWER] = np.nan
         feats = build_reference_features(
-            scada, test_wtg="T1", turbine_col=_TURBINE, active_power_col=_POWER, availability_col=_AVAIL
+            scada,
+            test_wtg="T1",
+            references=_REFS,
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
         )
         assert len(feats) == len(idx)
         assert np.isnan(feats.loc[idx[3], f"{_POWER}{QUALIFIER}R1"])
 
-    def test_raises_when_no_references(self) -> None:
+    def test_raises_when_the_pool_is_empty(self) -> None:
         idx = _index(12)
-        only_test = _scada(idx)
-        only_test = only_test[only_test[_TURBINE] == "T1"]
-        with pytest.raises(ValueError, match="reference"):
+        with pytest.raises(ValueError, match="no references supplied"):
             build_reference_features(
-                only_test, test_wtg="T1", turbine_col=_TURBINE, active_power_col=_POWER, availability_col=_AVAIL
+                _scada(idx),
+                test_wtg="T1",
+                references=(),
+                turbine_col=_TURBINE,
+                active_power_col=_POWER,
+                availability_col=_AVAIL,
             )
+
+    def test_a_turbine_outside_the_pool_contributes_nothing(self) -> None:
+        idx = _index(12)
+        feats = build_reference_features(
+            _scada(idx),
+            test_wtg="T1",
+            references=("R1", "R2"),
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
+        )
+        # R3 is in the frame but not offered as a reference, so it is not one
+        assert not any(c.endswith(f"{QUALIFIER}R3") for c in feats.columns)
+        assert len(feats.columns) == 4
 
     def test_extra_cols_add_per_reference_features(self) -> None:
         idx = _index(12)
@@ -94,6 +127,7 @@ class TestBuildReferenceFeatures:
         feats = build_reference_features(
             scada,
             test_wtg="T1",
+            references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
             availability_col=_AVAIL,
@@ -111,6 +145,7 @@ class TestBuildReferenceFeatures:
             build_reference_features(
                 scada,
                 test_wtg="T1",
+                references=_REFS,
                 turbine_col=_TURBINE,
                 active_power_col=_POWER,
                 availability_col=_AVAIL,
@@ -123,6 +158,7 @@ class TestBuildReferenceFeatures:
             build_reference_features(
                 _scada(idx),
                 test_wtg="T1",
+                references=_REFS,
                 turbine_col=_TURBINE,
                 active_power_col=_POWER,
                 availability_col=_AVAIL,
@@ -135,7 +171,12 @@ class TestBuildReferenceFeatures:
         # a leak-bait column only present on the test turbine must not appear among features
         scada["wtc_NacWdSp_mean"] = np.where(scada[_TURBINE] == "T1", scada[_POWER], np.nan)
         feats = build_reference_features(
-            scada, test_wtg="T1", turbine_col=_TURBINE, active_power_col=_POWER, availability_col=_AVAIL
+            scada,
+            test_wtg="T1",
+            references=_REFS,
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
         )
         assert not any("NacWdSp" in c for c in feats.columns)
         assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
@@ -205,6 +246,7 @@ class TestReferenceDirectionFeature:
         feats = build_reference_features(
             _scada_with_direction(idx),
             test_wtg="T1",
+            references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
             availability_col=_AVAIL,
@@ -223,6 +265,7 @@ class TestReferenceDirectionFeature:
         feats = build_reference_features(
             scada,
             test_wtg="T1",
+            references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
             availability_col=_AVAIL,
@@ -237,6 +280,7 @@ class TestReferenceDirectionFeature:
         feats = build_reference_features(
             _scada_with_direction(idx),
             test_wtg="T1",
+            references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
             availability_col=_AVAIL,
@@ -250,6 +294,7 @@ class TestReferenceDirectionFeature:
             build_reference_features(
                 _scada(idx),  # no direction columns at all
                 test_wtg="T1",
+                references=_REFS,
                 turbine_col=_TURBINE,
                 active_power_col=_POWER,
                 availability_col=_AVAIL,
@@ -261,6 +306,7 @@ class TestReferenceDirectionFeature:
         feats = build_reference_features(
             _scada_with_direction(idx),
             test_wtg="T1",
+            references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
             availability_col=_AVAIL,
@@ -274,7 +320,12 @@ class TestReferenceDirectionFeature:
         idx = _index(12)
         scada = _scada_with_direction(idx)
         without = build_reference_features(
-            scada, test_wtg="T1", turbine_col=_TURBINE, active_power_col=_POWER, availability_col=_AVAIL
+            scada,
+            test_wtg="T1",
+            references=_REFS,
+            turbine_col=_TURBINE,
+            active_power_col=_POWER,
+            availability_col=_AVAIL,
         )
         assert len(without.columns) == 6
         assert not any("northed" in c for c in without.columns)
@@ -302,6 +353,7 @@ class TestPowerFreeReferences:
         return build_reference_features(
             _scada_spanning_the_waking_threshold(idx),
             test_wtg="T1",
+            references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
             availability_col=_AVAIL,
@@ -355,6 +407,7 @@ class TestPowerFreeReferences:
         unscreened = build_reference_features(
             _scada_spanning_the_waking_threshold(idx),
             test_wtg="T1",
+            references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
             availability_col=_AVAIL,
@@ -383,6 +436,7 @@ class TestWakingDtype:
         return build_reference_features(
             scada[~drop],
             test_wtg="T1",
+            references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
             availability_col=_AVAIL,
@@ -416,6 +470,7 @@ class TestPowerFreeKeepsAvailability:
         return build_reference_features(
             _scada_spanning_the_waking_threshold(idx),
             test_wtg="T1",
+            references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
             availability_col=_AVAIL,

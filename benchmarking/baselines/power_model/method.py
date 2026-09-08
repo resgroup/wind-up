@@ -62,7 +62,7 @@ from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrad
 from wind_up.farm import TurbineUplift, farm_uplift
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from benchmarking.synthetic import ColumnSchema
 
@@ -395,6 +395,10 @@ class PowerModelMethod:
         reference from a good one at any floor, and ruling out a good reference costs more than
         leaving a mild bad one in
 
+    The reference pool is the campaign's candidate references (the context's
+    ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
+    them power-free rather than removing them from it.
+
     The toggle headline is always the counterfactual energy ratio ``Σactual/Σprediction - 1``.
     """
 
@@ -452,7 +456,8 @@ class PowerModelMethod:
             raise ValueError(msg)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
-        n_refs = scada[mi.turbine_col].nunique() - 1
+        references = self._candidate_references(scada, mi=mi)
+        n_refs = len(references)
 
         y = extract_outcome(
             scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, active_power_col=self.columns.active_power
@@ -461,10 +466,18 @@ class PowerModelMethod:
         # schema, so it is always present without per-driver ``reference_stat_cols`` config; extra
         # stat columns still append after it (deduped, so a caller repeating the min is harmless).
         extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
+        # Decided before the screen, whose clone fits are the first expensive thing here, so a
+        # matching column named by hand and not delivered stops the run before any model is fitted.
+        conditional_runnable = self._conditional_is_runnable(
+            self.era5_hourly_df.columns if self.era5_hourly_df is not None else ()
+        )
         screen = self.screen_references(mi) if self.reference_screen else None
+        # The screen does not shrink the pool: an outlier stays a reference and loses its power channels.
         power_free = screen.screened if screen is not None else ()
-        features = self._reference_features(scada, mi=mi, extra_cols=extra_cols, power_free=power_free)
-        features, era5 = self._add_era5(scada, features, mi=mi, index=index, timebase=timebase)
+        features = self._reference_features(
+            scada, mi=mi, references=references, extra_cols=extra_cols, power_free=power_free
+        )
+        features, era5 = self._add_era5(scada, features, mi=mi, references=references, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
 
         toggle_rows = resolve_toggle(mi.upgrade_timing, index)
@@ -537,7 +550,7 @@ class PowerModelMethod:
         # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
         # it (eventually AEP extrapolation will). Skipped when no conditions are requested.
         by_condition: pd.DataFrame | None = None
-        if self.conditions:
+        if self.conditions and conditional_runnable:
             # The conditional two-direction step matches baseline against upgraded rows and relies on
             # them sharing a distribution *and era* — for a toggle whose headline fit also trains on the
             # pre-campaign baseline, only the interleaved campaign off rows qualify (the strict
@@ -564,13 +577,13 @@ class PowerModelMethod:
             )
         # Reported post-screen: the sanity check asks what the *final* analysis says its references
         # did, so a ruled-out reference is listed but does not drag the headline.
-        references = (
+        reference_uplifts = (
             self.reference_uplifts(mi, screened=power_free, screen=screen) if self.report_reference_uplifts else None
         )
         return MethodOutput(
             p50_overall=uplift,
             p50_by_condition=by_condition,
-            reference_uplifts=references,
+            reference_uplifts=reference_uplifts,
             screen_passes=screen.passes if screen is not None else None,
         )
 
@@ -781,6 +794,37 @@ class PowerModelMethod:
                 run_dir / "plots" / stages.CONDITIONAL_UPLIFT, per_bin, test_wtg=mi.test_wtg
             )
 
+    def _conditional_is_runnable(self, era5_columns: Iterable[str]) -> bool:
+        """Whether the conditional step has its matching columns; raises when they were named by hand.
+
+        The untouched default set is skip-if-missing, so a partial ERA5 delivery costs the
+        conditional breakdown and leaves the headline standing. An explicitly-set ``matching_vars``
+        keeps the strict guard: a column named there and not present is a configuration error.
+
+        Judged on the raw ERA5 columns rather than the built features, so it can run before the
+        screen: ``era5_feature_frame`` passes every raw column through, and ``_validate_model_config``
+        has already refused an ``era5_exclude`` that would remove a matching var.
+        """
+        if not self.conditions:
+            return False
+        available = set(era5_columns)
+        missing = [v for v in self.matching_vars if v not in available]
+        if not missing:
+            return True
+        if self.matching_vars is not _DEFAULT_MATCHING_VARS:
+            msg = (
+                f"matching_vars names {missing}, which the ERA5 frame does not carry; the conditional step "
+                f"bins on them. Columns present: {sorted(available)}"
+            )
+            raise ValueError(msg)
+        logger.warning(
+            "%s: no conditional uplift -- the matching column(s) %s are not in the ERA5 features. The overall "
+            "P50 is unaffected.",
+            self.name,
+            missing,
+        )
+        return False
+
     def _default_bin_edges(self) -> dict[str, list[float]]:
         """Per-variable CEM edges for ``matching_vars`` from the curated defaults; raise on an unknown var."""
         missing = [v for v in self.matching_vars if v not in _DEFAULT_MATCHING_BIN_EDGES]
@@ -798,6 +842,7 @@ class PowerModelMethod:
         features: pd.DataFrame,
         *,
         mi: MethodInput,
+        references: Sequence[str],
         index: pd.DatetimeIndex,
         timebase: pd.Timedelta,
     ) -> tuple[pd.DataFrame, Any]:
@@ -805,7 +850,7 @@ class PowerModelMethod:
         if self.era5_hourly_df is None:
             return features, None
         reference_ws = reference_mean_wind_speed(
-            scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
+            scada, references=references, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
         )
         result = sync_era5(self.era5_hourly_df, target_index=index, reference_ws=reference_ws, timebase=timebase)
         era5_features = era5_feature_frame(result.aligned)
@@ -907,6 +952,35 @@ class PowerModelMethod:
             "baseline_valid_pos": baseline_valid_pos,  # positions over ``index`` of the held-out rows
         }
 
+    def _candidate_references(self, scada: pd.DataFrame, *, mi: MethodInput) -> list[str]:
+        """Return the campaign's candidate references that ``scada`` carries data for, sorted.
+
+        The pool starts at what the campaign offers: a turbine present in the frame that the
+        campaign does not offer as a reference is not one, and one the campaign offers that the
+        frame has no rows for is dropped with a warning rather than estimated as if it were there.
+        """
+        present = sorted({str(t) for t in scada[mi.turbine_col].unique()})
+        references = mi.context.references_among(present)
+        absent = sorted(set(mi.context.candidate_references) - set(references))
+        if absent:
+            logger.warning(
+                "%s %s: the campaign offers %d candidate reference(s) but scada_df carries no rows for %s, so "
+                "the estimate runs on a pool of %d. Reference count drives accuracy.",
+                self.name,
+                mi.test_wtg,
+                len(mi.context.candidate_references),
+                absent,
+                len(references),
+            )
+        if not references:
+            msg = (
+                f"no candidate references available for test_wtg {mi.test_wtg!r}: the campaign offers "
+                f"{sorted(mi.context.candidate_references)} and scada_df carries {present}. The power model "
+                f"needs at least one reference turbine."
+            )
+            raise ValueError(msg)
+        return references
+
     def reference_features(self, mi: MethodInput, *, power_free: Sequence[str] = ()) -> pd.DataFrame:
         """Build this method's reference feature matrix for ``mi``, optionally power-free for some.
 
@@ -915,15 +989,28 @@ class PowerModelMethod:
         """
         scada = mi.context.select(mi.scada_df)
         extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
-        return self._reference_features(scada, mi=mi, extra_cols=extra_cols, power_free=power_free)
+        return self._reference_features(
+            scada,
+            mi=mi,
+            references=self._candidate_references(scada, mi=mi),
+            extra_cols=extra_cols,
+            power_free=power_free,
+        )
 
     def _reference_features(
-        self, scada: pd.DataFrame, *, mi: MethodInput, extra_cols: tuple[str, ...], power_free: Sequence[str]
+        self,
+        scada: pd.DataFrame,
+        *,
+        mi: MethodInput,
+        references: Sequence[str],
+        extra_cols: tuple[str, ...],
+        power_free: Sequence[str],
     ) -> pd.DataFrame:
         """Return reference features for ``scada``; ``power_free`` references carry no power columns."""
         return build_reference_features(
             scada,
             test_wtg=mi.test_wtg,
+            references=references,
             turbine_col=mi.turbine_col,
             active_power_col=self.columns.active_power,
             availability_col=self.columns.availability,
@@ -950,12 +1037,13 @@ class PowerModelMethod:
         reused rather than refitting the whole pool.
         """
         context = mi.context
+        pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
         ruled_out = set(screened)
-        surviving = [r for r in context.candidate_references if r not in ruled_out]
+        surviving = [r for r in pool if r not in ruled_out]
         clone = self._reference_clone()
         reusable = self._reusable_screen_estimates(mi, screen=screen, ruled_out=ruled_out)
         rows: list[dict[str, object]] = []
-        for target in context.candidate_references:
+        for target in pool:
             refs = [r for r in surviving if r != target]
             if not refs:
                 continue
@@ -1013,7 +1101,7 @@ class PowerModelMethod:
         finite = selected[np.isfinite(selected)]
         return float(finite.sum()), int(finite.size)
 
-    def _campaign_days(self, mi: MethodInput) -> float:
+    def _campaign_days(self, mi: MethodInput, *, pool: Sequence[str]) -> float:
         """Upgraded days of *fittable* data the worst-covered turbine has, test turbine included.
 
         Counted from records rather than calendar span, and per turbine rather than over the frame:
@@ -1036,7 +1124,7 @@ class PowerModelMethod:
             availability_col=self.columns.availability,
         ).keep_mask
         covered: list[float] = []
-        for wtg in [mi.test_wtg, *mi.context.candidate_references]:
+        for wtg in [mi.test_wtg, *pool]:
             # This turbine's own rows: the long frame repeats each timestamp per turbine.
             rows = scada[scada[mi.turbine_col] == wtg].sort_index()
             rows = rows[~rows.index.duplicated()]
@@ -1109,7 +1197,8 @@ class PowerModelMethod:
             # more than leaving a mild bad one in, so it does not run.
             logger.info("%s %s: reference screen skipped, campaign is toggle", self.name, mi.test_wtg)
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
-        campaign_days = self._campaign_days(mi)
+        pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
+        campaign_days = self._campaign_days(mi, pool=pool)
         if campaign_days < self.screen_min_campaign_days:
             logger.info(
                 "%s %s: reference screen skipped, campaign holds %.1f days of upgraded data, under the %.1f "
@@ -1123,6 +1212,10 @@ class PowerModelMethod:
         timing = self.screening_timing(mi)
         clone = self._screening_clone()
 
+        # Why each candidate could not be estimated, so a screen that gives up can say what stopped
+        # it rather than only that it gave up.
+        causes: dict[str, str] = {}
+
         def estimate_one(target: str, refs: list[str]) -> float:
             sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=list(refs), timing=timing)
             sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
@@ -1132,11 +1225,17 @@ class PowerModelMethod:
                 # NaN ranks worst, so the candidate is ruled out rather than aborting the estimate:
                 # surviving a reference this bad is what the screen is for.
                 logger.warning("%s: reference screen could not estimate %s (%s)", self.name, target, e)
+                causes[target] = str(e)
                 return float("nan")
 
-        result = screen_references(
-            list(context.candidate_references), estimate_one=estimate_one, floor=self.screen_floor
-        )
+        try:
+            result = screen_references(pool, estimate_one=estimate_one, floor=self.screen_floor)
+        except ValueError as e:
+            if not causes:
+                raise
+            detail = "; ".join(f"{target}: {cause}" for target, cause in sorted(causes.items()))
+            msg = f"{e} What stopped each of them: {detail}"
+            raise ValueError(msg) from e
         if result.screened:
             logger.info(
                 "%s %s: reference screen ruled out %s; they keep direction + waking features but contribute no power",

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 
 import pandas as pd
+import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
 from benchmarking.campaigns.context import context_for
 from benchmarking.campaigns.declaration import CampaignSpec
@@ -45,6 +47,17 @@ class TestCandidateReferences:
     def test_a_declared_reference_absent_from_the_frame_is_dropped(self) -> None:
         context = context_for(_spec(candidate_references=["T3", "T4", "T9"]), turbine="T1", scada_df=_scada())
         assert context.candidate_references == ["T3", "T4"]
+
+    def test_dropping_a_declared_reference_is_announced(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A quietly smaller pool is a weaker estimate, so the gap between declared and delivered is said."""
+        with caplog.at_level(logging.WARNING):
+            context_for(_spec(candidate_references=["T3", "T4", "T9"]), turbine="T1", scada_df=_scada())
+        assert "T9" in caplog.text
+
+    def test_a_fully_delivered_pool_says_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING):
+            context_for(_spec(), turbine="T1", scada_df=_scada())
+        assert "carries no rows" not in caplog.text
 
 
 class TestValidForUplift:

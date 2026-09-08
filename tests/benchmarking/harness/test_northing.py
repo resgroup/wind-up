@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.harness.northing import north_scada
+from benchmarking.harness.northing import ERA5_WD_COL, era5_direction, north_scada
 from benchmarking.harness.replicates import StudyConfig, iter_replicates
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.circular_math import circ_diff
@@ -107,6 +107,38 @@ class TestDiscovery:
         scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
         with pytest.raises(ValueError, match="era5_wd"):
             north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, era5_wd=None)
+
+    @pytest.mark.parametrize("role", ["active_power", "availability"])
+    def test_discovery_without_a_column_it_reads_raises_naming_it(self, role: str) -> None:
+        """A missing input is reported as the missing column, not as a bare KeyError from pandas."""
+        index = _index(days=30)
+        scada, era5 = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
+        missing = str(getattr(_COLUMNS, role))
+        with pytest.raises(ValueError, match=missing):
+            north_scada(
+                scada.drop(columns=[missing]),
+                columns=_COLUMNS,
+                north_offsets=None,
+                rated_power_kw=_RATED,
+                era5_wd=pd.Series(era5, index=index),
+            )
+
+
+class TestEra5Direction:
+    def test_returns_the_direction_carried_onto_the_index(self) -> None:
+        index = _index(days=2)
+        hourly = pd.date_range(start=_START, periods=48, freq="h", tz="UTC")
+        era5 = pd.DataFrame({ERA5_WD_COL: np.arange(48, dtype=float)}, index=hourly)
+        out = era5_direction(era5, index)
+        assert out.index.equals(index)
+        assert out.iloc[0] == pytest.approx(0.0)
+
+    def test_without_the_direction_column_raises_naming_it(self) -> None:
+        index = _index(days=2)
+        hourly = pd.date_range(start=_START, periods=48, freq="h", tz="UTC")
+        era5 = pd.DataFrame({"wind_speed_100m": 9.0}, index=hourly)
+        with pytest.raises(ValueError, match=ERA5_WD_COL):
+            era5_direction(era5, index)
 
 
 class TestDeclared:
