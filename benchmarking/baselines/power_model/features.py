@@ -15,6 +15,11 @@ turbine's power — weather and wakes:
 Features that are not expected to add value and risk the model learning coincidences rather than
 cause-effect (reactive power, blade pitch, …) are intentionally excluded.
 
+The reference pool is passed in by the caller -- the campaign's **candidate references** -- and is
+never inferred from the turbines the frame happens to hold: a turbine present in the data is not
+thereby available as a reference. The caller's screen may make some of that pool ``power_free``;
+that downgrades a reference's channels, it does not shrink the pool.
+
 Feature columns from references are named ``"<tag>{QUALIFIER}<turbine>"`` so the original tag is
 preserved verbatim in importance diagnostics. :func:`check_reference_only` rejects any
 test-turbine-qualified column (the §3 guard).
@@ -41,13 +46,13 @@ _NORTHED_PREFIX = "northed_"
 logger = logging.getLogger(__name__)
 
 
-def _references(scada_df: pd.DataFrame, *, test_wtg: str, turbine_col: str) -> list[str]:
-    """Sorted reference turbine names (every turbine present except the test turbine)."""
-    refs = sorted(t for t in scada_df[turbine_col].unique() if t != test_wtg)
+def _checked_references(references: Sequence[str]) -> list[str]:
+    """Return the reference pool as supplied, deduped in order; raises when it is empty."""
+    refs = list(dict.fromkeys(str(r) for r in references))
     if not refs:
         msg = (
-            f"no reference turbines available for test_wtg {test_wtg!r}: scada_df contains only "
-            f"{sorted(scada_df[turbine_col].unique())}. The power model needs at least one reference turbine."
+            "no references supplied: the power model needs at least one. The pool is the campaign's candidate "
+            "references, so a turbine present in scada_df is not thereby available as a reference."
         )
         raise ValueError(msg)
     return refs
@@ -57,6 +62,7 @@ def build_reference_features(
     scada_df: pd.DataFrame,
     *,
     test_wtg: str,
+    references: Sequence[str],
     turbine_col: str,
     active_power_col: str,
     availability_col: str,
@@ -72,9 +78,12 @@ def build_reference_features(
     more per-reference channels and ``include_availability=False`` drops the availability feature.
     Columns are ``"<tag>{QUALIFIER}<turbine>"`` keeping the original tag name. The test turbine
     contributes nothing (its power is the outcome, extracted separately). NaNs are preserved (no
-    complete-case dropping) — LightGBM handles them natively. Raises if no reference turbine is
-    present, or (defensively) if any test-turbine column would leak in.
+    complete-case dropping) — LightGBM handles them natively. Raises if ``references`` is empty, or
+    (defensively) if any test-turbine column would leak in.
 
+    :param references: the reference pool -- the campaign's candidate references -- in the order
+        their feature columns are laid out. A turbine in ``scada_df`` that is not named here
+        contributes nothing, and a name with no data in ``scada_df`` contributes no value columns.
     :param extra_cols: additional per-reference value columns to carry as features (Issue 11's
         active-power max/min/SD statistics); must be present in ``scada_df`` like the primary two
     :param include_availability: when ``False``, drop the per-reference availability *feature*
@@ -93,7 +102,7 @@ def build_reference_features(
     :param waking_threshold_kw: active power at or above which a ``power_free`` reference counts as
         waking its neighbours
     """
-    refs = _references(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)
+    refs = _checked_references(references)
     power_free = _checked_power_free(power_free, refs=refs, waking_threshold_kw=waking_threshold_kw)
     extra_cols, direction_frame = _direction_features(
         scada_df, refs=refs, turbine_col=turbine_col, direction_col=direction_col, extra_cols=extra_cols
@@ -249,17 +258,17 @@ def extract_outcome(
 def reference_mean_wind_speed(
     scada_df: pd.DataFrame,
     *,
-    test_wtg: str,
+    references: Sequence[str],
     turbine_col: str,
     wind_speed_col: str,
 ) -> pd.Series:
-    """Mean wind speed across reference turbines on the unique index (used only for ERA5 lag sync).
+    """Mean wind speed across the reference pool on the unique index (used only for ERA5 lag sync).
 
     This is **not** a model feature — it is the site wind-speed signal the ERA5 correlation sweep
-    locks onto. Computed from references only so it stays upgrade-invariant.
+    locks onto. Averaged over ``references`` only, so it stays upgrade-invariant.
     """
     index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
-    refs = _references(scada_df, test_wtg=test_wtg, turbine_col=turbine_col)
+    refs = _checked_references(references)
     if wind_speed_col not in scada_df.columns:
         return pd.Series(np.nan, index=index)
     cols = []

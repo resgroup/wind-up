@@ -395,6 +395,10 @@ class PowerModelMethod:
         reference from a good one at any floor, and ruling out a good reference costs more than
         leaving a mild bad one in
 
+    The reference pool is the campaign's candidate references (the context's
+    ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
+    them power-free rather than removing them from it.
+
     The toggle headline is always the counterfactual energy ratio ``Σactual/Σprediction - 1``.
     """
 
@@ -452,7 +456,8 @@ class PowerModelMethod:
             raise ValueError(msg)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
-        n_refs = scada[mi.turbine_col].nunique() - 1
+        references = self._candidate_references(scada, mi=mi)
+        n_refs = len(references)
 
         y = extract_outcome(
             scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, active_power_col=self.columns.active_power
@@ -462,9 +467,12 @@ class PowerModelMethod:
         # stat columns still append after it (deduped, so a caller repeating the min is harmless).
         extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
         screen = self.screen_references(mi) if self.reference_screen else None
+        # The screen does not shrink the pool: an outlier stays a reference and loses its power channels.
         power_free = screen.screened if screen is not None else ()
-        features = self._reference_features(scada, mi=mi, extra_cols=extra_cols, power_free=power_free)
-        features, era5 = self._add_era5(scada, features, mi=mi, index=index, timebase=timebase)
+        features = self._reference_features(
+            scada, mi=mi, references=references, extra_cols=extra_cols, power_free=power_free
+        )
+        features, era5 = self._add_era5(scada, features, mi=mi, references=references, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
 
         toggle_rows = resolve_toggle(mi.upgrade_timing, index)
@@ -564,13 +572,13 @@ class PowerModelMethod:
             )
         # Reported post-screen: the sanity check asks what the *final* analysis says its references
         # did, so a ruled-out reference is listed but does not drag the headline.
-        references = (
+        reference_uplifts = (
             self.reference_uplifts(mi, screened=power_free, screen=screen) if self.report_reference_uplifts else None
         )
         return MethodOutput(
             p50_overall=uplift,
             p50_by_condition=by_condition,
-            reference_uplifts=references,
+            reference_uplifts=reference_uplifts,
             screen_passes=screen.passes if screen is not None else None,
         )
 
@@ -798,6 +806,7 @@ class PowerModelMethod:
         features: pd.DataFrame,
         *,
         mi: MethodInput,
+        references: Sequence[str],
         index: pd.DatetimeIndex,
         timebase: pd.Timedelta,
     ) -> tuple[pd.DataFrame, Any]:
@@ -805,7 +814,7 @@ class PowerModelMethod:
         if self.era5_hourly_df is None:
             return features, None
         reference_ws = reference_mean_wind_speed(
-            scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
+            scada, references=references, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
         )
         result = sync_era5(self.era5_hourly_df, target_index=index, reference_ws=reference_ws, timebase=timebase)
         era5_features = era5_feature_frame(result.aligned)
@@ -907,6 +916,23 @@ class PowerModelMethod:
             "baseline_valid_pos": baseline_valid_pos,  # positions over ``index`` of the held-out rows
         }
 
+    def _candidate_references(self, scada: pd.DataFrame, *, mi: MethodInput) -> list[str]:
+        """Return the campaign's candidate references that ``scada`` carries data for, sorted.
+
+        The pool starts at what the campaign offers: a turbine present in the frame that the
+        campaign does not offer as a reference is not one.
+        """
+        present = sorted({str(t) for t in scada[mi.turbine_col].unique()})
+        references = mi.context.references_among(present)
+        if not references:
+            msg = (
+                f"no candidate references available for test_wtg {mi.test_wtg!r}: the campaign offers "
+                f"{sorted(mi.context.candidate_references)} and scada_df carries {present}. The power model "
+                f"needs at least one reference turbine."
+            )
+            raise ValueError(msg)
+        return references
+
     def reference_features(self, mi: MethodInput, *, power_free: Sequence[str] = ()) -> pd.DataFrame:
         """Build this method's reference feature matrix for ``mi``, optionally power-free for some.
 
@@ -915,15 +941,28 @@ class PowerModelMethod:
         """
         scada = mi.context.select(mi.scada_df)
         extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
-        return self._reference_features(scada, mi=mi, extra_cols=extra_cols, power_free=power_free)
+        return self._reference_features(
+            scada,
+            mi=mi,
+            references=self._candidate_references(scada, mi=mi),
+            extra_cols=extra_cols,
+            power_free=power_free,
+        )
 
     def _reference_features(
-        self, scada: pd.DataFrame, *, mi: MethodInput, extra_cols: tuple[str, ...], power_free: Sequence[str]
+        self,
+        scada: pd.DataFrame,
+        *,
+        mi: MethodInput,
+        references: Sequence[str],
+        extra_cols: tuple[str, ...],
+        power_free: Sequence[str],
     ) -> pd.DataFrame:
         """Return reference features for ``scada``; ``power_free`` references carry no power columns."""
         return build_reference_features(
             scada,
             test_wtg=mi.test_wtg,
+            references=references,
             turbine_col=mi.turbine_col,
             active_power_col=self.columns.active_power,
             availability_col=self.columns.availability,

@@ -112,8 +112,9 @@ def build_era5_and_outcome(scada_df: pd.DataFrame, *, test_wtg: str) -> tuple[pd
     y = extract_outcome(
         scada_df, test_wtg=test_wtg, turbine_col=HOT_COLUMNS.turbine, active_power_col=HOT_COLUMNS.active_power
     )
+    references = sorted({str(t) for t in scada_df[HOT_COLUMNS.turbine].unique()} - {test_wtg})
     reference_ws = reference_mean_wind_speed(
-        scada_df, test_wtg=test_wtg, turbine_col=HOT_COLUMNS.turbine, wind_speed_col=HOT_COLUMNS.wind_speed
+        scada_df, references=references, turbine_col=HOT_COLUMNS.turbine, wind_speed_col=HOT_COLUMNS.wind_speed
     )
     synced = sync_era5(
         context.reanalysis_datasets[0].data, target_index=index, reference_ws=reference_ws, timebase=timebase

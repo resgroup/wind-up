@@ -65,7 +65,7 @@ class DiagnosticData:
     overall_uplift: float
     sum_actual_kw: float
     sum_counterfactual_kw: float
-    n_refs: int
+    n_refs: int  # candidate references in the pool, screened ones included
     era5_lag_rows: int | None
     era5_corr: float | None
     era5_sweep: pd.DataFrame | None
