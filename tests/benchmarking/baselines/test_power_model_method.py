@@ -8,6 +8,7 @@ recovers the uplift — for both prepost and toggle. Also checks the reference-o
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import tempfile
 from dataclasses import replace
@@ -1139,6 +1140,47 @@ class TestAShrunkenPoolIsAnnounced:
         with caplog.at_level(logging.WARNING):
             _screen_method().estimate(mi)
         assert "carries no data" not in caplog.text
+
+
+class TestTheConditionalGuardRunsBeforeTheScreen:
+    """An explicitly-named missing matching column stops the run before any model is fitted."""
+
+    def test_it_raises_without_ever_screening(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        scada = _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover))
+        method = PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            era5_hourly_df=_toy_era5(idx).drop(columns=["wind_gusts_10m"]),
+            matching_vars=("wind_speed_100m", "wind_gusts_10m"),
+            model_params=_FAST_PARAMS,
+            screen_min_campaign_days=0.0,
+        )
+        called: list[str] = []
+        monkeypatch.setattr(
+            PowerModelMethod,
+            "screen_references",
+            lambda self, mi: called.append(mi.test_wtg),  # noqa: ARG005
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        with pytest.raises(ValueError, match="wind_gusts_10m"):
+            method.estimate(mi)
+        assert called == []
+
+
+class TestTheScreenGateJudgesThePoolThatExists:
+    """A declared reference with no rows must not silently disable screening for the rest."""
+
+    def test_an_absent_declared_reference_does_not_disable_the_screen(self) -> None:
+        mi, changeover = _screen_case(step=0.0)
+        full = mi.scada_df
+        context = CampaignContext.from_frame(full, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        # R4 is offered by the campaign but never turned up; R1/R2/R3 did.
+        context = dataclasses.replace(context, candidate_references=[*context.candidate_references, "R4"])
+        starved = MethodInput(scada_df=full, test_wtg="T1", campaign_context=context)
+        assert _screen_method(screen_min_campaign_days=5.0).screen_references(starved).screenable
 
 
 class TestScreenFailureNamesItsCause:

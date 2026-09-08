@@ -62,7 +62,7 @@ from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrad
 from wind_up.farm import TurbineUplift, farm_uplift
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from benchmarking.synthetic import ColumnSchema
 
@@ -466,6 +466,11 @@ class PowerModelMethod:
         # schema, so it is always present without per-driver ``reference_stat_cols`` config; extra
         # stat columns still append after it (deduped, so a caller repeating the min is harmless).
         extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
+        # Decided before the screen, whose clone fits are the first expensive thing here, so a
+        # matching column named by hand and not delivered stops the run before any model is fitted.
+        conditional_runnable = self._conditional_is_runnable(
+            self.era5_hourly_df.columns if self.era5_hourly_df is not None else ()
+        )
         screen = self.screen_references(mi) if self.reference_screen else None
         # The screen does not shrink the pool: an outlier stays a reference and loses its power channels.
         power_free = screen.screened if screen is not None else ()
@@ -474,9 +479,6 @@ class PowerModelMethod:
         )
         features, era5 = self._add_era5(scada, features, mi=mi, references=references, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
-        # Decided before the fits, so an explicitly-named missing column stops the run at once
-        # rather than after the headline has been paid for.
-        conditional_runnable = self._conditional_is_runnable(features)
 
         toggle_rows = resolve_toggle(mi.upgrade_timing, index)
         t = toggle_rows.upgraded
@@ -792,22 +794,27 @@ class PowerModelMethod:
                 run_dir / "plots" / stages.CONDITIONAL_UPLIFT, per_bin, test_wtg=mi.test_wtg
             )
 
-    def _conditional_is_runnable(self, features: pd.DataFrame) -> bool:
+    def _conditional_is_runnable(self, era5_columns: Iterable[str]) -> bool:
         """Whether the conditional step has its matching columns; raises when they were named by hand.
 
         The untouched default set is skip-if-missing, so a partial ERA5 delivery costs the
         conditional breakdown and leaves the headline standing. An explicitly-set ``matching_vars``
         keeps the strict guard: a column named there and not present is a configuration error.
+
+        Judged on the raw ERA5 columns rather than the built features, so it can run before the
+        screen: ``era5_feature_frame`` passes every raw column through, and ``_validate_model_config``
+        has already refused an ``era5_exclude`` that would remove a matching var.
         """
         if not self.conditions:
             return False
-        missing = [v for v in self.matching_vars if v not in features.columns]
+        available = set(era5_columns)
+        missing = [v for v in self.matching_vars if v not in available]
         if not missing:
             return True
         if self.matching_vars is not _DEFAULT_MATCHING_VARS:
             msg = (
-                f"matching_vars names {missing}, which the ERA5 features do not carry; the conditional step "
-                f"bins on them. Columns present: {sorted(features.columns)}"
+                f"matching_vars names {missing}, which the ERA5 frame does not carry; the conditional step "
+                f"bins on them. Columns present: {sorted(available)}"
             )
             raise ValueError(msg)
         logger.warning(
@@ -1094,7 +1101,7 @@ class PowerModelMethod:
         finite = selected[np.isfinite(selected)]
         return float(finite.sum()), int(finite.size)
 
-    def _campaign_days(self, mi: MethodInput) -> float:
+    def _campaign_days(self, mi: MethodInput, *, pool: Sequence[str]) -> float:
         """Upgraded days of *fittable* data the worst-covered turbine has, test turbine included.
 
         Counted from records rather than calendar span, and per turbine rather than over the frame:
@@ -1117,7 +1124,7 @@ class PowerModelMethod:
             availability_col=self.columns.availability,
         ).keep_mask
         covered: list[float] = []
-        for wtg in [mi.test_wtg, *mi.context.candidate_references]:
+        for wtg in [mi.test_wtg, *pool]:
             # This turbine's own rows: the long frame repeats each timestamp per turbine.
             rows = scada[scada[mi.turbine_col] == wtg].sort_index()
             rows = rows[~rows.index.duplicated()]
@@ -1190,7 +1197,8 @@ class PowerModelMethod:
             # more than leaving a mild bad one in, so it does not run.
             logger.info("%s %s: reference screen skipped, campaign is toggle", self.name, mi.test_wtg)
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
-        campaign_days = self._campaign_days(mi)
+        pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
+        campaign_days = self._campaign_days(mi, pool=pool)
         if campaign_days < self.screen_min_campaign_days:
             logger.info(
                 "%s %s: reference screen skipped, campaign holds %.1f days of upgraded data, under the %.1f "
@@ -1202,7 +1210,6 @@ class PowerModelMethod:
             )
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
-        pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
         clone = self._screening_clone()
 
         # Why each candidate could not be estimated, so a screen that gives up can say what stopped
