@@ -962,9 +962,11 @@ without it. What W1a delivers is the *interface*; W1b settles whether it is *rig
   campaign can be run without importing anything.
 
 **Done when:** `wind-up` runs self-configured from a YAML-declared `CampaignSpec` on the
-C1/C2 campaigns, and W3 can be attempted against it. The composition is expected to keep
-moving as C3–C6 land — that is W1b's business, and W3 tests documentation and output
-legibility, not API stability.
+C1/C2 campaigns; a campaign runs on data with no ground truth and its report carries no
+truth columns; and **one W3 dry run has been driven end-to-end against the placebo**, with
+the transcript kept and the gaps it found recorded for W2 (done — see CF15 and the W3 gap
+list). The composition is expected to keep moving as C3–C6 land — that is W1b's business,
+and W3 tests documentation and output legibility, not API stability.
 
 ---
 
@@ -1069,6 +1071,30 @@ filesystem. The analyst therefore runs in a directory containing **only** the br
 declaration, the runner, the documentation under test and the output directory — never a
 checkout.
 
+**Two isolation holes the first runs actually hit** (CF15), neither of them the analyst's
+doing:
+- **`CLAUDE.md` is auto-injected** into any agent whose working directory is the checkout,
+  and it describes `benchmarking/synthetic/` as a generator of "injected known uplift
+  profiles" with "ground-truth recording". The harness tells the analyst the data is
+  synthetic before it reads the brief. **Spawn with cwd outside the checkout.**
+- **Concurrent runs on one machine see each other's processes**, so one instance's command
+  line — and therefore its existence and its paths — appears in another's transcript.
+  **Run one dry run at a time.**
+The analyst must still invoke the tool from the checkout's environment, so "never touched
+the repo" cannot be the audit criterion. What disqualifies a run is reading the answer key,
+the generator, or the campaign source; audit the transcript for those specifically.
+
+**The placebo cannot score (b).** A placebo on real SCADA injects no faults, so its key
+reads `"faults": []` while the data carries real ones — both first-run analysts correctly
+named T17 and a ~100° northing step on T16, neither of them injected. The (b) half is only
+scoreable where a fault was synthesized.
+
+**A weakly-shaped injection cannot score the class.** The first scored run injected a Cp
+gain running +4.5% at 6 m/s to +4.0% at 9 — nearly flat across the bins carrying data — and
+the analyst read it as a flat efficiency change. Magnitude was recovered; class was not.
+**C3's injection must be shaped sharply enough that the conditional output can discriminate
+it**, or class identification is not a fair question.
+
 **Scoring separates three different failures**, because they have three different fixes:
 
 | the analyst… | what it means | who fixes it |
@@ -1081,6 +1107,39 @@ checkout.
 what it guessed at, and what it went looking for and did not find, is the requirements
 list for W2's documentation. Runs are stochastic and model-dependent, so conclusions come
 from the pattern across repeats — a single failure is a signal, not a verdict.
+
+**Gaps found so far, for W2's documentation to answer.** From the first two dry runs
+(CF15); the ones that were outright wrong are already fixed in
+`docs/running-a-campaign.md`.
+
+- **`conditional.csv` has no reading instructions and drops the `covered` flag** its
+  per-turbine counterpart carries, so its low-wind bins read −27% to −56% and its high-TI
+  bins +109% to +196% with nothing to warn a reader off. Both analysts had to find the
+  per-turbine file themselves. This is the output you need to answer "what kind of change
+  was this", and it is one table row in the docs.
+- **The row filter is documented nowhere.** One analyst nearly reported a filtered 11-day
+  baseline outage as an unfixable bias, and named this as the point it most wanted to open
+  the source.
+- **`actual_energy` is summed 10-minute mean kW, not energy, and is unlabelled** — a 6x
+  trap against the MWh in the log.
+- **`rated_power_kw` has no guidance.** Turbine knowledge gives the wrong answer here
+  (Senvion MM82 nameplate 2050 kW against an observed 2300 kW).
+- **The reference screen's thresholds, its minimum pool size, and the fact that it stopped
+  early all live only in stdout.** When it stops, `reference_stability.csv` comes back
+  **header-only and silent** — the table the documentation tells you to read first. That
+  silence is a code fix, not a documentation one.
+- **"A healthy campaign reads near 0%" is never quantified**, though the tool's own 2.5 pp
+  floor exists in a log line. With two references left the pseudo-tests are pairwise
+  mirrors, which reads as two independent measurements and is not.
+- **The per-turbine output tree is undocumented** — results CSV, feature importance, seven
+  plot folders, `implied_shrinkage`, `r_fwd`/`r_rev`, `era5_lag_rows`.
+- **`northing_corrections.yaml` cannot be pasted back as `table:`** — no schema is shown and
+  the emitted file is a header-less indented fragment.
+- **No `schema:` value list**, and no way to discover one.
+- **`excluded` versus simply omitting a turbine read identically**, while a log line reveals
+  a third state (screened references keep direction and waking features). Say what each
+  role contributes.
+- **No worked example of a finished answer.** "Reading zero" stops one paragraph short.
 
 **Done when:** the dry run is repeatable on demand, has been run against at least one
 campaign per C issue as that issue lands, and W2's documentation answers every gap it

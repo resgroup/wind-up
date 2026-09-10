@@ -13,7 +13,7 @@ one YAML file and run from the command line.
 ## 1. Describe the campaign
 
 ```yaml
-name: my_campaign          # names the output subdirectory
+name: my_campaign          # identifies the run; also the default output directory name
 
 data:
   scada: data/scada.parquet     # long-format SCADA, one row per turbine per timestamp
@@ -71,14 +71,22 @@ with an offset is converted to UTC. Whatever you write, the resolved values are 
 `resolved_campaign.json` in the output — check it if a result looks shifted.
 
 **Reanalysis is not declared.** wind-up fetches the weather reanalysis it needs by itself, from
-the centre of the turbines in `turbines.csv`. The first run for a site downloads it; later runs
-reuse the cache.
+the centre of every turbine in `turbines.csv` — the whole site, not just the turbines this
+campaign names, so changing the roles never moves it. The first run for a site downloads it;
+later runs on that site reuse the cache.
 
 ## 2. Run it
 
 ```
 python -m benchmarking.campaigns run campaign.yaml --out out
 ```
+
+`--out` is the directory the report is written to, and it is used exactly as given: `name` does
+**not** add a subdirectory under it. Give each run its own `--out`, or a second run will overwrite
+the first. Omit `--out` and the report goes to `$WIND_UP_BENCHMARKING_OUTPUT_DIR/<name>` instead.
+
+Expect roughly **three minutes per upgraded turbine**, plus a couple of minutes for the shared
+northing step. It is not stuck.
 
 ## 3. Read the outputs
 
@@ -103,6 +111,14 @@ reference, its problem is now inside your headline number with the sign reversed
 Rows with `screened = True` were ruled out automatically and contributed no power to the estimate.
 Rows with `screened = False` that still read far from zero are the ones to think about; the screen
 is deliberately cautious and only runs on campaigns long enough to judge.
+
+### Re-run with a different reference set
+
+The single most useful check you can make. Run the campaign again with one or two references
+dropped, and see how far the headline moves. If it moves by as much as the headline itself, the
+reference set is doing more work than the change is, and you should report that rather than the
+number. Reanalysis is pinned to the whole site, so changing the roles does not disturb anything
+else.
 
 ### Then the headline
 

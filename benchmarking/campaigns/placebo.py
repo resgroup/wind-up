@@ -148,7 +148,11 @@ def placebo_campaign(
 PLACEBO_INSTANCE_YEARS = (2018, 2019)
 PLACEBO_INSTANCE_KEEP_AS_REFERENCE = ("T17",)
 PLACEBO_INSTANCE_LAST_CLEAN = pd.Timestamp("2021-01-01", tz="UTC")
-PLACEBO_INSTANCE_UPGRADED_RANGE = (4, 6)
+# How many turbines an instance may upgrade: at least two, and never so many that the reference
+# pool drops below what the screen needs to form a majority.
+MIN_SCREENABLE_REFERENCES = 3
+PLACEBO_INSTANCE_MIN_UPGRADED = 2
+PLACEBO_INSTANCE_MAX_UPGRADED_FRACTION = 1 / 3
 
 
 def placebo_instance(
@@ -166,13 +170,19 @@ def placebo_instance(
     participating = list(PLACEBO_TURBINES if turbines is None else turbines)
     rng = np.random.default_rng(seed)
     eligible = [w for w in participating if w not in PLACEBO_INSTANCE_KEEP_AS_REFERENCE]
-    low, high = PLACEBO_INSTANCE_UPGRADED_RANGE
-    n_upgraded = int(rng.integers(low, high + 1))
+    n_upgraded = int(rng.integers(PLACEBO_INSTANCE_MIN_UPGRADED, _max_upgraded(participating) + 1))
     upgraded = sorted(rng.choice(eligible, size=n_upgraded, replace=False).tolist())
     year = int(rng.choice(PLACEBO_INSTANCE_YEARS))
     month = int(rng.integers(1, 13))
     start = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
     return placebo_campaign(mode, upgraded=upgraded, turbines=participating, campaign_start=start)
+
+
+def _max_upgraded(participating: Sequence[str]) -> int:
+    """Return the most turbines an instance may upgrade on a farm of this size."""
+    by_fraction = int(len(participating) * PLACEBO_INSTANCE_MAX_UPGRADED_FRACTION)
+    by_pool = len(participating) - MIN_SCREENABLE_REFERENCES - 1
+    return max(PLACEBO_INSTANCE_MIN_UPGRADED, min(by_fraction, by_pool))
 
 
 def run_placebo(

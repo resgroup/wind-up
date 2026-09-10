@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import pytest
 
-from benchmarking.campaigns.loader import load_declaration
+from benchmarking.campaigns.loader import CENTROID_DECIMALS, load_declaration
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
 if TYPE_CHECKING:
@@ -170,8 +170,25 @@ class TestNorthing:
 
 
 class TestReanalysis:
-    def test_the_centroid_is_the_mean_of_the_declared_turbines(self, tmp_path: Path) -> None:
+    def test_the_centroid_is_the_mean_of_the_whole_turbines_file(self, tmp_path: Path) -> None:
         assert load(tmp_path).centroid == (57.50, -3.25)
+
+    def test_the_centroid_does_not_move_when_the_turbine_roles_change(self, tmp_path: Path) -> None:
+        # reanalysis is a model input, so a reference-set sensitivity run must not perturb it
+        dropped = PREPOST.replace("references: [T02, T03]", "references: [T02]").replace(
+            "excluded:   [T04]", "excluded:   []"
+        )
+        assert load(tmp_path, dropped).centroid == load(tmp_path).centroid
+
+    def test_the_centroid_is_rounded_so_a_site_keeps_one_cache_entry(self, tmp_path: Path) -> None:
+        moved = TURBINES_CSV.replace("57.40,-3.30", "57.404321,-3.301234")
+        (tmp_path / "turbines.csv").write_text(moved)
+        path = tmp_path / "campaign.yaml"
+        path.write_text(textwrap.dedent(PREPOST))
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        lat, lon = load_declaration(path).centroid
+        assert lat == round(lat, CENTROID_DECIMALS)
+        assert lon == round(lon, CENTROID_DECIMALS)
 
     def test_the_fetch_window_is_rounded_out_to_whole_calendar_years(self, tmp_path: Path) -> None:
         # the cache key includes the dates, so exact windows would refetch for every campaign

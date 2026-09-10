@@ -25,6 +25,11 @@ SCHEMAS: dict[str, ColumnSchema] = {"hill_of_towie": HOT_COLUMNS}
 
 MODES = ("prepost", "toggle")
 
+# The reanalysis centroid is rounded to this many decimals, and taken over the whole turbines
+# file rather than the declared roles, so every campaign on one site shares a cache entry and
+# changing the reference set does not move a model input.
+CENTROID_DECIMALS = 2
+
 
 class _RawTimestampLoader(yaml.SafeLoader):
     """SafeLoader with the implicit timestamp resolver removed, so times arrive as strings.
@@ -49,8 +54,8 @@ class Declaration:
     :param spec: the public campaign facts, the only thing a method sees
     :param columns: the source-native schema the SCADA is keyed by
     :param scada_path: the SCADA parquet, resolved relative to the declaration
-    :param centroid: the declared turbines' ``(latitude, longitude)`` centroid, which reanalysis
-        is self-served from
+    :param centroid: the site's ``(latitude, longitude)`` centroid over the whole turbines file,
+        rounded, which reanalysis is self-served from
     :param era5_window: ``(start_date, end_date)`` for the reanalysis fetch, rounded out to whole
         calendar years so campaigns on one site share a cache entry
     """
@@ -140,7 +145,7 @@ def load_declaration(path: str | Path) -> Declaration:
         ),
         columns=columns,
         scada_path=scada_path,
-        centroid=_centroid(coords, turbines=[*upgraded, *references, *excluded]),
+        centroid=_centroid(coords),
         era5_window=_era5_window(start, end),
     )
 
@@ -230,12 +235,16 @@ def _timestamp(value: object) -> pd.Timestamp:
     return stamp.tz_localize("UTC") if stamp.tz is None else stamp.tz_convert("UTC")
 
 
-def _centroid(coords: dict[str, tuple[float, float]], *, turbines: list[str]) -> tuple[float, float]:
-    """Return the declared turbines' mean latitude and longitude."""
-    points = [coords[w] for w in turbines]
+def _centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
+    """Return the site's mean latitude and longitude, rounded.
+
+    Taken over every turbine in the file, not the declared roles: reanalysis is a model input, so
+    a reference-set sensitivity run must not move it.
+    """
+    points = list(coords.values())
     return (
-        sum(lat for lat, _ in points) / len(points),
-        sum(lon for _, lon in points) / len(points),
+        round(sum(lat for lat, _ in points) / len(points), CENTROID_DECIMALS),
+        round(sum(lon for _, lon in points) / len(points), CENTROID_DECIMALS),
     )
 
 

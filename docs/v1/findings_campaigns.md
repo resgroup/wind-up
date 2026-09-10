@@ -12,6 +12,81 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF15 — The first W3 dry runs: an analyst reached the right verdict on both instances (zero, and +1–2.5% against a true +2.06%) but **missed the change class**, and the run that decided each assessment — re-running with a different reference set — is suggested nowhere in the documentation. The isolation broke in a way only running it could reveal: `CLAUDE.md` is auto-injected into any agent whose cwd is the checkout
+
+*2026-09-10. W1a phase 3. Two handovers built with `benchmarking.campaigns.handover.write_handover`
+from `placebo_instance("prepost", seed=11 | 29, turbines=<9 HoT turbines drawn with seed
+20260910>)`, on real Hill of Towie SCADA, a full year either side of the changeover. Instance A
+injects nothing; instance B injects
+`WindSpeedCpChange(ws_points=(3,6,9,12,14), deltas=(0, 0.045, 0.040, 0.015, 0))`. Each was given to
+a fresh agent holding only `analyst/` — the brief, a blank `campaign.yaml`, the SCADA, and
+`docs/running-a-campaign.md` — and asked for (a) the change class and magnitude, (b) data problems,
+and every documentation gap it hit.*
+
+**The verdicts.**
+
+| | truth | (a) reported | verdict |
+|---|---|---|---|
+| A | 0 | "nothing at all — I cannot distinguish this from zero" | correct |
+| B | **+2.059%** | headline +1.21%, range "+1 to +2.5%", class *flat efficiency change* | magnitude right, **class wrong** |
+
+B's clean-reference run read +2.44%, so the truth sits inside the range it reported and between its
+two configurations. It rated its own class call "medium-low, I can't fully separate it from
+mid-wind-weighted".
+
+**The class miss is partly the fixture's fault, not only the analyst's.** The injected deltas run
++4.5% at 6 m/s to +4.0% at 9 — nearly flat across the bins that carry data — and only ramp below
+6 m/s. B's ws bins read +2.1% at 5–6 against +2.7% at 9–10, a gap inside its noise. **C3 needs a
+more sharply shaped injection if class identification is to be scoreable at all.**
+
+**Both analysts reached their verdict the same way, and the documentation never suggests it.**
+Each re-ran the campaign with a different reference set and used the movement as the resolution
+floor: A saw T18 swing 1.4 pp and concluded zero; B saw its headline move +1.21% → +2.44% and
+declined to certify the number. That procedure is now in `docs/running-a-campaign.md`; it was the
+single largest gap.
+
+**(b) is not scoreable on a real-SCADA placebo.** Neither instance injected a fault, so both keys
+read `"faults": []` — yet both analysts correctly named T17 as an untrustworthy reference
+(auto-screened at +4.85% / +4.11%, against the +4.7% CF13 records), a ~100° nacelle-position step
+on T16 on 2017-05-19, and several real outages. The answer key records only what was *injected*, so
+on real data the (b) half can only be scored where a fault was synthesized.
+
+**Three defects in what W1a shipped, found by being used.**
+
+1. **The reanalysis centroid moved with the turbine roles.** It was computed over the declared
+   turbines, so dropping two references shifted it, changed the ERA5 cache key, re-downloaded a
+   different file and silently changed a top-5 model feature — during the very reference-set
+   sensitivity run both analysts relied on. Now taken over the whole turbines file and rounded to
+   2 dp, so a site keeps one cache entry and the roles cannot perturb a model input.
+2. **The dry-run instance starved its own campaign of references.** `placebo_instance` drew 4–6
+   upgraded turbines regardless of farm size; on the 9-turbine slice that left B three references,
+   then two after T17 was screened. The screen logged *"fewer than the 3 needed to form a
+   majority"* and stopped, and `reference_stability.csv` — the table the documentation tells you to
+   read first — came back **header-only, with no warning**. The draw now scales with the farm.
+   *The silent header-only table is not yet fixed and is a W2 item.*
+3. **`name` did not name the output directory when `--out` was given**, while the documentation's
+   own run command passes `--out`. Two runs into one directory overwrite silently.
+
+**The isolation hole.** Neither agent read the answer key or any wind-up source — audited by
+grepping both transcripts. But `CLAUDE.md` was **auto-injected into both** as project instructions,
+because the agent's working directory is the checkout, and it describes `benchmarking/synthetic/`
+as a *"synthetic upgrade-dataset generator (real SCADA + injected known uplift profiles;
+ground-truth recording)"*. The harness told each analyst the data was synthetic with a recorded
+answer before it read the brief. Separately, instance B's command line appeared in instance A's
+transcript: **concurrent runs on one machine see each other's processes.** Both scores above are
+therefore *compromised as clean measurements* and are recorded rather than certified; the gap list
+is unaffected, being about the documentation rather than the answer. **Future dry runs must spawn
+with cwd outside the checkout and run one at a time.**
+
+**The remaining gap list is recorded in the W3 section of
+[issues_campaigns.md](issues_campaigns.md)**, for W2's documentation to answer. The sharpest
+unfixed ones: `conditional.csv` has no reading instructions and drops the `covered` flag its
+per-turbine counterpart carries, so its low-wind bins read −27% to −56% with nothing to warn you
+off; the row filter that drops outage records is documented nowhere, and B nearly reported a
+filtered 11-day outage as an unfixable bias; `actual_energy` is summed 10-min mean kW rather than
+energy, a 6x trap; and `rated_power_kw` has no guidance at all, where turbine knowledge (Senvion
+MM82 nameplate 2050 kW) would have given the wrong answer against the observed 2300 kW.
+
 ## CF14 — Missing data is absorbed within estimator noise, with one exception: a reference that **disappears from the delivery** costs **+0.45 pp**, because it shrinks the pool rather than corrupting anything. Every crash named someone else's problem, and the misleading one was **prepost-only**
 
 *2026-09-08. R4, stage 1 + stage 2. Driver: `benchmarking.campaigns.outage_probe` — 19 arms over

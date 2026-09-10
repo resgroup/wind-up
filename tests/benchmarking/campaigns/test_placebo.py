@@ -7,6 +7,7 @@ import pytest
 
 from benchmarking.campaigns import CampaignRunner, per_turbine_table
 from benchmarking.campaigns.placebo import (
+    MIN_SCREENABLE_REFERENCES,
     PLACEBO_CAMPAIGN_START,
     PLACEBO_INSTANCE_KEEP_AS_REFERENCE,
     PLACEBO_INSTANCE_LAST_CLEAN,
@@ -187,6 +188,19 @@ class TestARandomisedInstance:
         campaign = placebo_instance("prepost", seed=3)
         assert 1 < len(campaign.upgraded_turbines) < len(PLACEBO_TURBINES)
         assert set(campaign.upgraded_turbines) <= set(PLACEBO_TURBINES)
+
+    def test_references_always_outnumber_the_upgraded_turbines(self) -> None:
+        # reference count is the biggest lever on accuracy, and the screen needs a pool to judge
+        for seed in range(20):
+            for farm in (PLACEBO_TURBINES, PLACEBO_TURBINES[:9]):
+                campaign = placebo_instance("prepost", seed=seed, turbines=farm)
+                assert len(campaign.candidate_references) > len(campaign.upgraded_turbines)
+
+    def test_a_small_farm_still_leaves_a_pool_the_screen_can_judge(self) -> None:
+        # a screen with fewer than three references cannot form a majority and stops
+        for seed in range(20):
+            campaign = placebo_instance("prepost", seed=seed, turbines=PLACEBO_TURBINES[:9])
+            assert len(campaign.candidate_references) >= MIN_SCREENABLE_REFERENCES + 1
 
     def test_every_other_turbine_is_offered_as_a_reference(self) -> None:
         campaign = placebo_instance("prepost", seed=3)
