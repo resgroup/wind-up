@@ -1,0 +1,315 @@
+"""Build the power-model's curated, reference-only feature matrix.
+
+The discipline (design note §3): every model feature must be *upgrade-invariant* — derived from
+reference turbines (or ERA5), never the test turbine's own signals, which the upgrade distorts.
+This matrix is deliberately **curated** to features known to relate to the *cause* of the test
+turbine's power — weather and wakes:
+
+* per **reference turbine**: active power (the primary stable weather-driven measurement), the
+  availability counter (whether the reference is operating, hence whether it is making a wake),
+  and optionally the **north-calibrated** direction as ``sin``/``cos`` (where each reference is
+  pointing is much of what resolves who is waking whom);
+* all raw **ERA5** columns, passed through under their original Open-Meteo names (no renaming),
+  with derived ``sin``/``cos`` companions for the circular wind-direction fields.
+
+Features that are not expected to add value and risk the model learning coincidences rather than
+cause-effect (reactive power, blade pitch, …) are intentionally excluded.
+
+The reference pool is passed in by the caller -- the campaign's **candidate references** -- and is
+never inferred from the turbines the frame happens to hold: a turbine present in the data is not
+thereby available as a reference. The caller's screen may make some of that pool ``power_free``;
+that downgrades a reference's channels, it does not shrink the pool.
+
+Feature columns from references are named ``"<tag>{QUALIFIER}<turbine>"`` so the original tag is
+preserved verbatim in importance diagnostics. :func:`check_reference_only` rejects any
+test-turbine-qualified column (the §3 guard).
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
+
+import numpy as np
+import pandas as pd
+
+from benchmarking.baselines.era5_sync import ERA5_WD, ERA5_WS
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+# Separator between a source-native tag and the turbine it came from in a feature name.
+QUALIFIER = " @ "
+# The prefix the shared northing step puts on a north-calibrated column.
+_NORTHED_PREFIX = "northed_"
+
+logger = logging.getLogger(__name__)
+
+
+def _checked_references(references: Sequence[str]) -> list[str]:
+    """Return the reference pool as supplied, deduped in order; raises when it is empty."""
+    refs = list(dict.fromkeys(str(r) for r in references))
+    if not refs:
+        msg = (
+            "no references supplied: the power model needs at least one. The pool is the campaign's candidate "
+            "references, so a turbine present in scada_df is not thereby available as a reference."
+        )
+        raise ValueError(msg)
+    return refs
+
+
+def build_reference_features(
+    scada_df: pd.DataFrame,
+    *,
+    test_wtg: str,
+    references: Sequence[str],
+    turbine_col: str,
+    active_power_col: str,
+    availability_col: str,
+    extra_cols: Sequence[str] = (),
+    include_availability: bool = True,
+    direction_col: str | None = None,
+    power_free: Sequence[str] = (),
+    waking_threshold_kw: float | None = None,
+) -> pd.DataFrame:
+    """Wide, curated reference features: each reference turbine's active power (+ optional extras).
+
+    By default each reference contributes its active power and availability; ``extra_cols`` adds
+    more per-reference channels and ``include_availability=False`` drops the availability feature.
+    Columns are ``"<tag>{QUALIFIER}<turbine>"`` keeping the original tag name. The test turbine
+    contributes nothing (its power is the outcome, extracted separately). NaNs are preserved (no
+    complete-case dropping) — LightGBM handles them natively. Raises if ``references`` is empty, or
+    (defensively) if any test-turbine column would leak in.
+
+    :param references: the reference pool -- the campaign's candidate references -- in the order
+        their feature columns are laid out. A turbine in ``scada_df`` that is not named here
+        contributes nothing, and a name with no data in ``scada_df`` contributes no value columns.
+    :param extra_cols: additional per-reference value columns to carry as features (Issue 11's
+        active-power max/min/SD statistics); must be present in ``scada_df`` like the primary two
+    :param include_availability: when ``False``, drop the per-reference availability *feature*
+        (removal-ablation knob); ``availability_col`` must still exist in ``scada_df`` (the
+        downtime filter needs it), so its presence is validated either way
+    :param direction_col: the **north-calibrated** direction column each reference contributes as
+        ``sin``/``cos`` companions (the raw degrees are never a feature: a tree cannot see that
+        359 degrees is next to 1). Must be the column the shared northing step writes; raises
+        naming it when absent. A raw direction listed in ``extra_cols`` is dropped in favour of
+        it, so a reference never contributes both.
+    :param power_free: references that contribute no power columns. They keep their direction
+        features and gain a ``waking_<active_power_col>`` boolean instead, so the wake information
+        their operating state carries is retained while the channels a performance change corrupts
+        are not. Requires ``waking_threshold_kw``. Empty by default, which leaves the matrix
+        byte-identical to a caller that never asked.
+    :param waking_threshold_kw: active power at or above which a ``power_free`` reference counts as
+        waking its neighbours
+    """
+    refs = _checked_references(references)
+    power_free = _checked_power_free(power_free, refs=refs, waking_threshold_kw=waking_threshold_kw)
+    extra_cols, direction_frame = _direction_features(
+        scada_df, refs=refs, turbine_col=turbine_col, direction_col=direction_col, extra_cols=extra_cols
+    )
+    value_cols = [active_power_col, *([availability_col] if include_availability else []), *extra_cols]
+    # availability_col stays validated even when not featured: it is a required input and the
+    # docstring contract is that it exists for the downstream downtime filter.
+    missing = sorted(c for c in {*value_cols, availability_col} if c not in scada_df.columns)
+    if missing:
+        msg = f"scada_df is missing required reference-feature columns {missing}; have {list(scada_df.columns)}"
+        raise ValueError(msg)
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+
+    tmp = scada_df[[turbine_col, *value_cols]].copy()
+    tmp["_ts"] = scada_df.index
+    wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=value_cols, aggfunc="first")
+    # power_free removes a reference's *power* channels only: availability is not one, and a
+    # screened reference is still known to be operating or not.
+    free = set(power_free)
+    power_cols = {active_power_col, *extra_cols}
+    keep = [
+        (col, r)
+        for col in value_cols
+        for r in refs
+        if (col, r) in wide.columns and not (r in free and col in power_cols)
+    ]
+    features = wide.loc[:, keep]
+    features.columns = [f"{col}{QUALIFIER}{r}" for col, r in keep]
+    features = features.reindex(index)
+    features.index.name = index.name
+    if direction_frame is not None:
+        features = features.join(direction_frame.reindex(index), how="left")
+    if power_free:
+        waking = _waking_features(
+            wide, refs=power_free, active_power_col=active_power_col, threshold_kw=waking_threshold_kw
+        )
+        features = features.join(waking.reindex(index), how="left")
+    check_reference_only(features.columns.tolist(), test_wtg=test_wtg)
+    return features
+
+
+def _checked_power_free(
+    power_free: Sequence[str], *, refs: list[str], waking_threshold_kw: float | None
+) -> tuple[str, ...]:
+    """Validate the power-free references against the pool, returning them deduped in pool order."""
+    requested = set(power_free)
+    if not requested:
+        return ()
+    unknown = sorted(requested - set(refs))
+    if unknown:
+        msg = f"power_free names {unknown}, which are not reference turbines of this estimate; have {refs}"
+        raise ValueError(msg)
+    if waking_threshold_kw is None:
+        msg = "power_free needs waking_threshold_kw: without it there is no waking boolean to replace power with"
+        raise ValueError(msg)
+    return tuple(r for r in refs if r in requested)
+
+
+def _waking_features(
+    wide: pd.DataFrame, *, refs: tuple[str, ...], active_power_col: str, threshold_kw: float | None
+) -> pd.DataFrame:
+    """Per-reference ``waking`` booleans: is this turbine producing enough to wake its neighbours.
+
+    A turbine above a few percent of rated already carries a large fraction of its maximum thrust,
+    so a low threshold separates waking from parked while leaking almost none of the power level.
+    """
+    assert threshold_kw is not None  # validated by _checked_power_free  # noqa: S101
+    columns = {}
+    for ref in refs:
+        if (active_power_col, ref) not in wide.columns:
+            continue
+        power = wide[(active_power_col, ref)]
+        # Float, not bool: the column is reindexed onto the full timestamp index downstream, and a
+        # bool column with gaps collapses to object dtype, which the outcome model rejects. A record
+        # the reference does not have is unknown rather than not-waking, so its NaN is preserved.
+        waking = (power >= threshold_kw).astype(float)
+        columns[f"waking_{active_power_col}{QUALIFIER}{ref}"] = waking.where(power.notna())
+    return pd.DataFrame(columns, index=wide.index)
+
+
+def _direction_features(
+    scada_df: pd.DataFrame,
+    *,
+    refs: list[str],
+    turbine_col: str,
+    direction_col: str | None,
+    extra_cols: Sequence[str],
+) -> tuple[tuple[str, ...], pd.DataFrame | None]:
+    """Return ``extra_cols`` with raw directions removed, and the per-reference sin/cos frame.
+
+    ``(None, ...)`` in, ``(extra_cols unchanged, None)`` out: a caller that asks for no direction
+    keeps exactly the feature set it had before.
+    """
+    if direction_col is None:
+        return tuple(extra_cols), None
+    if direction_col not in scada_df.columns:
+        msg = (
+            f"the north-calibrated direction column {direction_col!r} is not in scada_df; the shared "
+            f"northing step must run before the power model, which reads the northed direction rather "
+            f"than the raw one. Columns present: {sorted(scada_df.columns)}"
+        )
+        raise ValueError(msg)
+    raw = direction_col.removeprefix(_NORTHED_PREFIX)
+    kept = tuple(c for c in extra_cols if c not in {raw, direction_col})
+    if len(kept) != len(extra_cols):
+        logger.info("dropping raw direction %r from features in favour of %r", raw, direction_col)
+
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    columns = {}
+    for ref in refs:
+        rows = scada_df[scada_df[turbine_col] == ref]
+        series = pd.Series(rows[direction_col].to_numpy(dtype=float), index=pd.DatetimeIndex(rows.index))
+        series = series[~series.index.duplicated()].reindex(index)
+        rad = np.deg2rad(series.to_numpy(dtype=float))
+        columns[f"{direction_col}_sin{QUALIFIER}{ref}"] = np.sin(rad)
+        columns[f"{direction_col}_cos{QUALIFIER}{ref}"] = np.cos(rad)
+    return kept, pd.DataFrame(columns, index=index)
+
+
+def era5_feature_frame(aligned_era5: pd.DataFrame) -> pd.DataFrame:
+    """Turn aligned ERA5 into model features: all raw columns passed through + dir sin/cos companions.
+
+    All raw Open-Meteo columns are kept under their original names (no renaming); the neutral
+    ``era5_ws`` / ``era5_wd`` aliases the sync adds for back-compat are dropped here (they duplicate
+    ``wind_speed_100m`` / ``wind_direction_100m``). Circular wind-direction fields additionally get
+    derived ``<col>_sin`` / ``<col>_cos`` companions (LightGBM cannot see that 359° ≈ 1°); the raw
+    degree columns are kept too.
+    """
+    raw_cols = [c for c in aligned_era5.columns if c not in (ERA5_WS, ERA5_WD)]
+    out = aligned_era5[raw_cols].astype(float).copy()
+    for col in raw_cols:
+        if "direction" in col:
+            rad = np.deg2rad(out[col].to_numpy(dtype=float))
+            out[f"{col}_sin"] = np.sin(rad)
+            out[f"{col}_cos"] = np.cos(rad)
+    return out
+
+
+def extract_outcome(
+    scada_df: pd.DataFrame,
+    *,
+    test_wtg: str,
+    turbine_col: str,
+    active_power_col: str,
+) -> pd.Series:
+    """Return the outcome ``y`` (the test turbine's active power) on the unique sorted index."""
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    test_rows = scada_df[scada_df[turbine_col] == test_wtg]
+    y = pd.Series(test_rows[active_power_col].to_numpy(dtype=float), index=pd.DatetimeIndex(test_rows.index))
+    return y[~y.index.duplicated()].reindex(index)
+
+
+def reference_mean_wind_speed(
+    scada_df: pd.DataFrame,
+    *,
+    references: Sequence[str],
+    turbine_col: str,
+    wind_speed_col: str,
+) -> pd.Series:
+    """Mean wind speed across the reference pool on the unique index (used only for ERA5 lag sync).
+
+    This is **not** a model feature — it is the site wind-speed signal the ERA5 correlation sweep
+    locks onto. Averaged over ``references`` only, so it stays upgrade-invariant.
+    """
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    refs = _checked_references(references)
+    if wind_speed_col not in scada_df.columns:
+        return pd.Series(np.nan, index=index)
+    cols = []
+    for r in refs:
+        rows = scada_df[scada_df[turbine_col] == r]
+        series = pd.Series(rows[wind_speed_col].to_numpy(dtype=float), index=pd.DatetimeIndex(rows.index))
+        cols.append(series[~series.index.duplicated()].reindex(index))
+    return pd.concat(cols, axis=1).mean(axis=1)
+
+
+def test_condition_signals(
+    scada_df: pd.DataFrame,
+    *,
+    test_wtg: str,
+    turbine_col: str,
+    wind_speed_col: str,
+    wind_speed_sd_col: str | None,
+) -> pd.DataFrame:
+    """Test turbine's MEASURED ws and ti on the unique sorted index (post-treatment, accepted §3).
+
+    ``ti`` is omitted when no SD column is configured.
+    """
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    rows = scada_df[scada_df[turbine_col] == test_wtg]
+    ws = pd.Series(rows[wind_speed_col].to_numpy(dtype=float), index=pd.DatetimeIndex(rows.index))
+    ws = ws[~ws.index.duplicated()].reindex(index)
+    out = pd.DataFrame({"ws": ws})
+    if wind_speed_sd_col is not None and wind_speed_sd_col in scada_df.columns:
+        sd = pd.Series(rows[wind_speed_sd_col].to_numpy(dtype=float), index=pd.DatetimeIndex(rows.index))
+        sd = sd[~sd.index.duplicated()].reindex(index)
+        ws_arr = ws.to_numpy()
+        out["ti"] = np.divide(sd.to_numpy(), ws_arr, out=np.full(len(ws_arr), np.nan), where=ws_arr != 0)
+    return out
+
+
+def check_reference_only(feature_names: list[str], *, test_wtg: str) -> None:
+    """Raise if any feature is qualified with the test turbine (violating the §3 rule)."""
+    offenders = [f for f in feature_names if f.endswith(f"{QUALIFIER}{test_wtg}")]
+    if offenders:
+        msg = (
+            f"reference-only rule violated: features derived from the test turbine {test_wtg!r} "
+            f"are not allowed (the upgrade distorts its signals, design note §3): {offenders}"
+        )
+        raise ValueError(msg)

@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from tests.conftest import TEST_CONFIG_DIR
-from wind_up.models import DEFAULT_TIMEBASE_S, PrePost, WindUpConfig
+from wind_up_v0.models import DEFAULT_TIMEBASE_S, PrePost, WindUpConfig
 
 
 def test_lsa_asset_name(test_lsa_t13_config: WindUpConfig) -> None:

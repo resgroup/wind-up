@@ -11,10 +11,10 @@ import pytest
 from matplotlib.testing.decorators import image_comparison
 
 from tests.test_smarteole import _create_config
-from wind_up.constants import DataColumns
-from wind_up.interface import AssessmentInputs
-from wind_up.models import PrePost
-from wind_up.plots.input_data import plot_input_data_timeline
+from wind_up_v0.constants import DataColumns
+from wind_up_v0.interface import AssessmentInputs
+from wind_up_v0.models import PrePost
+from wind_up_v0.plots.input_data import plot_input_data_timeline
 
 logger = logging.getLogger(__name__)
 

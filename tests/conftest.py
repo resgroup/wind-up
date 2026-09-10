@@ -8,8 +8,8 @@ import matplotlib as mpl
 import pytest
 
 from tests.test_data.hot.data_loader import WindUpComponents, construct_hot_windup_components, get_meta_and_scada_data
-from wind_up.constants import PROJECTROOT_DIR
-from wind_up.models import WindUpConfig
+from wind_up_v0.constants import PROJECTROOT_DIR
+from wind_up_v0.models import WindUpConfig
 
 mpl.use("Agg")
 

@@ -29,7 +29,6 @@ dependencies = [
     'pydantic >= 2.0.0',
     'python-dotenv',
     'pyyaml',
-    'ruptures',
     'scipy',
     'seaborn',
     'tabulate',
@@ -46,6 +45,28 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project.optional-dependencies]
+era5 = [
+    'openmeteo-requests',
+    'requests-cache',
+    'retry-requests',
+]
+ml = [
+    'lightgbm',
+    'scikit-learn',
+]
+examples = [
+    'jupyterlab',
+    'notebook',
+    'ipywidgets',
+    'requests',
+    'ephem',
+    'flaml[automl]',
+]
+
+# PEP 735 dependency groups. uv installs the `dev` group by default on `uv sync` (use
+# `--no-dev` to skip it), so contributor tooling is present without naming an extra; unlike
+# `[project.optional-dependencies]`, groups are not published in the wheel metadata.
+[dependency-groups]
 dev = [
     'pytest',
     'coverage',
@@ -59,19 +80,22 @@ dev = [
     'mypy<1.19',
     'requests',
     'pytest-env',
-]
-examples = [
-    'jupyterlab',
-    'notebook',
-    'ipywidgets',
-    'requests',
-    'ephem',
-    'flaml[automl]',
+    'openmeteo-requests',
+    'requests-cache',
+    'retry-requests',
+    'lightgbm',
+    'scikit-learn',
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["wind_up*"]
+# src/ holds the shipped packages (`wind_up` = v1, `wind_up_v0` = legacy). `benchmarking`
+# lives at the repo root and is found via the "." root purely so it can still be imported
+# from an editable/path install; it is the eval harness, not the product.
+where = ["src", "."]
+# `benchmarking*` is included temporarily while it is imported by a separate project. This
+# DOES add `benchmarking` to any wheel/sdist built from this repo. It MUST be removed before
+# the v1.0.0 release so the harness is not shipped (tracked as a W2 cleanup item).
+include = ["wind_up*", "wind_up_v0*", "benchmarking*"]
 
 [tool.uv]
 # Dev/CI-only constraint (not part of published metadata, so consumers are unaffected).
@@ -107,7 +131,7 @@ max-statements = 69 # try to bring this down to 50
 max-args = 17 # try to bring this down to 5
 
 [tool.ruff.lint.per-file-ignores]
-"wind_up/models.py" = ["N805", "PERF401"] # try to eliminate this
+"src/wind_up_v0/models.py" = ["N805", "PERF401"] # try to eliminate this
 "tests/**/*.py" = [
     "S101",  # allow `assert`
     "PLR2004",  # allow magic values
@@ -117,8 +141,8 @@ max-args = 17 # try to bring this down to 5
 "**/__init__.py" = ["F401"]  # ignore unused imports in __init__.py
 "examples/**/*.py" = ["T20", "D"]
 "examples/**/kelmarsh_kaggle.py" = ["S101","PLR0915","PD013","N806"]
-"wind_up/smart_data.py" = ["D"]  # RES specific data loading
-"wind_up/plots/*.py" = ["D"]  # TODO: remove this
+"src/wind_up_v0/smart_data.py" = ["D"]  # RES specific data loading
+"src/wind_up_v0/plots/*.py" = ["D"]  # TODO: remove this
 "examples/*.ipynb" = ["D"]  # Jupyter notebooks
 
 [tool.mypy]
@@ -132,13 +156,17 @@ module = [
     "geographiclib.geodesic",
     "pandas",
     "pandas.testing",
-    "ruptures.*",
+    "scipy.interpolate",
+    "scipy.ndimage",
     "scipy.stats",
     "seaborn",
     "utm",
     "ephem",
     "flaml",
     "sklearn.*",
+    "openmeteo_requests",
+    "requests_cache",
+    "retry_requests",
 ]
 disable_error_code = ["name-defined"]
 ignore_missing_imports = true
@@ -156,7 +184,8 @@ markers = [
 
 [tool.coverage.report]
 omit = [
-    "wind_up/plots/*.py",
+    "src/wind_up_v0/plots/*.py",
+    "src/wind_up/northing_plots.py",
 ]
 exclude_lines = ["if __name__ == .__main__.:"]
 
@@ -180,14 +209,14 @@ sequence = [
 [tool.poe.tasks.test-fast]
 help = "Runs tests that are not marked as slow"
 sequence = [
-    { cmd = 'coverage run --source wind_up -m pytest -m "not slow"' },
+    { cmd = 'coverage run --source wind_up_v0,wind_up -m pytest -m "not slow"' },
     { cmd = "coverage report -m" },
 ]
 
 [tool.poe.tasks.test]
 help = "Runs unit tests and show coverage"
 sequence = [
-    { cmd = "coverage run --source wind_up -m pytest ./tests" },
+    { cmd = "coverage run --source wind_up_v0,wind_up -m pytest ./tests" },
     { cmd = "coverage report -m" },
 ]
 

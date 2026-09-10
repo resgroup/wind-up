@@ -3,9 +3,9 @@ from pathlib import Path
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
-from wind_up.models import WindUpConfig
-from wind_up.scada_power_curve import calc_pc_and_rated_ws
-from wind_up.ws_est import add_ws_est
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.scada_power_curve import calc_pc_and_rated_ws
+from wind_up_v0.ws_est import add_ws_est
 
 
 def test_ws_est(test_homer_config: WindUpConfig) -> None:

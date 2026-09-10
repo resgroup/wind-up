@@ -1,0 +1,169 @@
+"""Tests for comparison-derived ground-truth uplift."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from benchmarking.synthetic import HOT_COLUMNS
+from benchmarking.synthetic.ground_truth import true_farm_uplift, true_uplift
+from wind_up_v0.constants import TIMESTAMP_COL
+
+
+def _paired(
+    orig_power: list[float],
+    syn_power: list[float],
+    *,
+    wtg: str = "T01",
+    ws: list[float] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    n = len(orig_power)
+    index = pd.date_range("2020-01-01", periods=n, freq="10min", tz="UTC")
+
+    def frame(power: list[float]) -> pd.DataFrame:
+        df = pd.DataFrame(
+            {
+                HOT_COLUMNS.turbine: wtg,
+                HOT_COLUMNS.active_power: np.array(power, dtype=float),
+                HOT_COLUMNS.wind_speed: np.array(ws if ws is not None else [8.0] * n, dtype=float),
+                HOT_COLUMNS.wind_speed_sd: 0.8,
+            },
+            index=index,
+        )
+        df.index.name = TIMESTAMP_COL
+        return df
+
+    return frame(orig_power), frame(syn_power)
+
+
+def test_overall_uplift_is_energy_ratio_of_synthetic_to_original() -> None:
+    """Overall uplift is sum(synthetic)/sum(original) - 1 over the treated records."""
+    original, synthetic = _paired([1000.0] * 10, [1050.0] * 10)
+    result = true_uplift(synthetic, original, test_wtg="T01")
+    assert result.overall == pytest.approx(0.05)
+
+
+def test_default_mask_is_changed_records_only() -> None:
+    """With no mask, untreated (unchanged) records are excluded from the ratio."""
+    # first two rows unchanged, last two +10%
+    original, synthetic = _paired([1000.0, 1000.0, 1000.0, 1000.0], [1000.0, 1000.0, 1100.0, 1100.0])
+    result = true_uplift(synthetic, original, test_wtg="T01")
+    assert result.overall == pytest.approx(0.10)
+
+
+def test_uplift_depends_on_record_window() -> None:
+    """Passing an explicit mask covering all records dilutes the uplift (record-dependent)."""
+    original, synthetic = _paired([1000.0, 1000.0, 1000.0, 1000.0], [1000.0, 1000.0, 1100.0, 1100.0])
+    full = true_uplift(synthetic, original, test_wtg="T01", mask=np.array([True, True, True, True]))
+    assert full.overall == pytest.approx(0.05)
+
+
+def test_overall_uplift_ignores_nan_power_records() -> None:
+    """Real SCADA can have NaN power; those records must not poison the ratio.
+
+    Rows where the original power is NaN are unchanged by the upgrade (NaN stays NaN),
+    so they must be excluded rather than (a) flagged as treated via ``NaN != NaN`` or
+    (b) turning the energy sums into NaN.
+    """
+    original, synthetic = _paired(
+        [1000.0, np.nan, 1000.0, np.nan],
+        [1100.0, np.nan, 1100.0, np.nan],
+    )
+    result = true_uplift(synthetic, original, test_wtg="T01")
+    assert result.overall == pytest.approx(0.10)
+
+
+def test_explicit_mask_drops_nan_power_records() -> None:
+    """An explicit mask still excludes NaN-power rows from the energy ratio."""
+    original, synthetic = _paired(
+        [1000.0, np.nan, 1000.0, 1000.0],
+        [1100.0, np.nan, 1100.0, 1000.0],
+    )
+    result = true_uplift(synthetic, original, test_wtg="T01", mask=np.array([True, True, True, True]))
+    # finite rows: (1100+1100+1000)/(1000+1000+1000) - 1
+    assert result.overall == pytest.approx((1100.0 + 1100.0 + 1000.0) / 3000.0 - 1.0)
+
+
+def test_per_condition_breakdown_by_wind_speed() -> None:
+    """A by='ws' breakdown reports the true uplift within original wind-speed bins."""
+    original, synthetic = _paired(
+        [800.0, 800.0, 1500.0, 1500.0],
+        [880.0, 880.0, 1530.0, 1530.0],
+        ws=[6.0, 6.0, 10.0, 10.0],
+    )
+    result = true_uplift(synthetic, original, test_wtg="T01", by="ws", bins=[5.0, 8.0, 12.0])
+    by_condition = result.by_condition
+    assert by_condition is not None
+    assert len(by_condition) == 2
+    np.testing.assert_allclose(by_condition["true_uplift"].to_numpy(), [0.10, 0.02])
+
+
+def test_per_condition_breakdown_by_power_uses_original_untreated_power() -> None:
+    """A by='power' breakdown bins on the ORIGINAL (untreated) power, not the treated synthetic power.
+
+    The first record's original power (990) sits below the 1000 edge while its synthetic power (1010)
+    sits above it: binning on original keeps it in the low bin, so that bin is populated (a synthetic-
+    power binning would leave it empty).
+    """
+    original, synthetic = _paired([990.0, 1800.0], [1010.0, 1836.0])
+    result = true_uplift(synthetic, original, test_wtg="T01", by="power", bins=[0.0, 1000.0, 2000.0])
+    by_condition = result.by_condition
+    assert by_condition is not None
+    assert by_condition["n_records"].to_numpy().tolist() == [1, 1]
+    np.testing.assert_allclose(by_condition["true_uplift"].to_numpy(), [1010.0 / 990.0 - 1.0, 0.02])
+
+
+def _farm_frames(powers: dict[str, list[float]], uplifts: dict[str, float]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build (synthetic, original) long frames from per-turbine original powers and a flat uplift."""
+    index = pd.date_range("2020-01-01", periods=len(next(iter(powers.values()))), freq="10min", tz="UTC")
+    original = pd.concat(
+        [
+            pd.DataFrame({HOT_COLUMNS.turbine: wtg, HOT_COLUMNS.active_power: values}, index=index)
+            for wtg, values in powers.items()
+        ]
+    )
+    synthetic = original.copy()
+    for wtg, factor in uplifts.items():
+        rows = synthetic[HOT_COLUMNS.turbine] == wtg
+        synthetic.loc[rows, HOT_COLUMNS.active_power] = synthetic.loc[rows, HOT_COLUMNS.active_power] * (1 + factor)
+    return synthetic, original
+
+
+def test_farm_truth_pools_energy_across_turbines() -> None:
+    synthetic, original = _farm_frames({"T1": [100.0, 100.0], "T2": [300.0, 300.0]}, {"T1": 0.10})
+    masks = {"T1": np.array([True, True]), "T2": np.array([True, True])}
+    # (220 + 600) / (200 + 600) - 1 = 0.025
+    assert true_farm_uplift(synthetic, original, test_wtgs=["T1", "T2"], masks=masks) == pytest.approx(0.025)
+
+
+def test_farm_truth_defaults_to_the_records_the_upgrade_changed() -> None:
+    # T2 is untouched, so with no masks it contributes no records and only T1 is pooled.
+    synthetic, original = _farm_frames({"T1": [100.0, 100.0], "T2": [300.0, 300.0]}, {"T1": 0.10})
+    assert true_farm_uplift(synthetic, original, test_wtgs=["T1", "T2"]) == pytest.approx(0.10)
+
+
+def test_farm_truth_honours_per_turbine_masks() -> None:
+    synthetic, original = _farm_frames({"T1": [100.0, 100.0], "T2": [300.0, 300.0]}, {"T1": 0.10})
+    masks = {"T1": np.array([True, False]), "T2": np.array([False, True])}
+    assert true_farm_uplift(synthetic, original, test_wtgs=["T1", "T2"], masks=masks) == pytest.approx(0.025)
+
+
+def test_farm_truth_ignores_records_with_non_finite_power() -> None:
+    synthetic, original = _farm_frames({"T1": [100.0, np.nan], "T2": [300.0, 300.0]}, {"T1": 0.10})
+    masks = {"T1": np.array([True, True]), "T2": np.array([True, True])}
+    assert true_farm_uplift(synthetic, original, test_wtgs=["T1", "T2"], masks=masks) == pytest.approx(
+        (110.0 + 600.0) / (100.0 + 600.0) - 1.0
+    )
+
+
+def test_farm_truth_is_zero_for_an_unchanged_farm() -> None:
+    synthetic, original = _farm_frames({"T1": [100.0, 100.0], "T2": [300.0, 300.0]}, {})
+    masks = {"T1": np.array([True, True]), "T2": np.array([True, True])}
+    assert true_farm_uplift(synthetic, original, test_wtgs=["T1", "T2"], masks=masks) == pytest.approx(0.0)
+
+
+def test_farm_truth_is_nan_when_no_energy_survives() -> None:
+    synthetic, original = _farm_frames({"T1": [0.0, 0.0]}, {})
+    masks = {"T1": np.array([True, True])}
+    assert np.isnan(true_farm_uplift(synthetic, original, test_wtgs=["T1"], masks=masks))

@@ -8,8 +8,8 @@ import pandas as pd
 import pytest
 
 from tests.conftest import TEST_DATA_FLD
-from wind_up.constants import TIMESTAMP_COL
-from wind_up.smart_data import (
+from wind_up_v0.constants import TIMESTAMP_COL
+from wind_up_v0.smart_data import (
     add_smart_lat_long_to_cfg,
     calc_last_xmin_datetime_in_month,
     calc_month_list_and_time_info,
@@ -19,7 +19,7 @@ from wind_up.smart_data import (
 )
 
 if TYPE_CHECKING:
-    from wind_up.models import WindUpConfig
+    from wind_up_v0.models import WindUpConfig
 
 TIMEBASE_PD_TIMEDELTA = pd.Timedelta("10min")
 
