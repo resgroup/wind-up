@@ -26,6 +26,7 @@ import matplotlib as mpl
 
 mpl.use("Agg")  # headless: the report writes plots without a display
 
+import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
@@ -68,11 +69,13 @@ PLACEBO_BASELINE_MONTHS = 12
 PLACEBO_TOGGLE_PERIOD = pd.Timedelta(minutes=100)
 
 
-def placebo_analysis_period(mode: Literal["prepost", "toggle"]) -> tuple[pd.Timestamp, pd.Timestamp]:
+def placebo_analysis_period(
+    mode: Literal["prepost", "toggle"], *, campaign_start: pd.Timestamp = PLACEBO_CAMPAIGN_START
+) -> tuple[pd.Timestamp, pd.Timestamp]:
     """Return the whole record the methods see for ``mode``: the baseline plus the campaign."""
     return (
-        PLACEBO_CAMPAIGN_START - pd.DateOffset(months=PLACEBO_BASELINE_MONTHS),
-        PLACEBO_CAMPAIGN_START + pd.DateOffset(months=PLACEBO_CAMPAIGN_MONTHS[mode]),
+        campaign_start - pd.DateOffset(months=PLACEBO_BASELINE_MONTHS),
+        campaign_start + pd.DateOffset(months=PLACEBO_CAMPAIGN_MONTHS[mode]),
     )
 
 
@@ -100,6 +103,7 @@ def placebo_campaign(
     excluded: Sequence[str] | None = None,
     coords: dict[str, tuple[float, float]] | None = None,
     faults: Sequence[Fault] | None = None,
+    campaign_start: pd.Timestamp = PLACEBO_CAMPAIGN_START,
 ) -> SyntheticCampaign:
     """Declare the placebo campaign for ``mode``: a whole farm with no upgrade injected.
 
@@ -112,14 +116,15 @@ def placebo_campaign(
         upgrade reads them
     :param faults: measurement corruptions to inject; none by default, so the placebo stays a
         clean-data campaign. The R-series fixtures inject one and compare against that.
+    :param campaign_start: when treatment begins; defaults to :data:`PLACEBO_CAMPAIGN_START`
     """
     upgraded = tuple(PLACEBO_UPGRADED if upgraded is None else upgraded)
     participating = tuple(PLACEBO_TURBINES if turbines is None else turbines)
     excluded = tuple(PLACEBO_EXCLUDED if excluded is None else excluded)
     if mode == "prepost":
-        timing: pd.Timestamp | ToggleSchedule = PLACEBO_CAMPAIGN_START
+        timing: pd.Timestamp | ToggleSchedule = campaign_start
     elif mode == "toggle":
-        timing = ToggleSchedule(period=PLACEBO_TOGGLE_PERIOD, start=PLACEBO_CAMPAIGN_START)
+        timing = ToggleSchedule(period=PLACEBO_TOGGLE_PERIOD, start=campaign_start)
     else:
         msg = f"unknown mode {mode!r}; expected 'prepost' or 'toggle'"
         raise ValueError(msg)
@@ -134,8 +139,40 @@ def placebo_campaign(
         # discovered by the shared northing step, not supplied: the placebo exercises the norther
         north_offsets=None,
         rated_power_kw=HOT_RATED_POWER_KW,
-        analysis_period=placebo_analysis_period(mode),
+        analysis_period=placebo_analysis_period(mode, campaign_start=campaign_start),
     )
+
+
+# A randomised instance draws its treatment start from these post-years, and never upgrades
+# these turbines. The window stays before the site's real blade-upgrade installs.
+PLACEBO_INSTANCE_YEARS = (2018, 2019)
+PLACEBO_INSTANCE_KEEP_AS_REFERENCE = ("T17",)
+PLACEBO_INSTANCE_LAST_CLEAN = pd.Timestamp("2021-01-01", tz="UTC")
+PLACEBO_INSTANCE_UPGRADED_RANGE = (4, 6)
+
+
+def placebo_instance(
+    mode: Literal["prepost", "toggle"], *, seed: int, turbines: Sequence[str] | None = None
+) -> SyntheticCampaign:
+    """Return a seeded random placebo: which turbines are upgraded, and when treatment starts.
+
+    A handover built from the checked-in defaults would identify its own campaign, so both are
+    drawn. Nothing is injected, so the truth stays 0.
+
+    :param mode: ``"prepost"`` or ``"toggle"``
+    :param seed: the draw's seed; the same seed gives the same campaign
+    :param turbines: every participating turbine; defaults to :data:`PLACEBO_TURBINES`
+    """
+    participating = list(PLACEBO_TURBINES if turbines is None else turbines)
+    rng = np.random.default_rng(seed)
+    eligible = [w for w in participating if w not in PLACEBO_INSTANCE_KEEP_AS_REFERENCE]
+    low, high = PLACEBO_INSTANCE_UPGRADED_RANGE
+    n_upgraded = int(rng.integers(low, high + 1))
+    upgraded = sorted(rng.choice(eligible, size=n_upgraded, replace=False).tolist())
+    year = int(rng.choice(PLACEBO_INSTANCE_YEARS))
+    month = int(rng.integers(1, 13))
+    start = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
+    return placebo_campaign(mode, upgraded=upgraded, turbines=participating, campaign_start=start)
 
 
 def run_placebo(

@@ -8,12 +8,15 @@ import pytest
 from benchmarking.campaigns import CampaignRunner, per_turbine_table
 from benchmarking.campaigns.placebo import (
     PLACEBO_CAMPAIGN_START,
+    PLACEBO_INSTANCE_KEEP_AS_REFERENCE,
+    PLACEBO_INSTANCE_LAST_CLEAN,
     PLACEBO_TEST_CANDIDATES,
     PLACEBO_TURBINES,
     PLACEBO_UPGRADED,
     PLACEBO_WTG_NUMBERS,
     placebo_analysis_period,
     placebo_campaign,
+    placebo_instance,
 )
 from benchmarking.harness import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, SensorGainStep, ToggleSchedule
@@ -149,3 +152,69 @@ def test_declared_faults_reach_the_campaign() -> None:
     """R2 runs the placebo with a sensor fault injected, so the declaration has to carry one."""
     fault = SensorGainStep(turbine="T01", at=PLACEBO_CAMPAIGN_START, gain=1.5)
     assert placebo_campaign("prepost", faults=[fault]).faults == [fault]
+
+
+# --- the randomised instance, so a handover does not identify itself ---------------------------
+
+
+class TestARandomisedInstance:
+    def test_the_same_seed_gives_the_same_campaign(self) -> None:
+        first, second = placebo_instance("prepost", seed=7), placebo_instance("prepost", seed=7)
+        assert first.upgraded_turbines == second.upgraded_turbines
+        assert first.analysis_period == second.analysis_period
+
+    def test_different_seeds_give_different_campaigns(self) -> None:
+        drawn = {
+            (
+                tuple(placebo_instance("prepost", seed=s).upgraded_turbines),
+                placebo_instance("prepost", seed=s).analysis_period,
+            )
+            for s in range(12)
+        }
+        assert len(drawn) > 1
+
+    def test_it_does_not_hand_back_the_checked_in_default(self) -> None:
+        # a populated YAML matching the defaults would identify the campaign on sight
+        matches = [
+            s
+            for s in range(12)
+            if tuple(placebo_instance("prepost", seed=s).upgraded_turbines) == tuple(PLACEBO_UPGRADED)
+            and placebo_instance("prepost", seed=s).upgrade_timing == PLACEBO_CAMPAIGN_START
+        ]
+        assert not matches
+
+    def test_it_upgrades_several_turbines_of_the_farm(self) -> None:
+        campaign = placebo_instance("prepost", seed=3)
+        assert 1 < len(campaign.upgraded_turbines) < len(PLACEBO_TURBINES)
+        assert set(campaign.upgraded_turbines) <= set(PLACEBO_TURBINES)
+
+    def test_every_other_turbine_is_offered_as_a_reference(self) -> None:
+        campaign = placebo_instance("prepost", seed=3)
+        assert set(campaign.candidate_references) == set(PLACEBO_TURBINES) - set(campaign.upgraded_turbines)
+
+    def test_the_site_s_known_bad_turbine_is_never_a_test_turbine(self) -> None:
+        for seed in range(20):
+            assert set(placebo_instance("prepost", seed=seed).upgraded_turbines).isdisjoint(
+                PLACEBO_INSTANCE_KEEP_AS_REFERENCE
+            )
+
+    def test_the_window_stays_clear_of_the_site_s_real_upgrades(self) -> None:
+        # a real install inside the window would put a genuine change in a campaign whose truth is 0
+        for seed in range(20):
+            for mode in ("prepost", "toggle"):
+                start, end = placebo_instance(mode, seed=seed).analysis_period
+                assert start >= pd.Timestamp("2017-01-01", tz="UTC")
+                assert end <= PLACEBO_INSTANCE_LAST_CLEAN
+
+    def test_prepost_keeps_a_full_year_each_side(self) -> None:
+        start, end = placebo_instance("prepost", seed=5).analysis_period
+        changeover = placebo_instance("prepost", seed=5).upgrade_timing
+        assert changeover - start == pd.Timedelta(days=365) or (changeover - start).days in (365, 366)
+        assert (end - changeover).days in (365, 366)
+
+    def test_toggle_instances_declare_a_schedule(self) -> None:
+        assert isinstance(placebo_instance("toggle", seed=5).upgrade_timing, ToggleSchedule)
+
+    def test_it_injects_nothing(self) -> None:
+        assert placebo_instance("prepost", seed=5).upgrades == []
+        assert placebo_instance("prepost", seed=5).faults == []
