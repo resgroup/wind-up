@@ -1,25 +1,25 @@
-"""Run a declared campaign: per-turbine estimates, one farm headline, both output shapes."""
+"""The benchmark layer over the truth-free core: the same run, scored against the known truth."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-import numpy as np
 import pandas as pd
 
-from benchmarking.campaigns.context import context_for
-from benchmarking.harness import CampaignWindow, Replicate, score_one, truth_mask
-from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
-from wind_up import TurbineUplift, farm_uplift
+from benchmarking.campaigns.run import CampaignReport, estimate_campaign, visible_mask
+from benchmarking.harness import CampaignWindow, Replicate, score_output, truth_mask
+from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES
 from wind_up.northing import DEFAULT_NORTHING
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
 
+    import numpy as np
+
     from benchmarking.campaigns.declaration import CampaignSpec
-    from benchmarking.harness import Method, MethodInput, MethodOutput
+    from benchmarking.harness import Method, MethodOutput
     from benchmarking.synthetic import SyntheticDataset
     from wind_up import FarmUplift
     from wind_up.northing import NorthingSettings
@@ -32,7 +32,7 @@ _FARM_COLUMNS = ("method", "estimate", "truth", "signed_error", "uplift_spread",
 
 @dataclass
 class CampaignResult:
-    """Everything one campaign run produced.
+    """Everything one campaign run produced, truth included.
 
     :param spec: the campaign that was run
     :param scores: the tidy harness rows, one set per upgraded turbine at n=1
@@ -41,6 +41,8 @@ class CampaignResult:
     :param farm_uplifts: each method's :class:`~wind_up.FarmUplift`, including per-turbine detail
     :param truth_farm_uplift: the exact pooled farm truth
     :param outputs: each ``(method, turbine)``'s raw :class:`~benchmarking.harness.MethodOutput`
+    :param report: the truth-free :class:`~benchmarking.campaigns.run.CampaignReport` this run is
+        built on -- the analyst-facing tables, carrying no truth
     """
 
     spec: CampaignSpec
@@ -49,20 +51,7 @@ class CampaignResult:
     farm_uplifts: dict[str, FarmUplift]
     truth_farm_uplift: float
     outputs: dict[tuple[str, str], MethodOutput]
-
-
-class _Capturing:
-    """Delegates to a method and keeps its output, so one estimate call serves both output shapes."""
-
-    def __init__(self, method: Method) -> None:
-        self._method = method
-        self.name = method.name
-        self.output: MethodOutput | None = None
-
-    def estimate(self, mi: MethodInput) -> MethodOutput:
-        """Estimate via the wrapped method, retaining the output."""
-        self.output = self._method.estimate(mi)
-        return self.output
+    report: CampaignReport
 
 
 class CampaignRunner:
@@ -100,16 +89,23 @@ class CampaignRunner:
         self._northing_out_dir = northing_out_dir
 
     def run(self) -> CampaignResult:
-        """Run every applicable method on every upgraded turbine and aggregate to one headline."""
+        """Estimate the campaign on the truth-free core, then score what it produced against truth."""
         spec = self._spec
-        visible = self._visible_dataset()
+        report = estimate_campaign(
+            spec,
+            self._dataset.synthetic_df,
+            build_methods=self._build_methods,
+            columns=self._dataset.columns,
+            era5_wd=self._era5_wd,
+            northing_roles=self._northing_roles,
+            northing_settings=self._northing_settings,
+            northing_out_dir=self._northing_out_dir,
+        )
+        visible = self._visible_dataset(report)
         window = self._window()
 
         score_rows: list[dict[str, object]] = []
-        outputs: dict[tuple[str, str], MethodOutput] = {}
-        estimates: dict[str, list[TurbineUplift]] = {}
         truth_masks: dict[str, np.ndarray] = {}
-
         for wtg in spec.upgraded_turbines:
             replicate = Replicate(
                 dataset=visible,
@@ -120,49 +116,38 @@ class CampaignRunner:
             mask = truth_mask(replicate, window)
             truth_masks[wtg] = mask
             truth = replicate.true_uplift(mask=mask).overall
-            energy, n_records = self._actual_energy(visible, turbine=wtg, mask=mask)
-
-            context = context_for(spec, turbine=wtg, scada_df=visible.synthetic_df)
-            for method in self._build_methods(wtg):
-                capturing = _Capturing(method)
+            for (method_name, turbine), output in report.outputs.items():
+                if turbine != wtg:
+                    continue
                 score_rows.extend(
-                    score_one(
-                        capturing,
+                    score_output(
+                        output,
+                        method_name=method_name,
                         replicate=replicate,
                         window=window,
                         truth=truth,
                         mask=mask,
                         profile_name=spec.change_label(),
-                        context=context,
-                    )
-                )
-                if capturing.output is None:  # pragma: no cover - score_one always estimates
-                    msg = f"{method.name} produced no output for {wtg}"
-                    raise RuntimeError(msg)
-                outputs[method.name, wtg] = capturing.output
-                estimates.setdefault(method.name, []).append(
-                    TurbineUplift(
-                        turbine=wtg,
-                        uplift=capturing.output.p50_overall,
-                        actual_energy=energy,
-                        n_records=n_records,
-                        rated_power_kw=spec.rated_power_kw,
+                        wall_time_s=report.wall_time_s[method_name, turbine],
                     )
                 )
 
         truth_farm = visible.true_farm_uplift(test_wtgs=list(spec.upgraded_turbines), masks=truth_masks)
-        farm_uplifts = {name: farm_uplift(rows) for name, rows in estimates.items()}
         farm = pd.DataFrame(
-            [self._farm_row(name, result, visible=visible, masks=truth_masks) for name, result in farm_uplifts.items()],
+            [
+                self._farm_row(name, result, visible=visible, masks=truth_masks)
+                for name, result in report.farm_uplifts.items()
+            ],
             columns=_FARM_COLUMNS,
         )
         return CampaignResult(
             spec=spec,
             scores=pd.DataFrame(score_rows),
             farm=farm,
-            farm_uplifts=farm_uplifts,
+            farm_uplifts=report.farm_uplifts,
             truth_farm_uplift=truth_farm,
-            outputs=outputs,
+            outputs=report.outputs,
+            report=report,
         )
 
     def _farm_row(
@@ -191,41 +176,13 @@ class CampaignRunner:
             "n_guarded": int((result.turbines["guard"] != "").sum()),
         }
 
-    def _visible_dataset(self) -> SyntheticDataset:
-        """Return the dataset cut to what a method may see: analysis period, usable turbines only.
-
-        The shared northing step runs here, so every method downstream inherits the north-calibrated
-        direction rather than each hand-rolling one.
-        """
-        synthetic = self._dataset.synthetic_df
-        keep = self._visible_mask(synthetic)
-        visible = north_scada(
-            synthetic[keep],
-            columns=self._dataset.columns,
-            north_offsets=self._spec.north_offsets,
-            rated_power_kw=self._spec.rated_power_kw,
-            era5_wd=self._era5_wd,
-            roles=self._northing_roles,
-            settings=self._northing_settings,
-            out_dir=self._northing_out_dir,
-        )
+    def _visible_dataset(self, report: CampaignReport) -> SyntheticDataset:
+        """Pair the frame the methods saw with the matching slice of the ground-truth original."""
         return replace(
             self._dataset,
-            synthetic_df=visible,
-            original_df=self._dataset.original_df[self._visible_mask(self._dataset.original_df)],
+            synthetic_df=report.scada_df,
+            original_df=self._dataset.original_df[visible_mask(self._spec, self._dataset.original_df)],
         )
-
-    def _visible_mask(self, frame: pd.DataFrame) -> np.ndarray:
-        """Rows of ``frame`` inside the analysis period whose turbine may be used."""
-        spec = self._spec
-        start, end = spec.analysis_period
-        keep = np.asarray((frame.index >= start) & (frame.index < end))
-        turbines = frame[spec.turbine_col].to_numpy()
-        for turbine in pd.unique(turbines):
-            is_turbine = turbines == turbine
-            rows = pd.DatetimeIndex(frame.index[is_turbine])
-            keep[is_turbine] &= spec.usable_mask(str(turbine), rows)
-        return keep
 
     def _window(self) -> CampaignWindow:
         """Return one window spanning the whole campaign, so the harness scores it at n=1.
@@ -243,17 +200,6 @@ class CampaignRunner:
             treatment_start=treatment_start,
             activity_end=end,
         )
-
-    def _actual_energy(self, dataset: SyntheticDataset, *, turbine: str, mask: np.ndarray) -> tuple[float, int]:
-        """Return the energy one turbine actually produced over its upgraded records.
-
-        Finite records only, with the record count that sum covers.
-        """
-        columns = dataset.columns
-        frame = dataset.synthetic_df
-        power = frame.loc[frame[columns.turbine] == turbine, columns.active_power].to_numpy(dtype=float)
-        selected = mask & np.isfinite(power)
-        return float(power[selected].sum()), int(selected.sum())
 
 
 def per_turbine_table(result: CampaignResult) -> pd.DataFrame:
