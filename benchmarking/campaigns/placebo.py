@@ -144,10 +144,13 @@ def placebo_campaign(
 
 
 # A randomised instance draws its treatment start from these post-years, and never upgrades
-# these turbines. The window stays before the site's real blade-upgrade installs.
-PLACEBO_INSTANCE_YEARS = (2018, 2019)
+# these turbines. The window stays before the site's real blade-upgrade installs, and before the
+# thin-baseline year.
+PLACEBO_INSTANCE_YEARS = (2018,)
 PLACEBO_INSTANCE_KEEP_AS_REFERENCE = ("T17",)
 PLACEBO_INSTANCE_LAST_CLEAN = pd.Timestamp("2021-01-01", tz="UTC")
+# A treated period reaching past this rests on a 2019-only baseline, which reads far worse.
+PLACEBO_INSTANCE_LAST_GOOD_END = pd.Timestamp("2020-01-01", tz="UTC")
 # How many turbines an instance may upgrade: at least two, and never so many that the reference
 # pool drops below what the screen needs to form a majority.
 MIN_SCREENABLE_REFERENCES = 3

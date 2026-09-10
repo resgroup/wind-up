@@ -112,13 +112,18 @@ Rows with `screened = True` were ruled out automatically and contributed no powe
 Rows with `screened = False` that still read far from zero are the ones to think about; the screen
 is deliberately cautious and only runs on campaigns long enough to judge.
 
-### Re-run with a different reference set
+### Judging scale from that one table
 
-The single most useful check you can make. Run the campaign again with one or two references
-dropped, and see how far the headline moves. If it moves by as much as the headline itself, the
-reference set is doing more work than the change is, and you should report that rather than the
-number. Reanalysis is pinned to the whole site, so changing the roles does not disturb anything
-else.
+`reference_stability.csv` is also your noise yardstick, and it comes from the same single run. The
+references are turbines where nothing happened, so **the spread of their readings is what this
+campaign can resolve**. Compare your upgraded turbines against that spread:
+
+- upgraded turbines sitting inside the reference spread → not distinguishable from zero
+- upgraded turbines clearly outside it, and agreeing with each other → a real effect
+
+You should not need to re-run the campaign with a different reference set to answer that. If you
+find yourself wanting to, say so in your report — it means this run did not give you enough to
+judge on, which is a limitation of the tool rather than of the data.
 
 ### Then the headline
 

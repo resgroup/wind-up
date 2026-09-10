@@ -11,6 +11,7 @@ from benchmarking.campaigns.placebo import (
     PLACEBO_CAMPAIGN_START,
     PLACEBO_INSTANCE_KEEP_AS_REFERENCE,
     PLACEBO_INSTANCE_LAST_CLEAN,
+    PLACEBO_INSTANCE_LAST_GOOD_END,
     PLACEBO_TEST_CANDIDATES,
     PLACEBO_TURBINES,
     PLACEBO_UPGRADED,
@@ -219,6 +220,12 @@ class TestARandomisedInstance:
                 start, end = placebo_instance(mode, seed=seed).analysis_period
                 assert start >= pd.Timestamp("2017-01-01", tz="UTC")
                 assert end <= PLACEBO_INSTANCE_LAST_CLEAN
+
+    def test_the_prepost_window_avoids_the_thin_baseline_year(self) -> None:
+        # a treated period reaching into 2020 rests on a 2019-only baseline, which reads far worse
+        for seed in range(30):
+            _, end = placebo_instance("prepost", seed=seed).analysis_period
+            assert end <= PLACEBO_INSTANCE_LAST_GOOD_END
 
     def test_prepost_keeps_a_full_year_each_side(self) -> None:
         start, end = placebo_instance("prepost", seed=5).analysis_period
