@@ -39,9 +39,12 @@ CAMPAIGN_TEMPLATE = """\
 # Fill this in from the brief, then run:
 #   python -m benchmarking.campaigns run campaign.yaml --out out
 #
+# The report is written to --out exactly as given; `name` adds no subdirectory under it,
+# so give each run its own --out or the second overwrites the first.
+#
 # Every time below is UTC. A value without a timezone is read as UTC.
 
-name:                    # names the output subdirectory
+name:                    # identifies the run
 
 data:
   scada: data/scada.parquet

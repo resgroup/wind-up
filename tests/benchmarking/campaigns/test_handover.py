@@ -103,6 +103,12 @@ class TestTheTemplateIsBlank:
         for field in ("name", "scada", "schema", "turbines", "upgraded", "references", "timing", "analysis_period"):
             assert field in template
 
+    def test_it_does_not_claim_name_makes_an_output_subdirectory(self, tmp_path: Path) -> None:
+        # it does not, once --out is given, and the documented run command gives it
+        template = (_handover(tmp_path) / "analyst" / "campaign.yaml").read_text()
+        assert "names the output subdirectory" not in template
+        assert "adds no subdirectory" in template
+
 
 class TestIsolation:
     def test_the_answer_key_is_outside_the_analyst_directory(self, tmp_path: Path) -> None:
