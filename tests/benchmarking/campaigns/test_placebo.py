@@ -26,6 +26,8 @@ from benchmarking.synthetic import HOT_COLUMNS, SensorGainStep, ToggleSchedule
 TOLERANCE = 1e-9
 # A small slice of the farm, so the fixtures stay cheap; the production default is all 21 turbines.
 TEST_TURBINES = ("T07", "T11")
+# A line of turbines 400 m apart, so "the two nearest" is unambiguous.
+LINE_COORDS = {f"T{i:02d}": (57.5 + i * 0.0036, -3.25) for i in range(1, 22)}
 TEST_PARTICIPANTS = ("T07", "T11", "T01", "T02", "T03")
 
 
@@ -159,17 +161,54 @@ def test_declared_faults_reach_the_campaign() -> None:
 # --- the randomised instance, so a handover does not identify itself ---------------------------
 
 
+def instance(mode: str = "prepost", *, seed: int, turbines: tuple[str, ...] | None = None):  # noqa: ANN201
+    """A randomised instance on the straight-line fixture geometry."""
+    names = turbines if turbines is not None else tuple(LINE_COORDS)
+    return placebo_instance(mode, seed=seed, turbines=names, coords={w: LINE_COORDS[w] for w in names})
+
+
+def two_nearest(turbine: str, among: list[str]) -> list[str]:
+    """The two turbines of ``among`` closest to ``turbine`` on the fixture line."""
+    others = [w for w in among if w != turbine]
+    return sorted(others, key=lambda w: abs(LINE_COORDS[w][0] - LINE_COORDS[turbine][0]))[:2]
+
+
+class TestGeographicSpacing:
+    def test_every_test_turbine_keeps_its_two_nearest_as_references(self) -> None:
+        # a real campaign is designed so each test turbine has nearby references to compare against
+        for seed in range(25):
+            campaign = instance(seed=seed)
+            participating = [*campaign.upgraded_turbines, *campaign.candidate_references]
+            for wtg in campaign.upgraded_turbines:
+                nearest = two_nearest(wtg, participating)
+                assert set(nearest) <= set(campaign.candidate_references), (
+                    f"seed {seed}: {wtg}'s nearest {nearest} are not both references"
+                )
+
+    def test_no_two_test_turbines_are_immediate_neighbours(self) -> None:
+        for seed in range(25):
+            campaign = instance(seed=seed)
+            chosen = set(campaign.upgraded_turbines)
+            participating = [*campaign.upgraded_turbines, *campaign.candidate_references]
+            for wtg in chosen:
+                assert not (set(two_nearest(wtg, participating)) & chosen)
+
+    def test_it_still_upgrades_more_than_one_turbine(self) -> None:
+        for seed in range(25):
+            assert len(instance(seed=seed).upgraded_turbines) >= 2
+
+
 class TestARandomisedInstance:
     def test_the_same_seed_gives_the_same_campaign(self) -> None:
-        first, second = placebo_instance("prepost", seed=7), placebo_instance("prepost", seed=7)
+        first, second = instance(seed=7), instance(seed=7)
         assert first.upgraded_turbines == second.upgraded_turbines
         assert first.analysis_period == second.analysis_period
 
     def test_different_seeds_give_different_campaigns(self) -> None:
         drawn = {
             (
-                tuple(placebo_instance("prepost", seed=s).upgraded_turbines),
-                placebo_instance("prepost", seed=s).analysis_period,
+                tuple(instance(seed=s).upgraded_turbines),
+                instance(seed=s).analysis_period,
             )
             for s in range(12)
         }
@@ -180,13 +219,13 @@ class TestARandomisedInstance:
         matches = [
             s
             for s in range(12)
-            if tuple(placebo_instance("prepost", seed=s).upgraded_turbines) == tuple(PLACEBO_UPGRADED)
-            and placebo_instance("prepost", seed=s).upgrade_timing == PLACEBO_CAMPAIGN_START
+            if tuple(instance(seed=s).upgraded_turbines) == tuple(PLACEBO_UPGRADED)
+            and instance(seed=s).upgrade_timing == PLACEBO_CAMPAIGN_START
         ]
         assert not matches
 
     def test_it_upgrades_several_turbines_of_the_farm(self) -> None:
-        campaign = placebo_instance("prepost", seed=3)
+        campaign = instance(seed=3)
         assert 1 < len(campaign.upgraded_turbines) < len(PLACEBO_TURBINES)
         assert set(campaign.upgraded_turbines) <= set(PLACEBO_TURBINES)
 
@@ -194,48 +233,46 @@ class TestARandomisedInstance:
         # reference count is the biggest lever on accuracy, and the screen needs a pool to judge
         for seed in range(20):
             for farm in (PLACEBO_TURBINES, PLACEBO_TURBINES[:9]):
-                campaign = placebo_instance("prepost", seed=seed, turbines=farm)
+                campaign = instance(seed=seed, turbines=farm)
                 assert len(campaign.candidate_references) > len(campaign.upgraded_turbines)
 
     def test_a_small_farm_still_leaves_a_pool_the_screen_can_judge(self) -> None:
         # a screen with fewer than three references cannot form a majority and stops
         for seed in range(20):
-            campaign = placebo_instance("prepost", seed=seed, turbines=PLACEBO_TURBINES[:9])
+            campaign = instance(seed=seed, turbines=PLACEBO_TURBINES[:9])
             assert len(campaign.candidate_references) >= MIN_SCREENABLE_REFERENCES + 1
 
     def test_every_other_turbine_is_offered_as_a_reference(self) -> None:
-        campaign = placebo_instance("prepost", seed=3)
+        campaign = instance(seed=3)
         assert set(campaign.candidate_references) == set(PLACEBO_TURBINES) - set(campaign.upgraded_turbines)
 
     def test_the_site_s_known_bad_turbine_is_never_a_test_turbine(self) -> None:
         for seed in range(20):
-            assert set(placebo_instance("prepost", seed=seed).upgraded_turbines).isdisjoint(
-                PLACEBO_INSTANCE_KEEP_AS_REFERENCE
-            )
+            assert set(instance(seed=seed).upgraded_turbines).isdisjoint(PLACEBO_INSTANCE_KEEP_AS_REFERENCE)
 
     def test_the_window_stays_clear_of_the_site_s_real_upgrades(self) -> None:
         # a real install inside the window would put a genuine change in a campaign whose truth is 0
         for seed in range(20):
             for mode in ("prepost", "toggle"):
-                start, end = placebo_instance(mode, seed=seed).analysis_period
+                start, end = instance(mode, seed=seed).analysis_period
                 assert start >= pd.Timestamp("2017-01-01", tz="UTC")
                 assert end <= PLACEBO_INSTANCE_LAST_CLEAN
 
     def test_the_prepost_window_avoids_the_thin_baseline_year(self) -> None:
         # a treated period reaching into 2020 rests on a 2019-only baseline, which reads far worse
         for seed in range(30):
-            _, end = placebo_instance("prepost", seed=seed).analysis_period
+            _, end = instance(seed=seed).analysis_period
             assert end <= PLACEBO_INSTANCE_LAST_GOOD_END
 
     def test_prepost_keeps_a_full_year_each_side(self) -> None:
-        start, end = placebo_instance("prepost", seed=5).analysis_period
-        changeover = placebo_instance("prepost", seed=5).upgrade_timing
+        start, end = instance(seed=5).analysis_period
+        changeover = instance(seed=5).upgrade_timing
         assert changeover - start == pd.Timedelta(days=365) or (changeover - start).days in (365, 366)
         assert (end - changeover).days in (365, 366)
 
     def test_toggle_instances_declare_a_schedule(self) -> None:
-        assert isinstance(placebo_instance("toggle", seed=5).upgrade_timing, ToggleSchedule)
+        assert isinstance(instance("toggle", seed=5).upgrade_timing, ToggleSchedule)
 
     def test_it_injects_nothing(self) -> None:
-        assert placebo_instance("prepost", seed=5).upgrades == []
-        assert placebo_instance("prepost", seed=5).faults == []
+        assert instance(seed=5).upgrades == []
+        assert instance(seed=5).faults == []

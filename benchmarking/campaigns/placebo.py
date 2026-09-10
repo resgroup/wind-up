@@ -18,6 +18,7 @@ first run downloads and caches the Hill of Towie SCADA (Zenodo) and ERA5 (Open-M
 from __future__ import annotations
 
 import logging
+import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -156,29 +157,92 @@ PLACEBO_INSTANCE_LAST_GOOD_END = pd.Timestamp("2020-01-01", tz="UTC")
 MIN_SCREENABLE_REFERENCES = 3
 PLACEBO_INSTANCE_MIN_UPGRADED = 2
 PLACEBO_INSTANCE_MAX_UPGRADED_FRACTION = 1 / 3
+# How many of a test turbine's closest neighbours are held back as references.
+PLACEBO_INSTANCE_NEAREST_REFS = 2
+
+# One degree of latitude, for ranking neighbours on a single site.
+_METRES_PER_DEGREE = 111_320.0
 
 
 def placebo_instance(
-    mode: Literal["prepost", "toggle"], *, seed: int, turbines: Sequence[str] | None = None
+    mode: Literal["prepost", "toggle"],
+    *,
+    seed: int,
+    coords: dict[str, tuple[float, float]],
+    turbines: Sequence[str] | None = None,
 ) -> SyntheticCampaign:
     """Return a seeded random placebo: which turbines are upgraded, and when treatment starts.
 
     A handover built from the checked-in defaults would identify its own campaign, so both are
     drawn. Nothing is injected, so the truth stays 0.
 
+    Test turbines are drawn one at a time, and each draw takes its two nearest neighbours out of
+    the running, so every test turbine keeps nearby references to be compared against -- how a real
+    campaign is designed, and not what an unconstrained draw gives.
+
     :param mode: ``"prepost"`` or ``"toggle"``
     :param seed: the draw's seed; the same seed gives the same campaign
+    :param coords: turbine name to ``(latitude, longitude)``, which the spacing rule reads
     :param turbines: every participating turbine; defaults to :data:`PLACEBO_TURBINES`
     """
     participating = list(PLACEBO_TURBINES if turbines is None else turbines)
     rng = np.random.default_rng(seed)
-    eligible = [w for w in participating if w not in PLACEBO_INSTANCE_KEEP_AS_REFERENCE]
-    n_upgraded = int(rng.integers(PLACEBO_INSTANCE_MIN_UPGRADED, _max_upgraded(participating) + 1))
-    upgraded = sorted(rng.choice(eligible, size=n_upgraded, replace=False).tolist())
+    wanted = int(rng.integers(PLACEBO_INSTANCE_MIN_UPGRADED, _max_upgraded(participating) + 1))
+    upgraded = _spaced_draw(rng, participating=participating, coords=coords, wanted=wanted)
     year = int(rng.choice(PLACEBO_INSTANCE_YEARS))
     month = int(rng.integers(1, 13))
     start = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
-    return placebo_campaign(mode, upgraded=upgraded, turbines=participating, campaign_start=start)
+    return placebo_campaign(
+        mode,
+        upgraded=upgraded,
+        turbines=participating,
+        coords={w: coords[w] for w in participating},
+        campaign_start=start,
+    )
+
+
+def _spaced_draw(
+    rng: np.random.Generator,
+    *,
+    participating: list[str],
+    coords: dict[str, tuple[float, float]],
+    wanted: int,
+) -> list[str]:
+    """Draw test turbines one at a time, retiring everyone a pick would leave without references.
+
+    Nearest is not symmetric, so each pick retires both its own nearest neighbours and any turbine
+    that holds the pick among *its* nearest -- otherwise a later pick could end up beside an
+    earlier one.
+    """
+    available = [w for w in participating if w not in PLACEBO_INSTANCE_KEEP_AS_REFERENCE]
+    nearest = {
+        w: set(_nearest(w, among=participating, coords=coords, count=PLACEBO_INSTANCE_NEAREST_REFS))
+        for w in participating
+    }
+    chosen: list[str] = []
+    while available and len(chosen) < wanted:
+        pick = str(rng.choice(available))
+        chosen.append(pick)
+        available = [w for w in available if w != pick and w not in nearest[pick] and pick not in nearest[w]]
+    if len(chosen) < PLACEBO_INSTANCE_MIN_UPGRADED:
+        msg = (
+            f"the spacing rule left only {len(chosen)} test turbine(s) on a farm of "
+            f"{len(participating)}; it needs at least {PLACEBO_INSTANCE_MIN_UPGRADED}"
+        )
+        raise ValueError(msg)
+    return sorted(chosen)
+
+
+def _nearest(turbine: str, *, among: list[str], coords: dict[str, tuple[float, float]], count: int) -> list[str]:
+    """Return the ``count`` turbines of ``among`` closest to ``turbine``."""
+    others = [w for w in among if w != turbine]
+    return sorted(others, key=lambda w: _separation(coords[turbine], coords[w]))[:count]
+
+
+def _separation(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Approximate ground distance in metres between two lat/long points on one site."""
+    mean_lat = math.radians((a[0] + b[0]) / 2)
+    return math.hypot((a[0] - b[0]) * _METRES_PER_DEGREE, (a[1] - b[1]) * _METRES_PER_DEGREE * math.cos(mean_lat))
 
 
 def _max_upgraded(participating: Sequence[str]) -> int:
