@@ -140,7 +140,7 @@ so moved every frozen artefact at once. Read this before accepting any benchmark
 ## Suggested order
 
 `C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4 ✅] → W1a → C3 → C4 → R5 →
-C5 → R6 → C6 → C8 → W1b → W2`, with **W3 running continuously from W1a onward** rather
+C5 → R6 → C6 → C8 → C9 → W1b → W2`, with **W3 running continuously from W1a onward** rather
 than at one point in the line.
 
 The R-series lands after the C1/C2 foundation: **R1 (northing) before C3** so the
@@ -177,8 +177,10 @@ which only the thing it is looking for ever moves pitch or rpm. It is the last r
 issue for a reason: it is the only one that changes what *truth* means.
 
 **C8** (per-turbine change histories) lands **before W1b** so the generalized
-declaration is what gets frozen as public API at v1.0.0, not the flat one. C7 (drop
-`rlearner`, ✅ done) was independent.
+declaration is what gets frozen as public API at v1.0.0, not the flat one. **C9** (test
+turbines as wake contributors) follows it for the same reason — it adds a field to the
+`CampaignContext` seam W2 publishes — and because C8's per-turbine timeline is what makes
+the wake-only role time-ranged. C7 (drop `rlearner`, ✅ done) was independent.
 
 **Done so far:** C0, W0, C7, C1, C2, R1, R2, R3 and R4. **Next: C3**, which inherits the
 shared northing step R1 landed and the reference screen R3 landed.
@@ -493,6 +495,66 @@ mid-period is declared and run end-to-end, using each reference only over its va
 records; a named change appears in report and plot titles and an unnamed one falls back
 to neutral language; the neutral vocabulary decision is recorded and applied, with
 "window" left meaning one thing in the harness.
+
+---
+
+## C9 — Test turbines as wake contributors (power-free, not absent)
+
+**Goal:** let a turbine that is not a valid *reference* still contribute what it
+physically does to its neighbours — its wake — instead of being dropped from the
+estimate's frame entirely.
+
+**Motivation.** `power_model` already has the mechanism: a `power_free` reference keeps
+its direction channels and a `waking` boolean but contributes no power columns. Today
+that is reachable only through R3's screen, and only for turbines already in the
+candidate pool. Two gates close it off:
+
+- `CampaignContext.select()` keeps `test_wtg`, `candidate_references` and `also` only, so
+  every other turbine is dropped at the first line of `PowerModelMethod.estimate`, which
+  never passes `also`.
+- `_checked_power_free` raises on any name that is not already in `refs`.
+
+So a campaign's *other* changed turbines vanish from each estimate. On the placebo that
+costs little — 6 of 21 turbines. On the real AeroUp campaign **all 21 Hill of Towie
+turbines were upgraded**, so each estimate's frame would keep only the turbines
+hand-declared as references and none of the wake neighbours. A neighbour's wake is there
+whether or not that neighbour is treated; the declaration currently has no way to say so.
+
+**Scope**
+- **A third turbine role in the context** — kept in the frame, never a candidate
+  reference, never screened, never in the reference-stability table, and always
+  power-free.
+- **Derived, not declared.** `benchmarking/campaigns/context.py` fills it from the
+  campaign's other changed turbines. Under C8's per-turbine timelines the role is
+  *time-ranged* rather than whole-turbine: a turbine is a valid reference before its own
+  change and a wake-only contributor after it, from the same timeline C8 already needs.
+- **Union it into `power_model`'s feature-pool `power_free`**, leaving the R3 screen and
+  the reference-uplift table operating on `candidate_references` alone.
+- **Re-record the frozen benchmarks.** This changes the feature matrix, so every C- and
+  R-series campaign number moves.
+
+**The open question, to settle first: is `waking` treatment-invariant?** The substitute
+for power is a boolean thresholded on active power. For a Cp change it is very likely
+invariant — a turbine above a few percent of rated already carries most of its thrust, so
+a low threshold separates waking from parked while leaking almost none of the power
+level, which is the argument `_waking_features` already makes for screened references.
+For **wake steering (C5)** it is not: changing the neighbour's wake *is* the
+intervention, so its waking and geometry state move *with* treatment and a post-treatment
+variable would enter the feature matrix (design note §3). The concern is sharper here
+than for a screened reference, where the suspected change is unknown and incidental
+rather than known and simultaneous. Decide — on C5's fixture, with evidence — whether the
+role is uniform or whether a steering campaign must keep the neighbour out of even the
+waking feature.
+
+**Ordering:** with or just after **C8**, and **before W1b/W2**. It adds a field to
+`CampaignContext`, the method seam W2 promotes to public API, and C8's per-turbine
+timeline is what makes the role time-ranged rather than whole-turbine. Its §3 decision
+wants C5's fixture, so C5 should land first.
+
+**Done when:** a campaign in which every turbine is changed runs end-to-end with each
+estimate still seeing its neighbours' wake; the wake-only turbines appear in no
+reference-stability table and are screened by nothing; the §3 decision is recorded with
+the evidence behind it; and the frozen benchmarks are re-recorded.
 
 ---
 
