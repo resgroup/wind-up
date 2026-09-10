@@ -867,11 +867,29 @@ Hoisted ahead of C3–C6 because nothing here depends on them, and because W3 ca
 without it. What W1a delivers is the *interface*; W1b settles whether it is *right*.
 
 **Scope**
-- Build `wind-up` in `benchmarking/baselines` (like every v1 method), composing
-  **`power_model` (definite) + the shared northing step (R1) + the reference-validity
-  screen (R3)**. R4 added no adaptation layer to compose (see its scope correction): what it
-  left behind is attribution and a pool-shrinkage warning, already inside those parts.
-  `toggle_specialist` inclusion is **TBD** and is settled in W1b, not here.
+- **Grow a truth-free path — the bulk of the work.** There is none today: `CampaignRunner`
+  takes a `SyntheticDataset` (which requires `original_df`), `Replicate` requires the same,
+  and `score_one` requires a `truth` argument. Every code path that runs a method is a
+  benchmark path that knows the answer, so real data cannot currently be run at all. W1a
+  extracts a truth-free core — `estimate_campaign()` over frame-level northing and clipping —
+  and puts `CampaignRunner` back on top of it as a thin truth-adding layer, its public
+  behaviour unchanged. This is what makes W3's isolation structural rather than promised: the
+  code that writes the analyst report has no access to the answer key. The analyst report
+  carries a reference-turbine self-uplift table (`MethodOutput.reference_uplifts`) alongside
+  per-turbine and farm uplift, which every real Hill of Towie report gives equal billing.
+- **`wind-up` is campaign-level, not a `Method`** — so it is *not* a new entry in
+  `benchmarking/baselines` alongside the other v1 methods. At method level it would be a
+  no-op relabel of `power_model`: the R3 reference-validity screen is already inside
+  `PowerModelMethod` (`reference_screen=True` by default), and the R1 northing step is
+  already applied farm-wide, upstream of every method. Northing runs once for the whole farm,
+  so it cannot sit inside a per-turbine method without misrepresenting its scope, and the farm
+  aggregation, the guards and the report are campaign-level already. `wind-up` is therefore
+  the shared northing step, plus one **`power_model`** built from the accepted defaults, plus
+  the truth-free report, behind one name and one YAML declaration. R4 added no adaptation
+  layer to compose (see its scope correction): what it left behind is attribution and a
+  pool-shrinkage warning, already inside those parts. `toggle_specialist` inclusion is **TBD**
+  and is settled in W1b, not here. The multi-method `carried_forward_methods` path is
+  untouched — the benchmark comparisons keep running three methods.
 - **A campaign is declared, not scripted** (moved here from W2, which is too late for
   W3 to use it). `CampaignSpec` gains a simple user-facing declaration — a YAML file it
   initializes from — so an analyst describes turbine roles, timing, exclusions and
