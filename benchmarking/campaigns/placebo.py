@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 
     from benchmarking.campaigns.runner import CampaignResult
     from benchmarking.synthetic import Fault
+    from wind_up.campaign_design import CampaignDesign
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,20 @@ def placebo_layout(coords: dict[str, tuple[float, float]]) -> pd.DataFrame:
     )
 
 
+def placebo_design(
+    *,
+    seed: int,
+    coords: dict[str, tuple[float, float]],
+    turbines: Sequence[str] | None = None,
+) -> CampaignDesign:
+    """Return the campaign design behind :func:`placebo_instance` for the same ``seed`` and turbines.
+
+    :data:`PLACEBO_INSTANCE_BELOW_MAX` fewer test turbines than a compliant design allows, every
+    candidate listed in a seeded random priority.
+    """
+    return _instance_design(np.random.default_rng(seed), coords=coords, turbines=turbines)
+
+
 def placebo_instance(
     mode: Literal["prepost", "toggle"],
     *,
@@ -181,11 +196,8 @@ def placebo_instance(
     """Return a seeded random placebo: which turbines are upgraded, and when treatment starts.
 
     A handover built from the checked-in defaults would identify its own campaign, so both are
-    drawn. Nothing is injected, so the truth stays 0.
-
-    The upgraded turbines are a campaign design (:func:`wind_up.campaign_design.design_campaign`)
-    with :data:`PLACEBO_INSTANCE_BELOW_MAX` fewer test turbines than a compliant design allows, every
-    candidate listed in a seeded random priority.
+    drawn. Nothing is injected, so the truth stays 0. The upgraded turbines are the test turbines of
+    :func:`placebo_design` for the same seed.
 
     :param mode: ``"prepost"`` or ``"toggle"``
     :param seed: the draw's seed; the same seed gives the same campaign
@@ -194,16 +206,7 @@ def placebo_instance(
     """
     participating = list(PLACEBO_TURBINES if turbines is None else turbines)
     rng = np.random.default_rng(seed)
-    reference_only = [w for w in PLACEBO_INSTANCE_KEEP_AS_REFERENCE if w in participating]
-    candidates = [w for w in participating if w not in reference_only]
-    layout = placebo_layout({w: coords[w] for w in participating})
-    most = design_campaign(layout, reference_only=reference_only).max_test_turbines
-    design = design_campaign(
-        layout,
-        test_priority=[str(w) for w in rng.permutation(candidates)],
-        reference_only=reference_only,
-        n_test=max(1, most - PLACEBO_INSTANCE_BELOW_MAX),
-    )
+    design = _instance_design(rng, coords=coords, turbines=participating)
     year = int(rng.choice(PLACEBO_INSTANCE_YEARS))
     month = int(rng.integers(1, 13))
     start = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
@@ -213,6 +216,26 @@ def placebo_instance(
         turbines=participating,
         coords={w: coords[w] for w in participating},
         campaign_start=start,
+    )
+
+
+def _instance_design(
+    rng: np.random.Generator,
+    *,
+    coords: dict[str, tuple[float, float]],
+    turbines: Sequence[str] | None,
+) -> CampaignDesign:
+    """Design a placebo instance, drawing its priority from ``rng``."""
+    participating = list(PLACEBO_TURBINES if turbines is None else turbines)
+    reference_only = [w for w in PLACEBO_INSTANCE_KEEP_AS_REFERENCE if w in participating]
+    candidates = [w for w in participating if w not in reference_only]
+    layout = placebo_layout({w: coords[w] for w in participating})
+    most = design_campaign(layout, reference_only=reference_only).max_test_turbines
+    return design_campaign(
+        layout,
+        test_priority=[str(w) for w in rng.permutation(candidates)],
+        reference_only=reference_only,
+        n_test=max(1, most - PLACEBO_INSTANCE_BELOW_MAX),
     )
 
 

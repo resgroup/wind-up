@@ -6,10 +6,12 @@ import json
 from typing import TYPE_CHECKING
 
 import pandas as pd
+import pytest
 
 from benchmarking.campaigns.handover import GROUND_TRUTH_FILENAME, write_handover
-from benchmarking.campaigns.placebo import placebo_instance
+from benchmarking.campaigns.placebo import placebo_design, placebo_instance, placebo_layout
 from benchmarking.synthetic import HOT_COLUMNS
+from wind_up.campaign_design import design_campaign
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -21,10 +23,12 @@ BRIEF = "# The campaign\n\nSomething may have happened to some turbines.\n"
 TURBINES = ("T01", "T02", "T03", "T04", "T05", "T06", "T17")
 
 
+COORDS = {w: (57.5 + i * 0.0036, -3.25) for i, w in enumerate(TURBINES)}
+
+
 def _campaign() -> SyntheticCampaign:
     """A randomised placebo over a small slice of the farm."""
-    coords = {w: (57.5 + i * 0.0036, -3.25) for i, w in enumerate(TURBINES)}
-    return placebo_instance("prepost", seed=1, turbines=TURBINES, coords=coords)
+    return placebo_instance("prepost", seed=1, turbines=TURBINES, coords=COORDS)
 
 
 def _dataset(campaign: SyntheticCampaign) -> SyntheticDataset:
@@ -81,6 +85,46 @@ class TestWhatTheAnalystGets:
         doc.write_text("read me")
         root = _handover(tmp_path, docs=(doc,))
         assert (root / "analyst" / "docs" / "how_to.md").read_text() == "read me"
+
+
+class TestTheCampaignDesign:
+    def _root(self, tmp_path: Path) -> Path:
+        campaign = _campaign()
+        design = placebo_design(seed=1, turbines=TURBINES, coords=COORDS)
+        return write_handover(campaign, _dataset(campaign), root=tmp_path, brief=BRIEF, design=design)
+
+    def test_the_design_is_handed_over_with_its_map_and_compliance(self, tmp_path: Path) -> None:
+        design_dir = self._root(tmp_path) / "analyst" / "design"
+        assert sorted(p.name for p in design_dir.iterdir()) == [
+            "compliance.csv",
+            "design_map.png",
+            "design_map_latlon.png",
+            "roles.yaml",
+            "summary.yaml",
+            "turbines.csv",
+        ]
+
+    def test_it_names_the_front_row_but_not_the_priority(self, tmp_path: Path) -> None:
+        # a placebo's priority is a random shuffle, and would read as expected uplift
+        turbines = pd.read_csv(self._root(tmp_path) / "analyst" / "design" / "turbines.csv")
+        assert {"name", "role", "front_row", "reference_for"} <= set(turbines.columns)
+        assert not {"priority_rank", "from_test_priority", "outcome", "reason"} & set(turbines.columns)
+
+    def test_the_design_is_the_campaign_s(self) -> None:
+        assert placebo_design(seed=1, turbines=TURBINES, coords=COORDS).test_turbines
+        assert sorted(placebo_design(seed=1, turbines=TURBINES, coords=COORDS).test_turbines) == sorted(
+            _campaign().upgraded_turbines
+        )
+
+    def test_a_design_for_other_turbines_is_refused(self, tmp_path: Path) -> None:
+        campaign = _campaign()
+        other = design_campaign(placebo_layout(COORDS), reference_only=["T17"], n_test=1)
+        assert set(other.test_turbines) != set(campaign.upgraded_turbines)
+        with pytest.raises(ValueError, match="design"):
+            write_handover(campaign, _dataset(campaign), root=tmp_path, brief=BRIEF, design=other)
+
+    def test_no_design_means_no_design_directory(self, tmp_path: Path) -> None:
+        assert not (_handover(tmp_path) / "analyst" / "design").exists()
 
 
 class TestTheTemplateIsBlank:

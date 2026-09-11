@@ -8,6 +8,7 @@ The layout separates the two halves physically::
         campaign.yaml     a blank template to fill in
         data/scada.parquet
         data/turbines.csv
+        design/           the campaign design, when one is given
         docs/
       key/ground_truth.json
 
@@ -24,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 
 from benchmarking.synthetic import ToggleSchedule, treated_mask
+from wind_up.campaign_design import write_design
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -31,8 +33,13 @@ if TYPE_CHECKING:
 
     from benchmarking.campaigns.declaration import SyntheticCampaign
     from benchmarking.synthetic import SyntheticDataset
+    from wind_up.campaign_design import CampaignDesign
 
 GROUND_TRUTH_FILENAME = "ground_truth.json"
+
+# Columns of the design's turbines table the analyst does not get: a placebo's priority is a random
+# shuffle, and would read as expected uplift.
+WITHHELD_DESIGN_COLUMNS = ("priority_rank", "from_test_priority", "outcome", "reason")
 
 # The declaration the analyst fills in. Blank: a populated one would answer the brief on sight.
 CAMPAIGN_TEMPLATE = """\
@@ -81,6 +88,7 @@ def write_handover(
     root: Path,
     brief: str,
     docs: Sequence[Path] = (),
+    design: CampaignDesign | None = None,
 ) -> Path:
     """Write the handover for ``campaign`` under ``root`` and return it.
 
@@ -89,7 +97,15 @@ def write_handover(
     :param root: the directory to build the handover in, outside the checkout
     :param brief: the campaign brief, as an owner would write it
     :param docs: documentation files to copy into ``analyst/docs/``
+    :param design: the campaign design that chose ``campaign``'s upgraded turbines, written to
+        ``analyst/design/`` without its priority columns
     """
+    if design is not None and set(design.test_turbines) != set(campaign.upgraded_turbines):
+        msg = (
+            f"the design tests {sorted(design.test_turbines)} but the campaign upgrades "
+            f"{sorted(campaign.upgraded_turbines)}; hand over the design that chose the campaign"
+        )
+        raise ValueError(msg)
     analyst = root / "analyst"
     (analyst / "data").mkdir(parents=True, exist_ok=True)
     (root / "key").mkdir(parents=True, exist_ok=True)
@@ -98,6 +114,8 @@ def write_handover(
     (analyst / "campaign.yaml").write_text(CAMPAIGN_TEMPLATE)
     dataset.synthetic_df.to_parquet(analyst / "data" / "scada.parquet")
     _write_turbines(campaign, path=analyst / "data" / "turbines.csv")
+    if design is not None:
+        _write_design(design, out_dir=analyst / "design")
     if docs:
         (analyst / "docs").mkdir(parents=True, exist_ok=True)
         for doc in docs:
@@ -111,6 +129,13 @@ def _write_turbines(campaign: SyntheticCampaign, *, path: Path) -> None:
     """Write the turbines sidecar: name, latitude, longitude for every participating turbine."""
     rows = [{"Name": w, "Latitude": lat, "Longitude": lon} for w, (lat, lon) in sorted(campaign.coords.items())]
     pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _write_design(design: CampaignDesign, *, out_dir: Path) -> None:
+    """Write the design's outputs, with the priority columns of its turbines table withheld."""
+    write_design(design, out_dir=out_dir)
+    turbines = pd.read_csv(out_dir / "turbines.csv")
+    turbines.drop(columns=list(WITHHELD_DESIGN_COLUMNS)).to_csv(out_dir / "turbines.csv", index=False)
 
 
 def _ground_truth(campaign: SyntheticCampaign, dataset: SyntheticDataset) -> dict[str, Any]:

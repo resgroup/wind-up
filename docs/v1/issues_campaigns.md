@@ -546,7 +546,9 @@ rather than known and simultaneous. Decide — on C5's fixture, with evidence �
 role is uniform or whether a steering campaign must keep the neighbour out of even the
 waking feature.
 
-**Ordering:** with or just after **C8**, and **before W1b/W2**. It adds a field to
+**Ordering:** the whole-turbine form was pulled forward into **W1a** (2026-09-11), because
+test turbines losing each other's waking state is wrong on every campaign, not only C8's.
+The time-ranged form goes with or just after **C8**, and **before W1b/W2**. It adds a field to
 `CampaignContext`, the method seam W2 promotes to public API, and C8's per-turbine
 timeline is what makes the role time-ranged rather than whole-turbine. Its §3 decision
 wants C5's fixture, so C5 should land first.
@@ -960,12 +962,27 @@ without it. What W1a delivers is the *interface*; W1b settles whether it is *rig
   method instead.
 - A runner entry point that takes a declaration and writes an output directory, so a
   campaign can be run without importing anything.
+- **Other test turbines stay in every estimate as wake contributors — pulled forward from
+  C9 (added 2026-09-11), before the prepost dry run.** Today each test turbine's estimate
+  drops every *other* test turbine from its frame (`CampaignContext.select()` keeps only the
+  test turbine, the candidate references and `also`), so their waking state is missing from
+  the features where it matters: a designed campaign lets another test turbine sit among a
+  test turbine's four nearest, and an undesigned one puts them anywhere. Designed placebo instances now test 9 of Hill of Towie's 21 turbines,
+  so each estimate loses 8 wake neighbours, and a real campaign that upgrades the whole farm
+  would lose all of them. This is wrong, not a refinement. Do C9's whole-turbine form now: a
+  context role kept in the frame, never a candidate reference, never screened, always
+  power-free, filled from the campaign's other upgraded turbines and unioned into
+  `power_model`'s `power_free`. C9 keeps the time-ranged form (with C8) and the wake-steering
+  question, which a placebo or Cp-change campaign does not raise. Re-record the frozen
+  benchmarks, since the feature matrix changes.
 
 **Done when:** `wind-up` runs self-configured from a YAML-declared `CampaignSpec` on the
 C1/C2 campaigns; a campaign runs on data with no ground truth and its report carries no
 truth columns; and **one W3 dry run has been driven end-to-end against the placebo**, with
 the transcript kept and the gaps it found recorded for W2 (done — see CF15 and the W3 gap
-list). The composition is expected to keep moving as C3–C6 land — that is W1b's business,
+list). **Still open:** every other test turbine reaches each estimate as a power-free wake
+contributor, measured on the placebo before and after, and then the first **prepost** dry
+run (only toggle has been run). The composition is expected to keep moving as C3–C6 land — that is W1b's business,
 and W3 tests documentation and output legibility, not API stability.
 
 ---
@@ -1067,7 +1084,12 @@ answer is objectively scoreable rather than a matter of opinion.
   compliant designs (CF16).
 - **Analyst side.** A fresh agent is given the prompt, a YAML declaration to populate
   (W1a), a runner script, the documentation under test, and — after the run — the output
-  directory. It populates the declaration, runs the campaign, inspects the outputs, and
+  directory. When the campaign was designed, the handover also carries the design
+  (`analyst/design/`: the maps, front row, compliance and a roles block), as a real campaign's
+  design documents would, with its priority columns withheld; pass
+  `docs/designing-a-campaign.md` among the documents under test with it. Watch whether the
+  analyst shrinks the reference pool to the three compliance references per test turbine,
+  since reference count is the biggest accuracy lever (CF3). It populates the declaration, runs the campaign, inspects the outputs, and
   states **(a)** the upgrade class and magnitude and **(b)** which faults were present.
 - **The menu is given, not hidden.** A real analyst knows which upgrade and fault classes
   exist, so the analyst is told the candidate set. The question is which one and how big,
