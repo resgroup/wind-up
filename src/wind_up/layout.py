@@ -23,7 +23,7 @@ ROTOR_DIAMETER_COL = "rotor_diameter_m"
 WIND_FARM_COL = "wind_farm"
 
 # Wind directions swept for front-row classification, one per degree.
-SWEEP_DIRECTIONS_DEG = np.arange(360.0)
+SWEEP_DIRECTIONS_DEG = np.arange(360, dtype=np.float64)
 
 
 def iec_disturbed_sector_deg(distance_diameters: npt.ArrayLike) -> npt.NDArray[np.float64]:
