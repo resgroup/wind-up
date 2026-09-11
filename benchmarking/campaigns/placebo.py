@@ -153,6 +153,9 @@ PLACEBO_INSTANCE_LAST_CLEAN = pd.Timestamp("2021-01-01", tz="UTC")
 # A treated period reaching past this rests on a 2019-only baseline, which reads far worse.
 PLACEBO_INSTANCE_LAST_GOOD_END = pd.Timestamp("2020-01-01", tz="UTC")
 PLACEBO_WIND_FARM = "Hill of Towie"
+# An instance tests this many turbines fewer than a compliant design allows (never fewer than one),
+# so instances differ in their test turbines.
+PLACEBO_INSTANCE_BELOW_MAX = 1
 
 
 def placebo_layout(coords: dict[str, tuple[float, float]]) -> pd.DataFrame:
@@ -181,8 +184,8 @@ def placebo_instance(
     drawn. Nothing is injected, so the truth stays 0.
 
     The upgraded turbines are a campaign design (:func:`wind_up.campaign_design.design_campaign`)
-    with as many test turbines as a compliant design allows, every candidate listed in a seeded
-    random priority.
+    with :data:`PLACEBO_INSTANCE_BELOW_MAX` fewer test turbines than a compliant design allows, every
+    candidate listed in a seeded random priority.
 
     :param mode: ``"prepost"`` or ``"toggle"``
     :param seed: the draw's seed; the same seed gives the same campaign
@@ -193,10 +196,13 @@ def placebo_instance(
     rng = np.random.default_rng(seed)
     reference_only = [w for w in PLACEBO_INSTANCE_KEEP_AS_REFERENCE if w in participating]
     candidates = [w for w in participating if w not in reference_only]
+    layout = placebo_layout({w: coords[w] for w in participating})
+    most = design_campaign(layout, reference_only=reference_only).max_test_turbines
     design = design_campaign(
-        placebo_layout({w: coords[w] for w in participating}),
+        layout,
         test_priority=[str(w) for w in rng.permutation(candidates)],
         reference_only=reference_only,
+        n_test=max(1, most - PLACEBO_INSTANCE_BELOW_MAX),
     )
     year = int(rng.choice(PLACEBO_INSTANCE_YEARS))
     month = int(rng.integers(1, 13))

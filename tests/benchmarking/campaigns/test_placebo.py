@@ -193,12 +193,22 @@ class TestTheInstanceIsACompliantCampaignDesign:
             campaign = placebo_instance("prepost", seed=seed, coords=HOT_COORDS)
             assert complies(campaign, HOT_COORDS), f"seed {seed}"
 
-    def test_every_instance_tests_as_many_turbines_as_a_compliant_design_allows(self) -> None:
+    def test_every_instance_tests_one_turbine_fewer_than_a_compliant_design_allows(self) -> None:
+        # at the maximum the real layout has only two compliant designs; one fewer has sixty
         most = design_campaign(
             placebo_layout(HOT_COORDS), reference_only=PLACEBO_INSTANCE_KEEP_AS_REFERENCE
         ).max_test_turbines
         for seed in range(5):
-            assert len(placebo_instance("prepost", seed=seed, coords=HOT_COORDS).upgraded_turbines) == most
+            assert len(placebo_instance("prepost", seed=seed, coords=HOT_COORDS).upgraded_turbines) == most - 1
+
+    def test_instances_on_the_real_layout_vary_their_test_turbines(self) -> None:
+        drawn = {tuple(placebo_instance("prepost", seed=s, coords=HOT_COORDS).upgraded_turbines) for s in range(10)}
+        assert len(drawn) >= 5
+
+    def test_a_farm_that_supports_one_test_turbine_still_gets_one(self) -> None:
+        cluster = ("T01", "T02", "T03", "T05")
+        campaign = placebo_instance("prepost", seed=0, coords=HOT_COORDS, turbines=cluster)
+        assert len(campaign.upgraded_turbines) == 1
 
     def test_the_clustered_draw_of_the_first_dry_runs_does_not_comply(self) -> None:
         # T02/T04/T05 a mutual triangle and T13/T14 an adjacent pair: what an unconstrained draw gave
