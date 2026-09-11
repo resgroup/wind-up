@@ -120,10 +120,18 @@ Non-compliance is reported, never raised, so a failing design can still be inspe
 
 ## A worked example: Hill of Towie
 
-The 21 turbines of Hill of Towie (82 m rotors, 4–5 rotor diameters apart), with T17 reference-only
-and no priority, design as 10 test turbines. 14 of the 21 are front row, so the fair share for 10
-test turbines is 6.67, and 7 of the 10 are front row. Every test turbine's references are among its
-four nearest turbines, the furthest about 12 rotor diameters away.
+[`examples/v1/design_hill_of_towie.py`](../examples/v1/design_hill_of_towie.py) designs Hill of
+Towie's 21 turbines with T17 reference-only and no test priority. Run it from the repository root:
+
+```
+uv run python examples/v1/design_hill_of_towie.py
+```
+
+It writes the design to `examples/v1/output/design_hill_of_towie/` and refreshes these maps:
+
+![Hill of Towie campaign design](images/designing-a-campaign/design_map.png)
+
+![Hill of Towie front row](images/designing-a-campaign/front_row_map.png)
 
 ## Limits
 
