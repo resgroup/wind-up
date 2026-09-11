@@ -99,6 +99,7 @@ class TestTheCampaignDesign:
             "compliance.csv",
             "design_map.png",
             "design_map_latlon.png",
+            "front_row_map.png",
             "roles.yaml",
             "summary.yaml",
             "turbines.csv",

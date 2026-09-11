@@ -5,12 +5,22 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import yaml
+from matplotlib.colors import to_rgba
 
 from tests.wind_up.layouts import grid_layout, scatter_layout
 from wind_up.campaign_design import check_design, design_campaign, write_compliance, write_design
-from wind_up.campaign_design_plots import plot_design_map
+from wind_up.campaign_design_plots import (
+    FRONT_ROW_COLOUR,
+    NOT_FRONT_ROW_COLOUR,
+    REFERENCE_COLOUR,
+    UNUSED_COLOUR,
+    plot_design_map,
+    plot_front_row_map,
+)
+from wind_up.geodesy import local_east_north
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -34,6 +44,7 @@ def test_write_design_writes_every_file(tmp_path: Path) -> None:
         "compliance.csv",
         "design_map.png",
         "design_map_latlon.png",
+        "front_row_map.png",
         "roles.yaml",
         "summary.yaml",
         "turbines.csv",
@@ -115,4 +126,32 @@ def test_map_zooms_to_the_farm_under_design() -> None:
     # the farm spans 0-900 m east; the neighbours at 1500-1800 m fall outside the view
     assert left < 0
     assert 900 < right < 1500
+    plt.close(fig)
+
+
+def test_front_row_map_colours_every_farm_turbine_by_front_row() -> None:
+    design = _design()
+    frame = design.layout.frame
+    farm = frame[frame["wind_farm"] == "Home"]
+    fig = plot_front_row_map(design)
+    ax = fig.axes[0]
+    (points,) = [c for c in ax.collections if len(c.get_offsets()) == len(farm)]
+    expected = [FRONT_ROW_COLOUR if name in design.front_row else NOT_FRONT_ROW_COLOUR for name in farm["name"]]
+    np.testing.assert_allclose(points.get_facecolors(), [to_rgba(c) for c in expected])
+    assert ax.get_title().startswith(f"Home: {len(design.front_row)} of {len(farm)} turbines front row")
+    assert ax.get_xlabel() == "east [m]"
+    plt.close(fig)
+
+
+def test_design_map_draws_a_reference_only_turbine_by_its_outcome() -> None:
+    design = _design()
+    frame = design.layout.frame
+    x, y = local_east_north(latitudes=frame["latitude"], longitudes=frame["longitude"])
+    row = design.layout.index_of("R0C0")
+    in_use = any("R0C0" in refs for refs in design.references.values())
+    fig = plot_design_map(design)
+    ax = fig.axes[0]
+    (point,) = [c for c in ax.collections if np.allclose(c.get_offsets(), [[x[row], y[row]]])]
+    np.testing.assert_allclose(point.get_facecolors()[0], to_rgba(REFERENCE_COLOUR if in_use else UNUSED_COLOUR))
+    assert "reference-only" not in [t.get_text() for t in ax.get_legend().get_texts()]
     plt.close(fig)

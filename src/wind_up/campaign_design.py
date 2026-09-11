@@ -269,7 +269,8 @@ def write_design(design: CampaignDesign, *, out_dir: str | Path) -> None:
     Files: ``compliance.csv`` (one row per test turbine), ``summary.yaml`` (counts, the front-row
     share, the most test turbines possible, any problems), ``turbines.csv`` (every farm turbine's
     role, references served, priority and outcome), ``roles.yaml`` (a campaign declaration
-    ``turbines:`` block), and the maps ``design_map.png`` and ``design_map_latlon.png``.
+    ``turbines:`` block), and the maps ``design_map.png``, ``design_map_latlon.png`` and
+    ``front_row_map.png``.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)

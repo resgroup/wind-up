@@ -113,10 +113,12 @@ Non-compliance is reported, never raised, so a failing design can still be inspe
 | `roles.yaml` | A `turbines:` block to paste into the campaign declaration. Every available non-test turbine is offered as a reference, because the analysis uses them all |
 | `design_map.png` | The layout in metres east and north of the site's south-west corner |
 | `design_map_latlon.png` | The same in latitude and longitude |
+| `front_row_map.png` | Only which turbines are front row, in metres east and north |
 
-On the maps, test turbines are red and joined to their references (blue); other available
-turbines are grey, reference-only turbines hollow, excluded turbines crosses, and front-row
-turbines ringed in black.
+On the design maps, test turbines are red and joined to their references (blue); other available
+turbines are grey, excluded turbines crosses, and front-row turbines ringed in black.
+Reference-only turbines are drawn like any other non-test turbine. On the front-row map, front-row turbines are green and the rest purple;
+other farms' turbines are grey.
 
 ## A worked example: Hill of Towie
 
