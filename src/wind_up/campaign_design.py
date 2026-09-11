@@ -491,7 +491,7 @@ class _Site:
                 if nearest is not None and nearest in test_set:
                     problems.append(f"{self.name(row)}'s nearest neighbour {self.name(nearest)} is a test turbine")
                     ok = False
-            records.append(self._table_row(row, refs=refs, compliant=ok and row in self.available))
+            records.append(self._table_row(row, refs=refs, compliant=ok and row in self.candidates))
 
         n = len(tests)
         front_tests = sum(1 for r in tests if r in self.farm_rows and self.front[r])

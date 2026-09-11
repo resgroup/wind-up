@@ -59,8 +59,9 @@ class Layout:
         """Validate ``frame`` and compute its geometry.
 
         Column names are matched case-insensitively. ``latitude`` and ``longitude`` are required;
-        ``name``, ``rotor_diameter_m`` and ``wind_farm`` are optional. Missing rotor diameters take
-        the largest known one, and the filled turbines are listed in ``filled_rotor_diameters``.
+        ``name`` and ``wind_farm`` are optional. ``rotor_diameter_m`` needs at least one value;
+        missing ones take the largest known, and the filled turbines are listed in
+        ``filled_rotor_diameters``.
         """
         lookup = {str(c).strip().lower(): c for c in frame.columns}
         missing = [c for c in (LATITUDE_COL, LONGITUDE_COL) if c not in lookup]
@@ -160,7 +161,7 @@ def _upwind(layout: Layout, *, target: int, directions_deg: npt.NDArray[np.float
 
 def _text_or_none(value: object) -> str | None:
     """Return ``value`` as text, or ``None`` when it is missing or blank."""
-    if value is None or (isinstance(value, float) and np.isnan(value)):
+    if pd.api.types.is_scalar(value) and pd.isna(value):
         return None
     text = str(value).strip()
     return text or None

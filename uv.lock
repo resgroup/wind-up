@@ -2728,7 +2728,7 @@ requires-dist = [
     { name = "requests-cache", marker = "extra == 'era5'" },
     { name = "retry-requests", marker = "extra == 'era5'" },
     { name = "scikit-learn", marker = "extra == 'ml'" },
-    { name = "scipy" },
+    { name = "scipy", specifier = ">=1.9" },
     { name = "seaborn" },
     { name = "tabulate" },
     { name = "toml" },

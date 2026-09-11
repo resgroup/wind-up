@@ -226,6 +226,12 @@ class TestErrors:
         with pytest.raises(ValueError, match="upgraded"):
             load(tmp_path, PREPOST.replace("upgraded:   [T01]", "upgraded:   []"))
 
+    def test_a_name_given_twice_in_the_sidecar_is_rejected(self, tmp_path: Path) -> None:
+        path = write_campaign(tmp_path)
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV + "T02,57.70,-3.10\n")
+        with pytest.raises(ValueError, match="T02"):
+            load_declaration(path)
+
 
 class TestACampaignDesignFeedsTheDeclaration:
     def test_unnamed_rows_of_the_turbines_file_are_skipped(self, tmp_path: Path) -> None:

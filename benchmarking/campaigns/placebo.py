@@ -106,6 +106,7 @@ def placebo_campaign(
     coords: dict[str, tuple[float, float]] | None = None,
     faults: Sequence[Fault] | None = None,
     campaign_start: pd.Timestamp = PLACEBO_CAMPAIGN_START,
+    seed: int = 0,
 ) -> SyntheticCampaign:
     """Declare the placebo campaign for ``mode``: a whole farm with no upgrade injected.
 
@@ -119,6 +120,7 @@ def placebo_campaign(
     :param faults: measurement corruptions to inject; none by default, so the placebo stays a
         clean-data campaign. The R-series fixtures inject one and compare against that.
     :param campaign_start: when treatment begins; defaults to :data:`PLACEBO_CAMPAIGN_START`
+    :param seed: recorded on the campaign, so an answer key names the draw that made it
     """
     upgraded = tuple(PLACEBO_UPGRADED if upgraded is None else upgraded)
     participating = tuple(PLACEBO_TURBINES if turbines is None else turbines)
@@ -142,6 +144,7 @@ def placebo_campaign(
         north_offsets=None,
         rated_power_kw=HOT_RATED_POWER_KW,
         analysis_period=placebo_analysis_period(mode, campaign_start=campaign_start),
+        seed=seed,
     )
 
 
@@ -216,6 +219,7 @@ def placebo_instance(
         turbines=participating,
         coords={w: coords[w] for w in participating},
         campaign_start=start,
+        seed=seed,
     )
 
 

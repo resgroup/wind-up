@@ -18,7 +18,7 @@ case-insensitively.
 |---|---|---|
 | `latitude`, `longitude` | yes | WGS84 degrees |
 | `name` | for turbines of the farm under design | Neighbouring turbines you can see in aerial imagery but cannot name may be left blank |
-| `rotor_diameter_m` | no | A missing diameter takes the largest one given, which widens that turbine's wake sector (the worst case) |
+| `rotor_diameter_m` | on at least one turbine | A missing diameter takes the largest one given, which widens that turbine's wake sector (the worst case) |
 | `wind_farm` | no | Which farm a turbine belongs to. Neighbouring farms' turbines are drawn in their own colour and only block wakes |
 
 Include neighbouring farms' turbines: they decide which of your turbines are front row.

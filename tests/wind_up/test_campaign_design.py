@@ -118,6 +118,7 @@ def test_excluded_and_reference_only_turbines_cannot_be_tested() -> None:
     report = check_design(IRREGULAR_LINE, test_turbines=["T0", "T3"], excluded=["T3"], reference_only=["T0"])
     assert "T0 is reference-only, so it cannot be a test turbine" in report.problems
     assert "T3 is excluded, so it cannot be a test turbine" in report.problems
+    assert not report.table.set_index("test_turbine")["compliant"].any()
 
 
 def test_excluded_turbines_are_never_references() -> None:

@@ -178,7 +178,8 @@ def _resolve(root: Path, name: str, *, what: str) -> Path:
 def _read_turbines(path: Path) -> dict[str, tuple[float, float]]:
     """Read the turbines sidecar: name, latitude, longitude, however the header is cased.
 
-    Rows without a name are skipped, so a campaign-design layout can serve as the sidecar.
+    Rows without a name are skipped, so a campaign-design layout can serve as the sidecar. A name
+    given more than once is rejected.
     """
     frame = pd.read_csv(path)
     lookup = {str(c).strip().lower(): c for c in frame.columns}
@@ -187,6 +188,11 @@ def _read_turbines(path: Path) -> dict[str, tuple[float, float]]:
         msg = f"the turbines file {path.name} has no {missing} column(s); it carries {list(frame.columns)}"
         raise ValueError(msg)
     named = frame[frame[lookup["name"]].notna() & (frame[lookup["name"]].astype(str).str.strip() != "")]
+    names = named[lookup["name"]].astype(str)
+    doubled = sorted(set(names[names.duplicated()]))
+    if doubled:
+        msg = f"the turbines file {path.name} names {doubled} more than once"
+        raise ValueError(msg)
     return {
         str(row[lookup["name"]]): (float(row[lookup["latitude"]]), float(row[lookup["longitude"]]))
         for _, row in named.iterrows()

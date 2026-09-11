@@ -29,7 +29,7 @@ dependencies = [
     'pydantic >= 2.0.0',
     'python-dotenv',
     'pyyaml',
-    'scipy',
+    'scipy >= 1.9',
     'seaborn',
     'tabulate',
     'toml',

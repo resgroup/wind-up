@@ -193,4 +193,4 @@ class TestTheAnswerKey:
     def test_it_records_the_true_farm_uplift_and_the_seed(self, tmp_path: Path) -> None:
         key = self._key(tmp_path)
         assert key["true_farm_uplift"] == 0.0  # placebo: truth is 0 by construction
-        assert key["seed"] == _campaign().seed
+        assert key["seed"] == 1

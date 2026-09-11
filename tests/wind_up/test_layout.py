@@ -117,6 +117,12 @@ def test_unnamed_turbines_are_allowed() -> None:
     assert layout.filled_rotor_diameters == ()
 
 
+def test_nullable_missing_names_are_unnamed() -> None:
+    names = pd.Series(["HMR_T01", pd.NA, pd.NA], dtype="string")
+    layout = Layout.from_frame(HOMER.assign(name=names))
+    assert list(layout.frame["name"]) == ["HMR_T01", None, None]
+
+
 def test_wind_farm_is_optional() -> None:
     layout = Layout.from_frame(HOMER)
     assert list(layout.frame["wind_farm"]) == [None, None, None]
