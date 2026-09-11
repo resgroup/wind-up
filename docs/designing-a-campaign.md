@@ -36,9 +36,9 @@ Every turbine of the farm under design holds at most one of these roles:
 | `reference_only` | never tested, but may be a reference | The upgrade cannot be fitted to it; the owner will not change it |
 | `excluded` | neither tested nor a reference | Offline, part of another campaign, a known performance issue |
 
-A turbine you do not list is a test candidate too. Unlisted candidates follow the listed ones in
-a random order drawn from `seed`, so if you have no way to rank turbines, pass nothing and choose
-a seed.
+A turbine you do not list is a test candidate too. Unlisted candidates follow the listed ones,
+chosen to keep references as near as possible, with `seed` settling any remaining choice. If you
+have no way to rank turbines, pass nothing.
 
 ## 3. The rules
 
@@ -78,9 +78,16 @@ write_design(design, out_dir="design")
 ```
 
 wind-up first finds the most test turbines any compliant design allows (`n_test` asks for fewer).
-It then walks the priority order and keeps each turbine for which a compliant design of that size
+It then walks `test_priority` and keeps each turbine for which a compliant design of that size
 still exists, so a higher priority always wins over a lower one, but never at the cost of a test
 slot. A turbine that gives way is listed with the reason.
+
+The turbines you did not list then fill the remaining slots with the nearest references possible:
+wind-up finds the smallest reference distance that still allows a design of that size alongside
+the turbines already kept, and walks the unlisted turbines, in the order drawn from `seed`, under
+that limit. `summary.yaml` reports it as `reference_limit_d`. A fully listed priority is never
+overridden this way; to draw random designs, shuffle the whole priority list rather than rely on
+`seed`.
 
 ## 5. Check a design you already have
 
@@ -101,7 +108,7 @@ Non-compliance is reported, never raised, so a failing design can still be inspe
 | File | What it holds |
 |---|---|
 | `compliance.csv` | One row per test turbine: its three references, their distances in metres and rotor diameters, how near each one ranks, which are front row |
-| `summary.yaml` | Whether the design complies, any problems, the counts, the front-row share against its target, the most test turbines possible |
+| `summary.yaml` | Whether the design complies, any problems, the counts, the front-row share against its target, the most test turbines possible, the reference distance limit the unlisted turbines were chosen under |
 | `turbines.csv` | Every farm turbine: its role, the test turbines it serves as a reference, its priority, and why it was or was not tested |
 | `roles.yaml` | A `turbines:` block to paste into the campaign declaration. Every available non-test turbine is offered as a reference, because the analysis uses them all |
 | `design_map.png` | The layout in metres east and north of the site's south-west corner |

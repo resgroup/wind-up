@@ -332,3 +332,77 @@ def test_design_matches_brute_force(seed: int) -> None:
     design = design_campaign(layout, test_priority=priority)
     assert design.max_test_turbines == most
     assert set(design.test_turbines) == set(first)
+
+
+def _worst_reference_d(report_table: pd.DataFrame) -> float:
+    return float(report_table[[f"reference_{k}_distance_d" for k in (1, 2, 3)]].to_numpy().max())
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_unlisted_turbines_fill_the_design_with_the_nearest_references(seed: int) -> None:
+    """Without a priority, the furthest reference is as near as any design of the maximum size allows."""
+    rng = np.random.default_rng(100 + seed)
+    layout = scatter_layout([tuple(p) for p in rng.uniform(0, 1500, size=(8, 2))])
+    names = list(layout["name"])
+    reports = [
+        check_design(layout, test_turbines=list(combo))
+        for size in range(1, len(names) + 1)
+        for combo in itertools.combinations(names, size)
+    ]
+    compliant = [r for r in reports if r.compliant]
+    most = max(r.summary["test_turbines"] for r in compliant)
+    nearest = min(_worst_reference_d(r.table) for r in compliant if r.summary["test_turbines"] == most)
+
+    design = design_campaign(layout, seed=seed)
+    assert _worst_reference_d(design.compliance.table) == pytest.approx(nearest)
+    assert design.reference_limit_d == pytest.approx(nearest)
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_a_listed_turbine_is_kept_even_if_it_needs_further_references(seed: int) -> None:
+    rng = np.random.default_rng(200 + seed)
+    layout = scatter_layout([tuple(p) for p in rng.uniform(0, 1500, size=(8, 2))])
+    names = list(layout["name"])
+    compliant = [
+        check_design(layout, test_turbines=list(combo))
+        for size in range(1, len(names) + 1)
+        for combo in itertools.combinations(names, size)
+    ]
+    compliant = [r for r in compliant if r.compliant]
+    most = max(r.summary["test_turbines"] for r in compliant)
+    biggest = [r for r in compliant if r.summary["test_turbines"] == most]
+    listed = str(rng.choice(names))
+    with_listed = [r for r in biggest if listed in set(r.table["test_turbine"])]
+
+    design = design_campaign(layout, test_priority=[listed], seed=seed)
+    assert (listed in design.test_turbines) == bool(with_listed)
+    if with_listed:
+        nearest = min(_worst_reference_d(r.table) for r in with_listed)
+        assert _worst_reference_d(design.compliance.table) == pytest.approx(nearest)
+
+
+def test_a_fully_listed_priority_is_not_overridden_by_nearness() -> None:
+    layout = grid_layout(rows=5, cols=5, spacing_m=300)
+    order = [str(n) for n in np.random.default_rng(0).permutation(list(layout["name"]))]
+    listed = design_campaign(layout, test_priority=order)
+    walked = [o.name for o in listed.candidates if o.outcome == "test"]
+    # every candidate is listed, so the walk alone decides: the result is the first compliant set in that order
+    assert listed.test_turbines == tuple(walked)
+    assert listed.reference_limit_d == pytest.approx(_worst_reference_d(listed.compliance.table))
+
+
+def test_the_nearest_reference_limit_survives_rounding() -> None:
+    # Five spread-out Hill of Towie turbines, where the limit is set by a turbine at exactly that distance.
+    layout = pd.DataFrame(
+        [
+            ("T18", 57.50429684, -3.041183981),
+            ("T05", 57.49891107, -3.07812382),
+            ("T14", 57.51376046, -3.074939555),
+            ("T15", 57.49941809, -3.062837374),
+            ("T01", 57.49921441, -3.086742896),
+        ],
+        columns=["name", "latitude", "longitude"],
+    ).assign(rotor_diameter_m=82.0)
+    for seed in range(30):
+        design = design_campaign(layout, seed=seed)
+        assert len(design.test_turbines) == design.max_test_turbines == 1

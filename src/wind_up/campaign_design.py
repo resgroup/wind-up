@@ -16,13 +16,15 @@ the 3 nearest non-test turbines in its pool, nearest first.
 
 :func:`design_campaign` picks the most test turbines a compliant design allows, then walks the
 test priority, committing each turbine for which a compliant design of that size still exists.
-:func:`check_design` checks any set of test turbines, however it was chosen.
+Candidates not in the test priority are then walked in a seeded order under the least reference
+distance limit that still allows that size, so they fill the design with the nearest references
+possible. :func:`check_design` checks any set of test turbines, however it was chosen.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -88,7 +90,12 @@ class CandidateOutcome:
 
 @dataclass(frozen=True)
 class CampaignDesign:
-    """The outcome of :func:`design_campaign`."""
+    """The outcome of :func:`design_campaign`.
+
+    ``reference_limit_d`` is the reference-distance limit, in rotor diameters, the candidates not in
+    ``test_priority`` were chosen under: the least that still allows the design's size alongside the
+    listed turbines kept.
+    """
 
     wind_farm: str | None
     test_turbines: tuple[str, ...]
@@ -101,6 +108,7 @@ class CampaignDesign:
     filled_rotor_diameters: tuple[str, ...]
     reference_pool_size: int
     max_reference_distance_d: float
+    reference_limit_d: float
     front_row_min_clear_deg: float
     compliance: ComplianceReport
     layout: Layout = field(repr=False)
@@ -170,7 +178,8 @@ def design_campaign(
     :param wind_farm: the farm under design; defaults to the only ``wind_farm`` in the layout, or
         to every turbine when the layout names no wind farm
     :param test_priority: farm turbines to test first, highest priority first; every other
-        candidate follows in an order drawn from ``seed``
+        candidate follows in an order drawn from ``seed``, restricted to the nearest references
+        a design of this size allows
     :param reference_only: farm turbines that are never tested but may be references
     :param excluded: farm turbines that are neither tested nor references; they still block wakes
     :param n_test: how many test turbines; ``None`` takes the most a compliant design allows
@@ -204,23 +213,30 @@ def design_campaign(
 
     committed: list[int] = []
     outcomes: list[CandidateOutcome] = []
+    walking = site
+    limit_d = None
     for rank, row in enumerate(order, start=1):
+        if limit_d is None and row not in listed:
+            limit_d = site.tightest_limit_d(n=n, fixed=committed)
+            walking = site.at_limit(limit_d)
         outcome: Literal["test", "skipped", "not needed"]
         reason = None
         if len(committed) == n:
             outcome = "not needed"
-        elif len(site.within[row]) < REFERENCES_PER_TEST_TURBINE:
-            outcome, reason = "skipped", site.too_few_within(row)
-        elif site.solve(n=n, fixed=[*committed, row]) is not None:
+        elif len(walking.within[row]) < REFERENCES_PER_TEST_TURBINE:
+            outcome, reason = "skipped", walking.too_few_within(row)
+        elif walking.solve(n=n, fixed=[*committed, row]) is not None:
             outcome = "test"
             committed.append(row)
         else:
-            outcome, reason = "skipped", site.skip_reason(row, committed=committed, n=n)
+            outcome, reason = "skipped", walking.skip_reason(row, committed=committed, n=n)
         outcomes.append(
             CandidateOutcome(
                 name=site.name(row), rank=rank, from_test_priority=row in listed, outcome=outcome, reason=reason
             )
         )
+    if limit_d is None:
+        limit_d = site.tightest_limit_d(n=n, fixed=committed)
 
     report = site.check(committed)
     table = report.table.set_index("test_turbine")
@@ -240,6 +256,7 @@ def design_campaign(
         filled_rotor_diameters=site.layout.filled_rotor_diameters,
         reference_pool_size=reference_pool_size,
         max_reference_distance_d=max_reference_distance_d,
+        reference_limit_d=limit_d,
         front_row_min_clear_deg=front_row_min_clear_deg,
         compliance=report,
         layout=site.layout,
@@ -256,7 +273,11 @@ def write_design(design: CampaignDesign, *, out_dir: str | Path) -> None:
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    _write_report(design.compliance, out_dir=out, extra={"max_test_turbines": design.max_test_turbines})
+    _write_report(
+        design.compliance,
+        out_dir=out,
+        extra={"max_test_turbines": design.max_test_turbines, "reference_limit_d": design.reference_limit_d},
+    )
     _turbines_table(design).to_csv(out / "turbines.csv", index=False)
     (out / "roles.yaml").write_text(yaml.safe_dump({"turbines": design.roles()}, sort_keys=False))
     save_design_maps(design, out_dir=out)
@@ -327,6 +348,7 @@ class _Site:
     front: npt.NDArray[np.bool_]
     reference_pool_size: int
     max_reference_distance_d: float
+    distance_d: npt.NDArray[np.float64]
     ranked: dict[int, list[int]]
     within: dict[int, list[int]]
 
@@ -359,7 +381,7 @@ class _Site:
         reference_only_rows = frozenset(names[n] for n in reference_only)
 
         available = [i for i in farm_rows if i not in excluded_rows]
-        diameters = frame[ROTOR_DIAMETER_COL].to_numpy()
+        distance_d = layout.distance_m / frame[ROTOR_DIAMETER_COL].to_numpy()[:, None]
         ranked: dict[int, list[int]] = {}
         within: dict[int, list[int]] = {}
         for i in farm_rows:
@@ -367,8 +389,7 @@ class _Site:
                 (j for j in available if j != i), key=lambda j: (layout.distance_m[i, j], frame[NAME_COL].iloc[j])
             )
             ranked[i] = others
-            limit_m = max_reference_distance_d * diameters[i]
-            within[i] = [j for j in others if layout.distance_m[i, j] <= limit_m]
+            within[i] = [j for j in others if distance_d[i, j] <= max_reference_distance_d]
         return cls(
             layout=layout,
             farm=farm,
@@ -378,6 +399,7 @@ class _Site:
             front=front_row(layout, min_clear_deg=front_row_min_clear_deg),
             reference_pool_size=reference_pool_size,
             max_reference_distance_d=max_reference_distance_d,
+            distance_d=distance_d,
             ranked=ranked,
             within=within,
         )
@@ -591,6 +613,29 @@ class _Site:
             if self.solve(n=n) is not None:
                 return n
         return 0
+
+    def at_limit(self, limit_d: float) -> _Site:
+        """Return this site with references limited to ``limit_d`` rotor diameters."""
+        within = {i: [j for j in self.ranked[i] if self.distance_d[i, j] <= limit_d] for i in self.farm_rows}
+        return replace(self, within=within, max_reference_distance_d=limit_d)
+
+    def tightest_limit_d(self, *, n: int, fixed: list[int]) -> float:
+        """Return the least reference-distance limit at which a design of ``n`` including ``fixed`` exists.
+
+        The site's own limit is the fallback, since the walk only calls this when a design exists there.
+        """
+        limits = sorted(
+            {float(self.distance_d[i, j]) for i in self.candidates for j in self.within[i]}
+            | {self.max_reference_distance_d}
+        )
+        low, high = 0, len(limits) - 1
+        while low < high:
+            middle = (low + high) // 2
+            if self.at_limit(limits[middle]).solve(n=n, fixed=fixed) is not None:
+                high = middle
+            else:
+                low = middle + 1
+        return limits[low]
 
     def why_no_design(self) -> str:
         """Say why no set of test turbines complies."""

@@ -181,7 +181,8 @@ def placebo_instance(
     drawn. Nothing is injected, so the truth stays 0.
 
     The upgraded turbines are a campaign design (:func:`wind_up.campaign_design.design_campaign`)
-    with as many test turbines as a compliant design allows, the seed ordering the priority.
+    with as many test turbines as a compliant design allows, every candidate listed in a seeded
+    random priority.
 
     :param mode: ``"prepost"`` or ``"toggle"``
     :param seed: the draw's seed; the same seed gives the same campaign
@@ -190,10 +191,12 @@ def placebo_instance(
     """
     participating = list(PLACEBO_TURBINES if turbines is None else turbines)
     rng = np.random.default_rng(seed)
+    reference_only = [w for w in PLACEBO_INSTANCE_KEEP_AS_REFERENCE if w in participating]
+    candidates = [w for w in participating if w not in reference_only]
     design = design_campaign(
         placebo_layout({w: coords[w] for w in participating}),
-        reference_only=[w for w in PLACEBO_INSTANCE_KEEP_AS_REFERENCE if w in participating],
-        seed=int(rng.integers(2**31)),
+        test_priority=[str(w) for w in rng.permutation(candidates)],
+        reference_only=reference_only,
     )
     year = int(rng.choice(PLACEBO_INSTANCE_YEARS))
     month = int(rng.integers(1, 13))
