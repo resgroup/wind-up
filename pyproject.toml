@@ -34,7 +34,6 @@ dependencies = [
     'tabulate',
     'toml',
     'tqdm',
-    'utm',
 ]
 
 [project.urls]
@@ -157,10 +156,10 @@ module = [
     "pandas",
     "pandas.testing",
     "scipy.interpolate",
+    "scipy.optimize",
     "scipy.ndimage",
     "scipy.stats",
     "seaborn",
-    "utm",
     "ephem",
     "flaml",
     "sklearn.*",

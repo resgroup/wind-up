@@ -20,9 +20,7 @@ from benchmarking.synthetic import (
     ToggleSchedule,
     WakeSteering,
     apply_upgrades,
-    bearing_deg,
     derive_wake_steering_pairs,
-    distance_m,
     diurnal_factor,
     generate_dataset,
     plot_wake_steering_by_direction,
@@ -31,6 +29,7 @@ from benchmarking.synthetic import (
 )
 from benchmarking.synthetic.cp_core import CpCore
 from benchmarking.synthetic.upgrades import UpgradeEffect
+from wind_up.geodesy import distance_and_bearing
 from wind_up_v0.constants import TIMESTAMP_COL
 
 if TYPE_CHECKING:
@@ -72,11 +71,13 @@ def _steering(**overrides: object) -> WakeSteering:
 # --- geometry -----------------------------------------------------------------------------------
 
 
-def test_bearing_and_distance_due_north() -> None:
-    """A point due north bears 0 deg; the reciprocal bearing is 180 deg."""
-    assert bearing_deg(COORDS[UP], COORDS[DOWN]) == pytest.approx(0.0, abs=1e-6)
-    assert bearing_deg(COORDS[DOWN], COORDS[UP]) == pytest.approx(180.0, abs=1e-6)
-    assert distance_m(COORDS[UP], COORDS[DOWN]) == pytest.approx(300.0, abs=5.0)
+def test_derive_pairs_nadir_is_the_geodesic_bearing() -> None:
+    """The nadir is the ellipsoidal geodesic bearing from downstream to upstream, exactly."""
+    oblique = {"A": (57.500, -3.250), "B": (57.5031, -3.2440)}
+    pairs = derive_wake_steering_pairs(oblique, test_wtgs=["A", "B"])
+    directed = {(p.upstream, p.downstream): p.nadir_bearing for p in pairs}
+    assert directed[("A", "B")] == distance_and_bearing(oblique["B"], oblique["A"])[1]
+    assert directed[("B", "A")] == distance_and_bearing(oblique["A"], oblique["B"])[1]
 
 
 def test_derive_pairs_within_7d_and_excludes_references() -> None:

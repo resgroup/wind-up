@@ -2663,7 +2663,6 @@ dependencies = [
     { name = "tabulate" },
     { name = "toml" },
     { name = "tqdm" },
-    { name = "utm" },
 ]
 
 [package.optional-dependencies]
@@ -2734,7 +2733,6 @@ requires-dist = [
     { name = "tabulate" },
     { name = "toml" },
     { name = "tqdm" },
-    { name = "utm" },
 ]
 provides-extras = ["era5", "ml", "examples"]
 
@@ -3517,15 +3515,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8c/9e/43a5fbd5af6dd61fc6a64f8a0d1e190c5b335fd6b2442aa30bc37306d6b7/urllib3_future-2.21.902.tar.gz", hash = "sha256:9a1a9d600394e73c65057dfa26e30de93beea879ea8d17e8003e130bf78368f6", size = 1299740, upload-time = "2026-06-01T12:03:33.43Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5e/0e/e50386b53f5ae135147e5762a16490e521a85814dc9db9a4d091ff22821d/urllib3_future-2.21.902-py3-none-any.whl", hash = "sha256:0e7f57858b9faf12bf84f30ff86ca9fffeb271f8bd92fd519b765a89c46f4962", size = 772463, upload-time = "2026-06-01T12:03:31.402Z" },
-]
-
-[[package]]
-name = "utm"
-version = "0.8.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/76/c4/f7662574e0d8c883cea257a59efdc2dbb21f19f4a78e7c54be570d740f24/utm-0.8.1.tar.gz", hash = "sha256:634d5b6221570ddc6a1e94afa5c51bae92bcead811ddc5c9bc0a20b847c2dafa", size = 13128, upload-time = "2025-03-06T11:40:56.022Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3b/a4/0698f3e5c397442ec9323a537e48cc63b846288b6878d38efd04e91005e3/utm-0.8.1-py3-none-any.whl", hash = "sha256:e3d5e224082af138e40851dcaad08d7f99da1cc4b5c413a7de34eabee35f434a", size = 8613, upload-time = "2025-03-06T11:40:54.273Z" },
 ]
 
 [[package]]

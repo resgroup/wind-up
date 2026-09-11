@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import utm
+
+from wind_up.geodesy import local_east_north
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -52,14 +53,10 @@ def bubble_plot_calcs(
     list[str],
     list[str],
 ]:
-    x = np.array([])
-    y = np.array([])
-    wtg_id = []
-    for wtg in cfg.asset.wtgs:
-        c = utm.from_latlon(wtg.latitude, wtg.longitude)
-        x = np.append(x, c[0])
-        y = np.append(y, c[1])
-        wtg_id.append(wtg.name)
+    wtg_id = [wtg.name for wtg in cfg.asset.wtgs]
+    x, y = local_east_north(
+        latitudes=[wtg.latitude for wtg in cfg.asset.wtgs], longitudes=[wtg.longitude for wtg in cfg.asset.wtgs]
+    )
     x = x - np.median(x)
     y = y - np.median(y)
 
