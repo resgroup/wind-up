@@ -9,6 +9,9 @@ turbines are used where possible."*
 It picks **as many test turbines as the site allows** while every one keeps three nearby
 references, and while the test turbines occupy a fair share of front-row positions.
 
+It is not appropriate for upgrades with turbine-turbine interactions, such as wake steering: there
+an upgraded turbine changes its neighbours' output, so a nearby reference is not unaffected.
+
 ## 1. Describe the site
 
 One row per turbine, as a table (CSV or a pandas DataFrame). Column names are matched
@@ -32,13 +35,13 @@ Every turbine of the farm under design holds at most one of these roles:
 
 | Argument | The turbine is | Example reasons |
 |---|---|---|
-| `test_priority` | a test candidate, ranked: first is highest priority | Turbines with the most expected uplift, or a spread of expected uplifts |
+| `test_priority` | a test candidate, ranked: first is highest priority | can be used to help ensure representative coverage |
 | `reference_only` | never tested, but may be a reference | The upgrade cannot be fitted to it; the owner will not change it |
-| `excluded` | neither tested nor a reference | Offline, part of another campaign, a known performance issue |
+| `excluded` | neither tested nor a reference | Long-term offline, part of another campaign, a known performance issue |
 
-A turbine you do not list is a test candidate too. Unlisted candidates follow the listed ones,
-chosen to keep references as near as possible, with `seed` settling any remaining choice. If you
-have no way to rank turbines, pass nothing.
+A turbine you do not list in `test_priority` is a test candidate too. Unlisted candidates follow
+the listed ones, chosen to keep references as near as possible, with `seed` settling any remaining
+choice. If you have no way to rank turbines, pass nothing to `test_priority`.
 
 ## 3. The rules
 
@@ -111,14 +114,9 @@ Non-compliance is reported, never raised, so a failing design can still be inspe
 | `summary.yaml` | Whether the design complies, any problems, the counts, the front-row share against its target, the most test turbines possible, the reference distance limit the unlisted turbines were chosen under |
 | `turbines.csv` | Every farm turbine: its role, the test turbines it serves as a reference, its priority, and why it was or was not tested |
 | `roles.yaml` | A `turbines:` block to paste into the campaign declaration. Every available non-test turbine is offered as a reference, because the analysis uses them all |
-| `design_map.png` | The layout in metres east and north of the site's south-west corner |
+| `design_map.png` | A map of the test turbines and their references |
 | `design_map_latlon.png` | The same in latitude and longitude |
-| `front_row_map.png` | Only which turbines are front row, in metres east and north |
-
-On the design maps, test turbines are red and joined to their references (blue); other available
-turbines are grey, excluded turbines crosses, and front-row turbines ringed in black.
-Reference-only turbines are drawn like any other non-test turbine. On the front-row map, front-row turbines are green and the rest purple;
-other farms' turbines are grey.
+| `front_row_map.png` | A map of which turbines are front row |
 
 ## A worked example: Hill of Towie
 

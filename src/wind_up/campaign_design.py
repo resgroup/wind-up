@@ -1,24 +1,6 @@
 """Choose test turbines for an uplift validation campaign, and check a choice against the rules.
 
-A set of test turbines complies when:
-
-1. every test turbine is a named turbine of the farm under design, neither excluded nor
-   reference-only;
-2. each test turbine has at least 3 non-test turbines among its ``reference_pool_size`` nearest
-   reference-eligible turbines, counting only those within ``max_reference_distance_d`` of its own
-   rotor diameters;
-3. each test turbine's nearest reference-eligible turbine is not a test turbine;
-4. the number of front-row test turbines is within 0.5 of ``n * F / A``, where ``A`` farm turbines
-   are available (not excluded), ``F`` of them front row, and ``n`` are tested.
-
-A turbine may be a reference for any number of test turbines. Each test turbine's references are
-the 3 nearest non-test turbines in its pool, nearest first.
-
-:func:`design_campaign` picks the most test turbines a compliant design allows, then walks the
-test priority, committing each turbine for which a compliant design of that size still exists.
-Candidates not in the test priority are then walked in a seeded order under the least reference
-distance limit that still allows that size, so they fill the design with the nearest references
-possible. :func:`check_design` checks any set of test turbines, however it was chosen.
+The rules and how a design is chosen are described in ``docs/designing-a-campaign.md``.
 """
 
 from __future__ import annotations
@@ -46,13 +28,7 @@ REFERENCES_PER_TEST_TURBINE = 3
 
 @dataclass(frozen=True, eq=False)
 class ComplianceReport:
-    """The outcome of :func:`check_design`.
-
-    ``table`` has one row per test turbine: ``test_turbine``, ``front_row``, then for each of
-    ``reference_1`` to ``reference_3`` its name, ``_distance_m``, ``_distance_d`` (in the test
-    turbine's rotor diameters), ``_front_row`` and ``_rank`` (1 = the test turbine's nearest
-    reference-eligible turbine), then ``compliant``. Missing references are left empty.
-    """
+    """The outcome of :func:`check_design`; ``table`` has one row per test turbine."""
 
     compliant: bool
     problems: tuple[str, ...]

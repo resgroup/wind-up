@@ -44,9 +44,7 @@ def iec_disturbed_sector_deg(distance_diameters: npt.ArrayLike) -> npt.NDArray[n
 class Layout:
     """A validated turbine table plus the geodesic distance and bearing between every pair.
 
-    ``frame`` has one row per turbine, positionally indexed, with columns ``name`` (``None`` when
-    unknown), ``latitude``, ``longitude``, ``rotor_diameter_m`` and ``wind_farm`` (``None`` when
-    unknown). ``distance_m[i, j]`` and ``bearing_deg[i, j]`` are from row ``i`` to row ``j``.
+    ``distance_m[i, j]`` and ``bearing_deg[i, j]`` are from row ``i`` to row ``j``.
     """
 
     frame: pd.DataFrame
