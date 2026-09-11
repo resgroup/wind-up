@@ -30,7 +30,8 @@ class CampaignSpec:
     :param upgraded_turbines: the turbines whose uplift is being estimated
     :param upgrade_timing: the changeover timestamp (prepost) or the ``ToggleSchedule`` (toggle)
     :param candidate_references: turbines a method may use as references
-    :param excluded_turbines: turbines whose data must not be used at all
+    :param excluded_turbines: turbines never tested and never offered as a reference. Their data
+        still enters every estimate for their wake, as every turbine's does.
     :param coords: turbine name to ``(latitude, longitude)`` in degrees
     :param north_offsets: step-applied northing corrections, ``(turbine, from, offset_deg)``.
         ``None`` (the default) means the analyst supplied none and the shared northing step
@@ -71,8 +72,12 @@ class CampaignSpec:
         return self.upgrade_timing
 
     def usable_mask(self, turbine: str, index: pd.DatetimeIndex) -> npt.NDArray[np.bool_]:
-        """Boolean mask over ``index`` of the records ``turbine``'s data may be used over."""
-        return np.full(len(index), turbine not in self.excluded_turbines, dtype=bool)
+        """Boolean mask over ``index`` of the records ``turbine``'s data may be used over.
+
+        Every record of every turbine, excluded ones included.
+        """
+        del turbine
+        return np.ones(len(index), dtype=bool)
 
     def change_label(self) -> str:
         """How report and plot titles refer to what is being assessed."""
@@ -97,7 +102,8 @@ class SyntheticCampaign:
         ``None`` leaves them to be discovered (see :class:`CampaignSpec`)
     :param rated_power_kw: the turbines' rated power
     :param analysis_period: ``(start, end)`` of the whole record, end exclusive
-    :param excluded_turbines: turbines whose data must not be used
+    :param excluded_turbines: turbines never tested and never offered as a reference; their data
+        still carries their wake
     :param columns: the source-native column schema the SCADA is keyed by
     :param seed: recorded in the generated dataset's run metadata
     """
@@ -138,12 +144,14 @@ class SyntheticCampaign:
         )
 
     def generate(self, scada_df: pd.DataFrame) -> SyntheticDataset:
-        """Inject the declared upgrades into ``scada_df`` over the analysis period."""
+        """Inject the declared upgrades into ``scada_df`` over the analysis period.
+
+        Every turbine ``scada_df`` carries is kept, declared or not, since each can wake another.
+        """
         start, end = self.analysis_period
         in_period = (scada_df.index >= start) & (scada_df.index < end)
-        declared = scada_df[self.columns.turbine].isin(self.turbines).to_numpy()
         return generate_dataset(
-            scada_df=scada_df[in_period & declared],
+            scada_df=scada_df[in_period],
             test_wtgs=list(self.upgraded_turbines),
             upgrades=list(self.upgrades),
             mode="toggle" if isinstance(self.upgrade_timing, ToggleSchedule) else "prepost",

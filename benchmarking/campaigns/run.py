@@ -46,8 +46,8 @@ class CampaignReport:
     """Everything a truth-free campaign run produced.
 
     :param spec: the campaign that was run
-    :param scada_df: the frame the methods were given -- clipped to the analysis period, the
-        excluded turbines dropped, and north-calibrated by the shared northing step
+    :param scada_df: the frame the methods were given -- every turbine, clipped to the analysis
+        period and north-calibrated by the shared northing step
     :param per_turbine: one row per method and upgraded turbine -- ``method``, ``test_wtg``,
         ``estimate``
     :param farm: one row per method -- ``estimate``, ``uplift_spread``, ``n_guarded``

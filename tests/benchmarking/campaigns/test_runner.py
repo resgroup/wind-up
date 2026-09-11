@@ -98,12 +98,13 @@ def test_each_method_is_estimated_once_per_upgraded_turbine() -> None:
     assert {mi.test_wtg for mi in recording.seen} == {"T1", "T2"}
 
 
-def test_methods_never_see_an_excluded_turbine() -> None:
+def test_an_excluded_turbine_reaches_methods_for_its_wake_but_never_as_a_reference() -> None:
     recording = RecordingMethod()
     run([recording])
     for mi in recording.seen:
-        assert "T5" not in set(mi.scada_df[HOT_COLUMNS.turbine])
-        assert {"T1", "T2", "T3", "T4"} == set(mi.scada_df[HOT_COLUMNS.turbine])
+        assert {"T1", "T2", "T3", "T4", "T5"} == set(mi.scada_df[HOT_COLUMNS.turbine])
+        assert "T5" not in mi.context.candidate_references
+        assert "T5" in mi.context.wake_contributors
 
 
 def test_methods_see_only_the_analysis_period() -> None:

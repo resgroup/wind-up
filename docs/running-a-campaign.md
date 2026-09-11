@@ -26,7 +26,7 @@ data:
 turbines:
   upgraded:   [T06, T11]        # the turbines whose uplift you want
   references: [T01, T02, T03]   # turbines you are willing to compare them against
-  excluded:   []                # turbines whose data must not be used at all
+  excluded:   []                # turbines never to use as a reference; their wake still counts
   rated_power_kw: 2300.0
 
 timing:
@@ -43,10 +43,12 @@ northing:
 
 ### The fields that need a decision
 
-**`turbines.upgraded` / `references` / `excluded`.** Every turbine holds exactly one role. A
-turbine that is not listed at all is simply not used. Put a turbine in `excluded` when its data
-should play no part — for example, you know it was down for rebuild, or it had its own separate
-change.
+**`turbines.upgraded` / `references` / `excluded`.** Every turbine holds at most one role. Only
+`references` are compared against. Every other turbine in the SCADA — upgraded, excluded, or not
+listed at all — still enters each estimate for its wake, through whether it was running and where
+it pointed, never its power. Put a turbine in `excluded` when it must never be a reference — for
+example, it was down for rebuild, or it had its own separate change. Leaving it unlisted has the
+same effect; listing it records the decision.
 
 **More references is better.** Reference count is the single biggest lever on accuracy: a handful
 of references is noticeably worse than fifteen. Offer every turbine you have no reason to distrust
@@ -149,6 +151,6 @@ references are the same distance from zero, you are looking at the noise floor, 
 
 - Every turbine's change must share one date (or one toggle schedule). Staggered per-turbine dates
   are not yet expressible.
-- Turbines that are neither references nor under test are dropped from the analysis entirely, so
-  their wake is not accounted for.
+- Every turbine's data is trusted for its wake. A turbine whose power reads high while it is in
+  fact stopped would be counted as waking its neighbours.
 - The result is a P50 estimate. There is no uncertainty interval yet.

@@ -1427,3 +1427,83 @@ class TestGateUsesWorstCandidateCoverage:
         mi = self._mi_with_a_sparse_reference(campaign_days=200, sparse_days=200)
         method = _screen_method(screen_min_campaign_days=150.0)
         assert method.screen_references(mi).screenable
+
+
+_NEIGHBOUR_STEP = 0.10
+
+
+def _with_a_changed_neighbour(*, as_reference: bool = False, n: int = 4000) -> MethodInput:
+    """T1 under test at +5% beside W1, another changed turbine whose power steps +10% at the changeover.
+
+    W1 sees T1's own flow, so its power, were it a feature, would pass its own step off as T1's.
+    """
+    idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+    changeover = pd.Timestamp(idx[n // 2])
+    treated = np.asarray(idx >= changeover)
+    scada = _toy_scada(n, uplift=0.05, treated=treated)
+    w1 = scada[scada[_TURBINE] == "T1"].assign(**{_TURBINE: "W1"})
+    for col in (_POWER, _POWER_MIN, _POWER_MAX):
+        w1[col] = w1[col] * np.where(treated, (1.0 + _NEIGHBOUR_STEP) / 1.05, 1.0)
+    scada = pd.concat([scada, w1])
+    references = ["R1", "R2", "R3", *(["W1"] if as_reference else [])]
+    context = CampaignContext(
+        test_wtg="T1",
+        timing=changeover,
+        turbine_col=_TURBINE,
+        candidate_references=references,
+        wake_contributors=[] if as_reference else ["W1"],
+        valid_for_uplift=pd.DataFrame(data=True, index=idx, columns=["T1", "R1", "R2", "R3", "W1"]),
+    )
+    return MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
+
+
+class TestWakeContributors:
+    """Another changed turbine stays in the estimate for its wake, and never for its power."""
+
+    def test_its_wake_reaches_the_features_without_its_power(self) -> None:
+        features = _screen_method().reference_features(_with_a_changed_neighbour())
+        assert f"waking_{_POWER} @ W1" in features.columns
+        assert f"{_NORTHED_YAW}_sin @ W1" in features.columns
+        assert f"{_POWER} @ W1" not in features.columns
+        assert f"{_POWER_MIN} @ W1" not in features.columns
+
+    def test_its_change_does_not_reach_the_estimate(self) -> None:
+        method = _screen_method(reference_screen=False, report_reference_uplifts=False)
+        as_wake = method.estimate(_with_a_changed_neighbour()).p50_overall
+        as_reference = method.estimate(_with_a_changed_neighbour(as_reference=True)).p50_overall
+        assert abs(as_reference - 0.05) > 0.01, "the control: W1's power would carry its step into T1's estimate"
+        assert as_wake == pytest.approx(0.05, abs=0.005)
+
+    def test_it_is_never_screened_or_reported_as_a_reference(self) -> None:
+        out = _screen_method().estimate(_with_a_changed_neighbour())
+        assert out.reference_uplifts is not None
+        assert set(out.reference_uplifts["turbine"]) == {"R1", "R2", "R3"}
+        assert out.screen_passes is not None
+        assert set(out.screen_passes["turbine"]) <= {"R1", "R2", "R3"}
+
+    def test_every_estimate_keeps_every_turbine(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Screening and reporting estimate each reference too, and every other turbine still wakes it."""
+        contexts = _recorded_contexts(monkeypatch, _with_a_changed_neighbour())
+        assert {c.test_wtg for c in contexts} == {"T1", "R1", "R2", "R3"}
+        for c in contexts:
+            assert {c.test_wtg, *c.candidate_references, *c.wake_contributors} == {"T1", "R1", "R2", "R3", "W1"}
+
+    def test_a_screened_reference_still_wakes_the_others(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        contexts = _recorded_contexts(monkeypatch, _screen_case(step=0.05)[0])
+        ruled_out = [c for c in contexts if c.test_wtg != "R1" and "R1" not in c.candidate_references]
+        assert ruled_out, "the screen rules R1 out, so some estimate runs without it as a reference"
+        assert all("R1" in c.wake_contributors for c in ruled_out)
+
+
+def _recorded_contexts(monkeypatch: pytest.MonkeyPatch, mi: MethodInput) -> list[CampaignContext]:
+    """Run the screening method on ``mi`` and return the context of every estimate it made, its own first."""
+    contexts: list[CampaignContext] = []
+    estimate = PowerModelMethod.estimate
+
+    def recording(self: PowerModelMethod, mi: MethodInput) -> object:
+        contexts.append(mi.context)
+        return estimate(self, mi)
+
+    monkeypatch.setattr(PowerModelMethod, "estimate", recording)
+    _screen_method().estimate(mi)
+    return contexts

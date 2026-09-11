@@ -17,8 +17,8 @@ from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 
 from .test_declaration import CHANGEOVER, PERIOD, campaign, scada
 
-# Four usable turbines (T5 is excluded) over 4368 hourly records.
-EXPECTED_ROWS = 17472
+# Five turbines over 4368 hourly records; excluded T5 stays for its wake.
+EXPECTED_ROWS = 21840
 # The pre and post mean power of an upgraded turbine, and the truth and estimate that follow.
 BASELINE_POWER_KW = 900.0
 UPGRADED_POWER_KW = 944.9809758474812
@@ -59,7 +59,7 @@ def test_the_frame_handed_to_a_method_is_unchanged() -> None:
     frame = method.seen["T1"].scada_df
     assert len(frame) == EXPECTED_ROWS
     assert list(frame.columns) == list(scada().columns)
-    assert sorted(frame[HOT_COLUMNS.turbine].unique()) == ["T1", "T2", "T3", "T4"]
+    assert sorted(frame[HOT_COLUMNS.turbine].unique()) == ["T1", "T2", "T3", "T4", "T5"]
     assert frame.index.min() == PERIOD[0]
     assert frame.index.max() == PERIOD[1] - pd.Timedelta(hours=1)
     pd.testing.assert_frame_equal(frame, method.seen["T2"].scada_df)
@@ -88,3 +88,9 @@ def test_the_farm_numbers_are_unchanged() -> None:
     assert float(row["estimate"]) == pytest.approx(HALF * TRUE_UPLIFT, abs=EXACT)
     assert float(row["signed_error"]) == pytest.approx(-HALF * TRUE_UPLIFT, abs=EXACT)
     assert float(result.truth_farm_uplift) == pytest.approx(TRUE_UPLIFT, abs=EXACT)
+
+
+def test_each_estimate_keeps_every_non_reference_turbine_for_its_wake() -> None:
+    _, method = run()
+    assert method.seen["T1"].context.wake_contributors == ["T2", "T5"]
+    assert method.seen["T2"].context.wake_contributors == ["T1", "T5"]

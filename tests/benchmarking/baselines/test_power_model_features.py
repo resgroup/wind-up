@@ -425,6 +425,54 @@ class TestPowerFreeReferences:
         assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
 
 
+class TestWakeOnlyTurbines:
+    """A changed turbine that is not a reference still wakes its neighbours, and says so without its power."""
+
+    def _features(self, **kwargs: object) -> pd.DataFrame:
+        call: dict = {
+            "test_wtg": "T1",
+            "references": ("R1", "R2"),
+            "turbine_col": _TURBINE,
+            "active_power_col": _POWER,
+            "availability_col": _AVAIL,
+            "direction_col": _NORTHED_DIR,
+            "waking_threshold_kw": _WAKING_THRESHOLD_KW,
+            "wake_only": ("R3",),
+            **kwargs,
+        }
+        return build_reference_features(_scada_spanning_the_waking_threshold(_index(24)), **call)
+
+    def test_contributes_no_power(self) -> None:
+        assert f"{_POWER}{QUALIFIER}R3" not in self._features().columns
+
+    def test_contributes_its_direction(self) -> None:
+        feats = self._features()
+        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R3" in feats.columns
+        assert f"{_NORTHED_DIR}_cos{QUALIFIER}R3" in feats.columns
+
+    def test_contributes_its_waking_boolean(self) -> None:
+        assert f"waking_{_POWER}{QUALIFIER}R3" in self._features().columns
+
+    def test_contributes_its_availability(self) -> None:
+        assert f"{_AVAIL}{QUALIFIER}R3" in self._features().columns
+
+    def test_contributes_exactly_what_a_power_free_reference_does(self) -> None:
+        as_reference = self._features(references=_REFS, power_free=("R3",), wake_only=())
+        pd.testing.assert_frame_equal(self._features(), as_reference)
+
+    def test_a_reference_cannot_also_be_wake_only(self) -> None:
+        with pytest.raises(ValueError, match="R2"):
+            self._features(wake_only=("R2", "R3"))
+
+    def test_the_test_turbine_cannot_be_wake_only(self) -> None:
+        with pytest.raises(ValueError, match="T1"):
+            self._features(wake_only=("T1",))
+
+    def test_needs_the_waking_threshold(self) -> None:
+        with pytest.raises(ValueError, match="waking_threshold_kw"):
+            self._features(waking_threshold_kw=None)
+
+
 class TestWakingDtype:
     """The waking column has to survive reindexing onto the full index as a numeric feature."""
 

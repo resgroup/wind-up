@@ -14,7 +14,7 @@ from .test_declaration import CHANGEOVER, PERIOD, campaign, scada
 
 # Every column any truth-free output is forbidden to carry.
 TRUTH_COLUMNS = frozenset({"truth", "signed_error"})
-EXPECTED_ROWS = 17472
+EXPECTED_ROWS = 21840
 
 
 def spec_and_frame() -> tuple[object, pd.DataFrame]:
@@ -112,7 +112,7 @@ def test_methods_see_only_the_analysis_period_and_the_usable_turbines() -> None:
     run([method])
     frame = method.seen["T1"].scada_df
     assert len(frame) == EXPECTED_ROWS
-    assert sorted(frame[HOT_COLUMNS.turbine].unique()) == ["T1", "T2", "T3", "T4"]
+    assert sorted(frame[HOT_COLUMNS.turbine].unique()) == ["T1", "T2", "T3", "T4", "T5"]
     assert frame.index.min() >= PERIOD[0]
     assert frame.index.max() < PERIOD[1]
 
@@ -156,11 +156,11 @@ def test_the_report_carries_the_frame_the_methods_were_given() -> None:
 
 
 class TestVisibleFrame:
-    def test_visible_mask_keeps_the_analysis_period_and_drops_excluded_turbines(self) -> None:
+    def test_visible_mask_keeps_the_analysis_period_and_every_turbine(self) -> None:
         spec, frame = spec_and_frame()
         keep = visible_mask(spec, frame)
         kept = frame[keep]
-        assert sorted(kept[HOT_COLUMNS.turbine].unique()) == ["T1", "T2", "T3", "T4"]
+        assert sorted(kept[HOT_COLUMNS.turbine].unique()) == ["T1", "T2", "T3", "T4", "T5"]
         assert kept.index.min() >= PERIOD[0]
         assert kept.index.max() < PERIOD[1]
 
@@ -168,7 +168,7 @@ class TestVisibleFrame:
         spec, frame = spec_and_frame()
         visible = visible_scada(spec, frame, columns=HOT_COLUMNS)
         assert len(visible) == EXPECTED_ROWS
-        assert "T5" not in set(visible[HOT_COLUMNS.turbine])
+        assert "T5" in set(visible[HOT_COLUMNS.turbine])
 
 
 def test_a_toggle_campaign_runs_through_the_same_core() -> None:
