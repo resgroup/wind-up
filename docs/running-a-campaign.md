@@ -10,6 +10,9 @@ The second term is never observed, so wind-up estimates it from **reference turb
 on the same site that did *not* change — and reports the difference. A campaign is described in
 one YAML file and run from the command line.
 
+This page assumes the upgraded turbines are already chosen. To choose them, see
+[designing a campaign](designing-a-campaign.md).
+
 ## 1. Describe the campaign
 
 ```yaml

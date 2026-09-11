@@ -1024,6 +1024,11 @@ up.
 
 - **Document the declaration W1a delivered**, and fold in every gap W3 found — that
   list, not guesswork, is what the release documentation has to answer.
+- **Release the campaign design utility.** `wind_up.campaign_design` (with `wind_up.geodesy`
+  and `wind_up.layout`) already lives in `src/wind_up` and is documented in
+  `docs/designing-a-campaign.md`; it chooses test turbines compliant with the methodology's
+  reference rule (CF16). Decide whether the design step joins the declaration workflow, e.g.
+  as a CLI command writing the `turbines:` block it already produces.
 
 **Done when:** a user installs `res-wind-up`, imports `wind_up`, and runs the v1
 `wind-up` method end-to-end from the examples and README; `docs/methodology.md`
@@ -1055,6 +1060,11 @@ answer is objectively scoreable rather than a matter of opinion.
 - **Generator side.** Build a synthetic dataset from a known upgrade profile and a known
   fault set, plus a short campaign prompt (campaign brief) written as narrative — the prose an owner would
   send an analyst. Ground truth is recorded out of band.
+- **Test turbines are designed, not drawn.** `placebo_instance` chooses them with
+  `wind_up.campaign_design`, so every test turbine keeps three nearby references and the front
+  row gets its fair share, as a real campaign would be designed; an unconstrained draw clustered
+  them. It designs one below the maximum, because at the maximum Hill of Towie has only two
+  compliant designs (CF16).
 - **Analyst side.** A fresh agent is given the prompt, a YAML declaration to populate
   (W1a), a runner script, the documentation under test, and — after the run — the output
   directory. It populates the declaration, runs the campaign, inspects the outputs, and
@@ -1117,6 +1127,12 @@ from the pattern across repeats — a single failure is a signal, not a verdict.
   bins +109% to +196% with nothing to warn a reader off. Both analysts had to find the
   per-turbine file themselves. This is the output you need to answer "what kind of change
   was this", and it is one table row in the docs.
+- **`conditional.csv`'s per-bin levels are tied to the headline.** `relevel_conditional`
+  multiplies every measured bin by one factor so the bins energy-aggregate to the headline, so
+  for small uplifts each bin reads its measurement plus a shared constant. An analyst concluded
+  the bins "carry no independent information about the class"; that overstates it, since the
+  differences between measured bins are still the two-direction measurement. Tell the reader to
+  judge the class from the shape across bins, not from any bin's level.
 - **The row filter is documented nowhere.** One analyst nearly reported a filtered 11-day
   baseline outage as an unfixable bias, and named this as the point it most wanted to open
   the source.

@@ -12,6 +12,72 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF16 — Test turbines are now *designed*, not drawn: an order-free "3 non-test among the 4 nearest, nearest always a reference" rule tests **10 of 21** Hill of Towie turbines where the strict 3-nearest rule allows 7 — but at that maximum the site has only **2** compliant designs, so the placebo designs one below it (**60**)
+
+*2026-09-11. `wind_up.campaign_design` (`design_campaign`, `check_design`) on the Hill of Towie
+layout in `tests/test_data/hot/scada/Hill_of_Towie_turbine_metadata.csv` (82 m rotors, nearest
+spacing 4.1–4.9 D), T17 reference-only as in `placebo_instance`. Design counts were enumerated with
+the design's own MILP plus no-good cuts; subset figures are 30 subsets per size. The drivers were
+throwaway; every number is reproducible from the public API.*
+
+**Why.** The first dry-run instances clustered their test turbines (T02/T04/T05 as a mutual
+triangle, T13/T14 as an adjacent pair), leaving T05 no reference among its two nearest. The
+methodology (v3, step 2) asks for "at least three reference turbines" per test turbine, favouring
+the closest. That is now a checked rule set: at least 3 non-test turbines among each test turbine's
+4 nearest reference-eligible turbines within 20 rotor diameters; its nearest neighbour never a test
+turbine; the front-row test count the nearest whole number to the farm's front-row share, so
+neither too many nor too few; excluded and reference-only turbines never tested. `check_design`
+reports the clustered draw non-compliant.
+
+**The reference rule decides how many turbines a site can test.** Hill of Towie, no front-row share:
+
+| rule | most test turbines | nearest-neighbour test pairs | furthest 3rd reference |
+|---|---|---|---|
+| the 3 nearest are never test turbines | 7 | 0 | 3rd nearest |
+| greedy walk, earlier picks lock their references (order-dependent; 2000 orders) | 6–9 | 0 | 7th nearest |
+| 3 non-test among the 4 nearest | 10 | 2 | 4th nearest |
+| **3 non-test among the 4 nearest, nearest neighbour never tested (chosen)** | **10** | **0** | 4th nearest |
+| same, 5 / 6 nearest | 10 / 12 | 0 | 5th / 6th nearest |
+
+The order-dependent walk was rejected as a rule, not only on count: whether a set complies would
+then depend on the order it was built in, so a hand-made design could not be checked.
+
+**At the maximum a site can have almost no freedom.** Distinct compliant designs on Hill of Towie,
+and how many distinct ones 100 random priority orders actually drew:
+
+| test turbines | compliant designs | drawn by 100 orders |
+|---|---|---|
+| 10 (max) | **2** — identical but for T01/T02 | 2 |
+| 9 | 60 | 40 |
+| 8 | 464 | 90 |
+| 7 | 1581 | — |
+
+A maximal placebo would have upgraded the same nine turbines in every instance, so
+**`placebo_instance` designs one below the maximum**, listing every candidate in a shuffled
+priority. A real campaign would still maximise.
+
+**Small farms work down to four turbines.** Contiguous clusters of the site always design: 4
+turbines give 1 test turbine, 5 give 2, roughly half the farm is tested from 7 up, and 3 or fewer
+cannot (one test turbine needs 3 references). Random sparse draws of 4–6 turbines fail 10–73% of
+the time, on the 20 D limit. Front row rises as the farm shrinks, to every turbine at 6 or fewer.
+
+**Maximising the count pushes references outward, and only a gentle tie-break is usable.** At the
+maximum the furthest reference often sat at 17–20 D. The tightest limit that keeps the maximum
+count, applied before priority, usually leaves a single design (5x5 grid 8 → 1, Hill of Towie
+clusters of 8 and 12 → 1), so priority would stop mattering. It is applied only to the candidates
+the user did not list: the median furthest reference drops 1–3 D on Hill of Towie clusters (12
+turbines 11.8 → 8.6 D); the whole site is unchanged at 11.8 D, since both maximal designs need it.
+
+**Distances are geodesic now.** The shortcuts replaced were measurably off on this layout:
+equirectangular (the first spacing draw) up to 0.24% in distance, the haversine helper in
+`benchmarking/synthetic` 0.35%, its spherical bearing 0.06°; UTM put two Homer test turbines 2.4 m
+off true east. The 3-nearest sets happened to agree, which is luck on near-ties, not a guarantee.
+
+**One defect found by the subset study:** the first tie-break returned no test turbines on one
+sparse five-turbine subset, because its limits and its membership test used different arithmetic
+and one rounding ulp dropped the turbine that set the limit. Fixed, and that subset is a
+regression test.
+
 ## CF15 — The first W3 dry runs: an analyst reached the right verdict on both instances (zero, and +1–2.5% against a true +2.06%) but **missed the change class**, and the run that decided each assessment — re-running with a different reference set — is suggested nowhere in the documentation. The isolation broke in a way only running it could reveal: `CLAUDE.md` is auto-injected into any agent whose cwd is the checkout
 
 *2026-09-10. W1a phase 3. Two handovers built with `benchmarking.campaigns.handover.write_handover`
