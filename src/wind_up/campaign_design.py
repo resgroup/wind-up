@@ -24,6 +24,17 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 REFERENCES_PER_TEST_TURBINE = 3
+# The columns of ComplianceReport.table, in order: one row per test turbine.
+COMPLIANCE_COLUMNS: tuple[str, ...] = (
+    "test_turbine",
+    "front_row",
+    *(
+        f"reference_{k}{suffix}"
+        for k in range(1, REFERENCES_PER_TEST_TURBINE + 1)
+        for suffix in ("", "_distance_m", "_distance_d", "_front_row", "_rank")
+    ),
+    "compliant",
+)
 
 
 @dataclass(frozen=True, eq=False)
@@ -113,7 +124,7 @@ def check_design(
     max_reference_distance_d: float = 20.0,
     front_row_min_clear_deg: float = 90.0,
 ) -> ComplianceReport:
-    """Check ``test_turbines`` against the rules in the module docstring.
+    """Check ``test_turbines`` against the rules in ``docs/designing-a-campaign.md``.
 
     Raises only on malformed input: an unknown or repeated name, a name in more than one role, an
     ambiguous ``wind_farm``. Non-compliance is reported in the returned :class:`ComplianceReport`.
@@ -148,9 +159,8 @@ def design_campaign(
 ) -> CampaignDesign:
     """Choose test turbines for a campaign on the farm ``wind_farm`` of ``layout``.
 
-    :param layout: one row per turbine: ``latitude``, ``longitude``, and optionally ``name``,
-        ``rotor_diameter_m`` and ``wind_farm``; see :class:`wind_up.layout.Layout`. Turbines outside
-        the farm under design only block wakes.
+    :param layout: one row per turbine, as described in ``docs/designing-a-campaign.md``. Turbines
+        outside the farm under design only block wakes.
     :param wind_farm: the farm under design; defaults to the only ``wind_farm`` in the layout, or
         to every turbine when the layout names no wind farm
     :param test_priority: farm turbines to test first, highest priority first; every other
@@ -484,7 +494,7 @@ class _Site:
                 f"({f} of {a} available turbines are front row); {allowed}"
             )
 
-        table = pd.DataFrame.from_records(records, columns=_table_columns())
+        table = pd.DataFrame.from_records(records, columns=list(COMPLIANCE_COLUMNS))
         summary: dict[str, object] = {
             "wind_farm": self.farm,
             "farm_turbines": len(self.farm_rows),
@@ -525,6 +535,9 @@ class _Site:
                     f"reference_{k}_rank": None,
                 }
         record["compliant"] = compliant
+        if tuple(record) != COMPLIANCE_COLUMNS:
+            msg = f"compliance row columns {list(record)} are not COMPLIANCE_COLUMNS"
+            raise RuntimeError(msg)
         return record
 
     def solve(self, *, n: int | None, fixed: Iterable[int] = ()) -> npt.NDArray[np.float64] | None:
@@ -665,19 +678,6 @@ class _Site:
         if not self.front[row] and len(committed) - front_committed >= n - min(counts):
             return "the rest-of-farm share is full"
         return None
-
-
-def _table_columns() -> list[str]:
-    columns = ["test_turbine", "front_row"]
-    for k in range(1, REFERENCES_PER_TEST_TURBINE + 1):
-        columns += [
-            f"reference_{k}",
-            f"reference_{k}_distance_m",
-            f"reference_{k}_distance_d",
-            f"reference_{k}_front_row",
-            f"reference_{k}_rank",
-        ]
-    return [*columns, "compliant"]
 
 
 def _resolve_farm(frame: pd.DataFrame, *, wind_farm: str | None) -> str | None:

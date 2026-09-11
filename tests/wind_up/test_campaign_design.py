@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from tests.wind_up.layouts import grid_layout, line_layout, offset, scatter_layout
-from wind_up.campaign_design import check_design, design_campaign
+from wind_up.campaign_design import COMPLIANCE_COLUMNS, check_design, design_campaign
 
 # An east-west line with every gap different, so no two distances tie. 100 m rotors, so the gaps
 # are 3, 4, 5, 6, 7 and 8.5 diameters. T6 has only two turbines within 20 diameters.
@@ -63,6 +63,15 @@ def test_compliance_table_gives_distances_ranks_and_front_row() -> None:
     assert bool(table.loc["T0", "front_row"])
     assert bool(table.loc["T0", "reference_1_front_row"])
     assert bool(table.loc["T0", "compliant"])
+
+
+def test_compliance_table_has_the_compliance_columns() -> None:
+    for tests in (["T0", "T3"], []):
+        assert list(check_design(IRREGULAR_LINE, test_turbines=tests).table.columns) == list(COMPLIANCE_COLUMNS)
+
+
+def test_compliance_table_fills_every_column_for_a_compliant_design() -> None:
+    assert not check_design(IRREGULAR_LINE, test_turbines=["T0", "T3"]).table.isna().any().any()
 
 
 def test_failing_turbine_lists_what_references_it_has() -> None:
