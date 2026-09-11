@@ -176,16 +176,20 @@ def _resolve(root: Path, name: str, *, what: str) -> Path:
 
 
 def _read_turbines(path: Path) -> dict[str, tuple[float, float]]:
-    """Read the turbines sidecar: name, latitude, longitude, however the header is cased."""
+    """Read the turbines sidecar: name, latitude, longitude, however the header is cased.
+
+    Rows without a name are skipped, so a campaign-design layout can serve as the sidecar.
+    """
     frame = pd.read_csv(path)
     lookup = {str(c).strip().lower(): c for c in frame.columns}
     missing = [c for c in ("name", "latitude", "longitude") if c not in lookup]
     if missing:
         msg = f"the turbines file {path.name} has no {missing} column(s); it carries {list(frame.columns)}"
         raise ValueError(msg)
+    named = frame[frame[lookup["name"]].notna() & (frame[lookup["name"]].astype(str).str.strip() != "")]
     return {
         str(row[lookup["name"]]): (float(row[lookup["latitude"]]), float(row[lookup["longitude"]]))
-        for _, row in frame.iterrows()
+        for _, row in named.iterrows()
     }
 
 

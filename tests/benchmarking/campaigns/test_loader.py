@@ -225,3 +225,34 @@ class TestErrors:
     def test_no_upgraded_turbines_is_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="upgraded"):
             load(tmp_path, PREPOST.replace("upgraded:   [T01]", "upgraded:   []"))
+
+
+class TestACampaignDesignFeedsTheDeclaration:
+    def test_unnamed_rows_of_the_turbines_file_are_skipped(self, tmp_path: Path) -> None:
+        path = write_campaign(tmp_path)
+        (tmp_path / "turbines.csv").write_text(
+            "name,latitude,longitude,rotor_diameter_m,wind_farm\n"
+            "T01,57.40,-3.30,82,Home\nT02,57.60,-3.20,82,Home\nT03,57.50,-3.25,82,Home\n"
+            "T04,57.50,-3.25,82,Home\n,57.70,-3.10,90,\n"
+        )
+        declaration = load_declaration(path)
+        assert set(declaration.spec.coords) == {"T01", "T02", "T03", "T04"}
+        assert declaration.centroid == (57.50, -3.25)
+
+    def test_a_written_design_s_roles_and_layout_load(self, tmp_path: Path) -> None:
+        from tests.wind_up.layouts import grid_layout  # noqa: PLC0415
+        from wind_up.campaign_design import design_campaign, write_design  # noqa: PLC0415
+
+        layout = grid_layout(rows=3, cols=3, spacing_m=300).assign(wind_farm="Home")
+        design = design_campaign(layout)
+        write_design(design, out_dir=tmp_path / "design")
+        layout.to_csv(tmp_path / "turbines.csv", index=False)
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        roles = (tmp_path / "design" / "roles.yaml").read_text()
+        rest = textwrap.dedent(PREPOST)
+        rest = rest[: rest.index("turbines:\n  upgraded")] + rest[rest.index("timing:") :]
+        declaration_text = rest.replace("timing:", roles.rstrip() + "\n  rated_power_kw: 2300\n\ntiming:")
+        (tmp_path / "campaign.yaml").write_text(declaration_text)
+        spec = load_declaration(tmp_path / "campaign.yaml").spec
+        assert spec.upgraded_turbines == list(design.test_turbines)
+        assert spec.candidate_references == design.roles()["references"]

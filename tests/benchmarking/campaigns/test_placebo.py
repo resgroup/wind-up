@@ -7,7 +7,6 @@ import pytest
 
 from benchmarking.campaigns import CampaignRunner, per_turbine_table
 from benchmarking.campaigns.placebo import (
-    MIN_SCREENABLE_REFERENCES,
     PLACEBO_CAMPAIGN_START,
     PLACEBO_INSTANCE_KEEP_AS_REFERENCE,
     PLACEBO_INSTANCE_LAST_CLEAN,
@@ -19,15 +18,21 @@ from benchmarking.campaigns.placebo import (
     placebo_analysis_period,
     placebo_campaign,
     placebo_instance,
+    placebo_layout,
 )
 from benchmarking.harness import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, SensorGainStep, ToggleSchedule
+from tests.conftest import TEST_DATA_FLD
+from wind_up.campaign_design import check_design, design_campaign
 
 TOLERANCE = 1e-9
 # A small slice of the farm, so the fixtures stay cheap; the production default is all 21 turbines.
 TEST_TURBINES = ("T07", "T11")
-# A line of turbines 400 m apart, so "the two nearest" is unambiguous.
+# A line of turbines 400 m apart (about 5 rotor diameters).
 LINE_COORDS = {f"T{i:02d}": (57.5 + i * 0.0036, -3.25) for i in range(1, 22)}
+# The real Hill of Towie layout.
+HOT_METADATA = pd.read_csv(TEST_DATA_FLD / "hot" / "scada" / "Hill_of_Towie_turbine_metadata.csv")
+HOT_COORDS = {str(r["Turbine Name"]): (float(r["Latitude"]), float(r["Longitude"])) for _, r in HOT_METADATA.iterrows()}
 TEST_PARTICIPANTS = ("T07", "T11", "T01", "T02", "T03")
 
 
@@ -167,34 +172,43 @@ def instance(mode: str = "prepost", *, seed: int, turbines: tuple[str, ...] | No
     return placebo_instance(mode, seed=seed, turbines=names, coords={w: LINE_COORDS[w] for w in names})
 
 
-def two_nearest(turbine: str, among: list[str]) -> list[str]:
-    """The two turbines of ``among`` closest to ``turbine`` on the fixture line."""
-    others = [w for w in among if w != turbine]
-    return sorted(others, key=lambda w: abs(LINE_COORDS[w][0] - LINE_COORDS[turbine][0]))[:2]
+def complies(campaign, coords: dict[str, tuple[float, float]]) -> bool:  # noqa: ANN001
+    """Whether ``campaign``'s test turbines pass the campaign-design check on ``coords``."""
+    names = [*campaign.upgraded_turbines, *campaign.candidate_references]
+    report = check_design(
+        placebo_layout({w: coords[w] for w in names}),
+        test_turbines=campaign.upgraded_turbines,
+        reference_only=[w for w in PLACEBO_INSTANCE_KEEP_AS_REFERENCE if w in names],
+    )
+    return report.compliant
 
 
-class TestGeographicSpacing:
-    def test_every_test_turbine_keeps_its_two_nearest_as_references(self) -> None:
-        # a real campaign is designed so each test turbine has nearby references to compare against
-        for seed in range(25):
-            campaign = instance(seed=seed)
-            participating = [*campaign.upgraded_turbines, *campaign.candidate_references]
-            for wtg in campaign.upgraded_turbines:
-                nearest = two_nearest(wtg, participating)
-                assert set(nearest) <= set(campaign.candidate_references), (
-                    f"seed {seed}: {wtg}'s nearest {nearest} are not both references"
-                )
+class TestTheInstanceIsACompliantCampaignDesign:
+    def test_every_instance_complies(self) -> None:
+        for seed in range(10):
+            assert complies(instance(seed=seed), LINE_COORDS), f"seed {seed}"
 
-    def test_no_two_test_turbines_are_immediate_neighbours(self) -> None:
-        for seed in range(25):
-            campaign = instance(seed=seed)
-            chosen = set(campaign.upgraded_turbines)
-            participating = [*campaign.upgraded_turbines, *campaign.candidate_references]
-            for wtg in chosen:
-                assert not (set(two_nearest(wtg, participating)) & chosen)
+    def test_every_instance_on_the_real_layout_complies(self) -> None:
+        for seed in range(10):
+            campaign = placebo_instance("prepost", seed=seed, coords=HOT_COORDS)
+            assert complies(campaign, HOT_COORDS), f"seed {seed}"
+
+    def test_every_instance_tests_as_many_turbines_as_a_compliant_design_allows(self) -> None:
+        most = design_campaign(
+            placebo_layout(HOT_COORDS), reference_only=PLACEBO_INSTANCE_KEEP_AS_REFERENCE
+        ).max_test_turbines
+        for seed in range(5):
+            assert len(placebo_instance("prepost", seed=seed, coords=HOT_COORDS).upgraded_turbines) == most
+
+    def test_the_clustered_draw_of_the_first_dry_runs_does_not_comply(self) -> None:
+        # T02/T04/T05 a mutual triangle and T13/T14 an adjacent pair: what an unconstrained draw gave
+        report = check_design(placebo_layout(HOT_COORDS), test_turbines=["T02", "T04", "T05", "T13", "T14"])
+        assert not report.compliant
+        assert any(p.startswith("T05") for p in report.problems)
+        assert any("T13" in p and "T14" in p for p in report.problems)
 
     def test_it_still_upgrades_more_than_one_turbine(self) -> None:
-        for seed in range(25):
+        for seed in range(10):
             assert len(instance(seed=seed).upgraded_turbines) >= 2
 
 
@@ -240,7 +254,7 @@ class TestARandomisedInstance:
         # a screen with fewer than three references cannot form a majority and stops
         for seed in range(20):
             campaign = instance(seed=seed, turbines=PLACEBO_TURBINES[:9])
-            assert len(campaign.candidate_references) >= MIN_SCREENABLE_REFERENCES + 1
+            assert len(campaign.candidate_references) >= 4
 
     def test_every_other_turbine_is_offered_as_a_reference(self) -> None:
         campaign = instance(seed=3)

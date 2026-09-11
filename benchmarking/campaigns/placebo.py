@@ -18,7 +18,6 @@ first run downloads and caches the Hill of Towie SCADA (Zenodo) and ERA5 (Open-M
 from __future__ import annotations
 
 import logging
-import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -36,8 +35,9 @@ from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.report import write_campaign_report
 from benchmarking.campaigns.runner import CampaignRunner
 from benchmarking.harness.northing import era5_direction
-from benchmarking.synthetic import HOT_RATED_POWER_KW, ToggleSchedule
+from benchmarking.synthetic import HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M, ToggleSchedule
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
+from wind_up.campaign_design import design_campaign
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -152,16 +152,20 @@ PLACEBO_INSTANCE_KEEP_AS_REFERENCE = ("T17",)
 PLACEBO_INSTANCE_LAST_CLEAN = pd.Timestamp("2021-01-01", tz="UTC")
 # A treated period reaching past this rests on a 2019-only baseline, which reads far worse.
 PLACEBO_INSTANCE_LAST_GOOD_END = pd.Timestamp("2020-01-01", tz="UTC")
-# How many turbines an instance may upgrade: at least two, and never so many that the reference
-# pool drops below what the screen needs to form a majority.
-MIN_SCREENABLE_REFERENCES = 3
-PLACEBO_INSTANCE_MIN_UPGRADED = 2
-PLACEBO_INSTANCE_MAX_UPGRADED_FRACTION = 1 / 3
-# How many of a test turbine's closest neighbours are held back as references.
-PLACEBO_INSTANCE_NEAREST_REFS = 2
+PLACEBO_WIND_FARM = "Hill of Towie"
 
-# One degree of latitude, for ranking neighbours on a single site.
-_METRES_PER_DEGREE = 111_320.0
+
+def placebo_layout(coords: dict[str, tuple[float, float]]) -> pd.DataFrame:
+    """Return a campaign-design layout of the Hill of Towie turbines at ``coords``."""
+    return pd.DataFrame(
+        {
+            "name": list(coords),
+            "latitude": [lat for lat, _ in coords.values()],
+            "longitude": [lon for _, lon in coords.values()],
+            "rotor_diameter_m": HOT_ROTOR_DIAMETER_M,
+            "wind_farm": PLACEBO_WIND_FARM,
+        }
+    )
 
 
 def placebo_instance(
@@ -176,80 +180,31 @@ def placebo_instance(
     A handover built from the checked-in defaults would identify its own campaign, so both are
     drawn. Nothing is injected, so the truth stays 0.
 
-    Test turbines are drawn one at a time, and each draw takes its two nearest neighbours out of
-    the running, so every test turbine keeps nearby references to be compared against -- how a real
-    campaign is designed, and not what an unconstrained draw gives.
+    The upgraded turbines are a campaign design (:func:`wind_up.campaign_design.design_campaign`)
+    with as many test turbines as a compliant design allows, the seed ordering the priority.
 
     :param mode: ``"prepost"`` or ``"toggle"``
     :param seed: the draw's seed; the same seed gives the same campaign
-    :param coords: turbine name to ``(latitude, longitude)``, which the spacing rule reads
+    :param coords: turbine name to ``(latitude, longitude)``, which the campaign design reads
     :param turbines: every participating turbine; defaults to :data:`PLACEBO_TURBINES`
     """
     participating = list(PLACEBO_TURBINES if turbines is None else turbines)
     rng = np.random.default_rng(seed)
-    wanted = int(rng.integers(PLACEBO_INSTANCE_MIN_UPGRADED, _max_upgraded(participating) + 1))
-    upgraded = _spaced_draw(rng, participating=participating, coords=coords, wanted=wanted)
+    design = design_campaign(
+        placebo_layout({w: coords[w] for w in participating}),
+        reference_only=[w for w in PLACEBO_INSTANCE_KEEP_AS_REFERENCE if w in participating],
+        seed=int(rng.integers(2**31)),
+    )
     year = int(rng.choice(PLACEBO_INSTANCE_YEARS))
     month = int(rng.integers(1, 13))
     start = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
     return placebo_campaign(
         mode,
-        upgraded=upgraded,
+        upgraded=sorted(design.test_turbines),
         turbines=participating,
         coords={w: coords[w] for w in participating},
         campaign_start=start,
     )
-
-
-def _spaced_draw(
-    rng: np.random.Generator,
-    *,
-    participating: list[str],
-    coords: dict[str, tuple[float, float]],
-    wanted: int,
-) -> list[str]:
-    """Draw test turbines one at a time, retiring everyone a pick would leave without references.
-
-    Nearest is not symmetric, so each pick retires both its own nearest neighbours and any turbine
-    that holds the pick among *its* nearest -- otherwise a later pick could end up beside an
-    earlier one.
-    """
-    available = [w for w in participating if w not in PLACEBO_INSTANCE_KEEP_AS_REFERENCE]
-    nearest = {
-        w: set(_nearest(w, among=participating, coords=coords, count=PLACEBO_INSTANCE_NEAREST_REFS))
-        for w in participating
-    }
-    chosen: list[str] = []
-    while available and len(chosen) < wanted:
-        pick = str(rng.choice(available))
-        chosen.append(pick)
-        available = [w for w in available if w != pick and w not in nearest[pick] and pick not in nearest[w]]
-    if len(chosen) < PLACEBO_INSTANCE_MIN_UPGRADED:
-        msg = (
-            f"the spacing rule left only {len(chosen)} test turbine(s) on a farm of "
-            f"{len(participating)}; it needs at least {PLACEBO_INSTANCE_MIN_UPGRADED}"
-        )
-        raise ValueError(msg)
-    return sorted(chosen)
-
-
-def _nearest(turbine: str, *, among: list[str], coords: dict[str, tuple[float, float]], count: int) -> list[str]:
-    """Return the ``count`` turbines of ``among`` closest to ``turbine``."""
-    others = [w for w in among if w != turbine]
-    return sorted(others, key=lambda w: _separation(coords[turbine], coords[w]))[:count]
-
-
-def _separation(a: tuple[float, float], b: tuple[float, float]) -> float:
-    """Approximate ground distance in metres between two lat/long points on one site."""
-    mean_lat = math.radians((a[0] + b[0]) / 2)
-    return math.hypot((a[0] - b[0]) * _METRES_PER_DEGREE, (a[1] - b[1]) * _METRES_PER_DEGREE * math.cos(mean_lat))
-
-
-def _max_upgraded(participating: Sequence[str]) -> int:
-    """Return the most turbines an instance may upgrade on a farm of this size."""
-    by_fraction = int(len(participating) * PLACEBO_INSTANCE_MAX_UPGRADED_FRACTION)
-    by_pool = len(participating) - MIN_SCREENABLE_REFERENCES - 1
-    return max(PLACEBO_INSTANCE_MIN_UPGRADED, min(by_fraction, by_pool))
 
 
 def run_placebo(

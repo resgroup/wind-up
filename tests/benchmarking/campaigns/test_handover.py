@@ -23,9 +23,8 @@ TURBINES = ("T01", "T02", "T03", "T04", "T05", "T06", "T17")
 
 def _campaign() -> SyntheticCampaign:
     """A randomised placebo over a small slice of the farm."""
-    campaign = placebo_instance("prepost", seed=1, turbines=TURBINES)
-    campaign.coords = {w: (57.5 + i * 0.01, -3.25) for i, w in enumerate(TURBINES)}
-    return campaign
+    coords = {w: (57.5 + i * 0.0036, -3.25) for i, w in enumerate(TURBINES)}
+    return placebo_instance("prepost", seed=1, turbines=TURBINES, coords=coords)
 
 
 def _dataset(campaign: SyntheticCampaign) -> SyntheticDataset:
