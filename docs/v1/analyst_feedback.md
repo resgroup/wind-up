@@ -90,6 +90,7 @@ Kept so nothing is lost. Same status field; promote into a numbered entry when t
 
 | ask | raised by | status |
 |---|---|---|
+| Say which directory to run from. §2 gives the command with no working directory, and never says the declaration's `data:` paths resolve against it | a human analyst, 2026-09-12 | untriaged |
 | `conditional.csv` extended to the reference turbines, so per-bin shape has a noise floor | instance-f | untriaged |
 | A wind-direction axis in `conditional.csv` (30° bins) — the axis wake steering lives on | instance-g | untriaged |
 | A yaw-offset table: median (nacelle position − reference direction), ON minus OFF, by sector | instance-g | untriaged |
