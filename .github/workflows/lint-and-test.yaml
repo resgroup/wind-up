@@ -7,7 +7,6 @@ on:
   pull_request:
     branches:
       - main
-      # v1 feature branches PR into v1 rather than main, so without this they get no CI at all.
       - v1
 
 permissions:
