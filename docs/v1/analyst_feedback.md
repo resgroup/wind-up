@@ -88,9 +88,10 @@ names.
 ## AF4 — Write the run's log into `--out`, as v0 does
 
 **Raised by:** a human analyst, 2026-09-12.
-**Status:** untriaged.
+**Status:** **done**, b6a5720 — `run_declaration` writes `<out>/run.log`, and the documentation
+says it is there and why to read it.
 
-`python -m benchmarking.campaigns run` configures logging with `logging.basicConfig`, which installs
+`python -m benchmarking.campaigns run` configured logging with `logging.basicConfig`, which installs
 a console handler and nothing else, so the run leaves no log behind. v0's `setup_logger`
 (`examples/helpers.py`) adds a `FileHandler` beside the console one and the examples write
 `analysis.log` into the analysis output directory.
@@ -111,7 +112,7 @@ Kept so nothing is lost. Same status field; promote into a numbered entry when t
 
 | ask | raised by | status |
 |---|---|---|
-| Say which directory to run from. §2 gives the command and never says. (The `data:` paths resolve against the declaration's own directory, so only the path to `campaign.yaml` is relative to where you stand — which the reader also cannot tell) | a human analyst, 2026-09-12 | untriaged |
+| Say which directory to run from. §2 gave the command and never said. (The `data:` paths resolve against the declaration's own directory, so only the path to `campaign.yaml` is relative to where you stand) | a human analyst, 2026-09-12 | done, b6a5720 |
 | The `timing` block's commented `# prepost:` / `# toggle:` labels read as required keys, so the first attempt nested `prepost:` and `changeover:` under `mode:`. `mode` is then a mapping and the error reports its repr — `unknown timing.mode "{'prepost': None, ...}"` — rather than saying `mode` must be one of two strings | a human analyst, 2026-09-12 | untriaged |
 | `conditional.csv` extended to the reference turbines, so per-bin shape has a noise floor | instance-f | untriaged |
 | A wind-direction axis in `conditional.csv` (30° bins) — the axis wake steering lives on | instance-g | untriaged |
