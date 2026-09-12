@@ -61,7 +61,10 @@ stable either.
 ## AF3 — An `anemometer/` directory mirroring `northing/`
 
 **Raised by:** instance-f (its number 3), instance-g (its number 8).
-**Status:** untriaged.
+**Status:** untriaged, and **downgraded** — Alex, 2026-09-12: anemometer faults are coming out of
+the brief's failure-mode list and will not be injected into campaigns, because CF11 measured them
+at 0.21 pp worst case in prepost and exactly zero in toggle. What remains of this ask is that the
+campaign cannot see a real fault in the data, not that the fault changes the answer.
 
 The brief lists "an anemometer gain step or drift" among the known failure modes and **no output
 speaks to wind speed sensors at all**, while `northing/` covers the direction sensor thoroughly
