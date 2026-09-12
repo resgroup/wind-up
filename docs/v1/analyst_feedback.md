@@ -85,6 +85,24 @@ the *estimate* to this class of fault is smaller than the analysts assumed. That
 the ask: a campaign report that cannot see a 9% sensor step is missing a failure mode the brief
 names.
 
+## AF4 — Write the run's log into `--out`, as v0 does
+
+**Raised by:** a human analyst, 2026-09-12.
+**Status:** untriaged.
+
+`python -m benchmarking.campaigns run` configures logging with `logging.basicConfig`, which installs
+a console handler and nothing else, so the run leaves no log behind. v0's `setup_logger`
+(`examples/helpers.py`) adds a `FileHandler` beside the console one and the examples write
+`analysis.log` into the analysis output directory.
+
+This matters more here than it looks, because stdout is load-bearing in this tool and nothing else
+records it: the reference screen's thresholds, its minimum pool size, and the fact that it stopped
+early exist only in the log, and when it stops `reference_stability.csv` comes back header-only and
+silent. An analyst who closes the terminal has lost the only account of how the pool was judged.
+
+A campaign run is long enough that nobody watches it live, so the log is read afterwards or not at
+all. `--out` already exists and is the natural home.
+
 ---
 
 ## Also raised, not yet ranked
