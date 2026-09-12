@@ -37,6 +37,80 @@ if TYPE_CHECKING:
 
 GROUND_TRUTH_FILENAME = "ground_truth.json"
 
+# The brief an analyst is given: the prose an owner would send, and the menu of what the change and
+# the data problems could be. The menu is stated rather than hidden, so the question is which one
+# and how big rather than a guess at an unbounded space. Anemometer faults are not on it: CF11
+# priced them at 0.21 pp in prepost and zero in toggle, so they are neither injected nor asked about.
+BRIEF_TEMPLATE = """\
+# {farm} — campaign assessment
+
+We made a change to part of the {farm} fleet and need to know what it was worth.
+
+Work was carried out on **{upgraded}**. {timing} The remaining turbines in the data were not
+touched and are yours to use as references.
+
+The campaign was designed before the work began; the design documents are in `design/`.
+
+We have pulled SCADA from **{start}** to **{end}** — see `data/`. Please declare the campaign in
+`campaign.yaml`, run it, and tell us:
+
+**(a)** what kind of change this was, and how big it was;
+**(b)** whether anything was wrong with the data — any turbine misbehaving, any sensor drifting,
+any reference you would not trust.
+
+Be honest about the size of the number relative to the noise. If the answer is "we cannot
+distinguish this from zero", that is a useful answer and we would rather have it than a
+confident one that is wrong.
+
+## What the change could have been
+
+Our contractors do a limited set of things, so the answer to (a) is one of:
+
+- a **flat efficiency change** across the whole operating range (blade cleaning, fouling, add-ons)
+- a **wind-speed-dependent efficiency change**, biggest in mid winds (an aerodynamic blade upgrade)
+- an efficiency change that **varies with some other condition** (turbulence, say)
+- a change to the turbine's **rated power** (an uprate or a downrate)
+- **wake steering**, where one turbine is yawed deliberately to benefit another
+- **nothing at all** — sometimes the work is cancelled, or does not do what was promised
+
+For (b), the data problems we have seen before are: a **nacelle-position step** (a turbine's
+direction sensor re-zeroed), a **reference turbine that changed** during the period, and
+**missing data**.
+
+## Getting started
+
+Read `docs/running-a-campaign.md`, and `docs/designing-a-campaign.md` for how to read `design/`.
+Everything you need is in this directory; run from here.
+"""
+
+
+def campaign_brief(campaign: SyntheticCampaign, *, farm: str = "Hill of Towie") -> str:
+    """Return the brief for ``campaign``: who was treated, when, and what to report.
+
+    :param campaign: the declared campaign; only facts an analyst would know are used
+    :param farm: the wind farm's name, as the brief addresses it
+    """
+    timing = campaign.upgrade_timing
+    start, end = campaign.analysis_period
+    if isinstance(timing, ToggleSchedule):
+        began = timing.start if timing.start is not None else start
+        minutes = int(timing.period.total_seconds() // 60)
+        prose = (
+            f"The change was run as a **toggle**: from **{began:%d %B %Y}** the turbines alternated "
+            f"between changed and unchanged in blocks, on a full cycle of **{minutes} minutes** (so "
+            f"half that on, half off). Everything before that date is untouched baseline."
+        )
+    else:
+        prose = f"Treatment began on **{pd.Timestamp(timing):%d %B %Y}** and everything after that date is post-change."
+    return BRIEF_TEMPLATE.format(
+        farm=farm,
+        upgraded=", ".join(campaign.upgraded_turbines),
+        timing=prose,
+        start=f"{start:%d %B %Y}",
+        end=f"{end:%d %B %Y}",
+    )
+
+
 # Columns of the design's turbines table the analyst does not get: a placebo's priority is a random
 # shuffle, and would read as expected uplift.
 WITHHELD_DESIGN_COLUMNS = ("priority_rank", "from_test_priority", "outcome", "reason")

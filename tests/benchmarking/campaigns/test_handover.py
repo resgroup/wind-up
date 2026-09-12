@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import pytest
 
-from benchmarking.campaigns.handover import GROUND_TRUTH_FILENAME, write_handover
+from benchmarking.campaigns.handover import GROUND_TRUTH_FILENAME, campaign_brief, write_handover
 from benchmarking.campaigns.placebo import placebo_design, placebo_instance, placebo_layout
 from benchmarking.synthetic import HOT_COLUMNS
 from wind_up.campaign_design import design_campaign
@@ -126,6 +126,38 @@ class TestTheCampaignDesign:
 
     def test_no_design_means_no_design_directory(self, tmp_path: Path) -> None:
         assert not (_handover(tmp_path) / "analyst" / "design").exists()
+
+
+class TestTheBrief:
+    def test_it_names_the_treated_turbines_and_the_changeover(self) -> None:
+        campaign = _campaign()
+        brief = campaign_brief(campaign)
+        for turbine in campaign.upgraded_turbines:
+            assert turbine in brief
+        assert f"{pd.Timestamp(campaign.upgrade_timing):%d %B %Y}" in brief
+
+    def test_it_names_the_period_the_scada_covers(self) -> None:
+        campaign = _campaign()
+        brief = campaign_brief(campaign)
+        for edge in campaign.analysis_period:
+            assert f"{edge:%d %B %Y}" in brief
+
+    def test_a_toggle_campaign_is_described_as_blocks_with_its_period(self) -> None:
+        campaign = placebo_instance("toggle", seed=1, turbines=TURBINES, coords=COORDS)
+        brief = campaign_brief(campaign)
+        assert "toggle" in brief
+        assert f"{int(campaign.upgrade_timing.period.total_seconds() // 60)} minutes" in brief
+
+    def test_it_offers_the_candidate_classes_including_nothing_at_all(self) -> None:
+        # the menu is given, not hidden: the question is which one and how big
+        brief = campaign_brief(_campaign())
+        for candidate in ("flat efficiency", "wind-speed-dependent", "rated power", "wake steering"):
+            assert candidate in brief
+        assert "nothing at all" in brief
+
+    def test_it_does_not_ask_about_anemometer_faults(self) -> None:
+        # they are not injected either: CF11 priced them at 0.21 pp in prepost and zero in toggle
+        assert "anemometer" not in campaign_brief(_campaign()).lower()
 
 
 class TestTheTemplateIsBlank:

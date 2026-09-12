@@ -1028,11 +1028,9 @@ up.
 
 - **Document the declaration W1a delivered**, and fold in every gap W3 found — that
   list, not guesswork, is what the release documentation has to answer.
-- **Track the W3 campaign brief.** The brief an analyst is given, and the failure-mode menu
-  it names, live only in a scratch build script; `handover.py` ships `CAMPAIGN_TEMPLATE` but
-  not the brief. The wording a dry run is judged against should be in the repo beside the
-  handover writer, so a run is reproducible and changes to the menu (such as dropping
-  anemometer faults, 2026-09-12) are reviewable.
+- ~~**Track the W3 campaign brief.**~~ Done 2026-09-12: `handover.campaign_brief` renders it
+  beside `CAMPAIGN_TEMPLATE`, so the wording a dry run is judged against is in the repo and
+  changes to its menus are reviewable.
 - **Release the campaign design utility.** `wind_up.campaign_design` (with `wind_up.geodesy`
   and `wind_up.layout`) already lives in `src/wind_up` and is documented in
   `docs/designing-a-campaign.md`; it chooses test turbines compliant with the methodology's
@@ -1068,7 +1066,10 @@ answer is objectively scoreable rather than a matter of opinion.
 **Shape**
 - **Generator side.** Build a synthetic dataset from a known upgrade profile and a known
   fault set, plus a short campaign prompt (campaign brief) written as narrative — the prose an owner would
-  send an analyst. Ground truth is recorded out of band.
+  send an analyst. `handover.campaign_brief` renders it from the campaign, so its wording and the
+  menus it offers are tracked rather than retyped per run. Ground truth is recorded out of band.
+- **Anemometer faults are neither injected nor asked about** (2026-09-12): CF11 priced them at
+  0.21 pp in prepost and exactly zero in toggle, so a dry run spent on them measures nothing.
 - **Test turbines are designed, not drawn.** `placebo_instance` chooses them with
   `wind_up.campaign_design`, so every test turbine keeps three nearby references and the front
   row gets its fair share, as a real campaign would be designed; an unconstrained draw clustered
