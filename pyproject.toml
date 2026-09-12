@@ -84,6 +84,8 @@ dev = [
     'retry-requests',
     'lightgbm',
     'scikit-learn',
+    "pytest-xdist>=3.8.0",
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -207,8 +209,10 @@ sequence = [
 
 [tool.poe.tasks.test-fast]
 help = "Runs tests that are not marked as slow"
+# -n auto --dist worksteal: the suite is CPU-bound on LightGBM fits, and the per-test cost is very
+# uneven, so work-stealing packs the workers better than the default round-robin.
 sequence = [
-    { cmd = 'coverage run --source wind_up_v0,wind_up -m pytest -m "not slow"' },
+    { cmd = 'pytest -m "not slow" -n auto --dist worksteal --cov=wind_up --cov=wind_up_v0 --cov-report=' },
     { cmd = "coverage report -m" },
 ]
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import pandas as pd
 import pytest
 
@@ -166,10 +168,21 @@ def test_declared_faults_reach_the_campaign() -> None:
 # --- the randomised instance, so a handover does not identify itself ---------------------------
 
 
+@functools.cache
 def instance(mode: str = "prepost", *, seed: int, turbines: tuple[str, ...] | None = None):  # noqa: ANN201
-    """A randomised instance on the straight-line fixture geometry."""
+    """A randomised instance on the straight-line fixture geometry.
+
+    Cached: the design solve behind an instance is the expensive part, and the tests below read the
+    same seeds repeatedly. Treat the result as read-only.
+    """
     names = turbines if turbines is not None else tuple(LINE_COORDS)
     return placebo_instance(mode, seed=seed, turbines=names, coords={w: LINE_COORDS[w] for w in names})
+
+
+@functools.cache
+def hot_instance(mode: str = "prepost", *, seed: int):  # noqa: ANN201
+    """The same, on the real Hill of Towie layout. Read-only, as above."""
+    return placebo_instance(mode, seed=seed, coords=HOT_COORDS)
 
 
 def complies(campaign, coords: dict[str, tuple[float, float]]) -> bool:  # noqa: ANN001
@@ -190,7 +203,7 @@ class TestTheInstanceIsACompliantCampaignDesign:
 
     def test_every_instance_on_the_real_layout_complies(self) -> None:
         for seed in range(10):
-            campaign = placebo_instance("prepost", seed=seed, coords=HOT_COORDS)
+            campaign = hot_instance(seed=seed)
             assert complies(campaign, HOT_COORDS), f"seed {seed}"
 
     def test_every_instance_tests_one_turbine_fewer_than_a_compliant_design_allows(self) -> None:
@@ -199,10 +212,10 @@ class TestTheInstanceIsACompliantCampaignDesign:
             placebo_layout(HOT_COORDS), reference_only=PLACEBO_INSTANCE_KEEP_AS_REFERENCE
         ).max_test_turbines
         for seed in range(5):
-            assert len(placebo_instance("prepost", seed=seed, coords=HOT_COORDS).upgraded_turbines) == most - 1
+            assert len(hot_instance(seed=seed).upgraded_turbines) == most - 1
 
     def test_instances_on_the_real_layout_vary_their_test_turbines(self) -> None:
-        drawn = {tuple(placebo_instance("prepost", seed=s, coords=HOT_COORDS).upgraded_turbines) for s in range(10)}
+        drawn = {tuple(hot_instance(seed=s).upgraded_turbines) for s in range(10)}
         assert len(drawn) >= 5
 
     def test_a_farm_that_supports_one_test_turbine_still_gets_one(self) -> None:

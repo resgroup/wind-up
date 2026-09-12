@@ -12,7 +12,7 @@ import dataclasses
 import logging
 import tempfile
 from dataclasses import replace
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -32,6 +32,9 @@ from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.toggle import resolve_toggle
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _TURBINE = "TurbineName"
 _POWER = "wtc_ActPower_mean"
@@ -57,8 +60,15 @@ _COLUMNS = ColumnSchema(
 # Per-turbine north miscalibration the northed column removes.
 _YAW_OFFSETS = {"T1": 0.0, "R1": 7.0, "R2": -5.0, "R3": 3.0}
 
-# Small/fast LightGBM so the toy data (a few thousand rows) is fit well.
-_FAST_PARAMS = {"n_estimators": 120, "learning_rate": 0.1, "num_leaves": 31, "min_child_samples": 20}
+# Small/fast LightGBM so the toy data (a few thousand rows) is fit well. One thread per fit: the
+# toy frames are too small to gain from LightGBM's threading, and the test run is parallel.
+_FAST_PARAMS = {
+    "n_estimators": 60,
+    "learning_rate": 0.1,
+    "num_leaves": 31,
+    "min_child_samples": 20,
+    "n_jobs": 1,
+}
 
 
 def _toy_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0) -> pd.DataFrame:
@@ -901,6 +911,7 @@ def _screen_method(**overrides: object) -> PowerModelMethod:
         "conditions": (),
         "screen_floor": 0.01,
         "screen_min_campaign_days": 0.0,
+        "model_params": _FAST_PARAMS,
         **overrides,
     }
     return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
@@ -1373,11 +1384,14 @@ class TestPassClonesWriteNoDiagnostics:
     def test_diagnostics_are_written_by_default(self) -> None:
         assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).write_diagnostics
 
-    def test_screening_leaves_no_temp_directories(self, tmp_path: Path) -> None:
-        before = set(Path(tempfile.gettempdir()).glob("power_model_*"))
+    def test_screening_leaves_no_temp_directories(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # its own temp root, so a parallel worker's directories are not counted as this run's
+        temp_root = tmp_path / "tmp"
+        temp_root.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
         mi, _ = _screen_case(step=0.08)
-        _screen_method(out_dir=tmp_path).estimate(mi)
-        assert set(Path(tempfile.gettempdir()).glob("power_model_*")) == before
+        _screen_method(out_dir=tmp_path / "out").estimate(mi)
+        assert list(temp_root.glob("power_model_*")) == []
 
     def test_the_screen_config_reaches_the_run_config(self) -> None:
         """Without it the run-config YAML cannot reproduce whether screening was on, or at what floor."""
