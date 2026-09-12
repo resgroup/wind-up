@@ -4,18 +4,27 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from typing import TYPE_CHECKING
 
 import pandas as pd
 import pytest
 
-from benchmarking.campaigns.composed import WIND_UP, default_out_dir, run_declaration, wind_up_method
+from benchmarking.campaigns.composed import (
+    _LOG_HANDLER_NAME,
+    LOG_FILENAME,
+    WIND_UP,
+    default_out_dir,
+    run_declaration,
+    wind_up_method,
+)
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.synthetic import HOT_COLUMNS
 
 from .test_loader import load, write_campaign
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 # Configuration that belongs to the run, not to the method, so it is excluded from the comparison.
@@ -77,6 +86,41 @@ class TestTheOutputDirectory:
     ) -> None:
         monkeypatch.setenv("WIND_UP_BENCHMARKING_OUTPUT_DIR", str(tmp_path))
         assert default_out_dir("other").name == "other"
+
+
+class TestTheRunLog:
+    """Some of what a run decides is reported only in the log, so the log has to outlive the run."""
+
+    @pytest.fixture(autouse=True)
+    def _detach(self) -> Iterator[None]:
+        """Leave the root logger as the test found it."""
+        yield
+        root = logging.getLogger()
+        for handler in [h for h in root.handlers if getattr(h, "name", None) == _LOG_HANDLER_NAME]:
+            root.removeHandler(handler)
+            handler.close()
+
+    def _run(self, tmp_path: Path, out_dir: Path) -> None:
+        """Start a run that dies on the fixture's stub parquet, after the log is opened."""
+        with pytest.raises(Exception, match=r"[Pp]arquet"):
+            run_declaration(write_campaign(tmp_path), out_dir=out_dir, era5_hourly_df=era5())
+
+    def test_it_is_written_into_the_output_directory(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        out_dir = tmp_path / "out"
+        with caplog.at_level(logging.INFO):
+            self._run(tmp_path, out_dir)
+        assert "Running campaign 'demo'" in (out_dir / LOG_FILENAME).read_text()
+
+    def test_a_second_run_logs_to_its_own_directory_and_not_the_first(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        first, second = tmp_path / "first", tmp_path / "second"
+        with caplog.at_level(logging.INFO):
+            self._run(tmp_path, first)
+            before = (first / LOG_FILENAME).read_text()
+            self._run(tmp_path, second)
+        assert "Running campaign 'demo'" in (second / LOG_FILENAME).read_text()
+        assert (first / LOG_FILENAME).read_text() == before
 
 
 def test_the_declaration_is_echoed_before_the_run_so_a_failure_still_leaves_it(tmp_path: Path) -> None:

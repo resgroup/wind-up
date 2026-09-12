@@ -44,6 +44,11 @@ WIND_UP = "wind-up"
 # What the resolved declaration is echoed to, so a mis-declared timezone is visible after a run.
 RESOLVED_FILENAME = "resolved_campaign.json"
 
+# Where the run's log is kept. Some of what a run decides -- the reference screen's thresholds, its
+# pool size, whether it stopped early -- is reported only in the log.
+LOG_FILENAME = "run.log"
+_LOG_HANDLER_NAME = "campaign_run_log"
+
 OUTPUT_DIR_ENV = "WIND_UP_BENCHMARKING_OUTPUT_DIR"
 
 
@@ -80,6 +85,28 @@ def default_out_dir(name: str) -> Path:
     return root / name
 
 
+def log_to_file(out_dir: Path) -> Path:
+    """Send the root logger to ``out_dir``/``run.log`` as well as wherever it already goes.
+
+    Replaces the file this added for any previous run in the same process, so a second run writes
+    to its own directory and not also to the first one's. Records reach the file at the root
+    logger's level, which the command line sets to INFO.
+
+    :param out_dir: the run's output directory, which must exist
+    :return: the log file's path
+    """
+    root = logging.getLogger()
+    for stale in [h for h in root.handlers if getattr(h, "name", None) == _LOG_HANDLER_NAME]:
+        root.removeHandler(stale)
+        stale.close()
+    path = out_dir / LOG_FILENAME
+    handler = logging.FileHandler(path, mode="w")
+    handler.name = _LOG_HANDLER_NAME
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root.addHandler(handler)
+    return path
+
+
 def run_declaration(
     path: str | Path, *, out_dir: Path | None = None, era5_hourly_df: pd.DataFrame | None = None
 ) -> CampaignReport:
@@ -94,8 +121,9 @@ def run_declaration(
     declaration = load_declaration(path)
     out_dir = out_dir if out_dir is not None else default_out_dir(declaration.name)
     out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_to_file(out_dir)
     (out_dir / RESOLVED_FILENAME).write_text(json.dumps(declaration.resolved(), indent=2))
-    logger.info("Running campaign %r into %s", declaration.name, out_dir)
+    logger.info("Running campaign %r into %s, logging to %s", declaration.name, out_dir, log_path)
 
     scada_df = pd.read_parquet(declaration.scada_path)
     reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration)

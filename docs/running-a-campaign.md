@@ -86,9 +86,17 @@ later runs on that site reuse the cache.
 python -m benchmarking.campaigns run campaign.yaml --out out
 ```
 
+Run it from the directory holding `campaign.yaml`, or give the path to it; the `data:` paths inside
+the declaration are read relative to the declaration itself, so a campaign folder can be moved or
+copied whole.
+
 `--out` is the directory the report is written to, and it is used exactly as given: `name` does
 **not** add a subdirectory under it. Give each run its own `--out`, or a second run will overwrite
 the first. Omit `--out` and the report goes to `$WIND_UP_BENCHMARKING_OUTPUT_DIR/<name>` instead.
+
+The run also writes its log to `<out>/run.log`. Read it: some of what the run decided is reported
+nowhere else, in particular the reference screen's thresholds, how big a pool it had, and whether
+it stopped early.
 
 Expect roughly **three minutes per upgraded turbine**, plus a couple of minutes for the shared
 northing step. It is not stuck.
