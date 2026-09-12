@@ -471,6 +471,9 @@ HOT_RATED_POWER_KW = 2300.0
 # Hub height of the Hill of Towie turbines (m); feeds the ERA5 hub-height wind-speed derivation.
 HOT_HUB_HEIGHT_M = 59.0
 
+# Rotor diameter of the Hill of Towie turbines (m), all Siemens SWT-2.3-82.
+HOT_ROTOR_DIAMETER_M = 82.0
+
 # Approximate Hill of Towie site coordinates (deg, east-positive longitude); used as the default
 # site for the wake-steering solar/diurnal model.
 HOT_LAT = 57.50

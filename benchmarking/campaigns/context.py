@@ -23,35 +23,33 @@ logger = logging.getLogger(__name__)
 def context_for(spec: CampaignSpec, *, turbine: str, scada_df: pd.DataFrame) -> CampaignContext:
     """Return the context for estimating ``turbine``'s uplift from ``scada_df``.
 
-    References are the campaign's declared candidates that have data, so a turbine the campaign
-    does not offer is never used however its data looks. A declared candidate the frame carries no
-    rows for is dropped with a warning, since it leaves a smaller pool than the campaign asked for.
-    Each turbine's validity comes from the campaign's own per-turbine rule.
+    References are the campaign's declared candidates that have data and are not excluded, so a
+    turbine the campaign does not offer is never a reference however its data looks. A declared
+    candidate the frame carries no rows for is dropped with a warning, since it leaves a smaller pool
+    than the campaign asked for. Every other turbine with data is a wake contributor, declared or
+    not. Each turbine's validity comes from the campaign's own per-turbine rule.
 
     :param spec: the campaign's public facts
     :param turbine: the upgraded turbine being estimated
     :param scada_df: the frame the context must cover; its timestamps set the validity index
     """
     present = {str(t) for t in scada_df[spec.turbine_col].unique()}
-    references = sorted((set(spec.candidate_references) & present) - {turbine})
-    undelivered = sorted(set(spec.candidate_references) - present - {turbine})
+    offered = set(spec.candidate_references) - set(spec.excluded_turbines)
+    references = sorted((offered & present) - {turbine})
+    undelivered = sorted(offered - present - {turbine})
     if undelivered:
         logger.warning(
             "%s: the campaign offers %d candidate reference(s) but the data carries no rows for %s, so the "
             "estimate runs on a pool of %d. Reference count drives accuracy.",
             turbine,
-            len(spec.candidate_references),
+            len(offered),
             undelivered,
             len(references),
         )
-    # Validity covers every declared turbine with data, not just this estimate's references: a
-    # method co-analysing several upgraded turbines keeps them via ``select(also=...)`` and their
-    # rows must be screened too.
-    declared = sorted((set(spec.upgraded_turbines) | set(spec.candidate_references)) & present)
-    covered = sorted({turbine, *references, *declared})
+    wake_contributors = sorted(present - {turbine} - set(references))
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
     valid = pd.DataFrame(
-        {wtg: spec.usable_mask(wtg, index) for wtg in covered},
+        {wtg: spec.usable_mask(wtg, index) for wtg in sorted(present)},
         index=index,
         dtype=bool,
     )
@@ -60,5 +58,6 @@ def context_for(spec: CampaignSpec, *, turbine: str, scada_df: pd.DataFrame) -> 
         timing=spec.timing_for(turbine),
         turbine_col=spec.turbine_col,
         candidate_references=references,
+        wake_contributors=wake_contributors,
         valid_for_uplift=valid,
     )

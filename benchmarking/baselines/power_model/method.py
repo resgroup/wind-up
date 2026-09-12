@@ -312,6 +312,28 @@ def _clip_predictions(pred: np.ndarray, *, y_train: np.ndarray, rated_power_kw: 
     return np.clip(pred, lower, upper)
 
 
+def _reference_input(
+    mi: MethodInput, *, target: str, references: Sequence[str], timing: pd.Timestamp | None = None
+) -> MethodInput:
+    """Return the input for estimating reference ``target`` against ``references``.
+
+    Every turbine the campaign's estimate keeps stays in, so the test turbine and any reference left
+    out of ``references`` join the wake contributors.
+
+    :param timing: the contrast to estimate across; the campaign's own when ``None``
+    """
+    context = mi.context
+    kept = [mi.test_wtg, *context.candidate_references, *context.wake_contributors]
+    sub_context = dataclasses.replace(
+        context,
+        test_wtg=target,
+        candidate_references=list(references),
+        wake_contributors=[w for w in kept if w != target and w not in set(references)],
+        timing=context.timing if timing is None else timing,
+    )
+    return MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
+
+
 @dataclass
 class PowerModelMethod:
     """Pluggable counterfactual power-model uplift estimator (prepost and toggle).
@@ -1006,7 +1028,11 @@ class PowerModelMethod:
         extra_cols: tuple[str, ...],
         power_free: Sequence[str],
     ) -> pd.DataFrame:
-        """Return reference features for ``scada``; ``power_free`` references carry no power columns."""
+        """Return reference features for ``scada``; ``power_free`` references carry no power columns.
+
+        The context's wake contributors that ``scada`` carries data for join as wake-only turbines.
+        """
+        present = {str(t) for t in scada[mi.turbine_col].unique()}
         return build_reference_features(
             scada,
             test_wtg=mi.test_wtg,
@@ -1018,6 +1044,7 @@ class PowerModelMethod:
             include_availability=self.availability_feature,
             direction_col=self.columns.northed("nacelle_position") if self.direction_feature else None,
             power_free=power_free,
+            wake_only=[w for w in mi.context.wake_contributors if w in present],
             waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
         )
 
@@ -1047,8 +1074,7 @@ class PowerModelMethod:
             refs = [r for r in surviving if r != target]
             if not refs:
                 continue
-            sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=refs)
-            sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
+            sub_input = _reference_input(mi, target=target, references=refs)
             energy, n_records = self._upgraded_energy(sub_input, turbine=target)
             uplift = reusable[target] if target in reusable else self._reference_uplift(clone, sub_input)
             rows.append(
@@ -1217,8 +1243,7 @@ class PowerModelMethod:
         causes: dict[str, str] = {}
 
         def estimate_one(target: str, refs: list[str]) -> float:
-            sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=list(refs), timing=timing)
-            sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
+            sub_input = _reference_input(mi, target=target, references=refs, timing=timing)
             try:
                 return float(clone.estimate(sub_input).p50_overall)
             except ValueError as e:

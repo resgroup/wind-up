@@ -140,7 +140,7 @@ so moved every frozen artefact at once. Read this before accepting any benchmark
 ## Suggested order
 
 `C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4 ✅] → W1a → C3 → C4 → R5 →
-C5 → R6 → C6 → C8 → W1b → W2`, with **W3 running continuously from W1a onward** rather
+C5 → R6 → C6 → C8 → C9 → W1b → W2`, with **W3 running continuously from W1a onward** rather
 than at one point in the line.
 
 The R-series lands after the C1/C2 foundation: **R1 (northing) before C3** so the
@@ -177,8 +177,11 @@ which only the thing it is looking for ever moves pitch or rpm. It is the last r
 issue for a reason: it is the only one that changes what *truth* means.
 
 **C8** (per-turbine change histories) lands **before W1b** so the generalized
-declaration is what gets frozen as public API at v1.0.0, not the flat one. C7 (drop
-`rlearner`, ✅ done) was independent.
+declaration is what gets frozen as public API at v1.0.0, not the flat one. **C9**'s
+remaining time-ranged form (test turbines as wake contributors; the whole-turbine form
+landed in W1a) follows it for the same reason — it changes the `CampaignContext` seam W2
+publishes — and because C8's per-turbine timeline is what makes the wake-only role
+time-ranged. C7 (drop `rlearner`, ✅ done) was independent.
 
 **Done so far:** C0, W0, C7, C1, C2, R1, R2, R3 and R4. **Next: C3**, which inherits the
 shared northing step R1 landed and the reference screen R3 landed.
@@ -493,6 +496,54 @@ mid-period is declared and run end-to-end, using each reference only over its va
 records; a named change appears in report and plot titles and an unnamed one falls back
 to neutral language; the neutral vocabulary decision is recorded and applied, with
 "window" left meaning one thing in the harness.
+
+---
+
+## C9 — Test turbines as wake contributors (power-free, not absent) — whole-turbine form ✅
+
+**Goal:** let a turbine that is not a valid *reference* still contribute what it
+physically does to its neighbours — its wake — instead of being dropped from the
+estimate's frame entirely.
+
+**Done (whole-turbine form, pulled into W1a, `4a40487`).** `CampaignContext` carries a
+`wake_contributors` role: every turbine in the frame that is neither the test turbine nor
+one of its candidate references. `select()` keeps them, and `power_model` feeds them to
+`build_reference_features` as wake-only (availability, north-calibrated direction and a
+`waking` boolean, never power), so they are never candidate references, never screened,
+and absent from the reference-stability table. It went further than first scoped: every
+turbine with data stays in, not only the campaign's other changed turbines, and
+`excluded` became a role only, its data no longer dropped.
+
+**Remaining scope**
+- **Time-ranged form.** Under C8's per-turbine timelines a turbine is a valid reference
+  before its own change and a wake-only contributor after it, from the same timeline C8
+  already needs.
+- **The §3 question: is `waking` treatment-invariant?** The substitute for power is a
+  boolean thresholded on active power. For a Cp change it is very likely invariant — a
+  turbine above a few percent of rated already carries most of its thrust, so a low
+  threshold separates waking from parked while leaking almost none of the power level,
+  which is the argument `_waking_features` already makes for screened references. For
+  **wake steering (C5)** it is not: changing the neighbour's wake *is* the intervention,
+  so its waking and geometry state move *with* treatment and a post-treatment variable
+  would enter the feature matrix (design note §3). The concern is sharper here than for a
+  screened reference, where the suspected change is unknown and incidental rather than
+  known and simultaneous. Decide — on C5's fixture, with evidence — whether the role is
+  uniform or whether a steering campaign must keep the neighbour out of even the waking
+  feature.
+- **Re-record the frozen benchmarks.** The wake-only channels change the feature matrix,
+  so every C- and R-series campaign number moves. Not yet done: the `power_model`
+  benchmark JSONs are stale on W1a (PR 142).
+
+**Ordering:** re-recording the benchmarks is due now, on W1a. The time-ranged form goes
+with or just after **C8**, and **before W1b/W2**: C8's per-turbine timeline is what makes
+the role time-ranged, and it changes the `CampaignContext` seam W2 promotes to public API.
+The §3 decision wants C5's fixture, so C5 should land first.
+
+**Done when:** a campaign in which every turbine is changed runs end-to-end with each
+estimate still seeing its neighbours' wake; a campaign with staggered per-turbine dates
+uses each turbine as a reference only before its change and as a wake-only contributor
+after it; the §3 decision is recorded with the evidence behind it; and the frozen
+benchmarks are re-recorded.
 
 ---
 
@@ -867,11 +918,29 @@ Hoisted ahead of C3–C6 because nothing here depends on them, and because W3 ca
 without it. What W1a delivers is the *interface*; W1b settles whether it is *right*.
 
 **Scope**
-- Build `wind-up` in `benchmarking/baselines` (like every v1 method), composing
-  **`power_model` (definite) + the shared northing step (R1) + the reference-validity
-  screen (R3)**. R4 added no adaptation layer to compose (see its scope correction): what it
-  left behind is attribution and a pool-shrinkage warning, already inside those parts.
-  `toggle_specialist` inclusion is **TBD** and is settled in W1b, not here.
+- **Grow a truth-free path — the bulk of the work.** There is none today: `CampaignRunner`
+  takes a `SyntheticDataset` (which requires `original_df`), `Replicate` requires the same,
+  and `score_one` requires a `truth` argument. Every code path that runs a method is a
+  benchmark path that knows the answer, so real data cannot currently be run at all. W1a
+  extracts a truth-free core — `estimate_campaign()` over frame-level northing and clipping —
+  and puts `CampaignRunner` back on top of it as a thin truth-adding layer, its public
+  behaviour unchanged. This is what makes W3's isolation structural rather than promised: the
+  code that writes the analyst report has no access to the answer key. The analyst report
+  carries a reference-turbine self-uplift table (`MethodOutput.reference_uplifts`) alongside
+  per-turbine and farm uplift, which every real Hill of Towie report gives equal billing.
+- **`wind-up` is campaign-level, not a `Method`** — so it is *not* a new entry in
+  `benchmarking/baselines` alongside the other v1 methods. At method level it would be a
+  no-op relabel of `power_model`: the R3 reference-validity screen is already inside
+  `PowerModelMethod` (`reference_screen=True` by default), and the R1 northing step is
+  already applied farm-wide, upstream of every method. Northing runs once for the whole farm,
+  so it cannot sit inside a per-turbine method without misrepresenting its scope, and the farm
+  aggregation, the guards and the report are campaign-level already. `wind-up` is therefore
+  the shared northing step, plus one **`power_model`** built from the accepted defaults, plus
+  the truth-free report, behind one name and one YAML declaration. R4 added no adaptation
+  layer to compose (see its scope correction): what it left behind is attribution and a
+  pool-shrinkage warning, already inside those parts. `toggle_specialist` inclusion is **TBD**
+  and is settled in W1b, not here. The multi-method `carried_forward_methods` path is
+  untouched — the benchmark comparisons keep running three methods.
 - **A campaign is declared, not scripted** (moved here from W2, which is too late for
   W3 to use it). `CampaignSpec` gains a simple user-facing declaration — a YAML file it
   initializes from — so an analyst describes turbine roles, timing, exclusions and
@@ -880,11 +949,28 @@ without it. What W1a delivers is the *interface*; W1b settles whether it is *rig
   method instead.
 - A runner entry point that takes a declaration and writes an output directory, so a
   campaign can be run without importing anything.
+- **Other test turbines stay in every estimate as wake contributors — pulled forward from
+  C9 (added 2026-09-11), before the prepost dry run.** Today each test turbine's estimate
+  drops every *other* test turbine from its frame (`CampaignContext.select()` keeps only the
+  test turbine, the candidate references and `also`), so their waking state is missing from
+  the features where it matters: a designed campaign lets another test turbine sit among a
+  test turbine's four nearest, and an undesigned one puts them anywhere. Designed placebo instances now test 9 of Hill of Towie's 21 turbines,
+  so each estimate loses 8 wake neighbours, and a real campaign that upgrades the whole farm
+  would lose all of them. This is wrong, not a refinement. Do C9's whole-turbine form now: a
+  context role kept in the frame, never a candidate reference, never screened, always
+  power-free, filled from the campaign's other upgraded turbines and unioned into
+  `power_model`'s `power_free`. C9 keeps the time-ranged form (with C8) and the wake-steering
+  question, which a placebo or Cp-change campaign does not raise. Re-record the frozen
+  benchmarks, since the feature matrix changes.
 
 **Done when:** `wind-up` runs self-configured from a YAML-declared `CampaignSpec` on the
-C1/C2 campaigns, and W3 can be attempted against it. The composition is expected to keep
-moving as C3–C6 land — that is W1b's business, and W3 tests documentation and output
-legibility, not API stability.
+C1/C2 campaigns; a campaign runs on data with no ground truth and its report carries no
+truth columns; and **one W3 dry run has been driven end-to-end against the placebo**, with
+the transcript kept and the gaps it found recorded for W2 (done — see CF15 and the W3 gap
+list). **Still open:** every other test turbine reaches each estimate as a power-free wake
+contributor, measured on the placebo before and after, and then the first **prepost** dry
+run (only toggle has been run). The composition is expected to keep moving as C3–C6 land — that is W1b's business,
+and W3 tests documentation and output legibility, not API stability.
 
 ---
 
@@ -942,6 +1028,14 @@ up.
 
 - **Document the declaration W1a delivered**, and fold in every gap W3 found — that
   list, not guesswork, is what the release documentation has to answer.
+- ~~**Track the W3 campaign brief.**~~ Done 2026-09-12: `handover.campaign_brief` renders it
+  beside `CAMPAIGN_TEMPLATE`, so the wording a dry run is judged against is in the repo and
+  changes to its menus are reviewable.
+- **Release the campaign design utility.** `wind_up.campaign_design` (with `wind_up.geodesy`
+  and `wind_up.layout`) already lives in `src/wind_up` and is documented in
+  `docs/designing-a-campaign.md`; it chooses test turbines compliant with the methodology's
+  reference rule (CF16). Decide whether the design step joins the declaration workflow, e.g.
+  as a CLI command writing the `turbines:` block it already produces.
 
 **Done when:** a user installs `res-wind-up`, imports `wind_up`, and runs the v1
 `wind-up` method end-to-end from the examples and README; `docs/methodology.md`
@@ -972,10 +1066,23 @@ answer is objectively scoreable rather than a matter of opinion.
 **Shape**
 - **Generator side.** Build a synthetic dataset from a known upgrade profile and a known
   fault set, plus a short campaign prompt (campaign brief) written as narrative — the prose an owner would
-  send an analyst. Ground truth is recorded out of band.
+  send an analyst. `handover.campaign_brief` renders it from the campaign, so its wording and the
+  menus it offers are tracked rather than retyped per run. Ground truth is recorded out of band.
+- **Anemometer faults are neither injected nor asked about** (2026-09-12): CF11 priced them at
+  0.21 pp in prepost and exactly zero in toggle, so a dry run spent on them measures nothing.
+- **Test turbines are designed, not drawn.** `placebo_instance` chooses them with
+  `wind_up.campaign_design`, so every test turbine keeps three nearby references and the front
+  row gets its fair share, as a real campaign would be designed; an unconstrained draw clustered
+  them. It designs one below the maximum, because at the maximum Hill of Towie has only two
+  compliant designs (CF16).
 - **Analyst side.** A fresh agent is given the prompt, a YAML declaration to populate
   (W1a), a runner script, the documentation under test, and — after the run — the output
-  directory. It populates the declaration, runs the campaign, inspects the outputs, and
+  directory. When the campaign was designed, the handover also carries the design
+  (`analyst/design/`: the maps, front row, compliance and a roles block), as a real campaign's
+  design documents would, with its priority columns withheld; pass
+  `docs/designing-a-campaign.md` among the documents under test with it. Watch whether the
+  analyst shrinks the reference pool to the three compliance references per test turbine,
+  since reference count is the biggest accuracy lever (CF3). It populates the declaration, runs the campaign, inspects the outputs, and
   states **(a)** the upgrade class and magnitude and **(b)** which faults were present.
 - **The menu is given, not hidden.** A real analyst knows which upgrade and fault classes
   exist, so the analyst is told the candidate set. The question is which one and how big,
@@ -989,6 +1096,30 @@ filesystem. The analyst therefore runs in a directory containing **only** the br
 declaration, the runner, the documentation under test and the output directory — never a
 checkout.
 
+**Two isolation holes the first runs actually hit** (CF15), neither of them the analyst's
+doing:
+- **`CLAUDE.md` is auto-injected** into any agent whose working directory is the checkout,
+  and it describes `benchmarking/synthetic/` as a generator of "injected known uplift
+  profiles" with "ground-truth recording". The harness tells the analyst the data is
+  synthetic before it reads the brief. **Spawn with cwd outside the checkout.**
+- **Concurrent runs on one machine see each other's processes**, so one instance's command
+  line — and therefore its existence and its paths — appears in another's transcript.
+  **Run one dry run at a time.**
+The analyst must still invoke the tool from the checkout's environment, so "never touched
+the repo" cannot be the audit criterion. What disqualifies a run is reading the answer key,
+the generator, or the campaign source; audit the transcript for those specifically.
+
+**The placebo cannot score (b).** A placebo on real SCADA injects no faults, so its key
+reads `"faults": []` while the data carries real ones — both first-run analysts correctly
+named T17 and a ~100° northing step on T16, neither of them injected. The (b) half is only
+scoreable where a fault was synthesized.
+
+**A weakly-shaped injection cannot score the class.** The first scored run injected a Cp
+gain running +4.5% at 6 m/s to +4.0% at 9 — nearly flat across the bins carrying data — and
+the analyst read it as a flat efficiency change. Magnitude was recovered; class was not.
+**C3's injection must be shaped sharply enough that the conditional output can discriminate
+it**, or class identification is not a fair question.
+
 **Scoring separates three different failures**, because they have three different fixes:
 
 | the analyst… | what it means | who fixes it |
@@ -1001,6 +1132,45 @@ checkout.
 what it guessed at, and what it went looking for and did not find, is the requirements
 list for W2's documentation. Runs are stochastic and model-dependent, so conclusions come
 from the pattern across repeats — a single failure is a signal, not a verdict.
+
+**Gaps found so far, for W2's documentation to answer.** From the first two dry runs
+(CF15); the ones that were outright wrong are already fixed in
+`docs/running-a-campaign.md`.
+
+- **`conditional.csv` has no reading instructions and drops the `covered` flag** its
+  per-turbine counterpart carries, so its low-wind bins read −27% to −56% and its high-TI
+  bins +109% to +196% with nothing to warn a reader off. Both analysts had to find the
+  per-turbine file themselves. This is the output you need to answer "what kind of change
+  was this", and it is one table row in the docs.
+- **`conditional.csv`'s per-bin levels are tied to the headline.** `relevel_conditional`
+  multiplies every measured bin by one factor so the bins energy-aggregate to the headline, so
+  for small uplifts each bin reads its measurement plus a shared constant. An analyst concluded
+  the bins "carry no independent information about the class"; that overstates it, since the
+  differences between measured bins are still the two-direction measurement. Tell the reader to
+  judge the class from the shape across bins, not from any bin's level.
+- **The row filter is documented nowhere.** One analyst nearly reported a filtered 11-day
+  baseline outage as an unfixable bias, and named this as the point it most wanted to open
+  the source.
+- **`actual_energy` is summed 10-minute mean kW, not energy, and is unlabelled** — a 6x
+  trap against the MWh in the log.
+- **`rated_power_kw` has no guidance.** Turbine knowledge gives the wrong answer here
+  (Senvion MM82 nameplate 2050 kW against an observed 2300 kW).
+- **The reference screen's thresholds, its minimum pool size, and the fact that it stopped
+  early all live only in stdout.** When it stops, `reference_stability.csv` comes back
+  **header-only and silent** — the table the documentation tells you to read first. That
+  silence is a code fix, not a documentation one.
+- **"A healthy campaign reads near 0%" is never quantified**, though the tool's own 2.5 pp
+  floor exists in a log line. With two references left the pseudo-tests are pairwise
+  mirrors, which reads as two independent measurements and is not.
+- **The per-turbine output tree is undocumented** — results CSV, feature importance, seven
+  plot folders, `implied_shrinkage`, `r_fwd`/`r_rev`, `era5_lag_rows`.
+- **`northing_corrections.yaml` cannot be pasted back as `table:`** — no schema is shown and
+  the emitted file is a header-less indented fragment.
+- **No `schema:` value list**, and no way to discover one.
+- **`excluded` versus simply omitting a turbine read identically**, while a log line reveals
+  a third state (screened references keep direction and waking features). Say what each
+  role contributes.
+- **No worked example of a finished answer.** "Reading zero" stops one paragraph short.
 
 **Done when:** the dry run is repeatable on demand, has been run against at least one
 campaign per C issue as that issue lands, and W2's documentation answers every gap it

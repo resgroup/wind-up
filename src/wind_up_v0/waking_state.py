@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import TYPE_CHECKING
 
-import numpy as np
-import numpy.typing as npt
 import pandas as pd
-from geographiclib.geodesic import Geodesic
 from tabulate import tabulate
 
+from wind_up.geodesy import distance_and_bearing
+from wind_up.layout import iec_disturbed_sector_deg
 from wind_up_v0.circular_math import circ_diff
 from wind_up_v0.constants import (
     DEFAULT_AIR_DENSITY,
@@ -125,8 +125,7 @@ def calc_bearing(*, lat1: float, long1: float, lat2: float, long2: float) -> flo
     :param long2: longitude of point 2
     :return: bearing in degrees
     """
-    bearing_deg = Geodesic.WGS84.Inverse(lat1, long1, lat2, long2)["azi1"]
-    return bearing_deg % 360
+    return get_distance_and_bearing(lat1=lat1, long1=long1, lat2=lat2, long2=long2)[1]
 
 
 def calc_distance(*, lat1: float, long1: float, lat2: float, long2: float) -> float:
@@ -138,14 +137,12 @@ def calc_distance(*, lat1: float, long1: float, lat2: float, long2: float) -> fl
     :param long2: longitude of point 2
     :return: distance in meters
     """
-    return Geodesic.WGS84.Inverse(lat1, long1, lat2, long2)["s12"]
+    return get_distance_and_bearing(lat1=lat1, long1=long1, lat2=lat2, long2=long2)[0]
 
 
-distance_and_bearing_cache: dict[tuple[float, float, float, float], tuple[float, float]] = {}
-
-
+@functools.cache
 def get_distance_and_bearing(*, lat1: float, long1: float, lat2: float, long2: float) -> tuple[float, float]:
-    """Get distance and bearing between two points.
+    """Get distance and bearing between two points, cached by coordinates.
 
     :param lat1: latitude of point 1
     :param long1: longitude of point 1
@@ -153,27 +150,7 @@ def get_distance_and_bearing(*, lat1: float, long1: float, lat2: float, long2: f
     :param long2: longitude of point 2
     :return: distance in meters and bearing in degrees
     """
-    if (lat1, long1, lat2, long2) in distance_and_bearing_cache:
-        distance_m, bearing_deg = distance_and_bearing_cache[(lat1, long1, lat2, long2)]
-    else:
-        distance_m = calc_distance(lat1=lat1, long1=long1, lat2=lat2, long2=long2)
-        bearing_deg = calc_bearing(lat1=lat1, long1=long1, lat2=lat2, long2=long2)
-        distance_and_bearing_cache[(lat1, long1, lat2, long2)] = (distance_m, bearing_deg)
-    return distance_m, bearing_deg
-
-
-def iec_disturbed_sector_deg(distance_diameters: npt.ArrayLike) -> npt.NDArray[np.float64]:
-    """IEC 61400-12-1 disturbed-sector full width (deg) vs upwind separation in rotor diameters.
-
-    Below 2 diameters the whole 180 deg upwind is disturbed; from 2 to 20 diameters the sector is
-    ``1.3 * atan(2.5 / Dn + 0.15) + 10``; beyond 20 diameters the wake has dissipated (sector 0).
-    """
-    dn = np.asarray(distance_diameters, dtype=float)
-    sector = np.full(dn.shape, 180.0)
-    ge_2 = dn >= 2  # noqa: PLR2004
-    sector[ge_2] = 1.3 * np.rad2deg(np.arctan(2.5 / dn[ge_2] + 0.15)) + 10
-    sector[dn > 20] = 0.0  # noqa: PLR2004
-    return sector
+    return distance_and_bearing((lat1, long1), (lat2, long2))
 
 
 def calc_iec_upwind_turbines(*, lat: float, long: float, wind_direction: float, cfg: WindUpConfig) -> list[str]:

@@ -69,11 +69,40 @@ class TestValidForUplift:
         assert valid.index.equals(_INDEX)
         assert valid.to_numpy().all()
 
-    def test_an_excluded_turbine_is_never_valid(self) -> None:
-        spec = _spec(candidate_references=["T3", "T4"], excluded_turbines=["T4"])
-        valid = context_for(spec, turbine="T1", scada_df=_scada()).valid_for_uplift
-        assert not valid["T4"].any()
-        assert valid["T3"].all()
+    def test_covers_every_turbine_with_data_declared_or_not(self) -> None:
+        spec = _spec(excluded_turbines=["T4"])
+        valid = context_for(spec, turbine="T1", scada_df=_scada(("T1", "T2", "T3", "T4", "T9"))).valid_for_uplift
+        assert list(valid.columns) == ["T1", "T2", "T3", "T4", "T9"]
+        assert valid.to_numpy().all()
+
+
+class TestWakeContributors:
+    """Every turbine with data can wake this one, so each that is not a reference stays in its frame."""
+
+    def test_include_the_other_upgraded_turbines(self) -> None:
+        assert context_for(_spec(), turbine="T1", scada_df=_scada()).wake_contributors == ["T2"]
+
+    def test_leave_out_the_turbine_being_estimated(self) -> None:
+        assert context_for(_spec(), turbine="T2", scada_df=_scada()).wake_contributors == ["T1"]
+
+    def test_leave_out_an_upgraded_turbine_the_frame_has_no_rows_for(self) -> None:
+        context = context_for(_spec(), turbine="T1", scada_df=_scada(("T1", "T3", "T4")))
+        assert context.wake_contributors == []
+
+    def test_include_an_excluded_turbine_and_never_offer_it_as_a_reference(self) -> None:
+        context = context_for(_spec(excluded_turbines=["T4"]), turbine="T1", scada_df=_scada())
+        assert context.candidate_references == ["T3"]
+        assert context.wake_contributors == ["T2", "T4"]
+
+    def test_include_a_turbine_the_campaign_does_not_list(self) -> None:
+        context = context_for(_spec(), turbine="T1", scada_df=_scada(("T1", "T2", "T3", "T4", "T9")))
+        assert context.wake_contributors == ["T2", "T9"]
+
+    def test_leave_out_an_upgraded_turbine_the_campaign_also_offers_as_a_reference(self) -> None:
+        spec = _spec(upgraded_turbines=["T1", "T2", "T3", "T4"], candidate_references=["T3", "T4"])
+        context = context_for(spec, turbine="T1", scada_df=_scada())
+        assert context.wake_contributors == ["T2"]
+        assert context.candidate_references == ["T3", "T4"]
 
 
 class TestTiming:
@@ -90,5 +119,6 @@ def test_the_context_carries_only_the_documented_answers() -> None:
         "timing",
         "turbine_col",
         "candidate_references",
+        "wake_contributors",
         "valid_for_uplift",
     }

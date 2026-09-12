@@ -26,6 +26,7 @@ import matplotlib as mpl
 
 mpl.use("Agg")  # headless: the report writes plots without a display
 
+import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
@@ -34,14 +35,16 @@ from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.report import write_campaign_report
 from benchmarking.campaigns.runner import CampaignRunner
 from benchmarking.harness.northing import era5_direction
-from benchmarking.synthetic import HOT_RATED_POWER_KW, ToggleSchedule
+from benchmarking.synthetic import HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M, ToggleSchedule
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
+from wind_up.campaign_design import design_campaign
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from benchmarking.campaigns.runner import CampaignResult
     from benchmarking.synthetic import Fault
+    from wind_up.campaign_design import CampaignDesign
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +71,13 @@ PLACEBO_BASELINE_MONTHS = 12
 PLACEBO_TOGGLE_PERIOD = pd.Timedelta(minutes=100)
 
 
-def placebo_analysis_period(mode: Literal["prepost", "toggle"]) -> tuple[pd.Timestamp, pd.Timestamp]:
+def placebo_analysis_period(
+    mode: Literal["prepost", "toggle"], *, campaign_start: pd.Timestamp = PLACEBO_CAMPAIGN_START
+) -> tuple[pd.Timestamp, pd.Timestamp]:
     """Return the whole record the methods see for ``mode``: the baseline plus the campaign."""
     return (
-        PLACEBO_CAMPAIGN_START - pd.DateOffset(months=PLACEBO_BASELINE_MONTHS),
-        PLACEBO_CAMPAIGN_START + pd.DateOffset(months=PLACEBO_CAMPAIGN_MONTHS[mode]),
+        campaign_start - pd.DateOffset(months=PLACEBO_BASELINE_MONTHS),
+        campaign_start + pd.DateOffset(months=PLACEBO_CAMPAIGN_MONTHS[mode]),
     )
 
 
@@ -100,6 +105,8 @@ def placebo_campaign(
     excluded: Sequence[str] | None = None,
     coords: dict[str, tuple[float, float]] | None = None,
     faults: Sequence[Fault] | None = None,
+    campaign_start: pd.Timestamp = PLACEBO_CAMPAIGN_START,
+    seed: int = 0,
 ) -> SyntheticCampaign:
     """Declare the placebo campaign for ``mode``: a whole farm with no upgrade injected.
 
@@ -112,14 +119,16 @@ def placebo_campaign(
         upgrade reads them
     :param faults: measurement corruptions to inject; none by default, so the placebo stays a
         clean-data campaign. The R-series fixtures inject one and compare against that.
+    :param campaign_start: when treatment begins; defaults to :data:`PLACEBO_CAMPAIGN_START`
+    :param seed: recorded on the campaign, so an answer key names the draw that made it
     """
     upgraded = tuple(PLACEBO_UPGRADED if upgraded is None else upgraded)
     participating = tuple(PLACEBO_TURBINES if turbines is None else turbines)
     excluded = tuple(PLACEBO_EXCLUDED if excluded is None else excluded)
     if mode == "prepost":
-        timing: pd.Timestamp | ToggleSchedule = PLACEBO_CAMPAIGN_START
+        timing: pd.Timestamp | ToggleSchedule = campaign_start
     elif mode == "toggle":
-        timing = ToggleSchedule(period=PLACEBO_TOGGLE_PERIOD, start=PLACEBO_CAMPAIGN_START)
+        timing = ToggleSchedule(period=PLACEBO_TOGGLE_PERIOD, start=campaign_start)
     else:
         msg = f"unknown mode {mode!r}; expected 'prepost' or 'toggle'"
         raise ValueError(msg)
@@ -134,7 +143,103 @@ def placebo_campaign(
         # discovered by the shared northing step, not supplied: the placebo exercises the norther
         north_offsets=None,
         rated_power_kw=HOT_RATED_POWER_KW,
-        analysis_period=placebo_analysis_period(mode),
+        analysis_period=placebo_analysis_period(mode, campaign_start=campaign_start),
+        seed=seed,
+    )
+
+
+# A randomised instance draws its treatment start from these post-years, and never upgrades
+# these turbines. The window stays before the site's real blade-upgrade installs, and before the
+# thin-baseline year.
+PLACEBO_INSTANCE_YEARS = (2018,)
+PLACEBO_INSTANCE_KEEP_AS_REFERENCE = ("T17",)
+PLACEBO_INSTANCE_LAST_CLEAN = pd.Timestamp("2021-01-01", tz="UTC")
+# A treated period reaching past this rests on a 2019-only baseline, which reads far worse.
+PLACEBO_INSTANCE_LAST_GOOD_END = pd.Timestamp("2020-01-01", tz="UTC")
+PLACEBO_WIND_FARM = "Hill of Towie"
+# An instance tests this many turbines fewer than a compliant design allows (never fewer than one),
+# so instances differ in their test turbines.
+PLACEBO_INSTANCE_BELOW_MAX = 1
+
+
+def placebo_layout(coords: dict[str, tuple[float, float]]) -> pd.DataFrame:
+    """Return a campaign-design layout of the Hill of Towie turbines at ``coords``."""
+    return pd.DataFrame(
+        {
+            "name": list(coords),
+            "latitude": [lat for lat, _ in coords.values()],
+            "longitude": [lon for _, lon in coords.values()],
+            "rotor_diameter_m": HOT_ROTOR_DIAMETER_M,
+            "wind_farm": PLACEBO_WIND_FARM,
+        }
+    )
+
+
+def placebo_design(
+    *,
+    seed: int,
+    coords: dict[str, tuple[float, float]],
+    turbines: Sequence[str] | None = None,
+) -> CampaignDesign:
+    """Return the campaign design behind :func:`placebo_instance` for the same ``seed`` and turbines.
+
+    :data:`PLACEBO_INSTANCE_BELOW_MAX` fewer test turbines than a compliant design allows, every
+    candidate listed in a seeded random priority.
+    """
+    return _instance_design(np.random.default_rng(seed), coords=coords, turbines=turbines)
+
+
+def placebo_instance(
+    mode: Literal["prepost", "toggle"],
+    *,
+    seed: int,
+    coords: dict[str, tuple[float, float]],
+    turbines: Sequence[str] | None = None,
+) -> SyntheticCampaign:
+    """Return a seeded random placebo: which turbines are upgraded, and when treatment starts.
+
+    A handover built from the checked-in defaults would identify its own campaign, so both are
+    drawn. Nothing is injected, so the truth stays 0. The upgraded turbines are the test turbines of
+    :func:`placebo_design` for the same seed.
+
+    :param mode: ``"prepost"`` or ``"toggle"``
+    :param seed: the draw's seed; the same seed gives the same campaign
+    :param coords: turbine name to ``(latitude, longitude)``, which the campaign design reads
+    :param turbines: every participating turbine; defaults to :data:`PLACEBO_TURBINES`
+    """
+    participating = list(PLACEBO_TURBINES if turbines is None else turbines)
+    rng = np.random.default_rng(seed)
+    design = _instance_design(rng, coords=coords, turbines=participating)
+    year = int(rng.choice(PLACEBO_INSTANCE_YEARS))
+    month = int(rng.integers(1, 13))
+    start = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
+    return placebo_campaign(
+        mode,
+        upgraded=sorted(design.test_turbines),
+        turbines=participating,
+        coords={w: coords[w] for w in participating},
+        campaign_start=start,
+        seed=seed,
+    )
+
+
+def _instance_design(
+    rng: np.random.Generator,
+    *,
+    coords: dict[str, tuple[float, float]],
+    turbines: Sequence[str] | None,
+) -> CampaignDesign:
+    """Design a placebo instance, drawing its priority from ``rng``."""
+    participating = list(PLACEBO_TURBINES if turbines is None else turbines)
+    reference_only = [w for w in PLACEBO_INSTANCE_KEEP_AS_REFERENCE if w in participating]
+    candidates = [w for w in participating if w not in reference_only]
+    layout = placebo_layout({w: coords[w] for w in participating})
+    most = design_campaign(layout, reference_only=reference_only).max_test_turbines
+    return design_campaign(
+        layout,
+        test_priority=[str(w) for w in rng.permutation(candidates)],
+        reference_only=reference_only,
+        n_test=max(1, most - PLACEBO_INSTANCE_BELOW_MAX),
     )
 
 

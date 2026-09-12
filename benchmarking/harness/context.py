@@ -32,6 +32,9 @@ class CampaignContext:
     :param turbine_col: the turbine-identifier column of the SCADA frame
     :param candidate_references: the turbines a method may use as references. A turbine present
         in the frame but absent here is not a reference, whatever its data looks like.
+    :param wake_contributors: turbines kept in the frame for their wake alone -- the campaign's
+        other changed turbines. Never references, so a method may read their operating state
+        and direction but not their power.
     :param valid_for_uplift: boolean, timestamps x the turbines this context screens (the test
         turbine and its candidate references, plus any other turbine the campaign declares, so a
         method co-analysing several is covered too) -- may this turbine's data at this timestamp
@@ -47,7 +50,18 @@ class CampaignContext:
     timing: pd.Timestamp | ToggleSchedule | pd.DataFrame
     turbine_col: str
     candidate_references: list[str]
+    wake_contributors: list[str]
     valid_for_uplift: pd.DataFrame
+
+    def __post_init__(self) -> None:
+        """Raise when a wake contributor is also the test turbine or a candidate reference."""
+        clash = sorted({self.test_wtg, *self.candidate_references} & set(self.wake_contributors))
+        if clash:
+            msg = (
+                f"wake contributors {clash} are also the test turbine {self.test_wtg!r} or a candidate reference "
+                f"{sorted(self.candidate_references)}; a turbine holds one role"
+            )
+            raise ValueError(msg)
 
     @property
     def mode(self) -> Literal["prepost", "toggle"]:
@@ -85,17 +99,17 @@ class CampaignContext:
     def select(self, scada_df: pd.DataFrame, *, also: Iterable[str] = ()) -> pd.DataFrame:
         """Return the rows of a long-format ``scada_df`` the campaign allows this estimate to use.
 
-        Drops turbines the campaign does not offer, and each remaining turbine's rows that are not
-        valid for uplift. The long-frame counterpart of :meth:`references_among` plus
-        :meth:`mask_invalid`, for methods that work before pivoting.
+        Keeps the test turbine, its candidate references and its wake contributors, and drops each
+        one's rows that are not valid for uplift. The long-frame counterpart of
+        :meth:`references_among` plus :meth:`mask_invalid`, for methods that work before pivoting.
 
-        :param also: turbines to keep besides the test turbine and its candidate references -- the
-            other test turbines of a method that analyses several at once.
+        :param also: turbines to keep besides those -- the other test turbines of a method that
+            analyses several at once.
         """
         valid = self.valid_over(pd.DatetimeIndex(scada_df.index.unique()))
         turbines = scada_df[self.turbine_col].to_numpy()
         keep = np.zeros(len(scada_df), dtype=bool)
-        for wtg in dict.fromkeys([self.test_wtg, *self.candidate_references, *also]):
+        for wtg in dict.fromkeys([self.test_wtg, *self.candidate_references, *self.wake_contributors, *also]):
             is_turbine = turbines == wtg
             if not is_turbine.any():
                 continue
@@ -130,5 +144,6 @@ class CampaignContext:
             timing=timing,
             turbine_col=turbine_col,
             candidate_references=references,
+            wake_contributors=[],
             valid_for_uplift=pd.DataFrame(data=True, index=index, columns=sorted({test_wtg, *references})),
         )

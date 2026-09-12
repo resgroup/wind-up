@@ -21,10 +21,11 @@ import numpy.typing as npt
 import pandas as pd
 
 from benchmarking.synthetic.cp_core import power_from_cp_change, region2_fraction, rpm_from_power_change
-from benchmarking.synthetic.geometry import WakePair, bearing_deg, derive_wake_steering_pairs, distance_m, wrap180
+from benchmarking.synthetic.geometry import WakePair, derive_wake_steering_pairs, wrap180
 from benchmarking.synthetic.solar import diurnal_factor
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS, HOT_LAT, HOT_LON
-from wind_up_v0.waking_state import iec_disturbed_sector_deg
+from wind_up.geodesy import distance_and_bearing
+from wind_up.layout import iec_disturbed_sector_deg
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -356,10 +357,10 @@ class WakeSteering:
             for other, other_latlon in self.coords.items():
                 if other == wtg:
                     continue
-                dn = distance_m(self.coords[wtg], other_latlon) / self.rotor_diameter_m
-                half_angle = float(iec_disturbed_sector_deg(dn)) / 2.0
+                separation_m, bearing = distance_and_bearing(self.coords[wtg], other_latlon)
+                half_angle = float(iec_disturbed_sector_deg(separation_m / self.rotor_diameter_m)) / 2.0
                 if half_angle > 0.0:
-                    entries.append((bearing_deg(self.coords[wtg], other_latlon), half_angle))
+                    entries.append((bearing, half_angle))
             neighbours[wtg] = tuple(entries)
         object.__setattr__(self, "wake_neighbours", neighbours)
 

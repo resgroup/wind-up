@@ -10,6 +10,7 @@ import pytest
 from tests.test_data.hot.data_loader import WindUpComponents, construct_hot_windup_components, get_meta_and_scada_data
 from wind_up_v0.constants import PROJECTROOT_DIR
 from wind_up_v0.models import WindUpConfig
+from wind_up_v0.result_manager import result_manager
 
 mpl.use("Agg")
 
@@ -18,6 +19,17 @@ logger = logging.getLogger(__name__)
 TEST_DATA_FLD = Path(__file__).parent / "test_data"
 TEST_CONFIG_DIR = TEST_DATA_FLD / "config"
 CACHE_DIR = PROJECTROOT_DIR / "cache"
+
+
+@pytest.fixture(autouse=True)
+def _empty_stored_warnings() -> None:
+    """Start each test with no stored warnings.
+
+    ``result_manager`` is a process-wide singleton and an analysis clears its warnings only when it
+    reads them, so without this a warning left behind by one test is counted by the next, and the
+    recorded warning counts depend on what ran before.
+    """
+    result_manager.stored_warnings = []
 
 
 def _set_legacy_datetimes(cfg: WindUpConfig) -> None:

@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
     from benchmarking.harness.campaign import CampaignWindow
     from benchmarking.harness.context import CampaignContext
-    from benchmarking.harness.method import Method
+    from benchmarking.harness.method import Method, MethodOutput
     from benchmarking.harness.replicates import Replicate, StudyConfig
     from benchmarking.synthetic import ColumnSchema
 
@@ -144,8 +144,37 @@ def score_one(
     start = time.perf_counter()
     output = method.estimate(method_input)
     wall_time_s = time.perf_counter() - start
+    return score_output(
+        output,
+        method_name=method.name,
+        replicate=replicate,
+        window=window,
+        truth=truth,
+        mask=mask,
+        profile_name=profile_name,
+        wall_time_s=wall_time_s,
+    )
+
+
+def score_output(
+    output: MethodOutput,
+    *,
+    method_name: str,
+    replicate: Replicate,
+    window: CampaignWindow,
+    truth: float,
+    mask: npt.NDArray[np.bool_],
+    profile_name: str = "profile",
+    wall_time_s: float = float("nan"),
+) -> list[dict[str, object]]:
+    """Return the tidy result rows for an estimate that has already been made.
+
+    The row-building half of :func:`score_one`, for a caller that runs the method itself -- a
+    campaign estimates once on the truth-free path and scores that same output here, rather than
+    re-estimating. ``wall_time_s`` is the caller's own timing of the estimate.
+    """
     base_fields: dict[str, object] = {
-        "method": method.name,
+        "method": method_name,
         "profile": profile_name,
         "replicate": replicate.replicate_id,
         "test_wtg": replicate.test_wtg,

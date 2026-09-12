@@ -36,7 +36,7 @@ from benchmarking.harness.plots import (
     plot_conditional_uplift,
 )
 from benchmarking.harness.replicates import Replicate, StudyConfig, build_replicates, iter_replicates
-from benchmarking.harness.scoring import score_one, score_study, truth_mask
+from benchmarking.harness.scoring import score_one, score_output, score_study, truth_mask
 
 __all__ = [
     "CONDITIONS",
@@ -65,6 +65,7 @@ __all__ = [
     "plot_campaign_curves",
     "plot_conditional_uplift",
     "score_one",
+    "score_output",
     "score_study",
     "summarize_calibration",
     "summarize_errors",
