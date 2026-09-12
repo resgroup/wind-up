@@ -1028,6 +1028,11 @@ up.
 
 - **Document the declaration W1a delivered**, and fold in every gap W3 found — that
   list, not guesswork, is what the release documentation has to answer.
+- **Track the W3 campaign brief.** The brief an analyst is given, and the failure-mode menu
+  it names, live only in a scratch build script; `handover.py` ships `CAMPAIGN_TEMPLATE` but
+  not the brief. The wording a dry run is judged against should be in the repo beside the
+  handover writer, so a run is reproducible and changes to the menu (such as dropping
+  anemometer faults, 2026-09-12) are reviewable.
 - **Release the campaign design utility.** `wind_up.campaign_design` (with `wind_up.geodesy`
   and `wind_up.layout`) already lives in `src/wind_up` and is documented in
   `docs/designing-a-campaign.md`; it chooses test turbines compliant with the methodology's
