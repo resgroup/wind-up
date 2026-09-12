@@ -12,6 +12,113 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF18 — The **first prepost dry run** and a re-run toggle one both clear the one-run bar on the full 21-turbine farm: each said "cannot distinguish this from zero" from a single run, against a truth of zero. The design documents were used and did not shrink the reference pool. Phase 2 found **two real anemometer faults** no run reports
+
+*2026-09-12. `benchmarking.campaigns.handover.write_handover` from `placebo_instance` with its
+`placebo_design`: instance-f (prepost, seed 7, changeover 2018-06-01, a year either side) and
+instance-g (toggle, seed 8, 100-minute blocks from 2018-03-01 on a 12-month baseline), both 9 test
+turbines of 21 on real Hill of Towie SCADA, nothing injected. Each went to a fresh agent holding
+only `analyst/` — brief, blank declaration, SCADA, `design/`, and both campaign documents — under
+the two-phase protocol of CF15. Transcripts and answer keys kept outside the checkout.*
+
+| | headline | reference yardstick | (a) reported |
+|---|---|---|---|
+| instance-f, prepost | +0.69% | reference mean +0.66% | "cannot distinguish from zero", class *nothing at all* |
+| instance-g, toggle | +0.001% | treated scatter = reference scatter | "cannot distinguish from zero" |
+
+**The full farm is what made prepost answerable.** CF15's 9-turbine prepost case had the analyst
+hedging rather than saying zero; on 21 turbines it led with the zero and defended it. Toggle
+remains fine either way.
+
+**Isolation held.** Neither transcript contains a repo path, the answer key, or any mention of the
+generator — CF15's recipe, with the key moved out of the handover root. Its launch needed one
+change: an unattended `--permission-mode bypassPermissions` agent is refused, so the analyst runs
+under `acceptEdits` plus an explicit `--allowedTools` list, and the prompt must tell it to use its
+Bash tool's background option, since `&` and `nohup` are denied.
+
+**A near-miss worth keeping.** instance-f noticed that seven of twelve references looked "tight"
+(mean −0.01%, sd 0.37 pp) against five that did not, which would have made the upgrade read +0.66 pp
+at t = 2.65 — a significant result that is not there. It declined, because the split was drawn by
+eye after seeing the numbers. Its own phase 2 proved the refusal right: measured against each other
+alone, those same seven spread to sd 0.81 pp and their mean rose to +0.94%. Their tightness was an
+artifact of pool composition.
+
+**Two real faults the runs never mention**, both found by the analysts in ~30 lines of pandas
+(turbine wind speed over the farm median, by month): **T01** drifting −3.9 pp across Oct 2017 –
+Jan 2018 while serving as a trusted reference, and **T16** stepping about −9% in August 2017 — the
+same month as the T16 nacelle-position changepoint wind-up itself found at 2017-08-09. wind-up
+corrected the direction half of a combined sensor event and was silent about the speed half. T16's
+power-side reference reading was +1.09%, so this is instrumentation, not production. Reference
+nacelle wind speed is not a model feature — it reaches the estimate only through ERA5
+time-alignment — so the exposure of the estimate is smaller than the analysts assumed.
+
+**The design documents were used, and their boundary is real.** `roles.yaml` went straight into the
+declaration, `design/turbines.csv` flagged T17 as the reference-only turbine (which proved to be the
+worst reader on site), and `compliance.csv` showed the misbehaving references scattered rather than
+clustered, ruling out one common geographic cause. CF3's worry did not materialise: neither analyst
+shrank the pool to the three compliance references. The boundary: a design is pure geometry and
+`compliant: true` says nothing about data quality, while five of twelve references here were
+misbehaving.
+
+**Everything they asked for is logged in [analyst_feedback.md](analyst_feedback.md)** (AF1–AF3 plus
+a backlog), which is where W3's output now goes for triage.
+
+---
+
+## CF17 — Keeping every turbine as a wake contributor is neutral on the placebo (**+0.027 pp** at farm level) but flipped one borderline screen verdict in the benchmark, costing **+0.25 / +0.29 pp** on two 6-month prepost cells. The false positive sits **0.1 pp** from a true bad reference, so the 2.5 pp floor cannot separate them — screen changes wait for a benchmark with larger turbine groups
+
+*2026-09-12, branch `v1-w1a` at 85667b3. `study_power_model_compare` (both modes, 7 profiles,
+1/2/3/6/12 months, 4 replicates, seed 0) and `study_toggle_methods_compare --update-baseline`,
+re-recorded from a clean tree; the placebo pair is `placebo_instance("prepost", seed=1)`, 9 test
+turbines of 21, run once from a 4ab8259 snapshot on `PYTHONPATH` and once from HEAD.*
+
+**The re-record is otherwise a reproducibility check, and it passes.** Against the ec7dca2
+recording of five days earlier, every power_model cell outside 6-month prepost reproduces within
+0.01 pp and most are bit-identical; toggle is bit-identical throughout; `toggle_methods` moves at
+most 0.017 pp on its linux file and not at all on the portable one.
+
+**What moved, and what caused it.** Only prepost at 6 months, on two profiles:
+
+| profile | bias before | bias after | Δ |
+|---|---|---|---|
+| cp_minus_10pct | +0.450% | +0.697% | +0.248 pp |
+| cp_plus_3pct | +0.502% | +0.792% | +0.289 pp |
+
+In both, T07's screen now rules out T03 (2.70 and 2.60 pp from a pool median of 3) where it
+previously kept it. Re-running those two profiles from a 4ab8259 snapshot reproduces the old
+numbers exactly, so the change is `4ab8259..85667b3` — the wake-contributor commit, whose screening
+estimates now keep the test turbine in the frame.
+
+**The placebo shows the same mechanism doing no harm at farm level.** Farm `power_model` +0.442% →
++0.469% (+0.027 pp, under the 0.127 pp noise floor of CF14); `naive_ratio` identical; mean
+per-turbine |error| 0.483 → 0.522 pp, the largest single move T12 +1.10% → +1.55%. The behaviour
+change is visible where it should be: T17's screening estimate was one number (+2.770%) for all
+nine test turbines before, and varies per test turbine (+3.005% to +3.220%) after.
+
+**The floor is the wrong knob.** A true bad reference and this false positive overlap:
+
+| case | distance from pool median | pool | verdict |
+|---|---|---|---|
+| T03, benchmark, 6 months | 2.60 / 2.70 pp | 3 | false positive |
+| T17, placebo, before | 2.82 pp | 12 | true positive |
+| T17, placebo, after | 2.87–3.21 pp | 12 | true positive |
+| T17, W3 dry run instance-f | 5.5 pp | 12 | true positive |
+
+Raising the floor to 3.0 pp would drop T03 and also lose T17 on the placebo's "before" run. What
+separates the two cases is corroboration, not margin: T17 is flagged by all nine test turbines and
+at every campaign length, while T03 is flagged for one test turbine at 6 months and not at 12. The
+levers that follow from that are agreement across test turbines, agreement across time (the monthly
+reference stability of AF2), a minimum pool size before the screen may act — the flip happened on a
+pool of three, where removing one leaves two and the screen stops anyway — and a threshold scaled to
+what the campaign can resolve rather than a fixed 2.5 pp.
+
+**None of them are being built yet, deliberately** (Alex, 2026-09-12): the benchmark's cases are
+small turbine groups, so tuning the screen against them now would over-fit to that case. The
+benchmark first needs cases with varying numbers of test and reference turbines; the screen work
+follows it.
+
+---
+
 ## CF16 — Test turbines are now *designed*, not drawn: an order-free "3 non-test among the 4 nearest, nearest always a reference" rule tests **10 of 21** Hill of Towie turbines where the strict 3-nearest rule allows 7 — but at that maximum the site has only **2** compliant designs, so the placebo designs one below it (**60**)
 
 *2026-09-11. `wind_up.campaign_design` (`design_campaign`, `check_design`) on the Hill of Towie
