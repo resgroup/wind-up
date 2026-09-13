@@ -32,9 +32,10 @@ class CampaignContext:
     :param turbine_col: the turbine-identifier column of the SCADA frame
     :param candidate_references: the turbines a method may use as references. A turbine present
         in the frame but absent here is not a reference, whatever its data looks like.
-    :param wake_contributors: turbines kept in the frame for their wake alone -- the campaign's
-        other changed turbines. Never references, so a method may read their operating state
-        and direction but not their power.
+    :param wake_contributors: turbines kept in the frame for their wake alone -- every turbine
+        present that is neither the test turbine nor a candidate reference, so the campaign's
+        other changed turbines, its excluded ones, and any it never declared. Never references,
+        so a method may read their operating state and direction but not their power.
     :param valid_for_uplift: boolean, timestamps x the turbines this context screens (the test
         turbine and its candidate references, plus any other turbine the campaign declares, so a
         method co-analysing several is covered too) -- may this turbine's data at this timestamp

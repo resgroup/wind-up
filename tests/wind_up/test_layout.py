@@ -96,6 +96,15 @@ def test_missing_rotor_diameters_take_the_largest_known() -> None:
     assert layout.filled_rotor_diameters == ("HMR_T02",)
 
 
+@pytest.mark.parametrize("bad", [-62.0, 0.0, np.inf])
+def test_a_rotor_diameter_that_is_not_positive_and_finite_is_refused(bad: float) -> None:
+    # distances are measured in diameters: a negative one inverts the reference limit so every
+    # turbine reads as near, and an infinite one puts them all out of range
+    frame = HOMER.assign(rotor_diameter_m=[62.0, bad, 62.0])
+    with pytest.raises(ValueError, match="HMR_T02"):
+        Layout.from_frame(frame)
+
+
 def test_layout_needs_at_least_one_rotor_diameter() -> None:
     with pytest.raises(ValueError, match="rotor diameter"):
         Layout.from_frame(HOMER.drop(columns="rotor_diameter_m"))

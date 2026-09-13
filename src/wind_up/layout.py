@@ -84,6 +84,13 @@ class Layout:
             msg = "the layout has no rotor diameter for any turbine; at least one is needed"
             raise ValueError(msg)
         unknown = diameters.isna()
+        # Distances are measured in rotor diameters, so a non-positive one inverts the reference
+        # limit and every turbine reads as near, while an infinite one puts them all out of range.
+        unusable = ~unknown & ((diameters <= 0) | np.isinf(diameters))
+        if unusable.any():
+            named = [str(n) if n is not None else f"row {i}" for i, n in enumerate(names) if unusable.iloc[i]]
+            msg = f"the layout gives {named} a rotor diameter that is not positive and finite"
+            raise ValueError(msg)
         filled = tuple(str(n) if n is not None else f"row {i}" for i, n in enumerate(names) if unknown.iloc[i])
         diameters = diameters.fillna(diameters.max())
 

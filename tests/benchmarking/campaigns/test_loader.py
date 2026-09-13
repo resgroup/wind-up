@@ -118,6 +118,29 @@ class TestTiming:
         ).spec
         assert spec.upgrade_timing.start_on is True
 
+    def test_a_toggle_without_a_start_is_refused(self, tmp_path: Path) -> None:
+        # the schedule would otherwise take the first timestamp as origin, so a declared baseline
+        # would silently be toggling instead
+        with pytest.raises(ValueError, match=r"timing\.start"):
+            load(
+                tmp_path,
+                PREPOST.replace(
+                    "  mode: prepost\n  changeover: 2018-01-01T00:00:00Z", "  mode: toggle\n  period: 100min"
+                ),
+            )
+
+    @pytest.mark.parametrize("period", ["0min", "-100min"])
+    def test_a_period_that_is_not_positive_is_refused(self, tmp_path: Path, period: str) -> None:
+        # neither raises downstream: zero treats nothing at all and negative inverts the blocks
+        with pytest.raises(ValueError, match=r"timing\.period must be positive"):
+            load(
+                tmp_path,
+                PREPOST.replace(
+                    "  mode: prepost\n  changeover: 2018-01-01T00:00:00Z",
+                    f"  mode: toggle\n  start: 2018-01-01T00:00:00Z\n  period: {period}",
+                ),
+            )
+
     def test_an_unknown_mode_names_the_modes_there_are(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match=r"prepost.*toggle|toggle.*prepost"):
             load(tmp_path, PREPOST.replace("mode: prepost", "mode: sideways"))

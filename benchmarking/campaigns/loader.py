@@ -223,9 +223,18 @@ def _timing(block: dict) -> pd.Timestamp | ToggleSchedule:
     if mode == "prepost":
         return _timestamp(block["changeover"])
     if mode == "toggle":
+        if block.get("start") is None:
+            # ToggleSchedule allows no start, taking the first timestamp as origin with no
+            # baseline. A declaration must say instead, or a declared baseline silently toggles.
+            msg = "a toggle declaration needs timing.start: when toggling began"
+            raise ValueError(msg)
+        period = pd.Timedelta(block["period"])
+        if period <= pd.Timedelta(0):
+            msg = f"timing.period must be positive, got {period}"
+            raise ValueError(msg)
         return ToggleSchedule(
-            period=pd.Timedelta(block["period"]),
-            start=_timestamp(block["start"]) if block.get("start") is not None else None,
+            period=period,
+            start=_timestamp(block["start"]),
             start_on=bool(block.get("start_on", False)),
         )
     msg = f"unknown timing.mode {mode!r}; known modes are {list(MODES)}"
