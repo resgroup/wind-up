@@ -875,6 +875,35 @@ and the clean campaigns are unchanged, so nothing is paid for on a campaign with
 
 ---
 
+## R7 — Reactive power behaviour change
+
+**Goal:** synthesize a change in a turbine's reactive-power behaviour and find out whether it
+reaches the uplift estimate, and whether a campaign should be reporting it.
+
+**Why.** Importing or exporting reactive power can limit a turbine's active-power capacity. How
+much depends on the turbine and on the wind farm's electrical design, so the coupling is
+site-specific rather than universal — but it means a reactive-power change is a plausible
+*indicator* of an active-power performance change, and in some configurations a *cause* of one. A
+campaign that never looks at reactive power cannot tell the difference between "this turbine's
+output changed" and "this turbine's reactive setpoint changed and took some active capacity with
+it".
+
+**Scope (light, to be firmed up)**
+- **Fault (generator):** a reactive-power behaviour change on a turbine — a power-factor or
+  reactive-setpoint step — optionally coupled to an active-power cap, since that coupling is the
+  thing that matters. Nothing in `benchmarking/synthetic` changes reactive power today.
+- **Question:** does it move the estimate, on a test turbine and on a reference, in prepost and in
+  toggle? Success is the R-series pattern: invariance where the change is benign, and a visible
+  report where it is not.
+- **Diagnostics already half-cover this**: `reactive_vs_active.png` and `power_factor.png` are
+  drawn per run but no method reads reactive power, and no fixture tests it.
+
+**Prompted by** a human W3 dry run (2026-09-14): on real Hill of Towie SCADA the test turbine's
+reactive cloud is visibly unlike its neighbours' — roughly -2500 to +1500 kVAr against a tight
+-200 to -600 band — which is the kind of difference the campaign currently plots and then ignores.
+
+---
+
 # Productization issues (W-series)
 
 Turn the winning pieces into a shippable **v1.0.0**: one headline method named
