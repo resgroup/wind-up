@@ -328,7 +328,11 @@ def _reference_input(
         context,
         test_wtg=target,
         candidate_references=list(references),
-        wake_contributors=[w for w in kept if w != target and w not in set(references)],
+        # Sorted, not in the order the campaign's own estimate happened to hold them: that order
+        # starts at the test turbine, so the same reference would be screened against the same
+        # turbines laid out differently for each test turbine, and the model is not invariant to
+        # column order. Sorted, every test turbine screens a reference identically.
+        wake_contributors=sorted(w for w in kept if w != target and w not in set(references)),
         timing=context.timing if timing is None else timing,
     )
     return MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
@@ -447,6 +451,13 @@ class PowerModelMethod:
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
     write_diagnostics: bool = True
+    # A campaign's screen verdict is one answer for the whole campaign: the same pool judged across
+    # the same contrast. Every test turbine would otherwise re-run the identical round-robin. A
+    # campaign passes one dict to every turbine's method; None means screen per estimate. Every
+    # method sharing a cache must share its configuration, since the key does not carry it.
+    screen_cache: dict[tuple[tuple[str, ...], str], ScreenResult] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -1236,6 +1247,16 @@ class PowerModelMethod:
             )
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
+        cache_key = (tuple(pool), str(timing))
+        if self.screen_cache is not None and cache_key in self.screen_cache:
+            cached = self.screen_cache[cache_key]
+            logger.info(
+                "%s %s: reference screen already run for this campaign; %s",
+                self.name,
+                mi.test_wtg,
+                f"ruled out {list(cached.screened)}" if cached.screened else "it ruled out nobody",
+            )
+            return cached
         clone = self._screening_clone()
 
         # Why each candidate could not be estimated, so a screen that gives up can say what stopped
@@ -1268,6 +1289,8 @@ class PowerModelMethod:
                 mi.test_wtg,
                 list(result.screened),
             )
+        if self.screen_cache is not None:
+            self.screen_cache[cache_key] = result
         return result
 
     def _validate_model_config(self) -> None:

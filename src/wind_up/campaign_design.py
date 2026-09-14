@@ -107,7 +107,7 @@ class CampaignDesign:
         frame = self.layout.frame
         farm = [str(n) for n, f in zip(frame[NAME_COL], frame[WIND_FARM_COL], strict=True) if f == self.wind_farm]
         return {
-            "upgraded": list(self.test_turbines),
+            "upgraded": sorted(self.test_turbines),
             "references": [n for n in farm if n not in tests and n not in excluded],
             "excluded": [n for n in farm if n in excluded],
         }

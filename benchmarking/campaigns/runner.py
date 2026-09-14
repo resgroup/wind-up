@@ -106,7 +106,7 @@ class CampaignRunner:
 
         score_rows: list[dict[str, object]] = []
         truth_masks: dict[str, np.ndarray] = {}
-        for wtg in spec.upgraded_turbines:
+        for wtg in sorted(spec.upgraded_turbines):
             replicate = Replicate(
                 dataset=visible,
                 test_wtg=wtg,

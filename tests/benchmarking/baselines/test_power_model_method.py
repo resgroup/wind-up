@@ -25,6 +25,7 @@ from benchmarking.baselines.power_model.method import (
     _clip_predictions,
     _combine_uplift,
     _implied_shrinkage,
+    _reference_input,
     reference_overall_uplift,
 )
 from benchmarking.harness.conditions import CONDITIONS
@@ -1466,6 +1467,64 @@ def _with_a_changed_neighbour(*, as_reference: bool = False, n: int = 4000) -> M
         valid_for_uplift=pd.DataFrame(data=True, index=idx, columns=["T1", "R1", "R2", "R3", "W1"]),
     )
     return MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
+
+
+class TestOrderDoesNotReachTheAnswer:
+    """The model is not invariant to column order, so nothing that decides it may vary by accident."""
+
+    def _mi(self, references: list[str]) -> MethodInput:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        treated = np.asarray(idx >= idx[n // 2])
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        context = CampaignContext(
+            test_wtg="T1",
+            timing=pd.Timestamp(idx[n // 2]),
+            turbine_col=_TURBINE,
+            candidate_references=references,
+            wake_contributors=[],
+            valid_for_uplift=pd.DataFrame(data=True, index=idx, columns=["T1", "R1", "R2", "R3"]),
+        )
+        return MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
+
+    def test_the_declaration_order_of_the_references_does_not_change_the_estimate(self) -> None:
+        # the same campaign, its references typed in two different orders
+        method = PowerModelMethod(
+            columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(), model_params=_FAST_PARAMS
+        )
+        as_declared = method.estimate(self._mi(["R1", "R2", "R3"])).p50_overall
+        reversed_order = method.estimate(self._mi(["R3", "R2", "R1"])).p50_overall
+        assert as_declared == reversed_order
+
+    def test_every_test_turbine_screens_a_reference_identically(self) -> None:
+        # a campaign testing T1 and W1: the wake set behind a screening estimate is the same set
+        # whichever of them is under test, so only its order could ever have differed
+        mi = _with_a_changed_neighbour()
+        from_t1 = _reference_input(mi, target="R1", references=["R2", "R3"])
+        as_w1 = dataclasses.replace(mi.context, test_wtg="W1", wake_contributors=["T1"])
+        from_w1 = _reference_input(
+            MethodInput(scada_df=mi.scada_df, test_wtg="W1", campaign_context=as_w1),
+            target="R1",
+            references=["R2", "R3"],
+        )
+        assert from_t1.context.wake_contributors == from_w1.context.wake_contributors == ["T1", "W1"]
+
+
+class TestTheScreenRunsOncePerCampaign:
+    def test_a_shared_cache_reuses_the_verdict_for_the_next_test_turbine(self) -> None:
+        cache: dict = {}
+        mi, _ = _screen_case(step=0.08)
+        first = _screen_method(screen_cache=cache).screen_references(mi)
+        assert cache, "the screen recorded nothing to reuse"
+        again = _screen_method(screen_cache=cache).screen_references(mi)
+        assert again is first
+
+    def test_without_a_cache_it_screens_every_time(self) -> None:
+        mi, _ = _screen_case(step=0.08)
+        first = _screen_method().screen_references(mi)
+        again = _screen_method().screen_references(mi)
+        assert again is not first
+        assert again.screened == first.screened
 
 
 class TestWakeContributors:

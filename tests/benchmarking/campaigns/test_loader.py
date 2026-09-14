@@ -283,5 +283,7 @@ class TestACampaignDesignFeedsTheDeclaration:
         declaration_text = rest.replace("timing:", roles.rstrip() + "\n  rated_power_kw: 2300\n\ntiming:")
         (tmp_path / "campaign.yaml").write_text(declaration_text)
         spec = load_declaration(tmp_path / "campaign.yaml").spec
-        assert spec.upgraded_turbines == list(design.test_turbines)
+        # roles() is what was written, and it sorts: a declaration should not carry the order the
+        # design's priority walk happened to pick them in
+        assert spec.upgraded_turbines == design.roles()["upgraded"] == sorted(design.test_turbines)
         assert spec.candidate_references == design.roles()["references"]

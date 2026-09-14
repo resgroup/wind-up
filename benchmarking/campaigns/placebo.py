@@ -282,6 +282,7 @@ def run_placebo(
     era5 = build_hot_v0_context(wtg_names=participating).reanalysis_datasets[0].data
     index = pd.DatetimeIndex(dataset.synthetic_df.index.unique()).sort_values()
 
+    screen_cache: dict = {}
     runner = CampaignRunner(
         spec,
         dataset,
@@ -290,6 +291,7 @@ def run_placebo(
             out_dir=run_dir / wtg,
             era5_hourly_df=era5 if include_power_model else None,
             include_power_model=include_power_model,
+            screen_cache=screen_cache,
         ),
         era5_wd=era5_direction(era5, index),
         northing_out_dir=run_dir / "northing",

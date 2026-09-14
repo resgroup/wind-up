@@ -48,8 +48,13 @@ logger = logging.getLogger(__name__)
 
 
 def _checked_references(references: Sequence[str]) -> list[str]:
-    """Return the reference pool as supplied, deduped in order; raises when it is empty."""
-    refs = list(dict.fromkeys(str(r) for r in references))
+    """Return the reference pool sorted and deduped; raises when it is empty.
+
+    Sorted so the feature matrix does not depend on the order the caller happened to list its
+    references in -- a declaration's line order would otherwise reach the estimate, since the
+    model is not invariant to column order.
+    """
+    refs = sorted(dict.fromkeys(str(r) for r in references))
     if not refs:
         msg = (
             "no references supplied: the power model needs at least one. The pool is the campaign's candidate "
@@ -83,8 +88,9 @@ def build_reference_features(
     complete-case dropping) — LightGBM handles them natively. Raises if ``references`` is empty, or
     (defensively) if any test-turbine column would leak in.
 
-    :param references: the reference pool -- the campaign's candidate references -- in the order
-        their feature columns are laid out. A turbine in ``scada_df`` that is not named here
+    :param references: the reference pool -- the campaign's candidate references. Their feature
+        columns are laid out in sorted order whatever order they arrive in, so the estimate does
+        not depend on how a declaration listed them. A turbine in ``scada_df`` that is not named here
         contributes nothing, and a name with no data in ``scada_df`` contributes no value columns.
     :param extra_cols: additional per-reference value columns to carry as features (Issue 11's
         active-power max/min/SD statistics); must be present in ``scada_df`` like the primary two
@@ -151,8 +157,11 @@ def build_reference_features(
 
 
 def _checked_wake_only(wake_only: Sequence[str], *, refs: list[str], test_wtg: str) -> tuple[str, ...]:
-    """Return the wake-only turbines deduped in order; raises on the test turbine or a reference."""
-    wake = tuple(dict.fromkeys(str(w) for w in wake_only))
+    """Return the wake-only turbines sorted and deduped; raises on the test turbine or a reference.
+
+    Sorted for the same reason the references are: the caller's order must not reach the model.
+    """
+    wake = tuple(sorted(dict.fromkeys(str(w) for w in wake_only)))
     clash = sorted({test_wtg, *refs} & set(wake))
     if clash:
         msg = f"wake_only names {clash}, which are the test turbine {test_wtg!r} or references {refs}"

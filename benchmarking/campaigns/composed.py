@@ -53,7 +53,12 @@ OUTPUT_DIR_ENV = "WIND_UP_BENCHMARKING_OUTPUT_DIR"
 
 
 def wind_up_method(
-    spec: CampaignSpec, *, columns: ColumnSchema, out_dir: Path, era5_hourly_df: pd.DataFrame | None
+    spec: CampaignSpec,
+    *,
+    columns: ColumnSchema,
+    out_dir: Path,
+    era5_hourly_df: pd.DataFrame | None,
+    screen_cache: dict | None = None,
 ) -> Method:
     """Build ``wind-up``'s estimator for one campaign.
 
@@ -64,6 +69,8 @@ def wind_up_method(
     :param columns: the source-native schema the SCADA is keyed by
     :param out_dir: where the method writes its own diagnostics
     :param era5_hourly_df: reanalysis; without it the per-condition estimates are not reported
+    :param screen_cache: one dict shared across the campaign's turbines, so the reference screen
+        runs once rather than once per test turbine
     """
     return PowerModelMethod(
         name=WIND_UP,
@@ -76,6 +83,7 @@ def wind_up_method(
         model_params=dict(TUNED_MODEL_PARAMS),
         out_dir=out_dir,
         save_plots=True,
+        screen_cache=screen_cache,
     )
 
 
@@ -128,6 +136,8 @@ def run_declaration(
     scada_df = pd.read_parquet(declaration.scada_path)
     reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration)
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+    # One screen verdict for the campaign: every test turbine is judged against the same references.
+    screen_cache: dict = {}
 
     report = estimate_campaign(
         declaration.spec,
@@ -138,6 +148,7 @@ def run_declaration(
                 columns=declaration.columns,
                 out_dir=out_dir / wtg / WIND_UP,
                 era5_hourly_df=reanalysis,
+                screen_cache=screen_cache,
             )
         ],
         columns=declaration.columns,

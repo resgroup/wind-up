@@ -152,7 +152,9 @@ def estimate_campaign(
     reference_frames: list[pd.DataFrame] = []
     conditional_frames: list[pd.DataFrame] = []
 
-    for wtg in spec.upgraded_turbines:
+    # Sorted rather than in declaration order, so a glance at the log says how far through the
+    # campaign a run is, whatever order the turbines were declared in.
+    for wtg in sorted(spec.upgraded_turbines):
         timing = spec.timing_for(wtg)
         rows = visible[visible[spec.turbine_col] == wtg]
         treated = _treated_activity(pd.DatetimeIndex(rows.index), timing=timing, spec=spec)
