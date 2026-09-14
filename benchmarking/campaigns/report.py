@@ -15,6 +15,7 @@ import pandas as pd
 
 from benchmarking.campaigns.runner import per_turbine_table
 from benchmarking.campaigns.uplift_plots import write_uplift_plots
+from benchmarking.diagnostics.context import infer_timebase
 from benchmarking.harness import CONDITIONS, condition_bins, conditional_truth_vs_estimate, plot_conditional_uplift
 from benchmarking.harness.plots import conditional_estimates
 from benchmarking.synthetic import treated_mask
@@ -52,11 +53,14 @@ def write_report(report: CampaignReport, *, out_dir: Path) -> Path:
 
     label = report.spec.change_label()
     logger.info(
-        "Measured uplift per turbine for %s:\n%s", label, _as_percent(report.per_turbine).to_string(index=False)
+        "Measured uplift per turbine for %s:\n%s", label, _for_reading(report.per_turbine).to_string(index=False)
     )
-    logger.info("Measured farm uplift for %s:\n%s", label, _as_percent(report.farm).to_string(index=False))
+    logger.info("Measured farm uplift for %s:\n%s", label, _for_reading(report.farm).to_string(index=False))
     _log_guards(report.farm_uplifts)
-    _log_reference_stability(report.reference_stability)
+    _log_reference_stability(
+        report.reference_stability,
+        timebase=infer_timebase(pd.DatetimeIndex(report.scada_df.index.unique()).sort_values()),
+    )
 
     if not report.conditional.empty:
         report.conditional.to_csv(out_dir / "conditional.csv", index=False)
@@ -105,20 +109,37 @@ def _log_guards(farm_uplifts: dict) -> None:
 
 # Uplift columns are reported as percentages, named for what they are rather than for the estimator.
 _PERCENT_COLUMNS = {"estimate": "measured uplift [%]", "uplift": "measured uplift [%]", "uplift_spread": "spread [%]"}
+# actual_energy is a sum of mean power, not energy; the log converts it and says which it is.
+_ENERGY_COLUMN = "actual_energy"
+_ENERGY_SHOWN = "treated energy [MWh]"
+KW_PER_MW = 1000.0
 # A reference read this differently by two test turbines is a real difference, not arithmetic noise.
 _STABILITY_TOLERANCE_PCT = 0.1
 
 
-def _as_percent(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return ``frame`` with its uplift columns as named percentages, rounded for reading."""
+def _for_reading(frame: pd.DataFrame, *, timebase: pd.Timedelta | None = None) -> pd.DataFrame:
+    """Return ``frame`` as a human reads it: uplifts in percent, energy in MWh, counts as counts.
+
+    ``actual_energy`` is a sum of mean power over the treated records, so it becomes energy only
+    once the timebase is known; without one the column is left out rather than printed as a number
+    whose unit the reader would have to guess.
+    """
     shown = frame.copy()
     for column in _PERCENT_COLUMNS:
         if column in shown.columns:
             shown[column] = (shown[column].astype(float) * 100).round(3)
-    return shown.rename(columns=_PERCENT_COLUMNS)
+    if _ENERGY_COLUMN in shown.columns:
+        if timebase is None:
+            shown = shown.drop(columns=[_ENERGY_COLUMN])
+        else:
+            hours = timebase / pd.Timedelta(hours=1)
+            shown[_ENERGY_COLUMN] = (shown[_ENERGY_COLUMN].astype(float) * hours / KW_PER_MW).round(0).astype(int)
+    if "n_records" in shown.columns:
+        shown["n_records"] = shown["n_records"].astype(int)
+    return shown.rename(columns={**_PERCENT_COLUMNS, _ENERGY_COLUMN: _ENERGY_SHOWN})
 
 
-def _log_reference_stability(stability: pd.DataFrame) -> None:
+def _log_reference_stability(stability: pd.DataFrame, *, timebase: pd.Timedelta | None = None) -> None:
     """Report each reference's self-uplift: one row per reference, the campaign judging its pool.
 
     Every test turbine estimates each reference against the same pool over the same contrast, so
@@ -138,7 +159,7 @@ def _log_reference_stability(stability: pd.DataFrame) -> None:
         )
         logger.info(
             "Reference stability (each reference estimated as if it were a test turbine):\n%s",
-            _as_percent(stability).to_string(index=False),
+            _for_reading(stability, timebase=timebase).to_string(index=False),
         )
         return
     collapsed = (
@@ -154,7 +175,7 @@ def _log_reference_stability(stability: pd.DataFrame) -> None:
     )
     logger.info(
         "Reference stability (each reference estimated as if it were a test turbine):\n%s",
-        _as_percent(collapsed).to_string(index=False),
+        _for_reading(collapsed, timebase=timebase).to_string(index=False),
     )
 
 
