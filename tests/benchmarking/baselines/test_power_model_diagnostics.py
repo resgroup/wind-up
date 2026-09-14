@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,6 +13,7 @@ from benchmarking.baselines.power_model.diagnostics import (
     _as_percent_of_power,
     _binned_stats,
     _condition_diagnostic_figure,
+    _histogram_groups,
     _plot_residual_binned,
     _set_ylim_from_inliers,
     plot_conditional_diagnostics,
@@ -178,3 +179,38 @@ def test_plot_residual_binned_writes_png_without_conditions(tmp_path: Path) -> N
     _plot_residual_binned(model_dir, _diag_data(with_conditions=False))
     assert (model_dir / "residual_binned.png").exists()
     assert (model_dir / "residual_binned_pct.png").exists()
+
+
+class TestFeatureHistogramFolders:
+    """One signal per folder, so a farm's worth of nacelle positions does not bury the singletons."""
+
+    FEATURES: ClassVar[list[str]] = [
+        "wtc_ActPower_mean @ R1",
+        "wtc_ActPower_mean @ R2",
+        "northed_wtc_NacelPos_mean_sin @ R1",
+        "northed_wtc_NacelPos_mean_cos @ R1",
+        "cloud_cover",
+        "wind_direction_100m_sin",
+        "wind_direction_100m_cos",
+        "wind_direction_100m",
+    ]
+
+    def _placed(self, root: Path) -> dict[str, str]:
+        groups = _histogram_groups(self.FEATURES)
+        return {f: groups[f](root).name for f in self.FEATURES}
+
+    def test_each_turbine_s_copy_of_a_signal_shares_one_folder(self, tmp_path: Path) -> None:
+        placed = self._placed(tmp_path)
+        assert placed["wtc_ActPower_mean @ R1"] == placed["wtc_ActPower_mean @ R2"] == "wtc_ActPower_mean"
+
+    def test_a_sine_and_cosine_pair_is_one_signal(self, tmp_path: Path) -> None:
+        placed = self._placed(tmp_path)
+        assert placed["northed_wtc_NacelPos_mean_sin @ R1"] == "northed_wtc_NacelPos_mean"
+        assert placed["northed_wtc_NacelPos_mean_cos @ R1"] == "northed_wtc_NacelPos_mean"
+
+    def test_a_lone_plot_stays_at_the_top_level(self, tmp_path: Path) -> None:
+        assert self._placed(tmp_path)["cloud_cover"] == tmp_path.name
+
+    def test_a_reanalysis_field_groups_with_its_companions(self, tmp_path: Path) -> None:
+        placed = self._placed(tmp_path)
+        assert placed["wind_direction_100m"] == placed["wind_direction_100m_sin"] == "wind_direction_100m"

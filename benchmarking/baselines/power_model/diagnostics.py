@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -31,12 +32,15 @@ from benchmarking.diagnostics.style import apply_grid, save_fig
 from benchmarking.harness.conditions import CONDITIONS, TI_BINS, WS_BINS
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _SEGMENTS = ("all", "baseline", "upgraded")
 _TOP_FEATURES_LOGGED = 12
+# Feature histograms of a signal below this count stay at the top level rather than in a folder.
+_MIN_FOR_OWN_FOLDER = 2
 _MIN_CORR_PAIRS = 2
 
 
@@ -411,6 +415,7 @@ def _save_feature_histograms(out_dir: Path, data: DiagnosticData) -> None:
     sel = np.asarray(data.selected_all, dtype=bool)
     treated_sel = np.asarray(data.treated_all, dtype=bool)[sel]  # aligned to feature_values rows
     baseline_sel = ~treated_sel
+    groups = _histogram_groups(data.feature_names)
     for feature in data.feature_names:
         vals = data.feature_values[feature].to_numpy(dtype=float)
         bins = _robust_bins(vals)
@@ -427,7 +432,42 @@ def _save_feature_histograms(out_dir: Path, data: DiagnosticData) -> None:
         apply_grid(ax)
         if ax.get_legend_handles_labels()[0]:
             ax.legend()
-        save_fig(fig, out_dir / f"{_safe_filename(feature)}.png")
+        save_fig(fig, groups[feature](out_dir) / f"{_safe_filename(feature)}.png")
+
+
+def _signal_of(feature: str) -> str:
+    """Return the signal a feature measures: its tag, without the turbine or a sin/cos companion.
+
+    ``northed_wtc_NacelPos_mean_cos @ T01`` and its sine are both the nacelle position, and every
+    turbine's copy is the same signal.
+    """
+    tag = feature.partition(QUALIFIER)[0]
+    for companion in ("_sin", "_cos"):
+        tag = tag.removesuffix(companion)
+    return tag
+
+
+def _histogram_groups(features: Sequence[str]) -> dict[str, Callable[[Path], Path]]:
+    """Map each feature to where its histogram goes: a per-signal folder, or the root.
+
+    A whole farm's worth of one signal buries the signals there is only one of, so a signal with
+    more than one plot gets a folder of its own and the singletons stay at the top level.
+    """
+    counts = Counter(_signal_of(f) for f in features)
+
+    def place(feature: str) -> Callable[[Path], Path]:
+        signal = _signal_of(feature)
+        if counts[signal] < _MIN_FOR_OWN_FOLDER:
+            return lambda root: root
+        return lambda root: _made(root / _safe_filename(signal))
+
+    return {f: place(f) for f in features}
+
+
+def _made(path: Path) -> Path:
+    """Return ``path``, created if it is not there yet."""
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _robust_bins(values: np.ndarray, *, bins: int = 30) -> list[float] | int:
