@@ -75,6 +75,17 @@ class TestTheCampaignFacts:
         assert spec.coords["T01"] == (57.40, -3.30)
         assert set(spec.coords) == {"T01", "T02", "T03", "T04"}
 
+    def test_a_turbine_holding_no_role_keeps_its_coordinates(self, tmp_path: Path) -> None:
+        # it is a wake contributor, and the waking-layout diagnostic can only draw what it has
+        # coordinates for
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV + "T05,57.55,-3.22\n")
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        path = tmp_path / "campaign.yaml"
+        path.write_text(textwrap.dedent(PREPOST))
+        spec = load_declaration(path).spec
+        assert spec.coords["T05"] == (57.55, -3.22)
+        assert "T05" not in spec.candidate_references
+
     def test_the_named_schema_resolves_to_a_column_schema(self, tmp_path: Path) -> None:
         declaration = load(tmp_path)
         assert declaration.columns == HOT_COLUMNS
@@ -309,3 +320,20 @@ class TestACampaignDesignFeedsTheDeclaration:
         # design's priority walk happened to pick them in
         assert spec.upgraded_turbines == design.roles()["upgraded"] == sorted(design.test_turbines)
         assert spec.candidate_references == design.roles()["references"]
+
+
+class TestNamesThatBecomeDirectories:
+    """The campaign name and the turbine names are used as output directory names."""
+
+    @pytest.mark.parametrize("name", ["demo/2026", "../demo", "/elsewhere/demo", "."])
+    def test_a_campaign_name_that_is_not_one_path_component_is_refused(self, tmp_path: Path, name: str) -> None:
+        with pytest.raises(ValueError, match=r"name"):
+            load(tmp_path, PREPOST.replace("name: demo", f"name: {name!r}"))
+
+    def test_a_turbine_name_that_is_not_one_path_component_is_refused(self, tmp_path: Path) -> None:
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV.replace("T02,", "../T02,"))
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        path = tmp_path / "campaign.yaml"
+        path.write_text(textwrap.dedent(PREPOST.replace("references: [T02, T03]", "references: [T03]")))
+        with pytest.raises(ValueError, match=r"\.\./T02"):
+            load_declaration(path)

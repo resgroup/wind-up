@@ -138,13 +138,13 @@ def load_declaration(path: str | Path) -> Declaration:
         raise ValueError(msg)
 
     return Declaration(
-        name=str(raw["name"]),
+        name=_path_component(str(raw["name"]), what="campaign name"),
         spec=CampaignSpec(
             upgraded_turbines=upgraded,
             upgrade_timing=_timing(_section(raw, "timing")),
             candidate_references=references,
             excluded_turbines=excluded,
-            coords={w: coords[w] for w in [*upgraded, *references, *excluded]},
+            coords=dict(coords),
             north_offsets=_north_offsets(raw.get("northing")),
             rated_power_kw=float(roles["rated_power_kw"]),
             analysis_period=(start, end),
@@ -200,10 +200,23 @@ def _read_turbines(path: Path) -> dict[str, tuple[float, float]]:
     if doubled:
         msg = f"the turbines file {path.name} names {doubled} more than once"
         raise ValueError(msg)
+    for name in names:
+        _path_component(name, what=f"turbine name in {path.name}")
     return {
         str(row[lookup["name"]]): (float(row[lookup["latitude"]]), float(row[lookup["longitude"]]))
         for _, row in named.iterrows()
     }
+
+
+def _path_component(value: str, *, what: str) -> str:
+    """Check a name a run writes a directory for is one path component, and return it."""
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        msg = (
+            f"the {what} {value!r} names an output directory, so it cannot be empty, '.', '..', "
+            f"or carry a path separator"
+        )
+        raise ValueError(msg)
+    return value
 
 
 def _check_roles(
