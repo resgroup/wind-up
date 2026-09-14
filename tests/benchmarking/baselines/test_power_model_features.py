@@ -372,11 +372,15 @@ class TestPowerFreeReferences:
         for ref in ("R2", "R3"):
             assert f"{_POWER}{QUALIFIER}{ref}" in feats.columns
 
-    def test_a_power_free_reference_keeps_its_direction(self) -> None:
-        """Whether it is casting a wake on its neighbours is a function of where it points."""
+    def test_a_power_free_reference_loses_its_direction(self) -> None:
+        """Where it points can move with the change itself: a yaw realignment, or wake steering."""
         feats = self._features(_index(24), power_free=("R1",))
-        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R1" in feats.columns
-        assert f"{_NORTHED_DIR}_cos{QUALIFIER}R1" in feats.columns
+        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R1" not in feats.columns
+        assert f"{_NORTHED_DIR}_cos{QUALIFIER}R1" not in feats.columns
+
+    def test_a_reference_that_kept_its_power_still_keeps_its_direction(self) -> None:
+        feats = self._features(_index(24), power_free=("R1",))
+        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R2" in feats.columns
 
     def test_a_power_free_reference_gains_a_waking_boolean(self) -> None:
         feats = self._features(_index(24), power_free=("R1",))
@@ -445,16 +449,16 @@ class TestWakeOnlyTurbines:
     def test_contributes_no_power(self) -> None:
         assert f"{_POWER}{QUALIFIER}R3" not in self._features().columns
 
-    def test_contributes_its_direction(self) -> None:
+    def test_does_not_contribute_its_direction(self) -> None:
         feats = self._features()
-        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R3" in feats.columns
-        assert f"{_NORTHED_DIR}_cos{QUALIFIER}R3" in feats.columns
+        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R3" not in feats.columns
+        assert f"{_NORTHED_DIR}_cos{QUALIFIER}R3" not in feats.columns
 
     def test_contributes_its_waking_boolean(self) -> None:
         assert f"waking_{_POWER}{QUALIFIER}R3" in self._features().columns
 
-    def test_contributes_its_availability(self) -> None:
-        assert f"{_AVAIL}{QUALIFIER}R3" in self._features().columns
+    def test_does_not_contribute_its_availability(self) -> None:
+        assert f"{_AVAIL}{QUALIFIER}R3" not in self._features().columns
 
     def test_contributes_exactly_what_a_power_free_reference_does(self) -> None:
         as_reference = self._features(references=_REFS, power_free=("R3",), wake_only=())
@@ -510,8 +514,8 @@ class TestWakingDtype:
         assert bad == []
 
 
-class TestPowerFreeKeepsAvailability:
-    """`power_free` removes power channels; availability is not one of them."""
+class TestPowerFreeIsWakingAlone:
+    """A power-free turbine contributes its waking boolean and no other channel."""
 
     def _features(self, *, include_availability: bool) -> pd.DataFrame:
         idx = _index(24)
@@ -528,9 +532,14 @@ class TestPowerFreeKeepsAvailability:
             waking_threshold_kw=_WAKING_THRESHOLD_KW,
         )
 
-    def test_a_power_free_reference_keeps_availability_when_it_is_a_feature(self) -> None:
+    def test_a_power_free_reference_loses_availability_though_others_keep_it(self) -> None:
         feats = self._features(include_availability=True)
-        assert f"{_AVAIL}{QUALIFIER}R1" in feats.columns
+        assert f"{_AVAIL}{QUALIFIER}R1" not in feats.columns
+        assert f"{_AVAIL}{QUALIFIER}R2" in feats.columns
+
+    def test_waking_is_all_it_contributes(self) -> None:
+        feats = self._features(include_availability=True)
+        assert [c for c in feats.columns if c.endswith(f"{QUALIFIER}R1")] == [f"waking_{_POWER}{QUALIFIER}R1"]
 
     def test_it_still_loses_its_power(self) -> None:
         feats = self._features(include_availability=True)

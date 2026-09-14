@@ -1263,7 +1263,7 @@ class PowerModelMethod:
             raise ValueError(msg) from e
         if result.screened:
             logger.info(
-                "%s %s: reference screen ruled out %s; they keep direction + waking features but contribute no power",
+                "%s %s: reference screen ruled out %s; they contribute a waking feature and nothing else",
                 self.name,
                 mi.test_wtg,
                 list(result.screened),

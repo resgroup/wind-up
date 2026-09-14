@@ -18,8 +18,8 @@ cause-effect (reactive power, blade pitch, …) are intentionally excluded.
 The reference pool is passed in by the caller -- the campaign's **candidate references** -- and is
 never inferred from the turbines the frame happens to hold: a turbine present in the data is not
 thereby available as a reference. The caller's screen may make some of that pool ``power_free``;
-that downgrades a reference's channels, it does not shrink the pool. Changed turbines outside the
-pool join as ``wake_only``, with the same channels as a power-free reference.
+that downgrades a reference to its waking boolean alone, it does not shrink the pool. Changed
+turbines outside the pool join as ``wake_only``, with the same single channel.
 
 Feature columns from references are named ``"<tag>{QUALIFIER}<turbine>"`` so the original tag is
 preserved verbatim in importance diagnostics. :func:`check_reference_only` rejects any
@@ -96,10 +96,10 @@ def build_reference_features(
         359 degrees is next to 1). Must be the column the shared northing step writes; raises
         naming it when absent. A raw direction listed in ``extra_cols`` is dropped in favour of
         it, so a reference never contributes both.
-    :param power_free: references that contribute no power columns. They keep their direction
-        features and gain a ``waking_<active_power_col>`` boolean instead, so the wake information
-        their operating state carries is retained while the channels a performance change corrupts
-        are not. Requires ``waking_threshold_kw``. Empty by default, which leaves the matrix
+    :param power_free: references that contribute a ``waking_<active_power_col>`` boolean and
+        nothing else -- no power, no availability, no direction. The wake their operating state
+        carries is kept; every channel a performance change can move, including where they point,
+        is not. Requires ``waking_threshold_kw``. Empty by default, which leaves the matrix
         byte-identical to a caller that never asked.
     :param wake_only: turbines outside the reference pool that contribute their wake alone, as a
         ``power_free`` reference does. Their columns follow the references'. Requires
@@ -111,8 +111,13 @@ def build_reference_features(
     wake = _checked_wake_only(wake_only, refs=refs, test_wtg=test_wtg)
     power_free = _checked_power_free(power_free, refs=refs, wake_only=wake, waking_threshold_kw=waking_threshold_kw)
     turbines = [*refs, *wake]
+    free = set(power_free)
     extra_cols, direction_frame = _direction_features(
-        scada_df, refs=turbines, turbine_col=turbine_col, direction_col=direction_col, extra_cols=extra_cols
+        scada_df,
+        refs=[t for t in turbines if t not in free],
+        turbine_col=turbine_col,
+        direction_col=direction_col,
+        extra_cols=extra_cols,
     )
     value_cols = [active_power_col, *([availability_col] if include_availability else []), *extra_cols]
     # availability_col stays validated even when not featured: it is a required input and the
@@ -126,16 +131,10 @@ def build_reference_features(
     tmp = scada_df[[turbine_col, *value_cols]].copy()
     tmp["_ts"] = scada_df.index
     wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=value_cols, aggfunc="first")
-    # power_free removes a reference's *power* channels only: availability is not one, and a
-    # screened reference is still known to be operating or not.
-    free = set(power_free)
-    power_cols = {active_power_col, *extra_cols}
-    keep = [
-        (col, r)
-        for col in value_cols
-        for r in turbines
-        if (col, r) in wide.columns and not (r in free and col in power_cols)
-    ]
+    # A power-free turbine contributes the waking boolean and nothing else. Its power may carry a
+    # performance change, and its direction may carry the same change through yaw: a realignment or
+    # wake steering moves where it points, so the counterfactual would read the treatment back.
+    keep = [(col, r) for col in value_cols for r in turbines if (col, r) in wide.columns and r not in free]
     features = wide.loc[:, keep]
     features.columns = [f"{col}{QUALIFIER}{r}" for col, r in keep]
     features = features.reindex(index)

@@ -947,14 +947,11 @@ class TestReferenceScreen:
         on = _screen_method(reference_screen=True).estimate(mi).p50_overall
         assert on == pytest.approx(off)
 
-    def test_the_screened_reference_loses_power_but_keeps_direction_and_waking(self) -> None:
-        """The corrupted channels go; the wake geometry and the is-it-waking signal stay."""
+    def test_the_screened_reference_keeps_its_waking_signal_and_nothing_else(self) -> None:
+        """Its power changed, and whatever changed it may have moved where it points too."""
         mi, _ = _screen_case(step=0.03)
         features = _screen_method().reference_features(mi, power_free=("R1",))
-        assert f"{_POWER} @ R1" not in features.columns
-        assert f"{_POWER_MIN} @ R1" not in features.columns
-        assert f"{_NORTHED_YAW}_sin @ R1" in features.columns
-        assert f"waking_{_POWER} @ R1" in features.columns
+        assert [c for c in features.columns if c.endswith(" @ R1")] == [f"waking_{_POWER} @ R1"]
 
     def test_the_screen_is_on_by_default(self) -> None:
         assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).reference_screen
@@ -1474,12 +1471,9 @@ def _with_a_changed_neighbour(*, as_reference: bool = False, n: int = 4000) -> M
 class TestWakeContributors:
     """Another changed turbine stays in the estimate for its wake, and never for its power."""
 
-    def test_its_wake_reaches_the_features_without_its_power(self) -> None:
+    def test_its_wake_reaches_the_features_as_a_waking_boolean_alone(self) -> None:
         features = _screen_method().reference_features(_with_a_changed_neighbour())
-        assert f"waking_{_POWER} @ W1" in features.columns
-        assert f"{_NORTHED_YAW}_sin @ W1" in features.columns
-        assert f"{_POWER} @ W1" not in features.columns
-        assert f"{_POWER_MIN} @ W1" not in features.columns
+        assert [c for c in features.columns if c.endswith(" @ W1")] == [f"waking_{_POWER} @ W1"]
 
     def test_its_change_does_not_reach_the_estimate(self) -> None:
         method = _screen_method(reference_screen=False, report_reference_uplifts=False)
