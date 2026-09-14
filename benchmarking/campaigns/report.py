@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from benchmarking.campaigns.runner import per_turbine_table
+from benchmarking.campaigns.uplift_plots import write_uplift_plots
 from benchmarking.harness import CONDITIONS, condition_bins, conditional_truth_vs_estimate, plot_conditional_uplift
 from benchmarking.harness.plots import conditional_estimates
 from benchmarking.synthetic import treated_mask
@@ -41,6 +42,13 @@ def write_report(report: CampaignReport, *, out_dir: Path) -> Path:
     report.farm.to_csv(out_dir / "farm_uplift.csv", index=False)
     report.reference_stability.to_csv(out_dir / "reference_stability.csv", index=False)
     _write_detail(report.farm_uplifts, out_dir=out_dir)
+    write_uplift_plots(
+        out_dir,
+        per_turbine=report.per_turbine,
+        stability=report.reference_stability,
+        rated_power_kw=report.spec.rated_power_kw,
+        farm=report.farm,
+    )
 
     label = report.spec.change_label()
     logger.info("Per-turbine uplift for %s:\n%s", label, report.per_turbine.to_string(index=False))
