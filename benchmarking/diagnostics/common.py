@@ -26,7 +26,7 @@ from benchmarking.diagnostics.curves import (
     plot_reactive_vs_active,
 )
 from benchmarking.diagnostics.histograms import plot_condition_histograms
-from benchmarking.diagnostics.northing import plot_northing_error
+from benchmarking.diagnostics.northing import plot_northed_error, plot_northing_error
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -51,6 +51,7 @@ _PLOTS: tuple[Callable[[DiagnosticContext], Path | None], ...] = (
     plot_reactive_vs_active,
     plot_power_factor,
     plot_northing_error,
+    plot_northed_error,
 )
 
 

@@ -6,6 +6,10 @@ plots, per turbine, the **monthly circular mean** of (nacelle position - ERA5 wi
 time, so a drift or step in the offset stands out. Only rows where the turbine is generating
 (≥ 5% of its rated power) are used, because a parked turbine often points away from the wind.
 
+Drawn twice: from the raw nacelle position in ``1_inputs``, and from the north-calibrated column
+the shared northing step writes in ``3_feature_eng`` -- the signal the model is actually given, so
+a correction that did not take is visible as a residual offset or step.
+
 Requires a nacelle-position column and aligned ERA5 direction; returns ``None`` otherwise.
 """
 
@@ -46,17 +50,43 @@ def _monthly_circular_mean(error_deg: pd.Series) -> pd.Series:
 
 def plot_northing_error(ctx: DiagnosticContext) -> Path | None:
     """Per-turbine monthly circular-mean of (nacelle position - ERA5 direction) over time."""
-    if (
-        not ctx.has_column(ctx.columns.nacelle_position)
-        or ctx.era5_df is None
-        or ERA5_WD_COL not in ctx.era5_df.columns
-    ):
+    return _northing_error_figure(
+        ctx,
+        nacelle_col=ctx.columns.nacelle_position,
+        stage=stages.INPUTS,
+        filename="northing_error.png",
+        described="no corrections",
+    )
+
+
+def plot_northed_error(ctx: DiagnosticContext) -> Path | None:
+    """Draw the same timeline from the north-calibrated column the shared northing step wrote.
+
+    What the model actually sees. A residual offset or a step surviving here is a correction that
+    did not take, which the raw version cannot distinguish from one that was never applied.
+    """
+    if ctx.columns.nacelle_position is None:
+        return None
+    return _northing_error_figure(
+        ctx,
+        nacelle_col=ctx.columns.northed("nacelle_position"),
+        stage=stages.FEATURE_ENG,
+        filename="northed_error.png",
+        described="after northing correction",
+    )
+
+
+def _northing_error_figure(
+    ctx: DiagnosticContext, *, nacelle_col: str | None, stage: str, filename: str, described: str
+) -> Path | None:
+    """Draw the northing-error timeline from ``nacelle_col``; None when the inputs are not there."""
+    if not ctx.has_column(nacelle_col) or ctx.era5_df is None or ERA5_WD_COL not in ctx.era5_df.columns:
         return None
     era5_wd = ctx.era5_df[ERA5_WD_COL].reindex(ctx.index)
     fig, ax = plt.subplots(figsize=(12, 6))
     shade_segments(ax, ctx)
     for turbine in [ctx.test_wtg, *ctx.references()]:
-        nacelle = ctx.turbine_series(turbine, ctx.columns.nacelle_position)
+        nacelle = ctx.turbine_series(turbine, nacelle_col)
         power = ctx.turbine_series(turbine, ctx.columns.active_power)
         rated = np.nanpercentile(power.to_numpy(dtype=float), _RATED_PERCENTILE) if power.notna().any() else np.nan
         generating = power >= _GENERATING_FRAC * rated if np.isfinite(rated) else power.notna()
@@ -66,10 +96,10 @@ def plot_northing_error(ctx: DiagnosticContext) -> Path | None:
         ax.plot(monthly.index.to_numpy(), monthly.to_numpy(), linewidth=1.0, marker=".", markersize=3, label=label)
     ax.axhline(0.0, color="k", linewidth=1)
     ax.set_xlabel("date")
-    ax.set_ylabel(f"{ctx.columns.nacelle_position} - {ERA5_WD_COL} [deg] (monthly circular mean)")
-    ax.set_title(f"{ctx.test_wtg}: northing error over time (generating rows only, no corrections)")
+    ax.set_ylabel(f"{nacelle_col} - {ERA5_WD_COL} [deg] (monthly circular mean)")
+    ax.set_title(f"{ctx.test_wtg}: northing error over time (generating rows only, {described})")
     apply_grid(ax)
     ax.legend(ncol=2, fontsize="small")
-    path = ctx.stage_dir(stages.INPUTS) / "northing_error.png"
+    path = ctx.stage_dir(stage) / filename
     save_fig(fig, path)
     return path

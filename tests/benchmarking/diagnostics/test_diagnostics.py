@@ -7,6 +7,7 @@ gracefully. They do not assert pixel content — image fidelity is reviewed by e
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -20,6 +21,7 @@ from benchmarking.diagnostics.context import ERA5_WD_COL, ERA5_WS_COL, Diagnosti
 from benchmarking.diagnostics.coverage import exclusion_bucket, plot_excluded_fraction
 from benchmarking.diagnostics.curves import _overall_power_factor, _reactive_panel_turbines
 from benchmarking.diagnostics.density import density_scatter
+from benchmarking.diagnostics.northing import plot_northed_error, plot_northing_error
 from benchmarking.synthetic import ColumnSchema
 
 if TYPE_CHECKING:
@@ -268,3 +270,29 @@ class TestTheReactivePlotStaysReadable:
     def test_a_small_farm_keeps_every_turbine(self, tmp_path: Path) -> None:
         panels = _reactive_panel_turbines(self._farm_context(tmp_path, 4, test_wtg="T02"))
         assert len(panels) == 4
+
+
+class TestTheNorthedErrorTimeline:
+    """The raw timeline says what the sensor did; the northed one says what the model was given."""
+
+    def _context_with_northed(self, tmp_path: Path) -> DiagnosticContext:
+        ctx = _context(tmp_path)
+        scada = ctx.scada_df.copy()
+        # the shared northing step writes this alongside the untouched original
+        scada[ctx.columns.northed("nacelle_position")] = (scada["nacelle"] - 7.0) % 360.0
+        return dataclasses.replace(ctx, scada_df=scada)
+
+    def test_it_lands_in_the_feature_engineering_stage(self, tmp_path: Path) -> None:
+        path = plot_northed_error(self._context_with_northed(tmp_path))
+        assert path is not None
+        assert path.parent.name == "3_feature_eng"
+        assert path.name == "northed_error.png"
+
+    def test_the_raw_one_stays_in_inputs(self, tmp_path: Path) -> None:
+        path = plot_northing_error(self._context_with_northed(tmp_path))
+        assert path is not None
+        assert path.parent.name == "1_inputs"
+
+    def test_it_is_skipped_when_the_northing_step_has_not_run(self, tmp_path: Path) -> None:
+        # a method run outside a campaign has the raw column only
+        assert plot_northed_error(_context(tmp_path)) is None
