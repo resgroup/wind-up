@@ -32,6 +32,8 @@ class CampaignContext:
     :param turbine_col: the turbine-identifier column of the SCADA frame
     :param candidate_references: the turbines a method may use as references. A turbine present
         in the frame but absent here is not a reference, whatever its data looks like.
+    :param coords: turbine name to ``(latitude, longitude)``, when the campaign knows the layout;
+        diagnostics draw it, no estimate depends on it
     :param wake_contributors: turbines kept in the frame for their wake alone -- every turbine
         present that is neither the test turbine nor a candidate reference, so the campaign's
         other changed turbines, its excluded ones, and any it never declared. Never references,
@@ -53,6 +55,7 @@ class CampaignContext:
     candidate_references: list[str]
     wake_contributors: list[str]
     valid_for_uplift: pd.DataFrame
+    coords: dict[str, tuple[float, float]] | None = None
 
     def __post_init__(self) -> None:
         """Raise when a wake contributor is also the test turbine or a candidate reference."""

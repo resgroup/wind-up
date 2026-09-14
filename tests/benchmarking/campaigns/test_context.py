@@ -114,6 +114,8 @@ class TestTiming:
 
 def test_the_context_carries_only_the_documented_answers() -> None:
     # Guards the truth boundary: a field added here reaches every method, so it must be deliberate.
+    # coords is the layout the analyst declares in turbines.csv, not an answer: diagnostics draw
+    # it, no estimate reads it.
     assert {f.name for f in dataclasses.fields(CampaignContext)} == {
         "test_wtg",
         "timing",
@@ -121,4 +123,5 @@ def test_the_context_carries_only_the_documented_answers() -> None:
         "candidate_references",
         "wake_contributors",
         "valid_for_uplift",
+        "coords",
     }

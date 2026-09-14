@@ -60,4 +60,5 @@ def context_for(spec: CampaignSpec, *, turbine: str, scada_df: pd.DataFrame) -> 
         candidate_references=references,
         wake_contributors=wake_contributors,
         valid_for_uplift=valid,
+        coords=dict(spec.coords),
     )

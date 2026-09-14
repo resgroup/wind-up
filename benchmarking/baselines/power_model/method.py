@@ -49,6 +49,7 @@ from benchmarking.baselines.power_model.screening import (
 from benchmarking.baselines.power_model.screening import (
     empty_screen_passes as _empty_screen_passes,
 )
+from benchmarking.baselines.power_model.waking import write_waking_diagnostics
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.harness.conditions import (
@@ -583,6 +584,20 @@ class PowerModelMethod:
                 cond_upgraded=cond_upgraded,
                 cond_baseline_valid=cond_baseline_valid,
             )
+            if self.save_plots:
+                # What the wake-only turbines carry, beside the model that consumed it.
+                write_waking_diagnostics(
+                    run_dir,
+                    scada=scada,
+                    turbine_col=mi.turbine_col,
+                    active_power_col=self.columns.active_power,
+                    threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+                    treated=pd.Series(np.asarray(t, dtype=bool), index=index),
+                    test_wtg=mi.test_wtg,
+                    references=references,
+                    power_free=[*power_free, *mi.context.wake_contributors],
+                    coords=mi.context.coords,
+                )
 
         # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
         # it (eventually AEP extrapolation will). Skipped when no conditions are requested.
