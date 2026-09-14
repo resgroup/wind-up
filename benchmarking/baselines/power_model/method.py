@@ -1277,6 +1277,14 @@ class PowerModelMethod:
             )
             return cached
         clone = self._screening_clone()
+        logger.info(
+            "%s %s: screening %d candidate reference(s) across %s, one estimate each per pass; "
+            "this is the long part of the run, and the campaign's other test turbines reuse the verdict",
+            self.name,
+            mi.test_wtg,
+            len(pool),
+            timing.date() if hasattr(timing, "date") else timing,
+        )
 
         # Why each candidate could not be estimated, so a screen that gives up can say what stopped
         # it rather than only that it gave up.
@@ -1475,7 +1483,7 @@ class PowerModelMethod:
             cond_baseline_valid=cond_baseline_valid,
         )
         importance = diag.write_csvs(run_dir, run_name, ts, data)
-        diag.log_top_features(importance)
+        diag.log_top_features(importance, active_power_col=self.columns.active_power)
         logger.info(
             "%s %s: uplift=%+.3f%%  (sum_actual=%.1f MWh, sum_counterfactual=%.1f MWh, n_up=%d)",
             self.name,

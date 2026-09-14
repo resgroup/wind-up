@@ -141,12 +141,18 @@ def run_declaration(
     :return: the truth-free campaign report, which is also written under ``out_dir``
     """
     declaration = load_declaration(path)
-    out_dir = out_dir if out_dir is not None else default_out_dir(declaration.name)
+    out_dir = (out_dir if out_dir is not None else default_out_dir(declaration.name)).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_to_file(out_dir)
     resolved = yaml.safe_dump(declaration.resolved(), sort_keys=False, default_flow_style=False)
     (out_dir / RESOLVED_FILENAME).write_text(_RESOLVED_HEADER + resolved)
-    logger.info("Running campaign %r into %s, logging to %s", declaration.name, out_dir, log_path)
+    logger.info(
+        "Running campaign %r declared in %s\n  writing to %s\n  logging to %s",
+        declaration.name,
+        Path(path).resolve(),
+        out_dir,
+        log_path,
+    )
 
     scada_df = pd.read_parquet(declaration.scada_path)
     reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration)

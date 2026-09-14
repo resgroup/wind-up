@@ -108,14 +108,33 @@ def _sourced(feature: str, *, era5_label: str) -> str:
     return feature if QUALIFIER in feature else f"{feature}{QUALIFIER}{era5_label}"
 
 
-def log_top_features(importance: pd.DataFrame) -> None:
-    """Log the model's top features so a human can spot a leaking (too-good) predictor."""
+def log_top_features(importance: pd.DataFrame, *, active_power_col: str = "") -> None:
+    """Say what the model leant on: a line at INFO, the table at DEBUG, a warning when it is odd.
+
+    A neighbour's active power should lead: it is the same weather, measured. Anything else on top
+    means the model is explaining this turbine with something other than its neighbours' output,
+    which is worth a look before the number is believed.
+    """
+    if importance.empty:
+        return
     top = importance.head(_TOP_FEATURES_LOGGED)
-    pairs = ", ".join(f"{r.feature} (gain={r.gain:.0f})" for r in top.itertuples())
-    logger.info("power_model top features by gain: %s", pairs)
-    logger.info(
-        "Review the above: weather + wake tags are expected; a feature that trivially predicts power is a flag."
-    )
+    logger.debug("power_model feature gains:\n%s", top[["feature", "gain"]].to_string(index=False, float_format="%.0f"))
+    leader = str(top.iloc[0]["feature"])
+    names = ", ".join(str(r.feature) for r in top.head(3).itertuples())
+    logger.info("power_model leant on %s (top 3 by gain); %d features in the model", names, len(importance))
+    if active_power_col and not _is_neighbour_power(leader, active_power_col=active_power_col):
+        logger.warning(
+            "power_model's strongest feature is %r, not a neighbour's %s. A neighbour's power is the "
+            "expected leader, so check the feature importance before believing the estimate.",
+            leader,
+            active_power_col,
+        )
+
+
+def _is_neighbour_power(feature: str, *, active_power_col: str) -> bool:
+    """Whether ``feature`` is another turbine's active power, the expected strongest predictor."""
+    tag, separator, turbine = feature.partition(QUALIFIER)
+    return bool(separator) and bool(turbine) and tag == active_power_col
 
 
 def segment_stats(data: DiagnosticData) -> pd.DataFrame:

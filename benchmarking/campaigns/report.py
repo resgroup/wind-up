@@ -51,8 +51,10 @@ def write_report(report: CampaignReport, *, out_dir: Path) -> Path:
     )
 
     label = report.spec.change_label()
-    logger.info("Per-turbine uplift for %s:\n%s", label, report.per_turbine.to_string(index=False))
-    logger.info("Farm uplift for %s:\n%s", label, report.farm.to_string(index=False))
+    logger.info(
+        "Measured uplift per turbine for %s:\n%s", label, _as_percent(report.per_turbine).to_string(index=False)
+    )
+    logger.info("Measured farm uplift for %s:\n%s", label, _as_percent(report.farm).to_string(index=False))
     _log_guards(report.farm_uplifts)
     _log_reference_stability(report.reference_stability)
 
@@ -101,13 +103,58 @@ def _log_guards(farm_uplifts: dict) -> None:
         logger.warning("Guards fired:\n%s", guarded.to_string(index=False))
 
 
+# Uplift columns are reported as percentages, named for what they are rather than for the estimator.
+_PERCENT_COLUMNS = {"estimate": "measured uplift [%]", "uplift": "measured uplift [%]", "uplift_spread": "spread [%]"}
+# A reference read this differently by two test turbines is a real difference, not arithmetic noise.
+_STABILITY_TOLERANCE_PCT = 0.1
+
+
+def _as_percent(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return ``frame`` with its uplift columns as named percentages, rounded for reading."""
+    shown = frame.copy()
+    for column in _PERCENT_COLUMNS:
+        if column in shown.columns:
+            shown[column] = (shown[column].astype(float) * 100).round(3)
+    return shown.rename(columns=_PERCENT_COLUMNS)
+
+
 def _log_reference_stability(stability: pd.DataFrame) -> None:
-    """Report each method's reference-turbine self-uplift, the campaign judging its own references."""
+    """Report each reference's self-uplift: one row per reference, the campaign judging its pool.
+
+    Every test turbine estimates each reference against the same pool over the same contrast, so
+    the readings are one answer repeated and the table collapses to it. A reference the test
+    turbines disagree about is the exception -- it means their contrasts differ -- so it is
+    reported per turbine instead, with a warning.
+    """
     if stability.empty:
         return
+    spread = stability.groupby(["method", "turbine"])["uplift"].agg(lambda u: (u.max() - u.min()) * 100)
+    disputed = spread[spread > _STABILITY_TOLERANCE_PCT]
+    if not disputed.empty:
+        logger.warning(
+            "The test turbines do not agree on %d reference(s), so each is reported separately. Spread [%%]:\n%s",
+            len(disputed),
+            disputed.round(3).to_string(),
+        )
+        logger.info(
+            "Reference stability (each reference estimated as if it were a test turbine):\n%s",
+            _as_percent(stability).to_string(index=False),
+        )
+        return
+    collapsed = (
+        stability.groupby(["method", "turbine"], as_index=False)
+        .agg(
+            test_wtg=("test_wtg", lambda names: "ALL" if len(set(names)) > 1 else str(names.iloc[0])),
+            uplift=("uplift", "median"),
+            actual_energy=("actual_energy", "median"),
+            n_records=("n_records", "median"),
+            screened=("screened", "any"),
+        )
+        .loc[:, ["method", "test_wtg", "turbine", "uplift", "actual_energy", "n_records", "screened"]]
+    )
     logger.info(
         "Reference stability (each reference estimated as if it were a test turbine):\n%s",
-        stability.to_string(index=False),
+        _as_percent(collapsed).to_string(index=False),
     )
 
 

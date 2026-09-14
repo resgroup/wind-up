@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
 from benchmarking.baselines.power_model.diagnostics import (
     DiagnosticData,
@@ -16,6 +18,7 @@ from benchmarking.baselines.power_model.diagnostics import (
     _histogram_groups,
     _plot_residual_binned,
     _set_ylim_from_inliers,
+    log_top_features,
     plot_conditional_diagnostics,
 )
 from benchmarking.diagnostics import stages
@@ -214,3 +217,39 @@ class TestFeatureHistogramFolders:
     def test_a_reanalysis_field_groups_with_its_companions(self, tmp_path: Path) -> None:
         placed = self._placed(tmp_path)
         assert placed["wind_direction_100m"] == placed["wind_direction_100m_sin"] == "wind_direction_100m"
+
+
+class TestWhatTheFeatureLogSays:
+    """A line at INFO, the table at DEBUG, and a warning when the model leant on something odd."""
+
+    def _importance(self, leader: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"feature": [leader, "wtc_ActPower_mean @ R2", "wind_speed_100m @ ERA5"], "gain": [900.0, 50.0, 10.0]}
+        )
+
+    def test_a_neighbours_power_on_top_says_nothing_alarming(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.DEBUG):
+            log_top_features(self._importance("wtc_ActPower_mean @ R1"), active_power_col="wtc_ActPower_mean")
+        assert "leant on" in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_the_gain_numbers_are_debug_not_info(self, caplog: pytest.LogCaptureFixture) -> None:
+        # the dump is for someone who went looking; the INFO line just names what led
+        with caplog.at_level(logging.INFO):
+            log_top_features(self._importance("wtc_ActPower_mean @ R1"), active_power_col="wtc_ActPower_mean")
+        assert "900" not in caplog.text
+
+    def test_a_reanalysis_column_on_top_is_warned_about(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.INFO):
+            log_top_features(self._importance("wind_speed_100m @ ERA5"), active_power_col="wtc_ActPower_mean")
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings
+        assert "wind_speed_100m @ ERA5" in warnings[0].getMessage()
+
+    def test_a_neighbours_other_channel_on_top_is_warned_about(self, caplog: pytest.LogCaptureFixture) -> None:
+        # its direction is not its power: the expected leader is the same weather, measured
+        with caplog.at_level(logging.INFO):
+            log_top_features(
+                self._importance("northed_wtc_NacelPos_mean_sin @ R1"), active_power_col="wtc_ActPower_mean"
+            )
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING]
