@@ -46,8 +46,9 @@ northing:
 two out and every other turbine in `turbines.csv` is offered as a reference, with none excluded,
 which is what most campaigns want. Every turbine holds at most one role, and only `references` are
 compared against. Every other turbine in the SCADA — upgraded, excluded, or not
-listed at all — still enters each estimate for its wake, through whether it was running and where
-it pointed, never its power. Put a turbine in `excluded` when it must never be a reference — for
+listed at all — still enters each estimate for its wake, through whether it was running and
+nothing else: not its power, and not where it pointed, both of which a change to that turbine
+could move. Put a turbine in `excluded` when it must never be a reference — for
 example, it was down for rebuild, or it had its own separate change. Leaving it unlisted has the
 same effect; listing it records the decision.
 
@@ -111,6 +112,7 @@ northing step. It is not stuck.
 | `farm_uplift_detail.csv` | how each turbine contributed, and whether any was dropped |
 | `reference_stability.csv` | **each reference estimated as if it were a test turbine** |
 | `conditional.csv` and `conditional/` | uplift split by wind speed, turbulence and power |
+| `wind-up/` | the campaign's uplift plots, in a folder per method that ran |
 | `northing/` | the direction corrections that were discovered, with plots |
 | `campaign_resolved.yaml` | the campaign as wind-up understood it: your declaration with every default filled in and every timestamp resolved to UTC |
 
