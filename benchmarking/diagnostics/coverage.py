@@ -21,7 +21,7 @@ from matplotlib.ticker import PercentFormatter
 
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import ERA5_WS_COL
-from benchmarking.diagnostics.style import apply_grid, save_fig
+from benchmarking.diagnostics.style import apply_grid, save_fig, series_style
 from benchmarking.diagnostics.timeaxis import BASELINE_COLOR, UPGRADED_COLOR, shade_segments
 
 if TYPE_CHECKING:
@@ -89,11 +89,12 @@ def plot_input_coverage(ctx: DiagnosticContext) -> Path:
     """Weekly %-coverage line per turbine's power (+ ERA5 wind speed), before any filtering."""
     fig, ax = plt.subplots(figsize=(12, 6))
     shade_segments(ax, ctx)
-    for turbine in [ctx.test_wtg, *ctx.references()]:
+    for position, turbine in enumerate([ctx.test_wtg, *ctx.references()]):
         present = pd.Series(ctx.turbine_series(turbine, ctx.columns.active_power).notna().to_numpy(), index=ctx.index)
         weekly = _weekly_coverage(present, timebase=ctx.timebase)
         label = f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}"
-        ax.plot(weekly.index.to_numpy(), weekly.to_numpy(), linewidth=1.0, label=label)
+        colour, dash = series_style(position)
+        ax.plot(weekly.index.to_numpy(), weekly.to_numpy(), linewidth=1.0, label=label, color=colour, linestyle=dash)
     if ctx.era5_df is not None and ERA5_WS_COL in ctx.era5_df.columns:
         era5_present = pd.Series(ctx.era5_df[ERA5_WS_COL].reindex(ctx.index).notna().to_numpy(), index=ctx.index)
         weekly = _weekly_coverage(era5_present, timebase=ctx.timebase)

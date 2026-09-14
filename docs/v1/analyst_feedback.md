@@ -16,6 +16,7 @@ independently by analysts in both modes is worth more than one raised once.
 |---|---|---|---|---|
 | instance-f | prepost | Hill of Towie, 21 turbines, 9 test, changeover 2018-06-01, a year either side | "cannot distinguish from zero", class *nothing at all* | 0 |
 | instance-g | toggle | Hill of Towie, 21 turbines, 9 test, 100-min blocks from 2018-03-01, 12-month baseline | "cannot distinguish from zero" | 0 |
+| instance-h | prepost | Hill of Towie, 21 turbines, 9 test, changeover 2018-05-01, a year either side | "cannot tell this apart from zero", class *nothing at all* | 0 |
 
 Both are placebos on real SCADA (2026-09-12), each given one run, the documentation, and the
 campaign design. Both reached the right answer, so these asks are about the *cost* of getting
@@ -25,8 +26,13 @@ there, not about a wrong result.
 
 ## AF1 — Put the reference-relative estimate, with a standard error, in `farm_uplift.csv`
 
-**Raised by:** instance-f (its number 1), instance-g (its number 1, as an automatic placebo row).
-**Status:** untriaged.
+**Raised by:** instance-f (its number 1), instance-g (its number 1, as an automatic placebo row),
+instance-h (its number 3). Three analysts, three phrasings, one ask.
+**Status:** untriaged. **Half-answered 2026-09-14**: `farm_uplift.png` now draws the reference
+aggregate beside the headline, and instance-h used it to conclude the method reads +0.6-0.7% on this
+site for no change at all. It then asked for the same number as a column, which is the rest of this
+entry: "the +0.69% that is only drawn in `farm_uplift.png` ... the docs tell you to do this
+comparison by eye. I did it by hand; it should be a column."
 
 `farm_uplift.csv` leads with `estimate`, which is the quantity that moves when the reference set
 changes. The prepost analyst measured how much: re-running against seven references instead of
@@ -103,6 +109,39 @@ silent. An analyst who closes the terminal has lost the only account of how the 
 
 A campaign run is long enough that nobody watches it live, so the log is read afterwards or not at
 all. `--out` already exists and is the natural home.
+
+## AF5 — Say which references each estimate actually leant on
+
+**Raised by:** instance-h (its number 2).
+**Status:** untriaged.
+
+The log now names the top three features by gain, which instance-h read and found too coarse: it
+wanted `reference_usage.csv` with `test_wtg, reference, share_of_gain` for every reference, so that
+combined with `reference_stability.csv` it could compute each test turbine's expected bias --
+the sum of each reference's share times that reference's own reading -- and check whether a turbine's
+number is being carried by a reference that is itself drifting. Its stronger form: put
+`expected_ref_bias_pp` straight into `per_turbine.csv`.
+
+## AF6 — A per-turbine, per-period data quality table
+
+**Raised by:** instance-h (its number 4).
+**Status:** untriaged.
+
+`data_quality.csv`, one row per turbine and period, carrying the fraction of records below rated
+setpoint, missing power, the northing steps found, days from the nearest step to the changeover, the
+reference reading and whether it was screened. instance-h's claim is that this single table would
+have answered question (b) outright, and that it would have surfaced **T16 curtailed 75% of the
+time** -- which it only found by reading `PowerRef_endvalue` itself.
+
+## AF7 — Flag a northing changepoint that lands near the changeover
+
+**Raised by:** instance-h (its number 7).
+**Status:** untriaged.
+
+In `northing_corrections.yaml`, T01's spurious 2017-05-08 step and T05's genuine step ten days before
+the changeover are indistinguishable. A step close to the changeover is the dangerous one, since it
+splits the campaign; it should be flagged, and a `confirmed_by_farm_median` column would separate a
+real recalibration from a fitting artefact. Overlaps R5's northing refinement.
 
 ---
 

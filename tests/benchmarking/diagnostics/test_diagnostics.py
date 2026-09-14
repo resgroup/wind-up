@@ -22,6 +22,7 @@ from benchmarking.diagnostics.coverage import exclusion_bucket, plot_excluded_fr
 from benchmarking.diagnostics.curves import _overall_power_factor, _reactive_panel_turbines
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.northing import plot_northed_error, plot_northing_error
+from benchmarking.diagnostics.style import series_style
 from benchmarking.synthetic import ColumnSchema
 
 if TYPE_CHECKING:
@@ -296,3 +297,19 @@ class TestTheNorthedErrorTimeline:
     def test_it_is_skipped_when_the_northing_step_has_not_run(self, tmp_path: Path) -> None:
         # a method run outside a campaign has the raw column only
         assert plot_northed_error(_context(tmp_path)) is None
+
+
+class TestSeriesStyles:
+    """A whole farm needs more distinguishable lines than the colour cycle alone provides."""
+
+    def test_a_whole_farm_gets_a_distinct_style_each(self) -> None:
+        assert len({series_style(i) for i in range(21)}) == 21
+
+    def test_colours_and_dashes_are_coprime_so_thirty_are_distinct(self) -> None:
+        # 10 colours x 3 dashes: every pair appears before any repeats
+        assert len({series_style(i) for i in range(30)}) == 30
+        assert series_style(30) == series_style(0)
+
+    def test_the_first_ten_reuse_no_dash(self) -> None:
+        # within one colour cycle the dash changes, so neighbours never match on both
+        assert len({dash for _, dash in (series_style(i) for i in range(10))}) == 3

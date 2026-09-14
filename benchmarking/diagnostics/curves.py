@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from benchmarking.diagnostics import stages
-from benchmarking.diagnostics.style import apply_grid, save_fig
+from benchmarking.diagnostics.style import apply_grid, save_fig, series_style
 from benchmarking.diagnostics.timeaxis import shade_segments
 
 if TYPE_CHECKING:
@@ -246,10 +246,20 @@ def plot_power_factor(ctx: DiagnosticContext) -> Path | None:
         return None
     fig, ax = plt.subplots(figsize=(12, 6))
     shade_segments(ax, ctx)
-    for turbine in [ctx.test_wtg, *ctx.references()]:
+    for position, turbine in enumerate([ctx.test_wtg, *ctx.references()]):
         monthly = _monthly_power_factor(ctx, turbine)
         label = f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}"
-        ax.plot(monthly.index.to_numpy(), monthly.to_numpy(), linewidth=1.0, marker=".", markersize=3, label=label)
+        colour, dash = series_style(position)
+        ax.plot(
+            monthly.index.to_numpy(),
+            monthly.to_numpy(),
+            linewidth=1.0,
+            marker=".",
+            markersize=3,
+            label=label,
+            color=colour,
+            linestyle=dash,
+        )
     ax.set_xlabel("date")
     ax.set_ylabel("power factor (active-power-weighted monthly mean)")
     ax.set_title("power factor over time — |P| / sqrt(P^2 + Q^2)")

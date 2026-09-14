@@ -23,7 +23,7 @@ import pandas as pd
 
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import ERA5_WD_COL
-from benchmarking.diagnostics.style import apply_grid, save_fig
+from benchmarking.diagnostics.style import apply_grid, save_fig, series_style
 from benchmarking.diagnostics.timeaxis import shade_segments
 
 if TYPE_CHECKING:
@@ -85,15 +85,25 @@ def _northing_error_figure(
     era5_wd = ctx.era5_df[ERA5_WD_COL].reindex(ctx.index)
     fig, ax = plt.subplots(figsize=(12, 6))
     shade_segments(ax, ctx)
-    for turbine in [ctx.test_wtg, *ctx.references()]:
+    for position, turbine in enumerate([ctx.test_wtg, *ctx.references()]):
         nacelle = ctx.turbine_series(turbine, nacelle_col)
         power = ctx.turbine_series(turbine, ctx.columns.active_power)
         rated = np.nanpercentile(power.to_numpy(dtype=float), _RATED_PERCENTILE) if power.notna().any() else np.nan
         generating = power >= _GENERATING_FRAC * rated if np.isfinite(rated) else power.notna()
         error = _wrap180(nacelle - era5_wd).where(generating)
         monthly = _monthly_circular_mean(error)
+        colour, dash = series_style(position)
         label = f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}"
-        ax.plot(monthly.index.to_numpy(), monthly.to_numpy(), linewidth=1.0, marker=".", markersize=3, label=label)
+        ax.plot(
+            monthly.index.to_numpy(),
+            monthly.to_numpy(),
+            linewidth=1.0,
+            marker=".",
+            markersize=3,
+            label=label,
+            color=colour,
+            linestyle=dash,
+        )
     ax.axhline(0.0, color="k", linewidth=1)
     ax.set_xlabel("date")
     ax.set_ylabel(f"{nacelle_col} - {ERA5_WD_COL} [deg] (monthly circular mean)")
