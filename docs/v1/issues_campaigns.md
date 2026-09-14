@@ -140,13 +140,18 @@ so moved every frozen artefact at once. Read this before accepting any benchmark
 ## Suggested order
 
 `C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4 ✅] → W1a → C3 → C4 → R5 →
-C5 → R6 → C6 → C8 → C9 → W1b → W2`, with **W3 running continuously from W1a onward** rather
-than at one point in the line.
+C5 → R6 → C6 → C8 → C9 → W1b → R7 → W2`, with **W3 running continuously from W1a onward**
+rather than at one point in the line.
 
 The R-series lands after the C1/C2 foundation: **R1 (northing) before C3** so the
 prepost campaign inherits the shared northing step; R2–R4 are independent
-`power_model` work, any order within the block. **W0** (package restructure) is
-independent and runs **early** (after C0) so later code lands in the new layout.
+`power_model` work, any order within the block. **R7 (reactive power) is deliberately
+last**, after W1b: it is exploratory rather than a known bite, so it should not hold up
+validating the composed method, and W1b's criteria are unaffected either way. It stays
+ahead of W2 so a release does not ship without knowing the answer.
+
+**W0** (package restructure) is independent and runs **early** (after C0) so later code
+lands in the new layout.
 
 **W1 is split, and only half of it is terminal.** Its interface — composing `wind-up`
 and letting it self-configure from a declared `CampaignSpec` — does not depend on the
@@ -887,6 +892,10 @@ site-specific rather than universal — but it means a reactive-power change is 
 campaign that never looks at reactive power cannot tell the difference between "this turbine's
 output changed" and "this turbine's reactive setpoint changed and took some active capacity with
 it".
+
+**Scheduled last of the R-series**, after W1b and before W2: exploratory rather than a known
+bite, so it should not delay validating the composed method, but a release should not ship
+without the answer.
 
 **Scope (light, to be firmed up)**
 - **Fault (generator):** a reactive-power behaviour change on a turbine — a power-factor or
