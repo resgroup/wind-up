@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 
     from benchmarking.synthetic import ColumnSchema
 
+
+def era5_source_label(lat: float, lon: float) -> str:
+    """Return how reanalysis is named in output: the source and the point it was drawn from."""
+    return f"ERA5_{lat:.2f}_{lon:.2f}"
+
+
+# What reanalysis is called when the caller did not say where it came from.
+ERA5_UNLOCATED = "ERA5"
+
 # Column names the optional ``era5_df`` is expected to carry (the shared ERA5 sync output).
 ERA5_WS_COL = "era5_ws"
 ERA5_WD_COL = "era5_wd"
@@ -55,6 +64,8 @@ class DiagnosticContext:
     :param mode: ``"prepost"`` or ``"toggle"``
     :param era5_df: optional ERA5 aligned to the unique index (columns :data:`ERA5_WS_COL` /
         :data:`ERA5_WD_COL`)
+    :param era5_label: how reanalysis is named in plots and logs; :func:`era5_source_label` of the
+        point it was drawn from, so a reader can tell which series a run actually used
     :param excluded_ts: optional per-timestamp ``ColumnSchema.exclude_row`` mask (``None`` for a
         method with no exclusion concept). Separate from ``used_ts``, which also folds in downtime.
     """
@@ -69,6 +80,7 @@ class DiagnosticContext:
     timebase: pd.Timedelta
     mode: str
     era5_df: pd.DataFrame | None = None
+    era5_label: str = ERA5_UNLOCATED
     excluded_ts: npt.NDArray[np.bool_] | None = None
 
     @property

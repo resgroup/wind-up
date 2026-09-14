@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.toggle_specialist import ToggleSpecialistMethod
+from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.synthetic import HOT_COLUMNS
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ def carried_forward_methods(
     include_power_model: bool = True,
     reference_stat_cols: tuple[str, ...] = (),
     screen_cache: dict | None = None,
+    era5_label: str = ERA5_UNLOCATED,
 ) -> list[Method]:
     """Build the methods applicable to ``spec``, each writing into its own subfolder of ``out_dir``.
 
@@ -42,6 +44,8 @@ def carried_forward_methods(
     :param screen_cache: one dict shared by every turbine's method in a campaign, so the reference
         screen runs once for the campaign rather than once per test turbine. ``None`` screens per
         estimate.
+    :param era5_label: how reanalysis is named in output; :func:`era5_source_label` of where it
+        was fetched from.
     :param reference_stat_cols: extra per-reference channels the power model carries as features.
         Empty by default: reference anemometry is deliberately not a feature, and the R2 fixture
         passes it in only to measure what that exclusion is worth.
@@ -71,6 +75,7 @@ def carried_forward_methods(
                 out_dir=out_dir / "power_model",
                 save_plots=True,
                 screen_cache=screen_cache,
+                era5_label=era5_label,
             )
         )
     return methods

@@ -27,6 +27,7 @@ from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL
 from benchmarking.campaigns.loader import load_declaration
 from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
+from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label
 from benchmarking.harness.northing import era5_direction
 from wind_up_v0.era5 import get_era5_hourly_df
 
@@ -59,6 +60,7 @@ def wind_up_method(
     out_dir: Path,
     era5_hourly_df: pd.DataFrame | None,
     screen_cache: dict | None = None,
+    era5_label: str = ERA5_UNLOCATED,
 ) -> Method:
     """Build ``wind-up``'s estimator for one campaign.
 
@@ -71,6 +73,8 @@ def wind_up_method(
     :param era5_hourly_df: reanalysis; without it the per-condition estimates are not reported
     :param screen_cache: one dict shared across the campaign's turbines, so the reference screen
         runs once rather than once per test turbine
+    :param era5_label: how reanalysis is named in this run's output; the campaign passes the point
+        it fetched from
     """
     return PowerModelMethod(
         name=WIND_UP,
@@ -84,6 +88,7 @@ def wind_up_method(
         out_dir=out_dir,
         save_plots=True,
         screen_cache=screen_cache,
+        era5_label=era5_label,
     )
 
 
@@ -149,6 +154,7 @@ def run_declaration(
                 out_dir=out_dir / wtg / WIND_UP,
                 era5_hourly_df=reanalysis,
                 screen_cache=screen_cache,
+                era5_label=era5_source_label(*declaration.centroid),
             )
         ],
         columns=declaration.columns,

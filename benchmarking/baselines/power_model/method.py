@@ -50,6 +50,7 @@ from benchmarking.baselines.power_model.screening import (
     empty_screen_passes as _empty_screen_passes,
 )
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
+from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.harness.conditions import (
     CONDITION_BINS,
     CONDITIONS,
@@ -451,6 +452,9 @@ class PowerModelMethod:
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
     write_diagnostics: bool = True
+    # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
+    # era5_source_label() of the point it fetched, so a reader can tell which series was used.
+    era5_label: str = ERA5_UNLOCATED
     # A campaign's screen verdict is one answer for the whole campaign: the same pool judged across
     # the same contrast. Every test turbine would otherwise re-run the identical round-robin. A
     # campaign passes one dict to every turbine's method; None means screen per estimate. Every
@@ -1448,6 +1452,7 @@ class PowerModelMethod:
             sum_actual_kw=sum_actual,
             sum_counterfactual_kw=sum_counter,
             n_refs=n_refs,
+            era5_label=self.era5_label,
             era5_lag_rows=era5.best_lag_rows if era5 is not None else None,
             era5_corr=era5.best_corr if era5 is not None else None,
             era5_sweep=era5.sweep if era5 is not None else None,
@@ -1491,6 +1496,7 @@ class PowerModelMethod:
             timebase=timebase,
             mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
             era5_df=era5.aligned if era5 is not None else None,
+            era5_label=self.era5_label,
         )
         write_common_diagnostics(ctx)
         extra = {

@@ -54,7 +54,8 @@ def plot_input_timeline(ctx: DiagnosticContext) -> Path:
         label = f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}: {ctx.columns.active_power}"
         rows.append((label, ctx.turbine_series(turbine, ctx.columns.active_power).notna().to_numpy()))
     if ctx.era5_df is not None and ERA5_WS_COL in ctx.era5_df.columns:
-        rows.append((f"ERA5: {ERA5_WS_COL}", ctx.era5_df[ERA5_WS_COL].reindex(ctx.index).notna().to_numpy()))
+        present = ctx.era5_df[ERA5_WS_COL].reindex(ctx.index).notna().to_numpy()
+        rows.append((f"{ctx.era5_label}: {ERA5_WS_COL}", present))
 
     fig, ax = plt.subplots(figsize=(13, 1.2 + 0.5 * len(rows)))
     shade_segments(ax, ctx)
@@ -96,7 +97,7 @@ def plot_input_coverage(ctx: DiagnosticContext) -> Path:
     if ctx.era5_df is not None and ERA5_WS_COL in ctx.era5_df.columns:
         era5_present = pd.Series(ctx.era5_df[ERA5_WS_COL].reindex(ctx.index).notna().to_numpy(), index=ctx.index)
         weekly = _weekly_coverage(era5_present, timebase=ctx.timebase)
-        ax.plot(weekly.index.to_numpy(), weekly.to_numpy(), linewidth=1.0, linestyle="--", label="ERA5")
+        ax.plot(weekly.index.to_numpy(), weekly.to_numpy(), linewidth=1.0, linestyle="--", label=ctx.era5_label)
     ax.set_ylim(0, 105)
     ax.set_xlabel("date")
     ax.set_ylabel(f"weekly {ctx.columns.active_power} coverage [%]")

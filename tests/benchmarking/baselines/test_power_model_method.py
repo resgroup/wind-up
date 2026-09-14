@@ -28,6 +28,7 @@ from benchmarking.baselines.power_model.method import (
     _reference_input,
     reference_overall_uplift,
 )
+from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.conditions import CONDITIONS
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput
@@ -581,7 +582,7 @@ class TestFeatureConfig:
             }
             & fitted
         )
-        assert "wind_speed_100m" in fitted
+        assert "wind_speed_100m @ ERA5" in fitted  # reanalysis names its source like a turbine does
 
     def test_era5_exclude_of_matching_var_raises_with_conditional_on(self) -> None:
         mi = self._prepost_mi(n=300)
@@ -1467,6 +1468,33 @@ def _with_a_changed_neighbour(*, as_reference: bool = False, n: int = 4000) -> M
         valid_for_uplift=pd.DataFrame(data=True, index=idx, columns=["T1", "R1", "R2", "R3", "W1"]),
     )
     return MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
+
+
+class TestReanalysisIsIdentified:
+    """Output names the reanalysis point, so a reader can tell which series a run used."""
+
+    def test_era5_features_carry_their_source_in_the_importance_table(self, tmp_path: Path) -> None:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        treated = np.asarray(idx >= idx[n // 2])
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        method = PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            era5_hourly_df=_toy_era5(idx),
+            conditions=(),
+            model_params=_FAST_PARAMS,
+            out_dir=tmp_path,
+            era5_label=era5_source_label(57.4979, -3.2513),
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
+        method.estimate(mi)
+        importance = pd.read_csv(sorted(tmp_path.rglob("*_feature_importance_*.csv"))[-1])
+        assert "wind_speed_10m @ ERA5_57.50_-3.25" in set(importance["feature"])
+        assert any(f.endswith(" @ R1") for f in importance["feature"]), "turbine features keep their own source"
+
+    def test_unlocated_reanalysis_is_still_named(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).era5_label == "ERA5"
 
 
 class TestOrderDoesNotReachTheAnswer:

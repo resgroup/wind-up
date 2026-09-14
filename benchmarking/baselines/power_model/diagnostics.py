@@ -25,6 +25,7 @@ from matplotlib.patches import Patch
 
 from benchmarking.baselines.power_model.features import QUALIFIER
 from benchmarking.diagnostics import stages
+from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.style import apply_grid, save_fig
 from benchmarking.harness.conditions import CONDITIONS, TI_BINS, WS_BINS
@@ -69,6 +70,7 @@ class DiagnosticData:
     era5_lag_rows: int | None
     era5_corr: float | None
     era5_sweep: pd.DataFrame | None
+    era5_label: str = ERA5_UNLOCATED
     # test-turbine ws/TI row-aligned to each segment's residuals (None when no wind-speed col)
     cond_upgraded: pd.DataFrame | None = None
     cond_baseline_valid: pd.DataFrame | None = None
@@ -80,16 +82,26 @@ def feature_importance_long(data: DiagnosticData) -> pd.DataFrame:
     An alternative learner injected via the model-factory seam has no ``booster_``; the table then
     carries NaN importances (the feature *catalogue* still works) rather than failing the run.
     """
+    names = [_sourced(name, era5_label=data.era5_label) for name in data.feature_names]
     booster = getattr(data.outcome_model, "booster_", None)
     if booster is None:
-        return pd.DataFrame({"feature": data.feature_names, "gain": np.nan, "split_count": np.nan})
+        return pd.DataFrame({"feature": names, "gain": np.nan, "split_count": np.nan})
     return pd.DataFrame(
         {
-            "feature": data.feature_names,
+            "feature": names,
             "gain": booster.feature_importance(importance_type="gain"),
             "split_count": booster.feature_importance(importance_type="split"),
         }
     ).sort_values("gain", ascending=False, ignore_index=True)
+
+
+def _sourced(feature: str, *, era5_label: str) -> str:
+    """Return ``feature`` naming where it came from, for output only.
+
+    Reference features already carry their turbine. Everything else in the matrix is reanalysis,
+    which is named for the point it was drawn from so a reader can tell one series from another.
+    """
+    return feature if QUALIFIER in feature else f"{feature}{QUALIFIER}{era5_label}"
 
 
 def log_top_features(importance: pd.DataFrame) -> None:
@@ -162,18 +174,19 @@ def feature_catalogue(data: DiagnosticData) -> pd.DataFrame:
     for feature in data.feature_names:
         col = data.feature_values[feature].to_numpy(dtype=float)
         finite = np.isfinite(col)
-        tag, _, turbine = feature.partition(QUALIFIER)
+        sourced = _sourced(feature, era5_label=data.era5_label)
+        tag, _, source = sourced.partition(QUALIFIER)
         rows.append(
             {
-                "feature": feature,
+                "feature": sourced,
                 "source_tag": tag,
-                "turbine": turbine or "ERA5/derived",
+                "turbine": source,
                 "coverage_pct": float(100.0 * finite.mean()) if len(col) else np.nan,
                 "mean": float(np.nanmean(col)) if finite.any() else np.nan,
                 "std": float(np.nanstd(col)) if finite.any() else np.nan,
                 "min": float(np.nanmin(col)) if finite.any() else np.nan,
                 "max": float(np.nanmax(col)) if finite.any() else np.nan,
-                "gain": float(importance["gain"].get(feature, 0.0)),
+                "gain": float(importance["gain"].get(sourced, 0.0)),
                 "abs_corr_with_power": _abs_corr(col, data.y_selected),
             }
         )
@@ -700,8 +713,8 @@ def _plot_era5_sweep(plots_dir: Path, data: DiagnosticData) -> None:
             label=f"best shift = {data.era5_lag_rows} rows (corr = {corr_text})",
         )
         ax.legend()
-    ax.set_xlabel("ERA5 shift [rows]")
+    ax.set_xlabel(f"{data.era5_label} shift [rows]")
     ax.set_ylabel("wind-speed correlation")
-    ax.set_title(f"{data.test_wtg}: ERA5-SCADA correlation vs lag")
+    ax.set_title(f"{data.test_wtg}: {data.era5_label}-SCADA correlation vs lag")
     apply_grid(ax)
     save_fig(fig, plots_dir / "era5_sync.png")

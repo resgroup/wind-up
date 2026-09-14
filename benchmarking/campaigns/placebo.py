@@ -34,8 +34,9 @@ from benchmarking.campaigns.declaration import SyntheticCampaign
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.report import write_campaign_report
 from benchmarking.campaigns.runner import CampaignRunner
+from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.northing import era5_direction
-from benchmarking.synthetic import HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M, ToggleSchedule
+from benchmarking.synthetic import HOT_LAT, HOT_LON, HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M, ToggleSchedule
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
 from wind_up.campaign_design import design_campaign
 
@@ -292,6 +293,7 @@ def run_placebo(
             era5_hourly_df=era5 if include_power_model else None,
             include_power_model=include_power_model,
             screen_cache=screen_cache,
+            era5_label=era5_source_label(HOT_LAT, HOT_LON),
         ),
         era5_wd=era5_direction(era5, index),
         northing_out_dir=run_dir / "northing",
