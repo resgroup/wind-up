@@ -10,6 +10,7 @@ ruled them out of the estimate, and a reading it rejected is not a measure of ca
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 import matplotlib.pyplot as plt
@@ -143,25 +144,66 @@ def plot_farm_uplift(
     return path
 
 
+@dataclass(frozen=True)
+class MethodUpliftInputs:
+    """One method's slice of a campaign report, ready to plot.
+
+    :param method: the method these came from, which names its plot folder
+    :param per_turbine: its per-test-turbine estimates
+    :param references: its per-reference readings, one row per reference
+    :param farm_estimate: its farm headline
+    """
+
+    method: str
+    per_turbine: pd.DataFrame
+    references: pd.DataFrame
+    farm_estimate: float
+
+
+def per_method_inputs(
+    per_turbine: pd.DataFrame, *, stability: pd.DataFrame, farm: pd.DataFrame
+) -> list[MethodUpliftInputs]:
+    """Split a campaign report into one plottable slice per method, in method order."""
+    estimates = dict(zip(farm["method"], farm["estimate"].astype(float), strict=True)) if not farm.empty else {}
+    inputs = []
+    for method, rows in per_turbine.groupby("method", sort=True):
+        mine = stability[stability["method"] == method] if not stability.empty else stability
+        inputs.append(
+            MethodUpliftInputs(
+                method=str(method),
+                per_turbine=rows,
+                references=per_reference_uplifts(mine),
+                farm_estimate=estimates.get(method, float("nan")),
+            )
+        )
+    return inputs
+
+
 def write_uplift_plots(
     out_dir: Path, *, per_turbine: pd.DataFrame, stability: pd.DataFrame, rated_power_kw: float, farm: pd.DataFrame
 ) -> list[Path]:
-    """Write the three campaign-level uplift plots; returns what was written."""
+    """Write each method's three campaign-level uplift plots under ``out_dir``/its name.
+
+    Returns what was written.
+    """
     if per_turbine.empty:
         return []
-    references = per_reference_uplifts(stability)
-    estimate = float(farm["estimate"].iloc[0]) if not farm.empty else float("nan")
-    return [
-        plot_uplift_distributions(out_dir, per_turbine=per_turbine, references=references),
-        plot_per_turbine_uplifts(out_dir, per_turbine=per_turbine, references=references),
-        plot_farm_uplift(
-            out_dir,
-            per_turbine=per_turbine,
-            references=references,
-            rated_power_kw=rated_power_kw,
-            farm_estimate=estimate,
-        ),
-    ]
+    written = []
+    for inputs in per_method_inputs(per_turbine, stability=stability, farm=farm):
+        method_dir = out_dir / inputs.method
+        method_dir.mkdir(parents=True, exist_ok=True)
+        written += [
+            plot_uplift_distributions(method_dir, per_turbine=inputs.per_turbine, references=inputs.references),
+            plot_per_turbine_uplifts(method_dir, per_turbine=inputs.per_turbine, references=inputs.references),
+            plot_farm_uplift(
+                method_dir,
+                per_turbine=inputs.per_turbine,
+                references=inputs.references,
+                rated_power_kw=rated_power_kw,
+                farm_estimate=inputs.farm_estimate,
+            ),
+        ]
+    return written
 
 
 def _strip(

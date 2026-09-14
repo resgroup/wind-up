@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import pytest
 
-from benchmarking.campaigns.uplift_plots import per_reference_uplifts, write_uplift_plots
+from benchmarking.campaigns.uplift_plots import per_method_inputs, per_reference_uplifts, write_uplift_plots
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -50,6 +50,56 @@ class TestOneRowPerReference:
         assert "screened" in refs.columns
 
 
+def _two_methods() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """A report of two methods: `naive_ratio` on two test turbines, `wind-up` on one."""
+    per_turbine = pd.DataFrame(
+        {
+            "method": ["naive_ratio", "naive_ratio", "wind-up"],
+            "test_wtg": ["T1", "T2", "T1"],
+            "estimate": [0.10, 0.12, 0.02],
+        }
+    )
+    farm = pd.DataFrame(
+        {"method": ["naive_ratio", "wind-up"], "estimate": [0.11, 0.02], "uplift_spread": [0.05, 0.01], "n_guarded": 0}
+    )
+    naive = _stability({"R1": 0.09}).assign(method="naive_ratio")
+    wind_up = _stability({"R1": 0.001}).assign(method="wind-up")
+    return per_turbine, pd.concat([naive, wind_up], ignore_index=True), farm
+
+
+class TestEachMethodIsPlottedOnItsOwn:
+    """A campaign runs several methods; pooling them would mix one method's headline with another's spread."""
+
+    def _by_method(self) -> dict[str, object]:
+        per_turbine, stability, farm = _two_methods()
+        return {inputs.method: inputs for inputs in per_method_inputs(per_turbine, stability=stability, farm=farm)}
+
+    def test_there_is_one_set_of_inputs_per_method(self) -> None:
+        assert sorted(self._by_method()) == ["naive_ratio", "wind-up"]
+
+    def test_the_estimates_are_the_methods_own(self) -> None:
+        by_method = self._by_method()
+        assert list(by_method["wind-up"].per_turbine["estimate"]) == [0.02]
+        assert list(by_method["naive_ratio"].per_turbine["estimate"]) == [0.10, 0.12]
+
+    def test_the_references_are_the_methods_own(self) -> None:
+        by_method = self._by_method()
+        assert list(by_method["wind-up"].references["uplift"]) == [0.001]
+        assert list(by_method["naive_ratio"].references["uplift"]) == [0.09]
+
+    def test_the_farm_estimate_is_the_methods_own_not_the_first_rows(self) -> None:
+        assert self._by_method()["wind-up"].farm_estimate == 0.02
+
+    def test_every_method_gets_its_own_folder_of_plots(self, tmp_path: Path) -> None:
+        per_turbine, stability, farm = _two_methods()
+        written = write_uplift_plots(
+            tmp_path, per_turbine=per_turbine, stability=stability, rated_power_kw=2300.0, farm=farm
+        )
+        assert sorted({p.parent.name for p in written}) == ["naive_ratio", "wind-up"]
+        assert len(written) == 6
+        assert all(p.exists() for p in written)
+
+
 class TestWhatIsDrawn:
     def test_all_three_plots_are_written(self, tmp_path: Path) -> None:
         written = write_uplift_plots(
@@ -59,10 +109,10 @@ class TestWhatIsDrawn:
             rated_power_kw=2300.0,
             farm=_FARM,
         )
-        assert [p.name for p in written] == [
-            "uplift_distributions.png",
-            "per_turbine_uplift.png",
-            "farm_uplift.png",
+        assert [str(p.relative_to(tmp_path)) for p in written] == [
+            "wind-up/uplift_distributions.png",
+            "wind-up/per_turbine_uplift.png",
+            "wind-up/farm_uplift.png",
         ]
         assert all(p.exists() for p in written)
 
@@ -78,7 +128,7 @@ class TestWhatIsDrawn:
             tmp_path, per_turbine=pd.DataFrame(), stability=pd.DataFrame(), rated_power_kw=2300.0, farm=_FARM
         )
         assert written == []
-        assert not list(tmp_path.glob("*.png"))
+        assert not list(tmp_path.rglob("*.png"))
 
 
 @pytest.mark.parametrize("screened", [(), ("R3",)])

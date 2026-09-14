@@ -35,8 +35,9 @@ def write_report(report: CampaignReport, *, out_dir: Path) -> Path:
 
     Writes ``per_turbine.csv``, ``farm_uplift.csv``, ``farm_uplift_detail.csv`` and
     ``reference_stability.csv`` -- each candidate reference estimated as if it were a test
-    turbine, which a healthy campaign reads near 0%. A method reporting per-condition estimates
-    also gets ``conditional.csv`` and one plot per condition under ``conditional/``.
+    turbine, which a healthy campaign reads near 0%. Each method's uplift plots go under a folder
+    of its name. A method reporting per-condition estimates also gets ``conditional.csv`` and one
+    plot per condition under ``conditional/``.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     report.per_turbine.to_csv(out_dir / "per_turbine.csv", index=False)
