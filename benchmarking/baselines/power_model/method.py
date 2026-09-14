@@ -1277,13 +1277,14 @@ class PowerModelMethod:
             )
             return cached
         clone = self._screening_clone()
+        shared = " (once for the campaign)" if self.screen_cache is not None else ""
         logger.info(
-            "%s %s: screening %d candidate reference(s) across %s, one estimate each per pass; "
-            "this is the long part of the run, and the campaign's other test turbines reuse the verdict",
+            "%s %s: screening %d candidate reference(s) across %s%s, one estimate each per pass",
             self.name,
             mi.test_wtg,
             len(pool),
             timing.date() if hasattr(timing, "date") else timing,
+            shared,
         )
 
         # Why each candidate could not be estimated, so a screen that gives up can say what stopped
