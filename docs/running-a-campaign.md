@@ -25,9 +25,8 @@ data:
 
 turbines:
   upgraded:   [T06, T11]        # the turbines whose uplift you want
-  references: [T01, T02, T03]   # turbines you are willing to compare them against
-  excluded:   []                # turbines never to use as a reference; their wake still counts
   rated_power_kw: 2300.0
+  # references and excluded are optional; the defaults are every other turbine, and none
 
 timing:
   mode: prepost
@@ -43,8 +42,10 @@ northing:
 
 ### The fields that need a decision
 
-**`turbines.upgraded` / `references` / `excluded`.** Every turbine holds at most one role. Only
-`references` are compared against. Every other turbine in the SCADA — upgraded, excluded, or not
+**`turbines.upgraded` / `references` / `excluded`.** Only `upgraded` is required: leave the other
+two out and every other turbine in `turbines.csv` is offered as a reference, with none excluded,
+which is what most campaigns want. Every turbine holds at most one role, and only `references` are
+compared against. Every other turbine in the SCADA — upgraded, excluded, or not
 listed at all — still enters each estimate for its wake, through whether it was running and where
 it pointed, never its power. Put a turbine in `excluded` when it must never be a reference — for
 example, it was down for rebuild, or it had its own separate change. Leaving it unlisted has the
@@ -73,7 +74,7 @@ trusted correction table.
 
 **Timezones.** Every time is UTC. A time written without a timezone is read as UTC; a time written
 with an offset is converted to UTC. Whatever you write, the resolved values are echoed into
-`resolved_campaign.json` in the output — check it if a result looks shifted.
+`campaign_resolved.yaml` in the output — check it if a result looks shifted.
 
 **Reanalysis is not declared.** wind-up fetches the weather reanalysis it needs by itself, from
 the centre of every turbine in `turbines.csv` — the whole site, not just the turbines this
@@ -111,7 +112,7 @@ northing step. It is not stuck.
 | `reference_stability.csv` | **each reference estimated as if it were a test turbine** |
 | `conditional.csv` and `conditional/` | uplift split by wind speed, turbulence and power |
 | `northing/` | the direction corrections that were discovered, with plots |
-| `resolved_campaign.json` | the campaign as wind-up understood it |
+| `campaign_resolved.yaml` | the campaign as wind-up understood it: your declaration with every default filled in and every timestamp resolved to UTC |
 
 ### Start with `reference_stability.csv`
 

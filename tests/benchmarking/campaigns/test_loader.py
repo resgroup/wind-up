@@ -89,6 +89,28 @@ class TestTheCampaignFacts:
         assert end == pd.Timestamp("2019-01-01", tz="UTC")
 
 
+class TestTheRolesThatCanBeLeftOut:
+    """Only `upgraded` is required: the obvious campaign should not have to be spelled out."""
+
+    def _without(self, *lines: str) -> str:
+        kept = [ln for ln in PREPOST.splitlines() if not any(ln.strip().startswith(name) for name in lines)]
+        return "\n".join(kept) + "\n"
+
+    def test_omitting_references_offers_every_other_turbine(self, tmp_path: Path) -> None:
+        spec = load(tmp_path, self._without("references:", "excluded:")).spec
+        assert spec.upgraded_turbines == ["T01"]
+        assert spec.candidate_references == ["T02", "T03", "T04"]
+        assert spec.excluded_turbines == []
+
+    def test_an_excluded_turbine_is_still_kept_out_of_the_default_pool(self, tmp_path: Path) -> None:
+        spec = load(tmp_path, self._without("references:")).spec
+        assert spec.candidate_references == ["T02", "T03"]
+        assert spec.excluded_turbines == ["T04"]
+
+    def test_declaring_references_narrows_the_pool(self, tmp_path: Path) -> None:
+        assert load(tmp_path).spec.candidate_references == ["T02", "T03"]
+
+
 class TestTiming:
     def test_prepost_carries_the_changeover(self, tmp_path: Path) -> None:
         spec = load(tmp_path).spec

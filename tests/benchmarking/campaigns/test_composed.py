@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 import logging
 from typing import TYPE_CHECKING
 
 import pandas as pd
 import pytest
+import yaml
 
 from benchmarking.campaigns.composed import (
     _LOG_HANDLER_NAME,
@@ -129,7 +129,7 @@ def test_the_declaration_is_echoed_before_the_run_so_a_failure_still_leaves_it(t
     out_dir = tmp_path / "out"
     with pytest.raises(Exception, match=r"[Pp]arquet"):  # the fixture's scada.parquet is an empty stub
         run_declaration(path, out_dir=out_dir, era5_hourly_df=era5())
-    echoed = json.loads((out_dir / "resolved_campaign.json").read_text())
+    echoed = yaml.safe_load((out_dir / "campaign_resolved.yaml").read_text())
     assert echoed["name"] == "demo"
     assert echoed["analysis_period"]["start"] == "2017-01-01 00:00:00+00:00"
     assert echoed["timing"]["changeover"] == "2018-01-01 00:00:00+00:00"

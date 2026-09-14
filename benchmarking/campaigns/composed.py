@@ -15,13 +15,13 @@ next to the real ``wind_up`` package.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
+import yaml
 
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.campaigns.loader import load_declaration
@@ -42,8 +42,17 @@ logger = logging.getLogger(__name__)
 
 WIND_UP = "wind-up"
 
-# What the resolved declaration is echoed to, so a mis-declared timezone is visible after a run.
-RESOLVED_FILENAME = "resolved_campaign.json"
+# The declaration as the run understood it, echoed beside the report: what was declared, what was
+# defaulted, and what each timestamp resolved to. YAML, and shaped like campaign.yaml, so it reads
+# as the analyst's own file filled in rather than as a separate dialect.
+RESOLVED_FILENAME = "campaign_resolved.yaml"
+
+_RESOLVED_HEADER = """\
+# The campaign as wind-up understood it: campaign.yaml with every default filled in and every
+# timestamp resolved to UTC. Values you did not declare appear here anyway -- references defaults
+# to every other turbine in the turbines file, excluded to none. `reanalysis` is derived, not
+# declared: where the weather series was drawn from and the window it was fetched over.
+"""
 
 # Where the run's log is kept. Some of what a run decides -- the reference screen's thresholds, its
 # pool size, whether it stopped early -- is reported only in the log.
@@ -135,7 +144,8 @@ def run_declaration(
     out_dir = out_dir if out_dir is not None else default_out_dir(declaration.name)
     out_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_to_file(out_dir)
-    (out_dir / RESOLVED_FILENAME).write_text(json.dumps(declaration.resolved(), indent=2))
+    resolved = yaml.safe_dump(declaration.resolved(), sort_keys=False, default_flow_style=False)
+    (out_dir / RESOLVED_FILENAME).write_text(_RESOLVED_HEADER + resolved)
     logger.info("Running campaign %r into %s, logging to %s", declaration.name, out_dir, log_path)
 
     scada_df = pd.read_parquet(declaration.scada_path)

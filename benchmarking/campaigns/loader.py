@@ -120,8 +120,15 @@ def load_declaration(path: str | Path) -> Declaration:
 
     roles = _section(raw, "turbines")
     upgraded = [str(w) for w in roles.get("upgraded", [])]
-    references = [str(w) for w in roles.get("references", [])]
-    excluded = [str(w) for w in roles.get("excluded", [])]
+    # Both default to the obvious campaign: nothing excluded, and every other turbine in the
+    # turbines file offered as a reference. Declaring either narrows it.
+    excluded = [str(w) for w in roles.get("excluded") or []]
+    declared_references = roles.get("references")
+    references = (
+        [str(w) for w in declared_references]
+        if declared_references
+        else [w for w in coords if w not in set(upgraded) | set(excluded)]
+    )
     _check_roles(upgraded=upgraded, references=references, excluded=excluded, coords=coords)
 
     period = _section(raw, "analysis_period")

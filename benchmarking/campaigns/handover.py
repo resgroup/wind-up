@@ -134,8 +134,10 @@ data:
 
 turbines:
   upgraded:   []         # the turbines whose uplift you want
-  references: []         # turbines you are willing to compare them against
-  excluded:   []         # turbines never to use as a reference; their wake still counts
+  # references and excluded are optional. Leave them out and every other turbine in the turbines
+  # file is offered as a reference, and none is excluded.
+  # references: []       # narrow the turbines you are willing to compare against
+  # excluded:   []       # never use as a reference; their wake still counts
   rated_power_kw:
 
 timing:
