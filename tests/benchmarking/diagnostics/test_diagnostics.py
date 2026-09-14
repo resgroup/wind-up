@@ -18,6 +18,7 @@ import yaml
 from benchmarking.diagnostics import write_common_diagnostics, write_run_config
 from benchmarking.diagnostics.context import ERA5_WD_COL, ERA5_WS_COL, DiagnosticContext
 from benchmarking.diagnostics.coverage import exclusion_bucket, plot_excluded_fraction
+from benchmarking.diagnostics.curves import _overall_power_factor, _reactive_panel_turbines
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.synthetic import ColumnSchema
 
@@ -223,3 +224,47 @@ def test_runs_without_era5(tmp_path: Path, *, with_era5: bool) -> None:
     ctx = _context(tmp_path, with_era5=with_era5)
     written = write_common_diagnostics(ctx)
     assert ("northing_error.png" in {p.name for p in written}) == with_era5
+
+
+class TestTheReactivePlotStaysReadable:
+    """A whole farm does not fit one panel per turbine, so the figure picks a spread."""
+
+    def _farm_context(self, tmp_path: Path, n_turbines: int, test_wtg: str = "T05") -> DiagnosticContext:
+        rng = np.random.default_rng(0)
+        index = pd.date_range("2020-01-01", periods=300, freq="10min", tz="UTC")
+        names = [f"T{i:02d}" for i in range(1, n_turbines + 1)]
+        scada = _long_scada(index, names, rng=rng)
+        # a different reactive level per turbine, so they have distinguishable power factors
+        offsets = {name: 20.0 * i for i, name in enumerate(names)}
+        scada["reactive"] = scada["reactive"] + scada["turbine"].map(offsets)
+        return DiagnosticContext(
+            run_dir=tmp_path / "run",
+            test_wtg=test_wtg,
+            turbine_col="turbine",
+            columns=_FULL_COLUMNS,
+            scada_df=scada,
+            treated_ts=np.asarray(index >= index[len(index) // 2]),
+            used_ts=np.ones(len(index), dtype=bool),
+            timebase=pd.Timedelta(minutes=10),
+            mode="prepost",
+        )
+
+    def test_it_draws_at_most_nine_turbines(self, tmp_path: Path) -> None:
+        panels = _reactive_panel_turbines(self._farm_context(tmp_path, 21))
+        assert len(panels) == 9
+
+    def test_the_test_turbine_is_always_the_first_panel(self, tmp_path: Path) -> None:
+        panels = _reactive_panel_turbines(self._farm_context(tmp_path, 21))
+        assert panels[0][0] == "T05"
+
+    def test_it_keeps_both_ends_of_the_power_factor_range(self, tmp_path: Path) -> None:
+        ctx = self._farm_context(tmp_path, 21)
+        factors = {t: _overall_power_factor(ctx, t) for t in [ctx.test_wtg, *ctx.references()]}
+        others = {t: f for t, f in factors.items() if t != ctx.test_wtg}
+        drawn = {t for t, _ in _reactive_panel_turbines(ctx)}
+        assert min(others, key=lambda t: others[t]) in drawn
+        assert max(others, key=lambda t: others[t]) in drawn
+
+    def test_a_small_farm_keeps_every_turbine(self, tmp_path: Path) -> None:
+        panels = _reactive_panel_turbines(self._farm_context(tmp_path, 4, test_wtg="T02"))
+        assert len(panels) == 4
