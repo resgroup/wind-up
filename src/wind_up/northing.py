@@ -549,12 +549,15 @@ def _required_step(
     A segment's level is limited by site veer rather than by sampling noise, and veer averages out
     no faster than ``1/sqrt(span)``. So with less than ``confident_segment`` either side the
     required step grows accordingly, capped at ``max_transient_step_deg`` -- above which a step is
-    credible however little record sits around it.
+    credible however little record sits around it. The cap never falls below ``min_step_deg``:
+    ``np.clip`` with its bounds inverted returns the upper one, which let a pass asking for 30 deg
+    steps accept 10 deg ones.
     """
     edges = [start, *changepoints, end]
     spans = np.array([max((b - a) / confident_segment, 1e-9) for a, b in itertools.pairwise(edges)])
     support = np.minimum(spans[:-1], spans[1:])
-    return np.clip(min_step_deg / np.sqrt(np.minimum(support, 1.0)), min_step_deg, max_transient_step_deg)
+    ceiling = max(min_step_deg, max_transient_step_deg)
+    return np.clip(min_step_deg / np.sqrt(np.minimum(support, 1.0)), min_step_deg, ceiling)
 
 
 def estimate_north_table(
@@ -778,6 +781,32 @@ def _farm_direction(
     return _median_across(stack, enough=enough)
 
 
+def _common_drift(
+    index: pd.DatetimeIndex,
+    *,
+    baseline: Mapping[str, pd.DataFrame],
+    refined: Mapping[str, pd.DataFrame],
+) -> npt.NDArray[np.float64]:
+    """Per-timestamp median, across devices, of how far refinement moved each offset from ``baseline``.
+
+    A step one device alone carries is outvoted. A step the consensus itself carried lands in every
+    device's refined table at once, and a farm-relative pass cannot see it -- it is common-mode,
+    like a farm uniformly 180 degrees wrong -- so it is removed here and left to ``baseline``, which
+    is anchored to reanalysis.
+    """
+    zeros = np.zeros(len(index))
+    moved = np.vstack(
+        [
+            circ_diff(
+                apply_north_table(index, zeros, north_table=refined[name]),
+                apply_north_table(index, zeros, north_table=baseline[name]),
+            )
+            for name in sorted(refined)
+        ]
+    )
+    return np.asarray(np.median(moved, axis=0), dtype=float)
+
+
 def north_farm(
     index: pd.DatetimeIndex,
     *,
@@ -786,6 +815,8 @@ def north_farm(
     reanalysis_deg: npt.NDArray[np.float64],
     settings: NorthingSettings = DEFAULT_NORTHING,
     min_devices_for_farm_reference: int = 3,
+    anchoring_settings: NorthingSettings | None = None,
+    refinement_passes: int = 1,
 ) -> dict[str, pd.DataFrame]:
     """North a whole farm in two passes, returning one absolute table per device.
 
@@ -802,7 +833,17 @@ def north_farm(
     :param min_devices_for_farm_reference: the floor on how many devices must report at a
         timestamp for the consensus to be defined there, and the minimum farm size. The effective
         requirement is the larger of this and a strict majority of the farm.
+    :param anchoring_settings: how pass 1 is bounded. Defaults to :func:`anchoring_only` of
+        ``settings``. Pass 1 exists to bulk-align the farm to reanalysis, so a tighter budget here
+        leaves changepoint work to the farm consensus, which is the cleaner reference.
+    :param refinement_passes: how many times to north against the farm consensus. Each pass after
+        the first rebuilds the consensus from the previous pass's tables, less their common-mode
+        drift from pass 1 (see :func:`_common_drift`), so a step pass 1 left in one device stops
+        leaking into the others through the median.
     """
+    if refinement_passes < 1:
+        msg = f"refinement_passes must be at least 1, got {refinement_passes}"
+        raise ValueError(msg)
     devices = sorted(direction_deg)
     if len(devices) < min_devices_for_farm_reference:
         msg = (
@@ -837,7 +878,7 @@ def north_farm(
 
     # Pass 1's reference is reanalysis, so it may only attribute large steps; pass 2's farm
     # consensus is clean enough for the caller's chosen threshold.
-    anchoring = anchoring_only(settings)
+    anchoring = anchoring_only(settings) if anchoring_settings is None else anchoring_settings
     first_pass = {
         name: estimate_north_table(
             index,
@@ -855,9 +896,19 @@ def north_farm(
         logger.warning("farm reference is empty; keeping the reanalysis-only north tables")
         return first_pass
 
-    return {
-        name: estimate_north_table(
-            index, direction_deg[name], reference_deg=farm, usable=usable[name], settings=settings
-        )
-        for name in devices
-    }
+    tables = first_pass
+    for refinement in range(refinement_passes):
+        if refinement:
+            drift = _common_drift(index, baseline=first_pass, refined=tables)
+            northed = {
+                name: (apply_north_table(index, direction_deg[name], north_table=tables[name]) - drift) % 360.0
+                for name in devices
+            }
+            farm = _farm_direction(northed, usable=usable, min_devices=quorum)
+        tables = {
+            name: estimate_north_table(
+                index, direction_deg[name], reference_deg=farm, usable=usable[name], settings=settings
+            )
+            for name in devices
+        }
+    return tables

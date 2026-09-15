@@ -15,6 +15,7 @@ from wind_up.northing import (
     DEFAULT_NORTHING,
     NorthingSettings,
     _sector_signature,
+    anchoring_only,
     apply_north_table,
     estimate_north_table,
     north_farm,
@@ -326,6 +327,37 @@ class TestNorthFarm:
             assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
             assert len(tables[name]) == len(steps), name
 
+    def test_the_anchoring_pass_can_be_given_its_own_settings(self) -> None:
+        """Pass 1 is for bulk alignment; with no changepoint budget at all, refinement finds the step.
+
+        One refinement is not enough on a small farm: T03's unremoved step moves the consensus
+        median, so clean devices inherit a spurious step. Rebuilding the consensus from the refined
+        tables and refining again removes it.
+        """
+        index = _index()
+        offsets = {
+            "T01": [("2017-01-01", 0.0)],
+            "T02": [("2017-01-01", 8.0)],
+            "T03": [("2017-01-01", -5.0), ("2017-08-01", 35.0)],
+            "T04": [("2017-01-01", 3.0)],
+        }
+        reported, reference = self._farm(index, offsets)
+        constant = replace(anchoring_only(DEFAULT_NORTHING), changepoints_per_year=0.0, min_changepoints=0)
+
+        tables = north_farm(
+            index,
+            direction_deg=reported,
+            usable={name: _all_usable(index) for name in reported},
+            reanalysis_deg=reference,
+            anchoring_settings=constant,
+            refinement_passes=2,
+        )
+
+        for name, steps in offsets.items():
+            corrected = apply_north_table(index, reported[name], north_table=tables[name])
+            assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
+            assert len(tables[name]) == len(steps), name
+
     def test_recovers_a_farm_that_is_uniformly_180_degrees_wrong(self) -> None:
         """The reanalysis pass is load-bearing: a common-mode offset is invisible to pass 2 alone.
 
@@ -596,6 +628,31 @@ class TestNearTheRecordEdge:
     def test_the_same_small_step_well_inside_the_record_is_reported(self) -> None:
         """The step is identical; only the evidence behind it differs."""
         assert self._n_changepoints(4.0, days_after=300.0) == 1
+
+
+class TestAnchoringPass:
+    """The first pass is for bulk alignment to reanalysis; only big steps are its business."""
+
+    @staticmethod
+    def _n_changepoints(step_deg: float) -> int:
+        index = _index(days=700)
+        reported, reference = _reported(index, steps=[("2017-01-01", 0.0), ("2017-12-01", step_deg)])
+        table = estimate_north_table(
+            index,
+            reported,
+            reference_deg=reference,
+            usable=_all_usable(index),
+            settings=anchoring_only(DEFAULT_NORTHING),
+        )
+        return len(table) - 1
+
+    def test_a_persistent_step_below_the_anchoring_threshold_is_not_reported(self) -> None:
+        """``max_transient_step_deg`` (10) sits below ``ANCHORING_MIN_STEP_DEG`` (30); the support
+        threshold must not be clipped down to it."""
+        assert self._n_changepoints(20.0) == 0
+
+    def test_a_step_above_the_anchoring_threshold_is_found(self) -> None:
+        assert self._n_changepoints(60.0) == 1
 
 
 class TestFarmReferenceComposition:
