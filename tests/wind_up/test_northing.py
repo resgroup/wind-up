@@ -327,6 +327,37 @@ class TestNorthFarm:
             assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
             assert len(tables[name]) == len(steps), name
 
+    def test_the_anchoring_pass_can_be_given_its_own_settings(self) -> None:
+        """Pass 1 is for bulk alignment; with no changepoint budget at all, refinement finds the step.
+
+        One refinement is not enough on a small farm: T03's unremoved step moves the consensus
+        median, so clean devices inherit a spurious step. Rebuilding the consensus from the refined
+        tables and refining again removes it.
+        """
+        index = _index()
+        offsets = {
+            "T01": [("2017-01-01", 0.0)],
+            "T02": [("2017-01-01", 8.0)],
+            "T03": [("2017-01-01", -5.0), ("2017-08-01", 35.0)],
+            "T04": [("2017-01-01", 3.0)],
+        }
+        reported, reference = self._farm(index, offsets)
+        constant = replace(anchoring_only(DEFAULT_NORTHING), changepoints_per_year=0.0, min_changepoints=0)
+
+        tables = north_farm(
+            index,
+            direction_deg=reported,
+            usable={name: _all_usable(index) for name in reported},
+            reanalysis_deg=reference,
+            anchoring_settings=constant,
+            refinement_passes=2,
+        )
+
+        for name, steps in offsets.items():
+            corrected = apply_north_table(index, reported[name], north_table=tables[name])
+            assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
+            assert len(tables[name]) == len(steps), name
+
     def test_recovers_a_farm_that_is_uniformly_180_degrees_wrong(self) -> None:
         """The reanalysis pass is load-bearing: a common-mode offset is invisible to pass 2 alone.
 
