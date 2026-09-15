@@ -1,0 +1,339 @@
+"""Tests for the campaign declaration: YAML plus a turbines sidecar into a CampaignSpec."""
+
+from __future__ import annotations
+
+import textwrap
+from typing import TYPE_CHECKING
+
+import pandas as pd
+import pytest
+
+from benchmarking.campaigns.loader import CENTROID_DECIMALS, load_declaration
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+TURBINES_CSV = """Name,Latitude,Longitude
+T01,57.40,-3.30
+T02,57.60,-3.20
+T03,57.50,-3.25
+T04,57.50,-3.25
+"""
+
+PREPOST = """
+name: demo
+
+data:
+  scada: scada.parquet
+  schema: hill_of_towie
+  turbines: turbines.csv
+
+turbines:
+  upgraded:   [T01]
+  references: [T02, T03]
+  excluded:   [T04]
+  rated_power_kw: 2050
+
+timing:
+  mode: prepost
+  changeover: 2018-01-01T00:00:00Z
+
+analysis_period:
+  start: 2017-01-01T00:00:00Z
+  end:   2019-01-01T00:00:00Z
+"""
+
+
+def write_campaign(tmp_path: Path, yaml_text: str = PREPOST) -> Path:
+    """Write a campaign declaration plus the sidecar files it names, and return the YAML path."""
+    (tmp_path / "turbines.csv").write_text(TURBINES_CSV)
+    (tmp_path / "scada.parquet").write_bytes(b"")
+    path = tmp_path / "campaign.yaml"
+    path.write_text(textwrap.dedent(yaml_text))
+    return path
+
+
+def load(tmp_path: Path, yaml_text: str = PREPOST):  # noqa: ANN201
+    """Write and load a declaration in one step."""
+    return load_declaration(write_campaign(tmp_path, yaml_text))
+
+
+class TestTheCampaignFacts:
+    def test_the_name_is_carried(self, tmp_path: Path) -> None:
+        assert load(tmp_path).name == "demo"
+
+    def test_the_turbine_roles_are_carried(self, tmp_path: Path) -> None:
+        spec = load(tmp_path).spec
+        assert spec.upgraded_turbines == ["T01"]
+        assert spec.candidate_references == ["T02", "T03"]
+        assert spec.excluded_turbines == ["T04"]
+        assert spec.rated_power_kw == 2050.0
+
+    def test_the_coordinates_come_from_the_turbines_sidecar(self, tmp_path: Path) -> None:
+        spec = load(tmp_path).spec
+        assert spec.coords["T01"] == (57.40, -3.30)
+        assert set(spec.coords) == {"T01", "T02", "T03", "T04"}
+
+    def test_a_turbine_holding_no_role_keeps_its_coordinates(self, tmp_path: Path) -> None:
+        # it is a wake contributor, and the waking-layout diagnostic can only draw what it has
+        # coordinates for
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV + "T05,57.55,-3.22\n")
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        path = tmp_path / "campaign.yaml"
+        path.write_text(textwrap.dedent(PREPOST))
+        spec = load_declaration(path).spec
+        assert spec.coords["T05"] == (57.55, -3.22)
+        assert "T05" not in spec.candidate_references
+
+    def test_the_named_schema_resolves_to_a_column_schema(self, tmp_path: Path) -> None:
+        declaration = load(tmp_path)
+        assert declaration.columns == HOT_COLUMNS
+        assert declaration.spec.turbine_col == HOT_COLUMNS.turbine
+
+    def test_the_scada_path_resolves_relative_to_the_declaration(self, tmp_path: Path) -> None:
+        assert load(tmp_path).scada_path == tmp_path / "scada.parquet"
+
+    def test_the_analysis_period_end_is_exclusive(self, tmp_path: Path) -> None:
+        start, end = load(tmp_path).spec.analysis_period
+        assert start == pd.Timestamp("2017-01-01", tz="UTC")
+        assert end == pd.Timestamp("2019-01-01", tz="UTC")
+
+
+class TestTheRolesThatCanBeLeftOut:
+    """Only `upgraded` is required: the obvious campaign should not have to be spelled out."""
+
+    def _without(self, *lines: str) -> str:
+        kept = [ln for ln in PREPOST.splitlines() if not any(ln.strip().startswith(name) for name in lines)]
+        return "\n".join(kept) + "\n"
+
+    def test_omitting_references_offers_every_other_turbine(self, tmp_path: Path) -> None:
+        spec = load(tmp_path, self._without("references:", "excluded:")).spec
+        assert spec.upgraded_turbines == ["T01"]
+        assert spec.candidate_references == ["T02", "T03", "T04"]
+        assert spec.excluded_turbines == []
+
+    def test_an_excluded_turbine_is_still_kept_out_of_the_default_pool(self, tmp_path: Path) -> None:
+        spec = load(tmp_path, self._without("references:")).spec
+        assert spec.candidate_references == ["T02", "T03"]
+        assert spec.excluded_turbines == ["T04"]
+
+    def test_declaring_references_narrows_the_pool(self, tmp_path: Path) -> None:
+        assert load(tmp_path).spec.candidate_references == ["T02", "T03"]
+
+
+class TestTiming:
+    def test_prepost_carries_the_changeover(self, tmp_path: Path) -> None:
+        spec = load(tmp_path).spec
+        assert spec.mode == "prepost"
+        assert spec.upgrade_timing == pd.Timestamp("2018-01-01", tz="UTC")
+
+    def test_toggle_builds_a_schedule(self, tmp_path: Path) -> None:
+        spec = load(
+            tmp_path,
+            PREPOST.replace(
+                "  mode: prepost\n  changeover: 2018-01-01T00:00:00Z",
+                "  mode: toggle\n  start: 2018-01-01T00:00:00Z\n  period: 100min",
+            ),
+        ).spec
+        assert spec.mode == "toggle"
+        assert spec.upgrade_timing == ToggleSchedule(
+            period=pd.Timedelta(minutes=100), start=pd.Timestamp("2018-01-01", tz="UTC")
+        )
+
+    def test_toggle_carries_start_on(self, tmp_path: Path) -> None:
+        spec = load(
+            tmp_path,
+            PREPOST.replace(
+                "  mode: prepost\n  changeover: 2018-01-01T00:00:00Z",
+                "  mode: toggle\n  start: 2018-01-01T00:00:00Z\n  period: 100min\n  start_on: true",
+            ),
+        ).spec
+        assert spec.upgrade_timing.start_on is True
+
+    def test_a_toggle_without_a_start_is_refused(self, tmp_path: Path) -> None:
+        # the schedule would otherwise take the first timestamp as origin, so a declared baseline
+        # would silently be toggling instead
+        with pytest.raises(ValueError, match=r"timing\.start"):
+            load(
+                tmp_path,
+                PREPOST.replace(
+                    "  mode: prepost\n  changeover: 2018-01-01T00:00:00Z", "  mode: toggle\n  period: 100min"
+                ),
+            )
+
+    @pytest.mark.parametrize("period", ["0min", "-100min"])
+    def test_a_period_that_is_not_positive_is_refused(self, tmp_path: Path, period: str) -> None:
+        # neither raises downstream: zero treats nothing at all and negative inverts the blocks
+        with pytest.raises(ValueError, match=r"timing\.period must be positive"):
+            load(
+                tmp_path,
+                PREPOST.replace(
+                    "  mode: prepost\n  changeover: 2018-01-01T00:00:00Z",
+                    f"  mode: toggle\n  start: 2018-01-01T00:00:00Z\n  period: {period}",
+                ),
+            )
+
+    def test_an_unknown_mode_names_the_modes_there_are(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match=r"prepost.*toggle|toggle.*prepost"):
+            load(tmp_path, PREPOST.replace("mode: prepost", "mode: sideways"))
+
+
+class TestTimezones:
+    def test_a_naive_timestamp_is_read_as_utc(self, tmp_path: Path) -> None:
+        spec = load(tmp_path, PREPOST.replace("changeover: 2018-01-01T00:00:00Z", "changeover: 2018-01-01")).spec
+        assert spec.upgrade_timing == pd.Timestamp("2018-01-01", tz="UTC")
+
+    def test_an_offset_timestamp_is_converted_to_utc(self, tmp_path: Path) -> None:
+        # +01:00 is one hour ahead, so midnight there is 23:00 UTC the day before
+        spec = load(
+            tmp_path, PREPOST.replace("changeover: 2018-01-01T00:00:00Z", "changeover: 2018-01-01T00:00:00+01:00")
+        ).spec
+        assert spec.upgrade_timing == pd.Timestamp("2017-12-31 23:00", tz="UTC")
+
+    def test_every_resolved_timestamp_is_tz_aware_utc(self, tmp_path: Path) -> None:
+        spec = load(tmp_path, PREPOST.replace("start: 2017-01-01T00:00:00Z", "start: 2017-01-01")).spec
+        for stamp in (*spec.analysis_period, spec.upgrade_timing):
+            assert str(stamp.tz) == "UTC"
+
+    def test_the_resolved_timestamps_are_echoed(self, tmp_path: Path) -> None:
+        # visible beats infallible: a mis-declared timezone should be readable in the output
+        resolved = load(
+            tmp_path, PREPOST.replace("changeover: 2018-01-01T00:00:00Z", "changeover: 2018-01-01")
+        ).resolved()
+        assert resolved["timing"]["changeover"] == "2018-01-01 00:00:00+00:00"
+        assert resolved["analysis_period"]["start"] == "2017-01-01 00:00:00+00:00"
+
+
+class TestNorthing:
+    def test_discover_is_the_default_when_northing_is_not_declared(self, tmp_path: Path) -> None:
+        assert load(tmp_path).spec.north_offsets is None
+
+    def test_discover_true_leaves_the_offsets_to_be_found(self, tmp_path: Path) -> None:
+        assert load(tmp_path, PREPOST + "\nnorthing:\n  discover: true\n").spec.north_offsets is None
+
+    def test_a_declared_table_is_applied_exactly(self, tmp_path: Path) -> None:
+        text = PREPOST + textwrap.dedent("""
+            northing:
+              discover: false
+              table:
+                - [T01, 2017-06-01T00:00:00Z, 4.5]
+            """)
+        assert load(tmp_path, text).spec.north_offsets == [("T01", pd.Timestamp("2017-06-01", tz="UTC"), 4.5)]
+
+    def test_discover_false_with_no_table_applies_nothing_and_discovers_nothing(self, tmp_path: Path) -> None:
+        assert load(tmp_path, PREPOST + "\nnorthing:\n  discover: false\n").spec.north_offsets == []
+
+
+class TestReanalysis:
+    def test_the_centroid_is_the_mean_of_the_whole_turbines_file(self, tmp_path: Path) -> None:
+        assert load(tmp_path).centroid == (57.50, -3.25)
+
+    def test_the_centroid_does_not_move_when_the_turbine_roles_change(self, tmp_path: Path) -> None:
+        # reanalysis is a model input, so a reference-set sensitivity run must not perturb it
+        dropped = PREPOST.replace("references: [T02, T03]", "references: [T02]").replace(
+            "excluded:   [T04]", "excluded:   []"
+        )
+        assert load(tmp_path, dropped).centroid == load(tmp_path).centroid
+
+    def test_the_centroid_is_rounded_so_a_site_keeps_one_cache_entry(self, tmp_path: Path) -> None:
+        moved = TURBINES_CSV.replace("57.40,-3.30", "57.404321,-3.301234")
+        (tmp_path / "turbines.csv").write_text(moved)
+        path = tmp_path / "campaign.yaml"
+        path.write_text(textwrap.dedent(PREPOST))
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        lat, lon = load_declaration(path).centroid
+        assert lat == round(lat, CENTROID_DECIMALS)
+        assert lon == round(lon, CENTROID_DECIMALS)
+
+    def test_the_fetch_window_is_rounded_out_to_whole_calendar_years(self, tmp_path: Path) -> None:
+        # the cache key includes the dates, so exact windows would refetch for every campaign
+        assert load(tmp_path).era5_window == ("2017-01-01", "2018-12-31")
+
+    def test_the_exclusive_end_does_not_pull_in_an_extra_year(self, tmp_path: Path) -> None:
+        # the period ends at midnight on 1 Jan 2019, so no 2019 record is ever read
+        assert load(tmp_path).era5_window[1] == "2018-12-31"
+
+
+class TestErrors:
+    def test_an_unknown_schema_name_lists_the_known_ones(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="hill_of_towie"):
+            load(tmp_path, PREPOST.replace("schema: hill_of_towie", "schema: greenbyte_maybe"))
+
+    def test_a_turbine_missing_from_the_sidecar_is_named(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T99"):
+            load(tmp_path, PREPOST.replace("upgraded:   [T01]", "upgraded:   [T01, T99]"))
+
+    def test_a_turbine_in_two_roles_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T01"):
+            load(tmp_path, PREPOST.replace("references: [T02, T03]", "references: [T01, T02]"))
+
+    def test_an_end_before_the_start_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="end"):
+            load(tmp_path, PREPOST.replace("end:   2019-01-01T00:00:00Z", "end:   2016-01-01T00:00:00Z"))
+
+    def test_a_missing_sidecar_file_is_named(self, tmp_path: Path) -> None:
+        path = write_campaign(tmp_path)
+        (tmp_path / "turbines.csv").unlink()
+        with pytest.raises(FileNotFoundError, match=r"turbines.csv"):
+            load_declaration(path)
+
+    def test_no_upgraded_turbines_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="upgraded"):
+            load(tmp_path, PREPOST.replace("upgraded:   [T01]", "upgraded:   []"))
+
+    def test_a_name_given_twice_in_the_sidecar_is_rejected(self, tmp_path: Path) -> None:
+        path = write_campaign(tmp_path)
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV + "T02,57.70,-3.10\n")
+        with pytest.raises(ValueError, match="T02"):
+            load_declaration(path)
+
+
+class TestACampaignDesignFeedsTheDeclaration:
+    def test_unnamed_rows_of_the_turbines_file_are_skipped(self, tmp_path: Path) -> None:
+        path = write_campaign(tmp_path)
+        (tmp_path / "turbines.csv").write_text(
+            "name,latitude,longitude,rotor_diameter_m,wind_farm\n"
+            "T01,57.40,-3.30,82,Home\nT02,57.60,-3.20,82,Home\nT03,57.50,-3.25,82,Home\n"
+            "T04,57.50,-3.25,82,Home\n,57.70,-3.10,90,\n"
+        )
+        declaration = load_declaration(path)
+        assert set(declaration.spec.coords) == {"T01", "T02", "T03", "T04"}
+        assert declaration.centroid == (57.50, -3.25)
+
+    def test_a_written_design_s_roles_and_layout_load(self, tmp_path: Path) -> None:
+        from tests.wind_up.layouts import grid_layout  # noqa: PLC0415
+        from wind_up.campaign_design import design_campaign, write_design  # noqa: PLC0415
+
+        layout = grid_layout(rows=3, cols=3, spacing_m=300).assign(wind_farm="Home")
+        design = design_campaign(layout)
+        write_design(design, out_dir=tmp_path / "design")
+        layout.to_csv(tmp_path / "turbines.csv", index=False)
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        roles = (tmp_path / "design" / "roles.yaml").read_text()
+        rest = textwrap.dedent(PREPOST)
+        rest = rest[: rest.index("turbines:\n  upgraded")] + rest[rest.index("timing:") :]
+        declaration_text = rest.replace("timing:", roles.rstrip() + "\n  rated_power_kw: 2300\n\ntiming:")
+        (tmp_path / "campaign.yaml").write_text(declaration_text)
+        spec = load_declaration(tmp_path / "campaign.yaml").spec
+        # roles() is what was written, and it sorts: a declaration should not carry the order the
+        # design's priority walk happened to pick them in
+        assert spec.upgraded_turbines == design.roles()["upgraded"] == sorted(design.test_turbines)
+        assert spec.candidate_references == design.roles()["references"]
+
+
+class TestNamesThatBecomeDirectories:
+    """The campaign name and the turbine names are used as output directory names."""
+
+    @pytest.mark.parametrize("name", ["demo/2026", "../demo", "/elsewhere/demo", "."])
+    def test_a_campaign_name_that_is_not_one_path_component_is_refused(self, tmp_path: Path, name: str) -> None:
+        with pytest.raises(ValueError, match=r"name"):
+            load(tmp_path, PREPOST.replace("name: demo", f"name: {name!r}"))
+
+    def test_a_turbine_name_that_is_not_one_path_component_is_refused(self, tmp_path: Path) -> None:
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV.replace("T02,", "../T02,"))
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        path = tmp_path / "campaign.yaml"
+        path.write_text(textwrap.dedent(PREPOST.replace("references: [T02, T03]", "references: [T03]")))
+        with pytest.raises(ValueError, match=r"\.\./T02"):
+            load_declaration(path)

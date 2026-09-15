@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.combine_results import (
+from wind_up_v0.combine_results import (
     _CombinedResultsCols,
     calculate_total_uplift_of_test_and_ref_turbines,
     combine_results,

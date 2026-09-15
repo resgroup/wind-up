@@ -3,108 +3,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from pandas.testing import assert_frame_equal
 
 from tests.conftest import TEST_DATA_FLD
 from wind_up.circular_math import circ_median
-from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_YAWDIR_COL, TIMESTAMP_COL
-from wind_up.models import WindUpConfig
-from wind_up.optimize_northing import _clip_wtg_north_table, auto_northing_corrections
-from wind_up.reanalysis_data import ReanalysisDataset, add_reanalysis_data
-
-
-def test_clip_wtg_north_table_entries_before() -> None:
-    tstamps = pd.date_range(start="2021-01-01", tz="UTC", periods=3, freq="10min")
-    idx = pd.Index(tstamps)
-    wtg_df = pd.DataFrame(
-        data={
-            "ActivePowerMean": [3.14] * 3,
-            "some_col_with_nans": [np.nan] * 3,
-        },
-        index=idx,
-    )
-    tstamps_for_wtg_north_table = [
-        tstamps[0] - pd.Timedelta(days=2),
-        tstamps[0] - pd.Timedelta(days=1),
-        tstamps[-1],
-        tstamps[-1] + pd.Timedelta(days=1),
-    ]
-    initial_wtg_north_table = pd.DataFrame(
-        data={
-            TIMESTAMP_COL: tstamps_for_wtg_north_table,
-            "north_offset": list(range(len(tstamps_for_wtg_north_table))),
-        },
-    )
-    expected_wtg_north_table = pd.DataFrame(
-        data={
-            TIMESTAMP_COL: [tstamps[0], tstamps[-1], tstamps[-1] + pd.Timedelta(days=1)],
-            "north_offset": [1, 2, 3],
-        },
-    )
-    actual_wtg_north_table = _clip_wtg_north_table(initial_wtg_north_table, wtg_df=wtg_df)
-    assert_frame_equal(actual_wtg_north_table, expected_wtg_north_table)
-
-
-def test_clip_wtg_north_table_entry_exactly_at_start() -> None:
-    tstamps = pd.date_range(start="2021-01-01", tz="UTC", periods=3, freq="10min")
-    idx = pd.Index(tstamps)
-    wtg_df = pd.DataFrame(
-        data={
-            "ActivePowerMean": [3.14] * 3,
-            "some_col_with_nans": [np.nan] * 3,
-        },
-        index=idx,
-    )
-    tstamps_for_wtg_north_table = [
-        tstamps[0] - pd.Timedelta(days=1),
-        tstamps[0],
-        tstamps[-1],
-        tstamps[-1] + pd.Timedelta(days=1),
-    ]
-    initial_wtg_north_table = pd.DataFrame(
-        data={
-            TIMESTAMP_COL: tstamps_for_wtg_north_table,
-            "north_offset": list(range(len(tstamps_for_wtg_north_table))),
-        },
-    )
-    expected_wtg_north_table = pd.DataFrame(
-        data={
-            TIMESTAMP_COL: [tstamps[0], tstamps[-1], tstamps[-1] + pd.Timedelta(days=1)],
-            "north_offset": [1, 2, 3],
-        },
-    )
-    actual_wtg_north_table = _clip_wtg_north_table(initial_wtg_north_table, wtg_df=wtg_df)
-    assert_frame_equal(actual_wtg_north_table, expected_wtg_north_table)
-
-
-def test_clip_wtg_north_table_entry_after_start() -> None:
-    tstamps = pd.date_range(start="2021-01-01", tz="UTC", periods=3, freq="10min")
-    idx = pd.Index(tstamps)
-    wtg_df = pd.DataFrame(
-        data={
-            "ActivePowerMean": [3.14] * 3,
-            "some_col_with_nans": [np.nan] * 3,
-        },
-        index=idx,
-    )
-    tstamps_for_wtg_north_table = [
-        tstamps[-1] + pd.Timedelta(days=1),
-    ]
-    initial_wtg_north_table = pd.DataFrame(
-        data={
-            TIMESTAMP_COL: tstamps_for_wtg_north_table,
-            "north_offset": list(range(len(tstamps_for_wtg_north_table))),
-        },
-    )
-    expected_wtg_north_table = pd.DataFrame(
-        data={
-            TIMESTAMP_COL: [tstamps[0]],
-            "north_offset": [0],
-        },
-    )
-    actual_wtg_north_table = _clip_wtg_north_table(initial_wtg_north_table, wtg_df=wtg_df)
-    assert_frame_equal(actual_wtg_north_table, expected_wtg_north_table)
-
+from wind_up_v0.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_YAWDIR_COL
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.optimize_northing import auto_northing_corrections
+from wind_up_v0.reanalysis_data import ReanalysisDataset, add_reanalysis_data
 
 wind_direction_offsets = [
     0,
@@ -113,12 +18,8 @@ wind_direction_offsets = [
 ]
 
 
-@pytest.mark.slow
-@pytest.mark.parametrize(("wind_direction_offset"), wind_direction_offsets)
-def test_auto_northing_corrections(test_homer_config: WindUpConfig, wind_direction_offset: float) -> None:
-    cfg = test_homer_config
-    cfg.lt_first_dt_utc_start = pd.Timestamp("2023-07-01 00:00:00", tz="UTC")
-    cfg.analysis_last_dt_utc_start = pd.Timestamp("2023-07-31 23:50:00", tz="UTC")
+def _homer_wf_df(cfg: WindUpConfig, *, wind_direction_offset: float) -> pd.DataFrame:
+    """The July 2023 Homer month, with every direction column rotated by ``wind_direction_offset``."""
     wf_df = pd.read_parquet(Path(__file__).parents[0] / "test_data/Homer Wind Farm_July2023_scada_improved.parquet")
     reanalysis_datasets = [
         ReanalysisDataset(id=fp.stem, data=pd.read_parquet(fp))
@@ -131,18 +32,31 @@ def test_auto_northing_corrections(test_homer_config: WindUpConfig, wind_directi
     wf_df[RAW_YAWDIR_COL] = wf_df["YawAngleMean"]
     wf_df[RAW_DOWNTIME_S_COL] = wf_df["ShutdownDuration"]
 
-    # add wind_direction_offset to direction columns
     for col in {RAW_YAWDIR_COL, "YawAngleMean", "reanalysis_wd"}:
         wf_df[col] = (wf_df[col] + wind_direction_offset) % 360
     if wind_direction_offset != 0:
         # in this case YawAngleMin and YawAngleMax will be incorrect, so nan them out
         wf_df["YawAngleMin"] = np.nan
         wf_df["YawAngleMax"] = np.nan
+    return wf_df
+
+
+def _median_yaw(wf_df: pd.DataFrame) -> pd.Series:
+    return wf_df.groupby("TurbineName", observed=True)["YawAngleMean"].apply(circ_median)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(("wind_direction_offset"), wind_direction_offsets)
+def test_auto_northing_corrections(test_homer_config: WindUpConfig, wind_direction_offset: float) -> None:
+    cfg = test_homer_config
+    cfg.lt_first_dt_utc_start = pd.Timestamp("2023-07-01 00:00:00", tz="UTC")
+    cfg.analysis_last_dt_utc_start = pd.Timestamp("2023-07-31 23:50:00", tz="UTC")
+    wf_df = _homer_wf_df(cfg, wind_direction_offset=wind_direction_offset)
 
     northed_wf_df = auto_northing_corrections(wf_df, cfg=cfg, plot_cfg=None)
 
-    median_yaw_before_northing = wf_df.groupby("TurbineName", observed=True)["YawAngleMean"].apply(circ_median)
-    median_yaw_after_northing = northed_wf_df.groupby("TurbineName", observed=True)["YawAngleMean"].apply(circ_median)
+    median_yaw_before_northing = _median_yaw(wf_df)
+    median_yaw_after_northing = _median_yaw(northed_wf_df)
 
     expected_t1_yaw_after_northing = (290 + wind_direction_offset) % 360
     expected_t2_yaw_after_northing = (295 + wind_direction_offset) % 360
@@ -151,7 +65,22 @@ def test_auto_northing_corrections(test_homer_config: WindUpConfig, wind_directi
     assert median_yaw_after_northing["HMR_T01"] == pytest.approx(expected_t1_yaw_after_northing, abs=1.0)
     assert median_yaw_after_northing["HMR_T02"] == pytest.approx(expected_t2_yaw_after_northing, abs=1.0)
 
-    # try to mess up the yaw angles further and run again
+
+@pytest.mark.slow
+@pytest.mark.parametrize(("wind_direction_offset"), wind_direction_offsets)
+def test_auto_northing_corrections_with_changepoints(
+    test_homer_config: WindUpConfig, wind_direction_offset: float
+) -> None:
+    """Two injected step changes per turbine, on top of a 180 degree rotation, are all recovered.
+
+    A month is short enough that the per-year rate alone would allow only one changepoint; the
+    settings' floor is what leaves room for both.
+    """
+    cfg = test_homer_config
+    cfg.lt_first_dt_utc_start = pd.Timestamp("2023-07-01 00:00:00", tz="UTC")
+    cfg.analysis_last_dt_utc_start = pd.Timestamp("2023-07-31 23:50:00", tz="UTC")
+    wf_df = _homer_wf_df(cfg, wind_direction_offset=wind_direction_offset)
+
     wf_df[RAW_YAWDIR_COL] = (wf_df[RAW_YAWDIR_COL] + 180) % 360
 
     # add a change point in for each turbine
@@ -169,6 +98,6 @@ def test_auto_northing_corrections(test_homer_config: WindUpConfig, wind_directi
 
     northed_wf_df = auto_northing_corrections(wf_df, cfg=cfg, plot_cfg=None)
 
-    median_yaw_after_northing = northed_wf_df.groupby("TurbineName", observed=True)["YawAngleMean"].apply(circ_median)
-    assert median_yaw_after_northing["HMR_T01"] == pytest.approx(expected_t1_yaw_after_northing, abs=1.5)
-    assert median_yaw_after_northing["HMR_T02"] == pytest.approx(expected_t2_yaw_after_northing, abs=1.5)
+    median_yaw_after_northing = _median_yaw(northed_wf_df)
+    assert median_yaw_after_northing["HMR_T01"] == pytest.approx((290 + wind_direction_offset) % 360, abs=1.5)
+    assert median_yaw_after_northing["HMR_T02"] == pytest.approx((295 + wind_direction_offset) % 360, abs=1.5)

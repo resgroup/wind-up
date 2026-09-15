@@ -1,0 +1,229 @@
+"""Tests for the analyst handover directory, and the isolation it is supposed to guarantee."""
+
+from __future__ import annotations
+
+import json
+from typing import TYPE_CHECKING
+
+import pandas as pd
+import pytest
+
+from benchmarking.campaigns.handover import GROUND_TRUTH_FILENAME, campaign_brief, write_handover
+from benchmarking.campaigns.placebo import placebo_design, placebo_instance, placebo_layout
+from benchmarking.synthetic import HOT_COLUMNS
+from wind_up.campaign_design import design_campaign
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from benchmarking.campaigns.declaration import SyntheticCampaign
+    from benchmarking.synthetic import SyntheticDataset
+
+BRIEF = "# The campaign\n\nSomething may have happened to some turbines.\n"
+TURBINES = ("T01", "T02", "T03", "T04", "T05", "T06", "T17")
+
+
+COORDS = {w: (57.5 + i * 0.0036, -3.25) for i, w in enumerate(TURBINES)}
+
+
+def _campaign() -> SyntheticCampaign:
+    """A randomised placebo over a small slice of the farm."""
+    return placebo_instance("prepost", seed=1, turbines=TURBINES, coords=COORDS)
+
+
+def _dataset(campaign: SyntheticCampaign) -> SyntheticDataset:
+    """Generate the campaign's data from a tiny flat-power frame."""
+    index = pd.date_range(*campaign.analysis_period, freq="6h", tz="UTC", inclusive="left")
+    frame = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    HOT_COLUMNS.turbine: wtg,
+                    HOT_COLUMNS.active_power: 900.0,
+                    HOT_COLUMNS.active_power_min: 850.0,
+                    HOT_COLUMNS.wind_speed: 8.0,
+                    HOT_COLUMNS.wind_speed_sd: 0.8,
+                    HOT_COLUMNS.gen_rpm: 1400.0,
+                    HOT_COLUMNS.availability: 3600.0,
+                },
+                index=index,
+            )
+            for wtg in TURBINES
+        ]
+    )
+    return campaign.generate(frame)
+
+
+def _handover(tmp_path: Path, *, docs: tuple[Path, ...] = ()) -> Path:
+    """Write a handover and return its root."""
+    campaign = _campaign()
+    return write_handover(campaign, _dataset(campaign), root=tmp_path, brief=BRIEF, docs=docs)
+
+
+class TestWhatTheAnalystGets:
+    def test_the_analyst_directory_holds_the_brief_the_template_and_the_data(self, tmp_path: Path) -> None:
+        root = _handover(tmp_path)
+        assert (root / "analyst" / "brief.md").read_text() == BRIEF
+        assert (root / "analyst" / "campaign.yaml").exists()
+        assert (root / "analyst" / "data" / "scada.parquet").exists()
+        assert (root / "analyst" / "data" / "turbines.csv").exists()
+
+    def test_the_scada_is_the_frame_the_campaign_produced(self, tmp_path: Path) -> None:
+        campaign = _campaign()
+        dataset = _dataset(campaign)
+        root = write_handover(campaign, dataset, root=tmp_path, brief=BRIEF)
+        written = pd.read_parquet(root / "analyst" / "data" / "scada.parquet")
+        pd.testing.assert_frame_equal(written, dataset.synthetic_df)
+
+    def test_the_turbines_file_names_every_participating_turbine(self, tmp_path: Path) -> None:
+        turbines = pd.read_csv(_handover(tmp_path) / "analyst" / "data" / "turbines.csv")
+        assert set(turbines["Name"]) == set(TURBINES)
+        assert {"Name", "Latitude", "Longitude"} <= set(turbines.columns)
+
+    def test_the_documentation_under_test_is_copied_in(self, tmp_path: Path) -> None:
+        doc = tmp_path / "how_to.md"
+        doc.write_text("read me")
+        root = _handover(tmp_path, docs=(doc,))
+        assert (root / "analyst" / "docs" / "how_to.md").read_text() == "read me"
+
+
+class TestTheCampaignDesign:
+    def _root(self, tmp_path: Path) -> Path:
+        campaign = _campaign()
+        design = placebo_design(seed=1, turbines=TURBINES, coords=COORDS)
+        return write_handover(campaign, _dataset(campaign), root=tmp_path, brief=BRIEF, design=design)
+
+    def test_the_design_is_handed_over_with_its_map_and_compliance(self, tmp_path: Path) -> None:
+        design_dir = self._root(tmp_path) / "analyst" / "design"
+        assert sorted(p.name for p in design_dir.iterdir()) == [
+            "compliance.csv",
+            "design_map.png",
+            "design_map_latlon.png",
+            "front_row_map.png",
+            "roles.yaml",
+            "summary.yaml",
+            "turbines.csv",
+        ]
+
+    def test_it_names_the_front_row_but_not_the_priority(self, tmp_path: Path) -> None:
+        # a placebo's priority is a random shuffle, and would read as expected uplift
+        turbines = pd.read_csv(self._root(tmp_path) / "analyst" / "design" / "turbines.csv")
+        assert {"name", "role", "front_row", "reference_for"} <= set(turbines.columns)
+        assert not {"priority_rank", "from_test_priority", "outcome", "reason"} & set(turbines.columns)
+
+    def test_the_design_is_the_campaign_s(self) -> None:
+        assert placebo_design(seed=1, turbines=TURBINES, coords=COORDS).test_turbines
+        assert sorted(placebo_design(seed=1, turbines=TURBINES, coords=COORDS).test_turbines) == sorted(
+            _campaign().upgraded_turbines
+        )
+
+    def test_a_design_for_other_turbines_is_refused(self, tmp_path: Path) -> None:
+        campaign = _campaign()
+        other = design_campaign(placebo_layout(COORDS), reference_only=["T17"], n_test=1)
+        assert set(other.test_turbines) != set(campaign.upgraded_turbines)
+        with pytest.raises(ValueError, match="design"):
+            write_handover(campaign, _dataset(campaign), root=tmp_path, brief=BRIEF, design=other)
+
+    def test_no_design_means_no_design_directory(self, tmp_path: Path) -> None:
+        assert not (_handover(tmp_path) / "analyst" / "design").exists()
+
+
+class TestTheBrief:
+    def test_it_names_the_treated_turbines_and_the_changeover(self) -> None:
+        campaign = _campaign()
+        brief = campaign_brief(campaign)
+        for turbine in campaign.upgraded_turbines:
+            assert turbine in brief
+        assert f"{pd.Timestamp(campaign.upgrade_timing):%d %B %Y}" in brief
+
+    def test_it_names_the_period_the_scada_covers(self) -> None:
+        campaign = _campaign()
+        brief = campaign_brief(campaign)
+        for edge in campaign.analysis_period:
+            assert f"{edge:%d %B %Y}" in brief
+
+    def test_a_toggle_campaign_is_described_as_blocks_with_its_period(self) -> None:
+        campaign = placebo_instance("toggle", seed=1, turbines=TURBINES, coords=COORDS)
+        brief = campaign_brief(campaign)
+        assert "toggle" in brief
+        assert f"{int(campaign.upgrade_timing.period.total_seconds() // 60)} minutes" in brief
+
+    def test_it_offers_the_candidate_classes_including_nothing_at_all(self) -> None:
+        # the menu is given, not hidden: the question is which one and how big
+        brief = campaign_brief(_campaign())
+        for candidate in ("flat efficiency", "wind-speed-dependent", "rated power", "wake steering"):
+            assert candidate in brief
+        assert "nothing at all" in brief
+
+    def test_it_does_not_ask_about_anemometer_faults(self) -> None:
+        # they are not injected either: CF11 priced them at 0.21 pp in prepost and zero in toggle
+        assert "anemometer" not in campaign_brief(_campaign()).lower()
+
+
+class TestTheTemplateIsBlank:
+    def test_it_names_none_of_the_campaign_s_turbines(self, tmp_path: Path) -> None:
+        # a populated template would answer the question before the analyst starts
+        campaign = _campaign()
+        template = (_handover(tmp_path) / "analyst" / "campaign.yaml").read_text()
+        for turbine in campaign.upgraded_turbines:
+            assert turbine not in template
+
+    def test_it_carries_neither_the_changeover_nor_the_analysis_period(self, tmp_path: Path) -> None:
+        campaign = _campaign()
+        template = (_handover(tmp_path) / "analyst" / "campaign.yaml").read_text()
+        assert str(campaign.upgrade_timing.date()) not in template
+        assert str(campaign.analysis_period[0].date()) not in template
+
+    def test_it_still_explains_every_field_the_analyst_must_fill(self, tmp_path: Path) -> None:
+        template = (_handover(tmp_path) / "analyst" / "campaign.yaml").read_text()
+        for field in ("name", "scada", "schema", "turbines", "upgraded", "references", "timing", "analysis_period"):
+            assert field in template
+
+    def test_it_does_not_claim_name_makes_an_output_subdirectory(self, tmp_path: Path) -> None:
+        # it does not, once --out is given, and the documented run command gives it
+        template = (_handover(tmp_path) / "analyst" / "campaign.yaml").read_text()
+        assert "names the output subdirectory" not in template
+        assert "adds no subdirectory" in template
+
+
+class TestIsolation:
+    def test_the_answer_key_is_outside_the_analyst_directory(self, tmp_path: Path) -> None:
+        root = _handover(tmp_path)
+        assert (root / "key" / GROUND_TRUTH_FILENAME).exists()
+        assert not list((root / "analyst").rglob(GROUND_TRUTH_FILENAME))
+
+    def test_the_analyst_directory_carries_no_original_data_and_no_run_metadata(self, tmp_path: Path) -> None:
+        # the second of W1a's two isolation assertions: original_df and run_metadata never leave
+        analyst = _handover(tmp_path) / "analyst"
+        assert not list(analyst.rglob("original*"))
+        assert not list(analyst.rglob("*run_metadata*"))
+        assert sorted(p.name for p in analyst.rglob("*.parquet")) == ["scada.parquet"]
+
+    def test_the_scada_carries_no_column_the_campaign_did_not_measure(self, tmp_path: Path) -> None:
+        campaign = _campaign()
+        dataset = _dataset(campaign)
+        root = write_handover(campaign, dataset, root=tmp_path, brief=BRIEF)
+        written = pd.read_parquet(root / "analyst" / "data" / "scada.parquet")
+        assert set(written.columns) == set(dataset.synthetic_df.columns)
+
+
+class TestTheAnswerKey:
+    def _key(self, tmp_path: Path) -> dict:
+        return json.loads((_handover(tmp_path) / "key" / GROUND_TRUTH_FILENAME).read_text())
+
+    def test_it_records_what_was_injected(self, tmp_path: Path) -> None:
+        key = self._key(tmp_path)
+        assert key["upgrades"] == []  # a placebo injects nothing
+        assert key["faults"] == []
+
+    def test_it_records_who_was_treated_and_when(self, tmp_path: Path) -> None:
+        campaign = _campaign()
+        key = self._key(tmp_path)
+        assert key["upgraded_turbines"] == campaign.upgraded_turbines
+        assert key["timing"]["mode"] == "prepost"
+        assert key["timing"]["changeover"] == str(campaign.upgrade_timing)
+
+    def test_it_records_the_true_farm_uplift_and_the_seed(self, tmp_path: Path) -> None:
+        key = self._key(tmp_path)
+        assert key["true_farm_uplift"] == 0.0  # placebo: truth is 0 by construction
+        assert key["seed"] == 1
