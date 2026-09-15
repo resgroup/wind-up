@@ -15,6 +15,7 @@ from wind_up.northing import (
     DEFAULT_NORTHING,
     NorthingSettings,
     _sector_signature,
+    anchoring_only,
     apply_north_table,
     estimate_north_table,
     north_farm,
@@ -596,6 +597,31 @@ class TestNearTheRecordEdge:
     def test_the_same_small_step_well_inside_the_record_is_reported(self) -> None:
         """The step is identical; only the evidence behind it differs."""
         assert self._n_changepoints(4.0, days_after=300.0) == 1
+
+
+class TestAnchoringPass:
+    """The first pass is for bulk alignment to reanalysis; only big steps are its business."""
+
+    @staticmethod
+    def _n_changepoints(step_deg: float) -> int:
+        index = _index(days=700)
+        reported, reference = _reported(index, steps=[("2017-01-01", 0.0), ("2017-12-01", step_deg)])
+        table = estimate_north_table(
+            index,
+            reported,
+            reference_deg=reference,
+            usable=_all_usable(index),
+            settings=anchoring_only(DEFAULT_NORTHING),
+        )
+        return len(table) - 1
+
+    def test_a_persistent_step_below_the_anchoring_threshold_is_not_reported(self) -> None:
+        """``max_transient_step_deg`` (10) sits below ``ANCHORING_MIN_STEP_DEG`` (30); the support
+        threshold must not be clipped down to it."""
+        assert self._n_changepoints(20.0) == 0
+
+    def test_a_step_above_the_anchoring_threshold_is_found(self) -> None:
+        assert self._n_changepoints(60.0) == 1
 
 
 class TestFarmReferenceComposition:
