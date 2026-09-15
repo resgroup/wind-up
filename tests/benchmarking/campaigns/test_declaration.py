@@ -95,10 +95,11 @@ def test_usable_mask_keeps_every_record_of_a_participating_turbine() -> None:
     assert spec.usable_mask("T1", index).all()
 
 
-def test_usable_mask_drops_every_record_of_an_excluded_turbine() -> None:
+def test_usable_mask_keeps_every_record_of_an_excluded_turbine() -> None:
+    # Excluded is a role, never a reference or tested; its data still carries its wake.
     spec = campaign().spec()
     index = pd.date_range(PERIOD[0], periods=5, freq="1h", tz="UTC")
-    assert not spec.usable_mask("T5", index).any()
+    assert spec.usable_mask("T5", index).all()
 
 
 def test_usable_mask_is_a_boolean_array_matching_the_index() -> None:
@@ -140,9 +141,10 @@ def test_generate_restricts_the_data_to_the_analysis_period() -> None:
     assert dataset.synthetic_df.index.max() < PERIOD[1]
 
 
-def test_generate_drops_turbines_the_campaign_does_not_declare() -> None:
+def test_generate_keeps_a_turbine_the_campaign_does_not_declare() -> None:
+    # Every turbine with data is a potential wake contributor.
     dataset = campaign().generate(scada(turbines=("T1", "T2", "T3", "T4", "T5", "T99")))
-    assert "T99" not in set(dataset.synthetic_df[HOT_COLUMNS.turbine])
+    assert "T99" in set(dataset.synthetic_df[HOT_COLUMNS.turbine])
 
 
 def test_turbines_lists_every_declared_turbine() -> None:

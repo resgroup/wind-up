@@ -49,7 +49,9 @@ from benchmarking.baselines.power_model.screening import (
 from benchmarking.baselines.power_model.screening import (
     empty_screen_passes as _empty_screen_passes,
 )
+from benchmarking.baselines.power_model.waking import write_waking_diagnostics
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
+from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.harness.conditions import (
     CONDITION_BINS,
     CONDITIONS,
@@ -312,6 +314,32 @@ def _clip_predictions(pred: np.ndarray, *, y_train: np.ndarray, rated_power_kw: 
     return np.clip(pred, lower, upper)
 
 
+def _reference_input(
+    mi: MethodInput, *, target: str, references: Sequence[str], timing: pd.Timestamp | None = None
+) -> MethodInput:
+    """Return the input for estimating reference ``target`` against ``references``.
+
+    Every turbine the campaign's estimate keeps stays in, so the test turbine and any reference left
+    out of ``references`` join the wake contributors.
+
+    :param timing: the contrast to estimate across; the campaign's own when ``None``
+    """
+    context = mi.context
+    kept = [mi.test_wtg, *context.candidate_references, *context.wake_contributors]
+    sub_context = dataclasses.replace(
+        context,
+        test_wtg=target,
+        candidate_references=list(references),
+        # Sorted, not in the order the campaign's own estimate happened to hold them: that order
+        # starts at the test turbine, so the same reference would be screened against the same
+        # turbines laid out differently for each test turbine, and the model is not invariant to
+        # column order. Sorted, every test turbine screens a reference identically.
+        wake_contributors=sorted(w for w in kept if w != target and w not in set(references)),
+        timing=context.timing if timing is None else timing,
+    )
+    return MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
+
+
 @dataclass
 class PowerModelMethod:
     """Pluggable counterfactual power-model uplift estimator (prepost and toggle).
@@ -425,6 +453,16 @@ class PowerModelMethod:
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
     write_diagnostics: bool = True
+    # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
+    # era5_source_label() of the point it fetched, so a reader can tell which series was used.
+    era5_label: str = ERA5_UNLOCATED
+    # A campaign's screen verdict is one answer for the whole campaign: the same pool judged across
+    # the same contrast. Every test turbine would otherwise re-run the identical round-robin. A
+    # campaign passes one dict to every turbine's method; None means screen per estimate. Every
+    # method sharing a cache must share its configuration, since the key does not carry it.
+    screen_cache: dict[tuple[tuple[str, ...], str], ScreenResult] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -546,6 +584,20 @@ class PowerModelMethod:
                 cond_upgraded=cond_upgraded,
                 cond_baseline_valid=cond_baseline_valid,
             )
+            if self.save_plots:
+                # What the wake-only turbines carry, beside the model that consumed it.
+                write_waking_diagnostics(
+                    run_dir,
+                    scada=scada,
+                    turbine_col=mi.turbine_col,
+                    active_power_col=self.columns.active_power,
+                    threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+                    treated=pd.Series(np.asarray(t, dtype=bool), index=index),
+                    test_wtg=mi.test_wtg,
+                    references=references,
+                    power_free=[*power_free, *mi.context.wake_contributors],
+                    coords=mi.context.coords,
+                )
 
         # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
         # it (eventually AEP extrapolation will). Skipped when no conditions are requested.
@@ -1006,7 +1058,11 @@ class PowerModelMethod:
         extra_cols: tuple[str, ...],
         power_free: Sequence[str],
     ) -> pd.DataFrame:
-        """Return reference features for ``scada``; ``power_free`` references carry no power columns."""
+        """Return reference features for ``scada``; ``power_free`` references carry no power columns.
+
+        The context's wake contributors that ``scada`` carries data for join as wake-only turbines.
+        """
+        present = {str(t) for t in scada[mi.turbine_col].unique()}
         return build_reference_features(
             scada,
             test_wtg=mi.test_wtg,
@@ -1018,6 +1074,7 @@ class PowerModelMethod:
             include_availability=self.availability_feature,
             direction_col=self.columns.northed("nacelle_position") if self.direction_feature else None,
             power_free=power_free,
+            wake_only=[w for w in mi.context.wake_contributors if w in present],
             waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
         )
 
@@ -1047,8 +1104,7 @@ class PowerModelMethod:
             refs = [r for r in surviving if r != target]
             if not refs:
                 continue
-            sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=refs)
-            sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
+            sub_input = _reference_input(mi, target=target, references=refs)
             energy, n_records = self._upgraded_energy(sub_input, turbine=target)
             uplift = reusable[target] if target in reusable else self._reference_uplift(clone, sub_input)
             rows.append(
@@ -1210,15 +1266,33 @@ class PowerModelMethod:
             )
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
+        cache_key = (tuple(pool), str(timing))
+        if self.screen_cache is not None and cache_key in self.screen_cache:
+            cached = self.screen_cache[cache_key]
+            logger.info(
+                "%s %s: reference screen already run for this campaign; %s",
+                self.name,
+                mi.test_wtg,
+                f"ruled out {list(cached.screened)}" if cached.screened else "it ruled out nobody",
+            )
+            return cached
         clone = self._screening_clone()
+        shared = " (once for the campaign)" if self.screen_cache is not None else ""
+        logger.info(
+            "%s %s: screening %d candidate reference(s) across %s%s, one estimate each per pass",
+            self.name,
+            mi.test_wtg,
+            len(pool),
+            timing.date() if hasattr(timing, "date") else timing,
+            shared,
+        )
 
         # Why each candidate could not be estimated, so a screen that gives up can say what stopped
         # it rather than only that it gave up.
         causes: dict[str, str] = {}
 
         def estimate_one(target: str, refs: list[str]) -> float:
-            sub_context = dataclasses.replace(context, test_wtg=target, candidate_references=list(refs), timing=timing)
-            sub_input = MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
+            sub_input = _reference_input(mi, target=target, references=refs, timing=timing)
             try:
                 return float(clone.estimate(sub_input).p50_overall)
             except ValueError as e:
@@ -1238,11 +1312,13 @@ class PowerModelMethod:
             raise ValueError(msg) from e
         if result.screened:
             logger.info(
-                "%s %s: reference screen ruled out %s; they keep direction + waking features but contribute no power",
+                "%s %s: reference screen ruled out %s; they contribute a waking feature and nothing else",
                 self.name,
                 mi.test_wtg,
                 list(result.screened),
             )
+        if self.screen_cache is not None:
+            self.screen_cache[cache_key] = result
         return result
 
     def _validate_model_config(self) -> None:
@@ -1400,6 +1476,7 @@ class PowerModelMethod:
             sum_actual_kw=sum_actual,
             sum_counterfactual_kw=sum_counter,
             n_refs=n_refs,
+            era5_label=self.era5_label,
             era5_lag_rows=era5.best_lag_rows if era5 is not None else None,
             era5_corr=era5.best_corr if era5 is not None else None,
             era5_sweep=era5.sweep if era5 is not None else None,
@@ -1407,7 +1484,7 @@ class PowerModelMethod:
             cond_baseline_valid=cond_baseline_valid,
         )
         importance = diag.write_csvs(run_dir, run_name, ts, data)
-        diag.log_top_features(importance)
+        diag.log_top_features(importance, active_power_col=self.columns.active_power)
         logger.info(
             "%s %s: uplift=%+.3f%%  (sum_actual=%.1f MWh, sum_counterfactual=%.1f MWh, n_up=%d)",
             self.name,
@@ -1443,6 +1520,7 @@ class PowerModelMethod:
             timebase=timebase,
             mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
             era5_df=era5.aligned if era5 is not None else None,
+            era5_label=self.era5_label,
         )
         write_common_diagnostics(ctx)
         extra = {

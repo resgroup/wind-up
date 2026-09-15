@@ -7,6 +7,7 @@ gracefully. They do not assert pixel content — image fidelity is reviewed by e
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -18,7 +19,10 @@ import yaml
 from benchmarking.diagnostics import write_common_diagnostics, write_run_config
 from benchmarking.diagnostics.context import ERA5_WD_COL, ERA5_WS_COL, DiagnosticContext
 from benchmarking.diagnostics.coverage import exclusion_bucket, plot_excluded_fraction
+from benchmarking.diagnostics.curves import _overall_power_factor, _reactive_panel_turbines
 from benchmarking.diagnostics.density import density_scatter
+from benchmarking.diagnostics.northing import plot_northed_error, plot_northing_error
+from benchmarking.diagnostics.style import series_style
 from benchmarking.synthetic import ColumnSchema
 
 if TYPE_CHECKING:
@@ -223,3 +227,89 @@ def test_runs_without_era5(tmp_path: Path, *, with_era5: bool) -> None:
     ctx = _context(tmp_path, with_era5=with_era5)
     written = write_common_diagnostics(ctx)
     assert ("northing_error.png" in {p.name for p in written}) == with_era5
+
+
+class TestTheReactivePlotStaysReadable:
+    """A whole farm does not fit one panel per turbine, so the figure picks a spread."""
+
+    def _farm_context(self, tmp_path: Path, n_turbines: int, test_wtg: str = "T05") -> DiagnosticContext:
+        rng = np.random.default_rng(0)
+        index = pd.date_range("2020-01-01", periods=300, freq="10min", tz="UTC")
+        names = [f"T{i:02d}" for i in range(1, n_turbines + 1)]
+        scada = _long_scada(index, names, rng=rng)
+        # a different reactive level per turbine, so they have distinguishable power factors
+        offsets = {name: 20.0 * i for i, name in enumerate(names)}
+        scada["reactive"] = scada["reactive"] + scada["turbine"].map(offsets)
+        return DiagnosticContext(
+            run_dir=tmp_path / "run",
+            test_wtg=test_wtg,
+            turbine_col="turbine",
+            columns=_FULL_COLUMNS,
+            scada_df=scada,
+            treated_ts=np.asarray(index >= index[len(index) // 2]),
+            used_ts=np.ones(len(index), dtype=bool),
+            timebase=pd.Timedelta(minutes=10),
+            mode="prepost",
+        )
+
+    def test_it_draws_at_most_nine_turbines(self, tmp_path: Path) -> None:
+        panels = _reactive_panel_turbines(self._farm_context(tmp_path, 21))
+        assert len(panels) == 9
+
+    def test_the_test_turbine_is_always_the_first_panel(self, tmp_path: Path) -> None:
+        panels = _reactive_panel_turbines(self._farm_context(tmp_path, 21))
+        assert panels[0][0] == "T05"
+
+    def test_it_keeps_both_ends_of_the_power_factor_range(self, tmp_path: Path) -> None:
+        ctx = self._farm_context(tmp_path, 21)
+        factors = {t: _overall_power_factor(ctx, t) for t in [ctx.test_wtg, *ctx.references()]}
+        others = {t: f for t, f in factors.items() if t != ctx.test_wtg}
+        drawn = {t for t, _ in _reactive_panel_turbines(ctx)}
+        assert min(others, key=lambda t: others[t]) in drawn
+        assert max(others, key=lambda t: others[t]) in drawn
+
+    def test_a_small_farm_keeps_every_turbine(self, tmp_path: Path) -> None:
+        panels = _reactive_panel_turbines(self._farm_context(tmp_path, 4, test_wtg="T02"))
+        assert len(panels) == 4
+
+
+class TestTheNorthedErrorTimeline:
+    """The raw timeline says what the sensor did; the northed one says what the model was given."""
+
+    def _context_with_northed(self, tmp_path: Path) -> DiagnosticContext:
+        ctx = _context(tmp_path)
+        scada = ctx.scada_df.copy()
+        # the shared northing step writes this alongside the untouched original
+        scada[ctx.columns.northed("nacelle_position")] = (scada["nacelle"] - 7.0) % 360.0
+        return dataclasses.replace(ctx, scada_df=scada)
+
+    def test_it_lands_in_the_feature_engineering_stage(self, tmp_path: Path) -> None:
+        path = plot_northed_error(self._context_with_northed(tmp_path))
+        assert path is not None
+        assert path.parent.name == "3_feature_eng"
+        assert path.name == "northed_error.png"
+
+    def test_the_raw_one_stays_in_inputs(self, tmp_path: Path) -> None:
+        path = plot_northing_error(self._context_with_northed(tmp_path))
+        assert path is not None
+        assert path.parent.name == "1_inputs"
+
+    def test_it_is_skipped_when_the_northing_step_has_not_run(self, tmp_path: Path) -> None:
+        # a method run outside a campaign has the raw column only
+        assert plot_northed_error(_context(tmp_path)) is None
+
+
+class TestSeriesStyles:
+    """A whole farm needs more distinguishable lines than the colour cycle alone provides."""
+
+    def test_a_whole_farm_gets_a_distinct_style_each(self) -> None:
+        assert len({series_style(i) for i in range(21)}) == 21
+
+    def test_colours_and_dashes_are_coprime_so_thirty_are_distinct(self) -> None:
+        # 10 colours x 3 dashes: every pair appears before any repeats
+        assert len({series_style(i) for i in range(30)}) == 30
+        assert series_style(30) == series_style(0)
+
+    def test_the_first_ten_reuse_no_dash(self) -> None:
+        # within one colour cycle the dash changes, so neighbours never match on both
+        assert len({dash for _, dash in (series_style(i) for i in range(10))}) == 3

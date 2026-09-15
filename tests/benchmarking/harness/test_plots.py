@@ -10,8 +10,10 @@ mpl.use("Agg")  # headless: no display needed for tests
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import pytest
 
-from benchmarking.harness.plots import plot_campaign_curves, plot_conditional_uplift
+from benchmarking.harness.method import MethodOutput
+from benchmarking.harness.plots import conditional_estimates, plot_campaign_curves, plot_conditional_uplift
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -109,4 +111,40 @@ def test_plot_conditional_uplift_writes_png(tmp_path: Path) -> None:
     out = tmp_path / "cond.png"
     fig = plot_conditional_uplift(summary, condition="ws", save_path=out, title="ws_dependent_cp 6mo")
     assert out.exists()
+    plt.close(fig)
+
+
+# --- the estimate-only conditional shape, for a report with no ground truth ---------------------
+
+
+def _estimate_output() -> MethodOutput:
+    """A method output reporting two power bins and nothing else."""
+    return MethodOutput(
+        p50_overall=0.02,
+        p50_by_condition=pd.DataFrame(
+            {"condition": "power", "condition_bin": ["(0.0, 0.5]", "(0.5, 1.0]"], "p50_uplift": [0.01, 0.03]}
+        ),
+    )
+
+
+def test_conditional_estimates_shapes_an_output_without_truth() -> None:
+    frame = conditional_estimates(_estimate_output(), method_name="wind-up")
+    assert list(frame.columns) == ["method", "condition", "condition_bin", "mean_estimate"]
+    assert "mean_truth" not in frame.columns
+    assert frame["mean_estimate"].tolist() == [0.01, 0.03]
+
+
+def test_conditional_estimates_rejects_an_output_with_no_conditions() -> None:
+    with pytest.raises(ValueError, match="p50_by_condition"):
+        conditional_estimates(MethodOutput(p50_overall=0.0), method_name="wind-up")
+
+
+def test_plot_conditional_uplift_draws_estimates_alone_when_there_is_no_truth(tmp_path: Path) -> None:
+    out = tmp_path / "estimates.png"
+    frame = conditional_estimates(_estimate_output(), method_name="wind-up")
+    fig = plot_conditional_uplift(frame, condition="power", save_path=out, title="power")
+    assert out.exists()
+    labels = [line.get_label() for line in fig.axes[0].get_lines()]
+    assert "true uplift" not in labels
+    assert "wind-up" in labels
     plt.close(fig)

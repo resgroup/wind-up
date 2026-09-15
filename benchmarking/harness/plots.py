@@ -122,7 +122,11 @@ def plot_conditional_uplift(
     save_path: str | Path | None = None,
     title: str | None = None,
 ) -> Figure:
-    """Plot mean recovered vs true uplift across bins of one condition, with a bias±spread band."""
+    """Plot mean recovered uplift across bins of one condition, with a bias±spread band.
+
+    A ``mean_truth`` column is drawn as the reference series; without one only the estimates are
+    plotted, which is what a report with no ground truth beside it can show.
+    """
     df = summary_df[summary_df["condition"] == condition].copy()
     df["_left"] = df["condition_bin"].str.extract(r"\(([-0-9.]+),").astype(float)
     df = df.sort_values("_left")
@@ -130,8 +134,9 @@ def plot_conditional_uplift(
     x = np.arange(len(order))
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    truth = df.drop_duplicates("condition_bin").set_index("condition_bin").reindex(order)["mean_truth"]
-    ax.plot(x, truth.to_numpy() * _FRACTION_TO_PP, "--", marker="s", color="k", label="true uplift")
+    if "mean_truth" in df.columns:
+        truth = df.drop_duplicates("condition_bin").set_index("condition_bin").reindex(order)["mean_truth"]
+        ax.plot(x, truth.to_numpy() * _FRACTION_TO_PP, "--", marker="s", color="k", label="true uplift")
     for i, method in enumerate(sorted(df["method"].unique())):
         m = df[df["method"] == method].set_index("condition_bin").reindex(order)
         est = m["mean_estimate"].to_numpy() * _FRACTION_TO_PP
@@ -151,6 +156,22 @@ def plot_conditional_uplift(
     if save_path is not None:
         fig.savefig(save_path, dpi=120)
     return fig
+
+
+def conditional_estimates(output: MethodOutput, *, method_name: str) -> pd.DataFrame:
+    """Shape a method's p50_by_condition into a plot_conditional_uplift frame, with no truth."""
+    if output.p50_by_condition is None:
+        msg = "output.p50_by_condition must not be None"
+        raise ValueError(msg)
+    bc = output.p50_by_condition
+    return pd.DataFrame(
+        {
+            "method": method_name,
+            "condition": bc["condition"].astype(str),
+            "condition_bin": bc["condition_bin"].astype(str),
+            "mean_estimate": bc["p50_uplift"].to_numpy(),
+        }
+    )
 
 
 def conditional_truth_vs_estimate(

@@ -11,13 +11,17 @@ mpl.use("Agg")
 import numpy as np
 import pandas as pd
 
-from benchmarking.campaigns import CampaignRunner, write_campaign_report
+from benchmarking.campaigns import CampaignRunner, write_campaign_report, write_report
+from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.harness import CONDITIONS, MethodInput, MethodOutput, condition_bins
+from benchmarking.synthetic import HOT_COLUMNS
 
 from .test_declaration import CHANGEOVER, campaign, scada
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from benchmarking.campaigns.run import CampaignReport
 
 
 class ZeroMethod:
@@ -117,3 +121,70 @@ def test_conditional_plots_are_written_per_condition_and_turbine(tmp_path: Path)
     assert len(plots) == len(CONDITIONS) * 2
     assert any("T1" in name for name in plots)
     assert any("T2" in name for name in plots)
+
+
+# --- the analyst report: the same run, written without the answer key --------------------------
+
+
+class ReferenceReportingMethod:
+    """Reports a per-reference self-uplift frame, as the power model does by default."""
+
+    name = "with_refs"
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:
+        """Report zero overall, and one near-zero self-uplift row per candidate reference."""
+        references = mi.context.candidate_references
+        return MethodOutput(
+            p50_overall=0.0,
+            reference_uplifts=pd.DataFrame(
+                {"turbine": references, "uplift": 0.001, "actual_energy": 1000.0, "n_records": 10, "screened": False}
+            ),
+        )
+
+
+def _report(methods: list) -> CampaignReport:
+    """Run the fixture campaign through the truth-free core."""
+    spec = campaign(upgrade_timing=CHANGEOVER).spec()
+    return estimate_campaign(spec, scada(), build_methods=lambda _wtg: list(methods), columns=HOT_COLUMNS)
+
+
+class TestAnalystReport:
+    def test_it_writes_the_analyst_tables(self, tmp_path: Path) -> None:
+        out = write_report(_report([ReferenceReportingMethod()]), out_dir=tmp_path)
+        assert (out / "per_turbine.csv").exists()
+        assert (out / "farm_uplift.csv").exists()
+        assert (out / "farm_uplift_detail.csv").exists()
+        assert (out / "reference_stability.csv").exists()
+
+    def test_it_writes_no_scores_table(self, tmp_path: Path) -> None:
+        # scores.csv is the harness's truth-carrying shape; the analyst path has no truth to score
+        write_report(_report([ZeroMethod()]), out_dir=tmp_path)
+        assert not (tmp_path / "scores.csv").exists()
+
+    def test_no_table_it_writes_carries_a_truth_column(self, tmp_path: Path) -> None:
+        write_report(_report([ReferenceReportingMethod(), ConditionalZeroMethod()]), out_dir=tmp_path)
+        written = sorted(tmp_path.rglob("*.csv"))
+        assert written
+        for path in written:
+            columns = set(pd.read_csv(path).columns)
+            assert not ({"truth", "signed_error"} & columns), f"{path.name} carries truth"
+
+    def test_reference_stability_names_every_candidate_reference(self, tmp_path: Path) -> None:
+        out = write_report(_report([ReferenceReportingMethod()]), out_dir=tmp_path)
+        stability = pd.read_csv(out / "reference_stability.csv")
+        assert set(stability["turbine"]) == {"T3", "T4"}
+        assert set(stability["test_wtg"]) == {"T1", "T2"}
+
+    def test_conditional_estimates_are_written_when_a_method_reports_them(self, tmp_path: Path) -> None:
+        out = write_report(_report([ConditionalZeroMethod()]), out_dir=tmp_path)
+        assert (out / "conditional.csv").exists()
+        plots = sorted(p.name for p in (out / "conditional").glob("*.png"))
+        assert len(plots) == len(CONDITIONS) * 2
+
+    def test_nothing_conditional_is_written_when_no_method_reports_conditions(self, tmp_path: Path) -> None:
+        out = write_report(_report([ZeroMethod()]), out_dir=tmp_path)
+        assert not (out / "conditional.csv").exists()
+        assert not (out / "conditional").exists()
+
+    def test_it_returns_the_directory_it_wrote_to(self, tmp_path: Path) -> None:
+        assert write_report(_report([ZeroMethod()]), out_dir=tmp_path) == tmp_path

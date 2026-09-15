@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pandas as pd
 import pytest
 
@@ -41,6 +43,40 @@ class TestFromFrame:
 
     def test_a_turbine_absent_from_the_frame_is_not_a_candidate(self) -> None:
         assert _context(scada_df=_scada(("T1", "T2"))).candidate_references == ["T2"]
+
+    def test_there_are_no_wake_contributors(self) -> None:
+        # Every other turbine is a reference, so none is left to contribute its wake alone.
+        assert _context().wake_contributors == []
+
+
+def _with_wake_contributor() -> CampaignContext:
+    """T1 under test, T2 its only reference, T3 another changed turbine that wakes them."""
+    context = _context()
+    return dataclasses.replace(context, candidate_references=["T2"], wake_contributors=["T3"])
+
+
+class TestWakeContributors:
+    def test_select_keeps_their_rows(self) -> None:
+        selected = _with_wake_contributor().select(_scada())
+        assert sorted(selected[_TURBINE_COL].unique()) == ["T1", "T2", "T3"]
+
+    def test_select_drops_the_rows_they_may_not_contribute(self) -> None:
+        context = _with_wake_contributor()
+        valid = context.valid_for_uplift.copy()
+        valid.loc[_INDEX[:2], "T3"] = False
+        selected = dataclasses.replace(context, valid_for_uplift=valid).select(_scada())
+        assert selected[selected[_TURBINE_COL] == "T3"].index.equals(_INDEX[2:])
+
+    def test_they_are_never_references(self) -> None:
+        assert _with_wake_contributor().references_among(["T1", "T2", "T3"]) == ["T2"]
+
+    def test_a_candidate_reference_cannot_also_be_one(self) -> None:
+        with pytest.raises(ValueError, match="T2"):
+            dataclasses.replace(_context(), wake_contributors=["T2"])
+
+    def test_the_test_turbine_cannot_be_one(self) -> None:
+        with pytest.raises(ValueError, match="T1"):
+            dataclasses.replace(_context(), candidate_references=["T2"], wake_contributors=["T1"])
 
 
 class TestMode:

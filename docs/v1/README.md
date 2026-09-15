@@ -18,6 +18,8 @@ v1 is developed on the `v1` branch; feature PRs target `v1` rather than `main`.
 - **[findings_campaigns.md](findings_campaigns.md)** — empirical findings log for the
   current tranche (CF-numbered).
 - **[findings.md](findings.md)** — empirical findings log from the earlier work.
+- **[analyst_feedback.md](analyst_feedback.md)** — what the W3 dry-run analysts asked
+  wind-up for and did not get (AF-numbered), waiting to be triaged into issues.
 - **[references.md](references.md)** — related open-source tools (FLASC, OpenOA,
   DSWE) and key methodology references (Kanev TNO report) to investigate later.
 

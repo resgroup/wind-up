@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from benchmarking.diagnostics import stages
-from benchmarking.diagnostics.style import apply_grid, save_fig
+from benchmarking.diagnostics.style import apply_grid, save_fig, series_style
 from benchmarking.diagnostics.timeaxis import shade_segments
 
 if TYPE_CHECKING:
@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 
 _MIN_FINITE = 2
 _PF_BUCKET = "MS"  # monthly buckets keep the power-factor / northing timelines smooth
+# Panels on the reactive-vs-active figure. A whole farm is unreadable at one panel per turbine.
+_MAX_REACTIVE_PANELS = 9
 
 # A plotting "segment": (legend label, boolean row mask, colour).
 Segments = list[tuple[str, np.ndarray, str]]
@@ -176,28 +178,63 @@ def plot_curves_by_upgrade(ctx: DiagnosticContext) -> Path | None:
     )
 
 
+def _overall_power_factor(ctx: DiagnosticContext, turbine: str) -> float:
+    """One active-power-weighted power factor for a turbine over the whole record."""
+    active = ctx.turbine_series(turbine, ctx.columns.active_power)
+    reactive = ctx.turbine_series(turbine, ctx.columns.reactive_power)
+    apparent = np.sqrt(active**2 + reactive**2)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pf = (active.abs() / apparent).where(apparent > 0)
+    weight = active.abs().where(pf.notna())
+    total = float(weight.sum())
+    return float((pf * weight).sum() / total) if total > 0 else float("nan")
+
+
+def _reactive_panel_turbines(ctx: DiagnosticContext) -> list[tuple[str, float]]:
+    """Return the turbines to draw, with their power factors: the test turbine, then a spread.
+
+    A whole farm does not fit on one figure, so the rest are chosen evenly across the observed
+    power factors rather than alphabetically -- both extremes are kept, since an unusual reactive
+    signature is what this plot is read for.
+    """
+    factors = {t: _overall_power_factor(ctx, t) for t in [ctx.test_wtg, *ctx.references()]}
+    others = sorted((t for t in factors if t != ctx.test_wtg), key=lambda t: (np.isnan(factors[t]), factors[t]))
+    slots = _MAX_REACTIVE_PANELS - 1
+    if len(others) > slots:
+        picks = np.unique(np.linspace(0, len(others) - 1, slots).round().astype(int))
+        others = [others[i] for i in picks]
+    return [(t, factors[t]) for t in [ctx.test_wtg, *others]]
+
+
 def plot_reactive_vs_active(ctx: DiagnosticContext) -> Path | None:
-    """Reactive vs active power by upgrade state, one panel per turbine. None if no reactive tag."""
+    """Reactive vs active power by upgrade state, one panel per turbine. None if no reactive tag.
+
+    At most :data:`_MAX_REACTIVE_PANELS` panels: the test turbine and a spread of the others by
+    power factor, so a whole farm stays readable.
+    """
     if not ctx.has_column(ctx.columns.reactive_power):
         return None
-    turbines = [ctx.test_wtg, *ctx.references()]
+    panels = _reactive_panel_turbines(ctx)
+    turbines = [t for t, _ in panels]
     ncols = min(3, len(turbines))
     nrows = int(np.ceil(len(turbines) / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.5 * nrows), squeeze=False)
     flat = axes.flatten()
-    for ax, turbine in zip(flat, turbines, strict=False):
+    for ax, (turbine, power_factor) in zip(flat, panels, strict=False):
         active = ctx.turbine_series(turbine, ctx.columns.active_power).to_numpy(dtype=float)
         reactive = ctx.turbine_series(turbine, ctx.columns.reactive_power).to_numpy(dtype=float)
         for seg_label, seg, color in (("baseline", ctx.baseline_ts, "C0"), ("upgraded", ctx.upgraded_ts, "C1")):
             ax.scatter(active[seg], reactive[seg], s=6, alpha=0.3, color=color, label=seg_label)
-        ax.set_title(f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}")
+        ax.set_title(f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''} — pf {power_factor:.3f}")
         ax.set_xlabel(ctx.columns.active_power)
         ax.set_ylabel(ctx.columns.reactive_power)  # type: ignore[arg-type]
         apply_grid(ax)
         ax.legend()
     for ax in flat[len(turbines) :]:
         ax.set_visible(False)
-    fig.suptitle("reactive vs active power by upgrade state")
+    drawn, total = len(turbines), 1 + len(ctx.references())
+    shown = f"{drawn} of {total} turbines, spread by power factor" if drawn < total else "every turbine"
+    fig.suptitle(f"reactive vs active power by upgrade state ({shown})")
     path = ctx.stage_dir(stages.INPUTS) / "reactive_vs_active.png"
     save_fig(fig, path)
     return path
@@ -209,10 +246,20 @@ def plot_power_factor(ctx: DiagnosticContext) -> Path | None:
         return None
     fig, ax = plt.subplots(figsize=(12, 6))
     shade_segments(ax, ctx)
-    for turbine in [ctx.test_wtg, *ctx.references()]:
+    for position, turbine in enumerate([ctx.test_wtg, *ctx.references()]):
         monthly = _monthly_power_factor(ctx, turbine)
         label = f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}"
-        ax.plot(monthly.index.to_numpy(), monthly.to_numpy(), linewidth=1.0, marker=".", markersize=3, label=label)
+        colour, dash = series_style(position)
+        ax.plot(
+            monthly.index.to_numpy(),
+            monthly.to_numpy(),
+            linewidth=1.0,
+            marker=".",
+            markersize=3,
+            label=label,
+            color=colour,
+            linestyle=dash,
+        )
     ax.set_xlabel("date")
     ax.set_ylabel("power factor (active-power-weighted monthly mean)")
     ax.set_title("power factor over time — |P| / sqrt(P^2 + Q^2)")

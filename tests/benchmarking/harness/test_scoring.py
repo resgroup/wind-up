@@ -7,8 +7,9 @@ import pandas as pd
 import pytest
 
 from benchmarking.harness.campaign import campaign_windows
+from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.replicates import StudyConfig, build_replicates
-from benchmarking.harness.scoring import _merge_diagnostics, score_one, score_study, truth_mask
+from benchmarking.harness.scoring import _merge_diagnostics, score_one, score_output, score_study, truth_mask
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up_v0.constants import TIMESTAMP_COL
 
@@ -301,3 +302,93 @@ def test_duplicate_diagnostics_keys_raise_rather_than_silently_win() -> None:
     )
     with pytest.raises(ValueError, match="duplicate"):
         _merge_diagnostics([], diagnostics)
+
+
+# --- score_output is the row builder score_one is built from -----------------------------------
+
+
+class ReplayMethod:
+    """Returns a prepared output, so the same output can be scored twice by two routes."""
+
+    name = "replay"
+
+    def __init__(self, output: MethodOutput) -> None:
+        self.output = output
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:  # noqa: ARG002
+        """Return the prepared output."""
+        return self.output
+
+
+def _prepared_output() -> MethodOutput:
+    """An output exercising every row score_output builds: overall, per-condition and diagnostics."""
+    by_condition = pd.DataFrame(
+        {
+            "condition": "ws",
+            "condition_bin": ["(4.0, 5.0]", "(5.0, 6.0]"],
+            "p50_uplift": [0.01, 0.03],
+            "sigma_uplift": [0.002, 0.004],
+        }
+    )
+    diagnostics = pd.DataFrame([{"condition": "overall", "condition_bin": "overall", "n_blocks": 7}])
+    return MethodOutput(
+        p50_overall=0.02,
+        p50_by_condition=by_condition,
+        sigma_overall=0.005,
+        uncertainty_diagnostics=diagnostics,
+    )
+
+
+def test_score_output_reproduces_score_one_for_an_already_computed_output() -> None:
+    """The split a campaign needs: estimate once, then build the same score rows from the output."""
+    base = _base_scada()
+    study = _study(n_replicates=1)
+    replicate = build_replicates(base, profile=PROFILE, study=study)[0]
+    window = campaign_windows(
+        replicate.treatment_start,
+        min_pre_months=study.min_pre_months,
+        campaign_months=study.campaign_months,
+        campaign_weeks=study.campaign_weeks,
+        data_start=base.index.min(),
+        data_end=base.index.max(),
+    )[0]
+    mask = truth_mask(replicate, window)
+    truth = replicate.true_uplift(mask=mask).overall
+    output = _prepared_output()
+
+    from_one = score_one(
+        ReplayMethod(output), replicate=replicate, window=window, truth=truth, mask=mask, profile_name="p"
+    )
+    from_output = score_output(
+        output, method_name="replay", replicate=replicate, window=window, truth=truth, mask=mask, profile_name="p"
+    )
+
+    drop = ["wall_time_s"]  # timed per call, so it differs between the two routes
+    pd.testing.assert_frame_equal(
+        pd.DataFrame(from_one).drop(columns=drop), pd.DataFrame(from_output).drop(columns=drop)
+    )
+
+
+def test_score_output_records_the_wall_time_it_is_given() -> None:
+    base = _base_scada()
+    study = _study(n_replicates=1)
+    replicate = build_replicates(base, profile=PROFILE, study=study)[0]
+    window = campaign_windows(
+        replicate.treatment_start,
+        min_pre_months=study.min_pre_months,
+        campaign_months=study.campaign_months,
+        campaign_weeks=study.campaign_weeks,
+        data_start=base.index.min(),
+        data_end=base.index.max(),
+    )[0]
+    mask = truth_mask(replicate, window)
+    rows = score_output(
+        MethodOutput(p50_overall=0.0),
+        method_name="m",
+        replicate=replicate,
+        window=window,
+        truth=0.0,
+        mask=mask,
+        wall_time_s=1.25,
+    )
+    assert rows[0]["wall_time_s"] == 1.25

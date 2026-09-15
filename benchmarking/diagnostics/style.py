@@ -29,6 +29,12 @@ if TYPE_CHECKING:
 _DPI = 150
 _GRID_ALPHA = 0.3
 
+# Matplotlib's default colour cycle repeats after ten series, so a whole farm's lines are drawn in
+# the same few colours. Dash styles rotate alongside it, and the two counts are coprime, so every
+# colour/dash pair appears before any repeats: 10 x 3 = 30 distinguishable series.
+_COLOURS = 10
+_DASHES = ("-", "--", ":")
+
 
 def apply_grid(ax: plt.Axes) -> None:
     """Turn on a light grid (the project default for every axes)."""
@@ -46,3 +52,8 @@ def save_fig(fig: plt.Figure, path: Path) -> None:
     import matplotlib.pyplot as plt  # noqa: PLC0415
 
     plt.close(fig)
+
+
+def series_style(index: int) -> tuple[str, str]:
+    """Return the ``(colour, dash)`` pair for series ``index``: distinct for 30 series."""
+    return f"C{index % _COLOURS}", _DASHES[index % len(_DASHES)]

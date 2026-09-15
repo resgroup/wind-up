@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -25,17 +26,21 @@ from matplotlib.patches import Patch
 
 from benchmarking.baselines.power_model.features import QUALIFIER
 from benchmarking.diagnostics import stages
+from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.style import apply_grid, save_fig
 from benchmarking.harness.conditions import CONDITIONS, TI_BINS, WS_BINS
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _SEGMENTS = ("all", "baseline", "upgraded")
 _TOP_FEATURES_LOGGED = 12
+# Feature histograms of a signal below this count stay at the top level rather than in a folder.
+_MIN_FOR_OWN_FOLDER = 2
 _MIN_CORR_PAIRS = 2
 
 
@@ -69,6 +74,7 @@ class DiagnosticData:
     era5_lag_rows: int | None
     era5_corr: float | None
     era5_sweep: pd.DataFrame | None
+    era5_label: str = ERA5_UNLOCATED
     # test-turbine ws/TI row-aligned to each segment's residuals (None when no wind-speed col)
     cond_upgraded: pd.DataFrame | None = None
     cond_baseline_valid: pd.DataFrame | None = None
@@ -80,26 +86,55 @@ def feature_importance_long(data: DiagnosticData) -> pd.DataFrame:
     An alternative learner injected via the model-factory seam has no ``booster_``; the table then
     carries NaN importances (the feature *catalogue* still works) rather than failing the run.
     """
+    names = [_sourced(name, era5_label=data.era5_label) for name in data.feature_names]
     booster = getattr(data.outcome_model, "booster_", None)
     if booster is None:
-        return pd.DataFrame({"feature": data.feature_names, "gain": np.nan, "split_count": np.nan})
+        return pd.DataFrame({"feature": names, "gain": np.nan, "split_count": np.nan})
     return pd.DataFrame(
         {
-            "feature": data.feature_names,
+            "feature": names,
             "gain": booster.feature_importance(importance_type="gain"),
             "split_count": booster.feature_importance(importance_type="split"),
         }
     ).sort_values("gain", ascending=False, ignore_index=True)
 
 
-def log_top_features(importance: pd.DataFrame) -> None:
-    """Log the model's top features so a human can spot a leaking (too-good) predictor."""
+def _sourced(feature: str, *, era5_label: str) -> str:
+    """Return ``feature`` naming where it came from, for output only.
+
+    Reference features already carry their turbine. Everything else in the matrix is reanalysis,
+    which is named for the point it was drawn from so a reader can tell one series from another.
+    """
+    return feature if QUALIFIER in feature else f"{feature}{QUALIFIER}{era5_label}"
+
+
+def log_top_features(importance: pd.DataFrame, *, active_power_col: str = "") -> None:
+    """Say what the model leant on: a line at INFO, the table at DEBUG, a warning when it is odd.
+
+    A neighbour's active power should lead: it is the same weather, measured. Anything else on top
+    means the model is explaining this turbine with something other than its neighbours' output,
+    which is worth a look before the number is believed.
+    """
+    if importance.empty:
+        return
     top = importance.head(_TOP_FEATURES_LOGGED)
-    pairs = ", ".join(f"{r.feature} (gain={r.gain:.0f})" for r in top.itertuples())
-    logger.info("power_model top features by gain: %s", pairs)
-    logger.info(
-        "Review the above: weather + wake tags are expected; a feature that trivially predicts power is a flag."
-    )
+    logger.debug("power_model feature gains:\n%s", top[["feature", "gain"]].to_string(index=False, float_format="%.0f"))
+    leader = str(top.iloc[0]["feature"])
+    names = ", ".join(str(r.feature) for r in top.head(3).itertuples())
+    logger.info("power_model leant on %s (top 3 by gain); %d features in the model", names, len(importance))
+    if active_power_col and not _is_neighbour_power(leader, active_power_col=active_power_col):
+        logger.warning(
+            "power_model's strongest feature is %r, not a neighbour's %s. A neighbour's power is the "
+            "expected leader, so check the feature importance before believing the estimate.",
+            leader,
+            active_power_col,
+        )
+
+
+def _is_neighbour_power(feature: str, *, active_power_col: str) -> bool:
+    """Whether ``feature`` is another turbine's active power, the expected strongest predictor."""
+    tag, separator, turbine = feature.partition(QUALIFIER)
+    return bool(separator) and bool(turbine) and tag == active_power_col
 
 
 def segment_stats(data: DiagnosticData) -> pd.DataFrame:
@@ -162,18 +197,19 @@ def feature_catalogue(data: DiagnosticData) -> pd.DataFrame:
     for feature in data.feature_names:
         col = data.feature_values[feature].to_numpy(dtype=float)
         finite = np.isfinite(col)
-        tag, _, turbine = feature.partition(QUALIFIER)
+        sourced = _sourced(feature, era5_label=data.era5_label)
+        tag, _, source = sourced.partition(QUALIFIER)
         rows.append(
             {
-                "feature": feature,
+                "feature": sourced,
                 "source_tag": tag,
-                "turbine": turbine or "ERA5/derived",
+                "turbine": source,
                 "coverage_pct": float(100.0 * finite.mean()) if len(col) else np.nan,
                 "mean": float(np.nanmean(col)) if finite.any() else np.nan,
                 "std": float(np.nanstd(col)) if finite.any() else np.nan,
                 "min": float(np.nanmin(col)) if finite.any() else np.nan,
                 "max": float(np.nanmax(col)) if finite.any() else np.nan,
-                "gain": float(importance["gain"].get(feature, 0.0)),
+                "gain": float(importance["gain"].get(sourced, 0.0)),
                 "abs_corr_with_power": _abs_corr(col, data.y_selected),
             }
         )
@@ -398,6 +434,7 @@ def _save_feature_histograms(out_dir: Path, data: DiagnosticData) -> None:
     sel = np.asarray(data.selected_all, dtype=bool)
     treated_sel = np.asarray(data.treated_all, dtype=bool)[sel]  # aligned to feature_values rows
     baseline_sel = ~treated_sel
+    groups = _histogram_groups(data.feature_names)
     for feature in data.feature_names:
         vals = data.feature_values[feature].to_numpy(dtype=float)
         bins = _robust_bins(vals)
@@ -414,7 +451,42 @@ def _save_feature_histograms(out_dir: Path, data: DiagnosticData) -> None:
         apply_grid(ax)
         if ax.get_legend_handles_labels()[0]:
             ax.legend()
-        save_fig(fig, out_dir / f"{_safe_filename(feature)}.png")
+        save_fig(fig, groups[feature](out_dir) / f"{_safe_filename(feature)}.png")
+
+
+def _signal_of(feature: str) -> str:
+    """Return the signal a feature measures: its tag, without the turbine or a sin/cos companion.
+
+    ``northed_wtc_NacelPos_mean_cos @ T01`` and its sine are both the nacelle position, and every
+    turbine's copy is the same signal.
+    """
+    tag = feature.partition(QUALIFIER)[0]
+    for companion in ("_sin", "_cos"):
+        tag = tag.removesuffix(companion)
+    return tag
+
+
+def _histogram_groups(features: Sequence[str]) -> dict[str, Callable[[Path], Path]]:
+    """Map each feature to where its histogram goes: a per-signal folder, or the root.
+
+    A whole farm's worth of one signal buries the signals there is only one of, so a signal with
+    more than one plot gets a folder of its own and the singletons stay at the top level.
+    """
+    counts = Counter(_signal_of(f) for f in features)
+
+    def place(feature: str) -> Callable[[Path], Path]:
+        signal = _signal_of(feature)
+        if counts[signal] < _MIN_FOR_OWN_FOLDER:
+            return lambda root: root
+        return lambda root: _made(root / _safe_filename(signal))
+
+    return {f: place(f) for f in features}
+
+
+def _made(path: Path) -> Path:
+    """Return ``path``, created if it is not there yet."""
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _robust_bins(values: np.ndarray, *, bins: int = 30) -> list[float] | int:
@@ -700,8 +772,8 @@ def _plot_era5_sweep(plots_dir: Path, data: DiagnosticData) -> None:
             label=f"best shift = {data.era5_lag_rows} rows (corr = {corr_text})",
         )
         ax.legend()
-    ax.set_xlabel("ERA5 shift [rows]")
+    ax.set_xlabel(f"{data.era5_label} shift [rows]")
     ax.set_ylabel("wind-speed correlation")
-    ax.set_title(f"{data.test_wtg}: ERA5-SCADA correlation vs lag")
+    ax.set_title(f"{data.test_wtg}: {data.era5_label}-SCADA correlation vs lag")
     apply_grid(ax)
     save_fig(fig, plots_dir / "era5_sync.png")

@@ -18,7 +18,8 @@ cause-effect (reactive power, blade pitch, …) are intentionally excluded.
 The reference pool is passed in by the caller -- the campaign's **candidate references** -- and is
 never inferred from the turbines the frame happens to hold: a turbine present in the data is not
 thereby available as a reference. The caller's screen may make some of that pool ``power_free``;
-that downgrades a reference's channels, it does not shrink the pool.
+that downgrades a reference to its waking boolean alone, it does not shrink the pool. Changed
+turbines outside the pool join as ``wake_only``, with the same single channel.
 
 Feature columns from references are named ``"<tag>{QUALIFIER}<turbine>"`` so the original tag is
 preserved verbatim in importance diagnostics. :func:`check_reference_only` rejects any
@@ -47,8 +48,13 @@ logger = logging.getLogger(__name__)
 
 
 def _checked_references(references: Sequence[str]) -> list[str]:
-    """Return the reference pool as supplied, deduped in order; raises when it is empty."""
-    refs = list(dict.fromkeys(str(r) for r in references))
+    """Return the reference pool sorted and deduped; raises when it is empty.
+
+    Sorted so the feature matrix does not depend on the order the caller happened to list its
+    references in -- a declaration's line order would otherwise reach the estimate, since the
+    model is not invariant to column order.
+    """
+    refs = sorted(dict.fromkeys(str(r) for r in references))
     if not refs:
         msg = (
             "no references supplied: the power model needs at least one. The pool is the campaign's candidate "
@@ -70,6 +76,7 @@ def build_reference_features(
     include_availability: bool = True,
     direction_col: str | None = None,
     power_free: Sequence[str] = (),
+    wake_only: Sequence[str] = (),
     waking_threshold_kw: float | None = None,
 ) -> pd.DataFrame:
     """Wide, curated reference features: each reference turbine's active power (+ optional extras).
@@ -81,8 +88,9 @@ def build_reference_features(
     complete-case dropping) — LightGBM handles them natively. Raises if ``references`` is empty, or
     (defensively) if any test-turbine column would leak in.
 
-    :param references: the reference pool -- the campaign's candidate references -- in the order
-        their feature columns are laid out. A turbine in ``scada_df`` that is not named here
+    :param references: the reference pool -- the campaign's candidate references. Their feature
+        columns are laid out in sorted order whatever order they arrive in, so the estimate does
+        not depend on how a declaration listed them. A turbine in ``scada_df`` that is not named here
         contributes nothing, and a name with no data in ``scada_df`` contributes no value columns.
     :param extra_cols: additional per-reference value columns to carry as features (Issue 11's
         active-power max/min/SD statistics); must be present in ``scada_df`` like the primary two
@@ -94,18 +102,28 @@ def build_reference_features(
         359 degrees is next to 1). Must be the column the shared northing step writes; raises
         naming it when absent. A raw direction listed in ``extra_cols`` is dropped in favour of
         it, so a reference never contributes both.
-    :param power_free: references that contribute no power columns. They keep their direction
-        features and gain a ``waking_<active_power_col>`` boolean instead, so the wake information
-        their operating state carries is retained while the channels a performance change corrupts
-        are not. Requires ``waking_threshold_kw``. Empty by default, which leaves the matrix
+    :param power_free: references that contribute a ``waking_<active_power_col>`` boolean and
+        nothing else -- no power, no availability, no direction. The wake their operating state
+        carries is kept; every channel a performance change can move, including where they point,
+        is not. Requires ``waking_threshold_kw``. Empty by default, which leaves the matrix
         byte-identical to a caller that never asked.
-    :param waking_threshold_kw: active power at or above which a ``power_free`` reference counts as
-        waking its neighbours
+    :param wake_only: turbines outside the reference pool that contribute their wake alone, as a
+        ``power_free`` reference does. Their columns follow the references'. Requires
+        ``waking_threshold_kw``.
+    :param waking_threshold_kw: active power at or above which a ``power_free`` reference or a
+        ``wake_only`` turbine counts as waking its neighbours
     """
     refs = _checked_references(references)
-    power_free = _checked_power_free(power_free, refs=refs, waking_threshold_kw=waking_threshold_kw)
+    wake = _checked_wake_only(wake_only, refs=refs, test_wtg=test_wtg)
+    power_free = _checked_power_free(power_free, refs=refs, wake_only=wake, waking_threshold_kw=waking_threshold_kw)
+    turbines = [*refs, *wake]
+    free = set(power_free)
     extra_cols, direction_frame = _direction_features(
-        scada_df, refs=refs, turbine_col=turbine_col, direction_col=direction_col, extra_cols=extra_cols
+        scada_df,
+        refs=[t for t in turbines if t not in free],
+        turbine_col=turbine_col,
+        direction_col=direction_col,
+        extra_cols=extra_cols,
     )
     value_cols = [active_power_col, *([availability_col] if include_availability else []), *extra_cols]
     # availability_col stays validated even when not featured: it is a required input and the
@@ -119,16 +137,10 @@ def build_reference_features(
     tmp = scada_df[[turbine_col, *value_cols]].copy()
     tmp["_ts"] = scada_df.index
     wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=value_cols, aggfunc="first")
-    # power_free removes a reference's *power* channels only: availability is not one, and a
-    # screened reference is still known to be operating or not.
-    free = set(power_free)
-    power_cols = {active_power_col, *extra_cols}
-    keep = [
-        (col, r)
-        for col in value_cols
-        for r in refs
-        if (col, r) in wide.columns and not (r in free and col in power_cols)
-    ]
+    # A power-free turbine contributes the waking boolean and nothing else. Its power may carry a
+    # performance change, and its direction may carry the same change through yaw: a realignment or
+    # wake steering moves where it points, so the counterfactual would read the treatment back.
+    keep = [(col, r) for col in value_cols for r in turbines if (col, r) in wide.columns and r not in free]
     features = wide.loc[:, keep]
     features.columns = [f"{col}{QUALIFIER}{r}" for col, r in keep]
     features = features.reindex(index)
@@ -144,21 +156,36 @@ def build_reference_features(
     return features
 
 
+def _checked_wake_only(wake_only: Sequence[str], *, refs: list[str], test_wtg: str) -> tuple[str, ...]:
+    """Return the wake-only turbines sorted and deduped; raises on the test turbine or a reference.
+
+    Sorted for the same reason the references are: the caller's order must not reach the model.
+    """
+    wake = tuple(sorted(dict.fromkeys(str(w) for w in wake_only)))
+    clash = sorted({test_wtg, *refs} & set(wake))
+    if clash:
+        msg = f"wake_only names {clash}, which are the test turbine {test_wtg!r} or references {refs}"
+        raise ValueError(msg)
+    return wake
+
+
 def _checked_power_free(
-    power_free: Sequence[str], *, refs: list[str], waking_threshold_kw: float | None
+    power_free: Sequence[str], *, refs: list[str], wake_only: tuple[str, ...], waking_threshold_kw: float | None
 ) -> tuple[str, ...]:
-    """Validate the power-free references against the pool, returning them deduped in pool order."""
+    """Return the turbines whose power becomes a waking boolean: power-free references, then ``wake_only``."""
     requested = set(power_free)
-    if not requested:
-        return ()
     unknown = sorted(requested - set(refs))
     if unknown:
         msg = f"power_free names {unknown}, which are not reference turbines of this estimate; have {refs}"
         raise ValueError(msg)
-    if waking_threshold_kw is None:
-        msg = "power_free needs waking_threshold_kw: without it there is no waking boolean to replace power with"
+    free = (*(r for r in refs if r in requested), *wake_only)
+    if free and waking_threshold_kw is None:
+        msg = (
+            "power_free and wake_only need waking_threshold_kw: without it there is no waking boolean to replace "
+            "power with"
+        )
         raise ValueError(msg)
-    return tuple(r for r in refs if r in requested)
+    return free
 
 
 def _waking_features(

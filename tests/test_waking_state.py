@@ -65,6 +65,7 @@ def test_get_distance_and_bearing(test_homer_config: WindUpConfig) -> None:
     t2long = cfg.asset.wtgs[1].longitude
     expected_bearing = 245.02500888680734 - 180
     expected_distance = 270.894287973147
+    get_distance_and_bearing.cache_clear()
     start_time = time.perf_counter()
     distance_m, bearing_deg = get_distance_and_bearing(lat1=t1lat, long1=t1long, lat2=t2lat, long2=t2long)
     end_time = time.perf_counter()
