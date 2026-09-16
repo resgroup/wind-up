@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelMethod
+from benchmarking.baselines.power_model.features import QUALIFIER
 from benchmarking.baselines.power_model.method import (
     _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
     _TIME_DECAY_CAMPAIGN_MULTIPLE,
@@ -28,6 +29,7 @@ from benchmarking.baselines.power_model.method import (
     _reference_input,
     reference_overall_uplift,
 )
+from benchmarking.baselines.power_model.screening import ScreenResult
 from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.conditions import CONDITIONS
 from benchmarking.harness.context import CampaignContext
@@ -37,6 +39,7 @@ from benchmarking.synthetic import ColumnSchema, ToggleSchedule
 
 if TYPE_CHECKING:
     from pathlib import Path
+
 
 _TURBINE = "TurbineName"
 _POWER = "wtc_ActPower_mean"
@@ -892,6 +895,29 @@ def _scada_with_a_stepped_reference(n: int, *, changeover: pd.Timestamp, step: f
     return scada
 
 
+def _with_a_fourth_reference(scada: pd.DataFrame, *, seed: int = 7) -> pd.DataFrame:
+    """Add reference R4, R3's rows carrying their own noise.
+
+    Three references are the fewest the screen can rule with, so a three-reference pool cannot show
+    one candidate being left out of the screen while the rest are still screened.
+    """
+    r3 = scada[scada[_TURBINE] == "R3"]
+    power = r3[_POWER].to_numpy() + np.random.default_rng(seed).normal(0, 60, len(r3))
+    r4 = r3.assign(
+        **{
+            _TURBINE: "R4",
+            _POWER: power,
+            _POWER_MAX: power * 1.15,
+            _POWER_MIN: power * 0.85,
+            _POWER_SD: np.abs(power) / 20.0,
+            _WS: power / 100.0,
+            _WS_SD: power / 1000.0,
+            _YAW: (r3[_YAW].to_numpy() - 4.0) % 360.0,
+        }
+    )
+    return pd.concat([scada, r4])
+
+
 def _screen_case(*, step: float, n: int = 4000) -> tuple[MethodInput, pd.Timestamp]:
     idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
     changeover = pd.Timestamp(idx[n // 2])
@@ -949,11 +975,16 @@ class TestReferenceScreen:
         on = _screen_method(reference_screen=True).estimate(mi).p50_overall
         assert on == pytest.approx(off)
 
-    def test_the_screened_reference_keeps_its_waking_signal_and_nothing_else(self) -> None:
-        """Its power changed, and whatever changed it may have moved where it points too."""
+    def test_the_screened_reference_keeps_its_operating_state_and_nothing_else(self) -> None:
+        """Its power changed, and whatever changed it may have moved where it points too.
+
+        What survives is its operating state: whether it makes a wake, and whether it could run.
+        """
         mi, _ = _screen_case(step=0.03)
         features = _screen_method().reference_features(mi, power_free=("R1",))
-        assert [c for c in features.columns if c.endswith(" @ R1")] == [f"waking_{_POWER} @ R1"]
+        assert sorted(c for c in features.columns if c.endswith(" @ R1")) == sorted(
+            [f"waking_{_POWER} @ R1", f"normal_operation_{_AVAIL} @ R1"]
+        )
 
     def test_the_screen_is_on_by_default(self) -> None:
         assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).reference_screen
@@ -1081,7 +1112,7 @@ class TestReferenceUpliftReuse:
         method = _screen_method()
         screen = method.screen_references(mi)
         assert screen.screened == ()
-        reused = method.reference_uplifts(mi, screened=(), screen=screen)
+        reused = method.reference_uplifts(mi, power_free=(), screen=screen)
         final = screen.passes[screen.passes["pass"] == screen.passes["pass"].max()]
         expected = dict(zip(final["turbine"], final["estimate"], strict=True))
         for row in reused.itertuples():
@@ -1093,7 +1124,7 @@ class TestReferenceUpliftReuse:
         method = _screen_method()
         screen = method.screen_references(mi)
         assert screen.screened == ("R1",)
-        refits = method.reference_uplifts(mi, screened=screen.screened, screen=screen)
+        refits = method.reference_uplifts(mi, power_free=screen.power_free, screen=screen)
         first = screen.passes[screen.passes["pass"] == 1].set_index("turbine")["estimate"]
         survivor = refits[refits["turbine"] == "R2"].iloc[0]
         assert survivor["uplift"] != pytest.approx(first["R2"])
@@ -1230,7 +1261,7 @@ class TestReferenceUpliftsSchema:
         """One candidate reference leaves it no pool to be estimated against."""
         refs = _screen_method().reference_uplifts(self._single_reference_mi())
         assert refs.empty
-        assert list(refs.columns) == ["turbine", "uplift", "actual_energy", "n_records", "screened"]
+        assert list(refs.columns) == ["turbine", "uplift", "actual_energy", "n_records", "screened", "unjudged"]
         # the documented mask still works on an empty frame
         assert refs.loc[refs["screened"], "turbine"].tolist() == []
 
@@ -1273,7 +1304,7 @@ class TestScreenNeedsEnoughCampaign:
         # _toy_scada builds its own index from 2019-01-01, so the changeover is taken from that.
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = pd.Timestamp(idx[per_day * baseline_days])
-        scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=0.08)
+        scada = _with_a_fourth_reference(_scada_with_a_stepped_reference(n, changeover=changeover, step=0.08))
         return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
 
     def _gated_method(self, **overrides: object) -> PowerModelMethod:
@@ -1293,10 +1324,11 @@ class TestScreenNeedsEnoughCampaign:
         mi = self._prepost_days(30)
         assert self._gated_method(screen_min_campaign_days=10.0).screen_references(mi).screenable
 
-    def test_a_candidate_short_on_available_data_is_not_screened(self) -> None:
+    def test_a_candidate_short_on_available_data_is_left_out(self) -> None:
         """Readings are not fits: a reference available for a fortnight has a fortnight of data."""
         mi = self._prepost_days(200, baseline_days=200)
-        assert self._gated_method().screen_references(mi).screenable  # the control
+        control = self._gated_method().screen_references(mi)
+        assert set(control.passes["turbine"].astype(str)) == {"R1", "R2", "R3", "R4"}
 
         scada = mi.scada_df.copy()
         in_campaign = np.asarray(scada.index >= pd.Timestamp(mi.upgrade_timing))
@@ -1304,7 +1336,9 @@ class TestScreenNeedsEnoughCampaign:
         starved_rows = np.flatnonzero(is_r1 & in_campaign)[144 * 10 :]  # R1 keeps 10 available days
         scada.iloc[starved_rows, scada.columns.get_loc(_AVAIL)] = 0.0
         starved = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=mi.upgrade_timing, turbine_col=_TURBINE)
-        assert not self._gated_method().screen_references(starved).screenable
+        result = self._gated_method().screen_references(starved)
+        assert result.screenable
+        assert set(result.passes["turbine"].astype(str)) == {"R2", "R3", "R4"}
 
     def test_the_default_excludes_a_three_month_campaign(self) -> None:
         """The benchmark sweep set this: at 90 days a 3-month campaign still false-positived."""
@@ -1414,32 +1448,192 @@ def test_no_diagnostics_with_conditions_raises() -> None:
         ).estimate(_screen_case(step=0.0)[0])
 
 
-class TestGateUsesWorstCandidateCoverage:
-    """The gate must reflect the data each screening estimate actually has, not the frame's span."""
+class TestGateJudgesEachCandidateSeparately:
+    """The gate must reflect the data each screening estimate has, candidate by candidate.
 
-    def _mi_with_a_sparse_reference(self, *, campaign_days: int, sparse_days: int) -> MethodInput:
+    One turbine's outage says nothing about the others, so it leaves itself out of the screen
+    rather than switching the screen off for the whole pool.
+    """
+
+    def _mi_with_a_sparse_turbine(
+        self, *, campaign_days: int, sparse_days: int, sparse: str = "R1", fourth_reference: bool = True
+    ) -> MethodInput:
         per_day = 144
         baseline_days = 200
         n = per_day * (baseline_days + campaign_days)
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = pd.Timestamp(idx[per_day * baseline_days])
         scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=0.0)
-        # R1 has data for only the first `sparse_days` of the campaign.
+        if fourth_reference:
+            scada = _with_a_fourth_reference(scada)
+        # `sparse` has data for only the first `sparse_days` of the campaign.
         cutoff = changeover + pd.Timedelta(days=sparse_days)
-        drop = (scada[_TURBINE] == "R1") & (scada.index >= cutoff) & (scada.index >= changeover)
-        scada = scada[~drop]
+        scada = scada[~((scada[_TURBINE] == sparse) & (scada.index >= cutoff))]
         return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
 
-    def test_a_sparse_candidate_holds_the_whole_pool_back(self) -> None:
-        """A 200-day frame where one candidate has 10 campaign days is still the short-data regime."""
-        mi = self._mi_with_a_sparse_reference(campaign_days=200, sparse_days=10)
-        method = _screen_method(screen_min_campaign_days=150.0)
-        assert not method.screen_references(mi).screenable
+    @staticmethod
+    def _screened_turbines(result: ScreenResult) -> set[str]:
+        return set(result.passes["turbine"].astype(str))
 
-    def test_a_pool_that_all_has_coverage_is_screened(self) -> None:
-        mi = self._mi_with_a_sparse_reference(campaign_days=200, sparse_days=200)
+    def test_a_sparse_candidate_is_left_out_and_the_rest_are_still_screened(self) -> None:
+        """One candidate with 10 campaign days must not cost the other three their screen."""
+        mi = self._mi_with_a_sparse_turbine(campaign_days=200, sparse_days=10)
+        result = _screen_method(screen_min_campaign_days=150.0).screen_references(mi)
+        assert result.screenable
+        assert self._screened_turbines(result) == {"R2", "R3", "R4"}
+
+    def test_a_candidate_left_out_is_not_thereby_ruled_out(self) -> None:
+        """Thin data is not evidence against a reference, so it keeps its power channels."""
+        mi = self._mi_with_a_sparse_turbine(campaign_days=200, sparse_days=10)
+        assert "R1" not in _screen_method(screen_min_campaign_days=150.0).screen_references(mi).screened
+
+    def test_a_pool_that_all_has_coverage_is_screened_whole(self) -> None:
+        mi = self._mi_with_a_sparse_turbine(campaign_days=200, sparse_days=200)
+        result = _screen_method(screen_min_campaign_days=150.0).screen_references(mi)
+        assert result.screenable
+        assert self._screened_turbines(result) == {"R1", "R2", "R3", "R4"}
+
+    def test_the_test_turbine_s_outage_does_not_disable_the_screen(self) -> None:
+        """The screen never estimates the test turbine, so its coverage does not gate the pool."""
+        mi = self._mi_with_a_sparse_turbine(campaign_days=200, sparse_days=10, sparse="T1")
+        result = _screen_method(screen_min_campaign_days=150.0).screen_references(mi)
+        assert result.screenable
+        assert self._screened_turbines(result) == {"R1", "R2", "R3", "R4"}
+
+    def test_too_few_candidates_left_with_coverage_is_not_screened(self) -> None:
+        """Two survivors cannot form a majority, so the screen still stands down."""
+        mi = self._mi_with_a_sparse_turbine(campaign_days=200, sparse_days=10, fourth_reference=False)
+        assert not _screen_method(screen_min_campaign_days=150.0).screen_references(mi).screenable
+
+    def test_a_campaign_short_for_everyone_is_not_screened(self) -> None:
+        mi = self._mi_with_a_sparse_turbine(campaign_days=200, sparse_days=200)
+        assert not _screen_method(screen_min_campaign_days=250.0).screen_references(mi).screenable
+
+
+class TestNormalOperationBoolean:
+    """A power-free reference says two things: is it making a wake, and was it able to run.
+
+    Active power alone cannot separate a turbine that is out of service from one that is becalmed --
+    both read zero. Those two mean different things either side of a changeover, so a reference that
+    is up through the baseline and down through the campaign teaches the model "not waking means
+    calm" and then meets a broken turbine in a gale.
+    """
+
+    @staticmethod
+    def _mi() -> MethodInput:
+        mi, _ = _screen_case(step=0.0)
+        return mi
+
+    def _features(self, **overrides: object) -> pd.DataFrame:
+        return _screen_method(**overrides).reference_features(self._mi(), power_free=["R1"])
+
+    def test_it_is_on_by_default(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).normal_operation_feature
+
+    def test_a_power_free_reference_carries_both_booleans(self) -> None:
+        cols = self._features().columns
+        assert f"waking_{_POWER}{QUALIFIER}R1" in cols
+        assert f"normal_operation_{_AVAIL}{QUALIFIER}R1" in cols
+        assert f"{_POWER}{QUALIFIER}R1" not in cols, "power-free still means no power"
+
+    def test_turning_it_off_leaves_only_the_waking_boolean(self) -> None:
+        cols = self._features(normal_operation_feature=False).columns
+        assert f"waking_{_POWER}{QUALIFIER}R1" in cols
+        assert not [c for c in cols if c.startswith("normal_operation")]
+
+    def test_it_adds_nothing_when_no_reference_is_power_free(self) -> None:
+        """It rides on the power-free set, so a pool with nothing demoted is untouched."""
+        on = _screen_method().reference_features(self._mi())
+        off = _screen_method(normal_operation_feature=False).reference_features(self._mi())
+        assert on.equals(off)
+
+    def test_availability_does_not_become_a_feature_of_its_own(self) -> None:
+        """The boolean reads the counter; `availability_feature` decides whether it is a feature."""
+        cols = self._features(availability_feature=False).columns
+        assert not [c for c in cols if _AVAIL in c and not c.startswith("normal_operation")]
+
+    def test_only_the_new_column_changes(self) -> None:
+        on, off = self._features(), self._features(normal_operation_feature=False)
+        assert off.equals(on[off.columns])
+
+
+class TestAnUnjudgedCandidateLosesItsPowerEverywhere:
+    """What the screen could not judge, the headline must not lean on.
+
+    A screening estimate already runs with the held-out candidates demoted to their waking boolean
+    -- `_reference_input` puts any candidate outside the pool it is handed among the wake
+    contributors. The headline and the reference report must read that same pool, or the screen
+    rules on one farm and the campaign reports another.
+    """
+
+    @staticmethod
+    def _starved() -> MethodInput:
+        return TestGateJudgesEachCandidateSeparately()._mi_with_a_sparse_turbine(  # noqa: SLF001 - the shared fixture
+            campaign_days=200, sparse_days=10
+        )
+
+    def _method(self) -> PowerModelMethod:
+        return _screen_method(screen_min_campaign_days=150.0)
+
+    def test_the_screen_names_who_it_held_out(self) -> None:
+        assert self._method().screen_references(self._starved()).unjudged == ("R1",)
+
+    def test_power_free_covers_the_held_out_and_the_ruled_out(self) -> None:
+        screen = ScreenResult(screened=("R2",), passes=pd.DataFrame(), screenable=True, unjudged=("R1",))
+        assert set(screen.power_free) == {"R1", "R2"}
+
+    def test_the_headline_carries_no_power_from_a_held_out_candidate(self) -> None:
+        """The whole point: R1's power is a feature the screen was not allowed to vouch for."""
+        mi = self._starved()
+        method = self._method()
+        screen = method.screen_references(mi)
+        features = method.reference_features(mi, power_free=screen.power_free).columns
+        assert f"{_POWER}{QUALIFIER}R1" not in features
+        assert f"waking_{_POWER}{QUALIFIER}R1" in features
+        assert f"{_POWER}{QUALIFIER}R2" in features
+
+    def test_the_reference_report_keeps_it_out_of_every_pool_but_still_reports_it(self) -> None:
+        mi = self._starved()
+        method = self._method()
+        screen = method.screen_references(mi)
+        refs = method.reference_uplifts(mi, power_free=screen.power_free, screen=screen)
+        row = refs[refs["turbine"] == "R1"].iloc[0]
+        assert bool(row["unjudged"])
+        assert not bool(row["screened"]), "held out for thin data is not the same as ruled out"
+
+    def test_a_campaign_too_short_to_screen_demotes_nobody(self) -> None:
+        """Holding a pool out of a screen that never ran would strip every reference at once."""
+        mi = self._starved()
+        screen = _screen_method(screen_min_campaign_days=1e6).screen_references(mi)
+        assert not screen.screenable
+        assert screen.power_free == ()
+
+    def test_toggle_demotes_nobody(self) -> None:
+        screen = self._method().screen_references(TestScreenIsPrepostOnly()._toggle_mi())  # noqa: SLF001 - shared
+        assert not screen.screenable
+        assert screen.power_free == ()
+
+
+class TestTheReferenceReportRefitsAPartlyScreenedPool:
+    """Screening estimates are reusable only when they answered the reference report's question."""
+
+    def test_a_partly_screened_pool_is_not_reused(self) -> None:
+        """A candidate left out of the screen was not in the pools the screening estimates used."""
+        mi = TestGateJudgesEachCandidateSeparately()._mi_with_a_sparse_turbine(  # noqa: SLF001 - the shared fixture
+            campaign_days=200, sparse_days=10
+        )
         method = _screen_method(screen_min_campaign_days=150.0)
-        assert method.screen_references(mi).screenable
+        screen = method.screen_references(mi)
+        assert method._reusable_screen_estimates(mi, screen=screen, ruled_out=set()) == {}  # noqa: SLF001 - the guard
+
+    def test_a_wholly_screened_pool_is_reused(self) -> None:
+        mi = TestGateJudgesEachCandidateSeparately()._mi_with_a_sparse_turbine(  # noqa: SLF001 - as above
+            campaign_days=200, sparse_days=200
+        )
+        method = _screen_method(screen_min_campaign_days=150.0)
+        screen = method.screen_references(mi)
+        reusable = method._reusable_screen_estimates(mi, screen=screen, ruled_out=set())  # noqa: SLF001 - as above
+        assert set(reusable) == {"R1", "R2", "R3", "R4"}
 
 
 _NEIGHBOUR_STEP = 0.10
@@ -1545,7 +1739,11 @@ class TestTheScreenRunsOncePerCampaign:
         first = _screen_method(screen_cache=cache).screen_references(mi)
         assert cache, "the screen recorded nothing to reuse"
         again = _screen_method(screen_cache=cache).screen_references(mi)
-        assert again is first
+        # The verdict is the cached one -- `passes` is the expensive artefact, so sharing that object
+        # is what "did not screen again" means. The result itself is re-stamped per test turbine,
+        # since two of them can share a screening pool but hold different candidates out of it.
+        assert again.passes is first.passes
+        assert again.screened == first.screened
 
     def test_without_a_cache_it_screens_every_time(self) -> None:
         mi, _ = _screen_case(step=0.08)
@@ -1558,9 +1756,11 @@ class TestTheScreenRunsOncePerCampaign:
 class TestWakeContributors:
     """Another changed turbine stays in the estimate for its wake, and never for its power."""
 
-    def test_its_wake_reaches_the_features_as_a_waking_boolean_alone(self) -> None:
+    def test_its_wake_reaches_the_features_as_operating_state_booleans_alone(self) -> None:
         features = _screen_method().reference_features(_with_a_changed_neighbour())
-        assert [c for c in features.columns if c.endswith(" @ W1")] == [f"waking_{_POWER} @ W1"]
+        assert sorted(c for c in features.columns if c.endswith(" @ W1")) == sorted(
+            [f"waking_{_POWER} @ W1", f"normal_operation_{_AVAIL} @ W1"]
+        )
 
     def test_its_change_does_not_reach_the_estimate(self) -> None:
         method = _screen_method(reference_screen=False, report_reference_uplifts=False)
