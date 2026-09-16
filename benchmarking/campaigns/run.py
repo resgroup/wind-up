@@ -37,7 +37,16 @@ if TYPE_CHECKING:
 # consumers can index.
 _PER_TURBINE_COLUMNS = ("method", "test_wtg", "estimate")
 _FARM_COLUMNS = ("method", "estimate", "uplift_spread", "n_guarded")
-_REFERENCE_COLUMNS = ("method", "test_wtg", "turbine", "uplift", "actual_energy", "n_records", "screened")
+_REFERENCE_COLUMNS = (
+    "method",
+    "test_wtg",
+    "turbine",
+    "uplift",
+    "actual_energy",
+    "n_records",
+    "screened",
+    "unjudged",
+)
 _CONDITIONAL_COLUMNS = ("method", "test_wtg", "condition", "condition_bin", "p50_uplift")
 
 

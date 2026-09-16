@@ -125,8 +125,16 @@ campaign, or has a sensor fault, or is being waked differently — and if it is 
 reference, its problem is now inside your headline number with the sign reversed.
 
 Rows with `screened = True` were ruled out automatically and contributed no power to the estimate.
-Rows with `screened = False` that still read far from zero are the ones to think about; the screen
-is deliberately cautious and only runs on campaigns long enough to judge.
+Rows with `unjudged = True` contributed no power either, for a different reason: the campaign does
+not hold enough of their upgraded data for the screen to judge them, and a turbine the screen cannot
+vouch for is not one the estimate leans on. A reference down for most of the campaign lands here.
+Either way the turbine keeps its place in the analysis as a wake contributor, so the model still
+knows when it was running.
+
+Rows with both flags `False` that still read far from zero are the ones to think about. The screen is
+deliberately cautious: it judges each reference separately, so one reference's long outage costs only
+that reference its power, and on a campaign too short to judge any of them it does not run at all and
+takes nobody's power away. `run.log` names who it ruled out and who it held out.
 
 ### Judging scale from that one table
 

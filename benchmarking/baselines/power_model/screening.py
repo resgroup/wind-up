@@ -43,11 +43,19 @@ class ScreenResult:
     :param passes: one row per turbine per pass -- ``pass``, ``turbine``, ``estimate``,
         ``deviation`` (from that pass's median) and ``dropped``
     :param screenable: whether the pool was large enough to screen at all
+    :param unjudged: candidates held out of the screen for want of campaign data, sorted; empty
+        when the screen did not run
     """
 
     screened: tuple[str, ...]
     passes: pd.DataFrame
     screenable: bool
+    unjudged: tuple[str, ...] = ()
+
+    @property
+    def power_free(self) -> tuple[str, ...]:
+        """Candidates whose power the estimate must not use: ruled out, or never judged."""
+        return (*self.screened, *self.unjudged)
 
 
 def rank_by_deviation(estimates: Mapping[str, float]) -> list[tuple[str, float]]:
