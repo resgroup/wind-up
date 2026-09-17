@@ -73,13 +73,24 @@ PLACEBO_TOGGLE_PERIOD = pd.Timedelta(minutes=100)
 
 
 def placebo_analysis_period(
-    mode: Literal["prepost", "toggle"], *, campaign_start: pd.Timestamp = PLACEBO_CAMPAIGN_START
+    mode: Literal["prepost", "toggle"],
+    *,
+    campaign_start: pd.Timestamp = PLACEBO_CAMPAIGN_START,
+    baseline_months: int | None = None,
+    campaign_months: int | None = None,
 ) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Return the whole record the methods see for ``mode``: the baseline plus the campaign."""
-    return (
-        campaign_start - pd.DateOffset(months=PLACEBO_BASELINE_MONTHS),
-        campaign_start + pd.DateOffset(months=PLACEBO_CAMPAIGN_MONTHS[mode]),
-    )
+    """Return the whole record the methods see for ``mode``: the baseline plus the campaign.
+
+    :param mode: ``"prepost"`` or ``"toggle"``
+    :param campaign_start: when treatment begins
+    :param baseline_months: months of baseline before ``campaign_start``; the mode's default
+        when ``None``
+    :param campaign_months: months of campaign after ``campaign_start``; the mode's default
+        when ``None``
+    """
+    before = PLACEBO_BASELINE_MONTHS if baseline_months is None else baseline_months
+    after = PLACEBO_CAMPAIGN_MONTHS[mode] if campaign_months is None else campaign_months
+    return (campaign_start - pd.DateOffset(months=before), campaign_start + pd.DateOffset(months=after))
 
 
 def default_output_root() -> Path:
@@ -97,6 +108,8 @@ def placebo_campaign(
     coords: dict[str, tuple[float, float]] | None = None,
     faults: Sequence[Fault] | None = None,
     campaign_start: pd.Timestamp = PLACEBO_CAMPAIGN_START,
+    baseline_months: int | None = None,
+    campaign_months: int | None = None,
     seed: int = 0,
 ) -> SyntheticCampaign:
     """Declare the placebo campaign for ``mode``: a whole farm with no upgrade injected.
@@ -110,6 +123,8 @@ def placebo_campaign(
     :param faults: measurement corruptions to inject; none by default, so the placebo stays a
         clean-data campaign. The R-series fixtures inject one and compare against that.
     :param campaign_start: when treatment begins; defaults to :data:`PLACEBO_CAMPAIGN_START`
+    :param baseline_months: months of baseline before the changeover; the mode's default when ``None``
+    :param campaign_months: months of campaign after it; the mode's default when ``None``
     :param seed: recorded on the campaign, so an answer key names the draw that made it
     """
     upgraded = tuple(PLACEBO_UPGRADED if upgraded is None else upgraded)
@@ -136,7 +151,12 @@ def placebo_campaign(
         # discovered by the shared northing step, not supplied: the placebo exercises the norther
         north_offsets=None,
         rated_power_kw=HOT_RATED_POWER_KW,
-        analysis_period=placebo_analysis_period(mode, campaign_start=campaign_start),
+        analysis_period=placebo_analysis_period(
+            mode,
+            campaign_start=campaign_start,
+            baseline_months=baseline_months,
+            campaign_months=campaign_months,
+        ),
         seed=seed,
     )
 
