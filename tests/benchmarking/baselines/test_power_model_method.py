@@ -207,7 +207,7 @@ def _fundamentals_method(**overrides: object) -> PowerModelMethod:
 
 
 class TestModelFundamentals:
-    """The self-configuring time-decay weighting and the toggle campaign mask."""
+    """The campaign-proximity weighting, off by default, and the toggle campaign mask."""
 
     def test_time_decay_weights_recover_uplift(self) -> None:
         mi, _ = _prepost_case()
@@ -226,10 +226,16 @@ class TestModelFundamentals:
         no_decay = _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=None)
         assert no_decay._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3]) is None  # noqa: SLF001
 
+    def test_the_weighting_is_off_unless_asked_for(self) -> None:
+        method = _fundamentals_method()
+        assert method.adaptive_time_decay is False
+        assert method.time_decay_half_life_days is None
+        index = pd.date_range("2019-01-01", periods=5, freq="10D", tz="UTC")
+        assert method._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3]) is None  # noqa: SLF001
+
     def test_adaptive_time_decay_half_life_scales_with_campaign_duration(self) -> None:
-        # the self-configuring default: half_life = k * campaign_duration_days, in both modes
-        method = _fundamentals_method()  # adaptive_time_decay defaults to True
-        assert method.adaptive_time_decay is True
+        # opted in: half_life = k * campaign_duration_days, in both modes
+        method = _fundamentals_method(adaptive_time_decay=True)
         start = pd.Timestamp("2019-04-01", tz="UTC")
         for duration_days in (30.0, 90.0, 365.0):
             end = start + pd.Timedelta(days=duration_days)
@@ -237,7 +243,7 @@ class TestModelFundamentals:
             assert hl == pytest.approx(_TIME_DECAY_CAMPAIGN_MULTIPLE * duration_days)
 
     def test_adaptive_time_decay_weight_values(self) -> None:
-        method = _fundamentals_method()  # adaptive default
+        method = _fundamentals_method(adaptive_time_decay=True)
         index = pd.date_range("2019-01-01", periods=5, freq="10D", tz="UTC")
         start, end = index[2], index[3]  # 10-day campaign -> half_life = k * 10
         hl = _TIME_DECAY_CAMPAIGN_MULTIPLE * 10.0
