@@ -23,7 +23,7 @@ import logging
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -415,6 +415,11 @@ class PowerModelMethod:
         campaign sanity check (a healthy campaign's references read near 0%). Costs one extra model
         fit per reference, so a method sweep that scores estimators rather than reporting campaigns
         turns it off. It is a report, not an input: turning it off never moves the headline
+    :param headline_estimator: how the prepost headline is formed. ``"forward"`` (default) is the
+        counterfactual energy ratio ``Σactual/Σprediction - 1`` from the baseline-trained model.
+        ``"reversal"`` (the reversal correction) also fits the reverse direction (train the upgraded
+        rows, predict the baseline rows) and reports ``sqrt((1+r_fwd)/(1+r_rev)) - 1``, so a shrinkage
+        common to both directions cancels. Costs one extra model fit per estimate. Toggle is unaffected
     :param write_diagnostics: write the per-run diagnostics folder. ``False`` for the clones that
         estimate one reference during screening or reporting: ``out_dir=None`` does not suppress
         them, it makes a temp directory per run, and there are O(N) such runs per estimate
@@ -459,6 +464,7 @@ class PowerModelMethod:
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
+    headline_estimator: Literal["forward", "reversal"] = "forward"
     write_diagnostics: bool = True
     # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
     # era5_source_label() of the point it fetched, so a reader can tell which series was used.
@@ -556,6 +562,15 @@ class PowerModelMethod:
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
+
+        # The reversal correction to the prepost headline. The forward ratio above is 1+r_fwd; the
+        # reverse fit trains the upgraded rows and predicts the baseline rows for 1+r_rev, and
+        # _combine_uplift returns sqrt((1+r_fwd)/(1+r_rev))-1 so a shrinkage common to both directions
+        # cancels. Toggle keeps the forward ratio: its off-blocks already interleave, so no shift.
+        if self.headline_estimator == "reversal" and not is_toggle(mi.upgrade_timing) and np.isfinite(uplift):
+            pred_baseline = self._fit_direction(features, y_arr, train=upgraded_sel, predict=baseline_sel)
+            r_rev = _ratio(y_arr[baseline_sel], pred_baseline)
+            uplift = float(_combine_uplift(np.array([uplift]), np.array([r_rev]))[0])
 
         # ws/TI row-aligned to each segment's residuals, for the overall shrinkage-check diagnostics (cheap,
         # plots only). Computed here so the run folder's step-5 residual plots are drawn whether or not the
@@ -1369,6 +1384,9 @@ class PowerModelMethod:
 
     def _validate_model_config(self) -> None:
         """Fail loudly on config combinations that would silently misbehave."""
+        if self.headline_estimator not in ("forward", "reversal"):
+            msg = f"headline_estimator must be 'forward' or 'reversal', got {self.headline_estimator!r}"
+            raise ValueError(msg)
         if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
             msg = f"time_decay_half_life_days must be positive, got {self.time_decay_half_life_days}"
             raise ValueError(msg)
