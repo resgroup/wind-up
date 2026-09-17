@@ -120,6 +120,36 @@ def _toy_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0) -> 
     return pd.concat(parts)
 
 
+class TestReversalCorrection:
+    """The reversal correction (train-baseline-predict-upgraded contrasted with its reverse).
+
+    The reverse fit and the ``_combine_uplift`` formula are already exercised by the conditional
+    path; these check the wiring at the headline: the field defaults to the shipped forward ratio,
+    the reversal correction still recovers a known uplift and reads near zero on a placebo (the
+    common shrinkage cancels, ``u`` survives), and a bad value is rejected.
+    """
+
+    def test_defaults_to_forward(self) -> None:
+        method = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
+        assert method.headline_estimator == "forward"
+
+    def test_recovers_known_uplift_prepost(self) -> None:
+        mi, _ = _prepost_case(uplift=0.05)
+        out = _fundamentals_method(model_params=_FAST_PARAMS, headline_estimator="reversal").estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
+
+    def test_placebo_reads_near_zero(self) -> None:
+        mi, _ = _prepost_case(uplift=0.0)
+        out = _fundamentals_method(model_params=_FAST_PARAMS, headline_estimator="reversal").estimate(mi)
+        assert out.p50_overall == pytest.approx(0.0, abs=0.02)
+
+    def test_invalid_headline_estimator_raises(self) -> None:
+        mi, _ = _prepost_case(n=200)
+        method = _fundamentals_method(model_params=_FAST_PARAMS, headline_estimator="sideways")
+        with pytest.raises(ValueError, match="headline_estimator"):
+            method.estimate(mi)
+
+
 class TestRecovery:
     def test_recovers_known_uplift_prepost(self) -> None:
         n = 4000
