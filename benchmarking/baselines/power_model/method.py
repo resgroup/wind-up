@@ -394,21 +394,16 @@ class PowerModelMethod:
         ``columns.northed("nacelle_position")`` into the frame, and raises naming that column when
         it has not; the raw nacelle position is never used, northed or not. The test turbine's own
         direction stays barred (design-note §3): northing does not make a post-treatment signal safe.
-    :param adaptive_time_decay: when ``True`` (**default**, the Issue 15 self-configuring behaviour)
-        the headline fit's time-decay half-life is set automatically to
-        ``_TIME_DECAY_CAMPAIGN_MULTIPLE * campaign_duration_days`` — a short half-life for a short
-        campaign (down-weight the stale pre-campaign era that dominates a sliver campaign) and a long
-        one for a long campaign (use the plentiful recent data). This subsumes the fixed default:
-        the best half-life is regime-dependent (short helps 1-3-month campaigns in both modes,
-        long is safe at 12 months), and a campaign-proportional half-life gets both ends right with no
-        manual tuning. When ``True``, ``time_decay_half_life_days`` must be left ``None``.
-    :param time_decay_half_life_days: **expert override** (used only when ``adaptive_time_decay=False``):
-        a *fixed* half-life for the campaign-proximity training weights
-        ``0.5 ** (days_outside_campaign / half_life)``. Rows inside the campaign interval (for toggle,
-        the interleaved on and off rows) weigh 1; rows outside decay with their distance to it — so
-        distant history informs the fit without dominating it (Issue 13's recency weighting; the
-        alternative to the rejected drift *feature*). ``None`` disables the weighting entirely.
-        The default self-configuring behaviour is ``adaptive_time_decay=True`` (this left ``None``).
+    :param adaptive_time_decay: set the campaign-proximity weights' half-life from the campaign's
+        own duration, ``_TIME_DECAY_CAMPAIGN_MULTIPLE * campaign_duration_days``. ``False``
+        (**default**) with ``time_decay_half_life_days`` left ``None`` means every training row
+        weighs the same, whenever it happened. When ``True``, ``time_decay_half_life_days`` must be
+        left ``None``.
+    :param time_decay_half_life_days: a *fixed* half-life for the campaign-proximity training
+        weights ``0.5 ** (days_outside_campaign / half_life)``, used only when
+        ``adaptive_time_decay=False``. Rows inside the campaign interval (for toggle, the
+        interleaved on and off rows) weigh 1; rows outside decay with their distance to it.
+        ``None`` (**default**) leaves the weighting off.
     :param reference_screen: when ``True`` (**default**), estimate each candidate reference as if it
         were a test turbine against the others, and make clear outliers **power-free** -- they keep
         their direction features and gain a ``waking`` boolean, so their wake information is retained
@@ -458,7 +453,7 @@ class PowerModelMethod:
     availability_feature: bool = False
     normal_operation_feature: bool = True
     direction_feature: bool = True
-    adaptive_time_decay: bool = True
+    adaptive_time_decay: bool = False
     time_decay_half_life_days: float | None = None
     reference_screen: bool = True
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
