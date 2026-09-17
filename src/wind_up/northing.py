@@ -549,12 +549,15 @@ def _required_step(
     A segment's level is limited by site veer rather than by sampling noise, and veer averages out
     no faster than ``1/sqrt(span)``. So with less than ``confident_segment`` either side the
     required step grows accordingly, capped at ``max_transient_step_deg`` -- above which a step is
-    credible however little record sits around it.
+    credible however little record sits around it. The cap never falls below ``min_step_deg``:
+    ``np.clip`` with its bounds inverted returns the upper one, which let a pass asking for 30 deg
+    steps accept 10 deg ones.
     """
     edges = [start, *changepoints, end]
     spans = np.array([max((b - a) / confident_segment, 1e-9) for a, b in itertools.pairwise(edges)])
     support = np.minimum(spans[:-1], spans[1:])
-    return np.clip(min_step_deg / np.sqrt(np.minimum(support, 1.0)), min_step_deg, max_transient_step_deg)
+    ceiling = max(min_step_deg, max_transient_step_deg)
+    return np.clip(min_step_deg / np.sqrt(np.minimum(support, 1.0)), min_step_deg, ceiling)
 
 
 def estimate_north_table(

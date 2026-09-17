@@ -913,6 +913,34 @@ reactive cloud is visibly unlike its neighbours' — roughly -2500 to +1500 kVAr
 
 ---
 
+## R8 — Too much baseline: a very long pre period should not be able to dominate the fit
+
+**Goal:** decide what a campaign should do when an analyst arrives with far more baseline than the
+campaign needs — ten years of pre data against a six-month campaign — and make the answer a
+measured one.
+
+**Why.** The campaign-proximity weighting used to be on by default precisely to stop a stale
+pre-campaign era dominating a short campaign's fit. Measuring what the weighting itself costs
+([CF19](findings_campaigns.md)) showed it is a prepost-only lever that tilts the baseline toward
+the changeover and, on a record that must read 0, moved the reading +0.154 pp, so it now ships off.
+That closes the bias but leaves the original failure mode unaddressed: nothing currently stops a
+ten-year baseline from swamping the recent data, or from bringing in an era whose turbines,
+controller or surroundings are no longer the ones being measured.
+
+**Scope (light, to be firmed up)**
+- **Fixture:** a placebo whose baseline is several times the campaign length, run at a range of
+  baseline lengths against the same campaign, so "how much pre data is too much" is a curve rather
+  than an opinion.
+- **The shape to try first:** full weight within a year of the changeover, so the pre period holds
+  every season at full weight, then a light decay beyond it. This is deliberately not the current
+  exponential-from-the-changeover shape, which starts decaying immediately.
+- **Also worth testing:** simply truncating the baseline, which an analyst can already do by
+  declaring a shorter analysis period, and which may be the honest answer.
+- **Success:** the estimate is stable as baseline length grows, and whatever rule is adopted is
+  neutral on a placebo whose pre and post periods are equivalent.
+
+---
+
 # Productization issues (W-series)
 
 Turn the winning pieces into a shippable **v1.0.0**: one headline method named
