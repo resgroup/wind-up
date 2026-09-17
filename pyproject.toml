@@ -149,7 +149,7 @@ max-args = 17 # try to bring this down to 5
 [tool.mypy]
 plugins = ["pydantic.mypy"]
 python_version = "3.10"
-exclude = "build|tests|venv|.venv|__ignore__"
+exclude = "build|tests|venv|.venv|__ignore__|extra_docs"
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
