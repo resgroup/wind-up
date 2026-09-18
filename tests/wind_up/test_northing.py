@@ -15,6 +15,7 @@ from wind_up.northing import (
     DEFAULT_NORTHING,
     NorthingSettings,
     _sector_signature,
+    anchoring_only,
     apply_north_table,
     estimate_north_table,
     north_farm,
@@ -326,6 +327,37 @@ class TestNorthFarm:
             assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
             assert len(tables[name]) == len(steps), name
 
+    def test_the_anchoring_pass_can_be_given_its_own_settings(self) -> None:
+        """Pass 1 is for bulk alignment; with no changepoint budget at all, refinement finds the step.
+
+        One refinement is not enough on a small farm: T03's unremoved step moves the consensus
+        median, so clean devices inherit a spurious step. Rebuilding the consensus from the refined
+        tables and refining again removes it.
+        """
+        index = _index()
+        offsets = {
+            "T01": [("2017-01-01", 0.0)],
+            "T02": [("2017-01-01", 8.0)],
+            "T03": [("2017-01-01", -5.0), ("2017-08-01", 35.0)],
+            "T04": [("2017-01-01", 3.0)],
+        }
+        reported, reference = self._farm(index, offsets)
+        constant = replace(anchoring_only(DEFAULT_NORTHING), changepoints_per_year=0.0, min_changepoints=0)
+
+        tables = north_farm(
+            index,
+            direction_deg=reported,
+            usable={name: _all_usable(index) for name in reported},
+            reanalysis_deg=reference,
+            anchoring_settings=constant,
+            refinement_passes=2,
+        )
+
+        for name, steps in offsets.items():
+            corrected = apply_north_table(index, reported[name], north_table=tables[name])
+            assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
+            assert len(tables[name]) == len(steps), name
+
     def test_recovers_a_farm_that_is_uniformly_180_degrees_wrong(self) -> None:
         """The reanalysis pass is load-bearing: a common-mode offset is invisible to pass 2 alone.
 
@@ -598,6 +630,31 @@ class TestNearTheRecordEdge:
         assert self._n_changepoints(4.0, days_after=300.0) == 1
 
 
+class TestAnchoringPass:
+    """The first pass is for bulk alignment to reanalysis; only big steps are its business."""
+
+    @staticmethod
+    def _n_changepoints(step_deg: float) -> int:
+        index = _index(days=700)
+        reported, reference = _reported(index, steps=[("2017-01-01", 0.0), ("2017-12-01", step_deg)])
+        table = estimate_north_table(
+            index,
+            reported,
+            reference_deg=reference,
+            usable=_all_usable(index),
+            settings=anchoring_only(DEFAULT_NORTHING),
+        )
+        return len(table) - 1
+
+    def test_a_persistent_step_below_the_anchoring_threshold_is_not_reported(self) -> None:
+        """``max_transient_step_deg`` (10) sits below ``ANCHORING_MIN_STEP_DEG`` (30); the support
+        threshold must not be clipped down to it."""
+        assert self._n_changepoints(20.0) == 0
+
+    def test_a_step_above_the_anchoring_threshold_is_found(self) -> None:
+        assert self._n_changepoints(60.0) == 1
+
+
 class TestFarmReferenceComposition:
     """The farm reference must not depend on *which* devices happened to report.
 
@@ -785,3 +842,84 @@ class TestSectorSignature:
 
         assert signature[0] == pytest.approx(5.0)
         assert signature[150] == pytest.approx(-8.0)
+
+
+# --- reference_neighbours: pass 2's consensus can be a spatial neighbour set, not the whole farm ---
+
+
+def _tracking(
+    index: pd.DatetimeIndex, reference: np.ndarray, steps: list[tuple[str, float]], *, seed: int
+) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    return (reference + _stepped_offset(index, steps) + rng.normal(0.0, 2.0, len(index))) % 360.0
+
+
+def _stepping_farm(index: pd.DatetimeIndex) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """T01 is clean; its neighbours N1-N3 all step +40 deg mid-record; O1-O3 stay clean."""
+    reference = _true_direction(index, seed=3)
+    flat = [("2017-01-01", 0.0)]
+    stepped = [("2017-01-01", 0.0), ("2017-08-01", 40.0)]
+    reported = {
+        "T01": _tracking(index, reference, flat, seed=10),
+        "N1": _tracking(index, reference, stepped, seed=11),
+        "N2": _tracking(index, reference, stepped, seed=12),
+        "N3": _tracking(index, reference, stepped, seed=13),
+        "O1": _tracking(index, reference, flat, seed=14),
+        "O2": _tracking(index, reference, flat, seed=15),
+        "O3": _tracking(index, reference, flat, seed=16),
+    }
+    return reported, reference
+
+
+_NEIGHBOURS = {
+    "T01": ["N1", "N2", "N3"],  # T01's reference is exactly the three that step
+    "N1": ["N2", "N3", "O1"],
+    "N2": ["N1", "N3", "O2"],
+    "N3": ["N1", "N2", "O3"],
+    "O1": ["O2", "O3", "T01"],
+    "O2": ["O1", "O3", "T01"],
+    "O3": ["O1", "O2", "T01"],
+}
+
+
+def test_reference_neighbours_norths_against_the_listed_neighbours_only() -> None:
+    """A clean turbine inherits its neighbours' step when they are its whole reference.
+
+    Against the whole farm the four clean devices out-vote the three that step, so T01 stays flat;
+    against only N1-N3 the consensus itself steps +40, and T01 -- measured against it -- is handed
+    a spurious -40 step. That difference proves pass 2 used the neighbour map, not the farm median.
+    """
+    index = _index()
+    reported, reference = _stepping_farm(index)
+    usable = {name: _all_usable(index) for name in reported}
+    # constant pass 1 (no changepoints) so the anchor cannot itself remove the neighbours' +40 step
+    constant = replace(anchoring_only(DEFAULT_NORTHING), changepoints_per_year=0.0, min_changepoints=0)
+    common = {"direction_deg": reported, "usable": usable, "reanalysis_deg": reference, "anchoring_settings": constant}
+
+    whole = north_farm(index, **common)
+    near = north_farm(index, reference_neighbours=_NEIGHBOURS, **common)
+
+    assert len(whole["T01"]) == 1, f"whole-farm should keep T01 clean: {whole['T01']}"
+    table = near["T01"].sort_values("timestamp").reset_index(drop=True)
+    assert len(table) == 2, f"neighbour reference should give T01 one step: {table}"
+    assert abs(table["timestamp"].iloc[1] - pd.Timestamp("2017-08-01", tz="UTC")) <= pd.Timedelta(days=14)
+    step = abs(circ_diff(table["north_offset"].iloc[1], table["north_offset"].iloc[0]))
+    assert step == pytest.approx(40.0, abs=5.0), f"recovered {step:.1f} deg"
+
+
+def test_reference_neighbours_rejects_a_device_with_too_few_neighbours() -> None:
+    index = _index(days=30)
+    reported, reference = _stepping_farm(index)
+    usable = {name: _all_usable(index) for name in reported}
+    bad = {**_NEIGHBOURS, "T01": ["N1", "N2"]}  # only two
+    with pytest.raises(ValueError, match="reference neighbour"):
+        north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, reference_neighbours=bad)
+
+
+def test_reference_neighbours_rejects_an_unknown_device() -> None:
+    index = _index(days=30)
+    reported, reference = _stepping_farm(index)
+    usable = {name: _all_usable(index) for name in reported}
+    bad = {**_NEIGHBOURS, "T01": ["N1", "N2", "GHOST"]}
+    with pytest.raises(ValueError, match="unknown device"):
+        north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, reference_neighbours=bad)
