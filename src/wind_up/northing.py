@@ -26,7 +26,7 @@ import pandas as pd
 from wind_up.circular_math import circ_diff, circ_median
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     import numpy.typing as npt
@@ -807,6 +807,59 @@ def _common_drift(
     return np.asarray(np.median(moved, axis=0), dtype=float)
 
 
+def _validate_reference_neighbours(
+    devices: list[str], reference_neighbours: Mapping[str, Sequence[str]], *, min_devices: int
+) -> None:
+    """Check every device has an entry naming at least ``min_devices`` known other devices."""
+    known = set(devices)
+    for name in devices:
+        if name not in reference_neighbours:
+            msg = f"reference_neighbours is missing an entry for device {name!r}"
+            raise ValueError(msg)
+        neighbours = [n for n in reference_neighbours[name] if n != name]
+        unknown = sorted(set(neighbours) - known)
+        if unknown:
+            msg = f"reference_neighbours[{name!r}] names unknown device(s) {unknown}"
+            raise ValueError(msg)
+        if len(neighbours) < min_devices:
+            msg = (
+                f"device {name!r} has only {len(neighbours)} reference neighbour(s), need at least "
+                f"min_devices_for_farm_reference={min_devices}: {neighbours}"
+            )
+            raise ValueError(msg)
+
+
+def _consensus_references(
+    northed: Mapping[str, npt.NDArray[np.float64]],
+    *,
+    usable: Mapping[str, npt.NDArray[np.bool_]],
+    quorum: int,
+    reference_neighbours: Mapping[str, Sequence[str]] | None,
+    min_devices: int,
+) -> dict[str, npt.NDArray[np.float64]]:
+    """Return the direction each device is northed against in pass 2.
+
+    Without ``reference_neighbours`` every device shares the one whole-farm consensus -- the
+    historical behaviour, and the object is shared so the result is identical to computing it once.
+    With it, each device is northed against the circular-median consensus of *its own* listed
+    neighbours (itself excluded), so a far or miscalibrated turbine on the other side of the farm
+    cannot pull its reference. A neighbour set forms a consensus by the same quorum rule as the
+    whole farm: a strict majority of the set, floored at ``min_devices``.
+    """
+    if reference_neighbours is None:
+        farm = _farm_direction(northed, usable=usable, min_devices=quorum)
+        return dict.fromkeys(northed, farm)
+    references: dict[str, npt.NDArray[np.float64]] = {}
+    for name in northed:
+        neighbours = [n for n in reference_neighbours[name] if n != name]
+        references[name] = _farm_direction(
+            {n: northed[n] for n in neighbours},
+            usable={n: usable[n] for n in neighbours},
+            min_devices=_farm_quorum(len(neighbours), floor=min_devices),
+        )
+    return references
+
+
 def north_farm(
     index: pd.DatetimeIndex,
     *,
@@ -817,6 +870,7 @@ def north_farm(
     min_devices_for_farm_reference: int = 3,
     anchoring_settings: NorthingSettings | None = None,
     refinement_passes: int = 1,
+    reference_neighbours: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """North a whole farm in two passes, returning one absolute table per device.
 
@@ -840,6 +894,12 @@ def north_farm(
         the first rebuilds the consensus from the previous pass's tables, less their common-mode
         drift from pass 1 (see :func:`_common_drift`), so a step pass 1 left in one device stops
         leaking into the others through the median.
+    :param reference_neighbours: optional map from each device to the devices whose consensus is
+        pass 2's reference for it (itself excluded). ``None`` -- the default -- norths every device
+        against the one whole-farm consensus, as before. Supplying each device's spatial neighbours
+        keeps a far or miscalibrated turbine out of its reference, which is what a large,
+        heterogeneous farm needs; a turbine only shares wind with its neighbours anyway. Each list
+        must name known devices and hold at least ``min_devices_for_farm_reference`` of them.
     """
     if refinement_passes < 1:
         msg = f"refinement_passes must be at least 1, got {refinement_passes}"
@@ -855,6 +915,9 @@ def north_farm(
     if missing:
         msg = f"usable is missing masks for device(s) {missing}"
         raise ValueError(msg)
+
+    if reference_neighbours is not None:
+        _validate_reference_neighbours(devices, reference_neighbours, min_devices=min_devices_for_farm_reference)
 
     finite_reference = np.isfinite(np.asarray(reanalysis_deg, dtype=float))
     anchorable = {d: int((np.asarray(usable[d], dtype=bool) & finite_reference).sum()) for d in devices}
@@ -891,8 +954,14 @@ def north_farm(
     }
     northed = {name: apply_north_table(index, direction_deg[name], north_table=first_pass[name]) for name in devices}
     quorum = _farm_quorum(len(devices), floor=min_devices_for_farm_reference)
-    farm = _farm_direction(northed, usable=usable, min_devices=quorum)
-    if not np.isfinite(farm).any():
+    references = _consensus_references(
+        northed,
+        usable=usable,
+        quorum=quorum,
+        reference_neighbours=reference_neighbours,
+        min_devices=min_devices_for_farm_reference,
+    )
+    if not any(np.isfinite(reference).any() for reference in references.values()):
         logger.warning("farm reference is empty; keeping the reanalysis-only north tables")
         return first_pass
 
@@ -904,10 +973,16 @@ def north_farm(
                 name: (apply_north_table(index, direction_deg[name], north_table=tables[name]) - drift) % 360.0
                 for name in devices
             }
-            farm = _farm_direction(northed, usable=usable, min_devices=quorum)
+            references = _consensus_references(
+                northed,
+                usable=usable,
+                quorum=quorum,
+                reference_neighbours=reference_neighbours,
+                min_devices=min_devices_for_farm_reference,
+            )
         tables = {
             name: estimate_north_table(
-                index, direction_deg[name], reference_deg=farm, usable=usable[name], settings=settings
+                index, direction_deg[name], reference_deg=references[name], usable=usable[name], settings=settings
             )
             for name in devices
         }
