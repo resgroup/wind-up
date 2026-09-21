@@ -155,6 +155,7 @@ def run_one(test: RoadTest, *, out_dir: Path) -> pd.DataFrame:
         columns=columns,
         north_offsets=spec.north_offsets,
         rated_power_kw=rated,
+        coordinates=spec.coords,
         era5_wd=era5_direction(era5, index),
         roles=DEFAULT_NORTHING_ROLES,
     )

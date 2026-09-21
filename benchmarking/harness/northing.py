@@ -151,6 +151,7 @@ def north_scada(
     columns: ColumnSchema,
     north_offsets: Sequence[tuple[str, pd.Timestamp, float]] | None,
     rated_power_kw: float,
+    coordinates: dict[str, tuple[float, float]] | None,
     era5_wd: pd.Series | None = None,
     roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
     settings: NorthingSettings = DEFAULT_NORTHING,
@@ -165,6 +166,10 @@ def north_scada(
     :param columns: the source-native schema naming the turbine and direction role(s)
     :param north_offsets: ``None`` to discover the corrections, or the exact table to apply
     :param rated_power_kw: turbine rating, for deciding which rows are usable for northing
+    :param coordinates: turbine to ``(latitude, longitude)``; passed to :func:`north_farm` so pass 2
+        norths each turbine against its nearest neighbours when discovering. ``None`` -- explicitly --
+        norths against the whole-farm consensus, for callers with no layout to hand. Only used when
+        ``north_offsets`` is ``None``.
     :param era5_wd: reanalysis wind direction (deg) covering the frame, the absolute anchor for
         discovery. Required when ``north_offsets`` is ``None``.
     :param roles: the direction roles to write a ``northed_`` companion for
@@ -224,7 +229,7 @@ def north_scada(
             direction_deg=directions,
             usable=usable,
             reanalysis_deg=reference,
-            coordinates=None,
+            coordinates=coordinates,
             settings=settings,
         )
         found = sum(len(t) - 1 for t in tables.values())

@@ -1080,3 +1080,18 @@ def test_nearest_neighbours_caps_k_at_the_devices_available() -> None:
     nn = nearest_neighbours(coords, k=10)
     assert nn["A"] == ("B", "C")  # only two others exist, so k is capped
     assert all(len(v) == 2 for v in nn.values())
+
+
+def test_nearest_neighbours_rejects_a_non_positive_k() -> None:
+    # A non-positive k would slice as order[:0] or order[:-1], silently returning the wrong set.
+    for bad_k in (0, -1):
+        with pytest.raises(ValueError, match="k must be"):
+            nearest_neighbours(_LINE_COORDS, k=bad_k)
+
+
+def test_nearest_neighbours_rejects_an_unusable_coordinate() -> None:
+    # A non-finite or out-of-range coordinate makes the geodesic distance non-finite, but argsort
+    # still returns an order, so the "nearest" set would be arbitrary rather than rejected.
+    for bad in ((91.0, 0.0), (float("nan"), 0.0), (55.0, float("inf"))):
+        with pytest.raises(ValueError, match="coordinate"):
+            nearest_neighbours({**_LINE_COORDS, "A": bad}, k=2)

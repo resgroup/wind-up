@@ -106,6 +106,7 @@ def visible_scada(
         columns=columns,
         north_offsets=spec.north_offsets,
         rated_power_kw=spec.rated_power_kw,
+        coordinates=spec.coords,
         era5_wd=era5_wd,
         roles=roles,
         settings=settings,

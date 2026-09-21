@@ -760,6 +760,16 @@ def write_north_table_yaml(tables: Mapping[str, pd.DataFrame], *, path: Path) ->
     path.write_text("\n".join(lines) + "\n")
 
 
+_MIN_LATITUDE_DEG = -90.0
+_MAX_LATITUDE_DEG = 90.0
+
+
+def _usable_coordinate(point: tuple[float, float]) -> bool:
+    """Whether ``(latitude, longitude)`` is finite with a latitude in ``[-90, 90]``."""
+    latitude, longitude = point
+    return math.isfinite(latitude) and math.isfinite(longitude) and _MIN_LATITUDE_DEG <= latitude <= _MAX_LATITUDE_DEG
+
+
 def nearest_neighbours(coordinates: Mapping[str, tuple[float, float]], *, k: int) -> dict[str, tuple[str, ...]]:
     """Map each device to its ``k`` nearest others by geodesic distance.
 
@@ -767,10 +777,21 @@ def nearest_neighbours(coordinates: Mapping[str, tuple[float, float]], *, k: int
     each device's ``(latitude, longitude)``. ``k`` is capped at the number of other devices, so a
     farm smaller than ``k + 1`` simply lists everyone else. A device is never its own neighbour.
 
+    ``k`` must be positive, and every coordinate must be finite with a latitude in ``[-90, 90]``:
+    an out-of-range or non-finite point yields a non-finite distance that ``argsort`` would still
+    order, so the nearest set is rejected rather than silently arbitrary.
+
     This is what :func:`north_farm` uses to turn turbine positions into each device's pass-2
     reference consensus.
     """
+    if k < 1:
+        msg = f"k must be a positive number of neighbours, got {k}"
+        raise ValueError(msg)
     devices = sorted(coordinates)
+    bad = sorted(d for d in devices if not _usable_coordinate(coordinates[d]))
+    if bad:
+        msg = f"coordinates for device(s) {bad} are not a finite (latitude in [-90, 90], longitude) pair"
+        raise ValueError(msg)
     latitudes = [coordinates[d][0] for d in devices]
     longitudes = [coordinates[d][1] for d in devices]
     distance_m, _ = geodesic_matrices(latitudes=latitudes, longitudes=longitudes)

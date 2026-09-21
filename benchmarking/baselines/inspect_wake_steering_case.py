@@ -448,6 +448,7 @@ def inspect_wake_steering_case(
                 columns=HOT_COLUMNS,
                 north_offsets=None,
                 rated_power_kw=HOT_RATED_POWER_KW,
+                coordinates=dict(steering.coords),
                 era5_wd=era5_direction(era5, pd.DatetimeIndex(full_dataset.synthetic_df.index.unique()).sort_values()),
             ),
         )

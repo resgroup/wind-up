@@ -128,6 +128,7 @@ def iter_replicates(
     columns: ColumnSchema = HOT_COLUMNS,
     era5_wd: pd.Series | None = None,
     rated_power_kw: float = HOT_RATED_POWER_KW,
+    coords: dict[str, tuple[float, float]] | None = None,
 ) -> Iterator[Replicate]:
     """Yield ``study.n_replicates`` replicates of ``profile`` one at a time.
 
@@ -143,6 +144,9 @@ def iter_replicates(
         than sharing a table discovered once, so the step has to find the corrections unaided and a
         direction-moving upgrade in ``profile`` stays consistent with its northed companion.
     :param rated_power_kw: turbine rating, passed to the generator and to the northing step
+    :param coords: turbine to ``(latitude, longitude)`` for the shared northing step's
+        nearest-neighbour consensus; must cover ``study.turbine_subset``. ``None`` norths each
+        replicate against the whole-farm consensus.
     """
     subset = base_scada[base_scada[columns.turbine].isin(study.turbine_subset)]
     candidates = _candidate_starts(subset.index, study.treatment_start_range)
@@ -171,6 +175,7 @@ def iter_replicates(
                     columns=columns,
                     north_offsets=None,
                     rated_power_kw=rated_power_kw,
+                    coordinates=coords,
                     era5_wd=era5_wd,
                 ),
             )
@@ -191,6 +196,7 @@ def build_replicates(
     columns: ColumnSchema = HOT_COLUMNS,
     era5_wd: pd.Series | None = None,
     rated_power_kw: float = HOT_RATED_POWER_KW,
+    coords: dict[str, tuple[float, float]] | None = None,
 ) -> list[Replicate]:
     """Draw ``study.n_replicates`` replicates of ``profile`` from ``base_scada``.
 
@@ -203,6 +209,8 @@ def build_replicates(
     :param columns: the source-native column schema ``base_scada`` is keyed by
     :param era5_wd: reanalysis wind direction; see :func:`iter_replicates`
     :param rated_power_kw: turbine rating, passed to the generator and to the northing step
+    :param coords: turbine to ``(latitude, longitude)`` for the northing step; see
+        :func:`iter_replicates`
     """
     return list(
         iter_replicates(
@@ -212,6 +220,7 @@ def build_replicates(
             columns=columns,
             era5_wd=era5_wd,
             rated_power_kw=rated_power_kw,
+            coords=coords,
         )
     )
 

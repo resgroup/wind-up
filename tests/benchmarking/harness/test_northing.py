@@ -71,7 +71,9 @@ class TestDiscovery:
         scada, site_wd = _scada(index, offsets)
         era5 = pd.Series(site_wd, index=index)
 
-        out = north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, era5_wd=era5)
+        out = north_scada(
+            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=None, era5_wd=era5
+        )
 
         assert _COLUMNS.northed("nacelle_position") in out.columns
         assert np.allclose(
@@ -85,7 +87,9 @@ class TestDiscovery:
         scada, site_wd = _scada(index, offsets)
         era5 = pd.Series(site_wd, index=index)
 
-        out = north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, era5_wd=era5)
+        out = north_scada(
+            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=None, era5_wd=era5
+        )
 
         for turbine in _TURBINES:
             assert circ_diff(_northed(out, turbine), site_wd).mean() == pytest.approx(0.0, abs=2.0), turbine
@@ -98,7 +102,9 @@ class TestDiscovery:
         scada, site_wd = _scada(index, offsets)
         era5 = pd.Series(site_wd, index=index)
 
-        out = north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, era5_wd=era5)
+        out = north_scada(
+            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=None, era5_wd=era5
+        )
 
         assert circ_diff(_northed(out, "T03"), site_wd).mean() == pytest.approx(0.0, abs=2.0)
 
@@ -106,7 +112,9 @@ class TestDiscovery:
         index = _index(days=30)
         scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
         with pytest.raises(ValueError, match="era5_wd"):
-            north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, era5_wd=None)
+            north_scada(
+                scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=None, era5_wd=None
+            )
 
     @pytest.mark.parametrize("role", ["active_power", "availability"])
     def test_discovery_without_a_column_it_reads_raises_naming_it(self, role: str) -> None:
@@ -120,6 +128,7 @@ class TestDiscovery:
                 columns=_COLUMNS,
                 north_offsets=None,
                 rated_power_kw=_RATED,
+                coordinates=None,
                 era5_wd=pd.Series(era5, index=index),
             )
 
@@ -149,7 +158,9 @@ class TestDeclared:
         scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
         declared = [("T02", _START, 33.0)]
 
-        out = north_scada(scada, columns=_COLUMNS, north_offsets=declared, rated_power_kw=_RATED, era5_wd=None)
+        out = north_scada(
+            scada, columns=_COLUMNS, north_offsets=declared, rated_power_kw=_RATED, coordinates=None, era5_wd=None
+        )
 
         raw = scada[scada[_COLUMNS.turbine] == "T02"][_COLUMNS.nacelle_position].to_numpy(dtype=float)
         assert _northed(out, "T02") == pytest.approx((raw + 33.0) % 360.0)
@@ -162,7 +173,9 @@ class TestDeclared:
         offsets = {t: [(_START, 30.0)] for t in _TURBINES}
         scada, _ = _scada(index, offsets)
 
-        out = north_scada(scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, era5_wd=None)
+        out = north_scada(
+            scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, coordinates=None, era5_wd=None
+        )
 
         assert _COLUMNS.northed("nacelle_position") in out.columns
         for turbine in _TURBINES:
@@ -173,7 +186,7 @@ class TestDeclared:
         index = _index(days=30)
         scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
         # would raise if this branch tried to discover
-        north_scada(scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, era5_wd=None)
+        north_scada(scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, coordinates=None, era5_wd=None)
 
     def test_a_table_starting_after_the_data_raises(self) -> None:
         index = _index(days=30)
@@ -181,14 +194,18 @@ class TestDeclared:
         late = [("T01", _START + pd.Timedelta(days=5), 12.0)]
 
         with pytest.raises(ValueError, match="after the data starts"):
-            north_scada(scada, columns=_COLUMNS, north_offsets=late, rated_power_kw=_RATED, era5_wd=None)
+            north_scada(
+                scada, columns=_COLUMNS, north_offsets=late, rated_power_kw=_RATED, coordinates=None, era5_wd=None
+            )
 
     def test_a_turbine_with_no_declared_offset_is_left_alone(self) -> None:
         index = _index(days=30)
         scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
         only_t01 = [("T01", _START, 12.0)]
 
-        out = north_scada(scada, columns=_COLUMNS, north_offsets=only_t01, rated_power_kw=_RATED, era5_wd=None)
+        out = north_scada(
+            scada, columns=_COLUMNS, north_offsets=only_t01, rated_power_kw=_RATED, coordinates=None, era5_wd=None
+        )
 
         raw = scada[scada[_COLUMNS.turbine] == "T02"][_COLUMNS.nacelle_position].to_numpy(dtype=float)
         assert _northed(out, "T02") == pytest.approx(raw % 360.0)

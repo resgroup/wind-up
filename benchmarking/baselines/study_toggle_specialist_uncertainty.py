@@ -156,6 +156,7 @@ def run_sweep(
     study: StudyConfig,
     methods: list[ToggleSpecialistMethod],
     profiles: dict[str, list],
+    coords: dict[str, tuple[float, float]] | None = None,
 ) -> pd.DataFrame:
     """Score every method over every profile, streaming replicates to bound memory.
 
@@ -163,11 +164,14 @@ def run_sweep(
     replicate is alive at a time. Every method still sees the identical ``MethodInput`` for an
     instance (it is built once per instance and shared), so the cross-method fairness that matters
     for the block-length comparison is preserved.
+
+    ``coords`` (turbine to ``(latitude, longitude)``) is passed to the shared northing step so it
+    norths each replicate against its nearest neighbours; ``None`` uses the whole-farm consensus.
     """
     data_start, data_end = scada_df.index.min(), scada_df.index.max()
     rows: list[dict[str, object]] = []
     for profile_name, profile in profiles.items():
-        for replicate in iter_replicates(scada_df, profile=profile, study=study):
+        for replicate in iter_replicates(scada_df, profile=profile, study=study, coords=coords):
             windows = campaign_windows(
                 replicate.treatment_start,
                 min_pre_months=study.min_pre_months,
@@ -398,12 +402,13 @@ def main() -> None:
     output_dir = args.output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    scada_df, _ = load_hot_scada(
+    scada_df, metadata_df = load_hot_scada(
         start_dt=DEFAULT_START_DT,
         end_dt_excl=DEFAULT_END_DT_EXCL,
         wtg_numbers=DEFAULT_WTG_NUMBERS,
         wtg_names=DEFAULT_TURBINE_SUBSET,
     )
+    coords = {str(row.Name): (float(row.Latitude), float(row.Longitude)) for row in metadata_df.itertuples()}
     study = uncertainty_study(args.replicates)
     methods = build_methods(args.block_hours, out_dir=output_dir / "runs" if args.save_run_dirs else None)
     profiles = _select_profiles(args.profiles)
@@ -416,7 +421,7 @@ def main() -> None:
         args.replicates * len(profiles) * len(CAMPAIGN_WEEKS) * len(methods),
     )
 
-    cases = run_sweep(scada_df, study=study, methods=methods, profiles=profiles)
+    cases = run_sweep(scada_df, study=study, methods=methods, profiles=profiles, coords=coords)
     cases_path = output_dir / "cases.csv"
     cases.to_csv(cases_path, index=False)
     logger.info("Wrote %d scored cells to %s", len(cases), cases_path)
