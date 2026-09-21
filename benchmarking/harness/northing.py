@@ -219,7 +219,14 @@ def north_scada(
             rated_power_kw=rated_power_kw,
             timebase_s=timebase_s,
         )
-        tables = north_farm(index, direction_deg=directions, usable=usable, reanalysis_deg=reference, settings=settings)
+        tables = north_farm(
+            index,
+            direction_deg=directions,
+            usable=usable,
+            reanalysis_deg=reference,
+            coordinates=None,
+            settings=settings,
+        )
         found = sum(len(t) - 1 for t in tables.values())
         logger.info("discovered %d northing changepoint(s) across %d turbines", found, len(turbines))
         if out_dir is not None:
