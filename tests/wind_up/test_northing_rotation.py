@@ -84,9 +84,9 @@ def _compare(base: pd.DataFrame, rotated: pd.DataFrame, *, offsets_too: bool, ti
     if len(base) != len(rotated):
         problems.append(f"{len(base) - 1} changepoints unrotated vs {len(rotated) - 1} rotated")
         return problems
-    shift_days = np.abs(
-        (pd.DatetimeIndex(rotated["timestamp"]) - pd.DatetimeIndex(base["timestamp"])).total_seconds()
-    ) / 86400.0
+    shift_days = (
+        np.abs((pd.DatetimeIndex(rotated["timestamp"]) - pd.DatetimeIndex(base["timestamp"])).total_seconds()) / 86400.0
+    )
     if (shift_days > time_tol_days).any():
         rows = np.flatnonzero(shift_days > time_tol_days).tolist()
         problems.append(f"changepoint times differ by up to {shift_days.max():.2f} d at rows {rows}")
