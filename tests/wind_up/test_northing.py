@@ -993,3 +993,38 @@ def test_reference_neighbours_keeps_the_anchor_when_a_devices_consensus_is_empty
     assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
     corrected = apply_north_table(index, reported["X"], north_table=tables["X"])
     assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), "X's +25 deg anchor was discarded"
+
+
+def test_reference_neighbours_keeps_the_anchor_when_the_consensus_never_overlaps_the_device() -> None:
+    """A finite reference is not enough; it must be finite *where the device is usable*.
+
+    X reports only in the first half of the record, its neighbours only in the second. The neighbour
+    consensus is therefore finite (so the whole-farm check and a "finite anywhere" test both pass),
+    but never where X can be northed against it, so pass 2's residual is all-NaN. X's +25 deg pass-1
+    anchor must be kept rather than replaced by a zero-offset table.
+    """
+    index = _index()
+    ref = _true_direction(index, seed=8)
+    flat = [("2017-01-01", 0.0)]
+    reported = {name: _tracking(index, ref, flat, seed=30 + i) for i, name in enumerate(("N1", "N2", "N3"))}
+    reported["X"] = _tracking(index, ref, [("2017-01-01", 25.0)], seed=40)
+    half = len(index) // 2
+    first_half, second_half = np.zeros(len(index), dtype=bool), np.zeros(len(index), dtype=bool)
+    first_half[:half] = True
+    second_half[half:] = True
+    usable = {"X": first_half, "N1": second_half, "N2": second_half, "N3": second_half}
+    neighbours = {
+        "X": ["N1", "N2", "N3"],  # finite only in the second half; X is usable only in the first
+        "N1": ["N2", "N3", "X"],
+        "N2": ["N1", "N3", "X"],
+        "N3": ["N1", "N2", "X"],
+    }
+
+    tables = north_farm(
+        index, direction_deg=reported, usable=usable, reanalysis_deg=ref, reference_neighbours=neighbours
+    )
+
+    assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
+    corrected = apply_north_table(index, reported["X"], north_table=tables["X"])
+    on_x = circ_diff(corrected[first_half], ref[first_half]).mean()
+    assert on_x == pytest.approx(0.0, abs=5.0), "X's +25 deg anchor was discarded despite no overlap"

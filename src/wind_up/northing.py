@@ -943,10 +943,16 @@ def north_farm(
     tables = {}
     for name in devices:
         reference = references[name]
-        if not np.isfinite(reference).any():
-            # This device's consensus (its neighbours) has no finite value where it can be used, so
-            # pass 2 has nothing to north it against. Keep its pass-1 reanalysis anchor rather than
-            # let estimate_north_table return a zero offset and throw the anchor away.
+        # The reference must be finite where this device can be northed against it, not merely finite
+        # somewhere: pass 2's residual is taken over usable & finite(direction) & finite(reference)
+        # (see _residual). With no such overlap -- e.g. a device and its neighbours reporting in
+        # disjoint periods -- estimate_north_table returns a zero offset, so keep the pass-1 anchor.
+        overlap = (
+            np.asarray(usable[name], dtype=bool)
+            & np.isfinite(np.asarray(direction_deg[name], dtype=float))
+            & np.isfinite(reference)
+        )
+        if not overlap.any():
             logger.warning("no usable farm reference for device %s; keeping its reanalysis anchor", name)
             tables[name] = first_pass[name]
         else:
