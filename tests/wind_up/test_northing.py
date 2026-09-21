@@ -937,10 +937,16 @@ def test_coordinates_norths_each_device_against_its_nearest_neighbours() -> None
     index = _index()
     reported, reference = _stepping_farm(index)
     usable = {name: _all_usable(index) for name in reported}
-    common = {"direction_deg": reported, "usable": usable, "reanalysis_deg": reference}
 
-    whole = north_farm(index, coordinates=None, **common)
-    near = north_farm(index, coordinates=_STEPPING_COORDS, neighbours=3, **common)
+    whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, coordinates=None)
+    near = north_farm(
+        index,
+        direction_deg=reported,
+        usable=usable,
+        reanalysis_deg=reference,
+        coordinates=_STEPPING_COORDS,
+        neighbours=3,
+    )
 
     assert len(whole["T01"]) == 1, f"whole-farm should keep T01 clean: {whole['T01']}"
     table = near["T01"].sort_values("timestamp").reset_index(drop=True)
