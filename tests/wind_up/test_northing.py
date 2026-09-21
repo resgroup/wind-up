@@ -304,12 +304,25 @@ class TestNorthFarm:
         return reported, reference
 
     def test_two_pass_recovers_per_device_steps(self) -> None:
+        """Pass 2 recovers each device's own step and leaves clean devices alone.
+
+        Pass 1 is a constant bulk alignment, so a stepping device's step is still present when the
+        farm consensus is built. The consensus is a circular median, so enough clean devices
+        outvote the one that steps and the median holds; here T03's +35 step must not leak into the
+        clean devices. A tiny farm cannot give the median that quorum -- with only a handful of
+        devices a single large step shifts it a few degrees -- which is why northing wants a farm.
+        """
         index = _index()
         offsets = {
             "T01": [("2017-01-01", 0.0)],
             "T02": [("2017-01-01", 8.0)],
             "T03": [("2017-01-01", -5.0), ("2017-08-01", 35.0)],
             "T04": [("2017-01-01", 3.0)],
+            "T05": [("2017-01-01", -2.0)],
+            "T06": [("2017-01-01", 5.0)],
+            "T07": [("2017-01-01", -4.0)],
+            "T08": [("2017-01-01", 2.0)],
+            "T09": [("2017-01-01", -6.0)],
         }
         reported, reference = self._farm(index, offsets)
 
@@ -327,12 +340,16 @@ class TestNorthFarm:
             assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
             assert len(tables[name]) == len(steps), name
 
-    def test_the_anchoring_pass_can_be_given_its_own_settings(self) -> None:
-        """Pass 1 is for bulk alignment; with no changepoint budget at all, refinement finds the step.
+    def test_a_tiny_farm_leaks_a_stepping_device_into_the_clean_ones(self) -> None:
+        """The documented cost of a constant pass-1 anchor on a farm too small to give the median a
+        quorum.
 
-        One refinement is not enough on a small farm: T03's unremoved step moves the consensus
-        median, so clean devices inherit a spurious step. Rebuilding the consensus from the refined
-        tables and refining again removes it.
+        Pass 1 no longer removes a large step before the consensus is built, so on a four-device
+        farm T03's +35 step shifts the circular median a few degrees at the step, and every clean
+        device -- measured against that moved consensus -- is handed a matching spurious step. This
+        is why northing wants a real farm and why :func:`north_farm` takes ``reference_neighbours``
+        to keep a big mover out of a device's reference. Enlarge this farm (see
+        :meth:`test_two_pass_recovers_per_device_steps`) and the leak goes away.
         """
         index = _index()
         offsets = {
@@ -342,21 +359,21 @@ class TestNorthFarm:
             "T04": [("2017-01-01", 3.0)],
         }
         reported, reference = self._farm(index, offsets)
-        constant = replace(anchoring_only(DEFAULT_NORTHING), changepoints_per_year=0.0, min_changepoints=0)
 
         tables = north_farm(
             index,
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reference,
-            anchoring_settings=constant,
-            refinement_passes=2,
         )
 
-        for name, steps in offsets.items():
-            corrected = apply_north_table(index, reported[name], north_table=tables[name])
-            assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
-            assert len(tables[name]) == len(steps), name
+        assert len(tables["T03"]) == 2, "T03's own 35 deg step is still recovered"
+        clean = tables["T01"].sort_values("timestamp").reset_index(drop=True)
+        assert len(clean) == 2, f"a clean device leaks an extra changepoint on a tiny farm: {clean}"
+        when = clean["timestamp"].iloc[1]
+        assert abs(when - pd.Timestamp("2017-08-01", tz="UTC")) <= pd.Timedelta(days=21), when
+        leaked = abs(circ_diff(clean["north_offset"].iloc[1], clean["north_offset"].iloc[0]))
+        assert 0.0 < leaked < 10.0, f"the leak is small, not T03's full 35 deg: {leaked:.1f}"
 
     def test_recovers_a_farm_that_is_uniformly_180_degrees_wrong(self) -> None:
         """The reanalysis pass is load-bearing: a common-mode offset is invisible to pass 2 alone.
@@ -892,9 +909,9 @@ def test_reference_neighbours_norths_against_the_listed_neighbours_only() -> Non
     index = _index()
     reported, reference = _stepping_farm(index)
     usable = {name: _all_usable(index) for name in reported}
-    # constant pass 1 (no changepoints) so the anchor cannot itself remove the neighbours' +40 step
-    constant = replace(anchoring_only(DEFAULT_NORTHING), changepoints_per_year=0.0, min_changepoints=0)
-    common = {"direction_deg": reported, "usable": usable, "reanalysis_deg": reference, "anchoring_settings": constant}
+    # pass 1 is a constant bulk alignment (no changepoints), so the anchor cannot itself remove the
+    # neighbours' +40 step -- it survives into pass 2, where the neighbour consensus is measured.
+    common = {"direction_deg": reported, "usable": usable, "reanalysis_deg": reference}
 
     whole = north_farm(index, **common)
     near = north_farm(index, reference_neighbours=_NEIGHBOURS, **common)
