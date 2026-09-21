@@ -134,7 +134,12 @@ def _farm_tables(
     if key not in _FARM_RUNS:
         index, direction, usable, reanalysis = _arrays(hot, turbines, start, end, rotate_deg=rotate_deg)
         _FARM_RUNS[key] = north_farm(
-            index, direction_deg=direction, usable=usable, reanalysis_deg=reanalysis, settings=settings
+            index,
+            direction_deg=direction,
+            usable=usable,
+            reanalysis_deg=reanalysis,
+            coordinates=None,
+            settings=settings,
         )
     return _FARM_RUNS[key]
 

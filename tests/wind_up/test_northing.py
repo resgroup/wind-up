@@ -18,6 +18,7 @@ from wind_up.northing import (
     anchoring_only,
     apply_north_table,
     estimate_north_table,
+    nearest_neighbours,
     north_farm,
     veer_normalised,
     write_north_table_yaml,
@@ -331,6 +332,7 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reference,
+            coordinates=None,
         )
 
         assert set(tables) == set(offsets)
@@ -347,7 +349,7 @@ class TestNorthFarm:
         Pass 1 no longer removes a large step before the consensus is built, so on a four-device
         farm T03's +35 step shifts the circular median a few degrees at the step, and every clean
         device -- measured against that moved consensus -- is handed a matching spurious step. This
-        is why northing wants a real farm and why :func:`north_farm` takes ``reference_neighbours``
+        is why northing wants a real farm and why :func:`north_farm` takes ``coordinates``
         to keep a big mover out of a device's reference. Enlarge this farm (see
         :meth:`test_two_pass_recovers_per_device_steps`) and the leak goes away.
         """
@@ -365,6 +367,7 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reference,
+            coordinates=None,
         )
 
         assert len(tables["T03"]) == 2, "T03's own 35 deg step is still recovered"
@@ -390,6 +393,7 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reference,
+            coordinates=None,
         )
 
         for name in offsets:
@@ -413,6 +417,7 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reanalysis,
+            coordinates=None,
         )["T01"]
 
         truth = 20.0
@@ -440,7 +445,7 @@ class TestNorthFarm:
         reanalysis = (reference + rng.normal(0.0, 25.0, size=len(index))) % 360.0
         usable = {name: _all_usable(index) for name in names}
 
-        two_pass = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reanalysis)
+        two_pass = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reanalysis, coordinates=None)
 
         one_pass_errors, two_pass_errors = [], []
         for name in names:
@@ -464,6 +469,7 @@ class TestNorthFarm:
                 direction_deg=reported,
                 usable={name: _all_usable(index) for name in reported},
                 reanalysis_deg=reference,
+                coordinates=None,
                 min_devices_for_farm_reference=3,
             )
 
@@ -714,7 +720,12 @@ class TestFarmReferenceComposition:
         usable = {name: np.asarray(~outage | np.isin(name, still_on), dtype=bool) for name in reported}
 
         tables = north_farm(
-            index, direction_deg=reported, usable=usable, reanalysis_deg=reference, settings=DEFAULT_NORTHING
+            index,
+            direction_deg=reported,
+            usable=usable,
+            reanalysis_deg=reference,
+            coordinates=None,
+            settings=DEFAULT_NORTHING,
         )
 
         # Nothing may be attributed to the outage. A marginal detection elsewhere in the record is
@@ -739,12 +750,13 @@ class TestFarmReferenceComposition:
         usable = {name: _all_usable(index) for name in reported}
         subset = ("T01", "T02", "T03")
 
-        whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference)
+        whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, coordinates=None)
         part = north_farm(
             index,
             direction_deg={k: reported[k] for k in subset},
             usable={k: usable[k] for k in subset},
             reanalysis_deg=reference,
+            coordinates=None,
         )
 
         for name in subset:
@@ -778,6 +790,7 @@ class TestFarmNeedsAnAnchor:
                 direction_deg=reported,
                 usable=usable,
                 reanalysis_deg=np.full(len(index), np.nan),
+                coordinates=None,
                 settings=DEFAULT_NORTHING,
             )
 
@@ -792,7 +805,14 @@ class TestFarmNeedsAnAnchor:
         blinded[len(index) // 2 :] = np.nan
 
         with pytest.raises(ValueError, match="cannot anchor the farm"):
-            north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=blinded, settings=DEFAULT_NORTHING)
+            north_farm(
+                index,
+                direction_deg=reported,
+                usable=usable,
+                reanalysis_deg=blinded,
+                coordinates=None,
+                settings=DEFAULT_NORTHING,
+            )
 
     def test_a_healthy_reanalysis_still_norths(self) -> None:
         index = _index(days=60)
@@ -800,7 +820,12 @@ class TestFarmNeedsAnAnchor:
         usable = {name: _all_usable(index) for name in reported}
 
         tables = north_farm(
-            index, direction_deg=reported, usable=usable, reanalysis_deg=reference, settings=DEFAULT_NORTHING
+            index,
+            direction_deg=reported,
+            usable=usable,
+            reanalysis_deg=reference,
+            coordinates=None,
+            settings=DEFAULT_NORTHING,
         )
 
         assert set(tables) == set(reported)
@@ -861,7 +886,7 @@ class TestSectorSignature:
         assert signature[150] == pytest.approx(-8.0)
 
 
-# --- reference_neighbours: pass 2's consensus can be a spatial neighbour set, not the whole farm ---
+# --- coordinates: pass 2's consensus can be a spatial neighbour set, not the whole farm ---
 
 
 def _tracking(
@@ -888,79 +913,68 @@ def _stepping_farm(index: pd.DatetimeIndex) -> tuple[dict[str, np.ndarray], np.n
     return reported, reference
 
 
-_NEIGHBOURS = {
-    "T01": ["N1", "N2", "N3"],  # T01's reference is exactly the three that step
-    "N1": ["N2", "N3", "O1"],
-    "N2": ["N1", "N3", "O2"],
-    "N3": ["N1", "N2", "O3"],
-    "O1": ["O2", "O3", "T01"],
-    "O2": ["O1", "O3", "T01"],
-    "O3": ["O1", "O2", "T01"],
+# Positions that make T01's three nearest neighbours the steppers N1-N3: the clean T01 sits among
+# them, while the clean O1-O3 are a farm's-width away.
+_STEPPING_COORDS = {
+    "T01": (55.0, 0.000),
+    "N1": (55.0, 0.001),
+    "N2": (55.0, 0.002),
+    "N3": (55.0, 0.003),
+    "O1": (55.0, 1.000),
+    "O2": (55.0, 1.001),
+    "O3": (55.0, 1.002),
 }
 
 
-def test_reference_neighbours_norths_against_the_listed_neighbours_only() -> None:
-    """A clean turbine inherits its neighbours' step when they are its whole reference.
+def test_coordinates_norths_each_device_against_its_nearest_neighbours() -> None:
+    """With coordinates, a device is northed against its nearest turbines, not the whole farm.
 
-    Against the whole farm the four clean devices out-vote the three that step, so T01 stays flat;
-    against only N1-N3 the consensus itself steps +40, and T01 -- measured against it -- is handed
-    a spurious -40 step. That difference proves pass 2 used the neighbour map, not the farm median.
+    T01 is clean but sits among N1-N3, which all step +40 mid-record. Against the whole farm the
+    four clean devices out-vote the steppers, so T01 stays flat; against only its three nearest
+    (N1-N3) the consensus itself steps +40, and T01 -- measured against it -- is handed a spurious
+    -40 step. That difference proves pass 2 used the nearest-neighbour consensus, not the farm median.
     """
     index = _index()
     reported, reference = _stepping_farm(index)
     usable = {name: _all_usable(index) for name in reported}
-    # pass 1 is a constant bulk alignment (no changepoints), so the anchor cannot itself remove the
-    # neighbours' +40 step -- it survives into pass 2, where the neighbour consensus is measured.
     common = {"direction_deg": reported, "usable": usable, "reanalysis_deg": reference}
 
-    whole = north_farm(index, **common)
-    near = north_farm(index, reference_neighbours=_NEIGHBOURS, **common)
+    whole = north_farm(index, coordinates=None, **common)
+    near = north_farm(index, coordinates=_STEPPING_COORDS, neighbours=3, **common)
 
     assert len(whole["T01"]) == 1, f"whole-farm should keep T01 clean: {whole['T01']}"
     table = near["T01"].sort_values("timestamp").reset_index(drop=True)
-    assert len(table) == 2, f"neighbour reference should give T01 one step: {table}"
+    assert len(table) == 2, f"nearest-neighbour reference should give T01 one step: {table}"
     assert abs(table["timestamp"].iloc[1] - pd.Timestamp("2017-08-01", tz="UTC")) <= pd.Timedelta(days=14)
     step = abs(circ_diff(table["north_offset"].iloc[1], table["north_offset"].iloc[0]))
     assert step == pytest.approx(40.0, abs=5.0), f"recovered {step:.1f} deg"
 
 
-def test_reference_neighbours_rejects_a_device_with_too_few_neighbours() -> None:
+def test_coordinates_reject_a_farm_too_small_for_the_neighbour_count() -> None:
+    """A three-turbine farm can give each device only two neighbours, short of the floor of three.
+
+    The whole-farm path (coordinates=None) still works on such a farm, but asking for a
+    nearest-neighbour consensus it cannot form must fail rather than quietly thin the reference.
+    """
     index = _index(days=30)
-    reported, reference = _stepping_farm(index)
+    ref = _true_direction(index, seed=9)
+    flat = [("2017-01-01", 0.0)]
+    reported = {name: _tracking(index, ref, flat, seed=50 + i) for i, name in enumerate(("A", "B", "C"))}
     usable = {name: _all_usable(index) for name in reported}
-    bad = {**_NEIGHBOURS, "T01": ["N1", "N2"]}  # only two
+    coords = {"A": (55.0, 0.0), "B": (55.0, 0.001), "C": (55.0, 0.003)}
+
     with pytest.raises(ValueError, match="reference neighbour"):
-        north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, reference_neighbours=bad)
+        north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=ref, coordinates=coords)
 
 
-def test_reference_neighbours_rejects_an_unknown_device() -> None:
-    index = _index(days=30)
-    reported, reference = _stepping_farm(index)
-    usable = {name: _all_usable(index) for name in reported}
-    bad = {**_NEIGHBOURS, "T01": ["N1", "N2", "GHOST"]}
-    with pytest.raises(ValueError, match="unknown device"):
-        north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, reference_neighbours=bad)
+def test_coordinates_keep_the_anchor_when_a_devices_consensus_is_empty() -> None:
+    """A device whose nearest neighbours are all unusable has an all-NaN reference.
 
-
-def test_reference_neighbours_rejects_a_duplicate_device() -> None:
-    """A repeated neighbour would satisfy the count but collapse in the consensus dict, leaving the
-    quorum impossible to meet -- so it is rejected up front rather than yielding an empty reference."""
-    index = _index(days=30)
-    reported, reference = _stepping_farm(index)
-    usable = {name: _all_usable(index) for name in reported}
-    bad = {**_NEIGHBOURS, "T01": ["N1", "N1", "N2"]}  # three names, two devices
-    with pytest.raises(ValueError, match="duplicate"):
-        north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, reference_neighbours=bad)
-
-
-def test_reference_neighbours_keeps_the_anchor_when_a_devices_consensus_is_empty() -> None:
-    """A device whose neighbours never overlap it in usable rows has an all-NaN reference.
-
-    The whole-farm bail-out does not fire -- other devices' references are finite -- so pass 2 would
-    otherwise overwrite this device with a zero-offset table and throw away its pass-1 anchor. Its
-    constant reanalysis anchor must be kept instead. X carries a +25 deg frame offset that only the
-    anchor removes; its reference (U1-U3, all unusable) is empty, so a broken pass 2 leaves X's raw
-    +25 deg in place.
+    The whole-farm bail-out does not fire -- the far cluster's devices reference each other and are
+    finite -- so pass 2 would otherwise overwrite this device with a zero-offset table and throw away
+    its pass-1 anchor. Its constant reanalysis anchor must be kept instead. X carries a +25 deg frame
+    offset that only the anchor removes; X sits among U1-U3, which are all unusable, so its
+    nearest-neighbour reference is empty and a broken pass 2 would leave X's raw +25 deg in place.
     """
     index = _index()
     ref = _true_direction(index, seed=7)
@@ -973,21 +987,25 @@ def test_reference_neighbours_keeps_the_anchor_when_a_devices_consensus_is_empty
         "C1": _tracking(index, ref, flat, seed=24),
         "C2": _tracking(index, ref, flat, seed=25),
         "C3": _tracking(index, ref, flat, seed=26),
+        "C4": _tracking(index, ref, flat, seed=27),
     }
     dead = np.zeros(len(index), dtype=bool)
     usable = {name: (dead if name in {"U1", "U2", "U3"} else _all_usable(index)) for name in reported}
-    neighbours = {
-        "X": ["U1", "U2", "U3"],  # every one unusable -> X's reference is all-NaN
-        "U1": ["C1", "C2", "C3"],
-        "U2": ["C1", "C2", "C3"],
-        "U3": ["C1", "C2", "C3"],
-        "C1": ["C2", "C3", "X"],
-        "C2": ["C1", "C3", "X"],
-        "C3": ["C1", "C2", "X"],
+    # X's cluster {X, U1, U2, U3} sits at lon ~0, so X's three nearest are the unusable U1-U3; the
+    # usable cluster {C1-C4} is a farm's-width away and references itself, keeping the bail-out quiet.
+    coords = {
+        "X": (55.0, 0.000),
+        "U1": (55.0, 0.001),
+        "U2": (55.0, 0.002),
+        "U3": (55.0, 0.003),
+        "C1": (55.0, 1.000),
+        "C2": (55.0, 1.001),
+        "C3": (55.0, 1.002),
+        "C4": (55.0, 1.003),
     }
 
     tables = north_farm(
-        index, direction_deg=reported, usable=usable, reanalysis_deg=ref, reference_neighbours=neighbours
+        index, direction_deg=reported, usable=usable, reanalysis_deg=ref, coordinates=coords, neighbours=3
     )
 
     assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
@@ -995,7 +1013,7 @@ def test_reference_neighbours_keeps_the_anchor_when_a_devices_consensus_is_empty
     assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), "X's +25 deg anchor was discarded"
 
 
-def test_reference_neighbours_keeps_the_anchor_when_the_consensus_never_overlaps_the_device() -> None:
+def test_coordinates_keep_the_anchor_when_the_consensus_never_overlaps_the_device() -> None:
     """A finite reference is not enough; it must be finite *where the device is usable*.
 
     X reports only in the first half of the record, its neighbours only in the second. The neighbour
@@ -1013,18 +1031,46 @@ def test_reference_neighbours_keeps_the_anchor_when_the_consensus_never_overlaps
     first_half[:half] = True
     second_half[half:] = True
     usable = {"X": first_half, "N1": second_half, "N2": second_half, "N3": second_half}
-    neighbours = {
-        "X": ["N1", "N2", "N3"],  # finite only in the second half; X is usable only in the first
-        "N1": ["N2", "N3", "X"],
-        "N2": ["N1", "N3", "X"],
-        "N3": ["N1", "N2", "X"],
-    }
+    # Only four turbines, so with neighbours=3 every device's reference is the other three: X is thus
+    # northed against N1-N3, finite only in the second half, while X itself is usable only in the first.
+    coords = {"X": (55.0, 0.0), "N1": (55.0, 0.001), "N2": (55.0, 0.002), "N3": (55.0, 0.003)}
 
     tables = north_farm(
-        index, direction_deg=reported, usable=usable, reanalysis_deg=ref, reference_neighbours=neighbours
+        index, direction_deg=reported, usable=usable, reanalysis_deg=ref, coordinates=coords, neighbours=3
     )
 
     assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
     corrected = apply_north_table(index, reported["X"], north_table=tables["X"])
     on_x = circ_diff(corrected[first_half], ref[first_half]).mean()
     assert on_x == pytest.approx(0.0, abs=5.0), "X's +25 deg anchor was discarded despite no overlap"
+
+
+# Four turbines strung out along a parallel, unevenly spaced so no two are equidistant from a
+# third: A--B---C-------D at longitudes 0, 1, 3, 7 (arbitrary small degrees, same latitude).
+_LINE_COORDS = {
+    "A": (55.0, 0.00),
+    "B": (55.0, 0.01),
+    "C": (55.0, 0.03),
+    "D": (55.0, 0.07),
+}
+
+
+def test_nearest_neighbours_ranks_each_device_by_geodesic_distance() -> None:
+    nn = nearest_neighbours(_LINE_COORDS, k=2)
+    assert nn["A"] == ("B", "C")  # distances 1, 3, 7
+    assert nn["B"] == ("A", "C")  # distances 1, 2, 6
+    assert nn["C"] == ("B", "A")  # distances 2, 3, 4
+    assert nn["D"] == ("C", "B")  # distances 4, 6, 7
+
+
+def test_nearest_neighbours_excludes_the_device_itself() -> None:
+    nn = nearest_neighbours(_LINE_COORDS, k=3)
+    for name, neighbours in nn.items():
+        assert name not in neighbours
+
+
+def test_nearest_neighbours_caps_k_at_the_devices_available() -> None:
+    coords = {"A": (55.0, 0.0), "B": (55.0, 0.01), "C": (55.0, 0.03)}
+    nn = nearest_neighbours(coords, k=10)
+    assert nn["A"] == ("B", "C")  # only two others exist, so k is capped
+    assert all(len(v) == 2 for v in nn.values())

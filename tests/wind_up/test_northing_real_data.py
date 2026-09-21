@@ -92,7 +92,7 @@ def run_farm(
     key = (turbines, start, end)
     if key not in _RUNS:
         index, direction, usable, reanalysis = _arrays(hot, turbines, start, end)
-        tables = north_farm(index, direction_deg=direction, usable=usable, reanalysis_deg=reanalysis)
+        tables = north_farm(index, direction_deg=direction, usable=usable, reanalysis_deg=reanalysis, coordinates=None)
         _RUNS[key] = {name: _changepoints(table) for name, table in tables.items()}
     return _RUNS[key]
 

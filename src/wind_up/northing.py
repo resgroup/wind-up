@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from wind_up.circular_math import circ_diff, circ_median
+from wind_up.geodesy import geodesic_matrices
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -759,6 +760,28 @@ def write_north_table_yaml(tables: Mapping[str, pd.DataFrame], *, path: Path) ->
     path.write_text("\n".join(lines) + "\n")
 
 
+def nearest_neighbours(coordinates: Mapping[str, tuple[float, float]], *, k: int) -> dict[str, tuple[str, ...]]:
+    """Map each device to its ``k`` nearest others by geodesic distance.
+
+    Distances are the WGS84 ellipsoidal geodesic (:func:`wind_up.geodesy.geodesic_matrices`) over
+    each device's ``(latitude, longitude)``. ``k`` is capped at the number of other devices, so a
+    farm smaller than ``k + 1`` simply lists everyone else. A device is never its own neighbour.
+
+    This is what :func:`north_farm` uses to turn turbine positions into each device's pass-2
+    reference consensus.
+    """
+    devices = sorted(coordinates)
+    latitudes = [coordinates[d][0] for d in devices]
+    longitudes = [coordinates[d][1] for d in devices]
+    distance_m, _ = geodesic_matrices(latitudes=latitudes, longitudes=longitudes)
+    limit = min(k, len(devices) - 1)
+    out: dict[str, tuple[str, ...]] = {}
+    for i, name in enumerate(devices):
+        order = [j for j in np.argsort(distance_m[i], kind="stable") if j != i]
+        out[name] = tuple(devices[j] for j in order[:limit])
+    return out
+
+
 def _farm_quorum(n_devices: int, *, floor: int) -> int:
     """Return how many devices must report for their median to stand for the farm's consensus."""
     return max(floor, n_devices // 2 + 1)
@@ -846,9 +869,10 @@ def north_farm(
     direction_deg: Mapping[str, npt.NDArray[np.float64]],
     usable: Mapping[str, npt.NDArray[np.bool_]],
     reanalysis_deg: npt.NDArray[np.float64],
+    coordinates: Mapping[str, tuple[float, float]] | None,
+    neighbours: int = 4,
     settings: NorthingSettings = DEFAULT_NORTHING,
     min_devices_for_farm_reference: int = 3,
-    reference_neighbours: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """North a whole farm in two passes, returning one absolute table per device.
 
@@ -869,15 +893,20 @@ def north_farm(
     :param direction_deg: device name to its raw direction signal
     :param usable: device name to the rows usable for northing it
     :param reanalysis_deg: the absolute direction reference, on ``index``
+    :param coordinates: device name to its ``(latitude, longitude)`` in degrees. Pass 2 then norths
+        each device against the consensus of its ``neighbours`` nearest turbines (see
+        :func:`nearest_neighbours`), which keeps a far or miscalibrated turbine out of its reference
+        -- what a large, heterogeneous farm needs, since a turbine only shares wind with its
+        neighbours. Every device must have an entry. Pass ``coordinates=None`` -- explicitly -- to
+        fall back to the one whole-farm consensus; that ignores the layout and lets a distant or
+        miscalibrated turbine into every device's reference, so choose it only when no positions are
+        available.
+    :param neighbours: how many nearest turbines form each device's pass-2 consensus when
+        ``coordinates`` is given; capped at the farm size, and must leave every device at least
+        ``min_devices_for_farm_reference`` neighbours or the call raises.
     :param min_devices_for_farm_reference: the floor on how many devices must report at a
         timestamp for the consensus to be defined there, and the minimum farm size. The effective
         requirement is the larger of this and a strict majority of the farm.
-    :param reference_neighbours: optional map from each device to the devices whose consensus is
-        pass 2's reference for it (itself excluded). ``None`` -- the default -- norths every device
-        against the one whole-farm consensus. Supplying each device's spatial neighbours keeps a far
-        or miscalibrated turbine out of its reference, which is what a large, heterogeneous farm
-        needs; a turbine only shares wind with its neighbours anyway. Each list must name known
-        devices and hold at least ``min_devices_for_farm_reference`` of them.
     """
     devices = sorted(direction_deg)
     if len(devices) < min_devices_for_farm_reference:
@@ -891,7 +920,17 @@ def north_farm(
         msg = f"usable is missing masks for device(s) {missing}"
         raise ValueError(msg)
 
-    if reference_neighbours is not None:
+    if coordinates is None:
+        reference_neighbours = None
+    else:
+        missing_coords = sorted(set(devices) - set(coordinates))
+        if missing_coords:
+            msg = (
+                f"coordinates is missing an entry for device(s) {missing_coords}. "
+                "Pass coordinates=None explicitly to north against the whole-farm consensus instead."
+            )
+            raise ValueError(msg)
+        reference_neighbours = nearest_neighbours({d: coordinates[d] for d in devices}, k=neighbours)
         _validate_reference_neighbours(devices, reference_neighbours, min_devices=min_devices_for_farm_reference)
 
     finite_reference = np.isfinite(np.asarray(reanalysis_deg, dtype=float))
