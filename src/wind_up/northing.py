@@ -795,6 +795,12 @@ def _validate_reference_neighbours(
         if unknown:
             msg = f"reference_neighbours[{name!r}] names unknown device(s) {unknown}"
             raise ValueError(msg)
+        duplicates = sorted({n for n in neighbours if neighbours.count(n) > 1})
+        if duplicates:
+            # A repeat would count toward the quorum but collapse in the consensus dict, leaving a
+            # quorum no set of distinct devices can meet, so the reference comes out empty.
+            msg = f"reference_neighbours[{name!r}] lists duplicate device(s) {duplicates}"
+            raise ValueError(msg)
         if len(neighbours) < min_devices:
             msg = (
                 f"device {name!r} has only {len(neighbours)} reference neighbour(s), need at least "
@@ -934,9 +940,17 @@ def north_farm(
         logger.warning("farm reference is empty; keeping the reanalysis-only north tables")
         return first_pass
 
-    return {
-        name: estimate_north_table(
-            index, direction_deg[name], reference_deg=references[name], usable=usable[name], settings=settings
-        )
-        for name in devices
-    }
+    tables = {}
+    for name in devices:
+        reference = references[name]
+        if not np.isfinite(reference).any():
+            # This device's consensus (its neighbours) has no finite value where it can be used, so
+            # pass 2 has nothing to north it against. Keep its pass-1 reanalysis anchor rather than
+            # let estimate_north_table return a zero offset and throw the anchor away.
+            logger.warning("no usable farm reference for device %s; keeping its reanalysis anchor", name)
+            tables[name] = first_pass[name]
+        else:
+            tables[name] = estimate_north_table(
+                index, direction_deg[name], reference_deg=reference, usable=usable[name], settings=settings
+            )
+    return tables

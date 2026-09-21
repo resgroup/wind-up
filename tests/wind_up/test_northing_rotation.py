@@ -8,7 +8,8 @@ so each 360-0 crossing becomes an opportunity for a wrap bug to show.
 Rotations that are multiples of the 30 deg veer sector keep every row in an equivalent sector, so
 those must reproduce the unrotated tables exactly. Other rotations move sector boundaries relative
 to the data, which legitimately changes the veer signature a little; those are held to the same
-changepoints only.
+changepoints (same count, each within a few days -- the sector regrouping jitters a timestamp by a
+fraction of a day), but not to the same offsets.
 """
 
 from __future__ import annotations
@@ -78,14 +79,17 @@ def test_the_rotations_really_put_the_record_on_north(hot: pd.DataFrame) -> None
     assert near_north.mean() > 0.5
 
 
-def _compare(base: pd.DataFrame, rotated: pd.DataFrame, *, offsets_too: bool) -> list[str]:
+def _compare(base: pd.DataFrame, rotated: pd.DataFrame, *, offsets_too: bool, time_tol_days: float = 0.0) -> list[str]:
     problems = []
     if len(base) != len(rotated):
         problems.append(f"{len(base) - 1} changepoints unrotated vs {len(rotated) - 1} rotated")
         return problems
-    when = pd.DatetimeIndex(base["timestamp"]) != pd.DatetimeIndex(rotated["timestamp"])
-    if when.any():
-        problems.append(f"changepoint times differ at rows {np.flatnonzero(when).tolist()}")
+    shift_days = np.abs(
+        (pd.DatetimeIndex(rotated["timestamp"]) - pd.DatetimeIndex(base["timestamp"])).total_seconds()
+    ) / 86400.0
+    if (shift_days > time_tol_days).any():
+        rows = np.flatnonzero(shift_days > time_tol_days).tolist()
+        problems.append(f"changepoint times differ by up to {shift_days.max():.2f} d at rows {rows}")
     if offsets_too:
         worst = float(np.abs(circ_diff(base["north_offset"], rotated["north_offset"])).max())
         if worst > 1e-6:
@@ -93,19 +97,29 @@ def _compare(base: pd.DataFrame, rotated: pd.DataFrame, *, offsets_too: bool) ->
     return problems
 
 
-_SECTOR_BOUNDARY_XFAIL = pytest.mark.xfail(
-    reason=(
-        "veer sectors are fixed at absolute 0/30/60... deg, so a rotation that is not a multiple of the "
-        "sector width regroups rows and can change the veer signature; not a 0/360 wrap bug. Non-strict: "
-        "whether a given record is sensitive to the regrouping depends on the data (T16 at 223 deg is not)"
-    ),
-    strict=False,
-)
+# A sector-misaligned rotation regroups rows across the fixed veer-sector boundaries, which nudges a
+# changepoint's timestamp by a fraction of a day; the count never changes. Allow that jitter so the
+# test still fails on a real wrap bug (which moves changepoints by weeks or changes their count).
+_MISALIGNED_TIME_TOL_DAYS = 3.0
+
+
+# Each case is (rotation, check_offsets). Sector-aligned rotations keep every row in an equivalent
+# veer sector, so the offsets must match to the last decimal. A misaligned rotation regroups rows
+# across the fixed 0/30/60... deg sector boundaries and can change the veer signature a little -- a
+# legitimate offset difference, not a 0/360 wrap bug -- so its offsets are not pinned. The
+# changepoints must survive either way, and those are always asserted (never hidden behind an xfail),
+# so a rotation that moves a changepoint fails the test.
 _ROTATIONS = [
     *(pytest.param(r, id=f"aligned-{r:.0f}") for r in SECTOR_ALIGNED),
-    *(pytest.param(r, id=f"misaligned-{r:.0f}", marks=_SECTOR_BOUNDARY_XFAIL) for r in SECTOR_MISALIGNED),
+    *(pytest.param(r, id=f"misaligned-{r:.0f}") for r in SECTOR_MISALIGNED),
 ]
 NO_VEER = replace(DEFAULT_NORTHING, veer_sector_deg=None)
+
+
+def _tolerances(rotate_deg: float) -> tuple[bool, float]:
+    """``(offsets_too, time_tol_days)`` for a rotation: exact for sector-aligned, lenient otherwise."""
+    aligned = rotate_deg in SECTOR_ALIGNED
+    return aligned, 0.0 if aligned else _MISALIGNED_TIME_TOL_DAYS
 
 
 def _farm_tables(
@@ -134,7 +148,8 @@ def _lone(hot: pd.DataFrame, rotate_deg: float, settings: NorthingSettings = DEF
 
 @pytest.mark.parametrize("rotate_deg", _ROTATIONS)
 def test_a_lone_turbine_against_reanalysis(hot: pd.DataFrame, rotate_deg: float) -> None:
-    problems = _compare(_lone(hot, 0.0), _lone(hot, rotate_deg), offsets_too=True)
+    offsets_too, tol = _tolerances(rotate_deg)
+    problems = _compare(_lone(hot, 0.0), _lone(hot, rotate_deg), offsets_too=offsets_too, time_tol_days=tol)
     assert problems == [], f"T16 rotated by {rotate_deg}: {problems}"
 
 
@@ -143,7 +158,12 @@ def test_a_lone_turbine_against_reanalysis(hot: pd.DataFrame, rotate_deg: float)
 def test_the_whole_farm(hot: pd.DataFrame, rotate_deg: float) -> None:
     base = _farm_tables(hot, ALL_TURBINES, "2019-01-01", "2021-01-01", 0.0)
     rotated = _farm_tables(hot, ALL_TURBINES, "2019-01-01", "2021-01-01", rotate_deg)
-    problems = {name: p for name in ALL_TURBINES if (p := _compare(base[name], rotated[name], offsets_too=True))}
+    offsets_too, tol = _tolerances(rotate_deg)
+    problems = {
+        name: p
+        for name in ALL_TURBINES
+        if (p := _compare(base[name], rotated[name], offsets_too=offsets_too, time_tol_days=tol))
+    }
     assert problems == {}, f"rotated by {rotate_deg}: {problems}"
 
 
@@ -152,7 +172,12 @@ def test_the_whole_farm(hot: pd.DataFrame, rotate_deg: float) -> None:
 def test_half_the_farm(hot: pd.DataFrame, rotate_deg: float) -> None:
     base = _farm_tables(hot, WEST, "2017-01-01", "2019-01-01", 0.0)
     rotated = _farm_tables(hot, WEST, "2017-01-01", "2019-01-01", rotate_deg)
-    problems = {name: p for name in WEST if (p := _compare(base[name], rotated[name], offsets_too=True))}
+    offsets_too, tol = _tolerances(rotate_deg)
+    problems = {
+        name: p
+        for name in WEST
+        if (p := _compare(base[name], rotated[name], offsets_too=offsets_too, time_tol_days=tol))
+    }
     assert problems == {}, f"rotated by {rotate_deg}: {problems}"
 
 

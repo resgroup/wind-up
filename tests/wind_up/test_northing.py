@@ -940,3 +940,56 @@ def test_reference_neighbours_rejects_an_unknown_device() -> None:
     bad = {**_NEIGHBOURS, "T01": ["N1", "N2", "GHOST"]}
     with pytest.raises(ValueError, match="unknown device"):
         north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, reference_neighbours=bad)
+
+
+def test_reference_neighbours_rejects_a_duplicate_device() -> None:
+    """A repeated neighbour would satisfy the count but collapse in the consensus dict, leaving the
+    quorum impossible to meet -- so it is rejected up front rather than yielding an empty reference."""
+    index = _index(days=30)
+    reported, reference = _stepping_farm(index)
+    usable = {name: _all_usable(index) for name in reported}
+    bad = {**_NEIGHBOURS, "T01": ["N1", "N1", "N2"]}  # three names, two devices
+    with pytest.raises(ValueError, match="duplicate"):
+        north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, reference_neighbours=bad)
+
+
+def test_reference_neighbours_keeps_the_anchor_when_a_devices_consensus_is_empty() -> None:
+    """A device whose neighbours never overlap it in usable rows has an all-NaN reference.
+
+    The whole-farm bail-out does not fire -- other devices' references are finite -- so pass 2 would
+    otherwise overwrite this device with a zero-offset table and throw away its pass-1 anchor. Its
+    constant reanalysis anchor must be kept instead. X carries a +25 deg frame offset that only the
+    anchor removes; its reference (U1-U3, all unusable) is empty, so a broken pass 2 leaves X's raw
+    +25 deg in place.
+    """
+    index = _index()
+    ref = _true_direction(index, seed=7)
+    flat = [("2017-01-01", 0.0)]
+    reported = {
+        "X": _tracking(index, ref, [("2017-01-01", 25.0)], seed=20),
+        "U1": _tracking(index, ref, flat, seed=21),
+        "U2": _tracking(index, ref, flat, seed=22),
+        "U3": _tracking(index, ref, flat, seed=23),
+        "C1": _tracking(index, ref, flat, seed=24),
+        "C2": _tracking(index, ref, flat, seed=25),
+        "C3": _tracking(index, ref, flat, seed=26),
+    }
+    dead = np.zeros(len(index), dtype=bool)
+    usable = {name: (dead if name in {"U1", "U2", "U3"} else _all_usable(index)) for name in reported}
+    neighbours = {
+        "X": ["U1", "U2", "U3"],  # every one unusable -> X's reference is all-NaN
+        "U1": ["C1", "C2", "C3"],
+        "U2": ["C1", "C2", "C3"],
+        "U3": ["C1", "C2", "C3"],
+        "C1": ["C2", "C3", "X"],
+        "C2": ["C1", "C3", "X"],
+        "C3": ["C1", "C2", "X"],
+    }
+
+    tables = north_farm(
+        index, direction_deg=reported, usable=usable, reanalysis_deg=ref, reference_neighbours=neighbours
+    )
+
+    assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
+    corrected = apply_north_table(index, reported["X"], north_table=tables["X"])
+    assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), "X's +25 deg anchor was discarded"
