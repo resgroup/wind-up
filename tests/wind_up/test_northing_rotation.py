@@ -138,7 +138,7 @@ def _farm_tables(
             direction_deg=direction,
             usable=usable,
             reanalysis_deg=reanalysis,
-            coordinates=None,
+            layout=None,
             settings=settings,
         )
     return _FARM_RUNS[key]

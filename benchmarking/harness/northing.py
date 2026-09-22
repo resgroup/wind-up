@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from wind_up.layout import Layout
 from wind_up.northing import (
     DEFAULT_NORTHING,
     NorthingSettings,
@@ -229,7 +230,7 @@ def north_scada(
             direction_deg=directions,
             usable=usable,
             reanalysis_deg=reference,
-            coordinates=coordinates,
+            layout=Layout.from_coordinates(coordinates) if coordinates is not None else None,
             settings=settings,
         )
         found = sum(len(t) - 1 for t in tables.values())

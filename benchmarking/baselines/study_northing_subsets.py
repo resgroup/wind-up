@@ -159,7 +159,7 @@ def run_case(frame: pd.DataFrame, turbines: Sequence[str], start: pd.Timestamp, 
         direction_deg=direction,
         usable=usable,
         reanalysis_deg=reanalysis,
-        coordinates=None,
+        layout=None,
         settings=DEFAULT_NORTHING,
     )
     found: list[dict[str, object]] = []

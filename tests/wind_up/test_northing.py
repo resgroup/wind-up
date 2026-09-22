@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from wind_up.circular_math import circ_diff, circ_median
+from wind_up.layout import Layout
 from wind_up.northing import (
     DEFAULT_NORTHING,
     NorthingSettings,
@@ -332,7 +333,7 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reference,
-            coordinates=None,
+            layout=None,
         )
 
         assert set(tables) == set(offsets)
@@ -367,7 +368,7 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reference,
-            coordinates=None,
+            layout=None,
         )
 
         assert len(tables["T03"]) == 2, "T03's own 35 deg step is still recovered"
@@ -393,7 +394,7 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reference,
-            coordinates=None,
+            layout=None,
         )
 
         for name in offsets:
@@ -417,7 +418,7 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reanalysis,
-            coordinates=None,
+            layout=None,
         )["T01"]
 
         truth = 20.0
@@ -445,7 +446,7 @@ class TestNorthFarm:
         reanalysis = (reference + rng.normal(0.0, 25.0, size=len(index))) % 360.0
         usable = {name: _all_usable(index) for name in names}
 
-        two_pass = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reanalysis, coordinates=None)
+        two_pass = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reanalysis, layout=None)
 
         one_pass_errors, two_pass_errors = [], []
         for name in names:
@@ -457,21 +458,6 @@ class TestNorthFarm:
         # a device pass 1 happened to get right can still move slightly the wrong way; the farm is
         # what has to improve
         assert np.mean(two_pass_errors) < np.mean(one_pass_errors)
-
-    def test_raises_when_too_few_devices_for_a_farm_reference(self) -> None:
-        index = _index(days=30)
-        offsets = {"T01": [("2017-01-01", 0.0)], "T02": [("2017-01-01", 5.0)]}
-        reported, reference = self._farm(index, offsets)
-
-        with pytest.raises(ValueError, match="min_devices_for_farm_reference"):
-            north_farm(
-                index,
-                direction_deg=reported,
-                usable={name: _all_usable(index) for name in reported},
-                reanalysis_deg=reference,
-                coordinates=None,
-                min_devices_for_farm_reference=3,
-            )
 
 
 class TestSettings:
@@ -724,7 +710,7 @@ class TestFarmReferenceComposition:
             direction_deg=reported,
             usable=usable,
             reanalysis_deg=reference,
-            coordinates=None,
+            layout=None,
             settings=DEFAULT_NORTHING,
         )
 
@@ -750,13 +736,13 @@ class TestFarmReferenceComposition:
         usable = {name: _all_usable(index) for name in reported}
         subset = ("T01", "T02", "T03")
 
-        whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, coordinates=None)
+        whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, layout=None)
         part = north_farm(
             index,
             direction_deg={k: reported[k] for k in subset},
             usable={k: usable[k] for k in subset},
             reanalysis_deg=reference,
-            coordinates=None,
+            layout=None,
         )
 
         for name in subset:
@@ -790,7 +776,7 @@ class TestFarmNeedsAnAnchor:
                 direction_deg=reported,
                 usable=usable,
                 reanalysis_deg=np.full(len(index), np.nan),
-                coordinates=None,
+                layout=None,
                 settings=DEFAULT_NORTHING,
             )
 
@@ -810,7 +796,7 @@ class TestFarmNeedsAnAnchor:
                 direction_deg=reported,
                 usable=usable,
                 reanalysis_deg=blinded,
-                coordinates=None,
+                layout=None,
                 settings=DEFAULT_NORTHING,
             )
 
@@ -824,7 +810,7 @@ class TestFarmNeedsAnAnchor:
             direction_deg=reported,
             usable=usable,
             reanalysis_deg=reference,
-            coordinates=None,
+            layout=None,
             settings=DEFAULT_NORTHING,
         )
 
@@ -938,13 +924,13 @@ def test_coordinates_norths_each_device_against_its_nearest_neighbours() -> None
     reported, reference = _stepping_farm(index)
     usable = {name: _all_usable(index) for name in reported}
 
-    whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, coordinates=None)
+    whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, layout=None)
     near = north_farm(
         index,
         direction_deg=reported,
         usable=usable,
         reanalysis_deg=reference,
-        coordinates=_STEPPING_COORDS,
+        layout=Layout.from_coordinates(_STEPPING_COORDS),
         neighbours=3,
     )
 
@@ -956,21 +942,67 @@ def test_coordinates_norths_each_device_against_its_nearest_neighbours() -> None
     assert step == pytest.approx(40.0, abs=5.0), f"recovered {step:.1f} deg"
 
 
-def test_coordinates_reject_a_farm_too_small_for_the_neighbour_count() -> None:
+def test_a_farm_below_the_floor_is_anchored_not_rejected() -> None:
+    """A one- or two-device farm no longer raises: it is anchored to reanalysis and returned.
+
+    Below ``min_devices_for_farm_reference`` there is no farm consensus to form, so ``north_farm``
+    falls back to the pass-1 constant reanalysis anchor rather than refusing. A +25 deg frame offset
+    on the pair must still be removed.
+    """
+    index = _index(days=120)
+    ref = _true_direction(index, seed=5)
+    reported = {
+        "A": _tracking(index, ref, [("2017-01-01", 25.0)], seed=60),
+        "B": _tracking(index, ref, [("2017-01-01", -10.0)], seed=61),
+    }
+    usable = {name: _all_usable(index) for name in reported}
+
+    tables = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=ref, layout=None)
+
+    assert set(tables) == {"A", "B"}
+    for name, signal in reported.items():
+        assert len(tables[name]) == 1, f"{name} should get a single constant anchor: {tables[name]}"
+        corrected = apply_north_table(index, signal, north_table=tables[name])
+        assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), name
+
+
+def test_power_missing_a_device_is_rejected() -> None:
+    """``power`` feeds the pass-4 wake nudge, so an entry for every device is required when given."""
+    index = _index(days=30)
+    ref = _true_direction(index, seed=4)
+    flat = [("2017-01-01", 0.0)]
+    reported = {name: _tracking(index, ref, flat, seed=70 + i) for i, name in enumerate(("A", "B", "C", "D"))}
+    usable = {name: _all_usable(index) for name in reported}
+    power = {name: np.ones(len(index)) for name in ("A", "B", "C")}  # D is missing
+
+    with pytest.raises(ValueError, match="power is missing"):
+        north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=ref, layout=None, power=power)
+
+
+def test_a_farm_too_small_for_the_neighbour_count_falls_back_to_the_whole_farm() -> None:
     """A three-turbine farm can give each device only two neighbours, short of the floor of three.
 
-    The whole-farm path (coordinates=None) still works on such a farm, but asking for a
-    nearest-neighbour consensus it cannot form must fail rather than quietly thin the reference.
+    Rather than refusing, ``north_farm`` logs the shortfall and norths against the whole-farm
+    consensus -- which a three-device farm can still form. C carries a +25 deg frame offset the
+    consensus removes.
     """
-    index = _index(days=30)
+    index = _index()
     ref = _true_direction(index, seed=9)
     flat = [("2017-01-01", 0.0)]
-    reported = {name: _tracking(index, ref, flat, seed=50 + i) for i, name in enumerate(("A", "B", "C"))}
+    reported = {
+        "A": _tracking(index, ref, flat, seed=50),
+        "B": _tracking(index, ref, flat, seed=51),
+        "C": _tracking(index, ref, [("2017-01-01", 25.0)], seed=52),
+    }
     usable = {name: _all_usable(index) for name in reported}
     coords = {"A": (55.0, 0.0), "B": (55.0, 0.001), "C": (55.0, 0.003)}
 
-    with pytest.raises(ValueError, match="reference neighbour"):
-        north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=ref, coordinates=coords)
+    tables = north_farm(
+        index, direction_deg=reported, usable=usable, reanalysis_deg=ref, layout=Layout.from_coordinates(coords)
+    )
+
+    corrected = apply_north_table(index, reported["C"], north_table=tables["C"])
+    assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), "C's +25 deg offset survived"
 
 
 def test_coordinates_keep_the_anchor_when_a_devices_consensus_is_empty() -> None:
@@ -1011,7 +1043,12 @@ def test_coordinates_keep_the_anchor_when_a_devices_consensus_is_empty() -> None
     }
 
     tables = north_farm(
-        index, direction_deg=reported, usable=usable, reanalysis_deg=ref, coordinates=coords, neighbours=3
+        index,
+        direction_deg=reported,
+        usable=usable,
+        reanalysis_deg=ref,
+        layout=Layout.from_coordinates(coords),
+        neighbours=3,
     )
 
     assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
@@ -1042,7 +1079,12 @@ def test_coordinates_keep_the_anchor_when_the_consensus_never_overlaps_the_devic
     coords = {"X": (55.0, 0.0), "N1": (55.0, 0.001), "N2": (55.0, 0.002), "N3": (55.0, 0.003)}
 
     tables = north_farm(
-        index, direction_deg=reported, usable=usable, reanalysis_deg=ref, coordinates=coords, neighbours=3
+        index,
+        direction_deg=reported,
+        usable=usable,
+        reanalysis_deg=ref,
+        layout=Layout.from_coordinates(coords),
+        neighbours=3,
     )
 
     assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"

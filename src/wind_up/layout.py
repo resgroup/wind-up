@@ -8,10 +8,14 @@ them with no upwind turbine in the way.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from wind_up.circular_math import circ_diff
 from wind_up.geodesy import geodesic_matrices
@@ -24,6 +28,10 @@ WIND_FARM_COL = "wind_farm"
 
 # Wind directions swept for front-row classification, one per degree.
 SWEEP_DIRECTIONS_DEG = np.arange(360, dtype=np.float64)
+
+# Rotor diameter used when a layout carries none. Distances in diameters, and so the wake cutoff,
+# are then only approximate; geodesic distances and bearings are unaffected.
+DEFAULT_ROTOR_DIAMETER_M = 82.0
 
 
 def iec_disturbed_sector_deg(distance_diameters: npt.ArrayLike) -> npt.NDArray[np.float64]:
@@ -57,9 +65,9 @@ class Layout:
         """Validate ``frame`` and compute its geometry.
 
         Column names are matched case-insensitively. ``latitude`` and ``longitude`` are required;
-        ``name`` and ``wind_farm`` are optional. ``rotor_diameter_m`` needs at least one value;
-        missing ones take the largest known, and the filled turbines are listed in
-        ``filled_rotor_diameters``.
+        ``name``, ``wind_farm`` and ``rotor_diameter_m`` are optional. A missing rotor diameter
+        takes the largest known, or :data:`DEFAULT_ROTOR_DIAMETER_M` when none is known; the filled
+        turbines are listed in ``filled_rotor_diameters``.
         """
         lookup = {str(c).strip().lower(): c for c in frame.columns}
         missing = [c for c in (LATITUDE_COL, LONGITUDE_COL) if c not in lookup]
@@ -80,9 +88,6 @@ class Layout:
             raise ValueError(msg)
 
         diameters = pd.to_numeric(column(ROTOR_DIAMETER_COL), errors="coerce").astype(float)
-        if diameters.isna().all():
-            msg = "the layout has no rotor diameter for any turbine; at least one is needed"
-            raise ValueError(msg)
         unknown = diameters.isna()
         # Distances are measured in rotor diameters, so a non-positive one inverts the reference
         # limit and every turbine reads as near, while an infinite one puts them all out of range.
@@ -92,7 +97,7 @@ class Layout:
             msg = f"the layout gives {named} a rotor diameter that is not positive and finite"
             raise ValueError(msg)
         filled = tuple(str(n) if n is not None else f"row {i}" for i, n in enumerate(names) if unknown.iloc[i])
-        diameters = diameters.fillna(diameters.max())
+        diameters = diameters.fillna(diameters.max() if not unknown.all() else DEFAULT_ROTOR_DIAMETER_M)
 
         tidy = pd.DataFrame(
             {
@@ -105,6 +110,22 @@ class Layout:
         )
         distance_m, bearing_deg = geodesic_matrices(latitudes=tidy[LATITUDE_COL], longitudes=tidy[LONGITUDE_COL])
         return cls(frame=tidy, filled_rotor_diameters=filled, distance_m=distance_m, bearing_deg=bearing_deg)
+
+    @classmethod
+    def from_coordinates(cls, coordinates: Mapping[str, tuple[float, float]]) -> Layout:
+        """Build a layout from device name to ``(latitude, longitude)`` alone.
+
+        Every rotor diameter is filled with :data:`DEFAULT_ROTOR_DIAMETER_M`, so the geodesic
+        geometry is exact but distances in diameters are only approximate.
+        """
+        frame = pd.DataFrame(
+            {
+                NAME_COL: list(coordinates),
+                LATITUDE_COL: [coordinates[name][0] for name in coordinates],
+                LONGITUDE_COL: [coordinates[name][1] for name in coordinates],
+            }
+        )
+        return cls.from_frame(frame)
 
     def index_of(self, name: str) -> int:
         """Return the row of the turbine called ``name``."""

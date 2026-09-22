@@ -25,12 +25,15 @@ import pandas as pd
 
 from wind_up.circular_math import circ_diff, circ_median
 from wind_up.geodesy import geodesic_matrices
+from wind_up.layout import NAME_COL
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     import numpy.typing as npt
+
+    from wind_up.layout import Layout
 
 logger = logging.getLogger(__name__)
 
@@ -803,6 +806,74 @@ def nearest_neighbours(coordinates: Mapping[str, tuple[float, float]], *, k: int
     return out
 
 
+def _neighbours_from_layout(layout: Layout, *, devices: list[str], k: int) -> dict[str, tuple[str, ...]]:
+    """Map each device to its ``k`` nearest of the other ``devices`` by the layout's geodesic distance.
+
+    Reuses ``layout.distance_m`` rather than recomputing. External turbines in the layout that are
+    not being northed take no part. ``k`` is capped at the number of other devices, so a device is
+    never its own neighbour and a small farm simply lists everyone else.
+    """
+    rows = {name: layout.index_of(name) for name in devices}
+    limit = min(k, len(devices) - 1)
+    out: dict[str, tuple[str, ...]] = {}
+    for name in devices:
+        ranked = sorted((float(layout.distance_m[rows[name], rows[o]]), o) for o in devices if o != name)
+        out[name] = tuple(o for _, o in ranked[:limit])
+    return out
+
+
+def _validate_north_farm_inputs(
+    devices: list[str],
+    *,
+    usable: Mapping[str, npt.NDArray[np.bool_]],
+    power: Mapping[str, npt.NDArray[np.float64]] | None,
+    layout: Layout | None,
+) -> None:
+    """Check every device has a usable mask, a power entry when ``power`` is given, and a layout row."""
+    missing = sorted(set(devices) - set(usable))
+    if missing:
+        msg = f"usable is missing masks for device(s) {missing}"
+        raise ValueError(msg)
+    if power is not None:
+        missing_power = sorted(set(devices) - set(power))
+        if missing_power:
+            msg = f"power is missing an entry for device(s) {missing_power}"
+            raise ValueError(msg)
+    if layout is not None:
+        known = {n for n in layout.frame[NAME_COL].to_numpy() if n is not None}
+        unknown = sorted(set(devices) - known)
+        if unknown:
+            msg = (
+                f"layout has no row for device(s) {unknown}. "
+                "Pass layout=None explicitly to north against the whole-farm consensus instead."
+            )
+            raise ValueError(msg)
+
+
+def _pass_two_reference(
+    layout: Layout | None, *, devices: list[str], neighbours: int, min_devices: int
+) -> dict[str, tuple[str, ...]] | None:
+    """Return each device's pass-2 neighbour set, or ``None`` for the whole-farm consensus.
+
+    With a layout, a device is northed against its ``neighbours`` nearest turbines -- but only where
+    the layout leaves every device at least ``min_devices`` of them; a farm too small for that falls
+    back to the whole-farm consensus.
+    """
+    if layout is None:
+        return None
+    candidate = _neighbours_from_layout(layout, devices=devices, k=neighbours)
+    thinnest = min(len(candidate[d]) for d in devices)
+    if thinnest < min_devices:
+        logger.warning(
+            "layout gives each device only %d neighbour(s), below min_devices_for_farm_reference=%d; "
+            "northing against the whole-farm consensus instead",
+            thinnest,
+            min_devices,
+        )
+        return None
+    return candidate
+
+
 def _farm_quorum(n_devices: int, *, floor: int) -> int:
     """Return how many devices must report for their median to stand for the farm's consensus."""
     return max(floor, n_devices // 2 + 1)
@@ -823,34 +894,6 @@ def _farm_direction(
     )
     enough = np.isfinite(stack).sum(axis=0) >= min_devices
     return _median_across(stack, enough=enough)
-
-
-def _validate_reference_neighbours(
-    devices: list[str], reference_neighbours: Mapping[str, Sequence[str]], *, min_devices: int
-) -> None:
-    """Check every device has an entry naming at least ``min_devices`` known other devices."""
-    known = set(devices)
-    for name in devices:
-        if name not in reference_neighbours:
-            msg = f"reference_neighbours is missing an entry for device {name!r}"
-            raise ValueError(msg)
-        neighbours = [n for n in reference_neighbours[name] if n != name]
-        unknown = sorted(set(neighbours) - known)
-        if unknown:
-            msg = f"reference_neighbours[{name!r}] names unknown device(s) {unknown}"
-            raise ValueError(msg)
-        duplicates = sorted({n for n in neighbours if neighbours.count(n) > 1})
-        if duplicates:
-            # A repeat would count toward the quorum but collapse in the consensus dict, leaving a
-            # quorum no set of distinct devices can meet, so the reference comes out empty.
-            msg = f"reference_neighbours[{name!r}] lists duplicate device(s) {duplicates}"
-            raise ValueError(msg)
-        if len(neighbours) < min_devices:
-            msg = (
-                f"device {name!r} has only {len(neighbours)} reference neighbour(s), need at least "
-                f"min_devices_for_farm_reference={min_devices}: {neighbours}"
-            )
-            raise ValueError(msg)
 
 
 def _consensus_references(
@@ -890,7 +933,8 @@ def north_farm(
     direction_deg: Mapping[str, npt.NDArray[np.float64]],
     usable: Mapping[str, npt.NDArray[np.bool_]],
     reanalysis_deg: npt.NDArray[np.float64],
-    coordinates: Mapping[str, tuple[float, float]] | None,
+    layout: Layout | None,
+    power: Mapping[str, npt.NDArray[np.float64]] | None = None,
     neighbours: int = 4,
     settings: NorthingSettings = DEFAULT_NORTHING,
     min_devices_for_farm_reference: int = 3,
@@ -914,45 +958,25 @@ def north_farm(
     :param direction_deg: device name to its raw direction signal
     :param usable: device name to the rows usable for northing it
     :param reanalysis_deg: the absolute direction reference, on ``index``
-    :param coordinates: device name to its ``(latitude, longitude)`` in degrees. Pass 2 then norths
-        each device against the consensus of its ``neighbours`` nearest turbines (see
-        :func:`nearest_neighbours`), which keeps a far or miscalibrated turbine out of its reference
-        -- what a large, heterogeneous farm needs, since a turbine only shares wind with its
-        neighbours. Every device must have an entry. Pass ``coordinates=None`` -- explicitly -- to
-        fall back to the one whole-farm consensus; that ignores the layout and lets a distant or
-        miscalibrated turbine into every device's reference, so choose it only when no positions are
-        available.
-    :param neighbours: how many nearest turbines form each device's pass-2 consensus when
-        ``coordinates`` is given; capped at the farm size, and must leave every device at least
+    :param layout: the farm :class:`~wind_up.layout.Layout`. Pass 2 then norths each device against
+        the consensus of its ``neighbours`` nearest turbines (by the layout's geodesic distance),
+        which keeps a far or miscalibrated turbine out of its reference -- what a large, heterogeneous
+        farm needs, since a turbine only shares wind with its neighbours. Every device in
+        ``direction_deg`` must resolve to a layout row; external turbines in the layout are ignored.
+        Pass ``layout=None`` -- explicitly -- to fall back to the one whole-farm consensus; that lets
+        a distant or miscalibrated turbine into every device's reference, so choose it only when no
+        positions are available.
+    :param power: device name to its power signal on ``index``, for the pass-4 wake-nadir nudge.
+        ``None`` disables pass 4.
+    :param neighbours: how many nearest turbines form each device's pass-2 consensus when ``layout``
+        is given; capped at the farm size, and must leave every device at least
         ``min_devices_for_farm_reference`` neighbours or the call raises.
     :param min_devices_for_farm_reference: the floor on how many devices must report at a
         timestamp for the consensus to be defined there, and the minimum farm size. The effective
         requirement is the larger of this and a strict majority of the farm.
     """
     devices = sorted(direction_deg)
-    if len(devices) < min_devices_for_farm_reference:
-        msg = (
-            f"north_farm needs at least min_devices_for_farm_reference={min_devices_for_farm_reference} "
-            f"devices to form a farm reference, got {len(devices)}: {devices}"
-        )
-        raise ValueError(msg)
-    missing = sorted(set(devices) - set(usable))
-    if missing:
-        msg = f"usable is missing masks for device(s) {missing}"
-        raise ValueError(msg)
-
-    if coordinates is None:
-        reference_neighbours = None
-    else:
-        missing_coords = sorted(set(devices) - set(coordinates))
-        if missing_coords:
-            msg = (
-                f"coordinates is missing an entry for device(s) {missing_coords}. "
-                "Pass coordinates=None explicitly to north against the whole-farm consensus instead."
-            )
-            raise ValueError(msg)
-        reference_neighbours = nearest_neighbours({d: coordinates[d] for d in devices}, k=neighbours)
-        _validate_reference_neighbours(devices, reference_neighbours, min_devices=min_devices_for_farm_reference)
+    _validate_north_farm_inputs(devices, usable=usable, power=power, layout=layout)
 
     finite_reference = np.isfinite(np.asarray(reanalysis_deg, dtype=float))
     anchorable = {d: int((np.asarray(usable[d], dtype=bool) & finite_reference).sum()) for d in devices}
@@ -988,6 +1012,20 @@ def north_farm(
         for name in devices
     }
     northed = {name: apply_north_table(index, direction_deg[name], north_table=first_pass[name]) for name in devices}
+
+    # Whole-farm switch: below the floor there is no farm consensus to form, so keep the pass-1
+    # constant anchor. (Pass 3, reanalysis with changepoints, is the small-farm refinement.)
+    if len(devices) < min_devices_for_farm_reference:
+        logger.warning(
+            "farm of %d device(s) is below min_devices_for_farm_reference=%d; keeping the reanalysis anchor",
+            len(devices),
+            min_devices_for_farm_reference,
+        )
+        return first_pass
+
+    reference_neighbours = _pass_two_reference(
+        layout, devices=devices, neighbours=neighbours, min_devices=min_devices_for_farm_reference
+    )
     quorum = _farm_quorum(len(devices), floor=min_devices_for_farm_reference)
     references = _consensus_references(
         northed,
