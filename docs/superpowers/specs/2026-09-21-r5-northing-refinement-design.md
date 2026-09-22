@@ -40,6 +40,10 @@ answer — not just its internal consistency — using wake nadirs as a physical
    reference with changepoint detection, via `against_reanalysis(settings)`, at a
    `REANALYSIS_MIN_STEP_DEG` lowered by evidence. Supersedes pass 1 for small farms (pass 1 is its
    no-changepoint special case).
+   **Open question — Pass 1 re-anchor.** If Pass 2 uncovers heavy changepoints, the whole-record
+   Pass 1 anchor may be biased (its mean blends the pre/post regimes); a re-anchor afterwards
+   ("Pass 1′") might help. This is decided by the re-anchor synthetic challenge (§Graceful
+   degradation and challenge cases), not assumed.
 4. **Pass 4 — wake-nadir absolute nudge** *(new)*. Runs when a `Layout` and per-device `power` are
    supplied and geometry gives at least one usable pair within the wake cutoff. Produces one
    **absolute correction per turbine**, added on top of that turbine's changepoint table. Never
@@ -62,9 +66,9 @@ brainstorming):
   deficit-versus-direction curve. `None` disables pass 4.
 
 Device names in `direction_deg` must resolve to `Layout` rows; validated with a clear error.
-Reference-only turbines in the layout that are not being northed are ignored.
+External turbines in the layout that are not being northed are ignored.
 
-## Pass 3 design (Part A)
+## Pass 3 design
 
 Reanalysis reference + changepoints, veer-normalisation on (it also subtracts reanalysis's *static*
 direction-dependent bias per sector). The floor is lowered **by evidence, not assertion**.
@@ -81,7 +85,7 @@ mainly exposes edge / short-segment artefacts, already guarded by the support-sc
   (a separate `min_persistence_deg` for the reanalysis regime). Added **only if** evidence shows the
   floor alone cannot separate small real steps from artefacts. Not built speculatively.
 
-## Pass 4 design (Part B)
+## Pass 4 design
 
 A new module (`src/wind_up/wake_nadir.py`), invoked as pass 4 inside `north_farm`.
 
@@ -95,11 +99,32 @@ changepoints untouched" holds.
 (**10 rotor diameters**, from `layout`), the geometric nadir bearing β is the wind-from direction at
 which X's wake lands on Y — the geodesic bearing Y→X (reusing `WakePair` logic on `layout`).
 
-**Measured (apparent) nadir and its uncertainty.** For turbine X as the direction reference, bin
-Y's power against X's **northed** wind direction in a sector around β; locate the deficit minimum by
-a robust quadratic fit near the dip. The fit yields both the centre and a **quick standard error**
-from the dip's curvature (sharpness), depth, and in-sector row count: deep, sharp, well-sampled dips
-get small σ; shallow or thin ones get large σ. Apparent − geometric = X's residual δ.
+**Measured (apparent) nadir and its uncertainty.** For turbine X as the direction reference and
+downstream turbine Y, build the deficit-versus-direction curve in 1° bins of X's **northed** wind
+direction, restricted to a bounded sector around the geometric nadir β (**default ±15°** — wider
+than the largest plausible residual so the dip sits well inside the fit region, yet narrow enough to
+reject a spurious minimum from another wake or a record edge):
+
+- **Normalise as a ratio of means.** In each bin take Y's mean signal ÷ X's mean signal over the
+  same timestamps, not Y's raw power. Dividing by the upstream reference removes the
+  direction-dependence of the ambient resource, so the curve isolates the wake deficit rather than
+  the shape of the wind rose.
+- **Two independent deficit signals.** Compute the ratio-of-means for **both power and downstream
+  nacelle wind speed** and combine them (mean of the two normalised curves). They are physically
+  independent measures of the same deficit; their agreement is a quality signal and averaging
+  suppresses per-signal noise. Fall back to power alone where downstream nacelle wind speed is
+  missing or untrustworthy.
+- **Only where a wake exists.** Require the upstream turbine to be producing above a low power
+  threshold (above cut-in, not curtailed/parked); reuse the existing waking/validity filtering.
+- **Locate the dip** by a robust quadratic fit near the minimum of the *combined* curve. The fit
+  yields both the sub-bin centre and a **quick standard error** from the dip's curvature
+  (sharpness), depth, and in-sector row count: deep, sharp, well-sampled dips get small σ; shallow
+  or thin ones get large σ.
+- **Sufficiency gates.** Each contributing bin needs a minimum dwell (≈½ h) and the sector needs
+  enough populated bins to constrain the fit; otherwise the pair is dropped (σ → ∞), feeding
+  graceful degradation.
+
+Apparent − geometric = X's residual δ (with σ from the fit).
 
 **Aggregate per turbine.** Combine a turbine's pairs by **inverse-variance-weighted circular mean**
 (σ⁻²), with light outlier down-weighting, so the most certain wake centres dominate. Store δ_X and
@@ -119,7 +144,7 @@ near zero with wide σ (logged); with no geometry at all pass 4 is skipped.
 ## Validation and the ERA5 / published-table caveat
 
 ERA5 is a poor proxy for hub-height wind at the specific site, so the wake-nadir anchor can
-legitimately move the answer **by up to ~10°** from the ERA5-anchored / published answer. That move
+legitimately move the answer **by up to ~10° (not sure exactly)** from the ERA5-anchored / published answer. That move
 is the point of Part B, not a regression. Therefore:
 
 - The **published HoT table** (`optimized_northing_corrections.yaml`) validates **changepoint
@@ -127,12 +152,13 @@ is the point of Part B, not a regression. Therefore:
   bound the pass-4 absolute shift.
 - **Pass 4 correctness** is proven on **synthetic** ground truth: inject a known absolute offset θ
   (rotate all directions) on top of a `WakeSteering` dataset and assert pass 4 recovers θ.
-- On real HoT, pass 4's per-turbine shifts are checked for **plausibility** (spatially smooth across
-  neighbours; magnitude within a sane bound), not for agreement with the published table.
+- On real HoT, pass 4's per-turbine shifts are checked for **plausibility** — spatially smooth
+  (neighbouring resolved turbines agree to within a couple of degrees) and magnitude within a sane
+  bound — not for agreement with the published table.
 
-**Golden tables.** The full pipeline (1→2→4) on a complete farm is the best available absolute
+**Golden tables.** The full pipeline (1→2→4) on a complete farm with good data coverage is the best available absolute
 answer. Record each complete farm's golden table as a small fixture (new file — flagged for the user
-to `git add`; do not stage). Small-N / subset challenges are then scored against the **golden +
+to `git add`; do not stage). Small-N / subset challenges / low-data challenges are then scored against the **golden +
 published** tables.
 
 ## Harness plumbing
@@ -142,17 +168,60 @@ build a `Layout` from site metadata (lat/lon + rotor diameter) and pass `layout`
 `north_farm`. The campaign runner and study replicates inherit it unchanged. Coordinates-only
 callers (no diameters) still work — `Layout` fills missing diameters and pass 4 is simply weaker.
 
+## Graceful degradation and challenge cases
+
+Northing must **degrade gracefully**: as the farm shrinks or the record shortens, the answer gets
+less certain and falls back to simpler anchors, but the pipeline never hard-fails for ≥1 device and
+never returns a wild answer. This is a first-class goal, tested by a challenge matrix, not an
+afterthought.
+
+**Degradation ladder.** Rich case → pass 2 (neighbour consensus + changepoints) + pass 4 (wake
+nadir). Fewer turbines → pass 3 (ERA5 + changepoints) replaces pass 2. Too little data for
+changepoints → pass 1 constant anchor only. No wake geometry/data → pass 4 skips (δ→0, wide σ). Each
+step down widens σ and is logged via `result_manager.warning`, never `raise`.
+
+**Acceptance criteria (measurable):**
+
+- Runs without error for any farm of ≥1 device that clears a stated data minimum; below the minimum,
+  a clear typed error or a warning + best-effort constant anchor — never a crash or a NaN table.
+- Error vs the golden table grows monotonically-ish and stays within a stated bound as turbines/data
+  are removed; it does not spike.
+- Pass 4 skips cleanly when its sufficiency gates fail.
+
+**Challenge matrix** (crossed; HoT, plus Kelmarsh / Penmanshiel where data exists):
+
+- **Few turbines** — contiguous subsets N = full → 3 → 2 → 1, chosen **contiguous** so a wake pair
+  survives for pass 4; scored against the golden table.
+- **Low data** — full farm truncated to ~few months, ~few weeks, ~few days.
+- **Few turbines × low data** — the corner cases (e.g. 1 turbine, a few days) that must still
+  degrade, not crash.
+- **Data gaps / outages** — sparse coverage and mid-record outages.
+
+**Synthetic challenges** (on the generator's ground-truth datasets):
+
+- Injected changepoints — small steps, steps near the record edge, steps during an outage — pass 3
+  recovers structure at the chosen floor.
+- **Injected absolute-offset recovery** — pass 4 recovers a known θ, including at N = 1 (single pair,
+  wider σ).
+- **Pass 1 re-anchor investigation** — inject a large mid-record northing step so Pass 2 finds heavy
+  changepoints and the whole-record Pass 1 anchor is biased (its mean blends the two regimes).
+  Compare absolute error of the baseline pipeline against a variant that **recomputes the bulk anchor
+  after Pass 2's changepoints are applied** (a conditional "Pass 1′" re-anchor). **Decision rule:**
+  adopt Pass 1′ only if it materially and reliably reduces absolute error across the challenge set
+  without harming clean cases; otherwise drop it. Resolves the Pass 1 re-anchor open question above.
+
+**Regression lock-in.** Challenge cases that actually bite — those that required a fix to pass — are
+retained as integration tests, so the corrected behaviour on hard cases stays locked in.
+
 ## Testing plan
 
 - **Part A:** grow `TestSingleTurbineAgainstReanalysis` into all-21-turbines-scored-against-the-
-  published-table at the chosen floor; synthetic challenge cases — small steps, steps near the
-  record edge, steps during an outage.
+  published-table at the chosen floor.
 - **Part B:** synthetic injected-absolute-offset recovery (pass 4 recovers θ); on HoT, changepoints
   unchanged by pass 4 and per-turbine shifts plausible/spatially smooth; graceful degradation with
   too few pairs.
-- **Subsets** of HoT (and Kelmarsh / Penmanshiel where data exists) down to **1 turbine**, using
-  **contiguous** groups so a wake pair exists for pass 4; subset answers scored against the golden
-  table.
+- **Challenge matrix** (small-N, low-data, their cross, gaps/outages) per §Graceful degradation and
+  challenge cases; subset/challenge answers scored against the **golden + published** tables.
 - Existing real-data and rotation-invariance suites stay green (call sites migrated to `layout=` /
   `power=`).
 
@@ -165,9 +234,10 @@ callers (no diameters) still work — `Layout` fills missing diameters and pass 
    per-turbine nadir + spatial inheritance) and wire it as pass 4; run the full pipeline on complete
    HoT (and other sites where available); validate structure against the published table; record
    golden tables.
-3. **Pass 3 + evidence-driven floor.** Implement pass 3; run the one-at-a-time and contiguous-subset
-   experiments; set `REANALYSIS_MIN_STEP_DEG` (and, only if needed, the persistence lever) from the
-   results.
+3. **Pass 3 + evidence-driven floor + challenge matrix.** Implement pass 3; run the one-at-a-time,
+   contiguous-subset and low-data challenge experiments; set `REANALYSIS_MIN_STEP_DEG` (and, only if
+   needed, the persistence lever) from the results. Run the Pass 1 re-anchor investigation and
+   implement the conditional "Pass 1′" pass **only if** its decision rule is met.
 4. **Harness plumbing + final regression tests**, including the synthetic pass-4 recovery test.
 
 ## Decisions locked (from brainstorming)
@@ -177,7 +247,10 @@ callers (no diameters) still work — `Layout` fills missing diameters and pass 
 - Geometry input: **accept a `Layout`** (replacing the coordinates mapping).
 - Pass 4 shape: **per-turbine** absolute correction, uncertainty-weighted, with spatial inheritance
   (median of up to 4 nearest resolved). One number per turbine, not per segment.
-- Pass 4 magnitude: **may reach ~10°**; validated on synthetic ground truth, not against the
+- Pass 4 deficit measurement: **ratio-of-means normalisation** by the upstream turbine, from **two
+  combined signals** (downstream power and downstream nacelle wind speed, power-only fallback),
+  within a **±15° sector** around β, with per-bin dwell and populated-bin sufficiency gates.
+- Pass 4 magnitude: **may reach ~10° (not sure)**; validated on synthetic ground truth, not against the
   published table.
 - Pass 3 floor: **evidence-first**, persistence lever in reserve.
 
