@@ -5,8 +5,9 @@
 table onto the raw signal. Offsets are absolute -- relative to the raw field, never to an
 already-corrected one -- so a supplied table and an estimated one are directly comparable.
 
-:func:`north_farm` runs the two-pass farm workflow: north every device to reanalysis, build a
-farm consensus direction from the results, then north every device to that.
+:func:`north_farm` runs the farm workflow: anchor every device to reanalysis, build a farm
+consensus direction from the results and north every device to that, then, where a layout and power
+are supplied, nudge each device to its wake nadirs (:mod:`wind_up.wake_nadir`).
 
 The estimator works on any direction field. Only :func:`yaw_usable` is turbine-specific.
 """
@@ -26,6 +27,7 @@ import pandas as pd
 from wind_up.circular_math import circ_diff, circ_median
 from wind_up.geodesy import geodesic_matrices
 from wind_up.layout import NAME_COL
+from wind_up.wake_nadir import wake_nadir_offsets
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -879,6 +881,33 @@ def _farm_quorum(n_devices: int, *, floor: int) -> int:
     return max(floor, n_devices // 2 + 1)
 
 
+def _wake_nadir_pass(
+    tables: dict[str, pd.DataFrame],
+    *,
+    layout: Layout | None,
+    index: pd.DatetimeIndex,
+    direction_deg: Mapping[str, npt.NDArray[np.float64]],
+    power: Mapping[str, npt.NDArray[np.float64]] | None,
+    wind_speed: Mapping[str, npt.NDArray[np.float64]] | None,
+    usable: Mapping[str, npt.NDArray[np.bool_]],
+) -> dict[str, pd.DataFrame]:
+    """Add pass 4's wake-nadir correction to each device's table, or return ``tables`` unchanged.
+
+    Runs only with both a ``layout`` and ``power``. The correction is one absolute number per
+    turbine; it shifts every offset in that turbine's table and never touches which rows are valid.
+    """
+    if layout is None or power is None:
+        return tables
+    northed = {name: apply_north_table(index, direction_deg[name], north_table=tables[name]) for name in tables}
+    deltas = wake_nadir_offsets(
+        layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
+    )
+    return {
+        name: table.assign(**{NORTH_OFFSET_COL: table[NORTH_OFFSET_COL] + deltas[name]}) if deltas.get(name) else table
+        for name, table in tables.items()
+    }
+
+
 def _farm_direction(
     northed: Mapping[str, npt.NDArray[np.float64]],
     *,
@@ -935,11 +964,12 @@ def north_farm(
     reanalysis_deg: npt.NDArray[np.float64],
     layout: Layout | None,
     power: Mapping[str, npt.NDArray[np.float64]] | None = None,
+    wind_speed: Mapping[str, npt.NDArray[np.float64]] | None = None,
     neighbours: int = 4,
     settings: NorthingSettings = DEFAULT_NORTHING,
     min_devices_for_farm_reference: int = 3,
 ) -> dict[str, pd.DataFrame]:
-    """North a whole farm in two passes, returning one absolute table per device.
+    """North a whole farm, returning one absolute table per device.
 
     Pass 1 is a constant bulk alignment: each device gets a single offset nulling its whole-record
     direction to ``reanalysis_deg``, with no changepoints. Pass 2 then builds a farm consensus
@@ -967,7 +997,11 @@ def north_farm(
         a distant or miscalibrated turbine into every device's reference, so choose it only when no
         positions are available.
     :param power: device name to its power signal on ``index``, for the pass-4 wake-nadir nudge.
-        ``None`` disables pass 4.
+        With a ``layout``, pass 4 adds one absolute correction per turbine on top of its changepoint
+        table, from where each turbine's wake lands on its downstream neighbours. ``None`` (or no
+        ``layout``) disables pass 4.
+    :param wind_speed: device name to its nacelle wind speed on ``index``. When given, pass 4
+        combines it with power as a second, independent deficit signal; otherwise power is used alone.
     :param neighbours: how many nearest turbines form each device's pass-2 consensus when ``layout``
         is given; capped at the farm size, and must leave every device at least
         ``min_devices_for_farm_reference`` neighbours or the call raises.
@@ -1012,6 +1046,15 @@ def north_farm(
         for name in devices
     }
     northed = {name: apply_north_table(index, direction_deg[name], north_table=first_pass[name]) for name in devices}
+    wake_nadir = partial(
+        _wake_nadir_pass,
+        layout=layout,
+        index=index,
+        direction_deg=direction_deg,
+        power=power,
+        wind_speed=wind_speed,
+        usable=usable,
+    )
 
     # Whole-farm switch: below the floor there is no farm consensus to form, so keep the pass-1
     # constant anchor. (Pass 3, reanalysis with changepoints, is the small-farm refinement.)
@@ -1021,7 +1064,7 @@ def north_farm(
             len(devices),
             min_devices_for_farm_reference,
         )
-        return first_pass
+        return wake_nadir(first_pass)
 
     reference_neighbours = _pass_two_reference(
         layout, devices=devices, neighbours=neighbours, min_devices=min_devices_for_farm_reference
@@ -1036,7 +1079,7 @@ def north_farm(
     )
     if not any(np.isfinite(reference).any() for reference in references.values()):
         logger.warning("farm reference is empty; keeping the reanalysis-only north tables")
-        return first_pass
+        return wake_nadir(first_pass)
 
     tables = {}
     for name in devices:
@@ -1057,4 +1100,4 @@ def north_farm(
             tables[name] = estimate_north_table(
                 index, direction_deg[name], reference_deg=reference, usable=usable[name], settings=settings
             )
-    return tables
+    return wake_nadir(tables)
