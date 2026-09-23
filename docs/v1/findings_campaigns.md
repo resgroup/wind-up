@@ -12,6 +12,36 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF19 — A **Pass 1′ re-anchor** (recompute each device's bulk offset from its residual after pass 2's changepoints) is **not adopted**: it never materially beats the baseline and is worse when several devices step together, because pass 2 already anchors each device to the clean farm consensus, not to its own biased pass-1 offset
+
+*2026-09-23. Reproduce: synthetic sweep in the session scratch (`pass1prime_experiment.py`) — a
+9-turbine farm over 700 days with ERA5-like reanalysis noise, scored by absolute offset error vs the
+injected truth, baseline `north_farm` against a per-device re-anchor to reanalysis. Resolves the
+Pass 1′ open question in the R5 design (spec §Pass 3 / §Graceful degradation and challenge cases).*
+
+The concern was real but does not reach the answer. A device's own large mid-record step **does**
+bias its pass-1 offset — a single whole-record `circ_median` that blends the pre- and post-step
+regimes. But pass 2 norths each device against the **farm consensus** (the circular median of its
+clean neighbours' pass-1-northed signals), not against its own pass-1 offset, so the bias is confined
+to that device's contribution to the consensus and is outvoted there. On the spec's canonical case —
+one turbine with a +40° mid-record step in a nine-turbine farm — baseline and Pass 1′ both read
+**~0.13°** absolute offset error, reliably across six seeds (the gap is ~0.01°, below the noise
+floor), and the clean control is untouched (**0.03°** either way).
+
+Where the consensus itself is biased, Pass 1′ makes things **worse**, not better. With five of nine
+devices stepping +40° together, the consensus shifts toward the steppers post-step and the baseline
+error rises to **11.7°**; re-anchoring each device to reanalysis then trades the low-noise consensus
+frame for the noisier reanalysis frame and pushes it to **12.7°**. A fully common-mode step (all nine
+together) is invisible to the consensus **and** unrecoverable by a per-device re-anchor (**16.5°**
+both ways) — a separate limitation of consensus northing, out of R5 scope.
+
+**Implication.** Drop Pass 1′; `north_farm` keeps its four-pass shape (1 constant anchor → 2
+consensus / 3 reanalysis → 4 wake nadir) with no re-anchor pass. The whole-record pass-1 anchor is
+allowed to be biased by a device's own steps because the consensus, not that anchor, sets the final
+absolute frame.
+
+---
+
 ## CF18 — The **first prepost dry run** and a re-run toggle one both clear the one-run bar on the full 21-turbine farm: each said "cannot distinguish this from zero" from a single run, against a truth of zero. The design documents were used and did not shrink the reference pool. Phase 2 found **two real anemometer faults** no run reports
 
 *2026-09-12. `benchmarking.campaigns.handover.write_handover` from `placebo_instance` with its
