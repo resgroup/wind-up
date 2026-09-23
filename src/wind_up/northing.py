@@ -891,11 +891,14 @@ def _wake_nadir_pass(
     power: Mapping[str, npt.NDArray[np.float64]] | None,
     wind_speed: Mapping[str, npt.NDArray[np.float64]] | None,
     usable: Mapping[str, npt.NDArray[np.bool_]],
+    nadir_out: dict[str, float] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Add pass 4's wake-nadir correction to each device's table, or return ``tables`` unchanged.
 
     Runs only with both a ``layout`` and ``power``. The correction is one absolute number per
     turbine; it shifts every offset in that turbine's table and never touches which rows are valid.
+    When ``nadir_out`` is given it is filled with the per-device correction, for callers that plot
+    or log the nudge; it is left untouched when pass 4 does not run.
     """
     if layout is None or power is None:
         return tables
@@ -903,6 +906,8 @@ def _wake_nadir_pass(
     deltas = wake_nadir_offsets(
         layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
     )
+    if nadir_out is not None:
+        nadir_out.update(deltas)
     return {
         name: table.assign(**{NORTH_OFFSET_COL: table[NORTH_OFFSET_COL] + deltas[name]}) if deltas.get(name) else table
         for name, table in tables.items()
@@ -969,6 +974,7 @@ def north_farm(
     neighbours: int = 4,
     settings: NorthingSettings = DEFAULT_NORTHING,
     min_devices_for_farm_reference: int = 3,
+    nadir_out: dict[str, float] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """North a whole farm, returning one absolute table per device.
 
@@ -1009,6 +1015,8 @@ def north_farm(
     :param min_devices_for_farm_reference: the floor on how many devices must report at a
         timestamp for the consensus to be defined there, and the minimum farm size. The effective
         requirement is the larger of this and a strict majority of the farm.
+    :param nadir_out: when given, filled with each device's pass-4 correction (deg), for callers
+        that plot or log the nudge; left untouched when pass 4 does not run.
     """
     devices = sorted(direction_deg)
     _validate_north_farm_inputs(devices, usable=usable, power=power, layout=layout)
@@ -1055,6 +1063,7 @@ def north_farm(
         power=power,
         wind_speed=wind_speed,
         usable=usable,
+        nadir_out=nadir_out,
     )
 
     # Whole-farm switch: below the floor there is no farm consensus to form, so keep the pass-1

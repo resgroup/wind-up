@@ -30,7 +30,7 @@ from wind_up.northing import (
     write_north_table_yaml,
     yaw_usable,
 )
-from wind_up.northing_plots import plot_northing, plot_northing_farm
+from wind_up.northing_plots import plot_northing, plot_northing_farm, plot_wake_nadir_farm
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -167,17 +167,19 @@ def north_scada(
     :param columns: the source-native schema naming the turbine and direction role(s)
     :param north_offsets: ``None`` to discover the corrections, or the exact table to apply
     :param rated_power_kw: turbine rating, for deciding which rows are usable for northing
-    :param coordinates: turbine to ``(latitude, longitude)``; passed to :func:`north_farm` so pass 2
-        norths each turbine against its nearest neighbours when discovering. ``None`` -- explicitly --
-        norths against the whole-farm consensus, for callers with no layout to hand. Only used when
+    :param coordinates: turbine to ``(latitude, longitude)``; passed to :func:`north_farm` as a
+        layout so pass 2 norths each turbine against its nearest neighbours and pass 4 nudges each by
+        where its wake lands, when discovering. ``None`` -- explicitly -- norths against the
+        whole-farm consensus and skips pass 4, for callers with no layout to hand. Only used when
         ``north_offsets`` is ``None``.
     :param era5_wd: reanalysis wind direction (deg) covering the frame, the absolute anchor for
         discovery. Required when ``north_offsets`` is ``None``.
     :param roles: the direction roles to write a ``northed_`` companion for
     :param settings: how the changepoint search is bounded, when discovering
     :param out_dir: when given and corrections are discovered, the discovered table
-        (:data:`NORTH_TABLE_YAML`, hand-editable and usable as a prior), the farm overview and one
-        plot per device are written here, so the correction can be judged rather than trusted
+        (:data:`NORTH_TABLE_YAML`, hand-editable and usable as a prior), the farm overview, one
+        plot per device and, when a layout drives pass 4, the wake-nadir correction map are written
+        here, so the correction can be judged rather than trusted
     :return: a copy of ``scada_df`` with ``columns.northed(role)`` added for each role
     """
     columns.require_roles(roles)
@@ -225,13 +227,26 @@ def north_scada(
             rated_power_kw=rated_power_kw,
             timebase_s=timebase_s,
         )
+        # Power and nacelle wind speed drive the pass-4 wake-nadir nudge; wind speed is a second,
+        # independent deficit signal when the source ships it, else power carries pass 4 alone.
+        power = _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.active_power)
+        wind_speed = (
+            _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.wind_speed)
+            if columns.wind_speed in scada_df.columns
+            else None
+        )
+        layout = Layout.from_coordinates(coordinates) if coordinates is not None else None
+        nadir: dict[str, float] = {}
         tables = north_farm(
             index,
             direction_deg=directions,
             usable=usable,
             reanalysis_deg=reference,
-            layout=Layout.from_coordinates(coordinates) if coordinates is not None else None,
+            layout=layout,
+            power=power,
+            wind_speed=wind_speed,
             settings=settings,
+            nadir_out=nadir,
         )
         found = sum(len(t) - 1 for t in tables.values())
         logger.info("discovered %d northing changepoint(s) across %d turbines", found, len(turbines))
@@ -241,6 +256,9 @@ def north_scada(
             _write_northing_plots(
                 index, directions=directions, usable=usable, reference=reference, tables=tables, out_dir=out_dir
             )
+            if layout is not None and nadir:
+                figure = plot_wake_nadir_farm(layout, corrections=nadir, out_dir=out_dir)
+                plt.close(figure)
 
     turbine_of = scada_df[columns.turbine].to_numpy()
     row_index = pd.DatetimeIndex(scada_df.index)

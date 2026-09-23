@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -10,6 +12,10 @@ from benchmarking.harness.northing import ERA5_WD_COL, era5_direction, north_sca
 from benchmarking.harness.replicates import StudyConfig, iter_replicates
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.circular_math import circ_diff
+from wind_up.layout import Layout
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _COLUMNS = HOT_COLUMNS
 _TURBINES = ("T01", "T02", "T03", "T04")
@@ -60,6 +66,79 @@ def _spread_across_turbines(directions: np.ndarray) -> float:
 def _northed(frame: pd.DataFrame, turbine: str) -> np.ndarray:
     rows = frame[frame[_COLUMNS.turbine] == turbine]
     return rows[_COLUMNS.northed("nacelle_position")].to_numpy(dtype=float)
+
+
+def _waked_scada(
+    *, residual_deg: float, rows: int = 8000, seed: int = 0
+) -> tuple[pd.DataFrame, pd.DatetimeIndex, np.ndarray, dict[str, tuple[float, float]]]:
+    """Two turbines where A wakes B; both report the true wind carrying a constant ``residual_deg``.
+
+    B's power and wind speed dip when the true wind sits at the geometric nadir, so pass 4 can read
+    the residual back off the wake and null it. Reanalysis equals the reported direction, so pass 1
+    leaves the residual in place and only pass 4 can remove it.
+    """
+    coords = {"A": (55.0, -0.0064), "B": (55.0, 0.0)}
+    layout = Layout.from_coordinates(coords)
+    beta = float(layout.bearing_deg[layout.index_of("B"), layout.index_of("A")])
+    rng = np.random.default_rng(seed)
+    true_a = beta + rng.uniform(-25.0, 25.0, size=rows)
+    deficit = np.exp(-0.5 * (circ_diff(true_a, beta) / 3.0) ** 2)
+    index = pd.date_range(start=_START, periods=rows, freq="600s", tz="UTC")
+    reported = (true_a + residual_deg) % 360.0
+    power = {"A": np.full(rows, 1000.0), "B": 1000.0 * (1.0 - 0.4 * deficit)}
+    wind_speed = {"A": np.full(rows, 9.0), "B": 9.0 * (1.0 - 0.15 * deficit)}
+    frames = [
+        pd.DataFrame(
+            {
+                _COLUMNS.turbine: name,
+                _COLUMNS.active_power: power[name],
+                _COLUMNS.wind_speed: wind_speed[name],
+                _COLUMNS.wind_speed_sd: 1.0,
+                _COLUMNS.availability: 600.0,
+                _COLUMNS.nacelle_position: reported,
+            },
+            index=index,
+        )
+        for name in ("A", "B")
+    ]
+    return pd.concat(frames), index, true_a, coords
+
+
+class TestPassFourInTheHarness:
+    """The harness builds power, wind speed and a layout, so pass 4 runs on discovery."""
+
+    def test_pass_four_recovers_an_injected_offset(self) -> None:
+        residual = 6.0
+        scada, index, true_a, coords = _waked_scada(residual_deg=residual)
+        era5 = pd.Series((true_a + residual) % 360.0, index=index)
+
+        with_geo = north_scada(
+            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=coords, era5_wd=era5
+        )
+        without_geo = north_scada(
+            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=None, era5_wd=era5
+        )
+
+        # No wake geometry: A's northed direction keeps the injected residual.
+        assert circ_diff(_northed(without_geo, "A"), true_a).mean() == pytest.approx(residual, abs=2.0)
+        # Pass 4 reads the residual off the wake and removes it.
+        assert circ_diff(_northed(with_geo, "A"), true_a).mean() == pytest.approx(0.0, abs=2.0)
+
+    def test_writes_the_wake_nadir_bubble_plot(self, tmp_path: Path) -> None:
+        scada, index, true_a, coords = _waked_scada(residual_deg=6.0)
+        era5 = pd.Series((true_a + 6.0) % 360.0, index=index)
+
+        north_scada(
+            scada,
+            columns=_COLUMNS,
+            north_offsets=None,
+            rated_power_kw=_RATED,
+            coordinates=coords,
+            era5_wd=era5,
+            out_dir=tmp_path,
+        )
+
+        assert (tmp_path / "wake_nadir_bubble.png").is_file()
 
 
 class TestDiscovery:
