@@ -752,13 +752,14 @@ def write_north_table_yaml(tables: Mapping[str, pd.DataFrame], *, path: Path) ->
     """Write per-device north tables as the YAML list ``north_offsets`` and v0 both read.
 
     The format matches v0's ``optimized_northing_corrections.yaml``, so the file can be hand
-    edited and supplied back as a prior.
+    edited and supplied back as a prior. Offsets are wrapped into [-180, 180) on the way out.
 
     :param tables: one absolute north table per device
     :param path: file to write
     """
     lines = [
-        f"    - ['{device}', {pd.Timestamp(row.timestamp).strftime('%Y-%m-%d %H:%M:%S')}, {row.north_offset}]"
+        f"    - ['{device}', {pd.Timestamp(row.timestamp).strftime('%Y-%m-%d %H:%M:%S')}, "
+        f"{(row.north_offset + 180.0) % 360.0 - 180.0}]"
         for device in sorted(tables)
         for row in tables[device].itertuples()
     ]

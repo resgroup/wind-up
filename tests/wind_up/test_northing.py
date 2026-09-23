@@ -845,6 +845,20 @@ class TestNorthTableYaml:
             "2017-06-30 12:20:00",
         ]
 
+    def test_offsets_are_wrapped_into_minus_180_to_180(self, tmp_path: Path) -> None:
+        """A pass-1 anchor can land just outside [-180, 180); the written table wraps it canonically."""
+        tables = {
+            "T01": pd.DataFrame(
+                {"timestamp": pd.DatetimeIndex(["2016-01-01"], tz="UTC"), "north_offset": [181.5704048704585]}
+            )
+        }
+        path = tmp_path / "northing_corrections.yaml"
+
+        write_north_table_yaml(tables, path=path)
+        parsed = yaml.safe_load(path.read_text())
+
+        assert parsed[0][2] == pytest.approx(-178.4295951295415)
+
 
 class TestSectorSignature:
     """The level reported for a row must come from that row's own direction sector."""
