@@ -177,6 +177,10 @@ def greenbyte_inputs(
         float(meta["Latitude"].mean()), float(meta["Longitude"].mean()), index=index, start=start, end=end
     )
     columns = greenbyte.GREENBYTE_COLUMNS
+    nacelle_position = columns.nacelle_position
+    if nacelle_position is None:
+        msg = f"{farm.name} has no nacelle position column, so it cannot be northed"
+        raise ValueError(msg)
 
     def by_turbine(col: str) -> dict[str, np.ndarray]:
         out = {}
@@ -188,7 +192,7 @@ def greenbyte_inputs(
     return layout, _inputs_from_frames(
         index=index,
         reference=reference,
-        direction=by_turbine(columns.nacelle_position),
+        direction=by_turbine(nacelle_position),
         power=by_turbine(columns.active_power),
         wind_speed=by_turbine(columns.wind_speed),
         availability=by_turbine(columns.availability),
@@ -251,8 +255,7 @@ def bubble_plot(layout: Layout, deltas: dict[str, float], *, title: str, save_pa
     cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.02)
     cbar.set_label("pass-4 wake-nadir correction [deg]")
     ax.set_title(
-        f"{title} — pass-4 wake-nadir correction\n"
-        f"max |Δ| {np.abs(vals).max():.1f}°, mean {np.abs(vals).mean():.1f}°"
+        f"{title} — pass-4 wake-nadir correction\nmax |Δ| {np.abs(vals).max():.1f}°, mean {np.abs(vals).mean():.1f}°"
     )
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=130, bbox_inches="tight")
