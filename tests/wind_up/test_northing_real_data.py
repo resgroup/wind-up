@@ -28,9 +28,11 @@ import pandas as pd
 import pytest
 
 from wind_up.circular_math import circ_diff
+from wind_up.layout import Layout
 from wind_up.northing import estimate_north_table, north_farm
 
 FIXTURE = Path(__file__).parents[1] / "test_data" / "hot" / "northing" / "northing_inputs.parquet"
+METADATA = Path(__file__).parents[1] / "test_data" / "hot" / "scada" / "Hill_of_Towie_turbine_metadata.csv"
 ALL_TURBINES = tuple(f"T{n:02d}" for n in range(1, 22))
 
 
@@ -82,17 +84,43 @@ def _describe(found: list[tuple[pd.Timestamp, float]]) -> str:
     return str([(w.strftime("%Y-%m-%d"), round(s, 1)) for w, s in found])
 
 
+def hot_layout() -> Layout:
+    """The Hill of Towie layout, with each turbine's published rotor diameter."""
+    meta = pd.read_csv(METADATA, encoding="utf-8-sig")
+    return Layout.from_frame(
+        pd.DataFrame(
+            {
+                "name": meta["Turbine Name"],
+                "latitude": meta["Latitude"],
+                "longitude": meta["Longitude"],
+                "rotor_diameter_m": meta["Rotor Diameter (m)"],
+            }
+        )
+    )
+
+
 _RUNS: dict[tuple, dict[str, list[tuple[pd.Timestamp, float]]]] = {}
 
 
 def run_farm(
-    hot: pd.DataFrame, turbines: tuple[str, ...], start: str, end: str
+    hot: pd.DataFrame, turbines: tuple[str, ...], start: str, end: str, *, with_layout: bool = False
 ) -> dict[str, list[tuple[pd.Timestamp, float]]]:
-    """Changepoints per turbine for one (turbines, window), memoised -- each run costs seconds."""
-    key = (turbines, start, end)
+    """Changepoints per turbine for one (turbines, window), memoised -- each run costs seconds.
+
+    ``with_layout`` norths as a user with positions would by default: pass 2 against each turbine's
+    nearest neighbours rather than the whole-farm consensus. The fixture carries no power, so pass 4
+    (a constant per turbine, which moves no changepoint) does not run.
+    """
+    key = (turbines, start, end, with_layout)
     if key not in _RUNS:
         index, direction, usable, reanalysis = _arrays(hot, turbines, start, end)
-        tables = north_farm(index, direction_deg=direction, usable=usable, reanalysis_deg=reanalysis, layout=None)
+        tables = north_farm(
+            index,
+            direction_deg=direction,
+            usable=usable,
+            reanalysis_deg=reanalysis,
+            layout=hot_layout() if with_layout else None,
+        )
         _RUNS[key] = {name: _changepoints(table) for name, table in tables.items()}
     return _RUNS[key]
 
@@ -149,6 +177,54 @@ class TestKnownChangepoints:
         assert sum(len(v) for v in found.values()) == sum(len(v) for v in EXPECTED[window].values()), {
             n: _describe(v) for n, v in found.items() if v
         }
+
+
+class TestKnownChangepointsWithTheLayout:
+    """The default path -- nearest-neighbour consensus from the layout -- held to the same table.
+
+    The whole-farm tests above run with ``layout=None``; a user with turbine positions gets this
+    path instead, so it must find v0's recalibrations and nothing else just the same.
+    """
+
+    @pytest.mark.parametrize(("window", "turbine"), _CASES, ids=lambda v: v if isinstance(v, str) else v[0])
+    @pytest.mark.slow
+    def test_a_turbines_known_recalibrations_are_found(
+        self, hot: pd.DataFrame, window: tuple[str, str], turbine: str
+    ) -> None:
+        found = run_farm(hot, ALL_TURBINES, *window, with_layout=True)[turbine]
+        expected = EXPECTED[window][turbine]
+        assert len(found) == len(expected), f"{turbine}: {_describe(found)}"
+        for (when, step), (expected_when, expected_step) in zip(found, expected, strict=True):
+            assert abs(when - pd.Timestamp(expected_when, tz="UTC")) <= pd.Timedelta(days=3), _describe(found)
+            assert circ_diff(step, expected_step) == pytest.approx(0.0, abs=3.0), _describe(found)
+
+    @pytest.mark.parametrize(("window", "turbine"), _QUIET, ids=lambda v: v if isinstance(v, str) else v[0])
+    @pytest.mark.slow
+    def test_every_other_turbine_is_left_alone(self, hot: pd.DataFrame, window: tuple[str, str], turbine: str) -> None:
+        found = run_farm(hot, ALL_TURBINES, *window, with_layout=True)[turbine]
+        assert found == [], f"{turbine}: {_describe(found)}"
+
+    @pytest.mark.parametrize("window", [EARLY, LATE], ids=["early", "late"])
+    def test_the_farm_total_matches_the_published_table(self, hot: pd.DataFrame, window: tuple[str, str]) -> None:
+        found = run_farm(hot, ALL_TURBINES, *window, with_layout=True)
+        assert sum(len(v) for v in found.values()) == sum(len(v) for v in EXPECTED[window].values()), {
+            n: _describe(v) for n, v in found.items() if v
+        }
+
+    def test_no_turbine_steps_during_a_farm_outage(self, hot: pd.DataFrame) -> None:
+        during = {
+            name: [
+                (w, s)
+                for w, s in found
+                if any(
+                    pd.Timestamp(lo, tz="UTC") <= w <= pd.Timestamp(hi, tz="UTC")
+                    for lo, hi in TestOutageArtefacts.OUTAGES
+                )
+            ]
+            for name, found in run_farm(hot, ALL_TURBINES, *LATE, with_layout=True).items()
+        }
+        offenders = {name: _describe(v) for name, v in during.items() if v}
+        assert offenders == {}, f"turbines stepped with the outage, not their own calibration: {offenders}"
 
 
 class TestOutageArtefacts:
