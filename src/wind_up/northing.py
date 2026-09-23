@@ -104,6 +104,10 @@ class NorthingSettings:
 # Minimum step attributable to a turbine when northing against reanalysis rather than a farm
 # consensus. See :func:`against_reanalysis`.
 REANALYSIS_MIN_STEP_DEG = 10.0
+# Minimum gap between changepoints when northing against reanalysis. Reanalysis cannot resolve
+# recalibrations closer together than this, so a nearer pair is treated as reference wander and
+# merged. See :func:`against_reanalysis`.
+REANALYSIS_MIN_SEGMENT = pd.Timedelta(days=30)
 # Minimum step the first pass may act on. See :func:`anchoring_only`.
 ANCHORING_MIN_STEP_DEG = 30.0
 # Minimum step taken out of the residual before the veer signature is measured.
@@ -125,13 +129,16 @@ def anchoring_only(settings: NorthingSettings) -> NorthingSettings:
 def against_reanalysis(settings: NorthingSettings) -> NorthingSettings:
     """Return ``settings`` made safe for northing against reanalysis rather than a farm consensus.
 
-    Raises ``min_step_deg`` to at least :data:`REANALYSIS_MIN_STEP_DEG`, so drift in the
-    reanalysis reference is not attributed to the turbines as a small step change. Everything
-    else is unchanged.
+    Raises ``min_step_deg`` to at least :data:`REANALYSIS_MIN_STEP_DEG`, so drift in the reanalysis
+    reference is not attributed to the turbines as a small step change, and ``min_segment`` to at
+    least :data:`REANALYSIS_MIN_SEGMENT`, so changepoints closer together than reanalysis can resolve
+    are merged rather than read as a burst of recalibrations. Everything else is unchanged.
     """
-    if settings.min_step_deg >= REANALYSIS_MIN_STEP_DEG:
-        return settings
-    return replace(settings, min_step_deg=REANALYSIS_MIN_STEP_DEG)
+    return replace(
+        settings,
+        min_step_deg=max(settings.min_step_deg, REANALYSIS_MIN_STEP_DEG),
+        min_segment=max(settings.min_segment, REANALYSIS_MIN_SEGMENT),
+    )
 
 
 def yaw_usable(
@@ -1066,15 +1073,29 @@ def north_farm(
         nadir_out=nadir_out,
     )
 
-    # Whole-farm switch: below the floor there is no farm consensus to form, so keep the pass-1
-    # constant anchor. (Pass 3, reanalysis with changepoints, is the small-farm refinement.)
+    # Whole-farm switch: below the floor there is no farm consensus to form, so pass 3 norths each
+    # device against reanalysis directly. Unlike the pass-1 anchor it attributes changepoints, but at
+    # a coarser step floor, since reanalysis drift must not be read as a small turbine step. Pass 1 is
+    # pass 3's no-changepoint special case.
     if len(devices) < min_devices_for_farm_reference:
         logger.warning(
-            "farm of %d device(s) is below min_devices_for_farm_reference=%d; keeping the reanalysis anchor",
+            "farm of %d device(s) is below min_devices_for_farm_reference=%d; northing against "
+            "reanalysis with changepoints (pass 3)",
             len(devices),
             min_devices_for_farm_reference,
         )
-        return wake_nadir(first_pass)
+        reanalysis_settings = against_reanalysis(settings)
+        pass_three = {
+            name: estimate_north_table(
+                index,
+                direction_deg[name],
+                reference_deg=reanalysis_deg,
+                usable=usable[name],
+                settings=reanalysis_settings,
+            )
+            for name in devices
+        }
+        return wake_nadir(pass_three)
 
     reference_neighbours = _pass_two_reference(
         layout, devices=devices, neighbours=neighbours, min_devices=min_devices_for_farm_reference

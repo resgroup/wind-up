@@ -14,8 +14,11 @@ from wind_up.circular_math import circ_diff, circ_median
 from wind_up.layout import Layout
 from wind_up.northing import (
     DEFAULT_NORTHING,
+    REANALYSIS_MIN_SEGMENT,
+    REANALYSIS_MIN_STEP_DEG,
     NorthingSettings,
     _sector_signature,
+    against_reanalysis,
     anchoring_only,
     apply_north_table,
     estimate_north_table,
@@ -458,6 +461,97 @@ class TestNorthFarm:
         # a device pass 1 happened to get right can still move slightly the wrong way; the farm is
         # what has to improve
         assert np.mean(two_pass_errors) < np.mean(one_pass_errors)
+
+    def test_a_lone_turbine_norths_against_reanalysis_with_changepoints(self) -> None:
+        """Below the farm-consensus floor, a device is northed against reanalysis with changepoints.
+
+        A single device cannot form a farm consensus, so pass 2 cannot run. Pass 3 takes over: it
+        norths the device against reanalysis and still attributes its changepoints (at the coarser
+        reanalysis floor), rather than falling back to a constant whole-record anchor.
+        """
+        index = _index(days=500)
+        steps = [("2017-01-01", 5.0), ("2017-07-01", 30.0)]
+        reported, reference = _reported(index, steps=steps)
+
+        tables = north_farm(
+            index,
+            direction_deg={"T01": reported},
+            usable={"T01": _all_usable(index)},
+            reanalysis_deg=reference,
+            layout=None,
+        )
+
+        table = tables["T01"]
+        assert len(table) == 2, f"pass 3 did not find the lone turbine's step: {table}"
+        assert abs(table["timestamp"].iloc[1] - pd.Timestamp("2017-07-01", tz="UTC")) <= pd.Timedelta(days=2)
+        assert circ_diff(table["north_offset"].iloc[0], 5.0) == pytest.approx(0.0, abs=1.5)
+        assert circ_diff(table["north_offset"].iloc[1], 30.0) == pytest.approx(0.0, abs=1.5)
+
+    def test_a_two_device_farm_below_the_floor_norths_each_against_reanalysis(self) -> None:
+        """Two devices are still below the consensus floor, so each is northed by pass 3, not pass 1."""
+        index = _index(days=500)
+        reported = {}
+        reference = _true_direction(index)
+        for name, steps in {
+            "T01": [("2017-01-01", 8.0), ("2017-06-01", 40.0)],
+            "T02": [("2017-01-01", -3.0)],
+        }.items():
+            rng = np.random.default_rng(hash(name) % 100)
+            reported[name] = (reference + rng.normal(0.0, 6.0, size=len(index)) - _stepped_offset(index, steps)) % 360.0
+
+        tables = north_farm(
+            index,
+            direction_deg=reported,
+            usable={name: _all_usable(index) for name in reported},
+            reanalysis_deg=reference,
+            layout=None,
+        )
+
+        assert len(tables["T01"]) == 2, f"pass 3 missed T01's step: {tables['T01']}"
+        assert len(tables["T02"]) == 1, f"pass 3 invented a step for the clean device: {tables['T02']}"
+        for name, series in reported.items():
+            corrected = apply_north_table(index, series, north_table=tables[name])
+            assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
+
+    def test_pass_three_uses_the_coarser_reanalysis_step_floor(self) -> None:
+        """A step below the reanalysis floor is left alone, so reanalysis drift is not read as a step.
+
+        The default estimator would attribute a 6 deg step, but against reanalysis a step that small
+        is as likely to be drift in the reference as a real turbine move, so pass 3's coarser floor
+        must not report it.
+        """
+        index = _index(days=500)
+        steps = [("2017-01-01", 4.0), ("2017-07-01", 10.0)]  # a 6 deg step, under REANALYSIS_MIN_STEP_DEG
+        reported, reference = _reported(index, steps=steps)
+
+        tables = north_farm(
+            index,
+            direction_deg={"T01": reported},
+            usable={"T01": _all_usable(index)},
+            reanalysis_deg=reference,
+            layout=None,
+        )
+
+        assert len(tables["T01"]) == 1, f"pass 3 attributed a step below the reanalysis floor: {tables['T01']}"
+
+
+class TestAgainstReanalysis:
+    def test_raises_both_the_step_floor_and_the_minimum_segment(self) -> None:
+        """Northing against reanalysis needs a coarser step floor and a longer minimum segment.
+
+        Reanalysis is coarse in time as well as noisy in level, so changepoints closer together
+        than the minimum segment are more likely reference wander than real turbine recalibrations.
+        """
+        tuned = against_reanalysis(replace(DEFAULT_NORTHING, min_step_deg=3.0, min_segment=pd.Timedelta(days=7)))
+
+        assert tuned.min_step_deg >= REANALYSIS_MIN_STEP_DEG
+        assert tuned.min_segment >= REANALYSIS_MIN_SEGMENT
+
+    def test_leaves_already_stricter_settings_alone(self) -> None:
+        """A caller who already asked for stricter bounds keeps them."""
+        strict = replace(DEFAULT_NORTHING, min_step_deg=20.0, min_segment=pd.Timedelta(days=60))
+
+        assert against_reanalysis(strict) == strict
 
 
 class TestSettings:
