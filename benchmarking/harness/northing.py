@@ -31,6 +31,7 @@ from wind_up.northing import (
     yaw_usable,
 )
 from wind_up.northing_plots import plot_northing, plot_northing_farm, plot_wake_nadir_farm
+from wind_up.wake_nadir import wake_nadir_offsets
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -146,6 +147,32 @@ def _directions(
     return out
 
 
+def _pass_four_corrections(
+    index: pd.DatetimeIndex,
+    *,
+    directions: dict[str, np.ndarray],
+    usable: dict[str, np.ndarray],
+    reference: np.ndarray,
+    layout: Layout,
+    power: dict[str, np.ndarray],
+    wind_speed: dict[str, np.ndarray] | None,
+    settings: NorthingSettings,
+) -> dict[str, float]:
+    """Return the pass-4 wake-nadir correction per turbine, for the diagnostic bubble plot.
+
+    Norths the farm once without pass 4 and measures the correction from the resulting northed
+    directions -- the same computation north_farm applies internally, redone here so the plot can be
+    drawn without north_farm handing the corrections back.
+    """
+    without = north_farm(
+        index, direction_deg=directions, usable=usable, reanalysis_deg=reference, layout=layout, settings=settings
+    )
+    northed = {name: apply_north_table(index, directions[name], north_table=without[name]) for name in directions}
+    return wake_nadir_offsets(
+        layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
+    )
+
+
 def north_scada(
     scada_df: pd.DataFrame,
     *,
@@ -236,7 +263,6 @@ def north_scada(
             else None
         )
         layout = Layout.from_coordinates(coordinates) if coordinates is not None else None
-        nadir: dict[str, float] = {}
         tables = north_farm(
             index,
             direction_deg=directions,
@@ -246,7 +272,6 @@ def north_scada(
             power=power,
             wind_speed=wind_speed,
             settings=settings,
-            nadir_out=nadir,
         )
         found = sum(len(t) - 1 for t in tables.values())
         logger.info("discovered %d northing changepoint(s) across %d turbines", found, len(turbines))
@@ -256,9 +281,20 @@ def north_scada(
             _write_northing_plots(
                 index, directions=directions, usable=usable, reference=reference, tables=tables, out_dir=out_dir
             )
-            if layout is not None and nadir:
-                figure = plot_wake_nadir_farm(layout, corrections=nadir, out_dir=out_dir)
-                plt.close(figure)
+            if layout is not None:
+                corrections = _pass_four_corrections(
+                    index,
+                    directions=directions,
+                    usable=usable,
+                    reference=reference,
+                    layout=layout,
+                    power=power,
+                    wind_speed=wind_speed,
+                    settings=settings,
+                )
+                if corrections:
+                    figure = plot_wake_nadir_farm(layout, corrections=corrections, out_dir=out_dir)
+                    plt.close(figure)
 
     turbine_of = scada_df[columns.turbine].to_numpy()
     row_index = pd.DatetimeIndex(scada_df.index)

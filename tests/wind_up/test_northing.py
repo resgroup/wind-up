@@ -1041,9 +1041,10 @@ def test_coordinates_norths_each_device_against_its_nearest_neighbours() -> None
     """With coordinates, a device is northed against its nearest turbines, not the whole farm.
 
     T01 is clean but sits among N1-N3, which all step +40 mid-record. Against the whole farm the
-    four clean devices out-vote the steppers, so T01 stays flat; against only its three nearest
-    (N1-N3) the consensus itself steps +40, and T01 -- measured against it -- is handed a spurious
-    -40 step. That difference proves pass 2 used the nearest-neighbour consensus, not the farm median.
+    four clean devices out-vote the steppers, so T01 stays flat; against only its nearest turbines --
+    N1-N3 step and just one clean device (O1) joins them -- the stepping majority carries the
+    consensus, and T01, measured against it, is handed a spurious -40 step. That difference proves
+    pass 2 used the nearest-neighbour consensus, not the farm median.
     """
     index = _index()
     reported, reference = _stepping_farm(index)
@@ -1056,7 +1057,6 @@ def test_coordinates_norths_each_device_against_its_nearest_neighbours() -> None
         usable=usable,
         reanalysis_deg=reference,
         layout=Layout.from_coordinates(_STEPPING_COORDS),
-        neighbours=3,
     )
 
     assert len(whole["T01"]) == 1, f"whole-farm should keep T01 clean: {whole['T01']}"
@@ -1147,20 +1147,22 @@ def test_coordinates_keep_the_anchor_when_a_devices_consensus_is_empty() -> None
         "U1": _tracking(index, ref, flat, seed=21),
         "U2": _tracking(index, ref, flat, seed=22),
         "U3": _tracking(index, ref, flat, seed=23),
+        "U4": _tracking(index, ref, flat, seed=28),
         "C1": _tracking(index, ref, flat, seed=24),
         "C2": _tracking(index, ref, flat, seed=25),
         "C3": _tracking(index, ref, flat, seed=26),
         "C4": _tracking(index, ref, flat, seed=27),
     }
     dead = np.zeros(len(index), dtype=bool)
-    usable = {name: (dead if name in {"U1", "U2", "U3"} else _all_usable(index)) for name in reported}
-    # X's cluster {X, U1, U2, U3} sits at lon ~0, so X's three nearest are the unusable U1-U3; the
-    # usable cluster {C1-C4} is a farm's-width away and references itself, keeping the bail-out quiet.
+    usable = {name: (dead if name in {"U1", "U2", "U3", "U4"} else _all_usable(index)) for name in reported}
+    # X's cluster {X, U1-U4} sits at lon ~0, so X's four nearest are the unusable U1-U4; the usable
+    # cluster {C1-C4} is a farm's-width away and references itself, keeping the bail-out quiet.
     coords = {
         "X": (55.0, 0.000),
         "U1": (55.0, 0.001),
         "U2": (55.0, 0.002),
         "U3": (55.0, 0.003),
+        "U4": (55.0, 0.004),
         "C1": (55.0, 1.000),
         "C2": (55.0, 1.001),
         "C3": (55.0, 1.002),
@@ -1173,7 +1175,6 @@ def test_coordinates_keep_the_anchor_when_a_devices_consensus_is_empty() -> None
         usable=usable,
         reanalysis_deg=ref,
         layout=Layout.from_coordinates(coords),
-        neighbours=3,
     )
 
     assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
@@ -1199,8 +1200,8 @@ def test_coordinates_keep_the_anchor_when_the_consensus_never_overlaps_the_devic
     first_half[:half] = True
     second_half[half:] = True
     usable = {"X": first_half, "N1": second_half, "N2": second_half, "N3": second_half}
-    # Only four turbines, so with neighbours=3 every device's reference is the other three: X is thus
-    # northed against N1-N3, finite only in the second half, while X itself is usable only in the first.
+    # Only four turbines, so every device's reference is the other three: X is thus northed against
+    # N1-N3, finite only in the second half, while X itself is usable only in the first.
     coords = {"X": (55.0, 0.0), "N1": (55.0, 0.001), "N2": (55.0, 0.002), "N3": (55.0, 0.003)}
 
     tables = north_farm(
@@ -1209,7 +1210,6 @@ def test_coordinates_keep_the_anchor_when_the_consensus_never_overlaps_the_devic
         usable=usable,
         reanalysis_deg=ref,
         layout=Layout.from_coordinates(coords),
-        neighbours=3,
     )
 
     assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"

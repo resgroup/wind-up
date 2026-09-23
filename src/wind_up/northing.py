@@ -114,6 +114,13 @@ ANCHORING_MIN_STEP_DEG = 30.0
 # See :func:`_confident_steps`.
 VEER_SIGNATURE_MIN_STEP_DEG = 10.0
 
+# The minimum farm size for the neighbour-consensus regime (pass 2); below it north_farm norths each
+# device against reanalysis with changepoints (pass 3). Also the floor on how many devices must
+# report at a timestamp for their consensus to stand.
+MIN_DEVICES_FOR_FARM_REFERENCE = 3
+# How many nearest turbines form each device's pass-2 consensus, capped at the farm size.
+_CONSENSUS_NEIGHBOURS = 4
+
 DEFAULT_NORTHING = NorthingSettings()
 
 
@@ -898,14 +905,11 @@ def _wake_nadir_pass(
     power: Mapping[str, npt.NDArray[np.float64]] | None,
     wind_speed: Mapping[str, npt.NDArray[np.float64]] | None,
     usable: Mapping[str, npt.NDArray[np.bool_]],
-    nadir_out: dict[str, float] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Add pass 4's wake-nadir correction to each device's table, or return ``tables`` unchanged.
 
     Runs only with both a ``layout`` and ``power``. The correction is one absolute number per
     turbine; it shifts every offset in that turbine's table and never touches which rows are valid.
-    When ``nadir_out`` is given it is filled with the per-device correction, for callers that plot
-    or log the nudge; it is left untouched when pass 4 does not run.
     """
     if layout is None or power is None:
         return tables
@@ -913,8 +917,6 @@ def _wake_nadir_pass(
     deltas = wake_nadir_offsets(
         layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
     )
-    if nadir_out is not None:
-        nadir_out.update(deltas)
     return {
         name: table.assign(**{NORTH_OFFSET_COL: table[NORTH_OFFSET_COL] + deltas[name]}) if deltas.get(name) else table
         for name, table in tables.items()
@@ -978,10 +980,7 @@ def north_farm(
     layout: Layout | None,
     power: Mapping[str, npt.NDArray[np.float64]] | None = None,
     wind_speed: Mapping[str, npt.NDArray[np.float64]] | None = None,
-    neighbours: int = 4,
     settings: NorthingSettings = DEFAULT_NORTHING,
-    min_devices_for_farm_reference: int = 3,
-    nadir_out: dict[str, float] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """North a whole farm, returning one absolute table per device.
 
@@ -1016,14 +1015,6 @@ def north_farm(
         ``layout``) disables pass 4.
     :param wind_speed: device name to its nacelle wind speed on ``index``. When given, pass 4
         combines it with power as a second, independent deficit signal; otherwise power is used alone.
-    :param neighbours: how many nearest turbines form each device's pass-2 consensus when ``layout``
-        is given; capped at the farm size, and must leave every device at least
-        ``min_devices_for_farm_reference`` neighbours or the call raises.
-    :param min_devices_for_farm_reference: the floor on how many devices must report at a
-        timestamp for the consensus to be defined there, and the minimum farm size. The effective
-        requirement is the larger of this and a strict majority of the farm.
-    :param nadir_out: when given, filled with each device's pass-4 correction (deg), for callers
-        that plot or log the nudge; left untouched when pass 4 does not run.
     """
     devices = sorted(direction_deg)
     _validate_north_farm_inputs(devices, usable=usable, power=power, layout=layout)
@@ -1039,7 +1030,7 @@ def north_farm(
         )
         raise ValueError(msg)
     thin = sorted(d for d, n in anchorable.items() if n == 0)
-    if len(devices) - len(thin) < min_devices_for_farm_reference:
+    if len(devices) - len(thin) < MIN_DEVICES_FOR_FARM_REFERENCE:
         logger.warning(
             "only %d of %d devices have a usable row anchored to reanalysis (%s have none); the absolute "
             "anchor rests on few devices",
@@ -1070,19 +1061,18 @@ def north_farm(
         power=power,
         wind_speed=wind_speed,
         usable=usable,
-        nadir_out=nadir_out,
     )
 
     # Whole-farm switch: below the floor there is no farm consensus to form, so pass 3 norths each
     # device against reanalysis directly. Unlike the pass-1 anchor it attributes changepoints, but at
     # a coarser step floor, since reanalysis drift must not be read as a small turbine step. Pass 1 is
     # pass 3's no-changepoint special case.
-    if len(devices) < min_devices_for_farm_reference:
+    if len(devices) < MIN_DEVICES_FOR_FARM_REFERENCE:
         logger.warning(
             "farm of %d device(s) is below min_devices_for_farm_reference=%d; northing against "
             "reanalysis with changepoints (pass 3)",
             len(devices),
-            min_devices_for_farm_reference,
+            MIN_DEVICES_FOR_FARM_REFERENCE,
         )
         reanalysis_settings = against_reanalysis(settings)
         pass_three = {
@@ -1098,15 +1088,15 @@ def north_farm(
         return wake_nadir(pass_three)
 
     reference_neighbours = _pass_two_reference(
-        layout, devices=devices, neighbours=neighbours, min_devices=min_devices_for_farm_reference
+        layout, devices=devices, neighbours=_CONSENSUS_NEIGHBOURS, min_devices=MIN_DEVICES_FOR_FARM_REFERENCE
     )
-    quorum = _farm_quorum(len(devices), floor=min_devices_for_farm_reference)
+    quorum = _farm_quorum(len(devices), floor=MIN_DEVICES_FOR_FARM_REFERENCE)
     references = _consensus_references(
         northed,
         usable=usable,
         quorum=quorum,
         reference_neighbours=reference_neighbours,
-        min_devices=min_devices_for_farm_reference,
+        min_devices=MIN_DEVICES_FOR_FARM_REFERENCE,
     )
     if not any(np.isfinite(reference).any() for reference in references.values()):
         logger.warning("farm reference is empty; keeping the reanalysis-only north tables")

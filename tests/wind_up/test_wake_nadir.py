@@ -147,55 +147,6 @@ def test_north_farm_applies_the_wake_nudge_when_given_layout_and_power() -> None
         assert shift == pytest.approx(expected[name], abs=1e-6), name
 
 
-def test_north_farm_reports_the_pass_four_deltas_in_nadir_out() -> None:
-    """A supplied nadir_out is filled with the per-device correction pass 4 applied."""
-    layout = _pair_layout()
-    index, northed, power, wind_speed, usable, _ = _waked_pair(layout, residual_deg=6.0)
-    reanalysis = northed["A"]
-    without = north_farm(
-        index, direction_deg=northed, usable=usable, reanalysis_deg=reanalysis, layout=layout, power=None
-    )
-    pre_nudge = {name: apply_north_table(index, northed[name], north_table=without[name]) for name in northed}
-    expected = wake_nadir_offsets(
-        layout, index=index, northed_direction=pre_nudge, power=power, wind_speed=wind_speed, usable=usable
-    )
-
-    nadir: dict[str, float] = {}
-    north_farm(
-        index,
-        direction_deg=northed,
-        usable=usable,
-        reanalysis_deg=reanalysis,
-        layout=layout,
-        power=power,
-        wind_speed=wind_speed,
-        nadir_out=nadir,
-    )
-
-    assert set(nadir) == set(northed)
-    for name in northed:
-        assert nadir[name] == pytest.approx(expected[name], abs=1e-9), name
-
-
-def test_nadir_out_is_untouched_when_pass_four_does_not_run() -> None:
-    """Without power there is no pass 4, so a supplied nadir_out is left empty."""
-    layout = _pair_layout()
-    index, northed, _, _, usable, _ = _waked_pair(layout, residual_deg=6.0)
-
-    nadir: dict[str, float] = {}
-    north_farm(
-        index,
-        direction_deg=northed,
-        usable=usable,
-        reanalysis_deg=northed["A"],
-        layout=layout,
-        power=None,
-        nadir_out=nadir,
-    )
-
-    assert nadir == {}
-
-
 def test_unpopulated_sector_bins_do_not_warn() -> None:
     """A gap in the swept directions leaves some sector bins empty; combining deficits must not warn.
 
