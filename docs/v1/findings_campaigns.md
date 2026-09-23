@@ -12,6 +12,35 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF20 — Pass 3 (a lone turbine northed against reanalysis) over-detects changepoints, and the fix is a longer minimum segment, not a lower step floor: `REANALYSIS_MIN_STEP_DEG` stays **10°**, a 30-day `REANALYSIS_MIN_SEGMENT` cuts spurious steps from **~106 to 1** across Hill of Towie while keeping every recoverable published step
+
+*2026-09-23. Reproduce: `uv run python -m benchmarking.baselines.study_northing_degradation` (the
+`floor_sweep` / pass-3 config section) plus a session-scratch isolation experiment, matched against
+the published HoT table at ±14 days. Test counterpart:
+`tests/wind_up/test_northing_real_data.py::TestSingleTurbineAgainstReanalysis::test_pass_three_does_not_over_detect_against_reanalysis`.*
+
+The R5 Part A done-when expected `REANALYSIS_MIN_STEP_DEG` to be **lowered** by evidence. The
+evidence refuted that hypothesis, and the floor stays at 10°.
+
+**Recall is capped at 13 of 28 published changepoints regardless of the floor.** The other 15 are
+consensus-only — pass 2 finds them against neighbour signals reanalysis does not carry — so pass 3
+against ERA5 alone cannot recover them. Sweeping the step floor from 15° down to 5° only raised
+spurious changepoints (34 → 200 across the 21 turbines) while recovering **no** additional true
+positives.
+
+**The binding constraint is time resolution, not step size.** Hourly, site-generic reanalysis cannot
+place recalibrations closer together than about a month, so closely-spaced apparent steps against it
+are reference wander rather than real turbine moves. Raising `min_segment` to 30 days (folded into
+`against_reanalysis`) merges them: at the 10° floor, spurious changepoints drop from **106 to 1**,
+recall holds at 13/28, and the offset error vs the golden table is unchanged. The changepoint budget
+(`changepoints_per_year`) was irrelevant once `min_segment` was 30 days.
+
+**Implication.** Pass 3 ships with `REANALYSIS_MIN_SEGMENT = 30 days` and the floor unchanged at 10°.
+On real Hill of Towie the whole farm then resolves to 8 pass-3 changepoints, against ~100 without the
+guard — the behaviour locked in by the regression test above.
+
+---
+
 ## CF19 — A **Pass 1′ re-anchor** (recompute each device's bulk offset from its residual after pass 2's changepoints) is **not adopted**: it never materially beats the baseline and is worse when several devices step together, because pass 2 already anchors each device to the clean farm consensus, not to its own biased pass-1 offset
 
 *2026-09-23. Reproduce: synthetic sweep in the session scratch (`pass1prime_experiment.py`) — a
