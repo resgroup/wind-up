@@ -8,8 +8,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from benchmarking.harness import northing as harness_northing
+from benchmarking.harness import replicates as harness_replicates
 from benchmarking.harness.northing import ERA5_WD_COL, era5_direction, north_scada
-from benchmarking.harness.replicates import StudyConfig, iter_replicates
+from benchmarking.harness.replicates import NorthingInputs, StudyConfig, iter_replicates
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.circular_math import circ_diff
 from wind_up.layout import Layout
@@ -70,15 +72,18 @@ def _northed(frame: pd.DataFrame, turbine: str) -> np.ndarray:
 
 def _waked_scada(
     *, residual_deg: float, rows: int = 8000, seed: int = 0
-) -> tuple[pd.DataFrame, pd.DatetimeIndex, np.ndarray, dict[str, tuple[float, float]]]:
+) -> tuple[pd.DataFrame, pd.DatetimeIndex, np.ndarray, Layout]:
     """Two turbines where A wakes B; both report the true wind carrying a constant ``residual_deg``.
 
     B's power and wind speed dip when the true wind sits at the geometric nadir, so pass 4 can read
     the residual back off the wake and null it. Reanalysis equals the reported direction, so pass 1
     leaves the residual in place and only pass 4 can remove it.
     """
-    coords = {"A": (55.0, -0.0064), "B": (55.0, 0.0)}
-    layout = Layout.from_coordinates(coords)
+    layout = Layout.from_frame(
+        pd.DataFrame(
+            {"name": ["A", "B"], "latitude": [55.0, 55.0], "longitude": [-0.0064, 0.0], "rotor_diameter_m": 82.0}
+        )
+    )
     beta = float(layout.bearing_deg[layout.index_of("B"), layout.index_of("A")])
     rng = np.random.default_rng(seed)
     true_a = beta + rng.uniform(-25.0, 25.0, size=rows)
@@ -101,7 +106,7 @@ def _waked_scada(
         )
         for name in ("A", "B")
     ]
-    return pd.concat(frames), index, true_a, coords
+    return pd.concat(frames), index, true_a, layout
 
 
 class TestPassFourInTheHarness:
@@ -109,14 +114,14 @@ class TestPassFourInTheHarness:
 
     def test_pass_four_recovers_an_injected_offset(self) -> None:
         residual = 6.0
-        scada, index, true_a, coords = _waked_scada(residual_deg=residual)
+        scada, index, true_a, layout = _waked_scada(residual_deg=residual)
         era5 = pd.Series((true_a + residual) % 360.0, index=index)
 
         with_geo = north_scada(
-            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=coords, era5_wd=era5
+            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, layout=layout, era5_wd=era5
         )
         without_geo = north_scada(
-            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=None, era5_wd=era5
+            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, layout=None, era5_wd=era5
         )
 
         # No wake geometry: A's northed direction keeps the injected residual.
@@ -125,7 +130,7 @@ class TestPassFourInTheHarness:
         assert circ_diff(_northed(with_geo, "A"), true_a).mean() == pytest.approx(0.0, abs=2.0)
 
     def test_writes_the_wake_nadir_bubble_plot(self, tmp_path: Path) -> None:
-        scada, index, true_a, coords = _waked_scada(residual_deg=6.0)
+        scada, index, true_a, layout = _waked_scada(residual_deg=6.0)
         era5 = pd.Series((true_a + 6.0) % 360.0, index=index)
 
         north_scada(
@@ -133,12 +138,37 @@ class TestPassFourInTheHarness:
             columns=_COLUMNS,
             north_offsets=None,
             rated_power_kw=_RATED,
-            coordinates=coords,
+            layout=layout,
             era5_wd=era5,
             out_dir=tmp_path,
         )
 
         assert (tmp_path / "wake_nadir_bubble.png").is_file()
+
+    def test_writing_the_plots_norths_the_farm_only_once(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The bubble plot reuses the pass-4 corrections rather than northing the farm a second time."""
+        scada, index, true_a, layout = _waked_scada(residual_deg=6.0)
+        era5 = pd.Series((true_a + 6.0) % 360.0, index=index)
+        calls = []
+        real_north_farm = harness_northing.north_farm
+
+        def counting_north_farm(*args: object, **kwargs: object) -> object:
+            calls.append(1)
+            return real_north_farm(*args, **kwargs)
+
+        monkeypatch.setattr(harness_northing, "north_farm", counting_north_farm)
+
+        north_scada(
+            scada,
+            columns=_COLUMNS,
+            north_offsets=None,
+            rated_power_kw=_RATED,
+            layout=layout,
+            era5_wd=era5,
+            out_dir=tmp_path,
+        )
+
+        assert len(calls) == 1
 
 
 class TestDiscovery:
@@ -150,9 +180,7 @@ class TestDiscovery:
         scada, site_wd = _scada(index, offsets)
         era5 = pd.Series(site_wd, index=index)
 
-        out = north_scada(
-            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=None, era5_wd=era5
-        )
+        out = north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, layout=None, era5_wd=era5)
 
         assert _COLUMNS.northed("nacelle_position") in out.columns
         assert np.allclose(
@@ -166,9 +194,7 @@ class TestDiscovery:
         scada, site_wd = _scada(index, offsets)
         era5 = pd.Series(site_wd, index=index)
 
-        out = north_scada(
-            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=None, era5_wd=era5
-        )
+        out = north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, layout=None, era5_wd=era5)
 
         for turbine in _TURBINES:
             assert circ_diff(_northed(out, turbine), site_wd).mean() == pytest.approx(0.0, abs=2.0), turbine
@@ -181,9 +207,7 @@ class TestDiscovery:
         scada, site_wd = _scada(index, offsets)
         era5 = pd.Series(site_wd, index=index)
 
-        out = north_scada(
-            scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=None, era5_wd=era5
-        )
+        out = north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, layout=None, era5_wd=era5)
 
         assert circ_diff(_northed(out, "T03"), site_wd).mean() == pytest.approx(0.0, abs=2.0)
 
@@ -191,9 +215,7 @@ class TestDiscovery:
         index = _index(days=30)
         scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
         with pytest.raises(ValueError, match="era5_wd"):
-            north_scada(
-                scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, coordinates=None, era5_wd=None
-            )
+            north_scada(scada, columns=_COLUMNS, north_offsets=None, rated_power_kw=_RATED, layout=None, era5_wd=None)
 
     @pytest.mark.parametrize("role", ["active_power", "availability"])
     def test_discovery_without_a_column_it_reads_raises_naming_it(self, role: str) -> None:
@@ -207,7 +229,7 @@ class TestDiscovery:
                 columns=_COLUMNS,
                 north_offsets=None,
                 rated_power_kw=_RATED,
-                coordinates=None,
+                layout=None,
                 era5_wd=pd.Series(era5, index=index),
             )
 
@@ -238,7 +260,7 @@ class TestDeclared:
         declared = [("T02", _START, 33.0)]
 
         out = north_scada(
-            scada, columns=_COLUMNS, north_offsets=declared, rated_power_kw=_RATED, coordinates=None, era5_wd=None
+            scada, columns=_COLUMNS, north_offsets=declared, rated_power_kw=_RATED, layout=None, era5_wd=None
         )
 
         raw = scada[scada[_COLUMNS.turbine] == "T02"][_COLUMNS.nacelle_position].to_numpy(dtype=float)
@@ -252,9 +274,7 @@ class TestDeclared:
         offsets = {t: [(_START, 30.0)] for t in _TURBINES}
         scada, _ = _scada(index, offsets)
 
-        out = north_scada(
-            scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, coordinates=None, era5_wd=None
-        )
+        out = north_scada(scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, layout=None, era5_wd=None)
 
         assert _COLUMNS.northed("nacelle_position") in out.columns
         for turbine in _TURBINES:
@@ -265,7 +285,7 @@ class TestDeclared:
         index = _index(days=30)
         scada, _ = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
         # would raise if this branch tried to discover
-        north_scada(scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, coordinates=None, era5_wd=None)
+        north_scada(scada, columns=_COLUMNS, north_offsets=[], rated_power_kw=_RATED, layout=None, era5_wd=None)
 
     def test_a_table_starting_after_the_data_raises(self) -> None:
         index = _index(days=30)
@@ -273,9 +293,7 @@ class TestDeclared:
         late = [("T01", _START + pd.Timedelta(days=5), 12.0)]
 
         with pytest.raises(ValueError, match="after the data starts"):
-            north_scada(
-                scada, columns=_COLUMNS, north_offsets=late, rated_power_kw=_RATED, coordinates=None, era5_wd=None
-            )
+            north_scada(scada, columns=_COLUMNS, north_offsets=late, rated_power_kw=_RATED, layout=None, era5_wd=None)
 
     def test_a_turbine_with_no_declared_offset_is_left_alone(self) -> None:
         index = _index(days=30)
@@ -283,7 +301,7 @@ class TestDeclared:
         only_t01 = [("T01", _START, 12.0)]
 
         out = north_scada(
-            scada, columns=_COLUMNS, north_offsets=only_t01, rated_power_kw=_RATED, coordinates=None, era5_wd=None
+            scada, columns=_COLUMNS, north_offsets=only_t01, rated_power_kw=_RATED, layout=None, era5_wd=None
         )
 
         raw = scada[scada[_COLUMNS.turbine] == "T02"][_COLUMNS.nacelle_position].to_numpy(dtype=float)
@@ -317,11 +335,45 @@ class TestStudyPath:
                 profile=[ConstantCpChange(delta=0.05)],
                 study=TestStudyPath._study(),
                 columns=_COLUMNS,
-                era5_wd=None if era5_wd is None else reanalysis,
+                northing=None if era5_wd is None else NorthingInputs(era5_wd=reanalysis, layout=None),
                 rated_power_kw=_RATED,
             )
         )
         return replicates[0].synthetic_df
+
+    def test_the_layout_reaches_the_northing_step(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        index = _index()
+        scada, site_wd = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
+        layout = Layout.from_frame(
+            pd.DataFrame(
+                {
+                    "name": list(_TURBINES),
+                    "latitude": [55.0 + 0.004 * i for i in range(len(_TURBINES))],
+                    "longitude": 0.0,
+                    "rotor_diameter_m": 82.0,
+                }
+            )
+        )
+        seen = []
+
+        def recording_north_scada(frame: pd.DataFrame, **kwargs: object) -> pd.DataFrame:
+            seen.append(kwargs["layout"])
+            return frame
+
+        monkeypatch.setattr(harness_replicates, "north_scada", recording_north_scada)
+        next(
+            iter_replicates(
+                scada,
+                profile=[ConstantCpChange(delta=0.05)],
+                study=self._study(),
+                columns=_COLUMNS,
+                northing=NorthingInputs(era5_wd=pd.Series(site_wd, index=index), layout=layout),
+                rated_power_kw=_RATED,
+            )
+        )
+
+        assert len(seen) == 1
+        assert seen[0] is layout
 
     def test_no_reanalysis_means_no_northed_column(self) -> None:
         assert _COLUMNS.northed("nacelle_position") not in self._replicate(era5_wd=None).columns

@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
-from benchmarking.campaigns.declaration import SyntheticCampaign
+from benchmarking.campaigns.declaration import SyntheticCampaign, layout_from_coords
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.report import write_campaign_report
 from benchmarking.campaigns.runner import CampaignRunner
@@ -140,7 +140,10 @@ def placebo_campaign(
         excluded_turbines=list(excluded),
         upgrades=[],
         faults=list(faults) if faults is not None else [],
-        coords=coords if coords is not None else dict.fromkeys(participating, (0.0, 0.0)),
+        layout=layout_from_coords(
+            coords if coords is not None else dict.fromkeys(participating, (0.0, 0.0)),
+            rotor_diameter_m=HOT_ROTOR_DIAMETER_M,
+        ),
         # discovered by the shared northing step, not supplied: the placebo exercises the norther
         north_offsets=None,
         rated_power_kw=HOT_RATED_POWER_KW,

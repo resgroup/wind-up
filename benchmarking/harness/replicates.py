@@ -29,6 +29,24 @@ if TYPE_CHECKING:
 
     from benchmarking.harness.campaign import CampaignUnit
     from benchmarking.synthetic import ColumnSchema, SyntheticDataset, UpliftResult
+    from wind_up.layout import Layout
+
+
+@dataclass(frozen=True)
+class NorthingInputs:
+    """What the shared northing step needs to north each replicate.
+
+    Bundled so asking for northing is also deciding the layout: there is no way to supply the
+    reanalysis anchor and fall into the whole-farm consensus by omission.
+
+    :param era5_wd: reanalysis wind direction covering the base SCADA, the absolute anchor
+    :param layout: the farm layout (rotor diameters included) for nearest-neighbour consensus and the
+        pass-4 wake-nadir nudge; must cover ``StudyConfig.turbine_subset``. ``None`` -- explicitly --
+        norths against the whole-farm consensus and skips pass 4.
+    """
+
+    era5_wd: pd.Series
+    layout: Layout | None
 
 
 @dataclass(frozen=True)
@@ -126,9 +144,8 @@ def iter_replicates(
     profile: list,
     study: StudyConfig,
     columns: ColumnSchema = HOT_COLUMNS,
-    era5_wd: pd.Series | None = None,
+    northing: NorthingInputs | None = None,
     rated_power_kw: float = HOT_RATED_POWER_KW,
-    coords: dict[str, tuple[float, float]] | None = None,
 ) -> Iterator[Replicate]:
     """Yield ``study.n_replicates`` replicates of ``profile`` one at a time.
 
@@ -138,15 +155,12 @@ def iter_replicates(
     each be freed rather than materialising them all.
 
     :param columns: the source-native column schema ``base_scada`` is keyed by
-    :param era5_wd: reanalysis wind direction covering ``base_scada``. Supplying it runs the shared
-        northing step on each replicate, so methods reading ``columns.northed(role)`` find it;
-        without it no replicate is northed. Each replicate norths its own generated frame rather
-        than sharing a table discovered once, so the step has to find the corrections unaided and a
-        direction-moving upgrade in ``profile`` stays consistent with its northed companion.
+    :param northing: supplying it runs the shared northing step on each replicate, so methods
+        reading ``columns.northed(role)`` find it; ``None`` norths no replicate. Each replicate norths
+        its own generated frame rather than sharing a table discovered once, so the step has to find
+        the corrections unaided and a direction-moving upgrade in ``profile`` stays consistent with its
+        northed companion.
     :param rated_power_kw: turbine rating, passed to the generator and to the northing step
-    :param coords: turbine to ``(latitude, longitude)`` for the shared northing step's
-        nearest-neighbour consensus; must cover ``study.turbine_subset``. ``None`` norths each
-        replicate against the whole-farm consensus.
     """
     subset = base_scada[base_scada[columns.turbine].isin(study.turbine_subset)]
     candidates = _candidate_starts(subset.index, study.treatment_start_range)
@@ -167,7 +181,7 @@ def iter_replicates(
             rated_power_kw=rated_power_kw,
             seed=study.seed,
         )
-        if era5_wd is not None:
+        if northing is not None:
             dataset = replace(
                 dataset,
                 synthetic_df=north_scada(
@@ -175,8 +189,8 @@ def iter_replicates(
                     columns=columns,
                     north_offsets=None,
                     rated_power_kw=rated_power_kw,
-                    coordinates=coords,
-                    era5_wd=era5_wd,
+                    layout=northing.layout,
+                    era5_wd=northing.era5_wd,
                 ),
             )
         yield Replicate(
@@ -194,9 +208,8 @@ def build_replicates(
     profile: list,
     study: StudyConfig,
     columns: ColumnSchema = HOT_COLUMNS,
-    era5_wd: pd.Series | None = None,
+    northing: NorthingInputs | None = None,
     rated_power_kw: float = HOT_RATED_POWER_KW,
-    coords: dict[str, tuple[float, float]] | None = None,
 ) -> list[Replicate]:
     """Draw ``study.n_replicates`` replicates of ``profile`` from ``base_scada``.
 
@@ -207,10 +220,8 @@ def build_replicates(
     the ensemble is large enough for that to matter.
 
     :param columns: the source-native column schema ``base_scada`` is keyed by
-    :param era5_wd: reanalysis wind direction; see :func:`iter_replicates`
+    :param northing: the shared northing step's inputs; see :func:`iter_replicates`
     :param rated_power_kw: turbine rating, passed to the generator and to the northing step
-    :param coords: turbine to ``(latitude, longitude)`` for the northing step; see
-        :func:`iter_replicates`
     """
     return list(
         iter_replicates(
@@ -218,9 +229,8 @@ def build_replicates(
             profile=profile,
             study=study,
             columns=columns,
-            era5_wd=era5_wd,
+            northing=northing,
             rated_power_kw=rated_power_kw,
-            coords=coords,
         )
     )
 

@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.campaigns import CampaignSpec, SyntheticCampaign
+from benchmarking.campaigns import CampaignSpec, SyntheticCampaign, layout_from_coords
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange, ToggleSchedule
 
 PERIOD = (pd.Timestamp("2020-01-01", tz="UTC"), pd.Timestamp("2020-07-01", tz="UTC"))
@@ -23,7 +23,7 @@ def campaign(*, upgrades: list | None = None, upgrade_timing: object = CHANGEOVE
         candidate_references=["T3", "T4", "T5"],
         excluded_turbines=["T5"],
         upgrades=[] if upgrades is None else upgrades,
-        coords={f"T{i}": (57.5 + i * 0.01, -3.25) for i in range(1, 6)},
+        layout=layout_from_coords({f"T{i}": (57.5 + i * 0.01, -3.25) for i in range(1, 6)}, rotor_diameter_m=82.0),
         north_offsets=[("T1", pd.Timestamp("2020-01-01", tz="UTC"), 1.5)],
         rated_power_kw=2300.0,
         analysis_period=PERIOD,
@@ -50,6 +50,19 @@ def scada(turbines: tuple[str, ...] = ("T1", "T2", "T3", "T4", "T5")) -> pd.Data
             for wtg in turbines
         ]
     )
+
+
+def test_the_spec_carries_the_declared_layout_and_its_coordinates() -> None:
+    declared = campaign()
+    spec = declared.spec()
+    assert spec.layout is declared.layout
+    assert list(spec.layout.frame["rotor_diameter_m"]) == [82.0] * 5
+    assert spec.coords == {f"T{i}": (57.5 + i * 0.01, -3.25) for i in range(1, 6)}
+
+
+def test_layout_from_coords_needs_a_rotor_diameter() -> None:
+    with pytest.raises(TypeError):
+        layout_from_coords({"T1": (57.5, -3.25)})  # type: ignore[call-arg]
 
 
 def test_spec_exposes_no_upgrade_physics() -> None:

@@ -93,7 +93,7 @@ def one_pass(
         columns=dataset.columns,
         north_offsets=spec.north_offsets,
         rated_power_kw=spec.rated_power_kw,
-        coordinates=spec.coords,
+        layout=spec.layout,
         era5_wd=era5_direction(era5_df, index),
         roles=DEFAULT_NORTHING_ROLES,
     )

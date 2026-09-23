@@ -73,8 +73,9 @@ from benchmarking.harness import (
     score_study,
 )
 from benchmarking.harness.northing import era5_direction
+from benchmarking.harness.replicates import NorthingInputs
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW, ConstantCpChange
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_layout, load_hot_scada
 
 logger = logging.getLogger(__name__)
 
@@ -233,8 +234,11 @@ def run_study(out_dir: Path, *, profiles: list[str] | None = None) -> pd.DataFra
     context = build_hot_v0_context(wtg_names=DEFAULT_TURBINE_SUBSET)
     # The shared northing step runs per replicate, so every method sees a north-calibrated
     # direction that wind-up discovered for itself rather than one supplied to it.
-    era5_wd = era5_direction(
-        context.reanalysis_datasets[0].data, pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+    northing = NorthingInputs(
+        era5_wd=era5_direction(
+            context.reanalysis_datasets[0].data, pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+        ),
+        layout=hot_layout(context.metadata_df),
     )
     study = toggle_study()
 
@@ -250,7 +254,7 @@ def run_study(out_dir: Path, *, profiles: list[str] | None = None) -> pd.DataFra
             methods=methods,
             study=study,
             profile_name=profile_name,
-            era5_wd=era5_wd,
+            northing=northing,
         )
         results.to_csv(out_dir / f"results_{profile_name}.csv", index=False)
         all_results.append(results)

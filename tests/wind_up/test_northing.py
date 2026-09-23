@@ -17,12 +17,12 @@ from wind_up.northing import (
     REANALYSIS_MIN_SEGMENT,
     REANALYSIS_MIN_STEP_DEG,
     NorthingSettings,
+    _neighbours_from_layout,
     _sector_signature,
     against_reanalysis,
     anchoring_only,
     apply_north_table,
     estimate_north_table,
-    nearest_neighbours,
     north_farm,
     veer_normalised,
     write_north_table_yaml,
@@ -34,6 +34,19 @@ if TYPE_CHECKING:
 
 TIMEBASE_S = 600
 RATED_POWER = 2300.0
+
+
+def _layout(coordinates: dict[str, tuple[float, float]]) -> Layout:
+    """A layout of ``coordinates`` with 82 m rotors."""
+    frame = pd.DataFrame(
+        {
+            "name": list(coordinates),
+            "latitude": [lat for lat, _ in coordinates.values()],
+            "longitude": [lon for _, lon in coordinates.values()],
+            "rotor_diameter_m": 82.0,
+        }
+    )
+    return Layout.from_frame(frame)
 
 
 def _index(days: float = 400.0, start: str = "2017-01-01") -> pd.DatetimeIndex:
@@ -1056,7 +1069,7 @@ def test_coordinates_norths_each_device_against_its_nearest_neighbours() -> None
         direction_deg=reported,
         usable=usable,
         reanalysis_deg=reference,
-        layout=Layout.from_coordinates(_STEPPING_COORDS),
+        layout=_layout(_STEPPING_COORDS),
     )
 
     assert len(whole["T01"]) == 1, f"whole-farm should keep T01 clean: {whole['T01']}"
@@ -1070,7 +1083,7 @@ def test_coordinates_norths_each_device_against_its_nearest_neighbours() -> None
 def test_a_farm_below_the_floor_is_anchored_not_rejected() -> None:
     """A one- or two-device farm no longer raises: it is anchored to reanalysis and returned.
 
-    Below ``min_devices_for_farm_reference`` there is no farm consensus to form, so ``north_farm``
+    Below ``MIN_DEVICES_FOR_FARM_REFERENCE`` there is no farm consensus to form, so ``north_farm``
     falls back to the pass-1 constant reanalysis anchor rather than refusing. A +25 deg frame offset
     on the pair must still be removed.
     """
@@ -1122,9 +1135,7 @@ def test_a_farm_too_small_for_the_neighbour_count_falls_back_to_the_whole_farm()
     usable = {name: _all_usable(index) for name in reported}
     coords = {"A": (55.0, 0.0), "B": (55.0, 0.001), "C": (55.0, 0.003)}
 
-    tables = north_farm(
-        index, direction_deg=reported, usable=usable, reanalysis_deg=ref, layout=Layout.from_coordinates(coords)
-    )
+    tables = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=ref, layout=_layout(coords))
 
     corrected = apply_north_table(index, reported["C"], north_table=tables["C"])
     assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), "C's +25 deg offset survived"
@@ -1174,7 +1185,7 @@ def test_coordinates_keep_the_anchor_when_a_devices_consensus_is_empty() -> None
         direction_deg=reported,
         usable=usable,
         reanalysis_deg=ref,
-        layout=Layout.from_coordinates(coords),
+        layout=_layout(coords),
     )
 
     assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
@@ -1209,7 +1220,7 @@ def test_coordinates_keep_the_anchor_when_the_consensus_never_overlaps_the_devic
         direction_deg=reported,
         usable=usable,
         reanalysis_deg=ref,
-        layout=Layout.from_coordinates(coords),
+        layout=_layout(coords),
     )
 
     assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
@@ -1228,37 +1239,22 @@ _LINE_COORDS = {
 }
 
 
-def test_nearest_neighbours_ranks_each_device_by_geodesic_distance() -> None:
-    nn = nearest_neighbours(_LINE_COORDS, k=2)
+def test_pass_two_neighbours_are_ranked_by_geodesic_distance() -> None:
+    nn = _neighbours_from_layout(_layout(_LINE_COORDS), devices=sorted(_LINE_COORDS), k=2)
     assert nn["A"] == ("B", "C")  # distances 1, 3, 7
     assert nn["B"] == ("A", "C")  # distances 1, 2, 6
     assert nn["C"] == ("B", "A")  # distances 2, 3, 4
     assert nn["D"] == ("C", "B")  # distances 4, 6, 7
 
 
-def test_nearest_neighbours_excludes_the_device_itself() -> None:
-    nn = nearest_neighbours(_LINE_COORDS, k=3)
+def test_pass_two_neighbours_exclude_the_device_itself() -> None:
+    nn = _neighbours_from_layout(_layout(_LINE_COORDS), devices=sorted(_LINE_COORDS), k=3)
     for name, neighbours in nn.items():
         assert name not in neighbours
 
 
-def test_nearest_neighbours_caps_k_at_the_devices_available() -> None:
+def test_pass_two_neighbours_cap_k_at_the_devices_available() -> None:
     coords = {"A": (55.0, 0.0), "B": (55.0, 0.01), "C": (55.0, 0.03)}
-    nn = nearest_neighbours(coords, k=10)
+    nn = _neighbours_from_layout(_layout(coords), devices=sorted(coords), k=10)
     assert nn["A"] == ("B", "C")  # only two others exist, so k is capped
     assert all(len(v) == 2 for v in nn.values())
-
-
-def test_nearest_neighbours_rejects_a_non_positive_k() -> None:
-    # A non-positive k would slice as order[:0] or order[:-1], silently returning the wrong set.
-    for bad_k in (0, -1):
-        with pytest.raises(ValueError, match="k must be"):
-            nearest_neighbours(_LINE_COORDS, k=bad_k)
-
-
-def test_nearest_neighbours_rejects_an_unusable_coordinate() -> None:
-    # A non-finite or out-of-range coordinate makes the geodesic distance non-finite, but argsort
-    # still returns an order, so the "nearest" set would be arbitrary rather than rejected.
-    for bad in ((91.0, 0.0), (float("nan"), 0.0), (55.0, float("inf"))):
-        with pytest.raises(ValueError, match="coordinate"):
-            nearest_neighbours({**_LINE_COORDS, "A": bad}, k=2)

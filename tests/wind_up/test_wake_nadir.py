@@ -10,8 +10,8 @@ import pytest
 
 from wind_up.circular_math import circ_diff
 from wind_up.layout import Layout
-from wind_up.northing import apply_north_table, north_farm
-from wind_up.wake_nadir import _aggregate, _Nadir, wake_nadir_offsets
+from wind_up.northing import add_wake_nadir, apply_north_table, north_farm
+from wind_up.wake_nadir import _aggregate, wake_nadir_offsets
 
 TIMEBASE_S = 600
 
@@ -91,6 +91,25 @@ def test_power_only_fallback_recovers_the_residual() -> None:
     assert circ_diff(offsets["A"], -residual) == pytest.approx(0.0, abs=1.5)
 
 
+def test_a_missing_wind_speed_row_does_not_discard_the_wind_speed_signal() -> None:
+    """Real nacelle wind speed has gaps; one NaN row must drop that row, not the whole signal.
+
+    Power is flat here, so only the wind-speed curve carries the dip.
+    """
+    layout = _pair_layout()
+    residual = 6.0
+    index, northed, _, wind_speed, usable, _ = _waked_pair(layout, residual_deg=residual)
+    flat_power = {"A": np.full(len(index), 1000.0), "B": np.full(len(index), 1000.0)}
+    gappy = {name: ws.copy() for name, ws in wind_speed.items()}
+    gappy["B"][0] = np.nan
+
+    offsets = wake_nadir_offsets(
+        layout, index=index, northed_direction=northed, power=flat_power, wind_speed=gappy, usable=usable
+    )
+
+    assert circ_diff(offsets["A"], -residual) == pytest.approx(0.0, abs=1.5)
+
+
 def test_a_flat_deficit_leaves_the_turbine_uncorrected() -> None:
     """No dip anywhere means no turbine resolves, so every correction is zero (graceful)."""
     layout = _pair_layout()
@@ -147,6 +166,25 @@ def test_north_farm_applies_the_wake_nudge_when_given_layout_and_power() -> None
         assert shift == pytest.approx(expected[name], abs=1e-6), name
 
 
+def test_add_wake_nadir_returns_the_corrections_it_applied() -> None:
+    """The pass-4 step hands back the per-turbine correction it added, so a caller can report it."""
+    layout = _pair_layout()
+    index, northed, power, wind_speed, usable, _ = _waked_pair(layout, residual_deg=6.0)
+    tables = north_farm(index, direction_deg=northed, usable=usable, reanalysis_deg=northed["A"], layout=layout)
+
+    nudged, corrections = add_wake_nadir(
+        tables, layout=layout, index=index, direction_deg=northed, power=power, wind_speed=wind_speed, usable=usable
+    )
+
+    pre_nudge = {name: apply_north_table(index, northed[name], north_table=tables[name]) for name in northed}
+    assert corrections == wake_nadir_offsets(
+        layout, index=index, northed_direction=pre_nudge, power=power, wind_speed=wind_speed, usable=usable
+    )
+    for name in northed:
+        shift = circ_diff(nudged[name]["north_offset"].to_numpy(), tables[name]["north_offset"].to_numpy())
+        assert shift == pytest.approx(corrections[name], abs=1e-9), name
+
+
 def test_unpopulated_sector_bins_do_not_warn() -> None:
     """A gap in the swept directions leaves some sector bins empty; combining deficits must not warn.
 
@@ -178,8 +216,7 @@ def test_the_aggregate_is_a_median_that_resists_a_biased_pair() -> None:
     degrees. Aggregating a turbine's pairs by their circular median lets a majority of consistent pairs
     outvote a deflected one, where a mean (however weighted) would be dragged toward it.
     """
-    pairs = [_Nadir(delta=6.0, volume=8000.0), _Nadir(delta=6.4, volume=8000.0), _Nadir(delta=-9.0, volume=8000.0)]
-    assert _aggregate(pairs).delta == pytest.approx(6.0, abs=1e-9)
+    assert _aggregate([6.0, 6.4, -9.0]) == pytest.approx(6.0, abs=1e-9)
 
 
 def test_the_view_angle_is_wrap_safe_when_the_nadir_sits_at_north() -> None:

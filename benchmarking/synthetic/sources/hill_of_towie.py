@@ -34,6 +34,7 @@ from zipfile import ZipFile
 import pandas as pd
 
 from benchmarking.synthetic.schema import ColumnSchema
+from wind_up.layout import Layout
 from wind_up_v0.constants import DataColumns
 
 if TYPE_CHECKING:
@@ -759,6 +760,23 @@ def load_hot_metadata(*, data_dir: Path | None = None, wtg_names: Sequence[str] 
         # only return return_df rows where the turbine name is in wtg_names
         return_df = return_df[return_df["Name"].isin(wtg_names)]
     return return_df
+
+
+def hot_layout(metadata_df: pd.DataFrame) -> Layout:
+    """Return the farm :class:`~wind_up.layout.Layout` of ``metadata_df`` (as :func:`load_hot_metadata` gives).
+
+    Every Hill of Towie turbine is a Siemens SWT-2.3-82, so each takes :data:`HOT_ROTOR_DIAMETER_M`.
+    """
+    return Layout.from_frame(
+        pd.DataFrame(
+            {
+                "name": metadata_df["Name"].astype(str).to_list(),
+                "latitude": metadata_df["Latitude"].astype(float).to_list(),
+                "longitude": metadata_df["Longitude"].astype(float).to_list(),
+                "rotor_diameter_m": HOT_ROTOR_DIAMETER_M,
+            }
+        )
+    )
 
 
 def load_hot_scada(

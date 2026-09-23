@@ -36,7 +36,7 @@ import pandas as pd
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.power_model.method import reference_overall_uplift
 from benchmarking.campaigns.context import context_for
-from benchmarking.campaigns.declaration import SyntheticCampaign
+from benchmarking.campaigns.declaration import SyntheticCampaign, layout_coords, layout_from_coords
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, era5_direction, north_scada
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
@@ -47,13 +47,14 @@ from benchmarking.synthetic.sources.greenbyte import (
     load_greenbyte_metadata,
     load_greenbyte_scada,
 )
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_layout, load_hot_metadata, load_hot_scada
 from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from benchmarking.synthetic import ColumnSchema
+    from wind_up.layout import Layout
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +102,8 @@ def road_tests() -> list[RoadTest]:
     ]
 
 
-def _load(test: RoadTest) -> tuple[pd.DataFrame, dict[str, tuple[float, float]], ColumnSchema, float]:
-    """Return SCADA, coordinates, the column schema and rated power for one road test."""
+def _load(test: RoadTest) -> tuple[pd.DataFrame, Layout, ColumnSchema, float]:
+    """Return SCADA, the layout, the column schema and rated power for one road test."""
     if test.source == "hot":
         scada, _ = load_hot_scada(
             start_dt=BASELINE_START,
@@ -111,12 +112,7 @@ def _load(test: RoadTest) -> tuple[pd.DataFrame, dict[str, tuple[float, float]],
             wtg_names=list(test.turbines),
         )
         metadata = load_hot_metadata()
-        coords = {
-            str(r.Name): (float(r.Latitude), float(r.Longitude))
-            for r in metadata.itertuples()
-            if str(r.Name) in set(test.turbines)
-        }
-        return scada, coords, HOT_COLUMNS, HOT_RATED_POWER_KW
+        return scada, hot_layout(metadata[metadata["Name"].isin(test.turbines)]), HOT_COLUMNS, HOT_RATED_POWER_KW
     farm = KELMARSH if test.source == "kelmarsh" else PENMANSHIEL
     scada = load_greenbyte_scada(farm, years=[2017, 2018])
     scada = scada[scada[GREENBYTE_COLUMNS.turbine].isin(test.turbines)]
@@ -126,12 +122,14 @@ def _load(test: RoadTest) -> tuple[pd.DataFrame, dict[str, tuple[float, float]],
         for r in metadata.itertuples()
         if str(r.Name) in set(test.turbines)
     }
-    return scada, coords, GREENBYTE_COLUMNS, farm.rated_power_kw
+    layout = layout_from_coords(coords, rotor_diameter_m=farm.rotor_diameter_m)
+    return scada, layout, GREENBYTE_COLUMNS, farm.rated_power_kw
 
 
 def run_one(test: RoadTest, *, out_dir: Path) -> pd.DataFrame:
     """Run one road test and return a row per (test turbine, reference)."""
-    scada, coords, columns, rated = _load(test)
+    scada, layout, columns, rated = _load(test)
+    coords = layout_coords(layout)
     lat = sum(v[0] for v in coords.values()) / len(coords)
     lon = sum(v[1] for v in coords.values()) / len(coords)
     era5 = get_era5_hourly_df(lat=lat, lon=lon, start_date="2016-01-01", end_date="2019-06-01")
@@ -141,7 +139,7 @@ def run_one(test: RoadTest, *, out_dir: Path) -> pd.DataFrame:
         upgrade_timing=CAMPAIGN_START,
         candidate_references=[w for w in test.turbines if w not in set(test.test_wtgs)],
         upgrades=[],
-        coords=coords,
+        layout=layout,
         north_offsets=None,
         rated_power_kw=rated,
         analysis_period=(BASELINE_START, CAMPAIGN_END),
@@ -155,7 +153,7 @@ def run_one(test: RoadTest, *, out_dir: Path) -> pd.DataFrame:
         columns=columns,
         north_offsets=spec.north_offsets,
         rated_power_kw=rated,
-        coordinates=spec.coords,
+        layout=spec.layout,
         era5_wd=era5_direction(era5, index),
         roles=DEFAULT_NORTHING_ROLES,
     )

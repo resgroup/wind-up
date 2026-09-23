@@ -25,7 +25,6 @@ import numpy as np
 import pandas as pd
 
 from wind_up.circular_math import circ_diff, circ_median
-from wind_up.geodesy import geodesic_matrices
 from wind_up.layout import NAME_COL
 from wind_up.wake_nadir import wake_nadir_offsets
 
@@ -780,49 +779,6 @@ def write_north_table_yaml(tables: Mapping[str, pd.DataFrame], *, path: Path) ->
     path.write_text("\n".join(lines) + "\n")
 
 
-_MIN_LATITUDE_DEG = -90.0
-_MAX_LATITUDE_DEG = 90.0
-
-
-def _usable_coordinate(point: tuple[float, float]) -> bool:
-    """Whether ``(latitude, longitude)`` is finite with a latitude in ``[-90, 90]``."""
-    latitude, longitude = point
-    return math.isfinite(latitude) and math.isfinite(longitude) and _MIN_LATITUDE_DEG <= latitude <= _MAX_LATITUDE_DEG
-
-
-def nearest_neighbours(coordinates: Mapping[str, tuple[float, float]], *, k: int) -> dict[str, tuple[str, ...]]:
-    """Map each device to its ``k`` nearest others by geodesic distance.
-
-    Distances are the WGS84 ellipsoidal geodesic (:func:`wind_up.geodesy.geodesic_matrices`) over
-    each device's ``(latitude, longitude)``. ``k`` is capped at the number of other devices, so a
-    farm smaller than ``k + 1`` simply lists everyone else. A device is never its own neighbour.
-
-    ``k`` must be positive, and every coordinate must be finite with a latitude in ``[-90, 90]``:
-    an out-of-range or non-finite point yields a non-finite distance that ``argsort`` would still
-    order, so the nearest set is rejected rather than silently arbitrary.
-
-    This is what :func:`north_farm` uses to turn turbine positions into each device's pass-2
-    reference consensus.
-    """
-    if k < 1:
-        msg = f"k must be a positive number of neighbours, got {k}"
-        raise ValueError(msg)
-    devices = sorted(coordinates)
-    bad = sorted(d for d in devices if not _usable_coordinate(coordinates[d]))
-    if bad:
-        msg = f"coordinates for device(s) {bad} are not a finite (latitude in [-90, 90], longitude) pair"
-        raise ValueError(msg)
-    latitudes = [coordinates[d][0] for d in devices]
-    longitudes = [coordinates[d][1] for d in devices]
-    distance_m, _ = geodesic_matrices(latitudes=latitudes, longitudes=longitudes)
-    limit = min(k, len(devices) - 1)
-    out: dict[str, tuple[str, ...]] = {}
-    for i, name in enumerate(devices):
-        order = [j for j in np.argsort(distance_m[i], kind="stable") if j != i]
-        out[name] = tuple(devices[j] for j in order[:limit])
-    return out
-
-
 def _neighbours_from_layout(layout: Layout, *, devices: list[str], k: int) -> dict[str, tuple[str, ...]]:
     """Map each device to its ``k`` nearest of the other ``devices`` by the layout's geodesic distance.
 
@@ -882,7 +838,7 @@ def _pass_two_reference(
     thinnest = min(len(candidate[d]) for d in devices)
     if thinnest < min_devices:
         logger.warning(
-            "layout gives each device only %d neighbour(s), below min_devices_for_farm_reference=%d; "
+            "layout gives each device only %d neighbour(s), below MIN_DEVICES_FOR_FARM_REFERENCE=%d; "
             "northing against the whole-farm consensus instead",
             thinnest,
             min_devices,
@@ -896,31 +852,33 @@ def _farm_quorum(n_devices: int, *, floor: int) -> int:
     return max(floor, n_devices // 2 + 1)
 
 
-def _wake_nadir_pass(
-    tables: dict[str, pd.DataFrame],
+def add_wake_nadir(
+    tables: Mapping[str, pd.DataFrame],
     *,
-    layout: Layout | None,
+    layout: Layout,
     index: pd.DatetimeIndex,
     direction_deg: Mapping[str, npt.NDArray[np.float64]],
-    power: Mapping[str, npt.NDArray[np.float64]] | None,
-    wind_speed: Mapping[str, npt.NDArray[np.float64]] | None,
+    power: Mapping[str, npt.NDArray[np.float64]],
+    wind_speed: Mapping[str, npt.NDArray[np.float64]] | None = None,
     usable: Mapping[str, npt.NDArray[np.bool_]],
-) -> dict[str, pd.DataFrame]:
-    """Add pass 4's wake-nadir correction to each device's table, or return ``tables`` unchanged.
+) -> tuple[dict[str, pd.DataFrame], dict[str, float]]:
+    """Add pass 4's wake-nadir correction to each device's table; return the tables and the corrections.
 
-    Runs only with both a ``layout`` and ``power``. The correction is one absolute number per
-    turbine; it shifts every offset in that turbine's table and never touches which rows are valid.
+    The correction is one absolute number per turbine (:func:`wind_up.wake_nadir.wake_nadir_offsets`,
+    measured on the directions ``tables`` north). It shifts every offset in that turbine's table and
+    never touches which rows are valid. :func:`north_farm` runs this as its last pass when given a
+    layout and power; it is exposed so a caller that also wants to report the corrections gets them
+    without northing twice.
     """
-    if layout is None or power is None:
-        return tables
     northed = {name: apply_north_table(index, direction_deg[name], north_table=tables[name]) for name in tables}
     deltas = wake_nadir_offsets(
         layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
     )
-    return {
+    nudged = {
         name: table.assign(**{NORTH_OFFSET_COL: table[NORTH_OFFSET_COL] + deltas[name]}) if deltas.get(name) else table
         for name, table in tables.items()
     }
+    return nudged, deltas
 
 
 def _farm_direction(
@@ -1053,15 +1011,20 @@ def north_farm(
         for name in devices
     }
     northed = {name: apply_north_table(index, direction_deg[name], north_table=first_pass[name]) for name in devices}
-    wake_nadir = partial(
-        _wake_nadir_pass,
-        layout=layout,
-        index=index,
-        direction_deg=direction_deg,
-        power=power,
-        wind_speed=wind_speed,
-        usable=usable,
-    )
+
+    def wake_nadir(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        if layout is None or power is None:
+            return tables
+        nudged, _ = add_wake_nadir(
+            tables,
+            layout=layout,
+            index=index,
+            direction_deg=direction_deg,
+            power=power,
+            wind_speed=wind_speed,
+            usable=usable,
+        )
+        return nudged
 
     # Whole-farm switch: below the floor there is no farm consensus to form, so pass 3 norths each
     # device against reanalysis directly. Unlike the pass-1 anchor it attributes changepoints, but at
@@ -1069,7 +1032,7 @@ def north_farm(
     # pass 3's no-changepoint special case.
     if len(devices) < MIN_DEVICES_FOR_FARM_REFERENCE:
         logger.warning(
-            "farm of %d device(s) is below min_devices_for_farm_reference=%d; northing against "
+            "farm of %d device(s) is below MIN_DEVICES_FOR_FARM_REFERENCE=%d; northing against "
             "reanalysis with changepoints (pass 3)",
             len(devices),
             MIN_DEVICES_FOR_FARM_REFERENCE,

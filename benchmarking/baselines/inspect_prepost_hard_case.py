@@ -62,8 +62,9 @@ from benchmarking.harness import (
     window_row_mask,
 )
 from benchmarking.harness.northing import era5_direction
+from benchmarking.harness.replicates import NorthingInputs
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_layout, load_hot_scada
 
 if TYPE_CHECKING:
     from benchmarking.harness.replicates import Replicate
@@ -117,11 +118,11 @@ def _pin_case(
     profile_name: str,
     test_wtg: str,
     campaign_months: int,
-    era5_wd: pd.Series,
+    northing: NorthingInputs,
 ) -> tuple[Replicate, MethodInput, float, CampaignWindow]:
     """Build the pinned replicate, its shared ``MethodInput``, the ground-truth uplift, and the window."""
     profile = overnight_profiles()[profile_name]
-    replicates = build_replicates(scada_df, profile=profile, study=study, era5_wd=era5_wd)
+    replicates = build_replicates(scada_df, profile=profile, study=study, northing=northing)
     rep = _select_replicate(replicates, test_wtg)
 
     windows = campaign_windows(
@@ -306,8 +307,11 @@ def inspect_prepost_hard_case(
         profile_name=profile_name,
         test_wtg=test_wtg,
         campaign_months=campaign_months,
-        era5_wd=era5_direction(
-            context.reanalysis_datasets[0].data, pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+        northing=NorthingInputs(
+            era5_wd=era5_direction(
+                context.reanalysis_datasets[0].data, pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+            ),
+            layout=hot_layout(context.metadata_df),
         ),
     )
     methods = _build_methods(out_dir, context=context, include_v0=include_v0)

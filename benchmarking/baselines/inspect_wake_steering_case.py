@@ -84,7 +84,7 @@ from benchmarking.synthetic import (
     treated_mask,
 )
 from benchmarking.synthetic.geometry import wrap180
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_layout, load_hot_metadata, load_hot_scada
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -448,7 +448,7 @@ def inspect_wake_steering_case(
                 columns=HOT_COLUMNS,
                 north_offsets=None,
                 rated_power_kw=HOT_RATED_POWER_KW,
-                coordinates=dict(steering.coords),
+                layout=hot_layout(metadata_df),
                 era5_wd=era5_direction(era5, pd.DatetimeIndex(full_dataset.synthetic_df.index.unique()).sort_values()),
             ),
         )

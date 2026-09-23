@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -47,17 +47,6 @@ MAX_INHERIT_NEIGHBOURS = 4
 _FIT_HALF_WINDOW = 5
 
 
-class _Nadir(NamedTuple):
-    """A resolved wake nadir.
-
-    ``delta`` is the correction (deg, to add to the offset); ``volume`` is the in-sector row count
-    supporting it.
-    """
-
-    delta: float
-    volume: float
-
-
 def wake_nadir_offsets(
     layout: Layout,
     *,
@@ -87,7 +76,7 @@ def wake_nadir_offsets(
     devices = sorted(northed_direction)
     masks = usable if usable is not None else {d: np.ones(len(index), dtype=bool) for d in devices}
 
-    resolved: dict[str, _Nadir] = {}
+    resolved: dict[str, float] = {}
     for upstream in devices:
         pairs = [
             nadir
@@ -140,8 +129,8 @@ def _pair_nadir(
     ws_down: npt.NDArray[np.float64] | None,
     keep: npt.NDArray[np.bool_],
     half_width: float,
-) -> _Nadir | None:
-    """Return the residual and supporting row count for one pair, or ``None`` if the dip is not resolvable."""
+) -> float | None:
+    """Return the correction (deg, to add to the offset) for one pair, or ``None`` if the dip is not resolvable."""
     offset = np.asarray(circ_diff(northed_up, np.full(len(northed_up), beta)), dtype=float)
     rows = keep & np.isfinite(offset) & np.isfinite(power_up) & np.isfinite(power_down) & (np.abs(offset) <= half_width)
     if int(rows.sum()) < MIN_POPULATED_BINS * MIN_BIN_ROWS:
@@ -166,9 +155,8 @@ def _pair_nadir(
     dip_offset = _locate_dip(curve, counts=counts, populated=populated, half_width=half_width)
     if dip_offset is None:
         return None
-    volume = int(rows.sum())
-    logger.debug("pair %s->%s: nadir offset %.2f deg (%d rows)", upstream, downstream, dip_offset, volume)
-    return _Nadir(delta=-dip_offset, volume=float(volume))
+    logger.debug("pair %s->%s: nadir offset %.2f deg (%d rows)", upstream, downstream, dip_offset, int(rows.sum()))
+    return -dip_offset
 
 
 def _deficit_curve(
@@ -185,11 +173,19 @@ def _deficit_curve(
 
     Each signal is a ratio of the downstream to the upstream bin mean, so the ambient resource
     cancels; each ratio is then divided by its out-of-wake level so the two combine on one scale.
-    Unpopulated bins are NaN.
+    Unpopulated bins are NaN. Wind-speed rows missing either side are dropped from that curve alone,
+    and a bin they leave too thin is NaN in it.
     """
     curves = [_ratio_curve(bin_of=bin_of, n_bins=n_bins, down=power_down, up=power_up, populated=populated)]
-    if ws_up is not None and ws_down is not None and np.isfinite(ws_up).all() and np.isfinite(ws_down).all():
-        curves.append(_ratio_curve(bin_of=bin_of, n_bins=n_bins, down=ws_down, up=ws_up, populated=populated))
+    if ws_up is not None and ws_down is not None:
+        finite = np.isfinite(ws_up) & np.isfinite(ws_down)
+        ws_populated = populated & (np.bincount(bin_of[finite], minlength=n_bins) >= MIN_BIN_ROWS)
+        if ws_populated.any():
+            curves.append(
+                _ratio_curve(
+                    bin_of=bin_of[finite], n_bins=n_bins, down=ws_down[finite], up=ws_up[finite], populated=ws_populated
+                )
+            )
     stack = np.vstack(curves)
     combined = np.full(stack.shape[1], np.nan)
     filled = np.isfinite(stack).any(axis=0)
@@ -267,34 +263,32 @@ def _convex_vertex(
     return vertex, a, b, c
 
 
-def _aggregate(pairs: list[_Nadir]) -> _Nadir:
+def _aggregate(pairs: list[float]) -> float:
     """Combine a turbine's pairs by the circular median of their view-angle corrections.
 
     Each pair mixes the wake with a terrain-driven deflection that biases it by several degrees, and
     that bias is not a measurement variance the fit can report. The median lets a majority of
     consistent pairs outvote a deflected one, where any weighted mean would be dragged toward it.
     """
-    deltas = np.array([p.delta for p in pairs], dtype=float)
-    volume = float(sum(p.volume for p in pairs))
-    return _Nadir(delta=float(circ_median(deltas, range_360=False)), volume=volume)
+    return float(circ_median(np.array(pairs, dtype=float), range_360=False))
 
 
-def _fill(layout: Layout, *, devices: list[str], resolved: dict[str, _Nadir]) -> dict[str, float]:
+def _fill(layout: Layout, *, devices: list[str], resolved: dict[str, float]) -> dict[str, float]:
     """Return every device's correction: its own where resolved, else inherited, else zero."""
     out: dict[str, float] = {}
     for device in devices:
         if device in resolved:
-            out[device] = resolved[device].delta
+            out[device] = resolved[device]
             continue
         neighbours = _nearest_resolved(layout, device=device, resolved=resolved)
         if neighbours:
-            out[device] = float(circ_median(np.array([resolved[n].delta for n in neighbours]), range_360=False))
+            out[device] = float(circ_median(np.array([resolved[n] for n in neighbours]), range_360=False))
         else:
             out[device] = 0.0
     return out
 
 
-def _nearest_resolved(layout: Layout, *, device: str, resolved: dict[str, _Nadir]) -> list[str]:
+def _nearest_resolved(layout: Layout, *, device: str, resolved: dict[str, float]) -> list[str]:
     """Return up to :data:`MAX_INHERIT_NEIGHBOURS` resolved turbines nearest ``device``."""
     i = layout.index_of(device)
     ranked = sorted((float(layout.distance_m[i, layout.index_of(n)]), n) for n in resolved)

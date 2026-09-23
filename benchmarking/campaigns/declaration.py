@@ -10,14 +10,41 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
+import pandas as pd
 
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, generate_dataset
+from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL, Layout
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import numpy.typing as npt
-    import pandas as pd
 
     from benchmarking.synthetic import ColumnSchema, SyntheticDataset
+
+
+def layout_from_coords(coords: Mapping[str, tuple[float, float]], *, rotor_diameter_m: float) -> Layout:
+    """Return the :class:`~wind_up.layout.Layout` of ``coords`` with every rotor ``rotor_diameter_m`` across."""
+    return Layout.from_frame(
+        pd.DataFrame(
+            {
+                NAME_COL: list(coords),
+                LATITUDE_COL: [lat for lat, _ in coords.values()],
+                LONGITUDE_COL: [lon for _, lon in coords.values()],
+                ROTOR_DIAMETER_COL: rotor_diameter_m,
+            }
+        )
+    )
+
+
+def layout_coords(layout: Layout) -> dict[str, tuple[float, float]]:
+    """Turbine name to ``(latitude, longitude)`` for every named turbine in ``layout``."""
+    frame = layout.frame
+    return {
+        str(name): (float(lat), float(lon))
+        for name, lat, lon in zip(frame[NAME_COL], frame[LATITUDE_COL], frame[LONGITUDE_COL], strict=True)
+        if name is not None
+    }
 
 
 @dataclass(frozen=True)
@@ -32,7 +59,7 @@ class CampaignSpec:
     :param candidate_references: turbines a method may use as references
     :param excluded_turbines: turbines never tested and never offered as a reference. Their data
         still enters every estimate for their wake, as every turbine's does.
-    :param coords: turbine name to ``(latitude, longitude)`` in degrees
+    :param layout: the farm layout, rotor diameters included; :attr:`coords` reads its positions
     :param north_offsets: step-applied northing corrections, ``(turbine, from, offset_deg)``.
         ``None`` (the default) means the analyst supplied none and the shared northing step
         discovers them from the data -- the usual case. A list, **including an empty one**,
@@ -46,11 +73,16 @@ class CampaignSpec:
     upgrade_timing: pd.Timestamp | ToggleSchedule
     candidate_references: list[str]
     excluded_turbines: list[str]
-    coords: dict[str, tuple[float, float]]
+    layout: Layout
     north_offsets: list[tuple[str, pd.Timestamp, float]] | None
     rated_power_kw: float
     analysis_period: tuple[pd.Timestamp, pd.Timestamp]
     turbine_col: str = HOT_COLUMNS.turbine
+
+    @property
+    def coords(self) -> dict[str, tuple[float, float]]:
+        """Turbine name to ``(latitude, longitude)`` in degrees, from :attr:`layout`."""
+        return layout_coords(self.layout)
 
     @property
     def mode(self) -> Literal["prepost", "toggle"]:
@@ -97,7 +129,7 @@ class SyntheticCampaign:
     :param faults: measurement corruptions to inject after the upgrades (an R-series fault such
         as :class:`~benchmarking.synthetic.faults.NorthingStep`). Private ground truth like
         ``upgrades``: ``CampaignSpec`` never carries them, so a method must cope undeclared.
-    :param coords: turbine name to ``(latitude, longitude)`` in degrees
+    :param layout: the farm layout, rotor diameters included
     :param north_offsets: step-applied northing corrections, ``(turbine, from, offset_deg)``;
         ``None`` leaves them to be discovered (see :class:`CampaignSpec`)
     :param rated_power_kw: the turbines' rated power
@@ -112,7 +144,7 @@ class SyntheticCampaign:
     upgrade_timing: pd.Timestamp | ToggleSchedule
     candidate_references: list[str]
     upgrades: list
-    coords: dict[str, tuple[float, float]]
+    layout: Layout
     north_offsets: list[tuple[str, pd.Timestamp, float]] | None
     rated_power_kw: float
     analysis_period: tuple[pd.Timestamp, pd.Timestamp]
@@ -136,7 +168,7 @@ class SyntheticCampaign:
             upgrade_timing=self.upgrade_timing,
             candidate_references=list(self.candidate_references),
             excluded_turbines=list(self.excluded_turbines),
-            coords=dict(self.coords),
+            layout=self.layout,
             north_offsets=None if self.north_offsets is None else list(self.north_offsets),
             rated_power_kw=self.rated_power_kw,
             analysis_period=self.analysis_period,

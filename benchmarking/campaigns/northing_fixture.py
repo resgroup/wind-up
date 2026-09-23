@@ -34,11 +34,17 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
-from benchmarking.campaigns.declaration import SyntheticCampaign
+from benchmarking.campaigns.declaration import SyntheticCampaign, layout_from_coords
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.runner import CampaignRunner
 from benchmarking.harness.northing import era5_direction
-from benchmarking.synthetic import HOT_RATED_POWER_KW, NorthingStep, ToggleSchedule, WindSpeedCpChange
+from benchmarking.synthetic import (
+    HOT_RATED_POWER_KW,
+    HOT_ROTOR_DIAMETER_M,
+    NorthingStep,
+    ToggleSchedule,
+    WindSpeedCpChange,
+)
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
 
 if TYPE_CHECKING:
@@ -130,7 +136,10 @@ def fixture_campaign(
         candidate_references=list(FIXTURE_REFERENCES),
         upgrades=list(UPLIFT),
         faults=faults,
-        coords=coords if coords is not None else dict.fromkeys(FIXTURE_TURBINES, (0.0, 0.0)),
+        layout=layout_from_coords(
+            coords if coords is not None else dict.fromkeys(FIXTURE_TURBINES, (0.0, 0.0)),
+            rotor_diameter_m=HOT_ROTOR_DIAMETER_M,
+        ),
         north_offsets=None if northing else [],
         rated_power_kw=HOT_RATED_POWER_KW,
         analysis_period=analysis_period(mode),

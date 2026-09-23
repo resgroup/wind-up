@@ -20,8 +20,10 @@ import requests
 
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import (
+    HOT_ROTOR_DIAMETER_M,
     download_zenodo_data,
     ensure_hot_data_files,
+    hot_layout,
     long_to_wind_up_format,
     scada_wide_to_long,
 )
@@ -297,3 +299,14 @@ class TestEnsureHotDataFiles:
             ensure_hot_data_files(["2017.zip"], data_dir=tmp_path)
 
         assert download.call_args.kwargs["filenames"] == ["2017.zip"]
+
+
+def test_hot_layout_carries_positions_and_the_hot_rotor_diameter() -> None:
+    metadata = pd.DataFrame({"Name": ["T01", "T02"], "Latitude": [57.50, 57.51], "Longitude": [-3.25, -3.24]})
+
+    layout = hot_layout(metadata)
+
+    assert list(layout.frame["name"]) == ["T01", "T02"]
+    assert list(layout.frame["latitude"]) == [57.50, 57.51]
+    assert list(layout.frame["rotor_diameter_m"]) == [HOT_ROTOR_DIAMETER_M] * 2
+    assert layout.filled_rotor_diameters == ()

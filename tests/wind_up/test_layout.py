@@ -5,14 +5,7 @@ import pandas as pd
 import pytest
 
 from tests.wind_up.layouts import grid_layout
-from wind_up.layout import (
-    DEFAULT_ROTOR_DIAMETER_M,
-    Layout,
-    front_row,
-    iec_disturbed_sector_deg,
-    longest_clear_run_deg,
-    upwind_mask,
-)
+from wind_up.layout import Layout, front_row, iec_disturbed_sector_deg, longest_clear_run_deg, upwind_mask
 
 # The three Homer turbines of the v0 ``test_homer_with_t00_config`` fixture, 62 m rotors.
 HOMER = pd.DataFrame(
@@ -112,18 +105,9 @@ def test_a_rotor_diameter_that_is_not_positive_and_finite_is_refused(bad: float)
         Layout.from_frame(frame)
 
 
-def test_a_layout_with_no_rotor_diameters_fills_them_with_the_default() -> None:
-    layout = Layout.from_frame(HOMER.drop(columns="rotor_diameter_m"))
-    assert list(layout.frame["rotor_diameter_m"]) == [DEFAULT_ROTOR_DIAMETER_M] * 3
-    assert layout.filled_rotor_diameters == ("HMR_T01", "HMR_T02", "HMR_T00")
-
-
-def test_from_coordinates_builds_a_layout_with_default_diameters() -> None:
-    coordinates = {"HMR_T01": (-58.60364145072843, 103.6841410289202052), "HMR_T00": (-58.601587635380, 103.6925889)}
-    layout = Layout.from_coordinates(coordinates)
-    assert sorted(layout.frame["name"]) == ["HMR_T00", "HMR_T01"]
-    assert list(layout.frame["rotor_diameter_m"]) == [DEFAULT_ROTOR_DIAMETER_M] * 2
-    assert set(layout.filled_rotor_diameters) == {"HMR_T00", "HMR_T01"}
+def test_layout_needs_at_least_one_rotor_diameter() -> None:
+    with pytest.raises(ValueError, match="rotor diameter"):
+        Layout.from_frame(HOMER.drop(columns="rotor_diameter_m"))
 
 
 def test_layout_needs_latitude_and_longitude() -> None:
