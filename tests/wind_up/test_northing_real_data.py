@@ -227,3 +227,26 @@ class TestSingleTurbineAgainstReanalysis:
         assert any(abs(w - pd.Timestamp("2017-05-19", tz="UTC")) <= pd.Timedelta(days=3) for w, _ in found), _describe(
             found
         )
+
+    @pytest.mark.slow
+    def test_pass_three_does_not_over_detect_against_reanalysis(self, hot: pd.DataFrame) -> None:
+        """Below the consensus floor each turbine is northed against reanalysis with changepoints
+        (pass 3). Reanalysis is coarse in time, so recalibrations closer than the reanalysis minimum
+        segment must be merged rather than read as a burst of steps: the whole farm resolves to a
+        handful of changepoints, not one every few weeks.
+
+        Locks in the reanalysis min-segment guard: without it this farm reports ~100 changepoints
+        against ERA5; with it, single digits.
+        """
+        index, direction, usable, reanalysis = _arrays(hot, ALL_TURBINES, "2017-01-01", "2021-01-01")
+        total = 0
+        for turbine in ALL_TURBINES:
+            tables = north_farm(
+                index,
+                direction_deg={turbine: direction[turbine]},
+                usable={turbine: usable[turbine]},
+                reanalysis_deg=reanalysis,
+                layout=None,
+            )
+            total += len(_changepoints(tables[turbine]))
+        assert total <= 20, f"pass 3 over-detected against reanalysis: {total} changepoints across the farm"

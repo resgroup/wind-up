@@ -534,6 +534,23 @@ class TestNorthFarm:
 
         assert len(tables["T01"]) == 1, f"pass 3 attributed a step below the reanalysis floor: {tables['T01']}"
 
+    def test_a_single_device_with_a_few_days_degrades_without_raising(self) -> None:
+        """Graceful degradation: the smallest, shortest input still returns a valid table, never raises."""
+        index = _index(days=5)
+        reported, reference = _reported(index, steps=[("2017-01-01", 12.0)])
+
+        tables = north_farm(
+            index,
+            direction_deg={"T01": reported},
+            usable={"T01": _all_usable(index)},
+            reanalysis_deg=reference,
+            layout=None,
+        )
+
+        assert list(tables) == ["T01"]
+        assert len(tables["T01"]) >= 1
+        assert np.isfinite(tables["T01"]["north_offset"].to_numpy()).all()
+
 
 class TestAgainstReanalysis:
     def test_raises_both_the_step_floor_and_the_minimum_segment(self) -> None:
