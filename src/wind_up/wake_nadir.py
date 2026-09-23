@@ -48,10 +48,14 @@ _FIT_HALF_WINDOW = 5
 
 
 class _Nadir(NamedTuple):
-    """A resolved wake nadir: the correction ``delta`` (deg, to add to the offset) and its ``sigma``."""
+    """A resolved wake nadir.
+
+    ``delta`` is the correction (deg, to add to the offset); ``volume`` is the in-sector row count
+    supporting it.
+    """
 
     delta: float
-    sigma: float
+    volume: float
 
 
 def wake_nadir_offsets(
@@ -69,9 +73,10 @@ def wake_nadir_offsets(
 
     For each directed pair (upstream wakes downstream) within ``cutoff_diameters``, the downstream
     deficit versus the upstream turbine's northed direction dips at the geometric nadir; the offset
-    of the measured dip is the upstream turbine's residual. Each turbine's pairs are combined by an
-    inverse-variance-weighted circular mean. A turbine with no resolvable pair inherits the circular
-    median of up to :data:`MAX_INHERIT_NEIGHBOURS` nearest resolved turbines, or zero if none.
+    of the measured dip is the upstream turbine's residual. Each turbine's pairs are combined by the
+    circular median of their corrections, which resists the terrain-driven deflection that biases an
+    individual pair. A turbine with no resolvable pair inherits the circular median of up to
+    :data:`MAX_INHERIT_NEIGHBOURS` nearest resolved turbines, or zero if none.
 
     :param northed_direction: device name to its northed direction (deg) on ``index``
     :param power: device name to its power on ``index``
@@ -136,7 +141,7 @@ def _pair_nadir(
     keep: npt.NDArray[np.bool_],
     half_width: float,
 ) -> _Nadir | None:
-    """Return the residual and its sigma for one pair, or ``None`` if the dip is not resolvable."""
+    """Return the residual and supporting row count for one pair, or ``None`` if the dip is not resolvable."""
     offset = np.asarray(circ_diff(northed_up, np.full(len(northed_up), beta)), dtype=float)
     rows = keep & np.isfinite(offset) & np.isfinite(power_up) & np.isfinite(power_down) & (np.abs(offset) <= half_width)
     if int(rows.sum()) < MIN_POPULATED_BINS * MIN_BIN_ROWS:
@@ -158,12 +163,12 @@ def _pair_nadir(
         ws_down=None if ws_down is None else ws_down[rows],
         populated=populated,
     )
-    fit = _locate_dip(curve, counts=counts, populated=populated, half_width=half_width)
-    if fit is None:
+    dip_offset = _locate_dip(curve, counts=counts, populated=populated, half_width=half_width)
+    if dip_offset is None:
         return None
-    dip_offset, sigma = fit
-    logger.debug("pair %s->%s: nadir offset %.2f deg (sigma %.2f)", upstream, downstream, dip_offset, sigma)
-    return _Nadir(delta=-dip_offset, sigma=sigma)
+    volume = int(rows.sum())
+    logger.debug("pair %s->%s: nadir offset %.2f deg (%d rows)", upstream, downstream, dip_offset, volume)
+    return _Nadir(delta=-dip_offset, volume=float(volume))
 
 
 def _deficit_curve(
@@ -186,7 +191,10 @@ def _deficit_curve(
     if ws_up is not None and ws_down is not None and np.isfinite(ws_up).all() and np.isfinite(ws_down).all():
         curves.append(_ratio_curve(bin_of=bin_of, n_bins=n_bins, down=ws_down, up=ws_up, populated=populated))
     stack = np.vstack(curves)
-    return np.nanmean(stack, axis=0)
+    combined = np.full(stack.shape[1], np.nan)
+    filled = np.isfinite(stack).any(axis=0)
+    combined[filled] = np.nanmean(stack[:, filled], axis=0)
+    return combined
 
 
 def _ratio_curve(
@@ -213,8 +221,8 @@ def _locate_dip(
     counts: npt.NDArray[np.int64],
     populated: npt.NDArray[np.bool_],
     half_width: float,
-) -> tuple[float, float] | None:
-    """Locate the dip by a weighted quadratic fit near the minimum; return (offset_deg, sigma_deg).
+) -> float | None:
+    """Locate the dip by a weighted quadratic fit near the minimum; return its view-angle offset (deg).
 
     Rejects a curve whose minimum sits at the sector edge (an unbracketed dip, or a central peak),
     or whose best fit is not convex or not deep enough.
@@ -243,11 +251,7 @@ def _locate_dip(
     depth = float(np.nanmax(curve[populated]) - (c - b * b / (4 * a)))
     if depth < MIN_DIP_DEPTH:
         return None
-
-    fitted = a * centres**2 + b * centres + c
-    resid = float(np.sqrt(np.average((values - fitted) ** 2, weights=weights)))
-    sigma = (resid + 1e-3) / (depth * math.sqrt(a) * math.sqrt(counts[window].sum()))
-    return float(vertex), float(sigma)
+    return float(vertex)
 
 
 def _convex_vertex(
@@ -264,16 +268,15 @@ def _convex_vertex(
 
 
 def _aggregate(pairs: list[_Nadir]) -> _Nadir:
-    """Combine a turbine's pairs by an inverse-variance-weighted circular mean with outlier trimming."""
-    deltas = np.array([p.delta for p in pairs])
-    weights = np.array([1.0 / max(p.sigma, 1e-6) ** 2 for p in pairs])
-    mean = _weighted_circular_mean(deltas, weights)
-    if len(pairs) > 2:  # noqa: PLR2004 - down-weight only when there is a majority to appeal to
-        far = np.abs(circ_diff(deltas, np.full(len(deltas), mean))) > 3.0 * _spread(deltas, weights)
-        weights = np.where(far, weights * 0.25, weights)
-        mean = _weighted_circular_mean(deltas, weights)
-    sigma = float(1.0 / math.sqrt(weights.sum()))
-    return _Nadir(delta=mean, sigma=sigma)
+    """Combine a turbine's pairs by the circular median of their view-angle corrections.
+
+    Each pair mixes the wake with a terrain-driven deflection that biases it by several degrees, and
+    that bias is not a measurement variance the fit can report. The median lets a majority of
+    consistent pairs outvote a deflected one, where any weighted mean would be dragged toward it.
+    """
+    deltas = np.array([p.delta for p in pairs], dtype=float)
+    volume = float(sum(p.volume for p in pairs))
+    return _Nadir(delta=float(circ_median(deltas, range_360=False)), volume=volume)
 
 
 def _fill(layout: Layout, *, devices: list[str], resolved: dict[str, _Nadir]) -> dict[str, float]:
@@ -296,16 +299,3 @@ def _nearest_resolved(layout: Layout, *, device: str, resolved: dict[str, _Nadir
     i = layout.index_of(device)
     ranked = sorted((float(layout.distance_m[i, layout.index_of(n)]), n) for n in resolved)
     return [n for _, n in ranked[:MAX_INHERIT_NEIGHBOURS]]
-
-
-def _weighted_circular_mean(values_deg: npt.NDArray[np.float64], weights: npt.NDArray[np.float64]) -> float:
-    """Weighted circular mean of small angle values (deg)."""
-    rad = np.deg2rad(values_deg)
-    return float(np.degrees(np.arctan2(np.sum(weights * np.sin(rad)), np.sum(weights * np.cos(rad)))))
-
-
-def _spread(values_deg: npt.NDArray[np.float64], weights: npt.NDArray[np.float64]) -> float:
-    """Return a weighted angular spread (deg), floored so a tight cluster still admits a neighbour."""
-    mean = _weighted_circular_mean(values_deg, weights)
-    deviations = np.abs(circ_diff(values_deg, np.full(len(values_deg), mean)))
-    return max(float(np.sqrt(np.average(deviations**2, weights=weights))), 1.0)

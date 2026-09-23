@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -9,7 +11,7 @@ import pytest
 from wind_up.circular_math import circ_diff
 from wind_up.layout import Layout
 from wind_up.northing import apply_north_table, north_farm
-from wind_up.wake_nadir import wake_nadir_offsets
+from wind_up.wake_nadir import _aggregate, _Nadir, wake_nadir_offsets
 
 TIMEBASE_S = 600
 
@@ -143,6 +145,65 @@ def test_north_farm_applies_the_wake_nudge_when_given_layout_and_power() -> None
     for name in northed:
         shift = circ_diff(with_p4[name]["north_offset"].to_numpy(), without[name]["north_offset"].to_numpy())
         assert shift == pytest.approx(expected[name], abs=1e-6), name
+
+
+def test_unpopulated_sector_bins_do_not_warn() -> None:
+    """A gap in the swept directions leaves some sector bins empty; combining deficits must not warn.
+
+    Real SCADA rarely fills every one-degree bin in the sector, so a bin can be empty in both the
+    power and the wind-speed curve. Averaging that all-NaN column must stay silent (warnings are
+    errors here) while still resolving the dip from the populated bins.
+    """
+    layout = _pair_layout()
+    index, northed, power, wind_speed, usable, beta = _waked_pair(layout, residual_deg=6.0)
+    # Punch a hole in the sector (measured against geometry, as the code does) away from the nadir,
+    # so those one-degree bins have no rows at all.
+    offset = circ_diff(northed["A"], np.full(len(index), beta))
+    hole = (offset > -12.0) & (offset < -9.0)
+    usable = {name: mask & ~hole for name, mask in usable.items()}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        offsets = wake_nadir_offsets(
+            layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
+        )
+
+    assert circ_diff(offsets["A"], -6.0) == pytest.approx(0.0, abs=1.5)
+
+
+def test_the_aggregate_is_a_median_that_resists_a_biased_pair() -> None:
+    """Terrain adds a per-pair bias on top of the wake, so one deflected pair must not swing the answer.
+
+    Real wake nadirs mix wake geometry with terrain deflection, which biases individual pairs by many
+    degrees. Aggregating a turbine's pairs by their circular median lets a majority of consistent pairs
+    outvote a deflected one, where a mean (however weighted) would be dragged toward it.
+    """
+    pairs = [_Nadir(delta=6.0, volume=8000.0), _Nadir(delta=6.4, volume=8000.0), _Nadir(delta=-9.0, volume=8000.0)]
+    assert _aggregate(pairs).delta == pytest.approx(6.0, abs=1e-9)
+
+
+def test_the_view_angle_is_wrap_safe_when_the_nadir_sits_at_north() -> None:
+    """A pair whose geometric nadir is due north sweeps directions across the 360/0 wrap.
+
+    Measuring the dip in view angle -- the signed offset from the geometric nadir, in [-180, 180) --
+    keeps the swept directions contiguous through north, so the parabola fit is unharmed. A raw
+    direction difference would split the sector across the wrap and ruin the fit.
+    """
+    # A due north of B (~410 m), so the B->A bearing -- the geometric nadir -- is ~0 degrees.
+    frame = pd.DataFrame(
+        {"name": ["A", "B"], "latitude": [55.0037, 55.0], "longitude": [0.0, 0.0], "rotor_diameter_m": [82.0, 82.0]}
+    )
+    layout = Layout.from_frame(frame)
+    beta = float(layout.bearing_deg[layout.index_of("B"), layout.index_of("A")])
+    assert min(beta, 360.0 - beta) < 1.0, f"expected the nadir near north, got {beta}"
+    residual = 6.0
+    index, northed, power, wind_speed, usable, _ = _waked_pair(layout, residual_deg=residual)
+
+    offsets = wake_nadir_offsets(
+        layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
+    )
+
+    assert circ_diff(offsets["A"], -residual) == pytest.approx(0.0, abs=1.5)
 
 
 def test_a_downstream_turbine_inherits_its_neighbours_correction() -> None:

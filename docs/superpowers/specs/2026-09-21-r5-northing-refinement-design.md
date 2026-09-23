@@ -126,9 +126,20 @@ reject a spurious minimum from another wake or a record edge):
 
 Apparent − geometric = X's residual δ (with σ from the fit).
 
-**Aggregate per turbine.** Combine a turbine's pairs by **inverse-variance-weighted circular mean**
-(σ⁻²), with light outlier down-weighting, so the most certain wake centres dominate. Store δ_X and
-its combined σ_X.
+**Aggregate per turbine.** Combine a turbine's pairs by the **circular median** of their view-angle
+corrections, and store δ_X plus the total in-sector row count that supports it.
+
+> **Revised in golden-table validation (2026-09-23).** The original design here was an
+> inverse-variance-weighted circular mean (σ⁻²). Validated on real HoT it failed the spatial-
+> smoothness plausibility check badly (neighbour δ disagreement 14–15°): the dip σ from `_locate_dip`
+> is not calibrated — a sparse, over-fit dip reports a tiny σ and then dominates the weighted mean.
+> Weighting by data volume instead (tried at the user's suggestion) only halved the spread, because
+> the worst pairs are *high-volume but biased*: each pair mixes the wake with a terrain-driven
+> deflection of several degrees, which is a real per-pair bias, not a measurement variance. The
+> **circular median** resists that bias (a majority of consistent pairs outvotes a deflected one) and
+> restores smoothness (neighbour spread 6° max / 3° mean, |δ| ≤ ~6°). So pass 4 no longer computes or
+> uses σ at all; `_locate_dip` returns only the dip offset and `_Nadir` carries `(delta, volume)`.
+> The "quick standard error" bullet and the σ mentions elsewhere in this section are superseded.
 
 **Spatial inheritance.** A turbine with no resolvable δ (no downstream neighbour within the cutoff,
 or all σ too large) **inherits the circular median of δ from up to its 4 nearest turbines that did
@@ -245,8 +256,9 @@ retained as integration tests, so the corrected behaviour on hard cases stays lo
 - Pass 2/3 boundary: **whole-farm switch** on `min_devices_for_farm_reference` (not a new knob).
 - Pass 4 seam: **inside `north_farm`** as a true fourth pass.
 - Geometry input: **accept a `Layout`** (replacing the coordinates mapping).
-- Pass 4 shape: **per-turbine** absolute correction, uncertainty-weighted, with spatial inheritance
-  (median of up to 4 nearest resolved). One number per turbine, not per segment.
+- Pass 4 shape: **per-turbine** absolute correction, aggregated by the **circular median** of its
+  pairs (revised 2026-09-23 from uncertainty-weighted — see the golden-table validation note above),
+  with spatial inheritance (median of up to 4 nearest resolved). One number per turbine, not per segment.
 - Pass 4 deficit measurement: **ratio-of-means normalisation** by the upstream turbine, from **two
   combined signals** (downstream power and downstream nacelle wind speed, power-only fallback),
   within a **±15° sector** around β, with per-bin dwell and populated-bin sufficiency gates.
