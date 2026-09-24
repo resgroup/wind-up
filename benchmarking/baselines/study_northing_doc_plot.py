@@ -23,7 +23,7 @@ import pandas as pd
 from benchmarking.baselines.study_northing_degradation import load_north_table_yaml
 from benchmarking.baselines.study_wake_nadir_golden import NORTHING_DIR, hot_inputs
 from benchmarking.diagnostics.style import apply_grid, save_fig, series_style
-from wind_up.circular_math import circ_diff, rolling_circ_median_approx
+from wind_up.circular_math import circ_diff, circ_median
 from wind_up.northing import apply_north_table
 
 logger = logging.getLogger("northing_doc_plot")
@@ -36,17 +36,22 @@ WINDOW = ("2016-01-01", "2021-01-01")
 def rolling_error(
     direction: np.ndarray, *, reference: np.ndarray, usable: np.ndarray, index: pd.DatetimeIndex
 ) -> pd.Series:
-    """Return the 14-day centred rolling circular median of ``circ_diff(direction, reference)`` over ``usable`` rows."""
-    rolling_days = 14
+    """Return the 14-day centred rolling circular median of ``circ_diff(direction, reference)`` over ``usable`` rows.
+
+    Evaluated twice a day; a window with fewer than a third of its rows usable gives NaN.
+    """
     rows_per_day = 144
-    error = pd.Series(np.where(usable, circ_diff(direction, reference), np.nan), index=index)
-    return rolling_circ_median_approx(
-        error,
-        window=rolling_days * rows_per_day,
-        min_periods=rolling_days * rows_per_day // 3,
-        center=True,
-        range_360=False,
-    )
+    half_window = 7 * rows_per_day
+    step = rows_per_day // 2
+    error = np.where(usable, circ_diff(direction, reference), np.nan)
+    finite = np.concatenate([[0], np.cumsum(np.isfinite(error))])
+    centres = np.arange(0, len(error), step)
+    values = np.full(len(centres), np.nan)
+    for k, centre in enumerate(centres):
+        lo, hi = max(centre - half_window, 0), min(centre + half_window, len(error))
+        if finite[hi] - finite[lo] >= 2 * half_window // 3:
+            values[k] = circ_median(error[lo:hi], range_360=False)
+    return pd.Series(values, index=index[centres])
 
 
 def main() -> None:
@@ -65,11 +70,10 @@ def main() -> None:
         colour, dash = series_style(position)
         for ax, direction in zip(axes, (raw, northed), strict=True):
             error = rolling_error(direction, reference=reference, usable=inputs["usable"][turbine], index=index)
-            sampled = error.iloc[::72]  # twice a day is plenty for a 14-day rolling line
-            values = sampled.to_numpy()
+            values = error.to_numpy()
             wrap_deg = 180.0
             values[1:][np.abs(np.diff(values)) > wrap_deg] = np.nan  # break the line where it wraps
-            ax.plot(sampled.index, values, color=colour, linestyle=dash, linewidth=1.2, label=turbine)
+            ax.plot(error.index, values, color=colour, linestyle=dash, linewidth=1.2, label=turbine)
         logger.info("%s done", turbine)
 
     fig.suptitle("Hill of Towie: north error per turbine, before and after northing")
