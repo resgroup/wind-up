@@ -101,7 +101,7 @@ class Layout:
                 WIND_FARM_COL: pd.Series([_text_or_none(v) for v in column(WIND_FARM_COL)], dtype=object),
             }
         )
-        _check_positions(tidy)  # before the geodesic maths, which a position off the globe would break
+        _check_positions(tidy)  # before the geodesic maths
         distance_m, bearing_deg = geodesic_matrices(latitudes=tidy[LATITUDE_COL], longitudes=tidy[LONGITUDE_COL])
         return cls(frame=tidy, filled_rotor_diameters=filled, distance_m=distance_m, bearing_deg=bearing_deg)
 

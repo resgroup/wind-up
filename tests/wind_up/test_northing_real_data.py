@@ -64,10 +64,6 @@ EXPECTED = {
 }
 _KNOWN = [(window, turbine) for window, turbines in EXPECTED.items() for turbine in sorted(turbines)]
 
-# November 2019 and June 2020: most of the farm is down and the wind sits in a sector it rarely
-# occupies, so the weather and the reference move together. Nothing may step inside them.
-OUTAGES = (("2019-11-05", "2019-11-25"), ("2020-06-08", "2020-06-17"))
-
 
 @pytest.fixture(scope="module")
 def hot() -> pd.DataFrame:
@@ -117,11 +113,13 @@ class TestDefaultPipeline:
         assert extra == {}, f"changepoints v0's table does not record: {extra}"
 
     def test_no_turbine_steps_during_a_farm_outage(self, hot: pd.DataFrame) -> None:
+        # most of the farm is down in these windows
+        outages = (("2019-11-05", "2019-11-25"), ("2020-06-08", "2020-06-17"))
         during = {
             name: [
                 (w, s)
                 for w, s in changepoints(table)
-                if any(pd.Timestamp(lo, tz="UTC") <= w <= pd.Timestamp(hi, tz="UTC") for lo, hi in OUTAGES)
+                if any(pd.Timestamp(lo, tz="UTC") <= w <= pd.Timestamp(hi, tz="UTC") for lo, hi in outages)
             ]
             for name, table in default_run(hot, "late").items()
         }

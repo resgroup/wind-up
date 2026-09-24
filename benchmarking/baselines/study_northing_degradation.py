@@ -59,7 +59,6 @@ logger = logging.getLogger("northing_degradation")
 REPO = Path(__file__).resolve().parents[2]
 NORTHING_DIR = REPO / "tests" / "test_data" / "hot" / "northing"
 DAY = pd.Timedelta(days=1)
-MIN_GRID_POINTS = 4  # below this many month starts, sample the window at evenly spaced points instead
 MATCH_TOL_DAYS = 14  # a recovered changepoint counts as a published one within this many days (ERA5 timing is coarse)
 
 
@@ -124,8 +123,9 @@ def table_distance(
 
 def month_grid(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     """Return a monthly sampling grid across ``index`` (a handful of even points for a short window)."""
+    min_grid_points = 4
     grid = pd.date_range(index.min().ceil("D"), index.max(), freq="MS", tz="UTC")
-    if len(grid) >= MIN_GRID_POINTS:
+    if len(grid) >= min_grid_points:
         return grid
     return pd.DatetimeIndex(np.linspace(index.min().value, index.max().value, 6).astype("datetime64[ns]")).tz_localize(
         "UTC"

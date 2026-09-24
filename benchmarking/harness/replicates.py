@@ -36,13 +36,9 @@ if TYPE_CHECKING:
 class NorthingInputs:
     """What the shared northing step needs to north each replicate.
 
-    Bundled so asking for northing is also deciding the layout: there is no way to supply the
-    reanalysis anchor and fall into the whole-farm consensus by omission.
-
     :param era5_wd: reanalysis wind direction covering the base SCADA, the absolute anchor
-    :param layout: the farm layout (rotor diameters included) for nearest-neighbour consensus and the
-        wake-nadir shift; must cover ``StudyConfig.turbine_subset``. ``None`` -- explicitly --
-        norths against the whole-farm consensus and skips wake-nadir-shift.
+    :param layout: the farm layout, rotor diameters included; must cover ``StudyConfig.turbine_subset``.
+        ``None`` norths against the whole-farm consensus and skips the wake-nadir shift.
     """
 
     era5_wd: pd.Series
@@ -156,10 +152,8 @@ def iter_replicates(
 
     :param columns: the source-native column schema ``base_scada`` is keyed by
     :param northing: supplying it runs the shared northing step on each replicate, so methods
-        reading ``columns.northed(role)`` find it; ``None`` norths no replicate. Each replicate norths
-        its own generated frame rather than sharing a table discovered once, so the step has to find
-        the corrections unaided and a direction-moving upgrade in ``profile`` stays consistent with its
-        northed companion.
+        reading ``columns.northed(role)`` find it; ``None`` norths no replicate. Each replicate is
+        northed independently.
     :param rated_power_kw: turbine rating, passed to the generator and to the northing step
     """
     subset = base_scada[base_scada[columns.turbine].isin(study.turbine_subset)]

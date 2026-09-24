@@ -79,12 +79,6 @@ def _compare(base: pd.DataFrame, rotated: pd.DataFrame, *, offsets_too: bool, ti
     return problems
 
 
-# A sector-misaligned rotation regroups rows across the fixed veer-sector boundaries, which shifts a
-# changepoint's timestamp by a fraction of a day; the count never changes. Allow that jitter so the
-# test still fails on a real wrap bug (which moves changepoints by weeks or changes their count).
-_MISALIGNED_TIME_TOL_DAYS = 3.0
-
-
 # Each case is (rotation, check_offsets). Sector-aligned rotations keep every row in an equivalent
 # veer sector, so the offsets must match to the last decimal. A misaligned rotation regroups rows
 # across the fixed 0/30/60... deg sector boundaries and can change the veer signature a little -- a
@@ -101,7 +95,7 @@ NO_VEER = replace(DEFAULT_NORTHING, veer_sector_deg=None)
 def _tolerances(rotate_deg: float) -> tuple[bool, float]:
     """``(offsets_too, time_tol_days)`` for a rotation: exact for sector-aligned, lenient otherwise."""
     aligned = rotate_deg in SECTOR_ALIGNED
-    return aligned, 0.0 if aligned else _MISALIGNED_TIME_TOL_DAYS
+    return aligned, 0.0 if aligned else 3.0
 
 
 def _farm_tables(

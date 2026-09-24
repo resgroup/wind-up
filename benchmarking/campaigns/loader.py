@@ -187,8 +187,7 @@ def _resolve(root: Path, name: str, *, what: str) -> Path:
 def _read_turbines(path: Path) -> Layout:
     """Read the turbines sidecar -- name, latitude, longitude, rotor diameter -- into a layout.
 
-    The header may be cased any way. ``rotor_diameter_m`` is required: the northing wake geometry is
-    measured in rotor diameters, so none is assumed.
+    The header may be cased any way. ``rotor_diameter_m`` is required.
 
     Rows without a name are skipped, so a campaign-design layout can serve as the sidecar. A name
     given more than once is rejected.

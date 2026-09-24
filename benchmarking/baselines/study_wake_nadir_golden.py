@@ -57,7 +57,6 @@ logger = logging.getLogger(__name__)
 REPO = Path(__file__).resolve().parents[2]
 NORTHING_DIR = REPO / "tests" / "test_data" / "hot" / "northing"
 
-TIMEBASE_S = 600.0
 # Hill of Towie source-native tags.
 HOT_TAGS = {
     "yaw": "wtc_NacelPos_mean",
@@ -84,13 +83,14 @@ def _inputs_from_frames(
     rated_power_kw: float,
 ) -> dict:
     """Assemble north_farm inputs, deriving the ``yaw_usable`` mask, exactly as ``north_scada`` does."""
+    timebase_s = 600.0
     usable = {
         turbine: yaw_usable(
             power=power[turbine],
-            downtime_s=TIMEBASE_S - np.nan_to_num(availability[turbine], nan=0.0),
+            downtime_s=timebase_s - np.nan_to_num(availability[turbine], nan=0.0),
             reference_deg=reference,
             rated_power=rated_power_kw,
-            timebase_s=TIMEBASE_S,
+            timebase_s=timebase_s,
         )
         for turbine in direction
     }
@@ -227,10 +227,6 @@ def _layout_xy(layout: Layout) -> dict[str, tuple[float, float]]:
     return {name: (float(east[i]), float(north[i])) for i, name in enumerate(names)}
 
 
-# Fixed diverging colour range so a farm whose corrections sit near 0 shows no extreme colours.
-COLOUR_LIMIT_DEG = 10.0
-
-
 def bubble_plot(layout: Layout, deltas: dict[str, float], *, title: str, save_path: Path) -> None:
     """Render the wake-nadir shift across a farm layout, one bubble per turbine."""
     names = list(layout.frame[NAME_COL])
@@ -238,10 +234,11 @@ def bubble_plot(layout: Layout, deltas: dict[str, float], *, title: str, save_pa
     xs = [xy[t][0] for t in names]
     ys = [xy[t][1] for t in names]
     vals = np.array([deltas[t] for t in names])
-    norm = TwoSlopeNorm(vmin=-COLOUR_LIMIT_DEG, vcenter=0.0, vmax=COLOUR_LIMIT_DEG)
+    colour_limit_deg = 10.0
+    norm = TwoSlopeNorm(vmin=-colour_limit_deg, vcenter=0.0, vmax=colour_limit_deg)
 
     fig, ax = plt.subplots(1, 1, figsize=(9, 8))
-    sizes = 300 + 900 * np.clip(np.abs(vals) / COLOUR_LIMIT_DEG, 0.0, 1.0)
+    sizes = 300 + 900 * np.clip(np.abs(vals) / colour_limit_deg, 0.0, 1.0)
     scatter = ax.scatter(
         xs, ys, c=vals, s=sizes, cmap=plt.get_cmap("RdBu_r"), norm=norm, edgecolors="k", linewidths=0.6, zorder=3
     )

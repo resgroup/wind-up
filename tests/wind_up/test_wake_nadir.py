@@ -13,11 +13,9 @@ from wind_up.layout import Layout
 from wind_up.northing import add_wake_nadir_shift, apply_north_table, north_farm
 from wind_up.wake_nadir import _aggregate, wake_nadir_offsets
 
-TIMEBASE_S = 600
-
 
 def _index(rows: int) -> pd.DatetimeIndex:
-    return pd.date_range("2020-01-01", periods=rows, freq=f"{TIMEBASE_S}s", tz="UTC")
+    return pd.date_range("2020-01-01", periods=rows, freq="600s", tz="UTC")
 
 
 def _pair_layout() -> Layout:
