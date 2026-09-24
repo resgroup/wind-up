@@ -58,6 +58,29 @@ The two left are T12's one-week +/-13 deg excursion in June 2016, stable across 
 and possibly real. Everything published that is missed is at most 2.4 deg, below the step floor,
 apart from T10's February 2016 half of a one-month excursion.
 
+**Degradation study** (all three farms, 56 minutes, no crashes). The pass-3 floor sweep is
+unchanged, since pass 3 does not use the consensus: the shipped settings still recall 13/28
+published steps with 1 spurious, exactly CF20. Worst-turbine offset error against each farm's own
+golden table:
+
+| HoT case | one round | converged |
+|---|---|---|
+| 15 turbines | 3.37 | 0.03 |
+| 365 days | 5.90 | 3.65 |
+| 182 days | 6.03 | 2.81 |
+| 7 days | 9.27 | 5.78 |
+| 75% random dropout | 8.39 | 1.58 |
+| 6 turbines | 1.97 | **6.88** |
+| 3 turbines, 90 days | 12.10 | 12.12 |
+
+The two columns are scored against different golden tables (each run's own), so they compare
+robustness rather than accuracy. Convergence makes most cases more robust. The 6-turbine subset is
+the exception and is **not yet diagnosed**. A candidate: those six westernmost turbines include T01
+and T02, which flip about 180 deg together in June 2016, so most of the six have two stepping
+turbines among their four neighbours. Kelmarsh stays within 8.5 deg (a 30-day record). Penmanshiel,
+run for the first time, stays within 9.4 deg; its worst cases are 10 turbines (9.2) and 7 days
+(9.4).
+
 **Cost.** Each round is a pass 2, so convergence costs more than one round. Two things keep it down.
 A turbine is re-northed only if a turbine its consensus is built from moved by more than the
 tolerance in the last round; otherwise its reference has, by the loop's own stopping test, not
