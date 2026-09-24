@@ -12,6 +12,11 @@ not effect), so the estimate still
 never conditions on the test turbine's post-treatment wind speed (design-note §3). It speaks the
 data source's own column names and has no wind_up dependency.
 
+An optional **pairing filter** (``pairing_max_gap``) then drops any used row with no used row of the
+other segment nearby, so a filter that removes one segment's rows in some conditions also removes the
+other segment's rows from those conditions. Rows kept per segment after each selection stage are
+reported as ``MethodOutput.selection_accounting`` and written to a selection CSV.
+
 Every uplift — the headline and each power bin — comes with a non-optional 1-sigma uncertainty from
 a circular block bootstrap (:mod:`benchmarking.baselines.block_bootstrap`). It is computed after the
 uplift, from the uplift's own frozen row selection and bin assignment, and only when the uplift is
@@ -28,10 +33,11 @@ is re-derivable from the stats CSV as ``rho = used_test_mwh / used_ref_total_mwh
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -68,6 +74,57 @@ DEFAULT_BLOCK_HOURS = 6.0
 # treatment cannot move a row between bins. Binning by the test turbine's ws/TI would condition on
 # post-treatment signals, which this method exists not to do (see the module docstring).
 _SUPPORTED_CONDITIONS: tuple[str, ...] = ("power",)
+
+logger = logging.getLogger(__name__)
+
+
+class _Selection(NamedTuple):
+    """The cumulative used-row mask after each selection stage."""
+
+    filtered: pd.Series
+    not_excluded: pd.Series
+    paired: pd.Series
+
+
+class PairedRows(NamedTuple):
+    """The rows of each segment that have a row of the other segment within the pairing gap."""
+
+    baseline: npt.NDArray[np.bool_]
+    upgraded: npt.NDArray[np.bool_]
+
+
+def pair_within(
+    index: pd.DatetimeIndex,
+    *,
+    baseline: npt.NDArray[np.bool_],
+    upgraded: npt.NDArray[np.bool_],
+    max_gap: pd.Timedelta,
+) -> PairedRows:
+    """Keep each flagged row only if the other segment has a flagged row within ``max_gap``, inclusive."""
+    gap = gap_to_other_segment(index, baseline=baseline, upgraded=upgraded)
+    within = gap <= max_gap.total_seconds()
+    return PairedRows(baseline=baseline & within, upgraded=upgraded & within)
+
+
+def gap_to_other_segment(
+    index: pd.DatetimeIndex, *, baseline: npt.NDArray[np.bool_], upgraded: npt.NDArray[np.bool_]
+) -> npt.NDArray[np.float64]:
+    """Seconds from each flagged row to the nearest flagged row of the other segment; NaN if unflagged."""
+    times = index.asi8
+    gap = np.full(len(index), np.nan)
+    gap[baseline] = _nearest_gap_s(times[baseline], others=times[upgraded])
+    gap[upgraded] = _nearest_gap_s(times[upgraded], others=times[baseline])
+    return gap
+
+
+def _nearest_gap_s(times: npt.NDArray[np.int64], *, others: npt.NDArray[np.int64]) -> npt.NDArray[np.float64]:
+    if not len(others):
+        return np.full(len(times), np.inf)
+    others = np.sort(others)
+    position = np.searchsorted(others, times)
+    after = others[np.minimum(position, len(others) - 1)]
+    before = others[np.maximum(position - 1, 0)]
+    return np.minimum(np.abs(after - times), np.abs(times - before)) / 1e9
 
 
 def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
@@ -127,6 +184,11 @@ class ToggleSpecialistMethod:
         period**, for which :data:`DEFAULT_BLOCK_HOURS` may span only a cycle or two.
     :param n_resamples: bootstrap resamples; block sums are precomputed, so this can be generous.
     :param bootstrap_seed: RNG seed for the bootstrap, so a reported sigma is reproducible.
+    :param pairing_max_gap: when set, a used row of one segment is kept only if the other segment has
+        a used row within this gap, inclusive (a gap of exactly ``pairing_max_gap`` is kept). Must be
+        a positive whole multiple of the timebase; ``None`` disables pairing.
+    :param segment_imbalance_warning: warn when the two segments' kept fractions at any selection
+        stage differ by more than this.
     """
 
     columns: ColumnSchema
@@ -139,6 +201,8 @@ class ToggleSpecialistMethod:
     block_hours: float = DEFAULT_BLOCK_HOURS
     n_resamples: int = 1000
     bootstrap_seed: int = 0
+    pairing_max_gap: pd.Timedelta | None = None
+    segment_imbalance_warning: float = 0.1
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -184,11 +248,14 @@ class ToggleSpecialistMethod:
             raise ValueError(msg)
 
         timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
+        self._check_pairing_gap(timebase)
         rows = resolve_toggle(mi.upgrade_timing, wide.index)
         baseline = rows.campaign_baseline
         test_pw = wide[test].to_numpy(dtype=float)
         ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
-        used = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase).to_numpy()
+        selection = self._selection(mi, wide=wide, test=test, refs=refs, timebase=timebase, rows=rows)
+        used = selection.paired.to_numpy()
+        accounting = self._selection_accounting(selection, rows=rows)
 
         rho_base = _rho(test_pw, ref_total, used & baseline)
         rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
@@ -258,6 +325,9 @@ class ToggleSpecialistMethod:
             timebase=timebase,
             per_bin=per_bin,
             diagnostics=diagnostics,
+            accounting=accounting,
+            selection=selection,
+            rows=rows,
         )
         return MethodOutput(
             p50_overall=float(uplift),
@@ -267,6 +337,7 @@ class ToggleSpecialistMethod:
             labeled_rows=self._labeled_rows(
                 mi, wide=wide, test=test, used=used, rows=rows, rho_label=rho_label, ref_total=ref_total
             ),
+            selection_accounting=accounting,
         )
 
     def _labeled_rows(
@@ -396,7 +467,90 @@ class ToggleSpecialistMethod:
         frame.insert(0, "condition", "power")
         return frame
 
-    def _used_mask(
+    def _check_pairing_gap(self, timebase: pd.Timedelta) -> None:
+        gap = self.pairing_max_gap
+        if gap is None:
+            return
+        if gap <= pd.Timedelta(0) or gap % timebase != pd.Timedelta(0):
+            msg = (
+                f"{self.name}: pairing_max_gap {gap} must be a positive whole multiple of the timebase "
+                f"{timebase}; a shorter gap can never reach a row of the other segment."
+            )
+            raise ValueError(msg)
+
+    def _selection(
+        self,
+        mi: MethodInput,
+        *,
+        wide: pd.DataFrame,
+        test: str,
+        refs: list[str],
+        timebase: pd.Timedelta,
+        rows: ToggleRowSets,
+    ) -> _Selection:
+        """Return the used-row mask after each selection stage, each a bool Series on ``wide.index``."""
+        filtered = self._filtered_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
+        not_excluded = filtered & ~self._test_excluded(mi, test=test, index=wide.index)
+        if self.pairing_max_gap is None:
+            return _Selection(filtered=filtered, not_excluded=not_excluded, paired=not_excluded)
+        kept = not_excluded.to_numpy()
+        paired = pair_within(
+            wide.index,
+            baseline=kept & rows.campaign_baseline,
+            upgraded=kept & rows.upgraded,
+            max_gap=self.pairing_max_gap,
+        )
+        in_segment = rows.campaign_baseline | rows.upgraded
+        paired_mask = kept & (~in_segment | paired.baseline | paired.upgraded)
+        return _Selection(filtered=filtered, not_excluded=not_excluded, paired=pd.Series(paired_mask, index=wide.index))
+
+    def _selection_accounting(self, selection: _Selection, *, rows: ToggleRowSets) -> pd.DataFrame:
+        """Rows kept per segment after each stage, warning when a stage treats the segments unevenly.
+
+        ``kept_fraction`` is relative to the segment's rows; ``stage_kept_fraction`` to the previous
+        stage, so it isolates which stage discriminates between segments.
+        """
+        stages_masks = (
+            ("segment", None),
+            ("filters", selection.filtered),
+            ("exclude_row", selection.not_excluded),
+            ("pairing", selection.paired),
+        )
+        records = []
+        for segment, in_segment in ((_BASELINE, rows.campaign_baseline), (_UPGRADED, rows.upgraded)):
+            n_segment = int(in_segment.sum())
+            previous = n_segment
+            for stage, mask in stages_masks:
+                n_kept = n_segment if mask is None else int((mask.to_numpy() & in_segment).sum())
+                records.append(
+                    {
+                        "stage": stage,
+                        "segment": segment,
+                        "n_kept": n_kept,
+                        "kept_fraction": n_kept / n_segment if n_segment else np.nan,
+                        "stage_kept_fraction": n_kept / previous if previous else np.nan,
+                    }
+                )
+                previous = n_kept
+        accounting = pd.DataFrame(records)
+
+        by_stage = accounting.pivot(  # noqa: PD010 - one row per (stage, segment), nothing to aggregate
+            index="stage", columns="segment", values="stage_kept_fraction"
+        )
+        imbalance = (by_stage[_BASELINE] - by_stage[_UPGRADED]).abs()
+        for stage, gap in imbalance[imbalance > self.segment_imbalance_warning].items():
+            logger.warning(
+                "%s: stage %r kept %.1f%% of baseline vs %.1f%% of upgraded rows (difference %.1f%% > %.1f%%)",
+                self.name,
+                stage,
+                100 * by_stage.loc[stage, _BASELINE],
+                100 * by_stage.loc[stage, _UPGRADED],
+                100 * gap,
+                100 * self.segment_imbalance_warning,
+            )
+        return accounting
+
+    def _filtered_mask(
         self, mi: MethodInput, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
     ) -> pd.Series:
         """Complete-case timestamps that also pass downtime filtering on the test turbine and every reference.
@@ -426,7 +580,7 @@ class ToggleSpecialistMethod:
             .keep_mask(test_rows, timebase=timebase)
             .reindex(wide.index, fill_value=False)
         )
-        return complete & all_available & test_keep & ~self._test_excluded(mi, test=test, index=wide.index)
+        return complete & all_available & test_keep
 
     def _test_excluded(self, mi: MethodInput, *, test: str, index: pd.DatetimeIndex) -> pd.Series:
         """Boolean mask on *index*: the test turbine's caller-flagged rows to drop (empty when unused).
@@ -465,6 +619,9 @@ class ToggleSpecialistMethod:
         timebase: pd.Timedelta,
         per_bin: pd.DataFrame | None = None,
         diagnostics: pd.DataFrame | None = None,
+        accounting: pd.DataFrame | None = None,
+        selection: _Selection | None = None,
+        rows: ToggleRowSets | None = None,
     ) -> None:
         """Write the data-stats CSV, the headline results CSV, the per-bin CSV and (optionally) the plots."""
         upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
@@ -506,6 +663,8 @@ class ToggleSpecialistMethod:
             per_bin.to_csv(run_dir / f"{run_name}_by_power_bin_{ts}.csv", index=False)
         if diagnostics is not None:
             diagnostics.to_csv(run_dir / f"{run_name}_uncertainty_{ts}.csv", index=False)
+        if accounting is not None:
+            accounting.to_csv(run_dir / f"{run_name}_selection_{ts}.csv", index=False)
 
         if self.save_plots:
             _save_plots(
@@ -524,18 +683,27 @@ class ToggleSpecialistMethod:
                     test=mi.test_wtg,
                     active_power_col=self.columns.active_power,
                 )
-            self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, timebase=timebase)
+            if selection is not None and rows is not None:
+                _save_pairing_gap_plot(
+                    run_dir / "plots" / stages.FILTER / f"{mi.test_wtg}_pairing_gap.png",
+                    index=wide.index,
+                    selection=selection,
+                    rows=rows,
+                    timebase=timebase,
+                    max_gap=self.pairing_max_gap,
+                    test=mi.test_wtg,
+                )
+            self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, used=used, timebase=timebase)
 
     def _write_shared_diagnostics(
-        self, mi: MethodInput, *, run_dir: Path, wide: pd.DataFrame, timebase: pd.Timedelta
+        self, mi: MethodInput, *, run_dir: Path, wide: pd.DataFrame, used: np.ndarray, timebase: pd.Timedelta
     ) -> None:
         """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
         # ``wide`` (a pivot) drops all-NaN timestamps, so align the masks to the full unique index
         # the DiagnosticContext uses (timestamps absent from ``wide`` are simply not used).
         index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
-        test, refs = mi.test_wtg, [c for c in wide.columns if c != mi.test_wtg]
-        used_series = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
-        used = used_series.reindex(index, fill_value=False).to_numpy()
+        test = mi.test_wtg
+        used = pd.Series(used, index=wide.index).reindex(index, fill_value=False).to_numpy()
         treated = resolve_toggle(mi.upgrade_timing, index).upgraded.astype(bool)
         ctx = DiagnosticContext(
             run_dir=run_dir,
@@ -555,6 +723,7 @@ class ToggleSpecialistMethod:
         params = {
             "active_power_col": self.columns.active_power,
             "availability_col": self.columns.availability,
+            "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
         }
         write_run_config(ctx, method_name=self.name, method_params=params)
 
@@ -839,6 +1008,67 @@ def _save_plots(
     ax.legend()
     fig.tight_layout()
     _save(fig, plots_dir / stages.FILTER / f"{test}_coverage_timeseries.png")
+
+
+def _save_pairing_gap_plot(
+    path: Path,
+    *,
+    index: pd.DatetimeIndex,
+    selection: _Selection,
+    rows: ToggleRowSets,
+    timebase: pd.Timedelta,
+    max_gap: pd.Timedelta | None,
+    test: str,
+) -> None:
+    """Histogram each used row's gap to the nearest used row of the other segment, before and after pairing.
+
+    Gaps beyond the plotted range are piled into the last bin.
+    """
+    step_min = timebase.total_seconds() / 60.0
+    cap_steps = max(24, 3 * round(max_gap / timebase)) if max_gap is not None else 24
+    edges = (np.arange(cap_steps + 2) - 0.5) * step_min
+    hours_per_row = timebase / pd.Timedelta(hours=1)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    text = []
+    drawn = [("before pairing" if max_gap is not None else "used rows", selection.not_excluded, "C0")]
+    if max_gap is not None:
+        drawn.append(("after pairing", selection.paired, "C1"))
+    for label, mask, color in drawn:
+        kept = mask.to_numpy()
+        gap_min = (
+            gap_to_other_segment(index, baseline=kept & rows.campaign_baseline, upgraded=kept & rows.upgraded) / 60.0
+        )
+        gap_min = gap_min[~np.isnan(gap_min)]
+        ax.hist(
+            np.minimum(gap_min, cap_steps * step_min),
+            bins=edges,
+            histtype="stepfilled",
+            alpha=0.45,
+            color=color,
+            label=label,
+        )
+        n_base = int((kept & rows.campaign_baseline).sum())
+        n_up = int((kept & rows.upgraded).sum())
+        text.append(f"{label}: {n_base * hours_per_row:.1f} h baseline, {n_up * hours_per_row:.1f} h upgraded")
+    if max_gap is not None:
+        ax.axvline(
+            max_gap / pd.Timedelta(minutes=1),
+            color="k",
+            linestyle=":",
+            label=f"pairing_max_gap {max_gap / pd.Timedelta(minutes=1):g} min",
+        )
+    else:
+        text.append("no pairing filter configured")
+    ax.text(0.98, 0.95, "\n".join(text), transform=ax.transAxes, ha="right", va="top", fontsize=9)
+    ax.set_xlabel(f"gap to nearest used row of the other segment [min] (last bin: >= {cap_steps * step_min:g})")
+    ax.set_ylabel("used rows")
+    ax.set_yscale("log")
+    ax.set_title(f"{test}: gap from each used row to the opposite toggle state")
+    ax.grid(visible=True, alpha=0.3)
+    ax.legend(loc="upper right", bbox_to_anchor=(0.99, 0.83))
+    fig.tight_layout()
+    _save(fig, path)
 
 
 def _save_per_bin_plot(path: Path, *, per_bin: pd.DataFrame, test: str, active_power_col: str) -> None:

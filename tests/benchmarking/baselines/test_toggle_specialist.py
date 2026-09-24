@@ -24,6 +24,7 @@ from benchmarking.baselines.toggle_specialist import (
     _daily_segment_ratio,
     _expected_per_day,
     _infer_timebase,
+    pair_within,
     restrict_to_campaign,
 )
 from benchmarking.harness.conditions import condition_bins
@@ -801,13 +802,14 @@ class TestLabeledRows:
         wide = toggle_specialist._wide_column(  # noqa: SLF001
             mi_restricted.scada_df, turbine_col=_TURBINE_COL, value_col=_POWER_COL
         )
-        expected = method._used_mask(  # noqa: SLF001
+        expected = method._selection(  # noqa: SLF001
             mi_restricted,
             wide=wide,
             test="T1",
             refs=[c for c in wide.columns if c != "T1"],
             timebase=pd.Timedelta(minutes=10),
-        )
+            rows=resolve_toggle(mi_restricted.upgrade_timing, wide.index),
+        ).paired
         assert out.labeled_rows["used"].to_numpy().tolist() == expected.to_numpy().tolist()
 
     def test_a_downtime_row_is_labelled_unused(self) -> None:
@@ -1107,3 +1109,150 @@ class TestCampaignContext:
         )
         untouched = self._estimate(scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         assert with_holes != pytest.approx(untouched)
+
+
+# --- pairing filter (pairing_max_gap) -----------------------------------------------------------
+
+
+class TestPairWithin:
+    """``pair_within`` keeps a row only when the other segment has a row within the gap, inclusive."""
+
+    @staticmethod
+    def _one_each(gap_rows: int) -> tuple[pd.DatetimeIndex, np.ndarray, np.ndarray]:
+        index = _index(gap_rows + 1)
+        baseline = np.zeros(len(index), dtype=bool)
+        upgraded = np.zeros(len(index), dtype=bool)
+        baseline[0] = True
+        upgraded[-1] = True
+        return index, baseline, upgraded
+
+    def test_a_gap_exactly_equal_to_the_limit_is_kept(self) -> None:
+        index, baseline, upgraded = self._one_each(gap_rows=2)
+        paired = pair_within(index, baseline=baseline, upgraded=upgraded, max_gap=pd.Timedelta(minutes=20))
+        assert paired.baseline[0]
+        assert paired.upgraded[-1]
+
+    def test_a_gap_one_row_beyond_the_limit_is_dropped(self) -> None:
+        index, baseline, upgraded = self._one_each(gap_rows=3)
+        paired = pair_within(index, baseline=baseline, upgraded=upgraded, max_gap=pd.Timedelta(minutes=20))
+        assert not paired.baseline.any()
+        assert not paired.upgraded.any()
+
+    def test_an_empty_other_segment_drops_everything(self) -> None:
+        index = _index(6)
+        baseline = np.ones(len(index), dtype=bool)
+        paired = pair_within(
+            index, baseline=baseline, upgraded=np.zeros(len(index), dtype=bool), max_gap=pd.Timedelta(hours=1)
+        )
+        assert not paired.baseline.any()
+
+    @pytest.mark.parametrize("gap_minutes", [10, 30, 60])
+    def test_matches_v0_any_within_timedelta(self, gap_minutes: int) -> None:
+        """Parity with wind-up v0's ``_toggle_pairing_filter`` on a gappy toggle frame."""
+        v0 = pytest.importorskip("wind_up_v0.main_analysis")
+        rng = np.random.default_rng(3)
+        full = _index(400)
+        index = full[rng.random(len(full)) > 0.3]  # drop rows so gaps vary
+        state = rng.random(len(index)) > 0.5
+        cols = {"ws": 1.0, "pw": 1.0, "wd": 1.0}
+        pre_df = pd.DataFrame(cols, index=index[~state])
+        post_df = pd.DataFrame(cols, index=index[state])
+        v0_pre, v0_post = v0._toggle_pairing_filter(  # noqa: SLF001 - the v0 behaviour being matched
+            pre_df=pre_df,
+            post_df=post_df,
+            pairing_filter_method="any_within_timedelta",
+            pairing_filter_timedelta_seconds=gap_minutes * 60,
+            detrend_ws_col="ws",
+            test_pw_col="pw",
+            ref_wd_col="wd",
+            timebase_s=600,
+        )
+
+        paired = pair_within(index, baseline=~state, upgraded=state, max_gap=pd.Timedelta(minutes=gap_minutes))
+        assert set(index[paired.baseline]) == set(v0_pre.index)
+        assert set(index[paired.upgraded]) == set(v0_post.index)
+
+
+class TestPairingFilter:
+    """``pairing_max_gap`` on the method: validation, the rows it drops, and the selection accounting."""
+
+    @staticmethod
+    def _block_excluded_case() -> tuple[pd.DataFrame, ToggleSchedule, pd.DatetimeIndex]:
+        """A noisy toggle campaign whose upgraded test rows are all flagged over one 1-day block."""
+        scada, schedule = _noisy_toggle_case()
+        idx = pd.DatetimeIndex(pd.unique(scada.index))
+        treated = np.asarray(treated_mask(idx, schedule))
+        block = (idx >= idx[500]) & (idx < idx[644])
+        flagged = pd.Series(block & treated, index=idx)
+        out = scada.copy()
+        is_test = out[_TURBINE_COL] == "T1"
+        out[_EXCLUDE_COL] = False
+        out.loc[is_test, _EXCLUDE_COL] = flagged.reindex(out.index[is_test]).to_numpy()
+        return out, schedule, idx[block]
+
+    @staticmethod
+    def _run(scada: pd.DataFrame, schedule: ToggleSchedule, **kwargs: object) -> MethodOutput:
+        return ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, **kwargs).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+
+    @pytest.mark.parametrize("gap", [pd.Timedelta(0), pd.Timedelta(minutes=5), pd.Timedelta(minutes=25)])
+    def test_rejects_a_gap_that_is_not_a_positive_timebase_multiple(self, gap: pd.Timedelta) -> None:
+        scada, schedule = _noisy_toggle_case(n=200)
+        with pytest.raises(ValueError, match="pairing_max_gap"):
+            _estimate(scada, schedule, pairing_max_gap=gap)
+
+    def test_baseline_rows_far_from_any_used_upgraded_row_are_dropped(self) -> None:
+        scada, schedule, block = self._block_excluded_case()
+        out = self._run(scada, schedule, pairing_max_gap=pd.Timedelta(minutes=20))
+        assert out.labeled_rows is not None
+        rows = out.labeled_rows
+        inner = block[6:-6]  # more than 20 min from the block's edges
+        assert not rows.loc[inner, "used"].astype(bool).any()
+        outside = rows.index < block[0]
+        assert rows.loc[outside, "used"].astype(bool).all()
+
+    def test_without_pairing_the_block_keeps_its_baseline_rows(self) -> None:
+        scada, schedule, block = self._block_excluded_case()
+        out = self._run(scada, schedule)
+        assert out.labeled_rows is not None
+        rows = out.labeled_rows.loc[block]
+        assert rows.loc[rows["segment"] == "baseline", "used"].astype(bool).all()
+
+    def test_accounting_shows_each_stage_per_segment(self) -> None:
+        scada, schedule, block = self._block_excluded_case()
+        out = self._run(scada, schedule, pairing_max_gap=pd.Timedelta(minutes=20))
+        assert out.selection_accounting is not None
+        kept = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
+        n_block = len(block) // 2
+        assert kept["exclude_row", "upgraded"] == kept["filters", "upgraded"] - n_block
+        assert kept["exclude_row", "baseline"] == kept["filters", "baseline"]
+        assert kept["pairing", "baseline"] < kept["exclude_row", "baseline"]
+        assert kept["pairing", "upgraded"] <= kept["exclude_row", "upgraded"]
+
+    def test_accounting_is_reported_without_pairing(self) -> None:
+        scada, schedule = _noisy_toggle_case(n=200)
+        out = _estimate(scada, schedule)
+        assert out.selection_accounting is not None
+        kept = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
+        assert kept["pairing", "baseline"] == kept["exclude_row", "baseline"]
+
+    def test_an_uneven_stage_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        scada, schedule, _ = self._block_excluded_case()
+        with caplog.at_level("WARNING", logger=toggle_specialist.__name__):
+            self._run(scada, schedule, segment_imbalance_warning=0.05)
+        assert any("exclude_row" in record.getMessage() for record in caplog.records)
+
+    def test_an_even_selection_does_not_warn(self, caplog: pytest.LogCaptureFixture) -> None:
+        scada, schedule = _noisy_toggle_case(n=200)
+        with caplog.at_level("WARNING", logger=toggle_specialist.__name__):
+            _estimate(scada, schedule, pairing_max_gap=pd.Timedelta(minutes=20))
+        assert not [r for r in caplog.records if r.name == toggle_specialist.__name__]
+
+
+@pytest.mark.parametrize("gap", [None, pd.Timedelta(minutes=20)], ids=["no-pairing", "pairing"])
+def test_pairing_gap_plot_is_written(tmp_path: Path, gap: pd.Timedelta | None) -> None:
+    """The gap histogram is drawn with or without a pairing filter, so a user can judge whether one is needed."""
+    scada, schedule = _noisy_toggle_case(n=200)
+    _estimate(scada, schedule, out_dir=tmp_path, save_plots=True, pairing_max_gap=gap)
+    assert len(list(tmp_path.rglob("*_pairing_gap.png"))) == 1
