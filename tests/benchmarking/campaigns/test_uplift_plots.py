@@ -109,7 +109,7 @@ class TestWhatIsDrawn:
             rated_power_kw=2300.0,
             farm=_FARM,
         )
-        assert [str(p.relative_to(tmp_path)) for p in written] == [
+        assert [p.relative_to(tmp_path).as_posix() for p in written] == [
             "wind-up/uplift_distributions.png",
             "wind-up/per_turbine_uplift.png",
             "wind-up/farm_uplift.png",
