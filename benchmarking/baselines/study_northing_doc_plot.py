@@ -1,6 +1,6 @@
 """Draw the ``docs/northing.md`` figure: every Hill of Towie turbine's north error, before and after northing.
 
-The error is the 30-day rolling circular median of the circular difference between each turbine's
+The error is the 14-day rolling circular median of the circular difference between each turbine's
 nacelle position and ERA5 wind direction, over the rows northing uses
 (:func:`~wind_up.northing.yaw_usable`). The top panel uses the raw nacelle position; the bottom one
 applies the golden north table
@@ -36,8 +36,8 @@ WINDOW = ("2016-01-01", "2021-01-01")
 def rolling_error(
     direction: np.ndarray, *, reference: np.ndarray, usable: np.ndarray, index: pd.DatetimeIndex
 ) -> pd.Series:
-    """Return the 30-day centred rolling circular median of ``circ_diff(direction, reference)`` over ``usable`` rows."""
-    rolling_days = 30
+    """Return the 14-day centred rolling circular median of ``circ_diff(direction, reference)`` over ``usable`` rows."""
+    rolling_days = 14
     rows_per_day = 144
     error = pd.Series(np.where(usable, circ_diff(direction, reference), np.nan), index=index)
     return rolling_circ_median_approx(
@@ -65,15 +65,18 @@ def main() -> None:
         colour, dash = series_style(position)
         for ax, direction in zip(axes, (raw, northed), strict=True):
             error = rolling_error(direction, reference=reference, usable=inputs["usable"][turbine], index=index)
-            sampled = error.iloc[::72]  # twice a day is plenty for a 30-day rolling line
-            ax.plot(sampled.index, sampled.to_numpy(), color=colour, linestyle=dash, linewidth=1.2, label=turbine)
+            sampled = error.iloc[::72]  # twice a day is plenty for a 14-day rolling line
+            values = sampled.to_numpy()
+            wrap_deg = 180.0
+            values[1:][np.abs(np.diff(values)) > wrap_deg] = np.nan  # break the line where it wraps
+            ax.plot(sampled.index, values, color=colour, linestyle=dash, linewidth=1.2, label=turbine)
         logger.info("%s done", turbine)
 
     fig.suptitle("Hill of Towie: north error per turbine, before and after northing")
     axes[0].set_title("Before northing: circular difference of raw nacelle position and ERA5 wind direction")
     axes[1].set_title("After northing: circular difference of northed nacelle position and ERA5 wind direction")
     for ax in axes:
-        ax.set_ylabel("30-day rolling north error [deg]")
+        ax.set_ylabel("14-day rolling north error [deg]")
         ax.set_ylim(-180, 180)
         ax.set_yticks(range(-180, 181, 45))
         apply_grid(ax)
