@@ -24,7 +24,7 @@ import pandas as pd
 from wind_up.northing import (
     DEFAULT_NORTHING,
     NorthingSettings,
-    add_wake_nadir,
+    add_wake_nadir_shift,
     apply_north_table,
     north_farm,
     write_north_table_yaml,
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_NORTHING_ROLES: tuple[str, ...] = ("nacelle_position",)
 
 # The plots show the residual against reanalysis: it is the anchor available here, whereas the
-# farm consensus pass 2 uses is internal to north_farm.
+# farm consensus changepoints-v-consensus uses is internal to north_farm.
 _PLOT_REFERENCE_NAME = "reanalysis"
 
 # The discovered table, written in the format ``north_offsets`` and v0's
@@ -168,9 +168,9 @@ def north_scada(
     :param columns: the source-native schema naming the turbine and direction role(s)
     :param north_offsets: ``None`` to discover the corrections, or the exact table to apply
     :param rated_power_kw: turbine rating, for deciding which rows are usable for northing
-    :param layout: the farm layout, rotor diameters included. When discovering, pass 2 norths each
-        turbine against its nearest neighbours and pass 4 nudges each by where its wake lands.
-        ``None`` -- explicitly -- norths against the whole-farm consensus and skips pass 4, for
+    :param layout: the farm layout, rotor diameters included. When discovering, changepoints-v-consensus norths each
+        turbine against its nearest neighbours and the wake-nadir shift moves each by where its wake lands.
+        ``None`` -- explicitly -- norths against the whole-farm consensus and skips wake-nadir-shift, for
         callers with no layout to hand. Only used when ``north_offsets`` is ``None``.
     :param era5_wd: reanalysis wind direction (deg) covering the frame, the absolute anchor for
         discovery. Required when ``north_offsets`` is ``None``.
@@ -178,7 +178,7 @@ def north_scada(
     :param settings: how the changepoint search is bounded, when discovering
     :param out_dir: when given and corrections are discovered, the discovered table
         (:data:`NORTH_TABLE_YAML`, hand-editable and usable as a prior), the farm overview, one
-        plot per device and, when a layout drives pass 4, the wake-nadir correction map are written
+        plot per device and, when a layout drives wake-nadir-shift, the wake-nadir correction map are written
         here, so the correction can be judged rather than trusted
     :return: a copy of ``scada_df`` with ``columns.northed(role)`` added for each role
     """
@@ -230,7 +230,7 @@ def north_scada(
         tables = north_farm(
             index, direction_deg=directions, usable=usable, reanalysis_deg=reference, layout=layout, settings=settings
         )
-        # Pass 4 runs here rather than inside north_farm so its corrections are in hand for the map.
+        # Wake-nadir-shift runs here rather than inside north_farm so its corrections are in hand for the map.
         # Wind speed is a second, independent deficit signal when the source ships it.
         corrections: dict[str, float] = {}
         if layout is not None:
@@ -240,7 +240,7 @@ def north_scada(
                 if columns.wind_speed in scada_df.columns
                 else None
             )
-            tables, corrections = add_wake_nadir(
+            tables, corrections = add_wake_nadir_shift(
                 tables,
                 layout=layout,
                 index=index,

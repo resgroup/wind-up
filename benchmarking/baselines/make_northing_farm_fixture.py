@@ -3,12 +3,12 @@
 The fixture is exactly what :func:`benchmarking.baselines.study_wake_nadir_golden.hot_inputs` hands
 ``north_farm`` in ``study_northing_degradation`` -- every turbine's yaw, power and nacelle wind
 speed, the ``yaw_usable`` mask and the ERA5 direction -- for 2017-2020 (two two-year test windows), so a test can
-replay a study case end to end, pass 4 included, without the raw open-data download.
+replay a study case end to end, wake-nadir-shift included, without the raw open-data download.
 
 One wide frame on the 10-minute index, integer-scaled to keep the git-lfs object small (~15 MB):
 ``reference_decideg`` plus ``<turbine>_yaw_decideg``, ``<turbine>_power_kw`` and
 ``<turbine>_ws_cm_s`` per turbine, as nullable int16. A turbine's signals are kept only on its
-``yaw_usable`` rows and blanked elsewhere -- ``north_farm`` reads nothing off those rows, pass 4
+``yaw_usable`` rows and blanked elsewhere -- ``north_farm`` reads nothing off those rows, wake-nadir-shift
 included -- so a turbine's usable mask is simply where its yaw is present, and rows where no turbine
 is usable are dropped.
 

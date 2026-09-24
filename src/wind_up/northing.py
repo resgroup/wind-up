@@ -5,9 +5,7 @@
 table onto the raw signal. Offsets are absolute -- relative to the raw field, never to an
 already-corrected one -- so a supplied table and an estimated one are directly comparable.
 
-:func:`north_farm` runs the farm workflow: anchor every device to reanalysis, build a farm
-consensus direction from the results and north every device to that, then, where a layout and power
-are supplied, nudge each device to its wake nadirs (:mod:`wind_up.wake_nadir`).
+:func:`north_farm` runs the farm workflow, described in ``docs/northing.md``.
 
 The estimator works on any direction field. Only :func:`yaw_usable` is turbine-specific.
 """
@@ -100,34 +98,14 @@ class NorthingSettings:
     confident_segment: pd.Timedelta = _DEFAULT_CONFIDENT_SEGMENT
 
 
-# Minimum step attributable to a turbine when northing against reanalysis rather than a farm
-# consensus. See :func:`against_reanalysis`.
-REANALYSIS_MIN_STEP_DEG = 10.0
-# Minimum gap between changepoints when northing against reanalysis. Reanalysis cannot resolve
-# recalibrations closer together than this, so a nearer pair is treated as reference wander and
-# merged. See :func:`against_reanalysis`.
-REANALYSIS_MIN_SEGMENT = pd.Timedelta(days=30)
 # Minimum step the first pass may act on. See :func:`anchoring_only`.
 ANCHORING_MIN_STEP_DEG = 30.0
 # Minimum step taken out of the residual before the veer signature is measured.
 # See :func:`_confident_steps`.
 VEER_SIGNATURE_MIN_STEP_DEG = 10.0
 
-# The minimum farm size for the neighbour-consensus regime (pass 2); below it north_farm norths each
-# device against reanalysis with changepoints (pass 3). Also the floor on how many devices must
-# report at a timestamp for their consensus to stand.
+# The fewest devices that can form a consensus.
 MIN_DEVICES_FOR_FARM_REFERENCE = 3
-# How many nearest turbines form each device's pass-2 consensus, capped at the farm size.
-_CONSENSUS_NEIGHBOURS = 4
-# Pass 2 repeats until it converges. The first round builds the consensus from pass-1-northed
-# signals, which still carry every neighbour's own steps; a four-neighbour median moves several
-# degrees when one neighbour steps, handing the device a matching spurious step. Each later round
-# rebuilds the consensus from the previous round's tables, so those steps drop out of it. It has
-# converged once a round moves no changepoint beyond the search grid and no offset by more than
-# _CONSENSUS_CONVERGED_DEG (see _table_change);
-# _MAX_CONSENSUS_ROUNDS only guards against a farm that never settles.
-_MAX_CONSENSUS_ROUNDS = 10
-_CONSENSUS_CONVERGED_DEG = 0.5
 
 DEFAULT_NORTHING = NorthingSettings()
 
@@ -142,17 +120,11 @@ def anchoring_only(settings: NorthingSettings) -> NorthingSettings:
 
 
 def against_reanalysis(settings: NorthingSettings) -> NorthingSettings:
-    """Return ``settings`` made safe for northing against reanalysis rather than a farm consensus.
-
-    Raises ``min_step_deg`` to at least :data:`REANALYSIS_MIN_STEP_DEG`, so drift in the reanalysis
-    reference is not attributed to the turbines as a small step change, and ``min_segment`` to at
-    least :data:`REANALYSIS_MIN_SEGMENT`, so changepoints closer together than reanalysis can resolve
-    are merged rather than read as a burst of recalibrations. Everything else is unchanged.
-    """
+    """Return ``settings`` with the larger minimum step and segment that northing against reanalysis needs."""
     return replace(
         settings,
-        min_step_deg=max(settings.min_step_deg, REANALYSIS_MIN_STEP_DEG),
-        min_segment=max(settings.min_segment, REANALYSIS_MIN_SEGMENT),
+        min_step_deg=max(settings.min_step_deg, 10.0),
+        min_segment=max(settings.min_segment, pd.Timedelta(days=30)),
     )
 
 
@@ -577,9 +549,7 @@ def _required_step(
     A segment's level is limited by site veer rather than by sampling noise, and veer averages out
     no faster than ``1/sqrt(span)``. So with less than ``confident_segment`` either side the
     required step grows accordingly, capped at ``max_transient_step_deg`` -- above which a step is
-    credible however little record sits around it. The cap never falls below ``min_step_deg``:
-    ``np.clip`` with its bounds inverted returns the upper one, which let a pass asking for 30 deg
-    steps accept 10 deg ones.
+    credible however little record sits around it. The cap never falls below ``min_step_deg``.
     """
     edges = [start, *changepoints, end]
     spans = np.array([max((b - a) / confident_segment, 1e-9) for a, b in itertools.pairwise(edges)])
@@ -789,12 +759,7 @@ def write_north_table_yaml(tables: Mapping[str, pd.DataFrame], *, path: Path) ->
 
 
 def _neighbours_from_layout(layout: Layout, *, devices: list[str], k: int) -> dict[str, tuple[str, ...]]:
-    """Map each device to its ``k`` nearest of the other ``devices`` by the layout's geodesic distance.
-
-    Reuses ``layout.distance_m`` rather than recomputing. External turbines in the layout that are
-    not being northed take no part. ``k`` is capped at the number of other devices, so a device is
-    never its own neighbour and a small farm simply lists everyone else.
-    """
+    """Map each device to its ``k`` nearest other ``devices``, fewer when the farm is smaller."""
     rows = {name: layout.index_of(name) for name in devices}
     limit = min(k, len(devices) - 1)
     out: dict[str, tuple[str, ...]] = {}
@@ -832,14 +797,12 @@ def _validate_north_farm_inputs(
             raise ValueError(msg)
 
 
-def _pass_two_reference(
+def _consensus_neighbours(
     layout: Layout | None, *, devices: list[str], neighbours: int, min_devices: int
 ) -> dict[str, tuple[str, ...]] | None:
-    """Return each device's pass-2 neighbour set, or ``None`` for the whole-farm consensus.
+    """Return each device's ``neighbours`` nearest turbines, or ``None`` for the whole-farm consensus.
 
-    With a layout, a device is northed against its ``neighbours`` nearest turbines -- but only where
-    the layout leaves every device at least ``min_devices`` of them; a farm too small for that falls
-    back to the whole-farm consensus.
+    ``None`` when there is no layout, or when some device would have fewer than ``min_devices``.
     """
     if layout is None:
         return None
@@ -861,7 +824,7 @@ def _farm_quorum(n_devices: int, *, floor: int) -> int:
     return max(floor, n_devices // 2 + 1)
 
 
-def add_wake_nadir(
+def add_wake_nadir_shift(
     tables: Mapping[str, pd.DataFrame],
     *,
     layout: Layout,
@@ -871,23 +834,20 @@ def add_wake_nadir(
     wind_speed: Mapping[str, npt.NDArray[np.float64]] | None = None,
     usable: Mapping[str, npt.NDArray[np.bool_]],
 ) -> tuple[dict[str, pd.DataFrame], dict[str, float]]:
-    """Add pass 4's wake-nadir correction to each device's table; return the tables and the corrections.
+    """Shift each device's table by its wake-nadir correction; return the tables and the corrections.
 
-    The correction is one absolute number per turbine (:func:`wind_up.wake_nadir.wake_nadir_offsets`,
-    measured on the directions ``tables`` north). It shifts every offset in that turbine's table and
-    never touches which rows are valid. :func:`north_farm` runs this as its last pass when given a
-    layout and power; it is exposed so a caller that also wants to report the corrections gets them
-    without northing twice.
+    The correction is :func:`wind_up.wake_nadir.wake_nadir_offsets`, measured on the directions
+    ``tables`` north. :func:`north_farm` runs this as its last step when given a layout and power.
     """
     northed = {name: apply_north_table(index, direction_deg[name], north_table=tables[name]) for name in tables}
     deltas = wake_nadir_offsets(
         layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
     )
-    nudged = {
+    shifted = {
         name: table.assign(**{NORTH_OFFSET_COL: table[NORTH_OFFSET_COL] + deltas[name]}) if deltas.get(name) else table
         for name, table in tables.items()
     }
-    return nudged, deltas
+    return shifted, deltas
 
 
 def _farm_direction(
@@ -896,10 +856,7 @@ def _farm_direction(
     usable: Mapping[str, npt.NDArray[np.bool_]],
     min_devices: int,
 ) -> npt.NDArray[np.float64]:
-    """Per-timestamp circular median of the devices' northed directions, NaN where too few report.
-
-    ``min_devices`` is a quorum, not a fixed floor: see :func:`north_farm`.
-    """
+    """Per-timestamp circular median of the devices' northed directions, NaN where fewer than ``min_devices`` report."""
     stack = np.vstack(
         [np.where(usable[name] & np.isfinite(values), values, np.nan) for name, values in northed.items()]
     )
@@ -915,14 +872,11 @@ def _consensus_references(
     reference_neighbours: Mapping[str, Sequence[str]] | None,
     min_devices: int,
 ) -> dict[str, npt.NDArray[np.float64]]:
-    """Return the direction each device is northed against in pass 2.
+    """Return the consensus direction each device is northed against.
 
-    Without ``reference_neighbours`` every device shares the one whole-farm consensus -- the
-    historical behaviour, and the object is shared so the result is identical to computing it once.
-    With it, each device is northed against the circular-median consensus of *its own* listed
-    neighbours (itself excluded), so a far or miscalibrated turbine on the other side of the farm
-    cannot pull its reference. A neighbour set forms a consensus by the same quorum rule as the
-    whole farm: a strict majority of the set, floored at ``min_devices``.
+    Without ``reference_neighbours`` every device shares the whole-farm consensus, which needs
+    ``quorum`` devices reporting. With it, each device gets the consensus of its own listed
+    neighbours, which needs a strict majority of them and at least ``min_devices``.
     """
     if reference_neighbours is None:
         farm = _farm_direction(northed, usable=usable, min_devices=quorum)
@@ -939,11 +893,7 @@ def _consensus_references(
 
 
 def _table_change(before: pd.DataFrame, after: pd.DataFrame) -> float:
-    """How far one north table moved to another.
-
-    The largest offset change (deg), or infinity if a changepoint was added or removed, or moved by
-    more than a day -- the changepoint search's grid, below which ``refine`` jitters a timestamp.
-    """
+    """Return the largest offset change (deg); infinity if a changepoint was added, removed or moved over a day."""
     if len(before) != len(after):
         return float("inf")
     shift = np.abs(pd.DatetimeIndex(after[TIMESTAMP_COL]) - pd.DatetimeIndex(before[TIMESTAMP_COL]))
@@ -952,32 +902,25 @@ def _table_change(before: pd.DataFrame, after: pd.DataFrame) -> float:
     return float(np.abs(circ_diff(after[NORTH_OFFSET_COL], before[NORTH_OFFSET_COL])).max())
 
 
-def _converged_pass_two(
+def _changepoints_v_consensus(
     index: pd.DatetimeIndex,
     *,
     direction_deg: Mapping[str, npt.NDArray[np.float64]],
     usable: Mapping[str, npt.NDArray[np.bool_]],
-    first_pass: Mapping[str, pd.DataFrame],
+    reanalysis_anchor: Mapping[str, pd.DataFrame],
     references: dict[str, npt.NDArray[np.float64]],
     references_from: Callable[[dict[str, npt.NDArray[np.float64]]], dict[str, npt.NDArray[np.float64]]],
     reference_neighbours: Mapping[str, Sequence[str]] | None,
     settings: NorthingSettings,
 ) -> dict[str, pd.DataFrame]:
-    """Run pass 2 against ``references``, then repeat it until a round changes nothing.
+    """North each device against its consensus in ``references``, repeating until the tables converge.
 
-    Each repeat rebuilds the consensus from the previous round's tables (see
-    :data:`_MAX_CONSENSUS_ROUNDS`); ``references_from`` builds each device's consensus from a set of northed signals.
-
-    A device is re-northed only when a device its consensus is built from (``reference_neighbours``,
-    or every device for the whole-farm consensus) moved by more than the convergence tolerance in the
-    last round. Otherwise its reference has, by the same test that ends the loop, not changed, and it
-    keeps its table. Later rounds therefore touch only the neighbourhoods still settling.
+    Each round rebuilds the consensus with ``references_from`` from the previous round's tables and
+    re-norths only the devices whose consensus members moved. A device whose consensus never overlaps
+    its usable rows keeps its ``reanalysis_anchor`` table.
     """
-    # The reference must be finite where a device can be northed against it, not merely finite
-    # somewhere: pass 2's residual is taken over usable & finite(direction) & finite(reference) (see
-    # _residual). With no such overlap -- e.g. a device and its neighbours reporting in disjoint
-    # periods -- estimate_north_table returns a zero offset, so keep the pass-1 anchor. Which rows are
-    # finite does not change between rounds, so neither does this.
+    max_rounds = 10
+    converged_deg = 0.5
     devices = sorted(direction_deg)
     anchored_only = set()
     for name in devices:
@@ -992,7 +935,7 @@ def _converged_pass_two(
 
     def north_against(name: str, reference: npt.NDArray[np.float64]) -> pd.DataFrame:
         if name in anchored_only:
-            return first_pass[name]
+            return reanalysis_anchor[name]
         return estimate_north_table(
             index, direction_deg[name], reference_deg=reference, usable=usable[name], settings=settings
         )
@@ -1001,10 +944,9 @@ def _converged_pass_two(
         return devices if reference_neighbours is None else reference_neighbours[name]
 
     tables = {name: north_against(name, references[name]) for name in devices}
-    # what round 1 moved each device by, relative to the pass-1 signals its consensus was built from
-    moved = {name: _table_change(first_pass[name], tables[name]) for name in devices}
-    for consensus_round in range(2, _MAX_CONSENSUS_ROUNDS + 1):
-        settling = {name for name, change in moved.items() if change > _CONSENSUS_CONVERGED_DEG}
+    moved = {name: _table_change(reanalysis_anchor[name], tables[name]) for name in devices}
+    for consensus_round in range(2, max_rounds + 1):
+        settling = {name for name, change in moved.items() if change > converged_deg}
         stale = [name for name in devices if settling.intersection(feeds(name))]
         if not stale:
             break
@@ -1015,16 +957,17 @@ def _converged_pass_two(
         tables = {**tables, **{name: north_against(name, references[name]) for name in stale}}
         moved = {name: _table_change(previous[name], tables[name]) for name in devices}
         logger.debug(
-            "pass 2 round %d: re-northed %d device(s), largest change %.2f deg",
+            "changepoints-v-consensus round %d: re-northed %d device(s), largest change %.2f deg",
             consensus_round,
             len(stale),
             max(moved.values()),
         )
     else:
-        if max(moved.values()) > _CONSENSUS_CONVERGED_DEG:
+        if max(moved.values()) > converged_deg:
             logger.warning(
-                "pass 2 did not converge in %d rounds (last round moved an offset by %.1f deg); keeping the last",
-                _MAX_CONSENSUS_ROUNDS,
+                "changepoints-v-consensus did not converge in %d rounds (last round moved an offset by %.1f deg); "
+                "keeping the last",
+                max_rounds,
                 max(moved.values()),
             )
     return tables
@@ -1043,41 +986,19 @@ def north_farm(
 ) -> dict[str, pd.DataFrame]:
     """North a whole farm, returning one absolute table per device.
 
-    Pass 1 is a constant bulk alignment: each device gets a single offset nulling its whole-record
-    direction to ``reanalysis_deg``, with no changepoints. Pass 2 then builds a farm consensus
-    direction from those aligned signals and norths each device's raw signal to it, finding every
-    changepoint against that consensus. Pass 1 fixes the farm in absolute terms; pass 2 is the more
-    precise, and does all the changepoint work. Pass 2 repeats until it converges: each round rebuilds
-    the consensus from the previous round's tables, so a neighbour's own step -- still present after
-    the constant pass 1 -- stops moving the reference and leaking into the device as a spurious step.
-
-    Pass 1 attributes no changepoints on purpose: reanalysis is short-term unreliable, so a pass-1
-    changepoint lets that noise leak into the very consensus pass 2 trusts (an unusual weather spell
-    moves every device's residual against reanalysis together, and correcting it writes the
-    excursion into the consensus). A constant anchor cannot do that.
-
-    Every device's arrays are positional on the shared ``index``, which is what lets the farm
-    consensus be taken across devices at each timestamp.
+    Runs the reanalysis-anchor, changepoints-v-consensus (or, below
+    :data:`MIN_DEVICES_FOR_FARM_REFERENCE` devices, changepoints-v-reanalysis) and wake-nadir-shift
+    steps described in ``docs/northing.md``. Every device's arrays are positional on ``index``.
 
     :param direction_deg: device name to its raw direction signal
     :param usable: device name to the rows usable for northing it
     :param reanalysis_deg: the absolute direction reference, on ``index``
-    :param layout: the farm :class:`~wind_up.layout.Layout`. Pass 2 then norths each device against
-        the consensus of its ``neighbours`` nearest turbines (by the layout's geodesic distance),
-        which keeps a far or miscalibrated turbine out of its reference -- what a large, heterogeneous
-        farm needs, since a turbine only shares wind with its neighbours. Every device in
-        ``direction_deg`` must resolve to a layout row; external turbines in the layout are ignored.
-        Pass ``layout=None`` -- explicitly -- to fall back to the one whole-farm consensus; that lets
-        a distant or miscalibrated turbine into every device's reference, so choose it only when no
-        positions are available. A :class:`~wind_up.layout.Layout` cannot hold impossible positions
-        (overlapping rotors, placeholders at one point), so neighbour ranking and pass 4's wake
-        geometry always rest on a real farm.
-    :param power: device name to its power signal on ``index``, for the pass-4 wake-nadir nudge.
-        With a ``layout``, pass 4 adds one absolute correction per turbine on top of its changepoint
-        table, from where each turbine's wake lands on its downstream neighbours. ``None`` (or no
-        ``layout``) disables pass 4.
-    :param wind_speed: device name to its nacelle wind speed on ``index``. When given, pass 4
-        combines it with power as a second, independent deficit signal; otherwise power is used alone.
+    :param layout: the farm :class:`~wind_up.layout.Layout`, in which every device must have a row;
+        each device is then northed against the consensus of its nearest turbines. ``None`` norths
+        against one whole-farm consensus and skips the wake-nadir shift.
+    :param power: device name to its power on ``index``; with a ``layout``, enables the wake-nadir shift
+    :param wind_speed: device name to its nacelle wind speed on ``index``, used by the wake-nadir
+        shift alongside power when given
     """
     devices = sorted(direction_deg)
     _validate_north_farm_inputs(devices, usable=usable, power=power, layout=layout)
@@ -1086,10 +1007,8 @@ def north_farm(
     anchorable = {d: int((np.asarray(usable[d], dtype=bool) & finite_reference).sum()) for d in devices}
     if not any(anchorable.values()):
         msg = (
-            "no device has a usable row where reanalysis_deg is finite, so pass 1 cannot anchor the farm. "
-            "Pass 2 would still return plausible relative offsets, but a farm that is uniformly wrong "
-            "looks self-consistent, so the result would be unanchored. Check that reanalysis_deg covers "
-            "index and is not all NaN."
+            "no device has a usable row where reanalysis_deg is finite, so reanalysis cannot anchor the farm. "
+            "Check that reanalysis_deg covers index and is not all NaN."
         )
         raise ValueError(msg)
     thin = sorted(d for d, n in anchorable.items() if n == 0)
@@ -1102,10 +1021,8 @@ def north_farm(
             thin,
         )
 
-    # Pass 1 is a constant bulk alignment (no changepoints); pass 2's farm consensus does all the
-    # changepoint work, at the caller's chosen threshold.
     anchoring = replace(settings, changepoints_per_year=0.0, min_changepoints=0)
-    first_pass = {
+    reanalysis_anchor = {
         name: estimate_north_table(
             index,
             direction_deg[name],
@@ -1115,12 +1032,14 @@ def north_farm(
         )
         for name in devices
     }
-    northed = {name: apply_north_table(index, direction_deg[name], north_table=first_pass[name]) for name in devices}
+    northed = {
+        name: apply_north_table(index, direction_deg[name], north_table=reanalysis_anchor[name]) for name in devices
+    }
 
-    def wake_nadir(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    def wake_nadir_shift(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         if layout is None or power is None:
             return tables
-        nudged, _ = add_wake_nadir(
+        shifted, _ = add_wake_nadir_shift(
             tables,
             layout=layout,
             index=index,
@@ -1129,21 +1048,17 @@ def north_farm(
             wind_speed=wind_speed,
             usable=usable,
         )
-        return nudged
+        return shifted
 
-    # Whole-farm switch: below the floor there is no farm consensus to form, so pass 3 norths each
-    # device against reanalysis directly. Unlike the pass-1 anchor it attributes changepoints, but at
-    # a coarser step floor, since reanalysis drift must not be read as a small turbine step. Pass 1 is
-    # pass 3's no-changepoint special case.
     if len(devices) < MIN_DEVICES_FOR_FARM_REFERENCE:
         logger.warning(
             "farm of %d device(s) is below MIN_DEVICES_FOR_FARM_REFERENCE=%d; northing against "
-            "reanalysis with changepoints (pass 3)",
+            "reanalysis with changepoints",
             len(devices),
             MIN_DEVICES_FOR_FARM_REFERENCE,
         )
         reanalysis_settings = against_reanalysis(settings)
-        pass_three = {
+        changepoints_v_reanalysis = {
             name: estimate_north_table(
                 index,
                 direction_deg[name],
@@ -1153,10 +1068,10 @@ def north_farm(
             )
             for name in devices
         }
-        return wake_nadir(pass_three)
+        return wake_nadir_shift(changepoints_v_reanalysis)
 
-    reference_neighbours = _pass_two_reference(
-        layout, devices=devices, neighbours=_CONSENSUS_NEIGHBOURS, min_devices=MIN_DEVICES_FOR_FARM_REFERENCE
+    reference_neighbours = _consensus_neighbours(
+        layout, devices=devices, neighbours=4, min_devices=MIN_DEVICES_FOR_FARM_REFERENCE
     )
     quorum = _farm_quorum(len(devices), floor=MIN_DEVICES_FOR_FARM_REFERENCE)
 
@@ -1172,16 +1087,16 @@ def north_farm(
     references = references_from(northed)
     if not any(np.isfinite(reference).any() for reference in references.values()):
         logger.warning("farm reference is empty; keeping the reanalysis-only north tables")
-        return wake_nadir(first_pass)
+        return wake_nadir_shift(reanalysis_anchor)
 
-    tables = _converged_pass_two(
+    tables = _changepoints_v_consensus(
         index,
         direction_deg=direction_deg,
         usable=usable,
-        first_pass=first_pass,
+        reanalysis_anchor=reanalysis_anchor,
         references=references,
         references_from=references_from,
         reference_neighbours=reference_neighbours,
         settings=settings,
     )
-    return wake_nadir(tables)
+    return wake_nadir_shift(tables)

@@ -131,7 +131,7 @@ def contiguous_order(layout: Layout) -> list[str]:
     """Turbines ordered so every prefix is a spatially connected cluster (as the degradation study).
 
     Seeded from the westernmost turbine, then repeatedly the turbine nearest to any already chosen,
-    so the first ``k`` names keep a wake pair alive for pass 4 even when ``k`` is small.
+    so the first ``k`` names keep a wake pair alive for wake-nadir-shift even when ``k`` is small.
     """
     east, _ = local_east_north(latitudes=layout.frame[LATITUDE_COL], longitudes=layout.frame[LONGITUDE_COL])
     names = list(layout.frame[NAME_COL])
@@ -147,16 +147,16 @@ def contiguous_order(layout: Layout) -> list[str]:
     return order
 
 
-def north(inputs: FarmInputs, *, layout: Layout | None, pass_four: bool = True) -> dict[str, pd.DataFrame]:
-    """Run ``north_farm`` as a user would: the layout given, and power and wind speed for pass 4."""
+def north(inputs: FarmInputs, *, layout: Layout | None, wake_nadir_shift: bool = True) -> dict[str, pd.DataFrame]:
+    """Run ``north_farm`` as a user would: the layout given, and power and wind speed for wake-nadir-shift."""
     return north_farm(
         inputs.index,
         direction_deg=inputs.direction,
         usable=inputs.usable,
         reanalysis_deg=inputs.reference,
         layout=layout,
-        power=inputs.power if pass_four else None,
-        wind_speed=inputs.wind_speed if pass_four else None,
+        power=inputs.power if wake_nadir_shift else None,
+        wind_speed=inputs.wind_speed if wake_nadir_shift else None,
     )
 
 

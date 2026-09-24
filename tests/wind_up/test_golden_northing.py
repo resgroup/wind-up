@@ -1,7 +1,7 @@
 """Validity guard on the recorded golden northing tables (Hill of Towie, Kelmarsh, Penmanshiel).
 
 ``golden_northing_corrections_<farm>.yaml`` is each farm's v1 pipeline best-estimate northing
-corrections (passes 1-2 plus the pass-4 wake-nadir nudge), in the same flat ``['Txx', <timestamp>,
+corrections (every step, the wake-nadir shift included), in the same flat ``['Txx', <timestamp>,
 <offset>]`` layout as v0's ``optimized_northing_corrections.yaml``. They are recorded by
 ``benchmarking.baselines.study_wake_nadir_golden`` and are the reference small-N / subset / low-data
 challenges are scored against. Judging them against v0 or physically is a review job the driver logs;

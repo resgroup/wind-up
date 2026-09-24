@@ -14,8 +14,6 @@ from wind_up.circular_math import circ_diff, circ_median
 from wind_up.layout import Layout
 from wind_up.northing import (
     DEFAULT_NORTHING,
-    REANALYSIS_MIN_SEGMENT,
-    REANALYSIS_MIN_STEP_DEG,
     NorthingSettings,
     _neighbours_from_layout,
     _sector_signature,
@@ -323,9 +321,9 @@ class TestNorthFarm:
         return reported, reference
 
     def test_two_pass_recovers_per_device_steps(self) -> None:
-        """Pass 2 recovers each device's own step and leaves clean devices alone.
+        """Changepoints-v-consensus recovers each device's own step and leaves clean devices alone.
 
-        Pass 1 is a constant bulk alignment, so a stepping device's step is still present when the
+        Reanalysis-anchor is a constant bulk alignment, so a stepping device's step is still present when the
         farm consensus is built. The consensus is a circular median, so enough clean devices
         outvote the one that steps and the median holds; here T03's +35 step must not leak into the
         clean devices. A tiny farm cannot give the median that quorum -- with only a handful of
@@ -361,10 +359,10 @@ class TestNorthFarm:
             assert len(tables[name]) == len(steps), name
 
     def test_a_tiny_farm_leaks_a_stepping_device_into_the_clean_ones(self) -> None:
-        """The documented cost of a constant pass-1 anchor on a farm too small to give the median a
+        """The documented cost of a constant reanalysis anchor on a farm too small to give the median a
         quorum.
 
-        Pass 1 no longer removes a large step before the consensus is built, so on a four-device
+        Reanalysis-anchor no longer removes a large step before the consensus is built, so on a four-device
         farm T03's +35 step shifts the circular median a few degrees at the step, and every clean
         device -- measured against that moved consensus -- is handed a matching spurious step. This
         is why northing wants a real farm and why :func:`north_farm` takes a ``layout``
@@ -397,7 +395,7 @@ class TestNorthFarm:
         assert 0.0 < leaked < 10.0, f"the leak is small, not T03's full 35 deg: {leaked:.1f}"
 
     def test_recovers_a_farm_that_is_uniformly_180_degrees_wrong(self) -> None:
-        """The reanalysis pass is load-bearing: a common-mode offset is invisible to pass 2 alone.
+        """The reanalysis anchor is load-bearing: a common-mode offset is invisible to changepoints-v-consensus alone.
 
         Every device agrees with every other, so a farm-relative method sees a perfectly
         consistent farm and reports nothing wrong.
@@ -420,8 +418,8 @@ class TestNorthFarm:
             # and the recovered offset really is the 180 that was injected
             assert circ_diff(tables[name]["north_offset"].iloc[0], 180.0) == pytest.approx(0.0, abs=2.0)
 
-    def test_pass_two_beats_reanalysis_alone(self) -> None:
-        """The farm reference is less noisy than reanalysis, so two passes beat one."""
+    def test_changepoints_v_consensus_beats_reanalysis_alone(self) -> None:
+        """The farm reference is less noisy than reanalysis, so northing against it beats reanalysis alone."""
         index = _index()
         offsets = {name: [("2017-01-01", 20.0)] for name in ("T01", "T02", "T03", "T04")}
         reported, reference = self._farm(index, offsets)
@@ -447,13 +445,13 @@ class TestNorthFarm:
         reason="a device is part of the consensus it is northed against; see findings_campaigns.md CF7",
         strict=True,
     )
-    def test_pass_two_refines_every_device_on_an_odd_sized_farm(self) -> None:
+    def test_changepoints_v_consensus_refines_every_device_on_an_odd_sized_farm(self) -> None:
         """A device may not be part of the consensus it is northed against.
 
         With an odd device count the per-timestamp median *is* one of the devices, so a device
         that is its own reference scores an exact ``-offset`` residual on those rows. Those rows
         are algebra rather than measurement, and they mass on one value at the centre of the
-        distribution, which pins the median to whatever pass 1 already said.
+        distribution, which pins the median to whatever reanalysis-anchor already said.
         """
         index = _index()
         names = ("T01", "T02", "T03", "T04", "T05")
@@ -469,19 +467,22 @@ class TestNorthFarm:
         for name in names:
             one = estimate_north_table(index, reported[name], reference_deg=reanalysis, usable=usable[name])
             first, second = one["north_offset"].iloc[0], two_pass[name]["north_offset"].iloc[0]
-            assert second != pytest.approx(first, abs=1e-9), f"{name}: pass 2 merely repeated pass 1"
+            assert second != pytest.approx(first, abs=1e-9), (
+                f"{name}: changepoints-v-consensus merely repeated reanalysis-anchor"
+            )
             one_pass_errors.append(abs(circ_diff(first, 20.0)))
             two_pass_errors.append(abs(circ_diff(second, 20.0)))
-        # a device pass 1 happened to get right can still move slightly the wrong way; the farm is
+        # a device reanalysis-anchor happened to get right can still move slightly the wrong way; the farm is
         # what has to improve
         assert np.mean(two_pass_errors) < np.mean(one_pass_errors)
 
     def test_a_lone_turbine_norths_against_reanalysis_with_changepoints(self) -> None:
         """Below the farm-consensus floor, a device is northed against reanalysis with changepoints.
 
-        A single device cannot form a farm consensus, so pass 2 cannot run. Pass 3 takes over: it
-        norths the device against reanalysis and still attributes its changepoints (at the coarser
-        reanalysis floor), rather than falling back to a constant whole-record anchor.
+        A single device cannot form a farm consensus, so changepoints-v-consensus cannot run.
+        Changepoints-v-reanalysis takes over: it norths the device against reanalysis and still
+        attributes its changepoints (at the coarser reanalysis floor), rather than falling back to a
+        constant whole-record anchor.
         """
         index = _index(days=500)
         steps = [("2017-01-01", 5.0), ("2017-07-01", 30.0)]
@@ -496,13 +497,13 @@ class TestNorthFarm:
         )
 
         table = tables["T01"]
-        assert len(table) == 2, f"pass 3 did not find the lone turbine's step: {table}"
+        assert len(table) == 2, f"changepoints-v-reanalysis did not find the lone turbine's step: {table}"
         assert abs(table["timestamp"].iloc[1] - pd.Timestamp("2017-07-01", tz="UTC")) <= pd.Timedelta(days=2)
         assert circ_diff(table["north_offset"].iloc[0], 5.0) == pytest.approx(0.0, abs=1.5)
         assert circ_diff(table["north_offset"].iloc[1], 30.0) == pytest.approx(0.0, abs=1.5)
 
     def test_a_two_device_farm_below_the_floor_norths_each_against_reanalysis(self) -> None:
-        """Two devices are still below the consensus floor, so each is northed by pass 3, not pass 1."""
+        """Two devices are below the consensus floor, so each is northed by changepoints-v-reanalysis."""
         index = _index(days=500)
         reported = {}
         reference = _true_direction(index)
@@ -521,21 +522,23 @@ class TestNorthFarm:
             layout=None,
         )
 
-        assert len(tables["T01"]) == 2, f"pass 3 missed T01's step: {tables['T01']}"
-        assert len(tables["T02"]) == 1, f"pass 3 invented a step for the clean device: {tables['T02']}"
+        assert len(tables["T01"]) == 2, f"changepoints-v-reanalysis missed T01's step: {tables['T01']}"
+        assert len(tables["T02"]) == 1, (
+            f"changepoints-v-reanalysis invented a step for the clean device: {tables['T02']}"
+        )
         for name, series in reported.items():
             corrected = apply_north_table(index, series, north_table=tables[name])
             assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
 
-    def test_pass_three_uses_the_coarser_reanalysis_step_floor(self) -> None:
+    def test_changepoints_v_reanalysis_uses_the_coarser_reanalysis_step_floor(self) -> None:
         """A step below the reanalysis floor is left alone, so reanalysis drift is not read as a step.
 
         The default estimator would attribute a 6 deg step, but against reanalysis a step that small
-        is as likely to be drift in the reference as a real turbine move, so pass 3's coarser floor
+        is as likely to be drift in the reference as a real turbine move, so changepoints-v-reanalysis's coarser floor
         must not report it.
         """
         index = _index(days=500)
-        steps = [("2017-01-01", 4.0), ("2017-07-01", 10.0)]  # a 6 deg step, under REANALYSIS_MIN_STEP_DEG
+        steps = [("2017-01-01", 4.0), ("2017-07-01", 10.0)]  # a 6 deg step, under the reanalysis step floor
         reported, reference = _reported(index, steps=steps)
 
         tables = north_farm(
@@ -546,7 +549,9 @@ class TestNorthFarm:
             layout=None,
         )
 
-        assert len(tables["T01"]) == 1, f"pass 3 attributed a step below the reanalysis floor: {tables['T01']}"
+        assert len(tables["T01"]) == 1, (
+            f"changepoints-v-reanalysis attributed a step below the reanalysis floor: {tables['T01']}"
+        )
 
     def test_a_single_device_with_a_few_days_degrades_without_raising(self) -> None:
         """Graceful degradation: the smallest, shortest input still returns a valid table, never raises."""
@@ -575,8 +580,8 @@ class TestAgainstReanalysis:
         """
         tuned = against_reanalysis(replace(DEFAULT_NORTHING, min_step_deg=3.0, min_segment=pd.Timedelta(days=7)))
 
-        assert tuned.min_step_deg >= REANALYSIS_MIN_STEP_DEG
-        assert tuned.min_segment >= REANALYSIS_MIN_SEGMENT
+        assert tuned.min_step_deg == 10.0
+        assert tuned.min_segment == pd.Timedelta(days=30)
 
     def test_leaves_already_stricter_settings_alone(self) -> None:
         """A caller who already asked for stricter bounds keeps them."""
@@ -878,7 +883,7 @@ class TestFarmReferenceComposition:
 
 
 class TestFarmNeedsAnAnchor:
-    """Pass 2 alone is blind to a farm that is uniformly wrong, so the anchor must exist."""
+    """Changepoints-v-consensus alone is blind to a farm that is uniformly wrong, so the anchor must exist."""
 
     @staticmethod
     def _farm(index: pd.DatetimeIndex) -> tuple[dict[str, np.ndarray], np.ndarray]:
@@ -971,7 +976,7 @@ class TestNorthTableYaml:
         ]
 
     def test_offsets_are_wrapped_into_minus_180_to_180(self, tmp_path: Path) -> None:
-        """A pass-1 anchor can land just outside [-180, 180); the written table wraps it canonically."""
+        """A reanalysis anchor can land just outside [-180, 180); the written table wraps it canonically."""
         tables = {
             "T01": pd.DataFrame(
                 {"timestamp": pd.DatetimeIndex(["2016-01-01"], tz="UTC"), "north_offset": [181.5704048704585]}
@@ -1011,7 +1016,7 @@ class TestSectorSignature:
         assert signature[150] == pytest.approx(-8.0)
 
 
-# --- layout: pass 2's consensus can be a spatial neighbour set, not the whole farm ---
+# --- layout: changepoints-v-consensus's reference can be a spatial neighbour set, not the whole farm ---
 
 
 def _tracking(
@@ -1057,10 +1062,10 @@ def test_a_layout_norths_each_device_against_its_nearest_neighbours() -> None:
     T01 is clean but sits among N1-N3, which all step +40 mid-record. Against the whole farm the
     four clean devices out-vote the steppers, so T01 stays flat; against only its nearest turbines --
     N1-N3 step and just one clean device (O1) joins them -- the stepping majority carries the
-    consensus, and T01, measured against it, is handed a spurious step. That difference proves pass 2
+    consensus, and T01, measured against it, is handed a spurious step. That difference proves changepoints-v-consensus
     used the nearest-neighbour consensus, not the farm median.
 
-    Repeating pass 2 removes part of the steppers' move from T01's reference -- each stepper's own
+    Repeating changepoints-v-consensus removes part of the steppers' move from T01's reference -- each stepper's own
     neighbourhood is half clean, so it is handed only part of its step -- which is why the spurious
     step is sizeable but short of the full 40 deg. A neighbourhood that mostly steps together is
     beyond what any consensus can separate.
@@ -1090,7 +1095,7 @@ def test_a_farm_below_the_floor_is_anchored_not_rejected() -> None:
     """A one- or two-device farm no longer raises: it is anchored to reanalysis and returned.
 
     Below ``MIN_DEVICES_FOR_FARM_REFERENCE`` there is no farm consensus to form, so ``north_farm``
-    falls back to the pass-1 constant reanalysis anchor rather than refusing. A +25 deg frame offset
+    falls back to the constant reanalysis anchor rather than refusing. A +25 deg frame offset
     on the pair must still be removed.
     """
     index = _index(days=120)
@@ -1111,7 +1116,7 @@ def test_a_farm_below_the_floor_is_anchored_not_rejected() -> None:
 
 
 def test_power_missing_a_device_is_rejected() -> None:
-    """``power`` feeds the pass-4 wake nudge, so an entry for every device is required when given."""
+    """``power`` feeds the wake-nadir shift, so an entry for every device is required when given."""
     index = _index(days=30)
     ref = _true_direction(index, seed=4)
     flat = [("2017-01-01", 0.0)]
@@ -1151,10 +1156,10 @@ def test_a_layout_keeps_the_anchor_when_a_devices_consensus_is_empty() -> None:
     """A device whose nearest neighbours are all unusable has an all-NaN reference.
 
     The whole-farm bail-out does not fire -- the far cluster's devices reference each other and are
-    finite -- so pass 2 would otherwise overwrite this device with a zero-offset table and throw away
-    its pass-1 anchor. Its constant reanalysis anchor must be kept instead. X carries a +25 deg frame
+    finite -- so changepoints-v-consensus would otherwise overwrite this device with a zero-offset table and throw away
+    its reanalysis anchor. Its constant reanalysis anchor must be kept instead. X carries a +25 deg frame
     offset that only the anchor removes; X sits among U1-U3, which are all unusable, so its
-    nearest-neighbour reference is empty and a broken pass 2 would leave X's raw +25 deg in place.
+    nearest-neighbour reference is empty and a broken changepoints-v-consensus would leave X's raw +25 deg in place.
     """
     index = _index()
     ref = _true_direction(index, seed=7)
@@ -1204,8 +1209,8 @@ def test_a_layout_keeps_the_anchor_when_the_consensus_never_overlaps_the_device(
 
     X reports only in the first half of the record, its neighbours only in the second. The neighbour
     consensus is therefore finite (so the whole-farm check and a "finite anywhere" test both pass),
-    but never where X can be northed against it, so pass 2's residual is all-NaN. X's +25 deg pass-1
-    anchor must be kept rather than replaced by a zero-offset table.
+    but never where X can be northed against it, so changepoints-v-consensus's residual is all-NaN.
+    X's +25 deg reanalysis anchor must be kept rather than replaced by a zero-offset table.
     """
     index = _index()
     ref = _true_direction(index, seed=8)
@@ -1245,7 +1250,7 @@ _LINE_COORDS = {
 }
 
 
-def test_pass_two_neighbours_are_ranked_by_geodesic_distance() -> None:
+def test_changepoints_v_consensus_neighbours_are_ranked_by_geodesic_distance() -> None:
     nn = _neighbours_from_layout(_layout(_LINE_COORDS), devices=sorted(_LINE_COORDS), k=2)
     assert nn["A"] == ("B", "C")  # distances 1, 3, 7
     assert nn["B"] == ("A", "C")  # distances 1, 2, 6
@@ -1253,13 +1258,13 @@ def test_pass_two_neighbours_are_ranked_by_geodesic_distance() -> None:
     assert nn["D"] == ("C", "B")  # distances 4, 6, 7
 
 
-def test_pass_two_neighbours_exclude_the_device_itself() -> None:
+def test_changepoints_v_consensus_neighbours_exclude_the_device_itself() -> None:
     nn = _neighbours_from_layout(_layout(_LINE_COORDS), devices=sorted(_LINE_COORDS), k=3)
     for name, neighbours in nn.items():
         assert name not in neighbours
 
 
-def test_pass_two_neighbours_cap_k_at_the_devices_available() -> None:
+def test_changepoints_v_consensus_neighbours_cap_k_at_the_devices_available() -> None:
     coords = {"A": (55.0, 0.0), "B": (55.0, 0.01), "C": (55.0, 0.03)}
     nn = _neighbours_from_layout(_layout(coords), devices=sorted(coords), k=10)
     assert nn["A"] == ("B", "C")  # only two others exist, so k is capped
@@ -1267,7 +1272,7 @@ def test_pass_two_neighbours_cap_k_at_the_devices_available() -> None:
 
 
 class TestConsensusConvergence:
-    """Pass 2 repeats until a round changes nothing; ``_table_change`` is what "nothing" means."""
+    """Changepoints-v-consensus repeats until a round changes nothing; ``_table_change`` is what "nothing" means."""
 
     @staticmethod
     def _table(rows: list[tuple[str, float]]) -> pd.DataFrame:
@@ -1286,7 +1291,7 @@ class TestConsensusConvergence:
         assert _table_change(before, after) == pytest.approx(0.2)
 
     def test_a_changepoint_jittered_within_the_search_grid_has_not_moved(self) -> None:
-        """``refine`` places a step at native resolution, so a round can nudge it by a few rows."""
+        """``refine`` places a step at native resolution, so a round can shift it by a few rows."""
         before = self._table([("2017-01-01", 10.0), ("2017-06-01 12:00", 40.0)])
         after = self._table([("2017-01-01", 10.0), ("2017-06-01 14:30", 40.3)])
         assert _table_change(before, after) == pytest.approx(0.3)

@@ -75,9 +75,9 @@ def _waked_scada(
 ) -> tuple[pd.DataFrame, pd.DatetimeIndex, np.ndarray, Layout]:
     """Two turbines where A wakes B; both report the true wind carrying a constant ``residual_deg``.
 
-    B's power and wind speed dip when the true wind sits at the geometric nadir, so pass 4 can read
-    the residual back off the wake and null it. Reanalysis equals the reported direction, so pass 1
-    leaves the residual in place and only pass 4 can remove it.
+    B's power and wind speed dip when the true wind sits at the geometric nadir, so wake-nadir-shift can read
+    the residual back off the wake and null it. Reanalysis equals the reported direction, so reanalysis-anchor
+    leaves the residual in place and only wake-nadir-shift can remove it.
     """
     layout = Layout.from_frame(
         pd.DataFrame(
@@ -109,10 +109,10 @@ def _waked_scada(
     return pd.concat(frames), index, true_a, layout
 
 
-class TestPassFourInTheHarness:
-    """The harness builds power, wind speed and a layout, so pass 4 runs on discovery."""
+class TestWakeNadirShiftInTheHarness:
+    """The harness builds power, wind speed and a layout, so wake-nadir-shift runs on discovery."""
 
-    def test_pass_four_recovers_an_injected_offset(self) -> None:
+    def test_wake_nadir_shift_recovers_an_injected_offset(self) -> None:
         residual = 6.0
         scada, index, true_a, layout = _waked_scada(residual_deg=residual)
         era5 = pd.Series((true_a + residual) % 360.0, index=index)
@@ -126,7 +126,7 @@ class TestPassFourInTheHarness:
 
         # No wake geometry: A's northed direction keeps the injected residual.
         assert circ_diff(_northed(without_geo, "A"), true_a).mean() == pytest.approx(residual, abs=2.0)
-        # Pass 4 reads the residual off the wake and removes it.
+        # Wake-nadir-shift reads the residual off the wake and removes it.
         assert circ_diff(_northed(with_geo, "A"), true_a).mean() == pytest.approx(0.0, abs=2.0)
 
     def test_writes_the_wake_nadir_bubble_plot(self, tmp_path: Path) -> None:
@@ -146,7 +146,7 @@ class TestPassFourInTheHarness:
         assert (tmp_path / "wake_nadir_bubble.png").is_file()
 
     def test_writing_the_plots_norths_the_farm_only_once(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The bubble plot reuses the pass-4 corrections rather than northing the farm a second time."""
+        """The bubble plot reuses the wake-nadir-shift corrections rather than northing the farm a second time."""
         scada, index, true_a, layout = _waked_scada(residual_deg=6.0)
         era5 = pd.Series((true_a + 6.0) % 360.0, index=index)
         calls = []

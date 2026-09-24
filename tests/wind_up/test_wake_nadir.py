@@ -1,4 +1,4 @@
-"""Tests for the pass-4 wake-nadir absolute nudge."""
+"""Tests for the wake-nadir shift."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 
 from wind_up.circular_math import circ_diff
 from wind_up.layout import Layout
-from wind_up.northing import add_wake_nadir, apply_north_table, north_farm
+from wind_up.northing import add_wake_nadir_shift, apply_north_table, north_farm
 from wind_up.wake_nadir import _aggregate, wake_nadir_offsets
 
 TIMEBASE_S = 600
@@ -136,12 +136,12 @@ def test_turbines_beyond_the_cutoff_get_no_correction() -> None:
     assert offsets == {"A": 0.0, "B": 0.0}
 
 
-def test_north_farm_applies_the_wake_nudge_when_given_layout_and_power() -> None:
-    """north_farm runs pass 4 when a layout and power are supplied, shifting each device's table."""
+def test_north_farm_applies_the_wake_nadir_shift_when_given_layout_and_power() -> None:
+    """north_farm runs wake-nadir-shift when a layout and power are supplied, shifting each device's table."""
     layout = _pair_layout()
     residual = 6.0
     index, northed, power, wind_speed, usable, _ = _waked_pair(layout, residual_deg=residual)
-    reanalysis = northed["A"]  # anchor pass 1 to the reported signal so it contributes ~zero offset
+    reanalysis = northed["A"]  # reanalysis matches the reported signal, so the anchor contributes ~zero offset
 
     without = north_farm(
         index, direction_deg=northed, usable=usable, reanalysis_deg=reanalysis, layout=layout, power=None
@@ -156,32 +156,32 @@ def test_north_farm_applies_the_wake_nudge_when_given_layout_and_power() -> None
         wind_speed=wind_speed,
     )
 
-    pre_nudge = {name: apply_north_table(index, northed[name], north_table=without[name]) for name in northed}
+    pre_shift = {name: apply_north_table(index, northed[name], north_table=without[name]) for name in northed}
     expected = wake_nadir_offsets(
-        layout, index=index, northed_direction=pre_nudge, power=power, wind_speed=wind_speed, usable=usable
+        layout, index=index, northed_direction=pre_shift, power=power, wind_speed=wind_speed, usable=usable
     )
-    assert abs(expected["A"]) > 3.0, "the fixture should produce a real nudge to detect"
+    assert abs(expected["A"]) > 3.0, "the fixture should produce a real shift to detect"
     for name in northed:
         shift = circ_diff(with_p4[name]["north_offset"].to_numpy(), without[name]["north_offset"].to_numpy())
         assert shift == pytest.approx(expected[name], abs=1e-6), name
 
 
-def test_add_wake_nadir_returns_the_corrections_it_applied() -> None:
-    """The pass-4 step hands back the per-turbine correction it added, so a caller can report it."""
+def test_add_wake_nadir_shift_returns_the_corrections_it_applied() -> None:
+    """The wake-nadir-shift step hands back the per-turbine correction it added, so a caller can report it."""
     layout = _pair_layout()
     index, northed, power, wind_speed, usable, _ = _waked_pair(layout, residual_deg=6.0)
     tables = north_farm(index, direction_deg=northed, usable=usable, reanalysis_deg=northed["A"], layout=layout)
 
-    nudged, corrections = add_wake_nadir(
+    shifted, corrections = add_wake_nadir_shift(
         tables, layout=layout, index=index, direction_deg=northed, power=power, wind_speed=wind_speed, usable=usable
     )
 
-    pre_nudge = {name: apply_north_table(index, northed[name], north_table=tables[name]) for name in northed}
+    pre_shift = {name: apply_north_table(index, northed[name], north_table=tables[name]) for name in northed}
     assert corrections == wake_nadir_offsets(
-        layout, index=index, northed_direction=pre_nudge, power=power, wind_speed=wind_speed, usable=usable
+        layout, index=index, northed_direction=pre_shift, power=power, wind_speed=wind_speed, usable=usable
     )
     for name in northed:
-        shift = circ_diff(nudged[name]["north_offset"].to_numpy(), tables[name]["north_offset"].to_numpy())
+        shift = circ_diff(shifted[name]["north_offset"].to_numpy(), tables[name]["north_offset"].to_numpy())
         assert shift == pytest.approx(corrections[name], abs=1e-9), name
 
 

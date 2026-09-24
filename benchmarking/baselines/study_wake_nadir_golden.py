@@ -1,16 +1,16 @@
 """Golden northing corrections for the open SCADA farms, with wake-nadir bubble-plot diagnostics.
 
 For each farm (Hill of Towie, Kelmarsh, Penmanshiel) this runs the full v1 northing pipeline
-(passes 1-2 then the pass-4 wake-nadir nudge) on the whole farm and records the result as the
+(every step, the wake-nadir shift included) on the whole farm and records the result as the
 **golden table** -- the per-turbine, per-changepoint northing corrections, in the same YAML layout
 as v0's ``optimized_northing_corrections.yaml`` (a flat list of ``['Txx', <timestamp>, <offset deg>]``
 rows). It is the best-available absolute answer, and what small-N / subset / low-data challenges are
 later scored against.
 
-It also renders a **bubble plot** of the pass-4 correction per farm -- the layout with each turbine
+It also renders a **bubble plot** of the wake-nadir-shift correction per farm -- the layout with each turbine
 coloured by, sized by and labelled with its wake-nadir correction -- so a human can eyeball whether
-that part is plausible. Pass-4 correctness is proven on synthetic ground truth (the recovery test);
-on real data there is no ground-truth absolute northing, so the pass-4 checks here are plausibility
+that part is plausible. Wake-nadir-shift correctness is proven on synthetic ground truth (the recovery test);
+on real data there is no ground-truth absolute northing, so the wake-nadir-shift checks here are plausibility
 ones (magnitude, spatial smoothness); comparing the golden table to v0's is a review job.
 
 Run it (reads the cached SCADA; ERA5 is fetched per site and cached)::
@@ -201,10 +201,10 @@ def greenbyte_inputs(
 
 
 def golden_tables(layout: Layout, inputs: dict) -> tuple[dict[str, pd.DataFrame], dict[str, float]]:
-    """Return the golden north tables (full pipeline) and the pass-4 correction per turbine.
+    """Return the golden north tables (full pipeline) and the wake-nadir-shift correction per turbine.
 
-    Norths the farm twice on the same inputs -- without pass 4 and with it -- so the golden tables are
-    the pass-4-included result and the correction is the shift pass 4 added to each turbine.
+    Norths the farm twice on the same inputs -- without wake-nadir-shift and with it -- so the golden tables are
+    the wake-nadir-shift-included result and the correction is the shift it added to each turbine.
     """
     common = {
         "direction_deg": inputs["direction"],
@@ -213,11 +213,11 @@ def golden_tables(layout: Layout, inputs: dict) -> tuple[dict[str, pd.DataFrame]
         "layout": layout,
     }
     without = north_farm(inputs["index"], **common)
-    with_pass4 = north_farm(inputs["index"], power=inputs["power"], wind_speed=inputs["wind_speed"], **common)
+    with_shift = north_farm(inputs["index"], power=inputs["power"], wind_speed=inputs["wind_speed"], **common)
     deltas = {
-        t: float(circ_diff(with_pass4[t]["north_offset"].iloc[0], without[t]["north_offset"].iloc[0])) for t in without
+        t: float(circ_diff(with_shift[t]["north_offset"].iloc[0], without[t]["north_offset"].iloc[0])) for t in without
     }
-    return with_pass4, deltas
+    return with_shift, deltas
 
 
 def _layout_xy(layout: Layout) -> dict[str, tuple[float, float]]:
@@ -232,7 +232,7 @@ COLOUR_LIMIT_DEG = 10.0
 
 
 def bubble_plot(layout: Layout, deltas: dict[str, float], *, title: str, save_path: Path) -> None:
-    """Render the pass-4 wake-nadir correction across a farm layout, one bubble per turbine."""
+    """Render the wake-nadir shift across a farm layout, one bubble per turbine."""
     names = list(layout.frame[NAME_COL])
     xy = _layout_xy(layout)
     xs = [xy[t][0] for t in names]
@@ -253,10 +253,8 @@ def bubble_plot(layout: Layout, deltas: dict[str, float], *, title: str, save_pa
     ax.set_ylabel("Northing [m]")
     ax.grid(visible=True, alpha=0.25)
     cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.02)
-    cbar.set_label("pass-4 wake-nadir correction [deg]")
-    ax.set_title(
-        f"{title} — pass-4 wake-nadir correction\nmax |Δ| {np.abs(vals).max():.1f}°, mean {np.abs(vals).mean():.1f}°"
-    )
+    cbar.set_label("wake-nadir shift [deg]")
+    ax.set_title(f"{title} — wake-nadir shift\nmax |Δ| {np.abs(vals).max():.1f}°, mean {np.abs(vals).mean():.1f}°")
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=130, bbox_inches="tight")
     plt.close(fig)
@@ -278,11 +276,11 @@ def _neighbour_spread(layout: Layout, deltas: dict[str, float]) -> list[float]:
 
 
 def plausibility(layout: Layout, deltas: dict[str, float]) -> None:
-    """Log the pass-4 magnitude and neighbour smoothness for a farm."""
+    """Log the wake-nadir-shift magnitude and neighbour smoothness for a farm."""
     mags = np.array([abs(v) for v in deltas.values()])
     spreads = np.array(_neighbour_spread(layout, deltas))
     logger.info(
-        "  pass-4 |delta|: max %.2f mean %.2f ; neighbour spread max %.2f mean %.2f",
+        "  wake-nadir-shift |delta|: max %.2f mean %.2f ; neighbour spread max %.2f mean %.2f",
         mags.max(),
         mags.mean(),
         spreads.max(),

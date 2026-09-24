@@ -1,14 +1,4 @@
-"""Pass-4 wake-nadir absolute nudge for :func:`wind_up.northing.north_farm`.
-
-A turbine's wake lands on a downstream turbine at one wind-from direction fixed by geometry. The
-downstream deficit, plotted against the upstream turbine's northed direction, dips at that direction;
-where the measured dip sits away from the geometric nadir is the upstream turbine's residual northing
-error. :func:`wake_nadir_offsets` measures that per turbine and returns one absolute correction each,
-to add on top of that turbine's changepoint table.
-
-The correction is one number per turbine. A turbine with no resolvable dip inherits the circular
-median of its nearest resolved neighbours; one with neither gets zero.
-"""
+"""The wake-nadir shift step of :func:`wind_up.northing.north_farm`, described in ``docs/northing.md``."""
 
 from __future__ import annotations
 
@@ -31,20 +21,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Wake reaches this many rotor diameters downstream.
-WAKE_CUTOFF_DIAMETERS = 10.0
-# Half-width of the direction sector searched around the geometric nadir.
-SECTOR_HALF_WIDTH_DEG = 15.0
-# A 1-degree bin needs this many rows to contribute (about half an hour of 10-minute data).
+# Rows a 1-degree bin needs to contribute.
 MIN_BIN_ROWS = 3
-# The sector needs this many populated 1-degree bins to constrain the dip.
-MIN_POPULATED_BINS = 8
-# The dip must fall at least this far below the sector's out-of-wake level.
-MIN_DIP_DEPTH = 0.02
-# A turbine with no dip of its own inherits from up to this many nearest resolved turbines.
-MAX_INHERIT_NEIGHBOURS = 4
-# Half-window of bins each side of the minimum used for the quadratic fit.
-_FIT_HALF_WINDOW = 5
 
 
 def wake_nadir_offsets(
@@ -55,23 +33,18 @@ def wake_nadir_offsets(
     power: Mapping[str, npt.NDArray[np.float64]],
     wind_speed: Mapping[str, npt.NDArray[np.float64]] | None = None,
     usable: Mapping[str, npt.NDArray[np.bool_]] | None = None,
-    cutoff_diameters: float = WAKE_CUTOFF_DIAMETERS,
-    sector_half_width_deg: float = SECTOR_HALF_WIDTH_DEG,
+    cutoff_diameters: float = 10.0,
+    sector_half_width_deg: float = 15.0,
 ) -> dict[str, float]:
-    """Return one absolute northing correction per turbine, from wake-nadir geometry.
-
-    For each directed pair (upstream wakes downstream) within ``cutoff_diameters``, the downstream
-    deficit versus the upstream turbine's northed direction dips at the geometric nadir; the offset
-    of the measured dip is the upstream turbine's residual. Each turbine's pairs are combined by the
-    circular median of their corrections, which resists the terrain-driven deflection that biases an
-    individual pair. A turbine with no resolvable pair inherits the circular median of up to
-    :data:`MAX_INHERIT_NEIGHBOURS` nearest resolved turbines, or zero if none.
+    """Return one northing correction per turbine, to add to its offsets, from where its wakes land.
 
     :param northed_direction: device name to its northed direction (deg) on ``index``
     :param power: device name to its power on ``index``
     :param wind_speed: device name to its nacelle wind speed on ``index``; combined with power where
         present and trustworthy, else power alone is used
     :param usable: device name to the rows valid for northing it; defaults to all rows
+    :param cutoff_diameters: how far downstream, in the downstream turbine's rotor diameters, a pair counts
+    :param sector_half_width_deg: half-width of the direction sector searched around each pair's bearing
     """
     devices = sorted(northed_direction)
     masks = usable if usable is not None else {d: np.ones(len(index), dtype=bool) for d in devices}
@@ -131,16 +104,17 @@ def _pair_nadir(
     half_width: float,
 ) -> float | None:
     """Return the correction (deg, to add to the offset) for one pair, or ``None`` if the dip is not resolvable."""
+    min_populated_bins = 8
     offset = np.asarray(circ_diff(northed_up, np.full(len(northed_up), beta)), dtype=float)
     rows = keep & np.isfinite(offset) & np.isfinite(power_up) & np.isfinite(power_down) & (np.abs(offset) <= half_width)
-    if int(rows.sum()) < MIN_POPULATED_BINS * MIN_BIN_ROWS:
+    if int(rows.sum()) < min_populated_bins * MIN_BIN_ROWS:
         return None
 
     n_bins = 2 * math.ceil(half_width)
     bin_of = np.clip((offset[rows] + half_width).astype(int), 0, n_bins - 1)
     counts = np.bincount(bin_of, minlength=n_bins)
     populated = counts >= MIN_BIN_ROWS
-    if int(populated.sum()) < MIN_POPULATED_BINS:
+    if int(populated.sum()) < min_populated_bins:
         return None
 
     curve = _deficit_curve(
@@ -169,13 +143,7 @@ def _deficit_curve(
     ws_down: npt.NDArray[np.float64] | None,
     populated: npt.NDArray[np.bool_],
 ) -> npt.NDArray[np.float64]:
-    """Return the combined normalised deficit per bin: mean of the power and wind-speed ratios.
-
-    Each signal is a ratio of the downstream to the upstream bin mean, so the ambient resource
-    cancels; each ratio is then divided by its out-of-wake level so the two combine on one scale.
-    Unpopulated bins are NaN. Wind-speed rows missing either side are dropped from that curve alone,
-    and a bin they leave too thin is NaN in it.
-    """
+    """Return the normalised deficit per bin, the mean of the power and wind-speed ratio curves; NaN if unpopulated."""
     curves = [_ratio_curve(bin_of=bin_of, n_bins=n_bins, down=power_down, up=power_up, populated=populated)]
     if ws_up is not None and ws_down is not None:
         finite = np.isfinite(ws_up) & np.isfinite(ws_down)
@@ -218,11 +186,9 @@ def _locate_dip(
     populated: npt.NDArray[np.bool_],
     half_width: float,
 ) -> float | None:
-    """Locate the dip by a weighted quadratic fit near the minimum; return its view-angle offset (deg).
-
-    Rejects a curve whose minimum sits at the sector edge (an unbracketed dip, or a central peak),
-    or whose best fit is not convex or not deep enough.
-    """
+    """Return the dip's offset (deg) from a weighted quadratic fit near the minimum, or ``None`` if unresolvable."""
+    fit_half_window = 5
+    min_dip_depth = 0.02
     filled = np.where(populated, curve, np.nan)
     if not np.isfinite(filled).any():
         return None
@@ -231,10 +197,10 @@ def _locate_dip(
     if min_bin <= order[0] or min_bin >= order[-1]:
         return None
 
-    lo, hi = max(order[0], min_bin - _FIT_HALF_WINDOW), min(order[-1], min_bin + _FIT_HALF_WINDOW)
+    lo, hi = max(order[0], min_bin - fit_half_window), min(order[-1], min_bin + fit_half_window)
     window = np.arange(lo, hi + 1)
     window = window[populated[window]]
-    if len(window) < 3:  # noqa: PLR2004 - a parabola needs three points
+    if len(window) < 3:  # noqa: PLR2004
         return None
 
     centres = window - half_width + 0.5
@@ -245,7 +211,7 @@ def _locate_dip(
         return None
     vertex, a, b, c = convex
     depth = float(np.nanmax(curve[populated]) - (c - b * b / (4 * a)))
-    if depth < MIN_DIP_DEPTH:
+    if depth < min_dip_depth:
         return None
     return float(vertex)
 
@@ -264,12 +230,7 @@ def _convex_vertex(
 
 
 def _aggregate(pairs: list[float]) -> float:
-    """Combine a turbine's pairs by the circular median of their view-angle corrections.
-
-    Each pair mixes the wake with a terrain-driven deflection that biases it by several degrees, and
-    that bias is not a measurement variance the fit can report. The median lets a majority of
-    consistent pairs outvote a deflected one, where any weighted mean would be dragged toward it.
-    """
+    """Combine a turbine's pair corrections by their circular median."""
     return float(circ_median(np.array(pairs, dtype=float), range_360=False))
 
 
@@ -289,7 +250,7 @@ def _fill(layout: Layout, *, devices: list[str], resolved: dict[str, float]) -> 
 
 
 def _nearest_resolved(layout: Layout, *, device: str, resolved: dict[str, float]) -> list[str]:
-    """Return up to :data:`MAX_INHERIT_NEIGHBOURS` resolved turbines nearest ``device``."""
+    """Return up to four resolved turbines nearest ``device``."""
     i = layout.index_of(device)
     ranked = sorted((float(layout.distance_m[i, layout.index_of(n)]), n) for n in resolved)
-    return [n for _, n in ranked[:MAX_INHERIT_NEIGHBOURS]]
+    return [n for _, n in ranked[:4]]

@@ -41,8 +41,8 @@ class NorthingInputs:
 
     :param era5_wd: reanalysis wind direction covering the base SCADA, the absolute anchor
     :param layout: the farm layout (rotor diameters included) for nearest-neighbour consensus and the
-        pass-4 wake-nadir nudge; must cover ``StudyConfig.turbine_subset``. ``None`` -- explicitly --
-        norths against the whole-farm consensus and skips pass 4.
+        wake-nadir shift; must cover ``StudyConfig.turbine_subset``. ``None`` -- explicitly --
+        norths against the whole-farm consensus and skips wake-nadir-shift.
     """
 
     era5_wd: pd.Series

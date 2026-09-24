@@ -1,11 +1,11 @@
-"""Northing regression tests on two years of real Hill of Towie data, end to end through all passes.
+"""Northing regression tests on two years of real Hill of Towie data, end to end through every step.
 
 Synthetic tests pin the algorithm's contract; only real SCADA exercises what it does with site veer,
 farm outages, neighbours that recalibrate on the same day and a reference derived from the farm
 itself. The fixture (see :mod:`tests.wind_up.hot_northing`) is exactly the input the degradation
 study (``benchmarking.baselines.study_northing_degradation``) northes -- yaw, power, nacelle wind
 speed, the ``yaw_usable`` mask and ERA5 for all 21 turbines across 2017-2020 -- so each test runs
-:func:`~wind_up.northing.north_farm` as a user would: with the layout, and with power for pass 4.
+:func:`~wind_up.northing.north_farm` as a user would: with the layout, and with power for wake-nadir-shift.
 
 Four groups:
 
@@ -15,7 +15,7 @@ Four groups:
   both together, missing data), each scored against the same window's full-data answer and held to
   what the study recorded, so a change that makes northing degrade less gracefully fails.
 * **the whole-farm fallback** -- ``layout=None`` still finds the same recalibrations.
-* **a lone turbine against reanalysis** -- pass 3, and its guard against over-detecting.
+* **a lone turbine against reanalysis** -- changepoints-v-reanalysis, and its guard against over-detecting.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def _assert_matches(found: list[tuple[pd.Timestamp, float]], expected: list[tupl
 
 
 class TestDefaultPipeline:
-    """All 21 turbines, the layout and pass 4: v0's recalibrations, no others, consistent offsets."""
+    """All 21 turbines, the layout and wake-nadir-shift: v0's recalibrations, no others, consistent offsets."""
 
     @pytest.mark.parametrize(("window", "turbine"), _KNOWN, ids=lambda v: v)
     def test_a_turbines_published_recalibrations_are_found(self, hot: pd.DataFrame, window: str, turbine: str) -> None:
@@ -104,8 +104,8 @@ class TestDefaultPipeline:
     def test_every_other_turbine_is_left_alone(self, hot: pd.DataFrame, window: str) -> None:
         """Including the neighbours of a turbine that steps: its step must not leak into them.
 
-        T15 used to step with its neighbours T05 and T16, and T17 with T19, because pass 2's
-        four-neighbour consensus still carried each neighbour's own step; repeating pass 2 until it
+        T15 used to step with its neighbours T05 and T16, and T17 with T19, because changepoints-v-consensus's
+        four-neighbour consensus still carried each neighbour's own step; repeating changepoints-v-consensus until it
         converges removes it (CF21).
         """
         tables = default_run(hot, window)
@@ -131,7 +131,7 @@ class TestDefaultPipeline:
     def test_the_two_windows_agree_where_they_meet(self, hot: pd.DataFrame) -> None:
         """Each window is northed independently, yet a turbine's offset at the end of 2018 must equal
         its offset at the start of 2019: its calibration did not change at midnight. This holds the
-        absolute frame -- pass 1's anchor and pass 4's wake-nadir nudge -- and not just the steps.
+        absolute frame -- the reanalysis anchor and the wake-nadir shift -- and not just the steps.
         """
         early, late = default_run(hot, "early"), default_run(hot, "late")
         gaps = {
@@ -168,8 +168,9 @@ def _inputs_for(hot: pd.DataFrame, window: str, case: str) -> tuple[FarmInputs, 
 
 
 # (case, window) -> worst turbine's offset error (deg) against the window's full-data answer, as
-# recorded on the fixture with pass 2 repeated to convergence. A case may be up to half again as bad, plus a
-# degree, before it fails: enough for incidental change, not for a real loss of robustness.
+# recorded on the fixture with changepoints-v-consensus repeated to convergence. A case may be up to
+# half again as bad, plus a degree, before it fails: enough for incidental change, not for a real
+# loss of robustness.
 RECORDED_WORST_ERROR = {
     ("N=6", "early"): 2.0,
     ("N=6", "late"): 1.9,
@@ -225,11 +226,11 @@ class TestDegradation:
     """Fewer turbines, shorter records, both, and missing data: northing degrades, it does not fail.
 
     Mirrors ``study_northing_degradation``: turbines are taken as a spatially contiguous cluster (so a
-    wake pair survives for pass 4), records are truncated to their most recent days, and each result
+    wake pair survives for wake-nadir-shift), records are truncated to their most recent days, and each result
     is scored by the worst turbine's median offset error against the full-data answer.
 
     What the recorded errors say: to within a few degrees down to a lone turbine or a 90-day record,
-    since pass 3 takes over below three turbines. Two corners are genuinely weak and are held where
+    since changepoints-v-reanalysis takes over below three turbines. Two corners are genuinely weak and are held where
     they are rather than hidden: a whole-farm record of a month or less (T15 reads ~17 deg off at the
     end of 2018, where its neighbourhood data are thin), and three turbines on 90 days in 2020.
     """
@@ -268,11 +269,11 @@ class TestDegradation:
 
 
 class TestWholeFarmFallback:
-    """``layout=None`` -- one whole-farm consensus, no pass 4 -- finds the same recalibrations."""
+    """``layout=None`` -- one whole-farm consensus, no wake-nadir-shift -- finds the same recalibrations."""
 
     @pytest.mark.parametrize("window", list(WINDOWS))
     def test_finds_the_published_recalibrations_and_nothing_else(self, hot: pd.DataFrame, window: str) -> None:
-        tables = north(farm_inputs(hot, ALL_TURBINES, *WINDOWS[window]), layout=None, pass_four=False)
+        tables = north(farm_inputs(hot, ALL_TURBINES, *WINDOWS[window]), layout=None, wake_nadir_shift=False)
         for name in ALL_TURBINES:
             _assert_matches(changepoints(tables[name]), EXPECTED[window].get(name, []))
 
@@ -291,14 +292,16 @@ class TestSingleTurbineAgainstReanalysis:
         )
 
     @pytest.mark.slow
-    def test_pass_three_does_not_over_detect_against_reanalysis(self, hot: pd.DataFrame) -> None:
+    def test_changepoints_v_reanalysis_does_not_over_detect_against_reanalysis(self, hot: pd.DataFrame) -> None:
         """Below the consensus floor each turbine is northed against reanalysis with changepoints
-        (pass 3). Reanalysis is coarse in time, so recalibrations closer than the reanalysis minimum
+        (changepoints-v-reanalysis). Reanalysis is coarse in time, so recalibrations closer than the reanalysis minimum
         segment must be merged rather than read as a burst of steps: the whole farm resolves to a
         handful of changepoints, not one every few weeks (CF20: ~100 without the guard).
         """
         total = 0
         for turbine in ALL_TURBINES:
             inputs = farm_inputs(hot, (turbine,), "2017-01-01", "2021-01-01")
-            total += len(changepoints(north(inputs, layout=None, pass_four=False)[turbine]))
-        assert total <= 20, f"pass 3 over-detected against reanalysis: {total} changepoints across the farm"
+            total += len(changepoints(north(inputs, layout=None, wake_nadir_shift=False)[turbine]))
+        assert total <= 20, (
+            f"changepoints-v-reanalysis over-detected against reanalysis: {total} changepoints across the farm"
+        )

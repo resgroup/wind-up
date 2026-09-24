@@ -1,6 +1,6 @@
 """Exploration study: how v1 northing degrades as its input data is impoverished.
 
-Gathers evidence for R5 Stage 3 (graceful degradation, and the pass-3 reanalysis
+Gathers evidence for R5 Stage 3 (graceful degradation, and the changepoints-v-reanalysis
 changepoint floor). For each open farm it runs the full ``north_farm`` pipeline under a
 matrix of input degradations and scores the result against that farm's recorded golden
 table (the full-data answer):
@@ -12,9 +12,9 @@ table (the full-data answer):
 
 It also **sweeps the reanalysis changepoint floor** (``min_step_deg``) on Hill of Towie
 turbines northed one at a time against ERA5, scored against the published table, to inform
-``REANALYSIS_MIN_STEP_DEG`` for pass 3.
+the ``against_reanalysis`` step floor for changepoints-v-reanalysis.
 
-Read-only on the repo and on the pipeline (it does not build or change pass 3). Every case is
+Read-only on the repo and on the pipeline (it does not build or change changepoints-v-reanalysis). Every case is
 wrapped so a crash is recorded as a finding rather than aborting the run; results stream to a
 CSV and a human log under the output dir, flushed per case, so an interrupted run keeps its
 evidence.
@@ -48,7 +48,6 @@ from wind_up.geodesy import local_east_north
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, Layout
 from wind_up.northing import (
     DEFAULT_NORTHING,
-    REANALYSIS_MIN_STEP_DEG,
     NorthingSettings,
     against_reanalysis,
     estimate_north_table,
@@ -142,7 +141,7 @@ def contiguous_order(layout: Layout) -> list[str]:
     Region-grown by single linkage on the layout's WGS84-geodesic distances: seed from the
     westernmost turbine, then repeatedly append whichever remaining turbine is nearest to any
     turbine already in the cluster. So the first ``k`` names are always a connected spatial blob
-    (nested as ``k`` grows), which keeps a wake pair alive for pass 4 even at small ``k`` -- unlike
+    (nested as ``k`` grows), which keeps a wake pair alive for wake-nadir-shift even at small ``k`` -- unlike
     a plain west-to-east strip, which need not be compact on a two-dimensional layout.
     """
     east, _ = local_east_north(latitudes=layout.frame[LATITUDE_COL], longitudes=layout.frame[LONGITUDE_COL])
@@ -175,7 +174,7 @@ def run_north(
     power: dict[str, np.ndarray],
     wind_speed: dict[str, np.ndarray],
 ) -> dict[str, pd.DataFrame]:
-    """Run the full pipeline (passes 1-2/3 then pass 4) on already-degraded inputs."""
+    """Run the full pipeline (every step, the wake-nadir shift included) on already-degraded inputs."""
     return north_farm(
         index,
         direction_deg=direction,
@@ -473,7 +472,7 @@ def _blackout(
 
 
 # ---------------------------------------------------------------------------
-# reanalysis floor sweep (pass-3 evidence, Hill of Towie)
+# reanalysis floor sweep (changepoints-v-reanalysis evidence, Hill of Towie)
 # ---------------------------------------------------------------------------
 def published_changepoints() -> dict[str, list[pd.Timestamp]]:
     """Per-turbine changepoint timestamps from the published HoT table (rows after each turbine's first)."""
@@ -484,7 +483,8 @@ def published_changepoints() -> dict[str, list[pd.Timestamp]]:
 def floor_sweep(rec: Recorder, *, inputs: dict, floors: list[float]) -> None:
     """Sweep ``min_step_deg`` per HoT turbine northed against ERA5 alone, scored vs the published table.
 
-    For each floor, each turbine is northed one at a time (as pass 3 will, via ``against_reanalysis``)
+    For each floor, each turbine is northed one at a time (as changepoints-v-reanalysis does, via
+    ``against_reanalysis``)
     and its recovered changepoints are matched to the published table's within ``MATCH_TOL_DAYS`` --
     so the log shows recall (published steps found) against spurious extras as the floor is lowered.
     """
@@ -492,7 +492,7 @@ def floor_sweep(rec: Recorder, *, inputs: dict, floors: list[float]) -> None:
     index = inputs["index"]
     tol = pd.Timedelta(days=MATCH_TOL_DAYS)
     # Each floor is min_step-only (the diagnostic showing floor alone cannot tame ERA5); "tuned" is
-    # the shipped pass-3 config (against_reanalysis: min_step + min_segment), the row that matters.
+    # the shipped changepoints-v-reanalysis config (against_reanalysis: min_step + min_segment), the row that matters.
     configs: list[tuple[str, NorthingSettings]] = [
         (f"floor={floor:g}", replace(DEFAULT_NORTHING, min_step_deg=floor)) for floor in floors
     ]
@@ -595,8 +595,9 @@ def summarise(csv_path: Path) -> None:
             [
                 "",
                 "=" * 78,
-                f"PASS-3 CONFIG (Hill of Towie, published-step match +/-{MATCH_TOL_DAYS}d)",
-                "floor=* is min_step-only (diagnostic); 'tuned' is the shipped pass 3 (min_step + min_segment)",
+                f"CHANGEPOINTS-V-REANALYSIS CONFIG (Hill of Towie, published-step match +/-{MATCH_TOL_DAYS}d)",
+                "floor=* is min_step-only (diagnostic); "
+                "'tuned' is the shipped changepoints-v-reanalysis (min_step + min_segment)",
                 "=" * 78,
                 f"{'config':>16s} {'recall':>12s} {'spurious':>10s} {'found':>7s}",
             ]
@@ -649,8 +650,8 @@ def main() -> None:
         run_farm(rec, farm=farm, layout=layout, inputs=inputs, golden=golden)
 
     if hot_cache:
-        logger.info("=== reanalysis floor sweep (Hill of Towie, pass-3 evidence) ===")
-        logger.info("current REANALYSIS_MIN_STEP_DEG = %.1f", REANALYSIS_MIN_STEP_DEG)
+        logger.info("=== reanalysis floor sweep (Hill of Towie, changepoints-v-reanalysis evidence) ===")
+        logger.info("current reanalysis step floor = %.1f", against_reanalysis(DEFAULT_NORTHING).min_step_deg)
         floor_sweep(rec, inputs=hot_cache["inputs"], floors=[5.0, 7.0, 8.0, 10.0, 12.0, 15.0])
 
     rec.close()

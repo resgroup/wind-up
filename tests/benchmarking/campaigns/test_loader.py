@@ -280,7 +280,7 @@ class TestErrors:
             load_declaration(path)
 
     def test_a_sidecar_without_rotor_diameters_is_refused_naming_the_column(self, tmp_path: Path) -> None:
-        # pass 4's wake cutoff is measured in rotor diameters, so none may be assumed
+        # wake-nadir-shift's wake cutoff is measured in rotor diameters, so none may be assumed
         path = write_campaign(tmp_path)
         without = "".join(line.rsplit(",", 1)[0] + "\n" for line in TURBINES_CSV.splitlines())
         (tmp_path / "turbines.csv").write_text(without)

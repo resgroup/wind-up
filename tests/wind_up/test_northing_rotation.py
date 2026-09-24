@@ -11,7 +11,7 @@ to the data, which legitimately changes the veer signature a little; those are h
 changepoints (same count, each within a few days -- the sector regrouping jitters a timestamp by a
 fraction of a day), but not to the same offsets.
 
-Rotations run the neighbour-consensus path (the layout, no pass 4): pass 4 compares each turbine's
+Rotations run the neighbour-consensus path (the layout, no wake-nadir-shift): wake-nadir-shift compares each turbine's
 direction with the layout's absolute bearings, which a rotation of the data alone rightly changes.
 """
 
@@ -79,7 +79,7 @@ def _compare(base: pd.DataFrame, rotated: pd.DataFrame, *, offsets_too: bool, ti
     return problems
 
 
-# A sector-misaligned rotation regroups rows across the fixed veer-sector boundaries, which nudges a
+# A sector-misaligned rotation regroups rows across the fixed veer-sector boundaries, which shifts a
 # changepoint's timestamp by a fraction of a day; the count never changes. Allow that jitter so the
 # test still fails on a real wrap bug (which moves changepoints by weeks or changes their count).
 _MISALIGNED_TIME_TOL_DAYS = 3.0

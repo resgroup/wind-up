@@ -22,9 +22,6 @@ LONGITUDE_COL = "longitude"
 ROTOR_DIAMETER_COL = "rotor_diameter_m"
 WIND_FARM_COL = "wind_farm"
 
-# Wind directions swept for front-row classification, one per degree.
-SWEEP_DIRECTIONS_DEG = np.arange(360, dtype=np.float64)
-
 
 def iec_disturbed_sector_deg(distance_diameters: npt.ArrayLike) -> npt.NDArray[np.float64]:
     """IEC 61400-12-1 disturbed-sector full width (deg) vs upwind separation in rotor diameters.
@@ -44,12 +41,9 @@ def iec_disturbed_sector_deg(distance_diameters: npt.ArrayLike) -> npt.NDArray[n
 class Layout:
     """A validated turbine table plus the geodesic distance and bearing between every pair.
 
-    ``distance_m[i, j]`` and ``bearing_deg[i, j]`` are from row ``i`` to row ``j``.
-
-    A layout must be physically possible, however it is built: every turbine at a valid position,
-    with a positive, finite rotor diameter, and no two turbines closer than the sum of their rotor
-    radii. That refuses placeholder coordinates (every turbine at one point), which would otherwise
-    pass quietly into neighbour ranking, wake geometry and campaign design.
+    ``distance_m[i, j]`` and ``bearing_deg[i, j]`` are from row ``i`` to row ``j``. Construction
+    refuses an invalid position, a rotor diameter that is not positive and finite, and turbines
+    closer than the sum of their rotor radii.
     """
 
     frame: pd.DataFrame
@@ -95,13 +89,6 @@ class Layout:
             msg = "the layout has no rotor diameter for any turbine; at least one is needed"
             raise ValueError(msg)
         unknown = diameters.isna()
-        # Distances are measured in rotor diameters, so a non-positive one inverts the reference
-        # limit and every turbine reads as near, while an infinite one puts them all out of range.
-        unusable = ~unknown & ((diameters <= 0) | np.isinf(diameters))
-        if unusable.any():
-            named = [str(n) if n is not None else f"row {i}" for i, n in enumerate(names) if unusable.iloc[i]]
-            msg = f"the layout gives {named} a rotor diameter that is not positive and finite"
-            raise ValueError(msg)
         filled = tuple(str(n) if n is not None else f"row {i}" for i, n in enumerate(names) if unknown.iloc[i])
         diameters = diameters.fillna(diameters.max())
 
@@ -151,12 +138,9 @@ def _check_rotor_diameters(frame: pd.DataFrame) -> None:
         raise ValueError(msg)
 
 
-# How many offending pairs a clearance error names before summarising the rest.
-_PAIRS_SHOWN = 5
-
-
 def _check_rotor_clearance(frame: pd.DataFrame, distance_m: npt.NDArray[np.float64]) -> None:
-    """Refuse any two turbines closer than the sum of their rotor radii: their rotors would collide."""
+    """Refuse any two turbines closer than the sum of their rotor radii."""
+    pairs_shown = 5
     diameters = frame[ROTOR_DIAMETER_COL].to_numpy(dtype=float)
     clearance = (diameters[:, None] + diameters[None, :]) / 2.0
     first, second = np.nonzero(np.triu(~(np.asarray(distance_m, dtype=float) >= clearance), k=1))
@@ -164,9 +148,9 @@ def _check_rotor_clearance(frame: pd.DataFrame, distance_m: npt.NDArray[np.float
         names = _labels(frame, np.arange(len(frame)))
         pairs = [
             f"{names[i]}-{names[j]} ({distance_m[i, j]:.0f} m apart, rotors need {clearance[i, j]:.0f} m)"
-            for i, j in zip(first[:_PAIRS_SHOWN], second[:_PAIRS_SHOWN], strict=True)
+            for i, j in zip(first[:pairs_shown], second[:pairs_shown], strict=True)
         ]
-        more = f" and {len(first) - _PAIRS_SHOWN} more pair(s)" if len(first) > _PAIRS_SHOWN else ""
+        more = f" and {len(first) - pairs_shown} more pair(s)" if len(first) > pairs_shown else ""
         msg = (
             f"the layout places turbines closer than their rotors allow: {', '.join(pairs)}{more}. "
             "Check the coordinates (placeholders put every turbine at one point) and rotor diameters."
@@ -205,9 +189,10 @@ def front_row(layout: Layout, *, min_clear_deg: float = 90.0) -> npt.NDArray[np.
     A turbine is front row when at least ``min_clear_deg`` contiguous degrees of wind direction reach
     it with no other layout turbine upwind. Every turbine in the layout counts as a blocker.
     """
+    directions_deg = np.arange(360, dtype=np.float64)
     result = np.zeros(len(layout.frame), dtype=bool)
     for target in range(len(layout.frame)):
-        clear = np.asarray(~_upwind(layout, target=target, directions_deg=SWEEP_DIRECTIONS_DEG).any(axis=1))
+        clear = np.asarray(~_upwind(layout, target=target, directions_deg=directions_deg).any(axis=1))
         result[target] = longest_clear_run_deg(clear) >= min_clear_deg
     return result
 
