@@ -19,6 +19,7 @@ from wind_up.northing import (
     NorthingSettings,
     _neighbours_from_layout,
     _sector_signature,
+    _table_change,
     against_reanalysis,
     anchoring_only,
     apply_north_table,
@@ -366,7 +367,7 @@ class TestNorthFarm:
         Pass 1 no longer removes a large step before the consensus is built, so on a four-device
         farm T03's +35 step shifts the circular median a few degrees at the step, and every clean
         device -- measured against that moved consensus -- is handed a matching spurious step. This
-        is why northing wants a real farm and why :func:`north_farm` takes ``coordinates``
+        is why northing wants a real farm and why :func:`north_farm` takes a ``layout``
         to keep a big mover out of a device's reference. Enlarge this farm (see
         :meth:`test_two_pass_recovers_per_device_steps`) and the leak goes away.
         """
@@ -1010,7 +1011,7 @@ class TestSectorSignature:
         assert signature[150] == pytest.approx(-8.0)
 
 
-# --- coordinates: pass 2's consensus can be a spatial neighbour set, not the whole farm ---
+# --- layout: pass 2's consensus can be a spatial neighbour set, not the whole farm ---
 
 
 def _tracking(
@@ -1040,24 +1041,29 @@ def _stepping_farm(index: pd.DatetimeIndex) -> tuple[dict[str, np.ndarray], np.n
 # Positions that make T01's three nearest neighbours the steppers N1-N3: the clean T01 sits among
 # them, while the clean O1-O3 are a farm's-width away.
 _STEPPING_COORDS = {
-    "T01": (55.0, 0.000),
-    "N1": (55.0, 0.001),
-    "N2": (55.0, 0.002),
-    "N3": (55.0, 0.003),
-    "O1": (55.0, 1.000),
-    "O2": (55.0, 1.001),
-    "O3": (55.0, 1.002),
+    "T01": (55.0, 0.00),
+    "N1": (55.0, 0.01),
+    "N2": (55.0, 0.02),
+    "N3": (55.0, 0.03),
+    "O1": (55.0, 1.00),
+    "O2": (55.0, 1.01),
+    "O3": (55.0, 1.02),
 }
 
 
-def test_coordinates_norths_each_device_against_its_nearest_neighbours() -> None:
-    """With coordinates, a device is northed against its nearest turbines, not the whole farm.
+def test_a_layout_norths_each_device_against_its_nearest_neighbours() -> None:
+    """With a layout, a device is northed against its nearest turbines, not the whole farm.
 
     T01 is clean but sits among N1-N3, which all step +40 mid-record. Against the whole farm the
     four clean devices out-vote the steppers, so T01 stays flat; against only its nearest turbines --
     N1-N3 step and just one clean device (O1) joins them -- the stepping majority carries the
-    consensus, and T01, measured against it, is handed a spurious -40 step. That difference proves
-    pass 2 used the nearest-neighbour consensus, not the farm median.
+    consensus, and T01, measured against it, is handed a spurious step. That difference proves pass 2
+    used the nearest-neighbour consensus, not the farm median.
+
+    Repeating pass 2 removes part of the steppers' move from T01's reference -- each stepper's own
+    neighbourhood is half clean, so it is handed only part of its step -- which is why the spurious
+    step is sizeable but short of the full 40 deg. A neighbourhood that mostly steps together is
+    beyond what any consensus can separate.
     """
     index = _index()
     reported, reference = _stepping_farm(index)
@@ -1077,7 +1083,7 @@ def test_coordinates_norths_each_device_against_its_nearest_neighbours() -> None
     assert len(table) == 2, f"nearest-neighbour reference should give T01 one step: {table}"
     assert abs(table["timestamp"].iloc[1] - pd.Timestamp("2017-08-01", tz="UTC")) <= pd.Timedelta(days=14)
     step = abs(circ_diff(table["north_offset"].iloc[1], table["north_offset"].iloc[0]))
-    assert step == pytest.approx(40.0, abs=5.0), f"recovered {step:.1f} deg"
+    assert 10.0 < step <= 45.0, f"recovered {step:.1f} deg"
 
 
 def test_a_farm_below_the_floor_is_anchored_not_rejected() -> None:
@@ -1133,7 +1139,7 @@ def test_a_farm_too_small_for_the_neighbour_count_falls_back_to_the_whole_farm()
         "C": _tracking(index, ref, [("2017-01-01", 25.0)], seed=52),
     }
     usable = {name: _all_usable(index) for name in reported}
-    coords = {"A": (55.0, 0.0), "B": (55.0, 0.001), "C": (55.0, 0.003)}
+    coords = {"A": (55.0, 0.0), "B": (55.0, 0.01), "C": (55.0, 0.03)}
 
     tables = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=ref, layout=_layout(coords))
 
@@ -1141,7 +1147,7 @@ def test_a_farm_too_small_for_the_neighbour_count_falls_back_to_the_whole_farm()
     assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), "C's +25 deg offset survived"
 
 
-def test_coordinates_keep_the_anchor_when_a_devices_consensus_is_empty() -> None:
+def test_a_layout_keeps_the_anchor_when_a_devices_consensus_is_empty() -> None:
     """A device whose nearest neighbours are all unusable has an all-NaN reference.
 
     The whole-farm bail-out does not fire -- the far cluster's devices reference each other and are
@@ -1169,15 +1175,15 @@ def test_coordinates_keep_the_anchor_when_a_devices_consensus_is_empty() -> None
     # X's cluster {X, U1-U4} sits at lon ~0, so X's four nearest are the unusable U1-U4; the usable
     # cluster {C1-C4} is a farm's-width away and references itself, keeping the bail-out quiet.
     coords = {
-        "X": (55.0, 0.000),
-        "U1": (55.0, 0.001),
-        "U2": (55.0, 0.002),
-        "U3": (55.0, 0.003),
-        "U4": (55.0, 0.004),
-        "C1": (55.0, 1.000),
-        "C2": (55.0, 1.001),
-        "C3": (55.0, 1.002),
-        "C4": (55.0, 1.003),
+        "X": (55.0, 0.00),
+        "U1": (55.0, 0.01),
+        "U2": (55.0, 0.02),
+        "U3": (55.0, 0.03),
+        "U4": (55.0, 0.04),
+        "C1": (55.0, 1.00),
+        "C2": (55.0, 1.01),
+        "C3": (55.0, 1.02),
+        "C4": (55.0, 1.03),
     }
 
     tables = north_farm(
@@ -1193,7 +1199,7 @@ def test_coordinates_keep_the_anchor_when_a_devices_consensus_is_empty() -> None
     assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), "X's +25 deg anchor was discarded"
 
 
-def test_coordinates_keep_the_anchor_when_the_consensus_never_overlaps_the_device() -> None:
+def test_a_layout_keeps_the_anchor_when_the_consensus_never_overlaps_the_device() -> None:
     """A finite reference is not enough; it must be finite *where the device is usable*.
 
     X reports only in the first half of the record, its neighbours only in the second. The neighbour
@@ -1213,7 +1219,7 @@ def test_coordinates_keep_the_anchor_when_the_consensus_never_overlaps_the_devic
     usable = {"X": first_half, "N1": second_half, "N2": second_half, "N3": second_half}
     # Only four turbines, so every device's reference is the other three: X is thus northed against
     # N1-N3, finite only in the second half, while X itself is usable only in the first.
-    coords = {"X": (55.0, 0.0), "N1": (55.0, 0.001), "N2": (55.0, 0.002), "N3": (55.0, 0.003)}
+    coords = {"X": (55.0, 0.0), "N1": (55.0, 0.01), "N2": (55.0, 0.02), "N3": (55.0, 0.03)}
 
     tables = north_farm(
         index,
@@ -1258,3 +1264,42 @@ def test_pass_two_neighbours_cap_k_at_the_devices_available() -> None:
     nn = _neighbours_from_layout(_layout(coords), devices=sorted(coords), k=10)
     assert nn["A"] == ("B", "C")  # only two others exist, so k is capped
     assert all(len(v) == 2 for v in nn.values())
+
+
+class TestConsensusConvergence:
+    """Pass 2 repeats until a round changes nothing; ``_table_change`` is what "nothing" means."""
+
+    @staticmethod
+    def _table(rows: list[tuple[str, float]]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"timestamp": [pd.Timestamp(t, tz="UTC") for t, _ in rows], "north_offset": [o for _, o in rows]}
+        )
+
+    def test_the_same_changepoints_change_by_the_largest_offset_move(self) -> None:
+        before = self._table([("2017-01-01", 10.0), ("2017-06-01", 40.0)])
+        after = self._table([("2017-01-01", 10.2), ("2017-06-01", 39.5)])
+        assert _table_change(before, after) == pytest.approx(0.5)
+
+    def test_the_offset_move_is_wrap_safe(self) -> None:
+        before = self._table([("2017-01-01", 179.9)])
+        after = self._table([("2017-01-01", -179.9)])
+        assert _table_change(before, after) == pytest.approx(0.2)
+
+    def test_a_changepoint_jittered_within_the_search_grid_has_not_moved(self) -> None:
+        """``refine`` places a step at native resolution, so a round can nudge it by a few rows."""
+        before = self._table([("2017-01-01", 10.0), ("2017-06-01 12:00", 40.0)])
+        after = self._table([("2017-01-01", 10.0), ("2017-06-01 14:30", 40.3)])
+        assert _table_change(before, after) == pytest.approx(0.3)
+
+    @pytest.mark.parametrize(
+        "after",
+        [
+            [("2017-01-01", 10.0)],
+            [("2017-01-01", 10.0), ("2017-06-04", 40.0)],
+            [("2017-01-01", 10.0), ("2017-06-01", 40.0), ("2017-09-01", 45.0)],
+        ],
+        ids=["removed", "moved", "added"],
+    )
+    def test_any_changepoint_added_removed_or_moved_is_not_converged(self, after: list[tuple[str, float]]) -> None:
+        before = self._table([("2017-01-01", 10.0), ("2017-06-01", 40.0)])
+        assert _table_change(before, self._table(after)) == float("inf")

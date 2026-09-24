@@ -12,6 +12,66 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF21 — The default layout path handed a turbine its neighbour's step. Repeating pass 2 until it converges removes every such artefact on Hill of Towie: the golden table falls from **13** changepoints absent from v0's published table to **2**, with none of the published ones lost
+
+*2026-09-24. Reproduce: `uv run python -m benchmarking.baselines.study_wake_nadir_golden` (golden tables),
+`uv run python -m benchmarking.baselines.study_northing_degradation` (degradation matrix), and the
+real-data tests in `tests/wind_up/test_northing_real_data.py`, which run on the new
+`northing_farm_inputs.parquet` fixture (the study's own inputs, 2017-2020, with power for pass 4).*
+
+**The artefact.** With a layout, pass 2 norths each turbine against the circular median of its four
+nearest neighbours. Pass 1 is a single constant per turbine (CF19), so each neighbour's own steps are
+still present in the signals that consensus is built from. A median of four is the mean of the middle
+two, so a neighbour's large step drags it by several degrees, and the turbine gets a spurious step on
+the same day. The whole-farm median of 21 hardly moves, which is why the `layout=None` tests never
+saw it. On the recorded HoT golden table this caused T15 to step with neighbours T05 and T16
+(three times), T14 with T12, T03 and T04 with T01 and T02's 180 deg flip, and T11 during the June
+2020 outage. On 2019-2020 alone, T17 also stepped with T19.
+
+**Candidates, scored against the published changepoints on the 2017-18 and 2019-20 windows**
+(layout path, extra / missed):
+
+| variant | 2017-18 | 2019-20 |
+|---|---|---|
+| k=4, one round (was shipped) | 1 / 0 | 2 / 0 |
+| k=5, one round | 1 / 0 | 1 / 0 |
+| k=6, one round | 0 / 0 | 1 / 0 |
+| k=8, one round | 0 / 0 | 1 / 0 |
+| k=4, two rounds | 0 / 0 | 0 / 0 |
+
+A larger neighbourhood only dilutes the leak. A second round removes it: the second consensus is
+built from the first round's tables, so each neighbour's own step is out of it. Two rounds still left
+T05 and T07 stepping with T01 and T02's simultaneous 180 deg flip on the 5-year record, where two of
+their four neighbours move at once. **Repeating to convergence** (a round that moves no changepoint
+by more than a day and no offset by more than 0.5 deg, capped at 10 rounds) clears that too. On the 5-year HoT record
+it converged at round 7. There is no common-mode drift: the median absolute-offset change across
+turbines between rounds is ~0.0 deg, and only turbines that had an artefact move.
+
+**Golden table, 2016-2020, matched against v0's published table at +/-14 days:**
+
+| | changepoints | in published | not in published |
+|---|---|---|---|
+| one round (previous golden) | 30 | 17 | 13 |
+| converged | 19 | 17 | 2 |
+
+The two left are T12's one-week +/-13 deg excursion in June 2016, stable across every variant
+and possibly real. Everything published that is missed is at most 2.4 deg, below the step floor,
+apart from T10's February 2016 half of a one-month excursion.
+
+**Cost.** Each round is a pass 2, so convergence costs more than one round. Two things keep it down.
+A turbine is re-northed only if a turbine its consensus is built from moved by more than the
+tolerance in the last round; otherwise its reference has, by the loop's own stopping test, not
+changed. A changepoint that only moves within the one-day search grid, which is jitter from
+`refine`, does not count as moved. On the 5-year, 21-turbine HoT record this is 94 pass-2
+estimates instead of 147 (rounds re-north 21, 21, 21, 17, 7, 5, 2 turbines). That is about 5-6
+minutes against ~1.5 for a single round, with the same answer.
+
+**Implication.** `north_farm` repeats pass 2 until it converges. The real-data tests now run the
+default path (layout plus pass 4) and hold it to exactly the published changepoints on both windows,
+plus a representative sample of the degradation study's cases.
+
+---
+
 ## CF20 — Pass 3 (a lone turbine northed against reanalysis) over-detects changepoints, and the fix is a longer minimum segment, not a lower step floor: `REANALYSIS_MIN_STEP_DEG` stays **10°**, a 30-day `REANALYSIS_MIN_SEGMENT` cuts spurious steps from **~106 to 1** across Hill of Towie while keeping every recoverable published step
 
 *2026-09-23. Reproduce: `uv run python -m benchmarking.baselines.study_northing_degradation` (the

@@ -119,6 +119,15 @@ VEER_SIGNATURE_MIN_STEP_DEG = 10.0
 MIN_DEVICES_FOR_FARM_REFERENCE = 3
 # How many nearest turbines form each device's pass-2 consensus, capped at the farm size.
 _CONSENSUS_NEIGHBOURS = 4
+# Pass 2 repeats until it converges. The first round builds the consensus from pass-1-northed
+# signals, which still carry every neighbour's own steps; a four-neighbour median moves several
+# degrees when one neighbour steps, handing the device a matching spurious step. Each later round
+# rebuilds the consensus from the previous round's tables, so those steps drop out of it. It has
+# converged once a round moves no changepoint beyond the search grid and no offset by more than
+# _CONSENSUS_CONVERGED_DEG (see _table_change);
+# _MAX_CONSENSUS_ROUNDS only guards against a farm that never settles.
+_MAX_CONSENSUS_ROUNDS = 10
+_CONSENSUS_CONVERGED_DEG = 0.5
 
 DEFAULT_NORTHING = NorthingSettings()
 
@@ -929,6 +938,98 @@ def _consensus_references(
     return references
 
 
+def _table_change(before: pd.DataFrame, after: pd.DataFrame) -> float:
+    """How far one north table moved to another.
+
+    The largest offset change (deg), or infinity if a changepoint was added or removed, or moved by
+    more than a day -- the changepoint search's grid, below which ``refine`` jitters a timestamp.
+    """
+    if len(before) != len(after):
+        return float("inf")
+    shift = np.abs(pd.DatetimeIndex(after[TIMESTAMP_COL]) - pd.DatetimeIndex(before[TIMESTAMP_COL]))
+    if (shift > _DEFAULT_GRID).any():
+        return float("inf")
+    return float(np.abs(circ_diff(after[NORTH_OFFSET_COL], before[NORTH_OFFSET_COL])).max())
+
+
+def _converged_pass_two(
+    index: pd.DatetimeIndex,
+    *,
+    direction_deg: Mapping[str, npt.NDArray[np.float64]],
+    usable: Mapping[str, npt.NDArray[np.bool_]],
+    first_pass: Mapping[str, pd.DataFrame],
+    references: dict[str, npt.NDArray[np.float64]],
+    references_from: Callable[[dict[str, npt.NDArray[np.float64]]], dict[str, npt.NDArray[np.float64]]],
+    reference_neighbours: Mapping[str, Sequence[str]] | None,
+    settings: NorthingSettings,
+) -> dict[str, pd.DataFrame]:
+    """Run pass 2 against ``references``, then repeat it until a round changes nothing.
+
+    Each repeat rebuilds the consensus from the previous round's tables (see
+    :data:`_MAX_CONSENSUS_ROUNDS`); ``references_from`` builds each device's consensus from a set of northed signals.
+
+    A device is re-northed only when a device its consensus is built from (``reference_neighbours``,
+    or every device for the whole-farm consensus) moved by more than the convergence tolerance in the
+    last round. Otherwise its reference has, by the same test that ends the loop, not changed, and it
+    keeps its table. Later rounds therefore touch only the neighbourhoods still settling.
+    """
+    # The reference must be finite where a device can be northed against it, not merely finite
+    # somewhere: pass 2's residual is taken over usable & finite(direction) & finite(reference) (see
+    # _residual). With no such overlap -- e.g. a device and its neighbours reporting in disjoint
+    # periods -- estimate_north_table returns a zero offset, so keep the pass-1 anchor. Which rows are
+    # finite does not change between rounds, so neither does this.
+    devices = sorted(direction_deg)
+    anchored_only = set()
+    for name in devices:
+        overlap = (
+            np.asarray(usable[name], dtype=bool)
+            & np.isfinite(np.asarray(direction_deg[name], dtype=float))
+            & np.isfinite(references[name])
+        )
+        if not overlap.any():
+            logger.warning("no usable farm reference for device %s; keeping its reanalysis anchor", name)
+            anchored_only.add(name)
+
+    def north_against(name: str, reference: npt.NDArray[np.float64]) -> pd.DataFrame:
+        if name in anchored_only:
+            return first_pass[name]
+        return estimate_north_table(
+            index, direction_deg[name], reference_deg=reference, usable=usable[name], settings=settings
+        )
+
+    def feeds(name: str) -> Sequence[str]:
+        return devices if reference_neighbours is None else reference_neighbours[name]
+
+    tables = {name: north_against(name, references[name]) for name in devices}
+    # what round 1 moved each device by, relative to the pass-1 signals its consensus was built from
+    moved = {name: _table_change(first_pass[name], tables[name]) for name in devices}
+    for consensus_round in range(2, _MAX_CONSENSUS_ROUNDS + 1):
+        settling = {name for name, change in moved.items() if change > _CONSENSUS_CONVERGED_DEG}
+        stale = [name for name in devices if settling.intersection(feeds(name))]
+        if not stale:
+            break
+        references = references_from(
+            {name: apply_north_table(index, direction_deg[name], north_table=tables[name]) for name in devices}
+        )
+        previous = tables
+        tables = {**tables, **{name: north_against(name, references[name]) for name in stale}}
+        moved = {name: _table_change(previous[name], tables[name]) for name in devices}
+        logger.debug(
+            "pass 2 round %d: re-northed %d device(s), largest change %.2f deg",
+            consensus_round,
+            len(stale),
+            max(moved.values()),
+        )
+    else:
+        if max(moved.values()) > _CONSENSUS_CONVERGED_DEG:
+            logger.warning(
+                "pass 2 did not converge in %d rounds (last round moved an offset by %.1f deg); keeping the last",
+                _MAX_CONSENSUS_ROUNDS,
+                max(moved.values()),
+            )
+    return tables
+
+
 def north_farm(
     index: pd.DatetimeIndex,
     *,
@@ -946,7 +1047,9 @@ def north_farm(
     direction to ``reanalysis_deg``, with no changepoints. Pass 2 then builds a farm consensus
     direction from those aligned signals and norths each device's raw signal to it, finding every
     changepoint against that consensus. Pass 1 fixes the farm in absolute terms; pass 2 is the more
-    precise, and does all the changepoint work.
+    precise, and does all the changepoint work. Pass 2 repeats until it converges: each round rebuilds
+    the consensus from the previous round's tables, so a neighbour's own step -- still present after
+    the constant pass 1 -- stops moving the reference and leaking into the device as a spurious step.
 
     Pass 1 attributes no changepoints on purpose: reanalysis is short-term unreliable, so a pass-1
     changepoint lets that noise leak into the very consensus pass 2 trusts (an unusual weather spell
@@ -1054,34 +1157,29 @@ def north_farm(
         layout, devices=devices, neighbours=_CONSENSUS_NEIGHBOURS, min_devices=MIN_DEVICES_FOR_FARM_REFERENCE
     )
     quorum = _farm_quorum(len(devices), floor=MIN_DEVICES_FOR_FARM_REFERENCE)
-    references = _consensus_references(
-        northed,
-        usable=usable,
-        quorum=quorum,
-        reference_neighbours=reference_neighbours,
-        min_devices=MIN_DEVICES_FOR_FARM_REFERENCE,
-    )
+
+    def references_from(signals: dict[str, npt.NDArray[np.float64]]) -> dict[str, npt.NDArray[np.float64]]:
+        return _consensus_references(
+            signals,
+            usable=usable,
+            quorum=quorum,
+            reference_neighbours=reference_neighbours,
+            min_devices=MIN_DEVICES_FOR_FARM_REFERENCE,
+        )
+
+    references = references_from(northed)
     if not any(np.isfinite(reference).any() for reference in references.values()):
         logger.warning("farm reference is empty; keeping the reanalysis-only north tables")
         return wake_nadir(first_pass)
 
-    tables = {}
-    for name in devices:
-        reference = references[name]
-        # The reference must be finite where this device can be northed against it, not merely finite
-        # somewhere: pass 2's residual is taken over usable & finite(direction) & finite(reference)
-        # (see _residual). With no such overlap -- e.g. a device and its neighbours reporting in
-        # disjoint periods -- estimate_north_table returns a zero offset, so keep the pass-1 anchor.
-        overlap = (
-            np.asarray(usable[name], dtype=bool)
-            & np.isfinite(np.asarray(direction_deg[name], dtype=float))
-            & np.isfinite(reference)
-        )
-        if not overlap.any():
-            logger.warning("no usable farm reference for device %s; keeping its reanalysis anchor", name)
-            tables[name] = first_pass[name]
-        else:
-            tables[name] = estimate_north_table(
-                index, direction_deg[name], reference_deg=reference, usable=usable[name], settings=settings
-            )
+    tables = _converged_pass_two(
+        index,
+        direction_deg=direction_deg,
+        usable=usable,
+        first_pass=first_pass,
+        references=references,
+        references_from=references_from,
+        reference_neighbours=reference_neighbours,
+        settings=settings,
+    )
     return wake_nadir(tables)
