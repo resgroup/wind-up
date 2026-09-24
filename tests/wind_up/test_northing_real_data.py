@@ -1,306 +1,292 @@
-"""Northing regression tests on real Hill of Towie data, end to end through both passes.
+"""Northing regression tests on two years of real Hill of Towie data, end to end through all passes.
 
-Synthetic tests pin the algorithm's contract; only real SCADA exercises what it does with site
-veer, farm outages and a reference derived from the farm itself. The fixture holds the raw
-inputs -- each turbine's yaw and the reanalysis direction, over the rows where the turbine was
-generating -- for all 21 turbines across 2017-2020, so a test runs :func:`north_farm` exactly as
-a user would rather than trusting a precomputed reference.
+Synthetic tests pin the algorithm's contract; only real SCADA exercises what it does with site veer,
+farm outages, neighbours that recalibrate on the same day and a reference derived from the farm
+itself. The fixture (see :mod:`tests.wind_up.hot_northing`) is exactly the input the degradation
+study (``benchmarking.baselines.study_northing_degradation``) northes -- yaw, power, nacelle wind
+speed, the ``yaw_usable`` mask and ERA5 for all 21 turbines across 2017-2020 -- so each test runs
+:func:`~wind_up.northing.north_farm` as a user would: with the layout, and with power for pass 4.
 
-That distinction earned itself: an earlier version of this fixture stored the farm reference,
-which had been built with the very first-pass bug these tests exist to catch, so the tests could
-not see it.
+Four groups:
 
-Three groups, and the distinction is the point:
-
-* **known changepoints** -- recalibrations v0's published table also records. They must keep
-  being found; they are what any change to the estimator must not break.
-* **edge artefacts** -- changepoints that appear only because of where the record stops.
-* **outage artefacts** -- farm-wide excursions during outages, which are the weather and the
-  reference moving together rather than any turbine's calibration.
+* **the default pipeline** -- on each two-year window, the recalibrations v0's published table
+  records are found, nothing else is, and the absolute offsets agree across the two windows.
+* **degradation** -- a representative sample of the study's cases (few turbines, short records,
+  both together, missing data), each scored against the same window's full-data answer and held to
+  what the study recorded, so a change that makes northing degrade less gracefully fails.
+* **the whole-farm fallback** -- ``layout=None`` still finds the same recalibrations.
+* **a lone turbine against reanalysis** -- pass 3, and its guard against over-detecting.
 """
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from tests.wind_up.hot_northing import (
+    ALL_TURBINES,
+    EARLY,
+    LATE,
+    FarmInputs,
+    changepoints,
+    contiguous_order,
+    describe,
+    farm_inputs,
+    fixture_available,
+    hot_layout,
+    load_fixture,
+    monthly,
+    north,
+    offset_errors,
+)
 from wind_up.circular_math import circ_diff
-from wind_up.layout import Layout
-from wind_up.northing import estimate_north_table, north_farm
-
-FIXTURE = Path(__file__).parents[1] / "test_data" / "hot" / "northing" / "northing_inputs.parquet"
-METADATA = Path(__file__).parents[1] / "test_data" / "hot" / "scada" / "Hill_of_Towie_turbine_metadata.csv"
-ALL_TURBINES = tuple(f"T{n:02d}" for n in range(1, 22))
-
-
-def _is_parquet(path: Path) -> bool:
-    """Whether ``path`` holds real Parquet rather than an unsmudged git-lfs pointer."""
-    try:
-        with path.open("rb") as handle:
-            return handle.read(4) == b"PAR1"
-    except OSError:
-        return False
-
+from wind_up.northing import estimate_north_table
 
 pytestmark = pytest.mark.skipif(
-    not _is_parquet(FIXTURE), reason="Hill of Towie northing fixture not available (git-lfs not pulled)"
+    not fixture_available(), reason="Hill of Towie northing fixture not available (git-lfs not pulled)"
 )
 
-
-@pytest.fixture(scope="module")
-def hot() -> pd.DataFrame:
-    """The northing fixture, loaded once for the module."""
-    return pd.read_parquet(FIXTURE)
-
-
-def _arrays(hot: pd.DataFrame, turbines: tuple[str, ...], start: str, end: str) -> tuple:
-    """Return ``(index, direction, usable, reanalysis)`` for a window, as ``north_farm`` wants them."""
-    rows = hot[
-        hot["turbine"].isin(turbines)
-        & (hot["timestamp"] >= pd.Timestamp(start, tz="UTC"))
-        & (hot["timestamp"] < pd.Timestamp(end, tz="UTC"))
-    ]
-    index = pd.DatetimeIndex(sorted(rows["timestamp"].unique()))
-    direction, usable, reanalysis = {}, {}, None
-    for turbine in sorted(rows["turbine"].unique()):
-        one = rows[rows["turbine"] == turbine].drop_duplicates("timestamp").set_index("timestamp").reindex(index)
-        wd = one["era5_wd_deg"].to_numpy(dtype=float)
-        reanalysis = wd if reanalysis is None else np.where(np.isfinite(reanalysis), reanalysis, wd)
-        yaw = one["yaw_deg"].to_numpy(dtype=float)
-        direction[str(turbine)] = yaw
-        usable[str(turbine)] = np.isfinite(yaw) & np.isfinite(wd)
-    return index, direction, usable, reanalysis
-
-
-def _changepoints(table: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
-    offsets = table["north_offset"].to_numpy(dtype=float)
-    return [(table["timestamp"].iloc[i], float(circ_diff(offsets[i], offsets[i - 1]))) for i in range(1, len(table))]
-
-
-def _describe(found: list[tuple[pd.Timestamp, float]]) -> str:
-    return str([(w.strftime("%Y-%m-%d"), round(s, 1)) for w, s in found])
-
-
-def hot_layout() -> Layout:
-    """The Hill of Towie layout, with each turbine's published rotor diameter."""
-    meta = pd.read_csv(METADATA, encoding="utf-8-sig")
-    return Layout.from_frame(
-        pd.DataFrame(
-            {
-                "name": meta["Turbine Name"],
-                "latitude": meta["Latitude"],
-                "longitude": meta["Longitude"],
-                "rotor_diameter_m": meta["Rotor Diameter (m)"],
-            }
-        )
-    )
-
-
-_RUNS: dict[tuple, dict[str, list[tuple[pd.Timestamp, float]]]] = {}
-
-
-def run_farm(
-    hot: pd.DataFrame, turbines: tuple[str, ...], start: str, end: str, *, with_layout: bool = False
-) -> dict[str, list[tuple[pd.Timestamp, float]]]:
-    """Changepoints per turbine for one (turbines, window), memoised -- each run costs seconds.
-
-    ``with_layout`` norths as a user with positions would by default: pass 2 against each turbine's
-    nearest neighbours rather than the whole-farm consensus. The fixture carries no power, so pass 4
-    (a constant per turbine, which moves no changepoint) does not run.
-    """
-    key = (turbines, start, end, with_layout)
-    if key not in _RUNS:
-        index, direction, usable, reanalysis = _arrays(hot, turbines, start, end)
-        tables = north_farm(
-            index,
-            direction_deg=direction,
-            usable=usable,
-            reanalysis_deg=reanalysis,
-            layout=hot_layout() if with_layout else None,
-        )
-        _RUNS[key] = {name: _changepoints(table) for name, table in tables.items()}
-    return _RUNS[key]
-
-
-# Two two-year windows rather than one four-year one: the changepoint search costs roughly the
-# cube of the record length, so this covers the same events for a quarter of the runtime.
-EARLY = ("2017-01-01", "2019-01-01")
-LATE = ("2019-01-01", "2021-01-01")
+WINDOWS = {"early": EARLY, "late": LATE}
 
 # Every recalibration v0's published table records in each window, and nothing else.
 EXPECTED = {
-    EARLY: {
+    "early": {
         "T01": [("2017-04-23", 21.1), ("2017-05-04", -19.4)],
         "T05": [("2017-05-03", 35.7), ("2018-04-21", -19.7)],
         "T16": [("2017-05-19", 98.7), ("2017-06-18", 9.0), ("2017-08-09", -7.2)],
     },
-    LATE: {
+    "late": {
         "T11": [("2019-08-19", -4.4)],
         "T12": [("2020-06-18", 170.7)],
         "T19": [("2019-07-12", 98.8), ("2019-12-24", -122.5)],
     },
 }
-_CASES = [(window, turbine) for window, turbines in EXPECTED.items() for turbine in sorted(turbines)]
-_QUIET = [
-    (window, turbine) for window, turbines in EXPECTED.items() for turbine in ALL_TURBINES if turbine not in turbines
-]
+_KNOWN = [(window, turbine) for window, turbines in EXPECTED.items() for turbine in sorted(turbines)]
+
+# November 2019 and June 2020: most of the farm is down and the wind sits in a sector it rarely
+# occupies, so the weather and the reference move together. Nothing may step inside them.
+OUTAGES = (("2019-11-05", "2019-11-25"), ("2020-06-08", "2020-06-17"))
 
 
-class TestKnownChangepoints:
-    """All 21 turbines over two-year windows: v0's changepoints, and no others."""
+@pytest.fixture(scope="module")
+def hot() -> pd.DataFrame:
+    """The fixture, loaded once for the module."""
+    return load_fixture()
 
-    @pytest.mark.parametrize(("window", "turbine"), _CASES, ids=lambda v: v if isinstance(v, str) else v[0])
-    @pytest.mark.slow
-    def test_a_turbines_known_recalibrations_are_found(
-        self, hot: pd.DataFrame, window: tuple[str, str], turbine: str
-    ) -> None:
-        found = run_farm(hot, ALL_TURBINES, *window)[turbine]
-        expected = EXPECTED[window][turbine]
-        assert len(found) == len(expected), f"{turbine}: {_describe(found)}"
-        for (when, step), (expected_when, expected_step) in zip(found, expected, strict=True):
-            assert abs(when - pd.Timestamp(expected_when, tz="UTC")) <= pd.Timedelta(days=3), _describe(found)
-            assert circ_diff(step, expected_step) == pytest.approx(0.0, abs=3.0), _describe(found)
 
-    @pytest.mark.parametrize(("window", "turbine"), _QUIET, ids=lambda v: v if isinstance(v, str) else v[0])
-    @pytest.mark.slow
-    def test_every_other_turbine_is_left_alone(self, hot: pd.DataFrame, window: tuple[str, str], turbine: str) -> None:
-        found = run_farm(hot, ALL_TURBINES, *window)[turbine]
-        assert found == [], f"{turbine}: {_describe(found)}"
+_RUNS: dict[tuple, dict[str, pd.DataFrame]] = {}
 
-    @pytest.mark.parametrize("window", [EARLY, LATE], ids=["early", "late"])
-    def test_the_farm_total_matches_the_published_table(self, hot: pd.DataFrame, window: tuple[str, str]) -> None:
-        """v0's rate over 21 turbines, not an order more."""
-        found = run_farm(hot, ALL_TURBINES, *window)
-        assert sum(len(v) for v in found.values()) == sum(len(v) for v in EXPECTED[window].values()), {
-            n: _describe(v) for n, v in found.items() if v
+
+def default_run(hot: pd.DataFrame, window: str, turbines: tuple[str, ...] = ALL_TURBINES) -> dict[str, pd.DataFrame]:
+    """The default pipeline's tables for ``turbines`` over a window, memoised -- each run costs ~30 s."""
+    key = ("default", window, turbines)
+    if key not in _RUNS:
+        _RUNS[key] = north(farm_inputs(hot, turbines, *WINDOWS[window]), layout=hot_layout(turbines))
+    return _RUNS[key]
+
+
+def _assert_matches(found: list[tuple[pd.Timestamp, float]], expected: list[tuple[str, float]]) -> None:
+    assert len(found) == len(expected), describe(found)
+    for (when, step), (expected_when, expected_step) in zip(found, expected, strict=True):
+        assert abs(when - pd.Timestamp(expected_when, tz="UTC")) <= pd.Timedelta(days=3), describe(found)
+        assert circ_diff(step, expected_step) == pytest.approx(0.0, abs=3.0), describe(found)
+
+
+class TestDefaultPipeline:
+    """All 21 turbines, the layout and pass 4: v0's recalibrations, no others, consistent offsets."""
+
+    @pytest.mark.parametrize(("window", "turbine"), _KNOWN, ids=lambda v: v)
+    def test_a_turbines_published_recalibrations_are_found(self, hot: pd.DataFrame, window: str, turbine: str) -> None:
+        _assert_matches(changepoints(default_run(hot, window)[turbine]), EXPECTED[window][turbine])
+
+    @pytest.mark.parametrize("window", list(WINDOWS))
+    def test_every_other_turbine_is_left_alone(self, hot: pd.DataFrame, window: str) -> None:
+        """Including the neighbours of a turbine that steps: its step must not leak into them.
+
+        T15 used to step with its neighbours T05 and T16, and T17 with T19, because pass 2's
+        four-neighbour consensus still carried each neighbour's own step; repeating pass 2 until it
+        converges removes it (CF21).
+        """
+        tables = default_run(hot, window)
+        extra = {
+            name: describe(found)
+            for name, table in tables.items()
+            if name not in EXPECTED[window] and (found := changepoints(table))
         }
-
-
-class TestKnownChangepointsWithTheLayout:
-    """The default path -- nearest-neighbour consensus from the layout -- held to the same table.
-
-    The whole-farm tests above run with ``layout=None``; a user with turbine positions gets this
-    path instead, so it must find v0's recalibrations and nothing else just the same.
-    """
-
-    @pytest.mark.parametrize(("window", "turbine"), _CASES, ids=lambda v: v if isinstance(v, str) else v[0])
-    @pytest.mark.slow
-    def test_a_turbines_known_recalibrations_are_found(
-        self, hot: pd.DataFrame, window: tuple[str, str], turbine: str
-    ) -> None:
-        found = run_farm(hot, ALL_TURBINES, *window, with_layout=True)[turbine]
-        expected = EXPECTED[window][turbine]
-        assert len(found) == len(expected), f"{turbine}: {_describe(found)}"
-        for (when, step), (expected_when, expected_step) in zip(found, expected, strict=True):
-            assert abs(when - pd.Timestamp(expected_when, tz="UTC")) <= pd.Timedelta(days=3), _describe(found)
-            assert circ_diff(step, expected_step) == pytest.approx(0.0, abs=3.0), _describe(found)
-
-    @pytest.mark.parametrize(("window", "turbine"), _QUIET, ids=lambda v: v if isinstance(v, str) else v[0])
-    @pytest.mark.slow
-    def test_every_other_turbine_is_left_alone(self, hot: pd.DataFrame, window: tuple[str, str], turbine: str) -> None:
-        found = run_farm(hot, ALL_TURBINES, *window, with_layout=True)[turbine]
-        assert found == [], f"{turbine}: {_describe(found)}"
-
-    @pytest.mark.parametrize("window", [EARLY, LATE], ids=["early", "late"])
-    def test_the_farm_total_matches_the_published_table(self, hot: pd.DataFrame, window: tuple[str, str]) -> None:
-        found = run_farm(hot, ALL_TURBINES, *window, with_layout=True)
-        assert sum(len(v) for v in found.values()) == sum(len(v) for v in EXPECTED[window].values()), {
-            n: _describe(v) for n, v in found.items() if v
-        }
+        assert extra == {}, f"changepoints v0's table does not record: {extra}"
 
     def test_no_turbine_steps_during_a_farm_outage(self, hot: pd.DataFrame) -> None:
         during = {
             name: [
                 (w, s)
-                for w, s in found
-                if any(
-                    pd.Timestamp(lo, tz="UTC") <= w <= pd.Timestamp(hi, tz="UTC")
-                    for lo, hi in TestOutageArtefacts.OUTAGES
-                )
+                for w, s in changepoints(table)
+                if any(pd.Timestamp(lo, tz="UTC") <= w <= pd.Timestamp(hi, tz="UTC") for lo, hi in OUTAGES)
             ]
-            for name, found in run_farm(hot, ALL_TURBINES, *LATE, with_layout=True).items()
+            for name, table in default_run(hot, "late").items()
         }
-        offenders = {name: _describe(v) for name, v in during.items() if v}
+        offenders = {name: describe(v) for name, v in during.items() if v}
         assert offenders == {}, f"turbines stepped with the outage, not their own calibration: {offenders}"
 
-
-class TestOutageArtefacts:
-    """Farm-wide self-cancelling excursions must not be reported.
-
-    November 2019 and June 2020 are spells where most of the farm is down and the wind sits in a
-    sector it rarely occupies. Every turbine appeared to step by 12-22 degrees and back within a
-    week. The cause was the **first** pass: reanalysis carries its own direction-dependent bias,
-    so an unusual spell moves every turbine's residual against it together, and correcting for
-    that wrote the excursion into the northed directions and hence into the farm consensus the
-    second pass trusts.
-    """
-
-    OUTAGES = (("2019-11-05", "2019-11-25"), ("2020-06-08", "2020-06-17"))
-
-    def test_no_turbine_steps_during_a_farm_outage(self, hot: pd.DataFrame) -> None:
-        during = {
-            name: [
-                (w, s)
-                for w, s in found
-                if any(pd.Timestamp(lo, tz="UTC") <= w <= pd.Timestamp(hi, tz="UTC") for lo, hi in self.OUTAGES)
-            ]
-            for name, found in run_farm(hot, ALL_TURBINES, *LATE).items()
+    def test_the_two_windows_agree_where_they_meet(self, hot: pd.DataFrame) -> None:
+        """Each window is northed independently, yet a turbine's offset at the end of 2018 must equal
+        its offset at the start of 2019: its calibration did not change at midnight. This holds the
+        absolute frame -- pass 1's anchor and pass 4's wake-nadir nudge -- and not just the steps.
+        """
+        early, late = default_run(hot, "early"), default_run(hot, "late")
+        gaps = {
+            name: float(circ_diff(late[name]["north_offset"].iloc[0], early[name]["north_offset"].iloc[-1]))
+            for name in ALL_TURBINES
         }
-        offenders = {name: _describe(v) for name, v in during.items() if v}
-        assert offenders == {}, f"turbines stepped with the outage, not their own calibration: {offenders}"
-
-    def test_the_outage_years_are_quiet(self, hot: pd.DataFrame) -> None:
-        """Run 2019-2020 on its own: every changepoint across 21 turbines is in v0's table."""
-        found = run_farm(hot, ALL_TURBINES, *LATE)
-        expected = sum(len(v) for v in EXPECTED[LATE].values())
-        total = sum(len(v) for v in found.values())
-        assert total == expected, {n: _describe(v) for n, v in found.items() if v}
+        disagree = {name: round(gap, 1) for name, gap in gaps.items() if abs(gap) > 2.5}
+        assert disagree == {}, f"offset jumps between windows (deg): {disagree}"
 
 
-class TestEdgeArtefacts:
-    """A step near the end of a record is only credible if it is big.
+# ---------------------------------------------------------------------------
+# degradation: the study's cases, scored against the same window's full-data answer
+# ---------------------------------------------------------------------------
+def _inputs_for(hot: pd.DataFrame, window: str, case: str) -> tuple[FarmInputs, tuple[str, ...]]:
+    """Build a degraded case's inputs, named as the study names it ("N=3", "90d", "N=3,90d", "drop50%")."""
+    order = tuple(contiguous_order(hot_layout()))
+    start, end = WINDOWS[window]
+    turbines, days = ALL_TURBINES, None
+    for part in case.split(","):
+        if part.startswith("N="):
+            turbines = tuple(sorted(order[: int(part[2:])]))
+        elif part.endswith("d") and part[:-1].isdigit():
+            days = int(part[:-1])
+    inputs = farm_inputs(hot, turbines, start, end, last_days=days)
+    if case.startswith("drop"):
+        rng = np.random.default_rng(0)
+        frac = int(case[4:-1]) / 100
+        inputs = inputs.knocked_out({t: rng.random(len(inputs.index)) < frac for t in turbines})
+    elif case == "6mo_outage":
+        lo = inputs.index.min() + pd.Timedelta(days=180)
+        black = np.asarray((inputs.index >= lo) & (inputs.index < lo + pd.Timedelta(days=180)))
+        inputs = inputs.knocked_out(dict.fromkeys(turbines, black))
+    return inputs, turbines
 
-    T13 had an apparent +3.5 deg step on 2018-12-20 that existed only when the record stopped
-    twelve days later; extending it by two days removed it. It is not in v0's table.
+
+# (case, window) -> worst turbine's offset error (deg) against the window's full-data answer, as
+# recorded on the fixture with pass 2 repeated to convergence. A case may be up to half again as bad, plus a
+# degree, before it fails: enough for incidental change, not for a real loss of robustness.
+RECORDED_WORST_ERROR = {
+    ("N=6", "early"): 2.0,
+    ("N=6", "late"): 1.9,
+    ("N=3", "early"): 5.0,
+    ("N=3", "late"): 1.9,
+    ("N=2", "early"): 2.3,
+    ("N=2", "late"): 2.0,
+    ("N=1", "early"): 2.2,
+    ("N=1", "late"): 2.7,
+    ("365d", "early"): 2.3,
+    ("365d", "late"): 2.1,
+    ("90d", "early"): 5.3,
+    ("90d", "late"): 2.4,
+    ("30d", "early"): 17.5,
+    ("30d", "late"): 3.7,
+    ("7d", "early"): 15.7,
+    ("7d", "late"): 10.9,
+    ("N=3,90d", "early"): 2.2,
+    ("N=3,90d", "late"): 12.5,
+    ("N=2,30d", "early"): 1.4,
+    ("N=2,30d", "late"): 1.9,
+    ("N=1,14d", "early"): 4.7,
+    ("N=1,14d", "late"): 0.7,
+    ("N=1,7d", "early"): 8.0,
+    ("N=1,7d", "late"): 1.4,
+}
+# Cases that cost a full-farm, full-window run each: CI only.
+RECORDED_WORST_ERROR_SLOW = {
+    ("N=10", "early"): 2.1,
+    ("N=10", "late"): 2.0,
+    ("drop50%", "early"): 2.2,
+    ("drop50%", "late"): 1.9,
+    ("drop75%", "early"): 5.0,
+    ("drop75%", "late"): 3.2,
+    ("6mo_outage", "early"): 2.0,
+    ("6mo_outage", "late"): 1.7,
+}
+
+
+def _check_degraded(hot: pd.DataFrame, case: str, window: str, recorded: float) -> None:
+    inputs, turbines = _inputs_for(hot, window, case)
+    tables = north(inputs, layout=hot_layout(turbines))
+    assert set(tables) == set(turbines)
+    assert all(np.isfinite(t["north_offset"]).all() for t in tables.values()), "a degraded case returned NaN offsets"
+    errors = offset_errors(tables, default_run(hot, window), monthly(inputs.index))
+    worst = max(errors, key=errors.__getitem__)
+    assert errors[worst] <= 1.5 * recorded + 1.0, (
+        f"{case} ({window}): {worst} is {errors[worst]:.1f} deg off the full-data answer; recorded {recorded}"
+    )
+
+
+class TestDegradation:
+    """Fewer turbines, shorter records, both, and missing data: northing degrades, it does not fail.
+
+    Mirrors ``study_northing_degradation``: turbines are taken as a spatially contiguous cluster (so a
+    wake pair survives for pass 4), records are truncated to their most recent days, and each result
+    is scored by the worst turbine's median offset error against the full-data answer.
+
+    What the recorded errors say: to within a few degrees down to a lone turbine or a 90-day record,
+    since pass 3 takes over below three turbines. Two corners are genuinely weak and are held where
+    they are rather than hidden: a whole-farm record of a month or less (T15 reads ~17 deg off at the
+    end of 2018, where its neighbourhood data are thin), and three turbines on 90 days in 2020.
     """
 
+    @pytest.mark.parametrize(("case", "window"), list(RECORDED_WORST_ERROR), ids=lambda v: v)
+    def test_a_degraded_case_stays_near_the_full_data_answer(self, hot: pd.DataFrame, case: str, window: str) -> None:
+        _check_degraded(hot, case, window, RECORDED_WORST_ERROR[case, window])
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize(("case", "window"), list(RECORDED_WORST_ERROR_SLOW), ids=lambda v: v)
+    def test_a_costly_degraded_case_stays_near_the_full_data_answer(
+        self, hot: pd.DataFrame, case: str, window: str
+    ) -> None:
+        _check_degraded(hot, case, window, RECORDED_WORST_ERROR_SLOW[case, window])
+
+    @pytest.mark.slow
     @pytest.mark.parametrize("end", ["2019-01-01", "2019-01-03", "2019-02-01"])
+    def test_where_the_record_stops_does_not_invent_a_step(self, hot: pd.DataFrame, end: str) -> None:
+        """T13 once had an apparent +3.5 deg step on 2018-12-20 that existed only when the record
+        stopped twelve days later. A step near the end of a record is only credible if it is big.
+        """
+        inputs = farm_inputs(hot, ALL_TURBINES, "2017-01-01", end)
+        found = changepoints(north(inputs, layout=hot_layout())["T13"])
+        assert found == [], describe(found)
+
     @pytest.mark.slow
-    def test_t13_is_clean_wherever_the_record_stops(self, hot: pd.DataFrame, end: str) -> None:
-        found = run_farm(hot, ALL_TURBINES, "2017-01-01", end)["T13"]
-        assert found == [], _describe(found)
-
-
-class TestSubsetConsistency:
-    """Analysing part of a farm must not invent changepoints the whole farm does not see."""
-
-    WEST = tuple(f"T{n:02d}" for n in range(1, 16))
-    EAST = tuple(f"T{n:02d}" for n in range(16, 22))
-
     @pytest.mark.parametrize("half", ["west", "east"])
-    @pytest.mark.slow
-    def test_half_the_farm_agrees_with_the_whole(self, hot: pd.DataFrame, half: str) -> None:
-        turbines = self.WEST if half == "west" else self.EAST
-        tables = run_farm(hot, turbines, *EARLY)
-        reference = run_farm(hot, ALL_TURBINES, *EARLY)
+    def test_half_the_farm_finds_what_the_whole_farm_finds(self, hot: pd.DataFrame, half: str) -> None:
+        turbines = tuple(f"T{n:02d}" for n in (range(1, 16) if half == "west" else range(16, 22)))
+        part = default_run(hot, "early", turbines)
+        whole = default_run(hot, "early")
         for name in turbines:
-            found = tables[name]
-            whole = reference[name]
-            assert len(found) == len(whole), f"{name}: {half}={_describe(found)} whole={_describe(whole)}"
+            assert len(changepoints(part[name])) == len(changepoints(whole[name])), (
+                f"{name}: {half}={describe(changepoints(part[name]))} whole={describe(changepoints(whole[name]))}"
+            )
+
+
+class TestWholeFarmFallback:
+    """``layout=None`` -- one whole-farm consensus, no pass 4 -- finds the same recalibrations."""
+
+    @pytest.mark.parametrize("window", list(WINDOWS))
+    def test_finds_the_published_recalibrations_and_nothing_else(self, hot: pd.DataFrame, window: str) -> None:
+        tables = north(farm_inputs(hot, ALL_TURBINES, *WINDOWS[window]), layout=None, pass_four=False)
+        for name in ALL_TURBINES:
+            _assert_matches(changepoints(tables[name]), EXPECTED[window].get(name, []))
 
 
 class TestSingleTurbineAgainstReanalysis:
     """Northing one turbine with no farm to lean on falls back to reanalysis alone."""
 
     def test_a_lone_turbine_still_finds_its_large_recalibration(self, hot: pd.DataFrame) -> None:
-        index, direction, usable, reanalysis = _arrays(hot, ("T16",), "2017-01-01", "2019-01-01")
-        table = estimate_north_table(index, direction["T16"], reference_deg=reanalysis, usable=usable["T16"])
-        found = _changepoints(table)
-        assert len(found) >= 1, _describe(found)
-        assert any(abs(w - pd.Timestamp("2017-05-19", tz="UTC")) <= pd.Timedelta(days=3) for w, _ in found), _describe(
+        inputs = farm_inputs(hot, ("T16",), *EARLY)
+        table = estimate_north_table(
+            inputs.index, inputs.direction["T16"], reference_deg=inputs.reference, usable=inputs.usable["T16"]
+        )
+        found = changepoints(table)
+        assert any(abs(w - pd.Timestamp("2017-05-19", tz="UTC")) <= pd.Timedelta(days=3) for w, _ in found), describe(
             found
         )
 
@@ -309,20 +295,10 @@ class TestSingleTurbineAgainstReanalysis:
         """Below the consensus floor each turbine is northed against reanalysis with changepoints
         (pass 3). Reanalysis is coarse in time, so recalibrations closer than the reanalysis minimum
         segment must be merged rather than read as a burst of steps: the whole farm resolves to a
-        handful of changepoints, not one every few weeks.
-
-        Locks in the reanalysis min-segment guard: without it this farm reports ~100 changepoints
-        against ERA5; with it, single digits.
+        handful of changepoints, not one every few weeks (CF20: ~100 without the guard).
         """
-        index, direction, usable, reanalysis = _arrays(hot, ALL_TURBINES, "2017-01-01", "2021-01-01")
         total = 0
         for turbine in ALL_TURBINES:
-            tables = north_farm(
-                index,
-                direction_deg={turbine: direction[turbine]},
-                usable={turbine: usable[turbine]},
-                reanalysis_deg=reanalysis,
-                layout=None,
-            )
-            total += len(_changepoints(tables[turbine]))
+            inputs = farm_inputs(hot, (turbine,), "2017-01-01", "2021-01-01")
+            total += len(changepoints(north(inputs, layout=None, pass_four=False)[turbine]))
         assert total <= 20, f"pass 3 over-detected against reanalysis: {total} changepoints across the farm"

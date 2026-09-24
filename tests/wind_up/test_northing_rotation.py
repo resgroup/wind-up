@@ -10,63 +10,44 @@ those must reproduce the unrotated tables exactly. Other rotations move sector b
 to the data, which legitimately changes the veer signature a little; those are held to the same
 changepoints (same count, each within a few days -- the sector regrouping jitters a timestamp by a
 fraction of a day), but not to the same offsets.
+
+Rotations run the neighbour-consensus path (the layout, no pass 4): pass 4 compares each turbine's
+direction with the layout's absolute bearings, which a rotation of the data alone rightly changes.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from tests.wind_up.hot_northing import (
+    ALL_TURBINES,
+    EARLY,
+    LATE,
+    farm_inputs,
+    fixture_available,
+    hot_layout,
+    load_fixture,
+)
 from wind_up.circular_math import circ_diff
 from wind_up.northing import DEFAULT_NORTHING, NorthingSettings, estimate_north_table, north_farm
 
-FIXTURE = Path(__file__).parents[1] / "test_data" / "hot" / "northing" / "northing_inputs.parquet"
-ALL_TURBINES = tuple(f"T{n:02d}" for n in range(1, 22))
 WEST = tuple(f"T{n:02d}" for n in range(1, 16))
 
 SECTOR_ALIGNED = (90.0, 150.0, 270.0)
 SECTOR_MISALIGNED = (137.0, 223.0)
 
-
-def _is_parquet(path: Path) -> bool:
-    try:
-        with path.open("rb") as handle:
-            return handle.read(4) == b"PAR1"
-    except OSError:
-        return False
-
-
 pytestmark = pytest.mark.skipif(
-    not _is_parquet(FIXTURE), reason="Hill of Towie northing fixture not available (git-lfs not pulled)"
+    not fixture_available(), reason="Hill of Towie northing fixture not available (git-lfs not pulled)"
 )
 
 
 @pytest.fixture(scope="module")
 def hot() -> pd.DataFrame:
-    return pd.read_parquet(FIXTURE)
-
-
-def _arrays(hot: pd.DataFrame, turbines: tuple[str, ...], start: str, end: str, *, rotate_deg: float) -> tuple:
-    """``(index, direction, usable, reanalysis)`` for a window, every direction rotated by ``rotate_deg``."""
-    rows = hot[
-        hot["turbine"].isin(turbines)
-        & (hot["timestamp"] >= pd.Timestamp(start, tz="UTC"))
-        & (hot["timestamp"] < pd.Timestamp(end, tz="UTC"))
-    ]
-    index = pd.DatetimeIndex(sorted(rows["timestamp"].unique()))
-    direction, usable, reanalysis = {}, {}, None
-    for turbine in sorted(rows["turbine"].unique()):
-        one = rows[rows["turbine"] == turbine].drop_duplicates("timestamp").set_index("timestamp").reindex(index)
-        wd = (one["era5_wd_deg"].to_numpy(dtype=float) + rotate_deg) % 360.0
-        reanalysis = wd if reanalysis is None else np.where(np.isfinite(reanalysis), reanalysis, wd)
-        yaw = (one["yaw_deg"].to_numpy(dtype=float) + rotate_deg) % 360.0
-        direction[str(turbine)] = yaw
-        usable[str(turbine)] = np.isfinite(yaw) & np.isfinite(wd)
-    return index, direction, usable, reanalysis
+    return load_fixture()
 
 
 _FARM_RUNS: dict[tuple, dict[str, pd.DataFrame]] = {}
@@ -74,7 +55,8 @@ _FARM_RUNS: dict[tuple, dict[str, pd.DataFrame]] = {}
 
 def test_the_rotations_really_put_the_record_on_north(hot: pd.DataFrame) -> None:
     """Guard the premise: at +150 deg most of the yaw record sits within 60 deg of north."""
-    rotated = (hot["yaw_deg"].dropna().to_numpy() + 150.0) % 360.0
+    yaw = np.concatenate(list(farm_inputs(hot, ALL_TURBINES, *LATE).direction.values()))
+    rotated = (yaw[np.isfinite(yaw)] + 150.0) % 360.0
     near_north = np.abs(circ_diff(rotated, 0.0)) < 60.0
     assert near_north.mean() > 0.5
 
@@ -125,29 +107,32 @@ def _tolerances(rotate_deg: float) -> tuple[bool, float]:
 def _farm_tables(
     hot: pd.DataFrame,
     turbines: tuple[str, ...],
-    start: str,
-    end: str,
+    window: tuple[str, str],
     rotate_deg: float,
     settings: NorthingSettings = DEFAULT_NORTHING,
 ) -> dict[str, pd.DataFrame]:
-    key = (turbines, start, end, rotate_deg, settings)
+    key = (turbines, window, rotate_deg, settings)
     if key not in _FARM_RUNS:
-        index, direction, usable, reanalysis = _arrays(hot, turbines, start, end, rotate_deg=rotate_deg)
+        inputs = farm_inputs(hot, turbines, *window).rotated(rotate_deg)
         _FARM_RUNS[key] = north_farm(
-            index,
-            direction_deg=direction,
-            usable=usable,
-            reanalysis_deg=reanalysis,
-            layout=None,
+            inputs.index,
+            direction_deg=inputs.direction,
+            usable=inputs.usable,
+            reanalysis_deg=inputs.reference,
+            layout=hot_layout(turbines),
             settings=settings,
         )
     return _FARM_RUNS[key]
 
 
 def _lone(hot: pd.DataFrame, rotate_deg: float, settings: NorthingSettings = DEFAULT_NORTHING) -> pd.DataFrame:
-    index, direction, usable, reanalysis = _arrays(hot, ("T16",), "2017-01-01", "2019-01-01", rotate_deg=rotate_deg)
+    inputs = farm_inputs(hot, ("T16",), *EARLY).rotated(rotate_deg)
     return estimate_north_table(
-        index, direction["T16"], reference_deg=reanalysis, usable=usable["T16"], settings=settings
+        inputs.index,
+        inputs.direction["T16"],
+        reference_deg=inputs.reference,
+        usable=inputs.usable["T16"],
+        settings=settings,
     )
 
 
@@ -161,8 +146,8 @@ def test_a_lone_turbine_against_reanalysis(hot: pd.DataFrame, rotate_deg: float)
 @pytest.mark.slow
 @pytest.mark.parametrize("rotate_deg", _ROTATIONS)
 def test_the_whole_farm(hot: pd.DataFrame, rotate_deg: float) -> None:
-    base = _farm_tables(hot, ALL_TURBINES, "2019-01-01", "2021-01-01", 0.0)
-    rotated = _farm_tables(hot, ALL_TURBINES, "2019-01-01", "2021-01-01", rotate_deg)
+    base = _farm_tables(hot, ALL_TURBINES, LATE, 0.0)
+    rotated = _farm_tables(hot, ALL_TURBINES, LATE, rotate_deg)
     offsets_too, tol = _tolerances(rotate_deg)
     problems = {
         name: p
@@ -175,8 +160,8 @@ def test_the_whole_farm(hot: pd.DataFrame, rotate_deg: float) -> None:
 @pytest.mark.slow
 @pytest.mark.parametrize("rotate_deg", _ROTATIONS)
 def test_half_the_farm(hot: pd.DataFrame, rotate_deg: float) -> None:
-    base = _farm_tables(hot, WEST, "2017-01-01", "2019-01-01", 0.0)
-    rotated = _farm_tables(hot, WEST, "2017-01-01", "2019-01-01", rotate_deg)
+    base = _farm_tables(hot, WEST, EARLY, 0.0)
+    rotated = _farm_tables(hot, WEST, EARLY, rotate_deg)
     offsets_too, tol = _tolerances(rotate_deg)
     problems = {
         name: p
@@ -197,7 +182,7 @@ class TestWithoutVeerSectors:
     @pytest.mark.slow
     @pytest.mark.parametrize("rotate_deg", SECTOR_ALIGNED + SECTOR_MISALIGNED)
     def test_the_whole_farm(self, hot: pd.DataFrame, rotate_deg: float) -> None:
-        base = _farm_tables(hot, ALL_TURBINES, "2019-01-01", "2021-01-01", 0.0, NO_VEER)
-        rotated = _farm_tables(hot, ALL_TURBINES, "2019-01-01", "2021-01-01", rotate_deg, NO_VEER)
+        base = _farm_tables(hot, ALL_TURBINES, LATE, 0.0, NO_VEER)
+        rotated = _farm_tables(hot, ALL_TURBINES, LATE, rotate_deg, NO_VEER)
         problems = {name: p for name in ALL_TURBINES if (p := _compare(base[name], rotated[name], offsets_too=True))}
         assert problems == {}, f"rotated by {rotate_deg}: {problems}"
