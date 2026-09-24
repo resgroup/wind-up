@@ -24,6 +24,7 @@ from benchmarking.baselines.toggle_specialist import (
     _daily_segment_ratio,
     _expected_per_day,
     _infer_timebase,
+    gap_to_other_segment,
     pair_within,
     restrict_to_campaign,
 )
@@ -1137,6 +1138,15 @@ class TestPairWithin:
         paired = pair_within(index, baseline=baseline, upgraded=upgraded, max_gap=pd.Timedelta(minutes=20))
         assert not paired.baseline.any()
         assert not paired.upgraded.any()
+
+    @pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+    def test_the_index_resolution_does_not_change_the_gap(self, unit: str) -> None:
+        """Real SCADA often arrives at microsecond resolution; a 10-min gap must still read as 10 min."""
+        index, baseline, upgraded = self._one_each(gap_rows=1)
+        index = index.as_unit(unit)
+        assert gap_to_other_segment(index, baseline=baseline, upgraded=upgraded)[0] == pytest.approx(600.0)
+        paired = pair_within(index, baseline=baseline, upgraded=upgraded, max_gap=pd.Timedelta(minutes=5))
+        assert not paired.baseline.any()
 
     def test_an_empty_other_segment_drops_everything(self) -> None:
         index = _index(6)

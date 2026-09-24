@@ -110,7 +110,7 @@ def gap_to_other_segment(
     index: pd.DatetimeIndex, *, baseline: npt.NDArray[np.bool_], upgraded: npt.NDArray[np.bool_]
 ) -> npt.NDArray[np.float64]:
     """Seconds from each flagged row to the nearest flagged row of the other segment; NaN if unflagged."""
-    times = index.asi8
+    times = index.as_unit("ns").asi8
     gap = np.full(len(index), np.nan)
     gap[baseline] = _nearest_gap_s(times[baseline], others=times[upgraded])
     gap[upgraded] = _nearest_gap_s(times[upgraded], others=times[baseline])
