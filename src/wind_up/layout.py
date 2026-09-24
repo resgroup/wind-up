@@ -45,12 +45,23 @@ class Layout:
     """A validated turbine table plus the geodesic distance and bearing between every pair.
 
     ``distance_m[i, j]`` and ``bearing_deg[i, j]`` are from row ``i`` to row ``j``.
+
+    A layout must be physically possible, however it is built: every turbine at a valid position,
+    with a positive, finite rotor diameter, and no two turbines closer than the sum of their rotor
+    radii. That refuses placeholder coordinates (every turbine at one point), which would otherwise
+    pass quietly into neighbour ranking, wake geometry and campaign design.
     """
 
     frame: pd.DataFrame
     filled_rotor_diameters: tuple[str, ...]
     distance_m: npt.NDArray[np.float64]
     bearing_deg: npt.NDArray[np.float64]
+
+    def __post_init__(self) -> None:
+        """Refuse a layout that could not be a real wind farm."""
+        _check_positions(self.frame)
+        _check_rotor_diameters(self.frame)
+        _check_rotor_clearance(self.frame, self.distance_m)
 
     @classmethod
     def from_frame(cls, frame: pd.DataFrame) -> Layout:
@@ -103,6 +114,7 @@ class Layout:
                 WIND_FARM_COL: pd.Series([_text_or_none(v) for v in column(WIND_FARM_COL)], dtype=object),
             }
         )
+        _check_positions(tidy)  # before the geodesic maths, which a position off the globe would break
         distance_m, bearing_deg = geodesic_matrices(latitudes=tidy[LATITUDE_COL], longitudes=tidy[LONGITUDE_COL])
         return cls(frame=tidy, filled_rotor_diameters=filled, distance_m=distance_m, bearing_deg=bearing_deg)
 
@@ -113,6 +125,53 @@ class Layout:
             msg = f"the layout has no turbine called {name!r}"
             raise ValueError(msg)
         return int(matches[0])
+
+
+def _labels(frame: pd.DataFrame, rows: npt.NDArray[np.intp]) -> list[str]:
+    names = frame[NAME_COL].to_numpy()
+    return [str(names[i]) if names[i] is not None else f"row {i}" for i in rows]
+
+
+def _check_positions(frame: pd.DataFrame) -> None:
+    lat = frame[LATITUDE_COL].to_numpy(dtype=float)
+    lon = frame[LONGITUDE_COL].to_numpy(dtype=float)
+    valid = np.isfinite(lat) & np.isfinite(lon) & (np.abs(lat) <= 90) & (np.abs(lon) <= 180)  # noqa: PLR2004
+    if not valid.all():
+        bad = _labels(frame, np.flatnonzero(~valid))
+        msg = f"the layout gives {bad} a latitude/longitude that is not a valid position"
+        raise ValueError(msg)
+
+
+def _check_rotor_diameters(frame: pd.DataFrame) -> None:
+    diameters = frame[ROTOR_DIAMETER_COL].to_numpy(dtype=float)
+    valid = np.isfinite(diameters) & (diameters > 0)
+    if not valid.all():
+        bad = _labels(frame, np.flatnonzero(~valid))
+        msg = f"the layout gives {bad} a rotor diameter that is not positive and finite"
+        raise ValueError(msg)
+
+
+# How many offending pairs a clearance error names before summarising the rest.
+_PAIRS_SHOWN = 5
+
+
+def _check_rotor_clearance(frame: pd.DataFrame, distance_m: npt.NDArray[np.float64]) -> None:
+    """Refuse any two turbines closer than the sum of their rotor radii: their rotors would collide."""
+    diameters = frame[ROTOR_DIAMETER_COL].to_numpy(dtype=float)
+    clearance = (diameters[:, None] + diameters[None, :]) / 2.0
+    first, second = np.nonzero(np.triu(~(np.asarray(distance_m, dtype=float) >= clearance), k=1))
+    if len(first):
+        names = _labels(frame, np.arange(len(frame)))
+        pairs = [
+            f"{names[i]}-{names[j]} ({distance_m[i, j]:.0f} m apart, rotors need {clearance[i, j]:.0f} m)"
+            for i, j in zip(first[:_PAIRS_SHOWN], second[:_PAIRS_SHOWN], strict=True)
+        ]
+        more = f" and {len(first) - _PAIRS_SHOWN} more pair(s)" if len(first) > _PAIRS_SHOWN else ""
+        msg = (
+            f"the layout places turbines closer than their rotors allow: {', '.join(pairs)}{more}. "
+            "Check the coordinates (placeholders put every turbine at one point) and rotor diameters."
+        )
+        raise ValueError(msg)
 
 
 def upwind_mask(layout: Layout, *, target: int, wind_direction_deg: float) -> npt.NDArray[np.bool_]:

@@ -50,7 +50,7 @@ from benchmarking.campaigns.placebo import (
 from benchmarking.campaigns.runner import CampaignRunner
 from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_COLUMNS
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -326,16 +326,6 @@ def probe_arms() -> list[Arm]:
     ]
 
 
-def _coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
-    """Hill of Towie coordinates for ``turbines``."""
-    metadata = load_hot_metadata()
-    return {
-        str(row.Name): (float(row.Latitude), float(row.Longitude))
-        for row in metadata.itertuples()
-        if str(row.Name) in set(turbines)
-    }
-
-
 def _power_model_only(spec: object, *, out_dir: Path, era5_hourly_df: pd.DataFrame, seed: int) -> list[Method]:
     """Build just the power model for one turbine: it is the only method R4 is asking about."""
     return [
@@ -388,7 +378,7 @@ def run_arm(
             mode,
             upgraded=[PROBE_TEST_WTG],
             turbines=list(PROBE_TURBINES),
-            coords=_coords(PROBE_TURBINES),
+            coords=hot_coords(PROBE_TURBINES),
         )
         dataset = campaign.generate(faulted_scada)
         spec = campaign.spec()

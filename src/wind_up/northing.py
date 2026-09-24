@@ -1069,7 +1069,9 @@ def north_farm(
         ``direction_deg`` must resolve to a layout row; external turbines in the layout are ignored.
         Pass ``layout=None`` -- explicitly -- to fall back to the one whole-farm consensus; that lets
         a distant or miscalibrated turbine into every device's reference, so choose it only when no
-        positions are available.
+        positions are available. A :class:`~wind_up.layout.Layout` cannot hold impossible positions
+        (overlapping rotors, placeholders at one point), so neighbour ranking and pass 4's wake
+        geometry always rest on a real farm.
     :param power: device name to its power signal on ``index``, for the pass-4 wake-nadir nudge.
         With a ``layout``, pass 4 adds one absolute correction per turbine on top of its changepoint
         table, from where each turbine's wake lands on its downstream neighbours. ``None`` (or no

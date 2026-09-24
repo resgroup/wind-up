@@ -18,7 +18,7 @@ TURBINES_CSV = """Name,Latitude,Longitude,rotor_diameter_m
 T01,57.40,-3.30,82
 T02,57.60,-3.20,82
 T03,57.50,-3.25,82
-T04,57.50,-3.25,82
+T04,57.51,-3.25,82
 """
 
 PREPOST = """
@@ -304,7 +304,7 @@ class TestACampaignDesignFeedsTheDeclaration:
         (tmp_path / "turbines.csv").write_text(
             "name,latitude,longitude,rotor_diameter_m,wind_farm\n"
             "T01,57.40,-3.30,82,Home\nT02,57.60,-3.20,82,Home\nT03,57.50,-3.25,82,Home\n"
-            "T04,57.50,-3.25,82,Home\n,57.70,-3.10,90,\n"
+            "T04,57.51,-3.25,82,Home\n,57.70,-3.10,90,\n"
         )
         declaration = load_declaration(path)
         assert set(declaration.spec.coords) == {"T01", "T02", "T03", "T04"}

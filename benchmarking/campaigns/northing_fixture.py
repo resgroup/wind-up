@@ -45,7 +45,7 @@ from benchmarking.synthetic import (
     ToggleSchedule,
     WindSpeedCpChange,
 )
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -97,16 +97,6 @@ def default_output_root() -> Path:
     return root / "northing_fixture"
 
 
-def _coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
-    """Hill of Towie coordinates for ``turbines``."""
-    metadata = load_hot_metadata()
-    return {
-        str(row.Name): (float(row.Latitude), float(row.Longitude))
-        for row in metadata.itertuples()
-        if str(row.Name) in set(turbines)
-    }
-
-
 def fixture_campaign(
     mode: Literal["prepost", "toggle"],
     *,
@@ -120,7 +110,7 @@ def fixture_campaign(
     :param faulted: inject the northing step into :data:`FAULT_TURBINE`
     :param northing: ``True`` leaves ``north_offsets`` undeclared so the shared step discovers
         them; ``False`` declares an empty list, so the northed column is an uncorrected copy
-    :param coords: turbine coordinates; a placeholder is used when omitted
+    :param coords: turbine coordinates; the published Hill of Towie positions when omitted
     """
     if mode == "prepost":
         timing: pd.Timestamp | ToggleSchedule = CAMPAIGN_START
@@ -137,7 +127,7 @@ def fixture_campaign(
         upgrades=list(UPLIFT),
         faults=faults,
         layout=layout_from_coords(
-            coords if coords is not None else dict.fromkeys(FIXTURE_TURBINES, (0.0, 0.0)),
+            coords if coords is not None else hot_coords(FIXTURE_TURBINES),
             rotor_diameter_m=HOT_ROTOR_DIAMETER_M,
         ),
         north_offsets=None if northing else [],
@@ -157,7 +147,7 @@ def run_cell(
     include_power_model: bool = True,
 ) -> CampaignResult:
     """Run one cell of the 2x2 and return its result."""
-    campaign = fixture_campaign(mode, faulted=faulted, northing=northing, coords=_coords(FIXTURE_TURBINES))
+    campaign = fixture_campaign(mode, faulted=faulted, northing=northing, coords=hot_coords(FIXTURE_TURBINES))
     dataset = campaign.generate(scada_df)
     spec = campaign.spec()
     index = pd.DatetimeIndex(dataset.synthetic_df.index.unique()).sort_values()

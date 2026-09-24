@@ -37,7 +37,7 @@ from benchmarking.campaigns.runner import CampaignRunner
 from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_LAT, HOT_LON, HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M, ToggleSchedule
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
 from wind_up.campaign_design import design_campaign
 
 if TYPE_CHECKING:
@@ -88,16 +88,6 @@ def default_output_root() -> Path:
     return root / "placebo"
 
 
-def _coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
-    """Hill of Towie coordinates for ``turbines``."""
-    metadata = load_hot_metadata()
-    return {
-        str(row.Name): (float(row.Latitude), float(row.Longitude))
-        for row in metadata.itertuples()
-        if str(row.Name) in set(turbines)
-    }
-
-
 def placebo_campaign(
     mode: Literal["prepost", "toggle"],
     *,
@@ -116,8 +106,7 @@ def placebo_campaign(
     :param turbines: every participating turbine; defaults to :data:`PLACEBO_TURBINES`. Those
         that are neither upgraded nor excluded become the candidate references.
     :param excluded: turbines whose data must not be used; defaults to :data:`PLACEBO_EXCLUDED`
-    :param coords: turbine coordinates; a placeholder is used when omitted, since no declared
-        upgrade reads them
+    :param coords: turbine coordinates; the published Hill of Towie positions when omitted
     :param faults: measurement corruptions to inject; none by default, so the placebo stays a
         clean-data campaign. The R-series fixtures inject one and compare against that.
     :param campaign_start: when treatment begins; defaults to :data:`PLACEBO_CAMPAIGN_START`
@@ -141,7 +130,7 @@ def placebo_campaign(
         upgrades=[],
         faults=list(faults) if faults is not None else [],
         layout=layout_from_coords(
-            coords if coords is not None else dict.fromkeys(participating, (0.0, 0.0)),
+            coords if coords is not None else hot_coords(participating),
             rotor_diameter_m=HOT_ROTOR_DIAMETER_M,
         ),
         # discovered by the shared northing step, not supplied: the placebo exercises the norther
@@ -278,7 +267,7 @@ def run_placebo(
         wtg_numbers=[int(w[1:]) for w in participating],
         wtg_names=participating,
     )
-    campaign = placebo_campaign(mode, upgraded=upgraded, turbines=participating, coords=_coords(participating))
+    campaign = placebo_campaign(mode, upgraded=upgraded, turbines=participating, coords=hot_coords(participating))
     dataset = campaign.generate(scada_df)
     spec = campaign.spec()
     # ERA5 is needed whether or not the power model runs: it is the anchor the shared northing

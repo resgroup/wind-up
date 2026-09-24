@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.wind_up.layouts import grid_layout
+from tests.wind_up.layouts import grid_layout, line_layout
 from wind_up.layout import Layout, front_row, iec_disturbed_sector_deg, longest_clear_run_deg, upwind_mask
 
 # The three Homer turbines of the v0 ``test_homer_with_t00_config`` fixture, 62 m rotors.
@@ -144,3 +144,51 @@ def test_layout_carries_the_geodesic_matrices() -> None:
     assert layout.distance_m.shape == (3, 3)
     assert layout.distance_m[0, 1] == pytest.approx(270.894287973147)
     assert layout.bearing_deg[0, 1] == pytest.approx(245.02500888680734 - 180)
+
+
+class TestPhysicalSense:
+    """A layout that could not be a real wind farm is refused, however it is built."""
+
+    def test_turbines_whose_rotors_overlap_are_refused(self) -> None:
+        # 80 m apart with 100 m rotors: the discs would intersect
+        with pytest.raises(ValueError, match=r"closer than their rotors allow.*T0.*T1"):
+            Layout.from_frame(line_layout([0.0, 80.0]))
+
+    def test_turbines_exactly_touching_are_allowed(self) -> None:
+        layout = Layout.from_frame(line_layout([0.0, 100.5], rotor_diameter_m=100.0))
+        assert len(layout.frame) == 2
+
+    def test_the_overlap_uses_each_turbines_own_radius(self) -> None:
+        frame = line_layout([0.0, 70.0])
+        frame["rotor_diameter_m"] = [40.0, 90.0]  # radii 20 + 45 = 65 m < 70 m apart
+        assert len(Layout.from_frame(frame).frame) == 2
+        frame["rotor_diameter_m"] = [60.0, 90.0]  # 30 + 45 = 75 m > 70 m apart
+        with pytest.raises(ValueError, match="closer than their rotors allow"):
+            Layout.from_frame(frame)
+
+    def test_every_turbine_at_one_placeholder_point_is_refused(self) -> None:
+        frame = pd.DataFrame({"name": ["A", "B", "C"], "latitude": 0.0, "longitude": 0.0, "rotor_diameter_m": 82.0})
+        with pytest.raises(ValueError, match="closer than their rotors allow"):
+            Layout.from_frame(frame)
+
+    @pytest.mark.parametrize(
+        ("latitude", "longitude"),
+        [(float("nan"), -3.0), (57.5, float("inf")), (91.0, -3.0), (57.5, 181.0)],
+        ids=["nan-lat", "inf-lon", "lat-range", "lon-range"],
+    )
+    def test_a_position_off_the_globe_is_refused(self, latitude: float, longitude: float) -> None:
+        frame = line_layout([0.0, 500.0])
+        frame.loc[1, ["latitude", "longitude"]] = [latitude, longitude]
+        with pytest.raises(ValueError, match="not a valid position"):
+            Layout.from_frame(frame)
+
+    def test_building_the_dataclass_directly_is_validated_too(self) -> None:
+        good = Layout.from_frame(line_layout([0.0, 500.0]))
+        squashed = good.frame.assign(latitude=good.frame["latitude"].iloc[0], longitude=good.frame["longitude"].iloc[0])
+        with pytest.raises(ValueError, match="closer than their rotors allow"):
+            Layout(
+                frame=squashed,
+                filled_rotor_diameters=(),
+                distance_m=np.zeros((2, 2)),
+                bearing_deg=np.zeros((2, 2)),
+            )

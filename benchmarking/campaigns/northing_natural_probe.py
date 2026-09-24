@@ -36,7 +36,7 @@ from benchmarking.campaigns.northing_fixture import BASELINE_MONTHS, CAMPAIGN_ST
 from benchmarking.campaigns.runner import CampaignRunner
 from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -72,15 +72,6 @@ def analysis_period() -> tuple[pd.Timestamp, pd.Timestamp]:
     )
 
 
-def _coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
-    metadata = load_hot_metadata()
-    return {
-        str(row.Name): (float(row.Latitude), float(row.Longitude))
-        for row in metadata.itertuples()
-        if str(row.Name) in set(turbines)
-    }
-
-
 def probe_campaign(*, references: Sequence[str], northing: bool) -> SyntheticCampaign:
     """Declare one arm: the same real campaign, with the shared northing step on or off."""
     turbines = (PROBE_TEST_WTG, *references)
@@ -90,7 +81,7 @@ def probe_campaign(*, references: Sequence[str], northing: bool) -> SyntheticCam
         candidate_references=list(references),
         upgrades=list(UPLIFT),
         faults=[],
-        layout=layout_from_coords(_coords(turbines), rotor_diameter_m=HOT_ROTOR_DIAMETER_M),
+        layout=layout_from_coords(hot_coords(turbines), rotor_diameter_m=HOT_ROTOR_DIAMETER_M),
         north_offsets=None if northing else [],
         rated_power_kw=HOT_RATED_POWER_KW,
         analysis_period=analysis_period(),

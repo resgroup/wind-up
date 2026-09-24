@@ -475,6 +475,32 @@ HOT_HUB_HEIGHT_M = 59.0
 # Rotor diameter of the Hill of Towie turbines (m), all Siemens SWT-2.3-82.
 HOT_ROTOR_DIAMETER_M = 82.0
 
+# Each Hill of Towie turbine's (latitude, longitude), from the published open-data metadata
+# (``Hill_of_Towie_turbine_metadata.csv``), held here so a campaign can be declared without the download.
+HOT_COORDINATES: dict[str, tuple[float, float]] = {
+    "T01": (57.49921441, -3.086742896),
+    "T02": (57.49626574, -3.082817716),
+    "T03": (57.50206973, -3.088980479),
+    "T04": (57.50196736, -3.082085466),
+    "T05": (57.49891107, -3.07812382),
+    "T06": (57.50024464, -3.071321578),
+    "T07": (57.50513302, -3.085850762),
+    "T08": (57.50465629, -3.077542275),
+    "T09": (57.50827835, -3.08257274),
+    "T10": (57.50542459, -3.070655631),
+    "T11": (57.51184311, -3.080658605),
+    "T12": (57.51081569, -3.073684523),
+    "T13": (57.51666161, -3.078146735),
+    "T14": (57.51376046, -3.074939555),
+    "T15": (57.49941809, -3.062837374),
+    "T16": (57.50513916, -3.053340822),
+    "T17": (57.50662266, -3.047792556),
+    "T18": (57.50429684, -3.041183981),
+    "T19": (57.50859585, -3.041656952),
+    "T20": (57.51202849, -3.040436127),
+    "T21": (57.50978499, -3.034697307),
+}
+
 # Approximate Hill of Towie site coordinates (deg, east-positive longitude); used as the default
 # site for the wake-steering solar/diurnal model.
 HOT_LAT = 57.50
@@ -760,6 +786,15 @@ def load_hot_metadata(*, data_dir: Path | None = None, wtg_names: Sequence[str] 
         # only return return_df rows where the turbine name is in wtg_names
         return_df = return_df[return_df["Name"].isin(wtg_names)]
     return return_df
+
+
+def hot_coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
+    """Return the published ``(latitude, longitude)`` of each Hill of Towie turbine in ``turbines``."""
+    unknown = sorted(set(turbines) - set(HOT_COORDINATES))
+    if unknown:
+        msg = f"{unknown} are not Hill of Towie turbines; have {sorted(HOT_COORDINATES)}"
+        raise ValueError(msg)
+    return {name: HOT_COORDINATES[name] for name in turbines}
 
 
 def hot_layout(metadata_df: pd.DataFrame) -> Layout:
