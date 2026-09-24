@@ -9,7 +9,8 @@ and `write_north_table_yaml` writes the tables in the same format v0's
 `optimized_northing_corrections.yaml` uses, so a table can be hand edited and supplied back.
 
 The figure shows why this matters, on the 21 Hill of Towie turbines over 2016-2020. Each line is one
-turbine's 20-day rolling circular median of nacelle position minus ERA5 wind direction. Before
+turbine's 30-day rolling circular median of the circular difference between its nacelle
+position and ERA5 wind direction. Before
 northing (top), most turbines sit tens of degrees off, and several jump by 30 to 180 degrees
 overnight when their sensor is re-zeroed. After applying the tables `north_farm` discovers (bottom),
 every turbine stays within about 10 degrees of zero for the whole five years.
