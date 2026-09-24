@@ -15,12 +15,11 @@ from wind_up.northing_plots import plot_northing, plot_northing_farm, plot_wake_
 if TYPE_CHECKING:
     from pathlib import Path
 
-TIMEBASE_S = 600
-
 
 def _index(days: float = 400.0) -> pd.DatetimeIndex:
-    periods = round(days * 24 * 3600 / TIMEBASE_S)
-    return pd.date_range(start="2017-01-01", periods=periods, freq=f"{TIMEBASE_S}s", tz="UTC")
+    timebase_s = 600
+    periods = round(days * 24 * 3600 / timebase_s)
+    return pd.date_range(start="2017-01-01", periods=periods, freq=f"{timebase_s}s", tz="UTC")
 
 
 def _device(index: pd.DatetimeIndex, *, seed: int, step_deg: float) -> tuple[np.ndarray, np.ndarray]:

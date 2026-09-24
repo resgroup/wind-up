@@ -39,35 +39,20 @@ logger = logging.getLogger(__name__)
 TIMESTAMP_COL = "timestamp"
 NORTH_OFFSET_COL = "north_offset"
 
-# Yaw is read only above this fraction of rated power.
-YAW_OK_POWER_FRACTION = 0.05
-# Above this many aggregation bins the search warns; it still returns a correct result.
-_BIN_COUNT_WARN = 3000
 _DEFAULT_GRID = pd.Timedelta(days=1)
 _DEFAULT_MIN_SEGMENT = pd.Timedelta(days=7)
-# A segment needs a row either side of a candidate split for the split to mean anything.
-_MIN_ROWS_TO_SPLIT = 2
-# Direction sectors the residual is normalised over before the changepoint search.
-_DEFAULT_VEER_SECTOR_DEG = 30.0
-# A sector with fewer usable rows than this has no trustworthy level of its own.
-_MIN_ROWS_PER_SECTOR = 50
-# Steps larger than this are never ironed out as wander.
-_MAX_TRANSIENT_STEP_DEG = 10.0
-
-
-# The span either side of a changepoint at which ``min_step_deg`` applies unmodified; a shorter
-# segment needs a larger step.
 _DEFAULT_CONFIDENT_SEGMENT = pd.Timedelta(days=90)
+# A direction sector with fewer usable rows than this falls back to the overall level.
+_MIN_ROWS_PER_SECTOR = 50
 
 
 @dataclass(frozen=True)
 class NorthingSettings:
     """How the changepoint search is bounded, in physical units.
 
-    :param changepoints_per_year: budget of changepoints per year of record, so a longer
-        record is allowed more; the cap is ``max(min_changepoints, ceil(rate * years))``
-    :param min_changepoints: floor on that budget, so a short record can still hold several
-        corrections
+    :param changepoints_per_year: budget of changepoints per year of record; the cap is
+        ``max(min_changepoints, ceil(rate * years))``
+    :param min_changepoints: floor on that budget
     :param min_step_deg: the smallest step reported. A changepoint whose estimated step is
         below this is dropped and its segments merged.
     :param refine: pin each changepoint to native resolution after the search, instead of
@@ -75,16 +60,13 @@ class NorthingSettings:
     :param grid: aggregation bin for the changepoint search
     :param min_segment: shortest allowed gap between changepoints
     :param veer_sector_deg: width of the direction sectors the residual is normalised over
-        before the changepoint search, cancelling site veer (see :func:`veer_normalised`).
-        ``None`` searches the raw residual.
-    :param max_transient_step_deg: the largest step that may be ironed out as wander. Above it a
-        step is treated as a recalibration however the record behaves afterwards, since real ones
-        are sometimes reversed later. Also the ceiling on the support-scaled threshold, so a big
-        enough step is credible however little record sits either side of it.
+        before the changepoint search (see :func:`veer_normalised`). ``None`` searches the raw
+        residual.
+    :param max_transient_step_deg: the largest step that may be ironed out as wander, and the
+        ceiling on the step required of a changepoint with little record either side
     :param confident_segment: the span either side of a changepoint at which ``min_step_deg``
-        applies as written; with less record than that the required step grows as
-        ``sqrt(confident_segment / span)``, since the level is veer-limited and veer averages out
-        no faster than that.
+        applies as written; with less record the required step grows as
+        ``sqrt(confident_segment / span)``
     """
 
     changepoints_per_year: float = 12.0
@@ -93,16 +75,10 @@ class NorthingSettings:
     min_changepoints: int = 3
     grid: pd.Timedelta = _DEFAULT_GRID
     min_segment: pd.Timedelta = _DEFAULT_MIN_SEGMENT
-    veer_sector_deg: float | None = _DEFAULT_VEER_SECTOR_DEG
-    max_transient_step_deg: float = _MAX_TRANSIENT_STEP_DEG
+    veer_sector_deg: float | None = 30.0
+    max_transient_step_deg: float = 10.0
     confident_segment: pd.Timedelta = _DEFAULT_CONFIDENT_SEGMENT
 
-
-# Minimum step the first pass may act on. See :func:`anchoring_only`.
-ANCHORING_MIN_STEP_DEG = 30.0
-# Minimum step taken out of the residual before the veer signature is measured.
-# See :func:`_confident_steps`.
-VEER_SIGNATURE_MIN_STEP_DEG = 10.0
 
 # The fewest devices that can form a consensus.
 MIN_DEVICES_FOR_FARM_REFERENCE = 3
@@ -111,12 +87,8 @@ DEFAULT_NORTHING = NorthingSettings()
 
 
 def anchoring_only(settings: NorthingSettings) -> NorthingSettings:
-    """Return ``settings`` reduced to what the first pass is for: anchoring, not changepoint work.
-
-    Only steps of at least :data:`ANCHORING_MIN_STEP_DEG` are acted on; finer structure is left
-    to the second pass, which works against the farm consensus.
-    """
-    return replace(settings, min_step_deg=ANCHORING_MIN_STEP_DEG)
+    """Return ``settings`` acting only on steps of at least 30 deg, for anchoring to reanalysis."""
+    return replace(settings, min_step_deg=30.0)
 
 
 def against_reanalysis(settings: NorthingSettings) -> NorthingSettings:
@@ -138,13 +110,14 @@ def yaw_usable(
 ) -> npt.NDArray[np.bool_]:
     """Rows where a turbine's yaw reading may be used for northing.
 
-    The turbine must be generating (above :data:`YAW_OK_POWER_FRACTION` of rated), largely
-    free of downtime within the record, and have a reference direction to compare against.
+    The turbine must be generating (above 5% of rated), largely free of downtime within the
+    record, and have a reference direction to compare against.
     """
+    yaw_ok_power_fraction = 0.05
     return np.asarray(
         np.isfinite(reference_deg)
         & np.isfinite(power)
-        & (np.nan_to_num(power, nan=-1.0) > rated_power * YAW_OK_POWER_FRACTION)
+        & (np.nan_to_num(power, nan=-1.0) > rated_power * yaw_ok_power_fraction)
         & (np.nan_to_num(downtime_s, nan=0.0) < timebase_s / 4),
         dtype=bool,
     )
@@ -170,12 +143,7 @@ def _residual(
 def _de_stepped(
     residual: npt.NDArray[np.float64], *, index: pd.DatetimeIndex, edges: list[pd.Timestamp]
 ) -> npt.NDArray[np.float64]:
-    """Return ``residual`` with each segment's own level removed, leaving the within-segment shape.
-
-    Measuring the veer signature needs the step structure out of the way first: a sector's level
-    would otherwise average across the steps, and uneven direction sampling between segments would
-    distort the very steps being looked for.
-    """
+    """Return ``residual`` with each segment's own level removed, leaving the within-segment shape."""
     out = residual.copy()
     for begin, finish in itertools.pairwise(edges):
         rows = np.asarray((index >= begin) & (index < finish))
@@ -193,13 +161,9 @@ def _confident_steps(
     start: pd.Timestamp,
     residual: npt.NDArray[np.float64],
     index: pd.DatetimeIndex,
-    min_step_deg: float = VEER_SIGNATURE_MIN_STEP_DEG,
+    min_step_deg: float = 10.0,
 ) -> list[pd.Timestamp]:
-    """Return the changepoints whose step is large enough to be a real recalibration.
-
-    What the veer signature may be measured around. A search over a strongly veering residual
-    proposes splits that are the veer itself; de-stepping those would remove the signature.
-    """
+    """Return the changepoints whose step is at least ``min_step_deg``."""
     if not changepoints:
         return []
     offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
@@ -215,13 +179,9 @@ def veer_normalised(
     de_stepped: npt.NDArray[np.float64] | None = None,
     min_rows_per_sector: int = _MIN_ROWS_PER_SECTOR,
 ) -> npt.NDArray[np.float64]:
-    """Remove each direction sector's own long-run level from the residual.
+    """Remove each direction sector's own long-run level from the residual, for changepoint detection.
 
-    Subtracting each sector's whole-record median leaves a genuine north offset intact, since one
-    shifts every sector alike. Sectors with too little data fall back to the overall level.
-
-    Use this for detection only -- segment offsets are estimated from the raw residual, so the
-    correction stays absolute.
+    Sectors with too little data fall back to the overall level.
 
     :param de_stepped: the residual with a first-pass estimate of the step structure removed. The
         sector levels are measured on it rather than on ``residual``. Defaults to ``residual``.
@@ -275,8 +235,7 @@ def _bin_levels(
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Per-bin circular median of the residual (deg) and the count backing it.
 
-    The median is taken about each bin's circular mean, which is what makes it well defined
-    across the 0/360 wrap. Empty bins get level 0 and weight 0, so they cost nothing.
+    The median is taken about each bin's circular mean. Empty bins get level 0 and weight 0.
     """
     finite = np.isfinite(residual)
     bin_of = bins[finite]
@@ -398,7 +357,7 @@ def _refine(
         span_hi = int(np.searchsorted(times, following.value))
         first = int(np.searchsorted(times, earliest.value))
         last = int(np.searchsorted(times, latest.value))
-        if last <= first or span_hi - span_lo < _MIN_ROWS_TO_SPLIT:
+        if last <= first or span_hi - span_lo < 2:  # noqa: PLR2004
             continue
         candidates = np.arange(max(first, span_lo + 1), min(last, span_hi - 1) + 1)
         if len(candidates) == 0:
@@ -435,12 +394,7 @@ def _weighted_level(offsets: npt.NDArray[np.float64], weights: npt.NDArray[np.fl
 
 
 def _persistence(offsets: list[float], *, durations: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """How much each changepoint moves the long-run level, in degrees.
-
-    A recalibration moves the level and leaves it moved. An excursion -- the level wandering away
-    and back -- moves it only in between, so the record either side of any one of its changepoints
-    sits at the same place.
-    """
+    """Return how far each changepoint moves the duration-weighted level of the record either side (deg)."""
     values = np.asarray(offsets, dtype=float)
     return np.array(
         [
@@ -466,11 +420,7 @@ def _prune_while(
     index: pd.DatetimeIndex,
     worst: Callable[[list[pd.Timestamp], list[float]], int | None],
 ) -> tuple[list[pd.Timestamp], list[float]]:
-    """Drop whichever changepoint ``worst`` names, re-estimating offsets, until it names none.
-
-    Offsets must be re-estimated after every merge: joining two segments changes the level of the
-    result, which can in turn change which of the survivors looks weakest.
-    """
+    """Drop whichever changepoint ``worst`` names, re-estimating offsets after each, until it names none."""
     while changepoints:
         drop = worst(changepoints, offsets)
         if drop is None:
@@ -546,10 +496,8 @@ def _required_step(
 ) -> npt.NDArray[np.float64]:
     """Return the step size each changepoint must reach, given the record supporting it.
 
-    A segment's level is limited by site veer rather than by sampling noise, and veer averages out
-    no faster than ``1/sqrt(span)``. So with less than ``confident_segment`` either side the
-    required step grows accordingly, capped at ``max_transient_step_deg`` -- above which a step is
-    credible however little record sits around it. The cap never falls below ``min_step_deg``.
+    ``min_step_deg``, scaled up by ``sqrt(confident_segment / span)`` when the shorter adjacent
+    segment is under ``confident_segment``, and capped at ``max(min_step_deg, max_transient_step_deg)``.
     """
     edges = [start, *changepoints, end]
     spans = np.array([max((b - a) / confident_segment, 1e-9) for a, b in itertools.pairwise(edges)])
@@ -608,7 +556,7 @@ def estimate_north_table(
 
     bins = ((index - start) // settings.grid).to_numpy().astype(np.int64)
     n_bins = int(bins.max()) + 1
-    if n_bins > _BIN_COUNT_WARN:
+    if n_bins > 3000:  # noqa: PLR2004
         logger.warning("northing over %d %s bins; consider a coarser grid", n_bins, settings.grid)
     years = (index.max() - start) / pd.Timedelta(days=365.25)
     max_k = max(settings.min_changepoints, math.ceil(settings.changepoints_per_year * max(years, 0.0)))
@@ -622,8 +570,7 @@ def estimate_north_table(
             return []
         occupied = int((weight > 0).sum())
         typical = float(weight.sum()) / max(occupied, 1)
-        # A changepoint must pay for itself: the cost drop a ``min_step_deg`` step sustained
-        # over ``min_segment`` of typical-density data would produce.
+        # the cost drop a ``min_step_deg`` step over ``min_segment`` of typical-density data produces
         penalty = typical * min_span * (1.0 - math.cos(math.radians(settings.min_step_deg) / 2.0))
         breaks = _best_breakpoints(_segment_costs(level, weight), max_k=max_k, min_span=min_span, penalty=penalty)
         found = [start + b * settings.grid for b in breaks if b > 0]
@@ -653,9 +600,8 @@ def estimate_north_table(
                 de_stepped=de_stepped,
             )
 
-        # Search the veer-normalised residual, measuring the sector signature twice: first assuming
-        # no step structure, then around only the steps that search was confident of. Offsets come
-        # from the raw residual either way, so the correction stays absolute.
+        # Search the veer-normalised residual twice: the second time with the signature measured
+        # around the confident steps of the first.
         provisional = detect(normalised(None))
         confident = _confident_steps(provisional, start=start, residual=residual, index=index)
         changepoints = (
@@ -665,8 +611,7 @@ def estimate_north_table(
         )
 
     offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
-    # First iron out excursions, then drop what the record cannot support. Order matters: a step
-    # only looks unsupported once the excursion around it has gone.
+    # Drop excursions first, then steps the record cannot support.
     changepoints, offsets = _prune_while(
         changepoints,
         offsets,

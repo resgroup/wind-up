@@ -786,7 +786,7 @@ class TestAnchoringPass:
         return len(table) - 1
 
     def test_a_persistent_step_below_the_anchoring_threshold_is_not_reported(self) -> None:
-        """``max_transient_step_deg`` (10) sits below ``ANCHORING_MIN_STEP_DEG`` (30); the support
+        """``max_transient_step_deg`` (10) sits below the anchoring step floor (30); the support
         threshold must not be clipped down to it."""
         assert self._n_changepoints(20.0) == 0
 
