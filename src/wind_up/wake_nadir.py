@@ -136,7 +136,7 @@ def wake_pair_curves(
     :param wind_speed: device name to its nacelle wind speed; the wind-speed ratio is ``None`` without it
     :param usable: device name to the rows valid for northing it; defaults to all rows
     """
-    keep = np.ones(len(northed_direction), dtype=bool)
+    keep: npt.NDArray[np.bool_] = np.ones(len(northed_direction), dtype=bool)
     if usable is not None:
         keep = usable[upstream] & usable[downstream]
     ws_up = None if wind_speed is None else wind_speed.get(upstream)

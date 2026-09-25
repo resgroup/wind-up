@@ -63,7 +63,7 @@ def rolling_error(
     centres = np.arange(0, len(error), step)
     values = np.full(len(centres), np.nan)
     for k, centre in enumerate(centres):
-        lo, hi = max(centre - half_window, 0), min(centre + half_window, len(error))
+        lo, hi = max(int(centre) - half_window, 0), min(int(centre) + half_window, len(error))
         if finite[hi] - finite[lo] >= 2 * half_window // 3:
             values[k] = circ_median(error[lo:hi], range_360=False)
     return pd.Series(values, index=index[centres])
