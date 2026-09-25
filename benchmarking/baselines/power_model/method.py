@@ -23,7 +23,7 @@ import logging
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -140,6 +140,10 @@ _DEFAULT_SCREEN_FLOOR = 0.025
 # its neighbours. Low by design: thrust is already a large fraction of maximum well below rated,
 # so this separates waking from parked while leaking almost none of the power level.
 WAKING_RATED_FRACTION = 0.05
+# Share of the period a turbine must be ready to operate to count as operating normally, under
+# ``normal_operation_feature``. The counter is near-bimodal (0 or the full period), so the exact
+# value matters little.
+NORMAL_OPERATION_AVAILABLE_FRACTION = 0.5
 # A screening estimate is only as good as the campaign it is measured over, and the benchmark sweep
 # set this rather than a hand-picked calibration. At 90 days the sweep still produced false
 # positives on 3-month campaigns -- a reference read -2.9%, about 3.1 pp from its pool median, and
@@ -190,6 +194,7 @@ def empty_reference_uplifts() -> pd.DataFrame:
             "actual_energy": pd.Series(dtype=float),
             "n_records": pd.Series(dtype=int),
             "screened": pd.Series(dtype=bool),
+            "unjudged": pd.Series(dtype=bool),
         }
     )
 
@@ -389,21 +394,16 @@ class PowerModelMethod:
         ``columns.northed("nacelle_position")`` into the frame, and raises naming that column when
         it has not; the raw nacelle position is never used, northed or not. The test turbine's own
         direction stays barred (design-note §3): northing does not make a post-treatment signal safe.
-    :param adaptive_time_decay: when ``True`` (**default**, the Issue 15 self-configuring behaviour)
-        the headline fit's time-decay half-life is set automatically to
-        ``_TIME_DECAY_CAMPAIGN_MULTIPLE * campaign_duration_days`` — a short half-life for a short
-        campaign (down-weight the stale pre-campaign era that dominates a sliver campaign) and a long
-        one for a long campaign (use the plentiful recent data). This subsumes the fixed default:
-        the best half-life is regime-dependent (short helps 1-3-month campaigns in both modes,
-        long is safe at 12 months), and a campaign-proportional half-life gets both ends right with no
-        manual tuning. When ``True``, ``time_decay_half_life_days`` must be left ``None``.
-    :param time_decay_half_life_days: **expert override** (used only when ``adaptive_time_decay=False``):
-        a *fixed* half-life for the campaign-proximity training weights
-        ``0.5 ** (days_outside_campaign / half_life)``. Rows inside the campaign interval (for toggle,
-        the interleaved on and off rows) weigh 1; rows outside decay with their distance to it — so
-        distant history informs the fit without dominating it (Issue 13's recency weighting; the
-        alternative to the rejected drift *feature*). ``None`` disables the weighting entirely.
-        The default self-configuring behaviour is ``adaptive_time_decay=True`` (this left ``None``).
+    :param adaptive_time_decay: set the campaign-proximity weights' half-life from the campaign's
+        own duration, ``_TIME_DECAY_CAMPAIGN_MULTIPLE * campaign_duration_days``. ``False``
+        (**default**) with ``time_decay_half_life_days`` left ``None`` means every training row
+        weighs the same, whenever it happened. When ``True``, ``time_decay_half_life_days`` must be
+        left ``None``.
+    :param time_decay_half_life_days: a *fixed* half-life for the campaign-proximity training
+        weights ``0.5 ** (days_outside_campaign / half_life)``, used only when
+        ``adaptive_time_decay=False``. Rows inside the campaign interval (for toggle, the
+        interleaved on and off rows) weigh 1; rows outside decay with their distance to it.
+        ``None`` (**default**) leaves the weighting off.
     :param reference_screen: when ``True`` (**default**), estimate each candidate reference as if it
         were a test turbine against the others, and make clear outliers **power-free** -- they keep
         their direction features and gain a ``waking`` boolean, so their wake information is retained
@@ -415,13 +415,24 @@ class PowerModelMethod:
         campaign sanity check (a healthy campaign's references read near 0%). Costs one extra model
         fit per reference, so a method sweep that scores estimators rather than reporting campaigns
         turns it off. It is a report, not an input: turning it off never moves the headline
+    :param headline_estimator: how the prepost headline is formed. ``"forward"`` (default) is the
+        counterfactual energy ratio ``Σactual/Σprediction - 1`` from the baseline-trained model.
+        ``"reversal"`` (the reversal correction) also fits the reverse direction (train the upgraded
+        rows, predict the baseline rows) and reports ``sqrt((1+r_fwd)/(1+r_rev)) - 1``, so a shrinkage
+        common to both directions cancels. Costs one extra model fit per estimate. Toggle is unaffected
     :param write_diagnostics: write the per-run diagnostics folder. ``False`` for the clones that
         estimate one reference during screening or reporting: ``out_dir=None`` does not suppress
         them, it makes a temp directory per run, and there are O(N) such runs per estimate
-    :param screen_min_campaign_days: skip the screen when the campaign holds less than this much
-        upgraded data. A screening estimate over a short campaign is too noisy to separate a bad
-        reference from a good one at any floor, and ruling out a good reference costs more than
-        leaving a mild bad one in
+    :param normal_operation_feature: give each power-free reference a ``normal_operation`` boolean
+        beside its ``waking`` one, read off the availability counter: waking says whether a wake
+        exists, this says whether the turbine was able to run. ``availability_feature`` still
+        governs whether availability is a feature in its own right. It does not detect curtailment:
+        a turbine held at zero while available reads as operating normally
+    :param screen_min_campaign_days: leave a candidate reference out of the screen when it holds
+        less than this much upgraded data; when no candidate holds enough, the screen does not run.
+        A screening estimate over a short campaign is too noisy to separate a bad reference from a
+        good one at any floor, and ruling out a good reference costs more than leaving a mild bad
+        one in
 
     The reference pool is the campaign's candidate references (the context's
     ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
@@ -445,13 +456,15 @@ class PowerModelMethod:
     reference_stat_cols: tuple[str, ...] = ()
     era5_exclude: tuple[str, ...] = CURATED_ERA5_EXCLUDE
     availability_feature: bool = False
+    normal_operation_feature: bool = True
     direction_feature: bool = True
-    adaptive_time_decay: bool = True
+    adaptive_time_decay: bool = False
     time_decay_half_life_days: float | None = None
     reference_screen: bool = True
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
+    headline_estimator: Literal["forward", "reversal"] = "forward"
     write_diagnostics: bool = True
     # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
     # era5_source_label() of the point it fetched, so a reader can tell which series was used.
@@ -510,8 +523,10 @@ class PowerModelMethod:
             self.era5_hourly_df.columns if self.era5_hourly_df is not None else ()
         )
         screen = self.screen_references(mi) if self.reference_screen else None
-        # The screen does not shrink the pool: an outlier stays a reference and loses its power channels.
-        power_free = screen.screened if screen is not None else ()
+        # The screen does not shrink the pool: a reference it ruled out, or could not judge for
+        # want of campaign data, stays a reference and loses its power channels. This is the pool
+        # the screening estimates themselves ran on.
+        power_free = screen.power_free if screen is not None else ()
         features = self._reference_features(
             scada, mi=mi, references=references, extra_cols=extra_cols, power_free=power_free
         )
@@ -547,6 +562,15 @@ class PowerModelMethod:
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
+
+        # The reversal correction to the prepost headline. The forward ratio above is 1+r_fwd; the
+        # reverse fit trains the upgraded rows and predicts the baseline rows for 1+r_rev, and
+        # _combine_uplift returns sqrt((1+r_fwd)/(1+r_rev))-1 so a shrinkage common to both directions
+        # cancels. Toggle keeps the forward ratio: its off-blocks already interleave, so no shift.
+        if self.headline_estimator == "reversal" and not is_toggle(mi.upgrade_timing) and np.isfinite(uplift):
+            pred_baseline = self._fit_direction(features, y_arr, train=upgraded_sel, predict=baseline_sel)
+            r_rev = _ratio(y_arr[baseline_sel], pred_baseline)
+            uplift = float(_combine_uplift(np.array([uplift]), np.array([r_rev]))[0])
 
         # ws/TI row-aligned to each segment's residuals, for the overall shrinkage-check diagnostics (cheap,
         # plots only). Computed here so the run folder's step-5 residual plots are drawn whether or not the
@@ -630,7 +654,7 @@ class PowerModelMethod:
         # Reported post-screen: the sanity check asks what the *final* analysis says its references
         # did, so a ruled-out reference is listed but does not drag the headline.
         reference_uplifts = (
-            self.reference_uplifts(mi, screened=power_free, screen=screen) if self.report_reference_uplifts else None
+            self.reference_uplifts(mi, power_free=power_free, screen=screen) if self.report_reference_uplifts else None
         )
         return MethodOutput(
             p50_overall=uplift,
@@ -1076,29 +1100,38 @@ class PowerModelMethod:
             power_free=power_free,
             wake_only=[w for w in mi.context.wake_contributors if w in present],
             waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+            normal_operation_seconds=self._normal_operation_seconds(scada),
         )
 
+    def _normal_operation_seconds(self, scada: pd.DataFrame) -> float | None:
+        """Seconds ready-to-operate at which a turbine counts as operating normally, None to omit it."""
+        if not self.normal_operation_feature:
+            return None
+        timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
+        return NORMAL_OPERATION_AVAILABLE_FRACTION * timebase.total_seconds()
+
     def reference_uplifts(
-        self, mi: MethodInput, *, screened: Sequence[str] = (), screen: ScreenResult | None = None
+        self, mi: MethodInput, *, power_free: Sequence[str] = (), screen: ScreenResult | None = None
     ) -> pd.DataFrame:
         """Return what this campaign's own analysis says each candidate reference did.
 
-        Every reference is estimated under the campaign's own timing against the other surviving
-        references, so the reference headline and the test headline are the same kind of number. A
-        healthy campaign reads near 0% once these are combined by energy.
+        Every reference is estimated under the campaign's own timing against the other power-carrying
+        references, so the reference headline and the test headline are the same kind of number, on
+        the same pool. A healthy campaign reads near 0% once these are combined by energy.
 
-        Screened references are estimated and reported too, flagged so they stay visible without
-        dragging the headline; they are kept out of every reference pool here.
+        A reference the screen ruled out, or could not judge, is estimated and reported too, flagged
+        so it stays visible without dragging the headline; it is kept out of every reference pool here.
 
-        When nothing was screened and the screen already ran this exact contrast, its final pass is
+        When nobody lost their power and the screen already ran this exact contrast, its final pass is
         reused rather than refitting the whole pool.
         """
         context = mi.context
         pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
-        ruled_out = set(screened)
-        surviving = [r for r in pool if r not in ruled_out]
+        ruled_out = set(screen.screened if screen is not None else ())
+        demoted = set(power_free)
+        surviving = [r for r in pool if r not in demoted]
         clone = self._reference_clone()
-        reusable = self._reusable_screen_estimates(mi, screen=screen, ruled_out=ruled_out)
+        reusable = self._reusable_screen_estimates(mi, screen=screen, ruled_out=demoted, pool=surviving)
         rows: list[dict[str, object]] = []
         for target in pool:
             refs = [r for r in surviving if r != target]
@@ -1114,6 +1147,7 @@ class PowerModelMethod:
                     "actual_energy": energy,
                     "n_records": n_records,
                     "screened": target in ruled_out,
+                    "unjudged": target in demoted and target not in ruled_out,
                 }
             )
         return pd.DataFrame(rows) if rows else empty_reference_uplifts()
@@ -1131,19 +1165,22 @@ class PowerModelMethod:
             return float("nan")
 
     def _reusable_screen_estimates(
-        self, mi: MethodInput, *, screen: ScreenResult | None, ruled_out: set[str]
+        self, mi: MethodInput, *, screen: ScreenResult | None, ruled_out: set[str], pool: Sequence[str] | None = None
     ) -> dict[str, float]:
         """Screen estimates that already answer the reference-uplift question, so no refit is needed.
 
-        Only when nothing was ruled out (every pool is the full one) and the screen ran the
-        campaign's own contrast, which is the case for a healthy prepost campaign. Any other
-        combination refits, because the pools or the contrast differ.
+        Only when nobody lost their power after the screen ran, the screen covered the same pool the
+        reference report uses, and it ran the campaign's own contrast -- the case for a healthy
+        prepost campaign. Any other combination refits, because the pools or the contrast differ.
         """
         if screen is None or ruled_out or screen.passes.empty:
             return {}
         if is_toggle(mi.context.timing) or self.screening_timing(mi) != mi.context.timing:
             return {}
+        reported = self._candidate_references(mi.context.select(mi.scada_df), mi=mi) if pool is None else pool
         final = screen.passes[screen.passes["pass"] == screen.passes["pass"].max()]
+        if set(final["turbine"].astype(str)) != set(reported):
+            return {}
         return {str(r.turbine): float(r.estimate) for r in final.itertuples()}
 
     def _upgraded_energy(self, mi: MethodInput, *, turbine: str) -> tuple[float, int]:
@@ -1157,13 +1194,12 @@ class PowerModelMethod:
         finite = selected[np.isfinite(selected)]
         return float(finite.sum()), int(finite.size)
 
-    def _campaign_days(self, mi: MethodInput, *, pool: Sequence[str]) -> float:
-        """Upgraded days of *fittable* data the worst-covered turbine has, test turbine included.
+    def _upgraded_days(self, mi: MethodInput, *, turbines: Sequence[str]) -> dict[str, float]:
+        """Upgraded days of *fittable* data each of ``turbines`` has.
 
         Counted from records rather than calendar span, and per turbine rather than over the frame:
         the frame can span a year while one candidate has a fortnight of campaign data, and that
-        candidate is then estimated in exactly the short-data regime the gate exists to avoid. The
-        weakest member decides, since every screening estimate draws on the whole pool.
+        candidate is then estimated in exactly the short-data regime the gate exists to avoid.
 
         Rows are counted through the same normal-operation mask :meth:`_select_rows` fits on, so a
         turbine with a year of readings but a fortnight of available ones is judged on the
@@ -1179,18 +1215,19 @@ class PowerModelMethod:
             wind_speed_col=self.columns.wind_speed,
             availability_col=self.columns.availability,
         ).keep_mask
-        covered: list[float] = []
-        for wtg in [mi.test_wtg, *pool]:
+        covered: dict[str, float] = {}
+        for wtg in turbines:
             # This turbine's own rows: the long frame repeats each timestamp per turbine.
             rows = scada[scada[mi.turbine_col] == wtg].sort_index()
             rows = rows[~rows.index.duplicated()]
             if rows.empty:
-                return 0.0
+                covered[wtg] = 0.0
+                continue
             in_campaign = upgraded.reindex(pd.DatetimeIndex(rows.index)).fillna(value=False).to_numpy()
             normal = keep_mask(rows, timebase=timebase).to_numpy()
             finite = np.isfinite(rows[self.columns.active_power].to_numpy(dtype=float))
-            covered.append(float(np.count_nonzero(in_campaign & normal & finite)) * per_day)
-        return min(covered) if covered else 0.0
+            covered[wtg] = float(np.count_nonzero(in_campaign & normal & finite)) * per_day
+        return covered
 
     def _screening_clone(self) -> PowerModelMethod:
         """Return this method as it estimates one candidate reference during screening."""
@@ -1237,6 +1274,37 @@ class PowerModelMethod:
         campaign = index[index >= toggle_upgrade_start(timing, index)]
         return pd.Timestamp(campaign[len(campaign) // 2])
 
+    def _screenable_pool(self, mi: MethodInput) -> tuple[list[str], list[str]]:
+        """Return the candidate references with enough upgraded data to be screened, and those without.
+
+        A candidate holding less than ``screen_min_campaign_days`` is held out of the screen and
+        keeps only its operating-state booleans; the rest of the pool is still screened. An empty
+        pool means no candidate holds enough, and then nobody is held out either.
+        """
+        days = self._upgraded_days(mi, turbines=self._candidate_references(mi.context.select(mi.scada_df), mi=mi))
+        pool = [wtg for wtg, covered in days.items() if covered >= self.screen_min_campaign_days]
+        unjudged = sorted(set(days) - set(pool))
+        if not pool:
+            logger.info(
+                "%s %s: reference screen skipped, the best-covered candidate reference holds %.1f days of upgraded "
+                "data, under the %.1f needed for a screening estimate to separate a bad reference from a good one",
+                self.name,
+                mi.test_wtg,
+                max(days.values(), default=0.0),
+                self.screen_min_campaign_days,
+            )
+        elif unjudged:
+            logger.info(
+                "%s %s: %s held out of the reference screen, each holding under %.1f days of upgraded data; they "
+                "keep their waking boolean and contribute no power, and the remaining %d candidate(s) are screened",
+                self.name,
+                mi.test_wtg,
+                unjudged,
+                self.screen_min_campaign_days,
+                len(pool),
+            )
+        return pool, ([] if not pool else unjudged)
+
     def screen_references(self, mi: MethodInput) -> ScreenResult:
         """Estimate each candidate reference against the others and rule out clear outliers.
 
@@ -1253,22 +1321,15 @@ class PowerModelMethod:
             # more than leaving a mild bad one in, so it does not run.
             logger.info("%s %s: reference screen skipped, campaign is toggle", self.name, mi.test_wtg)
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
-        pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
-        campaign_days = self._campaign_days(mi, pool=pool)
-        if campaign_days < self.screen_min_campaign_days:
-            logger.info(
-                "%s %s: reference screen skipped, campaign holds %.1f days of upgraded data, under the %.1f "
-                "needed for a screening estimate to separate a bad reference from a good one",
-                self.name,
-                mi.test_wtg,
-                campaign_days,
-                self.screen_min_campaign_days,
-            )
+        pool, unjudged = self._screenable_pool(mi)
+        if not pool:
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
         cache_key = (tuple(pool), str(timing))
         if self.screen_cache is not None and cache_key in self.screen_cache:
-            cached = self.screen_cache[cache_key]
+            # Re-stamped: the pool decides the screening estimates, but which candidates were held
+            # out of it is this test turbine's own, and two of them can share a pool.
+            cached = dataclasses.replace(self.screen_cache[cache_key], unjudged=tuple(unjudged))
             logger.info(
                 "%s %s: reference screen already run for this campaign; %s",
                 self.name,
@@ -1319,10 +1380,13 @@ class PowerModelMethod:
             )
         if self.screen_cache is not None:
             self.screen_cache[cache_key] = result
-        return result
+        return dataclasses.replace(result, unjudged=tuple(unjudged))
 
     def _validate_model_config(self) -> None:
         """Fail loudly on config combinations that would silently misbehave."""
+        if self.headline_estimator not in ("forward", "reversal"):
+            msg = f"headline_estimator must be 'forward' or 'reversal', got {self.headline_estimator!r}"
+            raise ValueError(msg)
         if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
             msg = f"time_decay_half_life_days must be positive, got {self.time_decay_half_life_days}"
             raise ValueError(msg)
@@ -1548,6 +1612,7 @@ class PowerModelMethod:
             "time_decay_half_life_days": self.time_decay_half_life_days,
             "reference_screen": self.reference_screen,
             "screen_floor": self.screen_floor,
+            "normal_operation_feature": self.normal_operation_feature,
             "screen_min_campaign_days": self.screen_min_campaign_days,
             "report_reference_uplifts": self.report_reference_uplifts,
         }

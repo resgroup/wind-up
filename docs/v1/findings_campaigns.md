@@ -12,6 +12,135 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF24 — Balance the two periods and **two thirds of the prepost placebo bias disappears**: a whole farm whose pre and post hold the same months record for record reads **+0.23 pp** against **+0.65 pp** for six contiguous arms — and every large per-turbine offset goes with it, T17 included (+4.4 → −0.34)
+
+*2026-09-16/17. `benchmarking/campaigns/disguise_probe.py`: two years of Hill of Towie
+(2017-09-01..2019-09-01) cut into alternating day blocks and read twice. The toggle leg takes the
+record as it stands with the odd blocks toggled on; the prepost leg takes it with every timestamp
+remapped, SCADA and reanalysis together, so the even blocks become a contiguous pre period and the
+odd blocks a contiguous post period. Whole farm, T13 the test turbine and all 20 others estimated
+against the rest, screen off, nothing injected, so all 21 readings have a truth of 0. Two whole
+years makes each half a whole year, and the disguise then deals each half the same number of records
+of every calendar month. Compared against six contiguous reference arms (12-month baseline into a
+6-month campaign, changeovers 2018-03 through 2018-09) from `shift_probe references`.*
+
+| | farm mean | median | sd across turbines | worst turbine |
+|---|---|---|---|---|
+| **balanced periods** (prepost leg) | **+0.226 pp** | +0.139 | 0.269 | +0.798 |
+| **balanced periods** (toggle leg) | +0.226 | +0.139 | 0.269 | +0.798 |
+| six contiguous arms | +0.562 … +0.744, mean **+0.653** | +0.21 … +0.47 | 1.09 … 1.54 | T17 at +4.3 … +5.5 |
+
+**Every contiguous arm is positive** — +0.630, +0.611, +0.562, +0.744, +0.706, +0.666 — so the level
+is not one unlucky window.
+
+**What balancing removes.** About two thirds of the level, and nearly all of the between-turbine
+spread: sd falls from 1.1–1.5 pp to 0.26 pp. The large per-turbine offsets are the clearest part —
+T17 reads +4.3 to +5.5 pp across the contiguous arms and **−0.34 pp** here, T13 +2.9 to +3.7 against
++0.18, T12 +2.3 to +2.7 against +0.41. Those offsets are a property of comparing two different
+stretches of calendar time, not of the turbines: a reference that looks badly behaved on a
+contiguous campaign can be well behaved on the same data with the periods interleaved.
+
+**What survives it: about +0.23 pp**, which no amount of seasonal balance removes. That is the same
+quantity the holdout-geometry ladder measures — the sum bias is +0.001% when held-out rows are
+interleaved among training rows and +0.14% at ~1.5-day blocks, which is the geometry this
+construction has.
+
+**The construction checks itself.** `naive_ratio` reads 2.108402 on both legs, identical to the last
+digit: it has no time dependence, so matching to machine precision proves the legs pool the same
+rows into the same two groups. `power_model` agrees with it: **20 of the 21 turbines read bit for
+bit the same on both legs**, and the 21st (T09) differs by 0.008 pp.
+
+That last agreement needs the steps that read the whole timeline at once — the reanalysis alignment
+and northing discovery — settled once on the undisguised record and handed to both legs, which is
+what the probe does. Left to run per leg they do not agree with themselves: northing discovers 6
+changepoints on the interleaved timeline against 2 on the real one, because rearranging the days
+changes what a changepoint search sees, and that alone was a 0.008 pp mean (0.073 pp worst)
+difference between the legs. It is a property of interleaving, not a defect in either step — but it
+means a probe like this one has to hold every whole-timeline step fixed or it measures the step
+instead of the thing it is asking about.
+
+## CF23 — Removing the reference **power-minimum** feature, or **all ERA5 features**, or both, leaves the placebo reference level where it was (+0.58 pp against +0.52 to +0.62 pp): the prepost bias does not live in the auxiliary features, and ERA5's per-turbine effect cancels in the mean
+
+*2026-09-16. Whole-farm reference arm on a contiguous prepost placebo: real Hill of Towie SCADA,
+12-month baseline into a 6-month campaign changing over 2018-09-01, T13 the test turbine and all 20
+others estimated against the rest, nothing injected, reference screen off, campaign-proximity
+weighting off ([CF22](#cf22)). Every reading's truth is 0. ERA5 is removed as a model feature with
+`era5_hourly_df=None` and still drives the shared northing step; the power minimum is removed by
+unsetting the `active_power_min` role on the column schema, which takes it out of every reference's
+feature block.*
+
+**The tested idea** was that these two groups are the ones whose relationship to the target can
+drift over a campaign for reasons unrelated to any upgrade — a reference's power *minimum* can
+change character with turbine software, and ERA5's relationship to the site can change with local
+exposure such as tree growth or a neighbouring farm — while the target itself drifts only gently
+with normal degradation. A model leaning on a drifting feature would read that drift as uplift.
+
+| arm | 20 references | all 21 turbines |
+|---|---|---|
+| full | **+0.583** pp (median +0.329) | +0.692 |
+| no power minimum | +0.619 (+0.359) | +0.727 |
+| no ERA5 | +0.518 (+0.249) | +0.670 |
+| neither | +0.563 (+0.339) | +0.701 |
+
+The whole spread across the four arms is **0.10 pp**, at the 0.127 pp placebo noise floor
+([CF14](#cf14)), so nothing here is distinguishable from nothing.
+
+**Per turbine the two groups behave very differently, which is the useful part.** Dropping the power
+minimum barely moves any turbine (correlation with `full` 0.998, mean absolute change 0.07 pp, worst
+0.22 pp) — it is close to an inert feature at the headline. Dropping ERA5 moves individual turbines
+substantially (correlation 0.951, mean absolute change 0.28 pp, worst 1.37 pp: T18 goes +0.515 →
+−0.852) and yet the farm mean barely moves, because those changes cancel. ERA5 is redistributing
+error between turbines rather than creating or removing a level.
+
+**What it implies.** The bias is not in the auxiliary features, so it is in the reference-power
+relationship itself — the part of the model that cannot be ablated, since it is the estimator. That
+is consistent with the holdout-geometry result: the same rows and weights give a sum bias of +0.001%
+when held-out rows are interleaved among the training rows and +0.47 to +0.58% when they are
+contiguous blocks. Feature choice is not the lever; what the model is asked to extrapolate across is.
+
+## CF22 — The campaign-proximity **time-decay weighting is now off by default**: on a record whose pre and post periods are the same days interleaved — truth 0 — it moved the reading **+0.154 pp**, and with it off the disguised-prepost and toggle legs agree to the last digit
+
+*2026-09-16. `benchmarking/campaigns/disguise_probe.py` (rung 1 of the bottom-up ladder): one
+window of Hill of Towie cut into alternating day blocks, read twice. The toggle leg takes the
+record as it stands with the odd blocks toggled on; the prepost leg takes it with every timestamp
+remapped, SCADA and reanalysis together, so the even blocks become a contiguous pre period and the
+odd blocks a contiguous post period. Nothing is injected, so every turbine's truth is 0, and both
+legs contrast the same rows in the same two groups. Configuration for the numbers below: T13 the
+test turbine of five over 2018-01-01..2018-03-02, one-day blocks, reference screen off, and
+reanalysis lag-matched once over the undisguised record so both legs are handed the same features.*
+
+**The readings, all against a truth of 0:**
+
+| leg | reading |
+|---|---|
+| prepost, weighting on | +0.3493% |
+| prepost, weighting off | +0.1950% |
+| toggle | +0.1950% |
+
+With the weighting off the two legs match exactly — the feature frame (0 of 34 columns differing),
+the outcome, and the train and predict selections are identical, so the prepost path returns
+bit-for-bit what the toggle path does on the same inputs. That is the rung-1 result: there is no
+defect in the prepost path itself. The whole prepost-minus-toggle difference was the weights.
+
+**Why the weighting is a prepost-only lever.** The weights are
+`0.5 ** (days_outside_campaign / half_life)`, distance measured to the *campaign interval*, with
+the adaptive half-life at twice the campaign's duration. In toggle nothing decays at all: the on
+and off rows interleave inside the interval, so every row weighs 1. In prepost every baseline row
+sits outside it, so the baseline is tilted toward the changeover — a 12-month baseline before a
+12-month campaign runs from 0.71 at its oldest row to 1.00 at its newest, and a 12-month baseline
+before a 9.5-month campaign from 0.65. That tilt works against the thing a full-year baseline is
+chosen for, which is covering every season evenly.
+
+**Decision: off by default** — `adaptive_time_decay=False` with `time_decay_half_life_days=None`,
+which is now the shipped configuration. The mechanism stays in the method for anyone who wants it.
+This supersedes the default set by Issue 15 ([F20](findings.md)), which tuned the half-life without
+a placebo that could isolate what the weighting itself contributes.
+
+**Consequences.** Recorded benchmark baselines move and need re-recording. The case the weighting
+was built for is real but different — see [R8](issues_campaigns.md) — and wants a different shape.
+
+---
+
 ## CF21 — The default layout path handed a turbine its neighbour's step. Repeating pass 2 until it converges removes every such artefact on Hill of Towie: the golden table falls from **13** changepoints absent from v0's published table to **2**, with none of the published ones lost
 
 *2026-09-24. Reproduce: `uv run python -m benchmarking.baselines.study_wake_nadir_golden` (golden tables),
