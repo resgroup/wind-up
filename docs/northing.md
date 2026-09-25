@@ -8,7 +8,7 @@ are absolute: adding one to the raw signal norths it. `apply_north_table` applie
 `write_north_table_yaml` writes the tables in the same format wind-up uses, so a table can be hand
 edited and supplied back.
 
-The figure shows why this matters, on the 21 Hill of Towie turbines over 2016-2020. Each line is
+The figure shows why this matters on the 21 Hill of Towie turbines over 2016-2020. Each line is
 one turbine's 14-day rolling circular median of the circular difference between its nacelle
 position and ERA5 wind direction. Before northing (top), most turbines sit tens of degrees off, and
 several jump by 30 to 180 degrees when their north calibration is re-zeroed. After applying the
@@ -34,9 +34,7 @@ are drawn by `benchmarking/baselines/study_northing_doc_plot.py`.
 
 Each turbine gets one constant offset that nulls its whole-record direction against reanalysis
 (ERA5). This step fixes the farm in absolute terms: without it, a farm that is uniformly wrong
-looks self-consistent. It finds no changepoints, because reanalysis is unreliable over short
-periods: an unusual weather spell moves every turbine's residual together, and correcting that
-would write the excursion into the consensus the next step trusts.
+looks self-consistent.
 
 On Hill of Towie the anchor pulls the constant spread of the raw signals (top) to zero (bottom).
 Every step change survives it, so a turbine with a step sits off zero on at least one side of it.
@@ -65,9 +63,7 @@ smallest step reported, the shortest segment, the changepoint budget per year, a
 For a farm of three or more turbines, each turbine is northed against a consensus of the others,
 and this step finds all the changepoints. The consensus is the per-timestamp circular median of
 the anchored directions of the turbine's four nearest neighbours by geodesic distance from the
-`Layout`. A turbine shares wind with its neighbours, not with the far side of a large farm, and a
-miscalibrated turbine elsewhere cannot pull its reference. A consensus stands at a timestamp only
-when a strict majority of its turbines report, and never fewer than three.
+`Layout`. A consensus stands at a timestamp only when a strict majority of its turbines report, and never fewer than three.
 
 A neighbour consensus therefore needs at least three neighbours, so it applies from four turbines
 upward. A three-turbine farm, or a call with `layout=None`, uses one whole-farm consensus instead:
@@ -76,7 +72,7 @@ majority of the farm, and at least three turbines, report.
 
 A neighbour's own step is still in the anchored signals the first consensus is built from, and a
 four-turbine median moves when one member steps, which would hand the turbine a matching false
-step. So the step repeats: each round rebuilds the consensus from the previous round's tables,
+step. Therefore the procedure is repeated until convergence: each round rebuilds the consensus from the previous round's tables,
 re-northing only turbines whose neighbours changed, until no table moves by more than half a
 degree or shifts a changepoint by more than a day.
 
@@ -90,11 +86,11 @@ within a few degrees of zero.
 ## changepoints-v-reanalysis
 
 A farm of one or two turbines cannot form a consensus, so each turbine is northed directly against
-reanalysis with changepoints. Reanalysis wanders relative to the wind farm's weather, so this step
+reanalysis with changepoints. Reanalysis is a less accurate representation of the wind farm's weather, so this step
 needs a larger step (10 deg) and a longer gap between changepoints (30 days) before it attributes a
 step to the turbine (`against_reanalysis`).
 
-The figure runs `north_farm` on T12 and T19 alone, the two Hill of Towie turbines with the most
+The figure below shows results from `north_farm` considering only T12 and T19, the two Hill of Towie turbines with the most
 dramatic steps. T12 re-zeroes several times, by up to 180 degrees; T19 steps by about 100 degrees
 for five months of 2019. Against reanalysis alone, both steps are found and both turbines come
 back to zero.
