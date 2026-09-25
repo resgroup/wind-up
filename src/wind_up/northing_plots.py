@@ -15,14 +15,20 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.colors import TwoSlopeNorm
 
 from wind_up.circular_math import circ_diff, circ_median
+from wind_up.geodesy import local_east_north
+from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL
 from wind_up.northing import NORTH_OFFSET_COL, TIMESTAMP_COL, apply_north_table
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from matplotlib.figure import Figure
+
+    from wind_up.layout import Layout
+    from wind_up.wake_nadir import WakePairCurves
 
 # The accuracy a corrected direction is judged against, drawn as a band around zero.
 BELIEVABLE_DEG = 1.0
@@ -242,4 +248,93 @@ def plot_northing_farm(
     if out_dir is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_dir / "farm_northing.png", dpi=120)
+    return fig
+
+
+def plot_wake_nadir_farm(
+    layout: Layout,
+    *,
+    corrections: dict[str, float],
+    out_dir: Path | None = None,
+) -> Figure:
+    """Draw the wake-nadir shift on the farm map, one bubble per turbine.
+
+    Each turbine sits at its geodesic east/north position (positive quadrant); its bubble is
+    coloured by the correction on a fixed +/-10 deg diverging scale and sized by its magnitude, and
+    labelled with the turbine name and value. A turbine absent from ``corrections`` is drawn at zero.
+
+    :param corrections: turbine name to its wake-nadir shift (deg), as returned by
+        :func:`wind_up.northing.add_wake_nadir_shift`
+    :param out_dir: when given, the figure is saved here as ``wake_nadir_bubble.png``
+    """
+    frame = layout.frame
+    names = [str(n) for n in frame[NAME_COL]]
+    east, north = local_east_north(latitudes=frame[LATITUDE_COL], longitudes=frame[LONGITUDE_COL])
+    values = np.array([float(corrections.get(name, 0.0)) for name in names])
+
+    scale_deg = 10.0
+    fig, ax = plt.subplots(figsize=(8.0, 7.0))
+    norm = TwoSlopeNorm(vmin=-scale_deg, vcenter=0.0, vmax=scale_deg)
+    sizes = 120.0 + 90.0 * np.clip(np.abs(values), 0.0, scale_deg)
+    scatter = ax.scatter(
+        east, north, c=values, s=sizes, cmap="RdBu_r", norm=norm, edgecolors="black", linewidths=0.6, zorder=2
+    )
+    for x, y, name, value in zip(east, north, names, values, strict=True):
+        ax.annotate(f"{name}\n{value:+.1f}", (x, y), fontsize="x-small", ha="center", va="center", zorder=3)
+    ax.set_aspect("equal")
+    ax.set_xlabel("east (m)")
+    ax.set_ylabel("north (m)")
+    ax.set_title("Wake-nadir shift per turbine (deg)")
+    ax.grid(alpha=0.3)
+    fig.colorbar(scatter, ax=ax, label="correction (deg)")
+    fig.tight_layout()
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_dir / "wake_nadir_bubble.png", dpi=120)
+    return fig
+
+
+def plot_wake_nadir_pair(
+    before: WakePairCurves,
+    *,
+    after: WakePairCurves,
+    out_dir: Path | None = None,
+) -> Figure:
+    """Draw one pair's binned power and wind-speed ratios before and after the wake-nadir shift.
+
+    The x axis is the upstream turbine's northed direction relative to the pair's geometric bearing,
+    so after a good shift the nadir sits near zero.
+
+    :param before: the pair's curves on the direction northed without the shift, from
+        :func:`wind_up.wake_nadir.wake_pair_curves`
+    :param after: the same pair's curves on the shifted direction
+    :param out_dir: when given, the figure is saved here as ``wake_nadir_pair_<upstream>_<downstream>.png``
+    """
+    panels = [("power_ratio", "power ratio")]
+    if before.wind_speed_ratio is not None and after.wind_speed_ratio is not None:
+        panels.append(("wind_speed_ratio", "wind speed ratio"))
+    fig, axes = plt.subplots(1, len(panels), figsize=(5.5 * len(panels), 4.2), sharey=True, squeeze=False)
+    for ax, (field, label) in zip(axes.ravel(), panels, strict=True):
+        for curves, name, colour in ((before, "before", "tab:red"), (after, "after", "tab:blue")):
+            nadir = "unresolved" if curves.nadir_deg is None else f"nadir at {curves.nadir_deg:+.1f} deg"
+            ax.plot(
+                curves.offset_deg,
+                getattr(curves, field),
+                marker="o",
+                markersize=3,
+                color=colour,
+                label=f"{name}, {nadir}",
+            )
+            if curves.nadir_deg is not None:
+                ax.axvline(curves.nadir_deg, color=colour, linestyle=":", linewidth=1.0)
+        ax.axvline(0.0, color="k", linewidth=0.8)
+        ax.set_xlabel(f"{before.upstream} direction minus bearing to {before.downstream} (deg)")
+        ax.set_ylabel(f"{before.downstream} / {before.upstream} {label}, normalised")
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize="small")
+    fig.suptitle(f"Wake of {before.upstream} on {before.downstream}, before and after the wake-nadir shift")
+    fig.tight_layout()
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_dir / f"wake_nadir_pair_{before.upstream}_{before.downstream}.png", dpi=120)
     return fig

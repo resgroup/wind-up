@@ -14,11 +14,11 @@ from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 if TYPE_CHECKING:
     from pathlib import Path
 
-TURBINES_CSV = """Name,Latitude,Longitude
-T01,57.40,-3.30
-T02,57.60,-3.20
-T03,57.50,-3.25
-T04,57.50,-3.25
+TURBINES_CSV = """Name,Latitude,Longitude,rotor_diameter_m
+T01,57.40,-3.30,82
+T02,57.60,-3.20,82
+T03,57.50,-3.25,82
+T04,57.51,-3.25,82
 """
 
 PREPOST = """
@@ -78,12 +78,13 @@ class TestTheCampaignFacts:
     def test_a_turbine_holding_no_role_keeps_its_coordinates(self, tmp_path: Path) -> None:
         # it is a wake contributor, and the waking-layout diagnostic can only draw what it has
         # coordinates for
-        (tmp_path / "turbines.csv").write_text(TURBINES_CSV + "T05,57.55,-3.22\n")
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV + "T05,57.55,-3.22,82\n")
         (tmp_path / "scada.parquet").write_bytes(b"")
         path = tmp_path / "campaign.yaml"
         path.write_text(textwrap.dedent(PREPOST))
         spec = load_declaration(path).spec
         assert spec.coords["T05"] == (57.55, -3.22)
+        assert list(spec.layout.frame["rotor_diameter_m"]) == [82.0] * 5
         assert "T05" not in spec.candidate_references
 
     def test_the_named_schema_resolves_to_a_column_schema(self, tmp_path: Path) -> None:
@@ -278,13 +279,21 @@ class TestErrors:
         with pytest.raises(FileNotFoundError, match=r"turbines.csv"):
             load_declaration(path)
 
+    def test_a_sidecar_without_rotor_diameters_is_refused_naming_the_column(self, tmp_path: Path) -> None:
+        # wake-nadir-shift's wake cutoff is measured in rotor diameters, so none may be assumed
+        path = write_campaign(tmp_path)
+        without = "".join(line.rsplit(",", 1)[0] + "\n" for line in TURBINES_CSV.splitlines())
+        (tmp_path / "turbines.csv").write_text(without)
+        with pytest.raises(ValueError, match="rotor_diameter_m"):
+            load_declaration(path)
+
     def test_no_upgraded_turbines_is_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="upgraded"):
             load(tmp_path, PREPOST.replace("upgraded:   [T01]", "upgraded:   []"))
 
     def test_a_name_given_twice_in_the_sidecar_is_rejected(self, tmp_path: Path) -> None:
         path = write_campaign(tmp_path)
-        (tmp_path / "turbines.csv").write_text(TURBINES_CSV + "T02,57.70,-3.10\n")
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV + "T02,57.70,-3.10,82\n")
         with pytest.raises(ValueError, match="T02"):
             load_declaration(path)
 
@@ -295,7 +304,7 @@ class TestACampaignDesignFeedsTheDeclaration:
         (tmp_path / "turbines.csv").write_text(
             "name,latitude,longitude,rotor_diameter_m,wind_farm\n"
             "T01,57.40,-3.30,82,Home\nT02,57.60,-3.20,82,Home\nT03,57.50,-3.25,82,Home\n"
-            "T04,57.50,-3.25,82,Home\n,57.70,-3.10,90,\n"
+            "T04,57.51,-3.25,82,Home\n,57.70,-3.10,90,\n"
         )
         declaration = load_declaration(path)
         assert set(declaration.spec.coords) == {"T01", "T02", "T03", "T04"}

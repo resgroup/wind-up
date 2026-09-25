@@ -305,11 +305,10 @@ class TestSeriesStyles:
     def test_a_whole_farm_gets_a_distinct_style_each(self) -> None:
         assert len({series_style(i) for i in range(21)}) == 21
 
-    def test_colours_and_dashes_are_coprime_so_thirty_are_distinct(self) -> None:
-        # 10 colours x 3 dashes: every pair appears before any repeats
-        assert len({series_style(i) for i in range(30)}) == 30
-        assert series_style(30) == series_style(0)
+    def test_forty_are_distinct_before_any_repeat(self) -> None:
+        assert len({series_style(i) for i in range(40)}) == 40
+        assert series_style(40) == series_style(0)
 
-    def test_the_first_ten_reuse_no_dash(self) -> None:
-        # within one colour cycle the dash changes, so neighbours never match on both
-        assert len({dash for _, dash in (series_style(i) for i in range(10))}) == 3
+    def test_every_colour_is_used_solid_before_any_dash(self) -> None:
+        assert {dash for _, dash in (series_style(i) for i in range(10))} == {"-"}
+        assert [series_style(i)[1] for i in (10, 20, 30)] == ["--", "-.", ":"]

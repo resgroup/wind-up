@@ -155,7 +155,12 @@ def run_case(frame: pd.DataFrame, turbines: Sequence[str], start: pd.Timestamp, 
     if len(direction) < 3:  # noqa: PLR2004 - north_farm needs a farm
         return pd.DataFrame(columns=["turbine", "date", "step_deg"])
     tables = north_farm(
-        index, direction_deg=direction, usable=usable, reanalysis_deg=reanalysis, settings=DEFAULT_NORTHING
+        index,
+        direction_deg=direction,
+        usable=usable,
+        reanalysis_deg=reanalysis,
+        layout=None,
+        settings=DEFAULT_NORTHING,
     )
     found: list[dict[str, object]] = []
     for name, table in sorted(tables.items()):

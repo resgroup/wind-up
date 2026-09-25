@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 import yaml
 
-from benchmarking.campaigns.declaration import CampaignSpec
+from benchmarking.campaigns.declaration import CampaignSpec, layout_coords
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from wind_up.layout import Layout
 
 if TYPE_CHECKING:
     from benchmarking.synthetic import ColumnSchema
@@ -116,7 +117,8 @@ def load_declaration(path: str | Path) -> Declaration:
     data = _section(raw, "data")
     columns = _schema(str(data["schema"]))
     scada_path = _resolve(root, str(data["scada"]), what="scada")
-    coords = _read_turbines(_resolve(root, str(data["turbines"]), what="turbines"))
+    layout = _read_turbines(_resolve(root, str(data["turbines"]), what="turbines"))
+    coords = layout_coords(layout)
 
     roles = _section(raw, "turbines")
     upgraded = [str(w) for w in roles.get("upgraded", [])]
@@ -144,7 +146,7 @@ def load_declaration(path: str | Path) -> Declaration:
             upgrade_timing=_timing(_section(raw, "timing")),
             candidate_references=references,
             excluded_turbines=excluded,
-            coords=dict(coords),
+            layout=layout,
             north_offsets=_north_offsets(raw.get("northing")),
             rated_power_kw=float(roles["rated_power_kw"]),
             analysis_period=(start, end),
@@ -182,15 +184,17 @@ def _resolve(root: Path, name: str, *, what: str) -> Path:
     return path
 
 
-def _read_turbines(path: Path) -> dict[str, tuple[float, float]]:
-    """Read the turbines sidecar: name, latitude, longitude, however the header is cased.
+def _read_turbines(path: Path) -> Layout:
+    """Read the turbines sidecar -- name, latitude, longitude, rotor diameter -- into a layout.
+
+    The header may be cased any way. ``rotor_diameter_m`` is required.
 
     Rows without a name are skipped, so a campaign-design layout can serve as the sidecar. A name
     given more than once is rejected.
     """
     frame = pd.read_csv(path)
     lookup = {str(c).strip().lower(): c for c in frame.columns}
-    missing = [c for c in ("name", "latitude", "longitude") if c not in lookup]
+    missing = [c for c in ("name", "latitude", "longitude", "rotor_diameter_m") if c not in lookup]
     if missing:
         msg = f"the turbines file {path.name} has no {missing} column(s); it carries {list(frame.columns)}"
         raise ValueError(msg)
@@ -202,10 +206,7 @@ def _read_turbines(path: Path) -> dict[str, tuple[float, float]]:
         raise ValueError(msg)
     for name in names:
         _path_component(name, what=f"turbine name in {path.name}")
-    return {
-        str(row[lookup["name"]]): (float(row[lookup["latitude"]]), float(row[lookup["longitude"]]))
-        for _, row in named.iterrows()
-    }
+    return Layout.from_frame(named.reset_index(drop=True))
 
 
 def _path_component(value: str, *, what: str) -> str:

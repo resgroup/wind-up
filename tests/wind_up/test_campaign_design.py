@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.wind_up.layouts import grid_layout, line_layout, offset, scatter_layout
+from tests.wind_up.layouts import grid_layout, line_layout, offset, scatter_layout, spaced_points
 from wind_up.campaign_design import COMPLIANCE_COLUMNS, check_design, design_campaign
 
 # An east-west line with every gap different, so no two distances tie. 100 m rotors, so the gaps
@@ -325,7 +325,7 @@ def test_wind_farm_must_exist() -> None:
 def test_design_matches_brute_force(seed: int) -> None:
     """The solver's maximum is the true maximum; the walk returns the first compliant set in priority order."""
     rng = np.random.default_rng(seed)
-    layout = scatter_layout([tuple(p) for p in rng.uniform(0, 1500, size=(8, 2))])
+    layout = scatter_layout(spaced_points(rng, count=8, extent_m=1500))
     names = list(layout["name"])
     priority = [str(n) for n in rng.permutation(names)]
     rank = {name: i for i, name in enumerate(priority)}
@@ -352,7 +352,7 @@ def _worst_reference_d(report_table: pd.DataFrame) -> float:
 def test_unlisted_turbines_fill_the_design_with_the_nearest_references(seed: int) -> None:
     """Without a priority, the furthest reference is as near as any design of the maximum size allows."""
     rng = np.random.default_rng(100 + seed)
-    layout = scatter_layout([tuple(p) for p in rng.uniform(0, 1500, size=(8, 2))])
+    layout = scatter_layout(spaced_points(rng, count=8, extent_m=1500))
     names = list(layout["name"])
     reports = [
         check_design(layout, test_turbines=list(combo))
@@ -371,7 +371,7 @@ def test_unlisted_turbines_fill_the_design_with_the_nearest_references(seed: int
 @pytest.mark.parametrize("seed", range(6))
 def test_a_listed_turbine_is_kept_even_if_it_needs_further_references(seed: int) -> None:
     rng = np.random.default_rng(200 + seed)
-    layout = scatter_layout([tuple(p) for p in rng.uniform(0, 1500, size=(8, 2))])
+    layout = scatter_layout(spaced_points(rng, count=8, extent_m=1500))
     names = list(layout["name"])
     compliant = [
         check_design(layout, test_turbines=list(combo))

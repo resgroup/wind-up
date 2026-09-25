@@ -9,7 +9,7 @@ import pandas as pd
 import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
 from benchmarking.campaigns.context import context_for
-from benchmarking.campaigns.declaration import CampaignSpec
+from benchmarking.campaigns.declaration import CampaignSpec, layout_from_coords
 from benchmarking.harness.context import CampaignContext
 
 _TURBINE_COL = "TurbineName"
@@ -28,7 +28,7 @@ def _spec(**overrides: object) -> CampaignSpec:
         "upgrade_timing": pd.Timestamp("2020-01-01 00:20", tz="UTC"),
         "candidate_references": ["T3", "T4"],
         "excluded_turbines": [],
-        "coords": {},
+        "layout": layout_from_coords({f"T{i}": (57.5 + 0.01 * i, -3.25) for i in range(1, 5)}, rotor_diameter_m=82.0),
         "north_offsets": [],
         "rated_power_kw": 2300.0,
         "analysis_period": (_START, _START + pd.Timedelta(days=1)),

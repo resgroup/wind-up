@@ -12,6 +12,148 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF21 — The default layout path handed a turbine its neighbour's step. Repeating pass 2 until it converges removes every such artefact on Hill of Towie: the golden table falls from **13** changepoints absent from v0's published table to **2**, with none of the published ones lost
+
+*2026-09-24. Reproduce: `uv run python -m benchmarking.baselines.study_wake_nadir_golden` (golden tables),
+`uv run python -m benchmarking.baselines.study_northing_degradation` (degradation matrix), and the
+real-data tests in `tests/wind_up/test_northing_real_data.py`, which run on the new
+`northing_farm_inputs.parquet` fixture (the study's own inputs, 2017-2020, with power for pass 4).*
+
+**The artefact.** With a layout, pass 2 norths each turbine against the circular median of its four
+nearest neighbours. Pass 1 is a single constant per turbine (CF19), so each neighbour's own steps are
+still present in the signals that consensus is built from. A median of four is the mean of the middle
+two, so a neighbour's large step drags it by several degrees, and the turbine gets a spurious step on
+the same day. The whole-farm median of 21 hardly moves, which is why the `layout=None` tests never
+saw it. On the recorded HoT golden table this caused T15 to step with neighbours T05 and T16
+(three times), T14 with T12, T03 and T04 with T01 and T02's 180 deg flip, and T11 during the June
+2020 outage. On 2019-2020 alone, T17 also stepped with T19.
+
+**Candidates, scored against the published changepoints on the 2017-18 and 2019-20 windows**
+(layout path, extra / missed):
+
+| variant | 2017-18 | 2019-20 |
+|---|---|---|
+| k=4, one round (was shipped) | 1 / 0 | 2 / 0 |
+| k=5, one round | 1 / 0 | 1 / 0 |
+| k=6, one round | 0 / 0 | 1 / 0 |
+| k=8, one round | 0 / 0 | 1 / 0 |
+| k=4, two rounds | 0 / 0 | 0 / 0 |
+
+A larger neighbourhood only dilutes the leak. A second round removes it: the second consensus is
+built from the first round's tables, so each neighbour's own step is out of it. Two rounds still left
+T05 and T07 stepping with T01 and T02's simultaneous 180 deg flip on the 5-year record, where two of
+their four neighbours move at once. **Repeating to convergence** (a round that moves no changepoint
+by more than a day and no offset by more than 0.5 deg, capped at 10 rounds) clears that too. On the 5-year HoT record
+it converged at round 7. There is no common-mode drift: the median absolute-offset change across
+turbines between rounds is ~0.0 deg, and only turbines that had an artefact move.
+
+**Golden table, 2016-2020, matched against v0's published table at +/-14 days:**
+
+| | changepoints | in published | not in published |
+|---|---|---|---|
+| one round (previous golden) | 30 | 17 | 13 |
+| converged | 19 | 17 | 2 |
+
+The two left are T12's one-week +/-13 deg excursion in June 2016, stable across every variant
+and possibly real. Everything published that is missed is at most 2.4 deg, below the step floor,
+apart from T10's February 2016 half of a one-month excursion.
+
+**Degradation study** (all three farms, 56 minutes, no crashes). The pass-3 floor sweep is
+unchanged, since pass 3 does not use the consensus: the shipped settings still recall 13/28
+published steps with 1 spurious, exactly CF20. Worst-turbine offset error against each farm's own
+golden table:
+
+| HoT case | one round | converged |
+|---|---|---|
+| 15 turbines | 3.37 | 0.03 |
+| 365 days | 5.90 | 3.65 |
+| 182 days | 6.03 | 2.81 |
+| 7 days | 9.27 | 5.78 |
+| 75% random dropout | 8.39 | 1.58 |
+| 6 turbines | 1.97 | **6.88** |
+| 3 turbines, 90 days | 12.10 | 12.12 |
+
+The two columns are scored against different golden tables (each run's own), so they compare
+robustness rather than accuracy. Convergence makes most cases more robust. The 6-turbine subset is
+the exception and is **not yet diagnosed**. A candidate: those six westernmost turbines include T01
+and T02, which flip about 180 deg together in June 2016, so most of the six have two stepping
+turbines among their four neighbours. Kelmarsh stays within 8.5 deg (a 30-day record). Penmanshiel,
+run for the first time, stays within 9.4 deg; its worst cases are 10 turbines (9.2) and 7 days
+(9.4).
+
+**Cost.** Each round is a pass 2, so convergence costs more than one round. Two things keep it down.
+A turbine is re-northed only if a turbine its consensus is built from moved by more than the
+tolerance in the last round; otherwise its reference has, by the loop's own stopping test, not
+changed. A changepoint that only moves within the one-day search grid, which is jitter from
+`refine`, does not count as moved. On the 5-year, 21-turbine HoT record this is 94 pass-2
+estimates instead of 147 (rounds re-north 21, 21, 21, 17, 7, 5, 2 turbines). That is about 5-6
+minutes against ~1.5 for a single round, with the same answer.
+
+**Implication.** `north_farm` repeats pass 2 until it converges. The real-data tests now run the
+default path (layout plus pass 4) and hold it to exactly the published changepoints on both windows,
+plus a representative sample of the degradation study's cases.
+
+---
+
+## CF20 — Pass 3 (a lone turbine northed against reanalysis) over-detects changepoints, and the fix is a longer minimum segment, not a lower step floor: `REANALYSIS_MIN_STEP_DEG` stays **10°**, a 30-day `REANALYSIS_MIN_SEGMENT` cuts spurious steps from **~106 to 1** across Hill of Towie while keeping every recoverable published step
+
+*2026-09-23. Reproduce: `uv run python -m benchmarking.baselines.study_northing_degradation` (the
+`floor_sweep` / pass-3 config section) plus a session-scratch isolation experiment, matched against
+the published HoT table at ±14 days. Test counterpart:
+`tests/wind_up/test_northing_real_data.py::TestSingleTurbineAgainstReanalysis::test_pass_three_does_not_over_detect_against_reanalysis`.*
+
+The R5 Part A done-when expected `REANALYSIS_MIN_STEP_DEG` to be **lowered** by evidence. The
+evidence refuted that hypothesis, and the floor stays at 10°.
+
+**Recall is capped at 13 of 28 published changepoints regardless of the floor.** The other 15 are
+consensus-only — pass 2 finds them against neighbour signals reanalysis does not carry — so pass 3
+against ERA5 alone cannot recover them. Sweeping the step floor from 15° down to 5° only raised
+spurious changepoints (34 → 200 across the 21 turbines) while recovering **no** additional true
+positives.
+
+**The binding constraint is time resolution, not step size.** Hourly, site-generic reanalysis cannot
+place recalibrations closer together than about a month, so closely-spaced apparent steps against it
+are reference wander rather than real turbine moves. Raising `min_segment` to 30 days (folded into
+`against_reanalysis`) merges them: at the 10° floor, spurious changepoints drop from **106 to 1**,
+recall holds at 13/28, and the offset error vs the golden table is unchanged. The changepoint budget
+(`changepoints_per_year`) was irrelevant once `min_segment` was 30 days.
+
+**Implication.** Pass 3 ships with `REANALYSIS_MIN_SEGMENT = 30 days` and the floor unchanged at 10°.
+On real Hill of Towie the whole farm then resolves to 8 pass-3 changepoints, against ~100 without the
+guard — the behaviour locked in by the regression test above.
+
+---
+
+## CF19 — A **Pass 1′ re-anchor** (recompute each device's bulk offset from its residual after pass 2's changepoints) is **not adopted**: it never materially beats the baseline and is worse when several devices step together, because pass 2 already anchors each device to the clean farm consensus, not to its own biased pass-1 offset
+
+*2026-09-23. Reproduce: synthetic sweep in the session scratch (`pass1prime_experiment.py`) — a
+9-turbine farm over 700 days with ERA5-like reanalysis noise, scored by absolute offset error vs the
+injected truth, baseline `north_farm` against a per-device re-anchor to reanalysis. Resolves the
+Pass 1′ open question in the R5 design (spec §Pass 3 / §Graceful degradation and challenge cases).*
+
+The concern was real but does not reach the answer. A device's own large mid-record step **does**
+bias its pass-1 offset — a single whole-record `circ_median` that blends the pre- and post-step
+regimes. But pass 2 norths each device against the **farm consensus** (the circular median of its
+clean neighbours' pass-1-northed signals), not against its own pass-1 offset, so the bias is confined
+to that device's contribution to the consensus and is outvoted there. On the spec's canonical case —
+one turbine with a +40° mid-record step in a nine-turbine farm — baseline and Pass 1′ both read
+**~0.13°** absolute offset error, reliably across six seeds (the gap is ~0.01°, below the noise
+floor), and the clean control is untouched (**0.03°** either way).
+
+Where the consensus itself is biased, Pass 1′ makes things **worse**, not better. With five of nine
+devices stepping +40° together, the consensus shifts toward the steppers post-step and the baseline
+error rises to **11.7°**; re-anchoring each device to reanalysis then trades the low-noise consensus
+frame for the noisier reanalysis frame and pushes it to **12.7°**. A fully common-mode step (all nine
+together) is invisible to the consensus **and** unrecoverable by a per-device re-anchor (**16.5°**
+both ways) — a separate limitation of consensus northing, out of R5 scope.
+
+**Implication.** Drop Pass 1′; `north_farm` keeps its four-pass shape (1 constant anchor → 2
+consensus / 3 reanalysis → 4 wake nadir) with no re-anchor pass. The whole-record pass-1 anchor is
+allowed to be biased by a device's own steps because the consensus, not that anchor, sets the final
+absolute frame.
+
+---
+
 ## CF18 — The **first prepost dry run** and a re-run toggle one both clear the one-run bar on the full 21-turbine farm: each said "cannot distinguish this from zero" from a single run, against a truth of zero. The design documents were used and did not shrink the reference pool. Phase 2 found **two real anemometer faults** no run reports
 
 *2026-09-12. `benchmarking.campaigns.handover.write_handover` from `placebo_instance` with its

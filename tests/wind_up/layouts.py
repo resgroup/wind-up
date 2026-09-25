@@ -10,6 +10,8 @@ from geographiclib.geodesic import Geodesic
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    import numpy as np
+
 ORIGIN = (57.5, -3.0)
 
 
@@ -48,3 +50,19 @@ def scatter_layout(points_m: Sequence[tuple[float, float]], *, rotor_diameter_m:
         lat, lon = offset(east_m=east, north_m=north)
         records.append({"name": f"T{i}", "latitude": lat, "longitude": lon, "rotor_diameter_m": rotor_diameter_m})
     return pd.DataFrame(records)
+
+
+def spaced_points(
+    rng: np.random.Generator, *, count: int, extent_m: float, min_spacing_m: float = 100.0
+) -> list[tuple[float, float]]:
+    """Return ``count`` random ``(east_m, north_m)`` points, none closer than ``min_spacing_m``.
+
+    Drawn in a square of side ``extent_m``: a scatter a :class:`~wind_up.layout.Layout` accepts, since
+    its rotors must not touch.
+    """
+    points: list[tuple[float, float]] = []
+    while len(points) < count:
+        east, north = rng.uniform(0, extent_m, size=2)
+        if all((east - e) ** 2 + (north - n) ** 2 >= min_spacing_m**2 for e, n in points):
+            points.append((float(east), float(north)))
+    return points

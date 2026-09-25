@@ -11,10 +11,15 @@ import pytest
 import yaml
 
 from wind_up.circular_math import circ_diff, circ_median
+from wind_up.layout import Layout
 from wind_up.northing import (
     DEFAULT_NORTHING,
     NorthingSettings,
+    _neighbours_from_layout,
     _sector_signature,
+    _table_change,
+    against_reanalysis,
+    anchoring_only,
     apply_north_table,
     estimate_north_table,
     north_farm,
@@ -28,6 +33,19 @@ if TYPE_CHECKING:
 
 TIMEBASE_S = 600
 RATED_POWER = 2300.0
+
+
+def _layout(coordinates: dict[str, tuple[float, float]]) -> Layout:
+    """A layout of ``coordinates`` with 82 m rotors."""
+    frame = pd.DataFrame(
+        {
+            "name": list(coordinates),
+            "latitude": [lat for lat, _ in coordinates.values()],
+            "longitude": [lon for _, lon in coordinates.values()],
+            "rotor_diameter_m": 82.0,
+        }
+    )
+    return Layout.from_frame(frame)
 
 
 def _index(days: float = 400.0, start: str = "2017-01-01") -> pd.DatetimeIndex:
@@ -303,6 +321,54 @@ class TestNorthFarm:
         return reported, reference
 
     def test_two_pass_recovers_per_device_steps(self) -> None:
+        """Changepoints-v-consensus recovers each device's own step and leaves clean devices alone.
+
+        Reanalysis-anchor is a constant bulk alignment, so a stepping device's step is still present when the
+        farm consensus is built. The consensus is a circular median, so enough clean devices
+        outvote the one that steps and the median holds; here T03's +35 step must not leak into the
+        clean devices. A tiny farm cannot give the median that quorum -- with only a handful of
+        devices a single large step shifts it a few degrees -- which is why northing wants a farm.
+        """
+        index = _index()
+        offsets = {
+            "T01": [("2017-01-01", 0.0)],
+            "T02": [("2017-01-01", 8.0)],
+            "T03": [("2017-01-01", -5.0), ("2017-08-01", 35.0)],
+            "T04": [("2017-01-01", 3.0)],
+            "T05": [("2017-01-01", -2.0)],
+            "T06": [("2017-01-01", 5.0)],
+            "T07": [("2017-01-01", -4.0)],
+            "T08": [("2017-01-01", 2.0)],
+            "T09": [("2017-01-01", -6.0)],
+        }
+        reported, reference = self._farm(index, offsets)
+
+        tables = north_farm(
+            index,
+            direction_deg=reported,
+            usable={name: _all_usable(index) for name in reported},
+            reanalysis_deg=reference,
+            layout=None,
+        )
+
+        assert set(tables) == set(offsets)
+        assert len(tables["T03"]) == 2
+        for name, steps in offsets.items():
+            corrected = apply_north_table(index, reported[name], north_table=tables[name])
+            assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
+            assert len(tables[name]) == len(steps), name
+
+    def test_a_tiny_farm_leaks_a_stepping_device_into_the_clean_ones(self) -> None:
+        """The documented cost of a constant reanalysis anchor on a farm too small to give the median a
+        quorum.
+
+        Reanalysis-anchor no longer removes a large step before the consensus is built, so on a four-device
+        farm T03's +35 step shifts the circular median a few degrees at the step, and every clean
+        device -- measured against that moved consensus -- is handed a matching spurious step. This
+        is why northing wants a real farm and why :func:`north_farm` takes a ``layout``
+        to keep a big mover out of a device's reference. Enlarge this farm (see
+        :meth:`test_two_pass_recovers_per_device_steps`) and the leak goes away.
+        """
         index = _index()
         offsets = {
             "T01": [("2017-01-01", 0.0)],
@@ -317,17 +383,19 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reference,
+            layout=None,
         )
 
-        assert set(tables) == set(offsets)
-        assert len(tables["T03"]) == 2
-        for name, steps in offsets.items():
-            corrected = apply_north_table(index, reported[name], north_table=tables[name])
-            assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
-            assert len(tables[name]) == len(steps), name
+        assert len(tables["T03"]) == 2, "T03's own 35 deg step is still recovered"
+        clean = tables["T01"].sort_values("timestamp").reset_index(drop=True)
+        assert len(clean) == 2, f"a clean device leaks an extra changepoint on a tiny farm: {clean}"
+        when = clean["timestamp"].iloc[1]
+        assert abs(when - pd.Timestamp("2017-08-01", tz="UTC")) <= pd.Timedelta(days=21), when
+        leaked = abs(circ_diff(clean["north_offset"].iloc[1], clean["north_offset"].iloc[0]))
+        assert 0.0 < leaked < 10.0, f"the leak is small, not T03's full 35 deg: {leaked:.1f}"
 
     def test_recovers_a_farm_that_is_uniformly_180_degrees_wrong(self) -> None:
-        """The reanalysis pass is load-bearing: a common-mode offset is invisible to pass 2 alone.
+        """The reanalysis anchor is load-bearing: a common-mode offset is invisible to changepoints-v-consensus alone.
 
         Every device agrees with every other, so a farm-relative method sees a perfectly
         consistent farm and reports nothing wrong.
@@ -341,6 +409,7 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reference,
+            layout=None,
         )
 
         for name in offsets:
@@ -349,8 +418,8 @@ class TestNorthFarm:
             # and the recovered offset really is the 180 that was injected
             assert circ_diff(tables[name]["north_offset"].iloc[0], 180.0) == pytest.approx(0.0, abs=2.0)
 
-    def test_pass_two_beats_reanalysis_alone(self) -> None:
-        """The farm reference is less noisy than reanalysis, so two passes beat one."""
+    def test_changepoints_v_consensus_beats_reanalysis_alone(self) -> None:
+        """The farm reference is less noisy than reanalysis, so northing against it beats reanalysis alone."""
         index = _index()
         offsets = {name: [("2017-01-01", 20.0)] for name in ("T01", "T02", "T03", "T04")}
         reported, reference = self._farm(index, offsets)
@@ -364,6 +433,7 @@ class TestNorthFarm:
             direction_deg=reported,
             usable={name: _all_usable(index) for name in reported},
             reanalysis_deg=reanalysis,
+            layout=None,
         )["T01"]
 
         truth = 20.0
@@ -375,13 +445,13 @@ class TestNorthFarm:
         reason="a device is part of the consensus it is northed against; see findings_campaigns.md CF7",
         strict=True,
     )
-    def test_pass_two_refines_every_device_on_an_odd_sized_farm(self) -> None:
+    def test_changepoints_v_consensus_refines_every_device_on_an_odd_sized_farm(self) -> None:
         """A device may not be part of the consensus it is northed against.
 
         With an odd device count the per-timestamp median *is* one of the devices, so a device
         that is its own reference scores an exact ``-offset`` residual on those rows. Those rows
         are algebra rather than measurement, and they mass on one value at the centre of the
-        distribution, which pins the median to whatever pass 1 already said.
+        distribution, which pins the median to whatever reanalysis-anchor already said.
         """
         index = _index()
         names = ("T01", "T02", "T03", "T04", "T05")
@@ -391,32 +461,133 @@ class TestNorthFarm:
         reanalysis = (reference + rng.normal(0.0, 25.0, size=len(index))) % 360.0
         usable = {name: _all_usable(index) for name in names}
 
-        two_pass = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reanalysis)
+        two_pass = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reanalysis, layout=None)
 
         one_pass_errors, two_pass_errors = [], []
         for name in names:
             one = estimate_north_table(index, reported[name], reference_deg=reanalysis, usable=usable[name])
             first, second = one["north_offset"].iloc[0], two_pass[name]["north_offset"].iloc[0]
-            assert second != pytest.approx(first, abs=1e-9), f"{name}: pass 2 merely repeated pass 1"
+            assert second != pytest.approx(first, abs=1e-9), (
+                f"{name}: changepoints-v-consensus merely repeated reanalysis-anchor"
+            )
             one_pass_errors.append(abs(circ_diff(first, 20.0)))
             two_pass_errors.append(abs(circ_diff(second, 20.0)))
-        # a device pass 1 happened to get right can still move slightly the wrong way; the farm is
+        # a device reanalysis-anchor happened to get right can still move slightly the wrong way; the farm is
         # what has to improve
         assert np.mean(two_pass_errors) < np.mean(one_pass_errors)
 
-    def test_raises_when_too_few_devices_for_a_farm_reference(self) -> None:
-        index = _index(days=30)
-        offsets = {"T01": [("2017-01-01", 0.0)], "T02": [("2017-01-01", 5.0)]}
-        reported, reference = self._farm(index, offsets)
+    def test_a_lone_turbine_norths_against_reanalysis_with_changepoints(self) -> None:
+        """Below the farm-consensus floor, a device is northed against reanalysis with changepoints.
 
-        with pytest.raises(ValueError, match="min_devices_for_farm_reference"):
-            north_farm(
-                index,
-                direction_deg=reported,
-                usable={name: _all_usable(index) for name in reported},
-                reanalysis_deg=reference,
-                min_devices_for_farm_reference=3,
-            )
+        A single device cannot form a farm consensus, so changepoints-v-consensus cannot run.
+        Changepoints-v-reanalysis takes over: it norths the device against reanalysis and still
+        attributes its changepoints (at the coarser reanalysis floor), rather than falling back to a
+        constant whole-record anchor.
+        """
+        index = _index(days=500)
+        steps = [("2017-01-01", 5.0), ("2017-07-01", 30.0)]
+        reported, reference = _reported(index, steps=steps)
+
+        tables = north_farm(
+            index,
+            direction_deg={"T01": reported},
+            usable={"T01": _all_usable(index)},
+            reanalysis_deg=reference,
+            layout=None,
+        )
+
+        table = tables["T01"]
+        assert len(table) == 2, f"changepoints-v-reanalysis did not find the lone turbine's step: {table}"
+        assert abs(table["timestamp"].iloc[1] - pd.Timestamp("2017-07-01", tz="UTC")) <= pd.Timedelta(days=2)
+        assert circ_diff(table["north_offset"].iloc[0], 5.0) == pytest.approx(0.0, abs=1.5)
+        assert circ_diff(table["north_offset"].iloc[1], 30.0) == pytest.approx(0.0, abs=1.5)
+
+    def test_a_two_device_farm_below_the_floor_norths_each_against_reanalysis(self) -> None:
+        """Two devices are below the consensus floor, so each is northed by changepoints-v-reanalysis."""
+        index = _index(days=500)
+        reported = {}
+        reference = _true_direction(index)
+        for name, steps in {
+            "T01": [("2017-01-01", 8.0), ("2017-06-01", 40.0)],
+            "T02": [("2017-01-01", -3.0)],
+        }.items():
+            rng = np.random.default_rng(hash(name) % 100)
+            reported[name] = (reference + rng.normal(0.0, 6.0, size=len(index)) - _stepped_offset(index, steps)) % 360.0
+
+        tables = north_farm(
+            index,
+            direction_deg=reported,
+            usable={name: _all_usable(index) for name in reported},
+            reanalysis_deg=reference,
+            layout=None,
+        )
+
+        assert len(tables["T01"]) == 2, f"changepoints-v-reanalysis missed T01's step: {tables['T01']}"
+        assert len(tables["T02"]) == 1, (
+            f"changepoints-v-reanalysis invented a step for the clean device: {tables['T02']}"
+        )
+        for name, series in reported.items():
+            corrected = apply_north_table(index, series, north_table=tables[name])
+            assert circ_diff(corrected, reference).mean() == pytest.approx(0.0, abs=2.0), name
+
+    def test_changepoints_v_reanalysis_uses_the_coarser_reanalysis_step_floor(self) -> None:
+        """A step below the reanalysis floor is left alone, so reanalysis drift is not read as a step.
+
+        The default estimator would attribute a 6 deg step, but against reanalysis a step that small
+        is as likely to be drift in the reference as a real turbine move, so changepoints-v-reanalysis's coarser floor
+        must not report it.
+        """
+        index = _index(days=500)
+        steps = [("2017-01-01", 4.0), ("2017-07-01", 10.0)]  # a 6 deg step, under the reanalysis step floor
+        reported, reference = _reported(index, steps=steps)
+
+        tables = north_farm(
+            index,
+            direction_deg={"T01": reported},
+            usable={"T01": _all_usable(index)},
+            reanalysis_deg=reference,
+            layout=None,
+        )
+
+        assert len(tables["T01"]) == 1, (
+            f"changepoints-v-reanalysis attributed a step below the reanalysis floor: {tables['T01']}"
+        )
+
+    def test_a_single_device_with_a_few_days_degrades_without_raising(self) -> None:
+        """Graceful degradation: the smallest, shortest input still returns a valid table, never raises."""
+        index = _index(days=5)
+        reported, reference = _reported(index, steps=[("2017-01-01", 12.0)])
+
+        tables = north_farm(
+            index,
+            direction_deg={"T01": reported},
+            usable={"T01": _all_usable(index)},
+            reanalysis_deg=reference,
+            layout=None,
+        )
+
+        assert list(tables) == ["T01"]
+        assert len(tables["T01"]) >= 1
+        assert np.isfinite(tables["T01"]["north_offset"].to_numpy()).all()
+
+
+class TestAgainstReanalysis:
+    def test_raises_both_the_step_floor_and_the_minimum_segment(self) -> None:
+        """Northing against reanalysis needs a coarser step floor and a longer minimum segment.
+
+        Reanalysis is coarse in time as well as noisy in level, so changepoints closer together
+        than the minimum segment are more likely reference wander than real turbine recalibrations.
+        """
+        tuned = against_reanalysis(replace(DEFAULT_NORTHING, min_step_deg=3.0, min_segment=pd.Timedelta(days=7)))
+
+        assert tuned.min_step_deg == 10.0
+        assert tuned.min_segment == pd.Timedelta(days=30)
+
+    def test_leaves_already_stricter_settings_alone(self) -> None:
+        """A caller who already asked for stricter bounds keeps them."""
+        strict = replace(DEFAULT_NORTHING, min_step_deg=20.0, min_segment=pd.Timedelta(days=60))
+
+        assert against_reanalysis(strict) == strict
 
 
 class TestSettings:
@@ -598,6 +769,31 @@ class TestNearTheRecordEdge:
         assert self._n_changepoints(4.0, days_after=300.0) == 1
 
 
+class TestAnchoringOnly:
+    """``anchoring_only`` settings act only on big steps."""
+
+    @staticmethod
+    def _n_changepoints(step_deg: float) -> int:
+        index = _index(days=700)
+        reported, reference = _reported(index, steps=[("2017-01-01", 0.0), ("2017-12-01", step_deg)])
+        table = estimate_north_table(
+            index,
+            reported,
+            reference_deg=reference,
+            usable=_all_usable(index),
+            settings=anchoring_only(DEFAULT_NORTHING),
+        )
+        return len(table) - 1
+
+    def test_a_persistent_step_below_the_anchoring_threshold_is_not_reported(self) -> None:
+        """``max_transient_step_deg`` (10) sits below the anchoring step floor (30); the support
+        threshold must not be clipped down to it."""
+        assert self._n_changepoints(20.0) == 0
+
+    def test_a_step_above_the_anchoring_threshold_is_found(self) -> None:
+        assert self._n_changepoints(60.0) == 1
+
+
 class TestFarmReferenceComposition:
     """The farm reference must not depend on *which* devices happened to report.
 
@@ -640,7 +836,12 @@ class TestFarmReferenceComposition:
         usable = {name: np.asarray(~outage | np.isin(name, still_on), dtype=bool) for name in reported}
 
         tables = north_farm(
-            index, direction_deg=reported, usable=usable, reanalysis_deg=reference, settings=DEFAULT_NORTHING
+            index,
+            direction_deg=reported,
+            usable=usable,
+            reanalysis_deg=reference,
+            layout=None,
+            settings=DEFAULT_NORTHING,
         )
 
         # Nothing may be attributed to the outage. A marginal detection elsewhere in the record is
@@ -665,12 +866,13 @@ class TestFarmReferenceComposition:
         usable = {name: _all_usable(index) for name in reported}
         subset = ("T01", "T02", "T03")
 
-        whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference)
+        whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, layout=None)
         part = north_farm(
             index,
             direction_deg={k: reported[k] for k in subset},
             usable={k: usable[k] for k in subset},
             reanalysis_deg=reference,
+            layout=None,
         )
 
         for name in subset:
@@ -681,7 +883,7 @@ class TestFarmReferenceComposition:
 
 
 class TestFarmNeedsAnAnchor:
-    """Pass 2 alone is blind to a farm that is uniformly wrong, so the anchor must exist."""
+    """Changepoints-v-consensus alone is blind to a farm that is uniformly wrong, so the anchor must exist."""
 
     @staticmethod
     def _farm(index: pd.DatetimeIndex) -> tuple[dict[str, np.ndarray], np.ndarray]:
@@ -704,6 +906,7 @@ class TestFarmNeedsAnAnchor:
                 direction_deg=reported,
                 usable=usable,
                 reanalysis_deg=np.full(len(index), np.nan),
+                layout=None,
                 settings=DEFAULT_NORTHING,
             )
 
@@ -718,7 +921,14 @@ class TestFarmNeedsAnAnchor:
         blinded[len(index) // 2 :] = np.nan
 
         with pytest.raises(ValueError, match="cannot anchor the farm"):
-            north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=blinded, settings=DEFAULT_NORTHING)
+            north_farm(
+                index,
+                direction_deg=reported,
+                usable=usable,
+                reanalysis_deg=blinded,
+                layout=None,
+                settings=DEFAULT_NORTHING,
+            )
 
     def test_a_healthy_reanalysis_still_norths(self) -> None:
         index = _index(days=60)
@@ -726,7 +936,12 @@ class TestFarmNeedsAnAnchor:
         usable = {name: _all_usable(index) for name in reported}
 
         tables = north_farm(
-            index, direction_deg=reported, usable=usable, reanalysis_deg=reference, settings=DEFAULT_NORTHING
+            index,
+            direction_deg=reported,
+            usable=usable,
+            reanalysis_deg=reference,
+            layout=None,
+            settings=DEFAULT_NORTHING,
         )
 
         assert set(tables) == set(reported)
@@ -760,6 +975,20 @@ class TestNorthTableYaml:
             "2017-06-30 12:20:00",
         ]
 
+    def test_offsets_are_wrapped_into_minus_180_to_180(self, tmp_path: Path) -> None:
+        """A reanalysis anchor can land just outside [-180, 180); the written table wraps it canonically."""
+        tables = {
+            "T01": pd.DataFrame(
+                {"timestamp": pd.DatetimeIndex(["2016-01-01"], tz="UTC"), "north_offset": [181.5704048704585]}
+            )
+        }
+        path = tmp_path / "northing_corrections.yaml"
+
+        write_north_table_yaml(tables, path=path)
+        parsed = yaml.safe_load(path.read_text())
+
+        assert parsed[0][2] == pytest.approx(-178.4295951295415)
+
 
 class TestSectorSignature:
     """The level reported for a row must come from that row's own direction sector."""
@@ -785,3 +1014,297 @@ class TestSectorSignature:
 
         assert signature[0] == pytest.approx(5.0)
         assert signature[150] == pytest.approx(-8.0)
+
+
+# --- layout: changepoints-v-consensus's reference can be a spatial neighbour set, not the whole farm ---
+
+
+def _tracking(
+    index: pd.DatetimeIndex, reference: np.ndarray, steps: list[tuple[str, float]], *, seed: int
+) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    return (reference + _stepped_offset(index, steps) + rng.normal(0.0, 2.0, len(index))) % 360.0
+
+
+def _stepping_farm(index: pd.DatetimeIndex) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """T01 is clean; its neighbours N1-N3 all step +40 deg mid-record; O1-O3 stay clean."""
+    reference = _true_direction(index, seed=3)
+    flat = [("2017-01-01", 0.0)]
+    stepped = [("2017-01-01", 0.0), ("2017-08-01", 40.0)]
+    reported = {
+        "T01": _tracking(index, reference, flat, seed=10),
+        "N1": _tracking(index, reference, stepped, seed=11),
+        "N2": _tracking(index, reference, stepped, seed=12),
+        "N3": _tracking(index, reference, stepped, seed=13),
+        "O1": _tracking(index, reference, flat, seed=14),
+        "O2": _tracking(index, reference, flat, seed=15),
+        "O3": _tracking(index, reference, flat, seed=16),
+    }
+    return reported, reference
+
+
+# Positions that make T01's three nearest neighbours the steppers N1-N3: the clean T01 sits among
+# them, while the clean O1-O3 are a farm's-width away.
+_STEPPING_COORDS = {
+    "T01": (55.0, 0.00),
+    "N1": (55.0, 0.01),
+    "N2": (55.0, 0.02),
+    "N3": (55.0, 0.03),
+    "O1": (55.0, 1.00),
+    "O2": (55.0, 1.01),
+    "O3": (55.0, 1.02),
+}
+
+
+def test_a_layout_norths_each_device_against_its_nearest_neighbours() -> None:
+    """With a layout, a device is northed against its nearest turbines, not the whole farm.
+
+    T01 is clean but sits among N1-N3, which all step +40 mid-record. Against the whole farm the
+    four clean devices out-vote the steppers, so T01 stays flat; against only its nearest turbines --
+    N1-N3 step and just one clean device (O1) joins them -- the stepping majority carries the
+    consensus, and T01, measured against it, is handed a spurious step. That difference proves changepoints-v-consensus
+    used the nearest-neighbour consensus, not the farm median.
+
+    Repeating changepoints-v-consensus removes part of the steppers' move from T01's reference -- each stepper's own
+    neighbourhood is half clean, so it is handed only part of its step -- which is why the spurious
+    step is sizeable but short of the full 40 deg. A neighbourhood that mostly steps together is
+    beyond what any consensus can separate.
+    """
+    index = _index()
+    reported, reference = _stepping_farm(index)
+    usable = {name: _all_usable(index) for name in reported}
+
+    whole = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=reference, layout=None)
+    near = north_farm(
+        index,
+        direction_deg=reported,
+        usable=usable,
+        reanalysis_deg=reference,
+        layout=_layout(_STEPPING_COORDS),
+    )
+
+    assert len(whole["T01"]) == 1, f"whole-farm should keep T01 clean: {whole['T01']}"
+    table = near["T01"].sort_values("timestamp").reset_index(drop=True)
+    assert len(table) == 2, f"nearest-neighbour reference should give T01 one step: {table}"
+    assert abs(table["timestamp"].iloc[1] - pd.Timestamp("2017-08-01", tz="UTC")) <= pd.Timedelta(days=14)
+    step = abs(circ_diff(table["north_offset"].iloc[1], table["north_offset"].iloc[0]))
+    assert 10.0 < step <= 45.0, f"recovered {step:.1f} deg"
+
+
+def test_a_farm_below_the_floor_is_anchored_not_rejected() -> None:
+    """A one- or two-device farm no longer raises: it is anchored to reanalysis and returned.
+
+    Below ``MIN_DEVICES_FOR_FARM_REFERENCE`` there is no farm consensus to form, so ``north_farm``
+    falls back to the constant reanalysis anchor rather than refusing. A +25 deg frame offset
+    on the pair must still be removed.
+    """
+    index = _index(days=120)
+    ref = _true_direction(index, seed=5)
+    reported = {
+        "A": _tracking(index, ref, [("2017-01-01", 25.0)], seed=60),
+        "B": _tracking(index, ref, [("2017-01-01", -10.0)], seed=61),
+    }
+    usable = {name: _all_usable(index) for name in reported}
+
+    tables = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=ref, layout=None)
+
+    assert set(tables) == {"A", "B"}
+    for name, signal in reported.items():
+        assert len(tables[name]) == 1, f"{name} should get a single constant anchor: {tables[name]}"
+        corrected = apply_north_table(index, signal, north_table=tables[name])
+        assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), name
+
+
+def test_power_missing_a_device_is_rejected() -> None:
+    """``power`` feeds the wake-nadir shift, so an entry for every device is required when given."""
+    index = _index(days=30)
+    ref = _true_direction(index, seed=4)
+    flat = [("2017-01-01", 0.0)]
+    reported = {name: _tracking(index, ref, flat, seed=70 + i) for i, name in enumerate(("A", "B", "C", "D"))}
+    usable = {name: _all_usable(index) for name in reported}
+    power = {name: np.ones(len(index)) for name in ("A", "B", "C")}  # D is missing
+
+    with pytest.raises(ValueError, match="power is missing"):
+        north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=ref, layout=None, power=power)
+
+
+def test_a_farm_too_small_for_the_neighbour_count_falls_back_to_the_whole_farm() -> None:
+    """A three-turbine farm can give each device only two neighbours, short of the floor of three.
+
+    Rather than refusing, ``north_farm`` logs the shortfall and norths against the whole-farm
+    consensus -- which a three-device farm can still form. C carries a +25 deg frame offset the
+    consensus removes.
+    """
+    index = _index()
+    ref = _true_direction(index, seed=9)
+    flat = [("2017-01-01", 0.0)]
+    reported = {
+        "A": _tracking(index, ref, flat, seed=50),
+        "B": _tracking(index, ref, flat, seed=51),
+        "C": _tracking(index, ref, [("2017-01-01", 25.0)], seed=52),
+    }
+    usable = {name: _all_usable(index) for name in reported}
+    coords = {"A": (55.0, 0.0), "B": (55.0, 0.01), "C": (55.0, 0.03)}
+
+    tables = north_farm(index, direction_deg=reported, usable=usable, reanalysis_deg=ref, layout=_layout(coords))
+
+    corrected = apply_north_table(index, reported["C"], north_table=tables["C"])
+    assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), "C's +25 deg offset survived"
+
+
+def test_a_layout_keeps_the_anchor_when_a_devices_consensus_is_empty() -> None:
+    """A device whose nearest neighbours are all unusable has an all-NaN reference.
+
+    The whole-farm bail-out does not fire -- the far cluster's devices reference each other and are
+    finite -- so changepoints-v-consensus would otherwise overwrite this device with a zero-offset table and throw away
+    its reanalysis anchor. Its constant reanalysis anchor must be kept instead. X carries a +25 deg frame
+    offset that only the anchor removes; X sits among U1-U3, which are all unusable, so its
+    nearest-neighbour reference is empty and a broken changepoints-v-consensus would leave X's raw +25 deg in place.
+    """
+    index = _index()
+    ref = _true_direction(index, seed=7)
+    flat = [("2017-01-01", 0.0)]
+    reported = {
+        "X": _tracking(index, ref, [("2017-01-01", 25.0)], seed=20),
+        "U1": _tracking(index, ref, flat, seed=21),
+        "U2": _tracking(index, ref, flat, seed=22),
+        "U3": _tracking(index, ref, flat, seed=23),
+        "U4": _tracking(index, ref, flat, seed=28),
+        "C1": _tracking(index, ref, flat, seed=24),
+        "C2": _tracking(index, ref, flat, seed=25),
+        "C3": _tracking(index, ref, flat, seed=26),
+        "C4": _tracking(index, ref, flat, seed=27),
+    }
+    dead = np.zeros(len(index), dtype=bool)
+    usable = {name: (dead if name in {"U1", "U2", "U3", "U4"} else _all_usable(index)) for name in reported}
+    # X's cluster {X, U1-U4} sits at lon ~0, so X's four nearest are the unusable U1-U4; the usable
+    # cluster {C1-C4} is a farm's-width away and references itself, keeping the bail-out quiet.
+    coords = {
+        "X": (55.0, 0.00),
+        "U1": (55.0, 0.01),
+        "U2": (55.0, 0.02),
+        "U3": (55.0, 0.03),
+        "U4": (55.0, 0.04),
+        "C1": (55.0, 1.00),
+        "C2": (55.0, 1.01),
+        "C3": (55.0, 1.02),
+        "C4": (55.0, 1.03),
+    }
+
+    tables = north_farm(
+        index,
+        direction_deg=reported,
+        usable=usable,
+        reanalysis_deg=ref,
+        layout=_layout(coords),
+    )
+
+    assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
+    corrected = apply_north_table(index, reported["X"], north_table=tables["X"])
+    assert circ_diff(corrected, ref).mean() == pytest.approx(0.0, abs=5.0), "X's +25 deg anchor was discarded"
+
+
+def test_a_layout_keeps_the_anchor_when_the_consensus_never_overlaps_the_device() -> None:
+    """A finite reference is not enough; it must be finite *where the device is usable*.
+
+    X reports only in the first half of the record, its neighbours only in the second. The neighbour
+    consensus is therefore finite (so the whole-farm check and a "finite anywhere" test both pass),
+    but never where X can be northed against it, so changepoints-v-consensus's residual is all-NaN.
+    X's +25 deg reanalysis anchor must be kept rather than replaced by a zero-offset table.
+    """
+    index = _index()
+    ref = _true_direction(index, seed=8)
+    flat = [("2017-01-01", 0.0)]
+    reported = {name: _tracking(index, ref, flat, seed=30 + i) for i, name in enumerate(("N1", "N2", "N3"))}
+    reported["X"] = _tracking(index, ref, [("2017-01-01", 25.0)], seed=40)
+    half = len(index) // 2
+    first_half, second_half = np.zeros(len(index), dtype=bool), np.zeros(len(index), dtype=bool)
+    first_half[:half] = True
+    second_half[half:] = True
+    usable = {"X": first_half, "N1": second_half, "N2": second_half, "N3": second_half}
+    # Only four turbines, so every device's reference is the other three: X is thus northed against
+    # N1-N3, finite only in the second half, while X itself is usable only in the first.
+    coords = {"X": (55.0, 0.0), "N1": (55.0, 0.01), "N2": (55.0, 0.02), "N3": (55.0, 0.03)}
+
+    tables = north_farm(
+        index,
+        direction_deg=reported,
+        usable=usable,
+        reanalysis_deg=ref,
+        layout=_layout(coords),
+    )
+
+    assert len(tables["X"]) == 1, f"X should keep its single-offset anchor: {tables['X']}"
+    corrected = apply_north_table(index, reported["X"], north_table=tables["X"])
+    on_x = circ_diff(corrected[first_half], ref[first_half]).mean()
+    assert on_x == pytest.approx(0.0, abs=5.0), "X's +25 deg anchor was discarded despite no overlap"
+
+
+# Four turbines strung out along a parallel, unevenly spaced so no two are equidistant from a
+# third: A--B---C-------D at longitudes 0, 1, 3, 7 (arbitrary small degrees, same latitude).
+_LINE_COORDS = {
+    "A": (55.0, 0.00),
+    "B": (55.0, 0.01),
+    "C": (55.0, 0.03),
+    "D": (55.0, 0.07),
+}
+
+
+def test_changepoints_v_consensus_neighbours_are_ranked_by_geodesic_distance() -> None:
+    nn = _neighbours_from_layout(_layout(_LINE_COORDS), devices=sorted(_LINE_COORDS), k=2)
+    assert nn["A"] == ("B", "C")  # distances 1, 3, 7
+    assert nn["B"] == ("A", "C")  # distances 1, 2, 6
+    assert nn["C"] == ("B", "A")  # distances 2, 3, 4
+    assert nn["D"] == ("C", "B")  # distances 4, 6, 7
+
+
+def test_changepoints_v_consensus_neighbours_exclude_the_device_itself() -> None:
+    nn = _neighbours_from_layout(_layout(_LINE_COORDS), devices=sorted(_LINE_COORDS), k=3)
+    for name, neighbours in nn.items():
+        assert name not in neighbours
+
+
+def test_changepoints_v_consensus_neighbours_cap_k_at_the_devices_available() -> None:
+    coords = {"A": (55.0, 0.0), "B": (55.0, 0.01), "C": (55.0, 0.03)}
+    nn = _neighbours_from_layout(_layout(coords), devices=sorted(coords), k=10)
+    assert nn["A"] == ("B", "C")  # only two others exist, so k is capped
+    assert all(len(v) == 2 for v in nn.values())
+
+
+class TestConsensusConvergence:
+    """Changepoints-v-consensus repeats until a round changes nothing; ``_table_change`` is what "nothing" means."""
+
+    @staticmethod
+    def _table(rows: list[tuple[str, float]]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"timestamp": [pd.Timestamp(t, tz="UTC") for t, _ in rows], "north_offset": [o for _, o in rows]}
+        )
+
+    def test_the_same_changepoints_change_by_the_largest_offset_move(self) -> None:
+        before = self._table([("2017-01-01", 10.0), ("2017-06-01", 40.0)])
+        after = self._table([("2017-01-01", 10.2), ("2017-06-01", 39.5)])
+        assert _table_change(before, after) == pytest.approx(0.5)
+
+    def test_the_offset_move_is_wrap_safe(self) -> None:
+        before = self._table([("2017-01-01", 179.9)])
+        after = self._table([("2017-01-01", -179.9)])
+        assert _table_change(before, after) == pytest.approx(0.2)
+
+    def test_a_changepoint_jittered_within_the_search_grid_has_not_moved(self) -> None:
+        """``refine`` places a step at native resolution, so a round can shift it by a few rows."""
+        before = self._table([("2017-01-01", 10.0), ("2017-06-01 12:00", 40.0)])
+        after = self._table([("2017-01-01", 10.0), ("2017-06-01 14:30", 40.3)])
+        assert _table_change(before, after) == pytest.approx(0.3)
+
+    @pytest.mark.parametrize(
+        "after",
+        [
+            [("2017-01-01", 10.0)],
+            [("2017-01-01", 10.0), ("2017-06-04", 40.0)],
+            [("2017-01-01", 10.0), ("2017-06-01", 40.0), ("2017-09-01", 45.0)],
+        ],
+        ids=["removed", "moved", "added"],
+    )
+    def test_any_changepoint_added_removed_or_moved_is_not_converged(self, after: list[tuple[str, float]]) -> None:
+        before = self._table([("2017-01-01", 10.0), ("2017-06-01", 40.0)])
+        assert _table_change(before, self._table(after)) == float("inf")

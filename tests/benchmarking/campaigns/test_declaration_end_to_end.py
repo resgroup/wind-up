@@ -114,9 +114,14 @@ northing:
 def _write_campaign(tmp_path: Path, *, mode: str) -> Path:
     """Write a complete campaign folder -- declaration, turbines sidecar and SCADA -- and return the YAML."""
     _scada(mode=mode).to_parquet(tmp_path / "scada.parquet")
-    pd.DataFrame({"Name": list(TURBINES), "Latitude": [57.5 + i * 0.01 for i in range(5)], "Longitude": -3.25}).to_csv(
-        tmp_path / "turbines.csv", index=False
-    )
+    pd.DataFrame(
+        {
+            "Name": list(TURBINES),
+            "Latitude": [57.5 + i * 0.01 for i in range(5)],
+            "Longitude": -3.25,
+            "rotor_diameter_m": 82.0,
+        }
+    ).to_csv(tmp_path / "turbines.csv", index=False)
     path = tmp_path / "campaign.yaml"
     path.write_text(TEMPLATE.format(mode=mode, rated_kw=RATED_KW, timing=TIMING[mode]))
     return path

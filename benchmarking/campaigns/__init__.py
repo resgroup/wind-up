@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from benchmarking.campaigns.declaration import CampaignSpec, SyntheticCampaign
+from benchmarking.campaigns.declaration import CampaignSpec, SyntheticCampaign, layout_from_coords
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.report import write_campaign_report, write_report
 from benchmarking.campaigns.run import CampaignReport, estimate_campaign, visible_mask, visible_scada
@@ -16,6 +16,7 @@ __all__ = [
     "SyntheticCampaign",
     "carried_forward_methods",
     "estimate_campaign",
+    "layout_from_coords",
     "per_turbine_table",
     "visible_mask",
     "visible_scada",

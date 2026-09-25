@@ -71,12 +71,14 @@ class GreenbyteFarm:
     :param record: the Zenodo record id, so an error can say where to fetch the data
     :param years: the calendar years published for this farm
     :param rated_power_kw: the turbines' rated power
+    :param rotor_diameter_m: the turbines' rotor diameter
     """
 
     name: str
     record: str
     years: tuple[int, ...]
     rated_power_kw: float
+    rotor_diameter_m: float
 
     @property
     def static_file(self) -> str:
@@ -87,8 +89,13 @@ class GreenbyteFarm:
 # Both farms publish 2016-2021. Penmanshiel splits each year across two zips (WT01-10, WT11-15);
 # the loader globs rather than naming files, so either layout works and so do the shorter names a
 # manual download tends to leave behind.
-KELMARSH = GreenbyteFarm(name="Kelmarsh", record="5841834", years=tuple(range(2016, 2022)), rated_power_kw=2050.0)
-PENMANSHIEL = GreenbyteFarm(name="Penmanshiel", record="5946808", years=tuple(range(2016, 2022)), rated_power_kw=2050.0)
+# Kelmarsh is six Senvion MM92 turbines; Penmanshiel is Senvion MM82s.
+KELMARSH = GreenbyteFarm(
+    name="Kelmarsh", record="5841834", years=tuple(range(2016, 2022)), rated_power_kw=2050.0, rotor_diameter_m=92.0
+)
+PENMANSHIEL = GreenbyteFarm(
+    name="Penmanshiel", record="5946808", years=tuple(range(2016, 2022)), rated_power_kw=2050.0, rotor_diameter_m=82.0
+)
 
 FARMS = {farm.name.lower(): farm for farm in (KELMARSH, PENMANSHIEL)}
 

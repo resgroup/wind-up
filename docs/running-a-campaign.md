@@ -21,7 +21,7 @@ name: my_campaign          # identifies the run; also the default output directo
 data:
   scada: data/scada.parquet     # long-format SCADA, one row per turbine per timestamp
   schema: hill_of_towie         # the column vocabulary the SCADA is keyed by
-  turbines: data/turbines.csv   # Name, Latitude, Longitude
+  turbines: data/turbines.csv   # Name, Latitude, Longitude, Rotor_Diameter_m
 
 turbines:
   upgraded:   [T06, T11]        # the turbines whose uplift you want
@@ -70,8 +70,8 @@ answer as if it were uplift. `toggle` does not have this problem, because its bl
 
 **`northing.discover`.** Nacelle position sensors drift and get re-zeroed, which corrupts every
 direction-dependent calculation. `true` (the default) finds those steps in the data and corrects
-them, writing plots of what it did. Use `false` with a `table:` only when you already have a
-trusted correction table.
+them, writing plots of what it did ([how northing works](northing.md)). Use `false` with a
+`table:` only when you already have a trusted correction table.
 
 **Timezones.** Every time is UTC. A time written without a timezone is read as UTC; a time written
 with an offset is converted to UTC. Whatever you write, the resolved values are echoed into

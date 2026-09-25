@@ -26,6 +26,7 @@ import pandas as pd
 
 from benchmarking.synthetic import ToggleSchedule, treated_mask
 from wind_up.campaign_design import write_design
+from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -202,9 +203,17 @@ def write_handover(
 
 
 def _write_turbines(campaign: SyntheticCampaign, *, path: Path) -> None:
-    """Write the turbines sidecar: name, latitude, longitude for every participating turbine."""
-    rows = [{"Name": w, "Latitude": lat, "Longitude": lon} for w, (lat, lon) in sorted(campaign.coords.items())]
-    pd.DataFrame(rows).to_csv(path, index=False)
+    """Write the turbines sidecar: name, latitude, longitude and rotor diameter for every participating turbine."""
+    frame = campaign.layout.frame
+    named = frame[frame[NAME_COL].notna()].sort_values(NAME_COL)
+    pd.DataFrame(
+        {
+            "Name": named[NAME_COL].to_list(),
+            "Latitude": named[LATITUDE_COL].to_list(),
+            "Longitude": named[LONGITUDE_COL].to_list(),
+            ROTOR_DIAMETER_COL: named[ROTOR_DIAMETER_COL].to_list(),
+        }
+    ).to_csv(path, index=False)
 
 
 def _write_design(design: CampaignDesign, *, out_dir: Path) -> None:

@@ -5,8 +5,7 @@
 table onto the raw signal. Offsets are absolute -- relative to the raw field, never to an
 already-corrected one -- so a supplied table and an estimated one are directly comparable.
 
-:func:`north_farm` runs the two-pass farm workflow: north every device to reanalysis, build a
-farm consensus direction from the results, then north every device to that.
+:func:`north_farm` runs the farm workflow, described in ``docs/northing.md``.
 
 The estimator works on any direction field. Only :func:`yaw_usable` is turbine-specific.
 """
@@ -24,47 +23,36 @@ import numpy as np
 import pandas as pd
 
 from wind_up.circular_math import circ_diff, circ_median
+from wind_up.layout import NAME_COL
+from wind_up.wake_nadir import wake_nadir_offsets
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     import numpy.typing as npt
+
+    from wind_up.layout import Layout
 
 logger = logging.getLogger(__name__)
 
 TIMESTAMP_COL = "timestamp"
 NORTH_OFFSET_COL = "north_offset"
 
-# Yaw is read only above this fraction of rated power.
-YAW_OK_POWER_FRACTION = 0.05
-# Above this many aggregation bins the search warns; it still returns a correct result.
-_BIN_COUNT_WARN = 3000
 _DEFAULT_GRID = pd.Timedelta(days=1)
 _DEFAULT_MIN_SEGMENT = pd.Timedelta(days=7)
-# A segment needs a row either side of a candidate split for the split to mean anything.
-_MIN_ROWS_TO_SPLIT = 2
-# Direction sectors the residual is normalised over before the changepoint search.
-_DEFAULT_VEER_SECTOR_DEG = 30.0
-# A sector with fewer usable rows than this has no trustworthy level of its own.
-_MIN_ROWS_PER_SECTOR = 50
-# Steps larger than this are never ironed out as wander.
-_MAX_TRANSIENT_STEP_DEG = 10.0
-
-
-# The span either side of a changepoint at which ``min_step_deg`` applies unmodified; a shorter
-# segment needs a larger step.
 _DEFAULT_CONFIDENT_SEGMENT = pd.Timedelta(days=90)
+# A direction sector with fewer usable rows than this falls back to the overall level.
+_MIN_ROWS_PER_SECTOR = 50
 
 
 @dataclass(frozen=True)
 class NorthingSettings:
     """How the changepoint search is bounded, in physical units.
 
-    :param changepoints_per_year: budget of changepoints per year of record, so a longer
-        record is allowed more; the cap is ``max(min_changepoints, ceil(rate * years))``
-    :param min_changepoints: floor on that budget, so a short record can still hold several
-        corrections
+    :param changepoints_per_year: budget of changepoints per year of record; the cap is
+        ``max(min_changepoints, ceil(rate * years))``
+    :param min_changepoints: floor on that budget
     :param min_step_deg: the smallest step reported. A changepoint whose estimated step is
         below this is dropped and its segments merged.
     :param refine: pin each changepoint to native resolution after the search, instead of
@@ -72,16 +60,13 @@ class NorthingSettings:
     :param grid: aggregation bin for the changepoint search
     :param min_segment: shortest allowed gap between changepoints
     :param veer_sector_deg: width of the direction sectors the residual is normalised over
-        before the changepoint search, cancelling site veer (see :func:`veer_normalised`).
-        ``None`` searches the raw residual.
-    :param max_transient_step_deg: the largest step that may be ironed out as wander. Above it a
-        step is treated as a recalibration however the record behaves afterwards, since real ones
-        are sometimes reversed later. Also the ceiling on the support-scaled threshold, so a big
-        enough step is credible however little record sits either side of it.
+        before the changepoint search (see :func:`veer_normalised`). ``None`` searches the raw
+        residual.
+    :param max_transient_step_deg: the largest step that may be ironed out as wander, and the
+        ceiling on the step required of a changepoint with little record either side
     :param confident_segment: the span either side of a changepoint at which ``min_step_deg``
-        applies as written; with less record than that the required step grows as
-        ``sqrt(confident_segment / span)``, since the level is veer-limited and veer averages out
-        no faster than that.
+        applies as written; with less record the required step grows as
+        ``sqrt(confident_segment / span)``
     """
 
     changepoints_per_year: float = 12.0
@@ -90,42 +75,29 @@ class NorthingSettings:
     min_changepoints: int = 3
     grid: pd.Timedelta = _DEFAULT_GRID
     min_segment: pd.Timedelta = _DEFAULT_MIN_SEGMENT
-    veer_sector_deg: float | None = _DEFAULT_VEER_SECTOR_DEG
-    max_transient_step_deg: float = _MAX_TRANSIENT_STEP_DEG
+    veer_sector_deg: float | None = 30.0
+    max_transient_step_deg: float = 10.0
     confident_segment: pd.Timedelta = _DEFAULT_CONFIDENT_SEGMENT
 
 
-# Minimum step attributable to a turbine when northing against reanalysis rather than a farm
-# consensus. See :func:`against_reanalysis`.
-REANALYSIS_MIN_STEP_DEG = 10.0
-# Minimum step the first pass may act on. See :func:`anchoring_only`.
-ANCHORING_MIN_STEP_DEG = 30.0
-# Minimum step taken out of the residual before the veer signature is measured.
-# See :func:`_confident_steps`.
-VEER_SIGNATURE_MIN_STEP_DEG = 10.0
+# The fewest devices that can form a consensus.
+MIN_DEVICES_FOR_FARM_REFERENCE = 3
 
 DEFAULT_NORTHING = NorthingSettings()
 
 
 def anchoring_only(settings: NorthingSettings) -> NorthingSettings:
-    """Return ``settings`` reduced to what the first pass is for: anchoring, not changepoint work.
-
-    Only steps of at least :data:`ANCHORING_MIN_STEP_DEG` are acted on; finer structure is left
-    to the second pass, which works against the farm consensus.
-    """
-    return replace(settings, min_step_deg=ANCHORING_MIN_STEP_DEG)
+    """Return ``settings`` acting only on steps of at least 30 deg, for anchoring to reanalysis."""
+    return replace(settings, min_step_deg=30.0)
 
 
 def against_reanalysis(settings: NorthingSettings) -> NorthingSettings:
-    """Return ``settings`` made safe for northing against reanalysis rather than a farm consensus.
-
-    Raises ``min_step_deg`` to at least :data:`REANALYSIS_MIN_STEP_DEG`, so drift in the
-    reanalysis reference is not attributed to the turbines as a small step change. Everything
-    else is unchanged.
-    """
-    if settings.min_step_deg >= REANALYSIS_MIN_STEP_DEG:
-        return settings
-    return replace(settings, min_step_deg=REANALYSIS_MIN_STEP_DEG)
+    """Return ``settings`` with the larger minimum step and segment that northing against reanalysis needs."""
+    return replace(
+        settings,
+        min_step_deg=max(settings.min_step_deg, 10.0),
+        min_segment=max(settings.min_segment, pd.Timedelta(days=30)),
+    )
 
 
 def yaw_usable(
@@ -138,13 +110,14 @@ def yaw_usable(
 ) -> npt.NDArray[np.bool_]:
     """Rows where a turbine's yaw reading may be used for northing.
 
-    The turbine must be generating (above :data:`YAW_OK_POWER_FRACTION` of rated), largely
-    free of downtime within the record, and have a reference direction to compare against.
+    The turbine must be generating (above 5% of rated), largely free of downtime within the
+    record, and have a reference direction to compare against.
     """
+    yaw_ok_power_fraction = 0.05
     return np.asarray(
         np.isfinite(reference_deg)
         & np.isfinite(power)
-        & (np.nan_to_num(power, nan=-1.0) > rated_power * YAW_OK_POWER_FRACTION)
+        & (np.nan_to_num(power, nan=-1.0) > rated_power * yaw_ok_power_fraction)
         & (np.nan_to_num(downtime_s, nan=0.0) < timebase_s / 4),
         dtype=bool,
     )
@@ -170,12 +143,7 @@ def _residual(
 def _de_stepped(
     residual: npt.NDArray[np.float64], *, index: pd.DatetimeIndex, edges: list[pd.Timestamp]
 ) -> npt.NDArray[np.float64]:
-    """Return ``residual`` with each segment's own level removed, leaving the within-segment shape.
-
-    Measuring the veer signature needs the step structure out of the way first: a sector's level
-    would otherwise average across the steps, and uneven direction sampling between segments would
-    distort the very steps being looked for.
-    """
+    """Return ``residual`` with each segment's own level removed, leaving the within-segment shape."""
     out = residual.copy()
     for begin, finish in itertools.pairwise(edges):
         rows = np.asarray((index >= begin) & (index < finish))
@@ -193,13 +161,9 @@ def _confident_steps(
     start: pd.Timestamp,
     residual: npt.NDArray[np.float64],
     index: pd.DatetimeIndex,
-    min_step_deg: float = VEER_SIGNATURE_MIN_STEP_DEG,
+    min_step_deg: float = 10.0,
 ) -> list[pd.Timestamp]:
-    """Return the changepoints whose step is large enough to be a real recalibration.
-
-    What the veer signature may be measured around. A search over a strongly veering residual
-    proposes splits that are the veer itself; de-stepping those would remove the signature.
-    """
+    """Return the changepoints whose step is at least ``min_step_deg``."""
     if not changepoints:
         return []
     offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
@@ -215,13 +179,9 @@ def veer_normalised(
     de_stepped: npt.NDArray[np.float64] | None = None,
     min_rows_per_sector: int = _MIN_ROWS_PER_SECTOR,
 ) -> npt.NDArray[np.float64]:
-    """Remove each direction sector's own long-run level from the residual.
+    """Remove each direction sector's own long-run level from the residual, for changepoint detection.
 
-    Subtracting each sector's whole-record median leaves a genuine north offset intact, since one
-    shifts every sector alike. Sectors with too little data fall back to the overall level.
-
-    Use this for detection only -- segment offsets are estimated from the raw residual, so the
-    correction stays absolute.
+    Sectors with too little data fall back to the overall level.
 
     :param de_stepped: the residual with a first-pass estimate of the step structure removed. The
         sector levels are measured on it rather than on ``residual``. Defaults to ``residual``.
@@ -275,8 +235,7 @@ def _bin_levels(
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Per-bin circular median of the residual (deg) and the count backing it.
 
-    The median is taken about each bin's circular mean, which is what makes it well defined
-    across the 0/360 wrap. Empty bins get level 0 and weight 0, so they cost nothing.
+    The median is taken about each bin's circular mean. Empty bins get level 0 and weight 0.
     """
     finite = np.isfinite(residual)
     bin_of = bins[finite]
@@ -398,7 +357,7 @@ def _refine(
         span_hi = int(np.searchsorted(times, following.value))
         first = int(np.searchsorted(times, earliest.value))
         last = int(np.searchsorted(times, latest.value))
-        if last <= first or span_hi - span_lo < _MIN_ROWS_TO_SPLIT:
+        if last <= first or span_hi - span_lo < 2:  # noqa: PLR2004
             continue
         candidates = np.arange(max(first, span_lo + 1), min(last, span_hi - 1) + 1)
         if len(candidates) == 0:
@@ -435,12 +394,7 @@ def _weighted_level(offsets: npt.NDArray[np.float64], weights: npt.NDArray[np.fl
 
 
 def _persistence(offsets: list[float], *, durations: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """How much each changepoint moves the long-run level, in degrees.
-
-    A recalibration moves the level and leaves it moved. An excursion -- the level wandering away
-    and back -- moves it only in between, so the record either side of any one of its changepoints
-    sits at the same place.
-    """
+    """Return how far each changepoint moves the duration-weighted level of the record either side (deg)."""
     values = np.asarray(offsets, dtype=float)
     return np.array(
         [
@@ -466,11 +420,7 @@ def _prune_while(
     index: pd.DatetimeIndex,
     worst: Callable[[list[pd.Timestamp], list[float]], int | None],
 ) -> tuple[list[pd.Timestamp], list[float]]:
-    """Drop whichever changepoint ``worst`` names, re-estimating offsets, until it names none.
-
-    Offsets must be re-estimated after every merge: joining two segments changes the level of the
-    result, which can in turn change which of the survivors looks weakest.
-    """
+    """Drop whichever changepoint ``worst`` names, re-estimating offsets after each, until it names none."""
     while changepoints:
         drop = worst(changepoints, offsets)
         if drop is None:
@@ -546,15 +496,14 @@ def _required_step(
 ) -> npt.NDArray[np.float64]:
     """Return the step size each changepoint must reach, given the record supporting it.
 
-    A segment's level is limited by site veer rather than by sampling noise, and veer averages out
-    no faster than ``1/sqrt(span)``. So with less than ``confident_segment`` either side the
-    required step grows accordingly, capped at ``max_transient_step_deg`` -- above which a step is
-    credible however little record sits around it.
+    ``min_step_deg``, scaled up by ``sqrt(confident_segment / span)`` when the shorter adjacent
+    segment is under ``confident_segment``, and capped at ``max(min_step_deg, max_transient_step_deg)``.
     """
     edges = [start, *changepoints, end]
     spans = np.array([max((b - a) / confident_segment, 1e-9) for a, b in itertools.pairwise(edges)])
     support = np.minimum(spans[:-1], spans[1:])
-    return np.clip(min_step_deg / np.sqrt(np.minimum(support, 1.0)), min_step_deg, max_transient_step_deg)
+    ceiling = max(min_step_deg, max_transient_step_deg)
+    return np.clip(min_step_deg / np.sqrt(np.minimum(support, 1.0)), min_step_deg, ceiling)
 
 
 def estimate_north_table(
@@ -607,7 +556,7 @@ def estimate_north_table(
 
     bins = ((index - start) // settings.grid).to_numpy().astype(np.int64)
     n_bins = int(bins.max()) + 1
-    if n_bins > _BIN_COUNT_WARN:
+    if n_bins > 3000:  # noqa: PLR2004
         logger.warning("northing over %d %s bins; consider a coarser grid", n_bins, settings.grid)
     years = (index.max() - start) / pd.Timedelta(days=365.25)
     max_k = max(settings.min_changepoints, math.ceil(settings.changepoints_per_year * max(years, 0.0)))
@@ -621,8 +570,7 @@ def estimate_north_table(
             return []
         occupied = int((weight > 0).sum())
         typical = float(weight.sum()) / max(occupied, 1)
-        # A changepoint must pay for itself: the cost drop a ``min_step_deg`` step sustained
-        # over ``min_segment`` of typical-density data would produce.
+        # the cost drop a ``min_step_deg`` step over ``min_segment`` of typical-density data produces
         penalty = typical * min_span * (1.0 - math.cos(math.radians(settings.min_step_deg) / 2.0))
         breaks = _best_breakpoints(_segment_costs(level, weight), max_k=max_k, min_span=min_span, penalty=penalty)
         found = [start + b * settings.grid for b in breaks if b > 0]
@@ -652,9 +600,8 @@ def estimate_north_table(
                 de_stepped=de_stepped,
             )
 
-        # Search the veer-normalised residual, measuring the sector signature twice: first assuming
-        # no step structure, then around only the steps that search was confident of. Offsets come
-        # from the raw residual either way, so the correction stays absolute.
+        # Search the veer-normalised residual twice: the second time with the signature measured
+        # around the confident steps of the first.
         provisional = detect(normalised(None))
         confident = _confident_steps(provisional, start=start, residual=residual, index=index)
         changepoints = (
@@ -664,8 +611,7 @@ def estimate_north_table(
         )
 
     offsets = _segment_offsets(changepoints, start=start, residual=residual, index=index)
-    # First iron out excursions, then drop what the record cannot support. Order matters: a step
-    # only looks unsupported once the excursion around it has gone.
+    # Drop excursions first, then steps the record cannot support.
     changepoints, offsets = _prune_while(
         changepoints,
         offsets,
@@ -743,22 +689,110 @@ def write_north_table_yaml(tables: Mapping[str, pd.DataFrame], *, path: Path) ->
     """Write per-device north tables as the YAML list ``north_offsets`` and v0 both read.
 
     The format matches v0's ``optimized_northing_corrections.yaml``, so the file can be hand
-    edited and supplied back as a prior.
+    edited and supplied back as a prior. Offsets are wrapped into [-180, 180) on the way out.
 
     :param tables: one absolute north table per device
     :param path: file to write
     """
     lines = [
-        f"    - ['{device}', {pd.Timestamp(row.timestamp).strftime('%Y-%m-%d %H:%M:%S')}, {row.north_offset}]"
+        f"    - ['{device}', {pd.Timestamp(row.timestamp).strftime('%Y-%m-%d %H:%M:%S')}, "
+        f"{(row.north_offset + 180.0) % 360.0 - 180.0}]"
         for device in sorted(tables)
         for row in tables[device].itertuples()
     ]
     path.write_text("\n".join(lines) + "\n")
 
 
+def _neighbours_from_layout(layout: Layout, *, devices: list[str], k: int) -> dict[str, tuple[str, ...]]:
+    """Map each device to its ``k`` nearest other ``devices``, fewer when the farm is smaller."""
+    rows = {name: layout.index_of(name) for name in devices}
+    limit = min(k, len(devices) - 1)
+    out: dict[str, tuple[str, ...]] = {}
+    for name in devices:
+        ranked = sorted((float(layout.distance_m[rows[name], rows[o]]), o) for o in devices if o != name)
+        out[name] = tuple(o for _, o in ranked[:limit])
+    return out
+
+
+def _validate_north_farm_inputs(
+    devices: list[str],
+    *,
+    usable: Mapping[str, npt.NDArray[np.bool_]],
+    power: Mapping[str, npt.NDArray[np.float64]] | None,
+    layout: Layout | None,
+) -> None:
+    """Check every device has a usable mask, a power entry when ``power`` is given, and a layout row."""
+    missing = sorted(set(devices) - set(usable))
+    if missing:
+        msg = f"usable is missing masks for device(s) {missing}"
+        raise ValueError(msg)
+    if power is not None:
+        missing_power = sorted(set(devices) - set(power))
+        if missing_power:
+            msg = f"power is missing an entry for device(s) {missing_power}"
+            raise ValueError(msg)
+    if layout is not None:
+        known = {n for n in layout.frame[NAME_COL].to_numpy() if n is not None}
+        unknown = sorted(set(devices) - known)
+        if unknown:
+            msg = (
+                f"layout has no row for device(s) {unknown}. "
+                "Pass layout=None explicitly to north against the whole-farm consensus instead."
+            )
+            raise ValueError(msg)
+
+
+def _consensus_neighbours(
+    layout: Layout | None, *, devices: list[str], neighbours: int, min_devices: int
+) -> dict[str, tuple[str, ...]] | None:
+    """Return each device's ``neighbours`` nearest turbines, or ``None`` for the whole-farm consensus.
+
+    ``None`` when there is no layout, or when some device would have fewer than ``min_devices``.
+    """
+    if layout is None:
+        return None
+    candidate = _neighbours_from_layout(layout, devices=devices, k=neighbours)
+    thinnest = min(len(candidate[d]) for d in devices)
+    if thinnest < min_devices:
+        logger.warning(
+            "layout gives each device only %d neighbour(s), below MIN_DEVICES_FOR_FARM_REFERENCE=%d; "
+            "northing against the whole-farm consensus instead",
+            thinnest,
+            min_devices,
+        )
+        return None
+    return candidate
+
+
 def _farm_quorum(n_devices: int, *, floor: int) -> int:
     """Return how many devices must report for their median to stand for the farm's consensus."""
     return max(floor, n_devices // 2 + 1)
+
+
+def add_wake_nadir_shift(
+    tables: Mapping[str, pd.DataFrame],
+    *,
+    layout: Layout,
+    index: pd.DatetimeIndex,
+    direction_deg: Mapping[str, npt.NDArray[np.float64]],
+    power: Mapping[str, npt.NDArray[np.float64]],
+    wind_speed: Mapping[str, npt.NDArray[np.float64]] | None = None,
+    usable: Mapping[str, npt.NDArray[np.bool_]],
+) -> tuple[dict[str, pd.DataFrame], dict[str, float]]:
+    """Shift each device's table by its wake-nadir correction; return the tables and the corrections.
+
+    The correction is :func:`wind_up.wake_nadir.wake_nadir_offsets`, measured on the directions
+    ``tables`` north. :func:`north_farm` runs this as its last step when given a layout and power.
+    """
+    northed = {name: apply_north_table(index, direction_deg[name], north_table=tables[name]) for name in tables}
+    deltas = wake_nadir_offsets(
+        layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
+    )
+    shifted = {
+        name: table.assign(**{NORTH_OFFSET_COL: table[NORTH_OFFSET_COL] + deltas[name]}) if deltas.get(name) else table
+        for name, table in tables.items()
+    }
+    return shifted, deltas
 
 
 def _farm_direction(
@@ -767,15 +801,121 @@ def _farm_direction(
     usable: Mapping[str, npt.NDArray[np.bool_]],
     min_devices: int,
 ) -> npt.NDArray[np.float64]:
-    """Per-timestamp circular median of the devices' northed directions, NaN where too few report.
-
-    ``min_devices`` is a quorum, not a fixed floor: see :func:`north_farm`.
-    """
+    """Per-timestamp circular median of the devices' northed directions, NaN where fewer than ``min_devices`` report."""
     stack = np.vstack(
         [np.where(usable[name] & np.isfinite(values), values, np.nan) for name, values in northed.items()]
     )
     enough = np.isfinite(stack).sum(axis=0) >= min_devices
     return _median_across(stack, enough=enough)
+
+
+def _consensus_references(
+    northed: Mapping[str, npt.NDArray[np.float64]],
+    *,
+    usable: Mapping[str, npt.NDArray[np.bool_]],
+    quorum: int,
+    reference_neighbours: Mapping[str, Sequence[str]] | None,
+    min_devices: int,
+) -> dict[str, npt.NDArray[np.float64]]:
+    """Return the consensus direction each device is northed against.
+
+    Without ``reference_neighbours`` every device shares the whole-farm consensus, which needs
+    ``quorum`` devices reporting. With it, each device gets the consensus of its own listed
+    neighbours, which needs a strict majority of them and at least ``min_devices``.
+    """
+    if reference_neighbours is None:
+        farm = _farm_direction(northed, usable=usable, min_devices=quorum)
+        return dict.fromkeys(northed, farm)
+    references: dict[str, npt.NDArray[np.float64]] = {}
+    for name in northed:
+        neighbours = [n for n in reference_neighbours[name] if n != name]
+        references[name] = _farm_direction(
+            {n: northed[n] for n in neighbours},
+            usable={n: usable[n] for n in neighbours},
+            min_devices=_farm_quorum(len(neighbours), floor=min_devices),
+        )
+    return references
+
+
+def _table_change(before: pd.DataFrame, after: pd.DataFrame) -> float:
+    """Return the largest offset change (deg); infinity if a changepoint was added, removed or moved over a day."""
+    if len(before) != len(after):
+        return float("inf")
+    shift = np.abs(pd.DatetimeIndex(after[TIMESTAMP_COL]) - pd.DatetimeIndex(before[TIMESTAMP_COL]))
+    if (shift > _DEFAULT_GRID).any():
+        return float("inf")
+    return float(np.abs(circ_diff(after[NORTH_OFFSET_COL], before[NORTH_OFFSET_COL])).max())
+
+
+def _changepoints_v_consensus(
+    index: pd.DatetimeIndex,
+    *,
+    direction_deg: Mapping[str, npt.NDArray[np.float64]],
+    usable: Mapping[str, npt.NDArray[np.bool_]],
+    reanalysis_anchor: Mapping[str, pd.DataFrame],
+    references: dict[str, npt.NDArray[np.float64]],
+    references_from: Callable[[dict[str, npt.NDArray[np.float64]]], dict[str, npt.NDArray[np.float64]]],
+    reference_neighbours: Mapping[str, Sequence[str]] | None,
+    settings: NorthingSettings,
+) -> dict[str, pd.DataFrame]:
+    """North each device against its consensus in ``references``, repeating until the tables converge.
+
+    Each round rebuilds the consensus with ``references_from`` from the previous round's tables and
+    re-norths only the devices whose consensus members moved. A device whose consensus never overlaps
+    its usable rows keeps its ``reanalysis_anchor`` table.
+    """
+    max_rounds = 10
+    converged_deg = 0.5
+    devices = sorted(direction_deg)
+    anchored_only = set()
+    for name in devices:
+        overlap = (
+            np.asarray(usable[name], dtype=bool)
+            & np.isfinite(np.asarray(direction_deg[name], dtype=float))
+            & np.isfinite(references[name])
+        )
+        if not overlap.any():
+            logger.warning("no usable farm reference for device %s; keeping its reanalysis anchor", name)
+            anchored_only.add(name)
+
+    def north_against(name: str, reference: npt.NDArray[np.float64]) -> pd.DataFrame:
+        if name in anchored_only:
+            return reanalysis_anchor[name]
+        return estimate_north_table(
+            index, direction_deg[name], reference_deg=reference, usable=usable[name], settings=settings
+        )
+
+    def feeds(name: str) -> Sequence[str]:
+        return devices if reference_neighbours is None else reference_neighbours[name]
+
+    tables = {name: north_against(name, references[name]) for name in devices}
+    moved = {name: _table_change(reanalysis_anchor[name], tables[name]) for name in devices}
+    for consensus_round in range(2, max_rounds + 1):
+        settling = {name for name, change in moved.items() if change > converged_deg}
+        stale = [name for name in devices if settling.intersection(feeds(name))]
+        if not stale:
+            break
+        references = references_from(
+            {name: apply_north_table(index, direction_deg[name], north_table=tables[name]) for name in devices}
+        )
+        previous = tables
+        tables = {**tables, **{name: north_against(name, references[name]) for name in stale}}
+        moved = {name: _table_change(previous[name], tables[name]) for name in devices}
+        logger.debug(
+            "changepoints-v-consensus round %d: re-northed %d device(s), largest change %.2f deg",
+            consensus_round,
+            len(stale),
+            max(moved.values()),
+        )
+    else:
+        if max(moved.values()) > converged_deg:
+            logger.warning(
+                "changepoints-v-consensus did not converge in %d rounds (last round moved an offset by %.1f deg); "
+                "keeping the last",
+                max_rounds,
+                max(moved.values()),
+            )
+    return tables
 
 
 def north_farm(
@@ -784,49 +924,40 @@ def north_farm(
     direction_deg: Mapping[str, npt.NDArray[np.float64]],
     usable: Mapping[str, npt.NDArray[np.bool_]],
     reanalysis_deg: npt.NDArray[np.float64],
+    layout: Layout | None,
+    power: Mapping[str, npt.NDArray[np.float64]] | None = None,
+    wind_speed: Mapping[str, npt.NDArray[np.float64]] | None = None,
     settings: NorthingSettings = DEFAULT_NORTHING,
-    min_devices_for_farm_reference: int = 3,
 ) -> dict[str, pd.DataFrame]:
-    """North a whole farm in two passes, returning one absolute table per device.
+    """North a whole farm, returning one absolute table per device.
 
-    Pass 1 norths each device to ``reanalysis_deg``; the northed directions give a farm
-    consensus direction, and pass 2 norths each device's raw signal to that. Pass 1 is what
-    fixes the farm in absolute terms; pass 2 is the more precise.
-
-    Every device's arrays are positional on the shared ``index``, which is what lets the farm
-    consensus be taken across devices at each timestamp.
+    Runs the reanalysis-anchor, changepoints-v-consensus (or, below
+    :data:`MIN_DEVICES_FOR_FARM_REFERENCE` devices, changepoints-v-reanalysis) and wake-nadir-shift
+    steps described in ``docs/northing.md``. Every device's arrays are positional on ``index``.
 
     :param direction_deg: device name to its raw direction signal
     :param usable: device name to the rows usable for northing it
     :param reanalysis_deg: the absolute direction reference, on ``index``
-    :param min_devices_for_farm_reference: the floor on how many devices must report at a
-        timestamp for the consensus to be defined there, and the minimum farm size. The effective
-        requirement is the larger of this and a strict majority of the farm.
+    :param layout: the farm :class:`~wind_up.layout.Layout`, in which every device must have a row;
+        each device is then northed against the consensus of its nearest turbines. ``None`` norths
+        against one whole-farm consensus and skips the wake-nadir shift.
+    :param power: device name to its power on ``index``; with a ``layout``, enables the wake-nadir shift
+    :param wind_speed: device name to its nacelle wind speed on ``index``, used by the wake-nadir
+        shift alongside power when given
     """
     devices = sorted(direction_deg)
-    if len(devices) < min_devices_for_farm_reference:
-        msg = (
-            f"north_farm needs at least min_devices_for_farm_reference={min_devices_for_farm_reference} "
-            f"devices to form a farm reference, got {len(devices)}: {devices}"
-        )
-        raise ValueError(msg)
-    missing = sorted(set(devices) - set(usable))
-    if missing:
-        msg = f"usable is missing masks for device(s) {missing}"
-        raise ValueError(msg)
+    _validate_north_farm_inputs(devices, usable=usable, power=power, layout=layout)
 
     finite_reference = np.isfinite(np.asarray(reanalysis_deg, dtype=float))
     anchorable = {d: int((np.asarray(usable[d], dtype=bool) & finite_reference).sum()) for d in devices}
     if not any(anchorable.values()):
         msg = (
-            "no device has a usable row where reanalysis_deg is finite, so pass 1 cannot anchor the farm. "
-            "Pass 2 would still return plausible relative offsets, but a farm that is uniformly wrong "
-            "looks self-consistent, so the result would be unanchored. Check that reanalysis_deg covers "
-            "index and is not all NaN."
+            "no device has a usable row where reanalysis_deg is finite, so reanalysis cannot anchor the farm. "
+            "Check that reanalysis_deg covers index and is not all NaN."
         )
         raise ValueError(msg)
     thin = sorted(d for d, n in anchorable.items() if n == 0)
-    if len(devices) - len(thin) < min_devices_for_farm_reference:
+    if len(devices) - len(thin) < MIN_DEVICES_FOR_FARM_REFERENCE:
         logger.warning(
             "only %d of %d devices have a usable row anchored to reanalysis (%s have none); the absolute "
             "anchor rests on few devices",
@@ -835,10 +966,8 @@ def north_farm(
             thin,
         )
 
-    # Pass 1's reference is reanalysis, so it may only attribute large steps; pass 2's farm
-    # consensus is clean enough for the caller's chosen threshold.
-    anchoring = anchoring_only(settings)
-    first_pass = {
+    anchoring = replace(settings, changepoints_per_year=0.0, min_changepoints=0)
+    reanalysis_anchor = {
         name: estimate_north_table(
             index,
             direction_deg[name],
@@ -848,16 +977,71 @@ def north_farm(
         )
         for name in devices
     }
-    northed = {name: apply_north_table(index, direction_deg[name], north_table=first_pass[name]) for name in devices}
-    quorum = _farm_quorum(len(devices), floor=min_devices_for_farm_reference)
-    farm = _farm_direction(northed, usable=usable, min_devices=quorum)
-    if not np.isfinite(farm).any():
-        logger.warning("farm reference is empty; keeping the reanalysis-only north tables")
-        return first_pass
-
-    return {
-        name: estimate_north_table(
-            index, direction_deg[name], reference_deg=farm, usable=usable[name], settings=settings
-        )
-        for name in devices
+    northed = {
+        name: apply_north_table(index, direction_deg[name], north_table=reanalysis_anchor[name]) for name in devices
     }
+
+    def wake_nadir_shift(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        if layout is None or power is None:
+            return tables
+        shifted, _ = add_wake_nadir_shift(
+            tables,
+            layout=layout,
+            index=index,
+            direction_deg=direction_deg,
+            power=power,
+            wind_speed=wind_speed,
+            usable=usable,
+        )
+        return shifted
+
+    if len(devices) < MIN_DEVICES_FOR_FARM_REFERENCE:
+        logger.warning(
+            "farm of %d device(s) is below MIN_DEVICES_FOR_FARM_REFERENCE=%d; northing against "
+            "reanalysis with changepoints",
+            len(devices),
+            MIN_DEVICES_FOR_FARM_REFERENCE,
+        )
+        reanalysis_settings = against_reanalysis(settings)
+        changepoints_v_reanalysis = {
+            name: estimate_north_table(
+                index,
+                direction_deg[name],
+                reference_deg=reanalysis_deg,
+                usable=usable[name],
+                settings=reanalysis_settings,
+            )
+            for name in devices
+        }
+        return wake_nadir_shift(changepoints_v_reanalysis)
+
+    reference_neighbours = _consensus_neighbours(
+        layout, devices=devices, neighbours=4, min_devices=MIN_DEVICES_FOR_FARM_REFERENCE
+    )
+    quorum = _farm_quorum(len(devices), floor=MIN_DEVICES_FOR_FARM_REFERENCE)
+
+    def references_from(signals: dict[str, npt.NDArray[np.float64]]) -> dict[str, npt.NDArray[np.float64]]:
+        return _consensus_references(
+            signals,
+            usable=usable,
+            quorum=quorum,
+            reference_neighbours=reference_neighbours,
+            min_devices=MIN_DEVICES_FOR_FARM_REFERENCE,
+        )
+
+    references = references_from(northed)
+    if not any(np.isfinite(reference).any() for reference in references.values()):
+        logger.warning("farm reference is empty; keeping the reanalysis-only north tables")
+        return wake_nadir_shift(reanalysis_anchor)
+
+    tables = _changepoints_v_consensus(
+        index,
+        direction_deg=direction_deg,
+        usable=usable,
+        reanalysis_anchor=reanalysis_anchor,
+        references=references,
+        references_from=references_from,
+        reference_neighbours=reference_neighbours,
+        settings=settings,
+    )
+    return wake_nadir_shift(tables)

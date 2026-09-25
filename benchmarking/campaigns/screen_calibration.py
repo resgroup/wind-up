@@ -38,7 +38,7 @@ from benchmarking.campaigns.reference_fixture import REFERENCES_3, REFERENCES_5
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, era5_direction, north_scada
 from benchmarking.synthetic import HOT_COLUMNS
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -64,16 +64,6 @@ def default_output_root() -> Path:
     return root / "screen_calibration"
 
 
-def _coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
-    """Hill of Towie coordinates for ``turbines``."""
-    metadata = load_hot_metadata()
-    return {
-        str(row.Name): (float(row.Latitude), float(row.Longitude))
-        for row in metadata.itertuples()
-        if str(row.Name) in set(turbines)
-    }
-
-
 def one_pass(
     *,
     mode: Literal["prepost", "toggle"],
@@ -84,7 +74,7 @@ def one_pass(
 ) -> pd.DataFrame:
     """Run a single screening pass over a clean placebo pool and return its per-turbine deviations."""
     turbines = (test_wtg, *references)
-    campaign = placebo_campaign(mode, upgraded=[test_wtg], turbines=list(turbines), coords=_coords(turbines))
+    campaign = placebo_campaign(mode, upgraded=[test_wtg], turbines=list(turbines), coords=hot_coords(turbines))
     dataset = campaign.generate(scada_df)
     spec = campaign.spec()
     index = pd.DatetimeIndex(dataset.synthetic_df.index.unique()).sort_values()
@@ -93,6 +83,7 @@ def one_pass(
         columns=dataset.columns,
         north_offsets=spec.north_offsets,
         rated_power_kw=spec.rated_power_kw,
+        layout=spec.layout,
         era5_wd=era5_direction(era5_df, index),
         roles=DEFAULT_NORTHING_ROLES,
     )

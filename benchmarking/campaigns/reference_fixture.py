@@ -47,7 +47,7 @@ from benchmarking.campaigns.placebo import (
 from benchmarking.campaigns.runner import CampaignRunner
 from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import ReferenceCpChange
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -163,16 +163,6 @@ def fixture_arms(mode: Literal["prepost", "toggle"]) -> list[Arm]:
     ]
 
 
-def _coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
-    """Hill of Towie coordinates for ``turbines``."""
-    metadata = load_hot_metadata()
-    return {
-        str(row.Name): (float(row.Latitude), float(row.Longitude))
-        for row in metadata.itertuples()
-        if str(row.Name) in set(turbines)
-    }
-
-
 def fixture_turbines(pool: int) -> tuple[str, ...]:
     """Every turbine one arm's campaign declares: the test turbine and its candidate references."""
     return (FIXTURE_TEST_WTG, *references(pool))
@@ -188,7 +178,7 @@ def fixture_campaign(
 
     :param mode: ``"prepost"`` or ``"toggle"``
     :param arm: the cell being declared
-    :param coords: turbine coordinates; a placeholder is used when omitted
+    :param coords: turbine coordinates; the published Hill of Towie positions when omitted
     """
     return placebo_campaign(
         mode,
@@ -210,7 +200,7 @@ def run_cell(
 ) -> CampaignResult:
     """Run one arm and return its result."""
     turbines = fixture_turbines(arm.pool)
-    campaign = fixture_campaign(mode, arm=arm, coords=_coords(turbines))
+    campaign = fixture_campaign(mode, arm=arm, coords=hot_coords(turbines))
     dataset = campaign.generate(scada_df)
     spec = campaign.spec()
     index = pd.DatetimeIndex(dataset.synthetic_df.index.unique()).sort_values()
