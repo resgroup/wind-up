@@ -10,7 +10,8 @@ import pandas as pd
 
 from wind_up.layout import Layout
 from wind_up.northing import estimate_north_table
-from wind_up.northing_plots import plot_northing, plot_northing_farm, plot_wake_nadir_farm
+from wind_up.northing_plots import plot_northing, plot_northing_farm, plot_wake_nadir_farm, plot_wake_nadir_pair
+from wind_up.wake_nadir import WakePairCurves
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -129,3 +130,39 @@ class TestPlotWakeNadirFarm:
         plt.close(figure)
 
         assert len(offsets) == len(names)
+
+
+def _pair_curves(*, nadir_deg: float | None, wind_speed: bool) -> WakePairCurves:
+    offset = np.arange(30, dtype=float) - 14.5
+    ratio = 1.0 - 0.3 * np.exp(-0.5 * ((offset - (nadir_deg or 0.0)) / 3.0) ** 2)
+    return WakePairCurves(
+        upstream="T01",
+        downstream="T02",
+        offset_deg=offset,
+        power_ratio=ratio,
+        wind_speed_ratio=ratio if wind_speed else None,
+        nadir_deg=nadir_deg,
+    )
+
+
+class TestPlotWakeNadirPair:
+    def test_draws_power_and_wind_speed_and_saves(self, tmp_path: Path) -> None:
+        before = _pair_curves(nadir_deg=5.0, wind_speed=True)
+        after = _pair_curves(nadir_deg=0.2, wind_speed=True)
+
+        figure = plot_wake_nadir_pair(before, after=after, out_dir=tmp_path)
+        panels = len(figure.axes)
+        plt.close(figure)
+
+        assert (tmp_path / "wake_nadir_pair_T01_T02.png").is_file()
+        assert panels == 2
+
+    def test_power_only_and_an_unresolved_nadir_still_draw(self) -> None:
+        before = _pair_curves(nadir_deg=None, wind_speed=False)
+        after = _pair_curves(nadir_deg=None, wind_speed=False)
+
+        figure = plot_wake_nadir_pair(before, after=after)
+        panels = len(figure.axes)
+        plt.close(figure)
+
+        assert panels == 1

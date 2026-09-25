@@ -11,7 +11,7 @@ import pytest
 from wind_up.circular_math import circ_diff
 from wind_up.layout import Layout
 from wind_up.northing import add_wake_nadir_shift, apply_north_table, north_farm
-from wind_up.wake_nadir import _aggregate, wake_nadir_offsets
+from wind_up.wake_nadir import _aggregate, wake_nadir_offsets, wake_pair_curves, wake_pairs
 
 
 def _index(rows: int) -> pd.DatetimeIndex:
@@ -37,11 +37,11 @@ def _waked_pair(
 ) -> tuple[
     pd.DatetimeIndex, dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], float
 ]:
-    """Fabricate a clean wake dip on B whose apparent nadir sits ``residual_deg`` off geometry.
+    """Fabricate a clean wake on B whose apparent nadir sits ``residual_deg`` off geometry.
 
-    A's *true* direction sweeps the sector around the geometric nadir; B's power and wind speed dip
-    when the true wind is at the nadir. A's *northed* direction carries a constant ``residual_deg``
-    error, so the dip appears in A's northed direction at nadir + residual.
+    A's *true* direction sweeps the sector around the geometric nadir; B's power and wind speed reach
+    their nadir when the true wind is there. A's *northed* direction carries a constant ``residual_deg``
+    error, so the nadir appears in A's northed direction at the bearing + residual.
     """
     b_idx, a_idx = layout.index_of("B"), layout.index_of("A")
     beta = float(layout.bearing_deg[b_idx, a_idx])
@@ -79,7 +79,7 @@ def test_recovers_a_known_residual_on_the_waking_turbine() -> None:
 
 
 def test_power_only_fallback_recovers_the_residual() -> None:
-    """With no nacelle wind speed the power ratio alone still locates the dip."""
+    """With no nacelle wind speed the power ratio alone still locates the nadir."""
     layout = _pair_layout()
     residual = -5.0
     index, northed, power, _, usable, _ = _waked_pair(layout, residual_deg=residual)
@@ -92,7 +92,7 @@ def test_power_only_fallback_recovers_the_residual() -> None:
 def test_a_missing_wind_speed_row_does_not_discard_the_wind_speed_signal() -> None:
     """Real nacelle wind speed has gaps; one NaN row must drop that row, not the whole signal.
 
-    Power is flat here, so only the wind-speed curve carries the dip.
+    Power is flat here, so only the wind-speed curve carries the nadir.
     """
     layout = _pair_layout()
     residual = 6.0
@@ -109,7 +109,7 @@ def test_a_missing_wind_speed_row_does_not_discard_the_wind_speed_signal() -> No
 
 
 def test_a_flat_deficit_leaves_the_turbine_uncorrected() -> None:
-    """No dip anywhere means no turbine resolves, so every correction is zero (graceful)."""
+    """No nadir anywhere means no turbine resolves, so every correction is zero (graceful)."""
     layout = _pair_layout()
     index, northed, _, _, usable, _ = _waked_pair(layout, residual_deg=6.0)
     flat_power = {"A": np.full(len(index), 1000.0), "B": np.full(len(index), 1000.0)}
@@ -188,7 +188,7 @@ def test_unpopulated_sector_bins_do_not_warn() -> None:
 
     Real SCADA rarely fills every one-degree bin in the sector, so a bin can be empty in both the
     power and the wind-speed curve. Averaging that all-NaN column must stay silent (warnings are
-    errors here) while still resolving the dip from the populated bins.
+    errors here) while still resolving the nadir from the populated bins.
     """
     layout = _pair_layout()
     index, northed, power, wind_speed, usable, beta = _waked_pair(layout, residual_deg=6.0)
@@ -220,7 +220,7 @@ def test_the_aggregate_is_a_median_that_resists_a_biased_pair() -> None:
 def test_the_view_angle_is_wrap_safe_when_the_nadir_sits_at_north() -> None:
     """A pair whose geometric nadir is due north sweeps directions across the 360/0 wrap.
 
-    Measuring the dip in view angle -- the signed offset from the geometric nadir, in [-180, 180) --
+    Measuring the nadir in view angle -- the signed offset from the geometric nadir, in [-180, 180) --
     keeps the swept directions contiguous through north, so the parabola fit is unharmed. A raw
     direction difference would split the sector across the wrap and ruin the fit.
     """
@@ -252,3 +252,36 @@ def test_a_downstream_turbine_inherits_its_neighbours_correction() -> None:
     )
 
     assert circ_diff(offsets["B"], offsets["A"]) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_wake_pairs_lists_each_pair_within_the_cutoff() -> None:
+    layout = _pair_layout()
+
+    assert wake_pairs(layout, devices=["A", "B"]) == [("A", "B"), ("B", "A")]
+    assert wake_pairs(layout, devices=["A", "B"], cutoff_diameters=1.0) == []
+
+
+def test_wake_pair_curves_find_the_nadir_the_offsets_correct() -> None:
+    layout = _pair_layout()
+    residual = 6.0
+    index, northed, power, wind_speed, usable, _ = _waked_pair(layout, residual_deg=residual)
+
+    curves = wake_pair_curves(
+        layout, upstream="A", downstream="B", northed_direction=northed["A"], power=power, wind_speed=wind_speed
+    )
+    offsets = wake_nadir_offsets(
+        layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
+    )
+
+    assert curves is not None
+    assert curves.nadir_deg == pytest.approx(-offsets["A"])
+    assert curves.wind_speed_ratio is not None
+    assert len(curves.offset_deg) == len(curves.power_ratio) == len(curves.wind_speed_ratio)
+    assert float(curves.offset_deg[int(np.nanargmin(curves.power_ratio))]) == pytest.approx(residual, abs=1.0)
+
+
+def test_wake_pair_curves_are_none_without_enough_rows() -> None:
+    layout = _pair_layout()
+    _, northed, power, _, _, _ = _waked_pair(layout, residual_deg=0.0, rows=10)
+
+    assert wake_pair_curves(layout, upstream="A", downstream="B", northed_direction=northed["A"], power=power) is None

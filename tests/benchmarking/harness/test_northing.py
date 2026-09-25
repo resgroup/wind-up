@@ -75,7 +75,7 @@ def _waked_scada(
 ) -> tuple[pd.DataFrame, pd.DatetimeIndex, np.ndarray, Layout]:
     """Two turbines where A wakes B; both report the true wind carrying a constant ``residual_deg``.
 
-    B's power and wind speed dip when the true wind sits at the geometric nadir, so wake-nadir-shift can read
+    B's power and wind speed reach their nadir at the geometric nadir, so wake-nadir-shift can read
     the residual back off the wake and null it. Reanalysis equals the reported direction, so reanalysis-anchor
     leaves the residual in place and only wake-nadir-shift can remove it.
     """
@@ -144,6 +144,7 @@ class TestWakeNadirShiftInTheHarness:
         )
 
         assert (tmp_path / "wake_nadir_bubble.png").is_file()
+        assert (tmp_path / "wake_nadir_pair_A_B.png").is_file()
 
     def test_writing_the_plots_norths_the_farm_only_once(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The bubble plot reuses the wake-nadir-shift corrections rather than northing the farm a second time."""

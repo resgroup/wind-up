@@ -30,7 +30,8 @@ from wind_up.northing import (
     write_north_table_yaml,
     yaw_usable,
 )
-from wind_up.northing_plots import plot_northing, plot_northing_farm, plot_wake_nadir_farm
+from wind_up.northing_plots import plot_northing, plot_northing_farm, plot_wake_nadir_farm, plot_wake_nadir_pair
+from wind_up.wake_nadir import wake_pair_curves, wake_pairs
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -51,6 +52,9 @@ _PLOT_REFERENCE_NAME = "reanalysis"
 # The discovered table, written in the format ``north_offsets`` and v0's
 # ``northing_corrections_utc`` both read, so it can be hand edited and supplied back as a prior.
 NORTH_TABLE_YAML = "northing_corrections.yaml"
+
+# How many turbines, largest wake-nadir shift first, get a before/after plot of one of their wakes.
+_WAKE_PAIR_PLOTS = 3
 
 # Open-Meteo's hub-height wind direction, the reanalysis anchor discovery is measured against.
 ERA5_WD_COL = "wind_direction_100m"
@@ -176,7 +180,7 @@ def north_scada(
     :param settings: how the changepoint search is bounded, when discovering
     :param out_dir: when given and corrections are discovered, the discovered table
         (:data:`NORTH_TABLE_YAML`), the farm overview, one plot per device and, with a layout, the
-        wake-nadir shift map are written here
+        wake-nadir shift map and a few before/after wake plots are written here
     :return: a copy of ``scada_df`` with ``columns.northed(role)`` added for each role
     """
     columns.require_roles(roles)
@@ -229,6 +233,7 @@ def north_scada(
         )
         # The wake-nadir shift runs here so its corrections are available for the map.
         corrections: dict[str, float] = {}
+        unshifted = tables
         if layout is not None:
             power = _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.active_power)
             wind_speed = (
@@ -256,6 +261,18 @@ def north_scada(
             if layout is not None and corrections:
                 figure = plot_wake_nadir_farm(layout, corrections=corrections, out_dir=out_dir)
                 plt.close(figure)
+                _write_wake_pair_plots(
+                    layout,
+                    index=index,
+                    directions=directions,
+                    before=unshifted,
+                    after=tables,
+                    corrections=corrections,
+                    power=power,
+                    wind_speed=wind_speed,
+                    usable=usable,
+                    out_dir=out_dir,
+                )
 
     turbine_of = scada_df[columns.turbine].to_numpy()
     row_index = pd.DatetimeIndex(scada_df.index)
@@ -306,6 +323,59 @@ def _write_northing_plots(
         )
         plt.close(figure)
     logger.info("wrote northing plots for %d device(s) to %s", len(directions), out_dir)
+
+
+def _write_wake_pair_plots(
+    layout: Layout,
+    *,
+    index: pd.DatetimeIndex,
+    directions: dict[str, np.ndarray],
+    before: dict[str, pd.DataFrame],
+    after: dict[str, pd.DataFrame],
+    corrections: dict[str, float],
+    power: dict[str, np.ndarray],
+    wind_speed: dict[str, np.ndarray] | None,
+    usable: dict[str, np.ndarray],
+    out_dir: Path,
+) -> None:
+    """Write a before/after wake plot for each of the turbines shifted most.
+
+    Each turbine's plotted pair is the one whose nadir sits nearest the bearing after the shift.
+    """
+    pairs = wake_pairs(layout, devices=sorted(directions))
+    shifted_most = [t for t in sorted(corrections, key=lambda t: -abs(corrections[t])) if corrections[t]]
+    written = 0
+    for upstream in shifted_most:
+        northed = {
+            name: apply_north_table(index, directions[upstream], north_table=tables[upstream])
+            for name, tables in (("before", before), ("after", after))
+        }
+        candidates = []
+        for up, down in pairs:
+            if up != upstream:
+                continue
+            curves = [
+                wake_pair_curves(
+                    layout,
+                    upstream=up,
+                    downstream=down,
+                    northed_direction=northed[name],
+                    power=power,
+                    wind_speed=wind_speed,
+                    usable=usable,
+                )
+                for name in ("before", "after")
+            ]
+            if curves[0] is not None and curves[1] is not None and curves[1].nadir_deg is not None:
+                candidates.append((abs(curves[1].nadir_deg), curves[0], curves[1]))
+        if not candidates:
+            continue
+        _, pair_before, pair_after = min(candidates, key=lambda c: c[0])
+        figure = plot_wake_nadir_pair(pair_before, after=pair_after, out_dir=out_dir)
+        plt.close(figure)
+        written += 1
+        if written == _WAKE_PAIR_PLOTS:
+            break
 
 
 def _timebase_seconds(index: pd.DatetimeIndex) -> float:
