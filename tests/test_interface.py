@@ -1,8 +1,8 @@
 import pandas as pd
 
-from wind_up.constants import TIMESTAMP_COL
-from wind_up.interface import PrePostSplitter
-from wind_up.models import WindUpConfig
+from wind_up_v0.constants import TIMESTAMP_COL
+from wind_up_v0.interface import PrePostSplitter
+from wind_up_v0.models import WindUpConfig
 
 
 def _toggle_df(idx: pd.DatetimeIndex) -> pd.DataFrame:

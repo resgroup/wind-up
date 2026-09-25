@@ -12,9 +12,9 @@ from typing import NamedTuple
 import pandas as pd
 
 from tests.test_data.hot.unpack import unpack_local_meta_data, unpack_local_scada_data
-from wind_up.interface import PrePostSplitter
-from wind_up.models import PlotConfig, WindUpConfig
-from wind_up.reanalysis_data import ReanalysisDataset
+from wind_up_v0.interface import PrePostSplitter
+from wind_up_v0.models import PlotConfig, WindUpConfig
+from wind_up_v0.reanalysis_data import ReanalysisDataset
 
 logger = logging.getLogger(__name__)
 

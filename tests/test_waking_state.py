@@ -6,10 +6,10 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, TIMESTAMP_COL
-from wind_up.models import WindUpConfig
-from wind_up.scada_funcs import _scada_multi_index
-from wind_up.waking_state import (
+from wind_up_v0.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, TIMESTAMP_COL
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.scada_funcs import _scada_multi_index
+from wind_up_v0.waking_state import (
     add_waking_scen,
     add_waking_state,
     calc_bearing,
@@ -65,6 +65,7 @@ def test_get_distance_and_bearing(test_homer_config: WindUpConfig) -> None:
     t2long = cfg.asset.wtgs[1].longitude
     expected_bearing = 245.02500888680734 - 180
     expected_distance = 270.894287973147
+    get_distance_and_bearing.cache_clear()
     start_time = time.perf_counter()
     distance_m, bearing_deg = get_distance_and_bearing(lat1=t1lat, long1=t1long, lat2=t2lat, long2=t2long)
     end_time = time.perf_counter()
