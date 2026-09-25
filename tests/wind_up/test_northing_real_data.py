@@ -98,12 +98,7 @@ class TestDefaultPipeline:
 
     @pytest.mark.parametrize("window", list(WINDOWS))
     def test_every_other_turbine_is_left_alone(self, hot: pd.DataFrame, window: str) -> None:
-        """Including the neighbours of a turbine that steps: its step must not leak into them.
-
-        T15 used to step with its neighbours T05 and T16, and T17 with T19, because changepoints-v-consensus's
-        four-neighbour consensus still carried each neighbour's own step; repeating changepoints-v-consensus until it
-        converges removes it (CF21).
-        """
+        """Including the neighbours of a turbine that steps: its step must not leak into them."""
         tables = default_run(hot, window)
         extra = {
             name: describe(found)
@@ -292,9 +287,8 @@ class TestSingleTurbineAgainstReanalysis:
     @pytest.mark.slow
     def test_changepoints_v_reanalysis_does_not_over_detect_against_reanalysis(self, hot: pd.DataFrame) -> None:
         """Below the consensus floor each turbine is northed against reanalysis with changepoints
-        (changepoints-v-reanalysis). Reanalysis is coarse in time, so recalibrations closer than the reanalysis minimum
-        segment must be merged rather than read as a burst of steps: the whole farm resolves to a
-        handful of changepoints, not one every few weeks (CF20: ~100 without the guard).
+        (changepoints-v-reanalysis). The whole farm resolves to a handful of changepoints, not one every
+        few weeks.
         """
         total = 0
         for turbine in ALL_TURBINES:

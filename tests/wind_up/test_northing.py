@@ -769,8 +769,8 @@ class TestNearTheRecordEdge:
         assert self._n_changepoints(4.0, days_after=300.0) == 1
 
 
-class TestAnchoringPass:
-    """The first pass is for bulk alignment to reanalysis; only big steps are its business."""
+class TestAnchoringOnly:
+    """``anchoring_only`` settings act only on big steps."""
 
     @staticmethod
     def _n_changepoints(step_deg: float) -> int:

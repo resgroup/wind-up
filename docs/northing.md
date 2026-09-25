@@ -60,15 +60,16 @@ smallest step reported, the shortest segment, the changepoint budget per year, a
 
 ## changepoints-v-consensus
 
-For a farm of three or more turbines, each turbine is northed against a consensus of the others,
-and this step finds all the changepoints. The consensus is the per-timestamp circular median of
-the anchored directions of the turbine's four nearest neighbours by geodesic distance from the
-`Layout`. A consensus stands at a timestamp only when a strict majority of its turbines report, and never fewer than three.
+For a farm of three or more turbines, each turbine is northed against a consensus direction, and
+this step finds all the changepoints. A consensus is a per-timestamp circular median of anchored
+directions, and it stands at a timestamp only when a strict majority of its turbines, and never
+fewer than three, report.
 
-A neighbour consensus therefore needs at least three neighbours, so it applies from four turbines
-upward. A three-turbine farm, or a call with `layout=None`, uses one whole-farm consensus instead:
-the median of every turbine, the one being northed included, which stands only when a strict
-majority of the farm, and at least three turbines, report.
+From four turbines upward, with a `Layout`, each turbine's consensus is built from its four nearest
+neighbours by geodesic distance (all three others on a four-turbine farm), excluding the turbine
+itself. A three-turbine farm has only two neighbours per turbine, too few for a consensus of
+three, so it uses one whole-farm consensus instead, as does a call with `layout=None`: the median of
+every turbine, the one being northed included.
 
 A neighbour's own step is still in the anchored signals the first consensus is built from, and a
 four-turbine median moves when one member steps, which would hand the turbine a matching false
