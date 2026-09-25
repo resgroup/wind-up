@@ -59,6 +59,7 @@ if TYPE_CHECKING:
     from benchmarking.campaigns.declaration import SyntheticCampaign
     from benchmarking.campaigns.runner import CampaignResult
     from benchmarking.synthetic import ColumnSchema
+    from wind_up.layout import Layout
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +286,7 @@ def source_northed_scada(
     *,
     era5_df: pd.DataFrame,
     rated_power_kw: float,
+    layout: Layout | None,
     columns: ColumnSchema = HOT_COLUMNS,
     out_dir: Path | None = None,
 ) -> pd.DataFrame:
@@ -300,6 +302,7 @@ def source_northed_scada(
     :param scada_df: the undisguised SCADA the corrections are discovered on
     :param era5_df: reanalysis on the SCADA grid, the anchor discovery measures against
     :param rated_power_kw: turbine rating, for deciding which rows are usable for northing
+    :param layout: the farm layout for the neighbour consensus and the wake-nadir shift, or ``None``
     :param columns: the SCADA column schema
     :param out_dir: where the discovered table and its plots are written
     """
@@ -309,6 +312,7 @@ def source_northed_scada(
         columns=columns,
         north_offsets=None,
         rated_power_kw=rated_power_kw,
+        layout=layout,
         era5_wd=era5_direction(era5_df, index),
         out_dir=out_dir,
     )
@@ -323,6 +327,7 @@ def source_record(
     era5_df: pd.DataFrame,
     references: Sequence[str],
     rated_power_kw: float,
+    layout: Layout | None,
     window: tuple[pd.Timestamp, pd.Timestamp] = DISGUISE_WINDOW,
     columns: ColumnSchema = HOT_COLUMNS,
     out_dir: Path | None = None,
@@ -337,6 +342,7 @@ def source_record(
     :param era5_df: hourly reanalysis for the site
     :param references: the turbines whose mean wind speed the reanalysis lag is matched against
     :param rated_power_kw: turbine rating, for deciding which rows are usable for northing
+    :param layout: the farm layout northing discovery uses, or ``None``
     :param window: ``(start, end)`` of the record both legs share, end exclusive
     :param columns: the SCADA column schema
     :param out_dir: where the discovered northing table and its plots are written
@@ -344,7 +350,12 @@ def source_record(
     inside = scada_df[(scada_df.index >= window[0]) & (scada_df.index < window[1])]
     aligned = source_aligned_era5(era5_df, scada_df=inside, references=references, columns=columns)
     northed = source_northed_scada(
-        inside, era5_df=aligned, rated_power_kw=rated_power_kw, columns=columns, out_dir=out_dir
+        inside,
+        era5_df=aligned,
+        rated_power_kw=rated_power_kw,
+        layout=layout,
+        columns=columns,
+        out_dir=out_dir,
     )
     return northed, aligned
 
@@ -442,6 +453,7 @@ def run_disguise_probe(
         era5_df=era5_df,
         references=declared.candidate_references,
         rated_power_kw=declared.rated_power_kw,
+        layout=declared.layout,
         window=window,
         out_dir=run_dir / "northing",
     )

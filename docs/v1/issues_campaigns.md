@@ -921,7 +921,7 @@ measured one.
 
 **Why.** The campaign-proximity weighting used to be on by default precisely to stop a stale
 pre-campaign era dominating a short campaign's fit. Measuring what the weighting itself costs
-([CF19](findings_campaigns.md)) showed it is a prepost-only lever that tilts the baseline toward
+([CF22](findings_campaigns.md)) showed it is a prepost-only lever that tilts the baseline toward
 the changeover and, on a record that must read 0, moved the reading +0.154 pp, so it now ships off.
 That closes the bias but leaves the original failure mode unaddressed: nothing currently stops a
 ten-year baseline from swamping the recent data, or from bringing in an era whose turbines,

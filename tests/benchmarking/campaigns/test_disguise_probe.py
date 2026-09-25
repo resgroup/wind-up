@@ -246,12 +246,13 @@ def _northing_frame() -> tuple[pd.DataFrame, pd.Series]:
 def test_the_source_northing_is_written_into_the_nacelle_position_itself() -> None:
     scada_df, era5_wd = _northing_frame()
     era5_df = pd.DataFrame({ERA5_WD_COL: era5_wd})
-    northed = source_northed_scada(scada_df, era5_df=era5_df, rated_power_kw=2000.0)
+    northed = source_northed_scada(scada_df, era5_df=era5_df, rated_power_kw=2000.0, layout=None)
     expected = north_scada(
         scada_df,
         columns=HOT_COLUMNS,
         north_offsets=None,
         rated_power_kw=2000.0,
+        layout=None,
         era5_wd=era5_wd,
     )
     assert HOT_COLUMNS.northed("nacelle_position") not in northed.columns
@@ -262,7 +263,9 @@ def test_the_source_northing_is_written_into_the_nacelle_position_itself() -> No
 
 def test_the_source_northing_survives_the_disguise_row_for_row() -> None:
     scada_df, era5_wd = _northing_frame()
-    northed = source_northed_scada(scada_df, era5_df=pd.DataFrame({ERA5_WD_COL: era5_wd}), rated_power_kw=2000.0)
+    northed = source_northed_scada(
+        scada_df, era5_df=pd.DataFrame({ERA5_WD_COL: era5_wd}), rated_power_kw=2000.0, layout=None
+    )
     disguised = disguise_frame(northed, window=SHORT_WINDOW)
     back = disguised.set_index(undisguise_timestamps(pd.DatetimeIndex(disguised.index), window=SHORT_WINDOW))
     back = back.sort_index(kind="stable")
