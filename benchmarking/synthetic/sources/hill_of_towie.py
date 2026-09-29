@@ -75,11 +75,11 @@ class TruncatedDownloadError(Exception):
 def zenodo_record_dir(record_id: str) -> Path:
     """Return the directory one Zenodo record is downloaded into, creating it if needed.
 
-    ``<data root>/zenodo/<record id>``, the data root being ``WIND_UP_BENCHMARKING_DATA_DIR`` or
+    ``<data root>/<record id>``, the data root being ``WIND_UP_BENCHMARKING_DATA_DIR`` or
     ``~/temp/wind-up-benchmarking/data``. One directory per record, so files never collide.
     """
     root = Path(os.getenv("WIND_UP_BENCHMARKING_DATA_DIR", Path.home() / "temp" / "wind-up-benchmarking" / "data"))
-    path = root / "zenodo" / record_id
+    path = root / record_id
     path.mkdir(parents=True, exist_ok=True)
     return path
 

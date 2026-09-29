@@ -4,7 +4,7 @@ Copy ``.env.example`` to ``.env`` (which git ignores) and set any of its variabl
 already set in the environment wins over the file. The variables are only locations on this
 machine:
 
-- ``WIND_UP_BENCHMARKING_DATA_DIR``: where Zenodo open data is downloaded, one ``zenodo/<record id>``
+- ``WIND_UP_BENCHMARKING_DATA_DIR``: where Zenodo open data is downloaded, one ``<record id>``
   directory per record
 - ``WIND_UP_BENCHMARKING_OUTPUT_DIR``: where studies and runs write
 - ``WIND_UP_CACHE_DIR``: the reanalysis cache

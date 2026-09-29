@@ -268,7 +268,7 @@ class TestEnsureGreenbyteData:
 
 def test_each_zenodo_record_downloads_into_its_own_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WIND_UP_BENCHMARKING_DATA_DIR", str(tmp_path))
-    assert greenbyte.get_data_dir(KELMARSH) == tmp_path / "zenodo" / "5841834"
-    assert greenbyte.get_data_dir(PENMANSHIEL) == tmp_path / "zenodo" / "5946808"
-    assert hill_of_towie.get_data_dir() == tmp_path / "zenodo" / hill_of_towie.HOT_V2_RECORD_ID
+    assert greenbyte.get_data_dir(KELMARSH) == tmp_path / "5841834"
+    assert greenbyte.get_data_dir(PENMANSHIEL) == tmp_path / "5946808"
+    assert hill_of_towie.get_data_dir() == tmp_path / hill_of_towie.HOT_V2_RECORD_ID
     assert hill_of_towie.get_data_dir().is_dir()
