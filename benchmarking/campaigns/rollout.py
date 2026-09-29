@@ -1,7 +1,7 @@
 """Synthetic trial-then-rollout campaigns: realistic works schedules on real SCADA.
 
 A campaign draws a trial of a few turbines from :func:`~wind_up.campaign_design.design_campaign`,
-schedules their works on Scottish working days with one or two teams, and optionally rolls the upgrade
+schedules their works on UK working days with one or two teams, and optionally rolls the upgrade
 out to every other turbine some months later. The upgrade injected is the AeroUp shape, scaled by
 a multiplier. The works become a works table, so the period selector chooses each analysed
 turbine's span as it would for a real campaign.
@@ -58,7 +58,7 @@ SHUTDOWN_TO = (1, 2)
 
 WORKS_COLUMNS = ("Turbine", "First date of works", "Last date of works")
 
-# One-off changes to Scottish bank holidays: (moved away, added).
+# One-off changes to UK bank holidays: (moved away, added).
 _ONE_OFF_HOLIDAYS: dict[int, tuple[tuple[dt.date, ...], tuple[dt.date, ...]]] = {
     2011: ((), (dt.date(2011, 4, 29),)),
     2012: ((dt.date(2012, 5, 28),), (dt.date(2012, 6, 4), dt.date(2012, 6, 5))),
@@ -150,14 +150,16 @@ def kelmarsh_site(*, data_dir: Path | None = None) -> RolloutSite:
 
 @cache
 def bank_holidays(year: int) -> frozenset[dt.date]:
-    """Return the Scottish bank holidays of ``year``, weekend substitutes included."""
+    """Return the bank holidays of ``year`` in Scotland or in England and Wales, weekend substitutes included."""
     easter = (pd.Timestamp(year=year, month=1, day=1) + pd.offsets.Easter()).date()
     days = {
         *_new_year(year),
         easter - dt.timedelta(days=2),
+        easter + dt.timedelta(days=1),
         _first_monday(year, 5),
         _last_monday(year, 5),
         _first_monday(year, 8),
+        _last_monday(year, 8),
         _next_weekday(dt.date(year, 11, 30)),
         *_christmas(year),
     }

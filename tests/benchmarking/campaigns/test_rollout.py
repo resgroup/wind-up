@@ -57,15 +57,17 @@ def small_site() -> RolloutSite:
 # --- the calendar ------------------------------------------------------------------------------
 
 
-def test_bank_holidays_follow_scottish_rules() -> None:
+def test_bank_holidays_are_the_scottish_and_english_ones() -> None:
     assert bank_holidays(2019) == {
         dt.date(2019, 1, 1),
-        dt.date(2019, 1, 2),
+        dt.date(2019, 1, 2),  # Scotland
         dt.date(2019, 4, 19),  # Good Friday
+        dt.date(2019, 4, 22),  # Easter Monday, England and Wales
         dt.date(2019, 5, 6),  # early May: first Monday
         dt.date(2019, 5, 27),  # spring: last Monday of May
-        dt.date(2019, 8, 5),  # summer: first Monday of August
-        dt.date(2019, 12, 2),  # St Andrew's Day, 30 November, a Saturday
+        dt.date(2019, 8, 5),  # summer: first Monday of August, Scotland
+        dt.date(2019, 8, 26),  # summer: last Monday of August, England and Wales
+        dt.date(2019, 12, 2),  # St Andrew's Day, Scotland: 30 November, a Saturday
         dt.date(2019, 12, 25),
         dt.date(2019, 12, 26),
     }
@@ -90,8 +92,8 @@ def test_working_days_skip_weekends_bank_holidays_and_the_christmas_shutdown() -
     assert is_working_day(dt.date(2019, 5, 7))
     assert not is_working_day(dt.date(2019, 5, 4))  # Saturday
     assert not is_working_day(dt.date(2019, 5, 6))  # early May bank holiday
-    assert is_working_day(dt.date(2019, 4, 22))  # Easter Monday is not a Scottish bank holiday
-    assert is_working_day(dt.date(2019, 8, 26))  # nor is the last Monday of August
+    assert not is_working_day(dt.date(2019, 4, 22))  # Easter Monday, England and Wales
+    assert not is_working_day(dt.date(2019, 12, 2))  # St Andrew's Day, Scotland
     assert not is_working_day(dt.date(2019, 12, 24))  # shutdown starts
     assert not is_working_day(dt.date(2019, 12, 30))  # a weekday inside the shutdown
     assert not is_working_day(dt.date(2020, 1, 2))  # shutdown ends
