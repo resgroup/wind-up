@@ -207,7 +207,7 @@ From a seed and a site:
 3. **Optional full rollout**: every other turbine is worked, starting 6–9 months after the last
    trial works end (a uniform draw), with its own team draw.
 4. **Injected uplift**: the AeroUp shape — a region-2 Cp gain tailing to 0 by rated —
-   `WindSpeedCpChange(ws_points=(4, 6, 8, 12, 16), deltas=(0.0, 0.07, 0.07, 0.045, 0.0))`, times a
+   `WindSpeedCpChange(ws_points=(4, 8, 12, 16), deltas=(0.07, 0.07, 0.045, 0.0))`, times a
    multiplier of +1, 0 or −1. Applied to trial turbines and, when present, full-rollout turbines,
    from each turbine's own works end.
 5. **Post length**: the data is cut at the last trial works end plus `L` months, for `L` in 1, 2, 3,
@@ -219,7 +219,7 @@ that is accepted.
 
 ### Tests
 
-The calendar (a known bank holiday and the shutdown are skipped); team concurrency never exceeds
+The calendar (a known bank holiday and the works are skipped); team concurrency never exceeds
 `n_teams`; works start and end on working days; the pre-data bounds hold; the rollout lag bounds
 hold; the same seed gives the same campaign; the works table round-trips through the loader.
 
@@ -229,19 +229,19 @@ hold; the same seed gives the same campaign; the works table round-trips through
 
 ### The matrix
 
-- **Synthetic campaigns**: 8 seeds per site (HoT, Penmanshiel, Kelmarsh). Seeds alternate between
-  with and without a full rollout (4 each).
+- **Synthetic campaigns**: 4-20 seeds per site (HoT, Penmanshiel, Kelmarsh) depending on how much diversity the site can support (how many turbines and how much data it has). Seeds alternate between
+  with and without a full rollout (half each).
 - **Real**: HoT T13, with the post cut at 2021-09-30 plus `L` months.
 - **Axes**: multiplier ∈ {+1, 0, −1} (synthetic only; paired, so the design, dates and seed are
   identical across the three), `K` ∈ {3, 4, 6}, `L` ∈ {1, 2, 3, 6, 9, 12} months.
 - **One run** is one (campaign, multiplier, K, L): a full shipped `wind-up` run. Nothing is shared
-  between runs. That is 3 sites × 8 × 3 × 3 × 6 = 1296 synthetic runs plus 18 real ones.
+  between runs. That is 3 sites × 4-20 × 3 × 3 × 6 = a few thousand synthetic runs plus 18 real ones.
 - **The exclusion-channel A/B** (`"booleans"` vs `"nan"`) runs as a side arm at `K` = 4 only, on
   campaigns given synthetic reference exclusions: each seed draws 0–2 exclusions of 3–14 days per
   turbine.
 
 ### Running on the HPC
-
+TODO note I run tasks in tmux invoking with a single script, does this plan fit that?
 - `plan` writes the cell list (one line per run, a stable cell id).
 - `run-cell <id>` runs one cell and writes `cells/<id>.json`, with the metrics' raw inputs and the
   diagnostics. It is idempotent: an existing result is skipped. Suited to a job array.
