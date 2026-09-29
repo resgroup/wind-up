@@ -18,14 +18,24 @@ import yaml
 from benchmarking.baselines.prepost_matrix.cells import REAL_SITE, Cell, campaign_seed, draw_exclusions
 from benchmarking.campaigns.composed import WIND_UP, wind_up_method
 from benchmarking.campaigns.loader import centroid, era5_window, load_declaration
-from benchmarking.campaigns.real import HOT_AEROUP_T13_END, HOT_AEROUP_T13_START, write_hot_aeroup_t13
+from benchmarking.campaigns.real import (
+    HOT_AEROUP_T13_END,
+    HOT_AEROUP_T13_START,
+    HOT_AEROUP_WORKS,
+    write_hot_aeroup_t13,
+)
 from benchmarking.campaigns.rollout import draw_rollout, hot_site, kelmarsh_site, penmanshiel_site, rollout_campaign
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.campaigns.runner import CampaignRunner, per_turbine_table
 from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.northing import NORTH_TABLE_YAML, era5_direction
-from benchmarking.synthetic.sources.greenbyte import KELMARSH, PENMANSHIEL, load_greenbyte_scada
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
+from benchmarking.synthetic.sources.greenbyte import (
+    KELMARSH,
+    PENMANSHIEL,
+    ensure_greenbyte_data,
+    load_greenbyte_scada,
+)
+from benchmarking.synthetic.sources.hill_of_towie import HOT_COORDINATES, ensure_hot_data_files, load_hot_scada
 from wind_up.analysis_period import PlanSettings
 from wind_up_v0.era5 import get_era5_hourly_df
 
@@ -43,6 +53,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SITES: dict[str, Callable[[], RolloutSite]] = {"hot": hot_site, "pen": penmanshiel_site, "kel": kelmarsh_site}
+GREENBYTE_FARMS = {"pen": PENMANSHIEL, "kel": KELMARSH}
+HOT_METADATA = "Hill_of_Towie_turbine_metadata.csv"
 SOURCES_DIRNAME = "sources"
 METHOD_DIRNAME = "method"
 NORTHING_DIRNAME = "northing"
@@ -62,35 +74,55 @@ def _real_declaration_path(study_dir: Path) -> Path:
     return sources_dir(study_dir) / REAL_SITE / "campaign.yaml"
 
 
-def prefetch(study_dir: Path, cells: Iterable[Cell]) -> None:
-    """Write the SCADA of every site ``cells`` need under ``sources/``, and cache their reanalysis.
+def download_sources(cells: Iterable[Cell]) -> None:
+    """Download from Zenodo the open data every site ``cells`` need, and cache their reanalysis.
 
-    A site already written is not reloaded. Needs network on a reanalysis or source cache miss.
+    Files already present are not fetched again, so this makes no network call once complete.
     """
-    sites = sorted({cell.site for cell in cells})
+    for site_key in sorted({cell.site for cell in cells}):
+        if site_key == REAL_SITE:
+            years = range(HOT_AEROUP_T13_START.year, HOT_AEROUP_T13_END.year)
+            ensure_hot_data_files([*(f"{y}.zip" for y in years), HOT_AEROUP_WORKS, HOT_METADATA])
+            _real_reanalysis(centroid(dict(HOT_COORDINATES)))
+            continue
+        if site_key in GREENBYTE_FARMS:
+            ensure_greenbyte_data(GREENBYTE_FARMS[site_key])
+        site = SITES[site_key]()
+        if site_key == "hot":
+            ensure_hot_data_files(
+                [*(f"{y}.zip" for y in range(site.data_start.year, site.data_end.year)), HOT_METADATA]
+            )
+        _site_reanalysis(site)
+
+
+def prefetch(study_dir: Path, cells: Iterable[Cell]) -> None:
+    """Download what ``cells`` need, then write each site's SCADA under ``sources/``.
+
+    A site already written is not reloaded. After this the cells run offline.
+    """
+    cells = list(cells)
+    download_sources(cells)
     sources_dir(study_dir).mkdir(parents=True, exist_ok=True)
-    for site_key in sites:
+    for site_key in sorted({cell.site for cell in cells}):
         if site_key == REAL_SITE:
             path = _real_declaration_path(study_dir)
             if not path.exists():
                 write_hot_aeroup_t13(path.parent)
-            _real_reanalysis(load_declaration(path).centroid)
             continue
-        site = SITES[site_key]()
         path = _site_scada_path(study_dir, site_key)
         if not path.exists():
+            site = SITES[site_key]()
             logger.info("Loading %s SCADA %s..%s", site.name, site.data_start, site.data_end)
             partial = path.with_suffix(".partial")
             _load_site_scada(site_key, site).to_parquet(partial)
             partial.replace(path)
-        _site_reanalysis(site)
 
 
 def _load_site_scada(site_key: str, site: RolloutSite) -> pd.DataFrame:
     if site_key == "hot":
         scada, _ = load_hot_scada(start_dt=site.data_start, end_dt_excl=site.data_end)
         return scada
-    farm = {"pen": PENMANSHIEL, "kel": KELMARSH}[site_key]
+    farm = GREENBYTE_FARMS[site_key]
     return load_greenbyte_scada(farm, years=farm.years)
 
 

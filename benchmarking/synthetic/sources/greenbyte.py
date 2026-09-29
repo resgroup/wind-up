@@ -30,6 +30,7 @@ from zipfile import ZipFile
 import pandas as pd
 
 from benchmarking.synthetic.schema import ColumnSchema
+from benchmarking.synthetic.sources.hill_of_towie import download_zenodo_data, zenodo_record_files
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -115,6 +116,44 @@ def _turbine_name(member: str) -> str:
         msg = f"cannot read a turbine number from {member!r}"
         raise ValueError(msg)
     return f"T{int(match.group(1)):02d}"
+
+
+def ensure_greenbyte_data(
+    farm: GreenbyteFarm, *, years: Sequence[int] | None = None, data_dir: Path | None = None
+) -> None:
+    """Download ``farm``'s turbine metadata and SCADA zips for ``years`` (default: all) from Zenodo.
+
+    A year counts as present when at least as many local zips match it as the record publishes,
+    whatever they are named. Makes no network call when everything is present.
+    """
+    directory = data_dir or get_data_dir()
+    years = list(farm.years if years is None else years)
+    have_static = (directory / farm.static_file).is_file()
+    metadata_cached = (directory / _metadata_file(farm)).is_file()
+    if not metadata_cached and have_static and all(_local_zips(farm, year, directory) for year in years):
+        return
+    remote = zenodo_record_files(farm.record, output_dir=directory, metadata_filename=_metadata_file(farm))
+    sizes = {f["key"]: int(f["size"]) for f in remote}
+    wanted = [] if have_static else [farm.static_file]
+    for year in years:
+        keys = [k for k in sizes if re.fullmatch(rf"{farm.name}_SCADA_{year}_.*\.zip", k)]
+        complete = [
+            p for p in _local_zips(farm, year, directory) if p.stat().st_size == sizes.get(p.name, p.stat().st_size)
+        ]
+        if len(complete) < len(keys):
+            wanted.extend(k for k in keys if directory / k not in complete)
+    if not wanted:
+        return
+    logger.info("Downloading %s from Zenodo record %s into %s: %s", farm.name, farm.record, directory, wanted)
+    download_zenodo_data(farm.record, output_dir=directory, filenames=wanted, metadata_filename=_metadata_file(farm))
+
+
+def _local_zips(farm: GreenbyteFarm, year: int, directory: Path) -> list[Path]:
+    return sorted(directory.glob(f"{farm.name}*SCADA*{year}*.zip"))
+
+
+def _metadata_file(farm: GreenbyteFarm) -> str:
+    return f"zenodo_{farm.record}_metadata.json"
 
 
 def load_greenbyte_metadata(farm: GreenbyteFarm, *, data_dir: Path | None = None) -> pd.DataFrame:

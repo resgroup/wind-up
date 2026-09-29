@@ -87,6 +87,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pytest-cov>=7.1.0",
     "psutil>=7.2.2",
+    "python-dotenv>=1.2.2",
 ]
 
 [tool.setuptools.packages.find]

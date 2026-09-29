@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 TIMEBASE_S = 600
 HOT_V2_RECORD_ID = "20204946"
+ZENODO_METADATA_FILENAME = "zenodo_dataset_metadata.json"
 HOT_FIRST_WTG = 1
 HOT_LAST_WTG = 21
 _HOT_SERIAL_OFFSET = 2304509
@@ -85,42 +86,61 @@ def get_data_dir() -> Path:
 # --------------------------------------------------------------------------------------
 # Zenodo fetch
 # --------------------------------------------------------------------------------------
+def zenodo_record_files(
+    record_id: str,
+    *,
+    output_dir: Path,
+    metadata_filename: str = ZENODO_METADATA_FILENAME,
+    cache_overwrite: bool = False,
+) -> list[dict]:
+    """Return the file entries (``key``, ``size``, ...) of a Zenodo record, caching its metadata in ``output_dir``."""
+    import requests  # noqa: PLC0415  (lazy: keep network deps out of the import path)
+
+    metadata_fpath = output_dir / metadata_filename
+    if not cache_overwrite and metadata_fpath.is_file():
+        logger.info("Loading metadata from %s", metadata_fpath)
+        with metadata_fpath.open() as f:
+            return json.load(f)["files"]
+    logger.info("Fetching metadata from zenodo...")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (
+        requests.Session() as session,
+        session.get(f"https://zenodo.org/api/records/{record_id}", timeout=(_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S)) as r,
+    ):
+        r.raise_for_status()
+        content = r.json()
+    with metadata_fpath.open("w") as f:
+        json.dump(content, f)
+    logger.info("Saved metadata to %s", metadata_fpath)
+    return content["files"]
+
+
 def download_zenodo_data(
     record_id: str,
     *,
     output_dir: Path | None = None,
     filenames: Collection[str] | None = None,
     cache_overwrite: bool = False,
+    metadata_filename: str = ZENODO_METADATA_FILENAME,
 ) -> None:
-    """Download and cache files from zenodo.org."""
+    """Download and cache files from zenodo.org.
+
+    :param metadata_filename: where in ``output_dir`` the record's metadata is cached; records
+        sharing a directory need one each
+    """
     import requests  # noqa: PLC0415  (lazy: keep network deps out of the import path)
 
     output_dir = output_dir if output_dir is not None else get_data_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
-    metadata_fpath = output_dir / "zenodo_dataset_metadata.json"
+    remote_files = zenodo_record_files(
+        record_id, output_dir=output_dir, metadata_filename=metadata_filename, cache_overwrite=cache_overwrite
+    )
 
     # One Session for the whole download so its connection pool (and every socket) is
     # closed deterministically on exit. A per-call ``requests.get`` closes its transient
     # pool before the streamed response's socket is released back to it, leaking the
     # socket until GC -- which trips ``filterwarnings = error`` via ResourceWarning.
     with requests.Session() as session:
-        if not cache_overwrite and metadata_fpath.is_file():
-            logger.info("Loading metadata from %s", metadata_fpath)
-            with metadata_fpath.open() as f:
-                content = json.load(f)
-        else:
-            logger.info("Fetching metadata from zenodo...")
-            with session.get(
-                f"https://zenodo.org/api/records/{record_id}",
-                timeout=(_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S),
-            ) as r:
-                r.raise_for_status()
-                content = r.json()
-            with metadata_fpath.open("w") as f:
-                json.dump(content, f)
-            logger.info("Saved metadata to %s", metadata_fpath)
-
-        remote_files: list[dict] = content["files"]
         if filenames is None:
             files_to_download: list[dict] = list(remote_files)
         else:
@@ -312,7 +332,7 @@ def _cached_file_sizes(target_dir: Path) -> dict[str, int]:
     Empty when the metadata cache is missing or unreadable; the next successful fetch
     rewrites the cache.
     """
-    metadata_fpath = target_dir / "zenodo_dataset_metadata.json"
+    metadata_fpath = target_dir / ZENODO_METADATA_FILENAME
     if not metadata_fpath.is_file():
         return {}
     try:
