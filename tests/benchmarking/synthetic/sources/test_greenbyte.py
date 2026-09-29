@@ -14,7 +14,7 @@ from zipfile import ZipFile
 import pandas as pd
 import pytest
 
-from benchmarking.synthetic.sources import greenbyte
+from benchmarking.synthetic.sources import greenbyte, hill_of_towie
 from benchmarking.synthetic.sources.greenbyte import (
     AVAILABILITY,
     GREENBYTE_COLUMNS,
@@ -221,12 +221,12 @@ class TestEnsureGreenbyteData:
     def calls(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
         calls: dict[str, list] = {"metadata": [], "download": []}
 
-        def record_files(record: str, *, output_dir: Path, metadata_filename: str) -> list[dict]:
+        def record_files(record: str, *, output_dir: Path) -> list[dict]:
             calls["metadata"].append(record)
-            (output_dir / metadata_filename).write_text("{}")
+            (output_dir / "zenodo_dataset_metadata.json").write_text("{}")
             return [{"key": key, "size": size} for key, size in self.REMOTE]
 
-        def download(record: str, *, output_dir: Path, filenames: list[str], metadata_filename: str) -> None:  # noqa: ARG001
+        def download(record: str, *, output_dir: Path, filenames: list[str]) -> None:  # noqa: ARG001
             calls["download"].append(sorted(filenames))
 
         monkeypatch.setattr(greenbyte, "zenodo_record_files", record_files)
@@ -259,8 +259,16 @@ class TestEnsureGreenbyteData:
 
     def test_nothing_is_downloaded_once_complete(self, tmp_path: Path, calls: dict[str, list]) -> None:
         (tmp_path / "Penmanshiel_WT_static.csv").write_text("x")
-        (tmp_path / "zenodo_5946808_metadata.json").write_text("{}")
+        (tmp_path / "zenodo_dataset_metadata.json").write_text("{}")
         for key, size in self.REMOTE[3:5]:
             (tmp_path / key).write_bytes(b"x" * size)
         ensure_greenbyte_data(PENMANSHIEL, years=[2017], data_dir=tmp_path)
         assert calls["download"] == []
+
+
+def test_each_zenodo_record_downloads_into_its_own_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WIND_UP_BENCHMARKING_DATA_DIR", str(tmp_path))
+    assert greenbyte.get_data_dir(KELMARSH) == tmp_path / "zenodo" / "5841834"
+    assert greenbyte.get_data_dir(PENMANSHIEL) == tmp_path / "zenodo" / "5946808"
+    assert hill_of_towie.get_data_dir() == tmp_path / "zenodo" / hill_of_towie.HOT_V2_RECORD_ID
+    assert hill_of_towie.get_data_dir().is_dir()

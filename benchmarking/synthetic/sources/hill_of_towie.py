@@ -72,15 +72,21 @@ class TruncatedDownloadError(Exception):
     """A streamed download ended before the file's full byte count arrived."""
 
 
-def get_data_dir() -> Path:
-    """Return the local Hill of Towie data/cache directory, creating it if needed.
+def zenodo_record_dir(record_id: str) -> Path:
+    """Return the directory one Zenodo record is downloaded into, creating it if needed.
 
-    Overridable via the ``WIND_UP_BENCHMARKING_DATA_DIR`` environment variable;
-    defaults to ``~/temp/wind-up-benchmarking/data``.
+    ``<data root>/zenodo/<record id>``, the data root being ``WIND_UP_BENCHMARKING_DATA_DIR`` or
+    ``~/temp/wind-up-benchmarking/data``. One directory per record, so files never collide.
     """
-    path = Path(os.getenv("WIND_UP_BENCHMARKING_DATA_DIR", Path.home() / "temp" / "wind-up-benchmarking" / "data"))
+    root = Path(os.getenv("WIND_UP_BENCHMARKING_DATA_DIR", Path.home() / "temp" / "wind-up-benchmarking" / "data"))
+    path = root / "zenodo" / record_id
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def get_data_dir() -> Path:
+    """Return the local Hill of Towie data/cache directory: its Zenodo record's directory."""
+    return zenodo_record_dir(HOT_V2_RECORD_ID)
 
 
 # --------------------------------------------------------------------------------------
@@ -90,13 +96,12 @@ def zenodo_record_files(
     record_id: str,
     *,
     output_dir: Path,
-    metadata_filename: str = ZENODO_METADATA_FILENAME,
     cache_overwrite: bool = False,
 ) -> list[dict]:
     """Return the file entries (``key``, ``size``, ...) of a Zenodo record, caching its metadata in ``output_dir``."""
     import requests  # noqa: PLC0415  (lazy: keep network deps out of the import path)
 
-    metadata_fpath = output_dir / metadata_filename
+    metadata_fpath = output_dir / ZENODO_METADATA_FILENAME
     if not cache_overwrite and metadata_fpath.is_file():
         logger.info("Loading metadata from %s", metadata_fpath)
         with metadata_fpath.open() as f:
@@ -121,20 +126,13 @@ def download_zenodo_data(
     output_dir: Path | None = None,
     filenames: Collection[str] | None = None,
     cache_overwrite: bool = False,
-    metadata_filename: str = ZENODO_METADATA_FILENAME,
 ) -> None:
-    """Download and cache files from zenodo.org.
-
-    :param metadata_filename: where in ``output_dir`` the record's metadata is cached; records
-        sharing a directory need one each
-    """
+    """Download and cache files from zenodo.org."""
     import requests  # noqa: PLC0415  (lazy: keep network deps out of the import path)
 
     output_dir = output_dir if output_dir is not None else get_data_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
-    remote_files = zenodo_record_files(
-        record_id, output_dir=output_dir, metadata_filename=metadata_filename, cache_overwrite=cache_overwrite
-    )
+    remote_files = zenodo_record_files(record_id, output_dir=output_dir, cache_overwrite=cache_overwrite)
 
     # One Session for the whole download so its connection pool (and every socket) is
     # closed deterministically on exit. A per-call ``requests.get`` closes its transient
