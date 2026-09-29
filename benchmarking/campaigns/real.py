@@ -27,6 +27,8 @@ from benchmarking.synthetic.sources.hill_of_towie import (
 logger = logging.getLogger(__name__)
 
 HOT_AEROUP_WORKS = "Hill_of_Towie_AeroUp_install_dates.csv"
+HOT_AEROUP_T13_START = pd.Timestamp("2019-01-01", tz="UTC")
+HOT_AEROUP_T13_END = pd.Timestamp("2023-01-01", tz="UTC")
 
 # T13's AeroUp retrofit, with every other turbine's AeroUp works in the works table. The one
 # exclusion is the farm-wide curtailment period of tests/test_data/hot/HoT_AeroUp_T13.yaml.
@@ -48,8 +50,8 @@ HOT_AEROUP_T13: dict[str, Any] = {
 def write_hot_aeroup_t13(
     out_dir: Path,
     *,
-    start: pd.Timestamp = pd.Timestamp("2019-01-01", tz="UTC"),
-    end: pd.Timestamp = pd.Timestamp("2023-01-01", tz="UTC"),
+    start: pd.Timestamp = HOT_AEROUP_T13_START,
+    end: pd.Timestamp = HOT_AEROUP_T13_END,
     data_dir: Path | None = None,
 ) -> Path:
     """Write the Hill of Towie AeroUp T13 campaign folder under ``out_dir`` and return its declaration.

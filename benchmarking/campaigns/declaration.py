@@ -221,6 +221,8 @@ class SyntheticCampaign:
     :param seed: recorded in the generated dataset's run metadata
     :param works: works windows per turbine (see :class:`CampaignSpec`)
     :param exclusions: excluded periods (see :class:`CampaignSpec`)
+    :param other_upgraded: turbines the upgrades are injected into but that are not analysed, each
+        changed at the end of its works window, or at the shared changeover
     """
 
     upgraded_turbines: list[str]
@@ -237,6 +239,7 @@ class SyntheticCampaign:
     seed: int = 0
     works: dict[str, list[Window]] = field(default_factory=dict)
     exclusions: list[Exclusion] = field(default_factory=list)
+    other_upgraded: list[str] = field(default_factory=list)
 
     @property
     def turbines(self) -> list[str]:
@@ -274,7 +277,7 @@ class SyntheticCampaign:
             scada_df = scada_df[(scada_df.index >= start) & (scada_df.index < end)]
         return generate_dataset(
             scada_df=scada_df,
-            test_wtgs=list(self.upgraded_turbines),
+            test_wtgs=[*self.upgraded_turbines, *self.other_upgraded],
             upgrades=list(self.upgrades),
             mode="toggle" if isinstance(self.upgrade_timing, ToggleSchedule) else "prepost",
             upgrade_timing=self._injection_timing(),
@@ -288,4 +291,4 @@ class SyntheticCampaign:
         """Return the shared timing, or each upgraded turbine's works end."""
         if self.upgrade_timing is not None:
             return self.upgrade_timing
-        return {t: self.works[t][0][1] for t in self.upgraded_turbines}
+        return {t: self.works[t][0][1] for t in [*self.upgraded_turbines, *self.other_upgraded]}
