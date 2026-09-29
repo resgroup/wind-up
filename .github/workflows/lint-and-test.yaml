@@ -15,7 +15,7 @@ permissions:
 env:
   # The Zenodo record the Hill of Towie loader downloads; keep in step with HOT_V2_RECORD_ID in
   # benchmarking/synthetic/sources/hill_of_towie.py.
-  HOT_V2_RECORD_ID: "20204946"
+  HOT_V2_RECORD_ID: "22662930"
   # Bump to rebuild the data cache from scratch -- needed when a test starts using a year the
   # cached run never downloaded, since a cache is only written on a miss of the exact key.
   ZENODO_CACHE_VERSION: v1

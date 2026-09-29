@@ -5,7 +5,7 @@ A self-contained (vendored) copy of the pieces of the
 wind-up-format SCADA end to end:
 
 - the Zenodo fetcher (``ensure_hot_data_files`` / ``download_zenodo_data``) that
-  downloads and caches the Hill of Towie v2 datapack (Zenodo record ``20204946``);
+  downloads and caches the Hill of Towie v2 datapack (Zenodo record ``22662930``);
 - the 10-minute SCADA loader (``load_hot_10min_data``) and the wide-to-long reshape
   (``scada_wide_to_long``) that keeps source-native ``wtc_*`` tag names;
 - ``load_hot_scada`` that ties them together and returns source-native long SCADA plus
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TIMEBASE_S = 600
-HOT_V2_RECORD_ID = "20204946"
+HOT_V2_RECORD_ID = "22662930"
 ZENODO_METADATA_FILENAME = "zenodo_dataset_metadata.json"
 HOT_FIRST_WTG = 1
 HOT_LAST_WTG = 21
