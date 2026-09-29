@@ -241,19 +241,89 @@ hold; the same seed gives the same campaign; the works table round-trips through
   turbine.
 
 ### Running on the HPC
-TODO note I run tasks in tmux invoking with a single script, does this plan fit that?
-- `plan` writes the cell list (one line per run, a stable cell id).
-- `run-cell <id>` runs one cell and writes `cells/<id>.json`, with the metrics' raw inputs and the
-  diagnostics. It is idempotent: an existing result is skipped. Suited to a job array.
-- `run-local --workers N` runs the same cells through a process pool.
-- `merge` builds `candidate_baseline.json` from the cell files; `compare` diffs it against the
-  committed `study_prepost_campaign_matrix_baseline.json`; `--accept-candidate` promotes it, as in
-  `study_power_model_compare`.
-- **Reanalysis** is pre-fetched once into the cache by a `prefetch` step, so cells run offline.
-- **Determinism**: each worker runs LightGBM single-threaded and deterministic; parallelism is
-  across cells. Whether that makes a baseline recorded on the HPC reproduce on the laptop is
-  verified during the build (run a few cells on both and compare), not assumed. If it does not,
-  the baseline stays machine-specific and the file says so, as the existing one does.
+
+The HPC is a shared box, not a scheduler. The study is launched in tmux as **one invocation** that
+can be resumed; there are no job arrays. The pattern is borrowed from a long-sim driver that has
+already run overnight on the same box.
+
+```bash
+uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run --workers 16
+uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run --workers 16 --limit 32  # timing trial
+uv run python -m benchmarking.baselines.study_prepost_campaign_matrix merge STUDY_DIR
+uv run python -m benchmarking.baselines.study_prepost_campaign_matrix compare STUDY_DIR [--accept-candidate]
+uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run-cell STUDY_DIR CELL_ID
+uv run python -m benchmarking.baselines.study_prepost_campaign_matrix list
+```
+
+**The cell list.** It is a pure function of the matrix settings and a master seed. Cell `i`, and
+its campaign draw, depend only on `(master_seed, i)` and not on which other cells are drawn. The
+cell id is readable and stable, for example `pen_s07_m+1_K4_L6` or `hot_t13_K4_L6`. `plan` prints
+the list read-only.
+
+**`run`** does everything, in order:
+
+1. It creates or reopens the study directory (layout below).
+2. It prefetches the reanalysis into the cache in the parent process, so cells run offline.
+3. It runs every cell that is not yet `ok` through a `ProcessPoolExecutor` with the `spawn`
+   context. Failed cells are retried and `ok` cells are skipped. Re-running the same command after
+   a crash, a reboot or Ctrl-C resumes the study.
+4. It merges the cells into `candidate_baseline.json` and compares that with the committed
+   baseline.
+
+- Workers default to 16, which is also the intended ceiling on the shared box.
+- `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` and `MKL_NUM_THREADS` are set to 1 in the environment
+  before the workers spawn, so each worker gets them before it imports numpy. LightGBM runs with
+  `num_threads=1` and `deterministic=True`. Each worker uses one core; the parallelism is across
+  cells.
+- Cells are submitted longest first (real T13, then by `L` descending), so the slow tail does not
+  land at the end.
+- The driver logs one progress line per finished cell to `run.log`, for example
+  `pen_s07_m+1_K4_L6 ok (812/2916)`, so `tail -f` in a second tmux pane shows progress.
+- `--limit N` runs only the first N cells. It is the timing trial: wall time ≈ n_cells × mean cell
+  wall time / workers. Check that estimate, and peak RSS × workers against the box's memory, before
+  launching the full matrix.
+
+**A cell never raises.** `run_cell` catches any exception and records `status="failed"` with the
+traceback, so one bad campaign cannot stop an overnight run. `cell.json` is written **last**: a cell
+interrupted mid-run has no `cell.json` and is rerun. While a cell runs, all its logging is routed to
+its own `cell.log`. It records `wall_time_s` and `peak_rss_mb`, sampled by a `psutil` thread. `run-cell
+STUDY_DIR CELL_ID` runs one cell in the foreground, to reproduce a failure on the laptop.
+
+**The study directory.** It sits under `WIND_UP_BENCHMARKING_OUTPUT_DIR` (untracked) and is named
+`prepost_matrix__<commit7>[-dirty]`:
+
+```
+run_meta.json          matrix settings, master seed, commit, dirty flag, host, start time
+git_diff.patch         only when dirty: `git diff HEAD`
+run.log                driver log
+cells/<cell_id>/
+  cell.json            cell id + draw + status + wall_time_s + peak_rss_mb (+ traceback when failed),
+                       with the metrics' raw inputs and the diagnostics (below)
+  cell.log
+cells.csv              one row per cell: id, axes, status, failure type, wall time, peak RSS
+candidate_baseline.json
+comparison/            the compare output
+```
+
+- `run` refuses to reuse a study directory whose `run_meta.json` has different matrix settings or
+  a different master seed.
+- `merge` and `compare` read only the cell files. They can be re-run at any time, including on a
+  partial study; a partial merge is marked incomplete and cannot be accepted.
+- `--accept-candidate` promotes the candidate over the committed
+  `study_prepost_campaign_matrix_baseline.json`, as in `study_power_model_compare`. It refuses when
+  the study is incomplete, when any cell failed, or when the study was dirty.
+- `list` is read-only. It prints one row per study directory: the commit, whether that commit is an
+  ancestor of HEAD, the run date, n_ok / n_failed, and disk use. Deleting a study is `rm -rf` of
+  its directory.
+
+**Private details stay out of the repo.** The host name, absolute paths and the output root live
+only in the untracked study directory. The committed baseline carries the commit, the matrix
+settings, the platform (`sys.platform`) and the cell count, but no host name or paths.
+
+**Determinism.** Whether a baseline recorded on the HPC reproduces on the laptop is checked during
+the build, not assumed: run a few cells on both machines with `run-cell` and compare the
+`cell.json` metrics. If they do not match, the baseline stays platform-specific and the file says
+so, as the toggle baselines do (`_linux` / `_win32`).
 
 ### What each cell records
 
@@ -285,7 +355,10 @@ the later F2 fix, not to recording the baseline.
 
 ### Tests
 
-Cell ids are stable and unique; `run-cell` is idempotent; merge on synthetic cell files computes
+Cell ids are stable and unique, and cell `i` is the same whether or not other cells are drawn;
+`run` skips `ok` cells and reruns failed and interrupted ones (no `cell.json`); a raising cell
+records `failed` with its traceback instead of raising; `run` refuses a study directory with other
+settings; `--accept-candidate` refuses an incomplete, failed or dirty study; merge on synthetic cell files computes
 each metric correctly, including `line_scale`/`line_bias` on a constructed exact line; compare flags
 a moved cell; a tiny end-to-end run (one small campaign, one K, one L) completes under `slow`.
 
@@ -295,6 +368,8 @@ a moved cell; a tiny end-to-end run (one small campaign, one K, one L) completes
 
 - The exact AeroUp Cp deltas: the shape above is a starting point; check its injected energy truth
   lands at a plausible AeroUp size (a few percent) before recording.
-- Wall time per run on the HPC, and whether the matrix needs splitting across job arrays.
+- Wall time and peak RSS per cell on the HPC, measured by the `--limit` trial. They decide whether
+  the full matrix fits in one night at 16 workers, or runs over several nights. A resumed `run`
+  makes the second option free.
 - Whether the pool rule's "nearest is eligible" is too strict on Kelmarsh's small layout, forcing
   the fallback everywhere there. If so, report it rather than loosen the rule.
