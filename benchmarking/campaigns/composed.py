@@ -103,10 +103,14 @@ def wind_up_method(
     )
 
 
+def output_root() -> Path:
+    """Return the directory runs write under: ``WIND_UP_BENCHMARKING_OUTPUT_DIR``, or a default."""
+    return Path(os.getenv(OUTPUT_DIR_ENV, Path.home() / "temp" / "wind-up-benchmarking"))
+
+
 def default_out_dir(name: str) -> Path:
     """Return the directory a run of ``name`` writes to when none is given."""
-    root = Path(os.getenv(OUTPUT_DIR_ENV, Path.home() / "temp" / "wind-up-benchmarking"))
-    return root / name
+    return output_root() / name
 
 
 def log_to_file(out_dir: Path) -> Path:

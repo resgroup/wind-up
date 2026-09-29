@@ -122,6 +122,7 @@ def visible_scada(
     roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
     settings: NorthingSettings = DEFAULT_NORTHING,
     out_dir: Path | None = None,
+    northing_plots: bool = True,
 ) -> pd.DataFrame:
     """Return ``frame`` cut to what a method may see, north-calibrated.
 
@@ -131,7 +132,8 @@ def visible_scada(
 
     :param era5_wd: reanalysis wind direction, the anchor the shared step discovers against.
         Required when ``spec.north_offsets`` is ``None``; a declared table needs none.
-    :param out_dir: where the shared step writes its plots when it discovers corrections
+    :param out_dir: where the shared step writes its table and plots when it discovers corrections
+    :param northing_plots: write the plots as well as the table
     """
     usable, held = _row_masks(spec, frame)
     northed = north_scada(
@@ -144,6 +146,7 @@ def visible_scada(
         roles=roles,
         settings=settings,
         out_dir=out_dir,
+        plots=northing_plots,
     )
     if not held.any():
         return northed
@@ -161,6 +164,7 @@ def estimate_campaign(
     northing_roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
     northing_settings: NorthingSettings = DEFAULT_NORTHING,
     northing_out_dir: Path | None = None,
+    northing_plots: bool = True,
     plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
 ) -> CampaignReport:
     """Estimate every applicable method on every upgraded turbine and aggregate to one headline.
@@ -176,7 +180,8 @@ def estimate_campaign(
     :param era5_wd: reanalysis wind direction for the shared northing step
     :param northing_roles: the direction roles the shared step corrects
     :param northing_settings: how the shared step's changepoint search is bounded
-    :param northing_out_dir: where the shared step writes its plots when it discovers corrections
+    :param northing_out_dir: where the shared step writes its table and plots when it discovers corrections
+    :param northing_plots: write the shared step's plots as well as its table
     :param plan_settings: how a planning campaign's spans and power references are chosen
     """
     plans = plans_for(spec, scada_df, columns=columns, settings=plan_settings) if spec.uses_plans else {}
@@ -188,6 +193,7 @@ def estimate_campaign(
         roles=northing_roles,
         settings=northing_settings,
         out_dir=northing_out_dir,
+        northing_plots=northing_plots,
     )
 
     outputs: dict[tuple[str, str], MethodOutput] = {}

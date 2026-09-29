@@ -86,6 +86,7 @@ dev = [
     'scikit-learn',
     "pytest-xdist>=3.8.0",
     "pytest-cov>=7.1.0",
+    "psutil>=7.2.2",
 ]
 
 [tool.setuptools.packages.find]
@@ -168,6 +169,7 @@ module = [
     "openmeteo_requests",
     "requests_cache",
     "retry_requests",
+    "psutil",
 ]
 disable_error_code = ["name-defined"]
 ignore_missing_imports = true

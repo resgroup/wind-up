@@ -179,7 +179,7 @@ def load_declaration(path: str | Path) -> Declaration:
         spec=spec,
         columns=columns,
         scada_path=scada_path,
-        centroid=_centroid(coords),
+        centroid=centroid(coords),
         era5_window=era5_window(*bounds) if bounds is not None else None,
     )
 
@@ -386,7 +386,7 @@ def _timestamp(value: object) -> pd.Timestamp:
     return stamp.tz_localize("UTC") if stamp.tz is None else stamp.tz_convert("UTC")
 
 
-def _centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
+def centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
     """Return the site's mean latitude and longitude, rounded.
 
     Taken over every turbine in the file, not the declared roles: reanalysis is a model input, so
