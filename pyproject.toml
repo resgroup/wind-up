@@ -99,6 +99,9 @@ where = ["src", "."]
 # DOES add `benchmarking` to any wheel/sdist built from this repo. It MUST be removed before
 # the v1.0.0 release so the harness is not shipped (tracked as a W2 cleanup item).
 include = ["wind_up*", "wind_up_v0*", "benchmarking*"]
+# Only directories with an __init__.py are packages, so a stray folder (a leftover __pycache__ after a
+# branch switch) cannot become a namespace package that breaks the build.
+namespaces = false
 
 [tool.uv]
 # Dev/CI-only constraint (not part of published metadata, so consumers are unaffected).
