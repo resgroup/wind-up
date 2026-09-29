@@ -40,6 +40,45 @@ northing:
   discover: true
 ```
 
+### Staggered changes: declare the works instead of a date
+
+When the turbines were changed on different days, give wind-up the works dates rather than a
+changeover and a period:
+
+```yaml
+data:
+  scada: data/scada.parquet
+  schema: hill_of_towie
+  turbines: data/turbines.csv
+  works: data/works.csv          # Turbine, First date of works, Last date of works
+
+timing:
+  mode: prepost                  # no changeover: each turbine's is the end of its works
+
+exclusions:                      # optional; end exclusive
+  - {turbine: ALL, start: 2022-09-03T00:00:00Z, end: 2023-02-12T00:00:00Z}
+  - {turbine: T04, start: 2021-02-01T00:00:00Z, end: 2021-02-05T00:00:00Z}
+
+# analysis_period omitted: wind-up chooses a span for each upgraded turbine
+```
+
+- **The works table** has a `Turbine` column and the first columns whose names start `First date`
+  and `Last date` (the Zenodo Hill of Towie AeroUp table works as it is). Dates are whole days: a
+  window covers the first day through the end of the last. Any turbine may appear, analysed or not,
+  and a turbine may appear more than once. Each upgraded turbine needs exactly one window, and its
+  changeover is the end of that window. Its own works rows are never used.
+- **Exclusions** are periods whose data is not used, for one turbine or `ALL`.
+- **The span.** For each upgraded turbine wind-up picks the start and end of its analysis, and its
+  **power references**: the nearest 4 turbines with data over the whole span and no works inside
+  it, within 20 rotor diameters. A turbine changed entirely before or after the span is fine. It
+  prefers spans where the nearest turbine and at least 3 of the 4 nearest qualify, then the longest
+  shorter side up to 12 months, then post up to 12 months, then pre up to 24 months. Every other
+  turbine enters only for its wake.
+- **To fix the span yourself**, declare `analysis_period`, once for the campaign or per turbine
+  (`analysis_period: {T13: {start: ..., end: ...}}`). Declared `references` are then used as power
+  references even when their works overlap that span, with a warning.
+- `timing.changeover` with no works table still works as before.
+
 ### The fields that need a decision
 
 **`turbines.upgraded` / `references` / `excluded`.** Only `upgraded` is required: leave the other
@@ -52,9 +91,12 @@ could move. Put a turbine in `excluded` when it must never be a reference — fo
 example, it was down for rebuild, or it had its own separate change. Leaving it unlisted has the
 same effect; listing it records the decision.
 
-**More references is better.** Reference count is the single biggest lever on accuracy: a handful
-of references is noticeably worse than fifteen. Offer every turbine you have no reason to distrust
-and let the automatic screen (below) rule out the ones that misbehave.
+**More references is better** for a campaign declared with one changeover and period, which
+compares against every reference offered. Reference count is the single biggest lever on its
+accuracy: a handful of references is noticeably worse than fifteen. Offer every turbine you have no
+reason to distrust and let the automatic screen (below) rule out the ones that misbehave. A campaign
+declared by its works uses the nearest 4 instead; when the screen rules one out, the next nearest
+takes its place.
 
 **`timing.mode`.**
 
@@ -115,6 +157,8 @@ northing step. It is not stuck.
 | `wind-up/` | the campaign's uplift plots, in a folder per method that ran |
 | `northing/` | the direction corrections that were discovered, with plots |
 | `campaign_resolved.yaml` | the campaign as wind-up understood it: your declaration with every default filled in and every timestamp resolved to UTC |
+| `analysis_plans.yaml` | for a campaign declared by its works: each upgraded turbine's span, pre and post lengths, power references, and whether the pool rule held (with the reason when it did not) |
+| `analysis_plans.csv` | every other turbine's role for each upgraded turbine — power reference, reserve or waking only — with its distance and the reason it is not a power reference |
 
 ### Start with `reference_stability.csv`
 
@@ -168,8 +212,8 @@ references are the same distance from zero, you are looking at the noise floor, 
 
 ## Known limits
 
-- Every turbine's change must share one date (or one toggle schedule). Staggered per-turbine dates
-  are not yet expressible.
+- A toggle campaign shares one schedule. Staggered dates are prepost only, declared through a
+  works table.
 - Every turbine's data is trusted for its wake. A turbine whose power reads high while it is in
   fact stopped would be counted as waking its neighbours.
 - The result is a P50 estimate. There is no uncertainty interval yet.
