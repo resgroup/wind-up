@@ -175,3 +175,69 @@ def test_a_toggle_campaign_runs_through_the_same_core() -> None:
     spec = campaign(upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=8), start=CHANGEOVER)).spec()
     report = estimate_campaign(spec, scada(), build_methods=lambda _wtg: [FixedMethod()], columns=HOT_COLUMNS)
     assert set(report.per_turbine["test_wtg"]) == {"T1", "T2"}
+
+
+class TestAPlannedCampaign:
+    """A campaign declared with works windows runs each upgraded turbine over its own planned span."""
+
+    @staticmethod
+    def planned(methods: list | None = None, **overrides: object) -> tuple:
+        from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
+
+        spec = staggered_spec(north_offsets=[], **overrides)
+        method = FixedMethod()
+        report = estimate_campaign(
+            spec, hourly_scada(), build_methods=lambda _wtg: list(methods or [method]), columns=HOT_COLUMNS
+        )
+        return spec, report, method
+
+    def test_a_flat_declaration_resolves_no_plans(self) -> None:
+        assert run([FixedMethod()]).plans == {}
+
+    def test_each_upgraded_turbine_gets_a_plan(self) -> None:
+        _, report, _ = self.planned()
+        assert set(report.plans) == {"T0", "T6"}
+
+    def test_each_turbine_is_estimated_over_its_own_span(self) -> None:
+        _, report, method = self.planned()
+        for wtg in ("T0", "T6"):
+            plan, seen = report.plans[wtg], method.seen[wtg]
+            assert seen.scada_df.index.min() >= plan.start
+            assert seen.scada_df.index.max() < plan.end
+            assert seen.context.candidate_references == list(plan.power_references)
+            assert seen.context.timing == plan.works[1]
+
+    def test_held_back_rows_reach_the_method_marked_invalid(self) -> None:
+        _, _, method = self.planned()
+        seen = method.seen["T0"]
+        rows = seen.scada_df[seen.scada_df[HOT_COLUMNS.turbine] == "T4"]
+        inside = (rows.index >= pd.Timestamp("2019-02-01", tz="UTC")) & (
+            rows.index < pd.Timestamp("2019-02-05", tz="UTC")
+        )
+        assert inside.sum() == 4 * 24
+        assert rows.loc[inside, HOT_COLUMNS.northed("nacelle_position")].isna().all()
+        assert not seen.context.valid_over(pd.DatetimeIndex(rows.index[inside]))["T4"].any()
+
+    def test_the_northing_step_does_not_see_held_back_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import benchmarking.campaigns.run as run_module  # noqa: PLC0415
+
+        captured: list[pd.DataFrame] = []
+        real = run_module.north_scada
+
+        def spy(frame: pd.DataFrame, **kwargs: object) -> pd.DataFrame:
+            captured.append(frame)
+            return real(frame, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(run_module, "north_scada", spy)
+        self.planned()
+        t4 = captured[0][captured[0][HOT_COLUMNS.turbine] == "T4"]
+        assert not (
+            (t4.index >= pd.Timestamp("2019-02-01", tz="UTC")) & (t4.index < pd.Timestamp("2019-02-05", tz="UTC"))
+        ).any()
+
+    def test_the_test_turbines_works_rows_are_dropped(self) -> None:
+        _, report, _ = self.planned()
+        t0 = report.scada_df[report.scada_df[HOT_COLUMNS.turbine] == "T0"]
+        assert not (
+            (t0.index >= pd.Timestamp("2019-06-01", tz="UTC")) & (t0.index < pd.Timestamp("2019-06-06", tz="UTC"))
+        ).any()

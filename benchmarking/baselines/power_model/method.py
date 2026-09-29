@@ -37,6 +37,7 @@ from benchmarking.baselines.power_model.features import (
     check_reference_only,
     era5_feature_frame,
     extract_outcome,
+    operating_state_features,
     reference_mean_wind_speed,
     test_condition_signals,
 )
@@ -341,6 +342,10 @@ def _reference_input(
         # column order. Sorted, every test turbine screens a reference identically.
         wake_contributors=sorted(w for w in kept if w != target and w not in set(references)),
         timing=context.timing if timing is None else timing,
+        # A single reference's estimate neither refills nor reads its own references.
+        reserve_references=[],
+        reading_pools=None,
+        reading_pool_size=None,
     )
     return MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
 
@@ -428,6 +433,11 @@ class PowerModelMethod:
         exists, this says whether the turbine was able to run. ``availability_feature`` still
         governs whether availability is a feature in its own right. It does not detect curtailment:
         a turbine held at zero while available reads as operating normally
+    :param exclusion_channels: what a candidate reference carries over its own exclusions (rows
+        present in the frame but not valid for uplift). ``"booleans"`` (default) keeps its waking and
+        normal-operation booleans over its whole record, read from the frame before validity is
+        applied; its power and direction are missing over the exclusions. ``"nan"`` leaves every
+        column of it missing there
     :param screen_min_campaign_days: leave a candidate reference out of the screen when it holds
         less than this much upgraded data; when no candidate holds enough, the screen does not run.
         A screening estimate over a short campaign is too noisy to separate a bad reference from a
@@ -436,7 +446,10 @@ class PowerModelMethod:
 
     The reference pool is the campaign's candidate references (the context's
     ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
-    them power-free rather than removing them from it.
+    them power-free rather than removing them from it. When the context offers reserve references,
+    a reference the screen rules out becomes a wake contributor instead and the nearest reserve
+    takes its place, and the refilled pool is screened again. When the context offers reading
+    pools, each reference's own uplift is read against its own pool.
 
     The toggle headline is always the counterfactual energy ratio ``Σactual/Σprediction - 1``.
     """
@@ -465,6 +478,7 @@ class PowerModelMethod:
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
     headline_estimator: Literal["forward", "reversal"] = "forward"
+    exclusion_channels: Literal["booleans", "nan"] = "booleans"
     write_diagnostics: bool = True
     # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
     # era5_source_label() of the point it fetched, so a reader can tell which series was used.
@@ -473,7 +487,7 @@ class PowerModelMethod:
     # the same contrast. Every test turbine would otherwise re-run the identical round-robin. A
     # campaign passes one dict to every turbine's method; None means screen per estimate. Every
     # method sharing a cache must share its configuration, since the key does not carry it.
-    screen_cache: dict[tuple[tuple[str, ...], str], ScreenResult] | None = field(
+    screen_cache: dict[tuple[tuple[str, ...], str, str, str], ScreenResult] | None = field(
         default=None, repr=False, compare=False
     )
 
@@ -523,10 +537,15 @@ class PowerModelMethod:
             self.era5_hourly_df.columns if self.era5_hourly_df is not None else ()
         )
         screen = self.screen_references(mi) if self.reference_screen else None
-        # The screen does not shrink the pool: a reference it ruled out, or could not judge for
-        # want of campaign data, stays a reference and loses its power channels. This is the pool
-        # the screening estimates themselves ran on.
-        power_free = screen.power_free if screen is not None else ()
+        if screen is not None and screen.screened and mi.context.reserve_references:
+            mi, screen = self.refill_screened(mi, screen)
+            scada = mi.context.select(mi.scada_df)
+            references = self._candidate_references(scada, mi=mi)
+            n_refs = len(references)
+        # Without reserves the screen does not shrink the pool: a reference it ruled out, or could
+        # not judge for want of campaign data, stays a reference and loses its power channels. With
+        # reserves a ruled-out reference has already left the pool for the wake contributors.
+        power_free = tuple(r for r in screen.power_free if r in references) if screen is not None else ()
         features = self._reference_features(
             scada, mi=mi, references=references, extra_cols=extra_cols, power_free=power_free
         )
@@ -1087,7 +1106,7 @@ class PowerModelMethod:
         The context's wake contributors that ``scada`` carries data for join as wake-only turbines.
         """
         present = {str(t) for t in scada[mi.turbine_col].unique()}
-        return build_reference_features(
+        features = build_reference_features(
             scada,
             test_wtg=mi.test_wtg,
             references=references,
@@ -1102,6 +1121,33 @@ class PowerModelMethod:
             waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
             normal_operation_seconds=self._normal_operation_seconds(scada),
         )
+        held = self._held_back_references(mi, references=[r for r in references if r not in set(power_free)])
+        if self.exclusion_channels != "booleans" or not held:
+            return features
+        state = operating_state_features(
+            mi.scada_df,
+            turbines=held,
+            turbine_col=mi.turbine_col,
+            active_power_col=self.columns.active_power,
+            availability_col=self.columns.availability,
+            waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+            normal_operation_seconds=self._normal_operation_seconds(scada),
+        )
+        return features.join(state.reindex(features.index), how="left")
+
+    @staticmethod
+    def _held_back_references(mi: MethodInput, *, references: Sequence[str]) -> list[str]:
+        """Return the references with rows in the frame that are not valid for uplift."""
+        frame = mi.scada_df
+        valid = mi.context.valid_over(pd.DatetimeIndex(pd.unique(frame.index)))
+        held = []
+        for ref in references:
+            if ref not in valid.columns:
+                continue
+            rows = pd.DatetimeIndex(frame.index[(frame[mi.turbine_col] == ref).to_numpy()])
+            if not valid[ref].reindex(rows).to_numpy(dtype=bool).all():
+                held.append(ref)
+        return held
 
     def _normal_operation_seconds(self, scada: pd.DataFrame) -> float | None:
         """Seconds ready-to-operate at which a turbine counts as operating normally, None to omit it."""
@@ -1132,9 +1178,19 @@ class PowerModelMethod:
         surviving = [r for r in pool if r not in demoted]
         clone = self._reference_clone()
         reusable = self._reusable_screen_estimates(mi, screen=screen, ruled_out=demoted, pool=surviving)
+        # A reference the screen moved out of a refilled pool is still read and reported.
+        targets = [*pool, *(r for r in (screen.screened if screen is not None else ()) if r not in pool)]
+        present = {str(t) for t in mi.scada_df[mi.turbine_col].unique()}
         rows: list[dict[str, object]] = []
-        for target in pool:
-            refs = [r for r in surviving if r != target]
+        for target in targets:
+            if context.reading_pools is None:
+                refs = [r for r in surviving if r != target]
+            else:
+                refs = [
+                    r
+                    for r in context.reading_pools.get(target, [])
+                    if r not in ruled_out and r not in demoted and r != mi.test_wtg and r in present
+                ][: context.reading_pool_size]
             if not refs:
                 continue
             sub_input = _reference_input(mi, target=target, references=refs)
@@ -1173,7 +1229,7 @@ class PowerModelMethod:
         reference report uses, and it ran the campaign's own contrast -- the case for a healthy
         prepost campaign. Any other combination refits, because the pools or the contrast differ.
         """
-        if screen is None or ruled_out or screen.passes.empty:
+        if screen is None or ruled_out or screen.passes.empty or mi.context.reading_pools is not None:
             return {}
         if is_toggle(mi.context.timing) or self.screening_timing(mi) != mi.context.timing:
             return {}
@@ -1325,7 +1381,7 @@ class PowerModelMethod:
         if not pool:
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
-        cache_key = (tuple(pool), str(timing))
+        cache_key = (tuple(pool), str(timing), str(mi.scada_df.index.min()), str(mi.scada_df.index.max()))
         if self.screen_cache is not None and cache_key in self.screen_cache:
             # Re-stamped: the pool decides the screening estimates, but which candidates were held
             # out of it is this test turbine's own, and two of them can share a pool.
@@ -1382,10 +1438,59 @@ class PowerModelMethod:
             self.screen_cache[cache_key] = result
         return dataclasses.replace(result, unjudged=tuple(unjudged))
 
+    def refill_screened(self, mi: MethodInput, screen: ScreenResult) -> tuple[MethodInput, ScreenResult]:
+        """Replace each reference the screen ruled out with the nearest reserve, and screen again.
+
+        A ruled-out reference becomes a wake contributor. Rounds continue until a screen rules out
+        nobody new or the reserves run out, when the pool shrinks and a warning says so.
+
+        :return: the input with the refilled context, and every round's result combined: every
+            ruled-out reference in order, every round's passes numbered on from the last
+        """
+        context = mi.context
+        ejected: list[str] = []
+        rounds = [screen.passes]
+        result = screen
+        while True:
+            new = [r for r in result.screened if r not in ejected and r in context.candidate_references]
+            if not new:
+                break
+            ejected.extend(new)
+            promoted = list(context.reserve_references[: len(new)])
+            context = dataclasses.replace(
+                context,
+                candidate_references=[*(r for r in context.candidate_references if r not in new), *promoted],
+                reserve_references=list(context.reserve_references[len(new) :]),
+                wake_contributors=sorted((set(context.wake_contributors) - set(promoted)) | set(new)),
+            )
+            mi = MethodInput(scada_df=mi.scada_df, test_wtg=mi.test_wtg, campaign_context=context)
+            if len(promoted) < len(new):
+                logger.warning(
+                    "%s %s: the screen ruled out %s and the reserves ran out; the pool is %d, so the pool rule is "
+                    "broken",
+                    self.name,
+                    mi.test_wtg,
+                    ejected,
+                    len(context.candidate_references),
+                )
+                break
+            logger.info("%s %s: %s replace %s in the reference pool", self.name, mi.test_wtg, promoted, new)
+            result = self.screen_references(mi)
+            offset = max((int(r["pass"].max()) for r in rounds if not r.empty), default=0)
+            rounds.append(result.passes.assign(**{"pass": result.passes["pass"] + offset}))
+        if not ejected:
+            return mi, screen
+        recorded = [r for r in rounds if not r.empty]
+        passes = pd.concat(recorded, ignore_index=True) if recorded else screen.passes
+        return mi, dataclasses.replace(result, screened=tuple(ejected), passes=passes, screenable=True)
+
     def _validate_model_config(self) -> None:
         """Fail loudly on config combinations that would silently misbehave."""
         if self.headline_estimator not in ("forward", "reversal"):
             msg = f"headline_estimator must be 'forward' or 'reversal', got {self.headline_estimator!r}"
+            raise ValueError(msg)
+        if self.exclusion_channels not in ("booleans", "nan"):
+            msg = f"exclusion_channels must be 'booleans' or 'nan', got {self.exclusion_channels!r}"
             raise ValueError(msg)
         if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
             msg = f"time_decay_half_life_days must be positive, got {self.time_decay_half_life_days}"
@@ -1615,4 +1720,5 @@ class PowerModelMethod:
             "normal_operation_feature": self.normal_operation_feature,
             "screen_min_campaign_days": self.screen_min_campaign_days,
             "report_reference_uplifts": self.report_reference_uplifts,
+            "exclusion_channels": self.exclusion_channels,
         }

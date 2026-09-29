@@ -174,6 +174,40 @@ def build_reference_features(
     return features
 
 
+def operating_state_features(
+    scada_df: pd.DataFrame,
+    *,
+    turbines: Sequence[str],
+    turbine_col: str,
+    active_power_col: str,
+    availability_col: str,
+    waking_threshold_kw: float,
+    normal_operation_seconds: float | None = None,
+) -> pd.DataFrame:
+    """Each turbine's ``waking`` boolean, and its ``normal_operation`` one when a threshold is given.
+
+    The columns are named as a power-free reference's are in :func:`build_reference_features`, over
+    the unique timestamps of ``scada_df``.
+    """
+    refs = tuple(sorted(dict.fromkeys(str(t) for t in turbines)))
+    pivot_cols = [active_power_col, *([availability_col] if normal_operation_seconds is not None else [])]
+    rows = scada_df[scada_df[turbine_col].isin(refs)]
+    tmp = rows[[turbine_col, *pivot_cols]].copy()
+    tmp["_ts"] = rows.index
+    wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=pivot_cols, aggfunc="first")
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    parts = [_waking_features(wide, refs=refs, active_power_col=active_power_col, threshold_kw=waking_threshold_kw)]
+    if normal_operation_seconds is not None:
+        parts.append(
+            _normal_operation_features(
+                wide, refs=refs, availability_col=availability_col, threshold_seconds=normal_operation_seconds
+            )
+        )
+    state = pd.concat(parts, axis=1).reindex(index)
+    state.index.name = scada_df.index.name
+    return state
+
+
 def _checked_wake_only(wake_only: Sequence[str], *, refs: list[str], test_wtg: str) -> tuple[str, ...]:
     """Return the wake-only turbines sorted and deduped; raises on the test turbine or a reference.
 

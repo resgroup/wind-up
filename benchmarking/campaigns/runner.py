@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from benchmarking.harness import Method, MethodOutput
     from benchmarking.synthetic import SyntheticDataset
     from wind_up import FarmUplift
+    from wind_up.analysis_period import AnalysisPlan
     from wind_up.northing import NorthingSettings
 
 
@@ -102,18 +103,20 @@ class CampaignRunner:
             northing_out_dir=self._northing_out_dir,
         )
         visible = self._visible_dataset(report)
-        window = self._window()
 
         score_rows: list[dict[str, object]] = []
         truth_masks: dict[str, np.ndarray] = {}
         for wtg in sorted(spec.upgraded_turbines):
+            window = self._window(report.plans.get(wtg), turbine=wtg)
             replicate = Replicate(
                 dataset=visible,
                 test_wtg=wtg,
-                treatment_start=spec.treatment_start,
+                treatment_start=window.treatment_start,
                 upgrade_timing=spec.timing_for(wtg),
             )
-            mask = truth_mask(replicate, window)
+            synthetic = visible.synthetic_df
+            test_index = pd.DatetimeIndex(synthetic.index[(synthetic[spec.turbine_col] == wtg).to_numpy()])
+            mask = truth_mask(replicate, window) & spec.usable_mask(wtg, test_index)
             truth_masks[wtg] = mask
             truth = replicate.true_uplift(mask=mask).overall
             for (method_name, turbine), output in report.outputs.items():
@@ -184,14 +187,23 @@ class CampaignRunner:
             original_df=self._dataset.original_df[visible_mask(self._spec, self._dataset.original_df)],
         )
 
-    def _window(self) -> CampaignWindow:
-        """Return one window spanning the whole campaign, so the harness scores it at n=1.
+    def _window(self, plan: AnalysisPlan | None, *, turbine: str) -> CampaignWindow:
+        """Return one window spanning ``turbine``'s campaign, so the harness scores it at n=1.
 
-        ``length`` is the activity span in whole months; it labels the result rows and is not
-        used to select records.
+        A planned turbine's window is its plan's span from its own changeover; a flat campaign's is
+        the declared period from the campaign's changeover. ``length`` is the activity span in whole
+        months; it labels the result rows and is not used to select records.
         """
-        start, end = self._spec.analysis_period
-        treatment_start = self._spec.treatment_start
+        bounds = self._spec.period_bounds()
+        if plan is not None:
+            start, end = plan.start, plan.end
+            treatment_start = pd.Timestamp(self._spec.timing_for(turbine))  # type: ignore[arg-type]
+        elif bounds is not None:
+            start, end = bounds
+            treatment_start = self._spec.treatment_start
+        else:
+            msg = f"{turbine} has neither an analysis plan nor a declared analysis period"
+            raise ValueError(msg)
         months = (end.year - treatment_start.year) * 12 + (end.month - treatment_start.month)
         return CampaignWindow(
             length=months,

@@ -18,6 +18,7 @@ from benchmarking.baselines.power_model.features import (
     check_reference_only,
     era5_feature_frame,
     extract_outcome,
+    operating_state_features,
 )
 
 _TURBINE = "TurbineName"
@@ -548,3 +549,33 @@ class TestPowerFreeIsWakingAlone:
     def test_availability_stays_absent_when_it_is_not_a_feature(self) -> None:
         feats = self._features(include_availability=False)
         assert not any(c.startswith(_AVAIL) for c in feats.columns)
+
+
+def test_operating_state_features_match_the_power_free_booleans() -> None:
+    idx = _index(24)
+    scada = _scada_spanning_the_waking_threshold(idx)
+    free = build_reference_features(
+        scada,
+        test_wtg="T1",
+        references=_REFS,
+        turbine_col=_TURBINE,
+        active_power_col=_POWER,
+        availability_col=_AVAIL,
+        direction_col=_NORTHED_DIR,
+        include_availability=False,
+        power_free=("R1",),
+        waking_threshold_kw=_WAKING_THRESHOLD_KW,
+        normal_operation_seconds=300.0,
+    )
+    state = operating_state_features(
+        scada,
+        turbines=("R1",),
+        turbine_col=_TURBINE,
+        active_power_col=_POWER,
+        availability_col=_AVAIL,
+        waking_threshold_kw=_WAKING_THRESHOLD_KW,
+        normal_operation_seconds=300.0,
+    )
+    expected = free[[c for c in free.columns if c.endswith(f"{QUALIFIER}R1")]]
+    pd.testing.assert_frame_equal(state[expected.columns], expected, check_names=False)
+    assert set(state.columns) == set(expected.columns)

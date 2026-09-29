@@ -8,17 +8,19 @@ layers truth, scoring and truth-vs-estimate plots on top; see
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
-from benchmarking.campaigns.context import context_for
+from benchmarking.campaigns.context import context_for, context_for_plan
+from benchmarking.campaigns.plans import plans_for
 from benchmarking.harness import MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
 from benchmarking.synthetic import treated_mask
 from wind_up import TurbineUplift, farm_uplift
+from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.northing import DEFAULT_NORTHING
 
 if TYPE_CHECKING:
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
     from benchmarking.harness import Method, MethodOutput
     from benchmarking.synthetic import ColumnSchema, ToggleSchedule
     from wind_up import FarmUplift
+    from wind_up.analysis_period import AnalysisPlan, PlanSettings
     from wind_up.northing import NorthingSettings
 
 # Each table's columns, named here so a campaign with nothing to report still returns a frame
@@ -66,6 +69,8 @@ class CampaignReport:
     :param conditional: each method's per-condition estimates, empty when none reports any
     :param outputs: each ``(method, turbine)``'s raw :class:`~benchmarking.harness.MethodOutput`
     :param wall_time_s: how long each ``(method, turbine)`` estimate took
+    :param plans: each upgraded turbine's analysis plan; empty for a flat declaration, whose
+        turbines all run over the declared period against every candidate reference
     """
 
     spec: CampaignSpec
@@ -77,18 +82,35 @@ class CampaignReport:
     conditional: pd.DataFrame
     outputs: dict[tuple[str, str], MethodOutput]
     wall_time_s: dict[tuple[str, str], float]
+    plans: dict[str, AnalysisPlan] = field(default_factory=dict)
 
 
 def visible_mask(spec: CampaignSpec, frame: pd.DataFrame) -> npt.NDArray[np.bool_]:
-    """Rows of ``frame`` inside the analysis period whose turbine may be used."""
-    start, end = spec.analysis_period
-    keep = np.asarray((frame.index >= start) & (frame.index < end))
+    """Rows of ``frame`` inside the declared period that are usable or held back.
+
+    Held-back rows are a turbine's own exclusions: kept in the frame, marked invalid for uplift.
+    """
+    usable, held = _row_masks(spec, frame)
+    return usable | held
+
+
+def _row_masks(spec: CampaignSpec, frame: pd.DataFrame) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_]]:
+    """Rows inside the declared period that are usable, and those held back."""
+    bounds = spec.period_bounds()
+    in_period = (
+        np.ones(len(frame), dtype=bool)
+        if bounds is None
+        else np.asarray((frame.index >= bounds[0]) & (frame.index < bounds[1]))
+    )
+    usable = in_period.copy()
+    held = np.zeros(len(frame), dtype=bool)
     turbines = frame[spec.turbine_col].to_numpy()
     for turbine in pd.unique(turbines):
         is_turbine = turbines == turbine
         rows = pd.DatetimeIndex(frame.index[is_turbine])
-        keep[is_turbine] &= spec.usable_mask(str(turbine), rows)
-    return keep
+        usable[is_turbine] &= spec.usable_mask(str(turbine), rows)
+        held[is_turbine] = in_period[is_turbine] & spec.held_back_mask(str(turbine), rows)
+    return usable, held
 
 
 def visible_scada(
@@ -104,14 +126,16 @@ def visible_scada(
     """Return ``frame`` cut to what a method may see, north-calibrated.
 
     The shared northing step runs here, farm-wide and once, so every method downstream inherits
-    the north-calibrated direction rather than each hand-rolling one.
+    the north-calibrated direction rather than each hand-rolling one. It runs on the usable rows
+    only; held-back rows are added back afterwards with no north-calibrated direction.
 
     :param era5_wd: reanalysis wind direction, the anchor the shared step discovers against.
         Required when ``spec.north_offsets`` is ``None``; a declared table needs none.
     :param out_dir: where the shared step writes its plots when it discovers corrections
     """
-    return north_scada(
-        frame[visible_mask(spec, frame)],
+    usable, held = _row_masks(spec, frame)
+    northed = north_scada(
+        frame[usable],
         columns=columns,
         north_offsets=spec.north_offsets,
         rated_power_kw=spec.rated_power_kw,
@@ -121,6 +145,10 @@ def visible_scada(
         settings=settings,
         out_dir=out_dir,
     )
+    if not held.any():
+        return northed
+    held_back = frame[held].reindex(columns=northed.columns)
+    return pd.concat([northed, held_back]).sort_index(kind="stable")
 
 
 def estimate_campaign(
@@ -133,8 +161,13 @@ def estimate_campaign(
     northing_roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
     northing_settings: NorthingSettings = DEFAULT_NORTHING,
     northing_out_dir: Path | None = None,
+    plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
 ) -> CampaignReport:
     """Estimate every applicable method on every upgraded turbine and aggregate to one headline.
+
+    A campaign that plans (see :attr:`CampaignSpec.uses_plans`) runs each upgraded turbine over its
+    own span against its own power references; a flat one runs every turbine over the declared
+    period against every candidate reference.
 
     :param spec: the public campaign facts; methods see nothing else
     :param scada_df: long-format source-native SCADA covering the campaign
@@ -144,7 +177,9 @@ def estimate_campaign(
     :param northing_roles: the direction roles the shared step corrects
     :param northing_settings: how the shared step's changepoint search is bounded
     :param northing_out_dir: where the shared step writes its plots when it discovers corrections
+    :param plan_settings: how a planning campaign's spans and power references are chosen
     """
+    plans = plans_for(spec, scada_df, columns=columns, settings=plan_settings) if spec.uses_plans else {}
     visible = visible_scada(
         spec,
         scada_df,
@@ -166,14 +201,24 @@ def estimate_campaign(
     # campaign a run is, whatever order the turbines were declared in.
     for wtg in sorted(spec.upgraded_turbines):
         timing = spec.timing_for(wtg)
-        rows = visible[visible[spec.turbine_col] == wtg]
-        treated = _treated_activity(pd.DatetimeIndex(rows.index), timing=timing, spec=spec)
+        plan = plans.get(wtg)
+        if plan is None:
+            frame = visible
+            start, end = spec.treatment_start, spec.analysis_period[1]  # type: ignore[index]  # flat: one span
+            context = context_for(spec, turbine=wtg, scada_df=visible)
+        else:
+            frame = visible[(visible.index >= plan.start) & (visible.index < plan.end)]
+            start, end = plan.works[1], plan.end
+            context = context_for_plan(spec, plan, scada_df=frame)
+        rows = frame[frame[spec.turbine_col] == wtg]
+        row_index = pd.DatetimeIndex(rows.index)
+        treated = _treated_activity(row_index, timing=timing, start=start, end=end)
+        treated &= spec.usable_mask(wtg, row_index)
         energy, n_records = _actual_energy(rows, columns=columns, mask=treated)
-        context = context_for(spec, turbine=wtg, scada_df=visible)
 
         for method in build_methods(wtg):
             method_input = MethodInput(
-                scada_df=visible,
+                scada_df=frame,
                 test_wtg=wtg,
                 turbine_col=spec.turbine_col,
                 campaign_context=context,
@@ -210,6 +255,7 @@ def estimate_campaign(
         conditional=_stack(conditional_frames, lead=_CONDITIONAL_COLUMNS),
         outputs=outputs,
         wall_time_s=wall_time_s,
+        plans=plans,
     )
 
 
@@ -236,11 +282,10 @@ def _stack(frames: list[pd.DataFrame], *, lead: Sequence[str]) -> pd.DataFrame:
 
 
 def _treated_activity(
-    index: pd.DatetimeIndex, *, timing: pd.Timestamp | ToggleSchedule, spec: CampaignSpec
+    index: pd.DatetimeIndex, *, timing: pd.Timestamp | ToggleSchedule, start: pd.Timestamp, end: pd.Timestamp
 ) -> npt.NDArray[np.bool_]:
-    """Return the test turbine's treated rows within the campaign's activity period."""
-    _, end = spec.analysis_period
-    in_activity = np.asarray((index >= spec.treatment_start) & (index < end))
+    """Return the test turbine's treated rows within ``[start, end)``."""
+    in_activity = np.asarray((index >= start) & (index < end))
     return treated_mask(index, timing) & in_activity
 
 

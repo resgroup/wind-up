@@ -24,11 +24,12 @@ import pandas as pd
 import yaml
 
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
-from benchmarking.campaigns.loader import load_declaration
+from benchmarking.campaigns.loader import era5_window, load_declaration
 from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label
 from benchmarking.harness.northing import era5_direction
+from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
     from benchmarking.campaigns.run import CampaignReport
     from benchmarking.harness import Method
     from benchmarking.synthetic import ColumnSchema
+    from wind_up.analysis_period import PlanSettings
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +132,11 @@ def log_to_file(out_dir: Path) -> Path:
 
 
 def run_declaration(
-    path: str | Path, *, out_dir: Path | None = None, era5_hourly_df: pd.DataFrame | None = None
+    path: str | Path,
+    *,
+    out_dir: Path | None = None,
+    era5_hourly_df: pd.DataFrame | None = None,
+    plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
 ) -> CampaignReport:
     """Run the campaign declared at ``path`` and write its report.
 
@@ -138,6 +144,7 @@ def run_declaration(
     :param out_dir: where to write; defaults to :func:`default_out_dir` of the campaign's name
     :param era5_hourly_df: reanalysis to use instead of self-serving it from the farm centroid,
         for a caller that already holds it
+    :param plan_settings: how a planned campaign's spans and power references are chosen
     :return: the truth-free campaign report, which is also written under ``out_dir``
     """
     declaration = load_declaration(path)
@@ -155,8 +162,8 @@ def run_declaration(
     )
 
     scada_df = pd.read_parquet(declaration.scada_path)
-    reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration)
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+    reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration, index=index)
     # One screen verdict for the campaign: every test turbine is judged against the same references.
     screen_cache: dict = {}
 
@@ -176,18 +183,26 @@ def run_declaration(
         columns=declaration.columns,
         era5_wd=era5_direction(reanalysis, index),
         northing_out_dir=out_dir / "northing",
+        plan_settings=plan_settings,
     )
     write_report(report, out_dir=out_dir)
     logger.info("Wrote the %r report to %s", declaration.name, out_dir)
     return report
 
 
-def _fetch_era5(declaration: Declaration) -> pd.DataFrame:
-    """Fetch reanalysis for the farm centroid over the declaration's whole-year window.
+def reanalysis_window(declaration: Declaration, *, index: pd.DatetimeIndex) -> tuple[str, str]:
+    """Return the whole-year reanalysis window: the declared period's, or the data's when none is declared."""
+    if declaration.era5_window is not None:
+        return declaration.era5_window
+    return era5_window(index.min(), index.max() + pd.Timedelta(nanoseconds=1))
+
+
+def _fetch_era5(declaration: Declaration, *, index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Fetch reanalysis for the farm centroid over the campaign's whole-year window.
 
     The fetch itself needs the optional ``era5`` dependency group and network on a cache miss.
     """
     lat, lon = declaration.centroid
-    start_date, end_date = declaration.era5_window
+    start_date, end_date = reanalysis_window(declaration, index=index)
     logger.info("Fetching reanalysis for (%.4f, %.4f) over %s..%s", lat, lon, start_date, end_date)
     return get_era5_hourly_df(lat=lat, lon=lon, start_date=start_date, end_date=end_date)

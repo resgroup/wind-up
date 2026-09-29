@@ -1838,3 +1838,174 @@ def _recorded_contexts(monkeypatch: pytest.MonkeyPatch, mi: MethodInput) -> list
     monkeypatch.setattr(PowerModelMethod, "estimate", recording)
     _screen_method().estimate(mi)
     return contexts
+
+
+def _with_reference(scada: pd.DataFrame, name: str, *, seed: int) -> pd.DataFrame:
+    """Add reference ``name``: R3's rows carrying their own noise."""
+    r3 = scada[scada[_TURBINE] == "R3"]
+    power = r3[_POWER].to_numpy() + np.random.default_rng(seed).normal(0, 60, len(r3))
+    extra = r3.assign(
+        **{
+            _TURBINE: name,
+            _POWER: power,
+            _POWER_MAX: power * 1.15,
+            _POWER_MIN: power * 0.85,
+            _POWER_SD: np.abs(power) / 20.0,
+            _WS: power / 100.0,
+            _WS_SD: power / 1000.0,
+        }
+    )
+    return pd.concat([scada, extra])
+
+
+def _planned_case(
+    *, step: float, stepped: tuple[str, ...] = ("R1",), reserves: tuple[str, ...] = ("R5", "R6"), n: int = 4000
+) -> MethodInput:
+    """A pool R1..R4 with ``stepped`` references stepping at the changeover, and clean ``reserves`` waiting."""
+    idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+    changeover = pd.Timestamp(idx[n // 2])
+    scada = _toy_scada(n, uplift=0.0, treated=np.zeros(n, dtype=bool))
+    for k, name in enumerate(("R4", *reserves)):
+        scada = _with_reference(scada, name, seed=11 + k)
+    for name in stepped:
+        rows = (scada[_TURBINE] == name) & (scada.index >= changeover)
+        for col in (_POWER, _POWER_MIN, _POWER_MAX):
+            scada.loc[rows, col] = scada.loc[rows, col] * (1.0 + step)
+    base = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+    everyone = ["R1", "R2", "R3", "R4", *reserves]
+    context = dataclasses.replace(
+        base,
+        candidate_references=["R1", "R2", "R3", "R4"],
+        wake_contributors=list(reserves),
+        reserve_references=list(reserves),
+        reading_pools={r: [x for x in everyone if x != r] for r in everyone},
+        reading_pool_size=4,
+    )
+    return MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
+
+
+class TestTheScreenRefillsItsPool:
+    def test_a_ruled_out_reference_is_replaced_by_the_nearest_reserve(self) -> None:
+        mi = _planned_case(step=0.05)
+        method = _screen_method()
+        refilled, screen = method.refill_screened(mi, method.screen_references(mi))
+        assert refilled.context.candidate_references == ["R2", "R3", "R4", "R5"]
+        assert refilled.context.reserve_references == ["R6"]
+        assert "R1" in refilled.context.wake_contributors
+        assert "R5" not in refilled.context.wake_contributors
+        assert screen.screened == ("R1",)
+
+    def test_the_refilled_pool_is_screened_again_and_every_round_is_recorded(self) -> None:
+        mi = _planned_case(step=0.05)
+        method = _screen_method()
+        _, screen = method.refill_screened(mi, method.screen_references(mi))
+        assert "R5" in set(screen.passes["turbine"])
+        assert screen.passes["pass"].is_monotonic_increasing
+
+    def test_refill_runs_out_and_the_pool_shrinks(self, caplog: pytest.LogCaptureFixture) -> None:
+        mi = _planned_case(step=0.05, stepped=("R1",), reserves=())
+        method = _screen_method()
+        with caplog.at_level(logging.WARNING):
+            refilled, _ = method.refill_screened(mi, method.screen_references(mi))
+        assert refilled.context.candidate_references == ["R2", "R3", "R4"]
+        assert "reserves ran out" in caplog.text
+
+    def test_the_estimate_runs_on_the_refilled_pool(self) -> None:
+        out = _screen_method().estimate(_planned_case(step=0.05))
+        refs = out.reference_uplifts
+        assert refs is not None
+        assert set(refs["turbine"]) == {"R1", "R2", "R3", "R4", "R5"}
+        assert bool(refs.loc[refs["turbine"] == "R1", "screened"].iloc[0])
+        assert np.isfinite(out.p50_overall)
+
+    def test_without_reserves_a_clean_pool_is_untouched(self) -> None:
+        mi = _planned_case(step=0.0, reserves=())
+        method = _screen_method()
+        screen = method.screen_references(mi)
+        refilled, after = method.refill_screened(mi, screen)
+        assert refilled.context == mi.context
+        assert after == screen
+
+
+class TestTheScreenCacheKnowsTheSpan:
+    def test_two_spans_with_the_same_pool_are_screened_separately(self) -> None:
+        mi = _planned_case(step=0.0, reserves=())
+        cache: dict = {}
+        method = _screen_method(screen_cache=cache)
+        method.screen_references(mi)
+        later = mi.scada_df[mi.scada_df.index >= mi.scada_df.index.min() + pd.Timedelta(hours=6)]
+        method.screen_references(dataclasses.replace(mi, scada_df=later))
+        assert len(cache) == 2
+
+
+class TestReadingPools:
+    def test_each_reference_is_read_against_its_own_pool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mi = _planned_case(step=0.0, reserves=("R5",))
+        context = dataclasses.replace(
+            mi.context,
+            reading_pools={"R1": ["R5", "R2"], "R2": ["R1"], "R3": ["R4", "R1"], "R4": ["R3"]},
+            reading_pool_size=2,
+        )
+        mi = MethodInput(scada_df=mi.scada_df, test_wtg="T1", campaign_context=context)
+        seen: dict[str, list[str]] = {}
+
+        def record(self: PowerModelMethod, clone: PowerModelMethod, sub_input: MethodInput) -> float:  # noqa: ARG001
+            seen[sub_input.test_wtg] = list(sub_input.context.candidate_references)
+            return 0.0
+
+        monkeypatch.setattr(PowerModelMethod, "_reference_uplift", record)
+        _screen_method(reference_screen=False).reference_uplifts(mi)
+        assert seen == {"R1": ["R5", "R2"], "R2": ["R1"], "R3": ["R4", "R1"], "R4": ["R3"]}
+
+    def test_the_test_turbine_is_a_wake_contributor_of_every_reading(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mi = _planned_case(step=0.0, reserves=())
+        wakes: list[bool] = []
+
+        def record(self: PowerModelMethod, clone: PowerModelMethod, sub_input: MethodInput) -> float:  # noqa: ARG001
+            wakes.append("T1" in sub_input.context.wake_contributors)
+            return 0.0
+
+        monkeypatch.setattr(PowerModelMethod, "_reference_uplift", record)
+        _screen_method(reference_screen=False).reference_uplifts(mi)
+        assert wakes
+        assert all(wakes)
+
+
+def _held_back_case(*, days: int = 3) -> MethodInput:
+    """R1 held back (present but invalid) over its first ``days`` days."""
+    mi = _planned_case(step=0.0, reserves=())
+    valid = mi.context.valid_for_uplift.copy()
+    held = valid.index < valid.index.min() + pd.Timedelta(days=days)
+    valid.loc[held, "R1"] = False
+    context = dataclasses.replace(mi.context, valid_for_uplift=valid, reading_pools=None, reading_pool_size=None)
+    return MethodInput(scada_df=mi.scada_df, test_wtg="T1", campaign_context=context)
+
+
+class TestExclusionChannels:
+    def test_booleans_keep_the_operating_state_over_an_exclusion(self) -> None:
+        mi = _held_back_case()
+        features = _screen_method(exclusion_channels="booleans").reference_features(mi)
+        held = features.index < features.index.min() + pd.Timedelta(days=3)
+        assert features.loc[held, f"waking_{_POWER}{QUALIFIER}R1"].notna().all()
+        assert features.loc[held, f"normal_operation_{_AVAIL}{QUALIFIER}R1"].notna().all()
+        assert features.loc[held, f"{_POWER}{QUALIFIER}R1"].isna().all()
+        assert features.loc[~held, f"{_POWER}{QUALIFIER}R1"].notna().all()
+
+    def test_nan_adds_no_channels(self) -> None:
+        mi = _held_back_case()
+        features = _screen_method(exclusion_channels="nan").reference_features(mi)
+        assert f"waking_{_POWER}{QUALIFIER}R1" not in features.columns
+
+    def test_booleans_change_nothing_without_an_exclusion(self) -> None:
+        mi = _planned_case(step=0.0, reserves=())
+        booleans = _screen_method(exclusion_channels="booleans").reference_features(mi)
+        nan = _screen_method(exclusion_channels="nan").reference_features(mi)
+        pd.testing.assert_frame_equal(booleans, nan)
+
+    def test_booleans_is_the_default(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).exclusion_channels == "booleans"
+
+    def test_an_unknown_setting_is_rejected(self) -> None:
+        mi = _held_back_case()
+        with pytest.raises(ValueError, match="exclusion_channels"):
+            _screen_method(exclusion_channels="zeros").estimate(mi)
