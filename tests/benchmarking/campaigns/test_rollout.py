@@ -57,25 +57,28 @@ def small_site() -> RolloutSite:
 # --- the calendar ------------------------------------------------------------------------------
 
 
-def test_bank_holidays_follow_england_and_wales_rules() -> None:
+def test_bank_holidays_follow_scottish_rules() -> None:
     assert bank_holidays(2019) == {
         dt.date(2019, 1, 1),
+        dt.date(2019, 1, 2),
         dt.date(2019, 4, 19),  # Good Friday
-        dt.date(2019, 4, 22),  # Easter Monday
         dt.date(2019, 5, 6),  # early May: first Monday
         dt.date(2019, 5, 27),  # spring: last Monday of May
-        dt.date(2019, 8, 26),  # summer: last Monday of August
+        dt.date(2019, 8, 5),  # summer: first Monday of August
+        dt.date(2019, 12, 2),  # St Andrew's Day, 30 November, a Saturday
         dt.date(2019, 12, 25),
         dt.date(2019, 12, 26),
     }
 
 
 def test_bank_holidays_substitute_weekend_days() -> None:
-    # 2022: New Year's Day on a Saturday, Christmas Day on a Sunday
-    assert dt.date(2022, 1, 3) in bank_holidays(2022)
+    # 2022: 1 and 2 January on a weekend, Christmas Day on a Sunday
+    assert {dt.date(2022, 1, 3), dt.date(2022, 1, 4)} <= bank_holidays(2022)
     assert {dt.date(2022, 12, 26), dt.date(2022, 12, 27)} <= bank_holidays(2022)
-    # 2020: Boxing Day on a Saturday
-    assert dt.date(2020, 12, 28) in bank_holidays(2020)
+    # 2021: 2 January on a Saturday
+    assert dt.date(2021, 1, 4) in bank_holidays(2021)
+    # 2020: Boxing Day on a Saturday; St Andrew's Day on a Monday
+    assert {dt.date(2020, 12, 28), dt.date(2020, 11, 30)} <= bank_holidays(2020)
 
 
 def test_bank_holidays_carry_one_off_moves() -> None:
@@ -87,6 +90,8 @@ def test_working_days_skip_weekends_bank_holidays_and_the_christmas_shutdown() -
     assert is_working_day(dt.date(2019, 5, 7))
     assert not is_working_day(dt.date(2019, 5, 4))  # Saturday
     assert not is_working_day(dt.date(2019, 5, 6))  # early May bank holiday
+    assert is_working_day(dt.date(2019, 4, 22))  # Easter Monday is not a Scottish bank holiday
+    assert is_working_day(dt.date(2019, 8, 26))  # nor is the last Monday of August
     assert not is_working_day(dt.date(2019, 12, 24))  # shutdown starts
     assert not is_working_day(dt.date(2019, 12, 30))  # a weekday inside the shutdown
     assert not is_working_day(dt.date(2020, 1, 2))  # shutdown ends

@@ -1,7 +1,7 @@
 """Synthetic trial-then-rollout campaigns: realistic works schedules on real SCADA.
 
 A campaign draws a trial of a few turbines from :func:`~wind_up.campaign_design.design_campaign`,
-schedules their works on UK working days with one or two teams, and optionally rolls the upgrade
+schedules their works on Scottish working days with one or two teams, and optionally rolls the upgrade
 out to every other turbine some months later. The upgrade injected is the AeroUp shape, scaled by
 a multiplier. The works become a works table, so the period selector chooses each analysed
 turbine's span as it would for a real campaign.
@@ -58,7 +58,7 @@ SHUTDOWN_TO = (1, 2)
 
 WORKS_COLUMNS = ("Turbine", "First date of works", "Last date of works")
 
-# One-off changes to England and Wales bank holidays: (moved away, added).
+# One-off changes to Scottish bank holidays: (moved away, added).
 _ONE_OFF_HOLIDAYS: dict[int, tuple[tuple[dt.date, ...], tuple[dt.date, ...]]] = {
     2011: ((), (dt.date(2011, 4, 29),)),
     2012: ((dt.date(2012, 5, 28),), (dt.date(2012, 6, 4), dt.date(2012, 6, 5))),
@@ -150,15 +150,15 @@ def kelmarsh_site(*, data_dir: Path | None = None) -> RolloutSite:
 
 @cache
 def bank_holidays(year: int) -> frozenset[dt.date]:
-    """Return the England and Wales bank holidays of ``year``, weekend substitutes included."""
+    """Return the Scottish bank holidays of ``year``, weekend substitutes included."""
     easter = (pd.Timestamp(year=year, month=1, day=1) + pd.offsets.Easter()).date()
     days = {
-        _new_year(year),
+        *_new_year(year),
         easter - dt.timedelta(days=2),
-        easter + dt.timedelta(days=1),
         _first_monday(year, 5),
         _last_monday(year, 5),
-        _last_monday(year, 8),
+        _first_monday(year, 8),
+        _next_weekday(dt.date(year, 11, 30)),
         *_christmas(year),
     }
     moved, added = _ONE_OFF_HOLIDAYS.get(year, ((), ()))
@@ -183,9 +183,19 @@ def working_days_between(first: dt.date, last: dt.date) -> list[dt.date]:
     return [d.date() for d in pd.date_range(first, last, freq="D") if is_working_day(d.date())]
 
 
-def _new_year(year: int) -> dt.date:
-    day = dt.date(year, 1, 1)
+def _next_weekday(day: dt.date) -> dt.date:
     return day + dt.timedelta(days={_SATURDAY: 2, _SUNDAY: 1}.get(day.weekday(), 0))
+
+
+def _new_year(year: int) -> tuple[dt.date, dt.date]:
+    first, second = dt.date(year, 1, 1), dt.date(year, 1, 2)
+    if first.weekday() == _SATURDAY:
+        return dt.date(year, 1, 3), dt.date(year, 1, 4)
+    if first.weekday() == _SUNDAY:
+        return second, dt.date(year, 1, 3)
+    if second.weekday() == _SATURDAY:
+        return first, dt.date(year, 1, 4)
+    return first, second
 
 
 def _christmas(year: int) -> tuple[dt.date, dt.date]:
