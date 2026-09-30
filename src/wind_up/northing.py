@@ -860,9 +860,13 @@ def _changepoints_v_consensus(
 ) -> dict[str, pd.DataFrame]:
     """North each device against its consensus in ``references``, repeating until the tables converge.
 
-    Each round rebuilds the consensus with ``references_from`` from the previous round's tables and
-    re-norths only the devices whose consensus members moved. A device whose consensus never overlaps
-    its usable rows keeps its ``reanalysis_anchor`` table.
+    The first round norths every device against ``references``. Each later round re-norths, one at a
+    time in name order, the devices whose consensus members moved, rebuilding each one's consensus
+    with ``references_from`` from the latest tables -- including those re-northed earlier in the same
+    round. Updating all of them at once from the previous round's tables instead lets two neighbours
+    that share a step flip-flop: both claim it, so neither's consensus shows it and both drop it, so
+    both see it again. A device whose consensus never overlaps its usable rows keeps its
+    ``reanalysis_anchor`` table.
     """
     max_rounds = 10
     converged_deg = 0.5
@@ -890,17 +894,18 @@ def _changepoints_v_consensus(
 
     tables = {name: north_against(name, references[name]) for name in devices}
     moved = {name: _table_change(reanalysis_anchor[name], tables[name]) for name in devices}
+    northed = {name: apply_north_table(index, direction_deg[name], north_table=tables[name]) for name in devices}
     for consensus_round in range(2, max_rounds + 1):
         settling = {name for name, change in moved.items() if change > converged_deg}
         stale = [name for name in devices if settling.intersection(feeds(name))]
         if not stale:
             break
-        references = references_from(
-            {name: apply_north_table(index, direction_deg[name], north_table=tables[name]) for name in devices}
-        )
-        previous = tables
-        tables = {**tables, **{name: north_against(name, references[name]) for name in stale}}
-        moved = {name: _table_change(previous[name], tables[name]) for name in devices}
+        moved = dict.fromkeys(devices, 0.0)
+        for name in stale:
+            table = north_against(name, references_from(northed)[name])
+            moved[name] = _table_change(tables[name], table)
+            tables[name] = table
+            northed[name] = apply_north_table(index, direction_deg[name], north_table=table)
         logger.debug(
             "changepoints-v-consensus round %d: re-northed %d device(s), largest change %.2f deg",
             consensus_round,
@@ -908,12 +913,17 @@ def _changepoints_v_consensus(
             max(moved.values()),
         )
     else:
-        if max(moved.values()) > converged_deg:
+        unsettled = sorted(name for name, change in moved.items() if change > converged_deg)
+        if unsettled:
             logger.warning(
-                "changepoints-v-consensus did not converge in %d rounds (last round moved an offset by %.1f deg); "
-                "keeping the last",
+                "changepoints-v-consensus did not converge in %d rounds: the last round still %s; keeping the last",
                 max_rounds,
-                max(moved.values()),
+                "; ".join(
+                    f"changed {name}'s changepoints"
+                    if np.isinf(moved[name])
+                    else f"moved {name}'s offset by {moved[name]:.1f} deg"
+                    for name in unsettled
+                ),
             )
     return tables
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -1089,6 +1090,57 @@ def test_a_layout_norths_each_device_against_its_nearest_neighbours() -> None:
     assert abs(table["timestamp"].iloc[1] - pd.Timestamp("2017-08-01", tz="UTC")) <= pd.Timedelta(days=14)
     step = abs(circ_diff(table["north_offset"].iloc[1], table["north_offset"].iloc[0]))
     assert 10.0 < step <= 45.0, f"recovered {step:.1f} deg"
+
+
+# Six turbines where two overlapping trios share short excursions (+14 deg, then +23 deg): each
+# shared excursion shifts the four-turbine consensus of the turbines around it, so a turbine can be
+# handed a spurious step that later leaks back into its neighbours' consensus.
+_SHARED_EXCURSION_COORDS = {
+    "D0": (54.9893, 0.0238),
+    "D1": (54.9830, -0.0208),
+    "D2": (55.0024, 0.0293),
+    "D3": (55.0028, -0.0050),
+    "D4": (54.9857, -0.0038),
+    "D5": (54.9998, 0.0338),
+}
+_FIRST = [("2017-02-18", 14.1), ("2017-03-05", 0.0)]
+_SECOND = [("2017-04-24", 23.3), ("2017-05-05", 0.0)]
+_SHARED_EXCURSION_STEPS = {
+    "D0": [("2017-01-01", 0.0), *_FIRST],
+    "D1": [("2017-01-01", 0.0), *_FIRST, *_SECOND],
+    "D2": [("2017-01-01", 0.0)],
+    "D3": [("2017-01-01", 0.0)],
+    "D4": [("2017-01-01", 0.0), *_FIRST, *_SECOND],
+    "D5": [("2017-01-01", 0.0), *_SECOND],
+}
+
+
+def test_changepoints_v_consensus_converges_when_neighbours_share_excursions(caplog: pytest.LogCaptureFixture) -> None:
+    """Neighbours that share excursions must not flip-flop over who owns a step.
+
+    Re-northing every unsettled device at once, each against a consensus built from the previous
+    round's tables, lets devices that share a step claim it together, drop it together and claim it
+    again, so the tables cycle with period two and never converge; which tables are kept then depends
+    on the round cap's parity. Re-northing them one at a time, each against the latest tables, settles.
+    """
+    index = _index(200)
+    reference = _true_direction(index, seed=15)
+    reported = {
+        name: _tracking(index, reference, steps, seed=1500 + i)
+        for i, (name, steps) in enumerate(_SHARED_EXCURSION_STEPS.items())
+    }
+    usable = {name: _all_usable(index) for name in reported}
+
+    with caplog.at_level(logging.WARNING, logger="wind_up.northing"):
+        north_farm(
+            index,
+            direction_deg=reported,
+            usable=usable,
+            reanalysis_deg=reference,
+            layout=_layout(_SHARED_EXCURSION_COORDS),
+        )
+
+    assert not [r for r in caplog.records if "did not converge" in r.getMessage()]
 
 
 def test_a_farm_below_the_floor_is_anchored_not_rejected() -> None:
