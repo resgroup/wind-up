@@ -15,13 +15,25 @@ from tests.benchmarking.campaigns.timeline_fixtures import DATA_END, hourly_scad
 from wind_up.analysis_period import PlanSettings
 
 
-def plans(spec=None, scada=None, **kwargs):  # noqa: ANN001, ANN003, ANN201
+def resolve(spec=None, scada=None, **kwargs):  # noqa: ANN001, ANN003, ANN201
     return plans_for(
         staggered_spec() if spec is None else spec,
         hourly_scada() if scada is None else scada,
         columns=HOT_COLUMNS,
         **kwargs,
     )
+
+
+def plans(spec=None, scada=None, **kwargs):  # noqa: ANN001, ANN003, ANN201
+    return resolve(spec, scada, **kwargs).plans
+
+
+def without_pre(scada: pd.DataFrame, turbine: str) -> pd.DataFrame:
+    """Blank ``turbine``'s power until a week before its works, so no span gives it a pre side."""
+    works_start = staggered_spec().works[turbine][0][0]
+    blank = (scada[HOT_COLUMNS.turbine] == turbine) & (scada.index < works_start - pd.Timedelta(days=7))
+    scada.loc[blank, HOT_COLUMNS.active_power] = np.nan
+    return scada
 
 
 def test_extents_run_from_the_first_to_after_the_last_finite_power() -> None:
@@ -78,3 +90,18 @@ def test_declared_references_are_forced_in_only_under_a_declared_span(caplog: py
 
 def test_the_settings_reach_the_selector() -> None:
     assert len(plans(settings=PlanSettings(k=3))["T0"].power_references) == 3
+
+
+def test_a_turbine_the_selector_cannot_plan_is_reported_and_the_others_planned(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve(scada=without_pre(hourly_scada(), "T6"))
+    assert set(resolved.plans) == {"T0"}
+    assert set(resolved.unplanned) == {"T6"}
+    assert resolved.unplanned["T6"].startswith("T6: no span gives both sides at least 3 months")
+    assert "T6" in caplog.text
+
+
+def test_a_campaign_whose_turbines_all_plan_reports_none_unplanned() -> None:
+    assert resolve().unplanned == {}

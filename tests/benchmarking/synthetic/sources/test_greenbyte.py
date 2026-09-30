@@ -272,3 +272,20 @@ def test_each_zenodo_record_downloads_into_its_own_directory(tmp_path: Path, mon
     assert greenbyte.get_data_dir(PENMANSHIEL) == tmp_path / "5946808"
     assert hill_of_towie.get_data_dir() == tmp_path / hill_of_towie.HOT_V2_RECORD_ID
     assert hill_of_towie.get_data_dir().is_dir()
+
+
+class TestDataStart:
+    """Each farm's data starts after commercial operation, not on 1 January of its first year."""
+
+    def test_kelmarsh_starts_after_its_commercial_operations_date(self) -> None:
+        # the published static file gives 2016-04-15 for every turbine
+        assert pd.Timestamp("2016-05-01", tz="UTC") == KELMARSH.data_start
+
+    def test_penmanshiel_starts_on_its_commercial_operations_date(self) -> None:
+        # the published static file gives 2016-09-01 for every turbine
+        assert pd.Timestamp("2016-09-01", tz="UTC") == PENMANSHIEL.data_start
+
+    @pytest.mark.parametrize("farm", [KELMARSH, PENMANSHIEL])
+    def test_it_falls_in_the_first_published_year(self, farm: object) -> None:
+        assert farm.data_start.year == min(farm.years)
+        assert farm.data_start == farm.data_start.normalize()

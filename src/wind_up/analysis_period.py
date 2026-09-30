@@ -267,6 +267,12 @@ class _Timeline:
                     starts.add(w1)
                 if w0 >= self.b:
                     ends.add(w0)
+            # A reference whose data starts late or ends early is worth a shorter side when the
+            # pool rule or min_references needs it; the ranking decides whether it is.
+            extent = self.extents.get(other)
+            if extent is not None and self.within(other):
+                starts.add(extent[0])
+                ends.add(extent[1])
         return (
             sorted({max(s, first) for s in starts if s < self.a}),
             sorted({min(e, last) for e in ends if e > self.b}),
@@ -307,20 +313,16 @@ class _Timeline:
         needed = max(self.settings.min_references, 1)
         viable = [o for o in long_enough if len(o.references) >= needed]
         if not viable:
-            months = self.settings.min_side / MONTH
+            floor = _length(self.settings.min_side)
             if long_enough:
                 most = max(len(o.references) for o in long_enough)
                 wanted = "a power reference" if needed == 1 else f"{needed} power references"
                 msg = (
-                    f"{self.turbine}: no span with both sides at least {months:g} months has {wanted}; "
-                    f"the most any has is {most}"
+                    f"{self.turbine}: no span with both sides at least {floor} has {wanted}; the most any has is {most}"
                 )
                 raise ValueError(msg)
             best = max((min(o.pre, o.post) for o in options), default=pd.Timedelta(0))
-            msg = (
-                f"{self.turbine}: no span gives both sides at least {months:g} months; the best is "
-                f"{best / MONTH:.1f} months"
-            )
+            msg = f"{self.turbine}: no span gives both sides at least {floor}; the best is {_length(best, digits=1)}"
             raise ValueError(msg)
         return min(viable, key=self.key)
 
@@ -414,6 +416,15 @@ def _reading_pool(timeline: _Timeline, reference: str, *, start: pd.Timestamp, e
     limit = timeline.settings.max_reference_distance_d
     pool = [r for r in timeline.ranked if r != reference and distances[r] <= limit and timeline.eligible(r, start, end)]
     return tuple(sorted(pool, key=lambda r: (distances[r], r)))
+
+
+def _length(length: pd.Timedelta, *, digits: int | None = None) -> str:
+    """Return ``length`` in months, or in days when it is under a month."""
+    if length < MONTH:
+        days = length / pd.Timedelta(days=1)
+        return f"{days:g} days" if digits is None else f"{days:.{digits}f} days"
+    months = length / MONTH
+    return f"{months:g} months" if digits is None else f"{months:.{digits}f} months"
 
 
 def _day(stamp: pd.Timestamp) -> str:

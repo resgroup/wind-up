@@ -119,7 +119,10 @@ def hot_site() -> RolloutSite:
 
 
 def greenbyte_site(farm: GreenbyteFarm, *, data_dir: Path | None = None) -> RolloutSite:
-    """Return a Greenbyte farm over every year it publishes; read its turbine metadata from ``data_dir``."""
+    """Return a Greenbyte farm from its data start to the end of its last published year.
+
+    The turbine metadata is read from ``data_dir``.
+    """
     metadata = load_greenbyte_metadata(farm, data_dir=data_dir)
     return RolloutSite(
         name=farm.name,
@@ -130,18 +133,18 @@ def greenbyte_site(farm: GreenbyteFarm, *, data_dir: Path | None = None) -> Roll
         rotor_diameter_m=farm.rotor_diameter_m,
         rated_power_kw=farm.rated_power_kw,
         columns=GREENBYTE_COLUMNS,
-        data_start=pd.Timestamp(year=min(farm.years), month=1, day=1, tz="UTC"),
+        data_start=farm.data_start,
         data_end=pd.Timestamp(year=max(farm.years) + 1, month=1, day=1, tz="UTC"),
     )
 
 
 def penmanshiel_site(*, data_dir: Path | None = None) -> RolloutSite:
-    """Return Penmanshiel over every year it publishes."""
+    """Return Penmanshiel from its commercial operation to the end of its last published year."""
     return greenbyte_site(PENMANSHIEL, data_dir=data_dir)
 
 
 def kelmarsh_site(*, data_dir: Path | None = None) -> RolloutSite:
-    """Return Kelmarsh over every year it publishes."""
+    """Return Kelmarsh from its commercial operation to the end of its last published year."""
     return greenbyte_site(KELMARSH, data_dir=data_dir)
 
 

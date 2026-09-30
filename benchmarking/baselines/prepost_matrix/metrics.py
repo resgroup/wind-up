@@ -183,7 +183,7 @@ def leak_check(records: Iterable[dict[str, Any]]) -> pd.DataFrame:
     keys = ["arm", "site", "seed_index", "k", "post_months", "test_wtg", "turbine"]
     grouped = references.groupby(keys)["uplift"]
     table = pd.DataFrame({"leak": grouped.max() - grouped.min(), "n_multipliers": grouped.count()}).reset_index()
-    table = table[table["n_multipliers"] > 1]
+    table = table[table["n_multipliers"] > 1].astype({"seed_index": "Int64"})
     return table.sort_values("leak", ascending=False, kind="stable").reset_index(drop=True)
 
 

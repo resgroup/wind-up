@@ -41,7 +41,7 @@ def test_the_t13_declaration_loads(tmp_path: Path) -> None:
 def test_the_t13_folder_plans_sensibly(tmp_path: Path) -> None:
     declaration = load_declaration(write_hot_aeroup_t13(tmp_path))
     scada = pd.read_parquet(declaration.scada_path)
-    plan = plans_for(declaration.spec, scada, columns=declaration.columns)["T13"]
+    plan = plans_for(declaration.spec, scada, columns=declaration.columns).plans["T13"]
     assert plan.pool_rule_met
     assert plan.pre >= 3 * MONTH
     assert plan.post >= 3 * MONTH

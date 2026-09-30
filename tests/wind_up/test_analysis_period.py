@@ -181,6 +181,33 @@ class TestFallback:
         with pytest.raises(ValueError, match="no span with both sides at least 3 months has 3 power references"):
             plan(line(4), extents=extents)
 
+    def test_references_that_start_later_move_the_span_start(self) -> None:
+        # only T1 and T2 have data from T0's first record; waiting for T3..T5 buys the references
+        late = (utc("2019-06-01"), EXTENT[1])
+        extents = {f"T{i}": EXTENT for i in range(3)} | {f"T{i}": late for i in range(3, 6)}
+        p = plan(line(6), extents=extents)
+        assert p.start == late[0]
+        assert p.power_references == ("T1", "T2", "T3", "T4")
+        assert p.pool_rule_met
+
+    def test_a_reference_ending_inside_the_post_ends_the_span_when_it_is_needed(self) -> None:
+        extents = {f"T{i}": EXTENT for i in range(4)} | {"T3": (EXTENT[0], utc("2020-06-01"))}
+        p = plan(line(4), extents=extents)
+        assert p.end == utc("2020-06-01")
+        assert p.power_references == ("T1", "T2", "T3")
+
+    def test_a_reference_ending_inside_the_post_does_not_shorten_it_when_others_suffice(self) -> None:
+        extents = {f"T{i}": EXTENT for i in range(6)} | {"T3": (EXTENT[0], utc("2020-06-01"))}
+        p = plan(line(6), extents=extents)
+        assert p.end == TEST_WORKS[1] + 12 * MONTH
+        assert p.power_references == ("T1", "T2", "T4", "T5")
+        assert p.waking_only["T3"] == "no data over the whole span"
+
+    def test_a_short_minimum_side_is_reported_in_days(self) -> None:
+        extents = {f"T{i}": EXTENT for i in range(4)} | {"T3": (utc("2021-06-01"), EXTENT[1])}
+        with pytest.raises(ValueError, match="no span with both sides at least 14 days has 3 power references"):
+            plan(line(4), extents=extents, settings=PlanSettings(min_side=pd.Timedelta(days=14)))
+
     def test_the_minimum_number_of_references_is_a_setting(self) -> None:
         extents = {f"T{i}": EXTENT for i in range(4)} | {"T3": (utc("2021-06-01"), EXTENT[1])}
         p = plan(line(4), extents=extents, settings=PlanSettings(min_references=2))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -29,14 +30,29 @@ def data_extents(scada_df: pd.DataFrame, *, turbine_col: str, power_col: str) ->
     }
 
 
+@dataclass(frozen=True)
+class CampaignPlans:
+    """Each upgraded turbine's plan, and every turbine the selector could not plan with its reason.
+
+    :param plans: upgraded turbine to its analysis plan
+    :param unplanned: upgraded turbine to the selector's reason for giving up on it
+    """
+
+    plans: dict[str, AnalysisPlan] = field(default_factory=dict)
+    unplanned: dict[str, str] = field(default_factory=dict)
+
+
 def plans_for(
     spec: CampaignSpec,
     scada_df: pd.DataFrame,
     *,
     columns: ColumnSchema,
     settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
-) -> dict[str, AnalysisPlan]:
-    """Return each upgraded turbine's plan.
+) -> CampaignPlans:
+    """Return each upgraded turbine's plan, and the turbines no span could be found for.
+
+    A turbine the selector cannot plan is reported with its reason rather than stopping the
+    campaign, so the others are still analysed.
 
     Declared references are the candidates; otherwise every turbine not excluded is, the other
     upgraded turbines included. Under a declared span, declared references are forced in even when
@@ -59,19 +75,25 @@ def plans_for(
         ]
 
     plans: dict[str, AnalysisPlan] = {}
+    unplanned: dict[str, str] = {}
     for turbine in sorted(spec.upgraded_turbines):
         span = spec.period_for(turbine)
-        plan = plan_analysis(
-            spec.layout,
-            turbine=turbine,
-            works=works,
-            exclusions=spec.exclusions,
-            extents=extents,
-            candidates=candidates,
-            span=span,
-            forced=candidates if spec.references_declared and span is not None else (),
-            settings=settings,
-        )
+        try:
+            plan = plan_analysis(
+                spec.layout,
+                turbine=turbine,
+                works=works,
+                exclusions=spec.exclusions,
+                extents=extents,
+                candidates=candidates,
+                span=span,
+                forced=candidates if spec.references_declared and span is not None else (),
+                settings=settings,
+            )
+        except ValueError as exc:
+            logger.warning("%s is not analysed: %s", turbine, exc)
+            unplanned[turbine] = str(exc)
+            continue
         for reference in plan.forced:
             logger.warning("%s: declared reference %s is used although its works overlap the span", turbine, reference)
         logger.info(
@@ -86,4 +108,4 @@ def plans_for(
             "met" if plan.pool_rule_met else f"NOT met: {plan.pool_rule_reason}",
         )
         plans[turbine] = plan
-    return plans
+    return CampaignPlans(plans=plans, unplanned=unplanned)

@@ -264,3 +264,21 @@ def test_other_upgraded_turbines_are_injected_from_their_own_works_end() -> None
     assert first_changed["T01"] == index[2]
     assert first_changed["T02"] == index[6]
     assert not changed[(data.synthetic_df[HOT_COLUMNS.turbine] == "T03").to_numpy()].any()
+
+
+def test_a_greenbyte_site_starts_at_the_farms_data_start(tmp_path: Path) -> None:
+    from benchmarking.campaigns.rollout import greenbyte_site  # noqa: PLC0415
+    from benchmarking.synthetic.sources.greenbyte import PENMANSHIEL  # noqa: PLC0415
+
+    rows = [
+        f"Penmanshiel,Penmanshiel {n:02d},T{n:02d},X,Senvion,MM82,2050,80,82,55.9{n},-2.2{n},100,UK,01/09/2016"
+        for n in range(1, 4)
+    ]
+    header = (
+        "Wind Farm,Title,Alternative Title,Identity,Manufacturer,Model,Rated power (kW),Hub Height (m),"
+        "Rotor Diameter (m),Latitude,Longitude,Elevation (m),Country,Commercial Operations Date"
+    )
+    (tmp_path / PENMANSHIEL.static_file).write_text("\n".join([header, *rows]) + "\n", encoding="utf-8-sig")
+    site = greenbyte_site(PENMANSHIEL, data_dir=tmp_path)
+    assert site.data_start == PENMANSHIEL.data_start
+    assert site.data_end == pd.Timestamp("2022-01-01", tz="UTC")

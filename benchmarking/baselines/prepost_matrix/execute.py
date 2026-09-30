@@ -44,8 +44,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from benchmarking.baselines.prepost_matrix.cells import MatrixSettings
-    from benchmarking.campaigns.declaration import CampaignSpec
-    from benchmarking.campaigns.rollout import RolloutSite
+    from benchmarking.campaigns.declaration import CampaignSpec, Exclusion
+    from benchmarking.campaigns.rollout import RolloutDraw, RolloutSite
     from benchmarking.harness import Method
     from benchmarking.synthetic import ColumnSchema
     from wind_up.analysis_period import AnalysisPlan
@@ -157,15 +157,45 @@ def execute_cell(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: Matr
     return _execute_synthetic(cell, detail_dir=detail_dir, cell_dir=cell_dir, settings=settings)
 
 
-def _execute_synthetic(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
+def describe_cell(cell: Cell, *, settings: MatrixSettings) -> dict[str, Any]:
+    """Return ``cell``'s campaign draw as the record carries it; empty for the real campaign.
+
+    Deterministic and cheap, so it is recorded before the cell runs and a failed cell keeps it.
+    """
+    if cell.arm == "real":
+        return {}
+    _, seed, draw, exclusions = _draw(cell, settings=settings)
+    start, end = draw.data_window(cell.post_months)
+    return {
+        "draw": {
+            "campaign_seed": seed,
+            "full_rollout": cell.full_rollout,
+            "trial": list(draw.trial),
+            "rollout": list(draw.rollout),
+            "works": {t: [str(s), str(e)] for t, (s, e) in draw.works.items()},
+            "exclusions": [[t, str(s), str(e)] for t, s, e in exclusions],
+            "data_window": [str(start), str(end)],
+        }
+    }
+
+
+def _draw(cell: Cell, *, settings: MatrixSettings) -> tuple[RolloutSite, int, RolloutDraw, list[Exclusion]]:
+    """Return a synthetic cell's site, campaign seed, rollout draw and reference exclusions."""
     site = SITES[cell.site]()
     seed = campaign_seed(settings.master_seed, site=cell.site, seed_index=cell.seed_index)  # type: ignore[arg-type]
     draw = draw_rollout(site, seed=seed, full_rollout=cell.full_rollout)
-    campaign = rollout_campaign(draw, multiplier=float(cell.multiplier), post_months=cell.post_months)  # type: ignore[arg-type]
+    exclusions: list[Exclusion] = []
     if cell.exclusion_channels is not None:
         exclusions = draw_exclusions(
             [t for t in site.coords if t not in draw.trial], start=site.data_start, end=site.data_end, seed=seed
         )
+    return site, seed, draw, exclusions
+
+
+def _execute_synthetic(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
+    site, _, draw, exclusions = _draw(cell, settings=settings)
+    campaign = rollout_campaign(draw, multiplier=float(cell.multiplier), post_months=cell.post_months)  # type: ignore[arg-type]
+    if cell.exclusion_channels is not None:
         campaign = replace(campaign, exclusions=exclusions)
     start, end = draw.data_window(cell.post_months)
     scada = _read_scada(_site_scada_path(detail_dir, cell.site), start=start, end=end)
@@ -199,21 +229,18 @@ def _execute_synthetic(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings
     per_turbine = per_turbine[per_turbine["method"] == WIND_UP]
     farm = result.farm.set_index("method").loc[WIND_UP]
     return {
-        "draw": {
-            "campaign_seed": seed,
-            "full_rollout": cell.full_rollout,
-            "trial": list(draw.trial),
-            "rollout": list(draw.rollout),
-            "works": {t: [str(s), str(e)] for t, (s, e) in draw.works.items()},
-            "exclusions": [[t, str(s), str(e)] for t, s, e in spec.exclusions],
-            "data_window": [str(start), str(end)],
-        },
+        **describe_cell(cell, settings=settings),
         "turbines": [
             {"turbine": str(r.test_wtg), "estimate": float(r.estimate), "truth": float(r.truth)}
             for r in per_turbine.itertuples()
         ],
         "farm": {"estimate": float(farm["estimate"]), "truth": float(farm["truth"])},
-        **_diagnostics(result.report.reference_stability, plans=result.report.plans, cell_dir=cell_dir),
+        **diagnostics(
+            result.report.reference_stability,
+            plans=result.report.plans,
+            unplanned=result.report.unplanned,
+            cell_dir=cell_dir,
+        ),
     }
 
 
@@ -253,7 +280,7 @@ def _execute_real(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: Mat
             {"turbine": str(r.test_wtg), "estimate": float(r.estimate), "truth": None} for r in per_turbine.itertuples()
         ],
         "farm": {"estimate": float(report.farm.set_index("method").loc[WIND_UP, "estimate"]), "truth": None},
-        **_diagnostics(report.reference_stability, plans=report.plans, cell_dir=cell_dir),
+        **diagnostics(report.reference_stability, plans=report.plans, unplanned=report.unplanned, cell_dir=cell_dir),
     }
 
 
@@ -282,8 +309,14 @@ def _matrix_method(
     return replace(method, **overrides)  # type: ignore[type-var]
 
 
-def _diagnostics(references: pd.DataFrame, *, plans: Mapping[str, AnalysisPlan], cell_dir: Path) -> dict[str, Any]:
-    """Return the reference readings, the plans, the screen's ejections and the northing found."""
+def diagnostics(
+    references: pd.DataFrame,
+    *,
+    plans: Mapping[str, AnalysisPlan],
+    unplanned: Mapping[str, str],
+    cell_dir: Path,
+) -> dict[str, Any]:
+    """Return the reference readings, the plans and unplanned turbines, the screen's ejections and the northing."""
     references = references[references["method"] == WIND_UP]
     readings = [
         {
@@ -306,6 +339,7 @@ def _diagnostics(references: pd.DataFrame, *, plans: Mapping[str, AnalysisPlan],
             for wtg in sorted(plans)
         },
         "plans": {turbine: _plan_record(plan) for turbine, plan in sorted(plans.items())},
+        "unplanned": dict(sorted(unplanned.items())),
         "northing": northing,
         "n_northing_changepoints": len(northing) - len({device for device, _, _ in northing}),
     }

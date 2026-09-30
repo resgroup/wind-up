@@ -41,7 +41,7 @@ def write_report(report: CampaignReport, *, out_dir: Path) -> Path:
     plot per condition under ``conditional/``. A planned campaign also gets ``analysis_plans.csv``
     (every other turbine's role for each upgraded turbine, with the reason it is not a power
     reference) and ``analysis_plans.yaml`` (each plan's span, lengths, power references and pool
-    rule).
+    rule, and under ``unplanned`` each upgraded turbine no span could be found for, with the reason).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     if report.plans:
@@ -103,7 +103,10 @@ def _write_plans(report: CampaignReport, *, out_dir: Path) -> None:
     table[["test_wtg", *(c for c in table.columns if c != "test_wtg")]].to_csv(
         out_dir / "analysis_plans.csv", index=False
     )
-    summaries = {turbine: plan.summary() for turbine, plan in sorted(report.plans.items())}
+    summaries: dict[str, object] = {turbine: plan.summary() for turbine, plan in sorted(report.plans.items())}
+    if report.unplanned:
+        summaries["unplanned"] = dict(sorted(report.unplanned.items()))
+        logger.warning("Not analysed, as no span could be planned for them: %s", ", ".join(sorted(report.unplanned)))
     (out_dir / "analysis_plans.yaml").write_text(yaml.safe_dump(summaries, sort_keys=False))
     for turbine, plan in sorted(report.plans.items()):
         logger.info(

@@ -55,6 +55,11 @@ class CampaignResult:
     outputs: dict[tuple[str, str], MethodOutput]
     report: CampaignReport
 
+    @property
+    def unplanned(self) -> dict[str, str]:
+        """Each upgraded turbine the period selector could not plan, with its reason; truth leaves them out too."""
+        return self.report.unplanned
+
 
 class CampaignRunner:
     """Turn a campaign spec plus its generated dataset into per-turbine and farm results.
@@ -115,7 +120,8 @@ class CampaignRunner:
 
         score_rows: list[dict[str, object]] = []
         truth_masks: dict[str, np.ndarray] = {}
-        for wtg in sorted(spec.upgraded_turbines):
+        analysed = sorted(t for t in spec.upgraded_turbines if t not in report.unplanned)
+        for wtg in analysed:
             window = self._window(report.plans.get(wtg), turbine=wtg)
             replicate = Replicate(
                 dataset=visible,
@@ -144,7 +150,7 @@ class CampaignRunner:
                     )
                 )
 
-        truth_farm = visible.true_farm_uplift(test_wtgs=list(spec.upgraded_turbines), masks=truth_masks)
+        truth_farm = visible.true_farm_uplift(test_wtgs=analysed, masks=truth_masks)
         farm = pd.DataFrame(
             [
                 self._farm_row(name, result, visible=visible, masks=truth_masks)

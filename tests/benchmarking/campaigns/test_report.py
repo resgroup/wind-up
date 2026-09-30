@@ -210,6 +210,29 @@ class TestAnalysisPlans:
         assert summary["T0"]["power_references"] == list(report.plans["T0"].power_references)
         assert summary["T0"]["pool_rule_met"] is True
 
+    def test_an_unplanned_turbine_is_written_with_its_reason(self, tmp_path: Path) -> None:
+        import yaml  # noqa: PLC0415
+
+        from tests.benchmarking.campaigns.test_plans import without_pre  # noqa: PLC0415
+        from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
+
+        report = estimate_campaign(
+            staggered_spec(north_offsets=[]),
+            without_pre(hourly_scada(), "T6"),
+            build_methods=lambda _wtg: [ZeroMethod()],
+            columns=HOT_COLUMNS,
+        )
+        write_report(report, out_dir=tmp_path)
+        summary = yaml.safe_load((tmp_path / "analysis_plans.yaml").read_text())
+        assert set(summary) == {"T0", "unplanned"}
+        assert summary["unplanned"] == report.unplanned
+
+    def test_no_unplanned_entry_when_every_turbine_plans(self, tmp_path: Path) -> None:
+        import yaml  # noqa: PLC0415
+
+        write_report(self.planned_report(), out_dir=tmp_path)
+        assert "unplanned" not in yaml.safe_load((tmp_path / "analysis_plans.yaml").read_text())
+
     def test_no_plan_files_for_a_flat_campaign(self, tmp_path: Path) -> None:
         write_report(_report([ZeroMethod()]), out_dir=tmp_path)
         assert not (tmp_path / "analysis_plans.csv").exists()

@@ -77,6 +77,8 @@ class GreenbyteFarm:
     :param years: the calendar years published for this farm
     :param rated_power_kw: the turbines' rated power
     :param rotor_diameter_m: the turbines' rotor diameter
+    :param data_start: the first timestamp a campaign on this farm may use, after its commercial
+        operations date, so no commissioning data is analysed
     """
 
     name: str
@@ -84,6 +86,7 @@ class GreenbyteFarm:
     years: tuple[int, ...]
     rated_power_kw: float
     rotor_diameter_m: float
+    data_start: pd.Timestamp
 
     @property
     def static_file(self) -> str:
@@ -95,11 +98,29 @@ class GreenbyteFarm:
 # the loader globs rather than naming files, so either layout works and so do the shorter names a
 # manual download tends to leave behind.
 # Kelmarsh is six Senvion MM92 turbines; Penmanshiel is Senvion MM82s.
+#
+# Neither farm's record starts at commercial operation. The published static files give every
+# turbine a commercial operations date of 2016-04-15 at Kelmarsh and 2016-09-01 at Penmanshiel.
+# Kelmarsh's record begins 2016-01-03, its turbines first produce between 2016-01-21 and 2016-02-05,
+# and coverage is ~97% or better from March. Penmanshiel's record begins 2016-06-02, its turbines
+# first produce between 2016-06-02 and 2016-07-27, T08-T15 record 0-43% of June-August, and
+# coverage is ~100% from September. So a campaign starts on the first of the month after
+# commercial operation began: Kelmarsh 2016-05-01, Penmanshiel 2016-09-01.
 KELMARSH = GreenbyteFarm(
-    name="Kelmarsh", record="5841834", years=tuple(range(2016, 2022)), rated_power_kw=2050.0, rotor_diameter_m=92.0
+    name="Kelmarsh",
+    record="5841834",
+    years=tuple(range(2016, 2022)),
+    rated_power_kw=2050.0,
+    rotor_diameter_m=92.0,
+    data_start=pd.Timestamp("2016-05-01", tz="UTC"),
 )
 PENMANSHIEL = GreenbyteFarm(
-    name="Penmanshiel", record="5946808", years=tuple(range(2016, 2022)), rated_power_kw=2050.0, rotor_diameter_m=82.0
+    name="Penmanshiel",
+    record="5946808",
+    years=tuple(range(2016, 2022)),
+    rated_power_kw=2050.0,
+    rotor_diameter_m=82.0,
+    data_start=pd.Timestamp("2016-09-01", tz="UTC"),
 )
 
 FARMS = {farm.name.lower(): farm for farm in (KELMARSH, PENMANSHIEL)}

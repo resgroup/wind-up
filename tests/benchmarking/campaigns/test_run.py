@@ -241,3 +241,40 @@ class TestAPlannedCampaign:
         assert not (
             (t0.index >= pd.Timestamp("2019-06-01", tz="UTC")) & (t0.index < pd.Timestamp("2019-06-06", tz="UTC"))
         ).any()
+
+
+class TestAnUnplannableTurbine:
+    """A turbine the selector cannot plan is reported; the rest of the campaign still runs."""
+
+    @staticmethod
+    def report(blank: tuple[str, ...]) -> object:
+        from tests.benchmarking.campaigns.test_plans import without_pre  # noqa: PLC0415
+        from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
+
+        frame = hourly_scada()
+        for turbine in blank:
+            frame = without_pre(frame, turbine)
+        return estimate_campaign(
+            staggered_spec(north_offsets=[]), frame, build_methods=lambda _wtg: [FixedMethod()], columns=HOT_COLUMNS
+        )
+
+    def test_it_has_no_estimate_and_the_farm_is_over_the_others(self) -> None:
+        report = self.report(("T6",))
+        assert list(report.per_turbine["test_wtg"]) == ["T0"]
+        assert set(report.plans) == {"T0"}
+        assert list(report.farm_uplifts["fixed"].turbines["turbine"]) == ["T0"]
+        assert report.farm.loc[0, "estimate"] == pytest.approx(0.02)
+
+    def test_it_is_named_with_the_selectors_reason(self) -> None:
+        report = self.report(("T6",))
+        assert set(report.unplanned) == {"T6"}
+        assert "no span gives both sides" in report.unplanned["T6"]
+
+    def test_a_campaign_with_no_plannable_turbine_raises_naming_each(self) -> None:
+        with pytest.raises(ValueError, match="no upgraded turbine could be planned") as raised:
+            self.report(("T0", "T6"))
+        assert "T0: no span" in str(raised.value)
+        assert "T6: no span" in str(raised.value)
+
+    def test_a_flat_campaign_reports_none_unplanned(self) -> None:
+        assert run([FixedMethod()]).unplanned == {}

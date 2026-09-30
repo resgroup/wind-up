@@ -20,7 +20,7 @@ from benchmarking.baselines.prepost_matrix.cells import (
     draw_exclusions,
     matrix_cells,
 )
-from benchmarking.baselines.prepost_matrix.execute import plan_settings
+from benchmarking.baselines.prepost_matrix.execute import describe_cell, diagnostics, plan_settings
 from benchmarking.baselines.prepost_matrix.metrics import (
     baseline_tables,
     compare_tables,
@@ -245,6 +245,27 @@ def test_a_cell_writes_its_record_to_the_study_and_its_work_to_the_detail_direct
     assert [p.name for p in (study / "cells").iterdir()] == [f"{cell.cell_id}.json"]
 
 
+def test_a_failed_cell_still_records_its_campaign_draw(tmp_path: Path) -> None:
+    study, cell = tmp_path / "study", matrix_cells(SMALL)[0]
+    detail_dir(study).mkdir()
+    (detail_dir(study) / f"fail_{cell.cell_id}").touch()
+    record = run_cell(study, cell, settings=SMALL, execute=fake_execute)
+    assert record["status"] == "failed"
+    assert record["draw"] == describe_cell(cell, settings=SMALL)["draw"]
+    assert record["draw"]["campaign_seed"] == campaign_seed(SMALL.master_seed, site="hot", seed_index=0)
+    assert record["draw"]["trial"]
+
+
+def test_the_real_campaign_describes_no_draw_before_it_runs() -> None:
+    assert describe_cell(Cell("real", "hot_t13", None, None, 4, 3), settings=SMALL) == {}
+
+
+def test_the_cell_record_names_each_unplanned_turbine(tmp_path: Path) -> None:
+    references = pd.DataFrame(columns=["method", "test_wtg", "turbine", "uplift", "n_records", "screened", "unjudged"])
+    record = diagnostics(references, plans={}, unplanned={"T02": "T02: no span"}, cell_dir=tmp_path)
+    assert record["unplanned"] == {"T02": "T02: no span"}
+
+
 def test_a_study_is_named_by_commit_and_size_beside_its_detail_directory(tmp_path: Path) -> None:
     study = study_dir_for(tmp_path, commit="abc1234", dirty=True, size="small")
     assert study.name == "prepost_matrix__abc1234-dirty__small"
@@ -281,6 +302,21 @@ def test_run_skips_ok_and_failed_cells_and_reruns_interrupted_ones(tmp_path: Pat
     _run(SMALL, tmp_path)
     assert calls(study) == [interrupted.cell_id]
     assert read_cell(study, failing)["status"] == "failed"  # type: ignore[index]
+
+
+def test_a_failed_cells_reason_reaches_the_run_log(tmp_path: Path) -> None:
+    failing = matrix_cells(SMALL)[0]
+    probe = _run(SMALL, tmp_path, limit=0)
+    (detail_dir(probe) / f"fail_{failing.cell_id}").touch()
+    study = _run(SMALL, tmp_path)
+    assert f"{failing.cell_id} failed" in (study / "run.log").read_text()
+    assert "RuntimeError: this campaign is broken" in (study / "run.log").read_text()
+
+
+def test_seed_indices_are_written_as_integers(tmp_path: Path) -> None:
+    study = _run(SMALL, tmp_path)
+    cells = pd.read_csv(study / "cells.csv", dtype=str)
+    assert set(cells["seed_index"]) == {"0", "1"}
 
 
 def test_run_retries_failed_cells_when_asked(tmp_path: Path) -> None:
@@ -472,6 +508,7 @@ def test_the_leak_check_measures_how_far_a_reference_moves_across_multipliers() 
     assert (top["site"], top["turbine"]) == ("hot", "T02")
     assert top["leak"] == pytest.approx(0.010)
     assert leaks["leak"].iloc[1:].abs().max() == pytest.approx(0.0)
+    assert str(leaks["seed_index"].dtype) == "Int64"
 
 
 def test_merge_needs_only_the_downloaded_study_directory(tmp_path: Path) -> None:

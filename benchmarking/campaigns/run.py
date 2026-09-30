@@ -71,6 +71,8 @@ class CampaignReport:
     :param wall_time_s: how long each ``(method, turbine)`` estimate took
     :param plans: each upgraded turbine's analysis plan; empty for a flat declaration, whose
         turbines all run over the declared period against every candidate reference
+    :param unplanned: each upgraded turbine the period selector could not plan, with its reason;
+        it has no estimate and is left out of the farm headline
     """
 
     spec: CampaignSpec
@@ -83,6 +85,7 @@ class CampaignReport:
     outputs: dict[tuple[str, str], MethodOutput]
     wall_time_s: dict[tuple[str, str], float]
     plans: dict[str, AnalysisPlan] = field(default_factory=dict)
+    unplanned: dict[str, str] = field(default_factory=dict)
 
 
 def visible_mask(spec: CampaignSpec, frame: pd.DataFrame) -> npt.NDArray[np.bool_]:
@@ -184,7 +187,13 @@ def estimate_campaign(
     :param northing_plots: write the shared step's plots as well as its table
     :param plan_settings: how a planning campaign's spans and power references are chosen
     """
-    plans = plans_for(spec, scada_df, columns=columns, settings=plan_settings) if spec.uses_plans else {}
+    resolved = plans_for(spec, scada_df, columns=columns, settings=plan_settings) if spec.uses_plans else None
+    plans = resolved.plans if resolved is not None else {}
+    unplanned = resolved.unplanned if resolved is not None else {}
+    if unplanned and not plans:
+        reasons = "; ".join(unplanned[t] for t in sorted(unplanned))
+        msg = f"no upgraded turbine could be planned: {reasons}"
+        raise ValueError(msg)
     visible = visible_scada(
         spec,
         scada_df,
@@ -205,7 +214,7 @@ def estimate_campaign(
 
     # Sorted rather than in declaration order, so a glance at the log says how far through the
     # campaign a run is, whatever order the turbines were declared in.
-    for wtg in sorted(spec.upgraded_turbines):
+    for wtg in sorted(t for t in spec.upgraded_turbines if t not in unplanned):
         timing = spec.timing_for(wtg)
         plan = plans.get(wtg)
         if plan is None:
@@ -262,6 +271,7 @@ def estimate_campaign(
         outputs=outputs,
         wall_time_s=wall_time_s,
         plans=plans,
+        unplanned=unplanned,
     )
 
 

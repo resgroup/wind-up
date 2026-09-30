@@ -325,9 +325,18 @@ and already show the problems.
    - Fix it in `power_model`, most likely by not giving an upgraded turbine a waking boolean
      that reads its upgraded power.
    - Re-run small. The acceptance test is `leak_check.csv` at ~0 pp.
-2. **Re-run small after `b1beb06` (three power references required).** Count the cells that now
-   fail with "no span ... has 3 power references". Real data gaps, such as Penmanshiel T08, T11
-   and T15, may make some campaigns unanalysable. That is a finding about the draw, not a bug.
+2. **Re-run small after the Penmanshiel fixes.** The `1f87f6f` small run lost all 18 Penmanshiel
+   cells to one trial turbine, T02, for which no span had 3 power references. Three fixes followed:
+   - The period selector now also tries each candidate reference's data start and end as a span
+     edge, so it can give up some pre or post to reach references whose data starts late. The
+     ranking is unchanged.
+   - A trial turbine the selector cannot plan is reported under `unplanned` with its reason, in the
+     report's `analysis_plans.yaml` and in the cell record, and left out of the estimate and the
+     farm truth alike. The campaign fails only when no turbine plans.
+   - Kelmarsh and Penmanshiel campaigns start after commercial operation (the static files'
+     dates: 2016-04-15 and 2016-09-01), at 2016-05-01 and 2016-09-01, not on 1 January 2016.
+   A failed cell now also records its draw, and `run.log` gives its reason. Acceptance: no
+   Penmanshiel cell fails on the selector, and every plan has at least 3 references.
 3. **Make the cost model reference-aware before any big run (CF25 §2).**
    - Key costs by (site, K, post length) wherever measured.
    - Add a `calibrate` size: 2 seeds per site, one multiplier, every K and post length, no

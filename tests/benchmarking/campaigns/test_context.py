@@ -139,7 +139,7 @@ class TestAContextFromAPlan:
     def build(turbine: str = "T0", scada: pd.DataFrame | None = None) -> tuple:
         spec = staggered_spec()
         frame = hourly_scada() if scada is None else scada
-        plan = plans_for(spec, frame, columns=HOT_COLUMNS)[turbine]
+        plan = plans_for(spec, frame, columns=HOT_COLUMNS).plans[turbine]
         return spec, plan, context_for_plan(spec, plan, scada_df=frame)
 
     def test_the_power_references_are_the_candidates(self) -> None:

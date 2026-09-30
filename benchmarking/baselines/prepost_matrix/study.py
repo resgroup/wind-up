@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 
 from benchmarking.baselines.prepost_matrix.cells import Cell, MatrixSettings, matrix_cells
-from benchmarking.baselines.prepost_matrix.execute import METHOD_DIRNAME, execute_cell, prefetch
+from benchmarking.baselines.prepost_matrix.execute import METHOD_DIRNAME, describe_cell, execute_cell, prefetch
 from benchmarking.baselines.prepost_matrix.metrics import TABLE_KEYS, baseline_tables, compare_tables, leak_check
 from benchmarking.campaigns.composed import output_root
 
@@ -193,6 +193,7 @@ def run_cell(
     with _cell_log(directory / CELL_LOG), _PeakRss() as rss:
         start = time.perf_counter()
         try:
+            record |= describe_cell(cell, settings=settings)
             record |= execute(cell, detail_dir=detail_dir(study_dir), cell_dir=directory, settings=settings)
             record["status"] = "ok"
         except Exception as exc:
@@ -344,7 +345,11 @@ def _run_cells(
     def finished(record: dict[str, Any]) -> None:
         nonlocal done
         done += 1
-        logger.info("%s %s (%d/%d)", record["cell_id"], record["status"], done, n_total)
+        if record["status"] == "failed":
+            reason = record["traceback"].strip().splitlines()[-1]
+            logger.info("%s failed (%d/%d): %s", record["cell_id"], done, n_total, reason)
+        else:
+            logger.info("%s %s (%d/%d)", record["cell_id"], record["status"], done, n_total)
 
     if workers <= 1:
         for cell in cells:
@@ -401,7 +406,7 @@ def merge_study(study_dir: Path) -> dict[str, Any]:
             }
             for c in cells
         ]
-    ).to_csv(study_dir / "cells.csv", index=False)
+    ).astype({"seed_index": "Int64", "multiplier": "Int64"}).to_csv(study_dir / "cells.csv", index=False)
 
     n_ok = sum(r["status"] == "ok" for r in records)
     n_failed = sum(r["status"] == "failed" for r in records)

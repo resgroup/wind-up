@@ -252,3 +252,33 @@ class TestAPlannedCampaign:
         _, plan, expected, _, whole_post = self.result_and_expected()
         assert plan.end <= pd.Timestamp("2020-07-01", tz="UTC")
         assert expected != pytest.approx(whole_post)
+
+
+def test_an_unplanned_turbine_is_left_out_of_the_farm_truth() -> None:
+    from benchmarking.campaigns import SyntheticCampaign  # noqa: PLC0415
+    from benchmarking.synthetic import ConstantCpChange  # noqa: PLC0415
+    from tests.benchmarking.campaigns.test_plans import without_pre  # noqa: PLC0415
+    from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
+
+    spec = staggered_spec(north_offsets=[])
+    declared = SyntheticCampaign(
+        upgraded_turbines=spec.upgraded_turbines,
+        upgrade_timing=None,
+        candidate_references=spec.candidate_references,
+        upgrades=[ConstantCpChange(delta=0.05)],
+        layout=spec.layout,
+        north_offsets=[],
+        rated_power_kw=spec.rated_power_kw,
+        analysis_period=None,
+        works=spec.works,
+        exclusions=spec.exclusions,
+    )
+    dataset = declared.generate(without_pre(hourly_scada(), "T6"))
+    result = CampaignRunner(declared.spec(), dataset, build_methods=lambda _wtg: [ZeroMethod()]).run()
+
+    assert set(result.unplanned) == {"T6"}
+    per_turbine = per_turbine_table(result)
+    assert list(per_turbine["test_wtg"]) == ["T0"]
+    t0_truth = per_turbine.set_index("test_wtg").loc["T0", "truth"]
+    assert result.truth_farm_uplift == pytest.approx(t0_truth)
+    assert result.farm.loc[0, "truth"] == pytest.approx(t0_truth)
