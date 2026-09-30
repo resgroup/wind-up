@@ -14,6 +14,7 @@ from zipfile import ZipFile
 import pandas as pd
 import pytest
 
+from benchmarking.synthetic.sources import greenbyte, hill_of_towie
 from benchmarking.synthetic.sources.greenbyte import (
     AVAILABILITY,
     GREENBYTE_COLUMNS,
@@ -24,6 +25,7 @@ from benchmarking.synthetic.sources.greenbyte import (
     POWER_MIN,
     TIMEBASE_S,
     TURBINE,
+    ensure_greenbyte_data,
     load_greenbyte_metadata,
     load_greenbyte_scada,
 )
@@ -201,3 +203,72 @@ class TestActivePowerMinimum:
         scada = load_greenbyte_scada(KELMARSH, years=[2017], data_dir=kelmarsh_dir)
         both = scada[[POWER, POWER_MIN]].dropna()
         assert (both[POWER_MIN] <= both[POWER] + 1e-6).all()
+
+
+class TestEnsureGreenbyteData:
+    """What ``ensure_greenbyte_data`` asks Zenodo for, with the network faked."""
+
+    REMOTE = (
+        ("Penmanshiel_WT_static.csv", 10),
+        ("Penmanshiel_SCADA_2016_WT01-10_3107.zip", 5),
+        ("Penmanshiel_SCADA_2016_WT11-15_3107.zip", 5),
+        ("Penmanshiel_SCADA_2017_WT01-10_3114.zip", 5),
+        ("Penmanshiel_SCADA_2017_WT11-15_3115.zip", 5),
+        ("Penmanshiel_PMU_3152.zip", 5),
+    )
+
+    @pytest.fixture
+    def calls(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
+        calls: dict[str, list] = {"metadata": [], "download": []}
+
+        def record_files(record: str, *, output_dir: Path) -> list[dict]:
+            calls["metadata"].append(record)
+            (output_dir / "zenodo_dataset_metadata.json").write_text("{}")
+            return [{"key": key, "size": size} for key, size in self.REMOTE]
+
+        def download(record: str, *, output_dir: Path, filenames: list[str]) -> None:  # noqa: ARG001
+            calls["download"].append(sorted(filenames))
+
+        monkeypatch.setattr(greenbyte, "zenodo_record_files", record_files)
+        monkeypatch.setattr(greenbyte, "download_zenodo_data", download)
+        return calls
+
+    def test_everything_present_makes_no_network_call(self, tmp_path: Path, calls: dict[str, list]) -> None:
+        (tmp_path / "Penmanshiel_WT_static.csv").write_text("x")
+        for name in ("Penmanshiel_SCADA_2016_a.zip", "Penmanshiel_SCADA_2017_a.zip"):
+            (tmp_path / name).write_bytes(b"12345")
+        ensure_greenbyte_data(PENMANSHIEL, years=[2016, 2017], data_dir=tmp_path)
+        assert calls == {"metadata": [], "download": []}
+
+    def test_a_missing_year_downloads_every_zip_of_that_year(self, tmp_path: Path, calls: dict[str, list]) -> None:
+        (tmp_path / "Penmanshiel_WT_static.csv").write_text("x")
+        (tmp_path / "Penmanshiel_SCADA_2017_a.zip").write_bytes(b"12345")
+        (tmp_path / "Penmanshiel_SCADA_2017_b.zip").write_bytes(b"12345")
+        ensure_greenbyte_data(PENMANSHIEL, years=[2016, 2017], data_dir=tmp_path)
+        assert calls["download"] == [
+            ["Penmanshiel_SCADA_2016_WT01-10_3107.zip", "Penmanshiel_SCADA_2016_WT11-15_3107.zip"]
+        ]
+
+    def test_a_truncated_zip_and_a_missing_static_file_are_fetched(
+        self, tmp_path: Path, calls: dict[str, list]
+    ) -> None:
+        (tmp_path / "Penmanshiel_SCADA_2017_WT01-10_3114.zip").write_bytes(b"12")  # 2 of 5 bytes
+        (tmp_path / "Penmanshiel_SCADA_2017_WT11-15_3115.zip").write_bytes(b"12345")
+        ensure_greenbyte_data(PENMANSHIEL, years=[2017], data_dir=tmp_path)
+        assert calls["download"] == [["Penmanshiel_SCADA_2017_WT01-10_3114.zip", "Penmanshiel_WT_static.csv"]]
+
+    def test_nothing_is_downloaded_once_complete(self, tmp_path: Path, calls: dict[str, list]) -> None:
+        (tmp_path / "Penmanshiel_WT_static.csv").write_text("x")
+        (tmp_path / "zenodo_dataset_metadata.json").write_text("{}")
+        for key, size in self.REMOTE[3:5]:
+            (tmp_path / key).write_bytes(b"x" * size)
+        ensure_greenbyte_data(PENMANSHIEL, years=[2017], data_dir=tmp_path)
+        assert calls["download"] == []
+
+
+def test_each_zenodo_record_downloads_into_its_own_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WIND_UP_BENCHMARKING_DATA_DIR", str(tmp_path))
+    assert greenbyte.get_data_dir(KELMARSH) == tmp_path / "5841834"
+    assert greenbyte.get_data_dir(PENMANSHIEL) == tmp_path / "5946808"
+    assert hill_of_towie.get_data_dir() == tmp_path / hill_of_towie.HOT_V2_RECORD_ID
+    assert hill_of_towie.get_data_dir().is_dir()

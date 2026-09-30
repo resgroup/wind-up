@@ -346,3 +346,158 @@ class TestNamesThatBecomeDirectories:
         path.write_text(textwrap.dedent(PREPOST.replace("references: [T02, T03]", "references: [T03]")))
         with pytest.raises(ValueError, match=r"\.\./T02"):
             load_declaration(path)
+
+
+WORKS_CSV = """Turbine,First date of AeroUp works,Last date of AeroUp works
+T01,2018-01-10,2018-01-12
+T02,2018-06-01,2018-06-01
+T02,2018-09-01,2018-09-03
+"""
+
+STAGGERED = """
+name: staggered
+
+data:
+  scada: scada.parquet
+  schema: hill_of_towie
+  turbines: turbines.csv
+  works: works.csv
+
+turbines:
+  upgraded: [T01]
+  rated_power_kw: 2050
+
+timing:
+  mode: prepost
+
+exclusions:
+  - {turbine: ALL, start: 2018-03-01T00:00:00Z, end: 2018-03-02T00:00:00Z}
+  - {turbine: T03, start: 2018-04-01T00:00:00Z, end: 2018-04-05T00:00:00Z}
+"""
+
+
+def load_staggered(tmp_path: Path, yaml_text: str = STAGGERED, works: str = WORKS_CSV):  # noqa: ANN201
+    """Write a works table beside the declaration, then load it."""
+    (tmp_path / "works.csv").write_text(works)
+    return load(tmp_path, yaml_text)
+
+
+def utc(text: str) -> pd.Timestamp:
+    return pd.Timestamp(text, tz="UTC")
+
+
+class TestTheWorksTable:
+    def test_a_works_window_covers_whole_days(self, tmp_path: Path) -> None:
+        assert load_staggered(tmp_path).spec.works["T01"] == [(utc("2018-01-10"), utc("2018-01-13"))]
+
+    def test_a_turbine_may_have_several_windows(self, tmp_path: Path) -> None:
+        assert load_staggered(tmp_path).spec.works["T02"] == [
+            (utc("2018-06-01"), utc("2018-06-02")),
+            (utc("2018-09-01"), utc("2018-09-04")),
+        ]
+
+    def test_the_changeover_is_the_works_end(self, tmp_path: Path) -> None:
+        spec = load_staggered(tmp_path).spec
+        assert spec.upgrade_timing is None
+        assert spec.timing_for("T01") == utc("2018-01-13")
+
+    def test_the_date_columns_are_found_by_prefix(self, tmp_path: Path) -> None:
+        works = "Turbine,First date of works,Last date of works\nT01,2018-01-10,2018-01-12\n"
+        assert "T01" in load_staggered(tmp_path, works=works).spec.works
+
+    def test_a_table_without_the_columns_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="First date"):
+            load_staggered(tmp_path, works="Turbine,Start,End\nT01,2018-01-10,2018-01-12\n")
+
+    def test_an_analysed_turbine_with_two_windows_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T02"):
+            load_staggered(tmp_path, STAGGERED.replace("upgraded: [T01]", "upgraded: [T02]"))
+
+    def test_an_analysed_turbine_with_no_window_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T03"):
+            load_staggered(tmp_path, STAGGERED.replace("upgraded: [T01]", "upgraded: [T03]"))
+
+    def test_a_last_date_before_the_first_is_rejected(self, tmp_path: Path) -> None:
+        works = "Turbine,First date,Last date\nT01,2018-01-12,2018-01-10\n"
+        with pytest.raises(ValueError, match="T01"):
+            load_staggered(tmp_path, works=works)
+
+    def test_an_unknown_turbine_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T99"):
+            load_staggered(tmp_path, works=WORKS_CSV + "T99,2018-01-01,2018-01-02\n")
+
+    def test_a_changeover_and_a_works_table_together_are_rejected(self, tmp_path: Path) -> None:
+        text = STAGGERED.replace("mode: prepost", "mode: prepost\n  changeover: 2018-02-01T00:00:00Z")
+        with pytest.raises(ValueError, match="either"):
+            load_staggered(tmp_path, text)
+
+    def test_neither_a_changeover_nor_a_works_table_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="works"):
+            load(tmp_path, STAGGERED.replace("  works: works.csv\n", ""))
+
+
+class TestExclusionsAndPeriods:
+    def test_exclusions_are_read_with_all_as_farm_wide(self, tmp_path: Path) -> None:
+        assert load_staggered(tmp_path).spec.exclusions == [
+            (None, utc("2018-03-01"), utc("2018-03-02")),
+            ("T03", utc("2018-04-01"), utc("2018-04-05")),
+        ]
+
+    def test_an_exclusion_ending_before_it_starts_is_rejected(self, tmp_path: Path) -> None:
+        text = STAGGERED.replace("end: 2018-03-02T00:00:00Z", "end: 2018-02-01T00:00:00Z")
+        with pytest.raises(ValueError, match="exclusion"):
+            load_staggered(tmp_path, text)
+
+    def test_an_exclusion_of_an_unknown_turbine_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T99"):
+            load_staggered(tmp_path, STAGGERED.replace("turbine: T03", "turbine: T99"))
+
+    def test_a_flat_changeover_may_carry_exclusions(self, tmp_path: Path) -> None:
+        text = PREPOST + "exclusions:\n  - {turbine: ALL, start: 2017-03-01T00:00:00Z, end: 2017-03-02T00:00:00Z}\n"
+        assert load(tmp_path, text).spec.exclusions == [(None, utc("2017-03-01"), utc("2017-03-02"))]
+
+    def test_an_omitted_period_is_chosen_later(self, tmp_path: Path) -> None:
+        declaration = load_staggered(tmp_path)
+        assert declaration.spec.analysis_period is None
+        assert declaration.era5_window is None
+
+    def test_a_per_turbine_period_is_read(self, tmp_path: Path) -> None:
+        text = STAGGERED + "analysis_period:\n  T01: {start: 2017-06-01T00:00:00Z, end: 2018-06-01T00:00:00Z}\n"
+        declaration = load_staggered(tmp_path, text)
+        assert declaration.spec.period_for("T01") == (utc("2017-06-01"), utc("2018-06-01"))
+        assert declaration.era5_window == ("2017-01-01", "2018-12-31")
+
+    def test_a_per_turbine_period_for_an_unanalysed_turbine_is_rejected(self, tmp_path: Path) -> None:
+        text = STAGGERED + "analysis_period:\n  T02: {start: 2017-06-01T00:00:00Z, end: 2018-06-01T00:00:00Z}\n"
+        with pytest.raises(ValueError, match="T02"):
+            load_staggered(tmp_path, text)
+
+    def test_declared_references_are_marked_declared(self, tmp_path: Path) -> None:
+        text = STAGGERED.replace("upgraded: [T01]", "upgraded: [T01]\n  references: [T02, T03]")
+        assert load_staggered(tmp_path, text).spec.references_declared
+        assert not load_staggered(tmp_path).spec.references_declared
+
+    def test_the_resolved_echo_shows_the_timeline(self, tmp_path: Path) -> None:
+        resolved = load_staggered(tmp_path).resolved()
+        assert resolved["timing"] == {"mode": "prepost", "changeover": {"T01": "2018-01-13 00:00:00+00:00"}}
+        assert resolved["analysis_period"] == "chosen per upgraded turbine"
+        assert resolved["exclusions"][0] == {
+            "turbine": "ALL",
+            "start": "2018-03-01 00:00:00+00:00",
+            "end": "2018-03-02 00:00:00+00:00",
+        }
+        assert resolved["works"]["T01"] == [["2018-01-10 00:00:00+00:00", "2018-01-13 00:00:00+00:00"]]
+
+
+def test_the_greenbyte_schema_is_declarable(tmp_path: Path) -> None:
+    from benchmarking.synthetic.sources.greenbyte import GREENBYTE_COLUMNS  # noqa: PLC0415
+
+    assert load(tmp_path, PREPOST.replace("schema: hill_of_towie", "schema: greenbyte")).columns == GREENBYTE_COLUMNS
+
+
+def test_a_flat_declaration_loads_unchanged(tmp_path: Path) -> None:
+    declaration = load(tmp_path)
+    assert declaration.spec.works == {}
+    assert declaration.spec.exclusions == []
+    assert not declaration.spec.uses_plans
+    assert "works" not in declaration.resolved()

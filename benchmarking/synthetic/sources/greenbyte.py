@@ -20,19 +20,24 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 from zipfile import ZipFile
 
 import pandas as pd
 
 from benchmarking.synthetic.schema import ColumnSchema
+from benchmarking.synthetic.sources.hill_of_towie import (
+    ZENODO_METADATA_FILENAME,
+    download_zenodo_data,
+    zenodo_record_dir,
+    zenodo_record_files,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +105,9 @@ PENMANSHIEL = GreenbyteFarm(
 FARMS = {farm.name.lower(): farm for farm in (KELMARSH, PENMANSHIEL)}
 
 
-def get_data_dir() -> Path:
-    """Return the local cache directory for these datasets, creating it if needed."""
-    root = Path(os.getenv("WIND_UP_BENCHMARKING_DATA_DIR", Path.home() / "temp" / "wind-up-benchmarking" / "data"))
-    path = root / "zenodo"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def get_data_dir(farm: GreenbyteFarm) -> Path:
+    """Return where ``farm``'s Zenodo record is downloaded, creating it if needed."""
+    return zenodo_record_dir(farm.record)
 
 
 def _turbine_name(member: str) -> str:
@@ -117,12 +119,46 @@ def _turbine_name(member: str) -> str:
     return f"T{int(match.group(1)):02d}"
 
 
+def ensure_greenbyte_data(
+    farm: GreenbyteFarm, *, years: Sequence[int] | None = None, data_dir: Path | None = None
+) -> None:
+    """Download ``farm``'s turbine metadata and SCADA zips for ``years`` (default: all) from Zenodo.
+
+    A year counts as present when at least as many local zips match it as the record publishes,
+    whatever they are named. Makes no network call when everything is present.
+    """
+    directory = data_dir or get_data_dir(farm)
+    years = list(farm.years if years is None else years)
+    have_static = (directory / farm.static_file).is_file()
+    metadata_cached = (directory / ZENODO_METADATA_FILENAME).is_file()
+    if not metadata_cached and have_static and all(_local_zips(farm, year, directory) for year in years):
+        return
+    remote = zenodo_record_files(farm.record, output_dir=directory)
+    sizes = {f["key"]: int(f["size"]) for f in remote}
+    wanted = [] if have_static else [farm.static_file]
+    for year in years:
+        keys = [k for k in sizes if re.fullmatch(rf"{farm.name}_SCADA_{year}_.*\.zip", k)]
+        complete = [
+            p for p in _local_zips(farm, year, directory) if p.stat().st_size == sizes.get(p.name, p.stat().st_size)
+        ]
+        if len(complete) < len(keys):
+            wanted.extend(k for k in keys if directory / k not in complete)
+    if not wanted:
+        return
+    logger.info("Downloading %s from Zenodo record %s into %s: %s", farm.name, farm.record, directory, wanted)
+    download_zenodo_data(farm.record, output_dir=directory, filenames=wanted)
+
+
+def _local_zips(farm: GreenbyteFarm, year: int, directory: Path) -> list[Path]:
+    return sorted(directory.glob(f"{farm.name}*SCADA*{year}*.zip"))
+
+
 def load_greenbyte_metadata(farm: GreenbyteFarm, *, data_dir: Path | None = None) -> pd.DataFrame:
     """Return per-turbine ``Name``, ``Latitude`` and ``Longitude`` for ``farm``.
 
     Names are normalised to ``T01``-style so they match the SCADA frame.
     """
-    path = (data_dir or get_data_dir()) / farm.static_file
+    path = (data_dir or get_data_dir(farm)) / farm.static_file
     static = pd.read_csv(path, encoding="utf-8-sig")
     # Penmanshiel's CSV carries a trailing blank row, so rows without a turbine number are dropped
     numbers = static["Title"].astype(str).str.extract(r"(\d+)$")[0]
@@ -153,7 +189,7 @@ def load_greenbyte_scada(
     :param columns: the source-native value columns to keep besides availability
     :raises FileNotFoundError: if a year's zip has not been downloaded
     """
-    directory = data_dir or get_data_dir()
+    directory = data_dir or get_data_dir(farm)
     wanted = [_TIMESTAMP, *columns, "Time-based System Avail."]
     frames = []
     for year in years:

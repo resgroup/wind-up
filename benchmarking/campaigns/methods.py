@@ -28,6 +28,8 @@ def carried_forward_methods(
     reference_stat_cols: tuple[str, ...] = (),
     screen_cache: dict | None = None,
     era5_label: str = ERA5_UNLOCATED,
+    reference_screen: bool = True,
+    report_reference_uplifts: bool = True,
 ) -> list[Method]:
     """Build the methods applicable to ``spec``, each writing into its own subfolder of ``out_dir``.
 
@@ -49,6 +51,11 @@ def carried_forward_methods(
     :param reference_stat_cols: extra per-reference channels the power model carries as features.
         Empty by default: reference anemometry is deliberately not a feature, and the R2 fixture
         passes it in only to measure what that exclusion is worth.
+    :param reference_screen: run the power model's reference screen. Off holds the reference pool
+        identical across the arms of a study whose campaigns differ in length or coverage.
+    :param report_reference_uplifts: report each candidate reference's own uplift. It costs a model
+        fit per reference per test turbine and never moves a headline, so a study that scores only
+        its test turbines turns it off.
     """
     methods: list[Method] = [NaiveRatioMethod(columns=HOT_COLUMNS, out_dir=out_dir / "naive_ratio", save_plots=True)]
     if spec.mode == "toggle":
@@ -76,6 +83,8 @@ def carried_forward_methods(
                 save_plots=True,
                 screen_cache=screen_cache,
                 era5_label=era5_label,
+                reference_screen=reference_screen,
+                report_reference_uplifts=report_reference_uplifts,
             )
         )
     return methods

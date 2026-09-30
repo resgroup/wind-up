@@ -188,3 +188,29 @@ class TestAnalystReport:
 
     def test_it_returns_the_directory_it_wrote_to(self, tmp_path: Path) -> None:
         assert write_report(_report([ZeroMethod()]), out_dir=tmp_path) == tmp_path
+
+
+class TestAnalysisPlans:
+    @staticmethod
+    def planned_report() -> CampaignReport:
+        from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
+
+        spec = staggered_spec(north_offsets=[])
+        return estimate_campaign(spec, hourly_scada(), build_methods=lambda _wtg: [ZeroMethod()], columns=HOT_COLUMNS)
+
+    def test_each_plan_is_written(self, tmp_path: Path) -> None:
+        import yaml  # noqa: PLC0415
+
+        report = self.planned_report()
+        write_report(report, out_dir=tmp_path)
+        table = pd.read_csv(tmp_path / "analysis_plans.csv")
+        assert set(table["test_wtg"]) == {"T0", "T6"}
+        assert set(table.columns) == {"test_wtg", "turbine", "role", "distance_d", "reason"}
+        summary = yaml.safe_load((tmp_path / "analysis_plans.yaml").read_text())
+        assert summary["T0"]["power_references"] == list(report.plans["T0"].power_references)
+        assert summary["T0"]["pool_rule_met"] is True
+
+    def test_no_plan_files_for_a_flat_campaign(self, tmp_path: Path) -> None:
+        write_report(_report([ZeroMethod()]), out_dir=tmp_path)
+        assert not (tmp_path / "analysis_plans.csv").exists()
+        assert not (tmp_path / "analysis_plans.yaml").exists()

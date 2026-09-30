@@ -308,6 +308,33 @@ prepost split.
 **Re-verifies:** the shared northing step (R1) and the reference-validity screen (R3),
 now in-context on a realistic prepost campaign.
 
+### Status and next steps (2026-09-30)
+
+The prepost campaign matrix (`benchmarking/baselines/study_prepost_campaign_matrix.py`) runs at a
+size: `small` (38 cells, ~10 min on 16 workers) or `big`. Each study writes a directory to download
+and a `__detail` sibling that stays behind. The first small run is
+[CF25](findings_campaigns.md). **Hold the big run** until the small runs are clean: they are cheap
+and already show the problems.
+
+1. **Find and fix the reference-reading leak (CF25 §1).**
+   - Confirm the channel. Re-read one leaking cell (Penmanshiel seed 0, K4, L3, T12 → T13) with
+     the upgraded turbines left out of `wake_only`, or with their waking boolean computed from
+     un-upgraded power. The leak should vanish.
+   - Check whether the same channel moves the test turbines' own estimates, through the other
+     upgraded trial turbines.
+   - Fix it in `power_model`, most likely by not giving an upgraded turbine a waking boolean
+     that reads its upgraded power.
+   - Re-run small. The acceptance test is `leak_check.csv` at ~0 pp.
+2. **Re-run small after `b1beb06` (three power references required).** Count the cells that now
+   fail with "no span ... has 3 power references". Real data gaps, such as Penmanshiel T08, T11
+   and T15, may make some campaigns unanalysable. That is a finding about the draw, not a bug.
+3. **Make the cost model reference-aware before any big run (CF25 §2).**
+   - Key costs by (site, K, post length) wherever measured.
+   - Add a `calibrate` size: 2 seeds per site, one multiplier, every K and post length, no
+     exclusion arms, plus the real campaign.
+   - Re-project big with `plan --size big --measured <calibrate study>`, and trim it to 12 h.
+4. **Then the big run**, and commit its baseline with `compare --accept-candidate`.
+
 ---
 
 ## C4 — TuneUp (controller), toggle, multi-turbine
@@ -910,6 +937,34 @@ without the answer.
 **Prompted by** a human W3 dry run (2026-09-14): on real Hill of Towie SCADA the test turbine's
 reactive cloud is visibly unlike its neighbours' — roughly -2500 to +1500 kVAr against a tight
 -200 to -600 band — which is the kind of difference the campaign currently plots and then ignores.
+
+---
+
+## R8 — Too much baseline: a very long pre period should not be able to dominate the fit
+
+**Goal:** decide what a campaign should do when an analyst arrives with far more baseline than the
+campaign needs — ten years of pre data against a six-month campaign — and make the answer a
+measured one.
+
+**Why.** The campaign-proximity weighting used to be on by default precisely to stop a stale
+pre-campaign era dominating a short campaign's fit. Measuring what the weighting itself costs
+([CF22](findings_campaigns.md)) showed it is a prepost-only lever that tilts the baseline toward
+the changeover and, on a record that must read 0, moved the reading +0.154 pp, so it now ships off.
+That closes the bias but leaves the original failure mode unaddressed: nothing currently stops a
+ten-year baseline from swamping the recent data, or from bringing in an era whose turbines,
+controller or surroundings are no longer the ones being measured.
+
+**Scope (light, to be firmed up)**
+- **Fixture:** a placebo whose baseline is several times the campaign length, run at a range of
+  baseline lengths against the same campaign, so "how much pre data is too much" is a curve rather
+  than an opinion.
+- **The shape to try first:** full weight within a year of the changeover, so the pre period holds
+  every season at full weight, then a light decay beyond it. This is deliberately not the current
+  exponential-from-the-changeover shape, which starts decaying immediately.
+- **Also worth testing:** simply truncating the baseline, which an analyst can already do by
+  declaring a shorter analysis period, and which may be the honest answer.
+- **Success:** the estimate is stable as baseline length grows, and whatever rule is adopted is
+  neutral on a placebo whose pre and post periods are equivalent.
 
 ---
 

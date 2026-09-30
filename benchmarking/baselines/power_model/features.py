@@ -78,6 +78,7 @@ def build_reference_features(
     power_free: Sequence[str] = (),
     wake_only: Sequence[str] = (),
     waking_threshold_kw: float | None = None,
+    normal_operation_seconds: float | None = None,
 ) -> pd.DataFrame:
     """Wide, curated reference features: each reference turbine's active power (+ optional extras).
 
@@ -102,8 +103,9 @@ def build_reference_features(
         359 degrees is next to 1). Must be the column the shared northing step writes; raises
         naming it when absent. A raw direction listed in ``extra_cols`` is dropped in favour of
         it, so a reference never contributes both.
-    :param power_free: references that contribute a ``waking_<active_power_col>`` boolean and
-        nothing else -- no power, no availability, no direction. The wake their operating state
+    :param power_free: references that contribute a ``waking_<active_power_col>`` boolean (and, with
+        ``normal_operation_seconds``, a ``normal_operation_<availability_col>`` one) and nothing
+        else -- no power, no availability, no direction. The wake their operating state
         carries is kept; every channel a performance change can move, including where they point,
         is not. Requires ``waking_threshold_kw``. Empty by default, which leaves the matrix
         byte-identical to a caller that never asked.
@@ -112,6 +114,10 @@ def build_reference_features(
         ``waking_threshold_kw``.
     :param waking_threshold_kw: active power at or above which a ``power_free`` reference or a
         ``wake_only`` turbine counts as waking its neighbours
+    :param normal_operation_seconds: when given, each ``power_free`` reference gains a second
+        boolean beside its waking one: was it ready to operate for at least this many seconds.
+        Availability does not become a feature in its own right; ``include_availability`` governs
+        that
     """
     refs = _checked_references(references)
     wake = _checked_wake_only(wake_only, refs=refs, test_wtg=test_wtg)
@@ -126,6 +132,10 @@ def build_reference_features(
         extra_cols=extra_cols,
     )
     value_cols = [active_power_col, *([availability_col] if include_availability else []), *extra_cols]
+    # Availability is pivoted for the normal-operation boolean without joining ``value_cols``, so
+    # asking it that question does not also make it a per-reference feature.
+    pivot_cols = [*value_cols, *([availability_col] if normal_operation_seconds is not None else [])]
+    pivot_cols = list(dict.fromkeys(pivot_cols))
     # availability_col stays validated even when not featured: it is a required input and the
     # docstring contract is that it exists for the downstream downtime filter.
     missing = sorted(c for c in {*value_cols, availability_col} if c not in scada_df.columns)
@@ -134,9 +144,9 @@ def build_reference_features(
         raise ValueError(msg)
     index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
 
-    tmp = scada_df[[turbine_col, *value_cols]].copy()
+    tmp = scada_df[[turbine_col, *pivot_cols]].copy()
     tmp["_ts"] = scada_df.index
-    wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=value_cols, aggfunc="first")
+    wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=pivot_cols, aggfunc="first")
     # A power-free turbine contributes the waking boolean and nothing else. Its power may carry a
     # performance change, and its direction may carry the same change through yaw: a realignment or
     # wake steering moves where it points, so the counterfactual would read the treatment back.
@@ -152,8 +162,50 @@ def build_reference_features(
             wide, refs=power_free, active_power_col=active_power_col, threshold_kw=waking_threshold_kw
         )
         features = features.join(waking.reindex(index), how="left")
+        if normal_operation_seconds is not None:
+            operating = _normal_operation_features(
+                wide,
+                refs=power_free,
+                availability_col=availability_col,
+                threshold_seconds=normal_operation_seconds,
+            )
+            features = features.join(operating.reindex(index), how="left")
     check_reference_only(features.columns.tolist(), test_wtg=test_wtg)
     return features
+
+
+def operating_state_features(
+    scada_df: pd.DataFrame,
+    *,
+    turbines: Sequence[str],
+    turbine_col: str,
+    active_power_col: str,
+    availability_col: str,
+    waking_threshold_kw: float,
+    normal_operation_seconds: float | None = None,
+) -> pd.DataFrame:
+    """Each turbine's ``waking`` boolean, and its ``normal_operation`` one when a threshold is given.
+
+    The columns are named as a power-free reference's are in :func:`build_reference_features`, over
+    the unique timestamps of ``scada_df``.
+    """
+    refs = tuple(sorted(dict.fromkeys(str(t) for t in turbines)))
+    pivot_cols = [active_power_col, *([availability_col] if normal_operation_seconds is not None else [])]
+    rows = scada_df[scada_df[turbine_col].isin(refs)]
+    tmp = rows[[turbine_col, *pivot_cols]].copy()
+    tmp["_ts"] = rows.index
+    wide = tmp.pivot_table(index="_ts", columns=turbine_col, values=pivot_cols, aggfunc="first")
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    parts = [_waking_features(wide, refs=refs, active_power_col=active_power_col, threshold_kw=waking_threshold_kw)]
+    if normal_operation_seconds is not None:
+        parts.append(
+            _normal_operation_features(
+                wide, refs=refs, availability_col=availability_col, threshold_seconds=normal_operation_seconds
+            )
+        )
+    state = pd.concat(parts, axis=1).reindex(index)
+    state.index.name = scada_df.index.name
+    return state
 
 
 def _checked_wake_only(wake_only: Sequence[str], *, refs: list[str], test_wtg: str) -> tuple[str, ...]:
@@ -191,22 +243,48 @@ def _checked_power_free(
 def _waking_features(
     wide: pd.DataFrame, *, refs: tuple[str, ...], active_power_col: str, threshold_kw: float | None
 ) -> pd.DataFrame:
-    """Per-reference ``waking`` booleans: is this turbine producing enough to wake its neighbours.
+    """Per-reference ``waking`` booleans: is this turbine physically making a wake.
 
     A turbine above a few percent of rated already carries a large fraction of its maximum thrust,
     so a low threshold separates waking from parked while leaking almost none of the power level.
+    Whether the turbine was able to run is ``_normal_operation_features``.
     """
     assert threshold_kw is not None  # validated by _checked_power_free  # noqa: S101
+    return _threshold_features(
+        wide, refs=refs, source_col=active_power_col, threshold=threshold_kw, name=f"waking_{active_power_col}"
+    )
+
+
+def _normal_operation_features(
+    wide: pd.DataFrame, *, refs: tuple[str, ...], availability_col: str, threshold_seconds: float
+) -> pd.DataFrame:
+    """Per-reference ``normal_operation`` booleans: was this turbine able to run.
+
+    Read off the availability counter, so out of service reads differently from becalmed. It does
+    not detect curtailment: a turbine held at zero while available reads as operating normally.
+    """
+    return _threshold_features(
+        wide,
+        refs=refs,
+        source_col=availability_col,
+        threshold=threshold_seconds,
+        name=f"normal_operation_{availability_col}",
+    )
+
+
+def _threshold_features(
+    wide: pd.DataFrame, *, refs: tuple[str, ...], source_col: str, threshold: float, name: str
+) -> pd.DataFrame:
+    """One ``<name> @ <turbine>`` boolean per reference: is ``source_col`` at or above ``threshold``."""
     columns = {}
     for ref in refs:
-        if (active_power_col, ref) not in wide.columns:
+        if (source_col, ref) not in wide.columns:
             continue
-        power = wide[(active_power_col, ref)]
+        signal = wide[(source_col, ref)]
         # Float, not bool: the column is reindexed onto the full timestamp index downstream, and a
         # bool column with gaps collapses to object dtype, which the outcome model rejects. A record
-        # the reference does not have is unknown rather than not-waking, so its NaN is preserved.
-        waking = (power >= threshold_kw).astype(float)
-        columns[f"waking_{active_power_col}{QUALIFIER}{ref}"] = waking.where(power.notna())
+        # the reference does not have is unknown rather than False, so its NaN is preserved.
+        columns[f"{name}{QUALIFIER}{ref}"] = (signal >= threshold).astype(float).where(signal.notna())
     return pd.DataFrame(columns, index=wide.index)
 
 

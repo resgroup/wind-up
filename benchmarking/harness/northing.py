@@ -161,6 +161,7 @@ def north_scada(
     roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
     settings: NorthingSettings = DEFAULT_NORTHING,
     out_dir: Path | None = None,
+    plots: bool = True,
 ) -> pd.DataFrame:
     """Return ``scada_df`` with a north-calibrated companion column for each direction role.
 
@@ -181,6 +182,7 @@ def north_scada(
     :param out_dir: when given and corrections are discovered, the discovered table
         (:data:`NORTH_TABLE_YAML`), the farm overview, one plot per device and, with a layout, the
         wake-nadir shift map and a few before/after wake plots are written here
+    :param plots: write the plots to ``out_dir`` as well as the discovered table
     :return: a copy of ``scada_df`` with ``columns.northed(role)`` added for each role
     """
     columns.require_roles(roles)
@@ -234,6 +236,8 @@ def north_scada(
         # The wake-nadir shift runs here so its corrections are available for the map.
         corrections: dict[str, float] = {}
         unshifted = tables
+        power: dict[str, np.ndarray] | None = None
+        wind_speed: dict[str, np.ndarray] | None = None
         if layout is not None:
             power = _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.active_power)
             wind_speed = (
@@ -255,22 +259,18 @@ def north_scada(
         if out_dir is not None:
             out_dir.mkdir(parents=True, exist_ok=True)
             write_north_table_yaml(tables, path=out_dir / NORTH_TABLE_YAML)
-            _write_northing_plots(
-                index, directions=directions, usable=usable, reference=reference, tables=tables, out_dir=out_dir
-            )
-            if layout is not None and corrections:
-                figure = plot_wake_nadir_farm(layout, corrections=corrections, out_dir=out_dir)
-                plt.close(figure)
-                _write_wake_pair_plots(
-                    layout,
-                    index=index,
+            if plots:
+                _write_discovery_plots(
+                    index,
+                    layout=layout,
                     directions=directions,
+                    usable=usable,
+                    reference=reference,
                     before=unshifted,
                     after=tables,
                     corrections=corrections,
                     power=power,
                     wind_speed=wind_speed,
-                    usable=usable,
                     out_dir=out_dir,
                 )
 
@@ -287,6 +287,42 @@ def north_scada(
             values[rows] = apply_north_table(row_index[rows], values[rows], north_table=table)
         scada_df[target] = values
     return scada_df
+
+
+def _write_discovery_plots(
+    index: pd.DatetimeIndex,
+    *,
+    layout: Layout | None,
+    directions: dict[str, np.ndarray],
+    usable: dict[str, np.ndarray],
+    reference: np.ndarray,
+    before: dict[str, pd.DataFrame],
+    after: dict[str, pd.DataFrame],
+    corrections: dict[str, float],
+    power: dict[str, np.ndarray] | None,
+    wind_speed: dict[str, np.ndarray] | None,
+    out_dir: Path,
+) -> None:
+    """Write the discovery plots: per device, and with a layout the wake-nadir shift map and wake pairs."""
+    _write_northing_plots(
+        index, directions=directions, usable=usable, reference=reference, tables=after, out_dir=out_dir
+    )
+    if layout is None or not corrections or power is None:
+        return
+    figure = plot_wake_nadir_farm(layout, corrections=corrections, out_dir=out_dir)
+    plt.close(figure)
+    _write_wake_pair_plots(
+        layout,
+        index=index,
+        directions=directions,
+        before=before,
+        after=after,
+        corrections=corrections,
+        power=power,
+        wind_speed=wind_speed,
+        usable=usable,
+        out_dir=out_dir,
+    )
 
 
 def _write_northing_plots(

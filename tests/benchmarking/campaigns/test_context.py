@@ -8,9 +8,12 @@ import logging
 import pandas as pd
 import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
-from benchmarking.campaigns.context import context_for
+from benchmarking.campaigns.context import context_for, context_for_plan
 from benchmarking.campaigns.declaration import CampaignSpec, layout_from_coords
+from benchmarking.campaigns.plans import plans_for
 from benchmarking.harness.context import CampaignContext
+from benchmarking.synthetic import HOT_COLUMNS
+from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec
 
 _TURBINE_COL = "TurbineName"
 _INDEX = pd.date_range("2020-01-01", periods=4, freq="10min", tz="UTC")
@@ -115,7 +118,8 @@ class TestTiming:
 def test_the_context_carries_only_the_documented_answers() -> None:
     # Guards the truth boundary: a field added here reaches every method, so it must be deliberate.
     # coords is the layout the analyst declares in turbines.csv, not an answer: diagnostics draw
-    # it, no estimate reads it.
+    # it, no estimate reads it. The reserves and reading pools come from the analysis plan, itself
+    # derived from the layout, the works table and the data extents.
     assert {f.name for f in dataclasses.fields(CampaignContext)} == {
         "test_wtg",
         "timing",
@@ -124,4 +128,50 @@ def test_the_context_carries_only_the_documented_answers() -> None:
         "wake_contributors",
         "valid_for_uplift",
         "coords",
+        "reserve_references",
+        "reading_pools",
+        "reading_pool_size",
     }
+
+
+class TestAContextFromAPlan:
+    @staticmethod
+    def build(turbine: str = "T0", scada: pd.DataFrame | None = None) -> tuple:
+        spec = staggered_spec()
+        frame = hourly_scada() if scada is None else scada
+        plan = plans_for(spec, frame, columns=HOT_COLUMNS)[turbine]
+        return spec, plan, context_for_plan(spec, plan, scada_df=frame)
+
+    def test_the_power_references_are_the_candidates(self) -> None:
+        _, plan, context = self.build()
+        assert context.candidate_references == list(plan.power_references)
+        assert context.timing == plan.works[1]
+
+    def test_every_other_present_turbine_contributes_its_wake(self) -> None:
+        _, plan, context = self.build()
+        assert set(context.wake_contributors) == {f"T{i}" for i in range(7)} - {"T0", *plan.power_references}
+
+    def test_reserves_and_reading_pools_are_carried(self) -> None:
+        _, plan, context = self.build()
+        assert context.reserve_references == list(plan.reserves)
+        assert context.reading_pools == {r: list(p) for r, p in plan.reading_pools.items()}
+        assert context.reading_pool_size == plan.k
+
+    def test_turbines_without_data_are_dropped_from_every_list(self) -> None:
+        spec, plan, _ = self.build()
+        missing = plan.power_references[0]
+        full = hourly_scada()
+        context = context_for_plan(spec, plan, scada_df=full[full["TurbineName"] != missing])
+        assert missing not in context.candidate_references
+        assert missing not in context.wake_contributors
+        assert all(missing not in pool for pool in (context.reading_pools or {}).values())
+
+    def test_validity_comes_from_the_specs_usable_mask(self) -> None:
+        spec, _, context = self.build()
+        held = context.valid_for_uplift["T4"]
+        inside = (held.index >= pd.Timestamp("2019-02-01", tz="UTC")) & (
+            held.index < pd.Timestamp("2019-02-05", tz="UTC")
+        )
+        assert not held[inside].any()
+        assert held[~inside].all()
+        assert spec.usable_mask("T0", pd.DatetimeIndex(held.index)).sum() == context.valid_for_uplift["T0"].sum()

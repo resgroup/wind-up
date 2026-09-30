@@ -15,14 +15,20 @@ import yaml
 
 from benchmarking.campaigns.declaration import CampaignSpec, layout_coords
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from benchmarking.synthetic.sources.greenbyte import GREENBYTE_COLUMNS
 from wind_up.layout import Layout
 
 if TYPE_CHECKING:
+    from benchmarking.campaigns.declaration import Exclusion, Window
     from benchmarking.synthetic import ColumnSchema
 
 # The schemas a declaration may name. Inline schema definition is not supported: a source's
 # column names belong to its adapter, not to a campaign.
-SCHEMAS: dict[str, ColumnSchema] = {"hill_of_towie": HOT_COLUMNS}
+SCHEMAS: dict[str, ColumnSchema] = {"hill_of_towie": HOT_COLUMNS, "greenbyte": GREENBYTE_COLUMNS}
+
+# How a declaration names a farm-wide exclusion.
+ALL_TURBINES = "ALL"
+PER_TURBINE_PERIOD = "chosen per upgraded turbine"
 
 MODES = ("prepost", "toggle")
 
@@ -58,7 +64,8 @@ class Declaration:
     :param centroid: the site's ``(latitude, longitude)`` centroid over the whole turbines file,
         rounded, which reanalysis is self-served from
     :param era5_window: ``(start_date, end_date)`` for the reanalysis fetch, rounded out to whole
-        calendar years so campaigns on one site share a cache entry
+        calendar years so campaigns on one site share a cache entry. ``None`` when no analysis
+        period is declared; the run then takes it from the data.
     """
 
     name: str
@@ -66,7 +73,7 @@ class Declaration:
     columns: ColumnSchema
     scada_path: Path
     centroid: tuple[float, float]
-    era5_window: tuple[str, str]
+    era5_window: tuple[str, str] | None
 
     def resolved(self) -> dict[str, Any]:
         """Return the resolved campaign facts, for echoing into the run output.
@@ -75,15 +82,16 @@ class Declaration:
         mis-declared timezone is visible rather than silent.
         """
         spec = self.spec
-        start, end = spec.analysis_period
         timing: dict[str, Any] = {"mode": spec.mode}
         if isinstance(spec.upgrade_timing, ToggleSchedule):
             timing["start"] = str(spec.upgrade_timing.start)
             timing["period"] = str(spec.upgrade_timing.period)
             timing["start_on"] = spec.upgrade_timing.start_on
+        elif spec.upgrade_timing is None:
+            timing["changeover"] = {t: str(spec.timing_for(t)) for t in spec.upgraded_turbines}
         else:
             timing["changeover"] = str(spec.upgrade_timing)
-        return {
+        resolved: dict[str, Any] = {
             "name": self.name,
             "scada": str(self.scada_path),
             "schema": {v: k for k, v in SCHEMAS.items()}.get(self.columns, "custom"),
@@ -94,13 +102,24 @@ class Declaration:
                 "rated_power_kw": spec.rated_power_kw,
             },
             "timing": timing,
-            "analysis_period": {"start": str(start), "end": str(end)},
+            "analysis_period": _resolved_period(spec.analysis_period),
             "northing": {
                 "discover": spec.north_offsets is None,
                 "table": [] if spec.north_offsets is None else [[w, str(t), o] for w, t, o in spec.north_offsets],
             },
-            "reanalysis": {"centroid": list(self.centroid), "window": list(self.era5_window)},
+            "reanalysis": {
+                "centroid": list(self.centroid),
+                "window": list(self.era5_window) if self.era5_window is not None else "from the data",
+            },
         }
+        if spec.works:
+            resolved["works"] = {t: [[str(s), str(e)] for s, e in windows] for t, windows in spec.works.items()}
+        if spec.exclusions:
+            resolved["exclusions"] = [
+                {"turbine": ALL_TURBINES if who is None else who, "start": str(s), "end": str(e)}
+                for who, s, e in spec.exclusions
+            ]
+        return resolved
 
 
 def load_declaration(path: str | Path) -> Declaration:
@@ -133,30 +152,115 @@ def load_declaration(path: str | Path) -> Declaration:
     )
     _check_roles(upgraded=upgraded, references=references, excluded=excluded, coords=coords)
 
-    period = _section(raw, "analysis_period")
-    start, end = _timestamp(period["start"]), _timestamp(period["end"])
-    if end <= start:
-        msg = f"analysis_period end {end} is not after start {start}; the campaign would cover no records"
-        raise ValueError(msg)
+    works = read_works(_resolve(root, str(data["works"]), what="works")) if data.get("works") else {}
+    _check_known(works, coords=coords, what="the works table")
+    exclusions = _exclusions(raw.get("exclusions") or [])
+    _check_known({w: None for w, _, _ in exclusions if w is not None}, coords=coords, what="the exclusions")
+    timing = _timing(_section(raw, "timing"), has_works=bool(works))
+    period = _analysis_period(raw.get("analysis_period"), upgraded=upgraded)
 
+    spec = CampaignSpec(
+        upgraded_turbines=upgraded,
+        upgrade_timing=timing,
+        candidate_references=references,
+        excluded_turbines=excluded,
+        layout=layout,
+        north_offsets=_north_offsets(raw.get("northing")),
+        rated_power_kw=float(roles["rated_power_kw"]),
+        analysis_period=period,
+        turbine_col=columns.turbine,
+        works=works,
+        exclusions=exclusions,
+        references_declared=bool(declared_references),
+    )
+    bounds = spec.period_bounds()
     return Declaration(
         name=_path_component(str(raw["name"]), what="campaign name"),
-        spec=CampaignSpec(
-            upgraded_turbines=upgraded,
-            upgrade_timing=_timing(_section(raw, "timing")),
-            candidate_references=references,
-            excluded_turbines=excluded,
-            layout=layout,
-            north_offsets=_north_offsets(raw.get("northing")),
-            rated_power_kw=float(roles["rated_power_kw"]),
-            analysis_period=(start, end),
-            turbine_col=columns.turbine,
-        ),
+        spec=spec,
         columns=columns,
         scada_path=scada_path,
-        centroid=_centroid(coords),
-        era5_window=_era5_window(start, end),
+        centroid=centroid(coords),
+        era5_window=era5_window(*bounds) if bounds is not None else None,
     )
+
+
+def read_works(path: Path) -> dict[str, list[Window]]:
+    """Read a works table: ``Turbine`` plus the first ``First date...`` and ``Last date...`` columns.
+
+    Each row is one window of whole days, ``[first 00:00, last + 1 day 00:00)`` UTC. A turbine may
+    have several rows.
+    """
+    frame = pd.read_csv(path)
+    first = next((c for c in frame.columns if str(c).startswith("First date")), None)
+    last = next((c for c in frame.columns if str(c).startswith("Last date")), None)
+    if "Turbine" not in frame.columns or first is None or last is None:
+        msg = (
+            f"the works table {path.name} needs a Turbine column and columns starting 'First date' and "
+            f"'Last date'; it has {list(frame.columns)}"
+        )
+        raise ValueError(msg)
+    works: dict[str, list[Window]] = {}
+    for turbine, first_day, last_day in zip(frame["Turbine"].astype(str), frame[first], frame[last], strict=True):
+        start = _timestamp(pd.Timestamp(first_day).normalize())
+        end = _timestamp(pd.Timestamp(last_day).normalize()) + pd.Timedelta(days=1)
+        if end <= start:
+            msg = f"the works table {path.name} gives {turbine} a last date before its first"
+            raise ValueError(msg)
+        works.setdefault(turbine, []).append((start, end))
+    return {turbine: sorted(windows) for turbine, windows in works.items()}
+
+
+def _check_known(named: dict[str, Any], *, coords: dict[str, tuple[float, float]], what: str) -> None:
+    """Raise naming the turbines ``what`` names that the turbines file does not."""
+    unknown = sorted(set(named) - set(coords))
+    if unknown:
+        msg = f"{what} names {unknown}, which the turbines file has no row for"
+        raise ValueError(msg)
+
+
+def _exclusions(entries: list) -> list[Exclusion]:
+    """Read the declared exclusions; ``ALL`` is farm-wide."""
+    exclusions: list[Exclusion] = []
+    for entry in entries:
+        turbine = str(entry["turbine"])
+        start, end = _timestamp(entry["start"]), _timestamp(entry["end"])
+        if end <= start:
+            msg = f"the exclusion of {turbine} ends at {end}, not after its start {start}"
+            raise ValueError(msg)
+        exclusions.append((None if turbine == ALL_TURBINES else turbine, start, end))
+    return exclusions
+
+
+def _span(block: dict, *, what: str) -> Window:
+    """Read one ``{start, end}`` span, end exclusive."""
+    start, end = _timestamp(block["start"]), _timestamp(block["end"])
+    if end <= start:
+        msg = f"{what} end {end} is not after start {start}; the campaign would cover no records"
+        raise ValueError(msg)
+    return start, end
+
+
+def _analysis_period(block: dict | None, *, upgraded: list[str]) -> Window | dict[str, Window] | None:
+    """Read the optional analysis period: one span, a span per upgraded turbine, or none."""
+    if block is None:
+        return None
+    if set(block) == {"start", "end"}:
+        return _span(block, what="analysis_period")
+    stray = sorted(set(map(str, block)) - set(upgraded))
+    if stray:
+        msg = f"analysis_period names {stray}, which are not upgraded turbines; a per-turbine span is for those"
+        raise ValueError(msg)
+    return {str(t): _span(span, what=f"analysis_period of {t}") for t, span in block.items()}
+
+
+def _resolved_period(period: Window | dict[str, Window] | None) -> dict[str, Any] | str:
+    """Return the analysis period as the resolved echo shows it."""
+    if period is None:
+        return PER_TURBINE_PERIOD
+    if isinstance(period, dict):
+        return {t: {"start": str(s), "end": str(e)} for t, (s, e) in period.items()}
+    start, end = period
+    return {"start": str(start), "end": str(end)}
 
 
 def _section(raw: dict, name: str) -> dict:
@@ -238,11 +342,18 @@ def _check_roles(
         raise ValueError(msg)
 
 
-def _timing(block: dict) -> pd.Timestamp | ToggleSchedule:
-    """Build the campaign's timing from its tagged block."""
+def _timing(block: dict, *, has_works: bool) -> pd.Timestamp | ToggleSchedule | None:
+    """Build the campaign's timing from its tagged block; None when a works table gives it."""
     mode = str(block.get("mode", ""))
     if mode == "prepost":
-        return _timestamp(block["changeover"])
+        changeover = block.get("changeover")
+        if changeover is not None and has_works:
+            msg = "declare either timing.changeover or a works table (data.works), not both"
+            raise ValueError(msg)
+        if changeover is None and not has_works:
+            msg = "a prepost declaration needs timing.changeover or a works table (data.works)"
+            raise ValueError(msg)
+        return None if changeover is None else _timestamp(changeover)
     if mode == "toggle":
         if block.get("start") is None:
             # ToggleSchedule allows no start, taking the first timestamp as origin with no
@@ -275,7 +386,7 @@ def _timestamp(value: object) -> pd.Timestamp:
     return stamp.tz_localize("UTC") if stamp.tz is None else stamp.tz_convert("UTC")
 
 
-def _centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
+def centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
     """Return the site's mean latitude and longitude, rounded.
 
     Taken over every turbine in the file, not the declared roles: reanalysis is a model input, so
@@ -288,7 +399,7 @@ def _centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
     )
 
 
-def _era5_window(start: pd.Timestamp, end: pd.Timestamp) -> tuple[str, str]:
+def era5_window(start: pd.Timestamp, end: pd.Timestamp) -> tuple[str, str]:
     """Return the reanalysis fetch window, rounded out to whole calendar years.
 
     The reanalysis cache is keyed by its arguments, so exact analysis windows would re-download

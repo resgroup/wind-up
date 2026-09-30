@@ -943,7 +943,7 @@ temporary and slated for removal in the knob-cleanup deliverable.
 *2026-07-09 — the F17 stale-reference flag closed out. A full overnight run
 (`study_overnight_prepost` + `study_overnight_toggle`, both `include_v0=True`, seed 0, 4 replicates,
 1/2/3/6/12 months, all seven `overnight_profiles`) was produced on current committed code as
-`~/temp/wind-up-benchmarking/badass overnight 20260708/`. `study_power_model_compare.py` now defaults
+`~/temp/wind-up-benchmarking/hpc overnight 20260708/`. `study_power_model_compare.py` now defaults
 `_DEFAULT_REFERENCE_DIR` to it (was the unreproducible "30 June" run) and its `_load_reference_methods`
 tolerates the timestamped `<mode>/<YYYYmmdd_HHMMSS>/` subdir that `start_overnight_run` writes, so an
 overnight run drops in as a reference with no manual flattening.*
