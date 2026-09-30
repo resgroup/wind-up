@@ -308,6 +308,33 @@ prepost split.
 **Re-verifies:** the shared northing step (R1) and the reference-validity screen (R3),
 now in-context on a realistic prepost campaign.
 
+### Status and next steps (2026-09-30)
+
+The prepost campaign matrix (`benchmarking/baselines/study_prepost_campaign_matrix.py`) runs at a
+size: `small` (38 cells, ~10 min on 16 workers) or `big`. Each study writes a directory to download
+and a `__detail` sibling that stays behind. The first small run is
+[CF25](findings_campaigns.md). **Hold the big run** until the small runs are clean: they are cheap
+and already show the problems.
+
+1. **Find and fix the reference-reading leak (CF25 §1).**
+   - Confirm the channel. Re-read one leaking cell (Penmanshiel seed 0, K4, L3, T12 → T13) with
+     the upgraded turbines left out of `wake_only`, or with their waking boolean computed from
+     un-upgraded power. The leak should vanish.
+   - Check whether the same channel moves the test turbines' own estimates, through the other
+     upgraded trial turbines.
+   - Fix it in `power_model`, most likely by not giving an upgraded turbine a waking boolean
+     that reads its upgraded power.
+   - Re-run small. The acceptance test is `leak_check.csv` at ~0 pp.
+2. **Re-run small after `b1beb06` (three power references required).** Count the cells that now
+   fail with "no span ... has 3 power references". Real data gaps, such as Penmanshiel T08, T11
+   and T15, may make some campaigns unanalysable. That is a finding about the draw, not a bug.
+3. **Make the cost model reference-aware before any big run (CF25 §2).**
+   - Key costs by (site, K, post length) wherever measured.
+   - Add a `calibrate` size: 2 seeds per site, one multiplier, every K and post length, no
+     exclusion arms, plus the real campaign.
+   - Re-project big with `plan --size big --measured <calibrate study>`, and trim it to 12 h.
+4. **Then the big run**, and commit its baseline with `compare --accept-candidate`.
+
 ---
 
 ## C4 — TuneUp (controller), toggle, multi-turbine

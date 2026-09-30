@@ -12,6 +12,59 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF25 — The prepost matrix's first small run: reference readings move with the injected upgrade by up to **0.43 pp** (median 0.16 pp), and the period selector was taking **one** power reference where three were available on a shorter span
+
+*2026-09-30. `uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run --size small`
+at `682563e`, on the HPC with 16 workers: 38 cells (Penmanshiel and Kelmarsh one seed each, the real
+HoT T13 campaign), K4, post lengths 3 and 12 months, multipliers +1, 0, −1, both exclusion arms.
+All 38 ok in 8.3 min. The study directory holds `cells/*.json`, `cells.csv` and `leak_check.csv`.*
+
+**1. The leak check fails.** A reference's reading should not depend on the multiplier: its data,
+the plan and the record counts are identical across a campaign's three multipliers. It moves anyway,
+monotonically in the multiplier, in every arm and at both sites:
+
+| arm | site | readings | median move | largest move |
+|---|---|---|---|---|
+| main | pen | 17 | 0.137 pp | 0.319 pp |
+| main | kel | 7 | 0.134 pp | 0.255 pp |
+| excl_booleans | pen | 17 | 0.260 pp | 0.430 pp |
+| excl_nan | pen | 17 | 0.177 pp | 0.363 pp |
+
+The worst: Penmanshiel seed 0, L3, test turbine T12, reference T13 reads +1.159% / +1.018% /
++0.729% at multipliers −1 / 0 / +1, on 15038 records each time.
+
+*Suspected channel, not yet confirmed.* A reference reading
+(`PowerModelMethod.reference_uplifts` → `_reference_input`, `benchmarking/baselines/power_model/method.py`)
+keeps the test turbine and every other turbine of the campaign as `wake_only` features, a waking
+boolean at `WAKING_RATED_FRACTION` (5%) of rated power. The upgraded turbines' power is scaled by the
+injection, so rows near the threshold flip only in upgraded runs. If that is the channel, it reaches
+the **test turbines' own estimates** too, through the other upgraded trial turbines, and biases the
+headline, not only the sanity readings.
+
+**2. Cost depends on the reference count, not only on (site, K).** Penmanshiel K4 L3 cells took
+363 s, L12 cells 149 s. L3 plans had four power references and four readings; L12 had one and no
+readings. The `CELL_COST_S` table was measured on L6 to L12 cells alone, so `plan` under-projects
+short posts, and the big size's ~11.5 h is not to be trusted.
+
+**3. One power reference at L12.** The selector ranked span length above the reference count and
+treated the pool rule as a preference only, so for T12 at L12 it took a 360-day post with T13 alone
+over a ~282-day post with four references. Three causes combined:
+- Penmanshiel T08, T11 and T15 have no data from T12's own data start, 2016-07-02.
+- The four other trial turbines are worked inside every span.
+- Seed 0 is a full rollout, and seven more turbines are worked within the long post.
+
+Fixed in `b1beb06`: a chosen span now needs `PlanSettings.min_references` (3) power references, or
+the turbine raises.
+
+**4. Fewer trial turbines would not relieve this.** Replaying every big-matrix draw (HoT 5,
+Penmanshiel 6, Kelmarsh 4 seeds; all K and post lengths) through the selector with complete data
+extents, every test turbine meets the pool rule and none falls below 3 references. Drawing the trial
+size from 1..max−2 instead of 1..max−1 moves the mean references per test turbine by at most 0.1
+(HoT 4.19 → 4.19, Penmanshiel 4.32 → 4.33, Kelmarsh 3.74 → 3.83), and pins Kelmarsh (max 3) to a
+single trial turbine. The pressure comes from real data gaps, which the replay leaves out.
+
+---
+
 ## CF24 — Balance the two periods and **two thirds of the prepost placebo bias disappears**: a whole farm whose pre and post hold the same months record for record reads **+0.23 pp** against **+0.65 pp** for six contiguous arms — and every large per-turbine offset goes with it, T17 included (+4.4 → −0.34)
 
 *2026-09-16/17. `benchmarking/campaigns/disguise_probe.py`: two years of Hill of Towie
