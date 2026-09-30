@@ -9,7 +9,7 @@ from zipfile import ZipFile
 import pandas as pd
 from tqdm import tqdm
 
-from wind_up.constants import DataColumns
+from wind_up_v0.constants import DataColumns
 
 if TYPE_CHECKING:
     from pathlib import Path
