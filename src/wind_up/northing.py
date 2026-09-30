@@ -860,13 +860,9 @@ def _changepoints_v_consensus(
 ) -> dict[str, pd.DataFrame]:
     """North each device against its consensus in ``references``, repeating until the tables converge.
 
-    The first round norths every device against ``references``. Each later round re-norths, one at a
-    time in name order, the devices whose consensus members moved, rebuilding each one's consensus
-    with ``references_from`` from the latest tables -- including those re-northed earlier in the same
-    round. Updating all of them at once from the previous round's tables instead lets two neighbours
-    that share a step flip-flop: both claim it, so neither's consensus shows it and both drop it, so
-    both see it again. A device whose consensus never overlaps its usable rows keeps its
-    ``reanalysis_anchor`` table.
+    Later rounds re-north the devices whose consensus members moved one at a time, each against a
+    consensus rebuilt with ``references_from`` from the latest tables (see ``docs/northing.md``). A
+    device whose consensus never overlaps its usable rows keeps its ``reanalysis_anchor`` table.
     """
     max_rounds = 10
     converged_deg = 0.5

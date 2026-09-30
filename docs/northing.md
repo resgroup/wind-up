@@ -73,9 +73,13 @@ every turbine, the one being northed included.
 
 A neighbour's own step is still in the anchored signals the first consensus is built from, and a
 four-turbine median moves when one member steps, which would hand the turbine a matching false
-step. Therefore the procedure is repeated until convergence: each round rebuilds the consensus from the previous round's tables,
-re-northing only turbines whose neighbours changed, until no table moves by more than half a
-degree or shifts a changepoint by more than a day.
+step. Therefore the procedure is repeated until convergence, re-northing only turbines whose
+neighbours changed, until no table moves by more than half a degree or shifts a changepoint by more
+than a day. Within a round those turbines are re-northed one at a time, each against a consensus
+rebuilt from the latest tables, including those re-northed earlier in the same round. Re-northing
+them all at once from the previous round's tables lets neighbours that share a step flip-flop: they
+claim it together, so none of their consensuses shows it and they drop it together, so they see it
+again, never converging.
 
 A turbine whose consensus never overlaps its own usable rows keeps its reanalysis anchor.
 
