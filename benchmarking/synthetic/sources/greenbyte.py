@@ -104,15 +104,15 @@ class GreenbyteFarm:
 # Kelmarsh's record begins 2016-01-03, its turbines first produce between 2016-01-21 and 2016-02-05,
 # and coverage is ~97% or better from March. Penmanshiel's record begins 2016-06-02, its turbines
 # first produce between 2016-06-02 and 2016-07-27, T08-T15 record 0-43% of June-August, and
-# coverage is ~100% from September. So a campaign starts on the first of the month after
-# commercial operation began: Kelmarsh 2016-05-01, Penmanshiel 2016-09-01.
+# coverage is ~100% from September. So a campaign starts on the farm's commercial operations date,
+# as the Zenodo record gives it.
 KELMARSH = GreenbyteFarm(
     name="Kelmarsh",
     record="5841834",
     years=tuple(range(2016, 2022)),
     rated_power_kw=2050.0,
     rotor_diameter_m=92.0,
-    data_start=pd.Timestamp("2016-05-01", tz="UTC"),
+    data_start=pd.Timestamp("2016-04-15", tz="UTC"),
 )
 PENMANSHIEL = GreenbyteFarm(
     name="Penmanshiel",

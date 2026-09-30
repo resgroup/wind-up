@@ -333,8 +333,8 @@ and already show the problems.
    - A trial turbine the selector cannot plan is reported under `unplanned` with its reason, in the
      report's `analysis_plans.yaml` and in the cell record, and left out of the estimate and the
      farm truth alike. The campaign fails only when no turbine plans.
-   - Kelmarsh and Penmanshiel campaigns start after commercial operation (the static files'
-     dates: 2016-04-15 and 2016-09-01), at 2016-05-01 and 2016-09-01, not on 1 January 2016.
+   - Kelmarsh and Penmanshiel campaigns start on their commercial operations dates from the
+     Zenodo static files, 2016-04-15 and 2016-09-01, not on 1 January 2016.
    A failed cell now also records its draw, and `run.log` gives its reason. Acceptance: no
    Penmanshiel cell fails on the selector, and every plan has at least 3 references.
 3. **Make the cost model reference-aware before any big run (CF25 §2).**

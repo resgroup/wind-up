@@ -275,11 +275,11 @@ def test_each_zenodo_record_downloads_into_its_own_directory(tmp_path: Path, mon
 
 
 class TestDataStart:
-    """Each farm's data starts after commercial operation, not on 1 January of its first year."""
+    """Each farm's data starts on its Zenodo commercial operations date, not on 1 January of its first year."""
 
-    def test_kelmarsh_starts_after_its_commercial_operations_date(self) -> None:
+    def test_kelmarsh_starts_on_its_commercial_operations_date(self) -> None:
         # the published static file gives 2016-04-15 for every turbine
-        assert pd.Timestamp("2016-05-01", tz="UTC") == KELMARSH.data_start
+        assert pd.Timestamp("2016-04-15", tz="UTC") == KELMARSH.data_start
 
     def test_penmanshiel_starts_on_its_commercial_operations_date(self) -> None:
         # the published static file gives 2016-09-01 for every turbine
