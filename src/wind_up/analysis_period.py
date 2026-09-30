@@ -1,8 +1,9 @@
 """Choose each test turbine's analysis span and power references from the campaign timeline.
 
-A power reference must have data over the whole span and no works window inside it. Among the
-candidate spans, the pool rule comes first, then the shorter side, then post, then pre, then how many
-power references there are and how far the furthest is.
+A power reference must have data over the whole span and no works window inside it. A chosen span
+has at least ``min_references`` of them. Among the candidate spans, the pool rule comes first, then
+the shorter side, then post, then pre, then how many power references there are and how far the
+furthest is.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ class PlanSettings:
     :param pool_size: how many nearest candidates the pool rule looks at
     :param pool_min_eligible: how many of those must be eligible and within the distance limit
     :param max_reference_distance_d: the furthest a power reference may be, in rotor diameters
+    :param min_references: the fewest power references a chosen span may have
     """
 
     k: int = 4
@@ -51,6 +53,7 @@ class PlanSettings:
     pool_size: int = 4
     pool_min_eligible: int = REFERENCES_PER_TEST_TURBINE
     max_reference_distance_d: float = 20.0
+    min_references: int = REFERENCES_PER_TEST_TURBINE
 
 
 DEFAULT_PLAN_SETTINGS = PlanSettings()
@@ -297,16 +300,21 @@ class _Timeline:
         )
 
     def choose(self) -> _Option:
-        """Return the best candidate span; raise when none gives both sides ``min_side`` and a reference."""
+        """Return the best candidate span; raise when none gives both sides ``min_side`` and ``min_references``."""
         starts, ends = self.edges()
         options = [self.evaluate(s, e) for s in starts for e in ends]
-        viable = [
-            o for o in options if o.pre >= self.settings.min_side and o.post >= self.settings.min_side and o.references
-        ]
+        long_enough = [o for o in options if o.pre >= self.settings.min_side and o.post >= self.settings.min_side]
+        needed = max(self.settings.min_references, 1)
+        viable = [o for o in long_enough if len(o.references) >= needed]
         if not viable:
             months = self.settings.min_side / MONTH
-            if any(o.pre >= self.settings.min_side and o.post >= self.settings.min_side for o in options):
-                msg = f"{self.turbine}: no span with both sides at least {months:g} months has a power reference"
+            if long_enough:
+                most = max(len(o.references) for o in long_enough)
+                wanted = "a power reference" if needed == 1 else f"{needed} power references"
+                msg = (
+                    f"{self.turbine}: no span with both sides at least {months:g} months has {wanted}; "
+                    f"the most any has is {most}"
+                )
                 raise ValueError(msg)
             best = max((min(o.pre, o.post) for o in options), default=pd.Timedelta(0))
             msg = (

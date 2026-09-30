@@ -70,7 +70,8 @@ exclusions:                      # optional; end exclusive
 - **Exclusions** are periods whose data is not used, for one turbine or `ALL`.
 - **The span.** For each upgraded turbine wind-up picks the start and end of its analysis, and its
   **power references**: the nearest 4 turbines with data over the whole span and no works inside
-  it, within 20 rotor diameters. A turbine changed entirely before or after the span is fine. It
+  it, within 20 rotor diameters. A turbine changed entirely before or after the span is fine. A
+  chosen span has at least 3 power references; when none does, the turbine is not analysed. It
   prefers spans where the nearest turbine and at least 3 of the 4 nearest qualify, then the longest
   shorter side up to 12 months, then post up to 12 months, then pre up to 24 months. Every other
   turbine enters only for its wake.

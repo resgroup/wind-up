@@ -129,8 +129,8 @@ class TestEligibility:
         assert p.waking_only["T1"] == "not offered as a reference"
 
     def test_a_far_turbine_is_waking_only(self) -> None:
-        p = plan(line(4, spacing_d=8.0))
-        assert p.waking_only["T3"] == "beyond 20 D (24.0 D)"
+        p = plan(line(5, spacing_d=6.0))
+        assert p.waking_only["T4"] == "beyond 20 D (24.0 D)"
 
 
 class TestReferences:
@@ -147,7 +147,7 @@ class TestReferences:
         assert "T0" not in p.reading_pools["T3"]
 
     def test_distances_are_in_the_test_turbines_rotor_diameters(self) -> None:
-        assert plan(line(3)).distances_d == pytest.approx({"T1": 3.0, "T2": 6.0}, rel=1e-6)
+        assert plan(line(4)).distances_d == pytest.approx({"T1": 3.0, "T2": 6.0, "T3": 9.0}, rel=1e-6)
 
 
 class TestFallback:
@@ -166,6 +166,25 @@ class TestFallback:
     def test_no_eligible_reference_at_all_raises(self) -> None:
         with pytest.raises(ValueError, match="power reference"):
             plan(line(6), candidates=[])
+
+    def test_a_shorter_span_with_three_references_beats_a_longer_one_with_fewer(self) -> None:
+        # T1 and T2 have no data, so the pool rule fails over every span; a full post keeps only T5, T6
+        extents = {f"T{i}": EXTENT for i in range(7)} | {t: (utc("2021-06-01"), EXTENT[1]) for t in ("T1", "T2")}
+        works = {t: [(utc("2020-06-01"), utc("2020-06-05"))] for t in ("T3", "T4")}
+        p = plan(line(7), extents=extents, works=works)
+        assert not p.pool_rule_met
+        assert p.end == utc("2020-06-01")
+        assert p.power_references == ("T3", "T4", "T5", "T6")
+
+    def test_no_span_with_three_power_references_raises(self) -> None:
+        extents = {f"T{i}": EXTENT for i in range(4)} | {"T3": (utc("2021-06-01"), EXTENT[1])}
+        with pytest.raises(ValueError, match="no span with both sides at least 3 months has 3 power references"):
+            plan(line(4), extents=extents)
+
+    def test_the_minimum_number_of_references_is_a_setting(self) -> None:
+        extents = {f"T{i}": EXTENT for i in range(4)} | {"T3": (utc("2021-06-01"), EXTENT[1])}
+        p = plan(line(4), extents=extents, settings=PlanSettings(min_references=2))
+        assert p.power_references == ("T1", "T2")
 
 
 class TestADeclaredSpan:
