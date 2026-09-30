@@ -174,7 +174,9 @@ RECORDED_WORST_ERROR = {
     ("N=1", "early"): 2.2,
     ("N=1", "late"): 2.7,
     ("365d", "early"): 2.3,
-    ("365d", "late"): 2.1,
+    # 4.3 since re-northing one device at a time (CF22): T11 lands 0.2 deg away before the wake-nadir
+    # shift, but one of its wake pairs (T11->T13) is marginal and drops out, swinging its correction.
+    ("365d", "late"): 4.3,
     ("90d", "early"): 5.3,
     ("90d", "late"): 2.4,
     ("30d", "early"): 17.5,
