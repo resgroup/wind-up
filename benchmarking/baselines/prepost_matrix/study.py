@@ -1,16 +1,21 @@
 """The prepost campaign matrix as a resumable study: cells run in parallel, merged and compared.
 
-A study directory, ``prepost_matrix__<commit7>[-dirty]`` under the output root, holds::
+A study is two sibling directories under the output root. ``prepost_matrix__<commit7>[-dirty]__<size>``
+is the one to download; merging and comparing need nothing else::
 
-    run_meta.json          matrix settings, master seed, commit, dirty flag, host, start time
+    run_meta.json          matrix settings, size, master seed, commit, dirty flag, host, start time
     git_diff.patch         only when dirty
     run.log                driver log
-    sources/               the SCADA the cells read
-    cells/<cell_id>/       cell.json (written last) and cell.log
+    cells/<cell_id>.json   each cell's record, written last
     cells.csv              one row per cell
     candidate_baseline.json
     leak_check.csv
     comparison/            the compare output
+
+Its ``__detail`` sibling stays where the study ran::
+
+    sources/               the SCADA the cells read
+    cells/<cell_id>/       cell.log, the northing found, and a failed cell's method diagnostics
 """
 
 from __future__ import annotations
@@ -43,18 +48,18 @@ from benchmarking.baselines.prepost_matrix.metrics import TABLE_KEYS, baseline_t
 from benchmarking.campaigns.composed import output_root
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 
 STUDY_PREFIX = "prepost_matrix__"
-BASELINE_PATH = Path(__file__).resolve().parents[1] / "study_prepost_campaign_matrix_baseline.json"
+DETAIL_SUFFIX = "__detail"
+BASELINE_DIR = Path(__file__).resolve().parents[1]
 BASELINE_SCHEMA = "prepost_campaign_matrix_baseline_v1"
 RUN_META = "run_meta.json"
-CELL_JSON = "cell.json"
+CELLS_DIRNAME = "cells"
 CELL_LOG = "cell.log"
 CANDIDATE = "candidate_baseline.json"
-DEFAULT_WORKERS = 16
 # Rebuild the worker pool at most this many times after a worker dies (for instance, out of memory).
 MAX_POOL_RESTARTS = 3
 _THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
@@ -84,12 +89,22 @@ def _git(*args: str, cwd: Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout  # noqa: S603, S607
 
 
-def study_dir_for(root: Path, *, commit: str, dirty: bool) -> Path:
-    """Return the study directory of a run from ``commit``."""
-    return root / f"{STUDY_PREFIX}{commit}{'-dirty' if dirty else ''}"
+def study_dir_for(root: Path, *, commit: str, dirty: bool, size: str) -> Path:
+    """Return the study directory of a ``size`` run from ``commit``."""
+    return root / f"{STUDY_PREFIX}{commit}{'-dirty' if dirty else ''}__{size}"
 
 
-def open_study(study_dir: Path, settings: MatrixSettings, *, commit: str, dirty: bool) -> None:
+def detail_dir(study_dir: Path) -> Path:
+    """Return the sibling holding the study's sources and each cell's working files; it need not be downloaded."""
+    return study_dir.with_name(study_dir.name + DETAIL_SUFFIX)
+
+
+def baseline_path_for(size: str) -> Path:
+    """Return the committed baseline a ``size`` study is compared with."""
+    return BASELINE_DIR / f"study_prepost_campaign_matrix_baseline_{size}.json"
+
+
+def open_study(study_dir: Path, settings: MatrixSettings, *, size: str, commit: str, dirty: bool) -> None:
     """Create the study directory, or reopen it after checking it ran the same matrix.
 
     :raises ValueError: if the directory's ``run_meta.json`` has other settings or another master seed
@@ -107,6 +122,7 @@ def open_study(study_dir: Path, settings: MatrixSettings, *, commit: str, dirty:
     study_dir.mkdir(parents=True, exist_ok=True)
     meta = {
         "settings": settings.to_json(),
+        "size": size,
         "master_seed": settings.master_seed,
         "commit": commit,
         "dirty": dirty,
@@ -124,18 +140,28 @@ def study_settings(study_dir: Path) -> MatrixSettings:
     return MatrixSettings.from_json(json.loads((study_dir / RUN_META).read_text())["settings"])
 
 
+def study_size(study_dir: Path) -> str:
+    """Return the size a study was run at."""
+    return str(json.loads((study_dir / RUN_META).read_text())["size"])
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def cell_dir(study_dir: Path, cell: Cell) -> Path:
-    """Return where ``cell`` writes."""
-    return study_dir / "cells" / cell.cell_id
+    """Return where ``cell`` does its work: its log, northing and method diagnostics, in the detail sibling."""
+    return detail_dir(study_dir) / CELLS_DIRNAME / cell.cell_id
+
+
+def record_path(study_dir: Path, cell: Cell) -> Path:
+    """Return where ``cell``'s record is written, in the study itself."""
+    return study_dir / CELLS_DIRNAME / f"{cell.cell_id}.json"
 
 
 def read_cell(study_dir: Path, cell: Cell) -> dict[str, Any] | None:
     """Return ``cell``'s record, or ``None`` if it has not finished."""
-    path = cell_dir(study_dir, cell) / CELL_JSON
+    path = record_path(study_dir, cell)
     return json.loads(path.read_text()) if path.exists() else None
 
 
@@ -145,14 +171,16 @@ def read_cell(study_dir: Path, cell: Cell) -> dict[str, Any] | None:
 def run_cell(
     study_dir: Path, cell: Cell, *, settings: MatrixSettings, execute: Execute = execute_cell
 ) -> dict[str, Any]:
-    """Run ``cell``, write its ``cell.json`` last, and return the record. Never raises.
+    """Run ``cell``, write its record last, and return it. Never raises.
 
     An exception is recorded as ``status="failed"`` with its traceback. The cell's logging goes to
     its own ``cell.log``. A successful cell's method diagnostics are removed.
     """
     directory = cell_dir(study_dir, cell)
-    (directory / CELL_JSON).unlink(missing_ok=True)
+    record_file = record_path(study_dir, cell)
+    record_file.unlink(missing_ok=True)
     directory.mkdir(parents=True, exist_ok=True)
+    record_file.parent.mkdir(parents=True, exist_ok=True)
     record: dict[str, Any] = {
         "cell_id": cell.cell_id,
         "arm": cell.arm,
@@ -165,7 +193,7 @@ def run_cell(
     with _cell_log(directory / CELL_LOG), _PeakRss() as rss:
         start = time.perf_counter()
         try:
-            record |= execute(cell, study_dir=study_dir, cell_dir=directory, settings=settings)
+            record |= execute(cell, detail_dir=detail_dir(study_dir), cell_dir=directory, settings=settings)
             record["status"] = "ok"
         except Exception as exc:
             logger.exception("cell %s failed", cell.cell_id)
@@ -174,9 +202,9 @@ def run_cell(
     record["peak_rss_mb"] = rss.peak_mb
     if record["status"] == "ok":
         shutil.rmtree(directory / METHOD_DIRNAME, ignore_errors=True)
-    partial = directory / f"{CELL_JSON}.partial"
+    partial = record_file.with_suffix(".partial")
     partial.write_text(json.dumps(record, indent=2, default=str) + "\n")
-    partial.replace(directory / CELL_JSON)
+    partial.replace(record_file)
     return record
 
 
@@ -239,40 +267,51 @@ def _init_worker() -> None:
 def run_study(
     settings: MatrixSettings,
     *,
+    size: str,
     root: Path | None = None,
-    workers: int = DEFAULT_WORKERS,
+    workers: int,
     limit: int | None = None,
+    retry_failed: bool = False,
     execute: Execute = execute_cell,
     prefetch_sources: Prefetch = prefetch,
-    baseline_path: Path = BASELINE_PATH,
+    baseline_path: Path | None = None,
 ) -> Path:
-    """Run every cell not yet ``ok``, then merge and compare. Re-running resumes; returns the study directory.
+    """Run every cell without a record, then merge and compare. Re-running resumes; returns the study directory.
 
     :param settings: the matrix
+    :param size: the size's name, which names the study and its committed baseline
     :param root: where the study directory goes; the benchmarking output root by default
     :param workers: cells run at once, each on one core; 1 runs them in this process
     :param limit: run only the first ``limit`` cells, as a timing trial
+    :param retry_failed: run failed cells again too; a failure is otherwise a result, kept on resuming
     :param execute: runs one cell; :func:`~benchmarking.baselines.prepost_matrix.execute.execute_cell`
-    :param prefetch_sources: fills ``sources/`` and the reanalysis cache before any cell runs
-    :param baseline_path: the committed baseline compared against
+    :param prefetch_sources: fills the detail directory's ``sources/`` and the reanalysis cache first
+    :param baseline_path: the committed baseline compared against; the size's by default
     """
     commit, dirty = git_state()
-    study_dir = study_dir_for(root if root is not None else output_root(), commit=commit, dirty=dirty)
-    open_study(study_dir, settings, commit=commit, dirty=dirty)
+    root = root if root is not None else output_root()
+    study_dir = study_dir_for(root, commit=commit, dirty=dirty, size=size)
+    open_study(study_dir, settings, size=size, commit=commit, dirty=dirty)
+    detail_dir(study_dir).mkdir(exist_ok=True)
     handler = _log_to(study_dir / "run.log")
     try:
         cells = matrix_cells(settings)[:limit]
         logger.info("Study %s: %d cells", study_dir, len(cells))
-        prefetch_sources(study_dir, cells)
-        todo = [c for c in cells if (read_cell(study_dir, c) or {}).get("status") != "ok"]
-        logger.info("%d cells already ok; running %d on %d worker(s)", len(cells) - len(todo), len(todo), workers)
+        prefetch_sources(detail_dir(study_dir), cells)
+        todo = [c for c in cells if _wants_run(read_cell(study_dir, c), retry_failed=retry_failed)]
+        logger.info("%d cells already done; running %d on %d worker(s)", len(cells) - len(todo), len(todo), workers)
         _run_cells(study_dir, todo, settings=settings, workers=workers, execute=execute, n_total=len(cells))
         merge_study(study_dir)
         compare_study(study_dir, baseline_path=baseline_path)
+        logger.info("Download %s; %s can stay here", study_dir, detail_dir(study_dir))
     finally:
         logging.getLogger().removeHandler(handler)
         handler.close()
     return study_dir
+
+
+def _wants_run(record: dict[str, Any] | None, *, retry_failed: bool) -> bool:
+    return record is None or (retry_failed and record.get("status") == "failed")
 
 
 def _log_to(path: Path) -> logging.Handler:
@@ -418,11 +457,12 @@ def load_tables(doc: dict[str, Any]) -> dict[str, pd.DataFrame]:
     }
 
 
-def compare_study(study_dir: Path, *, baseline_path: Path = BASELINE_PATH) -> pd.DataFrame | None:
-    """Compare the study's candidate with the committed baseline; write ``comparison/``.
+def compare_study(study_dir: Path, *, baseline_path: Path | None = None) -> pd.DataFrame | None:
+    """Compare the study's candidate with the committed baseline, its size's by default; write ``comparison/``.
 
     :return: the comparison, or ``None`` when no baseline is committed yet
     """
+    baseline_path = baseline_path if baseline_path is not None else baseline_path_for(study_size(study_dir))
     candidate = json.loads((study_dir / CANDIDATE).read_text())
     if not baseline_path.exists():
         logger.info("No committed baseline at %s yet; nothing to compare", baseline_path)
@@ -445,11 +485,12 @@ def compare_study(study_dir: Path, *, baseline_path: Path = BASELINE_PATH) -> pd
     return comparison
 
 
-def accept_candidate(study_dir: Path, *, baseline_path: Path = BASELINE_PATH) -> None:
-    """Promote the study's candidate over the committed baseline.
+def accept_candidate(study_dir: Path, *, baseline_path: Path | None = None) -> None:
+    """Promote the study's candidate over the committed baseline, its size's by default.
 
     :raises ValueError: if the study is incomplete, has a failed cell, or was run from a dirty tree
     """
+    baseline_path = baseline_path if baseline_path is not None else baseline_path_for(study_size(study_dir))
     doc = json.loads((study_dir / CANDIDATE).read_text())
     if doc["n_failed"]:
         msg = f"refusing to accept {study_dir}: {doc['n_failed']} cell(s) failed"
@@ -465,30 +506,34 @@ def accept_candidate(study_dir: Path, *, baseline_path: Path = BASELINE_PATH) ->
 
 
 def list_studies(root: Path | None = None) -> pd.DataFrame:
-    """Return one row per study directory: commit, whether HEAD contains it, run date, cells, disk use."""
+    """Return one row per study: size, commit, whether HEAD contains it, run date, cells, and disk use.
+
+    ``download_mb`` is the study directory; ``detail_mb`` its sibling, which need not be downloaded.
+    """
     root = root if root is not None else output_root()
     rows = []
     for study_dir in sorted(root.glob(f"{STUDY_PREFIX}*")):
         meta_path = study_dir / RUN_META
-        if not meta_path.exists():
+        if study_dir.name.endswith(DETAIL_SUFFIX) or not meta_path.exists():
             continue
         meta = json.loads(meta_path.read_text())
-        statuses = [json.loads(p.read_text()).get("status") for p in study_dir.glob(f"cells/*/{CELL_JSON}")]
+        statuses = [json.loads(p.read_text()).get("status") for p in study_dir.glob(f"{CELLS_DIRNAME}/*.json")]
         rows.append(
             {
                 "study": study_dir.name,
+                "size": meta.get("size", ""),
                 "commit": meta["commit"],
                 "dirty": meta["dirty"],
                 "in_head": _is_ancestor(meta["commit"]),
                 "started_utc": meta["started_utc"],
                 "n_ok": statuses.count("ok"),
                 "n_failed": statuses.count("failed"),
-                "disk_mb": round(_disk_bytes(study_dir.rglob("*")) / _BYTES_PER_MB, 1),
+                "download_mb": _disk_mb(study_dir),
+                "detail_mb": _disk_mb(detail_dir(study_dir)),
             }
         )
-    return pd.DataFrame(
-        rows, columns=["study", "commit", "dirty", "in_head", "started_utc", "n_ok", "n_failed", "disk_mb"]
-    )
+    columns = ["study", "size", "commit", "dirty", "in_head", "started_utc", "n_ok", "n_failed"]
+    return pd.DataFrame(rows, columns=[*columns, "download_mb", "detail_mb"])
 
 
 def _is_ancestor(commit: str) -> bool:
@@ -499,5 +544,5 @@ def _is_ancestor(commit: str) -> bool:
     return True
 
 
-def _disk_bytes(paths: Iterable[Path]) -> int:
-    return sum(p.stat().st_size for p in paths if p.is_file())
+def _disk_mb(directory: Path) -> float:
+    return round(sum(p.stat().st_size for p in directory.rglob("*") if p.is_file()) / _BYTES_PER_MB, 3)

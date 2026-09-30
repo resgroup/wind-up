@@ -1,7 +1,7 @@
 """Run one cell of the prepost campaign matrix: a full shipped ``wind-up`` run, and what it recorded.
 
-Each cell reads the SCADA and reanalysis :func:`prefetch` put in the study's ``sources/`` folder and
-the reanalysis cache, so cells run offline.
+Each cell reads the SCADA and reanalysis :func:`prefetch` put in the study's detail directory's
+``sources/`` folder and the reanalysis cache, so cells run offline.
 """
 
 from __future__ import annotations
@@ -61,17 +61,17 @@ NORTHING_DIRNAME = "northing"
 REAL_T13 = "T13"
 
 
-def sources_dir(study_dir: Path) -> Path:
-    """Return where a study keeps the SCADA its cells read."""
-    return study_dir / SOURCES_DIRNAME
+def sources_dir(detail_dir: Path) -> Path:
+    """Return where a study's detail directory keeps the SCADA its cells read."""
+    return detail_dir / SOURCES_DIRNAME
 
 
-def _site_scada_path(study_dir: Path, site: str) -> Path:
-    return sources_dir(study_dir) / f"{site}.parquet"
+def _site_scada_path(detail_dir: Path, site: str) -> Path:
+    return sources_dir(detail_dir) / f"{site}.parquet"
 
 
-def _real_declaration_path(study_dir: Path) -> Path:
-    return sources_dir(study_dir) / REAL_SITE / "campaign.yaml"
+def _real_declaration_path(detail_dir: Path) -> Path:
+    return sources_dir(detail_dir) / REAL_SITE / "campaign.yaml"
 
 
 def download_sources(cells: Iterable[Cell]) -> None:
@@ -95,21 +95,21 @@ def download_sources(cells: Iterable[Cell]) -> None:
         _site_reanalysis(site)
 
 
-def prefetch(study_dir: Path, cells: Iterable[Cell]) -> None:
-    """Download what ``cells`` need, then write each site's SCADA under ``sources/``.
+def prefetch(detail_dir: Path, cells: Iterable[Cell]) -> None:
+    """Download what ``cells`` need, then write each site's SCADA under the detail directory's ``sources/``.
 
     A site already written is not reloaded. After this the cells run offline.
     """
     cells = list(cells)
     download_sources(cells)
-    sources_dir(study_dir).mkdir(parents=True, exist_ok=True)
+    sources_dir(detail_dir).mkdir(parents=True, exist_ok=True)
     for site_key in sorted({cell.site for cell in cells}):
         if site_key == REAL_SITE:
-            path = _real_declaration_path(study_dir)
+            path = _real_declaration_path(detail_dir)
             if not path.exists():
                 write_hot_aeroup_t13(path.parent)
             continue
-        path = _site_scada_path(study_dir, site_key)
+        path = _site_scada_path(detail_dir, site_key)
         if not path.exists():
             site = SITES[site_key]()
             logger.info("Loading %s SCADA %s..%s", site.name, site.data_start, site.data_end)
@@ -144,20 +144,20 @@ def _read_scada(path: Path, *, start: pd.Timestamp | None = None, end: pd.Timest
     return pd.read_parquet(path, filters=filters)
 
 
-def execute_cell(cell: Cell, *, study_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
+def execute_cell(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
     """Run ``cell`` and return what it recorded: estimates, truths, reference readings and diagnostics.
 
     :param cell: the cell to run
-    :param study_dir: the study, whose ``sources/`` :func:`prefetch` has filled
+    :param detail_dir: the study's detail directory, whose ``sources/`` :func:`prefetch` has filled
     :param cell_dir: where the run writes its method diagnostics and discovered north table
     :param settings: the matrix, for its master seed
     """
     if cell.arm == "real":
-        return _execute_real(cell, study_dir=study_dir, cell_dir=cell_dir, settings=settings)
-    return _execute_synthetic(cell, study_dir=study_dir, cell_dir=cell_dir, settings=settings)
+        return _execute_real(cell, detail_dir=detail_dir, cell_dir=cell_dir, settings=settings)
+    return _execute_synthetic(cell, detail_dir=detail_dir, cell_dir=cell_dir, settings=settings)
 
 
-def _execute_synthetic(cell: Cell, *, study_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
+def _execute_synthetic(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
     site = SITES[cell.site]()
     seed = campaign_seed(settings.master_seed, site=cell.site, seed_index=cell.seed_index)  # type: ignore[arg-type]
     draw = draw_rollout(site, seed=seed, full_rollout=cell.full_rollout)
@@ -168,7 +168,7 @@ def _execute_synthetic(cell: Cell, *, study_dir: Path, cell_dir: Path, settings:
         )
         campaign = replace(campaign, exclusions=exclusions)
     start, end = draw.data_window(cell.post_months)
-    scada = _read_scada(_site_scada_path(study_dir, cell.site), start=start, end=end)
+    scada = _read_scada(_site_scada_path(detail_dir, cell.site), start=start, end=end)
     dataset = campaign.generate(scada)
     spec = campaign.spec()
     era5 = _site_reanalysis(site)
@@ -217,8 +217,8 @@ def _execute_synthetic(cell: Cell, *, study_dir: Path, cell_dir: Path, settings:
     }
 
 
-def _execute_real(cell: Cell, *, study_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
-    declaration = load_declaration(_real_declaration_path(study_dir))
+def _execute_real(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
+    declaration = load_declaration(_real_declaration_path(detail_dir))
     spec = declaration.spec
     end = pd.Timestamp(spec.timing_for(REAL_T13)) + pd.DateOffset(months=cell.post_months)  # type: ignore[arg-type]
     scada = _read_scada(declaration.scada_path, end=end)

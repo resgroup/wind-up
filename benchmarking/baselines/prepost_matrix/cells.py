@@ -104,8 +104,51 @@ class Cell:
         return self.seed_index is not None and self.seed_index % 2 == 0
 
 
+@dataclass(frozen=True)
+class StudySize:
+    """One size of study: its matrix and how many cells run at once by default."""
+
+    settings: MatrixSettings
+    workers: int
+
+
+SIZES: dict[str, StudySize] = {
+    # A laptop smoke test of every arm and the real campaign; a synthetic HOT cell alone costs ~20 min.
+    "small": StudySize(
+        MatrixSettings(seeds={"hot": 0, "pen": 1, "kel": 1}, ks=(4,), post_months=(3, 12)),
+        workers=3,
+    ),
+    # Sized to about 11.5 h of cells on 16 workers; check with ``plan`` before a run.
+    "big": StudySize(MatrixSettings(seeds={"hot": 5, "pen": 6, "kel": 4}), workers=16),
+}
+
+# Mean wall seconds of one cell per (site, K), measured on the HPC at 57e4aeb. Post length barely
+# matters, as the pre-period dominates; the exclusion arms run at K4 and cost about what main K4 does.
+CELL_COST_S: dict[tuple[str, int], float] = {
+    ("hot", 3): 911.0,
+    ("hot", 4): 1085.0,
+    ("hot", 6): 1616.0,
+    ("pen", 3): 154.0,
+    ("pen", 4): 169.0,
+    ("pen", 6): 287.0,
+    ("kel", 3): 83.0,
+    ("kel", 4): 91.0,
+    ("kel", 6): 92.0,
+    (REAL_SITE, 3): 298.0,
+    (REAL_SITE, 4): 346.0,
+    (REAL_SITE, 6): 458.0,
+}
+# The largest peak resident memory of one cell per site, in MB, measured alongside CELL_COST_S.
+PEAK_RSS_MB: dict[str, float] = {"hot": 7165.0, "pen": 4082.0, "kel": 4178.0, REAL_SITE: 5465.0}
+
+
+def cell_cost_s(cell: Cell, costs: dict[tuple[str, int], float] = CELL_COST_S) -> float:
+    """Return the expected wall seconds of ``cell``."""
+    return costs[(cell.site, cell.k)]
+
+
 def matrix_cells(settings: MatrixSettings) -> list[Cell]:
-    """Return every cell, longest first: the real campaign, then by post length, descending."""
+    """Return every cell, the most expensive first, so no long cell is left to run alone at the end."""
     cells: list[Cell] = []
     if settings.real:
         cells.extend(Cell("real", REAL_SITE, None, None, k, n) for k in settings.ks for n in settings.post_months)
@@ -118,7 +161,7 @@ def matrix_cells(settings: MatrixSettings) -> list[Cell]:
                         Cell(arm, site, index, multiplier, settings.exclusion_k, n)  # type: ignore[arg-type]
                         for arm in settings.exclusion_arms
                     )
-    return sorted(cells, key=lambda c: (c.arm != "real", -c.post_months, c.cell_id))
+    return sorted(cells, key=lambda c: (-cell_cost_s(c), c.cell_id))
 
 
 def campaign_seed(master_seed: int, *, site: str, seed_index: int) -> int:
