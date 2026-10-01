@@ -12,6 +12,117 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF26 — The prepost matrix's second small run, with every cell reporting: **wind-up tracks the magnitude and misses the level**. The fitted slope is 0.993 to 0.996, while a placebo reading's sd **triples from 0.34 pp to 0.86 pp** as the post period grows from 3 months to 10. Penmanshiel is fixed; the leak is unmoved; the cost model is out by 5 to 9 times
+
+*2026-10-01. `uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run --size small`
+at `82c6398`, on the HPC with 16 workers: 38 cells (Penmanshiel and Kelmarsh one seed each, the
+real HoT T13 campaign), K4, post lengths 3 and 12 months, multipliers +1, 0, −1, both exclusion
+arms. All 38 ok in 33 min. Its candidate is now the committed `small` baseline. The study directory
+holds `cells/*.json`, `cells.csv` and `leak_check.csv`; the numbers below are read from them.*
+
+**1. The Penmanshiel fixes hold, and CF25 §3 and §4 are closed.** All 38 cells ok, **no `unplanned`
+turbine**, and every plan has 4 power references bar Kelmarsh at L12, which has 3 — the floor, met.
+Penmanshiel contributes 5 test turbines where the `1f87f6f` run lost all 18 of its cells. The two
+acceptance tests of C3's step 2 pass.
+
+**2. The method tracks the injected magnitude; what it gets wrong is the level.** Fitting
+`estimate = scale × truth + bias` across each campaign's three multipliers, pooled over both sites:
+
+| arm | post | `line_scale` | `line_bias` |
+|---|---|---|---|
+| main | 3 months | 0.996 ± 0.004 | −0.04 pp ± 0.35 |
+| main | 12 months | 0.993 ± 0.006 | +0.05 pp ± 0.54 |
+
+A slope within 0.7 % of unity on injections of ±4 to ±5.7 pp means the shape of the answer is
+right; essentially all of the error is an offset that does not depend on the upgrade. That is the
+useful framing for everything below — **the problem to solve is the level, not the response.**
+
+**3. Accuracy gets *worse* with a longer post period.** Over the 18 placebo (multiplier 0, truth
+exactly 0) test-turbine readings at each post length:
+
+| post asked | post days delivered | mean | sd | worst |
+|---|---|---|---|---|
+| 3 months | 90–110 | −0.04 pp | **0.34 pp** | 0.68 pp |
+| 12 months | 266–326 | −0.11 pp | **0.86 pp** | 1.68 pp |
+
+More data, a worse answer, so this is not a sampling-noise effect. It is the same quantity
+[CF24](#cf24--balance-the-two-periods-and-two-thirds-of-the-prepost-placebo-bias-disappears-a-whole-farm-whose-pre-and-post-hold-the-same-months-record-for-record-reads-023-pp-against-065-pp-for-six-contiguous-arms--and-every-large-per-turbine-offset-goes-with-it-t17-included-44--034) measures from the other side: a longer post period sits further from the baseline it
+is compared against, and balancing the two periods removes two thirds of the bias. The worst single
+group is Kelmarsh at L12, which reads **+1.10 pp** against a truth of 0 in the `main` arm (+1.37 and
++1.48 in the exclusion arms) — and its references read +0.62 to +0.98 pp over the same window, so
+the bias is common-mode and the references see it.
+
+**4. "L12" is never 12 months.** The data window runs to the last *trial* turbine's works end plus
+the requested length, and the selector then truncates each turbine's span at the first rollout
+turbine whose works fall inside it. Delivered: 266 to 326 days at Penmanshiel, 291 at Kelmarsh,
+where it also costs a power reference. The L axis is therefore confounded with reference
+availability, and the label overstates what was run.
+
+**5. Reference downtime has large leverage, and it is not symmetric about the changeover.**
+Penmanshiel T14 at L12, placebo, reads **−0.37 pp** in `main` and **−1.58 / −1.68 pp** in the two
+exclusion arms. Three drawn outages touch its four references; two fall in the post period (T13
+loses 13 days of August 2018, T07 4 days of June 2018) and one in the pre. That is about **1.3 % of
+its post-period reference records for a 1.3 pp move**. Its own reference-stability readings move by
+at most 0.19 pp over the same change, so **the sanity check does not see what moves the headline** —
+the test estimate is roughly seven times more sensitive to the perturbation than the readings that
+are supposed to police it.
+
+**6. The two exclusion channels disagree on identical data.** `excl_booleans` and `excl_nan` draw
+the same exclusions from the same campaign seed. Across all 141 reference readings their record
+counts are **identical to the record**, and their plans and reference sets are identical too. The
+estimates differ by up to **0.384 pp**, median 0.094 pp. The only difference between the arms is
+whether a held-back reference's `waking` and `normal_operation` booleans are recomputed from the
+unfiltered frame and joined back on. Same rows in, different answer out: a defect, not a data
+effect.
+
+**7. The leak is where CF25 left it** — it was not attempted on this commit, and these numbers
+confirm it rather than revisiting it:
+
+| arm | site | readings | median move | largest move |
+|---|---|---|---|---|
+| main | pen | 40 | 0.123 pp | 0.258 pp |
+| main | kel | 7 | 0.061 pp | 0.202 pp |
+| excl_booleans | pen | 40 | 0.119 pp | 0.304 pp |
+| excl_nan | pen | 40 | 0.119 pp | 0.346 pp |
+
+It is systematic, not noise: the pooled reference mean falls monotonically with the multiplier in
+**every** group (main, all sites, L12: +0.077 → +0.018 → −0.042 pp), which is the signature of the
+upgraded turbines' scaled power reaching the waking booleans.
+
+**8. A second channel, with a different signature: the wake-nadir shift jumps.** Discovered north
+offsets also move with the multiplier, but in discrete steps rather than monotonically —
+Penmanshiel T10 reads −1.216 / −1.316 / **+11.069** degrees across multipliers −1 / 0 / +1 at L3.
+The large movers are all test turbines, whose direction is never a model feature; **power
+references** move by at most 0.744 degrees (median 0.020). Small today, but a pass-4 answer that
+jumps by degrees when nothing geometric has changed is its own problem, tracked as
+[R9](issues_campaigns.md#r9--wake-nadir-northing-refinement-the-pass-4-shift-jumps).
+
+**9. `CELL_COST_S` is out by 5 to 9 times, and the big size is unaffordable as written.**
+
+| site | post | measured mean | `CELL_COST_S` | ratio |
+|---|---|---|---|---|
+| pen | 3 | 847 s | 169 s | **5.0×** |
+| pen | 12 | 1535 s | 169 s | **9.1×** |
+| kel | 3 / 12 | 126 / 185 s | 91 s | 1.4× / 2.0× |
+| hot_t13 | 3 / 12 | 385 / 694 s | 346 s | 1.1× / 2.0× |
+
+`plan --size big --measured <this study>` now projects **17.5 h on 16 workers** against the table's
+11.5 h — and that still prices the 450 synthetic `hot` cells, a third of the matrix, from the
+unmeasured table entry. Note the direction has flipped since CF25 §2, where L12 was *cheaper* than
+L3 because it got one reference; cost follows the reference count, and the references are now
+there. **`small` sets `hot: 0`, so no synthetic Hill of Towie cell has ever run** — the `calibrate`
+size must include one before any big run is projected.
+
+**10. The reference screen never fired.** Zero screened, zero unjudged, zero ejections across all
+38 cells. C3 claims to re-verify R3 in context on a realistic prepost campaign; on this evidence it
+does not exercise it at all.
+
+**11. The real campaign is stable.** Hill of Towie T13 AeroUp reads **+3.04 %** at L3 and **+3.02 %**
+at L12, against reference readings whose mean is +0.35 to +0.42 pp and whose worst is 0.72 to
+1.02 pp. Northing finds 4 changepoints at L3 and 5 at L12 (T11, T12, T19).
+
+---
+
 ## CF25 — The prepost matrix's first small run: reference readings move with the injected upgrade by up to **0.43 pp** (median 0.16 pp), and the period selector was taking **one** power reference where three were available on a shorter span
 
 *2026-09-30. `uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run --size small`
@@ -117,7 +228,7 @@ instead of the thing it is asking about.
 *2026-09-16. Whole-farm reference arm on a contiguous prepost placebo: real Hill of Towie SCADA,
 12-month baseline into a 6-month campaign changing over 2018-09-01, T13 the test turbine and all 20
 others estimated against the rest, nothing injected, reference screen off, campaign-proximity
-weighting off ([CF22](#cf22)). Every reading's truth is 0. ERA5 is removed as a model feature with
+weighting off ([CF22](#cf22--the-campaign-proximity-time-decay-weighting-is-now-off-by-default-on-a-record-whose-pre-and-post-periods-are-the-same-days-interleaved--truth-0--it-moved-the-reading-0154-pp-and-with-it-off-the-disguised-prepost-and-toggle-legs-agree-to-the-last-digit)). Every reading's truth is 0. ERA5 is removed as a model feature with
 `era5_hourly_df=None` and still drives the shared northing step; the power minimum is removed by
 unsetting the `active_power_min` role on the column schema, which takes it out of every reference's
 feature block.*
@@ -136,7 +247,7 @@ with normal degradation. A model leaning on a drifting feature would read that d
 | neither | +0.563 (+0.339) | +0.701 |
 
 The whole spread across the four arms is **0.10 pp**, at the 0.127 pp placebo noise floor
-([CF14](#cf14)), so nothing here is distinguishable from nothing.
+([CF14](#cf14--missing-data-is-absorbed-within-estimator-noise-with-one-exception-a-reference-that-disappears-from-the-delivery-costs-045-pp-because-it-shrinks-the-pool-rather-than-corrupting-anything-every-crash-named-someone-elses-problem-and-the-misleading-one-was-prepost-only)), so nothing here is distinguishable from nothing.
 
 **Per turbine the two groups behave very differently, which is the useful part.** Dropping the power
 minimum barely moves any turbine (correlation with `full` 0.998, mean absolute change 0.07 pp, worst
@@ -618,7 +729,7 @@ not cleared.
 **The one material effect is pool shrinkage, not corruption.** Compare `ref_empty` (T15 all-NaN for
 30 days — inside the noise) against `ref_absent_entirely` (T15 gone from the whole record —
 +0.45 pp). The difference is not damaged data: it is a **2-reference pool instead of 3**, and
-[CF3](#cf3) already establishes reference count as the dominant accuracy driver. So `power_model`
+[CF3](#cf3--reaching-the-02-farm-target-is-mostly-about-reference-count-not-test-count-going-from-3-to-20-references-halved-power_models-error-before-any-cancellation-and-six-test-turbines-then-took-the-farm-result-to-0148) already establishes reference count as the dominant accuracy driver. So `power_model`
 was reflecting a known effect faithfully; what it never did was **say the pool had shrunk**. The fix
 is announcement, not adaptation — which is why R4's anticipated "discover the available signals and
 adapt" was **not** implemented: it would have converted honest raises into silent estimates.

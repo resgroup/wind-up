@@ -11,7 +11,9 @@ on the same site that did *not* change — and reports the difference. A campaig
 one YAML file and run from the command line.
 
 This page assumes the upgraded turbines are already chosen. To choose them, see
-[designing a campaign](designing-a-campaign.md).
+[designing a campaign](designing-a-campaign.md). For what wind-up does with the data once it has
+it, see [how wind-up estimates uplift](estimating-uplift.md) and, for a campaign with a single
+changeover, [how wind-up handles a prepost campaign](prepost-campaigns.md).
 
 ## 1. Describe the campaign
 
@@ -67,14 +69,22 @@ exclusions:                      # optional; end exclusive
   window covers the first day through the end of the last. Any turbine may appear, analysed or not,
   and a turbine may appear more than once. Each upgraded turbine needs exactly one window, and its
   changeover is the end of that window. Its own works rows are never used.
-- **Exclusions** are periods whose data is not used, for one turbine or `ALL`.
+- **Exclusions** are periods whose data is not used, for one turbine or `ALL`. A turbine's *own*
+  exclusion leaves its rows in the analysis marked unusable, so the model can still tell whether
+  it was running and making a wake over them; a farm-wide exclusion removes the records outright.
 - **The span.** For each upgraded turbine wind-up picks the start and end of its analysis, and its
   **power references**: the nearest 4 turbines with data over the whole span and no works inside
   it, within 20 rotor diameters. A turbine changed entirely before or after the span is fine. A
-  chosen span has at least 3 power references; when none does, the turbine is not analysed. It
-  prefers spans where the nearest turbine and at least 3 of the 4 nearest qualify, then the longest
-  shorter side up to 12 months, then post up to 12 months, then pre up to 24 months. Every other
-  turbine enters only for its wake.
+  chosen span gives both sides at least 3 months of usable time and has at least 3 power
+  references; when none does, the turbine is not analysed — it is listed under `unplanned` with
+  the reason and left out of the farm headline, and the other turbines still run. Among the spans
+  that qualify it prefers, in order: the nearest turbine and at least 3 of the 4 nearest
+  qualifying, then the longest shorter side up to 12 months, then post up to 12 months, then pre
+  up to 24 months, then more power references, then a nearer furthest reference. It will give up
+  some pre or post period to reach a reference whose data starts late or ends early, if that is
+  what the preferences above want. Exclusions do not count towards either side's length. Every
+  other turbine enters only for its wake. [How wind-up handles a prepost
+  campaign](prepost-campaigns.md) describes the whole selection.
 - **To fix the span yourself**, declare `analysis_period`, once for the campaign or per turbine
   (`analysis_period: {T13: {start: ..., end: ...}}`). Declared `references` are then used as power
   references even when their works overlap that span, with a warning.

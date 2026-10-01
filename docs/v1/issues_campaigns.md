@@ -139,7 +139,7 @@ so moved every frozen artefact at once. Read this before accepting any benchmark
 
 ## Suggested order
 
-`C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4 ✅] → W1a → C3 → C4 → R5 →
+`C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4 ✅] → W1a → C3 → C4 → [R5 R9] →
 C5 → R6 → C6 → C8 → C9 → W1b → R7 → W2`, with **W3 running continuously from W1a onward**
 rather than at one point in the line.
 
@@ -174,7 +174,9 @@ in C5 the treatment *is* a direction offset, so a systematic absolute error move
 signal being measured rather than adding noise around it. R5's two known gaps bite
 exactly there — Part B supplies the absolute anchor from wake nadirs that passes 1 and 2
 cannot, and Part A norths the small device counts a geometry-driven steering pair can
-come down to.
+come down to. **R9** travels with it: it is the same pass-4 machinery, and a
+shift that jumps by degrees when nothing geometric has changed is a worse problem in C5 than
+anywhere else.
 
 **R6** (abnormal behaviour) lands **after C5** because it needs the signal realism that
 issue's fixtures push toward, and because its detector must not be handed a dataset in
@@ -308,41 +310,75 @@ prepost split.
 **Re-verifies:** the shared northing step (R1) and the reference-validity screen (R3),
 now in-context on a realistic prepost campaign.
 
-### Status and next steps (2026-09-30)
+### Status and next steps (2026-10-01)
 
 The prepost campaign matrix (`benchmarking/baselines/study_prepost_campaign_matrix.py`) runs at a
-size: `small` (38 cells, ~10 min on 16 workers) or `big`. Each study writes a directory to download
-and a `__detail` sibling that stays behind. The first small run is
-[CF25](findings_campaigns.md). **Hold the big run** until the small runs are clean: they are cheap
-and already show the problems.
+size: `small` (38 cells, ~33 min on 16 workers) or `big`. Each study writes a directory to download
+and a `__detail` sibling that stays behind. Two small runs so far: [CF25](findings_campaigns.md)
+at `682563e` and [CF26](findings_campaigns.md) at `82c6398`, whose candidate is the committed
+`small` baseline. **Hold the big run** until the small runs are clean: they are cheap and already
+show the problems.
 
-1. **Find and fix the reference-reading leak (CF25 §1).**
-   - Confirm the channel. Re-read one leaking cell (Penmanshiel seed 0, K4, L3, T12 → T13) with
-     the upgraded turbines left out of `wake_only`, or with their waking boolean computed from
-     un-upgraded power. The leak should vanish.
+**Done.** The Penmanshiel fixes landed in `b1beb06`, `08d7b1b` and `82c6398` and the CF26 run
+clears their acceptance test — 38 of 38 cells ok, no `unplanned` turbine, every plan at or above
+3 power references. The selector now tries each candidate's data extents as span edges, an
+unplannable turbine is reported rather than fatal, and the two Greenbyte sites start on their
+Zenodo commercial operations dates. **How the method works today is written up** in
+[estimating uplift](../estimating-uplift.md) and [prepost campaigns](../prepost-campaigns.md); read
+those before changing anything here.
+
+**The decision (2026-10-01): chase the method defects first; the big run waits.** CF26 shows the
+matrix is already earning its keep, and the big run would only multiply defects it has already
+found. In rough order of what is worth attacking:
+
+1. **Missing reference data — the exclusion channels and the downtime leverage
+   ([CF26](findings_campaigns.md) §5, §6).** Probably one defect, not two. `excl_booleans` and
+   `excl_nan` drop bit-identical record counts on identical plans and still differ by up to
+   0.38 pp, which gives a provable "should be exactly zero" oracle on one cheap cell (Penmanshiel
+   seed 0, m+0, K4, L12, T14). The same turbine moves 1.3 pp when ~1.3 % of its post-period
+   reference records go missing, which is the magnitude that makes it matter. A single
+   mishandling of absent reference data in `power_model` — NaN reaching a feature, or rows leaving
+   the fit without the prediction weighting being renormalised — would produce both.
+2. **The level error that grows with the post period ([CF26](findings_campaigns.md) §3).** The
+   placebo sd triples from 0.34 to 0.86 pp between a 3-month and a 10-month post period, and the
+   fitted slope stays within 0.7 % of unity throughout, so this is a level problem and not a
+   response problem. It overlaps [CF24](findings_campaigns.md)'s balanced-periods result; the open
+   question is what a campaign should do about it when the analyst cannot choose the periods.
+   Worth testing: the references diagnose much of it — subtracting each cell's reference median
+   takes Kelmarsh L12 from 1.36 to 0.42 pp RMSE — but it hurts where the bias is not common-mode
+   (Penmanshiel L3, 0.36 → 0.42), so any such correction needs shrinking towards the reference
+   spread rather than applying flat.
+3. **The reference-reading leak (CF25 §1, [CF26](findings_campaigns.md) §7).** Unchanged at a
+   median of 0.12 pp and a max of 0.35 pp, and still unattempted. It contaminates the multiplier
+   axis and the leak check itself, but not the placebo or fixed-multiplier comparisons above, so
+   it does not block them.
+   - Confirm the channel. Re-read one leaking cell with the upgraded turbines left out of
+     `wake_only`, or with their waking boolean computed from un-upgraded power.
    - Check whether the same channel moves the test turbines' own estimates, through the other
      upgraded trial turbines.
-   - Fix it in `power_model`, most likely by not giving an upgraded turbine a waking boolean
-     that reads its upgraded power.
-   - Re-run small. The acceptance test is `leak_check.csv` at ~0 pp.
-2. **Re-run small after the Penmanshiel fixes.** The `1f87f6f` small run lost all 18 Penmanshiel
-   cells to one trial turbine, T02, for which no span had 3 power references. Three fixes followed:
-   - The period selector now also tries each candidate reference's data start and end as a span
-     edge, so it can give up some pre or post to reach references whose data starts late. The
-     ranking is unchanged.
-   - A trial turbine the selector cannot plan is reported under `unplanned` with its reason, in the
-     report's `analysis_plans.yaml` and in the cell record, and left out of the estimate and the
-     farm truth alike. The campaign fails only when no turbine plans.
-   - Kelmarsh and Penmanshiel campaigns start on their commercial operations dates from the
-     Zenodo static files, 2016-04-15 and 2016-09-01, not on 1 January 2016.
-   A failed cell now also records its draw, and `run.log` gives its reason. Acceptance: no
-   Penmanshiel cell fails on the selector, and every plan has at least 3 references.
-3. **Make the cost model reference-aware before any big run (CF25 §2).**
-   - Key costs by (site, K, post length) wherever measured.
-   - Add a `calibrate` size: 2 seeds per site, one multiplier, every K and post length, no
-     exclusion arms, plus the real campaign.
-   - Re-project big with `plan --size big --measured <calibrate study>`, and trim it to 12 h.
-4. **Then the big run**, and commit its baseline with `compare --accept-candidate`.
+   - Fix it in `power_model`, most likely by not giving an upgraded turbine a waking boolean that
+     reads its upgraded power. The acceptance test is `leak_check.csv` at ~0 pp.
+   - The second channel, the wake-nadir shift, is [R9](#r9--wake-nadir-northing-refinement-the-pass-4-shift-jumps).
+
+**Before any big run,** independently of the above:
+
+- **Make the cost model reference-aware ([CF26](findings_campaigns.md) §9).** It is out by 5 to 9
+  times on Penmanshiel, and `big` now projects 17.5 h on 16 workers rather than 11.5. Key costs by
+  (site, K, post length); add a `calibrate` size — 2 seeds per site, one multiplier, every K and
+  post length, no exclusion arms, plus the real campaign — and **include `hot`**, whose 450 cells
+  are a third of `big` and have never been run even once. Re-project with
+  `plan --size big --measured <calibrate study>` and trim to 12 h.
+- **Make `L` mean what it says, or rename it ([CF26](findings_campaigns.md) §4).** "12 months"
+  delivers 266 to 326 days, because the rollout turbines' works truncate the span. As it stands the
+  axis is confounded with reference availability.
+- **Give the matrix a determinism check.** The baseline comparison flags a 0.1 pp move
+  (`metrics.MATERIAL`), and nothing verifies that two runs of the same cell agree to better than
+  that. LightGBM is pinned deterministic, so a duplicate-cell assertion should be cheap.
+- **Exercise the reference screen ([CF26](findings_campaigns.md) §10).** It fired on nothing in all
+  38 cells, so this issue's claim to re-verify R3 in context is currently unsupported. Either the
+  draws need a reference that misbehaves, or the claim should move to R3's own fixtures.
+
+**Then the big run**, and commit its baseline with `compare --accept-candidate`.
 
 ---
 
@@ -846,6 +882,10 @@ where geometry gives too few usable pairs.
 method wants to treat carefully, so pass 3 must not quietly change which rows downstream
 analysis considers valid. It outputs an offset, nothing else.
 
+**Note:** the shift itself now exists — `north_farm` runs it as pass 4 ([CF20](findings_campaigns.md),
+[how northing works](../northing.md)) — so what is left of Part B is the *absolute accuracy* goal,
+not the machinery. Its repeatability is a separate problem, tracked as [R9](#r9--wake-nadir-northing-refinement-the-pass-4-shift-jumps).
+
 ---
 
 ## R6 — Abnormal turbine behaviour: a one-off curtailment is not the upgrade's doing
@@ -974,6 +1014,77 @@ controller or surroundings are no longer the ones being measured.
   declaring a shorter analysis period, and which may be the honest answer.
 - **Success:** the estimate is stable as baseline length grows, and whatever rule is adopted is
   neutral on a placebo whose pre and post periods are equivalent.
+
+---
+
+## R9 — Wake-nadir northing refinement: the pass-4 shift jumps
+
+**Status:** unscheduled; belongs **before C5** beside [R5](#r5--northing-refinement-small-n-devices-and-absolute-accuracy-from-wake-nadirs),
+for the same reason — everywhere else a direction error is a nuisance variable, but in C5 the
+treatment *is* a direction offset.
+
+**Goal:** the wake-nadir shift should move only when the wake geometry it reads has actually
+moved. Today it can jump by degrees in response to a change that should not reach it at all.
+
+**The observation.** In the prepost campaign matrix each campaign is run three times at injected
+upgrade magnitudes of −1, 0 and +1. The SCADA is identical apart from the upgraded turbines' power,
+so a discovered north offset should barely move. Pass 4 reads power — it locates each pair's wake
+nadir from a power ratio — so it does move, and not smoothly. Penmanshiel seed 0, K4, L3, `main`
+arm (degrees):
+
+| turbine | −1 | 0 | +1 |
+|---|---|---|---|
+| **T10** (test turbine) | −1.216 | −1.316 | **+11.069** |
+| T07 (power reference) | 6.848 | 6.259 | 6.220 |
+| T12 (test turbine) | 10.753 | 10.708 | 10.663 |
+
+and Kelmarsh seed 0, K4, L3: T06 reads 4.299 / 2.830 / 2.829.
+
+**Why this reads as instability rather than as the leak.** The leak
+([CF25](findings_campaigns.md) §1) is monotonic in the magnitude — a smooth channel through the
+waking booleans. These are **discrete jumps**: two of the three multipliers agree to a hundredth
+of a degree and the third is 0.6, 1.5 or 12.4 degrees away. That is the signature of a pair being
+accepted on one run and rejected on the other, or of a turbine losing its last resolvable pair and
+falling back to the circular median of its neighbours. `wind_up.wake_nadir` rejects a nadir that is
+unbracketed, not convex, too shallow or too thinly sampled, and combines a turbine's surviving
+pairs by their circular median — so a single pair crossing one of those thresholds moves the whole
+answer in a step.
+
+**Scale, and who it reaches.** Across the 40 discovered offsets of that run, the median move over
+the three multipliers is 0.054°. The large movers are all **test** turbines (median 0.128°, worst
+12.385°), whose own direction is never a model feature, so the headline does not see them directly.
+**Power references** move by at most **0.744°** (Kelmarsh T03), median 0.020°, and those *are* fed
+to the model as `sin`/`cos` under `direction_feature`. So the damage today is small; the mechanism
+is not.
+
+**Other instances.** The same signature appeared in the earlier `1f87f6f` small run (Kelmarsh T05
+discovered at 2.7° against 4.5° across multipliers). [CF21](findings_campaigns.md) is a different
+pass with the same moral — the discovered table turned out to be sensitive to something it should
+have been invariant to, and the fix was to iterate pass 2 to convergence.
+
+**Scope**
+- **A repeatability probe.** Re-run pass 4 on one record perturbed in ways that cannot change the
+  true geometry — scale one turbine's power, drop a month, shift the window — and record how far
+  each turbine's shift moves. A pass whose answer is this sensitive to its input needs a stated
+  stability, the way the changepoint search has a minimum step.
+- **Find which guard is flipping.** The per-pair diagnostics are already written
+  (`wake_nadir_pair_<upstream>_<downstream>.png`); extend them to record, per pair per run, whether
+  the nadir was accepted and which test rejected it.
+- **Make the combine robust rather than brittle.** Candidates: require a pair to clear its
+  thresholds by a margin before it counts; weight pairs by how well bracketed they are instead of
+  taking an unweighted circular median; require a minimum number of surviving pairs before a
+  turbine takes its own shift rather than its neighbours'.
+- **Consider excluding upgraded turbines' power from pass 4** on a campaign that declares them, the
+  same way the power model refuses an upgraded turbine's power as a feature. Pass 4 is the one
+  northing step that reads power, and an upgraded turbine's power is exactly the signal a campaign
+  knows not to trust.
+
+**Done when:** a stated stability for the shift under perturbations that cannot change the
+geometry; the flipping guard identified and the combine changed or justified; and the matrix's
+discovered offsets no longer move with the injected magnitude beyond that stated figure.
+
+**Not in scope:** finding changepoints from nadirs, and the absolute-accuracy goal of R5 Part B.
+This issue is about the existing pass being repeatable, not about making it more ambitious.
 
 ---
 
