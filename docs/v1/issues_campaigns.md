@@ -329,36 +329,64 @@ those before changing anything here.
 
 **The decision (2026-10-01): chase the method defects first; the big run waits.** CF26 shows the
 matrix is already earning its keep, and the big run would only multiply defects it has already
-found. In rough order of what is worth attacking:
+found.
 
-1. **Missing reference data — the exclusion channels and the downtime leverage
-   ([CF26](findings_campaigns.md) §5, §6).** Probably one defect, not two. `excl_booleans` and
-   `excl_nan` drop bit-identical record counts on identical plans and still differ by up to
-   0.38 pp, which gives a provable "should be exactly zero" oracle on one cheap cell (Penmanshiel
-   seed 0, m+0, K4, L12, T14). The same turbine moves 1.3 pp when ~1.3 % of its post-period
-   reference records go missing, which is the magnitude that makes it matter. A single
-   mishandling of absent reference data in `power_model` — NaN reaching a feature, or rows leaving
-   the fit without the prediction weighting being renormalised — would produce both.
-2. **The level error that grows with the post period ([CF26](findings_campaigns.md) §3).** The
-   placebo sd triples from 0.34 to 0.86 pp between a 3-month and a 10-month post period, and the
-   fitted slope stays within 0.7 % of unity throughout, so this is a level problem and not a
-   response problem. It overlaps [CF24](findings_campaigns.md)'s balanced-periods result; the open
-   question is what a campaign should do about it when the analyst cannot choose the periods.
-   Worth testing: the references diagnose much of it — subtracting each cell's reference median
-   takes Kelmarsh L12 from 1.36 to 0.42 pp RMSE — but it hurts where the bias is not common-mode
-   (Penmanshiel L3, 0.36 → 0.42), so any such correction needs shrinking towards the reference
-   spread rather than applying flat.
-3. **The reference-reading leak (CF25 §1, [CF26](findings_campaigns.md) §7).** Unchanged at a
-   median of 0.12 pp and a max of 0.35 pp, and still unattempted. It contaminates the multiplier
-   axis and the leak check itself, but not the placebo or fixed-multiplier comparisons above, so
-   it does not block them.
-   - Confirm the channel. Re-read one leaking cell with the upgraded turbines left out of
-     `wake_only`, or with their waking boolean computed from un-upgraded power.
-   - Check whether the same channel moves the test turbines' own estimates, through the other
-     upgraded trial turbines.
-   - Fix it in `power_model`, most likely by not giving an upgraded turbine a waking boolean that
-     reads its upgraded power. The acceptance test is `leak_check.csv` at ~0 pp.
-   - The second channel, the wake-nadir shift, is [R9](#r9--wake-nadir-northing-refinement-the-pass-4-shift-jumps).
+**Plan refresh (2026-10-01): the reference non-zero uplift comes first.** A placebo reading — a
+turbine that did not change — carries a level error of +0.1 to +1 pp on contiguous prepost periods,
+growing with the post length, and wind-up v0 does not show it. That is not acceptable for release
+and it is the first problem to solve; the three defects CF26 listed are recast as parts of it.
+
+*The working diagnosis.* The counterfactual compares an observed sum against a modelled one. The
+double/debiased ML literature (Chernozhukov et al. 2018) gives that naive estimator's bias as
+**covariate shift between the periods × the model's conditional error**, plus any **drift** in the
+test–reference relation the features do not carry. Every C3 observation fits: the bias grows with
+how far apart in time the held-out rows are ([CF24](findings_campaigns.md)), balancing the periods
+removes two thirds of it, a longer post is worse ([CF26](findings_campaigns.md) §3), and a
+reference outage puts rows in a configuration the trees never trained on (§5, §6). Shin, Ding &
+Huang (2018, AoAS) measured the same +0.5 to +0.7 pp over-estimate with ground truth on a
+flexible pre-period model. v0 avoids it by construction: it fits a curve to *each* period on the
+same reference-derived grid and differences them under one external weight, drops rows from both
+sides rather than imputing, and carries the waking scenario of every row explicitly.
+
+*The plan, in order:*
+
+1. **Diagnose before changing the estimator.** A level probe dumps each estimate's per-row
+   actual, counterfactual and features, then decomposes the placebo level by month, direction
+   sector, wind band, operating-reference pattern, upwind-offline count and propensity
+   P(post | X), and computes the doubly-robust (AIPW) correction term to see whether it predicts
+   the observed level. Two cases: the Hill of Towie whole-farm reference arm at changeover
+   2018-09 (real data, truth 0) and the Penmanshiel cell (seed 0, m+0, K4, L12, T14) in all three
+   arms, where `excl_booleans` and `excl_nan` drop identical rows and must agree. The result picks
+   between the branches below.
+2. **Close the reference-reading leak** (CF25 §1, [CF26](findings_campaigns.md) §7). Replace the
+   5 %-of-rated waking threshold on upgraded and power-free turbines with an indicator a
+   multiplicative change cannot flip (power above zero with availability, or v0's raw shutdown
+   rule). Acceptance: `leak_check.csv` ≈ 0. Needed before any correction that leans on the
+   reference readings.
+3. **Make the estimator symmetric** — the v0 principle with v1's covariates. Candidates: a model
+   fitted to each period and compared over one common evaluation set; the AIPW correction
+   (out-of-fold baseline residuals reweighted by the propensity odds, cross-fitted on purged time
+   blocks); and common-support trimming, dropping post rows whose coarsened cell the baseline does
+   not cover from both sides. Chosen by step 1: concentrated in low-overlap rows → AIPW and
+   trimming; mixed → the two-model ratio first.
+4. **Use the reference contrast.** Model the outcome relative to the reference mean so common-mode
+   drift cancels before the model sees it; and correct the headline by the pooled reference
+   reading, shrunk toward zero by the reference spread (measured: Kelmarsh L12 RMSE 1.36 →
+   0.42 pp, Penmanshiel L3 0.36 → 0.42, hence the shrinkage). Also gives the farm-level reference
+   aggregate the documentation asks for. Leads if step 1 says drift.
+5. **Waking state and missing reference data.** An explicit per-row waking scenario (v0's
+   IEC-sector logic) as a feature and a support axis; drop a reference's power on rows where the
+   test turbine is upwind of it, with an analyst override; and a deliberate outage policy in place
+   of NaNs routed through trees. Pulled forward if step 1 localises the Penmanshiel channel
+   difference to held-back rows.
+6. **Reduce the shift by design.** Prefer a pre span covering the post's calendar months in the
+   planner; optionally weight the baseline to the post's month or weather mix.
+7. **Re-run the small matrix**, then revisit the reference screen as "the main method, unmodified"
+   once the level is fixed.
+
+*Done when:* on the small matrix the placebo test-turbine mean is within ±0.1 pp and its sd does
+not grow with the post length; each cell's pooled reference reading is within ±0.1 pp;
+`leak_check.csv` ≈ 0; and the two exclusion arms agree to better than 0.02 pp.
 
 **Before any big run,** independently of the above:
 
