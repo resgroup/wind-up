@@ -1,7 +1,7 @@
 """The level probe: where a power-model placebo reading's level comes from.
 
 A placebo reading (a turbine that did not change, truth 0) carries a level error of +0.1 to +1 pp
-on contiguous prepost periods. This probe runs two campaigns with the power model's per-row dump
+on contiguous prepost periods. This probe runs three campaigns with the power model's per-row dump
 on and decomposes each reading's level by month, direction, wind band, which references were
 running, how many upwind turbines were not waking, and how well the baseline covers each row
 (propensity). It then compares the level with what the augmented inverse-propensity term predicts
@@ -13,14 +13,25 @@ Cases:
   baseline into a 6-month campaign, T13 the declared test turbine, every other turbine a candidate
   reference, screen off). Every reading has a truth of 0.
 * ``pen`` -- the prepost matrix cell ``pen_s00_m+0_K4_L12`` in its ``main``, ``excl_booleans`` and
-  ``excl_nan`` arms. T14 is analysed in each, plus the difference between the two exclusion arms,
-  which drop identical rows and so must agree.
+  ``excl_nan`` arms. Each of its five test turbines is analysed in each arm (T14 is CF26's oracle:
+  the two exclusion arms drop identical rows and so must agree), plus the difference between the
+  two exclusion arms. Its reference readings are not analysed: the same reference read for
+  different test turbines lands in one folder.
+* ``kel`` -- the matrix cell ``kel_s00_m+0_K4_L12`` in the same three arms, CF26's worst placebo
+  group (T06 reads +1.10 pp in ``main``, its references +0.6 to +1.0 pp). One test turbine, so its
+  reference readings are analysed too.
 
 Run it::
 
+    uv run python -m benchmarking.campaigns.level_probe all      # pen, kel, then hot --all, in series
     uv run python -m benchmarking.campaigns.level_probe hot [--turbines T17 T13 ...] [--all] [--smoke]
     uv run python -m benchmarking.campaigns.level_probe pen
+    uv run python -m benchmarking.campaigns.level_probe kel
     uv run python -m benchmarking.campaigns.level_probe analyse <run_dir> [--turbines ...] [--all]
+
+``all`` logs a case that fails and carries on with the next. The matrix cells run with every
+thread rather than the matrix's one per cell; the fit is deterministic across thread counts to
+well under 1e-5 pp.
 
 Outputs land under ``WIND_UP_BENCHMARKING_OUTPUT_DIR``/``level_probe``/``<case>_<timestamp>/``:
 ``dump/<arm>/<turbine>/`` (the rows), ``analysis/<arm>/<turbine>/`` (the tables and figures),
@@ -78,8 +89,13 @@ HOT_DEFAULT_TURBINES = ("T17", "T13", "T12", "T07", "T06", "T16")
 # A smoke run: four turbines, two months into one, the test turbine alone analysed.
 HOT_SMOKE_TURBINES = ("T12", "T13", "T14", "T15")
 HOT_SMOKE_MONTHS = (2, 1)
-PEN_TEST_WTG = "T14"
-PEN_ARMS = ("main", "excl_booleans", "excl_nan")
+MATRIX_ARMS = ("main", "excl_booleans", "excl_nan")
+# Each matrix case's site, and whether its reference readings are analysed beside its test turbines.
+MATRIX_CASES: dict[str, dict[str, Any]] = {
+    "pen": {"site": "pen", "analyse_references": False},
+    "kel": {"site": "kel", "analyse_references": True},
+}
+_LOG_HANDLER_NAME = "level_probe"
 CHANNEL_ARMS = ("excl_booleans", "excl_nan")
 PROBE_JSON = "probe.json"
 PROBE_LOG = "probe.log"
@@ -217,19 +233,28 @@ def analyse_run(
     run_dir: Path,
     *,
     turbines: Sequence[str] | None = None,
+    every_turbine: bool = False,
     model_params: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     """Analyse the dumps of a probe run and write the tables, figures and ``summary.csv``.
 
     :param run_dir: a run's directory, holding ``probe.json`` and ``dump/``
-    :param turbines: the turbines to analyse in each arm; every dumped turbine when ``None``
+    :param turbines: the turbines to analyse in each arm; the run's own choice (``probe.json``'s
+        ``analyse``, every dumped turbine when that is null) when ``None``
+    :param every_turbine: analyse every dumped turbine, whatever ``turbines`` and the run say
     :param model_params: LightGBM parameters for the probe's own fits; the headline's when ``None``
     """
     meta = json.loads((run_dir / PROBE_JSON).read_text(encoding="utf-8"))
     params = dict(model_params) if model_params is not None else analysis_model_params()
+    chosen = None if every_turbine else (list(turbines) if turbines is not None else meta.get("analyse"))
+    tests = set(meta["test_wtgs"])
     rows = []
     for arm in meta["arms"]:
-        wanted = dumped_turbines(run_dir, arm) if turbines is None else list(turbines)
+        dumped = dumped_turbines(run_dir, arm)
+        wanted = dumped if chosen is None else [t for t in chosen if t in dumped]
+        missing = [] if chosen is None else sorted(set(chosen) - set(dumped))
+        if missing:
+            logger.warning("%s: no dump for %s, so they are not analysed", arm, missing)
         for turbine in wanted:
             dump = RowDump.load(run_dir / "dump" / arm / turbine)
             logger.info("analysing %s %s", arm, turbine)
@@ -239,17 +264,20 @@ def analyse_run(
                 rotor_diameter_m=meta["rotor_diameter_m"],
                 model_params=params,
             )
-            rows.append({"case": meta["case"], "arm": arm, "is_test": turbine == meta["test_wtg"], **row})
+            rows.append({"case": meta["case"], "arm": arm, "is_test": turbine in tests, **row})
     summary = pd.DataFrame(rows, columns=list(SUMMARY_COLUMNS))
     summary.to_csv(run_dir / "summary.csv", index=False)
     plot_summary(summary, path=run_dir / "summary.png")
     if set(CHANNEL_ARMS) <= set(meta["arms"]):
-        test = meta["test_wtg"]
-        analyse_channels(
-            *(RowDump.load(run_dir / "dump" / arm / test) for arm in CHANNEL_ARMS),
-            out_dir=run_dir / "analysis" / f"{test}_channels",
-            rotor_diameter_m=meta["rotor_diameter_m"],
-        )
+        for test in sorted(tests):
+            paths = [run_dir / "dump" / arm / test for arm in CHANNEL_ARMS]
+            if not all(path.is_dir() for path in paths):
+                continue
+            analyse_channels(
+                *(RowDump.load(path) for path in paths),
+                out_dir=run_dir / "analysis" / f"{test}_channels",
+                rotor_diameter_m=meta["rotor_diameter_m"],
+            )
     logger.info("wrote the level probe analysis to %s", run_dir)
     return summary
 
@@ -264,6 +292,13 @@ def write_probe_meta(run_dir: Path, **meta: object) -> None:
     logger.info("level probe %s", payload)
 
 
+def update_probe_meta(run_dir: Path, **meta: object) -> None:
+    """Add or replace fields of ``probe.json``, for what is known only once the campaign has run."""
+    path = run_dir / PROBE_JSON
+    payload = {**json.loads(path.read_text(encoding="utf-8")), **meta}
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+
+
 def _new_run_dir(case: str) -> Path:
     run_dir = probe_output_root() / f"{case}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -272,9 +307,15 @@ def _new_run_dir(case: str) -> Path:
 
 
 def _log_to(path: Path) -> None:
+    """Send the root logger to ``path`` too, replacing the file a previous case in this process opened."""
+    root = logging.getLogger()
+    for stale in [h for h in root.handlers if getattr(h, "name", None) == _LOG_HANDLER_NAME]:
+        root.removeHandler(stale)
+        stale.close()
     handler = logging.FileHandler(path, mode="a")
+    handler.name = _LOG_HANDLER_NAME
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    logging.getLogger().addHandler(handler)
+    root.addHandler(handler)
 
 
 # --- the cases -------------------------------------------------------------------------------------
@@ -295,7 +336,8 @@ def run_hot(*, turbines: Sequence[str] | None = None, analyse_all: bool = False,
         run_dir,
         case="hot",
         arms=[arm],
-        test_wtg=HOT_TEST_WTG,
+        test_wtgs=[HOT_TEST_WTG],
+        analyse=None if analyse_all else ([HOT_TEST_WTG] if smoke else list(turbines or HOT_DEFAULT_TURBINES)),
         rotor_diameter_m=HOT_ROTOR_DIAMETER_M,
         changeover=HOT_CHANGEOVER,
         baseline_months=baseline_months,
@@ -319,33 +361,34 @@ def run_hot(*, turbines: Sequence[str] | None = None, analyse_all: bool = False,
         campaign_months=campaign_months,
     )
     readings.to_csv(run_dir / "reference_readings.csv", index=False)
-    analysed = None if analyse_all else ([HOT_TEST_WTG] if smoke else list(turbines or HOT_DEFAULT_TURBINES))
-    analyse_run(run_dir, turbines=analysed)
+    analyse_run(run_dir)
     return run_dir
 
 
-def pen_cells() -> list[Any]:
-    """Return case B's cells: ``pen_s00_m+0_K4_L12`` in each of its three arms."""
+def matrix_cells(case: str) -> list[Any]:
+    """Return a matrix case's cells: its site's ``s00_m+0_K4_L12`` cell in each of the three arms."""
     from benchmarking.baselines.prepost_matrix.cells import Cell  # noqa: PLC0415
 
-    return [Cell(arm=arm, site="pen", seed_index=0, multiplier=0, k=4, post_months=12) for arm in PEN_ARMS]  # type: ignore[arg-type]
+    site = MATRIX_CASES[case]["site"]
+    return [Cell(arm=arm, site=site, seed_index=0, multiplier=0, k=4, post_months=12) for arm in MATRIX_ARMS]  # type: ignore[arg-type]
 
 
-def run_pen(*, execute: Callable[..., dict[str, Any]] | None = None) -> Path:
-    """Run case B, the Penmanshiel oracle cell in its three arms, then analyse T14; return the run directory."""
+def run_matrix_case(case: str, *, execute: Callable[..., dict[str, Any]] | None = None) -> Path:
+    """Run a matrix case's cell in its three arms with the dump on, then analyse it; return the run directory."""
     from benchmarking.baselines.prepost_matrix.cells import SIZES  # noqa: PLC0415
-    from benchmarking.baselines.prepost_matrix.execute import execute_cell, prefetch  # noqa: PLC0415
+    from benchmarking.baselines.prepost_matrix.execute import SITES, execute_cell, prefetch  # noqa: PLC0415
     from benchmarking.baselines.prepost_matrix.study import detail_dir, git_state, open_study, run_cell  # noqa: PLC0415
-    from benchmarking.campaigns.rollout import penmanshiel_site  # noqa: PLC0415
 
-    run_dir = _new_run_dir("pen")
-    cells = pen_cells()
+    config = MATRIX_CASES[case]
+    run_dir = _new_run_dir(case)
+    cells = matrix_cells(case)
     write_probe_meta(
         run_dir,
-        case="pen",
-        arms=list(PEN_ARMS),
-        test_wtg=PEN_TEST_WTG,
-        rotor_diameter_m=penmanshiel_site().rotor_diameter_m,
+        case=case,
+        arms=list(MATRIX_ARMS),
+        test_wtgs=[],
+        analyse=[],
+        rotor_diameter_m=SITES[config["site"]]().rotor_diameter_m,
         cells=[c.cell_id for c in cells],
     )
     # The small size's matrix, so the draw (seed, exclusions) is the one CF26 reports.
@@ -355,21 +398,48 @@ def run_pen(*, execute: Callable[..., dict[str, Any]] | None = None) -> Path:
     open_study(study, settings, size="small", commit=commit, dirty=dirty)
     prefetch(detail_dir(study), cells)
     run = execute if execute is not None else execute_cell
+    tests: set[str] = set()
     for cell in cells:
         logger.info("running %s", cell.cell_id)
-        record = run_cell(
-            study,
-            cell,
-            settings=settings,
-            execute=partial(run, method_overrides={"row_dump_dir": run_dir / "dump" / cell.arm}),
-        )
+        overrides = {"row_dump_dir": run_dir / "dump" / cell.arm, "model_params": analysis_model_params()}
+        record = run_cell(study, cell, settings=settings, execute=partial(run, method_overrides=overrides))
         if record["status"] != "ok":
             msg = f"{cell.cell_id} failed:\n{record.get('traceback', '')}"
             raise RuntimeError(msg)
-        estimate = {t["turbine"]: t["estimate"] for t in record["turbines"]}.get(PEN_TEST_WTG)
-        logger.info("%s: %s reads %s", cell.cell_id, PEN_TEST_WTG, estimate)
-    analyse_run(run_dir, turbines=[PEN_TEST_WTG])
+        readings = {t["turbine"]: t["estimate"] for t in record["turbines"]}
+        tests |= set(readings)
+        logger.info("%s reads %s", cell.cell_id, {t: f"{100 * u:+.3f} pp" for t, u in sorted(readings.items())})
+    update_probe_meta(run_dir, test_wtgs=sorted(tests), analyse=None if config["analyse_references"] else sorted(tests))
+    analyse_run(run_dir)
     return run_dir
+
+
+def run_all(runners: Mapping[str, Callable[[], Path]] | None = None) -> dict[str, Path | None]:
+    """Run every case in series; a case that fails is logged and the next one still runs.
+
+    :param runners: the case runners by name; pen, kel, then the whole Hill of Towie arm when ``None``
+    :return: each case's run directory, ``None`` for a case that failed
+    """
+    cases = (
+        runners
+        if runners is not None
+        else {
+            "pen": partial(run_matrix_case, "pen"),
+            "kel": partial(run_matrix_case, "kel"),
+            "hot": partial(run_hot, analyse_all=True),
+        }
+    )
+    done: dict[str, Path | None] = {}
+    for name, runner in cases.items():
+        logger.info("level probe: starting case %s", name)
+        try:
+            done[name] = runner()
+        except Exception:
+            logger.exception("level probe: case %s failed; carrying on", name)
+            done[name] = None
+    for name, path in done.items():
+        logger.info("level probe: %s -> %s", name, path if path is not None else "FAILED")
+    return done
 
 
 # --- figures ---------------------------------------------------------------------------------------
@@ -434,29 +504,31 @@ def plot_summary(summary: pd.DataFrame, *, path: Path) -> Path:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Run a case, or re-run the analysis of an existing run."""
+    """Run a case, every case, or re-run the analysis of an existing run."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("all", help="pen, kel, then the whole Hill of Towie arm, in series")
     hot = sub.add_parser("hot", help="the Hill of Towie whole-farm reference arm")
     hot.add_argument("--turbines", nargs="+", default=None)
     hot.add_argument("--all", action="store_true", help="analyse every reading")
     hot.add_argument("--smoke", action="store_true", help="four turbines, three months, T13 alone")
-    sub.add_parser("pen", help="the Penmanshiel oracle cell in its three arms")
+    for case in MATRIX_CASES:
+        sub.add_parser(case, help=f"the {case} matrix cell in its three arms")
     analyse = sub.add_parser("analyse", help="re-run the analysis of an existing run")
     analyse.add_argument("run_dir", type=Path)
     analyse.add_argument("--turbines", nargs="+", default=None)
     analyse.add_argument("--all", action="store_true", help="analyse every dumped reading")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    if args.command == "hot":
+    if args.command == "all":
+        run_all()
+    elif args.command == "hot":
         run_hot(turbines=args.turbines, analyse_all=args.all, smoke=args.smoke)
-    elif args.command == "pen":
-        run_pen()
+    elif args.command in MATRIX_CASES:
+        run_matrix_case(args.command)
     else:
         _log_to(args.run_dir / PROBE_LOG)
-        meta = json.loads((args.run_dir / PROBE_JSON).read_text(encoding="utf-8"))
-        default = [meta["test_wtg"]] if meta["case"] == "pen" else list(HOT_DEFAULT_TURBINES)
-        analyse_run(args.run_dir, turbines=None if args.all else (args.turbines or default))
+        analyse_run(args.run_dir, turbines=args.turbines, every_turbine=args.all)
 
 
 if __name__ == "__main__":
