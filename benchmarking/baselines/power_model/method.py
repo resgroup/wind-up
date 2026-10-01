@@ -19,6 +19,7 @@ this package imports nothing from ``wind_up``.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import tempfile
 from dataclasses import dataclass, field
@@ -443,6 +444,11 @@ class PowerModelMethod:
         A screening estimate over a short campaign is too noisy to separate a bad reference from a
         good one at any floor, and ruling out a good reference costs more than leaving a mild bad
         one in
+    :param row_dump_dir: when set, write the estimate's per-row frame (actual, counterfactual, row
+        selection and the full feature matrix under its original names) to
+        ``<row_dump_dir>/<test_wtg>/rows.parquet`` with a ``rows.json`` sidecar, for the level probe.
+        A reference-reading clone dumps under its own turbine's folder; the screening clone does not
+        dump. ``None`` (**default**) writes nothing
 
     The reference pool is the campaign's candidate references (the context's
     ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
@@ -480,6 +486,7 @@ class PowerModelMethod:
     headline_estimator: Literal["forward", "reversal"] = "forward"
     exclusion_channels: Literal["booleans", "nan"] = "booleans"
     write_diagnostics: bool = True
+    row_dump_dir: Path | None = None
     # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
     # era5_source_label() of the point it fetched, so a reader can tell which series was used.
     era5_label: str = ERA5_UNLOCATED
@@ -581,6 +588,22 @@ class PowerModelMethod:
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
+        if self.row_dump_dir is not None:
+            self._write_row_dump(
+                scada,
+                mi=mi,
+                index=index,
+                timebase=timebase,
+                references=references,
+                power_free=power_free,
+                features=features,
+                y=y_arr,
+                selected=selected,
+                baseline_sel=baseline_sel,
+                upgraded_sel=upgraded_sel,
+                fit=fit,
+                uplift=uplift,
+            )
 
         # The reversal correction to the prepost headline. The forward ratio above is 1+r_fwd; the
         # reverse fit trains the upgraded rows and predicts the baseline rows for 1+r_rev, and
@@ -1047,6 +1070,67 @@ class PowerModelMethod:
             "baseline_valid_pos": baseline_valid_pos,  # positions over ``index`` of the held-out rows
         }
 
+    def _write_row_dump(
+        self,
+        scada: pd.DataFrame,
+        *,
+        mi: MethodInput,
+        index: pd.DatetimeIndex,
+        timebase: pd.Timedelta,
+        references: Sequence[str],
+        power_free: Sequence[str],
+        features: pd.DataFrame,
+        y: np.ndarray,
+        selected: np.ndarray,
+        baseline_sel: np.ndarray,
+        upgraded_sel: np.ndarray,
+        fit: dict[str, Any],
+        uplift: float,
+    ) -> None:
+        """Write the per-row frame and its sidecar under ``row_dump_dir / test_wtg``.
+
+        ``uplift`` is the forward counterfactual ratio, the one the dumped sums reproduce.
+        """
+        assert self.row_dump_dir is not None  # noqa: S101
+        out_dir = Path(self.row_dump_dir) / mi.test_wtg
+        out_dir.mkdir(parents=True, exist_ok=True)
+        counterfactual = np.full(len(index), np.nan)
+        counterfactual[upgraded_sel] = fit["pred_upgraded"]
+        rows = pd.DataFrame(
+            {
+                "timestamp": index,
+                "actual_kw": y,
+                "counterfactual_kw": counterfactual,
+                "selected": np.asarray(selected, dtype=bool),
+                "baseline": np.asarray(baseline_sel, dtype=bool),
+                "upgraded": np.asarray(upgraded_sel, dtype=bool),
+                "reference_mean_ws": reference_mean_wind_speed(
+                    scada, references=references, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
+                ).to_numpy(dtype=float),
+            }
+        )
+        rows = pd.concat([rows, features.reset_index(drop=True)], axis=1)
+        rows.to_parquet(out_dir / "rows.parquet", engine="pyarrow", index=False)
+        present = {str(t) for t in scada[mi.turbine_col].unique()}
+        sidecar = {
+            "test_wtg": mi.test_wtg,
+            "references": list(references),
+            "power_free": list(power_free),
+            "wake_only": [w for w in mi.context.wake_contributors if w in present],
+            "uplift": uplift,
+            "sum_actual_kw": float(fit["y_upgraded"].sum()),
+            "sum_counterfactual_kw": float(fit["pred_upgraded"].sum()),
+            "n_baseline_rows": int(np.count_nonzero(baseline_sel)),
+            "n_upgraded_rows": int(np.count_nonzero(upgraded_sel)),
+            "timebase_s": timebase.total_seconds(),
+            "active_power_col": self.columns.active_power,
+            "northed_direction_col": self.columns.northed("nacelle_position") if self.direction_feature else None,
+            "waking_threshold_kw": WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+            "baseline_rated_power_kw": self.baseline_rated_power_kw,
+            "coords": {t: list(c) for t, c in (mi.context.coords or {}).items()},
+        }
+        (out_dir / "rows.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+
     def _candidate_references(self, scada: pd.DataFrame, *, mi: MethodInput) -> list[str]:
         """Return the campaign's candidate references that ``scada`` carries data for, sorted.
 
@@ -1286,8 +1370,11 @@ class PowerModelMethod:
         return covered
 
     def _screening_clone(self) -> PowerModelMethod:
-        """Return this method as it estimates one candidate reference during screening."""
-        return self._pass_clone("screen")
+        """Return this method as it estimates one candidate reference during screening.
+
+        It never dumps rows: screening fits are not what the level probe analyses.
+        """
+        return dataclasses.replace(self._pass_clone("screen"), row_dump_dir=None)
 
     def _reference_clone(self) -> PowerModelMethod:
         """Return this method as it estimates one reference for the reference-uplift report."""

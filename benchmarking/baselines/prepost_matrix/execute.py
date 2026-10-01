@@ -144,17 +144,25 @@ def _read_scada(path: Path, *, start: pd.Timestamp | None = None, end: pd.Timest
     return pd.read_parquet(path, filters=filters)
 
 
-def execute_cell(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
+def execute_cell(
+    cell: Cell,
+    *,
+    detail_dir: Path,
+    cell_dir: Path,
+    settings: MatrixSettings,
+    method_overrides: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Run ``cell`` and return what it recorded: estimates, truths, reference readings and diagnostics.
 
     :param cell: the cell to run
     :param detail_dir: the study's detail directory, whose ``sources/`` :func:`prefetch` has filled
     :param cell_dir: where the run writes its method diagnostics and discovered north table
     :param settings: the matrix, for its master seed
+    :param method_overrides: fields replaced on every turbine's method after the matrix's own, for a
+        probe that needs the method configured differently (the level probe's ``row_dump_dir``)
     """
-    if cell.arm == "real":
-        return _execute_real(cell, detail_dir=detail_dir, cell_dir=cell_dir, settings=settings)
-    return _execute_synthetic(cell, detail_dir=detail_dir, cell_dir=cell_dir, settings=settings)
+    run = _execute_real if cell.arm == "real" else _execute_synthetic
+    return run(cell, detail_dir=detail_dir, cell_dir=cell_dir, settings=settings, method_overrides=method_overrides)
 
 
 def describe_cell(cell: Cell, *, settings: MatrixSettings) -> dict[str, Any]:
@@ -192,7 +200,14 @@ def _draw(cell: Cell, *, settings: MatrixSettings) -> tuple[RolloutSite, int, Ro
     return site, seed, draw, exclusions
 
 
-def _execute_synthetic(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
+def _execute_synthetic(
+    cell: Cell,
+    *,
+    detail_dir: Path,
+    cell_dir: Path,
+    settings: MatrixSettings,
+    method_overrides: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     site, _, draw, exclusions = _draw(cell, settings=settings)
     campaign = rollout_campaign(draw, multiplier=float(cell.multiplier), post_months=cell.post_months)  # type: ignore[arg-type]
     if cell.exclusion_channels is not None:
@@ -217,6 +232,7 @@ def _execute_synthetic(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings
                 screen_cache=screen_cache,
                 era5_label=label,
                 exclusion_channels=cell.exclusion_channels,
+                method_overrides=method_overrides,
             )
         ],
         era5_wd=era5_direction(era5, index),
@@ -244,7 +260,14 @@ def _execute_synthetic(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings
     }
 
 
-def _execute_real(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: MatrixSettings) -> dict[str, Any]:
+def _execute_real(
+    cell: Cell,
+    *,
+    detail_dir: Path,
+    cell_dir: Path,
+    settings: MatrixSettings,
+    method_overrides: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     declaration = load_declaration(_real_declaration_path(detail_dir))
     spec = declaration.spec
     end = pd.Timestamp(spec.timing_for(REAL_T13)) + pd.DateOffset(months=cell.post_months)  # type: ignore[arg-type]
@@ -265,6 +288,7 @@ def _execute_real(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: Mat
                 screen_cache=screen_cache,
                 era5_label=label,
                 exclusion_channels=None,
+                method_overrides=method_overrides,
             )
         ],
         columns=declaration.columns,
@@ -298,14 +322,19 @@ def _matrix_method(
     screen_cache: dict,
     era5_label: str,
     exclusion_channels: str | None,
+    method_overrides: Mapping[str, Any] | None = None,
 ) -> Method:
-    """Return shipped ``wind-up`` on one thread, without plots, with the cell's exclusion channels."""
+    """Return shipped ``wind-up`` on one thread, without plots, with the cell's exclusion channels.
+
+    ``method_overrides`` is applied last, so a probe's field wins over the matrix's own.
+    """
     method = wind_up_method(
         spec, columns=columns, out_dir=out_dir, era5_hourly_df=era5, screen_cache=screen_cache, era5_label=era5_label
     )
     overrides: dict[str, Any] = {"save_plots": False, "model_params": {**method.model_params, "n_jobs": 1}}  # type: ignore[attr-defined]
     if exclusion_channels is not None:
         overrides["exclusion_channels"] = exclusion_channels
+    overrides.update(method_overrides or {})
     return replace(method, **overrides)  # type: ignore[type-var]
 
 

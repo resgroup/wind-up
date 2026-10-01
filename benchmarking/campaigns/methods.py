@@ -30,6 +30,7 @@ def carried_forward_methods(
     era5_label: str = ERA5_UNLOCATED,
     reference_screen: bool = True,
     report_reference_uplifts: bool = True,
+    row_dump_dir: Path | None = None,
 ) -> list[Method]:
     """Build the methods applicable to ``spec``, each writing into its own subfolder of ``out_dir``.
 
@@ -56,6 +57,8 @@ def carried_forward_methods(
     :param report_reference_uplifts: report each candidate reference's own uplift. It costs a model
         fit per reference per test turbine and never moves a headline, so a study that scores only
         its test turbines turns it off.
+    :param row_dump_dir: where the power model dumps each estimate's rows, for the level probe;
+        ``None`` dumps nothing
     """
     methods: list[Method] = [NaiveRatioMethod(columns=HOT_COLUMNS, out_dir=out_dir / "naive_ratio", save_plots=True)]
     if spec.mode == "toggle":
@@ -85,6 +88,7 @@ def carried_forward_methods(
                 era5_label=era5_label,
                 reference_screen=reference_screen,
                 report_reference_uplifts=report_reference_uplifts,
+                row_dump_dir=row_dump_dir,
             )
         )
     return methods

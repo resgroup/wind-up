@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -20,7 +21,7 @@ from benchmarking.baselines.prepost_matrix.cells import (
     draw_exclusions,
     matrix_cells,
 )
-from benchmarking.baselines.prepost_matrix.execute import describe_cell, diagnostics, plan_settings
+from benchmarking.baselines.prepost_matrix.execute import _matrix_method, describe_cell, diagnostics, plan_settings
 from benchmarking.baselines.prepost_matrix.metrics import (
     baseline_tables,
     compare_tables,
@@ -46,6 +47,7 @@ from benchmarking.baselines.prepost_matrix.study import (
     study_settings,
     study_size,
 )
+from benchmarking.synthetic import HOT_COLUMNS
 from wind_up.analysis_period import PlanSettings
 
 if TYPE_CHECKING:
@@ -588,3 +590,23 @@ def test_the_period_selector_takes_the_cells_k_and_the_matrix_shortest_side() ->
     assert chosen.k == 6
     assert chosen.min_side == pd.Timedelta(days=10)
     assert chosen.pre_cap == PlanSettings().pre_cap
+
+
+# --- method overrides --------------------------------------------------------------------------
+
+
+def test_method_overrides_reach_the_matrix_method(tmp_path: Path) -> None:
+    spec = SimpleNamespace(rated_power_kw=2300.0)
+    common = {"columns": HOT_COLUMNS, "out_dir": tmp_path, "era5": None, "screen_cache": {}, "era5_label": "x"}
+    plain = _matrix_method(spec, exclusion_channels="nan", **common)  # type: ignore[arg-type]
+    assert plain.row_dump_dir is None  # type: ignore[attr-defined]
+    dumped = _matrix_method(
+        spec,  # type: ignore[arg-type]
+        exclusion_channels="nan",
+        method_overrides={"row_dump_dir": tmp_path / "dump"},
+        **common,
+    )
+    assert dumped.row_dump_dir == tmp_path / "dump"  # type: ignore[attr-defined]
+    # the matrix's own overrides survive
+    assert dumped.exclusion_channels == "nan"  # type: ignore[attr-defined]
+    assert dumped.model_params["n_jobs"] == 1  # type: ignore[attr-defined]

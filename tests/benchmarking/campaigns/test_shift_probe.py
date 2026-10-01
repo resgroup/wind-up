@@ -52,6 +52,17 @@ def test_arms_differ_only_in_their_window() -> None:
     assert len({c.analysis_period for c in campaigns}) == len(campaigns)
 
 
+def test_an_arm_can_be_shortened_for_a_smoke_run() -> None:
+    changeover = probe_changeovers()[0]
+    start, end = analysis_period(changeover, baseline_months=2, campaign_months=1)
+    assert start == changeover - pd.DateOffset(months=2)
+    assert end == changeover + pd.DateOffset(months=1)
+    campaign = probe_campaign(
+        changeover, turbines=TEST_TURBINES, upgraded=TEST_TURBINES[:1], baseline_months=2, campaign_months=1
+    )
+    assert campaign.analysis_period == (start, end)
+
+
 def test_nothing_is_injected_so_the_truth_is_zero() -> None:
     campaign = probe_campaign(probe_changeovers()[0], turbines=TEST_TURBINES, upgraded=TEST_TURBINES[:1])
     assert campaign.upgrades == []

@@ -94,13 +94,15 @@ def arm_name(changeover: pd.Timestamp) -> str:
     return f"changeover_{changeover:%Y%m}"
 
 
-def analysis_period(changeover: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+def analysis_period(
+    changeover: pd.Timestamp,
+    *,
+    baseline_months: int = PROBE_BASELINE_MONTHS,
+    campaign_months: int = PROBE_CAMPAIGN_MONTHS,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
     """Return ``(start, end)`` of the whole record an arm's methods see, end exclusive."""
     return placebo_analysis_period(
-        "prepost",
-        campaign_start=changeover,
-        baseline_months=PROBE_BASELINE_MONTHS,
-        campaign_months=PROBE_CAMPAIGN_MONTHS,
+        "prepost", campaign_start=changeover, baseline_months=baseline_months, campaign_months=campaign_months
     )
 
 
@@ -126,8 +128,13 @@ def probe_campaign(
     turbines: Sequence[str] | None = None,
     upgraded: Sequence[str] | None = None,
     coords: dict[str, tuple[float, float]] | None = None,
+    baseline_months: int = PROBE_BASELINE_MONTHS,
+    campaign_months: int = PROBE_CAMPAIGN_MONTHS,
 ) -> SyntheticCampaign:
-    """Declare one arm: the placebo turbines over this arm's window, nothing injected."""
+    """Declare one arm: the placebo turbines over this arm's window, nothing injected.
+
+    The window's lengths are the probe's own unless a smoke run shortens them.
+    """
     participating = list(PLACEBO_TURBINES if turbines is None else turbines)
     return placebo_campaign(
         "prepost",
@@ -135,8 +142,8 @@ def probe_campaign(
         turbines=participating,
         coords=coords if coords is not None else _coords(participating),
         campaign_start=changeover,
-        baseline_months=PROBE_BASELINE_MONTHS,
-        campaign_months=PROBE_CAMPAIGN_MONTHS,
+        baseline_months=baseline_months,
+        campaign_months=campaign_months,
     )
 
 
@@ -244,6 +251,9 @@ def run_reference_arm(
     test_wtg: str = REFERENCE_ARM_TEST_WTG,
     turbines: Sequence[str] | None = None,
     reference_screen: bool = False,
+    row_dump_dir: Path | None = None,
+    baseline_months: int = PROBE_BASELINE_MONTHS,
+    campaign_months: int = PROBE_CAMPAIGN_MONTHS,
 ) -> pd.DataFrame:
     """Run one arm as a whole-farm campaign and return its per-reference readings, truth 0.
 
@@ -254,9 +264,18 @@ def run_reference_arm(
     :param test_wtg: the one turbine declared upgraded; every other turbine is a candidate reference
     :param turbines: every participating turbine; the placebo farm when ``None``
     :param reference_screen: run the screen as a campaign ships it, and mark what it ruled out
+    :param row_dump_dir: where the power model dumps every estimate's rows, for the level probe
+    :param baseline_months: months of baseline; the probe's own unless a smoke run shortens it
+    :param campaign_months: months of campaign; likewise
     """
     participating = list(PLACEBO_TURBINES if turbines is None else turbines)
-    campaign = probe_campaign(changeover, turbines=participating, upgraded=[test_wtg])
+    campaign = probe_campaign(
+        changeover,
+        turbines=participating,
+        upgraded=[test_wtg],
+        baseline_months=baseline_months,
+        campaign_months=campaign_months,
+    )
     dataset = campaign.generate(scada_df)
     spec = campaign.spec()
     index = pd.DatetimeIndex(dataset.synthetic_df.index.unique()).sort_values()
@@ -270,6 +289,7 @@ def run_reference_arm(
             era5_label=era5_source_label(HOT_LAT, HOT_LON),
             reference_screen=reference_screen,
             report_reference_uplifts=True,
+            row_dump_dir=row_dump_dir,
         ),
         era5_wd=era5_direction(era5_df, index),
         northing_out_dir=out_dir / "northing",
