@@ -29,7 +29,8 @@ Run it::
     uv run python -m benchmarking.campaigns.level_probe kel
     uv run python -m benchmarking.campaigns.level_probe analyse <run_dir> [--turbines ...] [--all]
 
-``all`` logs a case that fails and carries on with the next. The matrix cells run with every
+Settings come from the environment or the repository's ``.env`` (see :mod:`benchmarking.env`),
+as for the prepost matrix. ``all`` logs a case that fails and carries on with the next. The matrix cells run with every
 thread rather than the matrix's one per cell; the fit is deterministic across thread counts to
 well under 1e-5 pp.
 
@@ -76,6 +77,7 @@ from benchmarking.campaigns.level_analysis import (
     top_group,
 )
 from benchmarking.diagnostics.style import apply_grid, save_fig
+from benchmarking.env import load_env
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -388,7 +390,6 @@ def run_matrix_case(case: str, *, execute: Callable[..., dict[str, Any]] | None 
         arms=list(MATRIX_ARMS),
         test_wtgs=[],
         analyse=[],
-        rotor_diameter_m=SITES[config["site"]]().rotor_diameter_m,
         cells=[c.cell_id for c in cells],
     )
     # The small size's matrix, so the draw (seed, exclusions) is the one CF26 reports.
@@ -397,6 +398,8 @@ def run_matrix_case(case: str, *, execute: Callable[..., dict[str, Any]] | None 
     commit, dirty = git_state()
     open_study(study, settings, size="small", commit=commit, dirty=dirty)
     prefetch(detail_dir(study), cells)
+    # Only now: a site reads its turbine table, which prefetch has just downloaded.
+    update_probe_meta(run_dir, rotor_diameter_m=SITES[config["site"]]().rotor_diameter_m)
     run = execute if execute is not None else execute_cell
     tests: set[str] = set()
     for cell in cells:
@@ -520,6 +523,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     analyse.add_argument("--all", action="store_true", help="analyse every dumped reading")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Before anything resolves a path: where data, outputs and the reanalysis cache live.
+    load_env()
     if args.command == "all":
         run_all()
     elif args.command == "hot":

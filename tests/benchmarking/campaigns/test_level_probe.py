@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from benchmarking.campaigns import level_probe
 from benchmarking.campaigns.level_probe import (
     PROBE_JSON,
     PROBE_LOG,
@@ -22,6 +23,8 @@ from tests.benchmarking.campaigns.test_level_analysis import _FAST, _POWER, _Q, 
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
     from benchmarking.campaigns.level_analysis import RowDump
 
@@ -132,3 +135,11 @@ def test_every_turbine_overrides_the_runs_choice(tmp_path: Path) -> None:
     _arm(held_booleans=False).save(run_dir / "dump" / "main" / "R9")
     assert len(analyse_run(run_dir, model_params=_FAST)) == 1  # the run chose T14 alone
     assert len(analyse_run(run_dir, every_turbine=True, model_params=_FAST)) == 2
+
+
+def test_the_command_line_reads_the_env_file_before_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    monkeypatch.setattr(level_probe, "load_env", lambda: calls.append("env"))
+    monkeypatch.setattr(level_probe, "run_all", lambda: calls.append("all"))
+    level_probe.main(["all"])
+    assert calls == ["env", "all"]
