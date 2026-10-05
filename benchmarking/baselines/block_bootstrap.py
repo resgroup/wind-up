@@ -137,6 +137,13 @@ def combine_estimates(
         weight_a = wa / (wa + wb)
     weight_b = 1.0 - weight_a
 
+    if len(res_a) and len(res_b) and len(res_a) != len(res_b):
+        msg = (
+            f"the two components' resample arrays have different lengths ({len(res_a)} vs {len(res_b)}); "
+            f"they can only be paired draw by draw when both bootstraps ran with the same campaign span, "
+            f"timebase, block length, resample count and seed."
+        )
+        raise ValueError(msg)
     n_pairs = min(len(res_a), len(res_b))
     paired = np.isfinite(res_a[:n_pairs]) & np.isfinite(res_b[:n_pairs])
     if paired.sum() >= _MIN_RESAMPLES_FOR_SPREAD:

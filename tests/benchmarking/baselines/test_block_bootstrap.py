@@ -474,3 +474,11 @@ class TestASparseCellWithNoFallbackReportsNaN:
         cell = _run(case).cells["overall"]
         assert np.isnan(cell.sigma_fallback)
         assert np.isnan(cell.sigma)
+
+
+class TestCombineEstimatesRefusesUnpairedResamples:
+    """The correlation only means something when the two resample arrays came from the same block draws."""
+
+    def test_different_resample_counts_raise(self) -> None:
+        with pytest.raises(ValueError, match="resample"):
+            combine_estimates((0.0, 1.0, np.zeros(100)), (0.0, 1.0, np.zeros(99)))

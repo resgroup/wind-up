@@ -956,6 +956,11 @@ def _combine(a: _Estimate, b: _Estimate) -> _Estimate:
     is written to the selection CSV. The diagnostics carry both components' rows and a ``combined``
     row per cell with the blend's sigma, the weight on ``a`` and the correlation it used.
     """
+    if a.boot is not None and b.boot is not None and a.boot.n_blocks != b.boot.n_blocks:
+        # Both bootstraps come from the same method instance (same span, timebase, block length,
+        # resample count and seed), so their draws pair up; a block-count mismatch means they do not.
+        msg = f"component bootstraps drew different block counts ({a.boot.n_blocks} vs {b.boot.n_blocks})"
+        raise ValueError(msg)
 
     def _resamples(est: _Estimate, cell: str) -> npt.NDArray[np.float64]:
         return est.boot.resamples.get(cell, np.array([])) if est.boot is not None else np.array([])
