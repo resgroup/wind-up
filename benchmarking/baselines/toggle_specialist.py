@@ -738,34 +738,27 @@ class ToggleSpecialistMethod:
     def _filtered_mask(
         self, mi: MethodInput, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
     ) -> pd.Series:
-        """Complete-case timestamps that also pass downtime filtering on the test turbine and every reference.
+        """Timestamps at which the test turbine and every reference pass the same normal-operation filter.
 
-        Returns a bool Series on ``wide.index``. Every turbine (test and references) must be
-        available (counter >= a full period) and have finite power — a down turbine on either side
-        of the ratio is therefore excluded. The test turbine additionally goes through the shared
-        :class:`NormalOperationFilter` (the same downtime + finite-power logic the power model uses;
-        the stuck filter is left off here as the ratio sums raw power rather than fitting a model).
+        Returns a bool Series on ``wide.index``. One :class:`NormalOperationFilter` (the downtime +
+        finite-power logic the power model uses; the stuck filter is left off here as the ratio sums
+        raw power rather than fitting a model) is applied to each turbine's own rows, so a turbine
+        that is down or has no power on either side of the ratio excludes the timestamp. The same
+        filter on every turbine means any future change to it (e.g. the stuck filter) applies to
+        the references exactly as to the test turbine.
         """
-        turbines = [test, *refs]
-        complete = wide[turbines].notna().all(axis=1)
-
-        full = timebase.total_seconds()
-        avail = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.availability).reindex(
-            index=wide.index, columns=turbines
+        normal = NormalOperationFilter(
+            active_power_col=self.columns.active_power,
+            availability_col=self.columns.availability,
+            apply_stuck_filter=False,
         )
-        all_available = (avail >= full).all(axis=1)
-
-        test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]
-        test_keep = (
-            NormalOperationFilter(
-                active_power_col=self.columns.active_power,
-                availability_col=self.columns.availability,
-                apply_stuck_filter=False,
-            )
-            .keep_mask(test_rows, timebase=timebase)
-            .reindex(wide.index, fill_value=False)
-        )
-        return complete & all_available & test_keep
+        keep = pd.Series(data=True, index=wide.index, dtype=bool)
+        for turbine in (test, *refs):
+            rows = mi.scada_df[mi.scada_df[mi.turbine_col] == turbine]
+            keep &= normal.keep_mask(rows, timebase=timebase).reindex(wide.index, fill_value=False)
+            # ``wide`` is the masked pivot: a cell the campaign context blanked must not count either.
+            keep &= wide[turbine].notna()
+        return keep
 
     def _excluded(self, mi: MethodInput, *, turbines: list[str], index: pd.DatetimeIndex) -> pd.Series:
         """Boolean mask on *index*: timestamps at which any of ``turbines`` carries a caller-set exclusion flag.
