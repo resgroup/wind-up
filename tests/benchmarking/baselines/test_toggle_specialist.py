@@ -1407,3 +1407,63 @@ class TestCombinedMode:
         used_sum = total.labeled_rows["used"] == True  # noqa: E712
         assert used_combined.sum() > used_sum.sum()
         assert used_combined.all()
+
+
+_BLOCK_COL = "cycle_bad"
+_BLOCK_COLUMNS = replace(_COLUMNS, exclude_block=_BLOCK_COL)
+
+
+def _flag_block(scada: pd.DataFrame, *, turbine: str, at: pd.Timestamp) -> pd.DataFrame:
+    """Return a copy of ``scada`` with an all-False ``exclude_block`` column set on one ``turbine`` row."""
+    out = scada.copy()
+    out[_BLOCK_COL] = False
+    out.loc[((out[_TURBINE_COL] == turbine) & (out.index == at)).to_numpy(), _BLOCK_COL] = True
+    return out
+
+
+class TestExcludeBlock:
+    """``columns.exclude_block``: a flagged row removes its whole reference block, in every mode."""
+
+    @staticmethod
+    def _run(scada: pd.DataFrame, schedule: ToggleSchedule, **kwargs: object) -> MethodOutput:
+        return ToggleSpecialistMethod(columns=_BLOCK_COLUMNS, **kwargs).estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+
+    def test_a_flagged_test_row_removes_its_whole_block_in_sum_mode(self) -> None:
+        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
+        idx = pd.DatetimeIndex(pd.unique(scada.index))
+        block_5 = idx[20:24]
+        out = self._run(_flag_block(scada, turbine="T1", at=block_5[1]), schedule, reference_block=_BLOCK)
+        assert out.labeled_rows is not None
+        used = out.labeled_rows["used"].astype(bool)
+        assert not used.loc[block_5].any()
+        assert used.drop(block_5).all()
+        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
+        acc = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
+        for segment in ("baseline", "upgraded"):
+            assert acc.loc[("block", segment)] == acc.loc[("pairing", segment)] - 2
+
+    def test_a_flagged_reference_row_removes_the_block_too(self) -> None:
+        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
+        idx = pd.DatetimeIndex(pd.unique(scada.index))
+        block_7 = idx[28:32]
+        out = self._run(_flag_block(scada, turbine="R1", at=block_7[3]), schedule, reference_block=_BLOCK)
+        assert out.labeled_rows is not None
+        used = out.labeled_rows["used"].astype(bool)
+        assert not used.loc[block_7].any()
+        assert used.drop(block_7).all()
+
+    def test_a_flag_with_no_block_length_is_refused(self) -> None:
+        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
+        idx = pd.DatetimeIndex(pd.unique(scada.index))
+        with pytest.raises(ValueError, match="exclude_block"):
+            self._run(_flag_block(scada, turbine="T1", at=idx[21]), schedule)
+
+    def test_no_flags_change_nothing(self) -> None:
+        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
+        scada[_BLOCK_COL] = False
+        with_role = self._run(scada, schedule, reference_block=_BLOCK)
+        without = _estimate(scada.drop(columns=_BLOCK_COL), schedule, reference_block=_BLOCK)
+        assert with_role.p50_overall == pytest.approx(without.p50_overall)
+        assert with_role.sigma_overall == pytest.approx(without.sigma_overall)

@@ -15,7 +15,10 @@ data source's own column names and has no wind_up dependency.
 An optional **pairing filter** (``pairing_max_gap``) then drops any used row with no used row of the
 other segment nearby, so a filter that removes one segment's rows in some conditions also removes the
 other segment's rows from those conditions. Rows kept per segment after each selection stage are
-reported as ``MethodOutput.selection_accounting`` and written to a selection CSV.
+reported as ``MethodOutput.selection_accounting`` and written to a selection CSV. A caller may also
+flag rows through ``columns.exclude_block``: such a row removes its whole reference block (one
+toggle cycle), so both states lose the same conditions — a symmetric alternative to ``exclude_row``
+for a selection that would otherwise thin one state's rows in particular conditions.
 
 **Reference modes** (``reference_mode``) decide what the test power is compared against. ``"sum"``
 is the summed power of the references. The two *block* modes tile the campaign into fixed
@@ -259,8 +262,8 @@ class ToggleSpecialistMethod:
         stage differ by more than this.
     :param reference_mode: one of :data:`REFERENCE_MODES` (see the module docstring). ``"block_mean"``
         uses no references: they do not enter the row filters either, and none need exist.
-    :param reference_block: block length for the block modes, a positive whole multiple of the
-        timebase; defaults to ``pairing_max_gap`` (one cycle). Ignored in ``"sum"`` mode.
+    :param reference_block: block length for the block modes and for ``columns.exclude_block``, a
+        positive whole multiple of the timebase; defaults to ``pairing_max_gap`` (one cycle).
     """
 
     columns: ColumnSchema
@@ -393,10 +396,12 @@ class ToggleSpecialistMethod:
         campaign = baseline | rows.upgraded
         ids = (
             block_ids(wide.index, start=wide.index[campaign].min(), block=block)
-            if mode != "sum" and block is not None and campaign.any()
+            if block is not None and campaign.any()
             else None
         )
-        selection = self._selection(mi, wide=wide, test=test, refs=refs, timebase=timebase, rows=rows, ids=ids)
+        selection = self._selection(
+            mi, wide=wide, test=test, refs=refs, timebase=timebase, rows=rows, ids=ids, both_states=mode != "sum"
+        )
         used = selection.blocked.to_numpy()
         accounting = self._selection_accounting(selection, rows=rows)
         ref_total = self._reference_total(mode=mode, wide=wide, refs=refs, test_pw=test_pw, used=used, ids=ids)
@@ -601,12 +606,15 @@ class ToggleSpecialistMethod:
             raise ValueError(msg)
 
     def _reference_block(self, timebase: pd.Timedelta) -> pd.Timedelta | None:
-        """Return the block length the block modes tile the campaign with; ``None`` in ``sum`` mode."""
-        if self.reference_mode == "sum":
-            return None
+        """Return the block length (reference_block, else pairing_max_gap); ``None`` when neither is set.
+
+        The block modes (and ``combined``, for its block_mean component) cannot run without one and
+        raise; ``sum`` mode only needs it to honour ``columns.exclude_block``.
+        """
         block = self.reference_block if self.reference_block is not None else self.pairing_max_gap
-        # ``combined`` needs the block for its block_mean component.
         if block is None:
+            if self.reference_mode == "sum":
+                return None
             msg = (
                 f"{self.name}: reference_mode {self.reference_mode!r} needs a block length: set reference_block "
                 f"or pairing_max_gap (one toggle cycle is the natural choice)."
@@ -659,14 +667,18 @@ class ToggleSpecialistMethod:
         timebase: pd.Timedelta,
         rows: ToggleRowSets,
         ids: npt.NDArray[np.int64] | None = None,
+        both_states: bool = True,
     ) -> _Selection:
         """Return the used-row mask after each selection stage, each a bool Series on ``wide.index``.
 
-        ``ids`` are the reference-block ids (``None`` outside the block modes, or with no campaign
-        rows to tile); the ``block`` stage drops the rows of a block that lacks either state.
+        ``ids`` are the reference-block ids (``None`` with no block length, or no campaign rows to
+        tile). The ``block`` stage drops every row of a block that carries a ``columns.exclude_block``
+        flag on any of the turbines (all modes) or, when ``both_states`` (the block modes), lacks
+        either state.
         """
+        turbines = [test, *refs]
         filtered = self._filtered_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
-        not_excluded = filtered & ~self._excluded(mi, turbines=[test, *refs], index=wide.index)
+        not_excluded = filtered & ~self._excluded(mi, turbines=turbines, index=wide.index)
         in_segment = rows.campaign_baseline | rows.upgraded
         kept = not_excluded.to_numpy()
         if self.pairing_max_gap is not None:
@@ -678,7 +690,16 @@ class ToggleSpecialistMethod:
             )
             kept = kept & (~in_segment | paired.baseline | paired.upgraded)
         paired_series = pd.Series(kept, index=wide.index)
-        if ids is not None:
+        block_flag = self._excluded(mi, turbines=turbines, index=wide.index, role="exclude_block").to_numpy()
+        if block_flag.any():
+            if ids is None:
+                msg = (
+                    f"{self.name}: columns.exclude_block {self.columns.exclude_block!r} carries flags but there is "
+                    f"no block to remove: set reference_block or pairing_max_gap (one toggle cycle)."
+                )
+                raise ValueError(msg)
+            kept = kept & ~np.isin(ids, np.unique(ids[block_flag]))
+        if ids is not None and both_states:
             both = blocks_with_both_states(ids, baseline=kept & rows.campaign_baseline, upgraded=kept & rows.upgraded)
             kept = kept & (~in_segment | both)
         return _Selection(
@@ -760,17 +781,19 @@ class ToggleSpecialistMethod:
             keep &= wide[turbine].notna()
         return keep
 
-    def _excluded(self, mi: MethodInput, *, turbines: list[str], index: pd.DatetimeIndex) -> pd.Series:
-        """Boolean mask on *index*: timestamps at which any of ``turbines`` carries a caller-set exclusion flag.
+    def _excluded(
+        self, mi: MethodInput, *, turbines: list[str], index: pd.DatetimeIndex, role: str = "exclude_row"
+    ) -> pd.Series:
+        """Boolean mask on *index*: timestamps at which any of ``turbines`` carries a caller-set ``role`` flag.
 
-        Reads the ``columns.exclude_row`` column of each listed turbine's rows (the test turbine and
-        the references the mode uses), so a flagged reference row removes the timestamp the way a
-        reference outage does. Absent column or unset role -> nothing excluded. Reindex fills missing
-        timestamps with ``False`` so an expanded index never becomes an exclusion. NaN raises rather
-        than coercing: ``astype(bool)`` reads a missing flag as ``True`` and drops the row, the
-        opposite of the safe default.
+        Reads the ``columns.<role>`` column (``exclude_row`` or ``exclude_block``) of each listed
+        turbine's rows (the test turbine and the references the mode uses), so a flagged reference
+        row counts the way a reference outage does. Absent column or unset role -> nothing flagged.
+        Reindex fills missing timestamps with ``False`` so an expanded index never becomes an
+        exclusion. NaN raises rather than coercing: ``astype(bool)`` reads a missing flag as ``True``
+        and drops the row, the opposite of the safe default.
         """
-        col = self.columns.exclude_row
+        col: str | None = getattr(self.columns, role)
         excluded = pd.Series(data=False, index=index, dtype=bool)
         if not col or col not in mi.scada_df.columns:
             return excluded
@@ -778,7 +801,7 @@ class ToggleSpecialistMethod:
             flags = mi.scada_df.loc[mi.scada_df[mi.turbine_col] == turbine, col]
             if flags.isna().any():
                 msg = (
-                    f"exclude_row column {col!r} has {int(flags.isna().sum())} NaN value(s) for turbine "
+                    f"{role} column {col!r} has {int(flags.isna().sum())} NaN value(s) for turbine "
                     f"{turbine!r}; it must be boolean with no missing values (fill unknown rows with False explicitly)"
                 )
                 raise ValueError(msg)
@@ -912,6 +935,7 @@ class ToggleSpecialistMethod:
             "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
             "reference_mode": self.reference_mode,
             "reference_block": None if self.reference_block is None else str(self.reference_block),
+            "exclude_block_col": self.columns.exclude_block,
         }
         write_run_config(ctx, method_name=self.name, method_params=params)
 
