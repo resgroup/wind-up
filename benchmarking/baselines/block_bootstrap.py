@@ -402,7 +402,14 @@ def _summarise(
 
 
 def _blend(*, bootstrap: float, fallback: float, weight: float) -> float:
-    """Linear ramp ``weight*bootstrap + (1-weight)*fallback``, using whichever side is finite."""
+    """Linear ramp ``weight*bootstrap + (1-weight)*fallback``, using whichever side is finite.
+
+    A cell at the sparse end (``weight == 0``) reports the fallback alone, even when that is NaN:
+    with so few records every resample that sees the cell is the same handful, so the bootstrap's
+    std is float residue (~1e-17), which would read as near-certainty where there is none.
+    """
+    if weight == 0.0:
+        return fallback
     if math.isfinite(bootstrap) and math.isfinite(fallback):
         return weight * bootstrap + (1.0 - weight) * fallback
     if math.isfinite(bootstrap):

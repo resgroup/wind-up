@@ -447,3 +447,30 @@ class TestCombineEstimates:
         out = combine_estimates((0.0, 1.0, np.array([])), (0.0, 1.0, np.array([])))
         assert out.correlation == 0.5
         assert out.sigma == pytest.approx(np.sqrt((1 + 0.5) / 2))
+
+
+class TestASparseCellWithNoFallbackReportsNaN:
+    """Two records in a long campaign: every resample that sees them is identical, so the bootstrap's
+    std is float residue (~1e-17), and the per-record scatter cannot be measured either. That is no
+    uncertainty, not a tiny one."""
+
+    def test_two_records_report_nan_rather_than_float_residue(self) -> None:
+        times = _timeline(2016)
+        keep = np.zeros(2016, dtype=bool)
+        keep[[1000, 1001]] = True
+        on = np.zeros(2016, dtype=bool)
+        on[1000] = True
+        case = {
+            "times": times[keep],
+            "test_power": np.array([800.0, 750.0]),
+            "ref_total": np.array([1000.0, 1000.0]),
+            "upgraded": on[keep],
+            "baseline": ~on[keep],
+            "cell_membership": {"overall": np.ones(2, dtype=bool)},
+            "campaign_start": times[0],
+            "campaign_end": times[-1],
+            "timebase": _TIMEBASE,
+        }
+        cell = _run(case).cells["overall"]
+        assert np.isnan(cell.sigma_fallback)
+        assert np.isnan(cell.sigma)
