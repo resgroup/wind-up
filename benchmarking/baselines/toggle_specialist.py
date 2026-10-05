@@ -24,7 +24,12 @@ block the same reference value, so the on/off ratio cancels the block's wind lev
 ``"block_mean"`` uses the block's mean test power and needs **no references at all**;
 ``"block_scaled"`` keeps the summed references but rescales them per block so each block's reference
 total equals its test total, leaving the references only the within-block tracking. A block whose
-used rows lack either state is dropped (the ``block`` selection stage).
+used rows lack either state is dropped (the ``block`` selection stage). ``"combined"`` runs the
+``sum`` and ``block_mean`` estimates, each on its own row selection, and blends them by inverse
+variance, headline and per bin; the two bootstraps share their block draws, so the blend's sigma
+includes the components' correlation (:func:`benchmarking.baselines.block_bootstrap.combine_estimates`).
+Their errors come from different places (reference mismatch versus within-cycle drift), which is
+what the blend exploits.
 
 Every uplift — the headline and each power bin — comes with a non-optional 1-sigma uncertainty from
 a circular block bootstrap (:mod:`benchmarking.baselines.block_bootstrap`). It is computed after the
@@ -53,7 +58,12 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
-from benchmarking.baselines.block_bootstrap import BootstrapResult, bootstrap_ratio_uplift
+from benchmarking.baselines.block_bootstrap import (
+    BootstrapResult,
+    CombinedEstimate,
+    bootstrap_ratio_uplift,
+    combine_estimates,
+)
 from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import condition_bins, energy_ratio_by_bin, validate_conditions
@@ -84,7 +94,10 @@ DEFAULT_BLOCK_HOURS = 6.0
 # post-treatment signals, which this method exists not to do (see the module docstring).
 _SUPPORTED_CONDITIONS: tuple[str, ...] = ("power",)
 # ``reference_mode`` values; see the module docstring.
-REFERENCE_MODES: tuple[str, ...] = ("sum", "block_mean", "block_scaled")
+REFERENCE_MODES: tuple[str, ...] = ("sum", "block_mean", "block_scaled", "combined")
+# The two estimates ``"combined"`` blends, in blend order (the first is the one the row-selection
+# accounting and the reference-side diagnostics report).
+_COMBINED_COMPONENTS: tuple[str, str] = ("sum", "block_mean")
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +109,26 @@ class _Selection(NamedTuple):
     not_excluded: pd.Series
     paired: pd.Series
     blocked: pd.Series
+
+
+@dataclass(frozen=True)
+class _Estimate:
+    """One reference mode's complete estimate: what the outputs, the labels and the blend read."""
+
+    mode: str
+    refs: list[str]
+    selection: _Selection
+    used: npt.NDArray[np.bool_]
+    ref_total: npt.NDArray[np.float64]
+    label: npt.NDArray[np.float64]
+    rho_base: float
+    rho_up: float
+    uplift: float
+    sigma_overall: float
+    per_bin: pd.DataFrame | None
+    boot: BootstrapResult | None
+    accounting: pd.DataFrame
+    diagnostics: pd.DataFrame
 
 
 class PairedRows(NamedTuple):
@@ -268,25 +301,6 @@ class ToggleSpecialistMethod:
                 f"or toggle_df; this method has no prepost baseline to compare against."
             )
             raise ValueError(msg)
-
-        mi = restrict_to_campaign(mi)
-        wide = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.active_power)
-        test = mi.test_wtg
-        # block_mean compares the test turbine against its own block, so references play no part,
-        # not even in the row filters: a reference outage must not cost a zero-reference run rows.
-        refs = [] if self.reference_mode == "block_mean" else mi.context.references_among(wide.columns)
-        if not refs and self.reference_mode != "block_mean":
-            msg = (
-                f"no reference turbines available for test_wtg {test!r}: scada_df contains only "
-                f"{list(wide.columns)}. The toggle specialist method needs at least one reference turbine "
-                f"in reference_mode {self.reference_mode!r} (only 'block_mean' runs without references)."
-            )
-            raise ValueError(msg)
-        # Narrow to the campaign's turbines and blank the cells it says may not contribute, so the
-        # estimate and every diagnostic below see one consistent selection.
-        ref_set = set(refs)
-        wide = mi.context.mask_invalid(wide[[c for c in wide.columns if c == test or c in ref_set]])
-
         if self.columns.availability not in mi.scada_df.columns:
             msg = (
                 f"the availability column {self.columns.availability!r} (columns.availability) is not in "
@@ -294,22 +308,98 @@ class ToggleSpecialistMethod:
             )
             raise ValueError(msg)
 
+        mi = restrict_to_campaign(mi)
+        wide_all = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.active_power)
+        test = mi.test_wtg
         timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
         self._check_pairing_gap(timebase)
         block = self._reference_block(timebase)
-        rows = resolve_toggle(mi.upgrade_timing, wide.index)
+        rows = resolve_toggle(mi.upgrade_timing, wide_all.index)
+
+        modes: tuple[str, ...] = (self.reference_mode,)
+        if self.reference_mode == "combined":
+            modes = _COMBINED_COMPONENTS
+            if not mi.context.references_among(wide_all.columns):
+                # Nothing for the reference-based component to work with: the blend is its other
+                # half alone, which needs no references, rather than a failed estimate.
+                logger.warning(
+                    "%s: no reference turbines available for test_wtg %r; 'combined' falls back to 'block_mean'",
+                    self.name,
+                    test,
+                )
+                modes = ("block_mean",)
+        components = {
+            mode: self._component(
+                mi, mode=mode, wide_all=wide_all, test=test, timebase=timebase, block=block, rows=rows
+            )
+            for mode in modes
+        }
+        est = (
+            _combine(components[_COMBINED_COMPONENTS[0]], components[_COMBINED_COMPONENTS[1]])
+            if modes == _COMBINED_COMPONENTS
+            else components[modes[0]]
+        )
+
+        ref_set = set(est.refs)
+        wide = wide_all[[c for c in wide_all.columns if c == test or c in ref_set]]
+        stats = _segment_stats(
+            mi,
+            wide=wide,
+            used=est.used,
+            toggle_rows=rows,
+            ref_total=est.ref_total,
+            timebase=timebase,
+            active_power_col=self.columns.active_power,
+        )
+        self._write_outputs(mi, wide=wide, stats=stats, est=est, components=components, timebase=timebase, rows=rows)
+        return MethodOutput(
+            p50_overall=float(est.uplift),
+            p50_by_condition=est.per_bin,
+            sigma_overall=est.sigma_overall,
+            uncertainty_diagnostics=est.diagnostics,
+            labeled_rows=self._labeled_rows(mi, wide=wide, test=test, used=est.used, rows=rows, label=est.label),
+            selection_accounting=est.accounting,
+        )
+
+    def _component(
+        self,
+        mi: MethodInput,
+        *,
+        mode: str,
+        wide_all: pd.DataFrame,
+        test: str,
+        timebase: pd.Timedelta,
+        block: pd.Timedelta | None,
+        rows: ToggleRowSets,
+    ) -> _Estimate:
+        """Run one reference mode end to end: row selection, reference, uplift, bins and bootstrap."""
+        # block_mean compares the test turbine against its own block, so references play no part,
+        # not even in the row filters: a reference outage must not cost a zero-reference run rows.
+        refs = [] if mode == "block_mean" else mi.context.references_among(wide_all.columns)
+        if not refs and mode != "block_mean":
+            msg = (
+                f"no reference turbines available for test_wtg {test!r}: scada_df contains only "
+                f"{list(wide_all.columns)}. The toggle specialist method needs at least one reference turbine "
+                f"in reference_mode {mode!r} (only 'block_mean' runs without references)."
+            )
+            raise ValueError(msg)
+        # Narrow to the mode's turbines and blank the cells the campaign says may not contribute, so
+        # the estimate and every diagnostic see one consistent selection.
+        ref_set = set(refs)
+        wide = mi.context.mask_invalid(wide_all[[c for c in wide_all.columns if c == test or c in ref_set]])
+
         baseline = rows.campaign_baseline
         test_pw = wide[test].to_numpy(dtype=float)
         campaign = baseline | rows.upgraded
         ids = (
             block_ids(wide.index, start=wide.index[campaign].min(), block=block)
-            if block is not None and campaign.any()
+            if mode != "sum" and block is not None and campaign.any()
             else None
         )
         selection = self._selection(mi, wide=wide, test=test, refs=refs, timebase=timebase, rows=rows, ids=ids)
         used = selection.blocked.to_numpy()
         accounting = self._selection_accounting(selection, rows=rows)
-        ref_total = self._reference_total(wide=wide, refs=refs, test_pw=test_pw, used=used, ids=ids)
+        ref_total = self._reference_total(mode=mode, wide=wide, refs=refs, test_pw=test_pw, used=used, ids=ids)
 
         rho_base = _rho(test_pw, ref_total, used & baseline)
         rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
@@ -355,45 +445,22 @@ class ToggleSpecialistMethod:
             baseline=used & baseline,
             used=used,
         )
-
-        stats = _segment_stats(
-            mi,
-            wide=wide,
-            used=used,
-            toggle_rows=rows,
-            ref_total=ref_total,
-            timebase=timebase,
-            active_power_col=self.columns.active_power,
-        )
-        sigma_overall = _cell_sigma(boot, _OVERALL)
-        self._write_outputs(
-            mi,
-            wide=wide,
-            stats=stats,
+        diagnostics.insert(0, "component", mode)
+        return _Estimate(
+            mode=mode,
+            refs=refs,
+            selection=selection,
             used=used,
             ref_total=ref_total,
+            label=rho_label * ref_total,
             rho_base=rho_base,
             rho_up=rho_up,
             uplift=uplift,
-            sigma_overall=sigma_overall,
-            n_refs=len(refs),
-            refs=refs,
-            timebase=timebase,
+            sigma_overall=_cell_sigma(boot, _OVERALL),
             per_bin=per_bin,
-            diagnostics=diagnostics,
+            boot=boot,
             accounting=accounting,
-            selection=selection,
-            rows=rows,
-        )
-        return MethodOutput(
-            p50_overall=float(uplift),
-            p50_by_condition=per_bin,
-            sigma_overall=sigma_overall,
-            uncertainty_diagnostics=diagnostics,
-            labeled_rows=self._labeled_rows(
-                mi, wide=wide, test=test, used=used, rows=rows, rho_label=rho_label, ref_total=ref_total
-            ),
-            selection_accounting=accounting,
+            diagnostics=diagnostics,
         )
 
     def _labeled_rows(
@@ -404,8 +471,7 @@ class ToggleSpecialistMethod:
         test: str,
         used: npt.NDArray[np.bool_],
         rows: ToggleRowSets,
-        rho_label: float,
-        ref_total: npt.NDArray[np.float64],
+        label: npt.NDArray[np.float64],
     ) -> pd.DataFrame:
         """Return the test turbine's own records, tagged with the labels this estimate was built from.
 
@@ -425,10 +491,10 @@ class ToggleSpecialistMethod:
         # The bin label is the same reference-derived baseline power the uplift binned on, so a row
         # cannot sit in one bin here and another there. Outside the outer edges pd.cut gives NaN,
         # which is carried through as "this row belongs to no bin" rather than clipped to an edge.
-        if "power" in self.conditions and np.isfinite(rho_label):
+        if "power" in self.conditions and np.isfinite(label).any():
             assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
             bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
-            labeled["power_bin"] = _on_test_rows(np.asarray(pd.cut(rho_label * ref_total, bins=bins)))
+            labeled["power_bin"] = _on_test_rows(np.asarray(pd.cut(label, bins=bins)))
         return labeled
 
     def _cell_membership(
@@ -539,6 +605,7 @@ class ToggleSpecialistMethod:
         if self.reference_mode == "sum":
             return None
         block = self.reference_block if self.reference_block is not None else self.pairing_max_gap
+        # ``combined`` needs the block for its block_mean component.
         if block is None:
             msg = (
                 f"{self.name}: reference_mode {self.reference_mode!r} needs a block length: set reference_block "
@@ -557,25 +624,26 @@ class ToggleSpecialistMethod:
     def _reference_total(
         self,
         *,
+        mode: str,
         wide: pd.DataFrame,
         refs: list[str],
         test_pw: npt.NDArray[np.float64],
         used: npt.NDArray[np.bool_],
         ids: npt.NDArray[np.int64] | None,
     ) -> npt.NDArray[np.float64]:
-        """Return the per-row reference power for ``reference_mode``; NaN on rows no surviving block covers.
+        """Return the per-row reference power for ``mode``; NaN on rows no surviving block covers.
 
         Every used row of a block gets the same block-level factor, so within a block the on/off
         ratio cancels the block's wind level whatever the on/off count mix (the block mean carries
         the uplift at ``n_on / n`` strength in both denominators, a second-order effect).
         """
         ref_sum = wide[refs].sum(axis=1).to_numpy(dtype=float) if refs else np.zeros(len(wide))
-        if self.reference_mode == "sum":
+        if mode == "sum":
             return ref_sum
         if ids is None or not used.any():
             return np.full(len(wide), np.nan)
         block_test = _block_sum(ids, test_pw, used)
-        if self.reference_mode == "block_mean":
+        if mode == "block_mean":
             n_used = pd.Series(used.astype(float)).groupby(ids).sum()
             return _per_row(ids, block_test / n_used.reindex(block_test.index))
         scale = block_test / _block_sum(ids, ref_sum, used)
@@ -730,20 +798,10 @@ class ToggleSpecialistMethod:
         *,
         wide: pd.DataFrame,
         stats: pd.DataFrame,
-        used: np.ndarray,
-        ref_total: npt.NDArray[np.float64],
-        rho_base: float,
-        rho_up: float,
-        uplift: float,
-        sigma_overall: float,
-        n_refs: int,
-        refs: list[str],
+        est: _Estimate,
+        components: dict[str, _Estimate],
         timebase: pd.Timedelta,
-        per_bin: pd.DataFrame | None = None,
-        diagnostics: pd.DataFrame | None = None,
-        accounting: pd.DataFrame | None = None,
-        selection: _Selection | None = None,
-        rows: ToggleRowSets | None = None,
+        rows: ToggleRowSets,
     ) -> None:
         """Write the data-stats CSV, the headline results CSV, the per-bin CSV and (optionally) the plots."""
         upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
@@ -766,12 +824,14 @@ class ToggleSpecialistMethod:
                     "test_wtg": mi.test_wtg,
                     "mode": "toggle",
                     "n_turbines": wide.shape[1],
-                    "n_refs": n_refs,
+                    "n_refs": len(est.refs),
                     "reference_mode": self.reference_mode,
-                    "ratio_baseline": rho_base,
-                    "ratio_upgraded": rho_up,
-                    "uplift_frc": uplift,
-                    "uplift_sigma_frc": sigma_overall,
+                    "ratio_baseline": est.rho_base,
+                    "ratio_upgraded": est.rho_up,
+                    "uplift_frc": est.uplift,
+                    "uplift_sigma_frc": est.sigma_overall,
+                    **{f"uplift_frc_{mode}": component.uplift for mode, component in components.items()},
+                    **{f"uplift_sigma_frc_{mode}": component.sigma_overall for mode, component in components.items()},
                     "block_hours": self.block_hours,
                     "n_resamples": self.n_resamples,
                     "n_used_timestamps_baseline": used_base,
@@ -782,12 +842,13 @@ class ToggleSpecialistMethod:
         )
         results.to_csv(run_dir / f"{run_name}_results_{ts}.csv", index=False)
 
-        if per_bin is not None:
-            per_bin.to_csv(run_dir / f"{run_name}_by_power_bin_{ts}.csv", index=False)
-        if diagnostics is not None:
-            diagnostics.to_csv(run_dir / f"{run_name}_uncertainty_{ts}.csv", index=False)
-        if accounting is not None:
-            accounting.to_csv(run_dir / f"{run_name}_selection_{ts}.csv", index=False)
+        if est.per_bin is not None:
+            est.per_bin.to_csv(run_dir / f"{run_name}_by_power_bin_{ts}.csv", index=False)
+        est.diagnostics.to_csv(run_dir / f"{run_name}_uncertainty_{ts}.csv", index=False)
+        # Every component's row selection, so a blend's two selections can be told apart.
+        pd.concat(
+            [component.accounting.assign(component=mode) for mode, component in components.items()], ignore_index=True
+        ).to_csv(run_dir / f"{run_name}_selection_{ts}.csv", index=False)
 
         if self.save_plots:
             _save_plots(
@@ -795,31 +856,30 @@ class ToggleSpecialistMethod:
                 wide=wide,
                 mi=mi,
                 test=mi.test_wtg,
-                used=used,
-                ref_total=ref_total,
-                reference_mode=self.reference_mode,
+                used=est.used,
+                ref_total=est.ref_total,
+                reference_mode=est.mode,
                 timebase=timebase,
                 active_power_col=self.columns.active_power,
             )
-            if per_bin is not None:
+            if est.per_bin is not None:
                 _save_per_bin_plot(
                     run_dir / "plots" / stages.CONDITIONAL_UPLIFT / f"{mi.test_wtg}_per_bin_uplift.png",
-                    per_bin=per_bin,
+                    per_bin=est.per_bin,
                     test=mi.test_wtg,
                     active_power_col=self.columns.active_power,
                 )
-            if selection is not None and rows is not None:
-                _save_pairing_gap_plot(
-                    run_dir / "plots" / stages.FILTER / f"{mi.test_wtg}_pairing_gap.png",
-                    index=wide.index,
-                    selection=selection,
-                    rows=rows,
-                    timebase=timebase,
-                    max_gap=self.pairing_max_gap,
-                    test=mi.test_wtg,
-                )
+            _save_pairing_gap_plot(
+                run_dir / "plots" / stages.FILTER / f"{mi.test_wtg}_pairing_gap.png",
+                index=wide.index,
+                selection=est.selection,
+                rows=rows,
+                timebase=timebase,
+                max_gap=self.pairing_max_gap,
+                test=mi.test_wtg,
+            )
             self._write_shared_diagnostics(
-                mi, run_dir=run_dir, wide=wide, used=used, timebase=timebase, turbines=[mi.test_wtg, *refs]
+                mi, run_dir=run_dir, wide=wide, used=est.used, timebase=timebase, turbines=[mi.test_wtg, *est.refs]
             )
 
     def _write_shared_diagnostics(
@@ -886,6 +946,82 @@ def _per_bin_counterfactual(
     return rho_row * ref_total
 
 
+def _combine(a: _Estimate, b: _Estimate) -> _Estimate:
+    """Blend two component estimates by inverse variance, headline and per bin.
+
+    The blend's used rows are the union of the components' (a row contributed to at least one
+    estimate); its bin label is ``a``'s where ``a`` used the row and ``b``'s otherwise, so the two
+    components' bins, which share edges, are merged by name. Row-selection accounting, ``rho`` and
+    the reference-side diagnostics are ``a``'s (the reference-based component); ``b``'s selection
+    is written to the selection CSV. The diagnostics carry both components' rows and a ``combined``
+    row per cell with the blend's sigma, the weight on ``a`` and the correlation it used.
+    """
+
+    def _resamples(est: _Estimate, cell: str) -> npt.NDArray[np.float64]:
+        return est.boot.resamples.get(cell, np.array([])) if est.boot is not None else np.array([])
+
+    def _cell(cell: str, est_a: float, sig_a: float, est_b: float, sig_b: float) -> CombinedEstimate:
+        return combine_estimates((est_a, sig_a, _resamples(a, cell)), (est_b, sig_b, _resamples(b, cell)))
+
+    overall = _cell(_OVERALL, a.uplift, a.sigma_overall, b.uplift, b.sigma_overall)
+    blended_cells = {_OVERALL: overall}
+
+    per_bin = None
+    if a.per_bin is not None and b.per_bin is not None:
+        fa = a.per_bin.set_index(a.per_bin["condition_bin"].astype(str))
+        fb = b.per_bin.set_index(b.per_bin["condition_bin"].astype(str))
+        records = []
+        for cell in fa.index:
+            ra, rb = fa.loc[cell], fb.loc[cell]
+            blend = _cell(cell, ra["p50_uplift"], ra["sigma_uplift"], rb["p50_uplift"], rb["sigma_uplift"])
+            blended_cells[cell] = blend
+            take = ra if np.isfinite(ra["p50_uplift"]) else rb
+            records.append(
+                {
+                    "condition": ra["condition"],
+                    "condition_bin": ra["condition_bin"],
+                    "p50_uplift": blend.estimate,
+                    "n_records": int(max(ra["n_records"], rb["n_records"])),
+                    "sum_actual": take["sum_actual"],
+                    "sum_counterfactual": take["sum_counterfactual"],
+                    "sigma_uplift": blend.sigma,
+                }
+            )
+        per_bin = pd.DataFrame(records)
+
+    combined_rows = pd.DataFrame(
+        [
+            {
+                "component": "combined",
+                "condition": _OVERALL if cell == _OVERALL else "power",
+                "condition_bin": cell,
+                "sigma": blend.sigma,
+                f"weight_{a.mode}": blend.weight_a,
+                "correlation": blend.correlation,
+            }
+            for cell, blend in blended_cells.items()
+        ]
+    )
+    diagnostics = pd.concat([a.diagnostics, b.diagnostics, combined_rows], ignore_index=True)
+
+    return _Estimate(
+        mode="combined",
+        refs=a.refs,
+        selection=a.selection,
+        used=a.used | b.used,
+        ref_total=a.ref_total,
+        label=np.where(a.used, a.label, b.label),
+        rho_base=a.rho_base,
+        rho_up=a.rho_up,
+        uplift=overall.estimate,
+        sigma_overall=overall.sigma,
+        per_bin=per_bin,
+        boot=None,
+        accounting=a.accounting,
+        diagnostics=diagnostics,
+    )
+
+
 def _cell_sigma(boot: BootstrapResult | None, cell: str) -> float:
     """Return one cell's 1-sigma, or NaN when the bootstrap did not run or never saw that cell."""
     if boot is None or cell not in boot.cells:
@@ -922,6 +1058,7 @@ def _uncertainty_diagnostics(
                 "n_upgraded_records": int((member & up_used).sum()),
                 "n_baseline_records": int((member & base_used).sum()),
                 "n_blocks": boot.n_blocks if boot is not None else 0,
+                "sigma": cell_boot.sigma if cell_boot is not None else nan,
                 # Both components, not just the reported max: a blend rule can then be re-judged from
                 # a saved sweep rather than by re-running one.
                 "sigma_bootstrap": cell_boot.sigma_bootstrap if cell_boot is not None else nan,

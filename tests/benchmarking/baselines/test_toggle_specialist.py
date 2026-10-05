@@ -1363,3 +1363,47 @@ class TestReferenceModes:
         scada, schedule = _block_case(n_blocks=10, ref_scale=np.ones(10))
         with pytest.raises(ValueError, match="reference_block"):
             _estimate(scada, schedule, reference_mode="block_scaled")
+
+
+class TestCombinedMode:
+    """``reference_mode="combined"``: inverse-variance blend of the ``sum`` and ``block_mean`` estimates."""
+
+    def test_recovers_the_uplift_when_both_components_are_exact(self) -> None:
+        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
+        out = _estimate(scada, schedule, reference_mode="combined", reference_block=_BLOCK)
+        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
+
+    def test_falls_back_to_block_mean_when_the_references_are_out(self) -> None:
+        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5), seed=3)
+        scada.loc[(scada[_TURBINE_COL] == "R1").to_numpy(), _POWER_COL] = np.nan
+        combined = _estimate(scada, schedule, reference_mode="combined", reference_block=_BLOCK)
+        alone = _estimate(scada, schedule, reference_mode="block_mean", reference_block=_BLOCK)
+        assert combined.p50_overall == pytest.approx(alone.p50_overall)
+        assert combined.sigma_overall == pytest.approx(alone.sigma_overall)
+
+    def test_sigma_lies_between_the_naive_blend_and_the_better_component(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        gap = pd.Timedelta(minutes=20)
+        combined = _estimate(scada, schedule, reference_mode="combined", pairing_max_gap=gap)
+        total = _estimate(scada, schedule, reference_mode="sum", pairing_max_gap=gap)
+        block = _estimate(scada, schedule, reference_mode="block_mean", pairing_max_gap=gap)
+        naive = 1.0 / np.sqrt(1.0 / total.sigma_overall**2 + 1.0 / block.sigma_overall**2)
+        assert naive <= combined.sigma_overall <= max(total.sigma_overall, block.sigma_overall)
+
+    def test_diagnostics_name_the_components(self) -> None:
+        scada, schedule = _noisy_toggle_case(n=400)
+        out = _estimate(scada, schedule, reference_mode="combined", pairing_max_gap=pd.Timedelta(minutes=20))
+        assert set(out.uncertainty_diagnostics["component"]) == {"sum", "block_mean", "combined"}
+        combined = out.uncertainty_diagnostics[out.uncertainty_diagnostics["component"] == "combined"]
+        assert np.isfinite(combined.loc[combined["condition_bin"] == "overall", "weight_sum"]).all()
+
+    def test_used_rows_are_the_union_of_the_components(self) -> None:
+        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
+        is_ref = (scada[_TURBINE_COL] == "R1").to_numpy()
+        scada.loc[is_ref & (np.arange(len(scada)) % 7 == 0), _POWER_COL] = np.nan
+        out = _estimate(scada, schedule, reference_mode="combined", reference_block=_BLOCK)
+        total = _estimate(scada, schedule, reference_mode="sum", reference_block=_BLOCK)
+        used_combined = out.labeled_rows["used"] == True  # noqa: E712 - NaN (absent timestamp) must read as unused
+        used_sum = total.labeled_rows["used"] == True  # noqa: E712
+        assert used_combined.sum() > used_sum.sum()
+        assert used_combined.all()

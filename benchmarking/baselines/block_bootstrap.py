@@ -15,7 +15,7 @@ two lookups), so a resample is a gather-and-subtract rather than a pass over the
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -74,10 +74,83 @@ class BootstrapResult:
 
     :param n_blocks: blocks drawn per resample (``ceil(campaign / block)``)
     :param cells: uncertainty per cell name, keyed as the caller keyed ``cell_membership``
+    :param resamples: per cell, the resampled uplifts themselves (NaN where a resample was
+        degenerate), in draw order; empty when the bootstrap did not run. Two bootstraps run with the
+        same campaign span, timebase, block length, resample count and seed draw the same blocks, so
+        their resamples pair up draw by draw (see :func:`combine_estimates`).
     """
 
     n_blocks: int
     cells: dict[str, CellUncertainty]
+    resamples: dict[str, npt.NDArray[np.float64]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CombinedEstimate:
+    """An inverse-variance blend of two estimates of the same uplift.
+
+    :param estimate: ``weight_a * a + (1 - weight_a) * b``
+    :param sigma: the blend's 1-sigma, including the two components' correlation
+    :param weight_a: the weight on the first component, in ``[0, 1]``; NaN when neither was usable
+    :param correlation: the correlation of the two components' paired resamples that ``sigma`` used
+    """
+
+    estimate: float
+    sigma: float
+    weight_a: float
+    correlation: float
+
+
+# Correlation assumed between two components when their resamples cannot be paired: midway between
+# independent and identical, so the blend neither claims the full inverse-variance gain nor none.
+_DEFAULT_COMPONENT_CORRELATION = 0.5
+
+
+def combine_estimates(
+    a: tuple[float, float, npt.NDArray[np.float64]], b: tuple[float, float, npt.NDArray[np.float64]]
+) -> CombinedEstimate:
+    """Blend two ``(estimate, sigma, resamples)`` of the same quantity by inverse variance.
+
+    A component is usable when both its estimate and its sigma are finite. With two usable
+    components the weights are ``1 / sigma**2`` (a zero sigma takes all the weight) and the blend's
+    variance is ``(wa**2 sa**2 + wb**2 sb**2 + 2 wa wb r sa sb) / (wa + wb)**2`` with ``r`` the
+    Pearson correlation of the draw-paired finite resamples, or
+    :data:`_DEFAULT_COMPONENT_CORRELATION` when fewer than two pairs exist. One usable component is
+    returned as is; none gives NaN throughout.
+    """
+    est_a, sig_a, res_a = a
+    est_b, sig_b, res_b = b
+    usable_a = math.isfinite(est_a) and math.isfinite(sig_a)
+    usable_b = math.isfinite(est_b) and math.isfinite(sig_b)
+    nan = float("nan")
+    if usable_a and not usable_b:
+        return CombinedEstimate(estimate=est_a, sigma=sig_a, weight_a=1.0, correlation=nan)
+    if usable_b and not usable_a:
+        return CombinedEstimate(estimate=est_b, sigma=sig_b, weight_a=0.0, correlation=nan)
+    if not (usable_a and usable_b):
+        return CombinedEstimate(estimate=nan, sigma=nan, weight_a=nan, correlation=nan)
+
+    if sig_a == 0.0 or sig_b == 0.0:
+        weight_a = 0.5 if sig_a == sig_b else float(sig_a == 0.0)
+    else:
+        wa, wb = 1.0 / sig_a**2, 1.0 / sig_b**2
+        weight_a = wa / (wa + wb)
+    weight_b = 1.0 - weight_a
+
+    n_pairs = min(len(res_a), len(res_b))
+    paired = np.isfinite(res_a[:n_pairs]) & np.isfinite(res_b[:n_pairs])
+    if paired.sum() >= _MIN_RESAMPLES_FOR_SPREAD:
+        r = float(np.corrcoef(res_a[:n_pairs][paired], res_b[:n_pairs][paired])[0, 1])
+        correlation = r if math.isfinite(r) else _DEFAULT_COMPONENT_CORRELATION
+    else:
+        correlation = _DEFAULT_COMPONENT_CORRELATION
+    variance = weight_a**2 * sig_a**2 + weight_b**2 * sig_b**2 + 2.0 * weight_a * weight_b * correlation * sig_a * sig_b
+    return CombinedEstimate(
+        estimate=weight_a * est_a + weight_b * est_b,
+        sigma=math.sqrt(max(variance, 0.0)),
+        weight_a=weight_a,
+        correlation=correlation,
+    )
 
 
 def _nan_cells(names: list[str]) -> dict[str, CellUncertainty]:
@@ -227,6 +300,7 @@ def bootstrap_ratio_uplift(
     return BootstrapResult(
         n_blocks=n_blocks,
         cells=_summarise(uplift, names=names, fallback=fallback, boot_weight=boot_weight),
+        resamples={name: uplift[:, i] for i, name in enumerate(names)},
     )
 
 

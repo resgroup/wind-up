@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.block_bootstrap import bootstrap_ratio_uplift, relative_scatter
+from benchmarking.baselines.block_bootstrap import bootstrap_ratio_uplift, combine_estimates, relative_scatter
 
 _TIMEBASE = pd.Timedelta(minutes=10)
 
@@ -380,3 +380,70 @@ class TestPerfectDataMayReportZero:
             sigmas.append(_run(case).cells["overall"].sigma)
         assert sigmas == sorted(sigmas, reverse=True)
         assert sigmas[-1] < sigmas[0] / 10, "no floor is arresting the descent"
+
+
+class TestResamplesAreExposed:
+    def test_each_cell_carries_its_resampled_uplifts(self) -> None:
+        result = _run(_case(), n_resamples=300)
+        samples = result.resamples["overall"]
+        assert samples.shape == (300,)
+        assert np.std(samples[np.isfinite(samples)], ddof=1) == pytest.approx(result.cells["overall"].sigma_bootstrap)
+
+    def test_no_records_means_no_resamples(self) -> None:
+        empty = {
+            k: np.array([], dtype=bool if k in ("upgraded", "baseline") else float)
+            for k in ("test_power", "ref_total", "upgraded", "baseline")
+        }
+        result = bootstrap_ratio_uplift(
+            times=_timeline(0),
+            cell_membership={"overall": np.array([], dtype=bool)},
+            campaign_start=pd.Timestamp("2020-01-01", tz="UTC"),
+            campaign_end=pd.Timestamp("2020-01-08", tz="UTC"),
+            timebase=_TIMEBASE,
+            block_hours=48.0,
+            n_resamples=100,
+            seed=0,
+            **empty,
+        )
+        assert result.resamples == {}
+
+
+class TestCombineEstimates:
+    """Inverse-variance blend of two estimates of the same quantity, honouring their resample correlation."""
+
+    @staticmethod
+    def _samples(rho: float, *, n: int = 2000, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(seed)
+        a = rng.standard_normal(n)
+        b = rho * a + np.sqrt(1.0 - rho**2) * rng.standard_normal(n)
+        return a, b
+
+    def test_independent_components_give_the_naive_inverse_variance_sigma(self) -> None:
+        a, b = self._samples(0.0)
+        out = combine_estimates((0.02, 1.0, a), (0.04, 2.0, b))
+        assert out.weight_a == pytest.approx(0.8)
+        assert out.estimate == pytest.approx(0.8 * 0.02 + 0.2 * 0.04)
+        assert out.sigma == pytest.approx(1.0 / np.sqrt(1.0 + 0.25), abs=0.03)
+
+    def test_a_correlation_widens_the_combined_sigma(self) -> None:
+        a, b = self._samples(0.8)
+        out = combine_estimates((0.0, 1.0, a), (0.0, 1.0, b))
+        assert out.correlation == pytest.approx(0.8, abs=0.03)
+        assert out.sigma == pytest.approx(np.sqrt((1 + 0.8) / 2), abs=0.03)
+
+    def test_one_unusable_component_leaves_the_other_untouched(self) -> None:
+        a, b = self._samples(0.0)
+        out = combine_estimates((float("nan"), float("nan"), a), (0.03, 2.0, b))
+        assert out.weight_a == 0.0
+        assert out.estimate == 0.03
+        assert out.sigma == 2.0
+
+    def test_neither_usable_is_nan(self) -> None:
+        out = combine_estimates((float("nan"), float("nan"), np.array([])), (float("nan"), float("nan"), np.array([])))
+        assert np.isnan(out.estimate)
+        assert np.isnan(out.sigma)
+
+    def test_missing_resamples_assume_a_half_correlation(self) -> None:
+        out = combine_estimates((0.0, 1.0, np.array([])), (0.0, 1.0, np.array([])))
+        assert out.correlation == 0.5
+        assert out.sigma == pytest.approx(np.sqrt((1 + 0.5) / 2))
