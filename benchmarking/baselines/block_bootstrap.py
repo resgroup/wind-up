@@ -112,11 +112,13 @@ def combine_estimates(
     """Blend two ``(estimate, sigma, resamples)`` of the same quantity by inverse variance.
 
     A component is usable when both its estimate and its sigma are finite. With two usable
-    components the weights are ``1 / sigma**2`` (a zero sigma takes all the weight) and the blend's
-    variance is ``(wa**2 sa**2 + wb**2 sb**2 + 2 wa wb r sa sb) / (wa + wb)**2`` with ``r`` the
-    Pearson correlation of the draw-paired finite resamples, or
-    :data:`_DEFAULT_COMPONENT_CORRELATION` when fewer than two pairs exist. One usable component is
-    returned as is; none gives NaN throughout.
+    components the weights are the minimum-variance ones for two correlated estimates,
+    ``wa ∝ max(sb² - r sa sb, 0)`` and ``wb ∝ max(sa² - r sa sb, 0)`` (a zero sigma takes all the
+    weight; both weights zero splits evenly), with ``r`` the Pearson correlation of the draw-paired
+    finite resamples, or :data:`_DEFAULT_COMPONENT_CORRELATION` when fewer than two pairs exist.
+    The blend's variance is ``wa² sa² + wb² sb² + 2 wa wb r sa sb``, which these weights keep at or
+    below the better component's: a noisier leg correlated at ``r >= sb / sa`` gets no weight rather
+    than widening the blend. One usable component is returned as is; none gives NaN throughout.
     """
     est_a, sig_a, res_a = a
     est_b, sig_b, res_b = b
@@ -129,13 +131,6 @@ def combine_estimates(
         return CombinedEstimate(estimate=est_b, sigma=sig_b, weight_a=0.0, correlation=nan)
     if not (usable_a and usable_b):
         return CombinedEstimate(estimate=nan, sigma=nan, weight_a=nan, correlation=nan)
-
-    if sig_a == 0.0 or sig_b == 0.0:
-        weight_a = 0.5 if sig_a == sig_b else float(sig_a == 0.0)
-    else:
-        wa, wb = 1.0 / sig_a**2, 1.0 / sig_b**2
-        weight_a = wa / (wa + wb)
-    weight_b = 1.0 - weight_a
 
     if len(res_a) and len(res_b) and len(res_a) != len(res_b):
         msg = (
@@ -151,6 +146,14 @@ def combine_estimates(
         correlation = r if math.isfinite(r) else _DEFAULT_COMPONENT_CORRELATION
     else:
         correlation = _DEFAULT_COMPONENT_CORRELATION
+
+    if sig_a == 0.0 or sig_b == 0.0:
+        weight_a = 0.5 if sig_a == sig_b else float(sig_a == 0.0)
+    else:
+        cross = correlation * sig_a * sig_b
+        wa, wb = max(sig_b**2 - cross, 0.0), max(sig_a**2 - cross, 0.0)
+        weight_a = 0.5 if wa + wb == 0.0 else wa / (wa + wb)
+    weight_b = 1.0 - weight_a
     variance = weight_a**2 * sig_a**2 + weight_b**2 * sig_b**2 + 2.0 * weight_a * weight_b * correlation * sig_a * sig_b
     return CombinedEstimate(
         estimate=weight_a * est_a + weight_b * est_b,

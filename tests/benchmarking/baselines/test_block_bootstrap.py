@@ -421,8 +421,9 @@ class TestCombineEstimates:
     def test_independent_components_give_the_naive_inverse_variance_sigma(self) -> None:
         a, b = self._samples(0.0)
         out = combine_estimates((0.02, 1.0, a), (0.04, 2.0, b))
-        assert out.weight_a == pytest.approx(0.8)
-        assert out.estimate == pytest.approx(0.8 * 0.02 + 0.2 * 0.04)
+        # The sampled correlation is ~0, not exactly 0, so the weights land near the naive 0.8 / 0.2.
+        assert out.weight_a == pytest.approx(0.8, abs=0.02)
+        assert out.estimate == pytest.approx(0.8 * 0.02 + 0.2 * 0.04, abs=1e-3)
         assert out.sigma == pytest.approx(1.0 / np.sqrt(1.0 + 0.25), abs=0.03)
 
     def test_a_correlation_widens_the_combined_sigma(self) -> None:
@@ -430,6 +431,20 @@ class TestCombineEstimates:
         out = combine_estimates((0.0, 1.0, a), (0.0, 1.0, b))
         assert out.correlation == pytest.approx(0.8, abs=0.03)
         assert out.sigma == pytest.approx(np.sqrt((1 + 0.8) / 2), abs=0.03)
+
+    def test_a_correlated_noisier_component_drops_out_rather_than_widening_the_blend(self) -> None:
+        # Minimum-variance weights for correlated estimates: with r >= sb/sa the noisier leg gets no weight.
+        a, b = self._samples(0.8)
+        out = combine_estimates((0.10, 2.0, 2.0 * a), (0.02, 1.0, b))
+        assert out.weight_a == 0.0
+        assert out.estimate == pytest.approx(0.02)
+        assert out.sigma == pytest.approx(1.0)
+
+    def test_the_blend_is_never_worse_than_its_better_component(self) -> None:
+        for rho in (0.0, 0.3, 0.6, 0.9):
+            a, b = self._samples(rho, seed=1)
+            out = combine_estimates((0.0, 1.5, 1.5 * a), (0.0, 1.0, b))
+            assert out.sigma <= 1.0 + 1e-9, rho
 
     def test_one_unusable_component_leaves_the_other_untouched(self) -> None:
         a, b = self._samples(0.0)
