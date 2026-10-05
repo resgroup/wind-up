@@ -981,19 +981,19 @@ class TestExcludeRow:
         assert filtered.p50_overall == pytest.approx(0.05, abs=1e-9)
         assert abs(naive.p50_overall - 0.05) > abs(filtered.p50_overall - 0.05)
 
-    def test_flagged_reference_rows_are_kept(self) -> None:
-        """References are never excluded here: their special modes still carry ratio information."""
+    def test_flagged_reference_rows_drop_the_timestamp(self) -> None:
+        """A flagged reference row (curtailed, iced, parked) removes the timestamp like a reference outage."""
         scada, schedule = _noisy_toggle_case()
         flagged = _flag(scada, turbine="R1", every=3)
-        baseline = ToggleSpecialistMethod(columns=_COLUMNS).estimate(
+        out = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS).estimate(
             MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
-        with_role = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS).estimate(
-            MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
-        )
-        assert with_role.p50_overall == pytest.approx(baseline.p50_overall)
-        assert with_role.labeled_rows is not None
-        assert with_role.labeled_rows["used"].to_numpy().any()
+        assert out.labeled_rows is not None
+        is_ref = (flagged[_TURBINE_COL] == "R1").to_numpy()
+        flagged_ts = flagged.index[is_ref & flagged[_EXCLUDE_COL].to_numpy(dtype=bool)]
+        used = out.labeled_rows["used"].astype(bool)
+        assert not used.loc[flagged_ts].any()
+        assert used.drop(flagged_ts).any()
 
     def test_nan_in_the_exclude_column_is_rejected(self) -> None:
         """NaN is not "excluded": the schema contract says the column is never NaN, so say so loudly."""
@@ -1266,3 +1266,100 @@ def test_pairing_gap_plot_is_written(tmp_path: Path, gap: pd.Timedelta | None) -
     scada, schedule = _noisy_toggle_case(n=200)
     _estimate(scada, schedule, out_dir=tmp_path, save_plots=True, pairing_max_gap=gap)
     assert len(list(tmp_path.rglob("*_pairing_gap.png"))) == 1
+
+
+# --- reference modes: block_mean (zero references) and block_scaled ------------------------------
+
+_BLOCK = pd.Timedelta(minutes=40)  # one full 20-min on / 20-min off cycle = 4 rows of 10 min
+
+
+def _block_case(
+    n_blocks: int = 120,
+    *,
+    uplift: float = 0.04,
+    ramp: float = 0.0,
+    ref_scale: np.ndarray | None = None,
+    seed: int = 0,
+) -> tuple[pd.DataFrame, ToggleSchedule]:
+    """A toggle campaign whose power level jumps wildly between 40-min blocks (two on/off cycles each).
+
+    Test power is ``level_b * shape_i``, times ``1 + uplift`` when treated, where ``shape`` is a
+    within-block ramp of slope ``ramp`` per row (flat by default: a ramp in phase with the toggle
+    is exactly the drift ``block_mean`` cannot cancel). With ``ref_scale`` (one factor per block) a
+    reference ``R1 = ref_scale_b * level_b * shape_i`` is added: it tracks the test turbine inside
+    every block but its ratio to the test changes from block to block.
+    """
+    rng = np.random.default_rng(seed)
+    idx = _index(4 * n_blocks)
+    schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=idx[0])
+    treated = np.asarray(treated_mask(idx, schedule))
+    level = np.repeat(rng.uniform(200.0, 2000.0, n_blocks), 4)
+    shape = np.tile(1.0 + ramp * np.arange(4), n_blocks)
+    base = level * shape
+    test = np.where(treated, base * (1.0 + uplift), base)
+    turbines = {"T1": test}
+    if ref_scale is not None:
+        turbines["R1"] = np.repeat(ref_scale, 4) * base
+    return _scada(turbines, idx), schedule
+
+
+class TestReferenceModes:
+    def test_block_mean_recovers_the_uplift_with_no_references(self) -> None:
+        scada, schedule = _block_case(uplift=0.04)
+        out = _estimate(scada, schedule, reference_mode="block_mean", reference_block=_BLOCK)
+        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
+        assert np.isfinite(out.sigma_overall)
+
+    def test_block_mean_ignores_a_reference_outage(self) -> None:
+        """Zero-reference mode must not pay for references it does not use."""
+        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
+        is_ref = (scada[_TURBINE_COL] == "R1").to_numpy()
+        scada.loc[is_ref, _POWER_COL] = np.nan
+        out = _estimate(scada, schedule, reference_mode="block_mean", reference_block=_BLOCK)
+        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
+        assert out.labeled_rows is not None
+        assert out.labeled_rows["used"].astype(bool).all()
+
+    def test_block_scaled_recovers_the_uplift_when_the_reference_ratio_drifts_between_blocks(self) -> None:
+        rng = np.random.default_rng(1)
+        scada, schedule = _block_case(uplift=0.04, ramp=0.1, ref_scale=rng.uniform(0.3, 3.0, 120))
+        out = _estimate(scada, schedule, reference_mode="block_scaled", reference_block=_BLOCK)
+        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
+
+    def test_block_length_defaults_to_the_pairing_gap(self) -> None:
+        scada, schedule = _block_case(uplift=0.04)
+        out = _estimate(scada, schedule, reference_mode="block_mean", pairing_max_gap=_BLOCK)
+        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
+
+    def test_a_block_with_one_state_is_dropped_and_accounted(self) -> None:
+        scada, schedule = _block_case(uplift=0.04)
+        idx = pd.DatetimeIndex(pd.unique(scada.index))
+        block_rows = idx[40:44]  # the 11th block: two on/off cycles
+        off_rows = block_rows[~np.asarray(treated_mask(block_rows, schedule))]
+        scada.loc[scada.index.isin(off_rows), _POWER_COL] = np.nan
+        out = _estimate(scada, schedule, reference_mode="block_mean", reference_block=_BLOCK)
+        assert out.labeled_rows is not None
+        # NaN (a timestamp absent from the pivot) must read as unused, so compare rather than cast
+        used = out.labeled_rows["used"] == True  # noqa: E712
+        assert not used.loc[block_rows].any()
+        assert used.sum() == len(idx) - 4
+        kept = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
+        assert kept["block", "upgraded"] == kept["pairing", "upgraded"] - 2
+        assert kept["block", "baseline"] == kept["pairing", "baseline"]
+
+    def test_sum_mode_reports_a_block_stage_that_keeps_everything(self) -> None:
+        scada, schedule = _noisy_toggle_case(n=200)
+        out = _estimate(scada, schedule, pairing_max_gap=pd.Timedelta(minutes=20))
+        kept = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
+        stages = ["segment", "filters", "exclude_row", "pairing", "block"]
+        assert list(out.selection_accounting["stage"].unique()) == stages
+        assert kept["block", "baseline"] == kept["pairing", "baseline"]
+
+    def test_unknown_mode_raises(self) -> None:
+        with pytest.raises(ValueError, match="reference_mode"):
+            ToggleSpecialistMethod(columns=_COLUMNS, reference_mode="bogus")
+
+    def test_a_block_mode_without_a_block_length_raises(self) -> None:
+        scada, schedule = _block_case(n_blocks=10, ref_scale=np.ones(10))
+        with pytest.raises(ValueError, match="reference_block"):
+            _estimate(scada, schedule, reference_mode="block_scaled")

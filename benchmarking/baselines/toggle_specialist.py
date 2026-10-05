@@ -17,6 +17,15 @@ other segment nearby, so a filter that removes one segment's rows in some condit
 other segment's rows from those conditions. Rows kept per segment after each selection stage are
 reported as ``MethodOutput.selection_accounting`` and written to a selection CSV.
 
+**Reference modes** (``reference_mode``) decide what the test power is compared against. ``"sum"``
+is the summed power of the references. The two *block* modes tile the campaign into fixed
+wall-clock blocks of ``reference_block`` (one toggle cycle by default) and give every used row of a
+block the same reference value, so the on/off ratio cancels the block's wind level exactly:
+``"block_mean"`` uses the block's mean test power and needs **no references at all**;
+``"block_scaled"`` keeps the summed references but rescales them per block so each block's reference
+total equals its test total, leaving the references only the within-block tracking. A block whose
+used rows lack either state is dropped (the ``block`` selection stage).
+
 Every uplift — the headline and each power bin — comes with a non-optional 1-sigma uncertainty from
 a circular block bootstrap (:mod:`benchmarking.baselines.block_bootstrap`). It is computed after the
 uplift, from the uplift's own frozen row selection and bin assignment, and only when the uplift is
@@ -74,6 +83,8 @@ DEFAULT_BLOCK_HOURS = 6.0
 # treatment cannot move a row between bins. Binning by the test turbine's ws/TI would condition on
 # post-treatment signals, which this method exists not to do (see the module docstring).
 _SUPPORTED_CONDITIONS: tuple[str, ...] = ("power",)
+# ``reference_mode`` values; see the module docstring.
+REFERENCE_MODES: tuple[str, ...] = ("sum", "block_mean", "block_scaled")
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +95,7 @@ class _Selection(NamedTuple):
     filtered: pd.Series
     not_excluded: pd.Series
     paired: pd.Series
+    blocked: pd.Series
 
 
 class PairedRows(NamedTuple):
@@ -133,6 +145,29 @@ def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
     if len(unique) < _MIN_POINTS_FOR_TIMEBASE:
         return pd.Timedelta(minutes=10)
     return pd.Timedelta(np.median(np.diff(unique.to_numpy())))
+
+
+def block_ids(index: pd.DatetimeIndex, *, start: pd.Timestamp, block: pd.Timedelta) -> npt.NDArray[np.int64]:
+    """Index of the fixed wall-clock block of length ``block``, tiled forward from ``start``, holding each row."""
+    return np.floor(np.asarray((index - start) / block, dtype=float)).astype(np.int64)
+
+
+def blocks_with_both_states(
+    ids: npt.NDArray[np.int64], *, baseline: npt.NDArray[np.bool_], upgraded: npt.NDArray[np.bool_]
+) -> npt.NDArray[np.bool_]:
+    """Per row: whether its block holds at least one ``baseline`` and one ``upgraded`` row."""
+    both = set(np.unique(ids[baseline])) & set(np.unique(ids[upgraded]))
+    return np.isin(ids, list(both))
+
+
+def _block_sum(ids: npt.NDArray[np.int64], values: npt.NDArray[np.float64], mask: npt.NDArray[np.bool_]) -> pd.Series:
+    """Sum of ``values`` over the ``mask`` rows of each block, indexed by block id."""
+    return pd.Series(values[mask]).groupby(ids[mask]).sum()
+
+
+def _per_row(ids: npt.NDArray[np.int64], per_block: pd.Series) -> npt.NDArray[np.float64]:
+    """Broadcast a per-block value back onto rows; NaN for a row whose block has no value."""
+    return per_block.reindex(ids).to_numpy(dtype=float)
 
 
 def _wide_column(scada_df: pd.DataFrame, *, turbine_col: str, value_col: str) -> pd.DataFrame:
@@ -189,6 +224,10 @@ class ToggleSpecialistMethod:
         a positive whole multiple of the timebase; ``None`` disables pairing.
     :param segment_imbalance_warning: warn when the two segments' kept fractions at any selection
         stage differ by more than this.
+    :param reference_mode: one of :data:`REFERENCE_MODES` (see the module docstring). ``"block_mean"``
+        uses no references: they do not enter the row filters either, and none need exist.
+    :param reference_block: block length for the block modes, a positive whole multiple of the
+        timebase; defaults to ``pairing_max_gap`` (one cycle). Ignored in ``"sum"`` mode.
     """
 
     columns: ColumnSchema
@@ -203,10 +242,15 @@ class ToggleSpecialistMethod:
     bootstrap_seed: int = 0
     pairing_max_gap: pd.Timedelta | None = None
     segment_imbalance_warning: float = 0.1
+    reference_mode: str = "sum"
+    reference_block: pd.Timedelta | None = None
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
         self.columns.require_roles(("active_power", "availability"))
+        if self.reference_mode not in REFERENCE_MODES:
+            msg = f"{self.name}: reference_mode {self.reference_mode!r} is not one of {REFERENCE_MODES}"
+            raise ValueError(msg)
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
         if "power" in self.conditions and self.rated_power_kw is None:
             msg = (
@@ -228,11 +272,14 @@ class ToggleSpecialistMethod:
         mi = restrict_to_campaign(mi)
         wide = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.active_power)
         test = mi.test_wtg
-        refs = mi.context.references_among(wide.columns)
-        if not refs:
+        # block_mean compares the test turbine against its own block, so references play no part,
+        # not even in the row filters: a reference outage must not cost a zero-reference run rows.
+        refs = [] if self.reference_mode == "block_mean" else mi.context.references_among(wide.columns)
+        if not refs and self.reference_mode != "block_mean":
             msg = (
                 f"no reference turbines available for test_wtg {test!r}: scada_df contains only "
-                f"{list(wide.columns)}. The toggle specialist method needs at least one reference turbine."
+                f"{list(wide.columns)}. The toggle specialist method needs at least one reference turbine "
+                f"in reference_mode {self.reference_mode!r} (only 'block_mean' runs without references)."
             )
             raise ValueError(msg)
         # Narrow to the campaign's turbines and blank the cells it says may not contribute, so the
@@ -249,13 +296,20 @@ class ToggleSpecialistMethod:
 
         timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
         self._check_pairing_gap(timebase)
+        block = self._reference_block(timebase)
         rows = resolve_toggle(mi.upgrade_timing, wide.index)
         baseline = rows.campaign_baseline
         test_pw = wide[test].to_numpy(dtype=float)
-        ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
-        selection = self._selection(mi, wide=wide, test=test, refs=refs, timebase=timebase, rows=rows)
-        used = selection.paired.to_numpy()
+        campaign = baseline | rows.upgraded
+        ids = (
+            block_ids(wide.index, start=wide.index[campaign].min(), block=block)
+            if block is not None and campaign.any()
+            else None
+        )
+        selection = self._selection(mi, wide=wide, test=test, refs=refs, timebase=timebase, rows=rows, ids=ids)
+        used = selection.blocked.to_numpy()
         accounting = self._selection_accounting(selection, rows=rows)
+        ref_total = self._reference_total(wide=wide, refs=refs, test_pw=test_pw, used=used, ids=ids)
 
         rho_base = _rho(test_pw, ref_total, used & baseline)
         rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
@@ -307,7 +361,7 @@ class ToggleSpecialistMethod:
             wide=wide,
             used=used,
             toggle_rows=rows,
-            refs=refs,
+            ref_total=ref_total,
             timebase=timebase,
             active_power_col=self.columns.active_power,
         )
@@ -317,11 +371,13 @@ class ToggleSpecialistMethod:
             wide=wide,
             stats=stats,
             used=used,
+            ref_total=ref_total,
             rho_base=rho_base,
             rho_up=rho_up,
             uplift=uplift,
             sigma_overall=sigma_overall,
             n_refs=len(refs),
+            refs=refs,
             timebase=timebase,
             per_bin=per_bin,
             diagnostics=diagnostics,
@@ -478,6 +534,53 @@ class ToggleSpecialistMethod:
             )
             raise ValueError(msg)
 
+    def _reference_block(self, timebase: pd.Timedelta) -> pd.Timedelta | None:
+        """Return the block length the block modes tile the campaign with; ``None`` in ``sum`` mode."""
+        if self.reference_mode == "sum":
+            return None
+        block = self.reference_block if self.reference_block is not None else self.pairing_max_gap
+        if block is None:
+            msg = (
+                f"{self.name}: reference_mode {self.reference_mode!r} needs a block length: set reference_block "
+                f"or pairing_max_gap (one toggle cycle is the natural choice)."
+            )
+            raise ValueError(msg)
+        ratio = block / timebase
+        if block <= pd.Timedelta(0) or ratio != round(ratio):
+            msg = (
+                f"{self.name}: reference_block {block} must be a positive whole multiple of the timebase "
+                f"{timebase}; a block that does not tile the timebase grid cannot hold whole records."
+            )
+            raise ValueError(msg)
+        return block
+
+    def _reference_total(
+        self,
+        *,
+        wide: pd.DataFrame,
+        refs: list[str],
+        test_pw: npt.NDArray[np.float64],
+        used: npt.NDArray[np.bool_],
+        ids: npt.NDArray[np.int64] | None,
+    ) -> npt.NDArray[np.float64]:
+        """Return the per-row reference power for ``reference_mode``; NaN on rows no surviving block covers.
+
+        Every used row of a block gets the same block-level factor, so within a block the on/off
+        ratio cancels the block's wind level whatever the on/off count mix (the block mean carries
+        the uplift at ``n_on / n`` strength in both denominators, a second-order effect).
+        """
+        ref_sum = wide[refs].sum(axis=1).to_numpy(dtype=float) if refs else np.zeros(len(wide))
+        if self.reference_mode == "sum":
+            return ref_sum
+        if ids is None or not used.any():
+            return np.full(len(wide), np.nan)
+        block_test = _block_sum(ids, test_pw, used)
+        if self.reference_mode == "block_mean":
+            n_used = pd.Series(used.astype(float)).groupby(ids).sum()
+            return _per_row(ids, block_test / n_used.reindex(block_test.index))
+        scale = block_test / _block_sum(ids, ref_sum, used)
+        return ref_sum * _per_row(ids, scale)
+
     def _selection(
         self,
         mi: MethodInput,
@@ -487,22 +590,35 @@ class ToggleSpecialistMethod:
         refs: list[str],
         timebase: pd.Timedelta,
         rows: ToggleRowSets,
+        ids: npt.NDArray[np.int64] | None = None,
     ) -> _Selection:
-        """Return the used-row mask after each selection stage, each a bool Series on ``wide.index``."""
+        """Return the used-row mask after each selection stage, each a bool Series on ``wide.index``.
+
+        ``ids`` are the reference-block ids (``None`` outside the block modes, or with no campaign
+        rows to tile); the ``block`` stage drops the rows of a block that lacks either state.
+        """
         filtered = self._filtered_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
-        not_excluded = filtered & ~self._test_excluded(mi, test=test, index=wide.index)
-        if self.pairing_max_gap is None:
-            return _Selection(filtered=filtered, not_excluded=not_excluded, paired=not_excluded)
-        kept = not_excluded.to_numpy()
-        paired = pair_within(
-            wide.index,
-            baseline=kept & rows.campaign_baseline,
-            upgraded=kept & rows.upgraded,
-            max_gap=self.pairing_max_gap,
-        )
+        not_excluded = filtered & ~self._excluded(mi, turbines=[test, *refs], index=wide.index)
         in_segment = rows.campaign_baseline | rows.upgraded
-        paired_mask = kept & (~in_segment | paired.baseline | paired.upgraded)
-        return _Selection(filtered=filtered, not_excluded=not_excluded, paired=pd.Series(paired_mask, index=wide.index))
+        kept = not_excluded.to_numpy()
+        if self.pairing_max_gap is not None:
+            paired = pair_within(
+                wide.index,
+                baseline=kept & rows.campaign_baseline,
+                upgraded=kept & rows.upgraded,
+                max_gap=self.pairing_max_gap,
+            )
+            kept = kept & (~in_segment | paired.baseline | paired.upgraded)
+        paired_series = pd.Series(kept, index=wide.index)
+        if ids is not None:
+            both = blocks_with_both_states(ids, baseline=kept & rows.campaign_baseline, upgraded=kept & rows.upgraded)
+            kept = kept & (~in_segment | both)
+        return _Selection(
+            filtered=filtered,
+            not_excluded=not_excluded,
+            paired=paired_series,
+            blocked=pd.Series(kept, index=wide.index),
+        )
 
     def _selection_accounting(self, selection: _Selection, *, rows: ToggleRowSets) -> pd.DataFrame:
         """Rows kept per segment after each stage, warning when a stage treats the segments unevenly.
@@ -515,6 +631,7 @@ class ToggleSpecialistMethod:
             ("filters", selection.filtered),
             ("exclude_row", selection.not_excluded),
             ("pairing", selection.paired),
+            ("block", selection.blocked),
         )
         records = []
         for segment, in_segment in ((_BASELINE, rows.campaign_baseline), (_UPGRADED, rows.upgraded)):
@@ -582,27 +699,30 @@ class ToggleSpecialistMethod:
         )
         return complete & all_available & test_keep
 
-    def _test_excluded(self, mi: MethodInput, *, test: str, index: pd.DatetimeIndex) -> pd.Series:
-        """Boolean mask on *index*: the test turbine's caller-flagged rows to drop (empty when unused).
+    def _excluded(self, mi: MethodInput, *, turbines: list[str], index: pd.DatetimeIndex) -> pd.Series:
+        """Boolean mask on *index*: timestamps at which any of ``turbines`` carries a caller-set exclusion flag.
 
-        Reads the ``columns.exclude_row`` column of the test turbine's rows; references are never
-        excluded here (their special modes still carry information for the ratio). Absent column or
-        unset role -> nothing excluded. Reindex fills missing timestamps with ``False`` so an expanded
-        index never becomes an exclusion. NaN raises rather than coercing: ``astype(bool)`` reads a
-        missing flag as ``True`` and drops the row, the opposite of the safe default.
+        Reads the ``columns.exclude_row`` column of each listed turbine's rows (the test turbine and
+        the references the mode uses), so a flagged reference row removes the timestamp the way a
+        reference outage does. Absent column or unset role -> nothing excluded. Reindex fills missing
+        timestamps with ``False`` so an expanded index never becomes an exclusion. NaN raises rather
+        than coercing: ``astype(bool)`` reads a missing flag as ``True`` and drops the row, the
+        opposite of the safe default.
         """
         col = self.columns.exclude_row
+        excluded = pd.Series(data=False, index=index, dtype=bool)
         if not col or col not in mi.scada_df.columns:
-            return pd.Series(data=False, index=index, dtype=bool)
-        test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]
-        flags = test_rows[col]
-        if flags.isna().any():
-            msg = (
-                f"exclude_row column {col!r} has {int(flags.isna().sum())} NaN value(s) for turbine {test!r}; "
-                f"it must be boolean with no missing values (fill unknown rows with False explicitly)"
-            )
-            raise ValueError(msg)
-        return flags.astype(bool).reindex(index, fill_value=False)
+            return excluded
+        for turbine in turbines:
+            flags = mi.scada_df.loc[mi.scada_df[mi.turbine_col] == turbine, col]
+            if flags.isna().any():
+                msg = (
+                    f"exclude_row column {col!r} has {int(flags.isna().sum())} NaN value(s) for turbine "
+                    f"{turbine!r}; it must be boolean with no missing values (fill unknown rows with False explicitly)"
+                )
+                raise ValueError(msg)
+            excluded |= flags.astype(bool).reindex(index, fill_value=False)
+        return excluded
 
     def _write_outputs(
         self,
@@ -611,11 +731,13 @@ class ToggleSpecialistMethod:
         wide: pd.DataFrame,
         stats: pd.DataFrame,
         used: np.ndarray,
+        ref_total: npt.NDArray[np.float64],
         rho_base: float,
         rho_up: float,
         uplift: float,
         sigma_overall: float,
         n_refs: int,
+        refs: list[str],
         timebase: pd.Timedelta,
         per_bin: pd.DataFrame | None = None,
         diagnostics: pd.DataFrame | None = None,
@@ -645,6 +767,7 @@ class ToggleSpecialistMethod:
                     "mode": "toggle",
                     "n_turbines": wide.shape[1],
                     "n_refs": n_refs,
+                    "reference_mode": self.reference_mode,
                     "ratio_baseline": rho_base,
                     "ratio_upgraded": rho_up,
                     "uplift_frc": uplift,
@@ -673,6 +796,8 @@ class ToggleSpecialistMethod:
                 mi=mi,
                 test=mi.test_wtg,
                 used=used,
+                ref_total=ref_total,
+                reference_mode=self.reference_mode,
                 timebase=timebase,
                 active_power_col=self.columns.active_power,
             )
@@ -693,16 +818,24 @@ class ToggleSpecialistMethod:
                     max_gap=self.pairing_max_gap,
                     test=mi.test_wtg,
                 )
-            self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, used=used, timebase=timebase)
+            self._write_shared_diagnostics(
+                mi, run_dir=run_dir, wide=wide, used=used, timebase=timebase, turbines=[mi.test_wtg, *refs]
+            )
 
     def _write_shared_diagnostics(
-        self, mi: MethodInput, *, run_dir: Path, wide: pd.DataFrame, used: np.ndarray, timebase: pd.Timedelta
+        self,
+        mi: MethodInput,
+        *,
+        run_dir: Path,
+        wide: pd.DataFrame,
+        used: np.ndarray,
+        timebase: pd.Timedelta,
+        turbines: list[str],
     ) -> None:
         """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
         # ``wide`` (a pivot) drops all-NaN timestamps, so align the masks to the full unique index
         # the DiagnosticContext uses (timestamps absent from ``wide`` are simply not used).
         index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
-        test = mi.test_wtg
         used = pd.Series(used, index=wide.index).reindex(index, fill_value=False).to_numpy()
         treated = resolve_toggle(mi.upgrade_timing, index).upgraded.astype(bool)
         ctx = DiagnosticContext(
@@ -717,13 +850,15 @@ class ToggleSpecialistMethod:
             mode="toggle",
             era5_df=None,
             # the exclusion alone, so the plots show what the flag removed that downtime did not
-            excluded_ts=self._test_excluded(mi, test=test, index=index).to_numpy(),
+            excluded_ts=self._excluded(mi, turbines=turbines, index=index).to_numpy(),
         )
         write_common_diagnostics(ctx)
         params = {
             "active_power_col": self.columns.active_power,
             "availability_col": self.columns.availability,
             "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
+            "reference_mode": self.reference_mode,
+            "reference_block": None if self.reference_block is None else str(self.reference_block),
         }
         write_run_config(ctx, method_name=self.name, method_params=params)
 
@@ -823,14 +958,13 @@ def _segment_stats(
     wide: pd.DataFrame,
     used: npt.NDArray[np.bool_],
     toggle_rows: ToggleRowSets,
-    refs: list[str],
+    ref_total: npt.NDArray[np.float64],
     timebase: pd.Timedelta,
     active_power_col: str,
 ) -> pd.DataFrame:
     """Build the per-segment (all/baseline/upgraded) diagnostics table."""
     test = mi.test_wtg
     test_pw = wide[test].to_numpy(dtype=float)
-    ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
     n_turbines = wide.shape[1]
     timebase_hours = timebase / pd.Timedelta(hours=1)
 
@@ -935,6 +1069,8 @@ def _save_plots(
     mi: MethodInput,
     test: str,
     used: np.ndarray,
+    ref_total: npt.NDArray[np.float64],
+    reference_mode: str,
     timebase: pd.Timedelta,
     active_power_col: str,
 ) -> None:
@@ -945,11 +1081,10 @@ def _save_plots(
     The baseline is the strict campaign off-blocks the estimate used, so the plots never disagree
     with the headline.
     """
-    refs = [c for c in wide.columns if c != test]
     toggle_rows = resolve_toggle(mi.upgrade_timing, wide.index)
     baseline_mask = toggle_rows.campaign_baseline
     test_pw = wide[test].to_numpy(dtype=float)
-    ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
+    ref_label = f"sum of reference {active_power_col}" if reference_mode == "sum" else f"{reference_mode} reference"
     upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
     segments = (
         ("baseline", used & baseline_mask, "C0"),
@@ -964,7 +1099,7 @@ def _save_plots(
         if np.isfinite(rho) and seg.any():
             x_max = float(np.nanmax(ref_total[seg]))
             ax.plot([0, x_max], [0, rho * x_max], color=color, linewidth=1.5)
-    ax.set_xlabel(f"sum of reference {active_power_col} [kW]")
+    ax.set_xlabel(f"{ref_label} [kW]")
     ax.set_ylabel(f"{active_power_col} @ {test} [kW]")
     ax.set_title(f"{test}: test vs reference-total power")
     ax.grid(visible=True, alpha=0.3)
