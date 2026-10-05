@@ -1467,3 +1467,75 @@ class TestExcludeBlock:
         without = _estimate(scada.drop(columns=_BLOCK_COL), schedule, reference_block=_BLOCK)
         assert with_role.p50_overall == pytest.approx(without.p50_overall)
         assert with_role.sigma_overall == pytest.approx(without.sigma_overall)
+
+
+def _two_reference_case(noise_frac: float = 0.3, seed: int = 5) -> tuple[pd.DataFrame, ToggleSchedule]:
+    """``_block_case`` with a perfect tracker ``R1`` plus a noisy tracker ``R2``: the union is worse than R1 alone."""
+    scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5), seed=seed)
+    rng = np.random.default_rng(seed)
+    r2 = scada[scada[_TURBINE_COL] == "R1"].copy()
+    r2[_TURBINE_COL] = "R2"
+    r2[_POWER_COL] = r2[_POWER_COL].to_numpy() * (1.0 + noise_frac * rng.standard_normal(len(r2)))
+    return pd.concat([scada, r2]), schedule
+
+
+class TestReferenceChoice:
+    """``reference_choice="min_sigma"``: the sum leg takes the reference subset with the smallest headline sigma."""
+
+    def test_the_default_keeps_every_reference(self, tmp_path: Path) -> None:
+        scada, schedule = _two_reference_case()
+        _estimate(scada, schedule, out_dir=tmp_path)
+        results = _read_only_csv(tmp_path, "results")
+        assert results.loc[0, "reference_choice"] == "all"
+        assert results.loc[0, "refs_used"] == "R1;R2"
+        assert results.loc[0, "n_refs"] == 2
+        assert results.loc[0, "n_refs_available"] == 2
+
+    def test_min_sigma_picks_the_subset_with_the_smallest_sigma(self, tmp_path: Path) -> None:
+        scada, schedule = _two_reference_case()
+        out = _estimate(scada, schedule, reference_choice="min_sigma", out_dir=tmp_path)
+        results = _read_only_csv(tmp_path, "results")
+        assert results.loc[0, "refs_used"] == "R1"
+        assert results.loc[0, "n_refs"] == 1
+        assert results.loc[0, "n_refs_available"] == 2
+        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
+        union = _estimate(scada, schedule)
+        assert out.sigma_overall < union.sigma_overall
+
+    def test_every_subset_is_written_with_the_winner_marked(self, tmp_path: Path) -> None:
+        scada, schedule = _two_reference_case()
+        _estimate(scada, schedule, reference_choice="min_sigma", out_dir=tmp_path)
+        subsets = _read_only_csv(tmp_path, "reference_subsets")
+        assert sorted(subsets["refs"]) == ["R1", "R1;R2", "R2"]
+        assert subsets["chosen"].sum() == 1
+        assert subsets.loc[subsets["chosen"], "refs"].item() == "R1"
+        assert subsets["uplift_sigma_frc"].notna().all()
+        assert (subsets["n_used_timestamps"] > 0).all()
+
+    def test_combined_blends_the_chosen_subset(self, tmp_path: Path) -> None:
+        scada, schedule = _two_reference_case()
+        out = _estimate(
+            scada,
+            schedule,
+            reference_mode="combined",
+            reference_choice="min_sigma",
+            reference_block=_BLOCK,
+            out_dir=tmp_path,
+        )
+        results = _read_only_csv(tmp_path, "results")
+        assert results.loc[0, "refs_used"] == "R1"
+        assert set(out.uncertainty_diagnostics["component"]) == {"sum", "block_mean", "combined"}
+        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
+
+    def test_block_mean_ignores_the_choice(self) -> None:
+        scada, schedule = _two_reference_case()
+        chosen = _estimate(
+            scada, schedule, reference_mode="block_mean", reference_choice="min_sigma", reference_block=_BLOCK
+        )
+        plain = _estimate(scada, schedule, reference_mode="block_mean", reference_block=_BLOCK)
+        assert chosen.p50_overall == pytest.approx(plain.p50_overall)
+        assert chosen.sigma_overall == pytest.approx(plain.sigma_overall)
+
+    def test_an_unknown_choice_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="reference_choice"):
+            ToggleSpecialistMethod(columns=_COLUMNS, reference_choice="best")

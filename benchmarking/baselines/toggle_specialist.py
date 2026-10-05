@@ -34,6 +34,12 @@ includes the components' correlation (:func:`benchmarking.baselines.block_bootst
 Their errors come from different places (reference mismatch versus within-cycle drift), which is
 what the blend exploits.
 
+**Reference choice** (``reference_choice``) decides which references the ``sum`` estimate (alone or
+as the blend's reference leg) uses. ``"all"`` is every available reference; ``"min_sigma"`` runs the
+``sum`` estimate on every non-empty subset of them and keeps the subset with the smallest headline
+sigma (ties to the larger subset), so a reference that tracks badly, or is screened out for long
+stretches, loses to the subsets without it. Every subset's result is written to a CSV.
+
 Every uplift — the headline and each power bin — comes with a non-optional 1-sigma uncertainty from
 a circular block bootstrap (:mod:`benchmarking.baselines.block_bootstrap`). It is computed after the
 uplift, from the uplift's own frozen row selection and bin assignment, and only when the uplift is
@@ -53,6 +59,7 @@ from __future__ import annotations
 import logging
 import tempfile
 from dataclasses import dataclass, replace
+from itertools import combinations
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -101,6 +108,10 @@ REFERENCE_MODES: tuple[str, ...] = ("sum", "block_mean", "block_scaled", "combin
 # The two estimates ``"combined"`` blends, in blend order (the first is the one the row-selection
 # accounting and the reference-side diagnostics report).
 _COMBINED_COMPONENTS: tuple[str, str] = ("sum", "block_mean")
+# ``reference_choice`` values; see the module docstring.
+REFERENCE_CHOICES: tuple[str, ...] = ("all", "min_sigma")
+# ``min_sigma`` runs 2**n - 1 estimates; warn, rather than refuse, past this many references.
+_MAX_REFS_FOR_SUBSETS = 6
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +275,8 @@ class ToggleSpecialistMethod:
         uses no references: they do not enter the row filters either, and none need exist.
     :param reference_block: block length for the block modes and for ``columns.exclude_block``, a
         positive whole multiple of the timebase; defaults to ``pairing_max_gap`` (one cycle).
+    :param reference_choice: one of :data:`REFERENCE_CHOICES` (see the module docstring): which
+        references the ``sum`` estimate uses. Ignored by the block modes.
     """
 
     columns: ColumnSchema
@@ -280,12 +293,16 @@ class ToggleSpecialistMethod:
     segment_imbalance_warning: float = 0.1
     reference_mode: str = "sum"
     reference_block: pd.Timedelta | None = None
+    reference_choice: str = "all"
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
         self.columns.require_roles(("active_power", "availability"))
         if self.reference_mode not in REFERENCE_MODES:
             msg = f"{self.name}: reference_mode {self.reference_mode!r} is not one of {REFERENCE_MODES}"
+            raise ValueError(msg)
+        if self.reference_choice not in REFERENCE_CHOICES:
+            msg = f"{self.name}: reference_choice {self.reference_choice!r} is not one of {REFERENCE_CHOICES}"
             raise ValueError(msg)
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
         if "power" in self.conditions and self.rated_power_kw is None:
@@ -331,12 +348,17 @@ class ToggleSpecialistMethod:
                     test,
                 )
                 modes = ("block_mean",)
-        components = {
-            mode: self._component(
-                mi, mode=mode, wide_all=wide_all, test=test, timebase=timebase, block=block, rows=rows
-            )
-            for mode in modes
-        }
+        components: dict[str, _Estimate] = {}
+        subsets: pd.DataFrame | None = None
+        for mode in modes:
+            if mode == "sum" and self.reference_choice == "min_sigma":
+                components[mode], subsets = self._choose_references(
+                    mi, wide_all=wide_all, test=test, timebase=timebase, block=block, rows=rows
+                )
+            else:
+                components[mode] = self._component(
+                    mi, mode=mode, wide_all=wide_all, test=test, timebase=timebase, block=block, rows=rows
+                )
         est = (
             _combine(components[_COMBINED_COMPONENTS[0]], components[_COMBINED_COMPONENTS[1]])
             if modes == _COMBINED_COMPONENTS
@@ -354,7 +376,17 @@ class ToggleSpecialistMethod:
             timebase=timebase,
             active_power_col=self.columns.active_power,
         )
-        self._write_outputs(mi, wide=wide, stats=stats, est=est, components=components, timebase=timebase, rows=rows)
+        self._write_outputs(
+            mi,
+            wide=wide,
+            stats=stats,
+            est=est,
+            components=components,
+            timebase=timebase,
+            rows=rows,
+            subsets=subsets,
+            n_refs_available=len(mi.context.references_among(wide_all.columns)),
+        )
         return MethodOutput(
             p50_overall=float(est.uplift),
             p50_by_condition=est.per_bin,
@@ -374,11 +406,17 @@ class ToggleSpecialistMethod:
         timebase: pd.Timedelta,
         block: pd.Timedelta | None,
         rows: ToggleRowSets,
+        refs: list[str] | None = None,
     ) -> _Estimate:
-        """Run one reference mode end to end: row selection, reference, uplift, bins and bootstrap."""
-        # block_mean compares the test turbine against its own block, so references play no part,
-        # not even in the row filters: a reference outage must not cost a zero-reference run rows.
-        refs = [] if mode == "block_mean" else mi.context.references_among(wide_all.columns)
+        """Run one reference mode end to end: row selection, reference, uplift, bins and bootstrap.
+
+        ``refs`` names the references to use; ``None`` means every available one (none for
+        ``block_mean``, which compares the test turbine against its own block, so references play
+        no part, not even in the row filters: a reference outage must not cost a zero-reference run
+        rows).
+        """
+        if refs is None:
+            refs = [] if mode == "block_mean" else mi.context.references_among(wide_all.columns)
         if not refs and mode != "block_mean":
             msg = (
                 f"no reference turbines available for test_wtg {test!r}: scada_df contains only "
@@ -467,6 +505,60 @@ class ToggleSpecialistMethod:
             accounting=accounting,
             diagnostics=diagnostics,
         )
+
+    def _choose_references(
+        self,
+        mi: MethodInput,
+        *,
+        wide_all: pd.DataFrame,
+        test: str,
+        timebase: pd.Timedelta,
+        block: pd.Timedelta | None,
+        rows: ToggleRowSets,
+    ) -> tuple[_Estimate, pd.DataFrame | None]:
+        """Run the ``sum`` estimate on every non-empty reference subset; return the smallest-sigma one.
+
+        Ties go to the larger subset, then to the earlier in enumeration (the context's reference
+        order). No finite sigma anywhere -> the full set. The second value lists every subset's
+        result with the winner marked; ``None`` when there were no references to choose among (the
+        full-set estimate then raises as it always has).
+        """
+        refs_all = mi.context.references_among(wide_all.columns)
+        if not refs_all:
+            return self._component(
+                mi, mode="sum", wide_all=wide_all, test=test, timebase=timebase, block=block, rows=rows
+            ), None
+        if len(refs_all) > _MAX_REFS_FOR_SUBSETS:
+            logger.warning(
+                "%s: reference_choice 'min_sigma' over %d references runs %d estimates",
+                self.name,
+                len(refs_all),
+                2 ** len(refs_all) - 1,
+            )
+        subsets = [list(c) for k in range(1, len(refs_all) + 1) for c in combinations(refs_all, k)]
+        estimates = [
+            self._component(
+                mi, mode="sum", wide_all=wide_all, test=test, timebase=timebase, block=block, rows=rows, refs=refs
+            )
+            for refs in subsets
+        ]
+
+        def _rank(i: int) -> tuple[float, int, int]:
+            sigma = estimates[i].sigma_overall
+            return (sigma if np.isfinite(sigma) else np.inf, -len(subsets[i]), i)
+
+        best = min(range(len(subsets)), key=_rank)
+        table = pd.DataFrame(
+            {
+                "refs": [";".join(refs) for refs in subsets],
+                "n_refs": [len(refs) for refs in subsets],
+                "n_used_timestamps": [int(est.used.sum()) for est in estimates],
+                "uplift_frc": [est.uplift for est in estimates],
+                "uplift_sigma_frc": [est.sigma_overall for est in estimates],
+                "chosen": [i == best for i in range(len(subsets))],
+            }
+        )
+        return estimates[best], table
 
     def _labeled_rows(
         self,
@@ -818,8 +910,10 @@ class ToggleSpecialistMethod:
         components: dict[str, _Estimate],
         timebase: pd.Timedelta,
         rows: ToggleRowSets,
+        subsets: pd.DataFrame | None = None,
+        n_refs_available: int | None = None,
     ) -> None:
-        """Write the data-stats CSV, the headline results CSV, the per-bin CSV and (optionally) the plots."""
+        """Write the data-stats, results, per-bin, uncertainty, selection and reference-subsets CSVs and the plots."""
         upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
         last_dt = wide.index.max()
         run_name = f"toggle_specialist_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{last_dt:%Y%m%d}"
@@ -841,7 +935,10 @@ class ToggleSpecialistMethod:
                     "mode": "toggle",
                     "n_turbines": wide.shape[1],
                     "n_refs": len(est.refs),
+                    "n_refs_available": len(est.refs) if n_refs_available is None else n_refs_available,
+                    "refs_used": ";".join(est.refs),
                     "reference_mode": self.reference_mode,
+                    "reference_choice": self.reference_choice,
                     "ratio_baseline": est.rho_base,
                     "ratio_upgraded": est.rho_up,
                     "uplift_frc": est.uplift,
@@ -861,6 +958,8 @@ class ToggleSpecialistMethod:
         if est.per_bin is not None:
             est.per_bin.to_csv(run_dir / f"{run_name}_by_power_bin_{ts}.csv", index=False)
         est.diagnostics.to_csv(run_dir / f"{run_name}_uncertainty_{ts}.csv", index=False)
+        if subsets is not None:
+            subsets.to_csv(run_dir / f"{run_name}_reference_subsets_{ts}.csv", index=False)
         # Every component's row selection, so a blend's two selections can be told apart.
         pd.concat(
             [component.accounting.assign(component=mode) for mode, component in components.items()], ignore_index=True
@@ -936,6 +1035,7 @@ class ToggleSpecialistMethod:
             "reference_mode": self.reference_mode,
             "reference_block": None if self.reference_block is None else str(self.reference_block),
             "exclude_block_col": self.columns.exclude_block,
+            "reference_choice": self.reference_choice,
         }
         write_run_config(ctx, method_name=self.name, method_params=params)
 
