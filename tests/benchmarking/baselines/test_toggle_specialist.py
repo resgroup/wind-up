@@ -1539,3 +1539,100 @@ class TestReferenceChoice:
     def test_an_unknown_choice_is_refused(self) -> None:
         with pytest.raises(ValueError, match="reference_choice"):
             ToggleSpecialistMethod(columns=_COLUMNS, reference_choice="best")
+
+
+class TestDecisionBasis:
+    """``decision_basis="permuted"``: the subset choice and the blend weights come from label-permuted bootstraps."""
+
+    def test_an_unknown_basis_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="decision_basis"):
+            ToggleSpecialistMethod(columns=_COLUMNS, decision_basis="lucky")
+
+    def test_actual_is_the_default(self, tmp_path: Path) -> None:
+        scada, schedule = _two_reference_case()
+        _estimate(scada, schedule, out_dir=tmp_path)
+        results = _read_only_csv(tmp_path, "results")
+        assert results.loc[0, "decision_basis"] == "actual"
+
+    def test_permuted_labels_keep_every_blocks_on_off_counts(self) -> None:
+        rng = np.random.default_rng(0)
+        n = 40
+        upgraded = np.arange(n) % 4 < 2  # two on, two off per block of four
+        baseline = ~upgraded
+        used = np.ones(n, dtype=bool)
+        used[[3, 10, 11]] = False
+        ids = np.arange(n) // 4
+        up_p, base_p = toggle_specialist.permute_labels_within_blocks(
+            upgraded=upgraded, baseline=baseline, used=used, ids=ids, rng=rng
+        )
+        assert not np.array_equal(up_p, upgraded)
+        assert np.array_equal(up_p & used, ~base_p & used)  # every used row is exactly one state
+        assert np.array_equal(up_p[~used], upgraded[~used])  # unused rows untouched
+        for block in np.unique(ids):
+            rows = (ids == block) & used
+            assert (up_p & rows).sum() == (upgraded & rows).sum()
+            assert (base_p & rows).sum() == (baseline & rows).sum()
+
+    def test_permuted_labels_without_blocks_are_shuffled_globally(self) -> None:
+        rng = np.random.default_rng(1)
+        upgraded = np.arange(12) % 2 == 0
+        up_p, base_p = toggle_specialist.permute_labels_within_blocks(
+            upgraded=upgraded, baseline=~upgraded, used=np.ones(12, dtype=bool), ids=None, rng=rng
+        )
+        assert up_p.sum() == upgraded.sum()
+        assert np.array_equal(up_p, ~base_p)
+
+    def test_min_sigma_ranks_the_subsets_by_the_permuted_sigma(self, tmp_path: Path) -> None:
+        scada, schedule = _two_reference_case()
+        out = _estimate(scada, schedule, reference_choice="min_sigma", decision_basis="permuted", out_dir=tmp_path)
+        subsets = _read_only_csv(tmp_path, "reference_subsets")
+        assert subsets["decision_sigma_frc"].notna().all()
+        chosen = subsets.loc[subsets["chosen"], "refs"].item()
+        assert chosen == subsets.loc[subsets["decision_sigma_frc"].idxmin(), "refs"]
+        assert chosen == "R1"  # the perfect tracker is the least noisy on any basis
+        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
+        results = _read_only_csv(tmp_path, "results")
+        assert results.loc[0, "decision_basis"] == "permuted"
+        assert results.loc[0, "refs_used"] == "R1"
+
+    def test_the_reported_sigma_is_the_actual_one_of_the_chosen_subset(self) -> None:
+        scada, schedule = _two_reference_case()
+        chosen = _estimate(scada, schedule, reference_choice="min_sigma", decision_basis="permuted")
+        only_r1 = _estimate(scada[scada[_TURBINE_COL] != "R2"], schedule)
+        assert chosen.p50_overall == pytest.approx(only_r1.p50_overall)
+        assert chosen.sigma_overall == pytest.approx(only_r1.sigma_overall)
+        # The permuted sigma is a decision aid, never the answer: it is not the reported sigma.
+        assert chosen.sigma_overall > 0
+
+    def test_the_permuted_sigma_measures_the_same_noise_as_the_actual_one(self, tmp_path: Path) -> None:
+        """For a noisy reference the two sigmas agree; they differ only in whether the on/off split is the real one."""
+        scada, schedule = _two_reference_case()
+        _estimate(scada, schedule, reference_choice="min_sigma", out_dir=tmp_path / "actual")
+        _estimate(scada, schedule, reference_choice="min_sigma", decision_basis="permuted", out_dir=tmp_path / "perm")
+        actual = _read_only_csv(tmp_path / "actual", "reference_subsets").set_index("refs")["uplift_sigma_frc"]
+        permuted = _read_only_csv(tmp_path / "perm", "reference_subsets").set_index("refs")["decision_sigma_frc"]
+        for refs in ("R2", "R1;R2"):  # R1 alone is a perfect tracker: its actual sigma is exactly zero
+            assert permuted[refs] == pytest.approx(actual[refs], rel=0.3)
+        assert permuted["R1"] < permuted["R2"]
+
+    def test_combined_weights_come_from_the_permuted_sigmas_but_the_sigma_is_actual(self) -> None:
+        scada, schedule = _noisy_toggle_case(n=600)
+        gap = pd.Timedelta(minutes=20)
+        out = _estimate(scada, schedule, reference_mode="combined", pairing_max_gap=gap, decision_basis="permuted")
+        diag = out.uncertainty_diagnostics
+        head = diag[(diag["component"] == "combined") & (diag["condition_bin"] == "overall")].iloc[0]
+        legs = {
+            m: diag[(diag["component"] == m) & (diag["condition_bin"] == "overall")].iloc[0]
+            for m in ("sum", "block_mean")
+        }
+        w = head["weight_sum"]
+        assert 0.0 <= w <= 1.0
+        total = _estimate(scada, schedule, reference_mode="sum", pairing_max_gap=gap)
+        block = _estimate(scada, schedule, reference_mode="block_mean", pairing_max_gap=gap)
+        assert out.p50_overall == pytest.approx(w * total.p50_overall + (1 - w) * block.p50_overall)
+        sa, sb, r = legs["sum"]["sigma"], legs["block_mean"]["sigma"], head["correlation"]
+        assert sa == pytest.approx(total.sigma_overall)
+        variance = w**2 * sa**2 + (1 - w) ** 2 * sb**2 + 2 * w * (1 - w) * r * sa * sb
+        assert out.sigma_overall == pytest.approx(np.sqrt(variance))
+        assert np.isfinite(head["decision_sigma_sum"])
+        assert np.isfinite(head["decision_sigma_block_mean"])

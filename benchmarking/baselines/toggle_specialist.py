@@ -40,6 +40,15 @@ as the blend's reference leg) uses. ``"all"`` is every available reference; ``"m
 sigma (ties to the larger subset), so a reference that tracks badly, or is screened out for long
 stretches, loses to the subsets without it. Every subset's result is written to a CSV.
 
+**Decision basis** (``decision_basis``) decides what those two data-driven decisions, the subset
+choice and the blend weights, are judged on. ``"actual"`` ranks by the bootstrap sigma of the
+realised uplift. Because the on/off contrast noise is skewed, the alternative whose realised sigma
+is smallest tends to be the one whose realised uplift came out low, so ranking on it biases the
+estimate down and under-reports sigma (a winner's curse). ``"permuted"`` instead judges each
+alternative on a bootstrap of the same rows with the on/off labels shuffled within each reference
+block: the same noise, blind to how it split between the states. The reported uplift and sigma are
+always the actual ones; only the decisions move.
+
 Every uplift — the headline and each power bin — comes with a non-optional 1-sigma uncertainty from
 a circular block bootstrap (:mod:`benchmarking.baselines.block_bootstrap`). It is computed after the
 uplift, from the uplift's own frozen row selection and bin assignment, and only when the uplift is
@@ -110,6 +119,12 @@ REFERENCE_MODES: tuple[str, ...] = ("sum", "block_mean", "block_scaled", "combin
 _COMBINED_COMPONENTS: tuple[str, str] = ("sum", "block_mean")
 # ``reference_choice`` values; see the module docstring.
 REFERENCE_CHOICES: tuple[str, ...] = ("all", "min_sigma")
+# ``decision_basis`` values: what the subset choice and the blend weights are judged on. ``"actual"``
+# uses the bootstrap of the realised uplift; ``"permuted"`` uses a bootstrap of the same rows with the
+# on/off labels shuffled within each reference block, which measures the noise without seeing how it
+# happened to split between the states, so a decision cannot favour the alternative whose realised
+# uplift came out low (the winner's curse of ranking by realised sigma).
+DECISION_BASES: tuple[str, ...] = ("actual", "permuted")
 # ``min_sigma`` runs 2**n - 1 estimates; warn, rather than refuse, past this many references.
 _MAX_REFS_FOR_SUBSETS = 6
 
@@ -143,6 +158,43 @@ class _Estimate:
     boot: BootstrapResult | None
     accounting: pd.DataFrame
     diagnostics: pd.DataFrame
+    # The label-permuted bootstrap the decisions read under ``decision_basis="permuted"``; None otherwise.
+    decision_boot: BootstrapResult | None = None
+
+    @property
+    def decision_sigma(self) -> float:
+        """The headline sigma decisions are judged on: the permuted one when it exists, else the actual."""
+        return _cell_sigma(self.decision_boot, _OVERALL) if self.decision_boot is not None else self.sigma_overall
+
+
+def permute_labels_within_blocks(
+    *,
+    upgraded: npt.NDArray[np.bool_],
+    baseline: npt.NDArray[np.bool_],
+    used: npt.NDArray[np.bool_],
+    ids: npt.NDArray[np.int64] | None,
+    rng: np.random.Generator,
+) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_]]:
+    """Shuffle the on/off labels among the used campaign rows of each block; unused rows keep theirs.
+
+    Every block keeps its on and off counts, so the permuted campaign has the same structure as the
+    real one and differs only in which rows are called on. With ``ids`` None the labels are shuffled
+    over the whole campaign.
+    """
+    up_p = upgraded.copy()
+    base_p = baseline.copy()
+    campaign_used = np.flatnonzero(used & (upgraded | baseline))
+    if ids is None:
+        groups = [campaign_used]
+    else:
+        groups = [campaign_used[ids[campaign_used] == b] for b in np.unique(ids[campaign_used])]
+    for rows in groups:
+        if len(rows) < 2:  # noqa: PLR2004 - nothing to shuffle
+            continue
+        order = rng.permutation(rows)
+        up_p[rows] = upgraded[order]
+        base_p[rows] = baseline[order]
+    return up_p, base_p
 
 
 class PairedRows(NamedTuple):
@@ -277,6 +329,10 @@ class ToggleSpecialistMethod:
         positive whole multiple of the timebase; defaults to ``pairing_max_gap`` (one cycle).
     :param reference_choice: one of :data:`REFERENCE_CHOICES` (see the module docstring): which
         references the ``sum`` estimate uses. Ignored by the block modes.
+    :param decision_basis: one of :data:`DECISION_BASES`: what the ``min_sigma`` choice and the
+        ``combined`` blend weights are judged on. ``"permuted"`` judges them on a bootstrap of the
+        same rows with the on/off labels shuffled within each reference block, so neither decision
+        can chase the realised uplift; the reported uplift and sigma are always the actual ones.
     """
 
     columns: ColumnSchema
@@ -294,6 +350,7 @@ class ToggleSpecialistMethod:
     reference_mode: str = "sum"
     reference_block: pd.Timedelta | None = None
     reference_choice: str = "all"
+    decision_basis: str = "actual"
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -303,6 +360,9 @@ class ToggleSpecialistMethod:
             raise ValueError(msg)
         if self.reference_choice not in REFERENCE_CHOICES:
             msg = f"{self.name}: reference_choice {self.reference_choice!r} is not one of {REFERENCE_CHOICES}"
+            raise ValueError(msg)
+        if self.decision_basis not in DECISION_BASES:
+            msg = f"{self.name}: decision_basis {self.decision_basis!r} is not one of {DECISION_BASES}"
             raise ValueError(msg)
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
         if "power" in self.conditions and self.rated_power_kw is None:
@@ -360,7 +420,9 @@ class ToggleSpecialistMethod:
                     mi, mode=mode, wide_all=wide_all, test=test, timebase=timebase, block=block, rows=rows
                 )
         est = (
-            _combine(components[_COMBINED_COMPONENTS[0]], components[_COMBINED_COMPONENTS[1]])
+            _combine(
+                components[_COMBINED_COMPONENTS[0]], components[_COMBINED_COMPONENTS[1]], basis=self.decision_basis
+            )
             if modes == _COMBINED_COMPONENTS
             else components[modes[0]]
         )
@@ -407,13 +469,15 @@ class ToggleSpecialistMethod:
         block: pd.Timedelta | None,
         rows: ToggleRowSets,
         refs: list[str] | None = None,
+        with_actual: bool = True,
     ) -> _Estimate:
         """Run one reference mode end to end: row selection, reference, uplift, bins and bootstrap.
 
         ``refs`` names the references to use; ``None`` means every available one (none for
         ``block_mean``, which compares the test turbine against its own block, so references play
         no part, not even in the row filters: a reference outage must not cost a zero-reference run
-        rows).
+        rows). ``with_actual=False`` skips the actual bootstrap (a subset that is only being ranked
+        on its permuted sigma); the label-permuted bootstrap runs whenever ``decision_basis`` asks.
         """
         if refs is None:
             refs = [] if mode == "block_mean" else mi.context.references_among(wide_all.columns)
@@ -465,20 +529,31 @@ class ToggleSpecialistMethod:
         # Uncertainty runs strictly after the uplift, off the same frozen row selection and bin
         # assignment, and only when there is a finite uplift to qualify.
         membership = self._cell_membership(rho_label=rho_label, ref_total=ref_total, used=used)
-        boot = (
-            self._bootstrap(
+
+        def _run_bootstrap(up: npt.NDArray[np.bool_], base: npt.NDArray[np.bool_]) -> BootstrapResult:
+            return self._bootstrap(
                 index=wide.index,
                 test_pw=test_pw,
                 ref_total=ref_total,
                 used=used,
-                upgraded=rows.upgraded,
-                baseline=baseline,
+                upgraded=up,
+                baseline=base,
                 membership=membership,
                 timebase=timebase,
             )
-            if np.isfinite(uplift)
-            else None
-        )
+
+        boot = _run_bootstrap(rows.upgraded, baseline) if with_actual and np.isfinite(uplift) else None
+        decision_boot = None
+        if self.decision_basis == "permuted" and np.isfinite(uplift):
+            # Same rows, span, blocks, seed and cells as the actual bootstrap; only the labels differ.
+            up_p, base_p = permute_labels_within_blocks(
+                upgraded=rows.upgraded,
+                baseline=baseline,
+                used=used,
+                ids=ids,
+                rng=np.random.default_rng(self.bootstrap_seed),
+            )
+            decision_boot = _run_bootstrap(up_p, base_p)
         if per_bin is not None:
             per_bin["sigma_uplift"] = [_cell_sigma(boot, str(b)) for b in per_bin["condition_bin"]]
         diagnostics = _uncertainty_diagnostics(
@@ -504,6 +579,7 @@ class ToggleSpecialistMethod:
             boot=boot,
             accounting=accounting,
             diagnostics=diagnostics,
+            decision_boot=decision_boot,
         )
 
     def _choose_references(
@@ -518,10 +594,12 @@ class ToggleSpecialistMethod:
     ) -> tuple[_Estimate, pd.DataFrame | None]:
         """Run the ``sum`` estimate on every non-empty reference subset; return the smallest-sigma one.
 
-        Ties go to the larger subset, then to the earlier in enumeration (the context's reference
-        order). No finite sigma anywhere -> the full set. The second value lists every subset's
-        result with the winner marked; ``None`` when there were no references to choose among (the
-        full-set estimate then raises as it always has).
+        The sigma ranked is the ``decision_sigma``: the actual headline sigma, or under
+        ``decision_basis="permuted"`` the label-permuted one (the subsets then skip their actual
+        bootstrap and the winner is re-run in full). Ties go to the larger subset, then to the
+        earlier in enumeration (the context's reference order). No finite sigma anywhere -> the full
+        set. The second value lists every subset's result with the winner marked; ``None`` when
+        there were no references to choose among (the full-set estimate then raises as it always has).
         """
         refs_all = mi.context.references_among(wide_all.columns)
         if not refs_all:
@@ -536,18 +614,38 @@ class ToggleSpecialistMethod:
                 2 ** len(refs_all) - 1,
             )
         subsets = [list(c) for k in range(1, len(refs_all) + 1) for c in combinations(refs_all, k)]
+        permuted = self.decision_basis == "permuted"
         estimates = [
             self._component(
-                mi, mode="sum", wide_all=wide_all, test=test, timebase=timebase, block=block, rows=rows, refs=refs
+                mi,
+                mode="sum",
+                wide_all=wide_all,
+                test=test,
+                timebase=timebase,
+                block=block,
+                rows=rows,
+                refs=refs,
+                with_actual=not permuted,
             )
             for refs in subsets
         ]
 
         def _rank(i: int) -> tuple[float, int, int]:
-            sigma = estimates[i].sigma_overall
+            sigma = estimates[i].decision_sigma
             return (sigma if np.isfinite(sigma) else np.inf, -len(subsets[i]), i)
 
         best = min(range(len(subsets)), key=_rank)
+        if permuted:
+            estimates[best] = self._component(
+                mi,
+                mode="sum",
+                wide_all=wide_all,
+                test=test,
+                timebase=timebase,
+                block=block,
+                rows=rows,
+                refs=subsets[best],
+            )
         table = pd.DataFrame(
             {
                 "refs": [";".join(refs) for refs in subsets],
@@ -555,6 +653,7 @@ class ToggleSpecialistMethod:
                 "n_used_timestamps": [int(est.used.sum()) for est in estimates],
                 "uplift_frc": [est.uplift for est in estimates],
                 "uplift_sigma_frc": [est.sigma_overall for est in estimates],
+                "decision_sigma_frc": [est.decision_sigma for est in estimates],
                 "chosen": [i == best for i in range(len(subsets))],
             }
         )
@@ -939,12 +1038,14 @@ class ToggleSpecialistMethod:
                     "refs_used": ";".join(est.refs),
                     "reference_mode": self.reference_mode,
                     "reference_choice": self.reference_choice,
+                    "decision_basis": self.decision_basis,
                     "ratio_baseline": est.rho_base,
                     "ratio_upgraded": est.rho_up,
                     "uplift_frc": est.uplift,
                     "uplift_sigma_frc": est.sigma_overall,
                     **{f"uplift_frc_{mode}": component.uplift for mode, component in components.items()},
                     **{f"uplift_sigma_frc_{mode}": component.sigma_overall for mode, component in components.items()},
+                    **{f"decision_sigma_frc_{mode}": c.decision_sigma for mode, c in components.items()},
                     "block_hours": self.block_hours,
                     "n_resamples": self.n_resamples,
                     "n_used_timestamps_baseline": used_base,
@@ -1063,8 +1164,11 @@ def _per_bin_counterfactual(
     return rho_row * ref_total
 
 
-def _combine(a: _Estimate, b: _Estimate) -> _Estimate:
-    """Blend two component estimates by inverse variance, headline and per bin.
+def _combine(a: _Estimate, b: _Estimate, *, basis: str = "actual") -> _Estimate:
+    """Blend two component estimates by minimum-variance weights, headline and per bin.
+
+    With ``basis="permuted"`` the weights (and the correlation they need) come from the two legs'
+    label-permuted bootstraps, cell by cell; the blend's sigma always comes from the actual ones.
 
     The blend's used rows are the union of the components' (a row contributed to at least one
     estimate); its bin label is ``a``'s where ``a`` used the row and ``b``'s otherwise, so the two
@@ -1079,11 +1183,21 @@ def _combine(a: _Estimate, b: _Estimate) -> _Estimate:
         msg = f"component bootstraps drew different block counts ({a.boot.n_blocks} vs {b.boot.n_blocks})"
         raise ValueError(msg)
 
-    def _resamples(est: _Estimate, cell: str) -> npt.NDArray[np.float64]:
-        return est.boot.resamples.get(cell, np.array([])) if est.boot is not None else np.array([])
+    def _resamples(boot: BootstrapResult | None, cell: str) -> npt.NDArray[np.float64]:
+        return boot.resamples.get(cell, np.array([])) if boot is not None else np.array([])
 
     def _cell(cell: str, est_a: float, sig_a: float, est_b: float, sig_b: float) -> CombinedEstimate:
-        return combine_estimates((est_a, sig_a, _resamples(a, cell)), (est_b, sig_b, _resamples(b, cell)))
+        weighting = None
+        if basis == "permuted":
+            weighting = (
+                _cell_sigma(a.decision_boot, cell),
+                _cell_sigma(b.decision_boot, cell),
+                _resamples(a.decision_boot, cell),
+                _resamples(b.decision_boot, cell),
+            )
+        return combine_estimates(
+            (est_a, sig_a, _resamples(a.boot, cell)), (est_b, sig_b, _resamples(b.boot, cell)), weighting=weighting
+        )
 
     overall = _cell(_OVERALL, a.uplift, a.sigma_overall, b.uplift, b.sigma_overall)
     blended_cells = {_OVERALL: overall}
@@ -1120,6 +1234,8 @@ def _combine(a: _Estimate, b: _Estimate) -> _Estimate:
                 "sigma": blend.sigma,
                 f"weight_{a.mode}": blend.weight_a,
                 "correlation": blend.correlation,
+                f"decision_sigma_{a.mode}": _cell_sigma(a.decision_boot, cell),
+                f"decision_sigma_{b.mode}": _cell_sigma(b.decision_boot, cell),
             }
             for cell, blend in blended_cells.items()
         ]

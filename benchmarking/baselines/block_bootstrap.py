@@ -107,9 +107,12 @@ _DEFAULT_COMPONENT_CORRELATION = 0.5
 
 
 def combine_estimates(
-    a: tuple[float, float, npt.NDArray[np.float64]], b: tuple[float, float, npt.NDArray[np.float64]]
+    a: tuple[float, float, npt.NDArray[np.float64]],
+    b: tuple[float, float, npt.NDArray[np.float64]],
+    *,
+    weighting: tuple[float, float, npt.NDArray[np.float64], npt.NDArray[np.float64]] | None = None,
 ) -> CombinedEstimate:
-    """Blend two ``(estimate, sigma, resamples)`` of the same quantity by inverse variance.
+    """Blend two ``(estimate, sigma, resamples)`` of the same quantity by minimum-variance weights.
 
     A component is usable when both its estimate and its sigma are finite. With two usable
     components the weights are the minimum-variance ones for two correlated estimates,
@@ -119,6 +122,12 @@ def combine_estimates(
     The blend's variance is ``wa² sa² + wb² sb² + 2 wa wb r sa sb``, which these weights keep at or
     below the better component's: a noisier leg correlated at ``r >= sb / sa`` gets no weight rather
     than widening the blend. One usable component is returned as is; none gives NaN throughout.
+
+    ``weighting``, when given as ``(sigma_a, sigma_b, resamples_a, resamples_b)`` from another
+    bootstrap of the same two components (e.g. one with the on/off labels permuted), supplies the
+    weights instead, so they need not read the realised estimates' own spread; the blend's variance
+    and the reported correlation still come from ``a`` and ``b``. A ``weighting`` with a non-finite
+    sigma is ignored.
     """
     est_a, sig_a, res_a = a
     est_b, sig_b, res_b = b
@@ -132,6 +141,24 @@ def combine_estimates(
     if not (usable_a and usable_b):
         return CombinedEstimate(estimate=nan, sigma=nan, weight_a=nan, correlation=nan)
 
+    correlation = _paired_correlation(res_a, res_b)
+    if weighting is not None and math.isfinite(weighting[0]) and math.isfinite(weighting[1]):
+        sig_a_w, sig_b_w, res_a_w, res_b_w = weighting
+        weight_a = _min_variance_weight(sig_a_w, sig_b_w, _paired_correlation(res_a_w, res_b_w))
+    else:
+        weight_a = _min_variance_weight(sig_a, sig_b, correlation)
+    weight_b = 1.0 - weight_a
+    variance = weight_a**2 * sig_a**2 + weight_b**2 * sig_b**2 + 2.0 * weight_a * weight_b * correlation * sig_a * sig_b
+    return CombinedEstimate(
+        estimate=weight_a * est_a + weight_b * est_b,
+        sigma=math.sqrt(max(variance, 0.0)),
+        weight_a=weight_a,
+        correlation=correlation,
+    )
+
+
+def _paired_correlation(res_a: npt.NDArray[np.float64], res_b: npt.NDArray[np.float64]) -> float:
+    """Pearson correlation of two components' draw-paired finite resamples, or the default."""
     if len(res_a) and len(res_b) and len(res_a) != len(res_b):
         msg = (
             f"the two components' resample arrays have different lengths ({len(res_a)} vs {len(res_b)}); "
@@ -141,26 +168,19 @@ def combine_estimates(
         raise ValueError(msg)
     n_pairs = min(len(res_a), len(res_b))
     paired = np.isfinite(res_a[:n_pairs]) & np.isfinite(res_b[:n_pairs])
-    if paired.sum() >= _MIN_RESAMPLES_FOR_SPREAD:
-        r = float(np.corrcoef(res_a[:n_pairs][paired], res_b[:n_pairs][paired])[0, 1])
-        correlation = r if math.isfinite(r) else _DEFAULT_COMPONENT_CORRELATION
-    else:
-        correlation = _DEFAULT_COMPONENT_CORRELATION
+    if paired.sum() < _MIN_RESAMPLES_FOR_SPREAD:
+        return _DEFAULT_COMPONENT_CORRELATION
+    r = float(np.corrcoef(res_a[:n_pairs][paired], res_b[:n_pairs][paired])[0, 1])
+    return r if math.isfinite(r) else _DEFAULT_COMPONENT_CORRELATION
 
+
+def _min_variance_weight(sig_a: float, sig_b: float, correlation: float) -> float:
+    """Weight on ``a`` that minimises the variance of a blend of two estimates correlated at ``correlation``."""
     if sig_a == 0.0 or sig_b == 0.0:
-        weight_a = 0.5 if sig_a == sig_b else float(sig_a == 0.0)
-    else:
-        cross = correlation * sig_a * sig_b
-        wa, wb = max(sig_b**2 - cross, 0.0), max(sig_a**2 - cross, 0.0)
-        weight_a = 0.5 if wa + wb == 0.0 else wa / (wa + wb)
-    weight_b = 1.0 - weight_a
-    variance = weight_a**2 * sig_a**2 + weight_b**2 * sig_b**2 + 2.0 * weight_a * weight_b * correlation * sig_a * sig_b
-    return CombinedEstimate(
-        estimate=weight_a * est_a + weight_b * est_b,
-        sigma=math.sqrt(max(variance, 0.0)),
-        weight_a=weight_a,
-        correlation=correlation,
-    )
+        return 0.5 if sig_a == sig_b else float(sig_a == 0.0)
+    cross = correlation * sig_a * sig_b
+    wa, wb = max(sig_b**2 - cross, 0.0), max(sig_a**2 - cross, 0.0)
+    return 0.5 if wa + wb == 0.0 else wa / (wa + wb)
 
 
 def _nan_cells(names: list[str]) -> dict[str, CellUncertainty]:
