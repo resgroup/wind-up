@@ -310,7 +310,7 @@ prepost split.
 **Re-verifies:** the shared northing step (R1) and the reference-validity screen (R3),
 now in-context on a realistic prepost campaign.
 
-### Status and next steps (2026-10-01)
+### Status and next steps (2026-10-06)
 
 The prepost campaign matrix (`benchmarking/baselines/study_prepost_campaign_matrix.py`) runs at a
 size: `small` (38 cells, ~33 min on 16 workers) or `big`. Each study writes a directory to download
@@ -348,45 +348,70 @@ flexible pre-period model. v0 avoids it by construction: it fits a curve to *eac
 same reference-derived grid and differences them under one external weight, drops rows from both
 sides rather than imputing, and carries the waking scenario of every row explicitly.
 
+*The plan, in order (2026-10-01):* diagnose before changing the estimator; close the
+reference-reading leak; make the estimator symmetric; use the reference contrast; waking state and
+missing reference data; reduce the shift by design; re-run the small matrix. Step 1 ran as the level
+probe and the v0 probe; [CF27](findings_campaigns.md) records what they found and the plan below
+replaces the rest.
+
+**Plan refresh (2026-10-06): the diagnosis is in, and it reorders the work.** The placebo level is,
+in order of size: **rows on which a power reference has no valid data** (7.6 % of Hill of Towie's
+post rows carry whole turbines' readings; 1.3 pp at Penmanshiel T14); **one bad reference** (T17,
+the screen's business); and a **per-turbine relative drift of sd about 0.5 pp** that no model class
+removes (relative outcome, linear base, two-model ratio all leave it) and that only more references
+average down (k = 19 reads +0.16 pp against +0.59 for k = 4). The AIPW leg of the DML framing
+failed outright — time is almost perfectly predictable from the features, so the propensity has no
+overlap to work with — and the two-model ratio does not help. And **v0 is not the level-free
+yardstick** the 2026-10-01 refresh leaned on: on identical five-turbine pools its headline path
+reads −0.3 to −0.6 pp because of the reference anemometer, its power-only path agrees with the
+power model pair for pair (correlation 0.63) and sits a near-constant 0.7 pp below it, and whether
+that offset is season composition (v0's pre period is the matching six months a year earlier; CF24
+says balancing removes two thirds of the level) or the estimator's asymmetry is still open.
+
 *The plan, in order:*
 
-1. **Diagnose before changing the estimator.** A level probe dumps each estimate's per-row
-   actual, counterfactual and features, then decomposes the placebo level by month, direction
-   sector, wind band, operating-reference pattern, upwind-offline count and propensity
-   P(post | X), and computes the doubly-robust (AIPW) correction term to see whether it predicts
-   the observed level. Two cases: the Hill of Towie whole-farm reference arm at changeover
-   2018-09 (real data, truth 0) and the Penmanshiel cell (seed 0, m+0, K4, L12, T14) in all three
-   arms, where `excl_booleans` and `excl_nan` drop identical rows and must agree. The result picks
-   between the branches below.
-2. **Close the reference-reading leak** (CF25 §1, [CF26](findings_campaigns.md) §7). Replace the
-   5 %-of-rated waking threshold on upgraded and power-free turbines with an indicator a
-   multiplicative change cannot flip (power above zero with availability, or v0's raw shutdown
-   rule). Acceptance: `leak_check.csv` ≈ 0. Needed before any correction that leans on the
-   reference readings.
-3. **Make the estimator symmetric** — the v0 principle with v1's covariates. Candidates: a model
-   fitted to each period and compared over one common evaluation set; the AIPW correction
-   (out-of-fold baseline residuals reweighted by the propensity odds, cross-fitted on purged time
-   blocks); and common-support trimming, dropping post rows whose coarsened cell the baseline does
-   not cover from both sides. Chosen by step 1: concentrated in low-overlap rows → AIPW and
-   trimming; mixed → the two-model ratio first.
-4. **Use the reference contrast.** Model the outcome relative to the reference mean so common-mode
-   drift cancels before the model sees it; and correct the headline by the pooled reference
-   reading, shrunk toward zero by the reference spread (measured: Kelmarsh L12 RMSE 1.36 →
-   0.42 pp, Penmanshiel L3 0.36 → 0.42, hence the shrinkage). Also gives the farm-level reference
-   aggregate the documentation asks for. Leads if step 1 says drift.
-5. **Waking state and missing reference data.** An explicit per-row waking scenario (v0's
-   IEC-sector logic) as a feature and a support axis; drop a reference's power on rows where the
-   test turbine is upwind of it, with an analyst override; and a deliberate outage policy in place
-   of NaNs routed through trees. Pulled forward if step 1 localises the Penmanshiel channel
-   difference to held-back rows.
-6. **Reduce the shift by design.** Prefer a pre span covering the post's calendar months in the
-   planner; optionally weight the baseline to the post's month or weather mix.
-7. **Re-run the small matrix**, then revisit the reference screen as "the main method, unmodified"
+1. **Reference outage policy (D4).** Drop every row on which any power reference lacks valid data,
+   from both periods, before the fit and the sum. Oracle cells: Penmanshiel `pen_s00_m+0_K4_L12`
+   T14, where `excl_booleans` and `excl_nan` must agree and the exclusion arms must land on the
+   main arm's −0.27 pp; Hill of Towie T12 and T13 on the reference arm, which must fall to the farm
+   mean. Acceptance: the two channels agree to 0.02 pp, the farm mean on the Hill of Towie arm
+   moves +0.60 → about +0.37 pp.
+2. **Close the reference-reading leak (D1)** (CF25 §1, [CF26](findings_campaigns.md) §7): replace
+   the 5 %-of-rated waking threshold on upgraded and power-free turbines with an indicator a
+   multiplicative change cannot flip. Acceptance: `leak_check.csv` ≈ 0. Needed before anything
+   leans on the reference readings.
+3. **Rerun the v0 probe, whole farm, with a season-matched arm.** The v0 cache is fixed (CF27 §7);
+   rerun from scratch, not `--resume`, because T09 and T16 ran against a part-filled cache. Add a
+   power-model arm whose baseline is the 6 calendar months matching the post, one year earlier
+   (what v0 uses), so the probe reads three things on the same rows: the power model (12-month
+   baseline), the power model (season-matched), and v0's power-only path. About 25 min per turbine
+   after the first; split `--turbines` across processes to finish in an evening. This decides
+   step 4.
+4. **The next estimator change, chosen by step 3.** If the season-matched arm closes most of the
+   0.7 pp gap to v0's power path: **prefer a pre span covering the post's calendar months (C1)** in
+   the planner — a ranking criterion, soft, with a documented cost in baseline length — and
+   optionally weight the baseline to the post's month mix (C2). If it does not: **common-support
+   trimming (A3)** on coarsened cells (direction sector × operating-reference pattern × wind band),
+   dropping post rows the baseline does not cover from both sides. A2 (AIPW), A1 (two-model ratio),
+   B2 (relative outcome) and E1 (linear base) are parked: measured, no gain on this data.
+5. **Use the reference contrast (B1) and prefer large pools.** Correct the headline by the pooled
+   reference reading shrunk toward zero by the reference spread; report the farm-level reference
+   aggregate the documentation asks for. Both methods' test readings track their own references'
+   readings (CF27 §8), which is what this needs. Keep the reference screen on (T17); raise the
+   planner's preference for more power references, since the level falls with k.
+6. **Kelmarsh's data before Kelmarsh's placebos.** Its common-mode +0.7 to +1.1 pp is in every
+   estimator and in the all-references-normal rows, and the prime suspect is a SCADA change around
+   September 2017 (CF27 §5). Read the Zenodo record and the channel inventory across that date
+   before using Kelmarsh as a yardstick for anything in steps 1–5.
+7. **Port the v0 cache fix to `main`.** The public package has the same `upwind_wtgs_cache`; any
+   process that runs two analyses with different assets gets the first one's upwind lists.
+8. **Re-run the small matrix**, then revisit the reference screen as "the main method, unmodified"
    once the level is fixed.
 
 *Done when:* on the small matrix the placebo test-turbine mean is within ±0.1 pp and its sd does
 not grow with the post length; each cell's pooled reference reading is within ±0.1 pp;
-`leak_check.csv` ≈ 0; and the two exclusion arms agree to better than 0.02 pp.
+`leak_check.csv` ≈ 0; the two exclusion arms agree to better than 0.02 pp; and the whole-farm v0
+probe shows the power model within 0.2 pp of v0's power-only path on the reference pairs.
 
 **Before any big run,** independently of the above:
 

@@ -12,6 +12,145 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF27 — The level probe and the v0 probe: **missing power-reference rows are the largest single cause of the placebo level**, one bad reference is the next, and **v0 is not the level-free yardstick C3 assumed** — on identical five-turbine pools its headline path reads **−0.3 to −0.6 pp** (the reference anemometer), its power-only path sits **0.7 pp below** the power model pair for pair with the same ordering, and the AIPW correction fails as a diagnostic
+
+*2026-10-02 to 2026-10-06. Two drivers. (a) `uv run python -m benchmarking.campaigns.level_probe all`
+at `d1c44df`, overnight 2026-10-01 on the HPC: the Hill of Towie whole-farm reference arm at
+changeover 2018-09 (truth 0), the Penmanshiel cell seed 0 / m+0 / K4 / L12 / T14 in all three
+arms, and a Kelmarsh cell (seed 0, m+0, K4, L12, T06); each estimate's per-row actual,
+counterfactual and features dumped (`row_dump_dir`), then `level_probe analyse` and ad-hoc refits
+over the dumps. Round robins of the power model with one reference at a time followed on the same
+dumps. (b) `uv run python -m benchmarking.campaigns.v0_probe hot` at `88a5348`, 2026-10-02 on the
+HPC: each Hill of Towie turbine with its 4 nearest neighbours as the only candidates, 12 months of
+baseline into a 6-month campaign changing over 2018-09-01, nothing injected; the power model (screen
+off, per-reference readings on) and wind-up v0 (`V0BinnedMethod`: season-matched 6-month pre
+period, one-year detrend, long-term distribution off) on exactly the same rows. **Only 4 of 21
+turbines completed** (T01, T02, T09, T16); the other 17 crashed in v0 (§7).*
+
+**1. Missing power-reference rows are the biggest single cause.** On the Hill of Towie arm T14 is
+off 14–23 December 2018 and T11 for part of December. The 7.6 % of post rows on which a power
+reference has no valid data carry **+3.25 of T13's +2.97 pp** and **+1.59 of T12's +2.28 pp**, and
+most of T10, T18, T07 and T20's. Dropping those rows from the post side moves the farm mean
+**+0.60 → +0.37 pp**; refitting without them on both sides agrees. At Penmanshiel, T13's 13-day
+outage (5.3 % of post rows) carries **−1.2 of T14's −1.6 pp**, which lands the exclusion arms at
+−0.27 pp — the main arm's reading — and T02 and T06 move the same way through T07. The
+[CF26](#cf26--the-prepost-matrixs-second-small-run-with-every-cell-reporting-wind-up-tracks-the-magnitude-and-misses-the-level-the-fitted-slope-is-0993-to-0996-while-a-placebo-readings-sd-triples-from-034-pp-to-086-pp-as-the-post-period-grows-from-3-months-to-10-penmanshiel-is-fixed-the-leak-is-unmoved-the-cost-model-is-out-by-5-to-9-times) §6 channel disagreement sits on
+the same held-back rows (T14 0.12 of 0.09 pp, T12 0.34 of 0.38, T02 0.21 of 0.31); T04 still
+differs by 0.12 pp with none, so wake-only turbines' booleans perturb the fit at a floor of about
+0.1 pp. A row on which a power reference is not operating is a configuration the trees were rarely
+or never fitted on, and the counterfactual there is extrapolation.
+
+**2. T17 is a genuinely bad reference, not an estimator effect.** Its ratio to its peers is
+0.74–0.80 in October–November 2017 and August 2018 against about 0.9 elsewhere, and it reads
+**+4.7 pp in every post month**. That is the reference screen's business
+([CF13](#cf13--the-reference-screen-works-where-it-has-data-and-references-and-nowhere-else-it-needs-a-campaign-of-150-days-and-it-finds-hill-of-towies-genuinely-bad-turbine-t17-47-on-a-19-reference-pool-two-constraints-both-measured-decide-when-it-may-run-at-all) already found it), and the screen was off in both probes.
+
+**3. What remains at Hill of Towie after 1 and 2 is small and per-turbine.** Farm mean **+0.14 pp**,
+per-turbine sd about 0.5 pp. The per-turbine offsets (T05, T09, T12, T15 about +0.8; T16, T02 about
+−0.5) do not move under a relative outcome (B2), a linear-plus-trees model (E1) or a two-model
+ratio (A1): they are genuine period-to-period movement of each turbine against its neighbours,
+which no model class removes and which only more references average down. The reference-count
+ladder on T02/T05/T09/T16 (nearest k = 1, 2, 4, 8, 19) reads a mean level of 0.43 / 0.67 / 0.59 /
+0.38 / **0.16 pp**: positives shrink with k and negatives deepen, so with many references the
+estimate converges on each turbine's own relative drift.
+
+**4. One reference at a time is the most biased estimator measured.** Hill of Towie round robin
+(21 turbines × 4 nearest references, outage rows dropped), excluding T13 and T17 as test: mean
+**+0.67 pp**, median +0.57, sd 1.17 over 76 readings; the 29 two-way pairs share **+0.87 pp**
+(sd 0.54) and their half-differences have sd 0.90. Against +0.37 raw and +0.14 cleaned for the
+19-reference model over the same turbines, a single reference carries about twice the shared bias.
+Adding the other turbines' operating booleans makes it worse (+1.02), an upwind-offline count does
+not help (+0.86). Kelmarsh's pairs are all positive (+0.9 to +2.9, mean +1.65 against +0.84 with
+three references) and Penmanshiel's mean −0.36 against −0.06. Any single-reference scheme (E2)
+needs a robust combination plus subtraction of the shared bias.
+
+**5. Kelmarsh's common-mode +0.7 to +1.1 pp is not explained by anything in the dumps.** It is
+there for every estimator including plain linear (+1.5), carried by rows on which every reference
+is normal (0.92 of 1.10 pp), uncorrelated with the weekly resource, not season composition (the
+random-fold residual by month is ±0.5 % with an implied level of about 0), concentrated at 6–14 m/s
+and in February–April 2018, and the post test power sits 2–7 % above pre at a given reference power
+in the 100–1400 kW bands. The suspects are data-side: a Kelmarsh SCADA change around September 2017
+(the power-minimum channel appears then and is 100 % NaN before it) and the curtailment or
+sector-management regime. Three references cannot average it away. Do not use Kelmarsh's placebos
+as a yardstick until this is understood.
+
+**6. The AIPW correction (A2) and the two-model ratio (A1) fail as diagnostics or fixes.** The
+propensity separates the periods on time-giveaway features (at Kelmarsh the power-minimum channel
+is absent in pre, so 75 % of rows have m̂ > 0.95); the effective sample size is 2–10 %; predicted
+against observed level correlates 0.72 at Hill of Towie (excluding T13), 0.40 at Penmanshiel and
+−0.25 at Kelmarsh, with mean absolute error 0.8–1.3 pp. A1's post-fitted model agrees with the
+forward model at Hill of Towie and is wildly off in reverse, because a model fitted on six
+seasonally incomplete months does not generalise. Fold geometry reproduces
+[CF24](#cf24--balance-the-two-periods-and-two-thirds-of-the-prepost-placebo-bias-disappears-a-whole-farm-whose-pre-and-post-hold-the-same-months-record-for-record-reads-023-pp-against-065-pp-for-six-contiguous-arms--and-every-large-per-turbine-offset-goes-with-it-t17-included-44--034)'s
+ladder inside one baseline: Kelmarsh T06 out-of-fold mean error 9.5 kW (2.1 %) on time blocks,
+2.4 kW on day blocks, 0.1 kW on random folds. Removing the reference power-minimum feature changes
+nothing at Kelmarsh and 0.06–0.22 pp at Penmanshiel; it is dropped.
+
+**7. Seventeen v0 probe turbines crashed on a v0 cache, and two of the four survivors are tainted.**
+`wind_up_v0.waking_state.upwind_wtgs_cache` keys the IEC-upwind list by position, direction and
+object name but **not by the config's turbine set**, so the second analysis in a process with a
+different subset is handed turbines it has no data for (`KeyError: ['T02'] not in index` in
+`add_waking_scen`). T01 and T02 share one turbine set and are clean; T09 and T16 ran after failed
+turbines had part-filled the cache for T07, T08 and T15's positions, so some of their pairs'
+waking scenarios were judged against the wrong upwind sets. Fixed by keying the cache on the
+config's turbine names (`tests/test_waking_state.py`); **the public `wind_up` on `main` has the
+same cache and needs the same fix.** Timing for the rerun: the first turbine took 2 h 48 min
+(cold caches), every later one about 25 min for both methods together.
+
+**8. v0 and the power model on the same four pools (truth 0 throughout):**
+
+| test | refs | power model | v0 headline | v0 power-only (mean of 4 pairs) | pm refs vs pool (mean) | v0 ref pairs, headline / power-only |
+|---|---|---|---|---|---|---|
+| T01 | T02 T03 T04 T05 | +0.17 | −0.57 | −0.03 | +0.20 | −0.75 / −0.05 |
+| T02 | T01 T03 T04 T05 | −0.14 | −0.12 | +0.71 | +0.33 | −0.62 / −0.11 |
+| T09 | T07 T08 T11 T12 | +1.02 | −0.16 | +0.47 | +1.08 (T12 +2.57) | −0.54 / −0.05 |
+| T16 | T15 T17 T18 T19 | −0.15 | −0.30 | +0.66 | +1.25 (T17 +4.13) | −0.83 / −0.09 |
+| mean | | **+0.22** | **−0.29** | **+0.45** | +0.71 (+0.35 without T17, T12) | **−0.68 / −0.08** |
+
+*v0's headline is the inverse-variance combination of its four pairs; its per-pair one-sigma is
+0.4 to 1.1 pp, so every v0 headline is within one sigma of zero and so are three of the four power
+model ones.*
+
+- **v0 has a level of its own, and it is the reference anemometer.** Over all 64 pair readings in
+  the four runs, v0's headline path (`ref_ws_est_blend`, the reference's anemometer blended with
+  its power-derived wind speed) sits **−0.64 pp below its own power-only path** (sd 0.28, range
+  −1.69 to −0.08, never positive). The power-only path is symmetric — the reversed estimate agrees
+  with it to +0.05 ± 0.23 — and reads **−0.08 pp** on the reference pairs. v0 flags reference
+  anemometer drifts of 0.34 to 0.54 m/s on these turbines. So "v0 does not show the level"
+  ([C3](issues_campaigns.md#c3--blade-enhancement-aeroup-prepost)'s premise since CF24) was an
+  artefact of which v0 path was read: its anemometer path is 0.3 to 0.8 pp *low*, its power path
+  is near zero on references.
+- **Pair for pair the two methods agree on the structure and differ by a constant.** Matching the
+  36 (test, reference) pairs that both the v0 runs and the power model round robin read: correlation
+  **0.63** between the power model's single-reference reading and v0's power-only pair (0.73 with
+  the reversed pair), and the power model is higher by **+0.71 pp** (sd 1.10, standard error 0.18).
+  The ordering within every pool matches (T09's T11 pair highest in both; T16's T18/T19 high and
+  T15/T17 low in both; T02's T03 highest in both). The per-pair structure is real relative movement
+  of the two turbines, which both methods see; what separates them is an offset.
+- **The offset cannot yet be attributed.** The power model here uses a 12-month baseline; v0's pre
+  period is the 6 calendar months matching the post, one year earlier. CF24 measured +0.65 pp for
+  contiguous arms against +0.23 pp for balanced ones on the same farm, so season matching alone
+  could account for most of the +0.71 pp. The remainder, if any, is the asymmetry of an observed
+  sum against a modelled one. One cheap arm separates them: the power model on these pools with a
+  6-month season-matched baseline (what v0 uses), added to the probe before the rerun.
+- **The reference readings disagree by more than the headlines.** The power model's reference
+  readings against the pool average +0.35 pp with T17 and T12 excluded (+0.71 with them); v0's
+  power-only reference pairs average −0.08. Both methods' test readings are consistent with their
+  own references' readings, which is what a shrunk reference correction (B1) needs.
+
+**9. What this decides for C3.** The level is three things in order of size: rows on which a
+power reference has no valid data (an outage policy, D4, not an estimator change); a bad reference
+(the screen, kept on); and a per-turbine relative drift of sd about 0.5 pp that no model class
+removes and that more references average down. The DML framing of C3's plan refresh — covariate
+shift × model error — is confirmed only in its extrapolation extreme (the outage rows); the
+propensity-based corrections built on it (A2) do not work on this data because time is almost
+perfectly predictable from the features, and A1 does not help. v0 is not a zero-level comparator:
+its two paths bracket the power model, and its anemometer path is wrong in its own way. The
+season-matched-baseline arm of the rerun decides between C1 (prefer a pre span covering the post's
+months) and A3 (common-support trimming) as the next estimator change.
+
+---
+
 ## CF26 — The prepost matrix's second small run, with every cell reporting: **wind-up tracks the magnitude and misses the level**. The fitted slope is 0.993 to 0.996, while a placebo reading's sd **triples from 0.34 pp to 0.86 pp** as the post period grows from 3 months to 10. Penmanshiel is fixed; the leak is unmoved; the cost model is out by 5 to 9 times
 
 *2026-10-01. `uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run --size small`
