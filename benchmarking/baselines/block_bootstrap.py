@@ -170,7 +170,10 @@ def _paired_correlation(res_a: npt.NDArray[np.float64], res_b: npt.NDArray[np.fl
     paired = np.isfinite(res_a[:n_pairs]) & np.isfinite(res_b[:n_pairs])
     if paired.sum() < _MIN_RESAMPLES_FOR_SPREAD:
         return _DEFAULT_COMPONENT_CORRELATION
-    r = float(np.corrcoef(res_a[:n_pairs][paired], res_b[:n_pairs][paired])[0, 1])
+    pa, pb = res_a[:n_pairs][paired], res_b[:n_pairs][paired]
+    if np.ptp(pa) == 0.0 or np.ptp(pb) == 0.0:
+        return _DEFAULT_COMPONENT_CORRELATION
+    r = float(np.corrcoef(pa, pb)[0, 1])
     return r if math.isfinite(r) else _DEFAULT_COMPONENT_CORRELATION
 
 

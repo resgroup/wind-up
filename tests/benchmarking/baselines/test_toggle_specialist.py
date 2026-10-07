@@ -485,7 +485,7 @@ class TestErrors:
             out = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
                 MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
             )
-        assert set(out.uncertainty_diagnostics["component"]) == {"block_mean"}
+        assert _legs(out) == {"block_mean"}
         assert "no reference turbines" in caplog.text
 
     def test_no_used_baseline_returns_nan(self) -> None:
@@ -629,6 +629,22 @@ def _noisy_toggle_case(n: int = 2016, *, uplift: float = 0.03, noise_frac: float
     return scada, schedule
 
 
+_LEG_NAMES = ("sum", "block_mean", "combined")
+
+
+def _long_diagnostics(out: MethodOutput) -> pd.DataFrame:
+    """The harness frame back in per-leg rows: one row per (component, condition, condition_bin)."""
+    wide = out.uncertainty_diagnostics
+    assert wide is not None
+    frames = []
+    for leg in _LEG_NAMES:
+        renamed = {c: c.removesuffix(f"_{leg}") for c in wide.columns if c.endswith(f"_{leg}")}
+        if renamed:
+            leg_rows = wide[["condition", "condition_bin", *renamed]].rename(columns=renamed)
+            frames.append(leg_rows.dropna(subset=list(renamed.values()), how="all").assign(component=leg))
+    return pd.concat(frames, ignore_index=True)
+
+
 def _estimate(scada: pd.DataFrame, schedule: ToggleSchedule, **kwargs: object) -> MethodOutput:
     kwargs.setdefault("reference_block", _CYCLE)
     return ToggleSpecialistMethod(columns=_COLUMNS, **kwargs).estimate(
@@ -653,10 +669,18 @@ class TestUncertaintyIsAlwaysReported:
         assert len(populated) > 0
         assert populated["sigma_uplift"].notna().all()
 
+    def test_the_harness_frame_has_one_row_per_cell_and_no_reserved_column(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        diag = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW).uncertainty_diagnostics
+        assert diag is not None
+        assert not diag.duplicated(["condition", "condition_bin"]).any()
+        assert not set(diag.columns) & {"sigma", "estimate", "truth"}
+        assert {"sigma_sum", "sigma_block_mean", "sigma_combined"} <= set(diag.columns)
+
     def test_diagnostics_cover_the_headline_and_every_bin(self) -> None:
         scada, schedule = _noisy_toggle_case()
         out = _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW)
-        diag = out.uncertainty_diagnostics
+        diag = _long_diagnostics(out)
         assert diag is not None
         assert (diag["condition"] == "overall").sum() == diag["component"].nunique()
         assert set(diag.columns) >= {
@@ -686,7 +710,7 @@ class TestUncertaintyDoesNotChangeAnUplift:
         out = _estimate(scada, schedule, out_dir=tmp_path, **kwargs)
         subsets = _read_only_csv(tmp_path, "reference_subsets").set_index("refs")["uplift_frc"]
         block = _read_only_csv(tmp_path, "results").loc[0, "uplift_frc_block_mean"]
-        diag = out.uncertainty_diagnostics.set_index(["component", "condition_bin"])
+        diag = _long_diagnostics(out).set_index(["component", "condition_bin"])
         return subsets, block, diag
 
     def test_block_length_moves_the_bootstrap_and_no_uplift(self, tmp_path: Path) -> None:
@@ -739,11 +763,12 @@ class TestUncertaintyRunsOnlyWhenThereIsAnUpliftToQualify:
                 turbine_col=_TURBINE_COL,
             )
         )
-        diag = out.uncertainty_diagnostics
+        diag = _long_diagnostics(out)
         assert diag is not None
         legs = diag[diag["component"] != "combined"]
         assert (legs["n_blocks"] == 0).all()
-        assert legs["frac_resamples_finite"].isna().all()
+        # no resample ran, so no leg reports a finite fraction (the harness frame drops the empty column)
+        assert "frac_resamples_finite" not in legs or legs["frac_resamples_finite"].isna().all()
         assert (legs["n_baseline_records"] == 0).all()
 
 
@@ -1350,7 +1375,7 @@ def _two_reference_case(noise_frac: float = 0.3, seed: int = 5) -> tuple[pd.Data
 
 
 def _legs(out: MethodOutput) -> set[str]:
-    return set(out.uncertainty_diagnostics["component"])
+    return set(_long_diagnostics(out)["component"])
 
 
 class TestReferenceBlock:
@@ -1441,7 +1466,7 @@ class TestBlend:
         scada, schedule = _noisy_toggle_case(n=400)
         out = _estimate(scada, schedule, pairing_max_gap=pd.Timedelta(minutes=20))
         assert _legs(out) == {"sum", "block_mean", "combined"}
-        diag = out.uncertainty_diagnostics
+        diag = _long_diagnostics(out)
         head = diag[(diag["component"] == "combined") & (diag["condition_bin"] == "overall")].iloc[0]
         assert 0.0 <= head["weight_sum"] <= 1.0
         assert np.isfinite(head["decision_sigma_sum"])
@@ -1453,7 +1478,7 @@ class TestBlend:
         scada, schedule = _noisy_toggle_case(n=600)
         out = _estimate(scada, schedule, pairing_max_gap=pd.Timedelta(minutes=20), out_dir=tmp_path)
         results = _read_only_csv(tmp_path, "results").iloc[0]
-        diag = out.uncertainty_diagnostics
+        diag = _long_diagnostics(out)
         head = diag[(diag["component"] == "combined") & (diag["condition_bin"] == "overall")].iloc[0]
         legs = {
             m: diag[(diag["component"] == m) & (diag["condition_bin"] == "overall")].iloc[0]

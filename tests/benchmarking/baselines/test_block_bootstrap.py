@@ -463,6 +463,11 @@ class TestCombineEstimates:
         assert out.correlation == 0.5
         assert out.sigma == pytest.approx(np.sqrt((1 + 0.5) / 2))
 
+    def test_resamples_without_spread_assume_a_half_correlation(self) -> None:
+        # identical turbines: every resample of a leg reads exactly the same uplift
+        out = combine_estimates((0.0, 1.0, np.zeros(100)), (0.0, 1.0, np.linspace(-1, 1, 100)))
+        assert out.correlation == 0.5
+
 
 class TestASparseCellWithNoFallbackReportsNaN:
     """Two records in a long campaign: every resample that sees them is identical, so the bootstrap's

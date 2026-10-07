@@ -415,7 +415,7 @@ class ToggleSpecialistMethod:
             p50_overall=float(est.uplift),
             p50_by_condition=est.per_bin,
             sigma_overall=est.sigma_overall,
-            uncertainty_diagnostics=est.diagnostics,
+            uncertainty_diagnostics=_harness_diagnostics(est.diagnostics),
             labeled_rows=self._labeled_rows(mi, wide=wide, test=test, used=est.used, rows=rows, label=est.label),
             selection_accounting=est.accounting,
         )
@@ -1200,6 +1200,15 @@ def _cell_sigma(boot: BootstrapResult | None, cell: str) -> float:
     if boot is None or cell not in boot.cells:
         return float("nan")
     return boot.cells[cell].sigma
+
+
+def _harness_diagnostics(diagnostics: pd.DataFrame) -> pd.DataFrame:
+    """One row per ``(condition, condition_bin)``, each leg's columns suffixed ``_<component>``."""
+    keys = ["condition", "condition_bin"]
+    values = [c for c in diagnostics.columns if c not in (*keys, "component")]
+    wide = diagnostics.pivot(index=keys, columns="component", values=values).dropna(axis=1, how="all")  # noqa: PD010 - unique keys, nothing to aggregate
+    wide.columns = [f"{value}_{component}" for value, component in wide.columns]
+    return wide.reset_index()
 
 
 def _uncertainty_diagnostics(
