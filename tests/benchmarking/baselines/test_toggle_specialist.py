@@ -1378,6 +1378,42 @@ def _legs(out: MethodOutput) -> set[str]:
     return set(_long_diagnostics(out)["component"])
 
 
+class TestPowerBand:
+    """``power_band`` keeps the used rows whose reference-derived baseline power lies in ``(lo, hi]``."""
+
+    _BAND = (360.0, 840.0)  # two whole 240 kW bins at 1200 kW rated
+
+    @staticmethod
+    def _run(scada: pd.DataFrame, schedule: ToggleSchedule, **kwargs: object) -> MethodOutput:
+        return _estimate(scada, schedule, conditions=("power",), rated_power_kw=_RATED_KW, **kwargs)
+
+    def test_every_used_row_lies_in_the_band(self) -> None:
+        out = self._run(*_varying_rho_case(n=2016, uplift=0.05), power_band=self._BAND)
+        assert out.labeled_rows is not None
+        used_bins = set(out.labeled_rows.loc[out.labeled_rows["used"].astype(bool), "power_bin"].astype(str))
+        assert used_bins == {"(360.0, 600.0]", "(600.0, 840.0]"}
+
+    def test_a_band_holding_every_row_changes_nothing(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        assert self._run(scada, schedule, power_band=(-1e9, 1e9)).p50_overall == pytest.approx(
+            self._run(scada, schedule).p50_overall, abs=1e-12
+        )
+
+    def test_a_constant_uplift_reads_the_same_inside_the_band(self) -> None:
+        """The cut reads the reference-derived power, which the state cannot move, so it selects no state."""
+        out = self._run(*_varying_rho_case(n=2016, uplift=0.05), power_band=self._BAND)
+        assert out.p50_overall == pytest.approx(0.05, abs=2e-3)
+
+    def test_the_band_is_a_selection_stage_and_in_the_run_config(self, tmp_path: Path) -> None:
+        # the run config is written with the plots
+        self._run(*_varying_rho_case(n=2016, uplift=0.05), power_band=self._BAND, out_dir=tmp_path, save_plots=True)
+        stages = set(_read_only_csv(tmp_path, "selection")["stage"])
+        assert "power_band" in stages
+        run_dir = next(p for p in tmp_path.iterdir() if p.is_dir())
+        config_text = next(run_dir.glob("config_*.yaml")).read_text()
+        assert "power_band" in config_text
+
+
 class TestReferenceBlock:
     """``reference_block`` is the caller's statement of one toggle cycle: required, never inferred."""
 

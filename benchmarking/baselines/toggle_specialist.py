@@ -313,6 +313,9 @@ class ToggleSpecialistMethod:
         ``columns.exclude_block``: one toggle cycle (the campaign's own on + off duration), a
         positive whole multiple of the timebase. It is the caller's to state, not inferred, and it
         is independent of ``pairing_max_gap``.
+    :param power_band: when set, ``(lo, hi]`` in kW: each leg keeps only the used rows whose
+        reference-derived baseline power (``rho_label * ref_total``, the power the bins use, so
+        state-neutral) lies in it, and estimates its uplift over those. ``None`` keeps every used row.
     """
 
     columns: ColumnSchema
@@ -328,6 +331,7 @@ class ToggleSpecialistMethod:
     bootstrap_seed: int = 0
     pairing_max_gap: pd.Timedelta | None = None
     segment_imbalance_warning: float = 0.1
+    power_band: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
@@ -461,14 +465,22 @@ class ToggleSpecialistMethod:
             mi, wide=wide, test=test, refs=refs, timebase=timebase, rows=rows, ids=ids, both_states=mode == _BLOCK_LEG
         )
         used = selection.blocked.to_numpy()
-        accounting = self._selection_accounting(selection, rows=rows)
         ref_total = self._reference_total(mode=mode, wide=wide, refs=refs, test_pw=test_pw, used=used, ids=ids)
 
         rho_base = _rho(test_pw, ref_total, used & baseline)
         rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
+        rho_label = _rho_label(rho_base, rho_up)
+        in_band = None
+        if self.power_band is not None:
+            lo, hi = self.power_band
+            label = rho_label * ref_total
+            in_band = used & (label > lo) & (label <= hi)
+            used = in_band
+            rho_base = _rho(test_pw, ref_total, used & baseline)
+            rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
+        accounting = self._selection_accounting(selection, rows=rows, power_band=in_band)
         recoverable = np.isfinite(rho_base) and rho_base != 0 and np.isfinite(rho_up)
         uplift = rho_up / rho_base - 1.0 if recoverable else np.nan
-        rho_label = _rho_label(rho_base, rho_up)
 
         per_bin = (
             self._conditional_frame(
@@ -838,7 +850,9 @@ class ToggleSpecialistMethod:
             blocked=pd.Series(kept, index=wide.index),
         )
 
-    def _selection_accounting(self, selection: _Selection, *, rows: ToggleRowSets) -> pd.DataFrame:
+    def _selection_accounting(
+        self, selection: _Selection, *, rows: ToggleRowSets, power_band: npt.NDArray[np.bool_] | None = None
+    ) -> pd.DataFrame:
         """Rows kept per segment after each stage, warning when a stage treats the segments unevenly.
 
         ``kept_fraction`` is relative to the segment's rows; ``stage_kept_fraction`` to the previous
@@ -850,6 +864,7 @@ class ToggleSpecialistMethod:
             ("exclude_row", selection.not_excluded),
             ("pairing", selection.paired),
             ("block", selection.blocked),
+            *(() if power_band is None else (("power_band", pd.Series(power_band, index=selection.blocked.index)),)),
         )
         records = []
         for segment, in_segment in ((_BASELINE, rows.campaign_baseline), (_UPGRADED, rows.upgraded)):
@@ -1069,6 +1084,7 @@ class ToggleSpecialistMethod:
             "availability_col": self.columns.availability,
             "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
             "reference_block": str(self.reference_block),
+            "power_band": None if self.power_band is None else list(self.power_band),
             "exclude_block_col": self.columns.exclude_block,
         }
         write_run_config(ctx, method_name=self.name, method_params=params)
