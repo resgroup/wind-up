@@ -129,6 +129,7 @@ def build_methods(block_hours_grid: list[float], out_dir: Path | None = None) ->
     return [
         ToggleSpecialistMethod(
             columns=HOT_COLUMNS,
+            reference_block=DEFAULT_TOGGLE_PERIOD,
             name=f"toggle_specialist_bl{block_hours:g}",
             conditions=("power",),
             rated_power_kw=HOT_RATED_POWER_KW,

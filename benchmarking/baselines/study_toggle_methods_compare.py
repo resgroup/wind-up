@@ -202,6 +202,7 @@ def _build_methods(out_dir: Path, *, era5_hourly_df: pd.DataFrame) -> list:
     return [
         ToggleSpecialistMethod(
             columns=HOT_COLUMNS,
+            reference_block=DEFAULT_TOGGLE_PERIOD,
             conditions=("power",),
             rated_power_kw=HOT_RATED_POWER_KW,
             out_dir=out_dir / "toggle_specialist_runs",

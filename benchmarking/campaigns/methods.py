@@ -8,7 +8,7 @@ from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.toggle_specialist import ToggleSpecialistMethod
 from benchmarking.diagnostics.context import ERA5_UNLOCATED
-from benchmarking.synthetic import HOT_COLUMNS
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -52,9 +52,11 @@ def carried_forward_methods(
     """
     methods: list[Method] = [NaiveRatioMethod(columns=HOT_COLUMNS, out_dir=out_dir / "naive_ratio", save_plots=True)]
     if spec.mode == "toggle":
+        assert isinstance(spec.upgrade_timing, ToggleSchedule)  # noqa: S101 - what ``mode == "toggle"`` means
         methods.append(
             ToggleSpecialistMethod(
                 columns=HOT_COLUMNS,
+                reference_block=spec.upgrade_timing.period,
                 out_dir=out_dir / "toggle_specialist",
                 save_plots=True,
                 conditions=("power",),
