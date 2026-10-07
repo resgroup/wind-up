@@ -56,7 +56,7 @@ def carried_forward_methods(
         methods.append(
             ToggleSpecialistMethod(
                 columns=HOT_COLUMNS,
-                reference_block=spec.upgrade_timing.period,
+                toggle_period=spec.upgrade_timing.period,
                 out_dir=out_dir / "toggle_specialist",
                 save_plots=True,
                 conditions=("power",),

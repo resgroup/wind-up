@@ -43,7 +43,7 @@ _AVAIL_COL = "secs_avail"
 # Larger than any test timebase's full period, so the (required) availability filter keeps
 # every row unless a test deliberately sets a lower value.
 _FULLY_AVAILABLE_SECS = 3600.0
-# One toggle cycle of the 20-minute ``ToggleSchedule`` most tests use (``reference_block`` is required).
+# One toggle cycle of the 20-minute ``ToggleSchedule`` most tests use (``toggle_period`` is required).
 _CYCLE = pd.Timedelta(minutes=20)
 # The method reads active_power + availability from the schema; the other required roles are
 # unused by the ratio, so name them with placeholders.
@@ -121,7 +121,7 @@ def test_toggle_specialist_shares_no_wind_up_code() -> None:
 class TestRecovery:
     def test_toggle_recovers_known_uplift(self) -> None:
         scada, schedule, _ = _toggle_case(uplift=0.03)
-        out = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert isinstance(out, MethodOutput)
@@ -174,7 +174,7 @@ def _varying_rho_case(
 def _per_bin(scada: pd.DataFrame, schedule: ToggleSchedule) -> pd.DataFrame:
     """Run the method with power conditioning on and return its populated per-bin rows."""
     out = ToggleSpecialistMethod(
-        columns=_COLUMNS, reference_block=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
+        columns=_COLUMNS, toggle_period=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
     ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
     assert out.p50_by_condition is not None
     frame = out.p50_by_condition
@@ -249,7 +249,7 @@ class TestConditionsConfiguration:
     def test_default_reports_no_conditions(self) -> None:
         # back-compat: existing callers get exactly today's behaviour and need no rating
         scada, schedule, _ = _toggle_case(uplift=0.03)
-        out = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert out.p50_by_condition is None
@@ -258,16 +258,16 @@ class TestConditionsConfiguration:
         # the per-bin decomposition is additional reporting, never a change to the estimate
         scada, schedule, _ = _toggle_case(uplift=0.03)
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
-        plain = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(mi)
+        plain = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(mi)
         conditioned = ToggleSpecialistMethod(
-            columns=_COLUMNS, reference_block=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
+            columns=_COLUMNS, toggle_period=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
         ).estimate(mi)
         assert conditioned.p50_overall == plain.p50_overall
 
     def test_frame_is_labelled_with_the_power_condition(self) -> None:
         scada, schedule = _varying_rho_case(uplift=0.05)
         out = ToggleSpecialistMethod(
-            columns=_COLUMNS, reference_block=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
+            columns=_COLUMNS, toggle_period=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
         ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
         assert out.p50_by_condition is not None
         assert set(out.p50_by_condition["condition"]) == {"power"}
@@ -276,19 +276,17 @@ class TestConditionsConfiguration:
 
     def test_ws_condition_raises_citing_the_method_limit(self) -> None:
         with pytest.raises(ValueError, match="does not support"):
-            ToggleSpecialistMethod(
-                columns=_COLUMNS, reference_block=_CYCLE, conditions=("ws",), rated_power_kw=_RATED_KW
-            )
+            ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE, conditions=("ws",), rated_power_kw=_RATED_KW)
 
     def test_unknown_condition_raises(self) -> None:
         with pytest.raises(ValueError, match="unknown condition"):
             ToggleSpecialistMethod(
-                columns=_COLUMNS, reference_block=_CYCLE, conditions=("bogus",), rated_power_kw=_RATED_KW
+                columns=_COLUMNS, toggle_period=_CYCLE, conditions=("bogus",), rated_power_kw=_RATED_KW
             )
 
     def test_power_without_a_rating_raises(self) -> None:
         with pytest.raises(ValueError, match="rated_power_kw"):
-            ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE, conditions=("power",))
+            ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE, conditions=("power",))
 
 
 class TestPerBinSparseData:
@@ -298,7 +296,7 @@ class TestPerBinSparseData:
         # above the data's power range guarantees empty upper bins rather than hoping for them.
         scada, schedule = _varying_rho_case(uplift=0.05)
         out = ToggleSpecialistMethod(
-            columns=_COLUMNS, reference_block=_CYCLE, conditions=("power",), rated_power_kw=4000.0
+            columns=_COLUMNS, toggle_period=_CYCLE, conditions=("power",), rated_power_kw=4000.0
         ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
         assert out.p50_by_condition is not None
         empty = out.p50_by_condition[out.p50_by_condition["n_records"] == 0]
@@ -308,7 +306,7 @@ class TestPerBinSparseData:
     def test_every_bin_is_represented(self) -> None:
         scada, schedule = _varying_rho_case(uplift=0.05)
         out = ToggleSpecialistMethod(
-            columns=_COLUMNS, reference_block=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
+            columns=_COLUMNS, toggle_period=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
         ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
         assert out.p50_by_condition is not None
         assert len(out.p50_by_condition) == len(condition_bins("power", rated_power_kw=_RATED_KW)) - 1
@@ -318,13 +316,13 @@ class TestPerBinDiagnostics:
     def test_per_bin_csv_is_written(self, tmp_path: Path) -> None:
         scada, schedule = _varying_rho_case(uplift=0.05)
         ToggleSpecialistMethod(
-            columns=_COLUMNS, reference_block=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW, out_dir=tmp_path
+            columns=_COLUMNS, toggle_period=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW, out_dir=tmp_path
         ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
         assert list(tmp_path.rglob("*_by_power_bin_*.csv"))
 
     def test_no_per_bin_csv_when_conditioning_is_off(self, tmp_path: Path) -> None:
         scada, schedule, _ = _toggle_case(uplift=0.03)
-        ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE, out_dir=tmp_path).estimate(
+        ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE, out_dir=tmp_path).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert not list(tmp_path.rglob("*_by_power_bin_*.csv"))
@@ -333,7 +331,7 @@ class TestPerBinDiagnostics:
         scada, schedule = _varying_rho_case(uplift=0.05)
         ToggleSpecialistMethod(
             columns=_COLUMNS,
-            reference_block=_CYCLE,
+            toggle_period=_CYCLE,
             conditions=("power",),
             rated_power_kw=_RATED_KW,
             out_dir=tmp_path,
@@ -351,7 +349,7 @@ class TestPrepostRejected:
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
         with pytest.raises(ValueError, match="toggle"):
-            ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+            ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
                 MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
             )
 
@@ -368,13 +366,13 @@ class TestDowntimeFilter:
         # A schema that leaves the availability role blank (empty or whitespace) would silently skip
         # downtime filtering, so construction must reject it.
         with pytest.raises(ValueError, match="availability"):
-            ToggleSpecialistMethod(columns=replace(_COLUMNS, availability=blank), reference_block=_CYCLE)
+            ToggleSpecialistMethod(columns=replace(_COLUMNS, availability=blank), toggle_period=_CYCLE)
 
     def test_missing_availability_column_raises(self) -> None:
         scada, schedule, _ = _toggle_case()
         scada = scada.drop(columns=[_AVAIL_COL])
         with pytest.raises(ValueError, match="availability"):
-            ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+            ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
                 MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
             )
 
@@ -387,7 +385,7 @@ class TestDowntimeFilter:
         down = (corrupted[_TURBINE_COL] == "R1") & corrupted.index.isin([idx[3], idx[4]])
         corrupted.loc[down, _POWER_COL] = 1e6
         corrupted.loc[down, _AVAIL_COL] = 0.0
-        out = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert out.p50_overall == pytest.approx(0.05)
@@ -397,7 +395,7 @@ class TestCompleteCase:
     def test_drops_timestamp_when_a_reference_is_nan(self) -> None:
         scada, schedule, _ = _toggle_case()
         idx = scada.index.unique().sort_values()
-        clean = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        clean = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
 
@@ -406,7 +404,7 @@ class TestCompleteCase:
         corrupted = scada.copy()
         mask = (corrupted[_TURBINE_COL] == "R1") & (corrupted.index == idx[3])
         corrupted.loc[mask, _POWER_COL] = np.nan
-        out = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert out.p50_overall == pytest.approx(clean.p50_overall)
@@ -417,12 +415,12 @@ class TestCompleteCase:
         # make idx[2] already unused (test NaN), then add a second NaN at the same timestamp
         base = scada.copy()
         base.loc[(base[_TURBINE_COL] == "T1") & (base.index == idx[2]), _POWER_COL] = np.nan
-        before = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        before = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=base, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         after_df = base.copy()
         after_df.loc[(after_df[_TURBINE_COL] == "R1") & (after_df.index == idx[2]), _POWER_COL] = np.nan
-        after = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        after = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=after_df, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert after.p50_overall == pytest.approx(before.p50_overall)
@@ -437,7 +435,7 @@ class TestTimebaseInvariance:
             treated = np.asarray(treated_mask(idx, schedule))
             scada = _recovery_scada(idx, treated=treated, uplift=0.04)
             results.append(
-                ToggleSpecialistMethod(columns=_COLUMNS, reference_block=schedule.period)
+                ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=schedule.period)
                 .estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
                 .p50_overall
             )
@@ -447,7 +445,7 @@ class TestTimebaseInvariance:
         scada, schedule, _ = _toggle_case()
         method = ToggleSpecialistMethod(
             columns=_COLUMNS,
-            reference_block=pd.Timedelta(hours=1),
+            toggle_period=pd.Timedelta(hours=1),
             out_dir=tmp_path,
             timebase=pd.Timedelta(minutes=30),
         )
@@ -462,7 +460,7 @@ class TestTimebaseInvariance:
 class TestActivePowerOnly:
     def test_extra_columns_ignored(self) -> None:
         scada, schedule, _ = _toggle_case()
-        plain = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        plain = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
 
@@ -470,7 +468,7 @@ class TestActivePowerOnly:
         rng = np.random.default_rng(0)
         with_extra["ws"] = rng.normal(size=len(with_extra))
         with_extra["rpm"] = rng.normal(size=len(with_extra))
-        out = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=with_extra, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert out.p50_overall == pytest.approx(plain.p50_overall)
@@ -482,7 +480,7 @@ class TestErrors:
         schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=idx[0])
         scada = _scada({"T1": np.ones(len(idx))}, idx)
         with caplog.at_level("WARNING"):
-            out = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+            out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
                 MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
             )
         assert _legs(out) == {"block_mean"}
@@ -495,7 +493,7 @@ class TestErrors:
         off_ts = idx[~treated]
         is_baseline_test = (scada[_TURBINE_COL] == "T1") & scada.index.isin(off_ts)
         scada.loc[is_baseline_test, _POWER_COL] = np.nan
-        out = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert np.isnan(out.p50_overall)
@@ -548,9 +546,7 @@ def _read_only_csv(folder: Path, kind: str) -> pd.DataFrame:
 class TestDiagnostics:
     def _run(self, tmp_path, *, save_plots: bool = False):  # noqa: ANN001, ANN202
         scada, schedule, _ = _toggle_case(uplift=0.06)
-        method = ToggleSpecialistMethod(
-            columns=_COLUMNS, reference_block=_CYCLE, out_dir=tmp_path, save_plots=save_plots
-        )
+        method = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE, out_dir=tmp_path, save_plots=save_plots)
         out = method.estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
@@ -609,7 +605,7 @@ class TestCampaignOnly:
         schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=start)
         treated = np.asarray(treated_mask(idx, schedule))
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE, out_dir=tmp_path).estimate(
+        ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE, out_dir=tmp_path).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         baseline = _read_only_csv(tmp_path, "data_stats").set_index("segment").loc["baseline"]
@@ -646,7 +642,7 @@ def _long_diagnostics(out: MethodOutput) -> pd.DataFrame:
 
 
 def _estimate(scada: pd.DataFrame, schedule: ToggleSchedule, **kwargs: object) -> MethodOutput:
-    kwargs.setdefault("reference_block", _CYCLE)
+    kwargs.setdefault("toggle_period", _CYCLE)
     return ToggleSpecialistMethod(columns=_COLUMNS, **kwargs).estimate(
         MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
     )
@@ -737,7 +733,7 @@ class TestUncertaintyRunsOnlyWhenThereIsAnUpliftToQualify:
         idx = _index(40)
         # every row treated -> no off rows -> rho_base is NaN
         scada = _recovery_scada(idx, treated=np.ones(len(idx), dtype=bool))
-        out = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(
                 scada_df=scada,
                 test_wtg="T1",
@@ -754,7 +750,7 @@ class TestUncertaintyRunsOnlyWhenThereIsAnUpliftToQualify:
         idx = _index(40)
         scada = _recovery_scada(idx, treated=np.ones(len(idx), dtype=bool))
         out = ToggleSpecialistMethod(
-            columns=_COLUMNS, reference_block=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
+            columns=_COLUMNS, toggle_period=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
         ).estimate(
             MethodInput(
                 scada_df=scada,
@@ -843,7 +839,7 @@ class TestLabeledRows:
     def test_used_reproduces_the_methods_own_used_mask(self) -> None:
         scada, schedule = _noisy_toggle_case()
         method = ToggleSpecialistMethod(
-            columns=_COLUMNS, reference_block=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
+            columns=_COLUMNS, toggle_period=_CYCLE, conditions=("power",), rated_power_kw=_RATED_KW
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         out = method.estimate(mi)
@@ -1006,7 +1002,7 @@ class TestExcludeRow:
     def test_flagged_test_rows_are_not_used(self) -> None:
         scada, schedule = _noisy_toggle_case()
         flagged = _flag(scada, turbine="T1", every=5)
-        out = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, reference_block=_CYCLE).estimate(
+        out = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert out.labeled_rows is not None
@@ -1022,10 +1018,10 @@ class TestExcludeRow:
         spoiled = corrupted[_EXCLUDE_COL].to_numpy(dtype=bool) & (corrupted[_TURBINE_COL] == "T1").to_numpy()
         corrupted.loc[spoiled, _POWER_COL] *= 0.5
 
-        naive = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        naive = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
-        filtered = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, reference_block=_CYCLE).estimate(
+        filtered = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert filtered.p50_overall == pytest.approx(0.05, abs=1e-9)
@@ -1042,7 +1038,7 @@ class TestExcludeRow:
         flagged[_EXCLUDE_COL] = (
             flagged[_EXCLUDE_COL].to_numpy() | _flag(scada, turbine="R2", every=3)[_EXCLUDE_COL].to_numpy()
         )
-        out = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, reference_block=_CYCLE, out_dir=tmp_path).estimate(
+        out = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE, out_dir=tmp_path).estimate(
             MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert out.labeled_rows is not None
@@ -1060,14 +1056,14 @@ class TestExcludeRow:
         scada, schedule = _noisy_toggle_case()
         flagged = _flag(scada, turbine="T1", every=7, value=np.nan)
         with pytest.raises(ValueError, match=_EXCLUDE_COL):
-            ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, reference_block=_CYCLE).estimate(
+            ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE).estimate(
                 MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
             )
 
     def test_unset_role_excludes_nothing(self) -> None:
         scada, schedule = _noisy_toggle_case()
         flagged = _flag(scada, turbine="T1", every=5)
-        out = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE).estimate(
+        out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert out.labeled_rows is not None
@@ -1077,7 +1073,7 @@ class TestExcludeRow:
     def test_absent_column_excludes_nothing(self) -> None:
         """The role names a column the frame does not carry: skip, do not raise."""
         scada, schedule = _noisy_toggle_case()
-        out = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, reference_block=_CYCLE).estimate(
+        out = ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert out.labeled_rows is not None
@@ -1093,7 +1089,7 @@ class TestExcludeRow:
         scada, schedule = _noisy_toggle_case()
         flagged = _flag(scada, turbine="T1", every=5)
         ToggleSpecialistMethod(
-            columns=_EXCLUDE_COLUMNS, reference_block=_CYCLE, out_dir=tmp_path, save_plots=True
+            columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE, out_dir=tmp_path, save_plots=True
         ).estimate(MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
         run_dir = next(p for p in Path(tmp_path).iterdir() if p.is_dir())
         names = {p.name for p in (run_dir / "plots").rglob("*.png")}
@@ -1102,7 +1098,7 @@ class TestExcludeRow:
 
     def test_no_exclusion_plots_when_nothing_is_excluded(self, tmp_path: Path) -> None:
         scada, schedule = _noisy_toggle_case()
-        ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE, out_dir=tmp_path, save_plots=True).estimate(
+        ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE, out_dir=tmp_path, save_plots=True).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         run_dir = next(p for p in Path(tmp_path).iterdir() if p.is_dir())
@@ -1138,7 +1134,7 @@ class TestCampaignContext:
 
     @staticmethod
     def _estimate(scada: pd.DataFrame, **kwargs: object) -> float:
-        method = ToggleSpecialistMethod(columns=_COLUMNS, reference_block=_CYCLE)
+        method = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE)
         return method.estimate(MethodInput(scada_df=scada, **kwargs)).p50_overall
 
     def test_only_offered_references_are_used(self) -> None:
@@ -1262,7 +1258,7 @@ class TestPairingFilter:
 
     @staticmethod
     def _run(scada: pd.DataFrame, schedule: ToggleSchedule, **kwargs: object) -> MethodOutput:
-        kwargs.setdefault("reference_block", _CYCLE)
+        kwargs.setdefault("toggle_period", _CYCLE)
         return ToggleSpecialistMethod(columns=_EXCLUDE_COLUMNS, **kwargs).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
@@ -1307,18 +1303,6 @@ class TestPairingFilter:
         assert out.selection_accounting is not None
         kept = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
         assert kept["pairing", "baseline"] == kept["exclude_row", "baseline"]
-
-    def test_an_uneven_stage_warns(self, caplog: pytest.LogCaptureFixture) -> None:
-        scada, schedule, _ = self._block_excluded_case()
-        with caplog.at_level("WARNING", logger=toggle_specialist.__name__):
-            self._run(scada, schedule, segment_imbalance_warning=0.05)
-        assert any("exclude_row" in record.getMessage() for record in caplog.records)
-
-    def test_an_even_selection_does_not_warn(self, caplog: pytest.LogCaptureFixture) -> None:
-        scada, schedule = _noisy_toggle_case(n=200)
-        with caplog.at_level("WARNING", logger=toggle_specialist.__name__):
-            _estimate(scada, schedule, pairing_max_gap=pd.Timedelta(minutes=20))
-        assert not [r for r in caplog.records if r.name == toggle_specialist.__name__]
 
 
 @pytest.mark.parametrize("gap", [None, pd.Timedelta(minutes=20)], ids=["no-pairing", "pairing"])
@@ -1414,22 +1398,22 @@ class TestPowerBand:
         assert "power_band" in config_text
 
 
-class TestReferenceBlock:
-    """``reference_block`` is the caller's statement of one toggle cycle: required, never inferred."""
+class TestTogglePeriod:
+    """``toggle_period`` is the caller's statement of one toggle cycle: required, never inferred."""
 
     def test_it_is_required(self) -> None:
-        with pytest.raises(TypeError, match="reference_block"):
+        with pytest.raises(TypeError, match="toggle_period"):
             ToggleSpecialistMethod(columns=_COLUMNS)  # type: ignore[call-arg]
 
     def test_it_is_independent_of_the_pairing_gap(self) -> None:
         scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
-        out = _estimate(scada, schedule, reference_block=_BLOCK, pairing_max_gap=pd.Timedelta(minutes=10))
+        out = _estimate(scada, schedule, toggle_period=_BLOCK, pairing_max_gap=pd.Timedelta(minutes=10))
         assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
 
     def test_a_block_off_the_timebase_grid_is_refused(self) -> None:
         scada, schedule = _block_case(n_blocks=10, ref_scale=np.ones(10))
-        with pytest.raises(ValueError, match="reference_block"):
-            _estimate(scada, schedule, reference_block=pd.Timedelta(minutes=25))
+        with pytest.raises(ValueError, match="toggle_period"):
+            _estimate(scada, schedule, toggle_period=pd.Timedelta(minutes=25))
 
 
 class TestBlockLeg:
@@ -1437,7 +1421,7 @@ class TestBlockLeg:
 
     def test_recovers_the_uplift_with_no_references(self) -> None:
         scada, schedule = _block_case(uplift=0.04)
-        out = _estimate(scada, schedule, reference_block=_BLOCK)
+        out = _estimate(scada, schedule, toggle_period=_BLOCK)
         assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
         assert np.isfinite(out.sigma_overall)
         assert _legs(out) == {"block_mean"}
@@ -1447,7 +1431,7 @@ class TestBlockLeg:
         scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
         is_ref = (scada[_TURBINE_COL] == "R1").to_numpy()
         scada.loc[is_ref, _POWER_COL] = np.nan
-        out = _estimate(scada, schedule, reference_block=_BLOCK)
+        out = _estimate(scada, schedule, toggle_period=_BLOCK)
         assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
         assert out.labeled_rows is not None
         assert out.labeled_rows["used"].astype(bool).all()
@@ -1459,7 +1443,7 @@ class TestBlockLeg:
         block_rows = idx[40:44]  # the 11th block: two on/off cycles
         off_rows = block_rows[~np.asarray(treated_mask(block_rows, schedule))]
         scada.loc[scada.index.isin(off_rows), _POWER_COL] = np.nan
-        out = _estimate(scada, schedule, reference_block=_BLOCK)
+        out = _estimate(scada, schedule, toggle_period=_BLOCK)
         assert out.labeled_rows is not None
         # NaN (a timestamp absent from the pivot) must read as unused, so compare rather than cast
         used = out.labeled_rows["used"] == True  # noqa: E712
@@ -1483,7 +1467,7 @@ class TestBlend:
 
     def test_recovers_the_uplift_when_both_legs_are_exact(self) -> None:
         scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
-        out = _estimate(scada, schedule, reference_block=_BLOCK)
+        out = _estimate(scada, schedule, toggle_period=_BLOCK)
         assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
         assert _legs(out) == {"sum", "block_mean", "combined"}
 
@@ -1491,7 +1475,7 @@ class TestBlend:
         scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
         is_ref = (scada[_TURBINE_COL] == "R1").to_numpy()
         scada.loc[is_ref & (np.arange(len(scada)) % 7 == 0), _POWER_COL] = np.nan
-        out = _estimate(scada, schedule, reference_block=_BLOCK)
+        out = _estimate(scada, schedule, toggle_period=_BLOCK)
         used = out.labeled_rows["used"] == True  # noqa: E712 - NaN (absent timestamp) must read as unused
         assert used.all()
         # The accounting is the reference leg's, which the reference outage did cost rows.
@@ -1547,7 +1531,7 @@ def _flag_block(scada: pd.DataFrame, *, turbine: str, at: pd.Timestamp) -> pd.Da
 
 
 class TestExcludeBlock:
-    """``columns.exclude_block``: a flagged row removes its whole reference block, in both legs."""
+    """``columns.exclude_block``: a flagged row removes its whole toggle cycle, in both legs."""
 
     @staticmethod
     def _run(scada: pd.DataFrame, schedule: ToggleSchedule, **kwargs: object) -> MethodOutput:
@@ -1559,7 +1543,7 @@ class TestExcludeBlock:
         scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
         idx = pd.DatetimeIndex(pd.unique(scada.index))
         block_5 = idx[20:24]
-        out = self._run(_flag_block(scada, turbine="T1", at=block_5[1]), schedule, reference_block=_BLOCK)
+        out = self._run(_flag_block(scada, turbine="T1", at=block_5[1]), schedule, toggle_period=_BLOCK)
         assert out.labeled_rows is not None
         used = out.labeled_rows["used"].astype(bool)
         assert not used.loc[block_5].any()
@@ -1574,7 +1558,7 @@ class TestExcludeBlock:
         scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
         idx = pd.DatetimeIndex(pd.unique(scada.index))
         block_7 = idx[28:32]
-        out = self._run(_flag_block(scada, turbine="R1", at=block_7[3]), schedule, reference_block=_BLOCK)
+        out = self._run(_flag_block(scada, turbine="R1", at=block_7[3]), schedule, toggle_period=_BLOCK)
         assert out.labeled_rows is not None
         assert out.labeled_rows["used"].astype(bool).all()
         acc = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
@@ -1585,8 +1569,8 @@ class TestExcludeBlock:
     def test_no_flags_change_nothing(self) -> None:
         scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
         scada[_BLOCK_COL] = False
-        with_role = self._run(scada, schedule, reference_block=_BLOCK)
-        without = _estimate(scada.drop(columns=_BLOCK_COL), schedule, reference_block=_BLOCK)
+        with_role = self._run(scada, schedule, toggle_period=_BLOCK)
+        without = _estimate(scada.drop(columns=_BLOCK_COL), schedule, toggle_period=_BLOCK)
         assert with_role.p50_overall == pytest.approx(without.p50_overall)
         assert with_role.sigma_overall == pytest.approx(without.sigma_overall)
 

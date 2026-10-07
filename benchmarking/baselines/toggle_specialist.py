@@ -16,9 +16,9 @@ An optional **pairing filter** (``pairing_max_gap``) then drops any used row wit
 other segment nearby, so a filter that removes one segment's rows in some conditions also removes the
 other segment's rows from those conditions. Rows kept per segment after each selection stage are
 reported as ``MethodOutput.selection_accounting`` and written to a selection CSV. A caller may also
-flag rows through ``columns.exclude_block``: such a row removes its whole reference block (one
-toggle cycle), so both states lose the same conditions — a symmetric alternative to ``exclude_row``
-for a selection that would otherwise thin one state's rows in particular conditions.
+flag rows through ``columns.exclude_block``: such a row removes its whole toggle cycle, so both
+states lose the same conditions — a symmetric alternative to ``exclude_row`` for a selection that
+would otherwise thin one state's rows in particular conditions.
 
 **Two legs, blended.** The test power is compared against two references, each estimated on
 its own row selection, and the two estimates are blended by minimum-variance weights, headline and
@@ -27,9 +27,9 @@ the ``sum`` estimate runs on every non-empty subset of the available references 
 subset whose noise is smallest (ties to the larger subset), so a reference that tracks badly, or is
 screened out for long stretches, loses to the subsets without it; every subset's result is written
 to a CSV. The *block leg* (``block_mean``) needs **no references at all**: the campaign is tiled
-into fixed wall-clock blocks of ``reference_block`` (one toggle cycle) and every used row
-of a block is compared against the block's mean test power, so the on/off ratio cancels the block's
-wind level exactly; a block whose used rows lack either state is dropped (the ``block`` selection
+into fixed wall-clock toggle cycles of ``toggle_period`` and every used row of a cycle is
+compared against the cycle's mean test power, so the on/off ratio cancels the cycle's wind level
+exactly; a cycle whose used rows lack either state is dropped (the ``block`` selection
 stage). The two legs' errors come from different places (reference mismatch versus within-cycle
 drift), which is what the blend exploits; their bootstraps share their block draws, so the blend's
 sigma includes the legs' correlation (:func:`benchmarking.baselines.block_bootstrap.combine_estimates`).
@@ -37,7 +37,7 @@ With no reference turbine at all the estimate is the block leg alone.
 
 **Decisions on permuted labels.** The two data-driven decisions, the subset choice and the blend
 weights, are judged on a bootstrap of the same rows with the on/off labels shuffled within each
-reference block: the same noise, blind to how it happened to split between the states. Ranking on
+toggle cycle: the same noise, blind to how it happened to split between the states. Ranking on
 the realised sigma would favour the alternative whose realised uplift came out low (the on/off
 contrast noise is skewed), biasing the estimate down and under-reporting sigma. The reported uplift
 and sigma are always the actual ones; only the decisions read the permuted bootstrap.
@@ -307,10 +307,8 @@ class ToggleSpecialistMethod:
     :param pairing_max_gap: when set, a used row of one segment is kept only if the other segment has
         a used row within this gap, inclusive (a gap of exactly ``pairing_max_gap`` is kept). Must be
         a positive whole multiple of the timebase; ``None`` disables pairing.
-    :param segment_imbalance_warning: warn when the two segments' kept fractions at any selection
-        stage differ by more than this.
-    :param reference_block: **required** block length for the block leg, the label permutation and
-        ``columns.exclude_block``: one toggle cycle (the campaign's own on + off duration), a
+    :param toggle_period: **required** one toggle cycle (the campaign's own on + off duration): the
+        block length for the block leg, the label permutation and ``columns.exclude_block``. A
         positive whole multiple of the timebase. It is the caller's to state, not inferred, and it
         is independent of ``pairing_max_gap``.
     :param power_band: when set, ``(lo, hi]`` in kW: each leg keeps only the used rows whose
@@ -319,7 +317,7 @@ class ToggleSpecialistMethod:
     """
 
     columns: ColumnSchema
-    reference_block: pd.Timedelta
+    toggle_period: pd.Timedelta
     name: str = "toggle_specialist"
     out_dir: Path | None = None
     save_plots: bool = False
@@ -330,7 +328,6 @@ class ToggleSpecialistMethod:
     n_resamples: int = 1000
     bootstrap_seed: int = 0
     pairing_max_gap: pd.Timedelta | None = None
-    segment_imbalance_warning: float = 0.1
     power_band: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
@@ -366,7 +363,7 @@ class ToggleSpecialistMethod:
         timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
         self._check_pairing_gap(timebase)
         rows = resolve_toggle(mi.upgrade_timing, wide_all.index)
-        block = self._reference_block(timebase)
+        block = self._toggle_period(timebase)
 
         components: dict[str, _Estimate] = {}
         subsets: pd.DataFrame | None = None
@@ -763,14 +760,14 @@ class ToggleSpecialistMethod:
             )
             raise ValueError(msg)
 
-    def _reference_block(self, timebase: pd.Timedelta) -> pd.Timedelta:
-        """Return ``reference_block`` after checking it tiles the timebase grid."""
-        block = self.reference_block
+    def _toggle_period(self, timebase: pd.Timedelta) -> pd.Timedelta:
+        """Return ``toggle_period`` after checking it tiles the timebase grid."""
+        block = self.toggle_period
         ratio = block / timebase
         if block <= pd.Timedelta(0) or ratio != round(ratio):
             msg = (
-                f"{self.name}: reference_block {block} must be a positive whole multiple of the timebase "
-                f"{timebase}; a block that does not tile the timebase grid cannot hold whole records."
+                f"{self.name}: toggle_period {block} must be a positive whole multiple of the timebase "
+                f"{timebase}; a period that does not tile the timebase grid cannot hold whole records."
             )
             raise ValueError(msg)
         return block
@@ -813,7 +810,7 @@ class ToggleSpecialistMethod:
     ) -> _Selection:
         """Return the used-row mask after each selection stage, each a bool Series on ``wide.index``.
 
-        ``ids`` are the reference-block ids (``None`` when there are no campaign rows to tile). The
+        ``ids`` are the toggle-cycle ids (``None`` when there are no campaign rows to tile). The
         ``block`` stage drops every row of a block that carries a ``columns.exclude_block`` flag on
         any of the turbines (both legs) or, when ``both_states`` (the block leg), lacks either state.
         """
@@ -853,7 +850,7 @@ class ToggleSpecialistMethod:
     def _selection_accounting(
         self, selection: _Selection, *, rows: ToggleRowSets, power_band: npt.NDArray[np.bool_] | None = None
     ) -> pd.DataFrame:
-        """Rows kept per segment after each stage, warning when a stage treats the segments unevenly.
+        """Rows kept per segment after each stage.
 
         ``kept_fraction`` is relative to the segment's rows; ``stage_kept_fraction`` to the previous
         stage, so it isolates which stage discriminates between segments.
@@ -882,23 +879,7 @@ class ToggleSpecialistMethod:
                     }
                 )
                 previous = n_kept
-        accounting = pd.DataFrame(records)
-
-        by_stage = accounting.pivot(  # noqa: PD010 - one row per (stage, segment), nothing to aggregate
-            index="stage", columns="segment", values="stage_kept_fraction"
-        )
-        imbalance = (by_stage[_BASELINE] - by_stage[_UPGRADED]).abs()
-        for stage, gap in imbalance[imbalance > self.segment_imbalance_warning].items():
-            logger.warning(
-                "%s: stage %r kept %.1f%% of baseline vs %.1f%% of upgraded rows (difference %.1f%% > %.1f%%)",
-                self.name,
-                stage,
-                100 * by_stage.loc[stage, _BASELINE],
-                100 * by_stage.loc[stage, _UPGRADED],
-                100 * gap,
-                100 * self.segment_imbalance_warning,
-            )
-        return accounting
+        return pd.DataFrame(records)
 
     def _filtered_mask(
         self, mi: MethodInput, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
@@ -1083,7 +1064,7 @@ class ToggleSpecialistMethod:
             "active_power_col": self.columns.active_power,
             "availability_col": self.columns.availability,
             "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
-            "reference_block": str(self.reference_block),
+            "toggle_period": str(self.toggle_period),
             "power_band": None if self.power_band is None else list(self.power_band),
             "exclude_block_col": self.columns.exclude_block,
         }
