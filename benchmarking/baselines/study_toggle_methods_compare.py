@@ -61,7 +61,7 @@ from benchmarking.baselines.example_prepost_study import (
     DEFAULT_WTG_NUMBERS,
     MIN_PRE_MONTHS,
 )
-from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_PERIOD
+from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_DATUM, DEFAULT_TOGGLE_PERIOD
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.baselines.toggle_specialist import ToggleSpecialistMethod
@@ -171,6 +171,7 @@ def toggle_study() -> StudyConfig:
         min_pre_months=MIN_PRE_MONTHS,
         campaign_weeks=CAMPAIGN_WEEKS,
         toggle_period=DEFAULT_TOGGLE_PERIOD,
+        toggle_datum=DEFAULT_TOGGLE_DATUM,
         n_replicates=N_REPLICATES,
         seed=SEED,
     )
@@ -203,6 +204,7 @@ def _build_methods(out_dir: Path, *, era5_hourly_df: pd.DataFrame) -> list:
         ToggleSpecialistMethod(
             columns=HOT_COLUMNS,
             toggle_period=DEFAULT_TOGGLE_PERIOD,
+            toggle_datum=DEFAULT_TOGGLE_DATUM,
             conditions=("power",),
             rated_power_kw=HOT_RATED_POWER_KW,
             out_dir=out_dir / "toggle_specialist_runs",

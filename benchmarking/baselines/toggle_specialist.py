@@ -51,10 +51,18 @@ sigma under-covers where the method is biased.
 Each run writes a per-run folder ``toggle_specialist_<test>_<upgradestart>_<lastdate>/``
 (v0-style naming) under ``out_dir`` (a temp dir by default), holding a per-segment data-stats CSV,
 a headline results CSV, the per-leg selection and reference-subset CSVs, and -- when
-``save_plots`` -- three diagnostic plots (a test-vs-reference scatter, a per-segment daily-ratio
-timeseries, and a per-segment used-data-coverage timeseries).
-The rich stats let a human confirm the right data was received and interpreted: the headline uplift
-is re-derivable from the stats CSV as ``rho = used_test_mwh / used_ref_total_mwh`` per segment.
+``save_plots`` -- four diagnostic plots (a test-vs-reference scatter, a per-segment daily-ratio
+timeseries, a per-segment used-data-coverage timeseries, and a pairing-gap histogram).
+The rich stats let a human confirm the right data was received and interpreted: each leg's uplift
+is re-derivable from its rows of the stats CSV as ``rho = used_test_mwh / used_ref_total_mwh`` per
+segment, and the headline is the blend of the legs at the weight the results CSV reports.
+
+**Bin power.** The power bins and ``power_band`` both read one per-row power, chosen by
+``bin_power``. ``"baseline"`` (the default) is what the turbine makes untreated: ``rho_base *
+ref_total`` on the reference leg, the mean of the cycle's baseline rows on the block leg; no
+upgraded row enters it. ``"both_states"`` is the mean of the two states instead (``rho`` averaged
+over the states; the two states' cycle means averaged), for a campaign in which neither state is
+a true baseline. Either way a row's own state cannot move it between bins.
 """
 
 from __future__ import annotations
@@ -64,7 +72,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from itertools import combinations
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -111,8 +119,9 @@ _SUPPORTED_CONDITIONS: tuple[str, ...] = ("power",)
 _REFERENCE_LEG = "sum"
 _BLOCK_LEG = "block_mean"
 _COMBINED = "combined"
-# The subset choice runs 2**n - 1 estimates; warn, rather than refuse, past this many references.
-_MAX_REFS_FOR_SUBSETS = 6
+# The subset choice runs 2**n - 1 estimates; refuse past this many references.
+_MAX_REFS_FOR_SUBSETS = 8
+_BIN_POWERS = ("baseline", "both_states")
 
 logger = logging.getLogger(__name__)
 
@@ -311,13 +320,19 @@ class ToggleSpecialistMethod:
         block length for the block leg, the label permutation and ``columns.exclude_block``. A
         positive whole multiple of the timebase. It is the caller's to state, not inferred, and it
         is independent of ``pairing_max_gap``.
-    :param power_band: when set, ``(lo, hi]`` in kW: each leg keeps only the used rows whose
-        reference-derived baseline power (``rho_label * ref_total``, the power the bins use, so
-        state-neutral) lies in it, and estimates its uplift over those. ``None`` keeps every used row.
+    :param toggle_datum: **required** any boundary of the toggle-cycle grid (the controller's own
+        cycle datum, not when the campaign happened to begin); the cycles of the block leg, the label
+        permutation and ``columns.exclude_block`` are tiled from it. A ``ToggleSchedule`` tiles its
+        cycles from its first timestamp, which must lie on this grid.
+    :param bin_power: the per-row power the bins and ``power_band`` read (see the module docstring):
+        ``"baseline"`` (default) or ``"both_states"``.
+    :param power_band: when set, ``(lo, hi]`` in kW: each leg keeps only the used rows whose bin
+        power lies in it, and estimates its uplift over those. ``None`` keeps every used row.
     """
 
     columns: ColumnSchema
     toggle_period: pd.Timedelta
+    toggle_datum: pd.Timestamp
     name: str = "toggle_specialist"
     out_dir: Path | None = None
     save_plots: bool = False
@@ -328,12 +343,21 @@ class ToggleSpecialistMethod:
     n_resamples: int = 1000
     bootstrap_seed: int = 0
     pairing_max_gap: pd.Timedelta | None = None
+    bin_power: Literal["baseline", "both_states"] = "baseline"
     power_band: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
-        """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
+        """Validate the column roles, ``conditions``, ``bin_power`` and ``power_band``."""
         self.columns.require_roles(("active_power", "availability"))
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
+        if self.bin_power not in _BIN_POWERS:
+            msg = f"{self.name}: bin_power must be one of {_BIN_POWERS}, got {self.bin_power!r}"
+            raise ValueError(msg)
+        if self.power_band is not None:
+            lo, hi = self.power_band
+            if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
+                msg = f"{self.name}: power_band must be finite (lo, hi] with lo < hi, got {self.power_band}"
+                raise ValueError(msg)
         if "power" in self.conditions and self.rated_power_kw is None:
             msg = (
                 f"{self.name}: rated_power_kw is required when 'power' is in conditions — the power bin "
@@ -364,13 +388,14 @@ class ToggleSpecialistMethod:
         self._check_pairing_gap(timebase)
         rows = resolve_toggle(mi.upgrade_timing, wide_all.index)
         block = self._toggle_period(timebase)
+        datum = self._toggle_datum(mi, wide_all.index)
 
         components: dict[str, _Estimate] = {}
         subsets: pd.DataFrame | None = None
         n_refs_available = len(mi.context.references_among(wide_all.columns))
         if n_refs_available:
             components[_REFERENCE_LEG], subsets = self._choose_references(
-                mi, wide_all=wide_all, test=test, timebase=timebase, block=block, rows=rows
+                mi, wide_all=wide_all, test=test, timebase=timebase, block=block, datum=datum, rows=rows
             )
         else:
             # Nothing for the reference leg to work with: the estimate is the block leg alone, which
@@ -382,7 +407,14 @@ class ToggleSpecialistMethod:
                 _BLOCK_LEG,
             )
         components[_BLOCK_LEG] = self._component(
-            mi, mode=_BLOCK_LEG, wide_all=wide_all, test=test, timebase=timebase, block=block, rows=rows
+            mi,
+            mode=_BLOCK_LEG,
+            wide_all=wide_all,
+            test=test,
+            timebase=timebase,
+            block=block,
+            datum=datum,
+            rows=rows,
         )
         est = (
             _combine(components[_REFERENCE_LEG], components[_BLOCK_LEG], upgraded=rows.upgraded, bins=self._bins())
@@ -392,14 +424,20 @@ class ToggleSpecialistMethod:
 
         ref_set = set(est.refs)
         wide = wide_all[[c for c in wide_all.columns if c == test or c in ref_set]]
-        stats = _segment_stats(
-            mi,
-            wide=wide,
-            used=est.used,
-            toggle_rows=rows,
-            ref_total=est.ref_total,
-            timebase=timebase,
-            active_power_col=self.columns.active_power,
+        stats = pd.concat(
+            [
+                _segment_stats(
+                    mi,
+                    wide=wide_all[[c for c in wide_all.columns if c == test or c in set(component.refs)]],
+                    used=component.used,
+                    toggle_rows=rows,
+                    ref_total=component.ref_total,
+                    timebase=timebase,
+                    active_power_col=self.columns.active_power,
+                ).assign(component=mode)
+                for mode, component in components.items()
+            ],
+            ignore_index=True,
         )
         self._write_outputs(
             mi,
@@ -430,6 +468,7 @@ class ToggleSpecialistMethod:
         test: str,
         timebase: pd.Timedelta,
         block: pd.Timedelta | None,
+        datum: pd.Timestamp,
         rows: ToggleRowSets,
         refs: list[str] | None = None,
         with_actual: bool = True,
@@ -453,11 +492,7 @@ class ToggleSpecialistMethod:
         baseline = rows.campaign_baseline
         test_pw = wide[test].to_numpy(dtype=float)
         campaign = baseline | rows.upgraded
-        ids = (
-            block_ids(wide.index, start=wide.index[campaign].min(), block=block)
-            if block is not None and campaign.any()
-            else None
-        )
+        ids = block_ids(wide.index, start=datum, block=block) if block is not None and campaign.any() else None
         selection = self._selection(
             mi, wide=wide, test=test, refs=refs, timebase=timebase, rows=rows, ids=ids, both_states=mode == _BLOCK_LEG
         )
@@ -466,11 +501,19 @@ class ToggleSpecialistMethod:
 
         rho_base = _rho(test_pw, ref_total, used & baseline)
         rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
-        rho_label = _rho_label(rho_base, rho_up)
+        label = self._bin_power(
+            mode=mode,
+            test_pw=test_pw,
+            ref_total=ref_total,
+            baseline=used & baseline,
+            upgraded=used & rows.upgraded,
+            ids=ids,
+            rho_base=rho_base,
+            rho_up=rho_up,
+        )
         in_band = None
         if self.power_band is not None:
             lo, hi = self.power_band
-            label = rho_label * ref_total
             in_band = used & (label > lo) & (label <= hi)
             used = in_band
             rho_base = _rho(test_pw, ref_total, used & baseline)
@@ -483,7 +526,7 @@ class ToggleSpecialistMethod:
             self._conditional_frame(
                 test_pw=test_pw,
                 ref_total=ref_total,
-                rho_label=rho_label,
+                label=label,
                 baseline=used & baseline,
                 upgraded=used & rows.upgraded,
             )
@@ -493,7 +536,7 @@ class ToggleSpecialistMethod:
 
         # Uncertainty runs strictly after the uplift, off the same frozen row selection and bin
         # assignment, and only when there is a finite uplift to qualify.
-        membership = self._cell_membership(rho_label=rho_label, ref_total=ref_total, used=used)
+        membership = self._cell_membership(label=label, used=used)
 
         def _run_bootstrap(up: npt.NDArray[np.bool_], base: npt.NDArray[np.bool_]) -> BootstrapResult:
             return self._bootstrap(
@@ -535,7 +578,7 @@ class ToggleSpecialistMethod:
             selection=selection,
             used=used,
             ref_total=ref_total,
-            label=rho_label * ref_total,
+            label=label,
             rho_base=rho_base,
             rho_up=rho_up,
             uplift=uplift,
@@ -555,6 +598,7 @@ class ToggleSpecialistMethod:
         test: str,
         timebase: pd.Timedelta,
         block: pd.Timedelta | None,
+        datum: pd.Timestamp,
         rows: ToggleRowSets,
     ) -> tuple[_Estimate, pd.DataFrame | None]:
         """Run the ``sum`` leg on every non-empty reference subset; return the smallest-sigma one.
@@ -566,12 +610,11 @@ class ToggleSpecialistMethod:
         """
         refs_all = mi.context.references_among(wide_all.columns)
         if len(refs_all) > _MAX_REFS_FOR_SUBSETS:
-            logger.warning(
-                "%s: the reference-subset choice over %d references runs %d estimates",
-                self.name,
-                len(refs_all),
-                2 ** len(refs_all) - 1,
+            msg = (
+                f"{self.name}: {len(refs_all)} references would need {2 ** len(refs_all) - 1} subset estimates; "
+                f"pass at most {_MAX_REFS_FOR_SUBSETS} (the nearest or best-correlated) references"
             )
+            raise ValueError(msg)
         subsets = [list(c) for k in range(1, len(refs_all) + 1) for c in combinations(refs_all, k)]
         estimates = [
             self._component(
@@ -581,6 +624,7 @@ class ToggleSpecialistMethod:
                 test=test,
                 timebase=timebase,
                 block=block,
+                datum=datum,
                 rows=rows,
                 refs=refs,
                 with_actual=False,
@@ -600,6 +644,7 @@ class ToggleSpecialistMethod:
             test=test,
             timebase=timebase,
             block=block,
+            datum=datum,
             rows=rows,
             refs=subsets[best],
         )
@@ -641,7 +686,7 @@ class ToggleSpecialistMethod:
             np.where(rows.upgraded, _UPGRADED, np.where(rows.campaign_baseline, _BASELINE, _EXCLUDED))
         )
 
-        # The bin label is the same reference-derived baseline power the uplift binned on, so a row
+        # The bin label is the same bin power the uplift binned on, so a row
         # cannot sit in one bin here and another there. Outside the outer edges pd.cut gives NaN,
         # which is carried through as "this row belongs to no bin" rather than clipped to an edge.
         if "power" in self.conditions and np.isfinite(label).any():
@@ -653,8 +698,7 @@ class ToggleSpecialistMethod:
     def _cell_membership(
         self,
         *,
-        rho_label: float,
-        ref_total: npt.NDArray[np.float64],
+        label: npt.NDArray[np.float64],
         used: npt.NDArray[np.bool_],
     ) -> dict[str, npt.NDArray[np.bool_]]:
         """Which **used** records belong to each bootstrap cell: the headline, plus each power bin.
@@ -664,11 +708,11 @@ class ToggleSpecialistMethod:
         """
         used_idx = np.flatnonzero(used)
         membership: dict[str, npt.NDArray[np.bool_]] = {_OVERALL: np.ones(len(used_idx), dtype=bool)}
-        if "power" not in self.conditions or not np.isfinite(rho_label):
+        if "power" not in self.conditions or not np.isfinite(label[used_idx]).any():
             return membership
         assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
         bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
-        assigned = pd.cut(rho_label * ref_total[used_idx], bins=bins)
+        assigned = pd.cut(label[used_idx], bins=bins)
         for category in assigned.categories:
             membership[str(category)] = np.asarray(assigned == category)
         return membership
@@ -713,16 +757,15 @@ class ToggleSpecialistMethod:
         *,
         test_pw: npt.NDArray[np.float64],
         ref_total: npt.NDArray[np.float64],
-        rho_label: float,
+        label: npt.NDArray[np.float64],
         baseline: npt.NDArray[np.bool_],
         upgraded: npt.NDArray[np.bool_],
     ) -> pd.DataFrame:
-        """Per-power-bin uplift: ``rho_up(b) / rho_base(b) - 1``, on bins of the mean operating point.
+        """Per-power-bin uplift: ``rho_up(b) / rho_base(b) - 1``, on bins of ``label``.
 
         Two decisions carry this, and both are needed:
 
-        **The bin label is** ``rho_label * ref_total`` (see :func:`_rho_label`): reference-derived and
-        state-neutral, so neither the upgrade nor which state is called baseline can move a row
+        **The bin label is the bin power** (:meth:`_bin_power`): a row's own state cannot move it
         between bins, and it is on the test turbine's own kW scale.
 
         **The denominator is the per-bin** ``rho_base(b)``, not the global one: the test-to-reference
@@ -734,7 +777,6 @@ class ToggleSpecialistMethod:
         """
         assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
         bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
-        label = rho_label * ref_total
         counterfactual = _per_bin_counterfactual(
             label=label, test_pw=test_pw, ref_total=ref_total, baseline=baseline, bins=bins
         )
@@ -771,6 +813,50 @@ class ToggleSpecialistMethod:
             )
             raise ValueError(msg)
         return block
+
+    def _toggle_datum(self, mi: MethodInput, index: pd.DatetimeIndex) -> pd.Timestamp:
+        """Return ``toggle_datum`` after checking it is comparable with ``index`` and fits a ``ToggleSchedule``."""
+        datum = pd.Timestamp(self.toggle_datum)
+        if (datum.tz is None) != (index.tz is None):
+            msg = f"{self.name}: toggle_datum {datum} and the data index must both be tz-aware or both naive"
+            raise ValueError(msg)
+        timing = mi.upgrade_timing
+        if isinstance(timing, ToggleSchedule) and len(index):
+            first = timing.start if timing.start is not None else index.min()
+            if (pd.Timestamp(first) - datum) % self.toggle_period != pd.Timedelta(0):
+                msg = (
+                    f"{self.name}: the ToggleSchedule tiles its cycles from {first}, which is not on the "
+                    f"toggle_datum {datum} grid of {self.toggle_period}"
+                )
+                raise ValueError(msg)
+        return datum
+
+    def _bin_power(
+        self,
+        *,
+        mode: str,
+        test_pw: npt.NDArray[np.float64],
+        ref_total: npt.NDArray[np.float64],
+        baseline: npt.NDArray[np.bool_],
+        upgraded: npt.NDArray[np.bool_],
+        ids: npt.NDArray[np.int64] | None,
+        rho_base: float,
+        rho_up: float,
+    ) -> npt.NDArray[np.float64]:
+        """Per row, the power the bins and ``power_band`` read (``bin_power``); NaN where undefined."""
+        if mode == _REFERENCE_LEG:
+            scale = rho_base if self.bin_power == "baseline" else 0.5 * (rho_base + rho_up)
+            return scale * ref_total
+        if ids is None:
+            return np.full(len(test_pw), np.nan)
+
+        def _cycle_mean(mask: npt.NDArray[np.bool_]) -> npt.NDArray[np.float64]:
+            n = pd.Series(mask.astype(float)).groupby(ids).sum()
+            return _per_row(ids, _block_sum(ids, test_pw, mask) / n[n > 0])
+
+        if self.bin_power == "baseline":
+            return _cycle_mean(baseline)
+        return 0.5 * (_cycle_mean(baseline) + _cycle_mean(upgraded))
 
     def _reference_total(
         self,
@@ -970,10 +1056,11 @@ class ToggleSpecialistMethod:
                     "n_refs": len(est.refs),
                     "n_refs_available": len(est.refs) if n_refs_available is None else n_refs_available,
                     "refs_used": ";".join(est.refs),
-                    "ratio_baseline": est.rho_base,
-                    "ratio_upgraded": est.rho_up,
                     "uplift_frc": est.uplift,
                     "uplift_sigma_frc": est.sigma_overall,
+                    **{f"ratio_baseline_{mode}": component.rho_base for mode, component in components.items()},
+                    **{f"ratio_upgraded_{mode}": component.rho_up for mode, component in components.items()},
+                    f"weight_{_REFERENCE_LEG}": _overall_weight(est, components),
                     **{f"uplift_frc_{mode}": component.uplift for mode, component in components.items()},
                     **{f"uplift_sigma_frc_{mode}": component.sigma_overall for mode, component in components.items()},
                     **{f"decision_sigma_frc_{mode}": c.decision_sigma for mode, c in components.items()},
@@ -998,14 +1085,16 @@ class ToggleSpecialistMethod:
         ).to_csv(run_dir / f"{run_name}_selection_{ts}.csv", index=False)
 
         if self.save_plots:
+            # Scatter and ratio plots of one leg's own rows against its own reference.
+            shown = components.get(_REFERENCE_LEG, components[_BLOCK_LEG])
             _save_plots(
                 run_dir / "plots",
                 wide=wide,
                 mi=mi,
                 test=mi.test_wtg,
-                used=est.used,
-                ref_total=est.ref_total,
-                reference_mode=est.mode,
+                used=shown.used,
+                ref_total=shown.ref_total,
+                reference_mode=shown.mode,
                 timebase=timebase,
                 active_power_col=self.columns.active_power,
             )
@@ -1065,6 +1154,8 @@ class ToggleSpecialistMethod:
             "availability_col": self.columns.availability,
             "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
             "toggle_period": str(self.toggle_period),
+            "toggle_datum": str(self.toggle_datum),
+            "bin_power": self.bin_power,
             "power_band": None if self.power_band is None else list(self.power_band),
             "exclude_block_col": self.columns.exclude_block,
         }
@@ -1259,13 +1350,15 @@ def _rho(test_pw: npt.NDArray[np.float64], ref_total: npt.NDArray[np.float64], m
     return float(test_pw[mask].sum() / denom)
 
 
-def _rho_label(rho_base: float, rho_up: float) -> float:
-    """Return the test-to-reference ratio used to *label* bins: the mean of the two states.
-
-    State-neutral by construction, so relabelling which state is the baseline cannot move a row
-    between bins. Still a campaign-level scalar, so the upgrade cannot move a row either.
-    """
-    return 0.5 * (rho_base + rho_up)
+def _overall_weight(est: _Estimate, components: dict[str, _Estimate]) -> float:
+    """Return the headline blend's weight on the reference leg: 1 with that leg alone, 0 without it."""
+    if _REFERENCE_LEG not in components:
+        return 0.0
+    if _BLOCK_LEG not in components:
+        return 1.0
+    d = est.diagnostics
+    row = d[(d["component"] == _COMBINED) & (d["condition_bin"] == _OVERALL)]
+    return float(row[f"weight_{_REFERENCE_LEG}"].iloc[0]) if len(row) else float("nan")
 
 
 def _segment_stats(

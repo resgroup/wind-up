@@ -57,6 +57,8 @@ def carried_forward_methods(
             ToggleSpecialistMethod(
                 columns=HOT_COLUMNS,
                 toggle_period=spec.upgrade_timing.period,
+                # a declared campaign's schedule tiles its cycles from its start
+                toggle_datum=spec.upgrade_timing.start,
                 out_dir=out_dir / "toggle_specialist",
                 save_plots=True,
                 conditions=("power",),

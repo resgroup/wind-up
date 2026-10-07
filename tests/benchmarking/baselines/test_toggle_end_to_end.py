@@ -36,6 +36,7 @@ def test_naive_recovers_toggle_uplift(tmp_path) -> None:  # noqa: ANN001
         min_pre_months=24,
         campaign_months=[6],
         toggle_period=pd.Timedelta(minutes=40),
+        toggle_datum=pd.Timestamp("1970-01-01", tz="UTC"),
         n_replicates=1,
         seed=0,
     )
