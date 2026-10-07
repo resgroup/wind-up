@@ -12,6 +12,122 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF28 — The whole-farm v0 probe: **the power model's references do not combine to zero (+0.40 pp on clean references) and v0's power-only path does (−0.03 pp over 336 pairs)**; v0's anemometer path is 0.7 pp low because every Hill of Towie turbine's own power curve dropped 2 to 6 % between the two winters; and subtracting a pool's own reference reading corrects a level, not a turbine (correlation 0.04)
+
+*2026-10-06 to 2026-10-07. `uv run python -m benchmarking.campaigns.v0_probe hot` at `0a887c9`
+(the v0 cache fix of [CF27](#cf27--the-level-probe-and-the-v0-probe-missing-power-reference-rows-are-the-largest-single-cause-of-the-placebo-level-one-bad-reference-is-the-next-and-v0-is-not-the-level-free-yardstick-c3-assumed--on-identical-five-turbine-pools-its-headline-path-reads-03-to-06-pp-the-reference-anemometer-its-power-only-path-sits-07-pp-below-the-power-model-pair-for-pair-with-the-same-ordering-and-the-aipw-correction-fails-as-a-diagnostic) §7),
+from scratch, in series: started 2026-10-06 16:47, finished 2026-10-07 08:04, **all 21 turbines,
+no failures**. Same design as CF27 (b): each Hill of Towie turbine with its 4 nearest neighbours
+as the only candidates, 12 months of baseline into a 6-month campaign changing over 2018-09-01,
+nothing injected; the power model (screen off, per-reference readings on, each reference read
+against the other three with the test excluded) and wind-up v0 (`V0BinnedMethod`: the matching
+6 months a year earlier as pre period, one-year detrend, long-term distribution off) on exactly
+the same rows. **The season-matched power-model arm that CF27 asked for was not in the driver**,
+so the season-or-asymmetry question is still open (§6). T13's real AeroUp was September 2021, so
+every reading here has a truth of 0. Outputs: `v0_probe/hot_20261006_164724/` (`summary.csv`,
+`pairs.csv`, each turbine's v0 `*_results_per_test_ref_*.csv`).*
+
+**1. The whole farm, both methods (pp, truth 0).** "v0 power-only" is the mean of the test
+turbine's four power-only pair readings; "pm refs vs pool" is the mean of the four references'
+readings against the rest of the pool; "v0 ref pairs" is the mean of the power-only readings
+between the references.
+
+| test | refs | power model | v0 headline | v0 power-only | pm refs vs pool | v0 ref pairs (power-only) |
+|---|---|---|---|---|---|---|
+| T01 | T03 T02 T04 T05 | +0.17 | −0.57 | −0.03 | +0.20 | −0.05 |
+| T02 | T01 T05 T04 T03 | −0.14 | −0.12 | +0.71 | +0.33 | −0.11 |
+| T03 | T01 T07 T04 T05 | −0.26 | −0.94 | −0.63 | +0.47 | −0.08 |
+| T04 | T08 T03 T01 T05 | +0.20 | −0.47 | +0.05 | +0.23 | −0.17 |
+| T05 | T02 T04 T06 T01 | +1.33 | −0.41 | +0.15 | +0.45 | −0.12 |
+| T06 | T05 T15 T10 T08 | +0.08 | −1.23 | +0.01 | +0.58 | −0.07 |
+| T07 | T03 T09 T04 T08 | +0.22 | −0.64 | −0.39 | +0.25 | −0.08 |
+| T08 | T04 T10 T07 T09 | +0.19 | −1.42 | −0.71 | +0.47 | +0.00 |
+| T09 | T07 T11 T08 T12 | +1.02 | −0.16 | +0.47 | +1.08 | −0.05 |
+| T10 | T08 T06 T12 T09 | +0.56 | −0.37 | +1.50 | +0.17 | +0.17 |
+| T11 | T14 T09 T12 T13 | +0.18 | −0.13 | −0.15 | +0.63 | +0.08 |
+| T12 | T14 T11 T09 T10 | **+2.52** | +0.17 | +0.53 | +0.87 | +0.30 |
+| T13 | T14 T11 T12 T09 | **+3.47** | −1.76 | −1.66 | +0.92 | −0.00 |
+| T14 | T12 T13 T11 T09 | −0.37 | −0.51 | −0.31 | +1.10 | +0.02 |
+| T15 | T06 T10 T16 T05 | +1.01 | −0.99 | +0.02 | +0.86 | +0.00 |
+| T16 | T17 T18 T19 T15 | −0.15 | −0.30 | +0.66 | +1.25 | −0.09 |
+| T17 | T16 T19 T18 T20 | **+3.81** | +0.20 | +1.26 | +0.35 | −0.07 |
+| T18 | T17 T19 T21 T16 | +0.47 | −1.50 | −0.42 | +1.12 | +0.16 |
+| T19 | T20 T17 T21 T18 | +0.18 | +0.00 | +0.09 | +1.42 | −0.05 |
+| T20 | T19 T21 T17 T18 | +0.27 | −1.57 | −1.10 | +1.34 | −0.14 |
+| T21 | T20 T19 T18 T17 | −0.10 | −1.34 | −1.11 | +0.83 | −0.14 |
+| **mean, all 21** | | **+0.70** | **−0.67** | **−0.05** | +0.71 | −0.03 |
+| **mean excl T13, T17** | | **+0.39** (sd 0.68) | **−0.66** (sd 0.55) | **−0.03** (sd 0.64) | | |
+
+The per-turbine spread is the same for every path (sd 0.55 to 0.68): it is the relative drift
+of CF27 §3, and no path here is more precise than another. What separates them is the level.
+
+**2. The power model's references do not combine to zero; v0's power-only path's do.** The
+84 power-model readings of a reference against the rest of its pool average **+0.71 pp**
+(median +0.41). With T17 (+4.06, sd 0.24 over 5 pools: the bad reference of CF13 and CF27 §2)
+and T12 (+1.95: the outage rows of §4) taken out, the remaining 74 still average **+0.40 pp**
+(median +0.33). That is the estimator's level on turbines that did nothing, read against
+turbines that did nothing. v0's power-only path over the same pools reads **−0.03 pp** on 336
+reference pairs (−0.05 without T13 and T17 as the read turbine); its reversed estimate reads
+−0.07, the two correlate 0.93 pair for pair and differ by 0.27 pp in absolute mean. An estimator
+that fits each period on the same reference-power grid and drops bins either period lacks is
+symmetric and level-free on this farm, now measured over the whole farm rather than four pools.
+
+**3. v0's anemometer path is low by a farm-wide 0.7 pp, and the reason is in every turbine's own
+power curve.** Headline minus power-only is **−0.71 ± 0.51 pp** over the 336 pairs (CF27 had
+−0.64 ± 0.28 on 64). v0's own diagnostics say why: between the two winters **every turbine's
+power curve against its own anemometer reads lower**, by −0.5 % (T14) to −6.1 % (T15) and
+typically −4 to −5 %, with wind-speed drift against the reanalysis of 0.24 to 0.63 m/s on all
+21, generator speed −0.1 to −1.6 % and pitch −0.07 to −0.23° (T14 +0.07°). The per-pair gap
+correlates only −0.13 with the reference's own drift figure: the shift is farm-wide, not a few
+bad anemometers. Whether it is the anemometers, the nacelle transfer function or air density is
+not established and does not matter for the method: **no headline path may use a reference
+anemometer** (CF11's rule, now with a whole-farm case behind it), and any comparison against v0
+must quote its power-only path. `V0BinnedMethod`'s headline, as the probe reads it today, is the
+anemometer path.
+
+**4. The two largest power-model misses are the outage rows again.** T13 (+3.47) and T12
+(+2.52) are the two pools that hold both T14 and T11, the references that were off in December
+2018 (CF27 §1); T09 (+1.02) holds T11 and T12. v0 drops those rows pair by pair and reads T12
++0.17 and T13 **−1.76 on the anemometer path, −1.66 on the power path, and −1.75 as a reference
+in ten other pairs**: T13 genuinely moved against its neighbours in this window, which with four
+references nothing can tell from an upgrade. D4 stays the first change.
+
+**5. Subtracting the pool's own reference reading (B1 as first drafted) corrects a level, not a
+turbine.** Excluding T13 and T17 as test turbines:
+
+| estimate | mean | sd | rmse |
+|---|---|---|---|
+| power model, as read | +0.39 | 0.68 | 0.77 |
+| minus its pool's mean reference reading | −0.33 | 0.78 | 0.83 |
+| minus its pool's median reference reading | −0.11 | 0.72 | 0.71 |
+| minus its pool's mean with T17 screened out of the pool readings | −0.08 | 0.64 | 0.63 |
+| v0 anemometer path, as read | −0.66 | 0.55 | 0.85 |
+| minus its pairs' median | +0.05 | 0.50 | 0.49 |
+| v0 power-only path, as read | −0.03 | 0.64 | 0.63 |
+| minus its pairs' mean | −0.01 | 0.61 | 0.59 |
+
+A power-model test reading correlates **0.04** with its own four references' pool reading
+(v0 power-only 0.36, v0 anemometer 0.25), so the pool reading carries the farm-wide level plus
+noise and nothing about that test turbine. Per-pool subtraction with four references therefore
+adds noise, and over-corrects the five pools that hold T17 (T16 −1.40, T19 −1.24, T20 −1.07) unless
+the screen has run. Where the pool is clean (the 12 pools holding neither T13 nor T17) it does what a
+level correction should: power model +0.58 → +0.08 (rmse 0.95 → 0.63), v0 anemometer −0.60 →
++0.20 (rmse 0.75 → 0.45), v0 power-only +0.14 (rmse 0.60) unchanged. The right form of B1 is a
+**farm-wide** reference level — every screened reference's reading, pooled over many readings,
+median, shrunk — subtracted from each test, with the screen on; not a per-pool contrast.
+
+**6. What this decides for C3.** The requirement "the combined reference reading is 0.0" is met
+today by one estimator in hand, v0's power-only path, and not by the power model (+0.40 on clean
+references) nor by v0's headline (−0.66). The question CF27 left open — whether the power model's
+level is season composition (12-month baseline against a 6-month post; v0's pre period is the
+matching months) or the asymmetry of an observed sum against a modelled one — is **still open**,
+because the season-matched arm was not in this rerun; it is a power-model-only run on these
+pools and is the cheapest next experiment. D4 is confirmed as the first change and this run's
+pools are its before-picture. B1 is reshaped to a farm-wide level. The v0 yardstick becomes the
+power-only path.
+
+---
+
 ## CF27 — The level probe and the v0 probe: **missing power-reference rows are the largest single cause of the placebo level**, one bad reference is the next, and **v0 is not the level-free yardstick C3 assumed** — on identical five-turbine pools its headline path reads **−0.3 to −0.6 pp** (the reference anemometer), its power-only path sits **0.7 pp below** the power model pair for pair with the same ordering, and the AIPW correction fails as a diagnostic
 
 *2026-10-02 to 2026-10-06. Two drivers. (a) `uv run python -m benchmarking.campaigns.level_probe all`

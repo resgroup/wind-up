@@ -310,7 +310,7 @@ prepost split.
 **Re-verifies:** the shared northing step (R1) and the reference-validity screen (R3),
 now in-context on a realistic prepost campaign.
 
-### Status and next steps (2026-10-06)
+### Status and next steps (2026-10-07)
 
 The prepost campaign matrix (`benchmarking/baselines/study_prepost_campaign_matrix.py`) runs at a
 size: `small` (38 cells, ~33 min on 16 workers) or `big`. Each study writes a directory to download
@@ -368,6 +368,26 @@ power model pair for pair (correlation 0.63) and sits a near-constant 0.7 pp bel
 that offset is season composition (v0's pre period is the matching six months a year earlier; CF24
 says balancing removes two thirds of the level) or the estimator's asymmetry is still open.
 
+**Plan refresh (2026-10-07): the whole-farm probe is in, and it sharpens the requirement.**
+[CF28](findings_campaigns.md) ran all 21 Hill of Towie turbines with their 4 nearest references
+and both methods on the same rows. **The power model's references do not combine to zero**: a
+reference read against the rest of its pool averages +0.71 pp, and still **+0.40 pp** with the
+bad reference (T17) and the outage-row pool (T12) removed — the estimator's own level on turbines
+that did nothing. **v0's power-only path does combine to zero** (−0.03 pp over 336 reference
+pairs, reversed −0.07, symmetric pair for pair), while v0's headline path is −0.66 pp because
+every turbine's own-anemometer power curve dropped 2 to 6 % between the two winters (so the
+reference anemometer stays out of every headline path, and v0 comparisons quote its power-only
+path). Subtracting a pool's own reference reading corrects a farm-wide level, not that turbine
+(a test reading correlates 0.04 with its pool's reading), and it over-corrects wherever T17 sits
+unscreened. The two largest power-model misses (T13 +3.47, T12 +2.52) are again the pools holding
+the December 2018 outages. The season-matched power-model arm was not in the rerun, so whether the
++0.40 is season composition or estimator asymmetry is still open. The per-turbine spread (sd 0.55
+to 0.68 pp on four references) is the same on every path: only larger pools reduce it.
+
+*The requirement, restated:* **the combined reference reading of a campaign, produced by the
+same estimator and path as the test headline with the screen on, reads 0.0 within ±0.1 pp, and
+getting it there costs the test turbines no accuracy.** Today only v0's power-only path meets it.
+
 *The plan, in order:*
 
 1. **Reference outage policy (D4).** Drop every row on which any power reference lacks valid data,
@@ -375,30 +395,38 @@ says balancing removes two thirds of the level) or the estimator's asymmetry is 
    T14, where `excl_booleans` and `excl_nan` must agree and the exclusion arms must land on the
    main arm's −0.27 pp; Hill of Towie T12 and T13 on the reference arm, which must fall to the farm
    mean. Acceptance: the two channels agree to 0.02 pp, the farm mean on the Hill of Towie arm
-   moves +0.60 → about +0.37 pp.
-2. **Close the reference-reading leak (D1)** (CF25 §1, [CF26](findings_campaigns.md) §7): replace
+   moves +0.60 → about +0.37 pp. **The v0 probe's pools are the before-picture**
+   ([CF28](findings_campaigns.md) §1): after D4, rerun the power model alone on them and the
+   references-vs-pool median on clean references must sit near 0 with T12 and T13 back at the farm
+   mean.
+2. **The season-matched power-model arm, on the probe's pools, power model only.** Baseline = the
+   6 calendar months matching the post, one year earlier (what v0 uses); `conditions=()`,
+   per-reference readings on, screen off as before; about 10 to 15 minutes a turbine, one evening
+   split across processes. Placebo pools do not need the leak fix first. It decides step 4 against
+   v0's power-only path (−0.03 pp on the reference pairs). At the same time make the probe's v0
+   yardstick the **power-only path** and report both paths, so the anemometer never confounds the
+   comparison again.
+3. **Close the reference-reading leak (D1)** (CF25 §1, [CF26](findings_campaigns.md) §7): replace
    the 5 %-of-rated waking threshold on upgraded and power-free turbines with an indicator a
    multiplicative change cannot flip. Acceptance: `leak_check.csv` ≈ 0. Needed before anything
-   leans on the reference readings.
-3. **Rerun the v0 probe, whole farm, with a season-matched arm.** The v0 cache is fixed (CF27 §7);
-   rerun from scratch, not `--resume`, because T09 and T16 ran against a part-filled cache. Add a
-   power-model arm whose baseline is the 6 calendar months matching the post, one year earlier
-   (what v0 uses), so the probe reads three things on the same rows: the power model (12-month
-   baseline), the power model (season-matched), and v0's power-only path. About 25 min per turbine
-   after the first; split `--turbines` across processes to finish in an evening. This decides
-   step 4.
-4. **The next estimator change, chosen by step 3.** If the season-matched arm closes most of the
-   0.7 pp gap to v0's power path: **prefer a pre span covering the post's calendar months (C1)** in
-   the planner — a ranking criterion, soft, with a documented cost in baseline length — and
-   optionally weight the baseline to the post's month mix (C2). If it does not: **common-support
-   trimming (A3)** on coarsened cells (direction sector × operating-reference pattern × wind band),
-   dropping post rows the baseline does not cover from both sides. A2 (AIPW), A1 (two-model ratio),
-   B2 (relative outcome) and E1 (linear base) are parked: measured, no gain on this data.
-5. **Use the reference contrast (B1) and prefer large pools.** Correct the headline by the pooled
-   reference reading shrunk toward zero by the reference spread; report the farm-level reference
-   aggregate the documentation asks for. Both methods' test readings track their own references'
-   readings (CF27 §8), which is what this needs. Keep the reference screen on (T17); raise the
-   planner's preference for more power references, since the level falls with k.
+   leans on the reference readings of a campaign with a real upgrade in it.
+4. **The next estimator change, chosen by step 2.** If the season-matched arm brings the
+   clean-reference level from +0.40 pp to within 0.1 pp of v0's power-only path: **prefer a pre span
+   covering the post's calendar months (C1)** in the planner — a ranking criterion, soft, with a
+   documented cost in baseline length — and optionally weight the baseline to the post's month mix
+   (C2). If it does not: **common-support trimming (A3)** on coarsened cells (direction sector ×
+   operating-reference pattern × wind band), dropping post rows the baseline does not cover from
+   both sides — the model-side analogue of v0's shared bins, which is what makes its power path
+   symmetric. A2 (AIPW), A1 (two-model ratio), B2 (relative outcome) and E1 (linear base) stay
+   parked: measured, no gain on this data.
+5. **Use the reference contrast (B1) as a farm-wide level, and prefer large pools.** Pool every
+   screened reference's reading across the campaign (or the farm), take a median, shrink it toward
+   zero by the reference spread, and subtract that from each test reading; report it as the
+   farm-level reference aggregate the documentation asks for. **Not a per-pool contrast**: with four
+   references it adds noise and corrects nothing specific to the test turbine ([CF28](findings_campaigns.md) §5),
+   and it only behaves once the screen has removed the T17s. Keep the reference screen on; raise the
+   planner's preference for more power references, since the level falls with k and the
+   per-turbine spread only falls with k.
 6. **Kelmarsh's data before Kelmarsh's placebos.** Its common-mode +0.7 to +1.1 pp is in every
    estimator and in the all-references-normal rows, and the prime suspect is a SCADA change around
    September 2017 (CF27 §5). Read the Zenodo record and the channel inventory across that date
@@ -409,9 +437,11 @@ says balancing removes two thirds of the level) or the estimator's asymmetry is 
    once the level is fixed.
 
 *Done when:* on the small matrix the placebo test-turbine mean is within ±0.1 pp and its sd does
-not grow with the post length; each cell's pooled reference reading is within ±0.1 pp;
-`leak_check.csv` ≈ 0; the two exclusion arms agree to better than 0.02 pp; and the whole-farm v0
-probe shows the power model within 0.2 pp of v0's power-only path on the reference pairs.
+not grow with the post length; **each cell's combined reference reading, computed by the headline
+estimator and path with the screen on, is within ±0.1 pp**; `leak_check.csv` ≈ 0; the two exclusion
+arms agree to better than 0.02 pp; and on the v0 probe's pools the power model's references-vs-pool
+median on clean references is within 0.1 pp of v0's power-only reference pairs, without the
+test-turbine sd growing.
 
 **Before any big run,** independently of the above:
 
