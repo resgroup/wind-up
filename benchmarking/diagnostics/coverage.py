@@ -79,7 +79,7 @@ def plot_input_timeline(ctx: DiagnosticContext) -> Path:
     return path
 
 
-def _weekly_coverage(present: pd.Series, *, timebase: pd.Timedelta) -> pd.Series:
+def weekly_coverage(present: pd.Series, *, timebase: pd.Timedelta) -> pd.Series:
     """Weekly fraction (%) of expected timebase slots for which ``present`` is True."""
     expected = pd.Timedelta(_COVERAGE_BUCKET) / timebase
     return 100.0 * present.astype(float).resample(_COVERAGE_BUCKET).sum() / expected
@@ -91,13 +91,13 @@ def plot_input_coverage(ctx: DiagnosticContext) -> Path:
     shade_segments(ax, ctx)
     for position, turbine in enumerate([ctx.test_wtg, *ctx.references()]):
         present = pd.Series(ctx.turbine_series(turbine, ctx.columns.active_power).notna().to_numpy(), index=ctx.index)
-        weekly = _weekly_coverage(present, timebase=ctx.timebase)
+        weekly = weekly_coverage(present, timebase=ctx.timebase)
         label = f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}"
         colour, dash = series_style(position)
         ax.plot(weekly.index.to_numpy(), weekly.to_numpy(), linewidth=1.0, label=label, color=colour, linestyle=dash)
     if ctx.era5_df is not None and ERA5_WS_COL in ctx.era5_df.columns:
         era5_present = pd.Series(ctx.era5_df[ERA5_WS_COL].reindex(ctx.index).notna().to_numpy(), index=ctx.index)
-        weekly = _weekly_coverage(era5_present, timebase=ctx.timebase)
+        weekly = weekly_coverage(era5_present, timebase=ctx.timebase)
         ax.plot(weekly.index.to_numpy(), weekly.to_numpy(), linewidth=1.0, linestyle="--", label=ctx.era5_label)
     ax.set_ylim(0, 105)
     ax.set_xlabel("date")
@@ -117,15 +117,15 @@ def plot_filter_coverage(ctx: DiagnosticContext) -> Path:
     fig, ax = plt.subplots(figsize=(12, 6))
     shade_segments(ax, ctx)
     ax.plot(
-        _weekly_coverage(raw, timebase=ctx.timebase).index.to_numpy(),
-        _weekly_coverage(raw, timebase=ctx.timebase).to_numpy(),
+        weekly_coverage(raw, timebase=ctx.timebase).index.to_numpy(),
+        weekly_coverage(raw, timebase=ctx.timebase).to_numpy(),
         linewidth=1.2,
         color="C0",
         label=f"{ctx.columns.active_power} present (raw)",
     )
     ax.plot(
-        _weekly_coverage(used, timebase=ctx.timebase).index.to_numpy(),
-        _weekly_coverage(used, timebase=ctx.timebase).to_numpy(),
+        weekly_coverage(used, timebase=ctx.timebase).index.to_numpy(),
+        weekly_coverage(used, timebase=ctx.timebase).to_numpy(),
         linewidth=1.2,
         color="C3",
         label="used (after filter)",

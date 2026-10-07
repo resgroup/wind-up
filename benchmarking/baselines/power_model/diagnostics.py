@@ -237,13 +237,18 @@ def _r2_mae(actual: np.ndarray, predicted: np.ndarray) -> tuple[float, float]:
     return r2, float(np.mean(np.abs(resid)))
 
 
+def csv_name(kind: str, *, run_name: str, ts: str) -> str:
+    """Return a diagnostics CSV's file name: ``<run_name>_<kind>_<ts>.csv``, or ``<kind>.csv`` with no run name."""
+    return f"{run_name}_{kind}_{ts}.csv" if run_name else f"{kind}.csv"
+
+
 def write_csvs(run_dir: Path, run_name: str, ts: str, data: DiagnosticData) -> pd.DataFrame:
     """Write the data-stats, results, feature-importance and feature-catalogue CSVs; return importance."""
-    segment_stats(data).to_csv(run_dir / f"{run_name}_data_stats_{ts}.csv", index=False)
-    results_row(data).to_csv(run_dir / f"{run_name}_results_{ts}.csv", index=False)
+    segment_stats(data).to_csv(run_dir / csv_name("data_stats", run_name=run_name, ts=ts), index=False)
+    results_row(data).to_csv(run_dir / csv_name("results", run_name=run_name, ts=ts), index=False)
     importance = feature_importance_long(data)
-    importance.to_csv(run_dir / f"{run_name}_feature_importance_{ts}.csv", index=False)
-    feature_catalogue(data).to_csv(run_dir / f"{run_name}_feature_catalogue_{ts}.csv", index=False)
+    importance.to_csv(run_dir / csv_name("feature_importance", run_name=run_name, ts=ts), index=False)
+    feature_catalogue(data).to_csv(run_dir / csv_name("feature_catalogue", run_name=run_name, ts=ts), index=False)
     return importance
 
 
@@ -264,9 +269,9 @@ def write_conditional_csvs(
     per-cell counts. Together they show, for one case, how much conditional shrinkage was cancelled and
     how healthy the matching was. ``run_dir`` is the run's ``conditional/`` subfolder.
     """
-    pd.DataFrame([overall]).to_csv(run_dir / f"{run_name}_conditional_overall_{ts}.csv", index=False)
+    pd.DataFrame([overall]).to_csv(run_dir / csv_name("conditional_overall", run_name=run_name, ts=ts), index=False)
     if per_bin is not None:
-        per_bin.to_csv(run_dir / f"{run_name}_conditional_by_bin_{ts}.csv", index=False)
+        per_bin.to_csv(run_dir / csv_name("conditional_by_bin", run_name=run_name, ts=ts), index=False)
     balance = {
         "n_baseline_in": match.n_baseline_in,
         "n_upgraded_in": match.n_upgraded_in,
@@ -276,8 +281,8 @@ def write_conditional_csvs(
         "n_cells_two_sided": match.n_cells_two_sided,
         "n_cells_one_sided": match.n_cells_one_sided,
     }
-    pd.DataFrame([balance]).to_csv(run_dir / f"{run_name}_cem_balance_{ts}.csv", index=False)
-    match.per_cell.to_csv(run_dir / f"{run_name}_cem_cells_{ts}.csv", index=False)
+    pd.DataFrame([balance]).to_csv(run_dir / csv_name("cem_balance", run_name=run_name, ts=ts), index=False)
+    match.per_cell.to_csv(run_dir / csv_name("cem_cells", run_name=run_name, ts=ts), index=False)
 
 
 # covered (measured two-direction shape) vs imputed bins on the uplift panel.

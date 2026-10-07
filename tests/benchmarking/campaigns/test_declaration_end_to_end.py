@@ -112,8 +112,13 @@ northing:
 
 
 def _write_campaign(tmp_path: Path, *, mode: str) -> Path:
-    """Write a complete campaign folder -- declaration, turbines sidecar and SCADA -- and return the YAML."""
-    _scada(mode=mode).to_parquet(tmp_path / "scada.parquet")
+    """Write a complete campaign folder -- declaration, turbines sidecar and SCADA -- and return the YAML.
+
+    The folder is ``tmp_path/campaign``, so the step 1 plots written beside it stay inside ``tmp_path``.
+    """
+    folder = tmp_path / "campaign"
+    folder.mkdir(exist_ok=True)
+    _scada(mode=mode).to_parquet(folder / "scada.parquet")
     pd.DataFrame(
         {
             "Name": list(TURBINES),
@@ -121,8 +126,8 @@ def _write_campaign(tmp_path: Path, *, mode: str) -> Path:
             "Longitude": -3.25,
             "rotor_diameter_m": 82.0,
         }
-    ).to_csv(tmp_path / "turbines.csv", index=False)
-    path = tmp_path / "campaign.yaml"
+    ).to_csv(folder / "turbines.csv", index=False)
+    path = folder / "campaign.yaml"
     path.write_text(TEMPLATE.format(mode=mode, rated_kw=RATED_KW, timing=TIMING[mode]))
     return path
 
@@ -137,6 +142,11 @@ def test_a_declared_campaign_runs_and_writes_its_report(tmp_path: Path, mode: st
     for name in ("per_turbine.csv", "farm_uplift.csv", "farm_uplift_detail.csv", "reference_stability.csv"):
         assert (out_dir / name).exists(), name
     assert (out_dir / RESOLVED_FILENAME).exists()
+    # one folder per test turbine, with no method or run level under it
+    assert (out_dir / "T01" / "results.csv").exists()
+    assert (out_dir / "T01" / "plots" / "1_inputs" / "ops_relationships_T01.png").exists()
+    # step 1's plots of every turbine, beside the campaign folder
+    assert (tmp_path / "input_data_plots" / "ops_relationships_T05.png").exists()
 
 
 @pytest.mark.parametrize("mode", ["prepost", "toggle"])

@@ -2009,3 +2009,35 @@ class TestExclusionChannels:
         mi = _held_back_case()
         with pytest.raises(ValueError, match="exclusion_channels"):
             _screen_method(exclusion_channels="zeros").estimate(mi)
+
+
+class TestRunFolders:
+    """Studies keep a named, timestamped folder per run; a composed campaign writes flat and plain."""
+
+    def test_a_named_run_folder_by_default(self, tmp_path: Path) -> None:
+        mi, _ = _prepost_case(n=2000)
+        _fundamentals_method(out_dir=tmp_path, save_plots=False).estimate(mi)
+        (run_dir,) = list(tmp_path.iterdir())
+        assert run_dir.name.startswith("power_model_T1_")
+        assert list(run_dir.glob("power_model_T1_*_results_*.csv"))
+
+    def test_without_a_run_subfolder_it_writes_straight_into_out_dir(self, tmp_path: Path) -> None:
+        mi, _ = _prepost_case(n=2000)
+        _fundamentals_method(out_dir=tmp_path, save_plots=False, run_subdir=False).estimate(mi)
+        names = {p.name for p in tmp_path.iterdir()}
+        assert {"results.csv", "data_stats.csv", "feature_importance.csv", "feature_catalogue.csv"} <= names
+        assert not [n for n in names if n.startswith("power_model_")]
+
+    def test_the_conditional_csvs_are_plain_too(self, tmp_path: Path) -> None:
+        mi, _ = _prepost_case(n=2000)
+        method = PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
+            out_dir=tmp_path,
+            save_plots=False,
+            run_subdir=False,
+        )
+        method.estimate(mi)
+        names = {p.name for p in (tmp_path / "conditional").iterdir()}
+        assert {"conditional_overall.csv", "cem_balance.csv", "cem_cells.csv"} <= names

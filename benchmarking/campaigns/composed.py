@@ -28,6 +28,7 @@ from benchmarking.campaigns.loader import era5_window, load_declaration
 from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label
+from benchmarking.diagnostics.input_data import write_input_data_plots
 from benchmarking.harness.northing import era5_direction
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up_v0.era5 import get_era5_hourly_df
@@ -63,6 +64,10 @@ _LOG_HANDLER_NAME = "campaign_run_log"
 
 OUTPUT_DIR_ENV = "WIND_UP_BENCHMARKING_OUTPUT_DIR"
 
+# Step 1's plots: every turbine and every record provided, drawn before anything is planned. They
+# depend on the campaign's data alone, so they sit beside the campaign folder, shared by its runs.
+INPUT_PLOTS_DIRNAME = "input_data_plots"
+
 
 def wind_up_method(
     spec: CampaignSpec,
@@ -72,6 +77,7 @@ def wind_up_method(
     era5_hourly_df: pd.DataFrame | None,
     screen_cache: dict | None = None,
     era5_label: str = ERA5_UNLOCATED,
+    run_subdir: bool = True,
 ) -> Method:
     """Build ``wind-up``'s estimator for one campaign.
 
@@ -86,6 +92,8 @@ def wind_up_method(
         runs once rather than once per test turbine
     :param era5_label: how reanalysis is named in this run's output; the campaign passes the point
         it fetched from
+    :param run_subdir: write into a named, timestamped folder under ``out_dir``, as a study comparing
+        many runs wants; a campaign gives each test turbine its own ``out_dir`` and passes ``False``
     """
     return PowerModelMethod(
         name=WIND_UP,
@@ -100,7 +108,13 @@ def wind_up_method(
         save_plots=True,
         screen_cache=screen_cache,
         era5_label=era5_label,
+        run_subdir=run_subdir,
     )
+
+
+def default_input_plots_dir(path: str | Path) -> Path:
+    """Return where a campaign's step 1 plots go: beside the folder holding its declaration."""
+    return Path(path).resolve().parent.parent / INPUT_PLOTS_DIRNAME
 
 
 def output_root() -> Path:
@@ -141,6 +155,7 @@ def run_declaration(
     out_dir: Path | None = None,
     era5_hourly_df: pd.DataFrame | None = None,
     plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
+    input_plots_dir: Path | None = None,
 ) -> CampaignReport:
     """Run the campaign declared at ``path`` and write its report.
 
@@ -149,6 +164,8 @@ def run_declaration(
     :param era5_hourly_df: reanalysis to use instead of self-serving it from the farm centroid,
         for a caller that already holds it
     :param plan_settings: how a planned campaign's spans and power references are chosen
+    :param input_plots_dir: where step 1's plots of every turbine and every record go; defaults to
+        :func:`default_input_plots_dir`
     :return: the truth-free campaign report, which is also written under ``out_dir``
     """
     declaration = load_declaration(path)
@@ -166,6 +183,11 @@ def run_declaration(
     )
 
     scada_df = pd.read_parquet(declaration.scada_path)
+    write_input_data_plots(
+        scada_df,
+        columns=declaration.columns,
+        out_dir=input_plots_dir if input_plots_dir is not None else default_input_plots_dir(path),
+    )
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
     reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration, index=index)
     # One screen verdict for the campaign: every test turbine is judged against the same references.
@@ -178,10 +200,11 @@ def run_declaration(
             wind_up_method(
                 declaration.spec,
                 columns=declaration.columns,
-                out_dir=out_dir / wtg / WIND_UP,
+                out_dir=out_dir / wtg,
                 era5_hourly_df=reanalysis,
                 screen_cache=screen_cache,
                 era5_label=era5_source_label(*declaration.centroid),
+                run_subdir=False,
             )
         ],
         columns=declaration.columns,

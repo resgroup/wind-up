@@ -368,6 +368,10 @@ class PowerModelMethod:
     :param era5_hourly_df: optional raw hourly ERA5 (Open-Meteo columns); added as features when given
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
+    :param run_subdir: write each run into its own ``power_model_<wtg>_<start>_<end>`` folder under
+        ``out_dir``, with run-named, timestamped CSVs, so a study's runs sit side by side. ``False``
+        writes straight into ``out_dir`` with plain names (``results.csv``, ...), for a caller that
+        already gives every run its own folder, as a campaign does per test turbine.
     :param save_plots: also write the diagnostic plots
     :param seed: seed for the baseline holdout split and the LightGBM ``random_state`` (a caller-supplied
         ``random_state`` in ``model_params`` still wins)
@@ -490,6 +494,7 @@ class PowerModelMethod:
     # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
     # era5_source_label() of the point it fetched, so a reader can tell which series was used.
     era5_label: str = ERA5_UNLOCATED
+    run_subdir: bool = True
     # A campaign's screen verdict is one answer for the whole campaign: the same pool judged across
     # the same contrast. Every test turbine would otherwise re-run the identical round-robin. A
     # campaign passes one dict to every turbine's method; None means screen per estimate. Every
@@ -651,6 +656,15 @@ class PowerModelMethod:
                 cond_baseline_valid=cond_baseline_valid,
             )
             if self.save_plots:
+                self._write_shared_diagnostics(
+                    mi,
+                    run_dir=run_dir,
+                    t=t,
+                    selected=selected,
+                    timebase=timebase,
+                    era5=era5,
+                    power_references=[r for r in references if r not in power_free],
+                )
                 # What the wake-only turbines carry, beside the model that consumed it.
                 write_waking_diagnostics(
                     run_dir,
@@ -896,8 +910,7 @@ class PowerModelMethod:
         """
         conditional_dir = run_dir / "conditional"
         conditional_dir.mkdir(parents=True, exist_ok=True)
-        run_name = run_dir.name
-        ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        run_name, ts = self._csv_naming(run_dir)
         overall = {
             "test_wtg": mi.test_wtg,
             "mode": "toggle" if is_toggle(mi.upgrade_timing) else "prepost",
@@ -1675,15 +1688,23 @@ class PowerModelMethod:
     def _run_dir(self, mi: MethodInput, index: pd.DatetimeIndex) -> Path:
         """Return the per-run output folder ``<out_dir>/power_model_<wtg>_<start>_<end>`` (a temp dir when unset).
 
+        Without :attr:`run_subdir` it is ``out_dir`` itself.
+
         Computed once per ``estimate`` and shared by the overall diagnostics and the optional conditional
         step so both write into the *same* run folder.
         """
         upgrade_start = toggle_upgrade_start(mi.upgrade_timing, index)
         run_name = f"power_model_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{index.max():%Y%m%d}"
         out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="power_model_"))
-        run_dir = out_root / run_name
+        run_dir = out_root / run_name if self.run_subdir or self.out_dir is None else out_root
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
+
+    def _csv_naming(self, run_dir: Path) -> tuple[str, str]:
+        """Return the run name and timestamp a run's CSV names carry; both empty without a run folder."""
+        if not self.run_subdir and self.out_dir is not None:
+            return "", ""
+        return run_dir.name, pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
 
     def _write(
         self,
@@ -1707,8 +1728,7 @@ class PowerModelMethod:
         cond_baseline_valid: pd.DataFrame | None = None,
     ) -> None:
         """Assemble the diagnostic data and write the CSVs (+ plots), logging the top features."""
-        run_name = run_dir.name
-        ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        run_name, ts = self._csv_naming(run_dir)
 
         x_sel = features.iloc[selected]
         data = diag.DiagnosticData(
@@ -1752,7 +1772,6 @@ class PowerModelMethod:
         )
         if self.save_plots:
             diag.save_plots(run_dir / "plots", data, importance)
-            self._write_shared_diagnostics(mi, run_dir=run_dir, t=t, selected=selected, timebase=timebase, era5=era5)
 
     def _write_shared_diagnostics(
         self,
@@ -1763,6 +1782,7 @@ class PowerModelMethod:
         selected: np.ndarray,
         timebase: pd.Timedelta,
         era5: Any,  # noqa: ANN401
+        power_references: list[str] | None = None,
     ) -> None:
         """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
         ctx = DiagnosticContext(
@@ -1777,6 +1797,7 @@ class PowerModelMethod:
             mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
             era5_df=era5.aligned if era5 is not None else None,
             era5_label=self.era5_label,
+            power_references=power_references,
         )
         write_common_diagnostics(ctx)
         extra = {

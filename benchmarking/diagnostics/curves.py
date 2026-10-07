@@ -272,8 +272,14 @@ def plot_power_factor(ctx: DiagnosticContext) -> Path | None:
 
 def _monthly_power_factor(ctx: DiagnosticContext, turbine: str) -> pd.Series:
     """Monthly active-power-weighted mean power factor for one turbine."""
-    active = ctx.turbine_series(turbine, ctx.columns.active_power)
-    reactive = ctx.turbine_series(turbine, ctx.columns.reactive_power)
+    return monthly_power_factor(
+        ctx.turbine_series(turbine, ctx.columns.active_power),
+        ctx.turbine_series(turbine, ctx.columns.reactive_power),
+    )
+
+
+def monthly_power_factor(active: pd.Series, reactive: pd.Series) -> pd.Series:
+    """Monthly active-power-weighted mean power factor from time-indexed active and reactive power."""
     apparent = np.sqrt(active**2 + reactive**2)
     with np.errstate(divide="ignore", invalid="ignore"):
         pf = (active.abs() / apparent).where(apparent > 0)
