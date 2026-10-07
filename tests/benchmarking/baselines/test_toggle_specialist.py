@@ -242,7 +242,7 @@ class TestPerBinLocalisesUplift:
         scada = _scada({"T1": test, "R1": ref1, "R2": ref2}, idx)
 
         per_bin = _per_bin(scada, schedule)
-        low_bins = per_bin[per_bin["sum_counterfactual"] > 0].iloc[:2]
+        low_bins = per_bin[per_bin["sum_counterfactual_sum"] > 0].iloc[:2]
         assert low_bins["p50_uplift"].abs().max() < 0.005
         assert per_bin["p50_uplift"].max() == pytest.approx(0.10, abs=0.01)
 
@@ -273,8 +273,36 @@ class TestConditionsConfiguration:
         ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
         assert out.p50_by_condition is not None
         assert set(out.p50_by_condition["condition"]) == {"power"}
-        for col in ("condition_bin", "p50_uplift", "n_records", "sum_actual", "sum_counterfactual"):
+        for col in ("condition_bin", "p50_uplift", "n_records", "sigma_uplift", "weight_sum"):
             assert col in out.p50_by_condition.columns
+        for leg in ("sum", "block_mean"):
+            assert {f"sum_actual_{leg}", f"sum_counterfactual_{leg}"} <= set(out.p50_by_condition.columns)
+        assert "sum_actual" not in out.p50_by_condition.columns
+
+    def test_each_bin_is_the_blend_of_its_legs_at_its_weight(self) -> None:
+        """Each leg's bin uplift is its own energy ratio; the reported bin is their blend at the bin's weight."""
+        scada, schedule = _varying_rho_case(uplift=0.05, noise_frac=0.05)
+        out = ToggleSpecialistMethod(
+            columns=_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM, conditions=("power",), rated_power_kw=_RATED_KW
+        ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
+        assert out.p50_by_condition is not None
+        frame = out.p50_by_condition.dropna(subset=["p50_uplift", "weight_sum"])
+        assert len(frame)
+        legs = {
+            leg: frame[f"sum_actual_{leg}"] / frame[f"sum_counterfactual_{leg}"] - 1.0 for leg in ("sum", "block_mean")
+        }
+        weight = frame["weight_sum"]
+        # a leg with no estimate in a bin carries no weight there
+        blended = np.where(weight > 0, weight * legs["sum"], 0.0) + np.where(
+            weight < 1, (1.0 - weight) * legs["block_mean"], 0.0
+        )
+        np.testing.assert_allclose(frame["p50_uplift"], blended)
+
+    def test_a_single_leg_frame_carries_that_legs_sums(self) -> None:
+        scada, schedule = _block_case(uplift=0.04)
+        out = _estimate(scada, schedule, toggle_period=_BLOCK, conditions=("power",), rated_power_kw=_RATED_KW)
+        assert out.p50_by_condition is not None
+        assert {"sum_actual_block_mean", "sum_counterfactual_block_mean"} <= set(out.p50_by_condition.columns)
 
     def test_ws_condition_raises_citing_the_method_limit(self) -> None:
         with pytest.raises(ValueError, match="does not support"):

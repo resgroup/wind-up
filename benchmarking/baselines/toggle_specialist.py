@@ -529,7 +529,7 @@ class ToggleSpecialistMethod:
                 label=label,
                 baseline=used & baseline,
                 upgraded=used & rows.upgraded,
-            )
+            ).rename(columns={"sum_actual": f"sum_actual_{mode}", "sum_counterfactual": f"sum_counterfactual_{mode}"})
             if "power" in self.conditions
             else None
         )
@@ -771,7 +771,8 @@ class ToggleSpecialistMethod:
         **The denominator is the per-bin** ``rho_base(b)``, not the global one: the test-to-reference
         ratio varies with power, and a global denominator would read that structure as uplift. The
         price is that the per-bin numbers no longer aggregate exactly to ``p50_overall``, which is
-        deliberate and un-relevelled; ``sum_actual`` / ``sum_counterfactual`` expose the gap.
+        deliberate and un-relevelled; the leg's ``sum_actual_<leg>`` / ``sum_counterfactual_<leg>``
+        expose the gap.
 
         Sparse bins report NaN with ``n_records = 0`` rather than being imputed.
         """
@@ -1194,7 +1195,8 @@ def _combine(a: _Estimate, b: _Estimate, *, upgraded: npt.NDArray[np.bool_], bin
     The blend's used rows are the union of the components' (a row contributed to at least one
     estimate); its bin label is ``a``'s where ``a`` used the row and ``b``'s otherwise, so the two
     components' bins, which share edges, are merged by name, and each bin's ``n_records`` counts
-    the used ``upgraded`` rows that merged label puts in it (what ``labeled_rows`` reproduces).
+    the used ``upgraded`` rows that merged label puts in it (what ``labeled_rows`` reproduces). Each
+    bin also carries both legs' energy sums and its weight on ``a``, so its blend is re-derivable.
     Row-selection accounting, ``rho`` and the reference-side diagnostics are ``a``'s (the reference
     leg); ``b``'s selection is written to the selection CSV. The diagnostics carry both legs' rows and
     a ``combined`` row per cell with the blend's sigma, the weight on ``a`` and the correlation it used.
@@ -1234,15 +1236,15 @@ def _combine(a: _Estimate, b: _Estimate, *, upgraded: npt.NDArray[np.bool_], bin
             ra, rb = fa.loc[cell], fb.loc[cell]
             blend = _cell(cell, ra["p50_uplift"], ra["sigma_uplift"], rb["p50_uplift"], rb["sigma_uplift"])
             blended_cells[cell] = blend
-            take = ra if np.isfinite(ra["p50_uplift"]) else rb
             records.append(
                 {
                     "condition": ra["condition"],
                     "condition_bin": ra["condition_bin"],
                     "p50_uplift": blend.estimate,
                     "n_records": int((upgraded_bin == cell).sum()),
-                    "sum_actual": take["sum_actual"],
-                    "sum_counterfactual": take["sum_counterfactual"],
+                    **{f"{col}_{a.mode}": ra[f"{col}_{a.mode}"] for col in ("sum_actual", "sum_counterfactual")},
+                    **{f"{col}_{b.mode}": rb[f"{col}_{b.mode}"] for col in ("sum_actual", "sum_counterfactual")},
+                    f"weight_{a.mode}": blend.weight_a,
                     "sigma_uplift": blend.sigma,
                 }
             )
