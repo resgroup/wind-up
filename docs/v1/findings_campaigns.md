@@ -12,6 +12,63 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF29 — Repeating pass 2 by re-northing every unsettled turbine at once could flip-flop instead of converging; re-northing them one at a time against the latest tables fixes it. It exposed a fragile spot in the wake-nadir shift: one marginal wake pair can swing a turbine's correction by ~4 deg
+
+*2026-09-30. Reproduce: `test_changepoints_v_consensus_converges_when_neighbours_share_excursions` in
+`tests/wind_up/test_northing.py`, and the ("365d", "late") case of
+`TestDegradation` in `tests/wind_up/test_northing_real_data.py`.*
+
+**The flip-flop.** CF21's repeated pass 2 re-northed every unsettled turbine together, each against
+a consensus built from the previous round's tables. When neighbours share a step, or one turbine's
+excursion drags its neighbours' four-turbine median, they can claim a step together, then drop it
+together because none of their consensuses shows it any more, then claim it again. The tables cycle
+with period two until the 10-round cap. Which tables are kept then depends on the cap's parity. The
+symptom is the warning `did not converge in 10 rounds (last round moved an offset by inf deg)`, where
+"inf" is `_table_change`'s marker for a changepoint added, removed or moved, not an overflow. On two
+real farms of 11 and 5 turbines the per-round changepoint counts alternated, e.g. 6, 4, 6, 4 and 14,
+10, 14, 10.
+
+**The fix.** From the second round on, the unsettled turbines are re-northed one at a time in name
+order, each against a consensus rebuilt from the latest tables, including those re-northed earlier
+in the same round. Once one turbine owns a shared step, its neighbours see it corrected and cannot
+claim it too. The warning now names the turbines still moving and says whether their changepoints
+changed or by how much their offset moved.
+
+| | v1 (all at once) | one at a time |
+|---|---|---|
+| 25 random 5-7-turbine farms with 1-3 shared 1-3-week excursions | 3 hit the cap | 0 hit the cap, never more rounds |
+| the two real farms, second pass on calibration-corrected data | cycle to the cap | converge in 7 and 4 rounds |
+| a real farm's first pass, many shared calibration excursions | cycles to the cap | still hits the cap, but only by borderline changepoints appearing, disappearing or re-pinning by minutes to hours |
+| HoT golden table and the other 23 fast degradation cases | | unchanged; 22 within 0.1 deg of their recorded error |
+
+**The wake-nadir fragility.** One degradation case moved: ("365d", "late"), worst turbine T10 at
+2.1 deg became T11 at 4.3 deg against the full-data answer. Before the wake-nadir shift the two
+versions put T11 0.2 deg apart (-26.6 vs -26.8 deg). The difference is created by the shift, not
+by pass 2:
+
+- T11 has five wake pairs. T11->T13's deficit curve is nearly flat-bottomed, with its minimum near the
+  sector edge: fitted curvature 1.1e-4 under v1, 4.1e-6 after the change, while its depth barely
+  moves (0.140 vs 0.141). A 0.2 deg nudge moves enough rows between 1-deg bins to push the parabola's
+  vertex from -9.7 deg (inside the fit window, so the pair counts) to -46 deg (outside, so it is
+  discarded).
+- The remaining pair corrections are bimodal, -5.4 to -6.1 deg and +1.6 to +3.1 deg. A circular median of
+  five picks the middle value (+1.6). A median of four averages across the gap (-2.0). T11's
+  correction swings by 3.6 deg.
+
+The recorded 2.1 deg therefore partly reflected luck: T11's correction hinges on a pair that is not
+really resolved. The case is re-recorded at 4.3 deg.
+
+**Implications (not yet actioned).**
+
+- Resolvability in `_locate_nadir` is a hard in-window vertex test on an almost-flat parabola. Rejecting
+  fits whose curvature is not significant (e.g. a minimum curvature, or a curvature-to-noise ratio)
+  would make pairs drop out for a reason rather than by accident.
+- `_aggregate` takes a plain circular median of the pairs. With few, bimodal pairs, an even count
+  averages across the gap. A weighted median (e.g. by rows or fit quality), or requiring the pairs to
+  agree before shifting at all, would stop one pair from deciding a turbine's correction.
+
+---
+
 ## CF28 — The whole-farm v0 probe: **the power model's references do not combine to zero (+0.40 pp on clean references) and v0's power-only path does (−0.03 pp over 336 pairs)**; v0's anemometer path is 0.7 pp low because every Hill of Towie turbine's own power curve dropped 2 to 6 % between the two winters; and subtracting a pool's own reference reading corrects a level, not a turbine (correlation 0.04)
 
 *2026-10-06 to 2026-10-07. `uv run python -m benchmarking.campaigns.v0_probe hot` at `0a887c9`
