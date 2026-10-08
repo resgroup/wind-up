@@ -84,13 +84,8 @@ turbines on the wind farm are used to derive an operational state for each turbi
 
 The state is derived from cause signals only: controller state codes, time-in-state counters (for
 example time ready to operate, time in operation, time power reduced, time ice detected), the active
-power setpoint and, where needed, pitch angle to detect a parked rotor. Active power is never used to
-define a state. A state whose boundary is a power threshold moves when an upgrade moves the power, so
-records near the boundary would change state between the periods and the waking state of step 5,
-which is derived from these labels, would leak the upgrade into the result. For the same reason,
-whether a reduced setpoint actually limited the turbine is not judged from its power. Where the
-analyst knows that curtailment was only in force over certain dates, that is site configuration
-and reduced setpoints outside those dates are treated as normal operation.
+power setpoint and, where needed, pitch angle to detect a parked rotor. Active power and anemometer wind speed are ideally never used to
+define a state.
 
 This whole step is site dependent. The signals available, the states worth distinguishing, the rules
 that identify them and the use each state can be put to all differ from site to site and with the
