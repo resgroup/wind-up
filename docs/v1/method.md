@@ -102,12 +102,17 @@ The states distinguished in this example are:
   noise-mode flag is set. The steps are site configuration;
 - iii. **grid curtailment**: the setpoint is below rated and is neither a noise-mode step nor the
   start-up limit, within the dates curtailment is known to have been in force;
-- iv. **icing**: an ice flag or ice time counter is set;
+- iv. **icing**: an ice flag or ice time counter is set. Where the site has no working ice signal,
+  icing is identified the IEA Wind Task 19 way: cold records whose power falls well below the
+  turbine's own power curve from warm weather. This is a second exception to the rule that active
+  power and the anemometer do not define a state;
 - v. **partial downtime**: the availability (ready-to-operate) counter is above zero and below the
-  full period;
+  full period, or the rotor is parked (pitch beyond a threshold declared for the turbine type);
 - vi. **full downtime**: the availability counter is zero;
-- vii. **missing**: the signals are absent, or stuck (unchanged from the turbine's own previous
-  record while the wind is not calm), which indicates frozen telemetry.
+- vii. **missing**: the signals are absent or out of range, or stuck (unchanged from the turbine's
+  own previous record while the wind is not calm), which indicates frozen telemetry. The calm test
+  reads the nacelle anemometer: this is the one exception to the rule that the anemometer does not
+  define a state, because no upgrade-invariant wind signal exists before step 3.
 
 Data records are flagged as valid or not for each step of the analysis separately, because an
 operating state can be valid for some purposes but not for others. The mapping in this example is:
@@ -127,10 +132,17 @@ Some wind farms will have predictable curtailment which is expected to continue 
 analysis, provided the curtailment applies equally in the before and after periods. Noise mode is
 therefore valid for uplift only where the analyst declares it so.
 
-wind-up identifies downtime and missing data itself, from the availability counter and stuck
-telemetry, so that every dataset gets at least those states even when the analyst supplies nothing
-else. Whether the analyst labels the data before passing it to wind-up, or passes labelling rules
-that wind-up applies, is decided at implementation.
+Ownership of the states is split:
+
+- wind-up owns the generic states (missing, full downtime, partial downtime and normal operation)
+  and their validity, which the analyst cannot redefine. It identifies them itself, from the
+  availability counter, stuck telemetry and the declared parked-pitch threshold, so every dataset
+  gets at least those states even when the analyst supplies nothing else;
+- the analyst supplies a label column and a validity table for the site states only (noise mode,
+  grid curtailment, icing and so on in the example above);
+- the analyst may also assign a generic state from site rules, for example a stop setpoint becomes
+  partial downtime. The generic rules still come first: a record the analyst marks partial downtime
+  but whose power is absent is missing.
 
 It is important to carefully inspect power against wind speed, and pitch angle and rotor speed against
 power and wind speed, for both the excluded and the retained data of every turbine, to confirm that the

@@ -487,6 +487,31 @@ HOT_COLUMNS = ColumnSchema(
 # baseline ``rated_power_kw`` default and caps the power-model counterfactual predictions.
 HOT_RATED_POWER_KW = 2300.0
 
+# The power setpoint at the end of each record (kW), which the site operating-state labels read.
+HOT_POWER_SETPOINT_COL = "wtc_PowerRef_endvalue"
+# The ambient temperature the icing label reads.
+HOT_AMBIENT_TEMP_COL = _TAG_AMBIENT_TEMP_MEAN
+# A setpoint of 0 is a stop command; 100 kW is the one-interval limit after cut-in.
+HOT_STOP_SETPOINT_KW = 0.0
+HOT_STARTUP_SETPOINT_KW = 100.0
+# When Hill of Towie joined the Balancing Mechanism; reduced setpoints from then on are curtailment.
+HOT_BM_START = pd.Timestamp("2018-11-07", tz="UTC")
+# Each turbine's noise-mode setpoints (kW).
+HOT_NOISE_SETPOINTS_KW: dict[str, frozenset[float]] = {
+    "T16": frozenset({1993.0, 2116.0, 2130.0, 2207.0, 2208.0, 2261.0}),
+    "T17": frozenset({1993.0, 2116.0, 2130.0, 2207.0, 2208.0, 2261.0}),
+    "T19": frozenset({2207.0, 2208.0}),
+}
+# A reduced setpoint at or above this wind speed (m/s) is the turbine's own high-wind derate.
+HOT_HIGH_WIND_DERATE_MS = 20.0
+# Icing: at or below HOT_ICING_MAX_TEMP_C, power under HOT_ICING_POWER_FRACTION of the turbine's
+# median power at that wind speed in records above HOT_ICING_REFERENCE_MIN_TEMP_C, where that
+# median is at least HOT_ICING_MIN_EXPECTED_KW.
+HOT_ICING_MAX_TEMP_C = 2.0
+HOT_ICING_REFERENCE_MIN_TEMP_C = 3.0
+HOT_ICING_POWER_FRACTION = 0.5
+HOT_ICING_MIN_EXPECTED_KW = 300.0
+
 # Hub height of the Hill of Towie turbines (m); feeds the ERA5 hub-height wind-speed derivation.
 HOT_HUB_HEIGHT_M = 59.0
 

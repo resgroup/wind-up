@@ -129,7 +129,7 @@ def plot_ops_curves(ctx: DiagnosticContext) -> Path | None:
         segments=segments,
         title="operating curves (kept vs removed by the row filter)",
         filename="ops_curves.png",
-        stage=stages.FILTER,
+        stage=stages.VALID_RECORDS,
     )
 
 
@@ -142,7 +142,7 @@ def plot_ops_curves_kept(ctx: DiagnosticContext) -> Path | None:
         segments=segments,
         title="operating curves (used rows only)",
         filename="ops_curves_kept_only.png",
-        stage=stages.FILTER,
+        stage=stages.VALID_RECORDS,
     )
 
 
@@ -161,7 +161,7 @@ def plot_ops_curves_excluded(ctx: DiagnosticContext) -> Path | None:
         segments=segments,
         title=f"operating curves (kept vs excluded by the caller's flag; {excluded.sum()} rows excluded)",
         filename="ops_curves_excluded.png",
-        stage=stages.FILTER,
+        stage=stages.VALID_RECORDS,
     )
 
 
@@ -174,7 +174,7 @@ def plot_curves_by_upgrade(ctx: DiagnosticContext) -> Path | None:
         segments=segments,
         title="operating curves by upgrade state (used rows)",
         filename="ops_curves_by_upgrade.png",
-        stage=stages.UPLIFT_INPUTS,
+        stage=stages.VALID_RECORDS,
     )
 
 
@@ -235,7 +235,7 @@ def plot_reactive_vs_active(ctx: DiagnosticContext) -> Path | None:
     drawn, total = len(turbines), 1 + len(ctx.references())
     shown = f"{drawn} of {total} turbines, spread by power factor" if drawn < total else "every turbine"
     fig.suptitle(f"reactive vs active power by upgrade state ({shown})")
-    path = ctx.stage_dir(stages.INPUTS) / "reactive_vs_active.png"
+    path = ctx.stage_dir(stages.CHANGES) / "reactive_vs_active.png"
     save_fig(fig, path)
     return path
 
@@ -265,7 +265,7 @@ def plot_power_factor(ctx: DiagnosticContext) -> Path | None:
     ax.set_title("power factor over time — |P| / sqrt(P^2 + Q^2)")
     apply_grid(ax)
     ax.legend(ncol=2, fontsize="small")
-    path = ctx.stage_dir(stages.INPUTS) / "power_factor.png"
+    path = ctx.stage_dir(stages.CHANGES) / "power_factor.png"
     save_fig(fig, path)
     return path
 

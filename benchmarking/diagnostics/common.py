@@ -27,6 +27,7 @@ from benchmarking.diagnostics.curves import (
 )
 from benchmarking.diagnostics.histograms import plot_condition_histograms
 from benchmarking.diagnostics.northing import plot_northed_error, plot_northing_error
+from benchmarking.diagnostics.operating_states import plot_run_operating_states
 from benchmarking.diagnostics.ops_relationships import plot_run_ops_relationships
 
 if TYPE_CHECKING:
@@ -52,6 +53,7 @@ _PLOTS: tuple[Callable[[DiagnosticContext], Path | list[Path] | None], ...] = (
     plot_reactive_vs_active,
     plot_power_factor,
     plot_run_ops_relationships,
+    plot_run_operating_states,
     plot_northing_error,
     plot_northed_error,
 )

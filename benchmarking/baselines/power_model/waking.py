@@ -157,7 +157,7 @@ def write_waking_diagnostics(
     coords: dict[str, tuple[float, float]] | None,
 ) -> list[Path]:
     """Write both waking plots into the feature-engineering stage; returns what was written."""
-    out_dir = run_dir / "plots" / stages.FEATURE_ENG
+    out_dir = run_dir / "plots" / stages.WAKING
     out_dir.mkdir(parents=True, exist_ok=True)
     fractions = waking_fractions(
         scada,

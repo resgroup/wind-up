@@ -34,6 +34,7 @@ from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.conditions import CONDITIONS
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput
+from benchmarking.harness.operating_state import VALID_UPLIFT_COL
 from benchmarking.harness.toggle import resolve_toggle
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
 
@@ -2041,3 +2042,30 @@ class TestRunFolders:
         method.estimate(mi)
         names = {p.name for p in (tmp_path / "conditional").iterdir()}
         assert {"conditional_overall.csv", "cem_balance.csv", "cem_cells.csv"} <= names
+
+
+class TestValidUpliftRows:
+    """The test turbine's rows are selected by the operating states' uplift validity."""
+
+    @staticmethod
+    def _selected(scada: pd.DataFrame) -> np.ndarray:
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=scada.index[3], turbine_col=_TURBINE)
+        index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
+        y = scada[scada[_TURBINE] == "T1"][_POWER]
+        return _fundamentals_method()._select_rows(  # noqa: SLF001
+            scada, mi=mi, index=index, y=y, timebase=pd.Timedelta(minutes=10)
+        )
+
+    def test_a_labelled_frame_keeps_only_valid_uplift_rows(self) -> None:
+        scada = _toy_scada(6, uplift=0.0, treated=np.zeros(6, dtype=bool))
+        scada[VALID_UPLIFT_COL] = True
+        test = (scada[_TURBINE] == "T1").to_numpy()
+        curtailed = test & (scada.index == scada.index[2])
+        scada.loc[curtailed, VALID_UPLIFT_COL] = False
+        assert self._selected(scada).tolist() == [True, True, False, True, True, True]
+
+    def test_an_unlabelled_frame_drops_out_of_range_records(self) -> None:
+        scada = _toy_scada(6, uplift=0.0, treated=np.zeros(6, dtype=bool))
+        test = (scada[_TURBINE] == "T1").to_numpy()
+        scada.loc[test & (scada.index == scada.index[4]), _POWER] = 5000.0
+        assert self._selected(scada).tolist() == [True, True, True, True, False, True]

@@ -140,13 +140,18 @@ def test_a_declared_campaign_runs_and_writes_its_report(tmp_path: Path, mode: st
     assert list(report.per_turbine["method"]) == [WIND_UP]
     assert list(report.per_turbine["test_wtg"]) == ["T01"]
     for name in ("per_turbine.csv", "farm_uplift.csv", "farm_uplift_detail.csv", "reference_stability.csv"):
-        assert (out_dir / name).exists(), name
+        assert (out_dir / "C_campaign" / name).exists(), name
     assert (out_dir / RESOLVED_FILENAME).exists()
     # one folder per test turbine, with no method or run level under it
-    assert (out_dir / "T01" / "results.csv").exists()
-    assert (out_dir / "T01" / "plots" / "1_inputs" / "ops_relationships_T01.png").exists()
-    # step 1's plots of every turbine, beside the campaign folder
-    assert (tmp_path / "input_data_plots" / "ops_relationships_T05.png").exists()
+    turbine = out_dir / "B_uplift_estimator" / "T01"
+    assert (turbine / "results.csv").exists()
+    assert (turbine / "plots" / "01_changes" / "ops_relationships_T01.png").exists()
+    assert (turbine / "plots" / "02_operating_states" / "operating_states_T01.png").exists()
+    # steps 1, 2 and 4 for every turbine
+    preparation = out_dir / "A_data_preparation"
+    assert (preparation / "01_changes" / "ops_relationships_T05.png").exists()
+    assert (preparation / "02_operating_states" / "operating_states_T05.png").exists()
+    assert (preparation / "02_operating_states" / "operating_state_hours.csv").exists()
 
 
 @pytest.mark.parametrize("mode", ["prepost", "toggle"])
@@ -154,7 +159,7 @@ def test_the_report_of_a_declared_campaign_carries_no_truth(tmp_path: Path, mode
     # the isolation guarantee, on the real product path: there is no truth here to leak
     out_dir = tmp_path / "out"
     run_declaration(_write_campaign(tmp_path, mode=mode), out_dir=out_dir, era5_hourly_df=_era5())
-    written = sorted(out_dir.glob("*.csv"))
+    written = sorted(out_dir.rglob("*.csv"))
     assert written
     for path in written:
         assert not ({"truth", "signed_error"} & set(pd.read_csv(path).columns)), path.name

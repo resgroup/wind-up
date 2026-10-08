@@ -283,16 +283,16 @@ class TestTheNorthedErrorTimeline:
         scada[ctx.columns.northed("nacelle_position")] = (scada["nacelle"] - 7.0) % 360.0
         return dataclasses.replace(ctx, scada_df=scada)
 
-    def test_it_lands_in_the_feature_engineering_stage(self, tmp_path: Path) -> None:
+    def test_it_lands_in_the_northing_step(self, tmp_path: Path) -> None:
         path = plot_northed_error(self._context_with_northed(tmp_path))
         assert path is not None
-        assert path.parent.name == "3_feature_eng"
+        assert path.parent.name == "04_northing"
         assert path.name == "northed_error.png"
 
-    def test_the_raw_one_stays_in_inputs(self, tmp_path: Path) -> None:
+    def test_the_raw_one_lands_beside_it(self, tmp_path: Path) -> None:
         path = plot_northing_error(self._context_with_northed(tmp_path))
         assert path is not None
-        assert path.parent.name == "1_inputs"
+        assert path.parent.name == "04_northing"
 
     def test_it_is_skipped_when_the_northing_step_has_not_run(self, tmp_path: Path) -> None:
         # a method run outside a campaign has the raw column only

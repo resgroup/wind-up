@@ -3,7 +3,7 @@
 The analyst reviews these to confirm the data is fit for purpose and to define exclusions and the
 operating-state labels. They are drawn before the test turbine's span or references are chosen, so
 nothing is cut: no exclusion, works window or span is applied. The per-run plots in a run's
-``1_inputs`` folder show the same things for the test turbine and its references over the span.
+``01_changes`` folder show the same things for the test turbine and its references over the span.
 """
 
 from __future__ import annotations

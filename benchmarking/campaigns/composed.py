@@ -27,9 +27,12 @@ from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL
 from benchmarking.campaigns.loader import era5_window, load_declaration
 from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
-from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label
+from benchmarking.diagnostics import stages
+from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label, infer_timebase
 from benchmarking.diagnostics.input_data import write_input_data_plots
+from benchmarking.diagnostics.operating_states import write_operating_state_plots
 from benchmarking.harness.northing import era5_direction
+from benchmarking.harness.operating_state import label_operating_states
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up_v0.era5 import get_era5_hourly_df
 
@@ -64,9 +67,31 @@ _LOG_HANDLER_NAME = "campaign_run_log"
 
 OUTPUT_DIR_ENV = "WIND_UP_BENCHMARKING_OUTPUT_DIR"
 
-# Step 1's plots: every turbine and every record provided, drawn before anything is planned. They
-# depend on the campaign's data alone, so they sit beside the campaign folder, shared by its runs.
-INPUT_PLOTS_DIRNAME = "input_data_plots"
+# The run's output is laid out by the parts of docs/v1/method.md: data preparation for every turbine,
+# the estimator once per test turbine, and the campaign's results across turbines. Inside each, a
+# folder is named for the method step it shows.
+DATA_PREPARATION_DIRNAME = "A_data_preparation"
+ESTIMATOR_DIRNAME = "B_uplift_estimator"
+CAMPAIGN_DIRNAME = "C_campaign"
+README_FILENAME = "README.md"
+
+_README = f"""\
+# Campaign run output
+
+Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
+
+- `{RESOLVED_FILENAME}`: the campaign as wind-up understood it.
+- `{LOG_FILENAME}`: the run's log.
+- `{DATA_PREPARATION_DIRNAME}/`: part A, every turbine over every record provided.
+  - `{stages.CHANGES}/`: step 1, operating relationships, coverage and power factor.
+  - `{stages.OPERATING_STATES}/`: step 2, the operating-state labels and hours per state.
+  - `{stages.NORTHING}/`: step 4, the northing corrections.
+- `{ESTIMATOR_DIRNAME}/<test turbine>/`: part B, one folder per test turbine, over its span and with
+  its power references. Its results are in CSVs; its plots are under `plots/`, one folder per step.
+- `{CAMPAIGN_DIRNAME}/`: part C, the results across turbines: analysis plans (steps 7 and 11),
+  reference stability (step 11), per-turbine uplift (step 12), conditional uplift (step 13) and farm
+  uplift (step 14).
+"""
 
 
 def wind_up_method(
@@ -110,11 +135,6 @@ def wind_up_method(
         era5_label=era5_label,
         run_subdir=run_subdir,
     )
-
-
-def default_input_plots_dir(path: str | Path) -> Path:
-    """Return where a campaign's step 1 plots go: beside the folder holding its declaration."""
-    return Path(path).resolve().parent.parent / INPUT_PLOTS_DIRNAME
 
 
 def output_root() -> Path:
@@ -164,8 +184,8 @@ def run_declaration(
     :param era5_hourly_df: reanalysis to use instead of self-serving it from the farm centroid,
         for a caller that already holds it
     :param plan_settings: how a planned campaign's spans and power references are chosen
-    :param input_plots_dir: where step 1's plots of every turbine and every record go; defaults to
-        :func:`default_input_plots_dir`
+    :param input_plots_dir: where steps 1 and 2's plots of every turbine and every record go, in a
+        folder per step; defaults to the run's data-preparation folder
     :return: the truth-free campaign report, which is also written under ``out_dir``
     """
     declaration = load_declaration(path)
@@ -174,6 +194,9 @@ def run_declaration(
     log_path = log_to_file(out_dir)
     resolved = yaml.safe_dump(declaration.resolved(), sort_keys=False, default_flow_style=False)
     (out_dir / RESOLVED_FILENAME).write_text(_RESOLVED_HEADER + resolved)
+    (out_dir / README_FILENAME).write_text(_README)
+    preparation = out_dir / DATA_PREPARATION_DIRNAME
+    input_plots = input_plots_dir if input_plots_dir is not None else preparation
     logger.info(
         "Running campaign %r declared in %s\n  writing to %s\n  logging to %s",
         declaration.name,
@@ -183,12 +206,19 @@ def run_declaration(
     )
 
     scada_df = pd.read_parquet(declaration.scada_path)
-    write_input_data_plots(
+    index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+    timebase = infer_timebase(index)
+    scada_df = label_operating_states(
         scada_df,
         columns=declaration.columns,
-        out_dir=input_plots_dir if input_plots_dir is not None else default_input_plots_dir(path),
+        config=declaration.operating_state,
+        timebase=timebase,
+        rated_power_kw=declaration.spec.rated_power_kw,
     )
-    index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+    write_input_data_plots(scada_df, columns=declaration.columns, out_dir=input_plots / stages.CHANGES)
+    write_operating_state_plots(
+        scada_df, columns=declaration.columns, timebase=timebase, out_dir=input_plots / stages.OPERATING_STATES
+    )
     reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration, index=index)
     # One screen verdict for the campaign: every test turbine is judged against the same references.
     screen_cache: dict = {}
@@ -200,7 +230,7 @@ def run_declaration(
             wind_up_method(
                 declaration.spec,
                 columns=declaration.columns,
-                out_dir=out_dir / wtg,
+                out_dir=out_dir / ESTIMATOR_DIRNAME / wtg,
                 era5_hourly_df=reanalysis,
                 screen_cache=screen_cache,
                 era5_label=era5_source_label(*declaration.centroid),
@@ -209,10 +239,10 @@ def run_declaration(
         ],
         columns=declaration.columns,
         era5_wd=era5_direction(reanalysis, index),
-        northing_out_dir=out_dir / "northing",
+        northing_out_dir=preparation / stages.NORTHING,
         plan_settings=plan_settings,
     )
-    write_report(report, out_dir=out_dir)
+    write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME)
     logger.info("Wrote the %r report to %s", declaration.name, out_dir)
     return report
 

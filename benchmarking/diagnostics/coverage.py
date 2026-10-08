@@ -74,7 +74,7 @@ def plot_input_timeline(ctx: DiagnosticContext) -> Path:
     ]
     ax.legend(handles=legend, loc="lower right")
     apply_grid(ax)
-    path = ctx.stage_dir(stages.INPUTS) / "input_data_timeline.png"
+    path = ctx.stage_dir(stages.CHANGES) / "input_data_timeline.png"
     save_fig(fig, path)
     return path
 
@@ -105,7 +105,7 @@ def plot_input_coverage(ctx: DiagnosticContext) -> Path:
     ax.set_title(f"{ctx.test_wtg}: input data coverage (before filtering)")
     apply_grid(ax)
     ax.legend(ncol=2, fontsize="small")
-    path = ctx.stage_dir(stages.INPUTS) / "input_data_coverage.png"
+    path = ctx.stage_dir(stages.CHANGES) / "input_data_coverage.png"
     save_fig(fig, path)
     return path
 
@@ -137,7 +137,7 @@ def plot_filter_coverage(ctx: DiagnosticContext) -> Path:
     ax.set_title(f"{ctx.test_wtg}: data coverage before vs after the row filter")
     apply_grid(ax)
     ax.legend()
-    path = ctx.stage_dir(stages.FILTER) / "filter_coverage.png"
+    path = ctx.stage_dir(stages.VALID_RECORDS) / "filter_coverage.png"
     save_fig(fig, path)
     return path
 
@@ -173,6 +173,6 @@ def plot_excluded_fraction(ctx: DiagnosticContext) -> Path | None:
         f"({excluded.sum()} of {len(excluded)}, {100.0 * excluded.mean():.1f}%)"
     )
     apply_grid(ax)
-    path = ctx.stage_dir(stages.FILTER) / "excluded_row_fraction.png"
+    path = ctx.stage_dir(stages.VALID_RECORDS) / "excluded_row_fraction.png"
     save_fig(fig, path)
     return path

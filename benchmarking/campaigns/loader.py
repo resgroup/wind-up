@@ -6,7 +6,7 @@ Campaign facts only. Method configuration stays on the method, the deliberate br
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +14,7 @@ import pandas as pd
 import yaml
 
 from benchmarking.campaigns.declaration import CampaignSpec, layout_coords
+from benchmarking.harness.operating_state import OperatingStateConfig, StateValidity
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from benchmarking.synthetic.sources.greenbyte import GREENBYTE_COLUMNS
 from wind_up.layout import Layout
@@ -31,6 +32,13 @@ ALL_TURBINES = "ALL"
 PER_TURBINE_PERIOD = "chosen per upgraded turbine"
 
 MODES = ("prepost", "toggle")
+
+# How a declaration writes a state's northing and uplift validity.
+VALID = "valid"
+NOT_VALID = "not valid"
+_VALIDITY = {VALID: True, NOT_VALID: False}
+_OPERATING_STATE_KEYS = ("label_column", "parked_pitch_above_deg", "parked_pitch_below_deg", "labels")
+_STATE_VALIDITY_KEYS = ("northing", "waking", "uplift")
 
 # The reanalysis centroid is rounded to this many decimals, and taken over the whole turbines
 # file rather than the declared roles, so every campaign on one site shares a cache entry and
@@ -66,6 +74,8 @@ class Declaration:
     :param era5_window: ``(start_date, end_date)`` for the reanalysis fetch, rounded out to whole
         calendar years so campaigns on one site share a cache entry. ``None`` when no analysis
         period is declared; the run then takes it from the data.
+    :param operating_state: the site's operating-state labels and parked-pitch rule; generic states
+        only when none is declared
     """
 
     name: str
@@ -74,6 +84,7 @@ class Declaration:
     scada_path: Path
     centroid: tuple[float, float]
     era5_window: tuple[str, str] | None
+    operating_state: OperatingStateConfig = field(default_factory=OperatingStateConfig)
 
     def resolved(self) -> dict[str, Any]:
         """Return the resolved campaign facts, for echoing into the run output.
@@ -111,6 +122,7 @@ class Declaration:
                 "centroid": list(self.centroid),
                 "window": list(self.era5_window) if self.era5_window is not None else "from the data",
             },
+            "operating_state": _resolved_operating_state(self.operating_state),
         }
         if spec.works:
             resolved["works"] = {t: [[str(s), str(e)] for s, e in windows] for t, windows in spec.works.items()}
@@ -181,6 +193,7 @@ def load_declaration(path: str | Path) -> Declaration:
         scada_path=scada_path,
         centroid=centroid(coords),
         era5_window=era5_window(*bounds) if bounds is not None else None,
+        operating_state=_operating_state(raw.get("operating_state")),
     )
 
 
@@ -261,6 +274,57 @@ def _resolved_period(period: Window | dict[str, Window] | None) -> dict[str, Any
         return {t: {"start": str(s), "end": str(e)} for t, (s, e) in period.items()}
     start, end = period
     return {"start": str(start), "end": str(end)}
+
+
+def _operating_state(block: dict | None) -> OperatingStateConfig:
+    """Read the optional operating-state block; none gives the generic states only."""
+    if block is None:
+        return OperatingStateConfig()
+    stray = sorted(set(map(str, block)) - set(_OPERATING_STATE_KEYS))
+    if stray:
+        msg = f"operating_state has unknown keys {stray}; known keys are {list(_OPERATING_STATE_KEYS)}"
+        raise ValueError(msg)
+    labels = {str(name): _state_validity(str(name), entry) for name, entry in (block.get("labels") or {}).items()}
+    label_column = block.get("label_column")
+    above, below = block.get("parked_pitch_above_deg"), block.get("parked_pitch_below_deg")
+    return OperatingStateConfig(
+        label_column=None if label_column is None else str(label_column),
+        labels=labels,
+        parked_pitch_above_deg=None if above is None else float(above),
+        parked_pitch_below_deg=None if below is None else float(below),
+    )
+
+
+def _state_validity(name: str, entry: dict) -> StateValidity:
+    """Read one label's ``{northing, waking, uplift}`` validity."""
+    if not isinstance(entry, dict) or set(entry) != set(_STATE_VALIDITY_KEYS):
+        msg = f"operating_state label {name!r} needs exactly the keys {list(_STATE_VALIDITY_KEYS)}, got {entry!r}"
+        raise ValueError(msg)
+    for key in ("northing", "uplift"):
+        if entry[key] not in _VALIDITY:
+            msg = f"operating_state label {name!r} has {key} {entry[key]!r}; use {VALID!r} or {NOT_VALID!r}"
+            raise ValueError(msg)
+    return StateValidity(
+        northing=_VALIDITY[entry["northing"]], waking=str(entry["waking"]), uplift=_VALIDITY[entry["uplift"]]
+    )
+
+
+def _resolved_operating_state(config: OperatingStateConfig) -> dict[str, Any]:
+    """Return the operating-state block as the resolved echo shows it."""
+    resolved: dict[str, Any] = {"label_column": config.label_column}
+    if config.parked_pitch_below_deg is not None:
+        resolved["parked_pitch_below_deg"] = config.parked_pitch_below_deg
+    else:
+        resolved["parked_pitch_above_deg"] = config.parked_pitch_above_deg
+    resolved["labels"] = {
+        name: {
+            "northing": VALID if v.northing else NOT_VALID,
+            "waking": v.waking,
+            "uplift": VALID if v.uplift else NOT_VALID,
+        }
+        for name, v in config.labels.items()
+    }
+    return resolved
 
 
 def _section(raw: dict, name: str) -> dict:

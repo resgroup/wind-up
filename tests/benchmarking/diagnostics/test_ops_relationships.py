@@ -200,7 +200,7 @@ class TestTheRunLevelPlots:
             "ops_relationships_T2.png",
             "ops_relationships_T3.png",
         ]
-        assert {p.parent.name for p in paths} == {"1_inputs"}
+        assert {p.parent.name for p in paths} == {"01_changes"}
 
     def test_every_other_turbine_when_the_method_names_no_power_references(self, tmp_path: Path) -> None:
         paths = plot_run_ops_relationships(_context(tmp_path, power_references=None))

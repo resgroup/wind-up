@@ -13,10 +13,10 @@ import yaml
 
 from benchmarking.campaigns.composed import (
     _LOG_HANDLER_NAME,
-    INPUT_PLOTS_DIRNAME,
+    DATA_PREPARATION_DIRNAME,
+    ESTIMATOR_DIRNAME,
     LOG_FILENAME,
     WIND_UP,
-    default_input_plots_dir,
     default_out_dir,
     run_declaration,
     wind_up_method,
@@ -209,23 +209,24 @@ class TestTheInputDataPlots:
             root.removeHandler(handler)
             handler.close()
 
-    def test_they_sit_beside_the_campaign_folder(self, declaration: Path) -> None:
-        assert default_input_plots_dir(declaration) == declaration.parent.parent / INPUT_PLOTS_DIRNAME
-
     def test_every_turbine_is_drawn_before_planning(self, declaration: Path, tmp_path: Path) -> None:
         with pytest.raises(_StopError):
             run_declaration(declaration, out_dir=tmp_path / "out", era5_hourly_df=era5())
-        names = {p.name for p in (tmp_path / INPUT_PLOTS_DIRNAME).iterdir()}
+        preparation = tmp_path / "out" / DATA_PREPARATION_DIRNAME
+        names = {p.name for p in (preparation / "01_changes").iterdir()}
         # T04 is excluded from the campaign but its data was provided, so it is drawn
         assert {f"ops_relationships_T0{i}.png" for i in range(1, 5)} <= names
         assert {"power_factor.png", "input_data_coverage.png"} <= names
+        states = {p.name for p in (preparation / "02_operating_states").iterdir()}
+        assert {"operating_state_hours.csv", "operating_state_hours.png", "operating_states_T04.png"} <= states
 
     def test_the_folder_can_be_named(self, declaration: Path, tmp_path: Path) -> None:
         with pytest.raises(_StopError):
             run_declaration(
                 declaration, out_dir=tmp_path / "out", era5_hourly_df=era5(), input_plots_dir=tmp_path / "mine"
             )
-        assert (tmp_path / "mine" / "input_data_coverage.png").exists()
+        assert (tmp_path / "mine" / "01_changes" / "input_data_coverage.png").exists()
+        assert (tmp_path / "mine" / "02_operating_states" / "operating_state_hours.csv").exists()
 
 
 class TestTheRunFolders:
@@ -255,7 +256,7 @@ class TestTheRunFolders:
         with pytest.raises(_StopError):
             run_declaration(declaration, out_dir=tmp_path / "out", era5_hourly_df=era5())
         (method,) = built
-        assert method.out_dir == (tmp_path / "out" / "T01").resolve()  # type: ignore[attr-defined]
+        assert method.out_dir == (tmp_path / "out" / ESTIMATOR_DIRNAME / "T01").resolve()  # type: ignore[attr-defined]
         assert not method.run_subdir  # type: ignore[attr-defined]
 
     def test_studies_keep_a_named_folder_per_run(self, tmp_path: Path) -> None:

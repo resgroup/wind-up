@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from benchmarking.campaigns.loader import CENTROID_DECIMALS, load_declaration
+from benchmarking.harness.operating_state import GENERIC_STATES, OperatingStateConfig, StateValidity
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
 if TYPE_CHECKING:
@@ -501,3 +502,60 @@ def test_a_flat_declaration_loads_unchanged(tmp_path: Path) -> None:
     assert declaration.spec.exclusions == []
     assert not declaration.spec.uses_plans
     assert "works" not in declaration.resolved()
+
+
+OPERATING_STATE = """
+operating_state:
+  label_column: state
+  parked_pitch_above_deg: 45
+  labels:
+    noise mode:     {northing: valid, waking: waking,      uplift: not valid}
+    BM curtailment: {northing: valid, waking: part waking, uplift: not valid}
+"""
+
+
+def test_the_operating_state_block_is_parsed_and_echoed(tmp_path: Path) -> None:
+    declaration = load(tmp_path, PREPOST + OPERATING_STATE)
+    config = declaration.operating_state
+    assert config.label_column == "state"
+    assert config.parked_pitch_above_deg == 45
+    assert config.labels["noise mode"] == StateValidity(northing=True, waking="waking", uplift=False)
+    assert config.labels["BM curtailment"].waking == "part waking"
+    echoed = declaration.resolved()["operating_state"]
+    assert echoed["labels"]["noise mode"] == {"northing": "valid", "waking": "waking", "uplift": "not valid"}
+    assert echoed["parked_pitch_above_deg"] == 45
+
+
+def test_no_operating_state_block_gives_the_generic_states(tmp_path: Path) -> None:
+    config = load(tmp_path).operating_state
+    assert config == OperatingStateConfig()
+    assert set(config.validity()) == set(GENERIC_STATES)
+
+
+@pytest.mark.parametrize(
+    ("block", "match"),
+    [
+        ("operating_state:\n  colour: red\n", "unknown keys"),
+        (
+            "operating_state:\n  label_column: s\n  labels:\n    x: {northing: yes, waking: waking, uplift: valid}\n",
+            "northing",
+        ),
+        (
+            "operating_state:\n  label_column: s\n  labels:\n    x: {northing: valid, waking: often, uplift: valid}\n",
+            "waking",
+        ),
+        (
+            "operating_state:\n  label_column: s\n  labels:\n    x: {northing: valid, uplift: valid}\n",
+            "exactly the keys",
+        ),
+        (
+            "operating_state:\n  label_column: s\n  labels:\n"
+            "    missing: {northing: valid, waking: waking, uplift: valid}\n",
+            "generic",
+        ),
+        ("operating_state:\n  parked_pitch_above_deg: 45\n  parked_pitch_below_deg: -45\n", "pitch"),
+    ],
+)
+def test_bad_operating_state_blocks_raise(tmp_path: Path, block: str, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        load(tmp_path, PREPOST + block)

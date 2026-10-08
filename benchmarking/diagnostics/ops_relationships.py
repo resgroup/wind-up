@@ -225,7 +225,7 @@ def plot_run_ops_relationships(ctx: DiagnosticContext) -> list[Path]:
             turbine=turbine,
             columns=ctx.columns,
             timebase=ctx.timebase,
-            out_dir=ctx.stage_dir(stages.INPUTS),
+            out_dir=ctx.stage_dir(stages.CHANGES),
             title=f"{turbine} ({role}): operating relationships over the span, {period} (power > 0, fully available)",
         )
         if path is not None:

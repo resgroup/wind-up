@@ -125,7 +125,7 @@ def build_era5_and_outcome(scada_df: pd.DataFrame, *, test_wtg: str) -> tuple[pd
     test_rows = scada_df[scada_df[HOT_COLUMNS.turbine] == test_wtg].sort_index()
     keep = NormalOperationFilter(
         active_power_col=HOT_COLUMNS.active_power,
-        wind_speed_col=HOT_COLUMNS.wind_speed,
+        columns=HOT_COLUMNS,
         availability_col=HOT_COLUMNS.availability,
     ).keep_mask(test_rows, timebase=timebase)
     keep = keep[~keep.index.duplicated()].reindex(index, fill_value=False).to_numpy()

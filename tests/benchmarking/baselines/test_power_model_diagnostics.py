@@ -168,7 +168,7 @@ def test_set_ylim_from_inliers_noop_when_no_inliers() -> None:
 
 
 def test_plot_residual_binned_writes_both_png_with_conditions(tmp_path: Path) -> None:
-    model_dir = tmp_path / stages.UPLIFT_MODELLING
+    model_dir = tmp_path / stages.RELATE_REFERENCES
     model_dir.mkdir()
     _plot_residual_binned(model_dir, _diag_data(with_conditions=True))
     assert (model_dir / "residual_binned.png").exists()
@@ -177,7 +177,7 @@ def test_plot_residual_binned_writes_both_png_with_conditions(tmp_path: Path) ->
 
 def test_plot_residual_binned_writes_png_without_conditions(tmp_path: Path) -> None:
     # No ws/TI columns configured: the plot still renders the power-axis panels.
-    model_dir = tmp_path / stages.UPLIFT_MODELLING
+    model_dir = tmp_path / stages.RELATE_REFERENCES
     model_dir.mkdir()
     _plot_residual_binned(model_dir, _diag_data(with_conditions=False))
     assert (model_dir / "residual_binned.png").exists()

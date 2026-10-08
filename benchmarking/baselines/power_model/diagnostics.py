@@ -380,24 +380,24 @@ def plot_conditional_diagnostics(plots_dir: Path, per_bin: pd.DataFrame, *, test
 
 def save_plots(plots_dir: Path, data: DiagnosticData, importance: pd.DataFrame) -> None:
     """Write the power-model diagnostic plots into their analysis-stage subfolders."""
-    model_dir = plots_dir / stages.UPLIFT_MODELLING
+    model_dir = plots_dir / stages.RELATE_REFERENCES
     model_dir.mkdir(parents=True, exist_ok=True)
     _plot_importance(model_dir, importance, test_wtg=data.test_wtg)
     _plot_predicted_vs_actual(model_dir, data)
     _plot_residual_vs_mean(model_dir, data)
     _plot_residual_binned(model_dir, data)
 
-    results_dir = plots_dir / stages.UPLIFT_RESULTS
+    results_dir = plots_dir / stages.UPLIFT
     results_dir.mkdir(parents=True, exist_ok=True)
     _plot_actual_vs_counterfactual_timeseries(results_dir, data)
 
-    inputs_dir = plots_dir / stages.UPLIFT_INPUTS
+    inputs_dir = plots_dir / stages.FEATURES
     inputs_dir.mkdir(parents=True, exist_ok=True)
     _plot_feature_overview(inputs_dir, feature_catalogue(data))
     _save_feature_histograms(inputs_dir / "feature_histograms", data)
 
     if data.era5_sweep is not None:
-        feat_dir = plots_dir / stages.FEATURE_ENG
+        feat_dir = plots_dir / stages.REANALYSIS
         feat_dir.mkdir(parents=True, exist_ok=True)
         _plot_era5_sweep(feat_dir, data)
 

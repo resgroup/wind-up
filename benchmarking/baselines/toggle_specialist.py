@@ -519,7 +519,7 @@ class ToggleSpecialistMethod:
             )
             if per_bin is not None:
                 _save_per_bin_plot(
-                    run_dir / "plots" / stages.CONDITIONAL_UPLIFT / f"{mi.test_wtg}_per_bin_uplift.png",
+                    run_dir / "plots" / stages.UPLIFT_DISTRIBUTIONS / f"{mi.test_wtg}_per_bin_uplift.png",
                     per_bin=per_bin,
                     test=mi.test_wtg,
                     active_power_col=self.columns.active_power,
@@ -801,7 +801,7 @@ def _save_plots(
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    _save(fig, plots_dir / stages.UPLIFT_INPUTS / f"{test}_scatter.png")
+    _save(fig, plots_dir / stages.RELATE_REFERENCES / f"{test}_scatter.png")
 
     # 2) daily sum-based test/ref ratio, one series per segment, with each segment's scalar rho overlaid.
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -819,7 +819,7 @@ def _save_plots(
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    _save(fig, plots_dir / stages.UPLIFT_RESULTS / f"{test}_ratio_timeseries.png")
+    _save(fig, plots_dir / stages.UPLIFT / f"{test}_ratio_timeseries.png")
 
     # 3) daily used-data coverage as a fraction of the day's expected timestamps, one series per
     # segment, so each segment is seen to receive its share (under toggle, ~50% each post-upgrade).
@@ -838,7 +838,7 @@ def _save_plots(
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    _save(fig, plots_dir / stages.FILTER / f"{test}_coverage_timeseries.png")
+    _save(fig, plots_dir / stages.VALID_RECORDS / f"{test}_coverage_timeseries.png")
 
 
 def _save_per_bin_plot(path: Path, *, per_bin: pd.DataFrame, test: str, active_power_col: str) -> None:

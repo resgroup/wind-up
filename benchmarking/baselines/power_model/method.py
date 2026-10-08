@@ -30,7 +30,6 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.era5_sync import sync_era5
-from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.baselines.power_model import diagnostics as diag
 from benchmarking.baselines.power_model.conditional import impute_uncovered_bins, relevel_conditional
 from benchmarking.baselines.power_model.features import (
@@ -62,6 +61,7 @@ from benchmarking.harness.conditions import (
     validate_conditions,
 )
 from benchmarking.harness.method import MethodInput, MethodOutput
+from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
 from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrade_start
 from wind_up.farm import TurbineUplift, farm_uplift
 
@@ -922,7 +922,7 @@ class PowerModelMethod:
         diag.write_conditional_csvs(conditional_dir, run_name, ts, overall=overall, per_bin=per_bin, match=match)
         if self.save_plots and per_bin is not None:
             diag.plot_conditional_diagnostics(
-                run_dir / "plots" / stages.CONDITIONAL_UPLIFT, per_bin, test_wtg=mi.test_wtg
+                run_dir / "plots" / stages.UPLIFT_DISTRIBUTIONS, per_bin, test_wtg=mi.test_wtg
             )
 
     def _conditional_is_runnable(self, era5_columns: Iterable[str]) -> bool:
@@ -1036,15 +1036,23 @@ class PowerModelMethod:
     def _select_rows(
         self, scada: pd.DataFrame, *, mi: MethodInput, index: pd.DatetimeIndex, y: pd.Series, timebase: pd.Timedelta
     ) -> np.ndarray:
-        """Boolean over ``index``: normally-operating test rows (cause-not-effect) with finite outcome."""
+        """Boolean over ``index``: the test turbine's valid-uplift rows with finite outcome."""
         test_rows = scada[scada[mi.turbine_col] == mi.test_wtg].sort_index()
-        keep = NormalOperationFilter(
-            active_power_col=self.columns.active_power,
-            wind_speed_col=self.columns.wind_speed,
-            availability_col=self.columns.availability,
-        ).keep_mask(test_rows, timebase=timebase)
+        keep = self._valid_uplift(test_rows, timebase=timebase)
         keep = keep[~keep.index.duplicated()].reindex(index, fill_value=False)
         return keep.to_numpy() & np.isfinite(y.to_numpy(dtype=float))
+
+    def _valid_uplift(self, rows: pd.DataFrame, *, timebase: pd.Timedelta) -> pd.Series:
+        """Return the rows' ``valid_uplift`` column, labelling generic states first when the frame has none."""
+        if VALID_UPLIFT_COL not in rows.columns:
+            rows = label_operating_states(
+                rows,
+                columns=self.columns,
+                config=OperatingStateConfig(),
+                timebase=timebase,
+                rated_power_kw=self.baseline_rated_power_kw,
+            )
+        return rows[VALID_UPLIFT_COL].astype(bool)
 
     def _fit_predict(
         self,
@@ -1354,20 +1362,14 @@ class PowerModelMethod:
         the frame can span a year while one candidate has a fortnight of campaign data, and that
         candidate is then estimated in exactly the short-data regime the gate exists to avoid.
 
-        Rows are counted through the same normal-operation mask :meth:`_select_rows` fits on, so a
-        turbine with a year of readings but a fortnight of available ones is judged on the
-        fortnight.
+        Rows are counted through the same valid-uplift mask :meth:`_select_rows` fits on, so a
+        turbine with a year of readings but a fortnight of valid ones is judged on the fortnight.
         """
         scada = mi.context.select(mi.scada_df)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         upgraded = pd.Series(resolve_toggle(mi.upgrade_timing, index).upgraded, index=index)
         timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
         per_day = timebase.total_seconds() / 86400.0
-        keep_mask = NormalOperationFilter(
-            active_power_col=self.columns.active_power,
-            wind_speed_col=self.columns.wind_speed,
-            availability_col=self.columns.availability,
-        ).keep_mask
         covered: dict[str, float] = {}
         for wtg in turbines:
             # This turbine's own rows: the long frame repeats each timestamp per turbine.
@@ -1377,7 +1379,7 @@ class PowerModelMethod:
                 covered[wtg] = 0.0
                 continue
             in_campaign = upgraded.reindex(pd.DatetimeIndex(rows.index)).fillna(value=False).to_numpy()
-            normal = keep_mask(rows, timebase=timebase).to_numpy()
+            normal = self._valid_uplift(rows, timebase=timebase).to_numpy()
             finite = np.isfinite(rows[self.columns.active_power].to_numpy(dtype=float))
             covered[wtg] = float(np.count_nonzero(in_campaign & normal & finite)) * per_day
         return covered
