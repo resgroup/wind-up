@@ -491,7 +491,7 @@ HOT_RATED_POWER_KW = 2300.0
 HOT_POWER_SETPOINT_COL = "wtc_PowerRef_endvalue"
 # The ambient temperature the icing label reads.
 HOT_AMBIENT_TEMP_COL = _TAG_AMBIENT_TEMP_MEAN
-# A setpoint of 0 is a stop command; 100 kW is the one-interval limit after cut-in.
+# A setpoint of 0 is a stop or a curtailment to zero; 100 kW is the one-interval limit after cut-in.
 HOT_STOP_SETPOINT_KW = 0.0
 HOT_STARTUP_SETPOINT_KW = 100.0
 # When Hill of Towie joined the Balancing Mechanism; reduced setpoints from then on are curtailment.

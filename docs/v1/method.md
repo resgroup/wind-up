@@ -146,8 +146,8 @@ Ownership of the states is split:
 
 It is important to carefully inspect power against wind speed, and pitch angle and rotor speed against
 power and wind speed, for both the excluded and the retained data of every turbine, to confirm that the
-operational state classification matches expectations. Power is used here to check the labels, never
-to make them.
+operational state classification matches expectations. Apart from the icing fallback, power is used
+here to check the labels, never to make them.
 
 ### 3. Add reanalysis data
 

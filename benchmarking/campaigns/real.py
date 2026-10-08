@@ -93,7 +93,7 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
     Reads the power setpoint at the end of each record; the setpoint at its start is the turbine's
     previous record's end, NaN after a gap. A record takes, from either end and in this order:
 
-    1. partial downtime: a stop setpoint;
+    1. a setpoint of 0: BM curtailment from the Balancing Mechanism start, partial downtime before it;
     2. no label: the start-up setpoint;
     3. high wind derate: wind speed at or above ``HOT_HIGH_WIND_DERATE_MS`` and a setpoint below rated
        that is not one of the turbine's noise setpoints;
@@ -144,7 +144,8 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
     labels[either(curtailed)] = BM_CURTAILMENT
     labels[either(derated)] = HIGH_WIND_DERATE
     labels[either(lambda s: s == HOT_STARTUP_SETPOINT_KW)] = None
-    labels[either(lambda s: s == HOT_STOP_SETPOINT_KW)] = PARTIAL_DOWNTIME
+    stopped = either(lambda s: s == HOT_STOP_SETPOINT_KW)
+    labels[stopped] = np.where(when[stopped] >= HOT_BM_START, BM_CURTAILMENT, PARTIAL_DOWNTIME)
     labels[_iced(scada_long, order=order, follows=follows, unlabelled=pd.isna(labels))] = ICING
     result = np.empty(len(end), dtype=object)
     result[order] = labels

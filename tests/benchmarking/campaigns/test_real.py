@@ -96,14 +96,19 @@ def hot_labels(scada: pd.DataFrame) -> list[str | None]:
     return label_hot_site_states(scada).tolist()
 
 
-def test_a_stop_setpoint_at_either_end_is_partial_downtime() -> None:
+def test_a_zero_setpoint_at_either_end_is_partial_downtime_before_the_bm_start() -> None:
     # The record after a 0 starts at 0.
-    assert hot_labels(setpoints("T13", [2300.0, 0.0, 2300.0, 2300.0])) == [
+    assert hot_labels(setpoints("T13", [2300.0, 0.0, 2300.0, 2300.0], start="2018-01-01")) == [
         None,
         PARTIAL_DOWNTIME,
         PARTIAL_DOWNTIME,
         None,
     ]
+
+
+def test_a_zero_setpoint_is_curtailment_from_the_bm_start_even_in_high_wind() -> None:
+    scada = setpoints("T13", [2300.0, 0.0, 2300.0, 2300.0], wind_speed=21.0)
+    assert hot_labels(scada) == [None, BM_CURTAILMENT, BM_CURTAILMENT, None]
 
 
 def test_the_startup_setpoint_has_no_label() -> None:
@@ -175,7 +180,7 @@ def test_icing_needs_a_well_populated_warm_power_curve_of_meaningful_power() -> 
 def test_the_start_setpoint_is_nan_after_a_gap() -> None:
     scada = setpoints("T13", [0.0, 2300.0, 2300.0])
     scada.index = scada.index[:1].append(scada.index[1:] + pd.Timedelta(hours=1))
-    assert hot_labels(scada) == [PARTIAL_DOWNTIME, None, None]
+    assert hot_labels(scada) == [BM_CURTAILMENT, None, None]
 
 
 def test_the_t13_declaration_carries_the_site_states(tmp_path: Path) -> None:
