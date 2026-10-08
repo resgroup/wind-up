@@ -506,11 +506,14 @@ HOT_NOISE_SETPOINTS_KW: dict[str, frozenset[float]] = {
 HOT_HIGH_WIND_DERATE_MS = 20.0
 # Icing: at or below HOT_ICING_MAX_TEMP_C, power under HOT_ICING_POWER_FRACTION of the turbine's
 # median power at that wind speed in records above HOT_ICING_REFERENCE_MIN_TEMP_C, where that
-# median is at least HOT_ICING_MIN_EXPECTED_KW.
+# median is at least HOT_ICING_MIN_EXPECTED_KW and comes from at least HOT_ICING_MIN_BIN_RECORDS
+# records, for at least HOT_ICING_MIN_RUN_RECORDS consecutive records.
 HOT_ICING_MAX_TEMP_C = 2.0
 HOT_ICING_REFERENCE_MIN_TEMP_C = 3.0
 HOT_ICING_POWER_FRACTION = 0.5
 HOT_ICING_MIN_EXPECTED_KW = 300.0
+HOT_ICING_MIN_BIN_RECORDS = 36
+HOT_ICING_MIN_RUN_RECORDS = 3
 
 # Hub height of the Hill of Towie turbines (m); feeds the ERA5 hub-height wind-speed derivation.
 HOT_HUB_HEIGHT_M = 59.0

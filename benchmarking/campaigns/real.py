@@ -25,7 +25,9 @@ from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_COORDINATES,
     HOT_HIGH_WIND_DERATE_MS,
     HOT_ICING_MAX_TEMP_C,
+    HOT_ICING_MIN_BIN_RECORDS,
     HOT_ICING_MIN_EXPECTED_KW,
+    HOT_ICING_MIN_RUN_RECORDS,
     HOT_ICING_POWER_FRACTION,
     HOT_ICING_REFERENCE_MIN_TEMP_C,
     HOT_NOISE_SETPOINTS_KW,
@@ -100,7 +102,8 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
     5. noise mode: one of the turbine's noise setpoints.
 
     A record without a setpoint label is icing when it is cold and produces under a fraction of the
-    turbine's warm-weather median power at its wind speed (the ``HOT_ICING_*`` constants).
+    turbine's warm-weather median power at its wind speed, for a run of consecutive records (the
+    ``HOT_ICING_*`` constants).
 
     :param scada_long: long-format Hill of Towie SCADA, indexed by timestamp
     :return: the labels on ``scada_long``'s index, in its order
@@ -142,14 +145,17 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
     labels[either(derated)] = HIGH_WIND_DERATE
     labels[either(lambda s: s == HOT_STARTUP_SETPOINT_KW)] = None
     labels[either(lambda s: s == HOT_STOP_SETPOINT_KW)] = PARTIAL_DOWNTIME
-    labels[_iced(scada_long, order=order, unlabelled=pd.isna(labels))] = ICING
+    labels[_iced(scada_long, order=order, follows=follows, unlabelled=pd.isna(labels))] = ICING
     result = np.empty(len(end), dtype=object)
     result[order] = labels
     return pd.Series(result, index=scada_long.index, name=HOT_STATE_COL)
 
 
-def _iced(scada_long: pd.DataFrame, *, order: np.ndarray, unlabelled: np.ndarray) -> np.ndarray:
-    """Return which of the ``order``-sorted records are icing, among the ``unlabelled`` ones."""
+def _iced(scada_long: pd.DataFrame, *, order: np.ndarray, follows: np.ndarray, unlabelled: np.ndarray) -> np.ndarray:
+    """Return which of the ``order``-sorted records are icing, among the ``unlabelled`` ones.
+
+    ``follows`` marks the records that directly follow the previous one of the same turbine.
+    """
     rows = pd.DataFrame(
         {
             "turbine": scada_long[HOT_TURBINE_COL].astype(str).to_numpy()[order],
@@ -159,15 +165,20 @@ def _iced(scada_long: pd.DataFrame, *, order: np.ndarray, unlabelled: np.ndarray
     )
     ambient = scada_long[HOT_AMBIENT_TEMP_COL].to_numpy(dtype=float)[order]
     warm = unlabelled & (ambient > HOT_ICING_REFERENCE_MIN_TEMP_C)
-    curve = rows[warm].groupby(["turbine", "bin"])["power"].median().rename("expected")
+    curve = rows[warm].groupby(["turbine", "bin"])["power"].agg(["median", "count"])
+    curve = curve.loc[curve["count"] >= HOT_ICING_MIN_BIN_RECORDS, "median"].rename("expected")
     expected = rows.join(curve, on=["turbine", "bin"])["expected"].to_numpy()
     with np.errstate(invalid="ignore"):
-        return (
+        low = (
             unlabelled
             & (ambient <= HOT_ICING_MAX_TEMP_C)
             & (expected >= HOT_ICING_MIN_EXPECTED_KW)
             & (rows["power"].to_numpy() < HOT_ICING_POWER_FRACTION * expected)
         )
+    continues = follows & np.concatenate([[False], low[:-1]])
+    run = np.cumsum(~continues)
+    run_length = pd.Series(low).groupby(run).transform("sum").to_numpy()
+    return low & (run_length >= HOT_ICING_MIN_RUN_RECORDS)
 
 
 def write_hot_aeroup_t13(

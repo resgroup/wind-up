@@ -136,21 +136,40 @@ def test_a_noise_setpoint_in_high_wind_stays_noise_mode() -> None:
     assert hot_labels(setpoints("T16", [2300.0, 1993.0], wind_speed=21.0)) == [None, NOISE_MODE]
 
 
-def test_cold_records_far_below_the_warm_power_curve_are_icing() -> None:
-    warm = setpoints("T13", [2300.0] * 4, power=1000.0)
-    cold = setpoints(
-        "T13", [2300.0, 2300.0, 2300.0, 1500.0], start="2019-01-02", power=[250.0, 900.0, 250.0, 250.0], ambient=0.0
-    )
-    cold.iloc[2, cold.columns.get_loc(HOT_AMBIENT_TEMP_COL)] = 5.0
-    # Only the cold, low record without a setpoint label is icing; a reduced setpoint keeps its label.
-    assert hot_labels(pd.concat([warm, cold])) == [None] * 4 + [ICING, None, None, BM_CURTAILMENT]
+def warm_curve(*, records: int = 36, wind_speed: float = 8.0, power: float = 1000.0) -> pd.DataFrame:
+    """T13's warm records at one wind speed, a day before the cold records."""
+    return setpoints("T13", [2300.0] * records, start="2018-12-31", wind_speed=wind_speed, power=power)
 
 
-def test_icing_needs_a_warm_power_curve_of_meaningful_power() -> None:
-    warm = setpoints("T13", [2300.0] * 4, wind_speed=4.0, power=200.0)
-    cold = setpoints("T13", [2300.0, 2300.0], start="2019-01-02", wind_speed=[4.0, 12.0], power=50.0, ambient=0.0)
-    # 4 m/s expects under the minimum power; 12 m/s has no warm records.
-    assert hot_labels(pd.concat([warm, cold])) == [None] * 6
+def cold(power: list[float], *, setpoint: list[float] | None = None, wind_speed: float = 8.0) -> pd.DataFrame:
+    """T13's consecutive cold records at one wind speed."""
+    values = setpoint if setpoint is not None else [2300.0] * len(power)
+    return setpoints("T13", values, start="2019-01-02", wind_speed=wind_speed, power=power, ambient=0.0)
+
+
+def test_three_cold_records_far_below_the_warm_power_curve_are_icing() -> None:
+    labels = hot_labels(pd.concat([warm_curve(), cold([250.0, 250.0, 250.0, 900.0, 250.0, 250.0])]))
+    # The run of three is icing; the run of two after the 900 kW record is not.
+    assert labels[36:] == [ICING, ICING, ICING, None, None, None]
+
+
+def test_a_reduced_setpoint_breaks_an_icing_run() -> None:
+    labels = hot_labels(pd.concat([warm_curve(), cold([250.0] * 4, setpoint=[2300.0, 2300.0, 1500.0, 2300.0])]))
+    assert labels[36:] == [None, None, BM_CURTAILMENT, BM_CURTAILMENT]
+
+
+def test_a_warm_record_breaks_an_icing_run() -> None:
+    scada = pd.concat([warm_curve(), cold([250.0] * 5)])
+    scada.iloc[38, scada.columns.get_loc(HOT_AMBIENT_TEMP_COL)] = 5.0
+    assert hot_labels(scada)[36:] == [None] * 5
+
+
+def test_icing_needs_a_well_populated_warm_power_curve_of_meaningful_power() -> None:
+    # 35 warm records are too few for the curve.
+    assert hot_labels(pd.concat([warm_curve(records=35), cold([250.0] * 3)]))[35:] == [None] * 3
+    # At 4 m/s the warm curve is under the minimum power.
+    scada = pd.concat([warm_curve(wind_speed=4.0, power=200.0), cold([50.0] * 3, wind_speed=4.0)])
+    assert hot_labels(scada)[36:] == [None] * 3
 
 
 def test_the_start_setpoint_is_nan_after_a_gap() -> None:
