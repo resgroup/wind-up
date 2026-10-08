@@ -9,12 +9,17 @@ import pandas as pd
 
 from benchmarking.diagnostics.context import DiagnosticContext
 from benchmarking.diagnostics.operating_states import (
+    NORTHING_VIEWS,
     STATE_HOURS_CSV,
+    WAKING_VIEWS,
+    plot_monthly_state_hours,
     plot_operating_states,
     plot_run_operating_states,
+    plot_run_uplift_validity,
     state_colours,
     state_order,
     write_operating_state_plots,
+    write_validity_plots,
 )
 from benchmarking.harness.operating_state import (
     FULL_DOWNTIME,
@@ -103,10 +108,10 @@ def test_a_turbine_without_pitch_skips_the_pitch_panels(tmp_path: Path) -> None:
     assert path.exists()
 
 
-def test_the_run_level_plots_cover_the_test_turbine_and_power_references(tmp_path: Path) -> None:
+def _run_context(tmp_path: Path) -> DiagnosticContext:
     scada = _labelled(_farm(["T1", "T2", "T3"], days=10))
     index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
-    ctx = DiagnosticContext(
+    return DiagnosticContext(
         run_dir=tmp_path / "run",
         test_wtg="T1",
         turbine_col="turbine",
@@ -118,6 +123,67 @@ def test_the_run_level_plots_cover_the_test_turbine_and_power_references(tmp_pat
         mode="prepost",
         power_references=["T2"],
     )
-    written = plot_run_operating_states(ctx)
+
+
+def test_the_run_level_plots_cover_the_test_turbine_and_power_references(tmp_path: Path) -> None:
+    written = plot_run_operating_states(_run_context(tmp_path))
     assert sorted(p.name for p in written) == ["operating_states_T1.png", "operating_states_T2.png"]
     assert all(p.parent == tmp_path / "run" / "plots" / "02_operating_states" for p in written)
+
+
+def test_each_validity_view_of_each_turbine_is_drawn(tmp_path: Path) -> None:
+    labelled = _labelled(_farm(["T1", "T2"], days=10))
+    northing = write_validity_plots(
+        labelled, views=NORTHING_VIEWS, columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path / "04"
+    )
+    assert sorted(p.name for p in northing) == [
+        "northing_not_used_T1.png",
+        "northing_not_used_T2.png",
+        "northing_used_T1.png",
+        "northing_used_T2.png",
+    ]
+    waking = write_validity_plots(labelled, views=WAKING_VIEWS, columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path)
+    assert {p.name.rsplit("_", 1)[0] for p in waking} == {"waking", "part_waking", "not_waking"}
+
+
+def test_an_empty_view_is_still_drawn(tmp_path: Path) -> None:
+    rows = _labelled(_farm(["T1"], days=10))
+    path = plot_operating_states(
+        rows,
+        turbine="T1",
+        columns=COLUMNS,
+        timebase=TIMEBASE,
+        out_dir=tmp_path,
+        name="nothing",
+        subset=np.zeros(len(rows), dtype=bool),
+    )
+    assert path == tmp_path / "nothing_T1.png"
+    assert path.exists()
+
+
+def test_an_unlabelled_frame_gets_no_validity_plots(tmp_path: Path) -> None:
+    assert (
+        write_validity_plots(_farm(["T1"]), views=NORTHING_VIEWS, columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path)
+        == []
+    )
+
+
+def test_the_run_level_uplift_validity_covers_the_test_turbine_and_power_references(tmp_path: Path) -> None:
+    written = plot_run_uplift_validity(_run_context(tmp_path))
+    assert sorted(p.name for p in written) == [
+        "uplift_not_used_T1.png",
+        "uplift_not_used_T2.png",
+        "uplift_used_T1.png",
+        "uplift_used_T2.png",
+    ]
+    assert all(p.parent == tmp_path / "run" / "plots" / "08_valid_records" for p in written)
+
+
+def test_the_monthly_hours_mark_each_turbines_changeovers(tmp_path: Path) -> None:
+    labelled = _labelled(_farm(["T1", "T2"], days=70))
+    changeover = pd.Timestamp("2020-02-01", tz="UTC")
+    path = plot_monthly_state_hours(
+        labelled, columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path, changeovers={"T1": [changeover]}
+    )
+    assert path is not None
+    assert path.exists()

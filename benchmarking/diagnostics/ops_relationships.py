@@ -23,12 +23,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import BoundaryNorm, ListedColormap, Normalize
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap, Normalize
 
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.style import apply_grid, save_fig
+from benchmarking.diagnostics.timeaxis import upgrade_start
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
     from benchmarking.diagnostics.context import DiagnosticContext
@@ -47,9 +49,9 @@ N_BINS = 10
 MIN_HOURS = 6.0
 
 _COLUMNS = ["month", "bin", "x_lo", "x_hi", "x_mean", "y_mean", "hours"]
-# Single-hue sequential ramp, light to dark; the lightest end is skipped so every line stays visible.
-_CMAP = plt.get_cmap("Blues")
-_CMAP_FLOOR = 0.3
+# Blue through purple to red, with no pale step, so every line stays visible.
+_CMAP = LinearSegmentedColormap.from_list("blue_red", ["#2166ac", "#7b3294", "#d7191c"])
+_CMAP_FLOOR = 0.0
 
 
 def operating_mask(rows: pd.DataFrame, *, columns: ColumnSchema, timebase: pd.Timedelta) -> pd.Series:
@@ -111,7 +113,9 @@ def _ramp(n: int) -> list[tuple[float, float, float, float]]:
     return [_colour(i / max(n - 1, 1)) for i in range(n)]
 
 
-def _draw_by_bin(ax: plt.Axes, cells: pd.DataFrame, *, x_label: str, y_label: str) -> None:
+def _draw_by_bin(
+    ax: plt.Axes, cells: pd.DataFrame, *, x_label: str, y_label: str, changeovers: Sequence[pd.Timestamp]
+) -> None:
     """Bin-mean ``y`` over months, one line per bin, coloured by bin; a gap where a month has no data."""
     months = pd.date_range(cells["month"].min(), cells["month"].max(), freq="MS")
     wide = cells.pivot_table(index="month", columns="bin", values="y_mean").reindex(months)
@@ -126,6 +130,8 @@ def _draw_by_bin(ax: plt.Axes, cells: pd.DataFrame, *, x_label: str, y_label: st
         bar = ax.figure.colorbar(mappable, ax=ax, pad=0.01)
         bar.set_label(f"{x_label} bin", fontsize="small")
         bar.ax.tick_params(labelsize="x-small")
+    for changeover in changeovers:
+        ax.axvline(changeover, color="k", linestyle="--", linewidth=1.2)
     locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
     ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
@@ -133,8 +139,10 @@ def _draw_by_bin(ax: plt.Axes, cells: pd.DataFrame, *, x_label: str, y_label: st
     apply_grid(ax)
 
 
-def _draw_by_month(ax: plt.Axes, cells: pd.DataFrame, *, x_label: str, y_label: str) -> None:
-    """Bin-mean ``y`` against bin-mean ``x``, one line per month, coloured by date."""
+def _draw_by_month(
+    ax: plt.Axes, cells: pd.DataFrame, *, x_label: str, y_label: str, changeovers: Sequence[pd.Timestamp]
+) -> None:
+    """Bin-mean ``y`` against bin-mean ``x``, one line per month, coloured by date; changeovers on the colour bar."""
     months = sorted(cells["month"].unique())
     first, last = mdates.date2num(months[0]), mdates.date2num(months[-1])
     norm = Normalize(vmin=first, vmax=max(last, first + 1))
@@ -149,6 +157,8 @@ def _draw_by_month(ax: plt.Axes, cells: pd.DataFrame, *, x_label: str, y_label: 
     bar.ax.yaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
     bar.ax.tick_params(labelsize="x-small")
     bar.set_label("month", fontsize="small")
+    for changeover in changeovers:
+        bar.ax.axhline(mdates.date2num(changeover), color="k", linestyle="--", linewidth=1.2)
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     apply_grid(ax)
@@ -169,6 +179,7 @@ def plot_ops_relationships(
     title: str | None = None,
     n_bins: int = N_BINS,
     min_hours: float = MIN_HOURS,
+    changeovers: Sequence[pd.Timestamp] = (),
 ) -> Path | None:
     """Write ``ops_relationships_<turbine>.png``: each relationship of :data:`PAIRS` by bin and by month.
 
@@ -181,6 +192,7 @@ def plot_ops_relationships(
     :param timebase: the records' period
     :param out_dir: the folder written to
     :param title: the figure title; defaults to the turbine and the period covered
+    :param changeovers: dates drawn as dashed lines on the time axes and colour bars
     """
     kept = rows[operating_mask(rows, columns=columns, timebase=timebase).to_numpy()]
     panels: list[tuple[str, str, pd.DataFrame]] = []
@@ -196,16 +208,16 @@ def plot_ops_relationships(
 
     fig, axes = plt.subplots(len(panels), 2, figsize=(16, 3.4 * len(panels)), squeeze=False, layout="constrained")
     for (x_col, y_col, cells), (left, right) in zip(panels, axes, strict=True):
-        _draw_by_bin(left, cells, x_label=x_col, y_label=y_col)
+        _draw_by_bin(left, cells, x_label=x_col, y_label=y_col, changeovers=changeovers)
         left.set_title(f"{y_col} by {x_col} bin, monthly mean", fontsize="medium")
-        _draw_by_month(right, cells, x_label=x_col, y_label=y_col)
+        _draw_by_month(right, cells, x_label=x_col, y_label=y_col, changeovers=changeovers)
         right.set_title(f"{y_col} vs {x_col}, one line per month", fontsize="medium")
     index = pd.DatetimeIndex(rows.index)
     period = f"{index.min():%Y-%m-%d} to {index.max():%Y-%m-%d}" if len(index) else ""
-    fig.suptitle(
-        title or f"{turbine}: operating relationships over time, {period} (power > 0, fully available)",
-        fontsize="large",
-    )
+    title = title or f"{turbine}: operating relationships over time, {period} (power > 0, fully available)"
+    if changeovers:
+        title += "; dashed: changeover"
+    fig.suptitle(title, fontsize="large")
     path = out_dir / f"ops_relationships_{turbine}.png"
     save_fig(fig, path)
     return path
@@ -214,6 +226,8 @@ def plot_ops_relationships(
 def plot_run_ops_relationships(ctx: DiagnosticContext) -> list[Path]:
     """Write the figures for a run's test turbine and power references, over the span the run sees."""
     references = ctx.power_references if ctx.power_references is not None else ctx.references()
+    start = upgrade_start(ctx) if ctx.mode == "prepost" else None
+    changeovers = [start] if start is not None else []
     written: list[Path] = []
     for turbine in [ctx.test_wtg, *sorted(r for r in references if r != ctx.test_wtg)]:
         rows = ctx.scada_df[ctx.scada_df[ctx.turbine_col] == turbine]
@@ -227,6 +241,7 @@ def plot_run_ops_relationships(ctx: DiagnosticContext) -> list[Path]:
             timebase=ctx.timebase,
             out_dir=ctx.stage_dir(stages.CHANGES),
             title=f"{turbine} ({role}): operating relationships over the span, {period} (power > 0, fully available)",
+            changeovers=changeovers,
         )
         if path is not None:
             written.append(path)

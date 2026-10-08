@@ -213,6 +213,21 @@ class TestTheTimeline:
     def test_the_mode_is_prepost_without_a_shared_changeover(self) -> None:
         assert staggered().spec().mode == "prepost"
 
+    def test_changeovers_are_each_works_end_for_every_turbine(self) -> None:
+        assert staggered().spec().changeovers() == {
+            "T1": [utc("2020-03-06")],
+            "T2": [utc("2020-05-04")],
+            "T3": [utc("2020-06-12")],
+        }
+
+    def test_a_shared_changeover_is_each_upgraded_turbines_changeover(self) -> None:
+        spec = campaign().spec()
+        assert spec.changeovers() == {turbine: [CHANGEOVER] for turbine in spec.upgraded_turbines}
+
+    def test_a_toggle_campaign_has_no_changeovers(self) -> None:
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=4), start=CHANGEOVER)
+        assert campaign(upgrade_timing=schedule).spec().changeovers() == {}
+
     def test_the_works_window_of_a_shared_changeover_has_no_length(self) -> None:
         assert campaign().spec().works_window("T1") == (CHANGEOVER, CHANGEOVER)
 

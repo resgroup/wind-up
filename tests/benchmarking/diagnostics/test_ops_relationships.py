@@ -153,6 +153,15 @@ class TestTheFigure:
         assert path == tmp_path / "ops_relationships_T1.png"
         assert path.exists()
 
+    def test_changeovers_are_drawn(self, tmp_path: Path) -> None:
+        rows = _farm(["T1"])
+        changeover = pd.DatetimeIndex(rows.index)[len(rows) // 2]
+        path = plot_ops_relationships(
+            rows, turbine="T1", columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path, changeovers=[changeover]
+        )
+        assert path is not None
+        assert path.exists()
+
     def test_a_pair_with_an_unset_signal_is_skipped(self, tmp_path: Path) -> None:
         columns = NO_PITCH_OR_REACTIVE
         path = plot_ops_relationships(_farm(["T1"]), turbine="T1", columns=columns, timebase=TIMEBASE, out_dir=tmp_path)

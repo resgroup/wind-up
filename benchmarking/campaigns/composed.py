@@ -30,7 +30,12 @@ from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label, infer_timebase
 from benchmarking.diagnostics.input_data import write_input_data_plots
-from benchmarking.diagnostics.operating_states import write_operating_state_plots
+from benchmarking.diagnostics.operating_states import (
+    NORTHING_VIEWS,
+    WAKING_VIEWS,
+    write_operating_state_plots,
+    write_validity_plots,
+)
 from benchmarking.harness.northing import era5_direction
 from benchmarking.harness.operating_state import label_operating_states
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
@@ -85,9 +90,13 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
 - `{DATA_PREPARATION_DIRNAME}/`: part A, every turbine over every record provided.
   - `{stages.CHANGES}/`: step 1, operating relationships, coverage and power factor.
   - `{stages.OPERATING_STATES}/`: step 2, the operating-state labels and hours per state.
-  - `{stages.NORTHING}/`: step 4, the northing corrections.
+  - `{stages.NORTHING}/`: step 4, the northing corrections, and each turbine's records used and not
+    used for northing, coloured by operating state.
+  - `{stages.WAKING}/`: step 5, each turbine's records considered waking, part waking and not waking,
+    coloured by operating state.
 - `{ESTIMATOR_DIRNAME}/<test turbine>/`: part B, one folder per test turbine, over its span and with
   its power references. Its results are in CSVs; its plots are under `plots/`, one folder per step.
+  `plots/{stages.VALID_RECORDS}/` has the records used and not used for uplift, coloured by state.
 - `{CAMPAIGN_DIRNAME}/`: part C, the results across turbines: analysis plans (steps 7 and 11),
   reference stability (step 11), per-turbine uplift (step 12), conditional uplift (step 13) and farm
   uplift (step 14).
@@ -184,8 +193,8 @@ def run_declaration(
     :param era5_hourly_df: reanalysis to use instead of self-serving it from the farm centroid,
         for a caller that already holds it
     :param plan_settings: how a planned campaign's spans and power references are chosen
-    :param input_plots_dir: where steps 1 and 2's plots of every turbine and every record go, in a
-        folder per step; defaults to the run's data-preparation folder
+    :param input_plots_dir: where the plots of every turbine and every record go (steps 1 and 2, and
+        the northing and waking validity), in a folder per step; defaults to the run's data-preparation folder
     :return: the truth-free campaign report, which is also written under ``out_dir``
     """
     declaration = load_declaration(path)
@@ -215,10 +224,21 @@ def run_declaration(
         timebase=timebase,
         rated_power_kw=declaration.spec.rated_power_kw,
     )
-    write_input_data_plots(scada_df, columns=declaration.columns, out_dir=input_plots / stages.CHANGES)
-    write_operating_state_plots(
-        scada_df, columns=declaration.columns, timebase=timebase, out_dir=input_plots / stages.OPERATING_STATES
+    changeovers = declaration.spec.changeovers()
+    write_input_data_plots(
+        scada_df, columns=declaration.columns, out_dir=input_plots / stages.CHANGES, changeovers=changeovers
     )
+    write_operating_state_plots(
+        scada_df,
+        columns=declaration.columns,
+        timebase=timebase,
+        out_dir=input_plots / stages.OPERATING_STATES,
+        changeovers=changeovers,
+    )
+    for views, stage in ((NORTHING_VIEWS, stages.NORTHING), (WAKING_VIEWS, stages.WAKING)):
+        write_validity_plots(
+            scada_df, views=views, columns=declaration.columns, timebase=timebase, out_dir=input_plots / stage
+        )
     reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration, index=index)
     # One screen verdict for the campaign: every test turbine is judged against the same references.
     screen_cache: dict = {}

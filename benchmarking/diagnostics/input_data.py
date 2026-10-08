@@ -21,6 +21,7 @@ from benchmarking.diagnostics.ops_relationships import plot_ops_relationships
 from benchmarking.diagnostics.style import apply_grid, save_fig, series_style
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     from benchmarking.synthetic import ColumnSchema
@@ -28,7 +29,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def write_input_data_plots(scada_df: pd.DataFrame, *, columns: ColumnSchema, out_dir: Path) -> list[Path]:
+def write_input_data_plots(
+    scada_df: pd.DataFrame,
+    *,
+    columns: ColumnSchema,
+    out_dir: Path,
+    changeovers: Mapping[str, Sequence[pd.Timestamp]] | None = None,
+) -> list[Path]:
     """Write the farm-wide input-data plots for every turbine in ``scada_df`` and return their paths.
 
     One operating-relationships figure per turbine, and the power factor and data coverage of every
@@ -37,7 +44,9 @@ def write_input_data_plots(scada_df: pd.DataFrame, *, columns: ColumnSchema, out
     :param scada_df: long-format source-native SCADA, indexed by timestamp
     :param columns: the schema ``scada_df`` is keyed by
     :param out_dir: the folder written to
+    :param changeovers: each turbine's changeover dates, marked on its operating-relationships figure
     """
+    changeovers = changeovers or {}
     out_dir.mkdir(parents=True, exist_ok=True)
     index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
     timebase = infer_timebase(index)
@@ -46,7 +55,14 @@ def write_input_data_plots(scada_df: pd.DataFrame, *, columns: ColumnSchema, out
 
     written: list[Path] = []
     for turbine, rows in by_turbine.items():
-        path = plot_ops_relationships(rows, turbine=turbine, columns=columns, timebase=timebase, out_dir=out_dir)
+        path = plot_ops_relationships(
+            rows,
+            turbine=turbine,
+            columns=columns,
+            timebase=timebase,
+            out_dir=out_dir,
+            changeovers=changeovers.get(turbine, ()),
+        )
         if path is not None:
             written.append(path)
     written.append(_plot_coverage(by_turbine, columns=columns, index=index, timebase=timebase, out_dir=out_dir))

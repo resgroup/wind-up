@@ -150,6 +150,18 @@ class CampaignSpec:
             return self.works[turbine][0][1]
         return self.upgrade_timing
 
+    def changeovers(self) -> dict[str, list[pd.Timestamp]]:
+        """Return each turbine's changeover dates: the ends of its works windows and an upgraded turbine's timing.
+
+        Empty for a toggle campaign.
+        """
+        if self.mode == "toggle":
+            return {}
+        dates = {turbine: [end for _, end in windows] for turbine, windows in self.works.items()}
+        for turbine in self.upgraded_turbines:
+            dates.setdefault(turbine, []).append(self.works_window(turbine)[1])
+        return {turbine: sorted(set(found)) for turbine, found in dates.items()}
+
     def works_window(self, turbine: str) -> Window:
         """Return an upgraded turbine's works window; a shared changeover is a window of no length."""
         timing = self.timing_for(turbine)

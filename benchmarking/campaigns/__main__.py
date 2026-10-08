@@ -4,9 +4,9 @@
 
     python -m benchmarking.campaigns run campaign.yaml --out DIR
 
-``--out`` defaults to ``WIND_UP_BENCHMARKING_OUTPUT_DIR``/``<the campaign's name>``. Steps 1 and 2's
-plots of every turbine and every record go to the run's ``A_data_preparation`` folder, or
-``--input-plots``.
+``--out`` defaults to ``WIND_UP_BENCHMARKING_OUTPUT_DIR``/``<the campaign's name>``. The plots of
+every turbine and every record from steps 1, 2, 4 and 5's labels go to the run's
+``A_data_preparation`` folder, or ``--input-plots``.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--input-plots",
         type=Path,
         default=None,
-        help="where steps 1 and 2's plots of every turbine and record go (default: the run's A_data_preparation)",
+        help="where the plots of every turbine and record go (default: the run's A_data_preparation)",
     )
     return parser.parse_args(argv)
 

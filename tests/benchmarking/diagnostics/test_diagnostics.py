@@ -172,8 +172,6 @@ def test_common_diagnostics_writes_expected_plots(tmp_path: Path) -> None:
         "input_data_coverage.png",
         "filter_coverage.png",
         "condition_histograms.png",
-        "ops_curves.png",
-        "ops_curves_kept_only.png",
         "ops_curves_by_upgrade.png",
         "reactive_vs_active.png",
         "power_factor.png",
@@ -199,7 +197,7 @@ def test_optional_signals_skip_gracefully(tmp_path: Path) -> None:
     assert "reactive_vs_active.png" not in names
     assert "northing_error.png" not in names
     # the core curves still render.
-    assert "ops_curves.png" in names
+    assert "ops_curves_by_upgrade.png" in names
 
 
 def test_write_run_config_yaml(tmp_path: Path) -> None:

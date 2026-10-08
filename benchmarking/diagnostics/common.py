@@ -19,15 +19,13 @@ from benchmarking.diagnostics.coverage import (
 )
 from benchmarking.diagnostics.curves import (
     plot_curves_by_upgrade,
-    plot_ops_curves,
     plot_ops_curves_excluded,
-    plot_ops_curves_kept,
     plot_power_factor,
     plot_reactive_vs_active,
 )
 from benchmarking.diagnostics.histograms import plot_condition_histograms
 from benchmarking.diagnostics.northing import plot_northed_error, plot_northing_error
-from benchmarking.diagnostics.operating_states import plot_run_operating_states
+from benchmarking.diagnostics.operating_states import plot_run_operating_states, plot_run_uplift_validity
 from benchmarking.diagnostics.ops_relationships import plot_run_ops_relationships
 
 if TYPE_CHECKING:
@@ -46,8 +44,7 @@ _PLOTS: tuple[Callable[[DiagnosticContext], Path | list[Path] | None], ...] = (
     plot_filter_coverage,
     plot_excluded_fraction,
     plot_condition_histograms,
-    plot_ops_curves,
-    plot_ops_curves_kept,
+    plot_run_uplift_validity,
     plot_ops_curves_excluded,
     plot_curves_by_upgrade,
     plot_reactive_vs_active,

@@ -5,10 +5,8 @@ operationally meaningful signal), not a reference mean — even though own wind 
 *model feature* (it is post-treatment, design-note §3). Columns are labelled by their original
 source-native names.
 
-* :func:`plot_ops_curves` — a 2x3 figure (power curve; pitch/rpm vs power; pitch/rpm vs wind
-  speed) coloured kept vs removed, so it is both the operating-curve view and the filter check
-  (stage: filter).
-* :func:`plot_ops_curves_excluded` — the same figure coloured kept vs caller-excluded (stage: filter).
+* :func:`plot_ops_curves_excluded` — a 2x3 figure (power curve; pitch/rpm vs power; pitch/rpm vs wind
+  speed) coloured kept vs caller-excluded (stage: filter).
 * :func:`plot_curves_by_upgrade` — pitch/rpm/power vs wind speed split baseline vs upgraded
   (stage: uplift inputs).
 * :func:`plot_reactive_vs_active` / :func:`plot_power_factor` — reactive-power behaviour, per
@@ -118,32 +116,6 @@ def _ops_curve_figure(
     path = ctx.stage_dir(stage) / filename
     save_fig(fig, path)
     return path
-
-
-def plot_ops_curves(ctx: DiagnosticContext) -> Path | None:
-    """Draw the operating-curve figure coloured kept vs removed (the filter check)."""
-    used = np.asarray(ctx.used_ts, dtype=bool)
-    segments: Segments = [("kept", used, "C0"), ("removed", ~used, "C3")]
-    return _ops_curve_figure(
-        ctx,
-        segments=segments,
-        title="operating curves (kept vs removed by the row filter)",
-        filename="ops_curves.png",
-        stage=stages.VALID_RECORDS,
-    )
-
-
-def plot_ops_curves_kept(ctx: DiagnosticContext) -> Path | None:
-    """Draw the operating-curve figure for the KEPT rows only (so removed points cannot mask them)."""
-    used = np.asarray(ctx.used_ts, dtype=bool)
-    segments: Segments = [("kept", used, "C0")]
-    return _ops_curve_figure(
-        ctx,
-        segments=segments,
-        title="operating curves (used rows only)",
-        filename="ops_curves_kept_only.png",
-        stage=stages.VALID_RECORDS,
-    )
 
 
 def plot_ops_curves_excluded(ctx: DiagnosticContext) -> Path | None:
