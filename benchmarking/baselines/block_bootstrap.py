@@ -32,6 +32,9 @@ _RESAMPLE_CHUNK = 250
 # Per (cell, segment): the numerator and denominator of each segment's rho.
 _N_QUANTITIES = 4
 _MIN_RESAMPLES_FOR_SPREAD = 2
+# A resample whose reference energy on either side falls below this share of the whole campaign's is a
+# degenerate ratio (a calm spell or outage drawn over and over), not a draw from the estimator's spread.
+_MIN_REFERENCE_FRACTION = 0.1
 # With one block covering the whole campaign, every resample is that campaign: nothing varies.
 _MIN_BLOCKS_FOR_SPREAD = 2
 # Normal -/+1 sigma percentiles, so (p84 - p16) / 2 is a sigma for a normal.
@@ -328,7 +331,7 @@ def bootstrap_ratio_uplift(
         # vary. Any sigma it returned would be float residue (~1e-15), not a real certainty.
         return BootstrapResult(n_blocks=n_blocks, cells=_fallback_only_cells(names, fallback=fallback))
 
-    uplift = _uplift_from_totals(totals)
+    uplift = _uplift_from_totals(totals, reference_floor=_MIN_REFERENCE_FRACTION * prefix[n_records])
     boot_weight = {name: _bootstrap_weight(min(on, off)) for name, (on, off) in counts.items()}
     return BootstrapResult(
         n_blocks=n_blocks,
@@ -387,17 +390,22 @@ def _prefix_sums(
     return np.concatenate([np.zeros((1, len(names), _N_QUANTITIES)), np.cumsum(doubled, axis=0)], axis=0)
 
 
-def _uplift_from_totals(totals: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+def _uplift_from_totals(
+    totals: npt.NDArray[np.float64], *, reference_floor: npt.NDArray[np.float64] | None = None
+) -> npt.NDArray[np.float64]:
     """Re-form ``rho_up / rho_base - 1`` per (resample, cell) from resampled sums.
 
     The degeneracy guards mirror the point estimate's, so a resample fails only where the point
-    estimate would have failed on the same rows.
+    estimate would have failed on the same rows; ``reference_floor`` (per cell, same last axis as
+    ``totals``) additionally fails a resample whose on or off reference sum falls below it.
     """
     test_on, ref_on, test_off, ref_off = (totals[..., k] for k in range(_N_QUANTITIES))
     nan = np.full(test_on.shape, np.nan)
     rho_up = np.divide(test_on, ref_on, out=nan.copy(), where=ref_on != 0)
     rho_base = np.divide(test_off, ref_off, out=nan.copy(), where=ref_off != 0)
     valid = np.isfinite(rho_base) & (rho_base != 0) & np.isfinite(rho_up)
+    if reference_floor is not None:
+        valid &= (ref_on >= reference_floor[..., 1]) & (ref_off >= reference_floor[..., 3])
     return np.divide(rho_up, rho_base, out=nan.copy(), where=valid) - 1.0
 
 

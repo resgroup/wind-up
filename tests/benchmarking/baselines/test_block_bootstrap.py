@@ -207,6 +207,19 @@ class TestDegenerate:
         assert result.n_blocks == 0
         assert np.isnan(result.cells["overall"].sigma)
 
+    def test_a_resample_of_almost_no_reference_energy_is_not_a_spread_sample(self) -> None:
+        """A calm spell drawn over and over divides by nearly nothing; those resamples are dropped, not believed."""
+        case = _case(n=4032)
+        calm = np.arange(len(case["times"])) < int(0.9 * len(case["times"]))
+        case["ref_total"] = np.where(calm, 1e-3, case["ref_total"])
+        case["test_power"] = np.where(
+            calm, 1e-3 * (1.0 + 0.5 * np.random.default_rng(1).standard_normal(len(calm))), case["test_power"]
+        )
+        cell = _run(case).cells["overall"]
+        assert np.isfinite(cell.sigma)
+        assert cell.sigma < 1.0
+        assert cell.frac_resamples_finite < 1.0
+
     def test_too_few_resamples_for_a_spread_gives_nan(self) -> None:
         assert np.isnan(_run(_case(), n_resamples=1).cells["overall"].sigma)
 

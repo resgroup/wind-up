@@ -93,6 +93,8 @@ from benchmarking.harness.toggle import ToggleRowSets, is_toggle, resolve_toggle
 from benchmarking.synthetic import ToggleSchedule
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import numpy.typing as npt
 
     from benchmarking.synthetic import ColumnSchema
@@ -562,14 +564,19 @@ class ToggleSpecialistMethod:
                 rng=np.random.default_rng(self.bootstrap_seed),
             )
             decision_boot = _run_bootstrap(up_p, base_p)
+        uplift_by_cell = {_OVERALL: uplift}
         if per_bin is not None:
             per_bin["sigma_uplift"] = [_cell_sigma(boot, str(b)) for b in per_bin["condition_bin"]]
+            uplift_by_cell.update(
+                {str(b): float(u) for b, u in zip(per_bin["condition_bin"], per_bin["p50_uplift"], strict=True)}
+            )
         diagnostics = _uncertainty_diagnostics(
             boot,
             membership=membership,
             upgraded=used & rows.upgraded,
             baseline=used & baseline,
             used=used,
+            uplift_by_cell=uplift_by_cell,
         )
         diagnostics.insert(0, "component", mode)
         return _Estimate(
@@ -1256,6 +1263,7 @@ def _combine(a: _Estimate, b: _Estimate, *, upgraded: npt.NDArray[np.bool_], bin
                 "component": _COMBINED,
                 "condition": _OVERALL if cell == _OVERALL else "power",
                 "condition_bin": cell,
+                "uplift": blend.estimate,
                 "sigma": blend.sigma,
                 f"weight_{a.mode}": blend.weight_a,
                 "correlation": blend.correlation,
@@ -1308,8 +1316,9 @@ def _uncertainty_diagnostics(
     upgraded: npt.NDArray[np.bool_],
     baseline: npt.NDArray[np.bool_],
     used: npt.NDArray[np.bool_],
+    uplift_by_cell: Mapping[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Per-cell account of how the uncertainty was reached, keyed by ``(condition, condition_bin)``.
+    """Per-cell account of the estimate and how its uncertainty was reached, keyed by ``(condition, condition_bin)``.
 
     Carried through the harness seam uninterpreted, so an uncertainty model can be developed against
     a saved sweep rather than by re-running one. Emitted even when the bootstrap did not run: the
@@ -1327,6 +1336,7 @@ def _uncertainty_diagnostics(
             {
                 "condition": _OVERALL if cell == _OVERALL else "power",
                 "condition_bin": cell,
+                "uplift": uplift_by_cell.get(cell, nan) if uplift_by_cell is not None else nan,
                 "n_upgraded_records": int((member & up_used).sum()),
                 "n_baseline_records": int((member & base_used).sum()),
                 "n_blocks": boot.n_blocks if boot is not None else 0,

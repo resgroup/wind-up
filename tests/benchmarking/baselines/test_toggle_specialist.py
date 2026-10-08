@@ -1614,6 +1614,12 @@ class TestBlend:
         assert 0.0 <= head["weight_sum"] <= 1.0
         assert np.isfinite(head["decision_sigma_sum"])
         assert np.isfinite(head["decision_sigma_block_mean"])
+        assert head["uplift"] == pytest.approx(out.p50_overall)
+        legs = diag[(diag["component"] != "combined") & (diag["condition_bin"] == "overall")]
+        assert np.isfinite(legs["uplift"]).all()
+        w = head["weight_sum"]
+        by_leg = legs.set_index("component")["uplift"]
+        assert out.p50_overall == pytest.approx(w * by_leg["sum"] + (1 - w) * by_leg["block_mean"])
 
     def test_the_blend_is_the_weighted_legs_and_its_sigma_comes_from_the_actual_bootstraps(
         self, tmp_path: Path
