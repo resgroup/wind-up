@@ -171,6 +171,7 @@ def inspect_naive_run(
         campaign_months=campaign_months,
         n_replicates=n_replicates,
         toggle_period=toggle_period,
+        toggle_datum=pd.Timestamp("1970-01-01", tz="UTC"),
         seed=0,
     )
 

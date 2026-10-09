@@ -120,6 +120,10 @@ class MethodOutput:
         reference the method ruled out, so it stays visible without dragging that headline.
     :param screen_passes: optional per-pass frame from a method's reference-validity screen, so an
         analyst can see, and disagree with, which references it ruled out and why.
+    :param selection_accounting: optional per-(``stage``, ``segment``) frame of rows kept after each
+        of a method's row-selection stages (``n_kept``, ``kept_fraction``, ``stage_kept_fraction``),
+        so a consumer can see how much data each stage removed and whether it treated the segments
+        evenly. The harness never interprets it.
     """
 
     p50_overall: float
@@ -129,6 +133,7 @@ class MethodOutput:
     labeled_rows: pd.DataFrame | None = None
     reference_uplifts: pd.DataFrame | None = None
     screen_passes: pd.DataFrame | None = None
+    selection_accounting: pd.DataFrame | None = None
 
 
 @runtime_checkable

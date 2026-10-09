@@ -42,6 +42,7 @@ def _study(mode: str = "prepost", n_replicates: int = 5, seed: int = 0) -> Study
         min_pre_months=12,
         campaign_months=[3, 6],
         toggle_period=pd.Timedelta(days=14),
+        toggle_datum=pd.Timestamp("2017-01-01", tz="UTC"),
         n_replicates=n_replicates,
         seed=seed,
     )
@@ -55,6 +56,7 @@ def _weeks_study(mode: str = "toggle", n_replicates: int = 5, seed: int = 0) -> 
         min_pre_months=12,
         campaign_weeks=[1, 2, 4, 8],
         toggle_period=pd.Timedelta(days=14),
+        toggle_datum=pd.Timestamp("2017-01-01", tz="UTC"),
         n_replicates=n_replicates,
         seed=seed,
     )
@@ -104,6 +106,32 @@ class TestCampaignGrid:
     def test_max_activity_months_raises_for_a_weeks_study(self) -> None:
         with pytest.raises(ValueError, match="campaign_unit='weeks'"):
             _ = _weeks_study().max_activity_months
+
+
+class TestToggleCycleGrid:
+    """A toggle study draws treatment starts only on its cycle grid, so one datum serves every replicate."""
+
+    def test_a_toggle_study_needs_a_datum(self) -> None:
+        with pytest.raises(ValueError, match="toggle_datum"):
+            StudyConfig(
+                mode="toggle",
+                turbine_subset=["T1"],
+                treatment_start_range=(pd.Timestamp("2017-01-01", tz="UTC"), pd.Timestamp("2017-12-31", tz="UTC")),
+                min_pre_months=12,
+                campaign_weeks=[2],
+                toggle_period=pd.Timedelta(days=14),
+                n_replicates=1,
+            )
+
+    def test_every_drawn_start_is_a_cycle_boundary(self) -> None:
+        study = _weeks_study(n_replicates=8)
+        reps = build_replicates(_base_scada(), profile=PROFILE, study=study)
+        assert study.toggle_period is not None
+        assert study.toggle_datum is not None
+        for rep in reps:
+            start = pd.Timestamp(rep.treatment_start)
+            start = start if start.tz is not None else start.tz_localize("UTC")
+            assert (start - study.toggle_datum) % study.toggle_period == pd.Timedelta(0)
 
 
 def test_build_replicates_returns_n_replicate_records() -> None:

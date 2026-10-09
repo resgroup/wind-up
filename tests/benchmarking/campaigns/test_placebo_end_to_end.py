@@ -43,15 +43,15 @@ TEST_PARTICIPANTS = ("T07", "T11", "T01", "T02", "T03")
 
 
 def placebo_scada(mode: str, *, wind_noise_sd: float, seed: int = 0) -> pd.DataFrame:
-    """Hourly SCADA over ``mode``'s placebo period: a shared wind signal plus per-turbine noise.
+    """10-minute SCADA over ``mode``'s placebo period: a shared wind signal plus per-turbine noise.
 
     :param mode: the placebo mode whose analysis period the frame spans
     :param wind_noise_sd: per-turbine wind-speed noise in m/s; 0 makes every turbine identical
     :param seed: RNG seed for the noise
     """
     rng = np.random.default_rng(seed)
-    index = pd.date_range(*placebo_analysis_period(mode), freq="1h", tz="UTC", inclusive="left")
-    hours = np.arange(len(index), dtype=float)
+    index = pd.date_range(*placebo_analysis_period(mode), freq="10min", tz="UTC", inclusive="left")
+    hours = np.arange(len(index), dtype=float) / 6
     # a slow seasonal swing plus a daily cycle, so the pre and post periods differ in wind resource
     shared_ws = 8.0 + 2.5 * np.sin(hours / (24 * 30)) + 1.5 * np.sin(hours / 12)
     frames = []
@@ -68,7 +68,7 @@ def placebo_scada(mode: str, *, wind_noise_sd: float, seed: int = 0) -> pd.DataF
                     HOT_COLUMNS.wind_speed: ws,
                     HOT_COLUMNS.wind_speed_sd: 0.8,
                     HOT_COLUMNS.gen_rpm: 1400.0,
-                    HOT_COLUMNS.availability: 3600.0,
+                    HOT_COLUMNS.availability: 600.0,
                 },
                 index=index,
             )

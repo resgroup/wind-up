@@ -26,6 +26,7 @@ from benchmarking.baselines.example_prepost_study import (
     MIN_PRE_MONTHS,
 )
 from benchmarking.baselines.example_toggle_study import (
+    DEFAULT_TOGGLE_DATUM,
     DEFAULT_TOGGLE_PERIOD,
     default_output_root,
     run_toggle_study,
@@ -52,6 +53,7 @@ def main() -> None:
         min_pre_months=MIN_PRE_MONTHS,
         campaign_months=CAMPAIGN_MONTHS,
         toggle_period=DEFAULT_TOGGLE_PERIOD,
+        toggle_datum=DEFAULT_TOGGLE_DATUM,
         n_replicates=N_REPLICATES,
         seed=0,
     )

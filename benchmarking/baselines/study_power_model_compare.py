@@ -93,7 +93,7 @@ from benchmarking.baselines.example_prepost_study import (
     MIN_PRE_MONTHS,
     save_per_method_curve,
 )
-from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_PERIOD
+from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_DATUM, DEFAULT_TOGGLE_PERIOD
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.overnight_profiles import overnight_profiles
@@ -171,6 +171,7 @@ def _toggle_study() -> StudyConfig:
         min_pre_months=MIN_PRE_MONTHS,
         campaign_months=TOGGLE_CAMPAIGN_MONTHS,
         toggle_period=DEFAULT_TOGGLE_PERIOD,
+        toggle_datum=DEFAULT_TOGGLE_DATUM,
         n_replicates=N_REPLICATES,
         seed=SEED,
     )

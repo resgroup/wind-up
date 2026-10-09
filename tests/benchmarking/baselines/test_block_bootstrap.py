@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.block_bootstrap import bootstrap_ratio_uplift, relative_scatter
+from benchmarking.baselines.block_bootstrap import bootstrap_ratio_uplift, combine_estimates, relative_scatter
 
 _TIMEBASE = pd.Timedelta(minutes=10)
 
@@ -207,6 +207,19 @@ class TestDegenerate:
         assert result.n_blocks == 0
         assert np.isnan(result.cells["overall"].sigma)
 
+    def test_a_resample_of_almost_no_reference_energy_is_not_a_spread_sample(self) -> None:
+        """A calm spell drawn over and over divides by nearly nothing; those resamples are dropped, not believed."""
+        case = _case(n=4032)
+        calm = np.arange(len(case["times"])) < int(0.9 * len(case["times"]))
+        case["ref_total"] = np.where(calm, 1e-3, case["ref_total"])
+        case["test_power"] = np.where(
+            calm, 1e-3 * (1.0 + 0.5 * np.random.default_rng(1).standard_normal(len(calm))), case["test_power"]
+        )
+        cell = _run(case).cells["overall"]
+        assert np.isfinite(cell.sigma)
+        assert cell.sigma < 1.0
+        assert cell.frac_resamples_finite < 1.0
+
     def test_too_few_resamples_for_a_spread_gives_nan(self) -> None:
         assert np.isnan(_run(_case(), n_resamples=1).cells["overall"].sigma)
 
@@ -380,3 +393,125 @@ class TestPerfectDataMayReportZero:
             sigmas.append(_run(case).cells["overall"].sigma)
         assert sigmas == sorted(sigmas, reverse=True)
         assert sigmas[-1] < sigmas[0] / 10, "no floor is arresting the descent"
+
+
+class TestResamplesAreExposed:
+    def test_each_cell_carries_its_resampled_uplifts(self) -> None:
+        result = _run(_case(), n_resamples=300)
+        samples = result.resamples["overall"]
+        assert samples.shape == (300,)
+        assert np.std(samples[np.isfinite(samples)], ddof=1) == pytest.approx(result.cells["overall"].sigma_bootstrap)
+
+    def test_no_records_means_no_resamples(self) -> None:
+        empty = {
+            k: np.array([], dtype=bool if k in ("upgraded", "baseline") else float)
+            for k in ("test_power", "ref_total", "upgraded", "baseline")
+        }
+        result = bootstrap_ratio_uplift(
+            times=_timeline(0),
+            cell_membership={"overall": np.array([], dtype=bool)},
+            campaign_start=pd.Timestamp("2020-01-01", tz="UTC"),
+            campaign_end=pd.Timestamp("2020-01-08", tz="UTC"),
+            timebase=_TIMEBASE,
+            block_hours=48.0,
+            n_resamples=100,
+            seed=0,
+            **empty,
+        )
+        assert result.resamples == {}
+
+
+class TestCombineEstimates:
+    """Inverse-variance blend of two estimates of the same quantity, honouring their resample correlation."""
+
+    @staticmethod
+    def _samples(rho: float, *, n: int = 2000, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(seed)
+        a = rng.standard_normal(n)
+        b = rho * a + np.sqrt(1.0 - rho**2) * rng.standard_normal(n)
+        return a, b
+
+    def test_independent_components_give_the_naive_inverse_variance_sigma(self) -> None:
+        a, b = self._samples(0.0)
+        out = combine_estimates((0.02, 1.0, a), (0.04, 2.0, b))
+        # The sampled correlation is ~0, not exactly 0, so the weights land near the naive 0.8 / 0.2.
+        assert out.weight_a == pytest.approx(0.8, abs=0.02)
+        assert out.estimate == pytest.approx(0.8 * 0.02 + 0.2 * 0.04, abs=1e-3)
+        assert out.sigma == pytest.approx(1.0 / np.sqrt(1.0 + 0.25), abs=0.03)
+
+    def test_a_correlation_widens_the_combined_sigma(self) -> None:
+        a, b = self._samples(0.8)
+        out = combine_estimates((0.0, 1.0, a), (0.0, 1.0, b))
+        assert out.correlation == pytest.approx(0.8, abs=0.03)
+        assert out.sigma == pytest.approx(np.sqrt((1 + 0.8) / 2), abs=0.03)
+
+    def test_a_correlated_noisier_component_drops_out_rather_than_widening_the_blend(self) -> None:
+        # Minimum-variance weights for correlated estimates: with r >= sb/sa the noisier leg gets no weight.
+        a, b = self._samples(0.8)
+        out = combine_estimates((0.10, 2.0, 2.0 * a), (0.02, 1.0, b))
+        assert out.weight_a == 0.0
+        assert out.estimate == pytest.approx(0.02)
+        assert out.sigma == pytest.approx(1.0)
+
+    def test_the_blend_is_never_worse_than_its_better_component(self) -> None:
+        for rho in (0.0, 0.3, 0.6, 0.9):
+            a, b = self._samples(rho, seed=1)
+            out = combine_estimates((0.0, 1.5, 1.5 * a), (0.0, 1.0, b))
+            assert out.sigma <= 1.0 + 1e-9, rho
+
+    def test_one_unusable_component_leaves_the_other_untouched(self) -> None:
+        a, b = self._samples(0.0)
+        out = combine_estimates((float("nan"), float("nan"), a), (0.03, 2.0, b))
+        assert out.weight_a == 0.0
+        assert out.estimate == 0.03
+        assert out.sigma == 2.0
+
+    def test_neither_usable_is_nan(self) -> None:
+        out = combine_estimates((float("nan"), float("nan"), np.array([])), (float("nan"), float("nan"), np.array([])))
+        assert np.isnan(out.estimate)
+        assert np.isnan(out.sigma)
+
+    def test_missing_resamples_assume_a_half_correlation(self) -> None:
+        out = combine_estimates((0.0, 1.0, np.array([])), (0.0, 1.0, np.array([])))
+        assert out.correlation == 0.5
+        assert out.sigma == pytest.approx(np.sqrt((1 + 0.5) / 2))
+
+    def test_resamples_without_spread_assume_a_half_correlation(self) -> None:
+        # identical turbines: every resample of a leg reads exactly the same uplift
+        out = combine_estimates((0.0, 1.0, np.zeros(100)), (0.0, 1.0, np.linspace(-1, 1, 100)))
+        assert out.correlation == 0.5
+
+
+class TestASparseCellWithNoFallbackReportsNaN:
+    """Two records in a long campaign: every resample that sees them is identical, so the bootstrap's
+    std is float residue (~1e-17), and the per-record scatter cannot be measured either. That is no
+    uncertainty, not a tiny one."""
+
+    def test_two_records_report_nan_rather_than_float_residue(self) -> None:
+        times = _timeline(2016)
+        keep = np.zeros(2016, dtype=bool)
+        keep[[1000, 1001]] = True
+        on = np.zeros(2016, dtype=bool)
+        on[1000] = True
+        case = {
+            "times": times[keep],
+            "test_power": np.array([800.0, 750.0]),
+            "ref_total": np.array([1000.0, 1000.0]),
+            "upgraded": on[keep],
+            "baseline": ~on[keep],
+            "cell_membership": {"overall": np.ones(2, dtype=bool)},
+            "campaign_start": times[0],
+            "campaign_end": times[-1],
+            "timebase": _TIMEBASE,
+        }
+        cell = _run(case).cells["overall"]
+        assert np.isnan(cell.sigma_fallback)
+        assert np.isnan(cell.sigma)
+
+
+class TestCombineEstimatesRefusesUnpairedResamples:
+    """The correlation only means something when the two resample arrays came from the same block draws."""
+
+    def test_different_resample_counts_raise(self) -> None:
+        with pytest.raises(ValueError, match="resample"):
+            combine_estimates((0.0, 1.0, np.zeros(100)), (0.0, 1.0, np.zeros(99)))

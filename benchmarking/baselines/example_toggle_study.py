@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 # 20 minutes on, 20 minutes off -> a 40-minute on/off cycle.
 DEFAULT_TOGGLE_PERIOD = pd.Timedelta(minutes=40)
+# Cycles are counted from the Unix epoch, as a clock-aligned controller counts them.
+DEFAULT_TOGGLE_DATUM = pd.Timestamp("1970-01-01", tz="UTC")
 # One upgrade for the toggle study: a flat +3% Cp change in region 2.
 TOGGLE_PROFILES: dict[str, list] = {"cp_plus_3pct": [ConstantCpChange(delta=0.03)]}
 
@@ -199,6 +201,7 @@ def main(
         min_pre_months=MIN_PRE_MONTHS,
         campaign_months=campaign_months,
         toggle_period=toggle_period,
+        toggle_datum=DEFAULT_TOGGLE_DATUM,
         n_replicates=n_replicates,
         seed=0,
     )
