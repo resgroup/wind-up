@@ -27,7 +27,8 @@ data:
   # timestamps is optional; the default is period start, UTC
   timestamps: {convention: start, time_zone: UTC}
 
-# site is optional; the default is onshore
+# site is optional; the default is onshore. An offshore farm MUST set offshore: true;
+# wind-up does not detect it from the turbine positions.
 site:
   offshore: false
 
@@ -142,8 +143,11 @@ or the run stops. wind-up checks the declaration against the reanalysis: it warn
 lines up best with a shift of more than 30 minutes, and stops at 1 hour or more, which usually means
 the time zone or convention is wrong.
 
-**`site.offshore`.** Set `true` for an offshore farm, so the reanalysis comes from a sea grid cell
-rather than the nearest land one.
+**`site.offshore`.** Set `true` for an offshore farm. wind-up does not work this out from the turbine
+positions, and without it the reanalysis for an offshore farm comes from a land grid cell (one of
+similar elevation to the site, possibly on the nearest coast), whose wind is unlike the farm's. The run
+log and `campaign_resolved.yaml` say which kind of cell was used (`land` or `sea`): check them for an
+offshore or coastal site.
 
 **Reanalysis is not declared.** wind-up fetches the weather reanalysis it needs by itself, from
 the centre of every turbine in `turbines.csv` — the whole site, not just the turbines this
