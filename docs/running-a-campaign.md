@@ -11,7 +11,9 @@ on the same site that did *not* change — and reports the difference. A campaig
 one YAML file and run from the command line.
 
 This page assumes the upgraded turbines are already chosen. To choose them, see
-[designing a campaign](designing-a-campaign.md).
+[designing a campaign](designing-a-campaign.md). For what wind-up does with the data once it has
+it, see [how wind-up estimates uplift](estimating-uplift.md) and, for a campaign with a single
+changeover, [how wind-up handles a prepost campaign](prepost-campaigns.md).
 
 ## 1. Describe the campaign
 
@@ -22,6 +24,13 @@ data:
   scada: data/scada.parquet     # long-format SCADA, one row per turbine per timestamp
   schema: hill_of_towie         # the column vocabulary the SCADA is keyed by
   turbines: data/turbines.csv   # Name, Latitude, Longitude, Rotor_Diameter_m
+  # timestamps is optional; the default is period start, UTC
+  timestamps: {convention: start, time_zone: UTC}
+
+# site is optional; the default is onshore. An offshore farm MUST set offshore: true;
+# wind-up does not detect it from the turbine positions.
+site:
+  offshore: false
 
 turbines:
   upgraded:   [T06, T11]        # the turbines whose uplift you want
@@ -40,6 +49,54 @@ northing:
   discover: true
 ```
 
+### Staggered changes: declare the works instead of a date
+
+When the turbines were changed on different days, give wind-up the works dates rather than a
+changeover and a period:
+
+```yaml
+data:
+  scada: data/scada.parquet
+  schema: hill_of_towie
+  turbines: data/turbines.csv
+  works: data/works.csv          # Turbine, First date of works, Last date of works
+
+timing:
+  mode: prepost                  # no changeover: each turbine's is the end of its works
+
+exclusions:                      # optional; end exclusive
+  - {turbine: ALL, start: 2022-09-03T00:00:00Z, end: 2023-02-12T00:00:00Z}
+  - {turbine: T04, start: 2021-02-01T00:00:00Z, end: 2021-02-05T00:00:00Z}
+
+# analysis_period omitted: wind-up chooses a span for each upgraded turbine
+```
+
+- **The works table** has a `Turbine` column and the first columns whose names start `First date`
+  and `Last date` (the Zenodo Hill of Towie AeroUp table works as it is). Dates are whole days: a
+  window covers the first day through the end of the last. Any turbine may appear, analysed or not,
+  and a turbine may appear more than once. Each upgraded turbine needs exactly one window, and its
+  changeover is the end of that window. Its own works rows are never used.
+- **Exclusions** are periods whose data is not used, for one turbine or `ALL`. A turbine's *own*
+  exclusion leaves its rows in the analysis marked unusable, so the model can still tell whether
+  it was running and making a wake over them; a farm-wide exclusion removes the records outright.
+- **The span.** For each upgraded turbine wind-up picks the start and end of its analysis, and its
+  **power references**: the nearest 4 turbines with data over the whole span and no works inside
+  it, within 20 rotor diameters. A turbine changed entirely before or after the span is fine. A
+  chosen span gives both sides at least 3 months of usable time and has at least 3 power
+  references; when none does, the turbine is not analysed — it is listed under `unplanned` with
+  the reason and left out of the farm headline, and the other turbines still run. Among the spans
+  that qualify it prefers, in order: the nearest turbine and at least 3 of the 4 nearest
+  qualifying, then the longest shorter side up to 12 months, then post up to 12 months, then pre
+  up to 24 months, then more power references, then a nearer furthest reference. It will give up
+  some pre or post period to reach a reference whose data starts late or ends early, if that is
+  what the preferences above want. Exclusions do not count towards either side's length. Every
+  other turbine enters only for its wake. [How wind-up handles a prepost
+  campaign](prepost-campaigns.md) describes the whole selection.
+- **To fix the span yourself**, declare `analysis_period`, once for the campaign or per turbine
+  (`analysis_period: {T13: {start: ..., end: ...}}`). Declared `references` are then used as power
+  references even when their works overlap that span, with a warning.
+- `timing.changeover` with no works table still works as before.
+
 ### The fields that need a decision
 
 **`turbines.upgraded` / `references` / `excluded`.** Only `upgraded` is required: leave the other
@@ -52,9 +109,12 @@ could move. Put a turbine in `excluded` when it must never be a reference — fo
 example, it was down for rebuild, or it had its own separate change. Leaving it unlisted has the
 same effect; listing it records the decision.
 
-**More references is better.** Reference count is the single biggest lever on accuracy: a handful
-of references is noticeably worse than fifteen. Offer every turbine you have no reason to distrust
-and let the automatic screen (below) rule out the ones that misbehave.
+**More references is better** for a campaign declared with one changeover and period, which
+compares against every reference offered. Reference count is the single biggest lever on its
+accuracy: a handful of references is noticeably worse than fifteen. Offer every turbine you have no
+reason to distrust and let the automatic screen (below) rule out the ones that misbehave. A campaign
+declared by its works uses the nearest 4 instead; when the screen rules one out, the next nearest
+takes its place.
 
 **`timing.mode`.**
 
@@ -77,10 +137,22 @@ them, writing plots of what it did ([how northing works](northing.md)). Use `fal
 with an offset is converted to UTC. Whatever you write, the resolved values are echoed into
 `campaign_resolved.yaml` in the output — check it if a result looks shifted.
 
+**`data.timestamps`.** Whether a SCADA timestamp labels the `start` or the `end` of its period, and
+the time zone the SCADA is in. The SCADA timestamps must be timezone-aware and in that time zone,
+or the run stops. wind-up checks the declaration against the reanalysis: it warns when the weather
+lines up best with a shift of more than 30 minutes, and stops at 1 hour or more, which usually means
+the time zone or convention is wrong.
+
+**`site.offshore`.** Set `true` for an offshore farm. wind-up does not work this out from the turbine
+positions, and without it the reanalysis for an offshore farm comes from a land grid cell (one of
+similar elevation to the site, possibly on the nearest coast), whose wind is unlike the farm's. The run
+log and `campaign_resolved.yaml` say which kind of cell was used (`land` or `sea`): check them for an
+offshore or coastal site.
+
 **Reanalysis is not declared.** wind-up fetches the weather reanalysis it needs by itself, from
 the centre of every turbine in `turbines.csv` — the whole site, not just the turbines this
-campaign names, so changing the roles never moves it. The first run for a site downloads it;
-later runs on that site reuse the cache.
+campaign names, so changing the roles never moves it — over the whole SCADA record. The first
+run for a site downloads it; later runs on that site reuse the cache.
 
 ## 2. Run it
 
@@ -115,6 +187,8 @@ northing step. It is not stuck.
 | `wind-up/` | the campaign's uplift plots, in a folder per method that ran |
 | `northing/` | the direction corrections that were discovered, with plots |
 | `campaign_resolved.yaml` | the campaign as wind-up understood it: your declaration with every default filled in and every timestamp resolved to UTC |
+| `analysis_plans.yaml` | for a campaign declared by its works: each upgraded turbine's span, pre and post lengths, power references, and whether the pool rule held (with the reason when it did not) |
+| `analysis_plans.csv` | every other turbine's role for each upgraded turbine — power reference, reserve or waking only — with its distance and the reason it is not a power reference |
 
 ### Start with `reference_stability.csv`
 
@@ -125,8 +199,16 @@ campaign, or has a sensor fault, or is being waked differently — and if it is 
 reference, its problem is now inside your headline number with the sign reversed.
 
 Rows with `screened = True` were ruled out automatically and contributed no power to the estimate.
-Rows with `screened = False` that still read far from zero are the ones to think about; the screen
-is deliberately cautious and only runs on campaigns long enough to judge.
+Rows with `unjudged = True` contributed no power either, for a different reason: the campaign does
+not hold enough of their upgraded data for the screen to judge them, and a turbine the screen cannot
+vouch for is not one the estimate leans on. A reference down for most of the campaign lands here.
+Either way the turbine keeps its place in the analysis as a wake contributor, so the model still
+knows when it was running.
+
+Rows with both flags `False` that still read far from zero are the ones to think about. The screen is
+deliberately cautious: it judges each reference separately, so one reference's long outage costs only
+that reference its power, and on a campaign too short to judge any of them it does not run at all and
+takes nobody's power away. `run.log` names who it ruled out and who it held out.
 
 ### Judging scale from that one table
 
@@ -160,8 +242,8 @@ references are the same distance from zero, you are looking at the noise floor, 
 
 ## Known limits
 
-- Every turbine's change must share one date (or one toggle schedule). Staggered per-turbine dates
-  are not yet expressible.
+- A toggle campaign shares one schedule. Staggered dates are prepost only, declared through a
+  works table.
 - Every turbine's data is trusted for its wake. A turbine whose power reads high while it is in
   fact stopped would be counted as waking its neighbours.
 - The result is a P50 estimate. There is no uncertainty interval yet.

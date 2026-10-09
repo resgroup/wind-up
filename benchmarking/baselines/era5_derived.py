@@ -16,7 +16,7 @@ treatment-invariant quantities that actually drive turbine power and its scatter
   humidity (partial pressures of dry air and vapour, Magnus saturation formula).
 
 All functions are NaN-tolerant (LightGBM handles NaN natively) and operate on the *aligned* ERA5
-frame the lag sync produces (original Open-Meteo column names).
+frame from :func:`benchmarking.harness.reanalysis.interpolate_era5` (original Open-Meteo column names).
 """
 
 from __future__ import annotations

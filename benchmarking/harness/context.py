@@ -8,7 +8,7 @@ than declaration fields.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -47,6 +47,11 @@ class CampaignContext:
         a curtailed record is invalid for uplift while staying valid for a northing analysis.
         Its index **covers** the frame's timestamps rather than matching them, so narrowing the
         frame does not invalidate it; narrow with :meth:`valid_over`.
+    :param reserve_references: wake contributors that may replace a candidate reference a method
+        rules out, nearest first
+    :param reading_pools: per candidate reference or reserve, the turbines to read it against when
+        estimating its own uplift, nearest first. ``None`` reads each against the other candidates.
+    :param reading_pool_size: how many of a reading pool to use
     """
 
     test_wtg: str
@@ -56,15 +61,22 @@ class CampaignContext:
     wake_contributors: list[str]
     valid_for_uplift: pd.DataFrame
     coords: dict[str, tuple[float, float]] | None = None
+    reserve_references: list[str] = field(default_factory=list)
+    reading_pools: dict[str, list[str]] | None = None
+    reading_pool_size: int | None = None
 
     def __post_init__(self) -> None:
-        """Raise when a wake contributor is also the test turbine or a candidate reference."""
+        """Raise when a turbine holds two roles, or a reserve is not a wake contributor."""
         clash = sorted({self.test_wtg, *self.candidate_references} & set(self.wake_contributors))
         if clash:
             msg = (
                 f"wake contributors {clash} are also the test turbine {self.test_wtg!r} or a candidate reference "
                 f"{sorted(self.candidate_references)}; a turbine holds one role"
             )
+            raise ValueError(msg)
+        stray = sorted(set(self.reserve_references) - set(self.wake_contributors))
+        if stray:
+            msg = f"reserve references {stray} are not wake contributors; a reserve waits among them"
             raise ValueError(msg)
 
     @property

@@ -12,8 +12,9 @@ Three checks:
 * **downtime / availability** — drop rows where an availability counter shows the turbine was not
   ready to operate for the full period. This is **required** by the methods (a missing availability
   column is a configuration error, not a silent no-op).
-* **stuck data** — drop rows where every signal is unchanged from the previous record (a frozen
-  data stream), exempting genuine very-low-wind calms.
+* **stuck data** — drop rows where every measured schema signal is unchanged from the previous
+  record (a frozen data stream), exempting calms; the rule is
+  :func:`~benchmarking.harness.operating_state.stuck_records`.
 
 The central rule is **filter on cause, not effect**: selection uses operational signals and finite
 power, never "power lower than expected" — that would drop genuine low-uplift records and bias the
@@ -27,11 +28,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from benchmarking.harness.operating_state import stuck_records
+
 if TYPE_CHECKING:
     import pandas as pd
 
-# Below this wind speed a flat/constant signal is a genuine calm, not a stuck sensor.
-_VERY_LOW_WIND = 1.5
+    from benchmarking.synthetic import ColumnSchema
 
 
 @dataclass
@@ -40,8 +42,8 @@ class NormalOperationFilter:
 
     :param active_power_col: the test turbine's active-power column (rows with NaN power are
         always dropped — that is downtime/missing energy)
-    :param wind_speed_col: the test turbine's wind-speed column, used only to exempt very-low-wind
-        calms from the stuck filter (``None`` disables that exemption)
+    :param columns: the schema whose measured signals the stuck filter reads; required when
+        ``apply_stuck_filter`` is set
     :param availability_col: an operational "ready to operate" counter (e.g. seconds in the
         period); ``None`` disables the downtime filter
     :param full_period_seconds: the counter value that means fully available; defaults to the
@@ -50,7 +52,7 @@ class NormalOperationFilter:
     """
 
     active_power_col: str
-    wind_speed_col: str | None = None
+    columns: ColumnSchema | None = None
     availability_col: str | None = None
     full_period_seconds: float | None = None
     apply_stuck_filter: bool = True
@@ -66,15 +68,11 @@ class NormalOperationFilter:
         return keep.astype(bool)
 
     def _stuck(self, rows: pd.DataFrame) -> pd.Series:
-        """Return True where every numeric signal is unchanged from the previous row (not low wind)."""
-        numeric = rows.select_dtypes(include="number")
-        diffs = numeric.ffill().fillna(0).diff()
-        frozen = (diffs == 0).all(axis=1)
-        frozen.iloc[0] = False  # the first row has no predecessor to repeat
-        if self.wind_speed_col is not None:
-            calm = rows[self.wind_speed_col] < _VERY_LOW_WIND
-            frozen &= ~calm
-        return frozen
+        """Return True where every measured signal is unchanged from the previous row (not a calm)."""
+        if self.columns is None:
+            msg = "the stuck filter needs columns, the schema whose signals it reads"
+            raise ValueError(msg)
+        return stuck_records(rows, columns=self.columns)
 
     def _available(self, rows: pd.DataFrame, *, timebase: pd.Timedelta) -> pd.Series:
         """Return True where the availability counter shows a full period (NaN -> not available)."""

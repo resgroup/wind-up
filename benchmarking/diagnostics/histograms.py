@@ -118,7 +118,7 @@ def plot_condition_histograms(ctx: DiagnosticContext) -> Path:
     for ax in flat[len(conditions) :]:
         ax.set_visible(False)
     fig.suptitle(f"{ctx.test_wtg}: condition distributions on the USED (post-filter) data, baseline vs upgraded")
-    path = ctx.stage_dir(stages.UPLIFT_INPUTS) / "condition_histograms.png"
+    path = ctx.stage_dir(stages.VALID_RECORDS) / "condition_histograms.png"
     save_fig(fig, path)
     return path
 

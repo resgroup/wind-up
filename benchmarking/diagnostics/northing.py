@@ -6,9 +6,9 @@ plots, per turbine, the **monthly circular mean** of (nacelle position - ERA5 wi
 time, so a drift or step in the offset stands out. Only rows where the turbine is generating
 (≥ 5% of its rated power) are used, because a parked turbine often points away from the wind.
 
-Drawn twice: from the raw nacelle position in ``1_inputs``, and from the north-calibrated column
-the shared northing step writes in ``3_feature_eng`` -- the signal the model is actually given, so
-a correction that did not take is visible as a residual offset or step.
+Drawn twice, both in ``04_northing``: from the raw nacelle position, and from the north-calibrated
+column the shared northing step writes -- the signal the model is actually given, so a correction
+that did not take is visible as a residual offset or step.
 
 Requires a nacelle-position column and aligned ERA5 direction; returns ``None`` otherwise.
 """
@@ -53,7 +53,7 @@ def plot_northing_error(ctx: DiagnosticContext) -> Path | None:
     return _northing_error_figure(
         ctx,
         nacelle_col=ctx.columns.nacelle_position,
-        stage=stages.INPUTS,
+        stage=stages.NORTHING,
         filename="northing_error.png",
         described="no corrections",
     )
@@ -70,7 +70,7 @@ def plot_northed_error(ctx: DiagnosticContext) -> Path | None:
     return _northing_error_figure(
         ctx,
         nacelle_col=ctx.columns.northed("nacelle_position"),
-        stage=stages.FEATURE_ENG,
+        stage=stages.NORTHING,
         filename="northed_error.png",
         described="after northing correction",
     )

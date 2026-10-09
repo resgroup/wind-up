@@ -6,12 +6,15 @@ import dataclasses
 import logging
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 import pytest
 import yaml
 
 from benchmarking.campaigns.composed import (
     _LOG_HANDLER_NAME,
+    DATA_PREPARATION_DIRNAME,
+    ESTIMATOR_DIRNAME,
     LOG_FILENAME,
     WIND_UP,
     default_out_dir,
@@ -24,7 +27,7 @@ from benchmarking.synthetic import HOT_COLUMNS
 from .test_loader import load, write_campaign
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 # Configuration that belongs to the run, not to the method, so it is excluded from the comparison.
@@ -133,4 +136,124 @@ def test_the_declaration_is_echoed_before_the_run_so_a_failure_still_leaves_it(t
     assert echoed["name"] == "demo"
     assert echoed["analysis_period"]["start"] == "2017-01-01 00:00:00+00:00"
     assert echoed["timing"]["changeover"] == "2018-01-01 00:00:00+00:00"
-    assert echoed["reanalysis"]["window"] == ["2017-01-01", "2018-12-31"]
+    assert echoed["reanalysis"]["cell_selection"] == "land"
+
+
+class TestTheReanalysisWindow:
+    def test_it_covers_the_whole_scada_record_even_with_a_declared_period(self) -> None:
+        from benchmarking.campaigns.composed import reanalysis_window  # noqa: PLC0415
+
+        index = pd.date_range("2016-03-01", "2019-12-31 23:00", freq="1h", tz="UTC")
+        assert reanalysis_window(index) == ("2016-01-01", "2020-01-01")
+
+
+def _write_small_scada(path: Path) -> None:
+    """Two months of hourly SCADA for the fixture's four turbines, every signal the plots read."""
+    index = pd.date_range("2017-01-01", "2017-03-01", freq="1h", tz="UTC", inclusive="left")
+    rng = np.random.default_rng(0)
+    frames = []
+    for turbine in ("T01", "T02", "T03", "T04"):
+        ws = rng.uniform(3, 18, len(index))
+        power = np.clip(0.5 * ws**3, 0, 2050)
+        frames.append(
+            pd.DataFrame(
+                {
+                    HOT_COLUMNS.turbine: turbine,
+                    HOT_COLUMNS.active_power: power,
+                    HOT_COLUMNS.active_power_min: power,
+                    HOT_COLUMNS.wind_speed: ws,
+                    HOT_COLUMNS.wind_speed_sd: 1.0,
+                    HOT_COLUMNS.gen_rpm: np.clip(ws * 90, 0, 1600),
+                    HOT_COLUMNS.pitch: np.clip(ws - 12, 0, None),
+                    HOT_COLUMNS.reactive_power: 0.1 * power,
+                    HOT_COLUMNS.availability: 3600.0,
+                },
+                index=index,
+            )
+        )
+    pd.concat(frames).to_parquet(path)
+
+
+class _StopError(Exception):
+    """Raised by the stubbed campaign estimate, so a test stops the run where it wants to look."""
+
+
+class TestTheInputDataPlots:
+    """Step 1: every turbine and every record provided, drawn before anything is planned."""
+
+    @pytest.fixture
+    def declaration(self, tmp_path: Path) -> Path:
+        campaign = tmp_path / "campaign"
+        campaign.mkdir()
+        path = write_campaign(campaign)
+        _write_small_scada(campaign / "scada.parquet")
+        return path
+
+    @pytest.fixture(autouse=True)
+    def _stop_before_planning(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        def stub(*_args: object, **_kwargs: object) -> None:
+            raise _StopError
+
+        monkeypatch.setattr("benchmarking.campaigns.composed.estimate_campaign", stub)
+        yield
+        root = logging.getLogger()
+        for handler in [h for h in root.handlers if getattr(h, "name", None) == _LOG_HANDLER_NAME]:
+            root.removeHandler(handler)
+            handler.close()
+
+    def test_every_turbine_is_drawn_before_planning(self, declaration: Path, tmp_path: Path) -> None:
+        with pytest.raises(_StopError):
+            run_declaration(declaration, out_dir=tmp_path / "out", era5_hourly_df=era5())
+        preparation = tmp_path / "out" / DATA_PREPARATION_DIRNAME
+        names = {p.name for p in (preparation / "01_changes").iterdir()}
+        # T04 is excluded from the campaign but its data was provided, so it is drawn
+        assert {f"ops_relationships_T0{i}.png" for i in range(1, 5)} <= names
+        assert {"power_factor.png", "input_data_coverage.png"} <= names
+        states = {p.name for p in (preparation / "02_operating_states").iterdir()}
+        assert {"operating_state_hours.csv", "operating_state_hours.png", "operating_states_T04.png"} <= states
+        reanalysis = {p.name for p in (preparation / "03_reanalysis").iterdir()}
+        assert reanalysis == {"shift_check.png", "wind_speed_scatter.png", "reanalysis.csv"}
+        assert (preparation / "04_northing" / "possible_yaw_changes.csv").exists()
+
+    def test_the_folder_can_be_named(self, declaration: Path, tmp_path: Path) -> None:
+        with pytest.raises(_StopError):
+            run_declaration(
+                declaration, out_dir=tmp_path / "out", era5_hourly_df=era5(), input_plots_dir=tmp_path / "mine"
+            )
+        assert (tmp_path / "mine" / "01_changes" / "input_data_coverage.png").exists()
+        assert (tmp_path / "mine" / "02_operating_states" / "operating_state_hours.csv").exists()
+
+
+class TestTheRunFolders:
+    @pytest.fixture(autouse=True)
+    def _detach(self) -> Iterator[None]:
+        """Leave the root logger as the test found it."""
+        yield
+        root = logging.getLogger()
+        for handler in [h for h in root.handlers if getattr(h, "name", None) == _LOG_HANDLER_NAME]:
+            root.removeHandler(handler)
+            handler.close()
+
+    def test_each_test_turbine_writes_straight_into_its_own_folder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        built: list[object] = []
+
+        def stub(*_args: object, build_methods: Callable[[str], list[object]], **_kwargs: object) -> None:
+            built.extend(build_methods("T01"))
+            raise _StopError
+
+        monkeypatch.setattr("benchmarking.campaigns.composed.estimate_campaign", stub)
+        campaign = tmp_path / "campaign"
+        campaign.mkdir()
+        declaration = write_campaign(campaign)
+        _write_small_scada(campaign / "scada.parquet")
+        with pytest.raises(_StopError):
+            run_declaration(declaration, out_dir=tmp_path / "out", era5_hourly_df=era5())
+        (method,) = built
+        assert method.out_dir == (tmp_path / "out" / ESTIMATOR_DIRNAME / "T01").resolve()  # type: ignore[attr-defined]
+        assert not method.run_subdir  # type: ignore[attr-defined]
+
+    def test_studies_keep_a_named_folder_per_run(self, tmp_path: Path) -> None:
+        method = wind_up_method(load(tmp_path).spec, columns=HOT_COLUMNS, out_dir=tmp_path, era5_hourly_df=era5())
+        assert method.run_subdir

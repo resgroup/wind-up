@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.campaigns import CampaignRunner, per_turbine_table
+from benchmarking.campaigns import CampaignRunner, per_turbine_table, visible_mask
 from benchmarking.harness import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
@@ -191,3 +191,94 @@ class TestCampaignContext:
         for mi in recorder.seen:
             given = pd.DatetimeIndex(mi.scada_df.index.unique())
             assert mi.context.valid_over(given).to_numpy().all()
+
+
+class TestAPlannedCampaign:
+    """Truth follows each upgraded turbine's own plan: its span, and only its usable rows."""
+
+    EXCLUDED = (pd.Timestamp("2019-08-01", tz="UTC"), pd.Timestamp("2019-08-15", tz="UTC"))
+
+    def result_and_expected(self) -> tuple:
+        from benchmarking.campaigns import SyntheticCampaign  # noqa: PLC0415
+        from benchmarking.synthetic import ConstantCpChange  # noqa: PLC0415
+        from benchmarking.synthetic.ground_truth import true_uplift  # noqa: PLC0415
+        from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
+
+        spec = staggered_spec(north_offsets=[], exclusions=[("T0", *self.EXCLUDED)])
+        declared = SyntheticCampaign(
+            upgraded_turbines=spec.upgraded_turbines,
+            upgrade_timing=None,
+            candidate_references=spec.candidate_references,
+            upgrades=[ConstantCpChange(delta=0.05)],
+            layout=spec.layout,
+            north_offsets=[],
+            rated_power_kw=spec.rated_power_kw,
+            analysis_period=None,
+            works=spec.works,
+            exclusions=spec.exclusions,
+        )
+        frame = hourly_scada()
+        # T0 reads a different wind speed inside its exclusion and after its span, so a truth that
+        # wrongly counted those rows would move.
+        is_t0 = frame[HOT_COLUMNS.turbine] == "T0"
+        odd = is_t0 & (
+            ((frame.index >= self.EXCLUDED[0]) & (frame.index < self.EXCLUDED[1]))
+            | (frame.index >= pd.Timestamp("2020-07-01", tz="UTC"))
+        )
+        frame.loc[odd, HOT_COLUMNS.wind_speed] = 5.0
+        frame.loc[odd, HOT_COLUMNS.active_power] = 300.0
+        dataset = declared.generate(frame)
+        result = CampaignRunner(declared.spec(), dataset, build_methods=lambda _wtg: [ZeroMethod()]).run()
+
+        plan = result.report.plans["T0"]
+        synthetic = result.report.scada_df
+        original = dataset.original_df[visible_mask(declared.spec(), dataset.original_df)]
+        t0 = synthetic[synthetic[HOT_COLUMNS.turbine] == "T0"].index
+        window = (t0 >= plan.works[1]) & (t0 < plan.end)
+        inside_exclusion = (t0 >= self.EXCLUDED[0]) & (t0 < self.EXCLUDED[1])
+
+        def truth(mask: np.ndarray) -> float:
+            return true_uplift(synthetic, original, test_wtg="T0", mask=mask).overall
+
+        return result, plan, truth(window & ~inside_exclusion), truth(window), truth(t0 >= plan.works[1])
+
+    def test_truth_skips_the_test_turbines_excluded_rows(self) -> None:
+        result, _, expected, with_excluded, _ = self.result_and_expected()
+        got = per_turbine_table(result).set_index("test_wtg").loc["T0", "truth"]
+        assert expected != pytest.approx(with_excluded)
+        assert got == pytest.approx(expected)
+
+    def test_truth_ends_at_the_plans_end(self) -> None:
+        _, plan, expected, _, whole_post = self.result_and_expected()
+        assert plan.end <= pd.Timestamp("2020-07-01", tz="UTC")
+        assert expected != pytest.approx(whole_post)
+
+
+def test_an_unplanned_turbine_is_left_out_of_the_farm_truth() -> None:
+    from benchmarking.campaigns import SyntheticCampaign  # noqa: PLC0415
+    from benchmarking.synthetic import ConstantCpChange  # noqa: PLC0415
+    from tests.benchmarking.campaigns.test_plans import without_pre  # noqa: PLC0415
+    from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
+
+    spec = staggered_spec(north_offsets=[])
+    declared = SyntheticCampaign(
+        upgraded_turbines=spec.upgraded_turbines,
+        upgrade_timing=None,
+        candidate_references=spec.candidate_references,
+        upgrades=[ConstantCpChange(delta=0.05)],
+        layout=spec.layout,
+        north_offsets=[],
+        rated_power_kw=spec.rated_power_kw,
+        analysis_period=None,
+        works=spec.works,
+        exclusions=spec.exclusions,
+    )
+    dataset = declared.generate(without_pre(hourly_scada(), "T6"))
+    result = CampaignRunner(declared.spec(), dataset, build_methods=lambda _wtg: [ZeroMethod()]).run()
+
+    assert set(result.unplanned) == {"T6"}
+    per_turbine = per_turbine_table(result)
+    assert list(per_turbine["test_wtg"]) == ["T0"]
+    t0_truth = per_turbine.set_index("test_wtg").loc["T0", "truth"]
+    assert result.truth_farm_uplift == pytest.approx(t0_truth)
+    assert result.farm.loc[0, "truth"] == pytest.approx(t0_truth)

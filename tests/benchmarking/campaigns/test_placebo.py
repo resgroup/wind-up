@@ -92,6 +92,23 @@ def test_each_mode_gets_its_campaign_length_on_a_full_year_of_baseline(mode: str
     assert start == PLACEBO_CAMPAIGN_START - pd.DateOffset(months=12)
 
 
+def test_window_months_can_be_overridden_for_both_period_and_campaign() -> None:
+    changeover = pd.Timestamp("2018-03-01", tz="UTC")
+    start, end = placebo_analysis_period("prepost", campaign_start=changeover, baseline_months=12, campaign_months=6)
+    assert start == pd.Timestamp("2017-03-01", tz="UTC")
+    assert end == pd.Timestamp("2018-09-01", tz="UTC")
+    campaign = placebo_campaign(
+        "prepost",
+        turbines=TEST_TURBINES,
+        upgraded=TEST_TURBINES[:1],
+        campaign_start=changeover,
+        baseline_months=12,
+        campaign_months=6,
+    )
+    assert campaign.analysis_period == (start, end)
+    assert campaign.upgrade_timing == changeover
+
+
 def test_prepost_baseline_and_treated_periods_hold_the_same_seasons() -> None:
     # the point of the 12-month prepost campaign: an unconditioned method cannot then confuse
     # a seasonal difference between the two periods with an effect

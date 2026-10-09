@@ -46,9 +46,10 @@ large steps.
 ## The changepoint search
 
 Every step that finds changepoints uses `estimate_north_table`. It takes the circular difference
-between a turbine's direction and a reference over the rows where the turbine is generating and
-available (`yaw_usable`), and searches that residual for step changes by exact dynamic programming
-on a daily grid, then pins each step to native resolution. The residual is first normalised per
+between a turbine's direction and a reference over the rows usable for northing: valid for northing
+in the turbine's operating state (method step 2) and generating above 5% of rated power. It searches
+that residual for step changes by exact dynamic programming on a daily grid, then pins each step to
+native resolution. The residual is first normalised per
 direction sector, so site veer (a turbine reading differently from the reference depending on where
 the wind comes from) is not mistaken for a step. Each segment's offset is the circular median of
 its raw residual, so the correction stays absolute.

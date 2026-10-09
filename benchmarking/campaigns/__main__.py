@@ -4,7 +4,9 @@
 
     python -m benchmarking.campaigns run campaign.yaml --out DIR
 
-``--out`` defaults to ``WIND_UP_BENCHMARKING_OUTPUT_DIR``/``<the campaign's name>``.
+``--out`` defaults to ``WIND_UP_BENCHMARKING_OUTPUT_DIR``/``<the campaign's name>``. The plots of
+every turbine and every record from steps 1, 2, 4 and 5's labels go to the run's
+``A_data_preparation`` folder, or ``--input-plots``.
 """
 
 from __future__ import annotations
@@ -27,6 +29,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run = sub.add_parser("run", help="run a campaign declaration and write its report")
     run.add_argument("declaration", type=Path, help="the campaign YAML file")
     run.add_argument("--out", type=Path, default=None, help="output directory (default: from the campaign name)")
+    run.add_argument(
+        "--input-plots",
+        type=Path,
+        default=None,
+        help="where the plots of every turbine and record go (default: the run's A_data_preparation)",
+    )
     return parser.parse_args(argv)
 
 
@@ -34,7 +42,7 @@ def main(argv: list[str] | None = None) -> None:
     """Run the declared campaign."""
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    run_declaration(args.declaration, out_dir=args.out)
+    run_declaration(args.declaration, out_dir=args.out, input_plots_dir=args.input_plots)
 
 
 if __name__ == "__main__":

@@ -112,3 +112,11 @@ class TestCacheDir:
         p2 = era5._era5_cache_path(**args, cache_dir=tmp_path)  # noqa: SLF001
         assert p1 == p2
         assert p1.suffix == ".parquet"
+
+    def test_land_cell_selection_keeps_the_cache_path(self, tmp_path: Path) -> None:
+        args = {"lat": 57.5, "lon": -3.25, "start_date": "2020-01-01", "end_date": "2020-02-01", "fields": ["x"]}
+        default = era5._era5_cache_path(**args, cache_dir=tmp_path)  # noqa: SLF001
+        land = era5._era5_cache_path(**args, cache_dir=tmp_path, cell_selection="land")  # noqa: SLF001
+        sea = era5._era5_cache_path(**args, cache_dir=tmp_path, cell_selection="sea")  # noqa: SLF001
+        assert land == default
+        assert sea != default

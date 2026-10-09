@@ -21,8 +21,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from benchmarking.diagnostics.context import infer_timebase
+from benchmarking.harness.operating_state import VALID_NORTHING_COL
+from benchmarking.harness.reanalysis import ERA5_WS_RAW, interpolate_era5
 from wind_up.northing import (
     DEFAULT_NORTHING,
+    NORTH_OFFSET_COL,
+    TIMESTAMP_COL,
     NorthingSettings,
     add_wake_nadir_shift,
     apply_north_table,
@@ -36,6 +41,8 @@ from wind_up.wake_nadir import wake_pair_curves, wake_pairs
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
+
+    import numpy.typing as npt
 
     from benchmarking.synthetic import ColumnSchema
     from wind_up.layout import Layout
@@ -61,7 +68,9 @@ ERA5_WD_COL = "wind_direction_100m"
 
 
 def era5_direction(era5_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
-    """Return the hourly ERA5 wind direction carried onto ``index``, held within each hour.
+    """Return the ERA5 hub-height wind direction on the SCADA periods of ``index`` (period-start UTC).
+
+    Interpolated through the wind vector, as :func:`~benchmarking.harness.reanalysis.interpolate_era5`.
 
     Raises naming the column when the frame does not carry it: a partial reanalysis delivery is
     reported as the missing column rather than as a bare KeyError.
@@ -72,8 +81,9 @@ def era5_direction(era5_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
             f"step anchors against. Columns present: {sorted(era5_df.columns)}"
         )
         raise ValueError(msg)
-    hourly = era5_df[ERA5_WD_COL]
-    return hourly.reindex(hourly.index.union(index)).ffill(limit=6).reindex(index)
+    columns = [c for c in (ERA5_WD_COL, ERA5_WS_RAW) if c in era5_df.columns]
+    aligned = interpolate_era5(era5_df[columns], index=index, timebase=infer_timebase(index))
+    return aligned[ERA5_WD_COL]
 
 
 def _north_table_from_offsets(
@@ -121,21 +131,44 @@ def _usable_masks(
     timebase_s: float,
 ) -> dict[str, np.ndarray]:
     """Per-turbine rows usable for northing, positional on the shared ``index``."""
+    labelled = VALID_NORTHING_COL in scada_df.columns
     masks = {}
     for turbine in turbines:
         rows = scada_df[scada_df[columns.turbine] == turbine]
         frame = rows[~rows.index.duplicated()].reindex(index)
         power = frame[columns.active_power].to_numpy(dtype=float)
-        # the schema's availability is a "ready to operate" counter, so downtime is what is left
-        available = frame[columns.availability].to_numpy(dtype=float)
-        masks[turbine] = yaw_usable(
+        if labelled:
+            # step 2's validity replaces the downtime rule
+            valid = frame[VALID_NORTHING_COL].fillna(value=False).to_numpy(dtype=bool)
+            downtime_s = np.zeros(len(index))
+        else:
+            # the schema's availability is a "ready to operate" counter, so downtime is what is left
+            available = frame[columns.availability].to_numpy(dtype=float)
+            valid = np.ones(len(index), dtype=bool)
+            downtime_s = timebase_s - np.nan_to_num(available, nan=0.0)
+        masks[turbine] = valid & yaw_usable(
             power=power,
-            downtime_s=timebase_s - np.nan_to_num(available, nan=0.0),
+            downtime_s=downtime_s,
             reference_deg=reference_deg,
             rated_power=rated_power_kw,
             timebase_s=timebase_s,
         )
     return masks
+
+
+def northing_rows(scada_df: pd.DataFrame, *, columns: ColumnSchema, rated_power_kw: float) -> npt.NDArray[np.bool_]:
+    """Rows of a step-2 labelled frame that northing learns from, before the reanalysis is consulted.
+
+    Valid for northing and generating above the share of rated power :func:`~wind_up.northing.yaw_usable` asks.
+    """
+    power = scada_df[columns.active_power].to_numpy(dtype=float)
+    return scada_df[VALID_NORTHING_COL].fillna(value=False).to_numpy(dtype=bool) & yaw_usable(
+        power=power,
+        downtime_s=np.zeros(len(scada_df)),
+        reference_deg=np.zeros(len(scada_df)),
+        rated_power=rated_power_kw,
+        timebase_s=1.0,
+    )
 
 
 def _directions(
@@ -161,13 +194,17 @@ def north_scada(
     roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
     settings: NorthingSettings = DEFAULT_NORTHING,
     out_dir: Path | None = None,
+    plots: bool = True,
+    apply_to: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Return ``scada_df`` with a north-calibrated companion column for each direction role.
 
     One north table per turbine is derived from its ``nacelle_position`` and applied to every
     requested role, so a turbine's channels stay mutually consistent. The originals are untouched.
 
-    :param scada_df: long-format SCADA, timestamps indexed, turbines in ``columns.turbine``
+    :param scada_df: long-format SCADA, timestamps indexed, turbines in ``columns.turbine``. Rows
+        valid for northing are read from :data:`~benchmarking.harness.operating_state.VALID_NORTHING_COL`
+        when the frame carries it.
     :param columns: the source-native schema naming the turbine and direction role(s)
     :param north_offsets: ``None`` to discover the corrections, or the exact table to apply
     :param rated_power_kw: turbine rating, for deciding which rows are usable for northing
@@ -181,11 +218,12 @@ def north_scada(
     :param out_dir: when given and corrections are discovered, the discovered table
         (:data:`NORTH_TABLE_YAML`), the farm overview, one plot per device and, with a layout, the
         wake-nadir shift map and a few before/after wake plots are written here
-    :return: a copy of ``scada_df`` with ``columns.northed(role)`` added for each role
+    :param plots: write the plots to ``out_dir`` as well as the discovered table
+    :param apply_to: the frame to correct and return, when it differs from the frame learnt from
+    :return: a copy of ``apply_to`` (default ``scada_df``) with ``columns.northed(role)`` added for each role
     """
+    target = scada_df if apply_to is None else apply_to
     columns.require_roles(roles)
-    scada_df = scada_df.copy()
-    index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
     turbines = sorted(str(t) for t in scada_df[columns.turbine].unique())
     # A source that does not ship a direction channel has nothing to north; that is a property of
     # the data, not an error. ``require_roles`` has already checked the schema names the roles.
@@ -194,87 +232,132 @@ def north_scada(
     if skipped:
         logger.info("no northing for role(s) %s: their columns are not in scada_df", skipped)
     if not turbines or not present:
-        return scada_df
-    roles = present
+        return target.copy()
+    tables = north_tables(
+        scada_df,
+        columns=columns,
+        north_offsets=north_offsets,
+        rated_power_kw=rated_power_kw,
+        layout=layout,
+        era5_wd=era5_wd,
+        settings=settings,
+        out_dir=out_dir,
+        plots=plots,
+    )
+    return apply_north_tables(target, tables=tables, columns=columns, roles=present)
 
+
+def north_tables(
+    scada_df: pd.DataFrame,
+    *,
+    columns: ColumnSchema,
+    north_offsets: Sequence[tuple[str, pd.Timestamp, float]] | None,
+    rated_power_kw: float,
+    layout: Layout | None,
+    era5_wd: pd.Series | None = None,
+    settings: NorthingSettings = DEFAULT_NORTHING,
+    out_dir: Path | None = None,
+    plots: bool = True,
+) -> dict[str, pd.DataFrame]:
+    """Return one north table per turbine of ``scada_df``: the declared ones, or those discovered.
+
+    Takes the arguments of :func:`north_scada`, which applies what this returns. Discovers none when
+    ``scada_df`` has no nacelle position.
+    """
+    index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+    turbines = sorted(str(t) for t in scada_df[columns.turbine].unique())
     if north_offsets is not None:
-        tables = {wtg: _north_table_from_offsets(north_offsets, turbine=wtg, start=index.min()) for wtg in turbines}
         logger.info("applying %d declared northing correction(s); discovering none", len(north_offsets))
-    else:
-        if era5_wd is None:
-            msg = (
-                "north_scada needs era5_wd to discover northing corrections: reanalysis is the "
-                "absolute anchor, without which a farm that is uniformly wrong looks self-consistent. "
-                "Supply era5_wd, or declare north_offsets to apply a known table instead."
-            )
-            raise ValueError(msg)
-        reference = era5_wd.reindex(index).to_numpy(dtype=float)
-        timebase_s = _timebase_seconds(index)
-        source = columns.nacelle_position
-        if source is None or source not in scada_df.columns:
-            msg = (
-                f"northing discovery needs the nacelle_position column {source!r}, which is not in scada_df; "
-                f"the north table for every role is derived from it. Columns present: {sorted(scada_df.columns)}"
-            )
-            raise ValueError(msg)
-        _require_columns(scada_df, columns=columns, roles=("active_power", "availability"))
-        directions = _directions(scada_df, columns=columns, turbines=turbines, index=index, col=source)
-        usable = _usable_masks(
-            scada_df,
-            columns=columns,
-            turbines=turbines,
+        return {wtg: _north_table_from_offsets(north_offsets, turbine=wtg, start=index.min()) for wtg in turbines}
+    if era5_wd is None:
+        msg = (
+            "north_scada needs era5_wd to discover northing corrections: reanalysis is the "
+            "absolute anchor, without which a farm that is uniformly wrong looks self-consistent. "
+            "Supply era5_wd, or declare north_offsets to apply a known table instead."
+        )
+        raise ValueError(msg)
+    reference = era5_wd.reindex(index).to_numpy(dtype=float)
+    timebase_s = _timebase_seconds(index)
+    source = columns.nacelle_position
+    if source is None or source not in scada_df.columns:
+        logger.info("no northing: the nacelle_position column %r is not in scada_df", source)
+        return {}
+    needed = ("active_power",) if VALID_NORTHING_COL in scada_df.columns else ("active_power", "availability")
+    _require_columns(scada_df, columns=columns, roles=needed)
+    directions = _directions(scada_df, columns=columns, turbines=turbines, index=index, col=source)
+    usable = _usable_masks(
+        scada_df,
+        columns=columns,
+        turbines=turbines,
+        index=index,
+        reference_deg=reference,
+        rated_power_kw=rated_power_kw,
+        timebase_s=timebase_s,
+    )
+    tables = north_farm(
+        index, direction_deg=directions, usable=usable, reanalysis_deg=reference, layout=layout, settings=settings
+    )
+    # The wake-nadir shift runs here so its corrections are available for the map.
+    corrections: dict[str, float] = {}
+    unshifted = tables
+    power: dict[str, np.ndarray] | None = None
+    wind_speed: dict[str, np.ndarray] | None = None
+    if layout is not None:
+        power = _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.active_power)
+        wind_speed = (
+            _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.wind_speed)
+            if columns.wind_speed in scada_df.columns
+            else None
+        )
+        tables, corrections = add_wake_nadir_shift(
+            tables,
+            layout=layout,
             index=index,
-            reference_deg=reference,
-            rated_power_kw=rated_power_kw,
-            timebase_s=timebase_s,
+            direction_deg=directions,
+            power=power,
+            wind_speed=wind_speed,
+            usable=usable,
         )
-        tables = north_farm(
-            index, direction_deg=directions, usable=usable, reanalysis_deg=reference, layout=layout, settings=settings
-        )
-        # The wake-nadir shift runs here so its corrections are available for the map.
-        corrections: dict[str, float] = {}
-        unshifted = tables
-        if layout is not None:
-            power = _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.active_power)
-            wind_speed = (
-                _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.wind_speed)
-                if columns.wind_speed in scada_df.columns
-                else None
-            )
-            tables, corrections = add_wake_nadir_shift(
-                tables,
+    found = sum(len(t) - 1 for t in tables.values())
+    logger.info("discovered %d northing changepoint(s) across %d turbines", found, len(turbines))
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        write_north_table_yaml(tables, path=out_dir / NORTH_TABLE_YAML)
+        if plots:
+            _write_discovery_plots(
+                index,
                 layout=layout,
-                index=index,
-                direction_deg=directions,
+                directions=directions,
+                usable=usable,
+                reference=reference,
+                before=unshifted,
+                after=tables,
+                corrections=corrections,
                 power=power,
                 wind_speed=wind_speed,
-                usable=usable,
+                out_dir=out_dir,
             )
-        found = sum(len(t) - 1 for t in tables.values())
-        logger.info("discovered %d northing changepoint(s) across %d turbines", found, len(turbines))
-        if out_dir is not None:
-            out_dir.mkdir(parents=True, exist_ok=True)
-            write_north_table_yaml(tables, path=out_dir / NORTH_TABLE_YAML)
-            _write_northing_plots(
-                index, directions=directions, usable=usable, reference=reference, tables=tables, out_dir=out_dir
-            )
-            if layout is not None and corrections:
-                figure = plot_wake_nadir_farm(layout, corrections=corrections, out_dir=out_dir)
-                plt.close(figure)
-                _write_wake_pair_plots(
-                    layout,
-                    index=index,
-                    directions=directions,
-                    before=unshifted,
-                    after=tables,
-                    corrections=corrections,
-                    power=power,
-                    wind_speed=wind_speed,
-                    usable=usable,
-                    out_dir=out_dir,
-                )
+    return tables
 
-    turbine_of = scada_df[columns.turbine].to_numpy()
+
+def north_offsets_of(tables: dict[str, pd.DataFrame]) -> list[tuple[str, pd.Timestamp, float]]:
+    """Return ``tables`` as the ``(turbine, from, offset_deg)`` list a campaign declares."""
+    return [
+        (wtg, pd.Timestamp(ts), float(offset))
+        for wtg, table in sorted(tables.items())
+        for ts, offset in zip(table[TIMESTAMP_COL], table[NORTH_OFFSET_COL], strict=True)
+    ]
+
+
+def apply_north_tables(
+    scada_df: pd.DataFrame, *, tables: dict[str, pd.DataFrame], columns: ColumnSchema, roles: Sequence[str]
+) -> pd.DataFrame:
+    """Return a copy of ``scada_df`` with ``columns.northed(role)`` added for each role, from ``tables``.
+
+    A table may extend beyond the frame. A turbine without a table gets no correction.
+    """
+    scada_df = scada_df.copy()
+    turbine_of = scada_df[columns.turbine].astype(str).to_numpy()
     row_index = pd.DatetimeIndex(scada_df.index)
     for role in roles:
         source_col = getattr(columns, role)
@@ -287,6 +370,42 @@ def north_scada(
             values[rows] = apply_north_table(row_index[rows], values[rows], north_table=table)
         scada_df[target] = values
     return scada_df
+
+
+def _write_discovery_plots(
+    index: pd.DatetimeIndex,
+    *,
+    layout: Layout | None,
+    directions: dict[str, np.ndarray],
+    usable: dict[str, np.ndarray],
+    reference: np.ndarray,
+    before: dict[str, pd.DataFrame],
+    after: dict[str, pd.DataFrame],
+    corrections: dict[str, float],
+    power: dict[str, np.ndarray] | None,
+    wind_speed: dict[str, np.ndarray] | None,
+    out_dir: Path,
+) -> None:
+    """Write the discovery plots: per device, and with a layout the wake-nadir shift map and wake pairs."""
+    _write_northing_plots(
+        index, directions=directions, usable=usable, reference=reference, tables=after, out_dir=out_dir
+    )
+    if layout is None or not corrections or power is None:
+        return
+    figure = plot_wake_nadir_farm(layout, corrections=corrections, out_dir=out_dir)
+    plt.close(figure)
+    _write_wake_pair_plots(
+        layout,
+        index=index,
+        directions=directions,
+        before=before,
+        after=after,
+        corrections=corrections,
+        power=power,
+        wind_speed=wind_speed,
+        usable=usable,
+        out_dir=out_dir,
+    )
 
 
 def _write_northing_plots(

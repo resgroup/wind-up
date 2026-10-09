@@ -165,43 +165,43 @@ def _inputs_for(hot: pd.DataFrame, window: str, case: str) -> tuple[FarmInputs, 
 # half again as bad, plus a degree, before it fails: enough for incidental change, not for a real
 # loss of robustness.
 RECORDED_WORST_ERROR = {
-    ("N=6", "early"): 2.0,
-    ("N=6", "late"): 1.9,
-    ("N=3", "early"): 5.0,
-    ("N=3", "late"): 1.9,
-    ("N=2", "early"): 2.3,
-    ("N=2", "late"): 2.0,
+    ("N=6", "early"): 1.9,
+    ("N=6", "late"): 1.8,
+    ("N=3", "early"): 5.4,
+    ("N=3", "late"): 6.9,
+    ("N=2", "early"): 1.9,
+    ("N=2", "late"): 1.8,
     ("N=1", "early"): 2.2,
     ("N=1", "late"): 2.7,
-    ("365d", "early"): 2.3,
-    # 4.3 since re-northing one device at a time (CF22): T11 lands 0.2 deg away before the wake-nadir
-    # shift, but one of its wake pairs (T11->T13) is marginal and drops out, swinging its correction.
-    ("365d", "late"): 4.3,
-    ("90d", "early"): 5.3,
+    ("365d", "early"): 2.4,
+    # T11 lands close before the wake-nadir shift, but one of its wake pairs (T11->T13) is marginal and
+    # drops out, swinging its correction.
+    ("365d", "late"): 4.0,
+    ("90d", "early"): 5.9,
     ("90d", "late"): 2.4,
-    ("30d", "early"): 17.5,
-    ("30d", "late"): 3.7,
-    ("7d", "early"): 15.7,
-    ("7d", "late"): 10.9,
-    ("N=3,90d", "early"): 2.2,
-    ("N=3,90d", "late"): 12.5,
-    ("N=2,30d", "early"): 1.4,
-    ("N=2,30d", "late"): 1.9,
-    ("N=1,14d", "early"): 4.7,
-    ("N=1,14d", "late"): 0.7,
-    ("N=1,7d", "early"): 8.0,
-    ("N=1,7d", "late"): 1.4,
+    ("30d", "early"): 7.5,
+    ("30d", "late"): 3.1,
+    ("7d", "early"): 16.9,
+    ("7d", "late"): 5.8,
+    ("N=3,90d", "early"): 1.9,
+    ("N=3,90d", "late"): 12.3,
+    ("N=2,30d", "early"): 1.1,
+    ("N=2,30d", "late"): 1.8,
+    ("N=1,14d", "early"): 4.5,
+    ("N=1,14d", "late"): 0.8,
+    ("N=1,7d", "early"): 7.3,
+    ("N=1,7d", "late"): 2.0,
 }
 # Cases that cost a full-farm, full-window run each: CI only.
 RECORDED_WORST_ERROR_SLOW = {
-    ("N=10", "early"): 2.1,
-    ("N=10", "late"): 2.0,
-    ("drop50%", "early"): 2.2,
-    ("drop50%", "late"): 1.9,
-    ("drop75%", "early"): 5.0,
-    ("drop75%", "late"): 3.2,
-    ("6mo_outage", "early"): 2.0,
-    ("6mo_outage", "late"): 1.7,
+    ("N=10", "early"): 2.0,
+    ("N=10", "late"): 1.8,
+    ("drop50%", "early"): 2.0,
+    ("drop50%", "late"): 5.6,
+    ("drop75%", "early"): 4.3,
+    ("drop75%", "late"): 7.8,
+    ("6mo_outage", "early"): 1.9,
+    ("6mo_outage", "late"): 1.0,
 }
 
 
@@ -225,9 +225,9 @@ class TestDegradation:
     is scored by the worst turbine's median offset error against the full-data answer.
 
     What the recorded errors say: to within a few degrees down to a lone turbine or a 90-day record,
-    since changepoints-v-reanalysis takes over below three turbines. Two corners are genuinely weak and are held where
-    they are rather than hidden: a whole-farm record of a month or less (T15 reads ~17 deg off at the
-    end of 2018, where its neighbourhood data are thin), and three turbines on 90 days in 2020.
+    since changepoints-v-reanalysis takes over below three turbines. The weak corners are held where
+    they are rather than hidden: a whole-farm record of a week, three turbines in 2019-2020, and heavy
+    random data loss in 2019-2020.
     """
 
     @pytest.mark.parametrize(("case", "window"), list(RECORDED_WORST_ERROR), ids=lambda v: v)

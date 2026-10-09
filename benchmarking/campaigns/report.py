@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import yaml
 
 from benchmarking.campaigns.runner import per_turbine_table
 from benchmarking.campaigns.uplift_plots import write_uplift_plots
@@ -37,9 +38,14 @@ def write_report(report: CampaignReport, *, out_dir: Path) -> Path:
     ``reference_stability.csv`` -- each candidate reference estimated as if it were a test
     turbine, which a healthy campaign reads near 0%. Each method's uplift plots go under a folder
     of its name. A method reporting per-condition estimates also gets ``conditional.csv`` and one
-    plot per condition under ``conditional/``.
+    plot per condition under ``conditional/``. A planned campaign also gets ``analysis_plans.csv``
+    (every other turbine's role for each upgraded turbine, with the reason it is not a power
+    reference) and ``analysis_plans.yaml`` (each plan's span, lengths, power references and pool
+    rule, and under ``unplanned`` each upgraded turbine no span could be found for, with the reason).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    if report.plans:
+        _write_plans(report, out_dir=out_dir)
     report.per_turbine.to_csv(out_dir / "per_turbine.csv", index=False)
     report.farm.to_csv(out_dir / "farm_uplift.csv", index=False)
     report.reference_stability.to_csv(out_dir / "reference_stability.csv", index=False)
@@ -88,6 +94,27 @@ def write_campaign_report(result: CampaignResult, dataset: SyntheticDataset, *, 
 
     _write_conditional_plots(result, dataset, out_dir=out_dir / "conditional")
     return out_dir
+
+
+def _write_plans(report: CampaignReport, *, out_dir: Path) -> None:
+    """Write each upgraded turbine's analysis plan, and log it."""
+    tables = [plan.table().assign(test_wtg=turbine) for turbine, plan in sorted(report.plans.items())]
+    table = pd.concat(tables, ignore_index=True)
+    table[["test_wtg", *(c for c in table.columns if c != "test_wtg")]].to_csv(
+        out_dir / "analysis_plans.csv", index=False
+    )
+    summaries: dict[str, object] = {turbine: plan.summary() for turbine, plan in sorted(report.plans.items())}
+    if report.unplanned:
+        summaries["unplanned"] = dict(sorted(report.unplanned.items()))
+        logger.warning("Not analysed, as no span could be planned for them: %s", ", ".join(sorted(report.unplanned)))
+    (out_dir / "analysis_plans.yaml").write_text(yaml.safe_dump(summaries, sort_keys=False))
+    for turbine, plan in sorted(report.plans.items()):
+        logger.info(
+            "Analysis plan for %s:\n%s\n%s",
+            turbine,
+            yaml.safe_dump(plan.summary(), sort_keys=False).rstrip(),
+            plan.table().to_string(index=False),
+        )
 
 
 def _write_detail(farm_uplifts: dict, *, out_dir: Path) -> None:

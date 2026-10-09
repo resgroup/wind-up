@@ -71,3 +71,11 @@ def test_reference_stat_cols_reach_the_power_model(tmp_path: Path) -> None:
     )
     power_model = next(m for m in methods if m.name == "power_model")
     assert power_model.reference_stat_cols == exposed
+
+
+def test_row_dump_dir_reaches_the_power_model(tmp_path: Path) -> None:
+    """The level probe dumps the power model's rows; nothing else is affected."""
+    methods = carried_forward_methods(campaign().spec(), out_dir=tmp_path, row_dump_dir=tmp_path / "dump")
+    assert next(m for m in methods if m.name == "power_model").row_dump_dir == tmp_path / "dump"
+    default = carried_forward_methods(campaign().spec(), out_dir=tmp_path)
+    assert next(m for m in default if m.name == "power_model").row_dump_dir is None

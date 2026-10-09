@@ -77,17 +77,17 @@ class TestWhatIsWritten:
         )
         return [p.name for p in written]
 
-    def test_both_plots_land_in_the_feature_engineering_stage(self, tmp_path: Path) -> None:
+    def test_both_plots_land_in_the_waking_step(self, tmp_path: Path) -> None:
         coords = {"T1": (57.5, -3.25), "T2": (57.51, -3.25), "T3": (57.52, -3.25)}
         names = self._write(tmp_path, coords=coords)
         assert names == ["waking_fractions.png", "waking_layout.png"]
-        stage = tmp_path / "plots" / "3_feature_eng"
+        stage = tmp_path / "plots" / "05_waking"
         assert (stage / "waking_fractions.png").exists()
         assert (stage / "waking_layout.png").exists()
 
     def test_the_fractions_are_written_as_a_table_too(self, tmp_path: Path) -> None:
         self._write(tmp_path, coords=None)
-        table = pd.read_csv(tmp_path / "plots" / "3_feature_eng" / "waking_fractions.csv")
+        table = pd.read_csv(tmp_path / "plots" / "05_waking" / "waking_fractions.csv")
         assert set(table.columns) == {"turbine", "baseline", "treated", "shift"}
 
     def test_the_layout_is_skipped_when_the_campaign_has_no_coordinates(self, tmp_path: Path) -> None:

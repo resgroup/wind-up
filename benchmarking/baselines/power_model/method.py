@@ -19,17 +19,16 @@ this package imports nothing from ``wind_up``.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
 
-from benchmarking.baselines.era5_sync import sync_era5
-from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.baselines.power_model import diagnostics as diag
 from benchmarking.baselines.power_model.conditional import impute_uncovered_bins, relevel_conditional
 from benchmarking.baselines.power_model.features import (
@@ -37,6 +36,7 @@ from benchmarking.baselines.power_model.features import (
     check_reference_only,
     era5_feature_frame,
     extract_outcome,
+    operating_state_features,
     reference_mean_wind_speed,
     test_condition_signals,
 )
@@ -60,6 +60,8 @@ from benchmarking.harness.conditions import (
     validate_conditions,
 )
 from benchmarking.harness.method import MethodInput, MethodOutput
+from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
+from benchmarking.harness.reanalysis import interpolate_era5
 from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrade_start
 from wind_up.farm import TurbineUplift, farm_uplift
 
@@ -140,6 +142,10 @@ _DEFAULT_SCREEN_FLOOR = 0.025
 # its neighbours. Low by design: thrust is already a large fraction of maximum well below rated,
 # so this separates waking from parked while leaking almost none of the power level.
 WAKING_RATED_FRACTION = 0.05
+# Share of the period a turbine must be ready to operate to count as operating normally, under
+# ``normal_operation_feature``. The counter is near-bimodal (0 or the full period), so the exact
+# value matters little.
+NORMAL_OPERATION_AVAILABLE_FRACTION = 0.5
 # A screening estimate is only as good as the campaign it is measured over, and the benchmark sweep
 # set this rather than a hand-picked calibration. At 90 days the sweep still produced false
 # positives on 3-month campaigns -- a reference read -2.9%, about 3.1 pp from its pool median, and
@@ -190,6 +196,7 @@ def empty_reference_uplifts() -> pd.DataFrame:
             "actual_energy": pd.Series(dtype=float),
             "n_records": pd.Series(dtype=int),
             "screened": pd.Series(dtype=bool),
+            "unjudged": pd.Series(dtype=bool),
         }
     )
 
@@ -336,6 +343,10 @@ def _reference_input(
         # column order. Sorted, every test turbine screens a reference identically.
         wake_contributors=sorted(w for w in kept if w != target and w not in set(references)),
         timing=context.timing if timing is None else timing,
+        # A single reference's estimate neither refills nor reads its own references.
+        reserve_references=[],
+        reading_pools=None,
+        reading_pool_size=None,
     )
     return MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
 
@@ -347,16 +358,21 @@ class PowerModelMethod:
     :param columns: **required** source-native column schema — the single source of the method's
         column names. It reads the ``active_power`` (the outcome ``Y`` and the reference active-power
         feature), ``availability`` (drives the test-turbine downtime filter and is itself a reference
-        "is it waking" feature), ``wind_speed`` (its reference mean feeds the ERA5 lag sync and the
-        stuck-filter calm exemption) and ``wind_speed_sd`` (the turbulence-intensity signal) roles;
+        "is it waking" feature), ``wind_speed`` (its reference mean feeds the stuck-filter calm
+        exemption) and ``wind_speed_sd`` (the turbulence-intensity signal) roles;
         the remaining roles feed only the shared diagnostics.
     :param baseline_rated_power_kw: **required** rated power of the turbine over the data the model is
         fitted on — today every fit is on baseline rows, so this is the baseline rating. It caps the
         clipped counterfactual predictions. (A future cross-predict direction that trains on upgraded
         data would need the upgraded rating; that is out of scope here.)
-    :param era5_hourly_df: optional raw hourly ERA5 (Open-Meteo columns); added as features when given
+    :param era5_hourly_df: optional ERA5 (Open-Meteo columns), hourly or already aligned to the SCADA
+        periods; added as features when given
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
+    :param run_subdir: write each run into its own ``power_model_<wtg>_<start>_<end>`` folder under
+        ``out_dir``, with run-named, timestamped CSVs, so a study's runs sit side by side. ``False``
+        writes straight into ``out_dir`` with plain names (``results.csv``, ...), for a caller that
+        already gives every run its own folder, as a campaign does per test turbine.
     :param save_plots: also write the diagnostic plots
     :param seed: seed for the baseline holdout split and the LightGBM ``random_state`` (a caller-supplied
         ``random_state`` in ``model_params`` still wins)
@@ -389,21 +405,16 @@ class PowerModelMethod:
         ``columns.northed("nacelle_position")`` into the frame, and raises naming that column when
         it has not; the raw nacelle position is never used, northed or not. The test turbine's own
         direction stays barred (design-note §3): northing does not make a post-treatment signal safe.
-    :param adaptive_time_decay: when ``True`` (**default**, the Issue 15 self-configuring behaviour)
-        the headline fit's time-decay half-life is set automatically to
-        ``_TIME_DECAY_CAMPAIGN_MULTIPLE * campaign_duration_days`` — a short half-life for a short
-        campaign (down-weight the stale pre-campaign era that dominates a sliver campaign) and a long
-        one for a long campaign (use the plentiful recent data). This subsumes the fixed default:
-        the best half-life is regime-dependent (short helps 1-3-month campaigns in both modes,
-        long is safe at 12 months), and a campaign-proportional half-life gets both ends right with no
-        manual tuning. When ``True``, ``time_decay_half_life_days`` must be left ``None``.
-    :param time_decay_half_life_days: **expert override** (used only when ``adaptive_time_decay=False``):
-        a *fixed* half-life for the campaign-proximity training weights
-        ``0.5 ** (days_outside_campaign / half_life)``. Rows inside the campaign interval (for toggle,
-        the interleaved on and off rows) weigh 1; rows outside decay with their distance to it — so
-        distant history informs the fit without dominating it (Issue 13's recency weighting; the
-        alternative to the rejected drift *feature*). ``None`` disables the weighting entirely.
-        The default self-configuring behaviour is ``adaptive_time_decay=True`` (this left ``None``).
+    :param adaptive_time_decay: set the campaign-proximity weights' half-life from the campaign's
+        own duration, ``_TIME_DECAY_CAMPAIGN_MULTIPLE * campaign_duration_days``. ``False``
+        (**default**) with ``time_decay_half_life_days`` left ``None`` means every training row
+        weighs the same, whenever it happened. When ``True``, ``time_decay_half_life_days`` must be
+        left ``None``.
+    :param time_decay_half_life_days: a *fixed* half-life for the campaign-proximity training
+        weights ``0.5 ** (days_outside_campaign / half_life)``, used only when
+        ``adaptive_time_decay=False``. Rows inside the campaign interval (for toggle, the
+        interleaved on and off rows) weigh 1; rows outside decay with their distance to it.
+        ``None`` (**default**) leaves the weighting off.
     :param reference_screen: when ``True`` (**default**), estimate each candidate reference as if it
         were a test turbine against the others, and make clear outliers **power-free** -- they keep
         their direction features and gain a ``waking`` boolean, so their wake information is retained
@@ -415,17 +426,41 @@ class PowerModelMethod:
         campaign sanity check (a healthy campaign's references read near 0%). Costs one extra model
         fit per reference, so a method sweep that scores estimators rather than reporting campaigns
         turns it off. It is a report, not an input: turning it off never moves the headline
+    :param headline_estimator: how the prepost headline is formed. ``"forward"`` (default) is the
+        counterfactual energy ratio ``Σactual/Σprediction - 1`` from the baseline-trained model.
+        ``"reversal"`` (the reversal correction) also fits the reverse direction (train the upgraded
+        rows, predict the baseline rows) and reports ``sqrt((1+r_fwd)/(1+r_rev)) - 1``, so a shrinkage
+        common to both directions cancels. Costs one extra model fit per estimate. Toggle is unaffected
     :param write_diagnostics: write the per-run diagnostics folder. ``False`` for the clones that
         estimate one reference during screening or reporting: ``out_dir=None`` does not suppress
         them, it makes a temp directory per run, and there are O(N) such runs per estimate
-    :param screen_min_campaign_days: skip the screen when the campaign holds less than this much
-        upgraded data. A screening estimate over a short campaign is too noisy to separate a bad
-        reference from a good one at any floor, and ruling out a good reference costs more than
-        leaving a mild bad one in
+    :param normal_operation_feature: give each power-free reference a ``normal_operation`` boolean
+        beside its ``waking`` one, read off the availability counter: waking says whether a wake
+        exists, this says whether the turbine was able to run. ``availability_feature`` still
+        governs whether availability is a feature in its own right. It does not detect curtailment:
+        a turbine held at zero while available reads as operating normally
+    :param exclusion_channels: what a candidate reference carries over its own exclusions (rows
+        present in the frame but not valid for uplift). ``"booleans"`` (default) keeps its waking and
+        normal-operation booleans over its whole record, read from the frame before validity is
+        applied; its power and direction are missing over the exclusions. ``"nan"`` leaves every
+        column of it missing there
+    :param screen_min_campaign_days: leave a candidate reference out of the screen when it holds
+        less than this much upgraded data; when no candidate holds enough, the screen does not run.
+        A screening estimate over a short campaign is too noisy to separate a bad reference from a
+        good one at any floor, and ruling out a good reference costs more than leaving a mild bad
+        one in
+    :param row_dump_dir: when set, write the estimate's per-row frame (actual, counterfactual, row
+        selection and the full feature matrix under its original names) to
+        ``<row_dump_dir>/<test_wtg>/rows.parquet`` with a ``rows.json`` sidecar, for the level probe.
+        A reference-reading clone dumps under its own turbine's folder; the screening clone does not
+        dump. ``None`` (**default**) writes nothing
 
     The reference pool is the campaign's candidate references (the context's
     ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
-    them power-free rather than removing them from it.
+    them power-free rather than removing them from it. When the context offers reserve references,
+    a reference the screen rules out becomes a wake contributor instead and the nearest reserve
+    takes its place, and the refilled pool is screened again. When the context offers reading
+    pools, each reference's own uplift is read against its own pool.
 
     The toggle headline is always the counterfactual energy ratio ``Σactual/Σprediction - 1``.
     """
@@ -445,22 +480,27 @@ class PowerModelMethod:
     reference_stat_cols: tuple[str, ...] = ()
     era5_exclude: tuple[str, ...] = CURATED_ERA5_EXCLUDE
     availability_feature: bool = False
+    normal_operation_feature: bool = True
     direction_feature: bool = True
-    adaptive_time_decay: bool = True
+    adaptive_time_decay: bool = False
     time_decay_half_life_days: float | None = None
     reference_screen: bool = True
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
+    headline_estimator: Literal["forward", "reversal"] = "forward"
+    exclusion_channels: Literal["booleans", "nan"] = "booleans"
     write_diagnostics: bool = True
+    row_dump_dir: Path | None = None
     # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
     # era5_source_label() of the point it fetched, so a reader can tell which series was used.
     era5_label: str = ERA5_UNLOCATED
+    run_subdir: bool = True
     # A campaign's screen verdict is one answer for the whole campaign: the same pool judged across
     # the same contrast. Every test turbine would otherwise re-run the identical round-robin. A
     # campaign passes one dict to every turbine's method; None means screen per estimate. Every
     # method sharing a cache must share its configuration, since the key does not carry it.
-    screen_cache: dict[tuple[tuple[str, ...], str], ScreenResult] | None = field(
+    screen_cache: dict[tuple[tuple[str, ...], str, str, str], ScreenResult] | None = field(
         default=None, repr=False, compare=False
     )
 
@@ -485,13 +525,6 @@ class PowerModelMethod:
             raise ValueError(msg)
         # Checked before the screen, whose gate reads the same normal-operation mask, so a missing
         # column is reported as the configuration error it is rather than as a bare KeyError.
-        if self.era5_hourly_df is not None and self.columns.wind_speed not in scada.columns:
-            msg = (
-                f"wind_speed_col {self.columns.wind_speed!r} is not in scada_df; it provides the reference wind "
-                f"speed the ERA5 lag sync locks onto. A missing column silently yields an all-NaN reference "
-                f"wind speed and a meaningless lag, so this is treated as a configuration error."
-            )
-            raise ValueError(msg)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
         references = self._candidate_references(scada, mi=mi)
@@ -510,12 +543,19 @@ class PowerModelMethod:
             self.era5_hourly_df.columns if self.era5_hourly_df is not None else ()
         )
         screen = self.screen_references(mi) if self.reference_screen else None
-        # The screen does not shrink the pool: an outlier stays a reference and loses its power channels.
-        power_free = screen.screened if screen is not None else ()
+        if screen is not None and screen.screened and mi.context.reserve_references:
+            mi, screen = self.refill_screened(mi, screen)
+            scada = mi.context.select(mi.scada_df)
+            references = self._candidate_references(scada, mi=mi)
+            n_refs = len(references)
+        # Without reserves the screen does not shrink the pool: a reference it ruled out, or could
+        # not judge for want of campaign data, stays a reference and loses its power channels. With
+        # reserves a ruled-out reference has already left the pool for the wake contributors.
+        power_free = tuple(r for r in screen.power_free if r in references) if screen is not None else ()
         features = self._reference_features(
             scada, mi=mi, references=references, extra_cols=extra_cols, power_free=power_free
         )
-        features, era5 = self._add_era5(scada, features, mi=mi, references=references, index=index, timebase=timebase)
+        features, era5 = self._add_era5(features, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
 
         toggle_rows = resolve_toggle(mi.upgrade_timing, index)
@@ -547,6 +587,31 @@ class PowerModelMethod:
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
+        if self.row_dump_dir is not None:
+            self._write_row_dump(
+                scada,
+                mi=mi,
+                index=index,
+                timebase=timebase,
+                references=references,
+                power_free=power_free,
+                features=features,
+                y=y_arr,
+                selected=selected,
+                baseline_sel=baseline_sel,
+                upgraded_sel=upgraded_sel,
+                fit=fit,
+                uplift=uplift,
+            )
+
+        # The reversal correction to the prepost headline. The forward ratio above is 1+r_fwd; the
+        # reverse fit trains the upgraded rows and predicts the baseline rows for 1+r_rev, and
+        # _combine_uplift returns sqrt((1+r_fwd)/(1+r_rev))-1 so a shrinkage common to both directions
+        # cancels. Toggle keeps the forward ratio: its off-blocks already interleave, so no shift.
+        if self.headline_estimator == "reversal" and not is_toggle(mi.upgrade_timing) and np.isfinite(uplift):
+            pred_baseline = self._fit_direction(features, y_arr, train=upgraded_sel, predict=baseline_sel)
+            r_rev = _ratio(y_arr[baseline_sel], pred_baseline)
+            uplift = float(_combine_uplift(np.array([uplift]), np.array([r_rev]))[0])
 
         # ws/TI row-aligned to each segment's residuals, for the overall shrinkage-check diagnostics (cheap,
         # plots only). Computed here so the run folder's step-5 residual plots are drawn whether or not the
@@ -580,11 +645,19 @@ class PowerModelMethod:
                 sum_actual=sum_actual,
                 sum_counter=sum_counter,
                 n_refs=n_refs,
-                era5=era5,
                 cond_upgraded=cond_upgraded,
                 cond_baseline_valid=cond_baseline_valid,
             )
             if self.save_plots:
+                self._write_shared_diagnostics(
+                    mi,
+                    run_dir=run_dir,
+                    t=t,
+                    selected=selected,
+                    timebase=timebase,
+                    era5=era5,
+                    power_references=[r for r in references if r not in power_free],
+                )
                 # What the wake-only turbines carry, beside the model that consumed it.
                 write_waking_diagnostics(
                     run_dir,
@@ -630,7 +703,7 @@ class PowerModelMethod:
         # Reported post-screen: the sanity check asks what the *final* analysis says its references
         # did, so a ruled-out reference is listed but does not drag the headline.
         reference_uplifts = (
-            self.reference_uplifts(mi, screened=power_free, screen=screen) if self.report_reference_uplifts else None
+            self.reference_uplifts(mi, power_free=power_free, screen=screen) if self.report_reference_uplifts else None
         )
         return MethodOutput(
             p50_overall=uplift,
@@ -830,8 +903,7 @@ class PowerModelMethod:
         """
         conditional_dir = run_dir / "conditional"
         conditional_dir.mkdir(parents=True, exist_ok=True)
-        run_name = run_dir.name
-        ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        run_name, ts = self._csv_naming(run_dir)
         overall = {
             "test_wtg": mi.test_wtg,
             "mode": "toggle" if is_toggle(mi.upgrade_timing) else "prepost",
@@ -843,7 +915,7 @@ class PowerModelMethod:
         diag.write_conditional_csvs(conditional_dir, run_name, ts, overall=overall, per_bin=per_bin, match=match)
         if self.save_plots and per_bin is not None:
             diag.plot_conditional_diagnostics(
-                run_dir / "plots" / stages.CONDITIONAL_UPLIFT, per_bin, test_wtg=mi.test_wtg
+                run_dir / "plots" / stages.UPLIFT_DISTRIBUTIONS, per_bin, test_wtg=mi.test_wtg
             )
 
     def _conditional_is_runnable(self, era5_columns: Iterable[str]) -> bool:
@@ -889,23 +961,13 @@ class PowerModelMethod:
         return {v: _DEFAULT_MATCHING_BIN_EDGES[v] for v in self.matching_vars}
 
     def _add_era5(
-        self,
-        scada: pd.DataFrame,
-        features: pd.DataFrame,
-        *,
-        mi: MethodInput,
-        references: Sequence[str],
-        index: pd.DatetimeIndex,
-        timebase: pd.Timedelta,
-    ) -> tuple[pd.DataFrame, Any]:
-        """Sync ERA5 (if supplied) and append its features."""
+        self, features: pd.DataFrame, *, index: pd.DatetimeIndex, timebase: pd.Timedelta
+    ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+        """Align ERA5 (if supplied) to the SCADA periods and append its features."""
         if self.era5_hourly_df is None:
             return features, None
-        reference_ws = reference_mean_wind_speed(
-            scada, references=references, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
-        )
-        result = sync_era5(self.era5_hourly_df, target_index=index, reference_ws=reference_ws, timebase=timebase)
-        era5_features = era5_feature_frame(result.aligned)
+        aligned = interpolate_era5(self.era5_hourly_df, index=index, timebase=timebase)
+        era5_features = era5_feature_frame(aligned)
         if self.era5_exclude:
             missing = sorted(set(self.era5_exclude) - set(era5_features.columns))
             # An explicitly-set era5_exclude keeps the strict typo guard; the promoted class default
@@ -920,7 +982,7 @@ class PowerModelMethod:
                 if c in self.era5_exclude or any(c == f"{raw}_{t}" for raw in self.era5_exclude for t in ("sin", "cos"))
             ]
             era5_features = era5_features.drop(columns=drop)
-        return pd.concat([features, era5_features], axis=1), result
+        return pd.concat([features, era5_features], axis=1), aligned
 
     def _effective_half_life(self, *, campaign_start: pd.Timestamp, campaign_end: pd.Timestamp) -> float | None:
         """Return the time-decay half-life (days) for this campaign, or ``None`` when decay is off.
@@ -957,15 +1019,23 @@ class PowerModelMethod:
     def _select_rows(
         self, scada: pd.DataFrame, *, mi: MethodInput, index: pd.DatetimeIndex, y: pd.Series, timebase: pd.Timedelta
     ) -> np.ndarray:
-        """Boolean over ``index``: normally-operating test rows (cause-not-effect) with finite outcome."""
+        """Boolean over ``index``: the test turbine's valid-uplift rows with finite outcome."""
         test_rows = scada[scada[mi.turbine_col] == mi.test_wtg].sort_index()
-        keep = NormalOperationFilter(
-            active_power_col=self.columns.active_power,
-            wind_speed_col=self.columns.wind_speed,
-            availability_col=self.columns.availability,
-        ).keep_mask(test_rows, timebase=timebase)
+        keep = self._valid_uplift(test_rows, timebase=timebase)
         keep = keep[~keep.index.duplicated()].reindex(index, fill_value=False)
         return keep.to_numpy() & np.isfinite(y.to_numpy(dtype=float))
+
+    def _valid_uplift(self, rows: pd.DataFrame, *, timebase: pd.Timedelta) -> pd.Series:
+        """Return the rows' ``valid_uplift`` column, labelling generic states first when the frame has none."""
+        if VALID_UPLIFT_COL not in rows.columns:
+            rows = label_operating_states(
+                rows,
+                columns=self.columns,
+                config=OperatingStateConfig(),
+                timebase=timebase,
+                rated_power_kw=self.baseline_rated_power_kw,
+            )
+        return rows[VALID_UPLIFT_COL].astype(bool)
 
     def _fit_predict(
         self,
@@ -1003,6 +1073,67 @@ class PowerModelMethod:
             "pred_baseline_valid": pred_valid,
             "baseline_valid_pos": baseline_valid_pos,  # positions over ``index`` of the held-out rows
         }
+
+    def _write_row_dump(
+        self,
+        scada: pd.DataFrame,
+        *,
+        mi: MethodInput,
+        index: pd.DatetimeIndex,
+        timebase: pd.Timedelta,
+        references: Sequence[str],
+        power_free: Sequence[str],
+        features: pd.DataFrame,
+        y: np.ndarray,
+        selected: np.ndarray,
+        baseline_sel: np.ndarray,
+        upgraded_sel: np.ndarray,
+        fit: dict[str, Any],
+        uplift: float,
+    ) -> None:
+        """Write the per-row frame and its sidecar under ``row_dump_dir / test_wtg``.
+
+        ``uplift`` is the forward counterfactual ratio, the one the dumped sums reproduce.
+        """
+        assert self.row_dump_dir is not None  # noqa: S101
+        out_dir = Path(self.row_dump_dir) / mi.test_wtg
+        out_dir.mkdir(parents=True, exist_ok=True)
+        counterfactual = np.full(len(index), np.nan)
+        counterfactual[upgraded_sel] = fit["pred_upgraded"]
+        rows = pd.DataFrame(
+            {
+                "timestamp": index,
+                "actual_kw": y,
+                "counterfactual_kw": counterfactual,
+                "selected": np.asarray(selected, dtype=bool),
+                "baseline": np.asarray(baseline_sel, dtype=bool),
+                "upgraded": np.asarray(upgraded_sel, dtype=bool),
+                "reference_mean_ws": reference_mean_wind_speed(
+                    scada, references=references, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
+                ).to_numpy(dtype=float),
+            }
+        )
+        rows = pd.concat([rows, features.reset_index(drop=True)], axis=1)
+        rows.to_parquet(out_dir / "rows.parquet", engine="pyarrow", index=False)
+        present = {str(t) for t in scada[mi.turbine_col].unique()}
+        sidecar = {
+            "test_wtg": mi.test_wtg,
+            "references": list(references),
+            "power_free": list(power_free),
+            "wake_only": [w for w in mi.context.wake_contributors if w in present],
+            "uplift": uplift,
+            "sum_actual_kw": float(fit["y_upgraded"].sum()),
+            "sum_counterfactual_kw": float(fit["pred_upgraded"].sum()),
+            "n_baseline_rows": int(np.count_nonzero(baseline_sel)),
+            "n_upgraded_rows": int(np.count_nonzero(upgraded_sel)),
+            "timebase_s": timebase.total_seconds(),
+            "active_power_col": self.columns.active_power,
+            "northed_direction_col": self.columns.northed("nacelle_position") if self.direction_feature else None,
+            "waking_threshold_kw": WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+            "baseline_rated_power_kw": self.baseline_rated_power_kw,
+            "coords": {t: list(c) for t, c in (mi.context.coords or {}).items()},
+        }
+        (out_dir / "rows.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
 
     def _candidate_references(self, scada: pd.DataFrame, *, mi: MethodInput) -> list[str]:
         """Return the campaign's candidate references that ``scada`` carries data for, sorted.
@@ -1063,7 +1194,7 @@ class PowerModelMethod:
         The context's wake contributors that ``scada`` carries data for join as wake-only turbines.
         """
         present = {str(t) for t in scada[mi.turbine_col].unique()}
-        return build_reference_features(
+        features = build_reference_features(
             scada,
             test_wtg=mi.test_wtg,
             references=references,
@@ -1076,32 +1207,78 @@ class PowerModelMethod:
             power_free=power_free,
             wake_only=[w for w in mi.context.wake_contributors if w in present],
             waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+            normal_operation_seconds=self._normal_operation_seconds(scada),
         )
+        held = self._held_back_references(mi, references=[r for r in references if r not in set(power_free)])
+        if self.exclusion_channels != "booleans" or not held:
+            return features
+        state = operating_state_features(
+            mi.scada_df,
+            turbines=held,
+            turbine_col=mi.turbine_col,
+            active_power_col=self.columns.active_power,
+            availability_col=self.columns.availability,
+            waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
+            normal_operation_seconds=self._normal_operation_seconds(scada),
+        )
+        return features.join(state.reindex(features.index), how="left")
+
+    @staticmethod
+    def _held_back_references(mi: MethodInput, *, references: Sequence[str]) -> list[str]:
+        """Return the references with rows in the frame that are not valid for uplift."""
+        frame = mi.scada_df
+        valid = mi.context.valid_over(pd.DatetimeIndex(pd.unique(frame.index)))
+        held = []
+        for ref in references:
+            if ref not in valid.columns:
+                continue
+            rows = pd.DatetimeIndex(frame.index[(frame[mi.turbine_col] == ref).to_numpy()])
+            if not valid[ref].reindex(rows).to_numpy(dtype=bool).all():
+                held.append(ref)
+        return held
+
+    def _normal_operation_seconds(self, scada: pd.DataFrame) -> float | None:
+        """Seconds ready-to-operate at which a turbine counts as operating normally, None to omit it."""
+        if not self.normal_operation_feature:
+            return None
+        timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
+        return NORMAL_OPERATION_AVAILABLE_FRACTION * timebase.total_seconds()
 
     def reference_uplifts(
-        self, mi: MethodInput, *, screened: Sequence[str] = (), screen: ScreenResult | None = None
+        self, mi: MethodInput, *, power_free: Sequence[str] = (), screen: ScreenResult | None = None
     ) -> pd.DataFrame:
         """Return what this campaign's own analysis says each candidate reference did.
 
-        Every reference is estimated under the campaign's own timing against the other surviving
-        references, so the reference headline and the test headline are the same kind of number. A
-        healthy campaign reads near 0% once these are combined by energy.
+        Every reference is estimated under the campaign's own timing against the other power-carrying
+        references, so the reference headline and the test headline are the same kind of number, on
+        the same pool. A healthy campaign reads near 0% once these are combined by energy.
 
-        Screened references are estimated and reported too, flagged so they stay visible without
-        dragging the headline; they are kept out of every reference pool here.
+        A reference the screen ruled out, or could not judge, is estimated and reported too, flagged
+        so it stays visible without dragging the headline; it is kept out of every reference pool here.
 
-        When nothing was screened and the screen already ran this exact contrast, its final pass is
+        When nobody lost their power and the screen already ran this exact contrast, its final pass is
         reused rather than refitting the whole pool.
         """
         context = mi.context
         pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
-        ruled_out = set(screened)
-        surviving = [r for r in pool if r not in ruled_out]
+        ruled_out = set(screen.screened if screen is not None else ())
+        demoted = set(power_free)
+        surviving = [r for r in pool if r not in demoted]
         clone = self._reference_clone()
-        reusable = self._reusable_screen_estimates(mi, screen=screen, ruled_out=ruled_out)
+        reusable = self._reusable_screen_estimates(mi, screen=screen, ruled_out=demoted, pool=surviving)
+        # A reference the screen moved out of a refilled pool is still read and reported.
+        targets = [*pool, *(r for r in (screen.screened if screen is not None else ()) if r not in pool)]
+        present = {str(t) for t in mi.scada_df[mi.turbine_col].unique()}
         rows: list[dict[str, object]] = []
-        for target in pool:
-            refs = [r for r in surviving if r != target]
+        for target in targets:
+            if context.reading_pools is None:
+                refs = [r for r in surviving if r != target]
+            else:
+                refs = [
+                    r
+                    for r in context.reading_pools.get(target, [])
+                    if r not in ruled_out and r not in demoted and r != mi.test_wtg and r in present
+                ][: context.reading_pool_size]
             if not refs:
                 continue
             sub_input = _reference_input(mi, target=target, references=refs)
@@ -1114,6 +1291,7 @@ class PowerModelMethod:
                     "actual_energy": energy,
                     "n_records": n_records,
                     "screened": target in ruled_out,
+                    "unjudged": target in demoted and target not in ruled_out,
                 }
             )
         return pd.DataFrame(rows) if rows else empty_reference_uplifts()
@@ -1131,19 +1309,22 @@ class PowerModelMethod:
             return float("nan")
 
     def _reusable_screen_estimates(
-        self, mi: MethodInput, *, screen: ScreenResult | None, ruled_out: set[str]
+        self, mi: MethodInput, *, screen: ScreenResult | None, ruled_out: set[str], pool: Sequence[str] | None = None
     ) -> dict[str, float]:
         """Screen estimates that already answer the reference-uplift question, so no refit is needed.
 
-        Only when nothing was ruled out (every pool is the full one) and the screen ran the
-        campaign's own contrast, which is the case for a healthy prepost campaign. Any other
-        combination refits, because the pools or the contrast differ.
+        Only when nobody lost their power after the screen ran, the screen covered the same pool the
+        reference report uses, and it ran the campaign's own contrast -- the case for a healthy
+        prepost campaign. Any other combination refits, because the pools or the contrast differ.
         """
-        if screen is None or ruled_out or screen.passes.empty:
+        if screen is None or ruled_out or screen.passes.empty or mi.context.reading_pools is not None:
             return {}
         if is_toggle(mi.context.timing) or self.screening_timing(mi) != mi.context.timing:
             return {}
+        reported = self._candidate_references(mi.context.select(mi.scada_df), mi=mi) if pool is None else pool
         final = screen.passes[screen.passes["pass"] == screen.passes["pass"].max()]
+        if set(final["turbine"].astype(str)) != set(reported):
+            return {}
         return {str(r.turbine): float(r.estimate) for r in final.itertuples()}
 
     def _upgraded_energy(self, mi: MethodInput, *, turbine: str) -> tuple[float, int]:
@@ -1157,44 +1338,41 @@ class PowerModelMethod:
         finite = selected[np.isfinite(selected)]
         return float(finite.sum()), int(finite.size)
 
-    def _campaign_days(self, mi: MethodInput, *, pool: Sequence[str]) -> float:
-        """Upgraded days of *fittable* data the worst-covered turbine has, test turbine included.
+    def _upgraded_days(self, mi: MethodInput, *, turbines: Sequence[str]) -> dict[str, float]:
+        """Upgraded days of *fittable* data each of ``turbines`` has.
 
         Counted from records rather than calendar span, and per turbine rather than over the frame:
         the frame can span a year while one candidate has a fortnight of campaign data, and that
-        candidate is then estimated in exactly the short-data regime the gate exists to avoid. The
-        weakest member decides, since every screening estimate draws on the whole pool.
+        candidate is then estimated in exactly the short-data regime the gate exists to avoid.
 
-        Rows are counted through the same normal-operation mask :meth:`_select_rows` fits on, so a
-        turbine with a year of readings but a fortnight of available ones is judged on the
-        fortnight.
+        Rows are counted through the same valid-uplift mask :meth:`_select_rows` fits on, so a
+        turbine with a year of readings but a fortnight of valid ones is judged on the fortnight.
         """
         scada = mi.context.select(mi.scada_df)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         upgraded = pd.Series(resolve_toggle(mi.upgrade_timing, index).upgraded, index=index)
         timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
         per_day = timebase.total_seconds() / 86400.0
-        keep_mask = NormalOperationFilter(
-            active_power_col=self.columns.active_power,
-            wind_speed_col=self.columns.wind_speed,
-            availability_col=self.columns.availability,
-        ).keep_mask
-        covered: list[float] = []
-        for wtg in [mi.test_wtg, *pool]:
+        covered: dict[str, float] = {}
+        for wtg in turbines:
             # This turbine's own rows: the long frame repeats each timestamp per turbine.
             rows = scada[scada[mi.turbine_col] == wtg].sort_index()
             rows = rows[~rows.index.duplicated()]
             if rows.empty:
-                return 0.0
+                covered[wtg] = 0.0
+                continue
             in_campaign = upgraded.reindex(pd.DatetimeIndex(rows.index)).fillna(value=False).to_numpy()
-            normal = keep_mask(rows, timebase=timebase).to_numpy()
+            normal = self._valid_uplift(rows, timebase=timebase).to_numpy()
             finite = np.isfinite(rows[self.columns.active_power].to_numpy(dtype=float))
-            covered.append(float(np.count_nonzero(in_campaign & normal & finite)) * per_day)
-        return min(covered) if covered else 0.0
+            covered[wtg] = float(np.count_nonzero(in_campaign & normal & finite)) * per_day
+        return covered
 
     def _screening_clone(self) -> PowerModelMethod:
-        """Return this method as it estimates one candidate reference during screening."""
-        return self._pass_clone("screen")
+        """Return this method as it estimates one candidate reference during screening.
+
+        It never dumps rows: screening fits are not what the level probe analyses.
+        """
+        return dataclasses.replace(self._pass_clone("screen"), row_dump_dir=None)
 
     def _reference_clone(self) -> PowerModelMethod:
         """Return this method as it estimates one reference for the reference-uplift report."""
@@ -1237,6 +1415,37 @@ class PowerModelMethod:
         campaign = index[index >= toggle_upgrade_start(timing, index)]
         return pd.Timestamp(campaign[len(campaign) // 2])
 
+    def _screenable_pool(self, mi: MethodInput) -> tuple[list[str], list[str]]:
+        """Return the candidate references with enough upgraded data to be screened, and those without.
+
+        A candidate holding less than ``screen_min_campaign_days`` is held out of the screen and
+        keeps only its operating-state booleans; the rest of the pool is still screened. An empty
+        pool means no candidate holds enough, and then nobody is held out either.
+        """
+        days = self._upgraded_days(mi, turbines=self._candidate_references(mi.context.select(mi.scada_df), mi=mi))
+        pool = [wtg for wtg, covered in days.items() if covered >= self.screen_min_campaign_days]
+        unjudged = sorted(set(days) - set(pool))
+        if not pool:
+            logger.info(
+                "%s %s: reference screen skipped, the best-covered candidate reference holds %.1f days of upgraded "
+                "data, under the %.1f needed for a screening estimate to separate a bad reference from a good one",
+                self.name,
+                mi.test_wtg,
+                max(days.values(), default=0.0),
+                self.screen_min_campaign_days,
+            )
+        elif unjudged:
+            logger.info(
+                "%s %s: %s held out of the reference screen, each holding under %.1f days of upgraded data; they "
+                "keep their waking boolean and contribute no power, and the remaining %d candidate(s) are screened",
+                self.name,
+                mi.test_wtg,
+                unjudged,
+                self.screen_min_campaign_days,
+                len(pool),
+            )
+        return pool, ([] if not pool else unjudged)
+
     def screen_references(self, mi: MethodInput) -> ScreenResult:
         """Estimate each candidate reference against the others and rule out clear outliers.
 
@@ -1253,22 +1462,15 @@ class PowerModelMethod:
             # more than leaving a mild bad one in, so it does not run.
             logger.info("%s %s: reference screen skipped, campaign is toggle", self.name, mi.test_wtg)
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
-        pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
-        campaign_days = self._campaign_days(mi, pool=pool)
-        if campaign_days < self.screen_min_campaign_days:
-            logger.info(
-                "%s %s: reference screen skipped, campaign holds %.1f days of upgraded data, under the %.1f "
-                "needed for a screening estimate to separate a bad reference from a good one",
-                self.name,
-                mi.test_wtg,
-                campaign_days,
-                self.screen_min_campaign_days,
-            )
+        pool, unjudged = self._screenable_pool(mi)
+        if not pool:
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
-        cache_key = (tuple(pool), str(timing))
+        cache_key = (tuple(pool), str(timing), str(mi.scada_df.index.min()), str(mi.scada_df.index.max()))
         if self.screen_cache is not None and cache_key in self.screen_cache:
-            cached = self.screen_cache[cache_key]
+            # Re-stamped: the pool decides the screening estimates, but which candidates were held
+            # out of it is this test turbine's own, and two of them can share a pool.
+            cached = dataclasses.replace(self.screen_cache[cache_key], unjudged=tuple(unjudged))
             logger.info(
                 "%s %s: reference screen already run for this campaign; %s",
                 self.name,
@@ -1319,10 +1521,62 @@ class PowerModelMethod:
             )
         if self.screen_cache is not None:
             self.screen_cache[cache_key] = result
-        return result
+        return dataclasses.replace(result, unjudged=tuple(unjudged))
+
+    def refill_screened(self, mi: MethodInput, screen: ScreenResult) -> tuple[MethodInput, ScreenResult]:
+        """Replace each reference the screen ruled out with the nearest reserve, and screen again.
+
+        A ruled-out reference becomes a wake contributor. Rounds continue until a screen rules out
+        nobody new or the reserves run out, when the pool shrinks and a warning says so.
+
+        :return: the input with the refilled context, and every round's result combined: every
+            ruled-out reference in order, every round's passes numbered on from the last
+        """
+        context = mi.context
+        ejected: list[str] = []
+        rounds = [screen.passes]
+        result = screen
+        while True:
+            new = [r for r in result.screened if r not in ejected and r in context.candidate_references]
+            if not new:
+                break
+            ejected.extend(new)
+            promoted = list(context.reserve_references[: len(new)])
+            context = dataclasses.replace(
+                context,
+                candidate_references=[*(r for r in context.candidate_references if r not in new), *promoted],
+                reserve_references=list(context.reserve_references[len(new) :]),
+                wake_contributors=sorted((set(context.wake_contributors) - set(promoted)) | set(new)),
+            )
+            mi = MethodInput(scada_df=mi.scada_df, test_wtg=mi.test_wtg, campaign_context=context)
+            if len(promoted) < len(new):
+                logger.warning(
+                    "%s %s: the screen ruled out %s and the reserves ran out; the pool is %d, so the pool rule is "
+                    "broken",
+                    self.name,
+                    mi.test_wtg,
+                    ejected,
+                    len(context.candidate_references),
+                )
+                break
+            logger.info("%s %s: %s replace %s in the reference pool", self.name, mi.test_wtg, promoted, new)
+            result = self.screen_references(mi)
+            offset = max((int(r["pass"].max()) for r in rounds if not r.empty), default=0)
+            rounds.append(result.passes.assign(**{"pass": result.passes["pass"] + offset}))
+        if not ejected:
+            return mi, screen
+        recorded = [r for r in rounds if not r.empty]
+        passes = pd.concat(recorded, ignore_index=True) if recorded else screen.passes
+        return mi, dataclasses.replace(result, screened=tuple(ejected), passes=passes, screenable=True)
 
     def _validate_model_config(self) -> None:
         """Fail loudly on config combinations that would silently misbehave."""
+        if self.headline_estimator not in ("forward", "reversal"):
+            msg = f"headline_estimator must be 'forward' or 'reversal', got {self.headline_estimator!r}"
+            raise ValueError(msg)
+        if self.exclusion_channels not in ("booleans", "nan"):
+            msg = f"exclusion_channels must be 'booleans' or 'nan', got {self.exclusion_channels!r}"
+            raise ValueError(msg)
         if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
             msg = f"time_decay_half_life_days must be positive, got {self.time_decay_half_life_days}"
             raise ValueError(msg)
@@ -1419,15 +1673,23 @@ class PowerModelMethod:
     def _run_dir(self, mi: MethodInput, index: pd.DatetimeIndex) -> Path:
         """Return the per-run output folder ``<out_dir>/power_model_<wtg>_<start>_<end>`` (a temp dir when unset).
 
+        Without :attr:`run_subdir` it is ``out_dir`` itself.
+
         Computed once per ``estimate`` and shared by the overall diagnostics and the optional conditional
         step so both write into the *same* run folder.
         """
         upgrade_start = toggle_upgrade_start(mi.upgrade_timing, index)
         run_name = f"power_model_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{index.max():%Y%m%d}"
         out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="power_model_"))
-        run_dir = out_root / run_name
+        run_dir = out_root / run_name if self.run_subdir or self.out_dir is None else out_root
         run_dir.mkdir(parents=True, exist_ok=True)
         return run_dir
+
+    def _csv_naming(self, run_dir: Path) -> tuple[str, str]:
+        """Return the run name and timestamp a run's CSV names carry; both empty without a run folder."""
+        if not self.run_subdir and self.out_dir is not None:
+            return "", ""
+        return run_dir.name, pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
 
     def _write(
         self,
@@ -1446,13 +1708,11 @@ class PowerModelMethod:
         sum_actual: float,
         sum_counter: float,
         n_refs: int,
-        era5: Any,  # noqa: ANN401
         cond_upgraded: pd.DataFrame | None = None,
         cond_baseline_valid: pd.DataFrame | None = None,
     ) -> None:
         """Assemble the diagnostic data and write the CSVs (+ plots), logging the top features."""
-        run_name = run_dir.name
-        ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        run_name, ts = self._csv_naming(run_dir)
 
         x_sel = features.iloc[selected]
         data = diag.DiagnosticData(
@@ -1477,9 +1737,6 @@ class PowerModelMethod:
             sum_counterfactual_kw=sum_counter,
             n_refs=n_refs,
             era5_label=self.era5_label,
-            era5_lag_rows=era5.best_lag_rows if era5 is not None else None,
-            era5_corr=era5.best_corr if era5 is not None else None,
-            era5_sweep=era5.sweep if era5 is not None else None,
             cond_upgraded=cond_upgraded,
             cond_baseline_valid=cond_baseline_valid,
         )
@@ -1496,7 +1753,6 @@ class PowerModelMethod:
         )
         if self.save_plots:
             diag.save_plots(run_dir / "plots", data, importance)
-            self._write_shared_diagnostics(mi, run_dir=run_dir, t=t, selected=selected, timebase=timebase, era5=era5)
 
     def _write_shared_diagnostics(
         self,
@@ -1506,7 +1762,8 @@ class PowerModelMethod:
         t: np.ndarray,
         selected: np.ndarray,
         timebase: pd.Timedelta,
-        era5: Any,  # noqa: ANN401
+        era5: pd.DataFrame | None,
+        power_references: list[str] | None = None,
     ) -> None:
         """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
         ctx = DiagnosticContext(
@@ -1519,15 +1776,12 @@ class PowerModelMethod:
             used_ts=np.asarray(selected, dtype=bool),
             timebase=timebase,
             mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
-            era5_df=era5.aligned if era5 is not None else None,
+            era5_df=era5,
             era5_label=self.era5_label,
+            power_references=power_references,
         )
         write_common_diagnostics(ctx)
-        extra = {
-            "era5_lag_rows": era5.best_lag_rows if era5 is not None else None,
-            "era5_corr": era5.best_corr if era5 is not None else None,
-        }
-        write_run_config(ctx, method_name=self.name, method_params=self._config_params(), extra=extra)
+        write_run_config(ctx, method_name=self.name, method_params=self._config_params())
 
     def _config_params(self) -> dict[str, Any]:
         """Return the power-model configuration recorded in the run-config YAML."""
@@ -1548,6 +1802,8 @@ class PowerModelMethod:
             "time_decay_half_life_days": self.time_decay_half_life_days,
             "reference_screen": self.reference_screen,
             "screen_floor": self.screen_floor,
+            "normal_operation_feature": self.normal_operation_feature,
             "screen_min_campaign_days": self.screen_min_campaign_days,
             "report_reference_uplifts": self.report_reference_uplifts,
+            "exclusion_channels": self.exclusion_channels,
         }

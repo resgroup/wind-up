@@ -1,16 +1,18 @@
-"""Analysis-stage folder names for grouping the per-run diagnostic plots.
+"""Folder names for the per-run diagnostic plots, one per step of ``docs/v1/method.md``.
 
-Plots are written into numbered stage subfolders of ``<run>/plots`` so a reviewer can tell at a
-glance which step of the pipeline a plot describes (feedback 2026-06-26): raw inputs, filtering,
-feature engineering, the data fed to the uplift model, the modelling itself, and the results.
+Plots are written into ``<run>/plots/<step>`` so a reviewer can relate each plot to the method step
+it describes. The number is the step's number in the method.
 """
 
 from __future__ import annotations
 
-INPUTS = "1_inputs"
-FILTER = "2_filter"
-FEATURE_ENG = "3_feature_eng"
-UPLIFT_INPUTS = "4_uplift_inputs"
-UPLIFT_MODELLING = "5_uplift_modelling"
-UPLIFT_RESULTS = "6_uplift_results"
-CONDITIONAL_UPLIFT = "7_conditional_uplift"
+CHANGES = "01_changes"
+OPERATING_STATES = "02_operating_states"
+REANALYSIS = "03_reanalysis"
+NORTHING = "04_northing"
+WAKING = "05_waking"
+FEATURES = "06_features"
+VALID_RECORDS = "08_valid_records"
+RELATE_REFERENCES = "09_relate_references"
+UPLIFT = "10_uplift"
+UPLIFT_DISTRIBUTIONS = "13_uplift_distributions"

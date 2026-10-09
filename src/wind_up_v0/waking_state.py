@@ -197,7 +197,9 @@ def calc_iec_upwind_turbines(*, lat: float, long: float, wind_direction: float, 
     return upwind_turbine_list
 
 
-upwind_wtgs_cache: dict[tuple[float, float, float, str | None], list[str]] = {}
+# Keyed by position, direction, the evaluated object and the config's turbine names, so two analyses in one
+# process with different turbine sets (a subset of a farm, say) never share an upwind list.
+upwind_wtgs_cache: dict[tuple[float, float, float, str | None, tuple[str, ...]], list[str]] = {}
 
 
 def lat_long_is_valid(lat: float, long: float) -> bool:
@@ -229,13 +231,14 @@ def get_iec_upwind_turbines_one_latlong(
         msg = f"lat={lat} long={long} is not a valid lat long"
         raise ValueError(msg)
 
-    if (lat, long, wind_direction, object_name) in upwind_wtgs_cache:
-        upwind_wtgs = upwind_wtgs_cache[(lat, long, wind_direction, object_name)]
+    key = (lat, long, wind_direction, object_name, tuple(wtg.name for wtg in cfg.asset.wtgs))
+    if key in upwind_wtgs_cache:
+        upwind_wtgs = upwind_wtgs_cache[key]
     else:
         upwind_wtgs = calc_iec_upwind_turbines(lat=lat, long=long, wind_direction=wind_direction, cfg=cfg)
         if object_name is not None:
             upwind_wtgs = [x for x in upwind_wtgs if x.lower() != object_name.lower()]
-        upwind_wtgs_cache[(lat, long, wind_direction, object_name)] = upwind_wtgs
+        upwind_wtgs_cache[key] = upwind_wtgs
     return upwind_wtgs
 
 

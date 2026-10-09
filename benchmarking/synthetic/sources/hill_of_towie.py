@@ -5,7 +5,7 @@ A self-contained (vendored) copy of the pieces of the
 wind-up-format SCADA end to end:
 
 - the Zenodo fetcher (``ensure_hot_data_files`` / ``download_zenodo_data``) that
-  downloads and caches the Hill of Towie v2 datapack (Zenodo record ``20204946``);
+  downloads and caches the Hill of Towie v2 datapack (Zenodo record ``22662930``);
 - the 10-minute SCADA loader (``load_hot_10min_data``) and the wide-to-long reshape
   (``scada_wide_to_long``) that keeps source-native ``wtc_*`` tag names;
 - ``load_hot_scada`` that ties them together and returns source-native long SCADA plus
@@ -45,7 +45,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TIMEBASE_S = 600
-HOT_V2_RECORD_ID = "20204946"
+HOT_V2_RECORD_ID = "22662930"
+ZENODO_METADATA_FILENAME = "zenodo_dataset_metadata.json"
 HOT_FIRST_WTG = 1
 HOT_LAST_WTG = 21
 _HOT_SERIAL_OFFSET = 2304509
@@ -71,20 +72,54 @@ class TruncatedDownloadError(Exception):
     """A streamed download ended before the file's full byte count arrived."""
 
 
-def get_data_dir() -> Path:
-    """Return the local Hill of Towie data/cache directory, creating it if needed.
+def zenodo_record_dir(record_id: str) -> Path:
+    """Return the directory one Zenodo record is downloaded into, creating it if needed.
 
-    Overridable via the ``WIND_UP_BENCHMARKING_DATA_DIR`` environment variable;
-    defaults to ``~/temp/wind-up-benchmarking/data``.
+    ``<data root>/<record id>``, the data root being ``WIND_UP_BENCHMARKING_DATA_DIR`` or
+    ``~/temp/wind-up-benchmarking/data``. One directory per record, so files never collide.
     """
-    path = Path(os.getenv("WIND_UP_BENCHMARKING_DATA_DIR", Path.home() / "temp" / "wind-up-benchmarking" / "data"))
+    root = Path(os.getenv("WIND_UP_BENCHMARKING_DATA_DIR", Path.home() / "temp" / "wind-up-benchmarking" / "data"))
+    path = root / record_id
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def get_data_dir() -> Path:
+    """Return the local Hill of Towie data/cache directory: its Zenodo record's directory."""
+    return zenodo_record_dir(HOT_V2_RECORD_ID)
 
 
 # --------------------------------------------------------------------------------------
 # Zenodo fetch
 # --------------------------------------------------------------------------------------
+def zenodo_record_files(
+    record_id: str,
+    *,
+    output_dir: Path,
+    cache_overwrite: bool = False,
+) -> list[dict]:
+    """Return the file entries (``key``, ``size``, ...) of a Zenodo record, caching its metadata in ``output_dir``."""
+    import requests  # noqa: PLC0415  (lazy: keep network deps out of the import path)
+
+    metadata_fpath = output_dir / ZENODO_METADATA_FILENAME
+    if not cache_overwrite and metadata_fpath.is_file():
+        logger.info("Loading metadata from %s", metadata_fpath)
+        with metadata_fpath.open() as f:
+            return json.load(f)["files"]
+    logger.info("Fetching metadata from zenodo...")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (
+        requests.Session() as session,
+        session.get(f"https://zenodo.org/api/records/{record_id}", timeout=(_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S)) as r,
+    ):
+        r.raise_for_status()
+        content = r.json()
+    with metadata_fpath.open("w") as f:
+        json.dump(content, f)
+    logger.info("Saved metadata to %s", metadata_fpath)
+    return content["files"]
+
+
 def download_zenodo_data(
     record_id: str,
     *,
@@ -97,30 +132,13 @@ def download_zenodo_data(
 
     output_dir = output_dir if output_dir is not None else get_data_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
-    metadata_fpath = output_dir / "zenodo_dataset_metadata.json"
+    remote_files = zenodo_record_files(record_id, output_dir=output_dir, cache_overwrite=cache_overwrite)
 
     # One Session for the whole download so its connection pool (and every socket) is
     # closed deterministically on exit. A per-call ``requests.get`` closes its transient
     # pool before the streamed response's socket is released back to it, leaking the
     # socket until GC -- which trips ``filterwarnings = error`` via ResourceWarning.
     with requests.Session() as session:
-        if not cache_overwrite and metadata_fpath.is_file():
-            logger.info("Loading metadata from %s", metadata_fpath)
-            with metadata_fpath.open() as f:
-                content = json.load(f)
-        else:
-            logger.info("Fetching metadata from zenodo...")
-            with session.get(
-                f"https://zenodo.org/api/records/{record_id}",
-                timeout=(_CONNECT_TIMEOUT_S, _READ_TIMEOUT_S),
-            ) as r:
-                r.raise_for_status()
-                content = r.json()
-            with metadata_fpath.open("w") as f:
-                json.dump(content, f)
-            logger.info("Saved metadata to %s", metadata_fpath)
-
-        remote_files: list[dict] = content["files"]
         if filenames is None:
             files_to_download: list[dict] = list(remote_files)
         else:
@@ -312,7 +330,7 @@ def _cached_file_sizes(target_dir: Path) -> dict[str, int]:
     Empty when the metadata cache is missing or unreadable; the next successful fetch
     rewrites the cache.
     """
-    metadata_fpath = target_dir / "zenodo_dataset_metadata.json"
+    metadata_fpath = target_dir / ZENODO_METADATA_FILENAME
     if not metadata_fpath.is_file():
         return {}
     try:
@@ -468,6 +486,34 @@ HOT_COLUMNS = ColumnSchema(
 # Baseline rated power of the Hill of Towie test turbines (kW); matches the synthetic generator's
 # baseline ``rated_power_kw`` default and caps the power-model counterfactual predictions.
 HOT_RATED_POWER_KW = 2300.0
+
+# The power setpoint at the end of each record (kW), which the site operating-state labels read.
+HOT_POWER_SETPOINT_COL = "wtc_PowerRef_endvalue"
+# The ambient temperature the icing label reads.
+HOT_AMBIENT_TEMP_COL = _TAG_AMBIENT_TEMP_MEAN
+# A setpoint of 0 is a stop or a curtailment to zero; 100 kW is the one-interval limit after cut-in.
+HOT_STOP_SETPOINT_KW = 0.0
+HOT_STARTUP_SETPOINT_KW = 100.0
+# When Hill of Towie joined the Balancing Mechanism; reduced setpoints from then on are curtailment.
+HOT_BM_START = pd.Timestamp("2018-11-07", tz="UTC")
+# Each turbine's noise-mode setpoints (kW).
+HOT_NOISE_SETPOINTS_KW: dict[str, frozenset[float]] = {
+    "T16": frozenset({1993.0, 2116.0, 2130.0, 2207.0, 2208.0, 2261.0}),
+    "T17": frozenset({1993.0, 2116.0, 2130.0, 2207.0, 2208.0, 2261.0}),
+    "T19": frozenset({2207.0, 2208.0}),
+}
+# A reduced setpoint at or above this wind speed (m/s) is the turbine's own high-wind derate.
+HOT_HIGH_WIND_DERATE_MS = 20.0
+# Icing: at or below HOT_ICING_MAX_TEMP_C, power under HOT_ICING_POWER_FRACTION of the turbine's
+# median power at that wind speed in records above HOT_ICING_REFERENCE_MIN_TEMP_C, where that
+# median is at least HOT_ICING_MIN_EXPECTED_KW and comes from at least HOT_ICING_MIN_BIN_RECORDS
+# records, for at least HOT_ICING_MIN_RUN_RECORDS consecutive records.
+HOT_ICING_MAX_TEMP_C = 2.0
+HOT_ICING_REFERENCE_MIN_TEMP_C = 3.0
+HOT_ICING_POWER_FRACTION = 0.5
+HOT_ICING_MIN_EXPECTED_KW = 300.0
+HOT_ICING_MIN_BIN_RECORDS = 36
+HOT_ICING_MIN_RUN_RECORDS = 3
 
 # Hub height of the Hill of Towie turbines (m); feeds the ERA5 hub-height wind-speed derivation.
 HOT_HUB_HEIGHT_M = 59.0

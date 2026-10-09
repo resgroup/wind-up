@@ -6,25 +6,42 @@ Campaign facts only. Method configuration stays on the method, the deliberate br
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pandas as pd
 import yaml
 
 from benchmarking.campaigns.declaration import CampaignSpec, layout_coords
+from benchmarking.harness.operating_state import OperatingStateConfig, StateValidity
+from benchmarking.harness.reanalysis import TimestampConvention
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from benchmarking.synthetic.sources.greenbyte import GREENBYTE_COLUMNS
 from wind_up.layout import Layout
 
 if TYPE_CHECKING:
+    from benchmarking.campaigns.declaration import Exclusion, Window
     from benchmarking.synthetic import ColumnSchema
 
 # The schemas a declaration may name. Inline schema definition is not supported: a source's
 # column names belong to its adapter, not to a campaign.
-SCHEMAS: dict[str, ColumnSchema] = {"hill_of_towie": HOT_COLUMNS}
+SCHEMAS: dict[str, ColumnSchema] = {"hill_of_towie": HOT_COLUMNS, "greenbyte": GREENBYTE_COLUMNS}
+
+# How a declaration names a farm-wide exclusion.
+ALL_TURBINES = "ALL"
+PER_TURBINE_PERIOD = "chosen per upgraded turbine"
 
 MODES = ("prepost", "toggle")
+
+# How a declaration writes a state's northing and uplift validity.
+VALID = "valid"
+NOT_VALID = "not valid"
+_VALIDITY = {VALID: True, NOT_VALID: False}
+_OPERATING_STATE_KEYS = ("label_column", "parked_pitch_above_deg", "parked_pitch_below_deg", "labels")
+_STATE_VALIDITY_KEYS = ("northing", "waking", "uplift")
+_TIMESTAMP_KEYS = ("convention", "time_zone")
+_SITE_KEYS = ("offshore",)
 
 # The reanalysis centroid is rounded to this many decimals, and taken over the whole turbines
 # file rather than the declared roles, so every campaign on one site shares a cache entry and
@@ -57,8 +74,10 @@ class Declaration:
     :param scada_path: the SCADA parquet, resolved relative to the declaration
     :param centroid: the site's ``(latitude, longitude)`` centroid over the whole turbines file,
         rounded, which reanalysis is self-served from
-    :param era5_window: ``(start_date, end_date)`` for the reanalysis fetch, rounded out to whole
-        calendar years so campaigns on one site share a cache entry
+    :param operating_state: the site's operating-state labels and parked-pitch rule; generic states
+        only when none is declared
+    :param timestamps: the SCADA timestamp convention and time zone; period start, UTC by default
+    :param offshore: whether reanalysis is drawn from a sea grid cell rather than a land one
     """
 
     name: str
@@ -66,7 +85,14 @@ class Declaration:
     columns: ColumnSchema
     scada_path: Path
     centroid: tuple[float, float]
-    era5_window: tuple[str, str]
+    operating_state: OperatingStateConfig = field(default_factory=OperatingStateConfig)
+    timestamps: TimestampConvention = field(default_factory=TimestampConvention)
+    offshore: bool = False
+
+    @property
+    def cell_selection(self) -> Literal["land", "sea"]:
+        """Return the Open-Meteo grid-cell selection for this site."""
+        return "sea" if self.offshore else "land"
 
     def resolved(self) -> dict[str, Any]:
         """Return the resolved campaign facts, for echoing into the run output.
@@ -75,18 +101,21 @@ class Declaration:
         mis-declared timezone is visible rather than silent.
         """
         spec = self.spec
-        start, end = spec.analysis_period
         timing: dict[str, Any] = {"mode": spec.mode}
         if isinstance(spec.upgrade_timing, ToggleSchedule):
             timing["start"] = str(spec.upgrade_timing.start)
             timing["period"] = str(spec.upgrade_timing.period)
             timing["start_on"] = spec.upgrade_timing.start_on
+        elif spec.upgrade_timing is None:
+            timing["changeover"] = {t: str(spec.timing_for(t)) for t in spec.upgraded_turbines}
         else:
             timing["changeover"] = str(spec.upgrade_timing)
-        return {
+        resolved: dict[str, Any] = {
             "name": self.name,
             "scada": str(self.scada_path),
             "schema": {v: k for k, v in SCHEMAS.items()}.get(self.columns, "custom"),
+            "timestamps": {"convention": self.timestamps.convention, "time_zone": self.timestamps.time_zone},
+            "site": {"offshore": self.offshore},
             "turbines": {
                 "upgraded": list(spec.upgraded_turbines),
                 "references": list(spec.candidate_references),
@@ -94,13 +123,26 @@ class Declaration:
                 "rated_power_kw": spec.rated_power_kw,
             },
             "timing": timing,
-            "analysis_period": {"start": str(start), "end": str(end)},
+            "analysis_period": _resolved_period(spec.analysis_period),
             "northing": {
                 "discover": spec.north_offsets is None,
                 "table": [] if spec.north_offsets is None else [[w, str(t), o] for w, t, o in spec.north_offsets],
             },
-            "reanalysis": {"centroid": list(self.centroid), "window": list(self.era5_window)},
+            "reanalysis": {
+                "centroid": list(self.centroid),
+                "cell_selection": self.cell_selection,
+                "window": "the whole SCADA record, in whole calendar years",
+            },
+            "operating_state": _resolved_operating_state(self.operating_state),
         }
+        if spec.works:
+            resolved["works"] = {t: [[str(s), str(e)] for s, e in windows] for t, windows in spec.works.items()}
+        if spec.exclusions:
+            resolved["exclusions"] = [
+                {"turbine": ALL_TURBINES if who is None else who, "start": str(s), "end": str(e)}
+                for who, s, e in spec.exclusions
+            ]
+        return resolved
 
 
 def load_declaration(path: str | Path) -> Declaration:
@@ -133,30 +175,197 @@ def load_declaration(path: str | Path) -> Declaration:
     )
     _check_roles(upgraded=upgraded, references=references, excluded=excluded, coords=coords)
 
-    period = _section(raw, "analysis_period")
-    start, end = _timestamp(period["start"]), _timestamp(period["end"])
-    if end <= start:
-        msg = f"analysis_period end {end} is not after start {start}; the campaign would cover no records"
-        raise ValueError(msg)
+    works = read_works(_resolve(root, str(data["works"]), what="works")) if data.get("works") else {}
+    _check_known(works, coords=coords, what="the works table")
+    exclusions = _exclusions(raw.get("exclusions") or [])
+    _check_known({w: None for w, _, _ in exclusions if w is not None}, coords=coords, what="the exclusions")
+    timing = _timing(_section(raw, "timing"), has_works=bool(works))
+    period = _analysis_period(raw.get("analysis_period"), upgraded=upgraded)
 
+    spec = CampaignSpec(
+        upgraded_turbines=upgraded,
+        upgrade_timing=timing,
+        candidate_references=references,
+        excluded_turbines=excluded,
+        layout=layout,
+        north_offsets=_north_offsets(raw.get("northing")),
+        rated_power_kw=float(roles["rated_power_kw"]),
+        analysis_period=period,
+        turbine_col=columns.turbine,
+        works=works,
+        exclusions=exclusions,
+        references_declared=bool(declared_references),
+    )
     return Declaration(
         name=_path_component(str(raw["name"]), what="campaign name"),
-        spec=CampaignSpec(
-            upgraded_turbines=upgraded,
-            upgrade_timing=_timing(_section(raw, "timing")),
-            candidate_references=references,
-            excluded_turbines=excluded,
-            layout=layout,
-            north_offsets=_north_offsets(raw.get("northing")),
-            rated_power_kw=float(roles["rated_power_kw"]),
-            analysis_period=(start, end),
-            turbine_col=columns.turbine,
-        ),
+        spec=spec,
         columns=columns,
         scada_path=scada_path,
-        centroid=_centroid(coords),
-        era5_window=_era5_window(start, end),
+        centroid=centroid(coords),
+        operating_state=operating_state_config(raw.get("operating_state")),
+        timestamps=_timestamps(data.get("timestamps")),
+        offshore=_offshore(raw.get("site")),
     )
+
+
+def read_works(path: Path) -> dict[str, list[Window]]:
+    """Read a works table: ``Turbine`` plus the first ``First date...`` and ``Last date...`` columns.
+
+    Each row is one window of whole days, ``[first 00:00, last + 1 day 00:00)`` UTC. A turbine may
+    have several rows.
+    """
+    frame = pd.read_csv(path)
+    first = next((c for c in frame.columns if str(c).startswith("First date")), None)
+    last = next((c for c in frame.columns if str(c).startswith("Last date")), None)
+    if "Turbine" not in frame.columns or first is None or last is None:
+        msg = (
+            f"the works table {path.name} needs a Turbine column and columns starting 'First date' and "
+            f"'Last date'; it has {list(frame.columns)}"
+        )
+        raise ValueError(msg)
+    works: dict[str, list[Window]] = {}
+    for turbine, first_day, last_day in zip(frame["Turbine"].astype(str), frame[first], frame[last], strict=True):
+        start = _timestamp(pd.Timestamp(first_day).normalize())
+        end = _timestamp(pd.Timestamp(last_day).normalize()) + pd.Timedelta(days=1)
+        if end <= start:
+            msg = f"the works table {path.name} gives {turbine} a last date before its first"
+            raise ValueError(msg)
+        works.setdefault(turbine, []).append((start, end))
+    return {turbine: sorted(windows) for turbine, windows in works.items()}
+
+
+def _check_known(named: dict[str, Any], *, coords: dict[str, tuple[float, float]], what: str) -> None:
+    """Raise naming the turbines ``what`` names that the turbines file does not."""
+    unknown = sorted(set(named) - set(coords))
+    if unknown:
+        msg = f"{what} names {unknown}, which the turbines file has no row for"
+        raise ValueError(msg)
+
+
+def _exclusions(entries: list) -> list[Exclusion]:
+    """Read the declared exclusions; ``ALL`` is farm-wide."""
+    exclusions: list[Exclusion] = []
+    for entry in entries:
+        turbine = str(entry["turbine"])
+        start, end = _timestamp(entry["start"]), _timestamp(entry["end"])
+        if end <= start:
+            msg = f"the exclusion of {turbine} ends at {end}, not after its start {start}"
+            raise ValueError(msg)
+        exclusions.append((None if turbine == ALL_TURBINES else turbine, start, end))
+    return exclusions
+
+
+def _span(block: dict, *, what: str) -> Window:
+    """Read one ``{start, end}`` span, end exclusive."""
+    start, end = _timestamp(block["start"]), _timestamp(block["end"])
+    if end <= start:
+        msg = f"{what} end {end} is not after start {start}; the campaign would cover no records"
+        raise ValueError(msg)
+    return start, end
+
+
+def _analysis_period(block: dict | None, *, upgraded: list[str]) -> Window | dict[str, Window] | None:
+    """Read the optional analysis period: one span, a span per upgraded turbine, or none."""
+    if block is None:
+        return None
+    if set(block) == {"start", "end"}:
+        return _span(block, what="analysis_period")
+    stray = sorted(set(map(str, block)) - set(upgraded))
+    if stray:
+        msg = f"analysis_period names {stray}, which are not upgraded turbines; a per-turbine span is for those"
+        raise ValueError(msg)
+    return {str(t): _span(span, what=f"analysis_period of {t}") for t, span in block.items()}
+
+
+def _resolved_period(period: Window | dict[str, Window] | None) -> dict[str, Any] | str:
+    """Return the analysis period as the resolved echo shows it."""
+    if period is None:
+        return PER_TURBINE_PERIOD
+    if isinstance(period, dict):
+        return {t: {"start": str(s), "end": str(e)} for t, (s, e) in period.items()}
+    start, end = period
+    return {"start": str(start), "end": str(end)}
+
+
+def operating_state_config(block: dict | None) -> OperatingStateConfig:
+    """Read an operating-state block as a declaration writes it; none gives the generic states only."""
+    if block is None:
+        return OperatingStateConfig()
+    stray = sorted(set(map(str, block)) - set(_OPERATING_STATE_KEYS))
+    if stray:
+        msg = f"operating_state has unknown keys {stray}; known keys are {list(_OPERATING_STATE_KEYS)}"
+        raise ValueError(msg)
+    labels = {str(name): _state_validity(str(name), entry) for name, entry in (block.get("labels") or {}).items()}
+    label_column = block.get("label_column")
+    above, below = block.get("parked_pitch_above_deg"), block.get("parked_pitch_below_deg")
+    return OperatingStateConfig(
+        label_column=None if label_column is None else str(label_column),
+        labels=labels,
+        parked_pitch_above_deg=None if above is None else float(above),
+        parked_pitch_below_deg=None if below is None else float(below),
+    )
+
+
+def _timestamps(block: dict | None) -> TimestampConvention:
+    """Read the optional ``data.timestamps`` block; none gives period start, UTC."""
+    if block is None:
+        return TimestampConvention()
+    stray = sorted(set(map(str, block)) - set(_TIMESTAMP_KEYS))
+    if stray:
+        msg = f"data.timestamps has unknown keys {stray}; known keys are {list(_TIMESTAMP_KEYS)}"
+        raise ValueError(msg)
+    default = TimestampConvention()
+    return TimestampConvention(
+        convention=str(block.get("convention", default.convention)),  # type: ignore[arg-type]
+        time_zone=str(block.get("time_zone", default.time_zone)),
+    )
+
+
+def _offshore(block: dict | None) -> bool:
+    """Read the optional ``site`` block's offshore flag; onshore by default."""
+    if block is None:
+        return False
+    stray = sorted(set(map(str, block)) - set(_SITE_KEYS))
+    if stray:
+        msg = f"site has unknown keys {stray}; known keys are {list(_SITE_KEYS)}"
+        raise ValueError(msg)
+    offshore = block.get("offshore", False)
+    if not isinstance(offshore, bool):
+        msg = f"site.offshore must be true or false, not {offshore!r}"
+        raise ValueError(msg)  # noqa: TRY004 - a declaration error, reported like the others
+    return offshore
+
+
+def _state_validity(name: str, entry: dict) -> StateValidity:
+    """Read one label's ``{northing, waking, uplift}`` validity."""
+    if not isinstance(entry, dict) or set(entry) != set(_STATE_VALIDITY_KEYS):
+        msg = f"operating_state label {name!r} needs exactly the keys {list(_STATE_VALIDITY_KEYS)}, got {entry!r}"
+        raise ValueError(msg)
+    for key in ("northing", "uplift"):
+        if entry[key] not in _VALIDITY:
+            msg = f"operating_state label {name!r} has {key} {entry[key]!r}; use {VALID!r} or {NOT_VALID!r}"
+            raise ValueError(msg)
+    return StateValidity(
+        northing=_VALIDITY[entry["northing"]], waking=str(entry["waking"]), uplift=_VALIDITY[entry["uplift"]]
+    )
+
+
+def _resolved_operating_state(config: OperatingStateConfig) -> dict[str, Any]:
+    """Return the operating-state block as the resolved echo shows it."""
+    resolved: dict[str, Any] = {"label_column": config.label_column}
+    if config.parked_pitch_below_deg is not None:
+        resolved["parked_pitch_below_deg"] = config.parked_pitch_below_deg
+    else:
+        resolved["parked_pitch_above_deg"] = config.parked_pitch_above_deg
+    resolved["labels"] = {
+        name: {
+            "northing": VALID if v.northing else NOT_VALID,
+            "waking": v.waking,
+            "uplift": VALID if v.uplift else NOT_VALID,
+        }
+        for name, v in config.labels.items()
+    }
+    return resolved
 
 
 def _section(raw: dict, name: str) -> dict:
@@ -238,11 +447,18 @@ def _check_roles(
         raise ValueError(msg)
 
 
-def _timing(block: dict) -> pd.Timestamp | ToggleSchedule:
-    """Build the campaign's timing from its tagged block."""
+def _timing(block: dict, *, has_works: bool) -> pd.Timestamp | ToggleSchedule | None:
+    """Build the campaign's timing from its tagged block; None when a works table gives it."""
     mode = str(block.get("mode", ""))
     if mode == "prepost":
-        return _timestamp(block["changeover"])
+        changeover = block.get("changeover")
+        if changeover is not None and has_works:
+            msg = "declare either timing.changeover or a works table (data.works), not both"
+            raise ValueError(msg)
+        if changeover is None and not has_works:
+            msg = "a prepost declaration needs timing.changeover or a works table (data.works)"
+            raise ValueError(msg)
+        return None if changeover is None else _timestamp(changeover)
     if mode == "toggle":
         if block.get("start") is None:
             # ToggleSchedule allows no start, taking the first timestamp as origin with no
@@ -275,7 +491,7 @@ def _timestamp(value: object) -> pd.Timestamp:
     return stamp.tz_localize("UTC") if stamp.tz is None else stamp.tz_convert("UTC")
 
 
-def _centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
+def centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
     """Return the site's mean latitude and longitude, rounded.
 
     Taken over every turbine in the file, not the declared roles: reanalysis is a model input, so
@@ -288,7 +504,7 @@ def _centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
     )
 
 
-def _era5_window(start: pd.Timestamp, end: pd.Timestamp) -> tuple[str, str]:
+def era5_window(start: pd.Timestamp, end: pd.Timestamp) -> tuple[str, str]:
     """Return the reanalysis fetch window, rounded out to whole calendar years.
 
     The reanalysis cache is keyed by its arguments, so exact analysis windows would re-download

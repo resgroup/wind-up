@@ -300,7 +300,7 @@ def probe_arms() -> list[Arm]:
         ),
         Arm(
             name="era5_sync_absent",
-            what=f"ERA5 {' + '.join(ERA5_SYNC_COLS)} missing (what the lag sync locks onto)",
+            what=f"ERA5 {' + '.join(ERA5_SYNC_COLS)} missing (the hub-height wind)",
             shape="absent",
             era5=lambda df: drop_columns(df, columns=ERA5_SYNC_COLS),
         ),

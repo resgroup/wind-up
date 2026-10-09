@@ -168,3 +168,30 @@ class TestSelect:
         object.__setattr__(context, "valid_for_uplift", context.valid_for_uplift[["T1", "T2"]])
         with pytest.raises(ValueError, match="T3"):
             context.select(_scada(), also=["T3"])
+
+
+def test_a_reserve_must_be_a_wake_contributor() -> None:
+    with pytest.raises(ValueError, match="reserve"):
+        CampaignContext(
+            test_wtg="A",
+            timing=pd.Timestamp("2020-01-01", tz="UTC"),
+            turbine_col="t",
+            candidate_references=["B"],
+            wake_contributors=[],
+            reserve_references=["C"],
+            valid_for_uplift=pd.DataFrame(),
+        )
+
+
+def test_the_plan_fields_default_to_none() -> None:
+    context = CampaignContext(
+        test_wtg="A",
+        timing=pd.Timestamp("2020-01-01", tz="UTC"),
+        turbine_col="t",
+        candidate_references=["B"],
+        wake_contributors=[],
+        valid_for_uplift=pd.DataFrame(),
+    )
+    assert context.reserve_references == []
+    assert context.reading_pools is None
+    assert context.reading_pool_size is None

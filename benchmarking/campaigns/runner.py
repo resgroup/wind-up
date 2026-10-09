@@ -10,6 +10,7 @@ import pandas as pd
 from benchmarking.campaigns.run import CampaignReport, estimate_campaign, visible_mask
 from benchmarking.harness import CampaignWindow, Replicate, score_output, truth_mask
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES
+from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.northing import DEFAULT_NORTHING
 
 if TYPE_CHECKING:
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from benchmarking.harness import Method, MethodOutput
     from benchmarking.synthetic import SyntheticDataset
     from wind_up import FarmUplift
+    from wind_up.analysis_period import AnalysisPlan, PlanSettings
     from wind_up.northing import NorthingSettings
 
 
@@ -53,6 +55,11 @@ class CampaignResult:
     outputs: dict[tuple[str, str], MethodOutput]
     report: CampaignReport
 
+    @property
+    def unplanned(self) -> dict[str, str]:
+        """Each upgraded turbine the period selector could not plan, with its reason; truth leaves them out too."""
+        return self.report.unplanned
+
 
 class CampaignRunner:
     """Turn a campaign spec plus its generated dataset into per-turbine and farm results.
@@ -65,7 +72,9 @@ class CampaignRunner:
         needs none.
     :param northing_roles: the direction roles the shared step corrects
     :param northing_settings: how the shared step's changepoint search is bounded
-    :param northing_out_dir: where the shared step writes its plots when it discovers corrections
+    :param northing_out_dir: where the shared step writes its table and plots when it discovers corrections
+    :param northing_plots: write the shared step's plots as well as its table
+    :param plan_settings: how a planning campaign's spans and power references are chosen
     """
 
     def __init__(
@@ -78,6 +87,8 @@ class CampaignRunner:
         northing_roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
         northing_settings: NorthingSettings = DEFAULT_NORTHING,
         northing_out_dir: Path | None = None,
+        northing_plots: bool = True,
+        plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
     ) -> None:
         """Store the campaign, its data and the per-turbine method factory."""
         self._spec = spec
@@ -87,6 +98,8 @@ class CampaignRunner:
         self._northing_roles = tuple(northing_roles)
         self._northing_settings = northing_settings
         self._northing_out_dir = northing_out_dir
+        self._northing_plots = northing_plots
+        self._plan_settings = plan_settings
 
     def run(self) -> CampaignResult:
         """Estimate the campaign on the truth-free core, then score what it produced against truth."""
@@ -100,20 +113,25 @@ class CampaignRunner:
             northing_roles=self._northing_roles,
             northing_settings=self._northing_settings,
             northing_out_dir=self._northing_out_dir,
+            northing_plots=self._northing_plots,
+            plan_settings=self._plan_settings,
         )
         visible = self._visible_dataset(report)
-        window = self._window()
 
         score_rows: list[dict[str, object]] = []
         truth_masks: dict[str, np.ndarray] = {}
-        for wtg in sorted(spec.upgraded_turbines):
+        analysed = sorted(t for t in spec.upgraded_turbines if t not in report.unplanned)
+        for wtg in analysed:
+            window = self._window(report.plans.get(wtg), turbine=wtg)
             replicate = Replicate(
                 dataset=visible,
                 test_wtg=wtg,
-                treatment_start=spec.treatment_start,
+                treatment_start=window.treatment_start,
                 upgrade_timing=spec.timing_for(wtg),
             )
-            mask = truth_mask(replicate, window)
+            synthetic = visible.synthetic_df
+            test_index = pd.DatetimeIndex(synthetic.index[(synthetic[spec.turbine_col] == wtg).to_numpy()])
+            mask = truth_mask(replicate, window) & spec.usable_mask(wtg, test_index)
             truth_masks[wtg] = mask
             truth = replicate.true_uplift(mask=mask).overall
             for (method_name, turbine), output in report.outputs.items():
@@ -132,7 +150,7 @@ class CampaignRunner:
                     )
                 )
 
-        truth_farm = visible.true_farm_uplift(test_wtgs=list(spec.upgraded_turbines), masks=truth_masks)
+        truth_farm = visible.true_farm_uplift(test_wtgs=analysed, masks=truth_masks)
         farm = pd.DataFrame(
             [
                 self._farm_row(name, result, visible=visible, masks=truth_masks)
@@ -184,14 +202,23 @@ class CampaignRunner:
             original_df=self._dataset.original_df[visible_mask(self._spec, self._dataset.original_df)],
         )
 
-    def _window(self) -> CampaignWindow:
-        """Return one window spanning the whole campaign, so the harness scores it at n=1.
+    def _window(self, plan: AnalysisPlan | None, *, turbine: str) -> CampaignWindow:
+        """Return one window spanning ``turbine``'s campaign, so the harness scores it at n=1.
 
-        ``length`` is the activity span in whole months; it labels the result rows and is not
-        used to select records.
+        A planned turbine's window is its plan's span from its own changeover; a flat campaign's is
+        the declared period from the campaign's changeover. ``length`` is the activity span in whole
+        months; it labels the result rows and is not used to select records.
         """
-        start, end = self._spec.analysis_period
-        treatment_start = self._spec.treatment_start
+        bounds = self._spec.period_bounds()
+        if plan is not None:
+            start, end = plan.start, plan.end
+            treatment_start = pd.Timestamp(self._spec.timing_for(turbine))  # type: ignore[arg-type]
+        elif bounds is not None:
+            start, end = bounds
+            treatment_start = self._spec.treatment_start
+        else:
+            msg = f"{turbine} has neither an analysis plan nor a declared analysis period"
+            raise ValueError(msg)
         months = (end.year - treatment_start.year) * 12 + (end.month - treatment_start.month)
         return CampaignWindow(
             length=months,

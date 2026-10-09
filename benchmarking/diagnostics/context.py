@@ -68,6 +68,9 @@ class DiagnosticContext:
         point it was drawn from, so a reader can tell which series a run actually used
     :param excluded_ts: optional per-timestamp ``ColumnSchema.exclude_row`` mask (``None`` for a
         method with no exclusion concept). Separate from ``used_ts``, which also folds in downtime.
+    :param power_references: the turbines the method predicts the test turbine's power from, for
+        plots about the test turbine and its references only; ``None`` when the method does not say,
+        in which case those plots take every other turbine (:meth:`references`)
     """
 
     run_dir: Path
@@ -82,6 +85,7 @@ class DiagnosticContext:
     era5_df: pd.DataFrame | None = None
     era5_label: str = ERA5_UNLOCATED
     excluded_ts: npt.NDArray[np.bool_] | None = None
+    power_references: list[str] | None = None
 
     @property
     def index(self) -> pd.DatetimeIndex:

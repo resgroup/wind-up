@@ -71,9 +71,6 @@ class DiagnosticData:
     sum_actual_kw: float
     sum_counterfactual_kw: float
     n_refs: int  # candidate references in the pool, screened ones included
-    era5_lag_rows: int | None
-    era5_corr: float | None
-    era5_sweep: pd.DataFrame | None
     era5_label: str = ERA5_UNLOCATED
     # test-turbine ws/TI row-aligned to each segment's residuals (None when no wind-speed col)
     cond_upgraded: pd.DataFrame | None = None
@@ -182,8 +179,6 @@ def results_row(data: DiagnosticData) -> pd.DataFrame:
                 "sum_counterfactual_mwh": data.sum_counterfactual_kw * timebase_hours / 1000.0,
                 "baseline_holdout_r2": r2,
                 "baseline_holdout_mae_kw": mae,
-                "era5_lag_rows": data.era5_lag_rows,
-                "era5_corr": data.era5_corr,
                 "time_calculated": pd.Timestamp.utcnow(),
             }
         ]
@@ -237,13 +232,18 @@ def _r2_mae(actual: np.ndarray, predicted: np.ndarray) -> tuple[float, float]:
     return r2, float(np.mean(np.abs(resid)))
 
 
+def csv_name(kind: str, *, run_name: str, ts: str) -> str:
+    """Return a diagnostics CSV's file name: ``<run_name>_<kind>_<ts>.csv``, or ``<kind>.csv`` with no run name."""
+    return f"{run_name}_{kind}_{ts}.csv" if run_name else f"{kind}.csv"
+
+
 def write_csvs(run_dir: Path, run_name: str, ts: str, data: DiagnosticData) -> pd.DataFrame:
     """Write the data-stats, results, feature-importance and feature-catalogue CSVs; return importance."""
-    segment_stats(data).to_csv(run_dir / f"{run_name}_data_stats_{ts}.csv", index=False)
-    results_row(data).to_csv(run_dir / f"{run_name}_results_{ts}.csv", index=False)
+    segment_stats(data).to_csv(run_dir / csv_name("data_stats", run_name=run_name, ts=ts), index=False)
+    results_row(data).to_csv(run_dir / csv_name("results", run_name=run_name, ts=ts), index=False)
     importance = feature_importance_long(data)
-    importance.to_csv(run_dir / f"{run_name}_feature_importance_{ts}.csv", index=False)
-    feature_catalogue(data).to_csv(run_dir / f"{run_name}_feature_catalogue_{ts}.csv", index=False)
+    importance.to_csv(run_dir / csv_name("feature_importance", run_name=run_name, ts=ts), index=False)
+    feature_catalogue(data).to_csv(run_dir / csv_name("feature_catalogue", run_name=run_name, ts=ts), index=False)
     return importance
 
 
@@ -264,9 +264,9 @@ def write_conditional_csvs(
     per-cell counts. Together they show, for one case, how much conditional shrinkage was cancelled and
     how healthy the matching was. ``run_dir`` is the run's ``conditional/`` subfolder.
     """
-    pd.DataFrame([overall]).to_csv(run_dir / f"{run_name}_conditional_overall_{ts}.csv", index=False)
+    pd.DataFrame([overall]).to_csv(run_dir / csv_name("conditional_overall", run_name=run_name, ts=ts), index=False)
     if per_bin is not None:
-        per_bin.to_csv(run_dir / f"{run_name}_conditional_by_bin_{ts}.csv", index=False)
+        per_bin.to_csv(run_dir / csv_name("conditional_by_bin", run_name=run_name, ts=ts), index=False)
     balance = {
         "n_baseline_in": match.n_baseline_in,
         "n_upgraded_in": match.n_upgraded_in,
@@ -276,8 +276,8 @@ def write_conditional_csvs(
         "n_cells_two_sided": match.n_cells_two_sided,
         "n_cells_one_sided": match.n_cells_one_sided,
     }
-    pd.DataFrame([balance]).to_csv(run_dir / f"{run_name}_cem_balance_{ts}.csv", index=False)
-    match.per_cell.to_csv(run_dir / f"{run_name}_cem_cells_{ts}.csv", index=False)
+    pd.DataFrame([balance]).to_csv(run_dir / csv_name("cem_balance", run_name=run_name, ts=ts), index=False)
+    match.per_cell.to_csv(run_dir / csv_name("cem_cells", run_name=run_name, ts=ts), index=False)
 
 
 # covered (measured two-direction shape) vs imputed bins on the uplift panel.
@@ -375,26 +375,21 @@ def plot_conditional_diagnostics(plots_dir: Path, per_bin: pd.DataFrame, *, test
 
 def save_plots(plots_dir: Path, data: DiagnosticData, importance: pd.DataFrame) -> None:
     """Write the power-model diagnostic plots into their analysis-stage subfolders."""
-    model_dir = plots_dir / stages.UPLIFT_MODELLING
+    model_dir = plots_dir / stages.RELATE_REFERENCES
     model_dir.mkdir(parents=True, exist_ok=True)
     _plot_importance(model_dir, importance, test_wtg=data.test_wtg)
     _plot_predicted_vs_actual(model_dir, data)
     _plot_residual_vs_mean(model_dir, data)
     _plot_residual_binned(model_dir, data)
 
-    results_dir = plots_dir / stages.UPLIFT_RESULTS
+    results_dir = plots_dir / stages.UPLIFT
     results_dir.mkdir(parents=True, exist_ok=True)
     _plot_actual_vs_counterfactual_timeseries(results_dir, data)
 
-    inputs_dir = plots_dir / stages.UPLIFT_INPUTS
+    inputs_dir = plots_dir / stages.FEATURES
     inputs_dir.mkdir(parents=True, exist_ok=True)
     _plot_feature_overview(inputs_dir, feature_catalogue(data))
     _save_feature_histograms(inputs_dir / "feature_histograms", data)
-
-    if data.era5_sweep is not None:
-        feat_dir = plots_dir / stages.FEATURE_ENG
-        feat_dir.mkdir(parents=True, exist_ok=True)
-        _plot_era5_sweep(feat_dir, data)
 
 
 def _plot_importance(plots_dir: Path, importance: pd.DataFrame, *, test_wtg: str) -> None:
@@ -754,26 +749,3 @@ def _plot_actual_vs_counterfactual_timeseries(plots_dir: Path, data: DiagnosticD
     apply_grid(ax)
     ax.legend()
     save_fig(fig, plots_dir / "actual_vs_counterfactual_timeseries.png")
-
-
-def _plot_era5_sweep(plots_dir: Path, data: DiagnosticData) -> None:
-    """ERA5 correlation-vs-lag sweep, with the chosen optimal shift annotated."""
-    sweep = data.era5_sweep
-    if sweep is None:
-        return
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(sweep["shift_rows"], sweep["corr"], marker=".")
-    if data.era5_lag_rows is not None:
-        corr_text = f"{data.era5_corr:.3f}" if data.era5_corr is not None else "n/a"
-        ax.axvline(
-            data.era5_lag_rows,
-            color="k",
-            linestyle="--",
-            label=f"best shift = {data.era5_lag_rows} rows (corr = {corr_text})",
-        )
-        ax.legend()
-    ax.set_xlabel(f"{data.era5_label} shift [rows]")
-    ax.set_ylabel("wind-speed correlation")
-    ax.set_title(f"{data.test_wtg}: {data.era5_label}-SCADA correlation vs lag")
-    apply_grid(ax)
-    save_fig(fig, plots_dir / "era5_sync.png")

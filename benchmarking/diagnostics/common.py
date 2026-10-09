@@ -19,14 +19,14 @@ from benchmarking.diagnostics.coverage import (
 )
 from benchmarking.diagnostics.curves import (
     plot_curves_by_upgrade,
-    plot_ops_curves,
     plot_ops_curves_excluded,
-    plot_ops_curves_kept,
     plot_power_factor,
     plot_reactive_vs_active,
 )
 from benchmarking.diagnostics.histograms import plot_condition_histograms
 from benchmarking.diagnostics.northing import plot_northed_error, plot_northing_error
+from benchmarking.diagnostics.operating_states import plot_run_operating_states, plot_run_uplift_validity
+from benchmarking.diagnostics.ops_relationships import plot_run_ops_relationships
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,20 +36,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Every shared plot, in a sensible reading order. Each takes the context and returns a path
-# (or None when it has nothing to draw for this source).
-_PLOTS: tuple[Callable[[DiagnosticContext], Path | None], ...] = (
+# Every shared plot, in a sensible reading order. Each takes the context and returns a path, a
+# list of paths for a plot drawn once per turbine, or None when it has nothing to draw.
+_PLOTS: tuple[Callable[[DiagnosticContext], Path | list[Path] | None], ...] = (
     plot_input_timeline,
     plot_input_coverage,
     plot_filter_coverage,
     plot_excluded_fraction,
     plot_condition_histograms,
-    plot_ops_curves,
-    plot_ops_curves_kept,
+    plot_run_uplift_validity,
     plot_ops_curves_excluded,
     plot_curves_by_upgrade,
     plot_reactive_vs_active,
     plot_power_factor,
+    plot_run_ops_relationships,
+    plot_run_operating_states,
     plot_northing_error,
     plot_northed_error,
 )
@@ -77,6 +78,8 @@ def write_common_diagnostics(ctx: DiagnosticContext) -> list[Path]:
         except Exception:
             logger.exception("diagnostic plot %s failed for %s", plot.__name__, ctx.test_wtg)
             continue
-        if path is not None:
+        if isinstance(path, list):
+            written.extend(path)
+        elif path is not None:
             written.append(path)
     return written
