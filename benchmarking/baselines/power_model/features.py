@@ -367,10 +367,9 @@ def reference_mean_wind_speed(
     turbine_col: str,
     wind_speed_col: str,
 ) -> pd.Series:
-    """Mean wind speed across the reference pool on the unique index (used only for ERA5 lag sync).
+    """Mean wind speed across the reference pool on the unique index, for the diagnostics only.
 
-    This is **not** a model feature — it is the site wind-speed signal the ERA5 correlation sweep
-    locks onto. Averaged over ``references`` only, so it stays upgrade-invariant.
+    This is **not** a model feature. Averaged over ``references`` only, so it stays upgrade-invariant.
     """
     index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
     refs = _checked_references(references)

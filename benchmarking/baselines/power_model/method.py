@@ -358,14 +358,15 @@ class PowerModelMethod:
     :param columns: **required** source-native column schema — the single source of the method's
         column names. It reads the ``active_power`` (the outcome ``Y`` and the reference active-power
         feature), ``availability`` (drives the test-turbine downtime filter and is itself a reference
-        "is it waking" feature), ``wind_speed`` (its reference mean feeds the ERA5 lag sync and the
-        stuck-filter calm exemption) and ``wind_speed_sd`` (the turbulence-intensity signal) roles;
+        "is it waking" feature), ``wind_speed`` (its reference mean feeds the stuck-filter calm
+        exemption) and ``wind_speed_sd`` (the turbulence-intensity signal) roles;
         the remaining roles feed only the shared diagnostics.
     :param baseline_rated_power_kw: **required** rated power of the turbine over the data the model is
         fitted on — today every fit is on baseline rows, so this is the baseline rating. It caps the
         clipped counterfactual predictions. (A future cross-predict direction that trains on upgraded
         data would need the upgraded rating; that is out of scope here.)
-    :param era5_hourly_df: optional raw hourly ERA5 (Open-Meteo columns); added as features when given
+    :param era5_hourly_df: optional ERA5 (Open-Meteo columns), hourly or already aligned to the SCADA
+        periods; added as features when given
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param run_subdir: write each run into its own ``power_model_<wtg>_<start>_<end>`` folder under

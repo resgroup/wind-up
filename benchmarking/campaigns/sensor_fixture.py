@@ -8,7 +8,7 @@ the fault's doing. Each arm re-runs it with one anemometer gain fault:
   whole record (the shape least likely to cancel under toggle's alternation);
 * **gain** -- ``x1.5`` and ``x0.5``, the worst case that still happens in real data;
 * **target** -- the test turbine (whose anemometer feeds the conditional axes) or the nearest
-  reference (whose wind speed feeds only the ERA5 lag sync).
+  reference (whose wind speed is not a model feature).
 
 An **exposed** arm repeats the clean cell and the steps with reference anemometry deliberately
 carried as model features, which is the configuration the standing exclusion rules out. Comparing

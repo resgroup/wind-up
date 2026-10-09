@@ -125,7 +125,8 @@ def wind_up_method(
     :param spec: the campaign being run; supplies the turbine rating
     :param columns: the source-native schema the SCADA is keyed by
     :param out_dir: where the method writes its own diagnostics
-    :param era5_hourly_df: reanalysis; without it the per-condition estimates are not reported
+    :param era5_hourly_df: reanalysis, hourly or already aligned to the SCADA periods; without it the
+        per-condition estimates are not reported
     :param screen_cache: one dict shared across the campaign's turbines, so the reference screen
         runs once rather than once per test turbine
     :param era5_label: how reanalysis is named in this run's output; the campaign passes the point
@@ -272,7 +273,7 @@ def run_declaration(
                 declaration.spec,
                 columns=declaration.columns,
                 out_dir=out_dir / ESTIMATOR_DIRNAME / wtg,
-                era5_hourly_df=reanalysis,
+                era5_hourly_df=prepared.aligned,
                 screen_cache=screen_cache,
                 era5_label=era5_source_label(*declaration.centroid),
                 run_subdir=False,

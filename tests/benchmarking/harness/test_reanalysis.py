@@ -75,6 +75,21 @@ class TestInterpolate:
         again = interpolate_era5(aligned, index=index[1:], timebase=TIMEBASE)
         pd.testing.assert_frame_equal(again, aligned.iloc[1:])
 
+    def test_aligning_once_then_subsetting_matches_aligning_the_subset(self) -> None:
+        era5 = hourly(
+            4,
+            temperature_2m=[0.0, 6.0, 3.0, 9.0],
+            precipitation=[1.0, 2.0, 3.0, 4.0],
+            wind_direction_100m=[350.0, 10.0, 90.0, 270.0],
+        )
+        index = scada_index(18)
+        once = interpolate_era5(era5, index=index, timebase=TIMEBASE)
+        subset = index[[1, 4, 5, 11, 16]]
+        pd.testing.assert_frame_equal(
+            interpolate_era5(once, index=subset, timebase=TIMEBASE),
+            interpolate_era5(era5, index=subset, timebase=TIMEBASE),
+        )
+
     def test_trailing_all_nan_rows_are_trimmed_not_a_gap(self) -> None:
         era5 = hourly(3, temperature_2m=[0.0, 6.0, np.nan])
         era5.iloc[2] = np.nan
