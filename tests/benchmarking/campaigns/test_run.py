@@ -207,7 +207,7 @@ class TestAPlannedCampaign:
             assert seen.context.candidate_references == list(plan.power_references)
             assert seen.context.timing == plan.works[1]
 
-    def test_held_back_rows_reach_the_method_marked_invalid(self) -> None:
+    def test_held_back_rows_reach_the_method_marked_invalid_and_northed(self) -> None:
         _, _, method = self.planned()
         seen = method.seen["T0"]
         rows = seen.scada_df[seen.scada_df[HOT_COLUMNS.turbine] == "T4"]
@@ -215,7 +215,7 @@ class TestAPlannedCampaign:
             rows.index < pd.Timestamp("2019-02-05", tz="UTC")
         )
         assert inside.sum() == 4 * 24
-        assert rows.loc[inside, HOT_COLUMNS.northed("nacelle_position")].isna().all()
+        assert rows.loc[inside, HOT_COLUMNS.northed("nacelle_position")].notna().all()
         assert not seen.context.valid_over(pd.DatetimeIndex(rows.index[inside]))["T4"].any()
 
     def test_the_northing_step_does_not_see_held_back_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:

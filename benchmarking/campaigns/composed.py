@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,7 +39,9 @@ from benchmarking.diagnostics.operating_states import (
     write_validity_plots,
 )
 from benchmarking.diagnostics.reanalysis import write_reanalysis_outputs
-from benchmarking.harness.operating_state import label_operating_states
+from benchmarking.diagnostics.yaw_changes import write_possible_yaw_changes
+from benchmarking.harness.northing import north_offsets_of, north_tables, northing_rows
+from benchmarking.harness.operating_state import VALID_NORTHING_COL, label_operating_states
 from benchmarking.harness.reanalysis import ERA5_WD_RAW, normalise_timestamps, prepare_reanalysis
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up_v0.era5 import get_era5_hourly_df
@@ -94,8 +97,9 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
   - `{stages.OPERATING_STATES}/`: step 2, the operating-state labels and hours per state.
   - `{stages.REANALYSIS}/`: step 3, the reanalysis time-shift check, ERA5 against the site wind speed,
     and what the reanalysis covers.
-  - `{stages.NORTHING}/`: step 4, the northing corrections, and each turbine's records used and not
-    used for northing, coloured by operating state.
+  - `{stages.NORTHING}/`: step 4, the northing corrections over the whole record, each turbine's records
+    used and not used for northing coloured by operating state, and the possible yaw-alignment changes
+    with the apparent-Cp shift at each.
   - `{stages.WAKING}/`: step 5, each turbine's records considered waking, part waking and not waking,
     coloured by operating state.
 - `{ESTIMATOR_DIRNAME}/<test turbine>/`: part B, one folder per test turbine, over its span and with
@@ -241,9 +245,20 @@ def run_declaration(
         out_dir=input_plots / stages.OPERATING_STATES,
         changeovers=changeovers,
     )
-    for views, stage in ((NORTHING_VIEWS, stages.NORTHING), (WAKING_VIEWS, stages.WAKING)):
+    # The northing views draw the rows northing learns from, before the reanalysis is consulted.
+    used_for_northing = scada_df.assign(
+        **{
+            VALID_NORTHING_COL: northing_rows(
+                scada_df, columns=declaration.columns, rated_power_kw=declaration.spec.rated_power_kw
+            )
+        }
+    )
+    for frame, views, stage in (
+        (used_for_northing, NORTHING_VIEWS, stages.NORTHING),
+        (scada_df, WAKING_VIEWS, stages.WAKING),
+    ):
         write_validity_plots(
-            scada_df, views=views, columns=declaration.columns, timebase=timebase, out_dir=input_plots / stage
+            frame, views=views, columns=declaration.columns, timebase=timebase, out_dir=input_plots / stage
         )
     reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration, index=index)
     spec = declaration.spec
@@ -262,15 +277,36 @@ def run_declaration(
         cell_selection=declaration.cell_selection,
         out_dir=input_plots / stages.REANALYSIS,
     )
+    tables = north_tables(
+        scada_df,
+        columns=declaration.columns,
+        north_offsets=spec.north_offsets,
+        rated_power_kw=spec.rated_power_kw,
+        layout=spec.layout,
+        era5_wd=prepared.aligned[ERA5_WD_RAW],
+        out_dir=preparation / stages.NORTHING,
+    )
+    write_possible_yaw_changes(
+        scada_df,
+        tables=tables,
+        columns=declaration.columns,
+        rated_power_kw=spec.rated_power_kw,
+        timebase=timebase,
+        changeovers=changeovers,
+        analysis_period=spec.period_bounds(),
+        out_dir=input_plots / stages.NORTHING,
+    )
+    # The whole park's north tables over the whole record, applied as declared to what each method sees.
+    spec = replace(spec, north_offsets=north_offsets_of(tables))
     # One screen verdict for the campaign: every test turbine is judged against the same references.
     screen_cache: dict = {}
 
     report = estimate_campaign(
-        declaration.spec,
+        spec,
         scada_df,
         build_methods=lambda wtg: [
             wind_up_method(
-                declaration.spec,
+                spec,
                 columns=declaration.columns,
                 out_dir=out_dir / ESTIMATOR_DIRNAME / wtg,
                 era5_hourly_df=prepared.aligned,
@@ -280,8 +316,6 @@ def run_declaration(
             )
         ],
         columns=declaration.columns,
-        era5_wd=prepared.aligned[ERA5_WD_RAW],
-        northing_out_dir=preparation / stages.NORTHING,
         plan_settings=plan_settings,
     )
     write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME)

@@ -10,7 +10,8 @@ import pytest
 
 from benchmarking.harness import northing as harness_northing
 from benchmarking.harness import replicates as harness_replicates
-from benchmarking.harness.northing import ERA5_WD_COL, era5_direction, north_scada
+from benchmarking.harness.northing import ERA5_WD_COL, era5_direction, north_scada, northing_rows
+from benchmarking.harness.operating_state import VALID_NORTHING_COL
 from benchmarking.harness.replicates import NorthingInputs, StudyConfig, iter_replicates
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.circular_math import circ_diff
@@ -233,6 +234,44 @@ class TestDiscovery:
                 layout=None,
                 era5_wd=pd.Series(era5, index=index),
             )
+
+
+class TestStepTwoValidity:
+    """A frame labelled by step 2 is northed from the rows valid for northing that are generating."""
+
+    def test_rows_not_valid_for_northing_are_not_learnt_from(self) -> None:
+        index = _index()
+        offsets = {"T01": [(_START, 0.0)], "T02": [(_START, 25.0)], "T03": [(_START, -40.0)], "T04": [(_START, 12.0)]}
+        scada, site_wd = _scada(index, offsets)
+        scada[VALID_NORTHING_COL] = True
+        corrupt = (scada[_COLUMNS.turbine] == "T03").to_numpy() & (scada.index >= _START + pd.Timedelta(days=60))
+        scada.loc[corrupt, _COLUMNS.nacelle_position] = (
+            scada.loc[corrupt, _COLUMNS.nacelle_position].to_numpy(dtype=float) + 90.0
+        ) % 360.0
+        scada.loc[corrupt, VALID_NORTHING_COL] = False
+
+        out = north_scada(
+            scada.drop(columns=[_COLUMNS.availability]),
+            columns=_COLUMNS,
+            north_offsets=None,
+            rated_power_kw=_RATED,
+            layout=None,
+            era5_wd=pd.Series(site_wd, index=index),
+        )
+
+        # the corrupted rows found no changepoint, so they keep the 90 degrees
+        later = index >= _START + pd.Timedelta(days=60)
+        assert circ_diff(_northed(out, "T03")[later], site_wd[later]).mean() == pytest.approx(90.0, abs=2.0)
+
+    def test_northing_rows_also_need_the_turbine_generating(self) -> None:
+        frame = pd.DataFrame(
+            {
+                _COLUMNS.turbine: "T01",
+                _COLUMNS.active_power: [1000.0, 50.0, 1000.0],
+                VALID_NORTHING_COL: [True, True, False],
+            }
+        )
+        assert list(northing_rows(frame, columns=_COLUMNS, rated_power_kw=_RATED)) == [True, False, False]
 
 
 class TestEra5Direction:

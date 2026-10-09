@@ -213,6 +213,7 @@ class TestTheInputDataPlots:
         assert {"operating_state_hours.csv", "operating_state_hours.png", "operating_states_T04.png"} <= states
         reanalysis = {p.name for p in (preparation / "03_reanalysis").iterdir()}
         assert reanalysis == {"shift_check.png", "wind_speed_scatter.png", "reanalysis.csv"}
+        assert (preparation / "04_northing" / "possible_yaw_changes.csv").exists()
 
     def test_the_folder_can_be_named(self, declaration: Path, tmp_path: Path) -> None:
         with pytest.raises(_StopError):

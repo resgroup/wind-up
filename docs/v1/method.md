@@ -199,8 +199,20 @@ The nacelle direction of every turbine is analysed to detect its north calibrati
 over the full data period, and is corrected so that a north-calibrated direction is available for every
 turbine and every record. The method is described in [northing.md](../northing.md).
 
-Small north changes on an individual turbine may optionally be reported as possible yaw alignment
-changes, since these are a candidate cause of performance change (step 1).
+The north tables are found once for the whole wind farm over the whole SCADA record, and are applied to
+every record of every turbine. They are learnt from the records valid for northing (step 2) in which
+the turbine generates more than 5% of its rated power, because wind veer is larger at low wind speed.
+
+Small north changes on an individual turbine are reported as possible yaw alignment changes, since
+these are a candidate cause of performance change (step 1). A north change of 30° or more that returns
+within 90 days is a north calibration excursion; one that does not return is a re-calibration and
+becomes the new reference frame. Every other change, between two segments in the reference frame, is
+a candidate yaw alignment change. For each candidate, the change in the turbine's apparent power
+coefficient (its power divided by the cube of its own nacelle wind speed, binned by wind speed) is
+measured between the 60 days before and the 60 days after, using the records valid for northing and
+for uplift. It is compared with the largest such change at any other date of the turbine's record
+that is more than 60 days from every candidate. The report is for the analyst to inspect alongside the
+declared changes; it does not change the uplift calculation.
 
 ### 5. Determine waking state and waking scenarios
 

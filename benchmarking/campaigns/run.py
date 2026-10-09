@@ -130,8 +130,8 @@ def visible_scada(
     """Return ``frame`` cut to what a method may see, north-calibrated.
 
     The shared northing step runs here, farm-wide and once, so every method downstream inherits
-    the north-calibrated direction rather than each hand-rolling one. It runs on the usable rows
-    only; held-back rows are added back afterwards with no north-calibrated direction.
+    the north-calibrated direction rather than each hand-rolling one. Discovery learns from the
+    usable rows only; held-back rows are corrected too.
 
     :param era5_wd: reanalysis wind direction, the anchor the shared step discovers against.
         Required when ``spec.north_offsets`` is ``None``; a declared table needs none.
@@ -139,7 +139,8 @@ def visible_scada(
     :param northing_plots: write the plots as well as the table
     """
     usable, held = _row_masks(spec, frame)
-    northed = north_scada(
+    visible = frame[usable | held]
+    return north_scada(
         frame[usable],
         columns=columns,
         north_offsets=spec.north_offsets,
@@ -150,11 +151,8 @@ def visible_scada(
         settings=settings,
         out_dir=out_dir,
         plots=northing_plots,
+        apply_to=visible,
     )
-    if not held.any():
-        return northed
-    held_back = frame[held].reindex(columns=northed.columns)
-    return pd.concat([northed, held_back]).sort_index(kind="stable")
 
 
 def estimate_campaign(
