@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wind_up.constants import REANALYSIS_WS_COL
-from wind_up.models import WindUpConfig
-from wind_up.windspeed_drift import _calculate_rolling_windspeed_diff, check_windspeed_drift
+from wind_up_v0.constants import REANALYSIS_WS_COL
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.windspeed_drift import _calculate_rolling_windspeed_diff, check_windspeed_drift
 
 
 def test_check_windspeed_drift(test_lsa_t13_config: WindUpConfig) -> None:
