@@ -12,6 +12,36 @@ not effect), so the estimate still
 never conditions on the test turbine's post-treatment wind speed (design-note §3). It speaks the
 data source's own column names and has no wind_up dependency.
 
+An optional **pairing filter** (``pairing_max_gap``) then drops any used row with no used row of the
+other segment nearby, so a filter that removes one segment's rows in some conditions also removes the
+other segment's rows from those conditions. Rows kept per segment after each selection stage are
+reported as ``MethodOutput.selection_accounting`` and written to a selection CSV. A caller may also
+flag rows through ``columns.exclude_block``: such a row removes its whole toggle cycle, so both
+states lose the same conditions — a symmetric alternative to ``exclude_row`` for a selection that
+would otherwise thin one state's rows in particular conditions.
+
+**Two legs, blended.** The test power is compared against two references, each estimated on
+its own row selection, and the two estimates are blended by minimum-variance weights, headline and
+per bin. The *reference leg* (``sum``) compares against the summed power of a **reference subset**:
+the ``sum`` estimate runs on every non-empty subset of the available references and keeps the
+subset whose noise is smallest (ties to the larger subset), so a reference that tracks badly, or is
+screened out for long stretches, loses to the subsets without it; every subset's result is written
+to a CSV. The *block leg* (``block_mean``) needs **no references at all**: the campaign is tiled
+into fixed wall-clock toggle cycles of ``toggle_period`` and every used row of a cycle is
+compared against the cycle's mean test power, so the on/off ratio cancels the cycle's wind level
+exactly; a cycle whose used rows lack either state is dropped (the ``block`` selection
+stage). The two legs' errors come from different places (reference mismatch versus within-cycle
+drift), which is what the blend exploits; their bootstraps share their block draws, so the blend's
+sigma includes the legs' correlation (:func:`benchmarking.baselines.block_bootstrap.combine_estimates`).
+With no reference turbine at all the estimate is the block leg alone.
+
+**Decisions on permuted labels.** The two data-driven decisions, the subset choice and the blend
+weights, are judged on a bootstrap of the same rows with the on/off labels shuffled within each
+toggle cycle: the same noise, blind to how it happened to split between the states. Ranking on
+the realised sigma would favour the alternative whose realised uplift came out low (the on/off
+contrast noise is skewed), biasing the estimate down and under-reporting sigma. The reported uplift
+and sigma are always the actual ones; only the decisions read the permuted bootstrap.
+
 Every uplift — the headline and each power bin — comes with a non-optional 1-sigma uncertainty from
 a circular block bootstrap (:mod:`benchmarking.baselines.block_bootstrap`). It is computed after the
 uplift, from the uplift's own frozen row selection and bin assignment, and only when the uplift is
@@ -20,25 +50,41 @@ sigma under-covers where the method is biased.
 
 Each run writes a per-run folder ``toggle_specialist_<test>_<upgradestart>_<lastdate>/``
 (v0-style naming) under ``out_dir`` (a temp dir by default), holding a per-segment data-stats CSV,
-a headline results CSV, and -- when ``save_plots`` -- three diagnostic plots (a test-vs-reference
-scatter, a per-segment daily-ratio timeseries, and a per-segment used-data-coverage timeseries).
-The rich stats let a human confirm the right data was received and interpreted: the headline uplift
-is re-derivable from the stats CSV as ``rho = used_test_mwh / used_ref_total_mwh`` per segment.
+a headline results CSV, the per-leg selection and reference-subset CSVs, and -- when
+``save_plots`` -- four diagnostic plots (a test-vs-reference scatter, a per-segment daily-ratio
+timeseries, a per-segment used-data-coverage timeseries, and a pairing-gap histogram).
+The rich stats let a human confirm the right data was received and interpreted: each leg's uplift
+is re-derivable from its rows of the stats CSV as ``rho = used_test_mwh / used_ref_total_mwh`` per
+segment, and the headline is the blend of the legs at the weight the results CSV reports.
+
+**Bin power.** The power bins and ``power_band`` both read one per-row power, chosen by
+``bin_power``. ``"baseline"`` (the default) is what the turbine makes untreated: ``rho_base *
+ref_total`` on the reference leg, the mean of the cycle's baseline rows on the block leg; no
+upgraded row enters it. ``"both_states"`` is the mean of the two states instead (``rho`` averaged
+over the states; the two states' cycle means averaged), for a campaign in which neither state is
+a true baseline. Either way a row's own state cannot move it between bins.
 """
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from dataclasses import dataclass, replace
+from itertools import combinations
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
-from benchmarking.baselines.block_bootstrap import BootstrapResult, bootstrap_ratio_uplift
+from benchmarking.baselines.block_bootstrap import (
+    BootstrapResult,
+    CombinedEstimate,
+    bootstrap_ratio_uplift,
+    combine_estimates,
+)
 from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import condition_bins, energy_ratio_by_bin, validate_conditions
@@ -47,6 +93,8 @@ from benchmarking.harness.toggle import ToggleRowSets, is_toggle, resolve_toggle
 from benchmarking.synthetic import ToggleSchedule
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import numpy.typing as npt
 
     from benchmarking.synthetic import ColumnSchema
@@ -68,6 +116,123 @@ DEFAULT_BLOCK_HOURS = 6.0
 # treatment cannot move a row between bins. Binning by the test turbine's ws/TI would condition on
 # post-treatment signals, which this method exists not to do (see the module docstring).
 _SUPPORTED_CONDITIONS: tuple[str, ...] = ("power",)
+# The two legs the estimate blends (see the module docstring), in blend order: the first is the one
+# the row-selection accounting and the reference-side diagnostics report.
+_REFERENCE_LEG = "sum"
+_BLOCK_LEG = "block_mean"
+_COMBINED = "combined"
+# The subset choice runs 2**n - 1 estimates; refuse past this many references.
+_MAX_REFS_FOR_SUBSETS = 8
+_BIN_POWERS = ("baseline", "both_states")
+
+logger = logging.getLogger(__name__)
+
+
+class _Selection(NamedTuple):
+    """The cumulative used-row mask after each selection stage."""
+
+    filtered: pd.Series
+    not_excluded: pd.Series
+    paired: pd.Series
+    blocked: pd.Series
+
+
+@dataclass(frozen=True)
+class _Estimate:
+    """One leg's (or the blend's) complete estimate: what the outputs, the labels and the blend read."""
+
+    mode: str
+    refs: list[str]
+    selection: _Selection
+    used: npt.NDArray[np.bool_]
+    ref_total: npt.NDArray[np.float64]
+    label: npt.NDArray[np.float64]
+    rho_base: float
+    rho_up: float
+    uplift: float
+    sigma_overall: float
+    per_bin: pd.DataFrame | None
+    boot: BootstrapResult | None
+    accounting: pd.DataFrame
+    diagnostics: pd.DataFrame
+    # The label-permuted bootstrap the decisions read; None for the blend (which decides nothing further).
+    decision_boot: BootstrapResult | None = None
+
+    @property
+    def decision_sigma(self) -> float:
+        """The headline sigma the decisions are judged on: that of the label-permuted bootstrap."""
+        return _cell_sigma(self.decision_boot, _OVERALL)
+
+
+def permute_labels_within_blocks(
+    *,
+    upgraded: npt.NDArray[np.bool_],
+    baseline: npt.NDArray[np.bool_],
+    used: npt.NDArray[np.bool_],
+    ids: npt.NDArray[np.int64] | None,
+    rng: np.random.Generator,
+) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_]]:
+    """Shuffle the on/off labels among the used campaign rows of each block; unused rows keep theirs.
+
+    Every block keeps its on and off counts, so the permuted campaign has the same structure as the
+    real one and differs only in which rows are called on. With ``ids`` None the labels are shuffled
+    over the whole campaign.
+    """
+    up_p = upgraded.copy()
+    base_p = baseline.copy()
+    campaign_used = np.flatnonzero(used & (upgraded | baseline))
+    if ids is None:
+        groups = [campaign_used]
+    else:
+        groups = [campaign_used[ids[campaign_used] == b] for b in np.unique(ids[campaign_used])]
+    for rows in groups:
+        if len(rows) < 2:  # noqa: PLR2004 - nothing to shuffle
+            continue
+        order = rng.permutation(rows)
+        up_p[rows] = upgraded[order]
+        base_p[rows] = baseline[order]
+    return up_p, base_p
+
+
+class PairedRows(NamedTuple):
+    """The rows of each segment that have a row of the other segment within the pairing gap."""
+
+    baseline: npt.NDArray[np.bool_]
+    upgraded: npt.NDArray[np.bool_]
+
+
+def pair_within(
+    index: pd.DatetimeIndex,
+    *,
+    baseline: npt.NDArray[np.bool_],
+    upgraded: npt.NDArray[np.bool_],
+    max_gap: pd.Timedelta,
+) -> PairedRows:
+    """Keep each flagged row only if the other segment has a flagged row within ``max_gap``, inclusive."""
+    gap = gap_to_other_segment(index, baseline=baseline, upgraded=upgraded)
+    within = gap <= max_gap.total_seconds()
+    return PairedRows(baseline=baseline & within, upgraded=upgraded & within)
+
+
+def gap_to_other_segment(
+    index: pd.DatetimeIndex, *, baseline: npt.NDArray[np.bool_], upgraded: npt.NDArray[np.bool_]
+) -> npt.NDArray[np.float64]:
+    """Seconds from each flagged row to the nearest flagged row of the other segment; NaN if unflagged."""
+    times = index.as_unit("ns").asi8
+    gap = np.full(len(index), np.nan)
+    gap[baseline] = _nearest_gap_s(times[baseline], others=times[upgraded])
+    gap[upgraded] = _nearest_gap_s(times[upgraded], others=times[baseline])
+    return gap
+
+
+def _nearest_gap_s(times: npt.NDArray[np.int64], *, others: npt.NDArray[np.int64]) -> npt.NDArray[np.float64]:
+    if not len(others):
+        return np.full(len(times), np.inf)
+    others = np.sort(others)
+    position = np.searchsorted(others, times)
+    after = others[np.minimum(position, len(others) - 1)]
+    before = others[np.maximum(position - 1, 0)]
+    return np.minimum(np.abs(after - times), np.abs(times - before)) / 1e9
 
 
 def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
@@ -76,6 +241,29 @@ def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
     if len(unique) < _MIN_POINTS_FOR_TIMEBASE:
         return pd.Timedelta(minutes=10)
     return pd.Timedelta(np.median(np.diff(unique.to_numpy())))
+
+
+def block_ids(index: pd.DatetimeIndex, *, start: pd.Timestamp, block: pd.Timedelta) -> npt.NDArray[np.int64]:
+    """Index of the fixed wall-clock block of length ``block``, tiled forward from ``start``, holding each row."""
+    return np.floor(np.asarray((index - start) / block, dtype=float)).astype(np.int64)
+
+
+def blocks_with_both_states(
+    ids: npt.NDArray[np.int64], *, baseline: npt.NDArray[np.bool_], upgraded: npt.NDArray[np.bool_]
+) -> npt.NDArray[np.bool_]:
+    """Per row: whether its block holds at least one ``baseline`` and one ``upgraded`` row."""
+    both = set(np.unique(ids[baseline])) & set(np.unique(ids[upgraded]))
+    return np.isin(ids, list(both))
+
+
+def _block_sum(ids: npt.NDArray[np.int64], values: npt.NDArray[np.float64], mask: npt.NDArray[np.bool_]) -> pd.Series:
+    """Sum of ``values`` over the ``mask`` rows of each block, indexed by block id."""
+    return pd.Series(values[mask]).groupby(ids[mask]).sum()
+
+
+def _per_row(ids: npt.NDArray[np.int64], per_block: pd.Series) -> npt.NDArray[np.float64]:
+    """Broadcast a per-block value back onto rows; NaN for a row whose block has no value."""
+    return per_block.reindex(ids).to_numpy(dtype=float)
 
 
 def _wide_column(scada_df: pd.DataFrame, *, turbine_col: str, value_col: str) -> pd.DataFrame:
@@ -127,9 +315,26 @@ class ToggleSpecialistMethod:
         period**, for which :data:`DEFAULT_BLOCK_HOURS` may span only a cycle or two.
     :param n_resamples: bootstrap resamples; block sums are precomputed, so this can be generous.
     :param bootstrap_seed: RNG seed for the bootstrap, so a reported sigma is reproducible.
+    :param pairing_max_gap: when set, a used row of one segment is kept only if the other segment has
+        a used row within this gap, inclusive (a gap of exactly ``pairing_max_gap`` is kept). Must be
+        a positive whole multiple of the timebase; ``None`` disables pairing.
+    :param toggle_period: **required** one toggle cycle (the campaign's own on + off duration): the
+        block length for the block leg, the label permutation and ``columns.exclude_block``. A
+        positive whole multiple of the timebase. It is the caller's to state, not inferred, and it
+        is independent of ``pairing_max_gap``.
+    :param toggle_datum: **required** any boundary of the toggle-cycle grid (the controller's own
+        cycle datum, not when the campaign happened to begin); the cycles of the block leg, the label
+        permutation and ``columns.exclude_block`` are tiled from it. A ``ToggleSchedule`` tiles its
+        cycles from its first timestamp, which must lie on this grid.
+    :param bin_power: the per-row power the bins and ``power_band`` read (see the module docstring):
+        ``"baseline"`` (default) or ``"both_states"``.
+    :param power_band: when set, ``(lo, hi]`` in kW: each leg keeps only the used rows whose bin
+        power lies in it, and estimates its uplift over those. ``None`` keeps every used row.
     """
 
     columns: ColumnSchema
+    toggle_period: pd.Timedelta
+    toggle_datum: pd.Timestamp
     name: str = "toggle_specialist"
     out_dir: Path | None = None
     save_plots: bool = False
@@ -139,11 +344,22 @@ class ToggleSpecialistMethod:
     block_hours: float = DEFAULT_BLOCK_HOURS
     n_resamples: int = 1000
     bootstrap_seed: int = 0
+    pairing_max_gap: pd.Timedelta | None = None
+    bin_power: Literal["baseline", "both_states"] = "baseline"
+    power_band: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
-        """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
+        """Validate the column roles, ``conditions``, ``bin_power`` and ``power_band``."""
         self.columns.require_roles(("active_power", "availability"))
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
+        if self.bin_power not in _BIN_POWERS:
+            msg = f"{self.name}: bin_power must be one of {_BIN_POWERS}, got {self.bin_power!r}"
+            raise ValueError(msg)
+        if self.power_band is not None:
+            lo, hi = self.power_band
+            if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
+                msg = f"{self.name}: power_band must be finite (lo, hi] with lo < hi, got {self.power_band}"
+                raise ValueError(msg)
         if "power" in self.conditions and self.rated_power_kw is None:
             msg = (
                 f"{self.name}: rated_power_kw is required when 'power' is in conditions — the power bin "
@@ -160,22 +376,6 @@ class ToggleSpecialistMethod:
                 f"or toggle_df; this method has no prepost baseline to compare against."
             )
             raise ValueError(msg)
-
-        mi = restrict_to_campaign(mi)
-        wide = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.active_power)
-        test = mi.test_wtg
-        refs = mi.context.references_among(wide.columns)
-        if not refs:
-            msg = (
-                f"no reference turbines available for test_wtg {test!r}: scada_df contains only "
-                f"{list(wide.columns)}. The toggle specialist method needs at least one reference turbine."
-            )
-            raise ValueError(msg)
-        # Narrow to the campaign's turbines and blank the cells it says may not contribute, so the
-        # estimate and every diagnostic below see one consistent selection.
-        ref_set = set(refs)
-        wide = mi.context.mask_invalid(wide[[c for c in wide.columns if c == test or c in ref_set]])
-
         if self.columns.availability not in mi.scada_df.columns:
             msg = (
                 f"the availability column {self.columns.availability!r} (columns.availability) is not in "
@@ -183,91 +383,290 @@ class ToggleSpecialistMethod:
             )
             raise ValueError(msg)
 
+        mi = restrict_to_campaign(mi)
+        wide_all = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.active_power)
+        test = mi.test_wtg
         timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
-        rows = resolve_toggle(mi.upgrade_timing, wide.index)
+        self._check_pairing_gap(timebase)
+        rows = resolve_toggle(mi.upgrade_timing, wide_all.index)
+        block = self._toggle_period(timebase)
+        datum = self._toggle_datum(mi, wide_all.index)
+
+        components: dict[str, _Estimate] = {}
+        subsets: pd.DataFrame | None = None
+        n_refs_available = len(mi.context.references_among(wide_all.columns))
+        if n_refs_available:
+            components[_REFERENCE_LEG], subsets = self._choose_references(
+                mi, wide_all=wide_all, test=test, timebase=timebase, block=block, datum=datum, rows=rows
+            )
+        else:
+            # Nothing for the reference leg to work with: the estimate is the block leg alone, which
+            # needs no references, rather than a failed estimate.
+            logger.warning(
+                "%s: no reference turbines available for test_wtg %r; the estimate is the %r leg alone",
+                self.name,
+                test,
+                _BLOCK_LEG,
+            )
+        components[_BLOCK_LEG] = self._component(
+            mi,
+            mode=_BLOCK_LEG,
+            wide_all=wide_all,
+            test=test,
+            timebase=timebase,
+            block=block,
+            datum=datum,
+            rows=rows,
+        )
+        est = (
+            _combine(components[_REFERENCE_LEG], components[_BLOCK_LEG], upgraded=rows.upgraded, bins=self._bins())
+            if _REFERENCE_LEG in components
+            else components[_BLOCK_LEG]
+        )
+
+        ref_set = set(est.refs)
+        wide = wide_all[[c for c in wide_all.columns if c == test or c in ref_set]]
+        stats = pd.concat(
+            [
+                _segment_stats(
+                    mi,
+                    wide=wide_all[[c for c in wide_all.columns if c == test or c in set(component.refs)]],
+                    used=component.used,
+                    toggle_rows=rows,
+                    ref_total=component.ref_total,
+                    timebase=timebase,
+                    active_power_col=self.columns.active_power,
+                ).assign(component=mode)
+                for mode, component in components.items()
+            ],
+            ignore_index=True,
+        )
+        self._write_outputs(
+            mi,
+            wide=wide,
+            stats=stats,
+            est=est,
+            components=components,
+            timebase=timebase,
+            rows=rows,
+            subsets=subsets,
+            n_refs_available=n_refs_available,
+        )
+        return MethodOutput(
+            p50_overall=float(est.uplift),
+            p50_by_condition=est.per_bin,
+            sigma_overall=est.sigma_overall,
+            uncertainty_diagnostics=_harness_diagnostics(est.diagnostics),
+            labeled_rows=self._labeled_rows(mi, wide=wide, test=test, used=est.used, rows=rows, label=est.label),
+            selection_accounting=est.accounting,
+        )
+
+    def _component(
+        self,
+        mi: MethodInput,
+        *,
+        mode: str,
+        wide_all: pd.DataFrame,
+        test: str,
+        timebase: pd.Timedelta,
+        block: pd.Timedelta | None,
+        datum: pd.Timestamp,
+        rows: ToggleRowSets,
+        refs: list[str] | None = None,
+        with_actual: bool = True,
+    ) -> _Estimate:
+        """Run one leg end to end: row selection, reference, uplift, bins and the two bootstraps.
+
+        ``refs`` names the references the ``sum`` leg uses (the block leg compares the test turbine
+        against its own block, so references play no part, not even in the row filters: a reference
+        outage must not cost it rows). ``with_actual=False`` skips the actual bootstrap (a subset
+        that is only being ranked on its permuted sigma); the label-permuted bootstrap always runs.
+        """
+        refs = [] if mode == _BLOCK_LEG else list(refs or [])
+        if mode == _REFERENCE_LEG and not refs:
+            msg = f"{self.name}: the {mode!r} leg needs at least one reference turbine"
+            raise ValueError(msg)
+        # Narrow to the mode's turbines and blank the cells the campaign says may not contribute, so
+        # the estimate and every diagnostic see one consistent selection.
+        ref_set = set(refs)
+        wide = mi.context.mask_invalid(wide_all[[c for c in wide_all.columns if c == test or c in ref_set]])
+
         baseline = rows.campaign_baseline
         test_pw = wide[test].to_numpy(dtype=float)
-        ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
-        used = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase).to_numpy()
+        campaign = baseline | rows.upgraded
+        ids = block_ids(wide.index, start=datum, block=block) if block is not None and campaign.any() else None
+        selection = self._selection(
+            mi, wide=wide, test=test, refs=refs, timebase=timebase, rows=rows, ids=ids, both_states=mode == _BLOCK_LEG
+        )
+        used = selection.blocked.to_numpy()
+        ref_total = self._reference_total(mode=mode, wide=wide, refs=refs, test_pw=test_pw, used=used, ids=ids)
 
         rho_base = _rho(test_pw, ref_total, used & baseline)
         rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
+        label = self._bin_power(
+            mode=mode,
+            test_pw=test_pw,
+            ref_total=ref_total,
+            baseline=used & baseline,
+            upgraded=used & rows.upgraded,
+            ids=ids,
+            rho_base=rho_base,
+            rho_up=rho_up,
+        )
+        in_band = None
+        if self.power_band is not None:
+            lo, hi = self.power_band
+            in_band = used & (label > lo) & (label <= hi)
+            used = in_band
+            rho_base = _rho(test_pw, ref_total, used & baseline)
+            rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
+        accounting = self._selection_accounting(selection, rows=rows, power_band=in_band)
         recoverable = np.isfinite(rho_base) and rho_base != 0 and np.isfinite(rho_up)
         uplift = rho_up / rho_base - 1.0 if recoverable else np.nan
-        rho_label = _rho_label(rho_base, rho_up)
 
         per_bin = (
             self._conditional_frame(
                 test_pw=test_pw,
                 ref_total=ref_total,
-                rho_label=rho_label,
+                label=label,
                 baseline=used & baseline,
                 upgraded=used & rows.upgraded,
-            )
+            ).rename(columns={"sum_actual": f"sum_actual_{mode}", "sum_counterfactual": f"sum_counterfactual_{mode}"})
             if "power" in self.conditions
             else None
         )
 
         # Uncertainty runs strictly after the uplift, off the same frozen row selection and bin
         # assignment, and only when there is a finite uplift to qualify.
-        membership = self._cell_membership(rho_label=rho_label, ref_total=ref_total, used=used)
-        boot = (
-            self._bootstrap(
+        membership = self._cell_membership(label=label, used=used)
+
+        def _run_bootstrap(up: npt.NDArray[np.bool_], base: npt.NDArray[np.bool_]) -> BootstrapResult:
+            return self._bootstrap(
                 index=wide.index,
                 test_pw=test_pw,
                 ref_total=ref_total,
                 used=used,
-                upgraded=rows.upgraded,
-                baseline=baseline,
+                upgraded=up,
+                baseline=base,
                 membership=membership,
                 timebase=timebase,
             )
-            if np.isfinite(uplift)
-            else None
-        )
+
+        boot = _run_bootstrap(rows.upgraded, baseline) if with_actual and np.isfinite(uplift) else None
+        decision_boot = None
+        if np.isfinite(uplift):
+            # Same rows, span, blocks, seed and cells as the actual bootstrap; only the labels differ.
+            up_p, base_p = permute_labels_within_blocks(
+                upgraded=rows.upgraded,
+                baseline=baseline,
+                used=used,
+                ids=ids,
+                rng=np.random.default_rng(self.bootstrap_seed),
+            )
+            decision_boot = _run_bootstrap(up_p, base_p)
+        uplift_by_cell = {_OVERALL: uplift}
         if per_bin is not None:
             per_bin["sigma_uplift"] = [_cell_sigma(boot, str(b)) for b in per_bin["condition_bin"]]
+            uplift_by_cell.update(
+                {str(b): float(u) for b, u in zip(per_bin["condition_bin"], per_bin["p50_uplift"], strict=True)}
+            )
         diagnostics = _uncertainty_diagnostics(
             boot,
             membership=membership,
             upgraded=used & rows.upgraded,
             baseline=used & baseline,
             used=used,
+            uplift_by_cell=uplift_by_cell,
         )
-
-        stats = _segment_stats(
-            mi,
-            wide=wide,
-            used=used,
-            toggle_rows=rows,
+        diagnostics.insert(0, "component", mode)
+        return _Estimate(
+            mode=mode,
             refs=refs,
-            timebase=timebase,
-            active_power_col=self.columns.active_power,
-        )
-        sigma_overall = _cell_sigma(boot, _OVERALL)
-        self._write_outputs(
-            mi,
-            wide=wide,
-            stats=stats,
+            selection=selection,
             used=used,
+            ref_total=ref_total,
+            label=label,
             rho_base=rho_base,
             rho_up=rho_up,
             uplift=uplift,
-            sigma_overall=sigma_overall,
-            n_refs=len(refs),
-            timebase=timebase,
+            sigma_overall=_cell_sigma(boot, _OVERALL),
             per_bin=per_bin,
+            boot=boot,
+            accounting=accounting,
             diagnostics=diagnostics,
+            decision_boot=decision_boot,
         )
-        return MethodOutput(
-            p50_overall=float(uplift),
-            p50_by_condition=per_bin,
-            sigma_overall=sigma_overall,
-            uncertainty_diagnostics=diagnostics,
-            labeled_rows=self._labeled_rows(
-                mi, wide=wide, test=test, used=used, rows=rows, rho_label=rho_label, ref_total=ref_total
-            ),
+
+    def _choose_references(
+        self,
+        mi: MethodInput,
+        *,
+        wide_all: pd.DataFrame,
+        test: str,
+        timebase: pd.Timedelta,
+        block: pd.Timedelta | None,
+        datum: pd.Timestamp,
+        rows: ToggleRowSets,
+    ) -> tuple[_Estimate, pd.DataFrame | None]:
+        """Run the ``sum`` leg on every non-empty reference subset; return the smallest-sigma one.
+
+        The sigma ranked is the ``decision_sigma`` of the label-permuted bootstrap; the subsets skip
+        their actual bootstrap and the winner is re-run in full. Ties go to the larger subset, then
+        to the earlier in enumeration (the context's reference order). No finite sigma anywhere ->
+        the full set. The second value lists every subset's result with the winner marked.
+        """
+        refs_all = mi.context.references_among(wide_all.columns)
+        if len(refs_all) > _MAX_REFS_FOR_SUBSETS:
+            msg = (
+                f"{self.name}: {len(refs_all)} references would need {2 ** len(refs_all) - 1} subset estimates; "
+                f"pass at most {_MAX_REFS_FOR_SUBSETS} (the nearest or best-correlated) references"
+            )
+            raise ValueError(msg)
+        subsets = [list(c) for k in range(1, len(refs_all) + 1) for c in combinations(refs_all, k)]
+        estimates = [
+            self._component(
+                mi,
+                mode=_REFERENCE_LEG,
+                wide_all=wide_all,
+                test=test,
+                timebase=timebase,
+                block=block,
+                datum=datum,
+                rows=rows,
+                refs=refs,
+                with_actual=False,
+            )
+            for refs in subsets
+        ]
+
+        def _rank(i: int) -> tuple[float, int, int]:
+            sigma = estimates[i].decision_sigma
+            return (sigma if np.isfinite(sigma) else np.inf, -len(subsets[i]), i)
+
+        best = min(range(len(subsets)), key=_rank)
+        estimates[best] = self._component(
+            mi,
+            mode=_REFERENCE_LEG,
+            wide_all=wide_all,
+            test=test,
+            timebase=timebase,
+            block=block,
+            datum=datum,
+            rows=rows,
+            refs=subsets[best],
         )
+        table = pd.DataFrame(
+            {
+                "refs": [";".join(refs) for refs in subsets],
+                "n_refs": [len(refs) for refs in subsets],
+                "n_used_timestamps": [int(est.used.sum()) for est in estimates],
+                "uplift_frc": [est.uplift for est in estimates],
+                "uplift_sigma_frc": [est.sigma_overall for est in estimates],
+                "decision_sigma_frc": [est.decision_sigma for est in estimates],
+                "chosen": [i == best for i in range(len(subsets))],
+            }
+        )
+        return estimates[best], table
 
     def _labeled_rows(
         self,
@@ -277,8 +676,7 @@ class ToggleSpecialistMethod:
         test: str,
         used: npt.NDArray[np.bool_],
         rows: ToggleRowSets,
-        rho_label: float,
-        ref_total: npt.NDArray[np.float64],
+        label: npt.NDArray[np.float64],
     ) -> pd.DataFrame:
         """Return the test turbine's own records, tagged with the labels this estimate was built from.
 
@@ -295,20 +693,19 @@ class ToggleSpecialistMethod:
             np.where(rows.upgraded, _UPGRADED, np.where(rows.campaign_baseline, _BASELINE, _EXCLUDED))
         )
 
-        # The bin label is the same reference-derived baseline power the uplift binned on, so a row
+        # The bin label is the same bin power the uplift binned on, so a row
         # cannot sit in one bin here and another there. Outside the outer edges pd.cut gives NaN,
         # which is carried through as "this row belongs to no bin" rather than clipped to an edge.
-        if "power" in self.conditions and np.isfinite(rho_label):
+        if "power" in self.conditions and np.isfinite(label).any():
             assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
             bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
-            labeled["power_bin"] = _on_test_rows(np.asarray(pd.cut(rho_label * ref_total, bins=bins)))
+            labeled["power_bin"] = _on_test_rows(np.asarray(pd.cut(label, bins=bins)))
         return labeled
 
     def _cell_membership(
         self,
         *,
-        rho_label: float,
-        ref_total: npt.NDArray[np.float64],
+        label: npt.NDArray[np.float64],
         used: npt.NDArray[np.bool_],
     ) -> dict[str, npt.NDArray[np.bool_]]:
         """Which **used** records belong to each bootstrap cell: the headline, plus each power bin.
@@ -318,11 +715,11 @@ class ToggleSpecialistMethod:
         """
         used_idx = np.flatnonzero(used)
         membership: dict[str, npt.NDArray[np.bool_]] = {_OVERALL: np.ones(len(used_idx), dtype=bool)}
-        if "power" not in self.conditions or not np.isfinite(rho_label):
+        if "power" not in self.conditions or not np.isfinite(label[used_idx]).any():
             return membership
         assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
         bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
-        assigned = pd.cut(rho_label * ref_total[used_idx], bins=bins)
+        assigned = pd.cut(label[used_idx], bins=bins)
         for category in assigned.categories:
             membership[str(category)] = np.asarray(assigned == category)
         return membership
@@ -367,28 +764,27 @@ class ToggleSpecialistMethod:
         *,
         test_pw: npt.NDArray[np.float64],
         ref_total: npt.NDArray[np.float64],
-        rho_label: float,
+        label: npt.NDArray[np.float64],
         baseline: npt.NDArray[np.bool_],
         upgraded: npt.NDArray[np.bool_],
     ) -> pd.DataFrame:
-        """Per-power-bin uplift: ``rho_up(b) / rho_base(b) - 1``, on bins of the mean operating point.
+        """Per-power-bin uplift: ``rho_up(b) / rho_base(b) - 1``, on bins of ``label``.
 
         Two decisions carry this, and both are needed:
 
-        **The bin label is** ``rho_label * ref_total`` (see :func:`_rho_label`): reference-derived and
-        state-neutral, so neither the upgrade nor which state is called baseline can move a row
+        **The bin label is the bin power** (:meth:`_bin_power`): a row's own state cannot move it
         between bins, and it is on the test turbine's own kW scale.
 
         **The denominator is the per-bin** ``rho_base(b)``, not the global one: the test-to-reference
         ratio varies with power, and a global denominator would read that structure as uplift. The
         price is that the per-bin numbers no longer aggregate exactly to ``p50_overall``, which is
-        deliberate and un-relevelled; ``sum_actual`` / ``sum_counterfactual`` expose the gap.
+        deliberate and un-relevelled; the leg's ``sum_actual_<leg>`` / ``sum_counterfactual_<leg>``
+        expose the gap.
 
         Sparse bins report NaN with ``n_records = 0`` rather than being imputed.
         """
         assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
         bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
-        label = rho_label * ref_total
         counterfactual = _per_bin_counterfactual(
             label=label, test_pw=test_pw, ref_total=ref_total, baseline=baseline, bins=bins
         )
@@ -396,59 +792,240 @@ class ToggleSpecialistMethod:
         frame.insert(0, "condition", "power")
         return frame
 
-    def _used_mask(
-        self, mi: MethodInput, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
-    ) -> pd.Series:
-        """Complete-case timestamps that also pass downtime filtering on the test turbine and every reference.
+    def _bins(self) -> list[float] | None:
+        """Return the power bin edges when the method reports per bin; None otherwise."""
+        if "power" not in self.conditions:
+            return None
+        assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
+        return condition_bins("power", rated_power_kw=self.rated_power_kw)
 
-        Returns a bool Series on ``wide.index``. Every turbine (test and references) must be
-        available (counter >= a full period) and have finite power — a down turbine on either side
-        of the ratio is therefore excluded. The test turbine additionally goes through the shared
-        :class:`NormalOperationFilter` (the same downtime + finite-power logic the power model uses;
-        the stuck filter is left off here as the ratio sums raw power rather than fitting a model).
-        """
-        turbines = [test, *refs]
-        complete = wide[turbines].notna().all(axis=1)
-
-        full = timebase.total_seconds()
-        avail = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.availability).reindex(
-            index=wide.index, columns=turbines
-        )
-        all_available = (avail >= full).all(axis=1)
-
-        test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]
-        test_keep = (
-            NormalOperationFilter(
-                active_power_col=self.columns.active_power,
-                availability_col=self.columns.availability,
-                apply_stuck_filter=False,
-            )
-            .keep_mask(test_rows, timebase=timebase)
-            .reindex(wide.index, fill_value=False)
-        )
-        return complete & all_available & test_keep & ~self._test_excluded(mi, test=test, index=wide.index)
-
-    def _test_excluded(self, mi: MethodInput, *, test: str, index: pd.DatetimeIndex) -> pd.Series:
-        """Boolean mask on *index*: the test turbine's caller-flagged rows to drop (empty when unused).
-
-        Reads the ``columns.exclude_row`` column of the test turbine's rows; references are never
-        excluded here (their special modes still carry information for the ratio). Absent column or
-        unset role -> nothing excluded. Reindex fills missing timestamps with ``False`` so an expanded
-        index never becomes an exclusion. NaN raises rather than coercing: ``astype(bool)`` reads a
-        missing flag as ``True`` and drops the row, the opposite of the safe default.
-        """
-        col = self.columns.exclude_row
-        if not col or col not in mi.scada_df.columns:
-            return pd.Series(data=False, index=index, dtype=bool)
-        test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]
-        flags = test_rows[col]
-        if flags.isna().any():
+    def _check_pairing_gap(self, timebase: pd.Timedelta) -> None:
+        gap = self.pairing_max_gap
+        if gap is None:
+            return
+        if gap <= pd.Timedelta(0) or gap % timebase != pd.Timedelta(0):
             msg = (
-                f"exclude_row column {col!r} has {int(flags.isna().sum())} NaN value(s) for turbine {test!r}; "
-                f"it must be boolean with no missing values (fill unknown rows with False explicitly)"
+                f"{self.name}: pairing_max_gap {gap} must be a positive whole multiple of the timebase "
+                f"{timebase}; a shorter gap can never reach a row of the other segment."
             )
             raise ValueError(msg)
-        return flags.astype(bool).reindex(index, fill_value=False)
+
+    def _toggle_period(self, timebase: pd.Timedelta) -> pd.Timedelta:
+        """Return ``toggle_period`` after checking it tiles the timebase grid."""
+        block = self.toggle_period
+        ratio = block / timebase
+        if block <= pd.Timedelta(0) or ratio != round(ratio):
+            msg = (
+                f"{self.name}: toggle_period {block} must be a positive whole multiple of the timebase "
+                f"{timebase}; a period that does not tile the timebase grid cannot hold whole records."
+            )
+            raise ValueError(msg)
+        return block
+
+    def _toggle_datum(self, mi: MethodInput, index: pd.DatetimeIndex) -> pd.Timestamp:
+        """Return ``toggle_datum`` after checking it is comparable with ``index`` and fits a ``ToggleSchedule``."""
+        datum = pd.Timestamp(self.toggle_datum)
+        if (datum.tz is None) != (index.tz is None):
+            msg = f"{self.name}: toggle_datum {datum} and the data index must both be tz-aware or both naive"
+            raise ValueError(msg)
+        timing = mi.upgrade_timing
+        if isinstance(timing, ToggleSchedule) and len(index):
+            first = timing.start if timing.start is not None else index.min()
+            if (pd.Timestamp(first) - datum) % self.toggle_period != pd.Timedelta(0):
+                msg = (
+                    f"{self.name}: the ToggleSchedule tiles its cycles from {first}, which is not on the "
+                    f"toggle_datum {datum} grid of {self.toggle_period}"
+                )
+                raise ValueError(msg)
+        return datum
+
+    def _bin_power(
+        self,
+        *,
+        mode: str,
+        test_pw: npt.NDArray[np.float64],
+        ref_total: npt.NDArray[np.float64],
+        baseline: npt.NDArray[np.bool_],
+        upgraded: npt.NDArray[np.bool_],
+        ids: npt.NDArray[np.int64] | None,
+        rho_base: float,
+        rho_up: float,
+    ) -> npt.NDArray[np.float64]:
+        """Per row, the power the bins and ``power_band`` read (``bin_power``); NaN where undefined."""
+        if mode == _REFERENCE_LEG:
+            scale = rho_base if self.bin_power == "baseline" else 0.5 * (rho_base + rho_up)
+            return scale * ref_total
+        if ids is None:
+            return np.full(len(test_pw), np.nan)
+
+        def _cycle_mean(mask: npt.NDArray[np.bool_]) -> npt.NDArray[np.float64]:
+            n = pd.Series(mask.astype(float)).groupby(ids).sum()
+            return _per_row(ids, _block_sum(ids, test_pw, mask) / n[n > 0])
+
+        if self.bin_power == "baseline":
+            return _cycle_mean(baseline)
+        return 0.5 * (_cycle_mean(baseline) + _cycle_mean(upgraded))
+
+    def _reference_total(
+        self,
+        *,
+        mode: str,
+        wide: pd.DataFrame,
+        refs: list[str],
+        test_pw: npt.NDArray[np.float64],
+        used: npt.NDArray[np.bool_],
+        ids: npt.NDArray[np.int64] | None,
+    ) -> npt.NDArray[np.float64]:
+        """Return the per-row reference power for ``mode``; NaN on rows no surviving block covers.
+
+        The block leg gives every used row of a block the block's mean test power, so within a block
+        the on/off ratio cancels the block's wind level whatever the on/off count mix (the block mean
+        carries the uplift at ``n_on / n`` strength in both denominators, a second-order effect).
+        """
+        if mode == _REFERENCE_LEG:
+            return wide[refs].sum(axis=1).to_numpy(dtype=float)
+        if ids is None or not used.any():
+            return np.full(len(wide), np.nan)
+        block_test = _block_sum(ids, test_pw, used)
+        n_used = pd.Series(used.astype(float)).groupby(ids).sum()
+        return _per_row(ids, block_test / n_used.reindex(block_test.index))
+
+    def _selection(
+        self,
+        mi: MethodInput,
+        *,
+        wide: pd.DataFrame,
+        test: str,
+        refs: list[str],
+        timebase: pd.Timedelta,
+        rows: ToggleRowSets,
+        ids: npt.NDArray[np.int64] | None = None,
+        both_states: bool = True,
+    ) -> _Selection:
+        """Return the used-row mask after each selection stage, each a bool Series on ``wide.index``.
+
+        ``ids`` are the toggle-cycle ids (``None`` when there are no campaign rows to tile). The
+        ``block`` stage drops every row of a block that carries a ``columns.exclude_block`` flag on
+        any of the turbines (both legs) or, when ``both_states`` (the block leg), lacks either state.
+        """
+        turbines = [test, *refs]
+        filtered = self._filtered_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
+        not_excluded = filtered & ~self._excluded(mi, turbines=turbines, index=wide.index)
+        in_segment = rows.campaign_baseline | rows.upgraded
+        kept = not_excluded.to_numpy()
+        if self.pairing_max_gap is not None:
+            paired = pair_within(
+                wide.index,
+                baseline=kept & rows.campaign_baseline,
+                upgraded=kept & rows.upgraded,
+                max_gap=self.pairing_max_gap,
+            )
+            kept = kept & (~in_segment | paired.baseline | paired.upgraded)
+        paired_series = pd.Series(kept, index=wide.index)
+        block_flag = self._excluded(mi, turbines=turbines, index=wide.index, role="exclude_block").to_numpy()
+        if block_flag.any():
+            if ids is None:
+                msg = (
+                    f"{self.name}: columns.exclude_block {self.columns.exclude_block!r} carries flags but there is "
+                    f"no campaign row to tile into blocks."
+                )
+                raise ValueError(msg)
+            kept = kept & ~np.isin(ids, np.unique(ids[block_flag]))
+        if ids is not None and both_states:
+            both = blocks_with_both_states(ids, baseline=kept & rows.campaign_baseline, upgraded=kept & rows.upgraded)
+            kept = kept & (~in_segment | both)
+        return _Selection(
+            filtered=filtered,
+            not_excluded=not_excluded,
+            paired=paired_series,
+            blocked=pd.Series(kept, index=wide.index),
+        )
+
+    def _selection_accounting(
+        self, selection: _Selection, *, rows: ToggleRowSets, power_band: npt.NDArray[np.bool_] | None = None
+    ) -> pd.DataFrame:
+        """Rows kept per segment after each stage.
+
+        ``kept_fraction`` is relative to the segment's rows; ``stage_kept_fraction`` to the previous
+        stage, so it isolates which stage discriminates between segments.
+        """
+        stages_masks = (
+            ("segment", None),
+            ("filters", selection.filtered),
+            ("exclude_row", selection.not_excluded),
+            ("pairing", selection.paired),
+            ("block", selection.blocked),
+            *(() if power_band is None else (("power_band", pd.Series(power_band, index=selection.blocked.index)),)),
+        )
+        records = []
+        for segment, in_segment in ((_BASELINE, rows.campaign_baseline), (_UPGRADED, rows.upgraded)):
+            n_segment = int(in_segment.sum())
+            previous = n_segment
+            for stage, mask in stages_masks:
+                n_kept = n_segment if mask is None else int((mask.to_numpy() & in_segment).sum())
+                records.append(
+                    {
+                        "stage": stage,
+                        "segment": segment,
+                        "n_kept": n_kept,
+                        "kept_fraction": n_kept / n_segment if n_segment else np.nan,
+                        "stage_kept_fraction": n_kept / previous if previous else np.nan,
+                    }
+                )
+                previous = n_kept
+        return pd.DataFrame(records)
+
+    def _filtered_mask(
+        self, mi: MethodInput, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
+    ) -> pd.Series:
+        """Timestamps at which the test turbine and every reference pass the same normal-operation filter.
+
+        Returns a bool Series on ``wide.index``. One :class:`NormalOperationFilter` (the downtime +
+        finite-power logic the power model uses; the stuck filter is left off here as the ratio sums
+        raw power rather than fitting a model) is applied to each turbine's own rows, so a turbine
+        that is down or has no power on either side of the ratio excludes the timestamp. The same
+        filter on every turbine means any future change to it (e.g. the stuck filter) applies to
+        the references exactly as to the test turbine.
+        """
+        normal = NormalOperationFilter(
+            active_power_col=self.columns.active_power,
+            availability_col=self.columns.availability,
+            apply_stuck_filter=False,
+        )
+        keep = pd.Series(data=True, index=wide.index, dtype=bool)
+        for turbine in (test, *refs):
+            rows = mi.scada_df[mi.scada_df[mi.turbine_col] == turbine]
+            keep &= normal.keep_mask(rows, timebase=timebase).reindex(wide.index, fill_value=False)
+            # ``wide`` is the masked pivot: a cell the campaign context blanked must not count either.
+            keep &= wide[turbine].notna()
+        return keep
+
+    def _excluded(
+        self, mi: MethodInput, *, turbines: list[str], index: pd.DatetimeIndex, role: str = "exclude_row"
+    ) -> pd.Series:
+        """Boolean mask on *index*: timestamps at which any of ``turbines`` carries a caller-set ``role`` flag.
+
+        Reads the ``columns.<role>`` column (``exclude_row`` or ``exclude_block``) of each listed
+        turbine's rows (the test turbine and the references the mode uses), so a flagged reference
+        row counts the way a reference outage does. Absent column or unset role -> nothing flagged.
+        Reindex fills missing timestamps with ``False`` so an expanded index never becomes an
+        exclusion. NaN raises rather than coercing: ``astype(bool)`` reads a missing flag as ``True``
+        and drops the row, the opposite of the safe default.
+        """
+        col: str | None = getattr(self.columns, role)
+        excluded = pd.Series(data=False, index=index, dtype=bool)
+        if not col or col not in mi.scada_df.columns:
+            return excluded
+        for turbine in turbines:
+            flags = mi.scada_df.loc[mi.scada_df[mi.turbine_col] == turbine, col]
+            if flags.isna().any():
+                msg = (
+                    f"{role} column {col!r} has {int(flags.isna().sum())} NaN value(s) for turbine "
+                    f"{turbine!r}; it must be boolean with no missing values (fill unknown rows with False explicitly)"
+                )
+                raise ValueError(msg)
+            excluded |= flags.astype(bool).reindex(index, fill_value=False)
+        return excluded
 
     def _write_outputs(
         self,
@@ -456,17 +1033,14 @@ class ToggleSpecialistMethod:
         *,
         wide: pd.DataFrame,
         stats: pd.DataFrame,
-        used: np.ndarray,
-        rho_base: float,
-        rho_up: float,
-        uplift: float,
-        sigma_overall: float,
-        n_refs: int,
+        est: _Estimate,
+        components: dict[str, _Estimate],
         timebase: pd.Timedelta,
-        per_bin: pd.DataFrame | None = None,
-        diagnostics: pd.DataFrame | None = None,
+        rows: ToggleRowSets,
+        subsets: pd.DataFrame | None = None,
+        n_refs_available: int | None = None,
     ) -> None:
-        """Write the data-stats CSV, the headline results CSV, the per-bin CSV and (optionally) the plots."""
+        """Write the data-stats, results, per-bin, uncertainty, selection and reference-subsets CSVs and the plots."""
         upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
         last_dt = wide.index.max()
         run_name = f"toggle_specialist_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{last_dt:%Y%m%d}"
@@ -487,11 +1061,17 @@ class ToggleSpecialistMethod:
                     "test_wtg": mi.test_wtg,
                     "mode": "toggle",
                     "n_turbines": wide.shape[1],
-                    "n_refs": n_refs,
-                    "ratio_baseline": rho_base,
-                    "ratio_upgraded": rho_up,
-                    "uplift_frc": uplift,
-                    "uplift_sigma_frc": sigma_overall,
+                    "n_refs": len(est.refs),
+                    "n_refs_available": len(est.refs) if n_refs_available is None else n_refs_available,
+                    "refs_used": ";".join(est.refs),
+                    "uplift_frc": est.uplift,
+                    "uplift_sigma_frc": est.sigma_overall,
+                    **{f"ratio_baseline_{mode}": component.rho_base for mode, component in components.items()},
+                    **{f"ratio_upgraded_{mode}": component.rho_up for mode, component in components.items()},
+                    f"weight_{_REFERENCE_LEG}": _overall_weight(est, components),
+                    **{f"uplift_frc_{mode}": component.uplift for mode, component in components.items()},
+                    **{f"uplift_sigma_frc_{mode}": component.sigma_overall for mode, component in components.items()},
+                    **{f"decision_sigma_frc_{mode}": c.decision_sigma for mode, c in components.items()},
                     "block_hours": self.block_hours,
                     "n_resamples": self.n_resamples,
                     "n_used_timestamps_baseline": used_base,
@@ -502,40 +1082,65 @@ class ToggleSpecialistMethod:
         )
         results.to_csv(run_dir / f"{run_name}_results_{ts}.csv", index=False)
 
-        if per_bin is not None:
-            per_bin.to_csv(run_dir / f"{run_name}_by_power_bin_{ts}.csv", index=False)
-        if diagnostics is not None:
-            diagnostics.to_csv(run_dir / f"{run_name}_uncertainty_{ts}.csv", index=False)
+        if est.per_bin is not None:
+            est.per_bin.to_csv(run_dir / f"{run_name}_by_power_bin_{ts}.csv", index=False)
+        est.diagnostics.to_csv(run_dir / f"{run_name}_uncertainty_{ts}.csv", index=False)
+        if subsets is not None:
+            subsets.to_csv(run_dir / f"{run_name}_reference_subsets_{ts}.csv", index=False)
+        # Every leg's row selection, so the blend's two selections can be told apart.
+        pd.concat(
+            [component.accounting.assign(component=mode) for mode, component in components.items()], ignore_index=True
+        ).to_csv(run_dir / f"{run_name}_selection_{ts}.csv", index=False)
 
         if self.save_plots:
+            # Scatter and ratio plots of one leg's own rows against its own reference.
+            shown = components.get(_REFERENCE_LEG, components[_BLOCK_LEG])
             _save_plots(
                 run_dir / "plots",
                 wide=wide,
                 mi=mi,
                 test=mi.test_wtg,
-                used=used,
+                used=shown.used,
+                ref_total=shown.ref_total,
+                reference_mode=shown.mode,
                 timebase=timebase,
                 active_power_col=self.columns.active_power,
             )
-            if per_bin is not None:
+            if est.per_bin is not None:
                 _save_per_bin_plot(
                     run_dir / "plots" / stages.CONDITIONAL_UPLIFT / f"{mi.test_wtg}_per_bin_uplift.png",
-                    per_bin=per_bin,
+                    per_bin=est.per_bin,
                     test=mi.test_wtg,
                     active_power_col=self.columns.active_power,
                 )
-            self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, timebase=timebase)
+            _save_pairing_gap_plot(
+                run_dir / "plots" / stages.FILTER / f"{mi.test_wtg}_pairing_gap.png",
+                index=wide.index,
+                selection=est.selection,
+                rows=rows,
+                timebase=timebase,
+                max_gap=self.pairing_max_gap,
+                test=mi.test_wtg,
+            )
+            self._write_shared_diagnostics(
+                mi, run_dir=run_dir, wide=wide, used=est.used, timebase=timebase, turbines=[mi.test_wtg, *est.refs]
+            )
 
     def _write_shared_diagnostics(
-        self, mi: MethodInput, *, run_dir: Path, wide: pd.DataFrame, timebase: pd.Timedelta
+        self,
+        mi: MethodInput,
+        *,
+        run_dir: Path,
+        wide: pd.DataFrame,
+        used: np.ndarray,
+        timebase: pd.Timedelta,
+        turbines: list[str],
     ) -> None:
         """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
         # ``wide`` (a pivot) drops all-NaN timestamps, so align the masks to the full unique index
         # the DiagnosticContext uses (timestamps absent from ``wide`` are simply not used).
         index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
-        test, refs = mi.test_wtg, [c for c in wide.columns if c != mi.test_wtg]
-        used_series = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
-        used = used_series.reindex(index, fill_value=False).to_numpy()
+        used = pd.Series(used, index=wide.index).reindex(index, fill_value=False).to_numpy()
         treated = resolve_toggle(mi.upgrade_timing, index).upgraded.astype(bool)
         ctx = DiagnosticContext(
             run_dir=run_dir,
@@ -549,12 +1154,18 @@ class ToggleSpecialistMethod:
             mode="toggle",
             era5_df=None,
             # the exclusion alone, so the plots show what the flag removed that downtime did not
-            excluded_ts=self._test_excluded(mi, test=test, index=index).to_numpy(),
+            excluded_ts=self._excluded(mi, turbines=turbines, index=index).to_numpy(),
         )
         write_common_diagnostics(ctx)
         params = {
             "active_power_col": self.columns.active_power,
             "availability_col": self.columns.availability,
+            "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
+            "toggle_period": str(self.toggle_period),
+            "toggle_datum": str(self.toggle_datum),
+            "bin_power": self.bin_power,
+            "power_band": None if self.power_band is None else list(self.power_band),
+            "exclude_block_col": self.columns.exclude_block,
         }
         write_run_config(ctx, method_name=self.name, method_params=params)
 
@@ -582,11 +1193,120 @@ def _per_bin_counterfactual(
     return rho_row * ref_total
 
 
+def _combine(a: _Estimate, b: _Estimate, *, upgraded: npt.NDArray[np.bool_], bins: list[float] | None) -> _Estimate:
+    """Blend the two legs' estimates by minimum-variance weights, headline and per bin.
+
+    The weights (and the correlation they need) come from the two legs' label-permuted bootstraps,
+    cell by cell; the blend's sigma comes from the actual ones.
+
+    The blend's used rows are the union of the components' (a row contributed to at least one
+    estimate); its bin label is ``a``'s where ``a`` used the row and ``b``'s otherwise, so the two
+    components' bins, which share edges, are merged by name, and each bin's ``n_records`` counts
+    the used ``upgraded`` rows that merged label puts in it (what ``labeled_rows`` reproduces). Each
+    bin also carries both legs' energy sums and its weight on ``a``, so its blend is re-derivable.
+    Row-selection accounting, ``rho`` and the reference-side diagnostics are ``a``'s (the reference
+    leg); ``b``'s selection is written to the selection CSV. The diagnostics carry both legs' rows and
+    a ``combined`` row per cell with the blend's sigma, the weight on ``a`` and the correlation it used.
+    """
+    if a.boot is not None and b.boot is not None and a.boot.n_blocks != b.boot.n_blocks:
+        # Both bootstraps come from the same method instance (same span, timebase, block length,
+        # resample count and seed), so their draws pair up; a block-count mismatch means they do not.
+        msg = f"component bootstraps drew different block counts ({a.boot.n_blocks} vs {b.boot.n_blocks})"
+        raise ValueError(msg)
+
+    def _resamples(boot: BootstrapResult | None, cell: str) -> npt.NDArray[np.float64]:
+        return boot.resamples.get(cell, np.array([])) if boot is not None else np.array([])
+
+    def _cell(cell: str, est_a: float, sig_a: float, est_b: float, sig_b: float) -> CombinedEstimate:
+        weighting = (
+            _cell_sigma(a.decision_boot, cell),
+            _cell_sigma(b.decision_boot, cell),
+            _resamples(a.decision_boot, cell),
+            _resamples(b.decision_boot, cell),
+        )
+        return combine_estimates(
+            (est_a, sig_a, _resamples(a.boot, cell)), (est_b, sig_b, _resamples(b.boot, cell)), weighting=weighting
+        )
+
+    overall = _cell(_OVERALL, a.uplift, a.sigma_overall, b.uplift, b.sigma_overall)
+    blended_cells = {_OVERALL: overall}
+
+    used = a.used | b.used
+    label = np.where(a.used, a.label, b.label)
+    per_bin = None
+    if a.per_bin is not None and b.per_bin is not None and bins is not None:
+        fa = a.per_bin.set_index(a.per_bin["condition_bin"].astype(str))
+        fb = b.per_bin.set_index(b.per_bin["condition_bin"].astype(str))
+        upgraded_bin = pd.Series(pd.cut(label[used & upgraded], bins=bins).astype(str))
+        records = []
+        for cell in fa.index:
+            ra, rb = fa.loc[cell], fb.loc[cell]
+            blend = _cell(cell, ra["p50_uplift"], ra["sigma_uplift"], rb["p50_uplift"], rb["sigma_uplift"])
+            blended_cells[cell] = blend
+            records.append(
+                {
+                    "condition": ra["condition"],
+                    "condition_bin": ra["condition_bin"],
+                    "p50_uplift": blend.estimate,
+                    "n_records": int((upgraded_bin == cell).sum()),
+                    **{f"{col}_{a.mode}": ra[f"{col}_{a.mode}"] for col in ("sum_actual", "sum_counterfactual")},
+                    **{f"{col}_{b.mode}": rb[f"{col}_{b.mode}"] for col in ("sum_actual", "sum_counterfactual")},
+                    f"weight_{a.mode}": blend.weight_a,
+                    "sigma_uplift": blend.sigma,
+                }
+            )
+        per_bin = pd.DataFrame(records)
+
+    combined_rows = pd.DataFrame(
+        [
+            {
+                "component": _COMBINED,
+                "condition": _OVERALL if cell == _OVERALL else "power",
+                "condition_bin": cell,
+                "uplift": blend.estimate,
+                "sigma": blend.sigma,
+                f"weight_{a.mode}": blend.weight_a,
+                "correlation": blend.correlation,
+                f"decision_sigma_{a.mode}": _cell_sigma(a.decision_boot, cell),
+                f"decision_sigma_{b.mode}": _cell_sigma(b.decision_boot, cell),
+            }
+            for cell, blend in blended_cells.items()
+        ]
+    )
+    diagnostics = pd.concat([a.diagnostics, b.diagnostics, combined_rows], ignore_index=True)
+
+    return _Estimate(
+        mode=_COMBINED,
+        refs=a.refs,
+        selection=a.selection,
+        used=used,
+        ref_total=a.ref_total,
+        label=label,
+        rho_base=a.rho_base,
+        rho_up=a.rho_up,
+        uplift=overall.estimate,
+        sigma_overall=overall.sigma,
+        per_bin=per_bin,
+        boot=None,
+        accounting=a.accounting,
+        diagnostics=diagnostics,
+    )
+
+
 def _cell_sigma(boot: BootstrapResult | None, cell: str) -> float:
     """Return one cell's 1-sigma, or NaN when the bootstrap did not run or never saw that cell."""
     if boot is None or cell not in boot.cells:
         return float("nan")
     return boot.cells[cell].sigma
+
+
+def _harness_diagnostics(diagnostics: pd.DataFrame) -> pd.DataFrame:
+    """One row per ``(condition, condition_bin)``, each leg's columns suffixed ``_<component>``."""
+    keys = ["condition", "condition_bin"]
+    values = [c for c in diagnostics.columns if c not in (*keys, "component")]
+    wide = diagnostics.pivot(index=keys, columns="component", values=values).dropna(axis=1, how="all")  # noqa: PD010 - unique keys, nothing to aggregate
+    wide.columns = [f"{value}_{component}" for value, component in wide.columns]
+    return wide.reset_index()
 
 
 def _uncertainty_diagnostics(
@@ -596,8 +1316,9 @@ def _uncertainty_diagnostics(
     upgraded: npt.NDArray[np.bool_],
     baseline: npt.NDArray[np.bool_],
     used: npt.NDArray[np.bool_],
+    uplift_by_cell: Mapping[str, float] | None = None,
 ) -> pd.DataFrame:
-    """Per-cell account of how the uncertainty was reached, keyed by ``(condition, condition_bin)``.
+    """Per-cell account of the estimate and how its uncertainty was reached, keyed by ``(condition, condition_bin)``.
 
     Carried through the harness seam uninterpreted, so an uncertainty model can be developed against
     a saved sweep rather than by re-running one. Emitted even when the bootstrap did not run: the
@@ -615,9 +1336,11 @@ def _uncertainty_diagnostics(
             {
                 "condition": _OVERALL if cell == _OVERALL else "power",
                 "condition_bin": cell,
+                "uplift": uplift_by_cell.get(cell, nan) if uplift_by_cell is not None else nan,
                 "n_upgraded_records": int((member & up_used).sum()),
                 "n_baseline_records": int((member & base_used).sum()),
                 "n_blocks": boot.n_blocks if boot is not None else 0,
+                "sigma": cell_boot.sigma if cell_boot is not None else nan,
                 # Both components, not just the reported max: a blend rule can then be re-judged from
                 # a saved sweep rather than by re-running one.
                 "sigma_bootstrap": cell_boot.sigma_bootstrap if cell_boot is not None else nan,
@@ -639,13 +1362,15 @@ def _rho(test_pw: npt.NDArray[np.float64], ref_total: npt.NDArray[np.float64], m
     return float(test_pw[mask].sum() / denom)
 
 
-def _rho_label(rho_base: float, rho_up: float) -> float:
-    """Return the test-to-reference ratio used to *label* bins: the mean of the two states.
-
-    State-neutral by construction, so relabelling which state is the baseline cannot move a row
-    between bins. Still a campaign-level scalar, so the upgrade cannot move a row either.
-    """
-    return 0.5 * (rho_base + rho_up)
+def _overall_weight(est: _Estimate, components: dict[str, _Estimate]) -> float:
+    """Return the headline blend's weight on the reference leg: 1 with that leg alone, 0 without it."""
+    if _REFERENCE_LEG not in components:
+        return 0.0
+    if _BLOCK_LEG not in components:
+        return 1.0
+    d = est.diagnostics
+    row = d[(d["component"] == _COMBINED) & (d["condition_bin"] == _OVERALL)]
+    return float(row[f"weight_{_REFERENCE_LEG}"].iloc[0]) if len(row) else float("nan")
 
 
 def _segment_stats(
@@ -654,24 +1379,25 @@ def _segment_stats(
     wide: pd.DataFrame,
     used: npt.NDArray[np.bool_],
     toggle_rows: ToggleRowSets,
-    refs: list[str],
+    ref_total: npt.NDArray[np.float64],
     timebase: pd.Timedelta,
     active_power_col: str,
 ) -> pd.DataFrame:
     """Build the per-segment (all/baseline/upgraded) diagnostics table."""
     test = mi.test_wtg
     test_pw = wide[test].to_numpy(dtype=float)
-    ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
     n_turbines = wide.shape[1]
     timebase_hours = timebase / pd.Timedelta(hours=1)
 
     row_rows = resolve_toggle(mi.upgrade_timing, mi.scada_df.index)
     row_power = mi.scada_df[active_power_col].to_numpy(dtype=float)
+    # Only the turbines the estimate used (the test and its chosen references) count as rows.
+    in_wide = mi.scada_df[mi.turbine_col].isin(wide.columns).to_numpy()
 
     ts_baseline = toggle_rows.campaign_baseline
-    row_baseline = row_rows.campaign_baseline
+    row_baseline = row_rows.campaign_baseline & in_wide
     ts_masks = {"all": np.ones(len(wide), dtype=bool), "baseline": ts_baseline, "upgraded": toggle_rows.upgraded}
-    row_masks = {"all": np.ones(len(mi.scada_df), dtype=bool), "baseline": row_baseline, "upgraded": row_rows.upgraded}
+    row_masks = {"all": in_wide, "baseline": row_baseline, "upgraded": row_rows.upgraded & in_wide}
 
     rows = []
     for segment in _SEGMENTS:
@@ -766,6 +1492,8 @@ def _save_plots(
     mi: MethodInput,
     test: str,
     used: np.ndarray,
+    ref_total: npt.NDArray[np.float64],
+    reference_mode: str,
     timebase: pd.Timedelta,
     active_power_col: str,
 ) -> None:
@@ -776,11 +1504,10 @@ def _save_plots(
     The baseline is the strict campaign off-blocks the estimate used, so the plots never disagree
     with the headline.
     """
-    refs = [c for c in wide.columns if c != test]
     toggle_rows = resolve_toggle(mi.upgrade_timing, wide.index)
     baseline_mask = toggle_rows.campaign_baseline
     test_pw = wide[test].to_numpy(dtype=float)
-    ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
+    ref_label = f"{reference_mode} reference {active_power_col}"
     upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
     segments = (
         ("baseline", used & baseline_mask, "C0"),
@@ -795,7 +1522,7 @@ def _save_plots(
         if np.isfinite(rho) and seg.any():
             x_max = float(np.nanmax(ref_total[seg]))
             ax.plot([0, x_max], [0, rho * x_max], color=color, linewidth=1.5)
-    ax.set_xlabel(f"sum of reference {active_power_col} [kW]")
+    ax.set_xlabel(f"{ref_label} [kW]")
     ax.set_ylabel(f"{active_power_col} @ {test} [kW]")
     ax.set_title(f"{test}: test vs reference-total power")
     ax.grid(visible=True, alpha=0.3)
@@ -839,6 +1566,67 @@ def _save_plots(
     ax.legend()
     fig.tight_layout()
     _save(fig, plots_dir / stages.FILTER / f"{test}_coverage_timeseries.png")
+
+
+def _save_pairing_gap_plot(
+    path: Path,
+    *,
+    index: pd.DatetimeIndex,
+    selection: _Selection,
+    rows: ToggleRowSets,
+    timebase: pd.Timedelta,
+    max_gap: pd.Timedelta | None,
+    test: str,
+) -> None:
+    """Histogram each used row's gap to the nearest used row of the other segment, before and after pairing.
+
+    Gaps beyond the plotted range are piled into the last bin.
+    """
+    step_min = timebase.total_seconds() / 60.0
+    cap_steps = max(24, 3 * round(max_gap / timebase)) if max_gap is not None else 24
+    edges = (np.arange(cap_steps + 2) - 0.5) * step_min
+    hours_per_row = timebase / pd.Timedelta(hours=1)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    text = []
+    drawn = [("before pairing" if max_gap is not None else "used rows", selection.not_excluded, "C0")]
+    if max_gap is not None:
+        drawn.append(("after pairing", selection.paired, "C1"))
+    for label, mask, color in drawn:
+        kept = mask.to_numpy()
+        gap_min = (
+            gap_to_other_segment(index, baseline=kept & rows.campaign_baseline, upgraded=kept & rows.upgraded) / 60.0
+        )
+        gap_min = gap_min[~np.isnan(gap_min)]
+        ax.hist(
+            np.minimum(gap_min, cap_steps * step_min),
+            bins=edges,
+            histtype="stepfilled",
+            alpha=0.45,
+            color=color,
+            label=label,
+        )
+        n_base = int((kept & rows.campaign_baseline).sum())
+        n_up = int((kept & rows.upgraded).sum())
+        text.append(f"{label}: {n_base * hours_per_row:.1f} h baseline, {n_up * hours_per_row:.1f} h upgraded")
+    if max_gap is not None:
+        ax.axvline(
+            max_gap / pd.Timedelta(minutes=1),
+            color="k",
+            linestyle=":",
+            label=f"pairing_max_gap {max_gap / pd.Timedelta(minutes=1):g} min",
+        )
+    else:
+        text.append("no pairing filter configured")
+    ax.text(0.98, 0.95, "\n".join(text), transform=ax.transAxes, ha="right", va="top", fontsize=9)
+    ax.set_xlabel(f"gap to nearest used row of the other segment [min] (last bin: >= {cap_steps * step_min:g})")
+    ax.set_ylabel("used rows")
+    ax.set_yscale("log")
+    ax.set_title(f"{test}: gap from each used row to the opposite toggle state")
+    ax.grid(visible=True, alpha=0.3)
+    ax.legend(loc="upper right", bbox_to_anchor=(0.99, 0.83))
+    fig.tight_layout()
+    _save(fig, path)
 
 
 def _save_per_bin_plot(path: Path, *, per_bin: pd.DataFrame, test: str, active_power_col: str) -> None:

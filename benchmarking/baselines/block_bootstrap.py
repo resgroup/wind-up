@@ -15,7 +15,7 @@ two lookups), so a resample is a gather-and-subtract rather than a pass over the
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -32,6 +32,9 @@ _RESAMPLE_CHUNK = 250
 # Per (cell, segment): the numerator and denominator of each segment's rho.
 _N_QUANTITIES = 4
 _MIN_RESAMPLES_FOR_SPREAD = 2
+# A resample whose reference energy on either side falls below this share of the whole campaign's is a
+# degenerate ratio (a calm spell or outage drawn over and over), not a draw from the estimator's spread.
+_MIN_REFERENCE_FRACTION = 0.1
 # With one block covering the whole campaign, every resample is that campaign: nothing varies.
 _MIN_BLOCKS_FOR_SPREAD = 2
 # Normal -/+1 sigma percentiles, so (p84 - p16) / 2 is a sigma for a normal.
@@ -74,10 +77,116 @@ class BootstrapResult:
 
     :param n_blocks: blocks drawn per resample (``ceil(campaign / block)``)
     :param cells: uncertainty per cell name, keyed as the caller keyed ``cell_membership``
+    :param resamples: per cell, the resampled uplifts themselves (NaN where a resample was
+        degenerate), in draw order; empty when the bootstrap did not run. Two bootstraps run with the
+        same campaign span, timebase, block length, resample count and seed draw the same blocks, so
+        their resamples pair up draw by draw (see :func:`combine_estimates`).
     """
 
     n_blocks: int
     cells: dict[str, CellUncertainty]
+    resamples: dict[str, npt.NDArray[np.float64]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CombinedEstimate:
+    """An inverse-variance blend of two estimates of the same uplift.
+
+    :param estimate: ``weight_a * a + (1 - weight_a) * b``
+    :param sigma: the blend's 1-sigma, including the two components' correlation
+    :param weight_a: the weight on the first component, in ``[0, 1]``; NaN when neither was usable
+    :param correlation: the correlation of the two components' paired resamples that ``sigma`` used
+    """
+
+    estimate: float
+    sigma: float
+    weight_a: float
+    correlation: float
+
+
+# Correlation assumed between two components when their resamples cannot be paired: midway between
+# independent and identical, so the blend neither claims the full inverse-variance gain nor none.
+_DEFAULT_COMPONENT_CORRELATION = 0.5
+
+
+def combine_estimates(
+    a: tuple[float, float, npt.NDArray[np.float64]],
+    b: tuple[float, float, npt.NDArray[np.float64]],
+    *,
+    weighting: tuple[float, float, npt.NDArray[np.float64], npt.NDArray[np.float64]] | None = None,
+) -> CombinedEstimate:
+    """Blend two ``(estimate, sigma, resamples)`` of the same quantity by minimum-variance weights.
+
+    A component is usable when both its estimate and its sigma are finite. With two usable
+    components the weights are the minimum-variance ones for two correlated estimates,
+    ``wa ∝ max(sb² - r sa sb, 0)`` and ``wb ∝ max(sa² - r sa sb, 0)`` (a zero sigma takes all the
+    weight; both weights zero splits evenly), with ``r`` the Pearson correlation of the draw-paired
+    finite resamples, or :data:`_DEFAULT_COMPONENT_CORRELATION` when fewer than two pairs exist.
+    The blend's variance is ``wa² sa² + wb² sb² + 2 wa wb r sa sb``, which these weights keep at or
+    below the better component's: a noisier leg correlated at ``r >= sb / sa`` gets no weight rather
+    than widening the blend. One usable component is returned as is; none gives NaN throughout.
+
+    ``weighting``, when given as ``(sigma_a, sigma_b, resamples_a, resamples_b)`` from another
+    bootstrap of the same two components (e.g. one with the on/off labels permuted), supplies the
+    weights instead, so they need not read the realised estimates' own spread; the blend's variance
+    and the reported correlation still come from ``a`` and ``b``. A ``weighting`` with a non-finite
+    sigma is ignored.
+    """
+    est_a, sig_a, res_a = a
+    est_b, sig_b, res_b = b
+    usable_a = math.isfinite(est_a) and math.isfinite(sig_a)
+    usable_b = math.isfinite(est_b) and math.isfinite(sig_b)
+    nan = float("nan")
+    if usable_a and not usable_b:
+        return CombinedEstimate(estimate=est_a, sigma=sig_a, weight_a=1.0, correlation=nan)
+    if usable_b and not usable_a:
+        return CombinedEstimate(estimate=est_b, sigma=sig_b, weight_a=0.0, correlation=nan)
+    if not (usable_a and usable_b):
+        return CombinedEstimate(estimate=nan, sigma=nan, weight_a=nan, correlation=nan)
+
+    correlation = _paired_correlation(res_a, res_b)
+    if weighting is not None and math.isfinite(weighting[0]) and math.isfinite(weighting[1]):
+        sig_a_w, sig_b_w, res_a_w, res_b_w = weighting
+        weight_a = _min_variance_weight(sig_a_w, sig_b_w, _paired_correlation(res_a_w, res_b_w))
+    else:
+        weight_a = _min_variance_weight(sig_a, sig_b, correlation)
+    weight_b = 1.0 - weight_a
+    variance = weight_a**2 * sig_a**2 + weight_b**2 * sig_b**2 + 2.0 * weight_a * weight_b * correlation * sig_a * sig_b
+    return CombinedEstimate(
+        estimate=weight_a * est_a + weight_b * est_b,
+        sigma=math.sqrt(max(variance, 0.0)),
+        weight_a=weight_a,
+        correlation=correlation,
+    )
+
+
+def _paired_correlation(res_a: npt.NDArray[np.float64], res_b: npt.NDArray[np.float64]) -> float:
+    """Pearson correlation of two components' draw-paired finite resamples, or the default."""
+    if len(res_a) and len(res_b) and len(res_a) != len(res_b):
+        msg = (
+            f"the two components' resample arrays have different lengths ({len(res_a)} vs {len(res_b)}); "
+            f"they can only be paired draw by draw when both bootstraps ran with the same campaign span, "
+            f"timebase, block length, resample count and seed."
+        )
+        raise ValueError(msg)
+    n_pairs = min(len(res_a), len(res_b))
+    paired = np.isfinite(res_a[:n_pairs]) & np.isfinite(res_b[:n_pairs])
+    if paired.sum() < _MIN_RESAMPLES_FOR_SPREAD:
+        return _DEFAULT_COMPONENT_CORRELATION
+    pa, pb = res_a[:n_pairs][paired], res_b[:n_pairs][paired]
+    if np.ptp(pa) == 0.0 or np.ptp(pb) == 0.0:
+        return _DEFAULT_COMPONENT_CORRELATION
+    r = float(np.corrcoef(pa, pb)[0, 1])
+    return r if math.isfinite(r) else _DEFAULT_COMPONENT_CORRELATION
+
+
+def _min_variance_weight(sig_a: float, sig_b: float, correlation: float) -> float:
+    """Weight on ``a`` that minimises the variance of a blend of two estimates correlated at ``correlation``."""
+    if sig_a == 0.0 or sig_b == 0.0:
+        return 0.5 if sig_a == sig_b else float(sig_a == 0.0)
+    cross = correlation * sig_a * sig_b
+    wa, wb = max(sig_b**2 - cross, 0.0), max(sig_a**2 - cross, 0.0)
+    return 0.5 if wa + wb == 0.0 else wa / (wa + wb)
 
 
 def _nan_cells(names: list[str]) -> dict[str, CellUncertainty]:
@@ -222,11 +331,12 @@ def bootstrap_ratio_uplift(
         # vary. Any sigma it returned would be float residue (~1e-15), not a real certainty.
         return BootstrapResult(n_blocks=n_blocks, cells=_fallback_only_cells(names, fallback=fallback))
 
-    uplift = _uplift_from_totals(totals)
+    uplift = _uplift_from_totals(totals, reference_floor=_MIN_REFERENCE_FRACTION * prefix[n_records])
     boot_weight = {name: _bootstrap_weight(min(on, off)) for name, (on, off) in counts.items()}
     return BootstrapResult(
         n_blocks=n_blocks,
         cells=_summarise(uplift, names=names, fallback=fallback, boot_weight=boot_weight),
+        resamples={name: uplift[:, i] for i, name in enumerate(names)},
     )
 
 
@@ -280,17 +390,22 @@ def _prefix_sums(
     return np.concatenate([np.zeros((1, len(names), _N_QUANTITIES)), np.cumsum(doubled, axis=0)], axis=0)
 
 
-def _uplift_from_totals(totals: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+def _uplift_from_totals(
+    totals: npt.NDArray[np.float64], *, reference_floor: npt.NDArray[np.float64] | None = None
+) -> npt.NDArray[np.float64]:
     """Re-form ``rho_up / rho_base - 1`` per (resample, cell) from resampled sums.
 
     The degeneracy guards mirror the point estimate's, so a resample fails only where the point
-    estimate would have failed on the same rows.
+    estimate would have failed on the same rows; ``reference_floor`` (per cell, same last axis as
+    ``totals``) additionally fails a resample whose on or off reference sum falls below it.
     """
     test_on, ref_on, test_off, ref_off = (totals[..., k] for k in range(_N_QUANTITIES))
     nan = np.full(test_on.shape, np.nan)
     rho_up = np.divide(test_on, ref_on, out=nan.copy(), where=ref_on != 0)
     rho_base = np.divide(test_off, ref_off, out=nan.copy(), where=ref_off != 0)
     valid = np.isfinite(rho_base) & (rho_base != 0) & np.isfinite(rho_up)
+    if reference_floor is not None:
+        valid &= (ref_on >= reference_floor[..., 1]) & (ref_off >= reference_floor[..., 3])
     return np.divide(rho_up, rho_base, out=nan.copy(), where=valid) - 1.0
 
 
@@ -328,7 +443,14 @@ def _summarise(
 
 
 def _blend(*, bootstrap: float, fallback: float, weight: float) -> float:
-    """Linear ramp ``weight*bootstrap + (1-weight)*fallback``, using whichever side is finite."""
+    """Linear ramp ``weight*bootstrap + (1-weight)*fallback``, using whichever side is finite.
+
+    A cell at the sparse end (``weight == 0``) reports the fallback alone, even when that is NaN:
+    with so few records every resample that sees the cell is the same handful, so the bootstrap's
+    std is float residue (~1e-17), which would read as near-certainty where there is none.
+    """
+    if weight == 0.0:
+        return fallback
     if math.isfinite(bootstrap) and math.isfinite(fallback):
         return weight * bootstrap + (1.0 - weight) * fallback
     if math.isfinite(bootstrap):

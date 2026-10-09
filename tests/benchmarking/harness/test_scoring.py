@@ -46,6 +46,7 @@ def _study(mode: str = "prepost", n_replicates: int = 4, seed: int = 0) -> Study
         min_pre_months=12,
         campaign_months=[3, 6],
         toggle_period=pd.Timedelta(days=14),
+        toggle_datum=pd.Timestamp("2017-01-01", tz="UTC"),
         n_replicates=n_replicates,
         seed=seed,
     )

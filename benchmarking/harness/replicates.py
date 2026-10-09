@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
+import pandas as pd
 
 from benchmarking.harness.campaign import resolve_campaign_grid
 from benchmarking.harness.northing import north_scada
@@ -25,7 +26,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     import numpy.typing as npt
-    import pandas as pd
 
     from benchmarking.harness.campaign import CampaignUnit
     from benchmarking.synthetic import ColumnSchema, SyntheticDataset, UpliftResult
@@ -65,6 +65,8 @@ class StudyConfig:
     :param campaign_months: the campaign-length sweep grid, in months (exclusive with ``campaign_weeks``)
     :param campaign_weeks: the campaign-length sweep grid, in weeks (exclusive with ``campaign_months``)
     :param toggle_period: toggle on/off cycle length (toggle mode only)
+    :param toggle_datum: a boundary of the toggle-cycle grid (toggle mode only); treatment starts are
+        drawn only from cycle boundaries, as a clock-aligned controller toggles
     :param seed: RNG seed for the draws
     """
 
@@ -76,11 +78,15 @@ class StudyConfig:
     campaign_months: list[int] | None = None
     campaign_weeks: list[int] | None = None
     toggle_period: pd.Timedelta | None = None
+    toggle_datum: pd.Timestamp | None = None
     seed: int = 0
 
     def __post_init__(self) -> None:
-        """Validate that exactly one campaign-length grid is set."""
+        """Validate that exactly one campaign-length grid is set, and a toggle study's cycle grid."""
         resolve_campaign_grid(campaign_months=self.campaign_months, campaign_weeks=self.campaign_weeks)
+        if self.mode == "toggle" and (self.toggle_period is None or self.toggle_datum is None):
+            msg = "toggle_period and toggle_datum are required for mode='toggle'"
+            raise ValueError(msg)
 
     @property
     def campaign_lengths(self) -> list[int]:
@@ -157,7 +163,11 @@ def iter_replicates(
     :param rated_power_kw: turbine rating, passed to the generator and to the northing step
     """
     subset = base_scada[base_scada[columns.turbine].isin(study.turbine_subset)]
-    candidates = _candidate_starts(subset.index, study.treatment_start_range)
+    candidates = _candidate_starts(
+        subset.index,
+        study.treatment_start_range,
+        cycle_grid=(study.toggle_datum, study.toggle_period) if study.mode == "toggle" else None,
+    )
 
     rng = np.random.default_rng(study.seed)
     turbines = np.asarray(study.turbine_subset)
@@ -230,22 +240,29 @@ def build_replicates(
 
 
 def _candidate_starts(
-    index: pd.DatetimeIndex, treatment_start_range: tuple[pd.Timestamp, pd.Timestamp]
+    index: pd.DatetimeIndex,
+    treatment_start_range: tuple[pd.Timestamp, pd.Timestamp],
+    *,
+    cycle_grid: tuple[pd.Timestamp | None, pd.Timedelta | None] | None = None,
 ) -> npt.NDArray[np.datetime64]:
-    """Return unique on-grid timestamps within the draw range (so draws land on real records)."""
+    """Return unique on-grid timestamps within the draw range (so draws land on real records).
+
+    With ``cycle_grid`` ``(datum, period)``, only the records on a toggle-cycle boundary.
+    """
     lo, hi = treatment_start_range
     unique = index.unique()
     candidates = unique[(unique >= lo) & (unique <= hi)]
+    if cycle_grid is not None:
+        datum, period = cycle_grid
+        candidates = candidates[(candidates - datum) % period == pd.Timedelta(0)]
     if len(candidates) == 0:
-        msg = f"no records in treatment_start_range {treatment_start_range}"
+        msg = f"no records in treatment_start_range {treatment_start_range} (on the toggle-cycle grid, if any)"
         raise ValueError(msg)
     return candidates.sort_values().to_numpy()
 
 
 def _upgrade_timing(study: StudyConfig, treatment_start: pd.Timestamp) -> pd.Timestamp | ToggleSchedule:
     if study.mode == "toggle":
-        if study.toggle_period is None:
-            msg = "toggle_period is required for mode='toggle'"
-            raise ValueError(msg)
+        assert study.toggle_period is not None  # noqa: S101 - guaranteed by StudyConfig.__post_init__
         return ToggleSchedule(period=study.toggle_period, start=treatment_start)
     return treatment_start

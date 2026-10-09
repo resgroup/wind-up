@@ -49,7 +49,7 @@ from benchmarking.baselines.example_prepost_study import (
     DEFAULT_TURBINE_SUBSET,
     DEFAULT_WTG_NUMBERS,
 )
-from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_PERIOD
+from benchmarking.baselines.example_toggle_study import DEFAULT_TOGGLE_DATUM, DEFAULT_TOGGLE_PERIOD
 from benchmarking.baselines.study_toggle_methods_compare import TOGGLE_PROFILES
 from benchmarking.baselines.toggle_specialist import DEFAULT_BLOCK_HOURS, ToggleSpecialistMethod
 from benchmarking.harness import (
@@ -99,6 +99,7 @@ def uncertainty_study(n_replicates: int) -> StudyConfig:
         min_pre_months=MIN_PRE_MONTHS_TOGGLE,
         campaign_weeks=CAMPAIGN_WEEKS,
         toggle_period=DEFAULT_TOGGLE_PERIOD,
+        toggle_datum=DEFAULT_TOGGLE_DATUM,
         n_replicates=n_replicates,
         seed=SEED,
     )
@@ -129,6 +130,8 @@ def build_methods(block_hours_grid: list[float], out_dir: Path | None = None) ->
     return [
         ToggleSpecialistMethod(
             columns=HOT_COLUMNS,
+            toggle_period=DEFAULT_TOGGLE_PERIOD,
+            toggle_datum=DEFAULT_TOGGLE_DATUM,
             name=f"toggle_specialist_bl{block_hours:g}",
             conditions=("power",),
             rated_power_kw=HOT_RATED_POWER_KW,
