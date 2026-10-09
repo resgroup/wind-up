@@ -133,9 +133,6 @@ def _diag_data(*, with_conditions: bool) -> DiagnosticData:
         sum_actual_kw=0.0,
         sum_counterfactual_kw=0.0,
         n_refs=3,
-        era5_lag_rows=None,
-        era5_corr=None,
-        era5_sweep=None,
         cond_upgraded=cond_up,
         cond_baseline_valid=cond_base,
     )

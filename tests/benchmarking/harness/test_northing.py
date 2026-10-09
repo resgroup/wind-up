@@ -239,10 +239,17 @@ class TestEra5Direction:
     def test_returns_the_direction_carried_onto_the_index(self) -> None:
         index = _index(days=2)
         hourly = pd.date_range(start=_START, periods=48, freq="h", tz="UTC")
-        era5 = pd.DataFrame({ERA5_WD_COL: np.arange(48, dtype=float)}, index=hourly)
+        era5 = pd.DataFrame({ERA5_WD_COL: np.arange(48, dtype=float), "wind_speed_100m": 9.0}, index=hourly)
         out = era5_direction(era5, index)
         assert out.index.equals(index)
-        assert out.iloc[0] == pytest.approx(0.0)
+        # interpolated to the centre of the first 10-minute period
+        assert out.iloc[0] == pytest.approx(5 / 60, abs=1e-3)
+
+    def test_other_columns_are_ignored(self) -> None:
+        index = _index(days=2)
+        hourly = pd.date_range(start=_START, periods=48, freq="h", tz="UTC")
+        era5 = pd.DataFrame({ERA5_WD_COL: 10.0, "wind_speed_100m": 9.0, "not_era5": 1.0}, index=hourly)
+        assert era5_direction(era5, index).iloc[0] == pytest.approx(10.0)
 
     def test_without_the_direction_column_raises_naming_it(self) -> None:
         index = _index(days=2)

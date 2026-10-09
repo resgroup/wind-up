@@ -42,14 +42,13 @@ mpl.use("Agg")  # headless: the report writes plots without a display
 import numpy as np
 import pandas as pd
 
-from benchmarking.baselines.era5_sync import sync_era5
 from benchmarking.baselines.hot_context import build_hot_v0_context
-from benchmarking.baselines.power_model.features import reference_mean_wind_speed
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.placebo import PLACEBO_TURBINES, placebo_campaign
 from benchmarking.campaigns.runner import CampaignRunner, per_turbine_table
-from benchmarking.diagnostics.context import era5_source_label
+from benchmarking.diagnostics.context import era5_source_label, infer_timebase
 from benchmarking.harness.northing import era5_direction, north_scada
+from benchmarking.harness.reanalysis import interpolate_era5
 from benchmarking.synthetic import HOT_COLUMNS, HOT_LAT, HOT_LON, ToggleSchedule
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
 
@@ -250,35 +249,14 @@ def _readings(result: CampaignResult, *, test_wtg: str) -> pd.DataFrame:
     return readings.drop(columns="uplift")
 
 
-def source_aligned_era5(
-    era5_df: pd.DataFrame,
-    *,
-    scada_df: pd.DataFrame,
-    references: Sequence[str],
-    columns: ColumnSchema = HOT_COLUMNS,
-) -> pd.DataFrame:
-    """Return reanalysis on the SCADA grid, lag-matched to the site over the undisguised record.
-
-    The power model matches reanalysis to the site by the whole-series row shift that best
-    correlates its wind speed with the reference mean, and it runs that sweep in timestamp order.
-    Once blocks are interleaved every shift straddles block boundaries, which costs more
-    correlation than the shallow true peak is worth, so a disguised record picks a different lag
-    and its reanalysis features stop lining up with the record's own. Matching once here, before
-    the disguise, and handing the result to both legs leaves the model's sweep nothing to shift.
+def source_aligned_era5(era5_df: pd.DataFrame, *, scada_df: pd.DataFrame) -> pd.DataFrame:
+    """Return reanalysis on the SCADA grid of the undisguised record, so the disguise can move it with the SCADA.
 
     :param era5_df: hourly reanalysis for the site
-    :param scada_df: the undisguised SCADA the lag is matched against
-    :param references: the turbines whose mean wind speed is the site signal
-    :param columns: the SCADA column schema
+    :param scada_df: the undisguised SCADA whose periods the reanalysis is aligned to
     """
     index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
-    reference_ws = reference_mean_wind_speed(
-        scada_df,
-        references=list(references),
-        turbine_col=columns.turbine,
-        wind_speed_col=columns.wind_speed,
-    )
-    return sync_era5(era5_df, target_index=index, reference_ws=reference_ws).aligned
+    return interpolate_era5(era5_df, index=index, timebase=infer_timebase(index))
 
 
 def source_northed_scada(
@@ -325,7 +303,6 @@ def source_record(
     *,
     scada_df: pd.DataFrame,
     era5_df: pd.DataFrame,
-    references: Sequence[str],
     rated_power_kw: float,
     layout: Layout | None,
     window: tuple[pd.Timestamp, pd.Timestamp] = DISGUISE_WINDOW,
@@ -334,13 +311,11 @@ def source_record(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return the ``(scada, reanalysis)`` both legs read: trimmed to ``window``, every shared step settled.
 
-    Two steps read the whole timeline at once, and on an interleaved record each would settle
-    somewhere else: the reanalysis lag match and northing discovery. Both run here, once, on the
-    undisguised record, so what the legs are left differing by is the prepost path itself.
+    Reanalysis alignment and northing discovery run here, once, on the undisguised record, so what
+    the legs are left differing by is the prepost path itself.
 
     :param scada_df: SCADA covering at least ``window``
     :param era5_df: hourly reanalysis for the site
-    :param references: the turbines whose mean wind speed the reanalysis lag is matched against
     :param rated_power_kw: turbine rating, for deciding which rows are usable for northing
     :param layout: the farm layout northing discovery uses, or ``None``
     :param window: ``(start, end)`` of the record both legs share, end exclusive
@@ -348,7 +323,7 @@ def source_record(
     :param out_dir: where the discovered northing table and its plots are written
     """
     inside = scada_df[(scada_df.index >= window[0]) & (scada_df.index < window[1])]
-    aligned = source_aligned_era5(era5_df, scada_df=inside, references=references, columns=columns)
+    aligned = source_aligned_era5(era5_df, scada_df=inside)
     northed = source_northed_scada(
         inside,
         era5_df=aligned,
@@ -451,7 +426,6 @@ def run_disguise_probe(
     scada_df, era5_df = source_record(
         scada_df=scada_df,
         era5_df=era5_df,
-        references=declared.candidate_references,
         rated_power_kw=declared.rated_power_kw,
         layout=declared.layout,
         window=window,

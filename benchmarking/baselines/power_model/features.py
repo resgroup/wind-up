@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from benchmarking.baselines.era5_sync import ERA5_WD, ERA5_WS
+from benchmarking.harness.reanalysis import ERA5_WD, ERA5_WS
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

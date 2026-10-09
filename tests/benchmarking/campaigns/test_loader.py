@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import pytest
 
-from benchmarking.campaigns.loader import CENTROID_DECIMALS, load_declaration
+from benchmarking.campaigns.loader import CENTROID_DECIMALS, era5_window, load_declaration
 from benchmarking.harness.operating_state import GENERIC_STATES, OperatingStateConfig, StateValidity
+from benchmarking.harness.reanalysis import TimestampConvention
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
 if TYPE_CHECKING:
@@ -248,13 +249,46 @@ class TestReanalysis:
         assert lat == round(lat, CENTROID_DECIMALS)
         assert lon == round(lon, CENTROID_DECIMALS)
 
-    def test_the_fetch_window_is_rounded_out_to_whole_calendar_years(self, tmp_path: Path) -> None:
-        # the cache key includes the dates, so exact windows would refetch for every campaign
-        assert load(tmp_path).era5_window == ("2017-01-01", "2018-12-31")
+    def test_the_fetch_window_is_rounded_out_to_whole_calendar_years(self) -> None:
+        assert era5_window(utc("2017-03-04"), utc("2018-05-06")) == ("2017-01-01", "2018-12-31")
 
-    def test_the_exclusive_end_does_not_pull_in_an_extra_year(self, tmp_path: Path) -> None:
-        # the period ends at midnight on 1 Jan 2019, so no 2019 record is ever read
-        assert load(tmp_path).era5_window[1] == "2018-12-31"
+    def test_the_exclusive_end_does_not_pull_in_an_extra_year(self) -> None:
+        assert era5_window(utc("2017-03-04"), utc("2019-01-01"))[1] == "2018-12-31"
+
+    def test_onshore_with_period_start_utc_timestamps_by_default(self, tmp_path: Path) -> None:
+        declaration = load(tmp_path)
+        assert declaration.timestamps == TimestampConvention(convention="start", time_zone="UTC")
+        assert declaration.offshore is False
+
+    def test_the_timestamps_and_site_are_read(self, tmp_path: Path) -> None:
+        text = (
+            PREPOST.replace("data:\n", "data:\n  timestamps: {convention: end, time_zone: Europe/London}\n", 1)
+            + "site:\n  offshore: true\n"
+        )
+        declaration = load(tmp_path, text)
+        assert declaration.timestamps == TimestampConvention(convention="end", time_zone="Europe/London")
+        assert declaration.offshore is True
+
+    def test_the_resolved_echo_names_the_timestamps_and_cell(self, tmp_path: Path) -> None:
+        resolved = load(tmp_path, PREPOST + "site:\n  offshore: true\n").resolved()
+        assert resolved["timestamps"] == {"convention": "start", "time_zone": "UTC"}
+        assert resolved["site"] == {"offshore": True}
+        assert resolved["reanalysis"]["cell_selection"] == "sea"
+
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            ("data:\n", "data:\n  timestamps: {convention: middle}\n"),
+            ("data:\n", "data:\n  timestamps: {zone: UTC}\n"),
+        ],
+    )
+    def test_a_bad_timestamps_block_is_rejected(self, tmp_path: Path, old: str, new: str) -> None:
+        with pytest.raises(ValueError, match="timestamp"):
+            load(tmp_path, PREPOST.replace(old, new, 1))
+
+    def test_an_unknown_site_key_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="site"):
+            load(tmp_path, PREPOST + "site:\n  ofshore: true\n")
 
 
 class TestErrors:
@@ -460,13 +494,11 @@ class TestExclusionsAndPeriods:
     def test_an_omitted_period_is_chosen_later(self, tmp_path: Path) -> None:
         declaration = load_staggered(tmp_path)
         assert declaration.spec.analysis_period is None
-        assert declaration.era5_window is None
 
     def test_a_per_turbine_period_is_read(self, tmp_path: Path) -> None:
         text = STAGGERED + "analysis_period:\n  T01: {start: 2017-06-01T00:00:00Z, end: 2018-06-01T00:00:00Z}\n"
         declaration = load_staggered(tmp_path, text)
         assert declaration.spec.period_for("T01") == (utc("2017-06-01"), utc("2018-06-01"))
-        assert declaration.era5_window == ("2017-01-01", "2018-12-31")
 
     def test_a_per_turbine_period_for_an_unanalysed_turbine_is_rejected(self, tmp_path: Path) -> None:
         text = STAGGERED + "analysis_period:\n  T02: {start: 2017-06-01T00:00:00Z, end: 2018-06-01T00:00:00Z}\n"

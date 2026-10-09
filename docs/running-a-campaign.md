@@ -24,6 +24,12 @@ data:
   scada: data/scada.parquet     # long-format SCADA, one row per turbine per timestamp
   schema: hill_of_towie         # the column vocabulary the SCADA is keyed by
   turbines: data/turbines.csv   # Name, Latitude, Longitude, Rotor_Diameter_m
+  # timestamps is optional; the default is period start, UTC
+  timestamps: {convention: start, time_zone: UTC}
+
+# site is optional; the default is onshore
+site:
+  offshore: false
 
 turbines:
   upgraded:   [T06, T11]        # the turbines whose uplift you want
@@ -130,10 +136,19 @@ them, writing plots of what it did ([how northing works](northing.md)). Use `fal
 with an offset is converted to UTC. Whatever you write, the resolved values are echoed into
 `campaign_resolved.yaml` in the output — check it if a result looks shifted.
 
+**`data.timestamps`.** Whether a SCADA timestamp labels the `start` or the `end` of its period, and
+the time zone the SCADA is in. The SCADA timestamps must be timezone-aware and in that time zone,
+or the run stops. wind-up checks the declaration against the reanalysis: it warns when the weather
+lines up best with a shift of more than 30 minutes, and stops at 1 hour or more, which usually means
+the time zone or convention is wrong.
+
+**`site.offshore`.** Set `true` for an offshore farm, so the reanalysis comes from a sea grid cell
+rather than the nearest land one.
+
 **Reanalysis is not declared.** wind-up fetches the weather reanalysis it needs by itself, from
 the centre of every turbine in `turbines.csv` — the whole site, not just the turbines this
-campaign names, so changing the roles never moves it. The first run for a site downloads it;
-later runs on that site reuse the cache.
+campaign names, so changing the roles never moves it — over the whole SCADA record. The first
+run for a site downloads it; later runs on that site reuse the cache.
 
 ## 2. Run it
 

@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pandas as pd
 import yaml
 
 from benchmarking.campaigns.declaration import CampaignSpec, layout_coords
 from benchmarking.harness.operating_state import OperatingStateConfig, StateValidity
+from benchmarking.harness.reanalysis import TimestampConvention
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from benchmarking.synthetic.sources.greenbyte import GREENBYTE_COLUMNS
 from wind_up.layout import Layout
@@ -39,6 +40,8 @@ NOT_VALID = "not valid"
 _VALIDITY = {VALID: True, NOT_VALID: False}
 _OPERATING_STATE_KEYS = ("label_column", "parked_pitch_above_deg", "parked_pitch_below_deg", "labels")
 _STATE_VALIDITY_KEYS = ("northing", "waking", "uplift")
+_TIMESTAMP_KEYS = ("convention", "time_zone")
+_SITE_KEYS = ("offshore",)
 
 # The reanalysis centroid is rounded to this many decimals, and taken over the whole turbines
 # file rather than the declared roles, so every campaign on one site shares a cache entry and
@@ -71,11 +74,10 @@ class Declaration:
     :param scada_path: the SCADA parquet, resolved relative to the declaration
     :param centroid: the site's ``(latitude, longitude)`` centroid over the whole turbines file,
         rounded, which reanalysis is self-served from
-    :param era5_window: ``(start_date, end_date)`` for the reanalysis fetch, rounded out to whole
-        calendar years so campaigns on one site share a cache entry. ``None`` when no analysis
-        period is declared; the run then takes it from the data.
     :param operating_state: the site's operating-state labels and parked-pitch rule; generic states
         only when none is declared
+    :param timestamps: the SCADA timestamp convention and time zone; period start, UTC by default
+    :param offshore: whether reanalysis is drawn from a sea grid cell rather than a land one
     """
 
     name: str
@@ -83,8 +85,14 @@ class Declaration:
     columns: ColumnSchema
     scada_path: Path
     centroid: tuple[float, float]
-    era5_window: tuple[str, str] | None
     operating_state: OperatingStateConfig = field(default_factory=OperatingStateConfig)
+    timestamps: TimestampConvention = field(default_factory=TimestampConvention)
+    offshore: bool = False
+
+    @property
+    def cell_selection(self) -> Literal["land", "sea"]:
+        """Return the Open-Meteo grid-cell selection for this site."""
+        return "sea" if self.offshore else "land"
 
     def resolved(self) -> dict[str, Any]:
         """Return the resolved campaign facts, for echoing into the run output.
@@ -106,6 +114,8 @@ class Declaration:
             "name": self.name,
             "scada": str(self.scada_path),
             "schema": {v: k for k, v in SCHEMAS.items()}.get(self.columns, "custom"),
+            "timestamps": {"convention": self.timestamps.convention, "time_zone": self.timestamps.time_zone},
+            "site": {"offshore": self.offshore},
             "turbines": {
                 "upgraded": list(spec.upgraded_turbines),
                 "references": list(spec.candidate_references),
@@ -120,7 +130,8 @@ class Declaration:
             },
             "reanalysis": {
                 "centroid": list(self.centroid),
-                "window": list(self.era5_window) if self.era5_window is not None else "from the data",
+                "cell_selection": self.cell_selection,
+                "window": "the whole SCADA record, in whole calendar years",
             },
             "operating_state": _resolved_operating_state(self.operating_state),
         }
@@ -185,15 +196,15 @@ def load_declaration(path: str | Path) -> Declaration:
         exclusions=exclusions,
         references_declared=bool(declared_references),
     )
-    bounds = spec.period_bounds()
     return Declaration(
         name=_path_component(str(raw["name"]), what="campaign name"),
         spec=spec,
         columns=columns,
         scada_path=scada_path,
         centroid=centroid(coords),
-        era5_window=era5_window(*bounds) if bounds is not None else None,
         operating_state=_operating_state(raw.get("operating_state")),
+        timestamps=_timestamps(data.get("timestamps")),
+        offshore=_offshore(raw.get("site")),
     )
 
 
@@ -293,6 +304,36 @@ def _operating_state(block: dict | None) -> OperatingStateConfig:
         parked_pitch_above_deg=None if above is None else float(above),
         parked_pitch_below_deg=None if below is None else float(below),
     )
+
+
+def _timestamps(block: dict | None) -> TimestampConvention:
+    """Read the optional ``data.timestamps`` block; none gives period start, UTC."""
+    if block is None:
+        return TimestampConvention()
+    stray = sorted(set(map(str, block)) - set(_TIMESTAMP_KEYS))
+    if stray:
+        msg = f"data.timestamps has unknown keys {stray}; known keys are {list(_TIMESTAMP_KEYS)}"
+        raise ValueError(msg)
+    default = TimestampConvention()
+    return TimestampConvention(
+        convention=str(block.get("convention", default.convention)),  # type: ignore[arg-type]
+        time_zone=str(block.get("time_zone", default.time_zone)),
+    )
+
+
+def _offshore(block: dict | None) -> bool:
+    """Read the optional ``site`` block's offshore flag; onshore by default."""
+    if block is None:
+        return False
+    stray = sorted(set(map(str, block)) - set(_SITE_KEYS))
+    if stray:
+        msg = f"site has unknown keys {stray}; known keys are {list(_SITE_KEYS)}"
+        raise ValueError(msg)
+    offshore = block.get("offshore", False)
+    if not isinstance(offshore, bool):
+        msg = f"site.offshore must be true or false, not {offshore!r}"
+        raise ValueError(msg)  # noqa: TRY004 - a declaration error, reported like the others
+    return offshore
 
 
 def _state_validity(name: str, entry: dict) -> StateValidity:

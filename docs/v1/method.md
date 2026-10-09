@@ -152,10 +152,11 @@ here to check the labels, never to make them.
 ### 3. Add reanalysis data
 
 Reanalysis data (ERA5) is merged with the SCADA data. ERA5 is used as a source of upgrade-invariant
-weather information: it is unaffected by any change to the turbines.
+weather information: it is unaffected by any change to the turbines. This is done once, in data
+preparation, and every later step uses the same aligned ERA5.
 
-ERA5 is obtained from the Open-Meteo archive API with the ERA5 model selected. Its values are
-interpreted as follows:
+ERA5 is obtained from the Open-Meteo archive API with the ERA5 model selected, at the centroid of the
+wind farm and over the whole SCADA record provided. Its values are interpreted as follows:
 
 - i. **Time.** Timestamps are in UTC. Wind components, temperature and pressure are instantaneous
   values valid at the hourly timestamp, not averages over the hour. Accumulated fields such as
@@ -165,23 +166,32 @@ interpreted as follows:
   point value represents an average over the model grid box, not the conditions at the requested
   coordinates, and it cannot represent variability on spatial scales smaller than the grid box. By
   default Open-Meteo returns a nearby land grid cell of similar elevation to the requested coordinates
-  rather than strictly the nearest one.
-TODO override this default, we want strictly the lat-lon requested
+  rather than strictly the nearest one. For an offshore wind farm a sea grid cell is requested instead.
 - iii. **Smoothness.** Being a grid box value, an instantaneous ERA5 value is smooth in time and does
   not represent the short-term variability of a turbine's 10-minute mean. ERA5 is therefore a
   weather-state feature rather than a substitute for a measured wind speed.
 
 The hourly values are aligned to the SCADA timebase as follows.
 
-- **Option A (current default).** Forward-fill each hourly value through the hour, then apply the
-  single whole-record time shift (searched over ±24 hours) that maximises the correlation between ERA5
-  100 m wind speed and the mean wind speed of the unchanged turbines (step 1).
-- **Option B.** Establish the SCADA timestamp convention (period start or period end, and time zone)
-  explicitly, then interpolate the instantaneous ERA5 fields linearly to the centre of each SCADA
-  period. Hourly accumulations and maxima are assigned to the SCADA periods within the hour ending at
-  their timestamp, and are not interpolated. The time-shift search is retained only as a check, which is expected to find a shift near zero.
-  Where it does not, the timestamp convention is investigated rather than the shift being applied.
-TODO just switch to Option B which is more technically justified.
+- **Timestamps.** The SCADA timestamp convention (period start or period end) and time zone are
+  declared, by default period start and UTC. The SCADA timestamps must be timezone-aware and in the
+  declared time zone; they are then converted to period-start UTC.
+- **Instantaneous fields** are interpolated linearly to the centre of each SCADA period. Wind
+  directions are interpolated through the wind vector components at the same height, so that the
+  interpolation is correct across north; wind speed is interpolated as a scalar.
+- **Hourly accumulations and maxima** are assigned to the SCADA periods within the hour ending at
+  their timestamp, and are not interpolated.
+- **Gaps and coverage.** ERA5 is not extrapolated beyond its record. A gap in the ERA5 record (a
+  missing hour or a missing value) is an error. Where ERA5 does not cover the whole SCADA record a
+  warning is given.
+- **Time-shift check.** The time shift (searched over ±24 hours) that maximises the correlation between
+  ERA5 100 m wind speed and the mean nacelle wind speed of the unchanged turbines (step 1, records valid
+  for northing in step 2) is found as a check only, and is never applied. A best shift of more than
+  30 minutes gives a warning, and 1 hour or more is an error: either points at a mis-declared time
+  zone or timestamp convention, which is investigated rather than corrected by a shift.
+
+The outcome of this step is the aligned ERA5 and plots of the time-shift check and of ERA5 against the
+site wind speed.
 
 ### 4. Northing
 

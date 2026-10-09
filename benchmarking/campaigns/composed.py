@@ -24,6 +24,7 @@ import pandas as pd
 import yaml
 
 from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
+from benchmarking.campaigns.declaration import layout_coords
 from benchmarking.campaigns.loader import era5_window, load_declaration
 from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
@@ -36,8 +37,9 @@ from benchmarking.diagnostics.operating_states import (
     write_operating_state_plots,
     write_validity_plots,
 )
-from benchmarking.harness.northing import era5_direction
+from benchmarking.diagnostics.reanalysis import write_reanalysis_outputs
 from benchmarking.harness.operating_state import label_operating_states
+from benchmarking.harness.reanalysis import ERA5_WD_RAW, normalise_timestamps, prepare_reanalysis
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up_v0.era5 import get_era5_hourly_df
 
@@ -90,6 +92,8 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
 - `{DATA_PREPARATION_DIRNAME}/`: part A, every turbine over every record provided.
   - `{stages.CHANGES}/`: step 1, operating relationships, coverage and power factor.
   - `{stages.OPERATING_STATES}/`: step 2, the operating-state labels and hours per state.
+  - `{stages.REANALYSIS}/`: step 3, the reanalysis time-shift check, ERA5 against the site wind speed,
+    and what the reanalysis covers.
   - `{stages.NORTHING}/`: step 4, the northing corrections, and each turbine's records used and not
     used for northing, coloured by operating state.
   - `{stages.WAKING}/`: step 5, each turbine's records considered waking, part waking and not waking,
@@ -215,8 +219,9 @@ def run_declaration(
     )
 
     scada_df = pd.read_parquet(declaration.scada_path)
+    timebase = infer_timebase(pd.DatetimeIndex(scada_df.index.unique()).sort_values())
+    scada_df = normalise_timestamps(scada_df, timestamps=declaration.timestamps, timebase=timebase)
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
-    timebase = infer_timebase(index)
     scada_df = label_operating_states(
         scada_df,
         columns=declaration.columns,
@@ -240,6 +245,22 @@ def run_declaration(
             scada_df, views=views, columns=declaration.columns, timebase=timebase, out_dir=input_plots / stage
         )
     reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration, index=index)
+    spec = declaration.spec
+    prepared = prepare_reanalysis(
+        reanalysis,
+        scada_df=scada_df,
+        columns=declaration.columns,
+        unchanged=[
+            w for w in layout_coords(spec.layout) if w not in set(spec.upgraded_turbines) | set(spec.excluded_turbines)
+        ],
+        timebase=timebase,
+    )
+    write_reanalysis_outputs(
+        prepared,
+        era5_hourly_df=reanalysis,
+        cell_selection=declaration.cell_selection,
+        out_dir=input_plots / stages.REANALYSIS,
+    )
     # One screen verdict for the campaign: every test turbine is judged against the same references.
     screen_cache: dict = {}
 
@@ -258,7 +279,7 @@ def run_declaration(
             )
         ],
         columns=declaration.columns,
-        era5_wd=era5_direction(reanalysis, index),
+        era5_wd=prepared.aligned[ERA5_WD_RAW],
         northing_out_dir=preparation / stages.NORTHING,
         plan_settings=plan_settings,
     )
@@ -267,19 +288,31 @@ def run_declaration(
     return report
 
 
-def reanalysis_window(declaration: Declaration, *, index: pd.DatetimeIndex) -> tuple[str, str]:
-    """Return the whole-year reanalysis window: the declared period's, or the data's when none is declared."""
-    if declaration.era5_window is not None:
-        return declaration.era5_window
-    return era5_window(index.min(), index.max() + pd.Timedelta(nanoseconds=1))
+def reanalysis_window(index: pd.DatetimeIndex) -> tuple[str, str]:
+    """Return the reanalysis window: the whole SCADA record, rounded out to whole calendar years.
+
+    The window runs to 1 January after the last year, so the final hour of the record has an hour
+    after it to interpolate towards.
+    """
+    start, end = era5_window(index.min(), index.max() + pd.Timedelta(nanoseconds=1))
+    return start, (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 def _fetch_era5(declaration: Declaration, *, index: pd.DatetimeIndex) -> pd.DataFrame:
-    """Fetch reanalysis for the farm centroid over the campaign's whole-year window.
+    """Fetch reanalysis for the farm centroid over the whole SCADA record, from a sea cell when offshore.
 
     The fetch itself needs the optional ``era5`` dependency group and network on a cache miss.
     """
     lat, lon = declaration.centroid
-    start_date, end_date = reanalysis_window(declaration, index=index)
-    logger.info("Fetching reanalysis for (%.4f, %.4f) over %s..%s", lat, lon, start_date, end_date)
-    return get_era5_hourly_df(lat=lat, lon=lon, start_date=start_date, end_date=end_date)
+    start_date, end_date = reanalysis_window(index)
+    logger.info(
+        "Fetching reanalysis for (%.4f, %.4f) over %s..%s, %s cell",
+        lat,
+        lon,
+        start_date,
+        end_date,
+        declaration.cell_selection,
+    )
+    return get_era5_hourly_df(
+        lat=lat, lon=lon, start_date=start_date, end_date=end_date, cell_selection=declaration.cell_selection
+    )

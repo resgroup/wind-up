@@ -21,6 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from benchmarking.diagnostics.context import infer_timebase
+from benchmarking.harness.reanalysis import ERA5_WS_RAW, interpolate_era5
 from wind_up.northing import (
     DEFAULT_NORTHING,
     NorthingSettings,
@@ -61,7 +63,9 @@ ERA5_WD_COL = "wind_direction_100m"
 
 
 def era5_direction(era5_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
-    """Return the hourly ERA5 wind direction carried onto ``index``, held within each hour.
+    """Return the ERA5 hub-height wind direction on the SCADA periods of ``index`` (period-start UTC).
+
+    Interpolated through the wind vector, as :func:`~benchmarking.harness.reanalysis.interpolate_era5`.
 
     Raises naming the column when the frame does not carry it: a partial reanalysis delivery is
     reported as the missing column rather than as a bare KeyError.
@@ -72,8 +76,9 @@ def era5_direction(era5_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
             f"step anchors against. Columns present: {sorted(era5_df.columns)}"
         )
         raise ValueError(msg)
-    hourly = era5_df[ERA5_WD_COL]
-    return hourly.reindex(hourly.index.union(index)).ffill(limit=6).reindex(index)
+    columns = [c for c in (ERA5_WD_COL, ERA5_WS_RAW) if c in era5_df.columns]
+    aligned = interpolate_era5(era5_df[columns], index=index, timebase=infer_timebase(index))
+    return aligned[ERA5_WD_COL]
 
 
 def _north_table_from_offsets(

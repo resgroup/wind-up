@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.era5_sync import ERA5_WD, ERA5_WS
 from benchmarking.baselines.power_model.features import (
     QUALIFIER,
     build_reference_features,
@@ -20,6 +19,7 @@ from benchmarking.baselines.power_model.features import (
     extract_outcome,
     operating_state_features,
 )
+from benchmarking.harness.reanalysis import ERA5_WD, ERA5_WS
 
 _TURBINE = "TurbineName"
 _REFS = ("R1", "R2", "R3")

@@ -71,9 +71,6 @@ class DiagnosticData:
     sum_actual_kw: float
     sum_counterfactual_kw: float
     n_refs: int  # candidate references in the pool, screened ones included
-    era5_lag_rows: int | None
-    era5_corr: float | None
-    era5_sweep: pd.DataFrame | None
     era5_label: str = ERA5_UNLOCATED
     # test-turbine ws/TI row-aligned to each segment's residuals (None when no wind-speed col)
     cond_upgraded: pd.DataFrame | None = None
@@ -182,8 +179,6 @@ def results_row(data: DiagnosticData) -> pd.DataFrame:
                 "sum_counterfactual_mwh": data.sum_counterfactual_kw * timebase_hours / 1000.0,
                 "baseline_holdout_r2": r2,
                 "baseline_holdout_mae_kw": mae,
-                "era5_lag_rows": data.era5_lag_rows,
-                "era5_corr": data.era5_corr,
                 "time_calculated": pd.Timestamp.utcnow(),
             }
         ]
@@ -395,11 +390,6 @@ def save_plots(plots_dir: Path, data: DiagnosticData, importance: pd.DataFrame) 
     inputs_dir.mkdir(parents=True, exist_ok=True)
     _plot_feature_overview(inputs_dir, feature_catalogue(data))
     _save_feature_histograms(inputs_dir / "feature_histograms", data)
-
-    if data.era5_sweep is not None:
-        feat_dir = plots_dir / stages.REANALYSIS
-        feat_dir.mkdir(parents=True, exist_ok=True)
-        _plot_era5_sweep(feat_dir, data)
 
 
 def _plot_importance(plots_dir: Path, importance: pd.DataFrame, *, test_wtg: str) -> None:
@@ -759,26 +749,3 @@ def _plot_actual_vs_counterfactual_timeseries(plots_dir: Path, data: DiagnosticD
     apply_grid(ax)
     ax.legend()
     save_fig(fig, plots_dir / "actual_vs_counterfactual_timeseries.png")
-
-
-def _plot_era5_sweep(plots_dir: Path, data: DiagnosticData) -> None:
-    """ERA5 correlation-vs-lag sweep, with the chosen optimal shift annotated."""
-    sweep = data.era5_sweep
-    if sweep is None:
-        return
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(sweep["shift_rows"], sweep["corr"], marker=".")
-    if data.era5_lag_rows is not None:
-        corr_text = f"{data.era5_corr:.3f}" if data.era5_corr is not None else "n/a"
-        ax.axvline(
-            data.era5_lag_rows,
-            color="k",
-            linestyle="--",
-            label=f"best shift = {data.era5_lag_rows} rows (corr = {corr_text})",
-        )
-        ax.legend()
-    ax.set_xlabel(f"{data.era5_label} shift [rows]")
-    ax.set_ylabel("wind-speed correlation")
-    ax.set_title(f"{data.test_wtg}: {data.era5_label}-SCADA correlation vs lag")
-    apply_grid(ax)
-    save_fig(fig, plots_dir / "era5_sync.png")

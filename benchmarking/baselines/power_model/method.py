@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import pandas as pd
 
-from benchmarking.baselines.era5_sync import sync_era5
 from benchmarking.baselines.power_model import diagnostics as diag
 from benchmarking.baselines.power_model.conditional import impute_uncovered_bins, relevel_conditional
 from benchmarking.baselines.power_model.features import (
@@ -62,6 +61,7 @@ from benchmarking.harness.conditions import (
 )
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
+from benchmarking.harness.reanalysis import interpolate_era5
 from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrade_start
 from wind_up.farm import TurbineUplift, farm_uplift
 
@@ -524,13 +524,6 @@ class PowerModelMethod:
             raise ValueError(msg)
         # Checked before the screen, whose gate reads the same normal-operation mask, so a missing
         # column is reported as the configuration error it is rather than as a bare KeyError.
-        if self.era5_hourly_df is not None and self.columns.wind_speed not in scada.columns:
-            msg = (
-                f"wind_speed_col {self.columns.wind_speed!r} is not in scada_df; it provides the reference wind "
-                f"speed the ERA5 lag sync locks onto. A missing column silently yields an all-NaN reference "
-                f"wind speed and a meaningless lag, so this is treated as a configuration error."
-            )
-            raise ValueError(msg)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
         references = self._candidate_references(scada, mi=mi)
@@ -561,7 +554,7 @@ class PowerModelMethod:
         features = self._reference_features(
             scada, mi=mi, references=references, extra_cols=extra_cols, power_free=power_free
         )
-        features, era5 = self._add_era5(scada, features, mi=mi, references=references, index=index, timebase=timebase)
+        features, era5 = self._add_era5(features, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
 
         toggle_rows = resolve_toggle(mi.upgrade_timing, index)
@@ -651,7 +644,6 @@ class PowerModelMethod:
                 sum_actual=sum_actual,
                 sum_counter=sum_counter,
                 n_refs=n_refs,
-                era5=era5,
                 cond_upgraded=cond_upgraded,
                 cond_baseline_valid=cond_baseline_valid,
             )
@@ -968,23 +960,13 @@ class PowerModelMethod:
         return {v: _DEFAULT_MATCHING_BIN_EDGES[v] for v in self.matching_vars}
 
     def _add_era5(
-        self,
-        scada: pd.DataFrame,
-        features: pd.DataFrame,
-        *,
-        mi: MethodInput,
-        references: Sequence[str],
-        index: pd.DatetimeIndex,
-        timebase: pd.Timedelta,
-    ) -> tuple[pd.DataFrame, Any]:
-        """Sync ERA5 (if supplied) and append its features."""
+        self, features: pd.DataFrame, *, index: pd.DatetimeIndex, timebase: pd.Timedelta
+    ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+        """Align ERA5 (if supplied) to the SCADA periods and append its features."""
         if self.era5_hourly_df is None:
             return features, None
-        reference_ws = reference_mean_wind_speed(
-            scada, references=references, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
-        )
-        result = sync_era5(self.era5_hourly_df, target_index=index, reference_ws=reference_ws, timebase=timebase)
-        era5_features = era5_feature_frame(result.aligned)
+        aligned = interpolate_era5(self.era5_hourly_df, index=index, timebase=timebase)
+        era5_features = era5_feature_frame(aligned)
         if self.era5_exclude:
             missing = sorted(set(self.era5_exclude) - set(era5_features.columns))
             # An explicitly-set era5_exclude keeps the strict typo guard; the promoted class default
@@ -999,7 +981,7 @@ class PowerModelMethod:
                 if c in self.era5_exclude or any(c == f"{raw}_{t}" for raw in self.era5_exclude for t in ("sin", "cos"))
             ]
             era5_features = era5_features.drop(columns=drop)
-        return pd.concat([features, era5_features], axis=1), result
+        return pd.concat([features, era5_features], axis=1), aligned
 
     def _effective_half_life(self, *, campaign_start: pd.Timestamp, campaign_end: pd.Timestamp) -> float | None:
         """Return the time-decay half-life (days) for this campaign, or ``None`` when decay is off.
@@ -1725,7 +1707,6 @@ class PowerModelMethod:
         sum_actual: float,
         sum_counter: float,
         n_refs: int,
-        era5: Any,  # noqa: ANN401
         cond_upgraded: pd.DataFrame | None = None,
         cond_baseline_valid: pd.DataFrame | None = None,
     ) -> None:
@@ -1755,9 +1736,6 @@ class PowerModelMethod:
             sum_counterfactual_kw=sum_counter,
             n_refs=n_refs,
             era5_label=self.era5_label,
-            era5_lag_rows=era5.best_lag_rows if era5 is not None else None,
-            era5_corr=era5.best_corr if era5 is not None else None,
-            era5_sweep=era5.sweep if era5 is not None else None,
             cond_upgraded=cond_upgraded,
             cond_baseline_valid=cond_baseline_valid,
         )
@@ -1783,7 +1761,7 @@ class PowerModelMethod:
         t: np.ndarray,
         selected: np.ndarray,
         timebase: pd.Timedelta,
-        era5: Any,  # noqa: ANN401
+        era5: pd.DataFrame | None,
         power_references: list[str] | None = None,
     ) -> None:
         """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
@@ -1797,16 +1775,12 @@ class PowerModelMethod:
             used_ts=np.asarray(selected, dtype=bool),
             timebase=timebase,
             mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
-            era5_df=era5.aligned if era5 is not None else None,
+            era5_df=era5,
             era5_label=self.era5_label,
             power_references=power_references,
         )
         write_common_diagnostics(ctx)
-        extra = {
-            "era5_lag_rows": era5.best_lag_rows if era5 is not None else None,
-            "era5_corr": era5.best_corr if era5 is not None else None,
-        }
-        write_run_config(ctx, method_name=self.name, method_params=self._config_params(), extra=extra)
+        write_run_config(ctx, method_name=self.name, method_params=self._config_params())
 
     def _config_params(self) -> dict[str, Any]:
         """Return the power-model configuration recorded in the run-config YAML."""

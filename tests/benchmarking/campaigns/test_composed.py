@@ -136,23 +136,15 @@ def test_the_declaration_is_echoed_before_the_run_so_a_failure_still_leaves_it(t
     assert echoed["name"] == "demo"
     assert echoed["analysis_period"]["start"] == "2017-01-01 00:00:00+00:00"
     assert echoed["timing"]["changeover"] == "2018-01-01 00:00:00+00:00"
-    assert echoed["reanalysis"]["window"] == ["2017-01-01", "2018-12-31"]
+    assert echoed["reanalysis"]["cell_selection"] == "land"
 
 
 class TestTheReanalysisWindow:
-    def test_a_declared_period_sets_it(self, tmp_path: Path) -> None:
+    def test_it_covers_the_whole_scada_record_even_with_a_declared_period(self) -> None:
         from benchmarking.campaigns.composed import reanalysis_window  # noqa: PLC0415
-
-        index = pd.date_range("2015-01-01", "2020-01-01", freq="1h", tz="UTC")
-        assert reanalysis_window(load(tmp_path), index=index) == ("2017-01-01", "2018-12-31")
-
-    def test_without_a_period_it_covers_the_data(self, tmp_path: Path) -> None:
-        from benchmarking.campaigns.composed import reanalysis_window  # noqa: PLC0415
-
-        from .test_loader import STAGGERED, load_staggered  # noqa: PLC0415
 
         index = pd.date_range("2016-03-01", "2019-12-31 23:00", freq="1h", tz="UTC")
-        assert reanalysis_window(load_staggered(tmp_path, STAGGERED), index=index) == ("2016-01-01", "2019-12-31")
+        assert reanalysis_window(index) == ("2016-01-01", "2020-01-01")
 
 
 def _write_small_scada(path: Path) -> None:
@@ -219,6 +211,8 @@ class TestTheInputDataPlots:
         assert {"power_factor.png", "input_data_coverage.png"} <= names
         states = {p.name for p in (preparation / "02_operating_states").iterdir()}
         assert {"operating_state_hours.csv", "operating_state_hours.png", "operating_states_T04.png"} <= states
+        reanalysis = {p.name for p in (preparation / "03_reanalysis").iterdir()}
+        assert reanalysis == {"shift_check.png", "wind_speed_scatter.png", "reanalysis.csv"}
 
     def test_the_folder_can_be_named(self, declaration: Path, tmp_path: Path) -> None:
         with pytest.raises(_StopError):
