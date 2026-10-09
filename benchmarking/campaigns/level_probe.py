@@ -471,7 +471,7 @@ def plot_level(table: pd.DataFrame, *, turbine: str, uplift: float, grouping: st
 def plot_propensity(dump: RowDump, m_hat: pd.Series, *, path: Path) -> Path:
     """Histogram the out-of-fold propensity of the baseline and the upgraded rows."""
     fig, ax = plt.subplots(figsize=(6, 4))
-    bins = np.linspace(0, 1, 41)
+    bins = np.linspace(0, 1, 41).tolist()
     ax.hist(m_hat[dump.baseline], bins=bins, alpha=0.6, label="baseline", density=True)
     ax.hist(m_hat[dump.upgraded], bins=bins, alpha=0.6, label="upgraded", density=True)
     ax.set_xlabel("out-of-fold P(upgraded | X)")

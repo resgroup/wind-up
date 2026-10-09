@@ -78,7 +78,7 @@ _V0_INTERIM = "results_interim.csv"
 def nearest_references(coords: Mapping[str, tuple[float, float]], turbine: str, *, n: int) -> list[str]:
     """Return the ``n`` turbines nearest to ``turbine`` by great-circle distance, nearest first."""
     distances = {
-        other: distance_and_bearing(tuple(coords[turbine]), tuple(position))[0]
+        other: distance_and_bearing((coords[turbine][0], coords[turbine][1]), (position[0], position[1]))[0]
         for other, position in coords.items()
         if other != turbine
     }

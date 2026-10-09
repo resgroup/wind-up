@@ -47,6 +47,7 @@ from wind_up.layout import iec_disturbed_sector_deg
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from types import TracebackType
 
 logger = logging.getLogger(__name__)
 
@@ -543,5 +544,7 @@ class _quiet_nanmean:  # noqa: N801
         self._ctx.__enter__()
         warnings.simplefilter("ignore", RuntimeWarning)
 
-    def __exit__(self, *exc: object) -> None:
-        self._ctx.__exit__(*exc)
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
+        self._ctx.__exit__(exc_type, exc, tb)
