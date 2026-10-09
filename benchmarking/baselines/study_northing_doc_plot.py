@@ -2,7 +2,7 @@
 
 The north error is the 14-day rolling circular median of the circular difference between each
 turbine's nacelle position and ERA5 wind direction, over the rows northing uses
-(:func:`~wind_up.northing.yaw_usable`). Each step's tables are rebuilt the way
+(:func:`~benchmarking.baselines.study_wake_nadir_golden.hot_inputs`). Each step's tables are rebuilt the way
 :func:`~wind_up.northing.north_farm` builds them:
 
 * ``north_error_before_after.png`` -- raw, then after every step;

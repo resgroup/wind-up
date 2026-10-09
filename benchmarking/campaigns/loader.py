@@ -202,7 +202,7 @@ def load_declaration(path: str | Path) -> Declaration:
         columns=columns,
         scada_path=scada_path,
         centroid=centroid(coords),
-        operating_state=_operating_state(raw.get("operating_state")),
+        operating_state=operating_state_config(raw.get("operating_state")),
         timestamps=_timestamps(data.get("timestamps")),
         offshore=_offshore(raw.get("site")),
     )
@@ -287,8 +287,8 @@ def _resolved_period(period: Window | dict[str, Window] | None) -> dict[str, Any
     return {"start": str(start), "end": str(end)}
 
 
-def _operating_state(block: dict | None) -> OperatingStateConfig:
-    """Read the optional operating-state block; none gives the generic states only."""
+def operating_state_config(block: dict | None) -> OperatingStateConfig:
+    """Read an operating-state block as a declaration writes it; none gives the generic states only."""
     if block is None:
         return OperatingStateConfig()
     stray = sorted(set(map(str, block)) - set(_OPERATING_STATE_KEYS))

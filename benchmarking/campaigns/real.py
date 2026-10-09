@@ -17,7 +17,8 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from benchmarking.harness.operating_state import PARTIAL_DOWNTIME
+from benchmarking.campaigns.loader import operating_state_config
+from benchmarking.harness.operating_state import PARTIAL_DOWNTIME, label_operating_states
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_AMBIENT_TEMP_COL,
     HOT_BM_START,
@@ -85,6 +86,21 @@ HOT_AEROUP_T13: dict[str, Any] = {
     "northing": {"discover": True},
     "operating_state": HOT_OPERATING_STATE,
 }
+
+
+def label_hot_operating_states(scada_long: pd.DataFrame) -> pd.DataFrame:
+    """Return Hill of Towie SCADA with its site labels and the operating-state columns of :data:`HOT_OPERATING_STATE`.
+
+    :param scada_long: long-format Hill of Towie SCADA, indexed by timestamp
+    """
+    scada_long = scada_long.assign(**{HOT_STATE_COL: label_hot_site_states(scada_long)})
+    return label_operating_states(
+        scada_long,
+        columns=HOT_COLUMNS,
+        config=operating_state_config(HOT_OPERATING_STATE),
+        timebase=pd.Timedelta(seconds=TIMEBASE_S),
+        rated_power_kw=HOT_RATED_POWER_KW,
+    )
 
 
 def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
