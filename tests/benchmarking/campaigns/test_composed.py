@@ -14,8 +14,8 @@ import yaml
 from benchmarking.campaigns.composed import (
     _LOG_HANDLER_NAME,
     DATA_PREPARATION_DIRNAME,
-    ESTIMATOR_DIRNAME,
     LOG_FILENAME,
+    MEASUREMENT_DIRNAME,
     WIND_UP,
     default_out_dir,
     run_declaration,
@@ -262,7 +262,7 @@ class TestTheRunFolders:
         with pytest.raises(_StopError):
             run_declaration(declaration, out_dir=tmp_path / "out", era5_hourly_df=era5())
         (method,) = built
-        assert method.out_dir == (tmp_path / "out" / ESTIMATOR_DIRNAME / "T01").resolve()  # type: ignore[attr-defined]
+        assert method.out_dir == (tmp_path / "out" / MEASUREMENT_DIRNAME / "T01").resolve()  # type: ignore[attr-defined]
         assert not method.run_subdir  # type: ignore[attr-defined]
 
     def test_studies_keep_a_named_folder_per_run(self, tmp_path: Path) -> None:

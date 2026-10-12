@@ -176,7 +176,7 @@ def test_the_run_level_uplift_validity_covers_the_test_turbine_and_power_referen
         "uplift_used_T1.png",
         "uplift_used_T2.png",
     ]
-    assert all(p.parent == tmp_path / "run" / "plots" / "08_valid_records" for p in written)
+    assert all(p.parent == tmp_path / "run" / "plots" / "11_valid_records" for p in written)
 
 
 def test_the_monthly_hours_mark_each_turbines_changeovers(tmp_path: Path) -> None:

@@ -88,11 +88,12 @@ _LOG_HANDLER_NAME = "campaign_run_log"
 OUTPUT_DIR_ENV = "WIND_UP_BENCHMARKING_OUTPUT_DIR"
 
 # The run's output is laid out by the parts of docs/v1/method.md: data preparation for every turbine,
-# the estimator once per test turbine, and the campaign's results across turbines. Inside each, a
-# folder is named for the method step it shows.
+# the campaign's choices and headline per test turbine, one folder per measured turbine, and the
+# results across turbines. Inside each, a folder is named for the method step it shows.
 DATA_PREPARATION_DIRNAME = "A_data_preparation"
-ESTIMATOR_DIRNAME = "B_uplift_estimator"
-CAMPAIGN_DIRNAME = "C_campaign"
+CAMPAIGN_DIRNAME = "B_campaign"
+MEASUREMENT_DIRNAME = "C_turbine_measurement"
+FARM_DIRNAME = "D_farm"
 README_FILENAME = "README.md"
 
 _README = f"""\
@@ -115,12 +116,13 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
     from and how far its own is from its neighbours'; and the turbines upwind of each turbine by direction.
   - `{stages.FEATURES}/`: step 6, each ERA5 feature over the whole record with its source and units, and
     the share of each turbine's records in each waking scenario.
-- `{ESTIMATOR_DIRNAME}/<test turbine>/`: part B, one folder per test turbine, over its span and with
+- `{CAMPAIGN_DIRNAME}/`: part B, the campaign for each test turbine: its analysis plan (steps 7 and 8),
+  the reference screen (step 9) and its headline uplift (step 10), with the conditional uplift of
+  step 15 collected across test turbines.
+- `{MEASUREMENT_DIRNAME}/<turbine>/`: part C, one folder per measured turbine, over its span and with
   its power references. Its results are in CSVs; its plots are under `plots/`, one folder per step.
   `plots/{stages.VALID_RECORDS}/` has the records used and not used for uplift, coloured by state.
-- `{CAMPAIGN_DIRNAME}/`: part C, the results across turbines: analysis plans (steps 7 and 11),
-  reference stability (step 11), per-turbine uplift (step 12), conditional uplift (step 13) and farm
-  uplift (step 14).
+- `{FARM_DIRNAME}/`: part D, the results across turbines: the farm uplift (step 16) and the uplift plots.
 """
 
 
@@ -330,7 +332,7 @@ def run_declaration(
             wind_up_method(
                 spec,
                 columns=declaration.columns,
-                out_dir=out_dir / ESTIMATOR_DIRNAME / wtg,
+                out_dir=out_dir / MEASUREMENT_DIRNAME / wtg,
                 era5_hourly_df=prepared.aligned,
                 screen_cache=screen_cache,
                 era5_label=era5_source_label(*declaration.centroid),
@@ -340,7 +342,7 @@ def run_declaration(
         columns=declaration.columns,
         plan_settings=plan_settings,
     )
-    write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME)
+    write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME, farm_dir=out_dir / FARM_DIRNAME)
     logger.info("Wrote the %r report to %s", declaration.name, out_dir)
     return report
 

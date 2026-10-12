@@ -139,11 +139,13 @@ def test_a_declared_campaign_runs_and_writes_its_report(tmp_path: Path, mode: st
 
     assert list(report.per_turbine["method"]) == [WIND_UP]
     assert list(report.per_turbine["test_wtg"]) == ["T01"]
-    for name in ("per_turbine.csv", "farm_uplift.csv", "farm_uplift_detail.csv", "reference_stability.csv"):
-        assert (out_dir / "C_campaign" / name).exists(), name
+    for name in ("per_turbine.csv", "reference_stability.csv"):
+        assert (out_dir / "B_campaign" / name).exists(), name
+    for name in ("farm_uplift.csv", "farm_uplift_detail.csv"):
+        assert (out_dir / "D_farm" / name).exists(), name
     assert (out_dir / RESOLVED_FILENAME).exists()
-    # one folder per test turbine, with no method or run level under it
-    turbine = out_dir / "B_uplift_estimator" / "T01"
+    # one folder per measured turbine, with no method or run level under it
+    turbine = out_dir / "C_turbine_measurement" / "T01"
     assert (turbine / "results.csv").exists()
     assert (turbine / "plots" / "01_changes" / "ops_relationships_T01.png").exists()
     assert (turbine / "plots" / "02_operating_states" / "operating_states_T01.png").exists()

@@ -31,27 +31,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def write_report(report: CampaignReport, *, out_dir: Path) -> Path:
+def write_report(report: CampaignReport, *, out_dir: Path, farm_dir: Path | None = None) -> Path:
     """Write the analyst-facing campaign report under ``out_dir`` and return it.
 
-    Writes ``per_turbine.csv``, ``farm_uplift.csv``, ``farm_uplift_detail.csv`` and
-    ``reference_stability.csv`` -- each candidate reference estimated as if it were a test
-    turbine, which a healthy campaign reads near 0%. Each method's uplift plots go under a folder
-    of its name. A method reporting per-condition estimates also gets ``conditional.csv`` and one
-    plot per condition under ``conditional/``. A planned campaign also gets ``analysis_plans.csv``
-    (every other turbine's role for each upgraded turbine, with the reason it is not a power
-    reference) and ``analysis_plans.yaml`` (each plan's span, lengths, power references and pool
-    rule, and under ``unplanned`` each upgraded turbine no span could be found for, with the reason).
+    Writes ``per_turbine.csv`` and ``reference_stability.csv`` -- each candidate reference
+    estimated as if it were a test turbine, which a healthy campaign reads near 0%. A method
+    reporting per-condition estimates also gets ``conditional.csv`` and one plot per condition
+    under ``conditional/``. A planned campaign also gets ``analysis_plans.csv`` (every other
+    turbine's role for each upgraded turbine, with the reason it is not a power reference) and
+    ``analysis_plans.yaml`` (each plan's span, lengths, power references and pool rule, and under
+    ``unplanned`` each upgraded turbine no span could be found for, with the reason).
+
+    The results across turbines -- ``farm_uplift.csv``, ``farm_uplift_detail.csv`` and each
+    method's uplift plots under a folder of its name -- go under ``farm_dir``, by default ``out_dir``.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    farm = farm_dir if farm_dir is not None else out_dir
+    farm.mkdir(parents=True, exist_ok=True)
     if report.plans:
         _write_plans(report, out_dir=out_dir)
     report.per_turbine.to_csv(out_dir / "per_turbine.csv", index=False)
-    report.farm.to_csv(out_dir / "farm_uplift.csv", index=False)
+    report.farm.to_csv(farm / "farm_uplift.csv", index=False)
     report.reference_stability.to_csv(out_dir / "reference_stability.csv", index=False)
-    _write_detail(report.farm_uplifts, out_dir=out_dir)
+    _write_detail(report.farm_uplifts, out_dir=farm)
     write_uplift_plots(
-        out_dir,
+        farm,
         per_turbine=report.per_turbine,
         stability=report.reference_stability,
         rated_power_kw=report.spec.rated_power_kw,

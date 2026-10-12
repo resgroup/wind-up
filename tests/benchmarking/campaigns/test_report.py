@@ -189,6 +189,16 @@ class TestAnalystReport:
     def test_it_returns_the_directory_it_wrote_to(self, tmp_path: Path) -> None:
         assert write_report(_report([ZeroMethod()]), out_dir=tmp_path) == tmp_path
 
+    def test_the_farm_results_go_to_their_own_directory_when_given_one(self, tmp_path: Path) -> None:
+        campaign_dir, farm_dir = tmp_path / "campaign", tmp_path / "farm"
+        write_report(_report([ReferenceReportingMethod()]), out_dir=campaign_dir, farm_dir=farm_dir)
+        assert (campaign_dir / "per_turbine.csv").exists()
+        assert (campaign_dir / "reference_stability.csv").exists()
+        assert (farm_dir / "farm_uplift.csv").exists()
+        assert (farm_dir / "farm_uplift_detail.csv").exists()
+        assert (farm_dir / ReferenceReportingMethod().name / "farm_uplift.png").exists()
+        assert not (campaign_dir / "farm_uplift.csv").exists()
+
 
 class TestAnalysisPlans:
     @staticmethod
