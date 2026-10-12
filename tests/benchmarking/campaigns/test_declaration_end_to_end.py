@@ -1,13 +1,14 @@
 """A declared campaign run end to end: YAML in, a truth-free report out.
 
 The whole Phase-2 path in one test -- loader, the composed ``wind-up``, the truth-free core and
-the analyst report -- on a small synthetic farm, with reanalysis supplied rather than fetched so
-the test needs no network.
+the analyst report -- on a small synthetic farm. The wind is the real Hill of Towie ERA5 record
+(tracked under ``tests/test_data/hot``, at the farm's own grid cell), supplied rather than fetched so
+the test needs no network; each turbine's SCADA is derived from it.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import matplotlib as mpl
 
@@ -23,11 +24,26 @@ from benchmarking.synthetic import HOT_COLUMNS
 # Runs the real power model on a year of data.
 pytestmark = pytest.mark.slow
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 TURBINES = ("T01", "T02", "T03", "T04", "T05")
 PERIOD = (pd.Timestamp("2018-01-01", tz="UTC"), pd.Timestamp("2019-01-01", tz="UTC"))
+ERA5_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "test_data"
+    / "hot"
+    / "reanalysis_data"
+    / "ERA5T_57.50N_-3.25E_100m_1hr_20241231.parquet"
+)
+ERA5_COLUMNS = {
+    "100_m_hws_mean_mps": "wind_speed_100m",
+    "100_m_hwd_mean_deg-n_true": "wind_direction_100m",
+    "10_m_hws_mean_mps": "wind_speed_10m",
+    "2_m_temp_mean_deg-c": "temperature_2m",
+    "2_m_rh_mean_%": "relative_humidity_2m",
+    "0_m_pres_mean_pa": "surface_pressure",
+}
+PA_PER_HPA = 100.0
+# The record has no gust field; a fixed gust factor on the 10 m wind stands in for it.
+GUST_FACTOR = 1.4
 CHANGEOVER = pd.Timestamp("2018-07-01", tz="UTC")
 RATED_KW = 2300.0
 # The uplift injected into T01 after the changeover, and how close the estimate must land.
@@ -35,12 +51,25 @@ INJECTED_UPLIFT = 0.05
 TOLERANCE = 0.02
 
 
+def _era5() -> pd.DataFrame:
+    """The real Hill of Towie hourly reanalysis over the campaign, one hour past its end so every period is covered."""
+    era5 = pd.read_parquet(ERA5_PATH, columns=list(ERA5_COLUMNS)).rename(columns=ERA5_COLUMNS)
+    era5 = era5.loc[PERIOD[0] : PERIOD[1]].rename_axis(None)
+    era5["surface_pressure"] = era5["surface_pressure"] / PA_PER_HPA
+    era5["wind_gusts_10m"] = era5["wind_speed_10m"] * GUST_FACTOR
+    return era5
+
+
 def _scada(*, mode: str) -> pd.DataFrame:
-    """A five-turbine hourly farm with a shared wind signal, per-turbine noise, and one upgrade."""
+    """A five-turbine hourly farm blown by the real ERA5 wind, with per-turbine noise and one upgrade."""
     rng = np.random.default_rng(0)
+    era5 = _era5()
     index = pd.date_range(*PERIOD, freq="1h", tz="UTC", inclusive="left")
     hours = np.arange(len(index), dtype=float)
-    shared_ws = 8.5 + 2.5 * np.sin(hours / (24 * 30)) + 1.5 * np.sin(hours / 12)
+    # Each hourly SCADA record is the mean over its period, so it averages the hour's two end points.
+    hourly = era5["wind_speed_100m"].to_numpy(dtype=float)
+    shared_ws = (hourly[:-1] + hourly[1:]) / 2
+    shared_wd = era5["wind_direction_100m"].to_numpy(dtype=float)[:-1]
     treated = index >= CHANGEOVER if mode == "prepost" else (np.floor(hours / 4) % 2 == 1) & (index >= CHANGEOVER)
     frames = []
     for turbine in TURBINES:
@@ -58,26 +87,12 @@ def _scada(*, mode: str) -> pd.DataFrame:
                     HOT_COLUMNS.wind_speed_sd: 0.8,
                     HOT_COLUMNS.gen_rpm: 1400.0,
                     HOT_COLUMNS.availability: 3600.0,
-                    HOT_COLUMNS.nacelle_position: (210.0 + 20.0 * np.sin(hours / 50)) % 360.0,
+                    HOT_COLUMNS.nacelle_position: (shared_wd + rng.normal(0.0, 3.0, len(index))) % 360.0,
                 },
                 index=index,
             )
         )
     return pd.concat(frames)
-
-
-def _era5() -> pd.DataFrame:
-    """Hourly reanalysis spanning the campaign, with the direction the northing step anchors on."""
-    index = pd.date_range(*PERIOD, freq="1h", tz="UTC", inclusive="left")
-    hours = np.arange(len(index), dtype=float)
-    return pd.DataFrame(
-        {
-            "wind_speed_100m": 9.0 + 2.0 * np.sin(hours / (24 * 30)),
-            "wind_direction_100m": (210.0 + 20.0 * np.sin(hours / 50)) % 360.0,
-            "temperature_2m": 8.0 + 5.0 * np.sin(hours / (24 * 90)),
-        },
-        index=index,
-    )
 
 
 TIMING = {
