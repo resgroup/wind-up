@@ -37,8 +37,9 @@ The following principles apply to every step:
 
 The wind-up methodology comprises the following steps, in three parts.
 
-- **Part A, data preparation (steps 1 to 6)** is done once per dataset. Nothing in it depends on which
-  turbine is the test turbine or on which turbines are its references, so it is never repeated.
+- **Part A, data preparation (steps 1 to 6)** is done once per dataset. It depends on the test turbines only
+  as the set declared for the campaign, and not on which turbines are their references, so it is never
+  repeated.
 - **Part B, the uplift estimator (steps 7 to 10)** is a procedure that takes one test turbine, one set
   of power references and the before and after periods, and returns an uplift. Nothing in it changes
   the reference set or the periods.
@@ -222,18 +223,23 @@ preparation, before any test turbine or reference set is chosen, because the mat
 the features of step 6 depend on it and because it must not change when a reference is dropped.
 
 - i. **Waking state.** The waking state of every turbine is derived from the operational state of step
-  2. Each operational state is classed as waking (for example normal operation, noise mode), not waking
+  2. Each operational state is classed as waking (for example normal operation, noise mode, even if the turbine is not spinning - waking means capable of making a wake if winds are high enough), not waking
   (for example full downtime), part waking (for example partial downtime, grid curtailment) or
   missing. Because the states of step 2 are derived from cause signals only, the waking state of a
   changed turbine is upgrade invariant, as it must be.
 - ii. **Direction.** A direction is needed for each turbine to decide which turbines are upwind of it.
-  An unchanged turbine (step 1) uses its own north-calibrated direction (step 4). A changed turbine,
-  or an unchanged turbine whose own direction is missing, uses the circular mean of the
-  north-calibrated directions of up to four of the nearest unchanged turbines that have a valid
-  direction in that record. Where no such direction is available the record's waking scenario is
-  "unknown". A test turbine's own direction is never used, in keeping with the upgrade invariance
-  principle. Because the rule depends only on the changed and unchanged sets of step 1, the columns
-  of this step are unaffected by which turbines are later chosen or dropped as references.
+  A turbine's direction is valid in a record that is valid for northing (step 2), without the power
+  restriction of step 4: a turbine that is offline may not be facing into the wind. Every turbine other
+  than a test turbine uses its own north-calibrated direction (step 4) where it is valid. A test
+  turbine, or another turbine without a valid direction, uses the circular mean of the north-calibrated
+  directions of up to four of the nearest turbines that are not test turbines and have a valid
+  direction in that record. Where no such direction is available the record's waking
+  scenario is "unknown". A test turbine's own direction is never used, in keeping with the upgrade
+  invariance principle. Other changed turbines do contribute direction: a dataset can include a full
+  roll-out in which every turbine is changed at some point, and a change to a turbine shifts its
+  north-calibrated direction far less than the width of a disturbed sector. The test turbines are
+  those declared for the campaign, so the columns of this step are unaffected by which turbines are
+  later chosen or dropped as references.
 - iii. **Waking scenario.** For each turbine, the turbines upwind of it are found for each record:
   those within the IEC 61400-12-1 disturbed sector [1] for the direction of ii, given the turbine
   positions and rotor diameters. A waking scenario column is recorded per turbine (for example
@@ -251,13 +257,11 @@ the features of step 6 depend on it and because it must not change when a refere
   and work out for itself which ones matter, and it lets the before and after periods be matched on
   like-for-like waking scenarios (step 8). Records with part waking upwind turbines are labelled
   explicitly because their wake effect is too ambiguous, and they are not used by default.
-- iv. **Changed turbines upwind.** A second column per turbine (for example `T05_changed_upwind`)
-  lists the changed turbines (step 1) that are within its disturbed sector for the direction of ii.
-  An upgrade can change the wake a turbine casts, so these records are not used for the uplift
-  calculation by default (step 8). The column depends only on direction, so it is consistent between
-  the before and after periods by construction: it would not make sense to keep records with the test
-  turbine upwind in one period and drop them in the other. The analyst can override the default where
-  the wake is known not to change.
+- iv. **Upwind turbines.** A second column per turbine (for example `T05_upwind`) lists every turbine
+  within its disturbed sector for the direction of ii, whatever its waking state, in a fixed order. Its
+  value is "none" when no turbine is upwind and "unknown" when the direction of ii is unavailable. Which
+  of these turbines count as changed depends on the before and after periods of the test turbine, so
+  the records with a changed turbine upwind are found in step 8 rather than here.
 
 ### 6. Engineer features
 
@@ -280,6 +284,7 @@ repeating this step. The model of step 9 uses those of the reference set it is g
   power relative to its references: 100 m wind speed, 100 m wind direction (as sine and cosine), air
   density derived from temperature, pressure and humidity, a shear exponent derived from the 10 m and
   100 m wind speeds, and a turbulence proxy derived from the gust and mean 10 m wind speeds.
+- iv. Optional: information relevant to atmospheric stability; possible candidates could be solar position or irradiation from ERA5.
 
 Adding more information about the references has not reduced bias to date. Features are therefore kept
 to those with a clear physical justification.
@@ -344,9 +349,14 @@ TODO at this point warnings should be emitted if there are any apparent changes 
   part is about the wakes the test turbine and references are exposed to rather than about missing
   reference power. Whether a mismatch in waking configurations between the periods is itself a
   measurable source of bias has not yet been tested and is decided by validation.
-- iii. **Changed turbines upwind.** Records in which a changed turbine is upwind of the test turbine
-  or of a reference (step 5 iv) are dropped, unless the analyst has overridden this for a wake known
-  not to change.
+- iii. **Changed turbines upwind.** For this estimate, a turbine is changed if it has a change (step 1)
+  between the start of the before period and the end of the after period.
+  A turbine whose changes all fall outside that span casts the same wake in both periods. Records in
+  which a changed turbine is upwind of the test turbine or of a reference (step 5 iv), or in which
+  either upwind column is "unknown", are dropped. An upgrade can change the wake a turbine casts, and
+  the rule depends only on direction, so it drops the same conditions from both periods: it would not
+  make sense to keep records with the test turbine upwind in one period and drop them in the other.
+  The analyst can override the rule where the wake is known not to change.
 - iv. **Weather.** Both periods should see the same weather. For a toggle test the pairing filter of
   step 7 already ensures this.
   - **Option A (current default).** No weather matching beyond the choice of period in step 7.

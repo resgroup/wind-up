@@ -39,10 +39,18 @@ from benchmarking.diagnostics.operating_states import (
     write_validity_plots,
 )
 from benchmarking.diagnostics.reanalysis import write_reanalysis_outputs
+from benchmarking.diagnostics.waking_scenarios import write_waking_outputs
 from benchmarking.diagnostics.yaw_changes import write_possible_yaw_changes
-from benchmarking.harness.northing import north_offsets_of, north_tables, northing_rows
+from benchmarking.harness.northing import (
+    DEFAULT_NORTHING_ROLES,
+    apply_north_tables,
+    north_offsets_of,
+    north_tables,
+    northing_rows,
+)
 from benchmarking.harness.operating_state import VALID_NORTHING_COL, label_operating_states
 from benchmarking.harness.reanalysis import ERA5_WD_RAW, normalise_timestamps, prepare_reanalysis
+from benchmarking.harness.waking import WAKING_COLUMNS, add_waking_scenarios, waking_directions
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up_v0.era5 import get_era5_hourly_df
 
@@ -101,7 +109,8 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
     used and not used for northing coloured by operating state, and the possible yaw-alignment changes
     with the apparent-Cp shift at each.
   - `{stages.WAKING}/`: step 5, each turbine's records considered waking, part waking and not waking,
-    coloured by operating state.
+    coloured by operating state; the hours in each waking scenario; where each turbine's direction came
+    from and how far its own is from its neighbours'; and the turbines upwind of each turbine by direction.
 - `{ESTIMATOR_DIRNAME}/<test turbine>/`: part B, one folder per test turbine, over its span and with
   its power references. Its results are in CSVs; its plots are under `plots/`, one folder per step.
   `plots/{stages.VALID_RECORDS}/` has the records used and not used for uplift, coloured by state.
@@ -296,6 +305,9 @@ def run_declaration(
         analysis_period=spec.period_bounds(),
         out_dir=input_plots / stages.NORTHING,
     )
+    scada_df = _add_waking(
+        scada_df, spec=spec, tables=tables, columns=declaration.columns, timebase=timebase, out_dir=input_plots
+    )
     # The whole park's north tables over the whole record, applied as declared to what each method sees.
     spec = replace(spec, north_offsets=north_offsets_of(tables))
     # One screen verdict for the campaign: every test turbine is judged against the same references.
@@ -321,6 +333,42 @@ def run_declaration(
     write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME)
     logger.info("Wrote the %r report to %s", declaration.name, out_dir)
     return report
+
+
+def _add_waking(
+    scada_df: pd.DataFrame,
+    *,
+    spec: CampaignSpec,
+    tables: dict[str, pd.DataFrame],
+    columns: ColumnSchema,
+    timebase: pd.Timedelta,
+    out_dir: Path,
+) -> pd.DataFrame:
+    """Return ``scada_df`` with the step 5 waking columns, found from the northed direction, and write their outputs.
+
+    Returns ``scada_df`` unchanged when it has no nacelle position.
+    """
+    if columns.nacelle_position is None or columns.nacelle_position not in scada_df.columns:
+        logger.warning("no waking scenarios: the SCADA has no nacelle position")
+        return scada_df
+    northed = apply_north_tables(scada_df, tables=tables, columns=columns, roles=DEFAULT_NORTHING_ROLES)
+    directions = waking_directions(northed, columns=columns, layout=spec.layout, test_turbines=spec.upgraded_turbines)
+    waking = add_waking_scenarios(
+        northed,
+        columns=columns,
+        layout=spec.layout,
+        test_turbines=spec.upgraded_turbines,
+        directions=directions,
+    )
+    write_waking_outputs(
+        waking,
+        directions=directions,
+        layout=spec.layout,
+        columns=columns,
+        timebase=timebase,
+        out_dir=out_dir / stages.WAKING,
+    )
+    return scada_df.assign(**{col: waking[col].to_numpy() for col in WAKING_COLUMNS})
 
 
 def reanalysis_window(index: pd.DatetimeIndex) -> tuple[str, str]:
