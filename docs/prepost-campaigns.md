@@ -30,10 +30,9 @@ turbine's works window; with a declared `timing.changeover`, every turbine share
 ## Choosing the span and the power references
 
 This is the largest piece of prepost-only machinery: `wind_up.analysis_period`
-(`src/wind_up/analysis_period.py`), driven by `benchmarking/campaigns/plans.py`. It runs when the
-campaign declares no shared `timing.changeover`, or declares its `analysis_period` per turbine
-rather than as one span for the whole campaign (`CampaignSpec.uses_plans`). In practice that means
-whenever the campaign is declared by a works table.
+(`src/wind_up/analysis_period.py`), driven by `benchmarking/campaigns/plans.py`. It runs for every
+campaign: a declared `analysis_period`, for the campaign or per turbine, is used as given, and
+otherwise the span is chosen. Either way the power references are the nearest eligible candidates.
 
 Each upgraded turbine gets its own span and its own reference set, because a staggered rollout
 means every turbine's usable window is different. The span and the power references are chosen

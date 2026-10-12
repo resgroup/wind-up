@@ -12,6 +12,8 @@ import pandas as pd
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, PlanSettings, plan_analysis
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from benchmarking.campaigns.declaration import CampaignSpec, Window
     from benchmarking.synthetic import ColumnSchema
 
@@ -38,12 +40,30 @@ class CampaignPlans:
     :param unplanned: upgraded turbine to the selector's reason for giving up on it
     :param works: the works windows the plans were chosen from, the upgraded turbines' included
     :param extents: each turbine's data extent the plans were chosen from
+    :param warnings: per upgraded turbine, the turbines with an indicator of an undeclared change
+        inside its periods (itself included), each with the warning
     """
 
     plans: dict[str, AnalysisPlan] = field(default_factory=dict)
     unplanned: dict[str, str] = field(default_factory=dict)
     works: dict[str, list[Window]] = field(default_factory=dict)
     extents: dict[str, Window] = field(default_factory=dict)
+    warnings: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+def campaign_works(spec: CampaignSpec) -> dict[str, list[Window]]:
+    """Every turbine's works windows, each upgraded turbine given one.
+
+    A shared changeover is a window of no length at the changeover; a toggle campaign's is at the
+    start of toggling.
+    """
+    works = {t: list(w) for t, w in spec.works.items()}
+    if spec.mode == "toggle":
+        start = spec.treatment_start
+        works.update({t: [(start, start)] for t in spec.upgraded_turbines})
+    else:
+        works.update({t: [spec.works_window(t)] for t in spec.upgraded_turbines})
+    return works
 
 
 def plans_for(
@@ -52,6 +72,7 @@ def plans_for(
     *,
     columns: ColumnSchema,
     settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
+    possible_changes: Mapping[str, Sequence[pd.Timestamp]] | None = None,
 ) -> CampaignPlans:
     """Return each upgraded turbine's plan, and the turbines no span could be found for.
 
@@ -66,10 +87,11 @@ def plans_for(
     :param scada_df: long-format SCADA; data extents are read from its finite power
     :param columns: the schema ``scada_df`` is keyed by
     :param settings: how spans and references are chosen
+    :param possible_changes: each turbine's indicators of an undeclared change; one inside a plan's
+        periods is reported as a warning against that turbine
     """
     extents = data_extents(scada_df, turbine_col=spec.turbine_col, power_col=columns.active_power)
-    works = {t: list(w) for t, w in spec.works.items()}
-    works.update({t: [spec.works_window(t)] for t in spec.upgraded_turbines})
+    works = campaign_works(spec)
     excluded = set(spec.excluded_turbines)
     if spec.references_declared:
         candidates = [r for r in spec.candidate_references if r not in excluded]
@@ -80,6 +102,7 @@ def plans_for(
 
     plans: dict[str, AnalysisPlan] = {}
     unplanned: dict[str, str] = {}
+    warnings: dict[str, dict[str, str]] = {}
     for turbine in sorted(spec.upgraded_turbines):
         span = spec.period_for(turbine)
         try:
@@ -101,7 +124,7 @@ def plans_for(
         for reference in plan.forced:
             logger.warning("%s: declared reference %s is used although its works overlap the span", turbine, reference)
         logger.info(
-            "%s: analysis span %s..%s (%s), pre %.0f days, post %.0f days, power references %s, pool rule %s",
+            "%s: analysis span %s..%s (%s), before %.0f days, after %.0f days, power references %s, pool rule %s",
             turbine,
             plan.start,
             plan.end,
@@ -112,4 +135,24 @@ def plans_for(
             "met" if plan.pool_rule_met else f"NOT met: {plan.pool_rule_reason}",
         )
         plans[turbine] = plan
-    return CampaignPlans(plans=plans, unplanned=unplanned, works=works, extents=extents)
+        warnings[turbine] = plan_warnings(plan, possible_changes=possible_changes or {})
+        for other, warning in warnings[turbine].items():
+            logger.warning("%s: %s: %s", turbine, other, warning)
+    return CampaignPlans(plans=plans, unplanned=unplanned, works=works, extents=extents, warnings=warnings)
+
+
+def plan_warnings(plan: AnalysisPlan, *, possible_changes: Mapping[str, Sequence[pd.Timestamp]]) -> dict[str, str]:
+    """Return the warning against each turbine of ``plan`` with a possible undeclared change inside its periods.
+
+    The test turbine is checked over its before and after periods, each power reference and reserve
+    over the whole span.
+    """
+    found: dict[str, str] = {}
+    windows = {plan.turbine: [plan.before, plan.after]}
+    windows.update({r: [(plan.start, plan.end)] for r in (*plan.power_references, *plan.reserves)})
+    for turbine, periods in windows.items():
+        inside = sorted(t for t in possible_changes.get(turbine, ()) if any(s <= t < e for s, e in periods if s < e))
+        if inside:
+            days = ", ".join(t.strftime("%Y-%m-%d") for t in inside)
+            found[turbine] = f"possible undeclared change on {days}"
+    return found

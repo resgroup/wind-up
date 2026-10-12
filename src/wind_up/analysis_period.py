@@ -99,6 +99,16 @@ class AnalysisPlan:
     pool_rule_reason: str
     k: int
 
+    @property
+    def before(self) -> Window:
+        """The before period: the span's start to the start of the works window."""
+        return (self.start, self.works[0])
+
+    @property
+    def after(self) -> Window:
+        """The after period: the end of the works window to the span's end."""
+        return (self.works[1], self.end)
+
     def table(self) -> pd.DataFrame:
         """One row per other turbine, nearest first: ``turbine``, ``role``, ``distance_d``, ``reason``."""
         rows = []

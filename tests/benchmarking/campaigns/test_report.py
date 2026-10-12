@@ -10,6 +10,7 @@ mpl.use("Agg")
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from benchmarking.campaigns import CampaignRunner, write_campaign_report, write_report
 from benchmarking.campaigns.run import estimate_campaign
@@ -88,7 +89,7 @@ def test_report_returns_the_directory_it_wrote_to(tmp_path: Path) -> None:
 def test_no_conditional_plots_when_no_method_reports_conditions(tmp_path: Path) -> None:
     result, dataset = _result([ZeroMethod()])
     write_campaign_report(result, dataset, out_dir=tmp_path)
-    assert not (tmp_path / "conditional").exists()
+    assert not (tmp_path / "15_uplift_distributions").exists()
 
 
 class PowerOnlyMethod:
@@ -108,7 +109,7 @@ def test_only_the_conditions_a_method_reports_are_plotted(tmp_path: Path) -> Non
     # a ws or ti plot for this method would have an all-NaN estimate series
     result, dataset = _result([PowerOnlyMethod()])
     out = write_campaign_report(result, dataset, out_dir=tmp_path)
-    plots = sorted(p.name for p in (out / "conditional").glob("*.png"))
+    plots = sorted(p.name for p in (out / "15_uplift_distributions").glob("*.png"))
     assert len(plots) == 2  # one per upgraded turbine, power only
     assert all("power" in name for name in plots)
     assert not any("_ws_" in name or "_ti_" in name for name in plots)
@@ -117,7 +118,7 @@ def test_only_the_conditions_a_method_reports_are_plotted(tmp_path: Path) -> Non
 def test_conditional_plots_are_written_per_condition_and_turbine(tmp_path: Path) -> None:
     result, dataset = _result([ConditionalZeroMethod()])
     out = write_campaign_report(result, dataset, out_dir=tmp_path)
-    plots = sorted(p.name for p in (out / "conditional").glob("*.png"))
+    plots = sorted(p.name for p in (out / "15_uplift_distributions").glob("*.png"))
     assert len(plots) == len(CONDITIONS) * 2
     assert any("T1" in name for name in plots)
     assert any("T2" in name for name in plots)
@@ -154,7 +155,7 @@ class TestAnalystReport:
         assert (out / "per_turbine.csv").exists()
         assert (out / "farm_uplift.csv").exists()
         assert (out / "farm_uplift_detail.csv").exists()
-        assert (out / "reference_stability.csv").exists()
+        assert (out / "09_screen" / "reference_stability.csv").exists()
 
     def test_it_writes_no_scores_table(self, tmp_path: Path) -> None:
         # scores.csv is the harness's truth-carrying shape; the analyst path has no truth to score
@@ -171,20 +172,19 @@ class TestAnalystReport:
 
     def test_reference_stability_names_every_candidate_reference(self, tmp_path: Path) -> None:
         out = write_report(_report([ReferenceReportingMethod()]), out_dir=tmp_path)
-        stability = pd.read_csv(out / "reference_stability.csv")
+        stability = pd.read_csv(out / "09_screen" / "reference_stability.csv")
         assert set(stability["turbine"]) == {"T3", "T4"}
         assert set(stability["test_wtg"]) == {"T1", "T2"}
 
     def test_conditional_estimates_are_written_when_a_method_reports_them(self, tmp_path: Path) -> None:
         out = write_report(_report([ConditionalZeroMethod()]), out_dir=tmp_path)
-        assert (out / "conditional.csv").exists()
-        plots = sorted(p.name for p in (out / "conditional").glob("*.png"))
+        assert (out / "15_uplift_distributions" / "conditional.csv").exists()
+        plots = sorted(p.name for p in (out / "15_uplift_distributions").glob("*.png"))
         assert len(plots) == len(CONDITIONS) * 2
 
     def test_nothing_conditional_is_written_when_no_method_reports_conditions(self, tmp_path: Path) -> None:
         out = write_report(_report([ZeroMethod()]), out_dir=tmp_path)
-        assert not (out / "conditional.csv").exists()
-        assert not (out / "conditional").exists()
+        assert not (out / "15_uplift_distributions").exists()
 
     def test_it_returns_the_directory_it_wrote_to(self, tmp_path: Path) -> None:
         assert write_report(_report([ZeroMethod()]), out_dir=tmp_path) == tmp_path
@@ -193,75 +193,93 @@ class TestAnalystReport:
         campaign_dir, farm_dir = tmp_path / "campaign", tmp_path / "farm"
         write_report(_report([ReferenceReportingMethod()]), out_dir=campaign_dir, farm_dir=farm_dir)
         assert (campaign_dir / "per_turbine.csv").exists()
-        assert (campaign_dir / "reference_stability.csv").exists()
+        assert (campaign_dir / "09_screen" / "reference_stability.csv").exists()
         assert (farm_dir / "farm_uplift.csv").exists()
         assert (farm_dir / "farm_uplift_detail.csv").exists()
         assert (farm_dir / ReferenceReportingMethod().name / "farm_uplift.png").exists()
         assert not (campaign_dir / "farm_uplift.csv").exists()
 
 
-class TestAnalysisPlans:
+class TestPeriodsAndCandidates:
     @staticmethod
-    def planned_report() -> CampaignReport:
+    def planned_report(scada: pd.DataFrame | None = None, **kwargs: object) -> CampaignReport:
         from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
 
         spec = staggered_spec(north_offsets=[])
-        return estimate_campaign(spec, hourly_scada(), build_methods=lambda _wtg: [ZeroMethod()], columns=HOT_COLUMNS)
+        return estimate_campaign(
+            spec,
+            hourly_scada() if scada is None else scada,
+            build_methods=lambda _wtg: [ZeroMethod()],
+            columns=HOT_COLUMNS,
+            **kwargs,
+        )
 
-    def test_each_plan_is_written(self, tmp_path: Path) -> None:
-        import yaml  # noqa: PLC0415
+    @staticmethod
+    def without_pre_t6() -> pd.DataFrame:
+        from tests.benchmarking.campaigns.test_plans import without_pre  # noqa: PLC0415
+        from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada  # noqa: PLC0415
 
+        return without_pre(hourly_scada(), "T6")
+
+    def test_each_turbines_periods_are_written(self, tmp_path: Path) -> None:
         report = self.planned_report()
         write_report(report, out_dir=tmp_path)
-        table = pd.read_csv(tmp_path / "analysis_plans.csv")
+        periods = pd.read_csv(tmp_path / "07_periods" / "periods.csv")
+        assert list(periods["test_wtg"]) == ["T0", "T6"]
+        assert periods["analysed"].all()
+        plan = report.plans["T0"]
+        row = periods.set_index("test_wtg").loc["T0"]
+        assert pd.Timestamp(row["before_start"]) == plan.start
+        assert pd.Timestamp(row["before_end"]) == plan.works[0]
+        assert pd.Timestamp(row["after_start"]) == plan.works[1]
+        assert pd.Timestamp(row["after_end"]) == plan.end
+        assert row["before_days"] == pytest.approx(plan.pre / pd.Timedelta(days=1), abs=0.01)
+        assert bool(row["pool_rule_met"]) is True
+
+    def test_each_turbines_candidates_are_ranked_by_distance(self, tmp_path: Path) -> None:
+        report = self.planned_report()
+        write_report(report, out_dir=tmp_path)
+        table = pd.read_csv(tmp_path / "08_candidates" / "candidates.csv")
         assert set(table["test_wtg"]) == {"T0", "T6"}
-        assert set(table.columns) == {"test_wtg", "turbine", "role", "distance_d", "reason"}
-        summary = yaml.safe_load((tmp_path / "analysis_plans.yaml").read_text())
-        assert summary["T0"]["power_references"] == list(report.plans["T0"].power_references)
-        assert summary["T0"]["pool_rule_met"] is True
+        assert list(table.columns) == ["test_wtg", "turbine", "rank", "distance_d", "role", "reason", "warning"]
+        t0 = table[table["test_wtg"] == "T0"]
+        assert list(t0["rank"]) == list(range(1, 7))
+        assert list(t0["distance_d"]) == sorted(t0["distance_d"])
+        assert list(t0[t0["role"] == "power_reference"]["turbine"]) == list(report.plans["T0"].power_references)
 
     def test_an_unplanned_turbine_is_written_with_its_reason(self, tmp_path: Path) -> None:
-        import yaml  # noqa: PLC0415
-
-        from tests.benchmarking.campaigns.test_plans import without_pre  # noqa: PLC0415
-        from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
-
-        report = estimate_campaign(
-            staggered_spec(north_offsets=[]),
-            without_pre(hourly_scada(), "T6"),
-            build_methods=lambda _wtg: [ZeroMethod()],
-            columns=HOT_COLUMNS,
-        )
+        report = self.planned_report(self.without_pre_t6())
         write_report(report, out_dir=tmp_path)
-        summary = yaml.safe_load((tmp_path / "analysis_plans.yaml").read_text())
-        assert set(summary) == {"T0", "unplanned"}
-        assert summary["unplanned"] == report.unplanned
+        periods = pd.read_csv(tmp_path / "07_periods" / "periods.csv").set_index("test_wtg")
+        assert not bool(periods.loc["T6", "analysed"])
+        assert periods.loc["T6", "reason"] == report.unplanned["T6"]
+        assert bool(periods.loc["T0", "analysed"])
+        assert "T6" not in set(pd.read_csv(tmp_path / "08_candidates" / "candidates.csv")["test_wtg"])
 
-    def test_each_plan_gets_a_timeline_plot(self, tmp_path: Path) -> None:
-        write_report(self.planned_report(), out_dir=tmp_path)
-        assert (tmp_path / "analysis_timeline_T0.png").exists()
-        assert (tmp_path / "analysis_timeline_T6.png").exists()
+    def test_each_turbine_gets_a_timeline_plot_planned_or_not(self, tmp_path: Path) -> None:
+        write_report(self.planned_report(self.without_pre_t6()), out_dir=tmp_path)
+        assert (tmp_path / "07_periods" / "analysis_timeline_T0.png").exists()
+        assert (tmp_path / "07_periods" / "analysis_timeline_T6.png").exists()
 
-    def test_an_unplanned_turbine_gets_a_timeline_plot_too(self, tmp_path: Path) -> None:
-        from tests.benchmarking.campaigns.test_plans import without_pre  # noqa: PLC0415
-        from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
-
-        report = estimate_campaign(
-            staggered_spec(north_offsets=[]),
-            without_pre(hourly_scada(), "T6"),
-            build_methods=lambda _wtg: [ZeroMethod()],
-            columns=HOT_COLUMNS,
-        )
+    def test_a_possible_undeclared_change_is_a_warning_against_the_turbine(self, tmp_path: Path) -> None:
+        report = self.planned_report()
+        plan = report.plans["T0"]
+        inside = plan.start + (plan.works[0] - plan.start) / 2
+        report = self.planned_report(possible_changes={"T0": [inside], plan.power_references[0]: [inside]})
         write_report(report, out_dir=tmp_path)
-        assert (tmp_path / "analysis_timeline_T6.png").exists()
+        periods = pd.read_csv(tmp_path / "07_periods" / "periods.csv").set_index("test_wtg")
+        assert periods.loc["T0", "warning"] == f"possible undeclared change on {inside:%Y-%m-%d}"
+        assert pd.isna(periods.loc["T6", "warning"])
+        table = pd.read_csv(tmp_path / "08_candidates" / "candidates.csv").set_index(["test_wtg", "turbine"])
+        assert table.loc[("T0", plan.power_references[0]), "warning"] == (
+            f"possible undeclared change on {inside:%Y-%m-%d}"
+        )
 
-    def test_no_unplanned_entry_when_every_turbine_plans(self, tmp_path: Path) -> None:
-        import yaml  # noqa: PLC0415
-
-        write_report(self.planned_report(), out_dir=tmp_path)
-        assert "unplanned" not in yaml.safe_load((tmp_path / "analysis_plans.yaml").read_text())
-
-    def test_no_plan_files_for_a_flat_campaign(self, tmp_path: Path) -> None:
-        write_report(_report([ZeroMethod()]), out_dir=tmp_path)
-        assert not (tmp_path / "analysis_plans.csv").exists()
-        assert not (tmp_path / "analysis_plans.yaml").exists()
+    def test_a_declared_period_is_planned_too(self, tmp_path: Path) -> None:
+        report = _report([ZeroMethod()])
+        write_report(report, out_dir=tmp_path)
+        periods = pd.read_csv(tmp_path / "07_periods" / "periods.csv").set_index("test_wtg")
+        assert periods["declared"].all()
+        assert pd.Timestamp(periods.loc["T1", "after_start"]) == CHANGEOVER
+        assert (tmp_path / "07_periods" / "analysis_timeline_T1.png").exists()
+        assert (tmp_path / "08_candidates" / "candidates.csv").exists()

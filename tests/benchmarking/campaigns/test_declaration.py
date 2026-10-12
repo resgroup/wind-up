@@ -23,7 +23,7 @@ def campaign(*, upgrades: list | None = None, upgrade_timing: object = CHANGEOVE
         candidate_references=["T3", "T4", "T5"],
         excluded_turbines=["T5"],
         upgrades=[] if upgrades is None else upgrades,
-        layout=layout_from_coords({f"T{i}": (57.5 + i * 0.01, -3.25) for i in range(1, 6)}, rotor_diameter_m=82.0),
+        layout=layout_from_coords({f"T{i}": (57.5 + i * 0.002, -3.25) for i in range(1, 6)}, rotor_diameter_m=82.0),
         north_offsets=[("T1", pd.Timestamp("2020-01-01", tz="UTC"), 1.5)],
         rated_power_kw=2300.0,
         analysis_period=PERIOD,
@@ -57,7 +57,7 @@ def test_the_spec_carries_the_declared_layout_and_its_coordinates() -> None:
     spec = declared.spec()
     assert spec.layout is declared.layout
     assert list(spec.layout.frame["rotor_diameter_m"]) == [82.0] * 5
-    assert spec.coords == {f"T{i}": (57.5 + i * 0.01, -3.25) for i in range(1, 6)}
+    assert spec.coords == {f"T{i}": (57.5 + i * 0.002, -3.25) for i in range(1, 6)}
 
 
 def test_layout_from_coords_needs_a_rotor_diameter() -> None:
@@ -179,7 +179,7 @@ def staggered(**overrides: object) -> SyntheticCampaign:
         "upgrade_timing": None,
         "candidate_references": ["T3", "T4"],
         "upgrades": [],
-        "layout": layout_from_coords({f"T{i}": (57.5 + i * 0.01, -3.25) for i in range(1, 6)}, rotor_diameter_m=82.0),
+        "layout": layout_from_coords({f"T{i}": (57.5 + i * 0.002, -3.25) for i in range(1, 6)}, rotor_diameter_m=82.0),
         "north_offsets": None,
         "rated_power_kw": 2300.0,
         "analysis_period": None,
@@ -250,23 +250,20 @@ class TestThePeriod:
         spec = campaign().spec()
         assert spec.period_for("T1") == PERIOD
         assert spec.period_bounds() == PERIOD
-        assert not spec.uses_plans
 
     def test_no_period_means_plans_are_chosen(self) -> None:
         spec = staggered().spec()
         assert spec.period_for("T1") is None
         assert spec.period_bounds() is None
-        assert spec.uses_plans
 
-    def test_a_shared_changeover_without_a_period_uses_plans(self) -> None:
-        assert dataclasses.replace(campaign().spec(), analysis_period=None).uses_plans
+    def test_a_shared_changeover_without_a_period_leaves_each_span_to_be_chosen(self) -> None:
+        assert dataclasses.replace(campaign().spec(), analysis_period=None).period_for("T1") is None
 
     def test_a_per_turbine_period_is_read_per_turbine(self) -> None:
         per = {"T1": PERIOD, "T2": (utc("2020-02-01"), utc("2020-09-01"))}
         spec = staggered(analysis_period=per).spec()
         assert spec.period_for("T2") == per["T2"]
         assert spec.period_bounds() == (PERIOD[0], utc("2020-09-01"))
-        assert spec.uses_plans
 
 
 class TestTheMasks:

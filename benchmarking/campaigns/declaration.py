@@ -79,8 +79,8 @@ class CampaignSpec:
         discovers them from the data -- the usual case. A list, **including an empty one**,
         is applied exactly as given and nothing is discovered.
     :param rated_power_kw: the turbines' rated power
-    :param analysis_period: ``(start, end)`` of the whole record, end exclusive; a span per
-        upgraded turbine; or ``None`` for wind-up to choose each upgraded turbine's span
+    :param analysis_period: a declared ``(start, end)`` span for every upgraded turbine, end
+        exclusive; a span per upgraded turbine; or ``None`` for wind-up to choose each one's span
     :param turbine_col: the turbine-identifier column of the SCADA frame
     :param works: works windows per turbine, any turbine, analysed or not
     :param exclusions: ``(turbine, start, end)`` periods whose data is not used; turbine ``None``
@@ -135,11 +135,6 @@ class CampaignSpec:
             start, _ = self.analysis_period  # type: ignore[misc]  # a toggle campaign declares one period
             return start
         return min(self.works_window(t)[1] for t in self.upgraded_turbines)
-
-    @property
-    def uses_plans(self) -> bool:
-        """Whether each upgraded turbine's span and references are planned rather than declared flat."""
-        return self.upgrade_timing is None or not isinstance(self.analysis_period, tuple)
 
     def timing_for(self, turbine: str) -> pd.Timestamp | ToggleSchedule:
         """Return the upgrade timing of one upgraded turbine."""

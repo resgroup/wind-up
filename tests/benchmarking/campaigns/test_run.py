@@ -191,8 +191,12 @@ class TestAPlannedCampaign:
         )
         return spec, report, method
 
-    def test_a_flat_declaration_resolves_no_plans(self) -> None:
-        assert run([FixedMethod()]).plans == {}
+    def test_a_declared_period_is_planned_as_given(self) -> None:
+        report = run([FixedMethod()])
+        assert set(report.plans) == {"T1", "T2"}
+        assert all(plan.declared for plan in report.plans.values())
+        assert report.plans["T1"].before == (PERIOD[0], CHANGEOVER)
+        assert report.plans["T1"].after == (CHANGEOVER, PERIOD[1])
 
     def test_each_upgraded_turbine_gets_a_plan(self) -> None:
         _, report, _ = self.planned()

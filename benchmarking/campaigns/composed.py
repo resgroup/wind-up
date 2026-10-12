@@ -116,9 +116,15 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
     from and how far its own is from its neighbours'; and the turbines upwind of each turbine by direction.
   - `{stages.FEATURES}/`: step 6, each ERA5 feature over the whole record with its source and units, and
     the share of each turbine's records in each waking scenario.
-- `{CAMPAIGN_DIRNAME}/`: part B, the campaign for each test turbine: its analysis plan (steps 7 and 8),
-  the reference screen (step 9) and its headline uplift (step 10), with the conditional uplift of
-  step 15 collected across test turbines.
+- `{CAMPAIGN_DIRNAME}/`: part B, the campaign for each test turbine. `per_turbine.csv` is its headline
+  uplift (step 10).
+  - `{stages.PERIODS}/`: step 7, each test turbine's before and after periods, or why it is not analysed,
+    and its timeline over every turbine's data, works and exclusions.
+  - `{stages.CANDIDATES}/`: step 8, every other turbine ranked by distance for each test turbine, with
+    its role (power reference, reserve or waking only), the reason, and any warning of an undeclared
+    change inside the periods.
+  - `{stages.SCREEN}/`: step 9, each candidate reference estimated as if it were a test turbine.
+  - `{stages.UPLIFT_DISTRIBUTIONS}/`: step 15, the conditional uplift collected across test turbines.
 - `{MEASUREMENT_DIRNAME}/<turbine>/`: part C, one folder per measured turbine, over its span and with
   its power references. Its results are in CSVs; its plots are under `plots/`, one folder per step.
   `plots/{stages.VALID_RECORDS}/` has the records used and not used for uplift, coloured by state.
@@ -299,7 +305,7 @@ def run_declaration(
         era5_wd=prepared.aligned[ERA5_WD_RAW],
         out_dir=preparation / stages.NORTHING,
     )
-    write_possible_yaw_changes(
+    possible_changes = write_possible_yaw_changes(
         scada_df,
         tables=tables,
         columns=declaration.columns,
@@ -341,6 +347,9 @@ def run_declaration(
         ],
         columns=declaration.columns,
         plan_settings=plan_settings,
+        possible_changes={
+            str(t): list(rows["timestamp"]) for t, rows in possible_changes.groupby("turbine", sort=True)
+        },
     )
     write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME, farm_dir=out_dir / FARM_DIRNAME)
     logger.info("Wrote the %r report to %s", declaration.name, out_dir)

@@ -137,7 +137,7 @@ def _write_campaign(tmp_path: Path, *, mode: str) -> Path:
     pd.DataFrame(
         {
             "Name": list(TURBINES),
-            "Latitude": [57.5 + i * 0.01 for i in range(5)],
+            "Latitude": [57.5 + i * 0.002 for i in range(5)],
             "Longitude": -3.25,
             "rotor_diameter_m": 82.0,
         }
@@ -154,8 +154,13 @@ def test_a_declared_campaign_runs_and_writes_its_report(tmp_path: Path, mode: st
 
     assert list(report.per_turbine["method"]) == [WIND_UP]
     assert list(report.per_turbine["test_wtg"]) == ["T01"]
-    for name in ("per_turbine.csv", "reference_stability.csv"):
-        assert (out_dir / "B_campaign" / name).exists(), name
+    campaign = out_dir / "B_campaign"
+    assert (campaign / "per_turbine.csv").exists()
+    assert (campaign / "07_periods" / "periods.csv").exists()
+    assert (campaign / "07_periods" / "analysis_timeline_T01.png").exists()
+    assert (campaign / "08_candidates" / "candidates.csv").exists()
+    assert (campaign / "09_screen" / "reference_stability.csv").exists()
+    assert (campaign / "15_uplift_distributions" / "conditional.csv").exists()
     for name in ("farm_uplift.csv", "farm_uplift_detail.csv"):
         assert (out_dir / "D_farm" / name).exists(), name
     assert (out_dir / RESOLVED_FILENAME).exists()

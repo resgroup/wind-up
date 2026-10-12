@@ -24,7 +24,7 @@ _ROLE_COLOURS = {
     "candidate": "dimgray",
     "test": "black",
     "power_reference": "C0",
-    "forced": "C1",
+    "forced": "C4",
     "reserve": "C2",
     "waking_only": "dimgray",
 }
@@ -39,8 +39,8 @@ _ROLE_WORDS = {
 _DATA_COLOUR = "0.85"
 _WORKS_COLOUR = "C3"
 _EXCLUSION_COLOUR = "0.6"
-_PRE_COLOUR = "C0"
-_POST_COLOUR = "C2"
+_BEFORE_COLOUR = "C0"
+_AFTER_COLOUR = "C1"
 _ROW_HEIGHT = 0.6
 
 
@@ -59,8 +59,8 @@ def plot_analysis_timeline(
 
     One row per turbine, the test turbine first and the rest nearest first: its data extent, its
     works windows and its own exclusions. Farm-wide exclusions span every row. With a ``plan`` the
-    pre and post sides are shaded and each row is labelled with its role; without one the title
-    gives ``reason``.
+    before and after periods are shaded and each row is labelled with its role; without one the
+    title gives ``reason``.
 
     :param turbine: the test turbine
     :param layout: every turbine, rotor diameters included
@@ -94,9 +94,8 @@ def plot_analysis_timeline(
         if who is None:
             ax.axvspan(_num(s), _num(e), facecolor="none", edgecolor=_EXCLUSION_COLOUR, hatch="///", zorder=0)
     if plan is not None:
-        a, b = plan.works
-        ax.axvspan(_num(plan.start), _num(a), facecolor=_PRE_COLOUR, alpha=0.15, zorder=0)
-        ax.axvspan(_num(b), _num(plan.end), facecolor=_POST_COLOUR, alpha=0.15, zorder=0)
+        ax.axvspan(*map(_num, plan.before), facecolor=_BEFORE_COLOUR, alpha=0.15, zorder=0)
+        ax.axvspan(*map(_num, plan.after), facecolor=_AFTER_COLOUR, alpha=0.15, zorder=0)
 
     ax.set_yticks(range(len(rows)))
     ax.set_yticklabels([_label(name, test=turbine, distances=distances, roles=roles) for name in rows])
@@ -144,13 +143,13 @@ def _title(turbine: str, *, plan: AnalysisPlan | None, reason: str) -> str:
     if plan is None:
         reason = reason.removeprefix(f"{turbine}: ")
         return f"{turbine}: not analysed. {reason}" if reason else f"{turbine}: not analysed"
-    pre_days = plan.pre / pd.Timedelta(days=1)
-    post_days = plan.post / pd.Timedelta(days=1)
+    before_days = plan.pre / pd.Timedelta(days=1)
+    after_days = plan.post / pd.Timedelta(days=1)
     pool = "met" if plan.pool_rule_met else f"not met ({plan.pool_rule_reason})"
     how = "declared" if plan.declared else "chosen"
     return (
         f"{turbine}: span {_day(plan.start)}..{_day(plan.end)} ({how}), "
-        f"pre {pre_days:.0f} d, post {post_days:.0f} d, pool rule {pool}"
+        f"before {before_days:.0f} d, after {after_days:.0f} d, pool rule {pool}"
     )
 
 
@@ -162,8 +161,8 @@ def _legend_handles(*, planned: bool) -> list[Patch]:
     ]
     if planned:
         handles += [
-            Patch(facecolor=_PRE_COLOUR, alpha=0.15, label="pre side"),
-            Patch(facecolor=_POST_COLOUR, alpha=0.15, label="post side"),
+            Patch(facecolor=_BEFORE_COLOUR, alpha=0.15, label="before period"),
+            Patch(facecolor=_AFTER_COLOUR, alpha=0.15, label="after period"),
         ]
     return handles
 

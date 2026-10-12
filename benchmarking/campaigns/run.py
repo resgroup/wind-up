@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from benchmarking.campaigns.context import context_for, context_for_plan
+from benchmarking.campaigns.context import context_for_plan
 from benchmarking.campaigns.plans import CampaignPlans, plans_for
 from benchmarking.harness import MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
@@ -24,12 +24,12 @@ from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.northing import DEFAULT_NORTHING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     import numpy.typing as npt
 
-    from benchmarking.campaigns.declaration import CampaignSpec
+    from benchmarking.campaigns.declaration import CampaignSpec, Window
     from benchmarking.harness import Method, MethodOutput
     from benchmarking.synthetic import ColumnSchema, ToggleSchedule
     from wind_up import FarmUplift
@@ -69,11 +69,8 @@ class CampaignReport:
     :param conditional: each method's per-condition estimates, empty when none reports any
     :param outputs: each ``(method, turbine)``'s raw :class:`~benchmarking.harness.MethodOutput`
     :param wall_time_s: how long each ``(method, turbine)`` estimate took
-    :param plans: each upgraded turbine's analysis plan; empty for a flat declaration, whose
-        turbines all run over the declared period against every candidate reference
-    :param unplanned: each upgraded turbine the period selector could not plan, with its reason;
-        it has no estimate and is left out of the farm headline
-    :param timeline: the works and data extents the plans were chosen from; None for a flat declaration
+    :param timeline: each upgraded turbine's analysis plan, or the reason none could be chosen,
+        with the works and data extents they were chosen from and the warnings against them
     """
 
     spec: CampaignSpec
@@ -85,9 +82,17 @@ class CampaignReport:
     conditional: pd.DataFrame
     outputs: dict[tuple[str, str], MethodOutput]
     wall_time_s: dict[tuple[str, str], float]
-    plans: dict[str, AnalysisPlan] = field(default_factory=dict)
-    unplanned: dict[str, str] = field(default_factory=dict)
-    timeline: CampaignPlans | None = None
+    timeline: CampaignPlans = field(default_factory=CampaignPlans)
+
+    @property
+    def plans(self) -> dict[str, AnalysisPlan]:
+        """Each analysed turbine's plan."""
+        return self.timeline.plans
+
+    @property
+    def unplanned(self) -> dict[str, str]:
+        """Each upgraded turbine no plan could be chosen for, with the reason; it has no estimate."""
+        return self.timeline.unplanned
 
 
 def visible_mask(spec: CampaignSpec, frame: pd.DataFrame) -> npt.NDArray[np.bool_]:
@@ -169,12 +174,12 @@ def estimate_campaign(
     northing_out_dir: Path | None = None,
     northing_plots: bool = True,
     plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
+    possible_changes: Mapping[str, Sequence[pd.Timestamp]] | None = None,
 ) -> CampaignReport:
     """Estimate every applicable method on every upgraded turbine and aggregate to one headline.
 
-    A campaign that plans (see :attr:`CampaignSpec.uses_plans`) runs each upgraded turbine over its
-    own span against its own power references; a flat one runs every turbine over the declared
-    period against every candidate reference.
+    Each upgraded turbine runs over its own span against its own power references, chosen from
+    the campaign timeline or used as declared.
 
     :param spec: the public campaign facts; methods see nothing else
     :param scada_df: long-format source-native SCADA covering the campaign
@@ -185,12 +190,13 @@ def estimate_campaign(
     :param northing_settings: how the shared step's changepoint search is bounded
     :param northing_out_dir: where the shared step writes its table and plots when it discovers corrections
     :param northing_plots: write the shared step's plots as well as its table
-    :param plan_settings: how a planning campaign's spans and power references are chosen
+    :param plan_settings: how each turbine's span and power references are chosen
+    :param possible_changes: each turbine's indicators of an undeclared change, reported as warnings
+        against the plans they fall inside
     """
-    resolved = plans_for(spec, scada_df, columns=columns, settings=plan_settings) if spec.uses_plans else None
-    plans = resolved.plans if resolved is not None else {}
-    unplanned = resolved.unplanned if resolved is not None else {}
-    if unplanned and not plans:
+    resolved = plans_for(spec, scada_df, columns=columns, settings=plan_settings, possible_changes=possible_changes)
+    plans, unplanned = resolved.plans, resolved.unplanned
+    if not plans:
         reasons = "; ".join(unplanned[t] for t in sorted(unplanned))
         msg = f"no upgraded turbine could be planned: {reasons}"
         raise ValueError(msg)
@@ -214,20 +220,13 @@ def estimate_campaign(
 
     # Sorted rather than in declaration order, so a glance at the log says how far through the
     # campaign a run is, whatever order the turbines were declared in.
-    for wtg in sorted(t for t in spec.upgraded_turbines if t not in unplanned):
+    for wtg, plan in sorted(plans.items()):
         timing = spec.timing_for(wtg)
-        plan = plans.get(wtg)
-        if plan is None:
-            frame = visible
-            start, end = spec.treatment_start, spec.analysis_period[1]  # type: ignore[index]  # flat: one span
-            context = context_for(spec, turbine=wtg, scada_df=visible)
-        else:
-            frame = visible[(visible.index >= plan.start) & (visible.index < plan.end)]
-            start, end = plan.works[1], plan.end
-            context = context_for_plan(spec, plan, scada_df=frame)
+        frame = visible[(visible.index >= plan.start) & (visible.index < plan.end)]
+        context = context_for_plan(spec, plan, scada_df=frame)
         rows = frame[frame[spec.turbine_col] == wtg]
         row_index = pd.DatetimeIndex(rows.index)
-        treated = _treated_activity(row_index, timing=timing, start=start, end=end)
+        treated = _treated_activity(row_index, timing=timing, window=plan.after)
         treated &= spec.usable_mask(wtg, row_index)
         energy, n_records = _actual_energy(rows, columns=columns, mask=treated)
 
@@ -270,8 +269,6 @@ def estimate_campaign(
         conditional=_stack(conditional_frames, lead=_CONDITIONAL_COLUMNS),
         outputs=outputs,
         wall_time_s=wall_time_s,
-        plans=plans,
-        unplanned=unplanned,
         timeline=resolved,
     )
 
@@ -299,9 +296,10 @@ def _stack(frames: list[pd.DataFrame], *, lead: Sequence[str]) -> pd.DataFrame:
 
 
 def _treated_activity(
-    index: pd.DatetimeIndex, *, timing: pd.Timestamp | ToggleSchedule, start: pd.Timestamp, end: pd.Timestamp
+    index: pd.DatetimeIndex, *, timing: pd.Timestamp | ToggleSchedule, window: Window
 ) -> npt.NDArray[np.bool_]:
-    """Return the test turbine's treated rows within ``[start, end)``."""
+    """Return the test turbine's treated rows within ``window``, its after period."""
+    start, end = window
     in_activity = np.asarray((index >= start) & (index < end))
     return treated_mask(index, timing) & in_activity
 

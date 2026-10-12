@@ -32,13 +32,15 @@ import pandas as pd
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
-from benchmarking.campaigns.context import context_for
+from benchmarking.campaigns.context import context_for_plan
 from benchmarking.campaigns.placebo import placebo_analysis_period, placebo_campaign
+from benchmarking.campaigns.plans import plans_for
 from benchmarking.campaigns.reference_fixture import REFERENCES_3, REFERENCES_5
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, era5_direction, north_scada
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
+from wind_up.analysis_period import PlanSettings
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -87,7 +89,10 @@ def one_pass(
         era5_wd=era5_direction(era5_df, index),
         roles=DEFAULT_NORTHING_ROLES,
     )
-    context = context_for(spec, turbine=test_wtg, scada_df=visible)
+    # The whole declared pool is the power references: the study varies the pool size itself.
+    settings = PlanSettings(k=len(references), max_reference_distance_d=float("inf"))
+    plan = plans_for(spec, visible, columns=HOT_COLUMNS, settings=settings).plans[test_wtg]
+    context = context_for_plan(spec, plan, scada_df=visible)
     method = PowerModelMethod(
         columns=HOT_COLUMNS,
         baseline_rated_power_kw=spec.rated_power_kw,

@@ -532,7 +532,7 @@ def test_a_flat_declaration_loads_unchanged(tmp_path: Path) -> None:
     declaration = load(tmp_path)
     assert declaration.spec.works == {}
     assert declaration.spec.exclusions == []
-    assert not declaration.spec.uses_plans
+    assert declaration.spec.period_for("T01") is not None
     assert "works" not in declaration.resolved()
 
 

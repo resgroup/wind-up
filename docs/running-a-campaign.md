@@ -182,14 +182,14 @@ northing step. It is not stuck.
 | `per_turbine.csv` | the uplift estimate for each upgraded turbine |
 | `farm_uplift.csv` | one headline number for the whole campaign, weighted by energy |
 | `farm_uplift_detail.csv` | how each turbine contributed, and whether any was dropped |
-| `reference_stability.csv` | **each reference estimated as if it were a test turbine** |
-| `conditional.csv` and `conditional/` | uplift split by wind speed, turbulence and power |
+| `09_screen/reference_stability.csv` | **each reference estimated as if it were a test turbine** |
+| `15_uplift_distributions/` | `conditional.csv` and its plots: uplift split by wind speed, turbulence and power |
 | `wind-up/` | the campaign's uplift plots, in a folder per method that ran |
 | `northing/` | the direction corrections that were discovered, with plots |
 | `campaign_resolved.yaml` | the campaign as wind-up understood it: your declaration with every default filled in and every timestamp resolved to UTC |
-| `analysis_plans.yaml` | for a campaign declared by its works: each upgraded turbine's span, pre and post lengths, power references, and whether the pool rule held (with the reason when it did not) |
-| `analysis_plans.csv` | every other turbine's role for each upgraded turbine — power reference, reserve or waking only — with its distance and the reason it is not a power reference |
-| `analysis_timeline_<turbine>.png` | the chosen span drawn over every turbine's data, works and exclusions, each turbine labelled with its role ([how the analysis period is chosen](analysis-period.md)) |
+| `07_periods/periods.csv` | each upgraded turbine's before and after periods, whether they were declared or chosen, whether the pool rule held (with the reason when it did not), and for a turbine no span could be found for, the reason |
+| `07_periods/analysis_timeline_<turbine>.png` | the span drawn over every turbine's data, works and exclusions, each turbine labelled with its role ([how the analysis period is chosen](analysis-period.md)) |
+| `08_candidates/candidates.csv` | every other turbine ranked by distance for each upgraded turbine — power reference, reserve or waking only — with the reason it is not a power reference and any warning of a possible undeclared change |
 
 ### Start with `reference_stability.csv`
 

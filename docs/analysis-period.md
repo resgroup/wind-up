@@ -10,22 +10,25 @@ rollout every test turbine faces this trade-off differently.
 only: every turbine's works windows, every turbine's data extent, the declared exclusions, the layout,
 and a few settings. It never reads power. It returns an `AnalysisPlan`: the span, the power
 references, the reserves, every other turbine's role with the reason, and whether the pool rule held.
-The campaign runner (`benchmarking/campaigns/plans.py`) calls it once per upgraded turbine whenever
-the campaign is declared by a works table, and writes each plan beside the report
-(`analysis_plans.yaml`, `analysis_plans.csv` and an `analysis_timeline_<turbine>.png`).
+The campaign runner (`benchmarking/campaigns/plans.py`) calls it once per upgraded turbine for every
+campaign, with a declared span used as given, and writes each plan in the report's Part B folders
+(`07_periods/periods.csv` with an `analysis_timeline_<turbine>.png` per turbine, and
+`08_candidates/candidates.csv`). The span's two sides are the before and after periods of method
+step 7: the before period runs from the span's start to the start of the test turbine's works, the
+after period from the end of the works to the span's end.
 
 The figure shows the plan for T13, the AeroUp trial turbine on Hill of Towie, over the 2019 to 2024
 record. Each row is a turbine, the test turbine first and the rest nearest first with their distance
 in rotor diameters (D): grey is data, red is works, hatching is an exclusion. The chosen span is
-shaded, blue before T13's works and green after.
+shaded, blue for the before period and green for the after period.
 
 ![T13's analysis timeline on Hill of Towie](images/analysis-period/analysis_timeline_T13.png)
 
-The pre side runs the full 24 months back from T13's works. The post side stops on 2022-08-30, the
+The before period runs the full 24 months back from T13's works. The after period stops on 2022-08-30, the
 day the nearest turbine T14 started its own AeroUp works, because a span that ran on would lose T14
 as a power reference. T10 and T08, 16 D away, started their works earlier in August 2022 and so are
 waking only: ending the span before their works would have kept them eligible as reserves, at the
-cost of 26 days of post side, and the selector prefers the longer side. T07, 17 D away, is a
+cost of 26 days of after period, and the selector prefers the longer side. T07, 17 D away, is a
 reserve: eligible, within reach, but beyond the nearest four. The farm-wide exclusion from September 2022 to February 2023 falls after the span. The
 figures on this page are drawn by `benchmarking/baselines/study_analysis_period_doc_plot.py`.
 
@@ -50,17 +53,17 @@ The search is exact over a finite set of candidate edges, so there is no optimis
 The candidate **starts** are:
 
 - the test turbine's own first data;
-- the longest pre side sought, `works start − pre_cap` (24 months);
+- the longest before period sought, `works start − pre_cap` (24 months);
 - the edge that yields `pre_cap` of *usable* time once exclusions are subtracted (`reach`, which
   iterates because masked time can push an edge back into more masked time);
 - every other candidate's works window **end**, where that ends before the test turbine's works;
-- every candidate's own **data start**, so the selector can give up some pre period to reach a
+- every candidate's own **data start**, so the selector can give up some before period to reach a
   reference whose data begins late.
 
 The candidate **ends** mirror these, with `side_cap` (12 months) in place of `pre_cap`, works
 window **starts**, and candidates' data ends.
 
-Every start × end combination is evaluated. A span is **viable** when both sides are at least
+Every start × end combination is evaluated. A span is **viable** when both periods are at least
 `min_side` (3 months by default) of usable time *after subtracting exclusions*, and it has at least
 `min_references` (3) eligible power references.
 
@@ -69,9 +72,9 @@ The viable spans are then ranked, in this order:
 | rank by | detail |
 |---|---|
 | 1. the pool rule | of the test turbine's 4 nearest candidates (`pool_size`), the **nearest must be eligible** and at least 3 of the 4 must be eligible within 20 D |
-| 2. the longer short side | `min(pre, post)`, capped at 12 months |
-| 3. the longer post | capped at 12 months |
-| 4. the longer pre | capped at 24 months |
+| 2. the longer short period | `min(before, after)`, capped at 12 months |
+| 3. the longer after period | capped at 12 months |
+| 4. the longer before period | capped at 24 months |
 | 5. more power references | |
 | 6. the nearer furthest reference | |
 | 7. the later start, then the earlier end | a determinism tiebreak; among otherwise equal spans it prefers the shortest |
@@ -80,7 +83,7 @@ The pool rule is a strong **preference**, not a filter: a span that breaks it is
 nothing else is viable, and the plan records `pool_rule_met: false` with the reason.
 
 The chosen span's power references are the **nearest `k`** (4 by default) of its eligible
-candidates. Everything else gets a role and a reason, recorded in `analysis_plans.csv`:
+candidates. Everything else gets a role and a reason, recorded in `candidates.csv`:
 
 - **reserve**: eligible and within reach, but beyond the nearest `k`. Reserves are what the
   reference screen promotes from when it rules a reference out.
@@ -94,8 +97,8 @@ neighbours rather than against the test turbine's.
 
 ## When no span is viable
 
-If no start and end give both sides `min_side` with `min_references` eligible references, the
-turbine is **not analysed**. The runner reports it under `unplanned` with the reason, leaves it out
+If no start and end give both periods `min_side` with `min_references` eligible references, the
+turbine is **not analysed**. The runner reports it in `periods.csv` with the reason, leaves it out
 of the estimate and the farm headline, and continues with the other turbines. Only when no turbine
 can be planned does the campaign fail.
 
@@ -116,8 +119,13 @@ unchanged for each test turbine.
 ## A declared span
 
 Declaring `analysis_period`, for the campaign or per turbine, skips the search: the span is used as
-given. Declared `references` are then **forced in** as power references even when their works
-overlap that span, with a warning. A declared span with no power reference at all raises.
+given, and the candidates are still ranked by distance with the nearest `k` as power references.
+Declared `references` whose works overlap that span are **forced in** as power references, with a
+warning. A declared span with no power reference at all raises.
+
+A toggle campaign always declares its span. Its works window is the start of toggling, of no
+length, so its before period is the data before toggling began and its after period the toggle
+period; the off and on records inside the latter are what the method compares.
 
 ## Settings
 
@@ -127,9 +135,9 @@ exclusions.
 | setting | default | meaning |
 |---|---|---|
 | `k` | 4 | power references per test turbine |
-| `pre_cap` | 24 months | the longest pre side sought |
-| `side_cap` | 12 months | the longest short side, and the longest post side, sought |
-| `min_side` | 3 months | the shortest side a chosen span may have |
+| `pre_cap` | 24 months | the longest before period sought |
+| `side_cap` | 12 months | the longest short period, and the longest after period, sought |
+| `min_side` | 3 months | the shortest period a chosen span may have |
 | `pool_size` | 4 | how many nearest candidates the pool rule looks at |
 | `pool_min_eligible` | 3 | how many of those must be eligible and within the distance limit |
 | `max_reference_distance_d` | 20 | the furthest a power reference may be, in rotor diameters |
@@ -140,13 +148,18 @@ with short gaps between works still yield a reading; a real campaign should not.
 
 ## What the run writes
 
-For every upgraded turbine, planned or not:
+Under the report's `B_campaign/`, for every upgraded turbine, planned or not:
 
 | file | what it says |
 |---|---|
-| `analysis_plans.yaml` | each plan's span, pre and post lengths, power references and pool rule, and under `unplanned` each turbine no span could be found for, with the reason |
-| `analysis_plans.csv` | every other turbine's role for each upgraded turbine, with its distance and the reason it is not a power reference |
-| `analysis_timeline_<turbine>.png` | the figures on this page: the span over every turbine's data, works and exclusions, each turbine labelled with its role |
+| `07_periods/periods.csv` | one row per upgraded turbine: its before and after periods and their lengths, whether the span was declared, whether the pool rule held (with the reason when it did not), any warning of a possible undeclared change inside its periods, and for a turbine no span could be found for, the reason |
+| `07_periods/analysis_timeline_<turbine>.png` | the figures on this page: the span over every turbine's data, works and exclusions, each turbine labelled with its role |
+| `08_candidates/candidates.csv` | every other turbine for each upgraded turbine, ranked by distance, with its role, the reason it is not a power reference, and any warning of a possible undeclared change inside the span |
+
+The warnings come from the possible yaw-alignment changes found in method step 4: one inside a
+test turbine's before or after period, or inside a power reference's or reserve's span, is reported
+against that turbine. It is a warning, not a bar: the analyst decides whether to declare the change
+or exclude the turbine.
 
 `wind_up.analysis_period_plots.plot_analysis_timeline` draws the figure from the same inputs the
 selector used, so what it shows is what the selector saw.

@@ -254,3 +254,9 @@ def test_the_summary_is_plain_data() -> None:
     assert summary["power_references"] == ["T1", "T2", "T3", "T4"]
     assert summary["post_days"] == pytest.approx(365.25)
     assert summary["pool_rule_met"] is True
+
+
+def test_the_before_and_after_periods_bracket_the_works_window() -> None:
+    chosen = plan(line(6))
+    assert chosen.before == (chosen.start, chosen.works[0])
+    assert chosen.after == (chosen.works[1], chosen.end)

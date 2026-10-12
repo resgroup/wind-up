@@ -122,7 +122,7 @@ class CampaignRunner:
         truth_masks: dict[str, np.ndarray] = {}
         analysed = sorted(t for t in spec.upgraded_turbines if t not in report.unplanned)
         for wtg in analysed:
-            window = self._window(report.plans.get(wtg), turbine=wtg)
+            window = self._window(report.plans[wtg])
             replicate = Replicate(
                 dataset=visible,
                 test_wtg=wtg,
@@ -202,23 +202,14 @@ class CampaignRunner:
             original_df=self._dataset.original_df[visible_mask(self._spec, self._dataset.original_df)],
         )
 
-    def _window(self, plan: AnalysisPlan | None, *, turbine: str) -> CampaignWindow:
-        """Return one window spanning ``turbine``'s campaign, so the harness scores it at n=1.
+    def _window(self, plan: AnalysisPlan) -> CampaignWindow:
+        """Return one window spanning the planned turbine's campaign, so the harness scores it at n=1.
 
-        A planned turbine's window is its plan's span from its own changeover; a flat campaign's is
-        the declared period from the campaign's changeover. ``length`` is the activity span in whole
-        months; it labels the result rows and is not used to select records.
+        The window is the plan's span, treated from the start of its after period. ``length`` is
+        the activity span in whole months; it labels the result rows and is not used to select records.
         """
-        bounds = self._spec.period_bounds()
-        if plan is not None:
-            start, end = plan.start, plan.end
-            treatment_start = pd.Timestamp(self._spec.timing_for(turbine))  # type: ignore[arg-type]
-        elif bounds is not None:
-            start, end = bounds
-            treatment_start = self._spec.treatment_start
-        else:
-            msg = f"{turbine} has neither an analysis plan nor a declared analysis period"
-            raise ValueError(msg)
+        start, end = plan.start, plan.end
+        treatment_start = plan.after[0]
         months = (end.year - treatment_start.year) * 12 + (end.month - treatment_start.month)
         return CampaignWindow(
             length=months,

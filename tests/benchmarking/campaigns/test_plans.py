@@ -105,3 +105,48 @@ def test_a_turbine_the_selector_cannot_plan_is_reported_and_the_others_planned(
 
 def test_a_campaign_whose_turbines_all_plan_reports_none_unplanned() -> None:
     assert resolve().unplanned == {}
+
+
+def test_a_toggle_campaign_is_planned_from_the_start_of_toggling() -> None:
+    from benchmarking.synthetic import ToggleSchedule  # noqa: PLC0415
+
+    start = utc("2019-06-01")
+    schedule = ToggleSchedule(period=pd.Timedelta(hours=8), start=start)
+    span = (utc("2019-01-01"), utc("2020-01-01"))
+    spec = staggered_spec(upgrade_timing=schedule, works={}, analysis_period=span)
+    plan = plans(spec)["T0"]
+    assert plan.works == (start, start)
+    assert plan.before == (span[0], start)
+    assert plan.after == (start, span[1])
+    assert plan.declared
+
+
+def test_a_declared_span_with_a_shared_changeover_is_used_as_given() -> None:
+    change = utc("2019-06-06")
+    span = (utc("2018-06-01"), utc("2020-01-01"))
+    plan = plans(staggered_spec(upgrade_timing=change, works={}, analysis_period=span))["T0"]
+    assert plan.declared
+    assert (plan.start, plan.end) == span
+    assert len(plan.power_references) == 4
+    assert plan.reserves
+
+
+def test_a_possible_change_inside_the_periods_is_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    plan = plans()["T0"]
+    reference = plan.power_references[0]
+    inside = plan.start + pd.Timedelta(days=30)
+    outside = plan.end + pd.Timedelta(days=30)
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve(possible_changes={"T0": [inside, outside], reference: [outside, inside], "T6": [inside]})
+    assert resolved.warnings["T0"] == {
+        "T0": f"possible undeclared change on {inside:%Y-%m-%d}",
+        reference: f"possible undeclared change on {inside:%Y-%m-%d}",
+    }
+    assert "T6" not in resolved.warnings["T0"]
+    assert reference in caplog.text
+
+
+def test_a_possible_change_inside_the_test_turbines_works_is_no_warning() -> None:
+    plan = plans()["T0"]
+    during_works = plan.works[0] + (plan.works[1] - plan.works[0]) / 2
+    assert resolve(possible_changes={"T0": [during_works]}).warnings["T0"] == {}

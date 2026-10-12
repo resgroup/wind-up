@@ -35,8 +35,9 @@ import pandas as pd
 
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.power_model.method import reference_overall_uplift
-from benchmarking.campaigns.context import context_for
+from benchmarking.campaigns.context import context_for_plan
 from benchmarking.campaigns.declaration import SyntheticCampaign, layout_coords, layout_from_coords
+from benchmarking.campaigns.plans import plans_for
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, era5_direction, north_scada
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
@@ -48,6 +49,7 @@ from benchmarking.synthetic.sources.greenbyte import (
     load_greenbyte_scada,
 )
 from benchmarking.synthetic.sources.hill_of_towie import hot_layout, load_hot_metadata, load_hot_scada
+from wind_up.analysis_period import PlanSettings
 from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:
@@ -168,7 +170,10 @@ def run_one(test: RoadTest, *, out_dir: Path) -> pd.DataFrame:
             model_params=dict(TUNED_MODEL_PARAMS),
             out_dir=out_dir / test.name / wtg,
         )
-        context = context_for(spec, turbine=wtg, scada_df=visible)
+        # Every candidate is a power reference: the road test judges the screen on the whole pool.
+        settings = PlanSettings(k=len(spec.candidate_references), max_reference_distance_d=float("inf"))
+        plan = plans_for(spec, visible, columns=columns, settings=settings).plans[wtg]
+        context = context_for_plan(spec, plan, scada_df=visible)
         out = method.estimate(MethodInput(scada_df=visible, test_wtg=wtg, campaign_context=context))
         refs = out.reference_uplifts
         combined = reference_overall_uplift(refs, rated_power_kw=rated) if refs is not None else float("nan")
