@@ -193,7 +193,7 @@ def _draw(cell: Cell, *, settings: MatrixSettings) -> tuple[RolloutSite, int, Ro
     seed = campaign_seed(settings.master_seed, site=cell.site, seed_index=cell.seed_index)  # type: ignore[arg-type]
     draw = draw_rollout(site, seed=seed, full_rollout=cell.full_rollout)
     exclusions: list[Exclusion] = []
-    if cell.exclusion_channels is not None:
+    if cell.has_exclusions:
         exclusions = draw_exclusions(
             [t for t in site.coords if t not in draw.trial], start=site.data_start, end=site.data_end, seed=seed
         )
@@ -210,7 +210,7 @@ def _execute_synthetic(
 ) -> dict[str, Any]:
     site, _, draw, exclusions = _draw(cell, settings=settings)
     campaign = rollout_campaign(draw, multiplier=float(cell.multiplier), post_months=cell.post_months)  # type: ignore[arg-type]
-    if cell.exclusion_channels is not None:
+    if cell.has_exclusions:
         campaign = replace(campaign, exclusions=exclusions)
     start, end = draw.data_window(cell.post_months)
     scada = _read_scada(_site_scada_path(detail_dir, cell.site), start=start, end=end)
@@ -231,7 +231,6 @@ def _execute_synthetic(
                 era5=era5,
                 screen_cache=screen_cache,
                 era5_label=label,
-                exclusion_channels=cell.exclusion_channels,
                 method_overrides=method_overrides,
             )
         ],
@@ -287,7 +286,6 @@ def _execute_real(
                 era5=era5,
                 screen_cache=screen_cache,
                 era5_label=label,
-                exclusion_channels=None,
                 method_overrides=method_overrides,
             )
         ],
@@ -321,10 +319,9 @@ def _matrix_method(
     era5: pd.DataFrame,
     screen_cache: dict,
     era5_label: str,
-    exclusion_channels: str | None,
     method_overrides: Mapping[str, Any] | None = None,
 ) -> Method:
-    """Return shipped ``wind-up`` on one thread, without plots, with the cell's exclusion channels.
+    """Return shipped ``wind-up`` on one thread, without plots.
 
     ``method_overrides`` is applied last, so a probe's field wins over the matrix's own.
     """
@@ -332,8 +329,6 @@ def _matrix_method(
         spec, columns=columns, out_dir=out_dir, era5_hourly_df=era5, screen_cache=screen_cache, era5_label=era5_label
     )
     overrides: dict[str, Any] = {"save_plots": False, "model_params": {**method.model_params, "n_jobs": 1}}  # type: ignore[attr-defined]
-    if exclusion_channels is not None:
-        overrides["exclusion_channels"] = exclusion_channels
     overrides.update(method_overrides or {})
     return replace(method, **overrides)  # type: ignore[type-var]
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
+from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.toggle_specialist import ToggleSpecialistMethod
 from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
@@ -82,8 +82,6 @@ def carried_forward_methods(
                 baseline_rated_power_kw=spec.rated_power_kw,
                 era5_hourly_df=era5_hourly_df,
                 conditions=PowerModelMethod.conditions if era5_hourly_df is not None else (),
-                availability_feature=False,
-                era5_exclude=CURATED_ERA5_EXCLUDE,
                 reference_stat_cols=reference_stat_cols,
                 model_params=dict(TUNED_MODEL_PARAMS),
                 out_dir=out_dir / "power_model",

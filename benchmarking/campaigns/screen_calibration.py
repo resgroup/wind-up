@@ -31,7 +31,7 @@ mpl.use("Agg")  # headless
 import pandas as pd
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
+from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.campaigns.context import context_for
 from benchmarking.campaigns.placebo import placebo_analysis_period, placebo_campaign
 from benchmarking.campaigns.reference_fixture import REFERENCES_3, REFERENCES_5
@@ -93,8 +93,6 @@ def one_pass(
         baseline_rated_power_kw=spec.rated_power_kw,
         era5_hourly_df=era5_df,
         conditions=(),
-        availability_feature=False,
-        era5_exclude=CURATED_ERA5_EXCLUDE,
         model_params=dict(TUNED_MODEL_PARAMS),
         # Infinite floor: nothing is ever dropped, so the loop stops after one pass and every
         # deviation recorded is the clean pool's own spread.

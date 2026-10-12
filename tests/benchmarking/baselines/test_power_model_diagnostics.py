@@ -15,6 +15,7 @@ from benchmarking.baselines.power_model.diagnostics import (
     _as_percent_of_power,
     _binned_stats,
     _condition_diagnostic_figure,
+    _histogram_figure,
     _histogram_groups,
     _plot_residual_binned,
     _set_ylim_from_inliers,
@@ -22,6 +23,8 @@ from benchmarking.baselines.power_model.diagnostics import (
     plot_conditional_diagnostics,
 )
 from benchmarking.diagnostics import stages
+from benchmarking.diagnostics.features import category_shares_figure, write_feature_outputs
+from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
 
 def _toy_per_bin() -> pd.DataFrame:
@@ -182,13 +185,15 @@ def test_plot_residual_binned_writes_png_without_conditions(tmp_path: Path) -> N
 
 
 class TestFeatureHistogramFolders:
-    """One signal per folder, so a farm's worth of nacelle positions does not bury the singletons."""
+    """A signal carried by several turbines gets one folder; everything else stays at the top level."""
 
     FEATURES: ClassVar[list[str]] = [
         "wtc_ActPower_mean @ R1",
         "wtc_ActPower_mean @ R2",
         "northed_wtc_NacelPos_mean_sin @ R1",
         "northed_wtc_NacelPos_mean_cos @ R1",
+        "northed_wtc_NacelPos_mean_sin @ R2",
+        "northed_wtc_NacelPos_mean_cos @ R2",
         "cloud_cover",
         "wind_direction_100m_sin",
         "wind_direction_100m_cos",
@@ -211,9 +216,36 @@ class TestFeatureHistogramFolders:
     def test_a_lone_plot_stays_at_the_top_level(self, tmp_path: Path) -> None:
         assert self._placed(tmp_path)["cloud_cover"] == tmp_path.name
 
-    def test_a_reanalysis_field_groups_with_its_companions(self, tmp_path: Path) -> None:
+    def test_a_reanalysis_field_and_its_companions_stay_at_the_top_level(self, tmp_path: Path) -> None:
         placed = self._placed(tmp_path)
-        assert placed["wind_direction_100m"] == placed["wind_direction_100m_sin"] == "wind_direction_100m"
+        assert placed["wind_direction_100m"] == placed["wind_direction_100m_sin"] == tmp_path.name
+
+
+class TestFeatureDistributionFigures:
+    def test_an_era5_histogram_names_its_source_and_units(self) -> None:
+        vals = np.linspace(1.1, 1.3, 50)
+        fig = _histogram_figure(
+            vals, treated=np.arange(50) >= 25, label="air_density @ ERA5_57.50_-3.25", test_wtg="T1"
+        )
+        ax = fig.axes[0]
+        assert ax.get_xlabel() == "air_density @ ERA5_57.50_-3.25 [kg/m³]"
+        assert "@ ERA5_57.50_-3.25" in ax.get_title()
+        plt.close(fig)
+
+    def test_a_categorical_feature_is_labelled_by_its_category_names(self) -> None:
+        values = pd.Series(["normal"] * 6 + ["T03 not waking"] * 3 + [None], dtype="category")
+        fig = category_shares_figure(values, segments={"baseline": np.arange(10) < 5}, title="T1")
+        labels = [t.get_text() for t in fig.axes[0].get_yticklabels()]
+        assert labels == ["normal", "T03 not waking", "(missing)"]
+        plt.close(fig)
+
+    def test_rare_categories_are_pooled(self) -> None:
+        values = pd.Series([f"c{i:02d}" for i in range(30)] * 2, dtype="category")
+        fig = category_shares_figure(values, segments={"baseline": np.arange(60) < 30}, title="T1")
+        labels = [t.get_text() for t in fig.axes[0].get_yticklabels()]
+        assert len(labels) == 20
+        assert labels[-1] == "11 other categories"
+        plt.close(fig)
 
 
 class TestWhatTheFeatureLogSays:
@@ -250,3 +282,25 @@ class TestWhatTheFeatureLogSays:
                 self._importance("northed_wtc_NacelPos_mean_sin @ R1"), active_power_col="wtc_ActPower_mean"
             )
         assert [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_the_step_6_outputs_cover_every_era5_feature_and_turbine(tmp_path: Path) -> None:
+    idx = pd.date_range("2020-01-01", periods=200, freq="6h", tz="UTC")
+    scada = pd.concat(
+        pd.DataFrame(
+            {"turbine": t, WAKING_SCENARIO_COL: np.where(np.arange(200) % 7 == 0, "R2 not waking", "normal")}, index=idx
+        )
+        for t in ("T1", "T2")
+    )
+    era5 = pd.DataFrame({"air_density": np.linspace(1.2, 1.3, 200), "gust_ratio": 1.5}, index=idx)
+    write_feature_outputs(
+        scada, era5_features=era5, era5_label="ERA5_57.50_-3.25", turbine_col="turbine", out_dir=tmp_path
+    )
+    assert sorted(p.name for p in (tmp_path / "era5").iterdir()) == ["air_density.png", "gust_ratio.png"]
+    assert sorted(p.name for p in (tmp_path / "waking_scenarios").iterdir()) == [
+        "waking_scenario_T1.png",
+        "waking_scenario_T2.png",
+    ]
+    table = pd.read_csv(tmp_path / "era5_features.csv")
+    assert list(table["feature"]) == ["air_density @ ERA5_57.50_-3.25", "gust_ratio @ ERA5_57.50_-3.25"]
+    assert list(table["unit"].fillna("")) == ["kg/m³", "-"]

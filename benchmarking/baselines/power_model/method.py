@@ -36,9 +36,9 @@ from benchmarking.baselines.power_model.features import (
     check_reference_only,
     era5_feature_frame,
     extract_outcome,
-    operating_state_features,
     reference_mean_wind_speed,
     test_condition_signals,
+    waking_scenario_features,
 )
 from benchmarking.baselines.power_model.fitting import make_outcome_model, model_safe_features, time_block_folds
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
@@ -49,7 +49,6 @@ from benchmarking.baselines.power_model.screening import (
 from benchmarking.baselines.power_model.screening import (
     empty_screen_passes as _empty_screen_passes,
 )
-from benchmarking.baselines.power_model.waking import write_waking_diagnostics
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.harness.conditions import (
@@ -63,6 +62,7 @@ from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
 from benchmarking.harness.reanalysis import interpolate_era5
 from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrade_start
+from benchmarking.harness.waking import WAKING_SCENARIO_COL
 from wind_up.farm import TurbineUplift, farm_uplift
 
 if TYPE_CHECKING:
@@ -85,19 +85,6 @@ _N_BLOCKS = 25
 # data), reproducing the earlier regime map with one mechanism-anchored constant. k=2 -> 1mo~60d, 12mo~730d.
 _TIME_DECAY_CAMPAIGN_MULTIPLE = 2.0
 _MIN_TIME_DECAY_DURATION_DAYS = 1.0  # floor the campaign duration so the half-life can't degenerate to 0
-
-# Removal-ablation verdict: raw Open-Meteo columns the curated feature set does
-# better without — redundant thermodynamic derivatives of temperature/humidity and the precipitation
-# trio. HoT drivers pass this (with availability_feature=False) as the accepted default; kept here,
-# not baked into ``era5_exclude``'s dataclass default, so a non-Open-Meteo ERA5 frame is not broken
-# by exclusions it never had.
-CURATED_ERA5_EXCLUDE: tuple[str, ...] = (
-    "apparent_temperature",
-    "dew_point_2m",
-    "precipitation",
-    "rain",
-    "snowfall",
-)
 
 # Capacity verdict: loosening min_child_samples 200 -> 50 materially
 # improves prepost spread/score (placebo ALL Δscore -0.62 pp) at neutral overall P50; 20 overshoots
@@ -138,14 +125,6 @@ _DEFAULT_MATCHING_BIN_EDGES: dict[str, list[float]] = {
 # Set high deliberately -- ruling out a good reference costs more than leaving a mild bad one in
 # (on the clean fixture a false positive moved the estimate 0.88 pp).
 _DEFAULT_SCREEN_FLOOR = 0.025
-# Active power, as a fraction of rated, at or above which a power-free reference counts as waking
-# its neighbours. Low by design: thrust is already a large fraction of maximum well below rated,
-# so this separates waking from parked while leaking almost none of the power level.
-WAKING_RATED_FRACTION = 0.05
-# Share of the period a turbine must be ready to operate to count as operating normally, under
-# ``normal_operation_feature``. The counter is near-bimodal (0 or the full period), so the exact
-# value matters little.
-NORMAL_OPERATION_AVAILABLE_FRACTION = 0.5
 # A screening estimate is only as good as the campaign it is measured over, and the benchmark sweep
 # set this rather than a hand-picked calibration. At 90 days the sweep still produced false
 # positives on 3-month campaigns -- a reference read -2.9%, about 3.1 pp from its pool median, and
@@ -357,10 +336,9 @@ class PowerModelMethod:
 
     :param columns: **required** source-native column schema — the single source of the method's
         column names. It reads the ``active_power`` (the outcome ``Y`` and the reference active-power
-        feature), ``availability`` (drives the test-turbine downtime filter and is itself a reference
-        "is it waking" feature), ``wind_speed`` (its reference mean feeds the stuck-filter calm
-        exemption) and ``wind_speed_sd`` (the turbulence-intensity signal) roles;
-        the remaining roles feed only the shared diagnostics.
+        feature), ``availability`` (drives the test-turbine downtime filter), ``wind_speed`` (its
+        reference mean feeds the stuck-filter calm exemption) and ``wind_speed_sd`` (the
+        turbulence-intensity signal) roles; the remaining roles feed only the shared diagnostics.
     :param baseline_rated_power_kw: **required** rated power of the turbine over the data the model is
         fitted on — today every fit is on baseline rows, so this is the baseline rating. It caps the
         clipped counterfactual predictions. (A future cross-predict direction that trains on upgraded
@@ -389,17 +367,7 @@ class PowerModelMethod:
         cross-prediction — the expensive part — and return only the overall P50.
     :param matching_vars: ERA5 columns matched on for the conditional step (default: the curated set)
     :param matching_bin_edges: per-variable CEM bin edges; the curated defaults are used when ``None``
-    :param reference_stat_cols: *extra* per-reference value columns to carry as features beyond the
-        active-power minimum, which is always carried via the ``columns`` schema's ``active_power_min``
-        role (Issue 11 — the max/SD companions stay opt-in here; a repeat of the min is deduped)
-    :param era5_exclude: raw ERA5 columns to drop from the model features (removal-ablation knob;
-        a dropped direction column also loses its sin/cos companions). Columns used as
-        ``matching_vars`` cannot be excluded while any ``conditions`` are requested. Defaults to the
-        accepted ``CURATED_ERA5_EXCLUDE`` set; the **untouched default** is drop-if-present (so a
-        non-Open-Meteo ERA5 frame lacking those columns is not broken), while an **explicitly-set**
-        value keeps the strict raise-on-unknown-column typo guard.
-    :param availability_feature: when ``False`` (the accepted default), drop the per-reference
-        availability *feature*; the ``availability`` role itself stays required for the downtime filter
+    :param reference_stat_cols: extra per-reference value columns to carry as features beside active power
     :param direction_feature: when ``True``, each reference contributes its **north-calibrated**
         direction as ``sin``/``cos``. Requires the shared northing step to have written
         ``columns.northed("nacelle_position")`` into the frame, and raises naming that column when
@@ -416,10 +384,8 @@ class PowerModelMethod:
         interleaved on and off rows) weigh 1; rows outside decay with their distance to it.
         ``None`` (**default**) leaves the weighting off.
     :param reference_screen: when ``True`` (**default**), estimate each candidate reference as if it
-        were a test turbine against the others, and make clear outliers **power-free** -- they keep
-        their direction features and gain a ``waking`` boolean, so their wake information is retained
-        while the channels a performance change corrupts are not. Needs at least 3 candidate
-        references to form a majority; below that it is skipped.
+        were a test turbine against the others, and make clear outliers **power-free**: they contribute
+        no features. Needs at least 3 candidate references to form a majority; below that it is skipped.
     :param screen_floor: deviation from the screened pool's median, in uplift fraction, at which a
         reference is ruled out
     :param report_reference_uplifts: report each candidate reference's own uplift, the standard
@@ -434,16 +400,6 @@ class PowerModelMethod:
     :param write_diagnostics: write the per-run diagnostics folder. ``False`` for the clones that
         estimate one reference during screening or reporting: ``out_dir=None`` does not suppress
         them, it makes a temp directory per run, and there are O(N) such runs per estimate
-    :param normal_operation_feature: give each power-free reference a ``normal_operation`` boolean
-        beside its ``waking`` one, read off the availability counter: waking says whether a wake
-        exists, this says whether the turbine was able to run. ``availability_feature`` still
-        governs whether availability is a feature in its own right. It does not detect curtailment:
-        a turbine held at zero while available reads as operating normally
-    :param exclusion_channels: what a candidate reference carries over its own exclusions (rows
-        present in the frame but not valid for uplift). ``"booleans"`` (default) keeps its waking and
-        normal-operation booleans over its whole record, read from the frame before validity is
-        applied; its power and direction are missing over the exclusions. ``"nan"`` leaves every
-        column of it missing there
     :param screen_min_campaign_days: leave a candidate reference out of the screen when it holds
         less than this much upgraded data; when no candidate holds enough, the screen does not run.
         A screening estimate over a short campaign is too noisy to separate a bad reference from a
@@ -478,9 +434,6 @@ class PowerModelMethod:
     matching_vars: tuple[str, ...] = _DEFAULT_MATCHING_VARS
     matching_bin_edges: dict[str, list[float]] | None = None
     reference_stat_cols: tuple[str, ...] = ()
-    era5_exclude: tuple[str, ...] = CURATED_ERA5_EXCLUDE
-    availability_feature: bool = False
-    normal_operation_feature: bool = True
     direction_feature: bool = True
     adaptive_time_decay: bool = False
     time_decay_half_life_days: float | None = None
@@ -489,7 +442,6 @@ class PowerModelMethod:
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
     headline_estimator: Literal["forward", "reversal"] = "forward"
-    exclusion_channels: Literal["booleans", "nan"] = "booleans"
     write_diagnostics: bool = True
     row_dump_dir: Path | None = None
     # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
@@ -506,7 +458,7 @@ class PowerModelMethod:
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
-        self.columns.require_roles(("active_power", "active_power_min", "availability", "wind_speed", "wind_speed_sd"))
+        self.columns.require_roles(("active_power", "availability", "wind_speed", "wind_speed_sd"))
         if self.direction_feature:
             self.columns.require_roles(("nacelle_position",))
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
@@ -533,10 +485,6 @@ class PowerModelMethod:
         y = extract_outcome(
             scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, active_power_col=self.columns.active_power
         )
-        # The per-reference active-power minimum (Issue 11) is a standard feature carried by the
-        # schema, so it is always present without per-driver ``reference_stat_cols`` config; extra
-        # stat columns still append after it (deduped, so a caller repeating the min is harmless).
-        extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
         # Decided before the screen, whose clone fits are the first expensive thing here, so a
         # matching column named by hand and not delivered stops the run before any model is fitted.
         conditional_runnable = self._conditional_is_runnable(
@@ -549,12 +497,10 @@ class PowerModelMethod:
             references = self._candidate_references(scada, mi=mi)
             n_refs = len(references)
         # Without reserves the screen does not shrink the pool: a reference it ruled out, or could
-        # not judge for want of campaign data, stays a reference and loses its power channels. With
+        # not judge for want of campaign data, stays in the pool and contributes no features. With
         # reserves a ruled-out reference has already left the pool for the wake contributors.
         power_free = tuple(r for r in screen.power_free if r in references) if screen is not None else ()
-        features = self._reference_features(
-            scada, mi=mi, references=references, extra_cols=extra_cols, power_free=power_free
-        )
+        features = self._reference_features(scada, mi=mi, references=references, power_free=power_free)
         features, era5 = self._add_era5(features, index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
 
@@ -658,19 +604,6 @@ class PowerModelMethod:
                     era5=era5,
                     power_references=[r for r in references if r not in power_free],
                 )
-                # What the wake-only turbines carry, beside the model that consumed it.
-                write_waking_diagnostics(
-                    run_dir,
-                    scada=scada,
-                    turbine_col=mi.turbine_col,
-                    active_power_col=self.columns.active_power,
-                    threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
-                    treated=pd.Series(np.asarray(t, dtype=bool), index=index),
-                    test_wtg=mi.test_wtg,
-                    references=references,
-                    power_free=[*power_free, *mi.context.wake_contributors],
-                    coords=mi.context.coords,
-                )
 
         # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
         # it (eventually AEP extrapolation will). Skipped when no conditions are requested.
@@ -692,6 +625,7 @@ class PowerModelMethod:
                 scada,
                 mi=mi,
                 features=features,
+                era5=era5,  # type: ignore[arg-type]
                 y=y_arr,
                 baseline_sel=selected & toggle_rows.campaign_baseline,
                 upgraded_sel=upgraded_sel,
@@ -718,6 +652,7 @@ class PowerModelMethod:
         *,
         mi: MethodInput,
         features: pd.DataFrame,
+        era5: pd.DataFrame,
         y: np.ndarray,
         baseline_sel: np.ndarray,
         upgraded_sel: np.ndarray,
@@ -730,16 +665,16 @@ class PowerModelMethod:
         Match the baseline and upgraded periods on ERA5 weather, then fit/predict in both directions and
         combine so the common per-bin shrinkage cancels (by design); the decomposition is re-leveled onto the
         already-computed overall headline (``overall_ratio``, from the single full fit ``fit``) so the per-bin
-        MWh partitions it. Requires ERA5 — the matching axis is the synced ERA5 columns, which live in
-        ``features`` (``era5_feature_frame`` passes them through). Returns the ``[condition, condition_bin,
-        p50_uplift]`` frame (or ``None`` when no wind-speed column), and writes the per-run diagnostics.
+        MWh partitions it. Requires ERA5: the matching axis is the aligned ERA5 columns ``era5``. Returns
+        the ``[condition, condition_bin, p50_uplift]`` frame (or ``None`` when no wind-speed column), and
+        writes the per-run diagnostics.
         """
         # Matched two-direction fits, for the per-bin shape only. Matching is required: without it the reverse
         # model (train upgraded, predict baseline) would extrapolate out-of-distribution across the prepost
         # weather shift.
         edges = self.matching_bin_edges if self.matching_bin_edges is not None else self._default_bin_edges()
         match = coarsened_exact_match(
-            features[list(self.matching_vars)],
+            era5[list(self.matching_vars)],
             baseline_sel=baseline_sel,
             upgraded_sel=upgraded_sel,
             bin_edges=edges,
@@ -919,35 +854,18 @@ class PowerModelMethod:
             )
 
     def _conditional_is_runnable(self, era5_columns: Iterable[str]) -> bool:
-        """Whether the conditional step has its matching columns; raises when they were named by hand.
-
-        The untouched default set is skip-if-missing, so a partial ERA5 delivery costs the
-        conditional breakdown and leaves the headline standing. An explicitly-set ``matching_vars``
-        keeps the strict guard: a column named there and not present is a configuration error.
-
-        Judged on the raw ERA5 columns rather than the built features, so it can run before the
-        screen: ``era5_feature_frame`` passes every raw column through, and ``_validate_model_config``
-        has already refused an ``era5_exclude`` that would remove a matching var.
-        """
+        """Whether the conditional step runs; raises when ERA5 lacks a matching column."""
         if not self.conditions:
             return False
         available = set(era5_columns)
         missing = [v for v in self.matching_vars if v not in available]
-        if not missing:
-            return True
-        if self.matching_vars is not _DEFAULT_MATCHING_VARS:
+        if missing:
             msg = (
                 f"matching_vars names {missing}, which the ERA5 frame does not carry; the conditional step "
                 f"bins on them. Columns present: {sorted(available)}"
             )
             raise ValueError(msg)
-        logger.warning(
-            "%s: no conditional uplift -- the matching column(s) %s are not in the ERA5 features. The overall "
-            "P50 is unaffected.",
-            self.name,
-            missing,
-        )
-        return False
+        return True
 
     def _default_bin_edges(self) -> dict[str, list[float]]:
         """Per-variable CEM edges for ``matching_vars`` from the curated defaults; raise on an unknown var."""
@@ -968,20 +886,6 @@ class PowerModelMethod:
             return features, None
         aligned = interpolate_era5(self.era5_hourly_df, index=index, timebase=timebase)
         era5_features = era5_feature_frame(aligned)
-        if self.era5_exclude:
-            missing = sorted(set(self.era5_exclude) - set(era5_features.columns))
-            # An explicitly-set era5_exclude keeps the strict typo guard; the promoted class default
-            # (CURATED_ERA5_EXCLUDE) is drop-if-present, so a non-Open-Meteo ERA5 frame lacking those
-            # columns is not broken by an exclusion it never had. Identity check = "untouched default".
-            if missing and self.era5_exclude is not CURATED_ERA5_EXCLUDE:
-                msg = f"era5_exclude names columns not in the ERA5 features: {missing}"
-                raise ValueError(msg)
-            drop = [
-                c
-                for c in era5_features.columns
-                if c in self.era5_exclude or any(c == f"{raw}_{t}" for raw in self.era5_exclude for t in ("sin", "cos"))
-            ]
-            era5_features = era5_features.drop(columns=drop)
         return pd.concat([features, era5_features], axis=1), aligned
 
     def _effective_half_life(self, *, campaign_start: pd.Timestamp, campaign_end: pd.Timestamp) -> float | None:
@@ -1115,12 +1019,10 @@ class PowerModelMethod:
         )
         rows = pd.concat([rows, features.reset_index(drop=True)], axis=1)
         rows.to_parquet(out_dir / "rows.parquet", engine="pyarrow", index=False)
-        present = {str(t) for t in scada[mi.turbine_col].unique()}
         sidecar = {
             "test_wtg": mi.test_wtg,
             "references": list(references),
             "power_free": list(power_free),
-            "wake_only": [w for w in mi.context.wake_contributors if w in present],
             "uplift": uplift,
             "sum_actual_kw": float(fit["y_upgraded"].sum()),
             "sum_counterfactual_kw": float(fit["pred_upgraded"].sum()),
@@ -1129,7 +1031,6 @@ class PowerModelMethod:
             "timebase_s": timebase.total_seconds(),
             "active_power_col": self.columns.active_power,
             "northed_direction_col": self.columns.northed("nacelle_position") if self.direction_feature else None,
-            "waking_threshold_kw": WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
             "baseline_rated_power_kw": self.baseline_rated_power_kw,
             "coords": {t: list(c) for t, c in (mi.context.coords or {}).items()},
         }
@@ -1165,84 +1066,46 @@ class PowerModelMethod:
         return references
 
     def reference_features(self, mi: MethodInput, *, power_free: Sequence[str] = ()) -> pd.DataFrame:
-        """Build this method's reference feature matrix for ``mi``, optionally power-free for some.
+        """Build this method's reference feature matrix for ``mi``, with ``power_free`` references left out.
 
-        The same matrix :meth:`estimate` fits on, exposed so a caller can inspect what the screen
-        changed.
+        The same matrix :meth:`estimate` fits on, before ERA5 is added, exposed so a caller can
+        inspect what the screen changed.
         """
         scada = mi.context.select(mi.scada_df)
-        extra_cols = tuple(dict.fromkeys(c for c in (self.columns.active_power_min, *self.reference_stat_cols) if c))
         return self._reference_features(
-            scada,
-            mi=mi,
-            references=self._candidate_references(scada, mi=mi),
-            extra_cols=extra_cols,
-            power_free=power_free,
+            scada, mi=mi, references=self._candidate_references(scada, mi=mi), power_free=power_free
         )
 
     def _reference_features(
-        self,
-        scada: pd.DataFrame,
-        *,
-        mi: MethodInput,
-        references: Sequence[str],
-        extra_cols: tuple[str, ...],
-        power_free: Sequence[str],
+        self, scada: pd.DataFrame, *, mi: MethodInput, references: Sequence[str], power_free: Sequence[str]
     ) -> pd.DataFrame:
-        """Return reference features for ``scada``; ``power_free`` references carry no power columns.
+        """Return the power references' features and the waking scenarios of the test turbine and power references.
 
-        The context's wake contributors that ``scada`` carries data for join as wake-only turbines.
+        The power references are ``references`` less ``power_free``. Without a waking scenario column
+        in ``scada`` the scenarios are left out with a warning.
         """
-        present = {str(t) for t in scada[mi.turbine_col].unique()}
+        power_references = [r for r in references if r not in set(power_free)]
         features = build_reference_features(
             scada,
             test_wtg=mi.test_wtg,
-            references=references,
+            references=power_references,
             turbine_col=mi.turbine_col,
             active_power_col=self.columns.active_power,
-            availability_col=self.columns.availability,
-            extra_cols=extra_cols,
-            include_availability=self.availability_feature,
+            extra_cols=self.reference_stat_cols,
             direction_col=self.columns.northed("nacelle_position") if self.direction_feature else None,
-            power_free=power_free,
-            wake_only=[w for w in mi.context.wake_contributors if w in present],
-            waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
-            normal_operation_seconds=self._normal_operation_seconds(scada),
         )
-        held = self._held_back_references(mi, references=[r for r in references if r not in set(power_free)])
-        if self.exclusion_channels != "booleans" or not held:
+        if WAKING_SCENARIO_COL not in scada.columns:
+            logger.warning(
+                "%s %s: no waking scenario features -- scada_df has no %r column (method step 5)",
+                self.name,
+                mi.test_wtg,
+                WAKING_SCENARIO_COL,
+            )
             return features
-        state = operating_state_features(
-            mi.scada_df,
-            turbines=held,
-            turbine_col=mi.turbine_col,
-            active_power_col=self.columns.active_power,
-            availability_col=self.columns.availability,
-            waking_threshold_kw=WAKING_RATED_FRACTION * self.baseline_rated_power_kw,
-            normal_operation_seconds=self._normal_operation_seconds(scada),
+        scenarios = waking_scenario_features(
+            scada, test_wtg=mi.test_wtg, references=power_references, turbine_col=mi.turbine_col
         )
-        return features.join(state.reindex(features.index), how="left")
-
-    @staticmethod
-    def _held_back_references(mi: MethodInput, *, references: Sequence[str]) -> list[str]:
-        """Return the references with rows in the frame that are not valid for uplift."""
-        frame = mi.scada_df
-        valid = mi.context.valid_over(pd.DatetimeIndex(pd.unique(frame.index)))
-        held = []
-        for ref in references:
-            if ref not in valid.columns:
-                continue
-            rows = pd.DatetimeIndex(frame.index[(frame[mi.turbine_col] == ref).to_numpy()])
-            if not valid[ref].reindex(rows).to_numpy(dtype=bool).all():
-                held.append(ref)
-        return held
-
-    def _normal_operation_seconds(self, scada: pd.DataFrame) -> float | None:
-        """Seconds ready-to-operate at which a turbine counts as operating normally, None to omit it."""
-        if not self.normal_operation_feature:
-            return None
-        timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
-        return NORMAL_OPERATION_AVAILABLE_FRACTION * timebase.total_seconds()
+        return features.join(scenarios.reindex(features.index), how="left")
 
     def reference_uplifts(
         self, mi: MethodInput, *, power_free: Sequence[str] = (), screen: ScreenResult | None = None
@@ -1419,7 +1282,7 @@ class PowerModelMethod:
         """Return the candidate references with enough upgraded data to be screened, and those without.
 
         A candidate holding less than ``screen_min_campaign_days`` is held out of the screen and
-        keeps only its operating-state booleans; the rest of the pool is still screened. An empty
+        contributes no features; the rest of the pool is still screened. An empty
         pool means no candidate holds enough, and then nobody is held out either.
         """
         days = self._upgraded_days(mi, turbines=self._candidate_references(mi.context.select(mi.scada_df), mi=mi))
@@ -1437,7 +1300,7 @@ class PowerModelMethod:
         elif unjudged:
             logger.info(
                 "%s %s: %s held out of the reference screen, each holding under %.1f days of upgraded data; they "
-                "keep their waking boolean and contribute no power, and the remaining %d candidate(s) are screened",
+                "contribute no features, and the remaining %d candidate(s) are screened",
                 self.name,
                 mi.test_wtg,
                 unjudged,
@@ -1574,9 +1437,6 @@ class PowerModelMethod:
         if self.headline_estimator not in ("forward", "reversal"):
             msg = f"headline_estimator must be 'forward' or 'reversal', got {self.headline_estimator!r}"
             raise ValueError(msg)
-        if self.exclusion_channels not in ("booleans", "nan"):
-            msg = f"exclusion_channels must be 'booleans' or 'nan', got {self.exclusion_channels!r}"
-            raise ValueError(msg)
         if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
             msg = f"time_decay_half_life_days must be positive, got {self.time_decay_half_life_days}"
             raise ValueError(msg)
@@ -1599,13 +1459,6 @@ class PowerModelMethod:
             msg = (
                 "the conditional step requires ERA5 (era5_hourly_df): the matching axis is the ERA5 weather "
                 "columns. Supply era5_hourly_df, or pass conditions=() for an overall-only estimate."
-            )
-            raise ValueError(msg)
-        blocked = sorted(set(self.era5_exclude) & set(self.matching_vars))
-        if blocked and self.conditions:
-            msg = (
-                f"era5_exclude {blocked} are matching_vars; excluding them as model features would "
-                f"break the CEM matching cells. Pass conditions=() or re-pick matching_vars first."
             )
             raise ValueError(msg)
 
@@ -1794,16 +1647,12 @@ class PowerModelMethod:
             "seed": self.seed,
             "has_era5": self.era5_hourly_df is not None,
             "reference_stat_cols": list(self.reference_stat_cols),
-            "era5_exclude": list(self.era5_exclude),
-            "availability_feature": self.availability_feature,
             "direction_feature": self.direction_feature,
             "model_params": {**TUNED_MODEL_PARAMS, **self.model_params},
             "adaptive_time_decay": self.adaptive_time_decay,
             "time_decay_half_life_days": self.time_decay_half_life_days,
             "reference_screen": self.reference_screen,
             "screen_floor": self.screen_floor,
-            "normal_operation_feature": self.normal_operation_feature,
             "screen_min_campaign_days": self.screen_min_campaign_days,
             "report_reference_uplifts": self.report_reference_uplifts,
-            "exclusion_channels": self.exclusion_channels,
         }

@@ -202,10 +202,8 @@ def _make_power_model(
     protocol), e.g. ``{"matching_vars": ["wind_speed_100m"]}``; unknown field names fail loudly and
     JSON lists are coerced to the tuples the dataclass fields expect.
     """
-    # Only data-schema description is passed here now: the accepted behaviour defaults
-    # (availability_feature/era5_exclude, min_child_samples) live on the PowerModelMethod class,
-    # so a bare method already *is* the benchmarked config. The reference active-power minimum is
-    # carried by HOT_COLUMNS' active_power_min role, so no specialist config is needed here either.
+    # Only data-schema description is passed here now: the accepted behaviour defaults live on the
+    # PowerModelMethod class, so a bare method already *is* the benchmarked config.
     kwargs: dict[str, Any] = {
         "columns": HOT_COLUMNS,
         "baseline_rated_power_kw": HOT_RATED_POWER_KW,

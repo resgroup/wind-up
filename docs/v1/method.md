@@ -277,9 +277,10 @@ repeating this step. The model of step 9 uses those of the reference set it is g
     speeds where reference power carries little information.
   - **Option B.** Pitch angle and rotor speed are added, which allows high wind speed operation to be
     resolved.
-- ii. **Waking scenarios:** the waking scenario column (step 5 iii) of each turbine, as a categorical
-  feature. After the matching of step 8 most values are "normal", so these features only act where a
-  non-normal scenario was retained in both periods.
+- ii. **Waking scenarios:** the waking scenario column (step 5 iii) of the test turbine and of each
+  power reference, as a categorical feature. They carry the waking state of every other turbine on
+  the wind farm, which contributes no feature of its own. After the matching of step 8 most values
+  are "normal", so these features only act where a non-normal scenario was retained in both periods.
 - iii. **ERA5:** a short list of variables with a clear physical reason to affect the test turbine's
   power relative to its references: 100 m wind speed, 100 m wind direction (as sine and cosine), air
   density derived from temperature, pressure and humidity, a shear exponent derived from the 10 m and

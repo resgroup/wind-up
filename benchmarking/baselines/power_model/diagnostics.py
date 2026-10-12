@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -24,10 +23,11 @@ import pandas as pd
 from matplotlib.colors import Normalize
 from matplotlib.patches import Patch
 
-from benchmarking.baselines.power_model.features import QUALIFIER
+from benchmarking.baselines.power_model.features import ERA5_UNITS, QUALIFIER
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.diagnostics.density import density_scatter
+from benchmarking.diagnostics.features import category_shares_figure
 from benchmarking.diagnostics.style import apply_grid, save_fig
 from benchmarking.harness.conditions import CONDITIONS, TI_BINS, WS_BINS
 
@@ -190,7 +190,7 @@ def feature_catalogue(data: DiagnosticData) -> pd.DataFrame:
     importance = feature_importance_long(data).set_index("feature")
     rows = []
     for feature in data.feature_names:
-        col = data.feature_values[feature].to_numpy(dtype=float)
+        col = _numeric(data.feature_values[feature])
         finite = np.isfinite(col)
         sourced = _sourced(feature, era5_label=data.era5_label)
         tag, _, source = sourced.partition(QUALIFIER)
@@ -209,6 +209,14 @@ def feature_catalogue(data: DiagnosticData) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows).sort_values("gain", ascending=False, ignore_index=True)
+
+
+def _numeric(values: pd.Series) -> np.ndarray:
+    """Return ``values`` as floats; a categorical becomes its category codes, NaN where missing."""
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        codes = values.cat.codes.to_numpy(dtype=float)
+        return np.where(codes < 0, np.nan, codes)
+    return values.to_numpy(dtype=float)
 
 
 def _abs_corr(col: np.ndarray, y: np.ndarray) -> float:
@@ -418,35 +426,45 @@ def _plot_feature_overview(plots_dir: Path, catalogue: pd.DataFrame) -> None:
 
 
 def _save_feature_histograms(out_dir: Path, data: DiagnosticData) -> None:
-    """One baseline-vs-upgraded density histogram per model input feature, using the real tag name.
+    """One baseline-vs-upgraded distribution plot per model input feature.
 
-    Every column the uplift model actually sees gets its own plot (named by its real source tag /
-    ERA5 column) so a reviewer can check the baseline and upgraded distributions overlap for *each*
-    input — the per-feature view of the overlap/positivity story, complementing the curated shared
-    ``condition_histograms.png``.
+    A numeric feature gets a density histogram; a categorical one gets the share of records in each
+    category. ERA5 features are labelled with their source and units.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     sel = np.asarray(data.selected_all, dtype=bool)
     treated_sel = np.asarray(data.treated_all, dtype=bool)[sel]  # aligned to feature_values rows
-    baseline_sel = ~treated_sel
     groups = _histogram_groups(data.feature_names)
     for feature in data.feature_names:
-        vals = data.feature_values[feature].to_numpy(dtype=float)
-        bins = _robust_bins(vals)
-        fig, ax = plt.subplots(figsize=(7, 5))
-        for seg_label, seg, color in (("baseline", baseline_sel, "C0"), ("upgraded", treated_sel, "C1")):
-            seg_vals = vals[seg & np.isfinite(vals)]
-            if seg_vals.size:
-                ax.hist(
-                    seg_vals, bins=bins, density=True, histtype="stepfilled", alpha=0.45, color=color, label=seg_label
-                )
-        ax.set_xlabel(feature)
-        ax.set_ylabel("density")
-        ax.set_title(f"{data.test_wtg}: {feature}\n(used rows, baseline vs upgraded)")
-        apply_grid(ax)
-        if ax.get_legend_handles_labels()[0]:
-            ax.legend()
+        values = data.feature_values[feature]
+        label = _sourced(feature, era5_label=data.era5_label)
+        if isinstance(values.dtype, pd.CategoricalDtype):
+            fig = category_shares_figure(
+                values,
+                segments={"baseline": ~treated_sel, "upgraded": treated_sel},
+                title=f"{data.test_wtg}: {label}\n(used rows, baseline vs upgraded)",
+            )
+        else:
+            fig = _histogram_figure(_numeric(values), treated=treated_sel, label=label, test_wtg=data.test_wtg)
         save_fig(fig, groups[feature](out_dir) / f"{_safe_filename(feature)}.png")
+
+
+def _histogram_figure(vals: np.ndarray, *, treated: np.ndarray, label: str, test_wtg: str) -> plt.Figure:
+    """Density histograms of ``vals`` in the baseline and upgraded rows."""
+    bins = _robust_bins(vals)
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for seg_label, seg, color in (("baseline", ~treated, "C0"), ("upgraded", treated, "C1")):
+        seg_vals = vals[seg & np.isfinite(vals)]
+        if seg_vals.size:
+            ax.hist(seg_vals, bins=bins, density=True, histtype="stepfilled", alpha=0.45, color=color, label=seg_label)
+    unit = ERA5_UNITS.get(label.partition(QUALIFIER)[0])
+    ax.set_xlabel(f"{label} [{unit}]" if unit else label)
+    ax.set_ylabel("density")
+    ax.set_title(f"{test_wtg}: {label}\n(used rows, baseline vs upgraded)")
+    apply_grid(ax)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend()
+    return fig
 
 
 def _signal_of(feature: str) -> str:
@@ -464,14 +482,16 @@ def _signal_of(feature: str) -> str:
 def _histogram_groups(features: Sequence[str]) -> dict[str, Callable[[Path], Path]]:
     """Map each feature to where its histogram goes: a per-signal folder, or the root.
 
-    A whole farm's worth of one signal buries the signals there is only one of, so a signal with
-    more than one plot gets a folder of its own and the singletons stay at the top level.
+    A signal carried by more than one turbine gets a folder of its own; every other feature stays
+    at the top level.
     """
-    counts = Counter(_signal_of(f) for f in features)
+    turbines: dict[str, set[str]] = {}
+    for feature in features:
+        turbines.setdefault(_signal_of(feature), set()).add(feature.partition(QUALIFIER)[2])
 
     def place(feature: str) -> Callable[[Path], Path]:
         signal = _signal_of(feature)
-        if counts[signal] < _MIN_FOR_OWN_FOLDER:
+        if len(turbines[signal]) < _MIN_FOR_OWN_FOLDER:
             return lambda root: root
         return lambda root: _made(root / _safe_filename(signal))
 

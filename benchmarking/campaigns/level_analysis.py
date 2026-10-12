@@ -16,8 +16,7 @@ changes an estimate.
 * :func:`aipw_level` is the augmented inverse-propensity correction's estimate of the covariate
   shift bias. For a placebo the observed level is pure bias, so the two agreeing says the shift
   term explains it.
-* :func:`channel_difference_by` splits the difference between two dumps of the same rows (the two
-  ``exclusion_channels``) the same way.
+* :func:`channel_difference_by` splits the difference between two dumps of the same rows the same way.
 
 A label function returns ``None``, with a logged warning, when its inputs are absent.
 """
@@ -271,7 +270,7 @@ def label_upwind_offline(dump: RowDump, *, rotor_diameter_m: float) -> pd.Series
     deg_arr = deg.to_numpy(dtype=float)
     offline = np.zeros(len(dump.rows))
     unknown = np.zeros(len(dump.rows), dtype=bool)
-    for turbine in sorted({*dump.meta["references"], *dump.meta["wake_only"]}):
+    for turbine in sorted({*dump.meta["references"], *dump.meta.get("wake_only", [])}):
         if turbine not in coords:
             continue
         waking = _waking_state(dump, turbine)
@@ -292,7 +291,7 @@ def _waking_state(dump: RowDump, turbine: str) -> np.ndarray | None:
     """1 waking, 0 not, NaN unknown; ``None`` when the dump carries nothing about ``turbine``."""
     if dump.waking_col(turbine) in dump.rows.columns:
         return dump.rows[dump.waking_col(turbine)].to_numpy(dtype=float)
-    if dump.power_col(turbine) in dump.rows.columns:
+    if dump.power_col(turbine) in dump.rows.columns and "waking_threshold_kw" in dump.meta:
         power = dump.rows[dump.power_col(turbine)].to_numpy(dtype=float)
         with np.errstate(invalid="ignore"):
             return np.where(np.isnan(power), np.nan, (power >= dump.meta["waking_threshold_kw"]).astype(float))

@@ -63,7 +63,7 @@ SIZE = "test"
 def test_cell_ids_are_readable() -> None:
     assert Cell("main", "pen", 7, 1, 4, 6).cell_id == "pen_s07_m+1_K4_L6"
     assert Cell("main", "pen", 7, -1, 4, 6).cell_id == "pen_s07_m-1_K4_L6"
-    assert Cell("excl_nan", "kel", 0, 0, 4, 12).cell_id == "kel_s00_m+0_K4_L12_xnan"
+    assert Cell("excl", "kel", 0, 0, 4, 12).cell_id == "kel_s00_m+0_K4_L12_excl"
     assert Cell("real", "hot_t13", None, None, 4, 6).cell_id == "hot_t13_K4_L6"
 
 
@@ -76,7 +76,7 @@ def test_the_default_matrix_size() -> None:
     settings = MatrixSettings()
     n_campaigns = sum(settings.seeds.values())
     per_campaign = len(settings.multipliers) * len(settings.post_months)
-    expected = n_campaigns * per_campaign * (len(settings.ks) + 2) + len(settings.ks) * len(settings.post_months)
+    expected = n_campaigns * per_campaign * (len(settings.ks) + 1) + len(settings.ks) * len(settings.post_months)
     assert len(matrix_cells(settings)) == expected
 
 
@@ -99,9 +99,9 @@ def test_cells_run_most_expensive_first() -> None:
 
 def test_the_small_and_big_sizes() -> None:
     small, big = matrix_cells(SIZES["small"].settings), matrix_cells(SIZES["big"].settings)
-    assert (len(small), len(big)) == (38, 1368)
+    assert (len(small), len(big)) == (26, 1098)
     assert "hot" not in {c.site for c in small}
-    assert {c.arm for c in small} == {"main", "excl_booleans", "excl_nan", "real"}
+    assert {c.arm for c in small} == {"main", "excl", "real"}
     assert (SIZES["small"].workers, SIZES["big"].workers) == (3, 16)
     assert {c.cell_id for c in small} <= {c.cell_id for c in matrix_cells(MatrixSettings())}
 
@@ -130,10 +130,10 @@ def test_plan_projects_cpu_hours_wall_time_and_memory() -> None:
 def test_the_plan_command_prints_a_sizes_projection(capsys: pytest.CaptureFixture[str]) -> None:
     driver.main(["plan", "--size", "small"])
     out = capsys.readouterr().out
-    assert "38 cells" in out
+    assert "26 cells" in out
     assert "on 3 worker(s)" in out
     driver.main(["plan", "--size", "big", "--workers", "8"])
-    assert "1368 cells" in capsys.readouterr().out
+    assert "1098 cells" in capsys.readouterr().out
 
 
 def test_run_and_download_need_a_size() -> None:
@@ -168,7 +168,7 @@ def test_half_the_campaigns_roll_out_to_the_whole_farm() -> None:
 
 
 def test_settings_round_trip_through_json() -> None:
-    settings = MatrixSettings(seeds={"hot": 3}, ks=(4,), exclusion_arms=("excl_nan",))
+    settings = MatrixSettings(seeds={"hot": 3}, ks=(4,), exclusion_arms=("excl",))
     assert MatrixSettings.from_json(json.loads(json.dumps(settings.to_json()))) == settings
 
 
@@ -338,7 +338,7 @@ def test_run_on_worker_processes(tmp_path: Path) -> None:
     settings = MatrixSettings(seeds={"hot": 1}, multipliers=(1,), ks=(4,), post_months=(1,), real=False)
     study = _run(settings, tmp_path, workers=2)
     statuses = pd.read_csv(study / "cells.csv")["status"]
-    assert list(statuses) == ["ok"] * 3
+    assert list(statuses) == ["ok"] * 2
 
 
 def test_a_study_directory_refuses_another_matrix(tmp_path: Path) -> None:
@@ -598,15 +598,13 @@ def test_the_period_selector_takes_the_cells_k_and_the_matrix_shortest_side() ->
 def test_method_overrides_reach_the_matrix_method(tmp_path: Path) -> None:
     spec = SimpleNamespace(rated_power_kw=2300.0)
     common = {"columns": HOT_COLUMNS, "out_dir": tmp_path, "era5": None, "screen_cache": {}, "era5_label": "x"}
-    plain = _matrix_method(spec, exclusion_channels="nan", **common)  # type: ignore[arg-type]
+    plain = _matrix_method(spec, **common)  # type: ignore[arg-type]
     assert plain.row_dump_dir is None  # type: ignore[attr-defined]
     dumped = _matrix_method(
         spec,  # type: ignore[arg-type]
-        exclusion_channels="nan",
         method_overrides={"row_dump_dir": tmp_path / "dump"},
         **common,
     )
     assert dumped.row_dump_dir == tmp_path / "dump"  # type: ignore[attr-defined]
     # the matrix's own overrides survive
-    assert dumped.exclusion_channels == "nan"  # type: ignore[attr-defined]
     assert dumped.model_params["n_jobs"] == 1  # type: ignore[attr-defined]

@@ -103,44 +103,38 @@ Feature columns are named `<source tag> @ <turbine>`, and the references are lai
 order whatever order the declaration listed them in, so the line order of a YAML file cannot reach
 the model.
 
-**Each reference that still carries power contributes:**
+**Each power reference contributes:**
 
 | feature | from | on by default |
 |---|---|---|
 | active power | the `active_power` role | yes |
-| active power minimum | the `active_power_min` role | yes |
 | north-calibrated nacelle position, as `sin` and `cos` | `northed_<nacelle_position>` | yes (`direction_feature`) |
-| availability | the `availability` role | **no** (`availability_feature=False`) |
+| further per-reference columns | `reference_stat_cols` | no (empty) |
 
 The direction is always the north-calibrated column, never the raw one, and it is always split
 into `sin`/`cos` because a tree cannot see that 359° is next to 1°.
 
-**Each power-free reference and every wake contributor contributes two booleans and nothing else:**
+**The test turbine and each power reference contribute their waking scenario** (method step 5 iii) as
+a categorical: `waking_scenario @ test` for the test turbine and `waking_scenario @ <turbine>` for each
+power reference. The test turbine's scenario is upgrade-invariant: its direction comes from its
+neighbours and its value from the waking states of the turbines upwind of it. The scenarios carry
+the wake state of every other turbine on the farm, so power-free references, wake contributors and
+held-back rows contribute no feature of their own. Without a `waking_scenario` column in the frame,
+as on a path that has not run Part A, the scenarios are left out with a warning.
 
-| feature | meaning |
+**Reanalysis** contributes six features (`ERA5_FEATURES`), computed from the aligned ERA5 of method
+step 3:
+
+| feature | derived from |
 |---|---|
-| `waking_<power>` | active power at or above 5 % of rated (`WAKING_RATED_FRACTION`) — is this turbine physically making a wake |
-| `normal_operation_<availability>` | availability counter at or above half the period (`NORMAL_OPERATION_AVAILABLE_FRACTION`) — was it able to run |
-TODO we have already found that the 5 % of rated rule is perhaps a source of leak / bias where test turbine power has changed a lot. Need to brainstorm alternatives. Have a look back at how v0 handled waking information.
+| `wind_speed_100m` | as delivered |
+| `wind_direction_100m_sin`, `wind_direction_100m_cos` | `wind_direction_100m` |
+| `air_density` | `temperature_2m`, `surface_pressure`, `relative_humidity_2m` (moist air, Magnus saturation pressure) |
+| `shear_exponent` | `ln(wind_speed_100m / wind_speed_10m) / ln(10)` |
+| `gust_ratio` | `wind_gusts_10m / wind_speed_10m`, missing below 1 m/s |
 
-A turbine that may have changed keeps its wake information and loses every channel a performance
-change can move — its power, and also its direction, since a realignment or wake steering moves
-where it points. The booleans are floats, not booleans, so that a timestamp the turbine has no row
-for stays NaN (unknown) rather than collapsing to `False`.
-
-**Reanalysis** contributes every raw Open-Meteo ERA5 column under its original name, plus `sin`/`cos`
-companions for the direction fields. Five columns are dropped by default
-(`CURATED_ERA5_EXCLUDE`): `apparent_temperature`, `dew_point_2m`, `precipitation`, `rain`,
-`snowfall` — redundant thermodynamic derivatives and the precipitation trio, which a removal
-ablation found the feature set does better without.
-TODO revisit as this ablation study is old and possibly overfit. Switch to just including a small list of ERA5 features which have clear physical justification to be included.
-
-ERA5 arrives hourly and is aligned to the analysis timebase by `sync_era5`
-(`benchmarking/baselines/era5_sync.py`): resample and forward-fill within each hour, then apply the
-single integer row shift, swept over ±24 h, that maximises the correlation between ERA5
-`wind_speed_100m` and the **mean wind speed across the reference pool**. The reference mean is used
-rather than the test turbine's own, so the alignment stays upgrade-invariant; it is not itself a
-feature.
+A missing input column raises. The conditional step matches on the aligned ERA5 columns
+(`matching_vars`), not on these features.
 
 Deliberately excluded everywhere: reactive power, blade pitch, and anything else whose relationship
 to power is a coincidence rather than a cause.
@@ -206,12 +200,12 @@ Three gates stop the screen running where it cannot do better than chance:
 | mode | prepost only | see [prepost campaigns](prepost-campaigns.md) |
 
 A candidate holding too little campaign data is **unjudged** rather than trusted: the rest of the
-pool is still screened, and the unjudged candidate loses its power channels too. If no candidate
+pool is still screened, and the unjudged candidate loses its features too. If no candidate
 holds enough, the screen does not run at all and nobody loses anything.
 
 **What being ruled out costs a reference.** Without reserves, it stays in the pool and becomes
-power-free — it keeps its waking and normal-operation booleans and loses its power, its power
-minimum and its direction. With reserves (which a planned prepost campaign supplies), it leaves the
+power-free: it contributes no features, and its wake reaches the model only through the waking
+scenarios. With reserves (which a planned prepost campaign supplies), it leaves the
 pool for the wake contributors, the nearest reserve is promoted in its place, and the refilled pool
 is screened again; rounds continue until a pass rules out nobody new or the reserves run out.
 
@@ -268,10 +262,7 @@ field.
 
 | knob | default | note |
 |---|---|---|
-| `availability_feature` | `False` | per-reference availability is not a feature; the role is still required for the downtime filter |
-| `normal_operation_feature` | `True` | power-free references get a second boolean beside their waking one |
 | `direction_feature` | `True` | north-calibrated direction as sin/cos; requires the shared northing step to have run |
-| `era5_exclude` | `CURATED_ERA5_EXCLUDE` | five raw columns dropped |
 | `model_params` | `min_child_samples=50` | loosened from the common 200; 20 overshoots into overfit |
 | `reference_screen` | `True` | |
 | `screen_floor` | `0.025` | 2.5 pp from the pool median |
@@ -279,7 +270,6 @@ field.
 | `report_reference_uplifts` | `True` | a report, not an input — turning it off never moves the headline |
 | `headline_estimator` | `"forward"` | `"reversal"` is prepost-only and off |
 | `adaptive_time_decay` / `time_decay_half_life_days` | `False` / `None` | campaign-proximity weighting is off; every training row weighs the same |
-| `exclusion_channels` | `"booleans"` | prepost-relevant; see [prepost campaigns](prepost-campaigns.md#exclusions-and-held-back-rows) |
 | `conditions` | all three | `()` skips the expensive conditional step |
 
 ## Known limits

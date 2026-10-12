@@ -37,7 +37,18 @@ PER_RUN_FIELDS = frozenset({"name", "out_dir"})
 def era5() -> pd.DataFrame:
     """A minimal hourly reanalysis frame, enough for the power model to be built with conditions."""
     index = pd.date_range("2017-01-01", "2019-01-01", freq="1h", tz="UTC", inclusive="left")
-    return pd.DataFrame({"wind_speed_100m": 9.0, "wind_direction_100m": 210.0, "temperature_2m": 8.0}, index=index)
+    return pd.DataFrame(
+        {
+            "wind_speed_100m": 9.0,
+            "wind_direction_100m": 210.0,
+            "wind_speed_10m": 7.0,
+            "wind_gusts_10m": 12.0,
+            "temperature_2m": 8.0,
+            "surface_pressure": 1000.0,
+            "relative_humidity_2m": 80.0,
+        },
+        index=index,
+    )
 
 
 def _config(method: object) -> dict:

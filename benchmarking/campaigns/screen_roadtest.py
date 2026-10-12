@@ -33,7 +33,7 @@ mpl.use("Agg")  # headless
 
 import pandas as pd
 
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
+from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.power_model.method import reference_overall_uplift
 from benchmarking.campaigns.context import context_for
 from benchmarking.campaigns.declaration import SyntheticCampaign, layout_coords, layout_from_coords
@@ -165,8 +165,6 @@ def run_one(test: RoadTest, *, out_dir: Path) -> pd.DataFrame:
             baseline_rated_power_kw=rated,
             era5_hourly_df=era5,
             conditions=(),
-            availability_feature=False,
-            era5_exclude=CURATED_ERA5_EXCLUDE,
             model_params=dict(TUNED_MODEL_PARAMS),
             out_dir=out_dir / test.name / wtg,
         )

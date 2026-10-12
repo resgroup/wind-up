@@ -84,7 +84,7 @@ def test_the_dump_carries_every_documented_column(tmp_path: Path) -> None:
     assert sidecar["power_free"] == []
     assert sidecar["n_upgraded_rows"] == len(upgraded)
     assert sidecar["n_baseline_rows"] == int((rows["selected"] & rows["baseline"]).sum())
-    keys = ("wake_only", "timebase_s", "active_power_col", "northed_direction_col", "waking_threshold_kw", "coords")
+    keys = ("timebase_s", "active_power_col", "northed_direction_col", "coords")
     for key in keys:
         assert key in sidecar
     assert sidecar["coords"] == {}

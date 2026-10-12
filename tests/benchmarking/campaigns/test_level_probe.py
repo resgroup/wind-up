@@ -80,17 +80,9 @@ def test_analyse_run_writes_every_table_and_the_summary(tmp_path: Path) -> None:
     assert abs(held.loc["held back", "difference_pp"] - (observed["excl_booleans"] - observed["excl_nan"])) < 1e-9
 
 
-def test_the_matrix_cases_are_their_sites_l12_placebo_cell_in_three_arms() -> None:
-    assert [c.cell_id for c in matrix_cells("pen")] == [
-        "pen_s00_m+0_K4_L12",
-        "pen_s00_m+0_K4_L12_xbool",
-        "pen_s00_m+0_K4_L12_xnan",
-    ]
-    assert [c.cell_id for c in matrix_cells("kel")] == [
-        "kel_s00_m+0_K4_L12",
-        "kel_s00_m+0_K4_L12_xbool",
-        "kel_s00_m+0_K4_L12_xnan",
-    ]
+def test_the_matrix_cases_are_their_sites_l12_placebo_cell_in_two_arms() -> None:
+    assert [c.cell_id for c in matrix_cells("pen")] == ["pen_s00_m+0_K4_L12", "pen_s00_m+0_K4_L12_excl"]
+    assert [c.cell_id for c in matrix_cells("kel")] == ["kel_s00_m+0_K4_L12", "kel_s00_m+0_K4_L12_excl"]
 
 
 def test_a_failed_case_does_not_stop_the_series(tmp_path: Path) -> None:

@@ -24,13 +24,15 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import yaml
 
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
+from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
+from benchmarking.baselines.power_model.features import era5_feature_frame
 from benchmarking.campaigns.declaration import layout_coords
 from benchmarking.campaigns.loader import era5_window, load_declaration
 from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label, infer_timebase
+from benchmarking.diagnostics.features import write_feature_outputs
 from benchmarking.diagnostics.input_data import write_input_data_plots
 from benchmarking.diagnostics.operating_states import (
     NORTHING_VIEWS,
@@ -111,6 +113,8 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
   - `{stages.WAKING}/`: step 5, each turbine's records considered waking, part waking and not waking,
     coloured by operating state; the hours in each waking scenario; where each turbine's direction came
     from and how far its own is from its neighbours'; and the turbines upwind of each turbine by direction.
+  - `{stages.FEATURES}/`: step 6, each ERA5 feature over the whole record with its source and units, and
+    the share of each turbine's records in each waking scenario.
 - `{ESTIMATOR_DIRNAME}/<test turbine>/`: part B, one folder per test turbine, over its span and with
   its power references. Its results are in CSVs; its plots are under `plots/`, one folder per step.
   `plots/{stages.VALID_RECORDS}/` has the records used and not used for uplift, coloured by state.
@@ -153,8 +157,6 @@ def wind_up_method(
         baseline_rated_power_kw=spec.rated_power_kw,
         era5_hourly_df=era5_hourly_df,
         conditions=PowerModelMethod.conditions if era5_hourly_df is not None else (),
-        availability_feature=False,
-        era5_exclude=CURATED_ERA5_EXCLUDE,
         model_params=dict(TUNED_MODEL_PARAMS),
         out_dir=out_dir,
         save_plots=True,
@@ -307,6 +309,14 @@ def run_declaration(
     )
     scada_df = _add_waking(
         scada_df, spec=spec, tables=tables, columns=declaration.columns, timebase=timebase, out_dir=input_plots
+    )
+    write_feature_outputs(
+        scada_df,
+        era5_features=era5_feature_frame(prepared.aligned),
+        era5_label=era5_source_label(*declaration.centroid),
+        turbine_col=declaration.columns.turbine,
+        changeovers=changeovers,
+        out_dir=input_plots / stages.FEATURES,
     )
     # The whole park's north tables over the whole record, applied as declared to what each method sees.
     spec = replace(spec, north_offsets=north_offsets_of(tables))

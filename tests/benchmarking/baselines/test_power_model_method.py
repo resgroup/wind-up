@@ -17,8 +17,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, PowerModelMethod
-from benchmarking.baselines.power_model.features import QUALIFIER
+from benchmarking.baselines.power_model import PowerModelMethod
+from benchmarking.baselines.power_model.features import ERA5_FEATURES, QUALIFIER
 from benchmarking.baselines.power_model.method import (
     _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
     _TIME_DECAY_CAMPAIGN_MULTIPLE,
@@ -35,6 +35,7 @@ from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL
 from benchmarking.harness.toggle import resolve_toggle
+from benchmarking.harness.waking import WAKING_SCENARIO_COL
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
 
 if TYPE_CHECKING:
@@ -410,7 +411,7 @@ class TestConditionsSelection:
 
 
 class TestConditionalWithoutItsMatchingColumns:
-    """A partial reanalysis delivery costs the conditional breakdown, not the headline."""
+    """A reanalysis delivery without a matching column stops the run."""
 
     def _case(self, **overrides: object) -> tuple[PowerModelMethod, MethodInput]:
         n = 4000
@@ -429,23 +430,12 @@ class TestConditionalWithoutItsMatchingColumns:
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         return method, mi
 
-    def test_the_headline_survives_a_missing_default_matching_column(self) -> None:
+    def test_a_missing_matching_column_raises(self) -> None:
         method, mi = self._case()
-        out = method.estimate(mi)
-        assert np.isfinite(out.p50_overall)
-
-    def test_the_conditional_breakdown_is_dropped_rather_than_guessed(self) -> None:
-        method, mi = self._case()
-        assert method.estimate(mi).p50_by_condition is None
-
-    def test_it_says_so(self, caplog: pytest.LogCaptureFixture) -> None:
-        method, mi = self._case()
-        with caplog.at_level(logging.WARNING):
+        with pytest.raises(ValueError, match="wind_gusts_10m"):
             method.estimate(mi)
-        assert "wind_gusts_10m" in caplog.text
 
-    def test_an_explicitly_named_missing_column_raises_instead(self) -> None:
-        """Naming a column that is not there is a configuration error, not a partial delivery."""
+    def test_an_explicitly_named_missing_column_raises(self) -> None:
         method, mi = self._case(matching_vars=("wind_speed_100m", "wind_gusts_10m"))
         with pytest.raises(ValueError, match="wind_gusts_10m"):
             method.estimate(mi)
@@ -550,8 +540,7 @@ def _toy_era5(scada_idx: pd.DatetimeIndex, *, seed: int = 0) -> pd.DataFrame:
 
 
 class TestFeatureConfig:
-    """The surviving feature config (Issue 11 reference stats, era5_exclude, availability): columns
-    reach the model and estimates stay sound."""
+    """The feature config: columns reach the model and estimates stay sound."""
 
     def _prepost_mi(self, n: int = 4000, *, uplift: float = 0.05) -> MethodInput:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
@@ -582,7 +571,7 @@ class TestFeatureConfig:
         assert {f"{_POWER_SD} @ R1", f"{_POWER_MAX} @ R2", f"{_POWER_MIN} @ R3"} <= fitted
         assert not any(name.endswith(" @ T1") for name in fitted)
 
-    def test_era5_exclude_drops_column_and_direction_companions(self, tmp_path: Path) -> None:
+    def test_the_era5_features_are_the_curated_list(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
         method = PowerModelMethod(
             columns=_COLUMNS,
@@ -590,49 +579,25 @@ class TestFeatureConfig:
             era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
             conditions=(),
             model_params=_FAST_PARAMS,
-            era5_exclude=("wind_speed_10m", "wind_direction_10m"),
             out_dir=tmp_path,
         )
         out = method.estimate(mi)
         assert out.p50_overall == pytest.approx(0.05, abs=0.02)
         fitted = self._fitted_feature_names(tmp_path)
-        assert (
-            not {
-                "wind_speed_10m",
-                "wind_direction_10m",
-                "wind_direction_10m_sin",
-                "wind_direction_10m_cos",
-            }
-            & fitted
-        )
-        assert "wind_speed_100m @ ERA5" in fitted  # reanalysis names its source like a turbine does
+        era5 = {name.removesuffix(" @ ERA5") for name in fitted if name.endswith(" @ ERA5")}
+        assert era5 == set(ERA5_FEATURES)
 
-    def test_era5_exclude_of_matching_var_raises_with_conditional_on(self) -> None:
-        mi = self._prepost_mi(n=300)
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
-            era5_exclude=("wind_gusts_10m",),
-        )
-        with pytest.raises(ValueError, match="matching_vars"):
-            method.estimate(mi)
-
-    def test_availability_feature_off_removes_availability_columns(self, tmp_path: Path) -> None:
+    def test_power_and_direction_are_all_a_reference_contributes(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
         method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            conditions=(),
-            model_params=_FAST_PARAMS,
-            availability_feature=False,
-            out_dir=tmp_path,
+            columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(), model_params=_FAST_PARAMS, out_dir=tmp_path
         )
         out = method.estimate(mi)
         assert out.p50_overall == pytest.approx(0.05, abs=0.02)
         fitted = self._fitted_feature_names(tmp_path)
-        assert not any(name.startswith(_AVAIL) for name in fitted)
-        assert f"{_POWER} @ R1" in fitted
+        assert sorted(name for name in fitted if name.endswith(" @ R1")) == sorted(
+            [f"{_POWER} @ R1", f"{_NORTHED_YAW}_sin @ R1", f"{_NORTHED_YAW}_cos @ R1"]
+        )
 
 
 class TestPromotedDefaults:
@@ -647,14 +612,6 @@ class TestPromotedDefaults:
             model_params={"min_child_samples": 123},
         )
         assert m._make_model().get_params()["min_child_samples"] == 123  # noqa: SLF001
-
-    def test_availability_feature_defaults_off(self) -> None:
-        m = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
-        assert m.availability_feature is False
-
-    def test_era5_exclude_defaults_to_curated_set(self) -> None:
-        m = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
-        assert m.era5_exclude == CURATED_ERA5_EXCLUDE
 
 
 # The re-level is now the pinned-imputed ``relevel_conditional`` in power_model.conditional; its unit
@@ -995,16 +952,11 @@ class TestReferenceScreen:
         on = _screen_method(reference_screen=True).estimate(mi).p50_overall
         assert on == pytest.approx(off)
 
-    def test_the_screened_reference_keeps_its_operating_state_and_nothing_else(self) -> None:
-        """Its power changed, and whatever changed it may have moved where it points too.
-
-        What survives is its operating state: whether it makes a wake, and whether it could run.
-        """
+    def test_the_screened_reference_contributes_nothing(self) -> None:
+        """Its power changed, and whatever changed it may have moved where it points too."""
         mi, _ = _screen_case(step=0.03)
         features = _screen_method().reference_features(mi, power_free=("R1",))
-        assert sorted(c for c in features.columns if c.endswith(" @ R1")) == sorted(
-            [f"waking_{_POWER} @ R1", f"normal_operation_{_AVAIL} @ R1"]
-        )
+        assert not [c for c in features.columns if c.endswith(" @ R1")]
 
     def test_the_screen_is_on_by_default(self) -> None:
         assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).reference_screen
@@ -1247,24 +1199,24 @@ class TestTheScreenGateJudgesThePoolThatExists:
 class TestScreenFailureNamesItsCause:
     """When no reference can be estimated, the raised error carries why, not just the verdict."""
 
-    def _mi_without_the_power_minimum(self) -> MethodInput:
+    def _mi_without_the_northed_direction(self) -> MethodInput:
         """Every reference becomes unestimatable for one reason: a column the features need is gone."""
         mi, changeover = _screen_case(step=0.0)
-        scada = mi.scada_df.drop(columns=[_COLUMNS.active_power_min])
+        scada = mi.scada_df.drop(columns=[_NORTHED_YAW])
         return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
 
     def test_the_error_names_the_missing_column(self) -> None:
         """Without this the analyst is told the farm is broken when one column is absent."""
-        with pytest.raises(ValueError, match=str(_COLUMNS.active_power_min)):
-            _screen_method().estimate(self._mi_without_the_power_minimum())
+        with pytest.raises(ValueError, match=_NORTHED_YAW):
+            _screen_method().estimate(self._mi_without_the_northed_direction())
 
     def test_the_error_still_carries_the_screen_s_own_verdict(self) -> None:
         with pytest.raises(ValueError, match="majority"):
-            _screen_method().estimate(self._mi_without_the_power_minimum())
+            _screen_method().estimate(self._mi_without_the_northed_direction())
 
     def test_the_underlying_cause_is_chained(self) -> None:
         with pytest.raises(ValueError, match="What stopped each of them") as excinfo:
-            _screen_method().estimate(self._mi_without_the_power_minimum())
+            _screen_method().estimate(self._mi_without_the_northed_direction())
         assert excinfo.value.__cause__ is not None
 
 
@@ -1530,60 +1482,13 @@ class TestGateJudgesEachCandidateSeparately:
         assert not _screen_method(screen_min_campaign_days=250.0).screen_references(mi).screenable
 
 
-class TestNormalOperationBoolean:
-    """A power-free reference says two things: is it making a wake, and was it able to run.
-
-    Active power alone cannot separate a turbine that is out of service from one that is becalmed --
-    both read zero. Those two mean different things either side of a changeover, so a reference that
-    is up through the baseline and down through the campaign teaches the model "not waking means
-    calm" and then meets a broken turbine in a gale.
-    """
-
-    @staticmethod
-    def _mi() -> MethodInput:
-        mi, _ = _screen_case(step=0.0)
-        return mi
-
-    def _features(self, **overrides: object) -> pd.DataFrame:
-        return _screen_method(**overrides).reference_features(self._mi(), power_free=["R1"])
-
-    def test_it_is_on_by_default(self) -> None:
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).normal_operation_feature
-
-    def test_a_power_free_reference_carries_both_booleans(self) -> None:
-        cols = self._features().columns
-        assert f"waking_{_POWER}{QUALIFIER}R1" in cols
-        assert f"normal_operation_{_AVAIL}{QUALIFIER}R1" in cols
-        assert f"{_POWER}{QUALIFIER}R1" not in cols, "power-free still means no power"
-
-    def test_turning_it_off_leaves_only_the_waking_boolean(self) -> None:
-        cols = self._features(normal_operation_feature=False).columns
-        assert f"waking_{_POWER}{QUALIFIER}R1" in cols
-        assert not [c for c in cols if c.startswith("normal_operation")]
-
-    def test_it_adds_nothing_when_no_reference_is_power_free(self) -> None:
-        """It rides on the power-free set, so a pool with nothing demoted is untouched."""
-        on = _screen_method().reference_features(self._mi())
-        off = _screen_method(normal_operation_feature=False).reference_features(self._mi())
-        assert on.equals(off)
-
-    def test_availability_does_not_become_a_feature_of_its_own(self) -> None:
-        """The boolean reads the counter; `availability_feature` decides whether it is a feature."""
-        cols = self._features(availability_feature=False).columns
-        assert not [c for c in cols if _AVAIL in c and not c.startswith("normal_operation")]
-
-    def test_only_the_new_column_changes(self) -> None:
-        on, off = self._features(), self._features(normal_operation_feature=False)
-        assert off.equals(on[off.columns])
-
-
 class TestAnUnjudgedCandidateLosesItsPowerEverywhere:
     """What the screen could not judge, the headline must not lean on.
 
-    A screening estimate already runs with the held-out candidates demoted to their waking boolean
-    -- `_reference_input` puts any candidate outside the pool it is handed among the wake
-    contributors. The headline and the reference report must read that same pool, or the screen
-    rules on one farm and the campaign reports another.
+    A screening estimate already runs without the held-out candidates -- `_reference_input` puts
+    any candidate outside the pool it is handed among the wake contributors. The headline and the
+    reference report must read that same pool, or the screen rules on one farm and the campaign
+    reports another.
     """
 
     @staticmethod
@@ -1608,8 +1513,7 @@ class TestAnUnjudgedCandidateLosesItsPowerEverywhere:
         method = self._method()
         screen = method.screen_references(mi)
         features = method.reference_features(mi, power_free=screen.power_free).columns
-        assert f"{_POWER}{QUALIFIER}R1" not in features
-        assert f"waking_{_POWER}{QUALIFIER}R1" in features
+        assert not [c for c in features if c.endswith(f"{QUALIFIER}R1")]
         assert f"{_POWER}{QUALIFIER}R2" in features
 
     def test_the_reference_report_keeps_it_out_of_every_pool_but_still_reports_it(self) -> None:
@@ -1704,7 +1608,7 @@ class TestReanalysisIsIdentified:
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
         method.estimate(mi)
         importance = pd.read_csv(sorted(tmp_path.rglob("*_feature_importance_*.csv"))[-1])
-        assert "wind_speed_10m @ ERA5_57.50_-3.25" in set(importance["feature"])
+        assert "wind_speed_100m @ ERA5_57.50_-3.25" in set(importance["feature"])
         assert any(f.endswith(" @ R1") for f in importance["feature"]), "turbine features keep their own source"
 
     def test_unlocated_reanalysis_is_still_named(self) -> None:
@@ -1776,11 +1680,9 @@ class TestTheScreenRunsOncePerCampaign:
 class TestWakeContributors:
     """Another changed turbine stays in the estimate for its wake, and never for its power."""
 
-    def test_its_wake_reaches_the_features_as_operating_state_booleans_alone(self) -> None:
+    def test_it_contributes_no_features(self) -> None:
         features = _screen_method().reference_features(_with_a_changed_neighbour())
-        assert sorted(c for c in features.columns if c.endswith(" @ W1")) == sorted(
-            [f"waking_{_POWER} @ W1", f"normal_operation_{_AVAIL} @ W1"]
-        )
+        assert not [c for c in features.columns if c.endswith(" @ W1")]
 
     def test_its_change_does_not_reach_the_estimate(self) -> None:
         method = _screen_method(reference_screen=False, report_reference_uplifts=False)
@@ -1965,34 +1867,43 @@ def _held_back_case(*, days: int = 3) -> MethodInput:
     return MethodInput(scada_df=mi.scada_df, test_wtg="T1", campaign_context=context)
 
 
-class TestExclusionChannels:
-    def test_booleans_keep_the_operating_state_over_an_exclusion(self) -> None:
+class TestAHeldBackReference:
+    def test_its_power_is_missing_over_its_exclusion(self) -> None:
         mi = _held_back_case()
-        features = _screen_method(exclusion_channels="booleans").reference_features(mi)
+        features = _screen_method().reference_features(mi)
         held = features.index < features.index.min() + pd.Timedelta(days=3)
-        assert features.loc[held, f"waking_{_POWER}{QUALIFIER}R1"].notna().all()
-        assert features.loc[held, f"normal_operation_{_AVAIL}{QUALIFIER}R1"].notna().all()
         assert features.loc[held, f"{_POWER}{QUALIFIER}R1"].isna().all()
         assert features.loc[~held, f"{_POWER}{QUALIFIER}R1"].notna().all()
 
-    def test_nan_adds_no_channels(self) -> None:
-        mi = _held_back_case()
-        features = _screen_method(exclusion_channels="nan").reference_features(mi)
-        assert f"waking_{_POWER}{QUALIFIER}R1" not in features.columns
 
-    def test_booleans_change_nothing_without_an_exclusion(self) -> None:
-        mi = _planned_case(step=0.0, reserves=())
-        booleans = _screen_method(exclusion_channels="booleans").reference_features(mi)
-        nan = _screen_method(exclusion_channels="nan").reference_features(mi)
-        pd.testing.assert_frame_equal(booleans, nan)
+def _with_scenarios(mi: MethodInput) -> MethodInput:
+    """``mi`` with a waking scenario per record that depends on the time of day only."""
+    scada = mi.scada_df
+    hours = pd.DatetimeIndex(scada.index).hour
+    labels = np.where(hours < 6, "R2 not waking", "normal")
+    return dataclasses.replace(mi, scada_df=scada.assign(**{WAKING_SCENARIO_COL: labels}))
 
-    def test_booleans_is_the_default(self) -> None:
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).exclusion_channels == "booleans"
 
-    def test_an_unknown_setting_is_rejected(self) -> None:
-        mi = _held_back_case()
-        with pytest.raises(ValueError, match="exclusion_channels"):
-            _screen_method(exclusion_channels="zeros").estimate(mi)
+class TestWakingScenarioFeatures:
+    def test_the_test_turbine_and_each_power_reference_contribute_their_scenario(self) -> None:
+        mi = _with_scenarios(_with_a_changed_neighbour())
+        features = _screen_method().reference_features(mi, power_free=("R3",))
+        scenarios = sorted(c for c in features.columns if c.startswith(WAKING_SCENARIO_COL))
+        assert scenarios == [f"{WAKING_SCENARIO_COL}{QUALIFIER}{t}" for t in ("R1", "R2", "test")]
+        assert all(features[c].dtype == "category" for c in scenarios)
+
+    def test_the_estimate_recovers_the_uplift_with_them(self, tmp_path: Path) -> None:
+        mi = _with_scenarios(_with_a_changed_neighbour())
+        method = _screen_method(reference_screen=False, report_reference_uplifts=False, out_dir=tmp_path)
+        assert method.estimate(mi).p50_overall == pytest.approx(0.05, abs=0.005)
+        importance = pd.read_csv(sorted(tmp_path.rglob("*_feature_importance_*.csv"))[-1])
+        assert f"{WAKING_SCENARIO_COL}{QUALIFIER}test" in set(importance["feature"])
+
+    def test_without_the_column_they_are_left_out_with_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING):
+            features = _screen_method().reference_features(_with_a_changed_neighbour())
+        assert not [c for c in features.columns if c.startswith(WAKING_SCENARIO_COL)]
+        assert "no waking scenario features" in caplog.text
 
 
 class TestRunFolders:

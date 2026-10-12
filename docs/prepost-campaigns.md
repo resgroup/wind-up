@@ -119,33 +119,26 @@ Three different things remove a turbine's data, and wind-up distinguishes them:
 | the turbine's **own** exclusion | its data is not usable for uplift | **yes**, marked invalid |
 TODO exclusions are a general concept that toggle tests would use too but they are not explained in docs/estimating-uplift.md
 
-The third is what `held_back_mask` picks out. Those rows stay in the frame so that a method can
-still read *whether the turbine was running* over them, even though its power may not be trusted.
+The third is what `held_back_mask` picks out. Those rows stay in the frame so that the waking
+scenarios can still read *whether the turbine was running* over them, even though its power may not
+be trusted.
 They carry no north-calibrated direction, because the shared northing step runs on the usable rows
 only.
 
 Exclusions also shorten the sides: `pre` and `post` in a plan are calendar time **minus** the
 masked time inside them, which is why a plan's `pre_days` can be well short of the span it covers.
 
-### `exclusion_channels`
+### What a reference carries over its own exclusion
 
-What a still-powered reference carries over its own exclusions is a method setting with two values:
-
-- **`"booleans"` (the default)** — the reference's `waking` and `normal_operation` booleans are
-  recomputed from the **unfiltered** frame over its whole record and joined on, so they are present
-  across the exclusion. Its power, power minimum and direction stay missing there.
-- **`"nan"`** — no such join. Every column of that reference is missing across its exclusion.
-
-This applies only to references that still carry power; a power-free reference already contributes
-nothing but those booleans. The two settings therefore drop exactly the same records and differ
-only in how much the model is told about the dropped stretch.
+Nothing: its power and direction are missing across the exclusion, and the record is not valid for
+uplift. Its waking state still reaches the other turbines' waking scenarios (method step 5).
 
 ## The parts of the core method that are prepost-only
 
 | mechanism | behaviour |
 |---|---|
 | **the reference screen** | runs on prepost only. A reference is screened across the campaign's own changeover (`screening_timing`). Toggle is skipped entirely: a reference change before the test is common-mode across every on and off block, so the on/off contrast is blind to it, and splitting the test period in half leaves too little a side to see one |
-| **reserves and refilling** | only a planned campaign supplies reserves, so only prepost refills a screened-out reference. A flat campaign's screened reference stays in the pool and goes power-free instead |
+| **reserves and refilling** | only a planned campaign supplies reserves, so only prepost refills a screened-out reference. A flat campaign's screened reference stays in the pool and goes power-free (contributes no features) instead |
 | **`headline_estimator="reversal"`** | applies to prepost only. It also fits the reverse direction — train the upgraded rows, predict the baseline rows — and reports `sqrt((1+r_fwd)/(1+r_rev)) − 1`, so a shrinkage common to both directions cancels. **Off by default**; toggle always keeps the forward ratio |
 | **campaign-proximity time decay** | a prepost-only lever, because in toggle the on and off rows interleave inside the campaign interval and every row weighs 1. **Off by default** since [CF22](v1/findings_campaigns.md): on a record whose pre and post periods were the same days interleaved — truth 0 — it moved the reading +0.154 pp, and with it off the disguised-prepost and toggle legs agreed to the last digit. The tilt works against the thing a full-year baseline is chosen for, which is covering every season evenly |
 

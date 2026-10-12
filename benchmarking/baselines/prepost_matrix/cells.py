@@ -17,14 +17,14 @@ import pandas as pd
 if TYPE_CHECKING:
     from benchmarking.campaigns.declaration import Exclusion
 
-Arm = Literal["main", "excl_booleans", "excl_nan", "real"]
+Arm = Literal["main", "excl", "real"]
 
 REAL_SITE = "hot_t13"
-# The exclusion-channel A/B arms and the power_model setting each runs.
-EXCLUSION_ARMS: dict[str, Literal["booleans", "nan"]] = {"excl_booleans": "booleans", "excl_nan": "nan"}
-_ARM_SUFFIX = {"main": "", "excl_booleans": "_xbool", "excl_nan": "_xnan", "real": ""}
+# The arms whose references are given synthetic exclusions.
+EXCLUSION_ARMS: tuple[str, ...] = ("excl",)
+_ARM_SUFFIX = {"main": "", "excl": "_excl", "real": ""}
 
-# Synthetic reference exclusions for the A/B arms: per turbine, this many periods, each this many days.
+# Synthetic reference exclusions for the exclusion arms: per turbine, this many periods, each this many days.
 EXCLUSIONS_PER_TURBINE = (0, 2)
 EXCLUSION_DAYS = (3, 14)
 
@@ -37,8 +37,8 @@ class MatrixSettings:
     :param multipliers: the AeroUp shape's scalings, paired within a campaign
     :param ks: power references per test turbine
     :param post_months: months of data after the last trial works end (after T13's works for the real campaign)
-    :param exclusion_k: the one K the exclusion-channel A/B arms run at
-    :param exclusion_arms: which of the exclusion-channel A/B arms run
+    :param exclusion_k: the one K the exclusion arms run at
+    :param exclusion_arms: which of the exclusion arms run
     :param real: include the real Hill of Towie AeroUp T13 campaign
     :param min_side_days: the shortest side the period selector may choose, so that every post length is analysed
     :param master_seed: every campaign draw is keyed on it
@@ -49,7 +49,7 @@ class MatrixSettings:
     ks: tuple[int, ...] = (3, 4, 6)
     post_months: tuple[int, ...] = (1, 2, 3, 6, 9, 12)
     exclusion_k: int = 4
-    exclusion_arms: tuple[str, ...] = tuple(EXCLUSION_ARMS)
+    exclusion_arms: tuple[str, ...] = EXCLUSION_ARMS
     real: bool = True
     min_side_days: int = 14
     master_seed: int = 0
@@ -68,7 +68,7 @@ class MatrixSettings:
 class Cell:
     """One run of the matrix.
 
-    :param arm: ``main``; an exclusion-channel A/B arm; or ``real``
+    :param arm: ``main``; ``excl``, whose references have synthetic exclusions; or ``real``
     :param site: ``hot``, ``pen``, ``kel`` or :data:`REAL_SITE`
     :param seed_index: which of the site's campaigns; ``None`` for the real campaign
     :param multiplier: the AeroUp scaling; ``None`` for the real campaign
@@ -94,9 +94,9 @@ class Cell:
         )
 
     @property
-    def exclusion_channels(self) -> Literal["booleans", "nan"] | None:
-        """The power_model exclusion channels this cell's arm sets; ``None`` keeps the default."""
-        return EXCLUSION_ARMS.get(self.arm)
+    def has_exclusions(self) -> bool:
+        """Whether this cell's references are given synthetic exclusions."""
+        return self.arm in EXCLUSION_ARMS
 
     @property
     def full_rollout(self) -> bool:
@@ -118,7 +118,7 @@ SIZES: dict[str, StudySize] = {
         MatrixSettings(seeds={"hot": 0, "pen": 1, "kel": 1}, ks=(4,), post_months=(3, 12)),
         workers=3,
     ),
-    # Sized to about 11.5 h of cells on 16 workers; check with ``plan`` before a run.
+    # About 9.4 h of cells on 16 workers; check with ``plan`` before a run.
     "big": StudySize(MatrixSettings(seeds={"hot": 5, "pen": 6, "kel": 4}), workers=16),
 }
 

@@ -12,12 +12,11 @@ Cases:
 * ``hot`` -- the Hill of Towie whole-farm reference arm at changeover 2018-09-01 (12 months of
   baseline into a 6-month campaign, T13 the declared test turbine, every other turbine a candidate
   reference, screen off). Every reading has a truth of 0.
-* ``pen`` -- the prepost matrix cell ``pen_s00_m+0_K4_L12`` in its ``main``, ``excl_booleans`` and
-  ``excl_nan`` arms. Each of its five test turbines is analysed in each arm (T14 is CF26's oracle:
-  the two exclusion arms drop identical rows and so must agree), plus the difference between the
-  two exclusion arms. Its reference readings are not analysed: the same reference read for
-  different test turbines lands in one folder.
-* ``kel`` -- the matrix cell ``kel_s00_m+0_K4_L12`` in the same three arms, CF26's worst placebo
+* ``pen`` -- the prepost matrix cell ``pen_s00_m+0_K4_L12`` in its ``main`` and ``excl`` arms. Each
+  of its five test turbines is analysed in each arm. Its reference readings are not analysed: the
+  same reference read for different test turbines lands in one folder. ``analyse`` of an older run
+  with the ``excl_booleans`` and ``excl_nan`` arms also writes the difference between them.
+* ``kel`` -- the matrix cell ``kel_s00_m+0_K4_L12`` in the same arms, CF26's worst placebo
   group (T06 reads +1.10 pp in ``main``, its references +0.6 to +1.0 pp). One test turbine, so its
   reference readings are analysed too.
 
@@ -91,13 +90,14 @@ HOT_DEFAULT_TURBINES = ("T17", "T13", "T12", "T07", "T06", "T16")
 # A smoke run: four turbines, two months into one, the test turbine alone analysed.
 HOT_SMOKE_TURBINES = ("T12", "T13", "T14", "T15")
 HOT_SMOKE_MONTHS = (2, 1)
-MATRIX_ARMS = ("main", "excl_booleans", "excl_nan")
+MATRIX_ARMS = ("main", "excl")
 # Each matrix case's site, and whether its reference readings are analysed beside its test turbines.
 MATRIX_CASES: dict[str, dict[str, Any]] = {
     "pen": {"site": "pen", "analyse_references": False},
     "kel": {"site": "kel", "analyse_references": True},
 }
 _LOG_HANDLER_NAME = "level_probe"
+# The exclusion-channel arms of runs before the channels were removed, compared by ``analyse``.
 CHANNEL_ARMS = ("excl_booleans", "excl_nan")
 PROBE_JSON = "probe.json"
 PROBE_LOG = "probe.log"
