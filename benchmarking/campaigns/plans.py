@@ -36,10 +36,14 @@ class CampaignPlans:
 
     :param plans: upgraded turbine to its analysis plan
     :param unplanned: upgraded turbine to the selector's reason for giving up on it
+    :param works: the works windows the plans were chosen from, the upgraded turbines' included
+    :param extents: each turbine's data extent the plans were chosen from
     """
 
     plans: dict[str, AnalysisPlan] = field(default_factory=dict)
     unplanned: dict[str, str] = field(default_factory=dict)
+    works: dict[str, list[Window]] = field(default_factory=dict)
+    extents: dict[str, Window] = field(default_factory=dict)
 
 
 def plans_for(
@@ -108,4 +112,4 @@ def plans_for(
             "met" if plan.pool_rule_met else f"NOT met: {plan.pool_rule_reason}",
         )
         plans[turbine] = plan
-    return CampaignPlans(plans=plans, unplanned=unplanned)
+    return CampaignPlans(plans=plans, unplanned=unplanned, works=works, extents=extents)

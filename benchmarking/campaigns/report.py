@@ -20,6 +20,7 @@ from benchmarking.diagnostics.context import infer_timebase
 from benchmarking.harness import CONDITIONS, condition_bins, conditional_truth_vs_estimate, plot_conditional_uplift
 from benchmarking.harness.plots import conditional_estimates
 from benchmarking.synthetic import treated_mask
+from wind_up.analysis_period_plots import plot_analysis_timeline
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -40,7 +41,9 @@ def write_report(report: CampaignReport, *, out_dir: Path, farm_dir: Path | None
     under ``conditional/``. A planned campaign also gets ``analysis_plans.csv`` (every other
     turbine's role for each upgraded turbine, with the reason it is not a power reference) and
     ``analysis_plans.yaml`` (each plan's span, lengths, power references and pool rule, and under
-    ``unplanned`` each upgraded turbine no span could be found for, with the reason).
+    ``unplanned`` each upgraded turbine no span could be found for, with the reason), and an
+    ``analysis_timeline_<turbine>.png`` per upgraded turbine showing the span over every turbine's
+    data, works and exclusions.
 
     The results across turbines -- ``farm_uplift.csv``, ``farm_uplift_detail.csv`` and each
     method's uplift plots under a folder of its name -- go under ``farm_dir``, by default ``out_dir``.
@@ -50,6 +53,8 @@ def write_report(report: CampaignReport, *, out_dir: Path, farm_dir: Path | None
     farm.mkdir(parents=True, exist_ok=True)
     if report.plans:
         _write_plans(report, out_dir=out_dir)
+    if report.timeline is not None:
+        _write_timelines(report, out_dir=out_dir)
     report.per_turbine.to_csv(out_dir / "per_turbine.csv", index=False)
     report.farm.to_csv(farm / "farm_uplift.csv", index=False)
     report.reference_stability.to_csv(out_dir / "reference_stability.csv", index=False)
@@ -119,6 +124,25 @@ def _write_plans(report: CampaignReport, *, out_dir: Path) -> None:
             yaml.safe_dump(plan.summary(), sort_keys=False).rstrip(),
             plan.table().to_string(index=False),
         )
+
+
+def _write_timelines(report: CampaignReport, *, out_dir: Path) -> None:
+    """Draw each upgraded turbine's analysis timeline, planned or not."""
+    timeline = report.timeline
+    if timeline is None:
+        return
+    for turbine in sorted({*report.plans, *report.unplanned}):
+        fig = plot_analysis_timeline(
+            turbine,
+            layout=report.spec.layout,
+            works=timeline.works,
+            exclusions=report.spec.exclusions,
+            extents=timeline.extents,
+            plan=report.plans.get(turbine),
+            reason=report.unplanned.get(turbine, ""),
+            out_dir=out_dir,
+        )
+        plt.close(fig)
 
 
 def _write_detail(farm_uplifts: dict, *, out_dir: Path) -> None:

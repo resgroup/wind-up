@@ -131,6 +131,18 @@ class AnalysisPlan:
         }
 
 
+def distances_in_diameters(layout: Layout, *, turbine: str) -> dict[str, float]:
+    """Every other named turbine's distance from ``turbine``, in ``turbine``'s rotor diameters."""
+    frame = layout.frame
+    row = layout.index_of(turbine)
+    diameter = float(frame[ROTOR_DIAMETER_COL].iloc[row])
+    return {
+        str(name): float(layout.distance_m[row, j]) / diameter
+        for j, name in enumerate(frame[NAME_COL])
+        if name is not None and str(name) != turbine
+    }
+
+
 def intervals_duration(windows: Sequence[Window], *, start: pd.Timestamp, end: pd.Timestamp) -> pd.Timedelta:
     """Total length of the union of ``windows`` clipped to ``[start, end)``."""
     clipped = sorted((max(s, start), min(e, end)) for s, e in windows if s < end and e > start)
@@ -186,15 +198,7 @@ class _Timeline:
         self.ranked = sorted(offered & set(self.distances_d), key=lambda r: (self.distances_d[r], r))
 
     def distances_from(self, turbine: str) -> dict[str, float]:
-        """Every other named turbine's distance from ``turbine``, in ``turbine``'s rotor diameters."""
-        frame = self.layout.frame
-        row = self.layout.index_of(turbine)
-        diameter = float(frame[ROTOR_DIAMETER_COL].iloc[row])
-        return {
-            str(name): float(self.layout.distance_m[row, j]) / diameter
-            for j, name in enumerate(frame[NAME_COL])
-            if name is not None and str(name) != turbine
-        }
+        return distances_in_diameters(self.layout, turbine=turbine)
 
     def within(self, other: str) -> bool:
         return self.distances_d[other] <= self.settings.max_reference_distance_d

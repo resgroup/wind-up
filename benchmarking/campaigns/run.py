@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.campaigns.context import context_for, context_for_plan
-from benchmarking.campaigns.plans import plans_for
+from benchmarking.campaigns.plans import CampaignPlans, plans_for
 from benchmarking.harness import MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
 from benchmarking.synthetic import treated_mask
@@ -73,6 +73,7 @@ class CampaignReport:
         turbines all run over the declared period against every candidate reference
     :param unplanned: each upgraded turbine the period selector could not plan, with its reason;
         it has no estimate and is left out of the farm headline
+    :param timeline: the works and data extents the plans were chosen from; None for a flat declaration
     """
 
     spec: CampaignSpec
@@ -86,6 +87,7 @@ class CampaignReport:
     wall_time_s: dict[tuple[str, str], float]
     plans: dict[str, AnalysisPlan] = field(default_factory=dict)
     unplanned: dict[str, str] = field(default_factory=dict)
+    timeline: CampaignPlans | None = None
 
 
 def visible_mask(spec: CampaignSpec, frame: pd.DataFrame) -> npt.NDArray[np.bool_]:
@@ -270,6 +272,7 @@ def estimate_campaign(
         wall_time_s=wall_time_s,
         plans=plans,
         unplanned=unplanned,
+        timeline=resolved,
     )
 
 

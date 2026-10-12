@@ -237,6 +237,24 @@ class TestAnalysisPlans:
         assert set(summary) == {"T0", "unplanned"}
         assert summary["unplanned"] == report.unplanned
 
+    def test_each_plan_gets_a_timeline_plot(self, tmp_path: Path) -> None:
+        write_report(self.planned_report(), out_dir=tmp_path)
+        assert (tmp_path / "analysis_timeline_T0.png").exists()
+        assert (tmp_path / "analysis_timeline_T6.png").exists()
+
+    def test_an_unplanned_turbine_gets_a_timeline_plot_too(self, tmp_path: Path) -> None:
+        from tests.benchmarking.campaigns.test_plans import without_pre  # noqa: PLC0415
+        from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
+
+        report = estimate_campaign(
+            staggered_spec(north_offsets=[]),
+            without_pre(hourly_scada(), "T6"),
+            build_methods=lambda _wtg: [ZeroMethod()],
+            columns=HOT_COLUMNS,
+        )
+        write_report(report, out_dir=tmp_path)
+        assert (tmp_path / "analysis_timeline_T6.png").exists()
+
     def test_no_unplanned_entry_when_every_turbine_plans(self, tmp_path: Path) -> None:
         import yaml  # noqa: PLC0415
 
