@@ -35,17 +35,20 @@ The following principles apply to every step:
 
 ## Method steps
 
-The wind-up methodology comprises the following steps, in three parts.
+The wind-up methodology comprises the following steps, in four parts.
 
 - **Part A, data preparation (steps 1 to 6)** is done once per dataset. It depends on the test turbines only
   as the set declared for the campaign, and not on which turbines are their references, so it is never
   repeated.
-- **Part B, the uplift estimator (steps 7 to 10)** is a procedure that takes one test turbine, one set
-  of power references and the before and after periods, and returns an uplift. Nothing in it changes
-  the reference set or the periods.
-- **Part C, the campaign (steps 11 to 16)** calls the estimator: first with each candidate reference as
-  the test turbine, to screen the references (step 11), then for the test turbine with the screened
-  references (step 12), and assembles the results.
+- **Part B, the campaign for one test turbine (steps 7 to 10)** defines the before and after periods from
+  the test turbine alone, ranks the candidate references, screens them by measuring each candidate as if
+  it were a test turbine, and then measures the test turbine with the screened references.
+- **Part C, the measurement of one turbine's uplift (steps 11 to 15)** is a procedure that takes one
+  subject turbine, one set of power references and the before and after periods, and returns an uplift.
+  It is the same procedure whether the subject is the test turbine (step 10) or a candidate reference
+  (step 9). Nothing in it changes the reference set or the periods.
+- **Part D, across turbines (steps 16 and 17)** combines the measurements of the test and reference
+  turbines and extrapolates the result to annual energy production.
 
 This separation is what resolves a circularity that is otherwise easy to fall into: the usable data
 depends on the references, the references depend on a screen, and the screen needs the usable data.
@@ -118,7 +121,7 @@ The states distinguished in this example are:
 Data records are flagged as valid or not for each step of the analysis separately, because an
 operating state can be valid for some purposes but not for others. The mapping in this example is:
 
-| State             | Northing (step 4) | Waking state (step 5) | Uplift (step 8)         |
+| State             | Northing (step 4) | Waking state (step 5) | Uplift (step 11)        |
 | ----------------- | ----------------- | --------------------- | ----------------------- |
 | normal operation  | valid             | waking                | valid                   |
 | noise mode        | valid             | waking                | see below               |
@@ -219,7 +222,7 @@ declared changes; it does not change the uplift calculation.
 
 The waking state of every turbine on the wind farm, and the waking scenario of every turbine that may
 serve as a test or reference turbine, are determined for each record. This is done in data
-preparation, before any test turbine or reference set is chosen, because the matching of step 8 and
+preparation, before any test turbine or reference set is chosen, because the matching of step 11 and
 the features of step 6 depend on it and because it must not change when a reference is dropped.
 
 - i. **Waking state.** The waking state of every turbine is derived from the operational state of step
@@ -253,21 +256,21 @@ the features of step 6 depend on it and because it must not change when a refere
 
   This mirrors wind-up v0, which labelled each record of a test-reference pair with the turbines
   upwind of the pair that were offline. Summarising the upwind turbines this way means the
-  counterfactual model (step 9) does not have to be given the state of every turbine on the wind farm
+  counterfactual model (step 12) does not have to be given the state of every turbine on the wind farm
   and work out for itself which ones matter, and it lets the before and after periods be matched on
-  like-for-like waking scenarios (step 8). Records with part waking upwind turbines are labelled
+  like-for-like waking scenarios (step 11). Records with part waking upwind turbines are labelled
   explicitly because their wake effect is too ambiguous, and they are not used by default.
 - iv. **Upwind turbines.** A second column per turbine (for example `T05_upwind`) lists every turbine
   within its disturbed sector for the direction of ii, whatever its waking state, in a fixed order. Its
   value is "none" when no turbine is upwind and "unknown" when the direction of ii is unavailable. Which
   of these turbines count as changed depends on the before and after periods of the test turbine, so
-  the records with a changed turbine upwind are found in step 8 rather than here.
+  the records with a changed turbine upwind are found in step 11 rather than here.
 
 ### 6. Engineer features
 
 The features from which the test turbine's power is predicted are computed for every record. They are
 computed for every unchanged turbine, so that any of them can serve as a power reference without
-repeating this step. The model of step 9 uses those of the reference set it is given.
+repeating this step. The model of step 12 uses those of the reference set it is given.
 
 - i. **Power references:** for every unchanged turbine, active power and the north-calibrated nacelle
   direction (step 4) as sine and cosine. The direction is a feature in both options below: the test
@@ -279,7 +282,7 @@ repeating this step. The model of step 9 uses those of the reference set it is g
     resolved.
 - ii. **Waking scenarios:** the waking scenario column (step 5 iii) of the test turbine and of each
   power reference, as a categorical feature. They carry the waking state of every other turbine on
-  the wind farm, which contributes no feature of its own. After the matching of step 8 most values
+  the wind farm, which contributes no feature of its own. After the matching of step 11 most values
   are "normal", so these features only act where a non-normal scenario was retained in both periods.
 - iii. **ERA5:** a short list of variables with a clear physical reason to affect the test turbine's
   power relative to its references: 100 m wind speed, 100 m wind direction (as sine and cosine), air
@@ -290,11 +293,12 @@ repeating this step. The model of step 9 uses those of the reference set it is g
 Adding more information about the references has not reduced bias to date. Features are therefore kept
 to those with a clear physical justification.
 
-## Part B: the uplift estimator
+## Part B: the campaign for one test turbine
 
-Steps 7 to 10 take one test turbine, one set of power references and the data of Part A, and return
-an uplift. They are written for the test turbine, but step 11 runs them with a reference turbine in
-the role of test turbine and the remaining references as its references.
+Steps 7 to 10 are run once per test turbine. They decide the inputs of every measurement made for that
+test turbine (the periods and the power references) and call the measurement of Part C: first with each
+candidate reference as the subject, to screen the references (step 9), then with the test turbine as
+the subject and the screened references as its power references (step 10).
 
 ### 7. Define the before and after periods
 
@@ -306,7 +310,7 @@ one after another, each test turbine has its own before and after periods.
 
 The periods are defined from the test turbine alone: its upgrade date, and any other known change to
 the test turbine (step 1), which neither period may include. They do not depend on the references. A
-candidate reference that has a change of its own inside the periods is ineligible (step 11) rather
+candidate reference that has a change of its own inside the periods is ineligible (step 8) rather
 than the periods being trimmed to accommodate it. Where a valuable reference would be kept by a
 shorter before period, that is a deliberate choice the analyst makes by setting the period, and the
 tool reports the trade-off.
@@ -317,29 +321,88 @@ The length of the before period is chosen as follows.
   with every record weighted equally.
 - **Option B.** Use the same calendar months as the after period, in the previous year or years (the
   seasonal matching of wind-up v0). The same effect can be had analytically by including calendar time
-  among the conditions matched in step 8, which is the form in which this option is tested.
+  among the conditions matched in step 11, which is the form in which this option is tested.
 
-A long before period gives the counterfactual model (step 9) more data and generalises better to the
+A long before period gives the counterfactual model (step 12) more data and generalises better to the
 after period. A matched before period exposes both periods to the same conditions. Evidence to
-date favours each in different circumstances, and the matching step (step 8) may make the choice less
+date favours each in different circumstances, and the matching step (step 11) may make the choice less
 important, so it is decided by validation.
 
-For a toggle test, a toggle pairing filter is applied which only keeps data where the time difference
-between a data record and the nearest valid record with the opposite toggle state is within expected
-limits.
+### 8. Rank the candidate references
 
-TODO at this point warnings should be emitted if there are any apparent changes in key turbines eg reactive power changes
+A set of reference turbines is chosen for each test turbine. These are the power references: turbines
+whose power is used to predict the test turbine's power. The selection has two stages: a ranked pool
+of candidates (this step) and a screen that measures each candidate as if it were a test turbine
+(step 9).
 
-### 8. Select valid records and match conditions between the periods
+Every unchanged turbine (step 1) is a candidate. The following factors are considered when ranking
+them:
 
-- i. **Validity.** A record is used only if the test turbine and every power reference are valid for
+- i. Turbines for which the active power correlates most strongly with the test turbine are favoured.
+  Normally these are also the closest turbines to the test turbine, and in practice the nearest
+  eligible turbines within 20 rotor diameters are taken.
+- ii. A candidate must have data over the whole of the periods of step 7, should have no known
+  performance issues, and must not have a change of its own (step 1) inside those periods. A
+  candidate with such a change is ineligible; the periods are not trimmed to keep it (step 7). An
+  indicator of an undeclared change (step 1) inside the periods, for example a change in reactive
+  power behaviour, is reported as a warning against the candidate, so that the analyst can declare
+  the change or exclude the turbine; it does not by itself make the candidate ineligible.
+- iii. It helps where possible for a reference turbine to be un-waked in the predominant wind direction,
+  especially by the test turbine itself.
+
+At least three reference turbines are required, and more can be used where available. The number
+used is a trade-off. Each reference's own drift relative to the test turbine is averaged down as more
+references are added, but the usable data is the intersection of the references' valid data
+(step 11 i), so each added reference costs hours. The tool reports usable hours against number of
+references so the analyst can see the cost.
+
+Every other turbine on the wind farm, including other test turbines and turbines excluded as power
+references, still contribute to the waking scenario (step 5).
+
+### 9. Screen the references
+
+The measurement of Part C (steps 11 to 14) is run with each candidate in turn as the subject turbine,
+predicted from the other candidates, with the periods of step 7 and the same matching and features.
+The uplift distributions of step 15 are not needed for the screen and are off by default. The
+expectation is that 0 % uplift is measured for each candidate. The purpose is to detect any bias in
+the references, by seeing whether any of them have a measurable change in performance relative to the
+others.
+
+A candidate whose uplift differs from the median of the candidates by more than a floor (2.5
+percentage points by default) is excluded as a power reference and the remaining candidates are
+judged again, excluding at most one turbine per pass. The median rather than zero is used because the
+reference turbines may all drift together, which is not a source of bias. When a candidate is
+excluded the next in the ranking takes its place. The screen requires at least three candidates and
+enough after-period data to separate a bad reference from noise. Because the columns of step 5 do
+not depend on the reference set, excluding a candidate changes nothing in Part A. The screened set is
+the set of power references used for the test turbine in step 10.
+
+Each candidate's measurement is kept and reported: the combined reference uplift of step 16, before and
+after the screen, is the campaign's own check of bias.
+
+### 10. Measure the test turbine
+
+The measurement of Part C (steps 11 to 15) is run for the test turbine with the screened reference set
+of step 9 and the periods of step 7. Its output is the headline uplift of the test turbine, its
+uncertainty and its uplift distributions.
+
+## Part C: measure one turbine's uplift
+
+Steps 11 to 15 take one subject turbine, one set of power references, the before and after periods and
+the data of Part A, and return an uplift. The subject is the test turbine in step 10 and a candidate
+reference in step 9; the procedure is the same for both, and the steps below say "subject turbine" for
+either. Nothing in Part C changes the reference set or the periods.
+
+### 11. Select valid records and match conditions between the periods
+
+- i. **Validity.** A record is used only if the subject turbine and every power reference are valid for
   the uplift calculation in that record (step 2) and none of them is inside an exclusion window
-  (step 1). Because the references are modelled together (step 9), the loss of data is the union of
+  (step 1). Because the references are modelled together (step 12), the loss of data is the union of
   the references' invalid data: a record in which any one reference is in downtime is lost for all of
   them. This puts pressure against using many references, and is one side of the trade-off of
-  step 11.
+  step 8.
 - ii. **Waking configuration.** For each record, the configuration is the combination of the waking
-  scenarios (step 5 iii) of the test turbine and all of its power references, taken together. Only
+  scenarios (step 5 iii) of the subject turbine and all of its power references, taken together. Only
   configurations with at least 24 hours of data in both periods are retained, in the same way that
   wind-up v0 retained only the waking scenarios with at least one day of data. By default any
   configuration in which a scenario contains a part waking turbine or is "unknown" is dropped, however
@@ -347,19 +410,21 @@ TODO at this point warnings should be emitted if there are any apparent changes 
   seen, and its prediction for it is an extrapolation. The largest single source of bias identified to
   date was a related extrapolation: after-period records in which a power reference was offline, so
   that its power was missing from the model's inputs. Part i already excludes such records, so this
-  part is about the wakes the test turbine and references are exposed to rather than about missing
+  part is about the wakes the subject turbine and references are exposed to rather than about missing
   reference power. Whether a mismatch in waking configurations between the periods is itself a
   measurable source of bias has not yet been tested and is decided by validation.
-- iii. **Changed turbines upwind.** For this estimate, a turbine is changed if it has a change (step 1)
-  between the start of the before period and the end of the after period.
+- iii. **Changed turbines upwind.** For this measurement, a turbine is changed if it has a change
+  (step 1) between the start of the before period and the end of the after period.
   A turbine whose changes all fall outside that span casts the same wake in both periods. Records in
-  which a changed turbine is upwind of the test turbine or of a reference (step 5 iv), or in which
+  which a changed turbine is upwind of the subject turbine or of a reference (step 5 iv), or in which
   either upwind column is "unknown", are dropped. An upgrade can change the wake a turbine casts, and
   the rule depends only on direction, so it drops the same conditions from both periods: it would not
   make sense to keep records with the test turbine upwind in one period and drop them in the other.
   The analyst can override the rule where the wake is known not to change.
-- iv. **Weather.** Both periods should see the same weather. For a toggle test the pairing filter of
-  step 7 already ensures this.
+- iv. **Weather.** Both periods should see the same weather. For a toggle test a toggle pairing filter
+  is applied, which only keeps data where the time difference between a data record and the nearest
+  valid record with the opposite toggle state is within expected limits. For a prepost test one of the
+  following is used.
   - **Option A (current default).** No weather matching beyond the choice of period in step 7.
   - **Option B.** Common-support trimming: coarsen ERA5 wind speed, direction and a stability proxy
     into cells, and drop the records of either period that fall in cells with less than a minimum
@@ -373,22 +438,33 @@ period, must not be used for matching. Weighting the records by a model of the p
 to each period is not used, because on real data the period is almost perfectly predictable from such
 features.
 
-### 9. Relate the reference measurements to the test turbine measurements
+### 12. Relate the reference measurements to the subject turbine measurements
 
-A machine learning model is trained which predicts test turbine power from the features of step 6 for
-the reference set. This takes the place of the directional detrending of wind-up v0: rather than a
-ratio of wind speeds by direction bin, the model learns how the test turbine's power relates to its
+A machine learning model is trained which predicts subject turbine power from the features of step 6
+for the reference set. This takes the place of the directional detrending of wind-up v0: rather than a
+ratio of wind speeds by direction bin, the model learns how the subject turbine's power relates to its
 references under every combination of weather and waking state present in the data. Only the records
-retained by step 8 are used.
+retained by step 11 are used.
 
 The model is a gradient-boosted tree regressor minimising squared error. It is configured to give
 identical results on any machine.
 
-### 10. Calculate the uplift
+**Joint or paired references.** By default the references are analysed together as one model for each
+subject turbine, not one subject-reference pair at a time. A single-reference estimate carries
+roughly twice the shared bias of a multi-reference one, and each reference's own drift relative to
+the subject turbine is averaged down as more references are added.
 
-The model of step 9 trained on the before period, $\hat f_B$, predicts the test turbine's power in the
-after period. Writing $y$ for measured test turbine power and $A$ and $B$ for the after and before
-records, the forward uplift is
+- **Option A (current default).** One joint model per subject turbine.
+- **Option B.** Steps 11 to 13 are run once per subject-reference pair and the pair results are
+  combined. This keeps more data, because the validity of step 11 i is not unioned across references,
+  and lets a reference be dropped after the fact without re-running. Whether its larger shared bias
+  remains once the rest of the method is in place is decided by validation.
+
+### 13. Calculate the uplift
+
+The model of step 12 trained on the before period, $\hat f_B$, predicts the subject turbine's power in
+the after period. Writing $y$ for measured subject turbine power and $A$ and $B$ for the after and
+before records, the forward uplift is
 
 $$
 U_{fwd} = \frac{\sum_A y}{\sum_A \hat f_B} - 1
@@ -396,8 +472,8 @@ $$
 
 This compares a measured sum with a predicted one, and is biased by any error the model makes on
 average when predicting data unlike its training data. That error grows with the time separating the
-two periods and is the main source of bias left once steps 5 to 8 are applied. One of the following is
-used to remove it:
+two periods and is the main source of bias left once steps 5, 6, 7 and 11 are applied. One of the
+following is used to remove it:
 
 - **Option A (current default).** The forward uplift alone.
 - **Option B, reversibility.** As in wind-up v0, the calculation is also performed in reverse: a
@@ -420,91 +496,34 @@ used to remove it:
   (forward only) and 1 (full reversal) is calculated from the measured precision of the two directions
   to minimise the expected error.
 
-The reverse calculation of option B does not use the test turbine anemometer and so can be performed in
-full, unlike wind-up v0, which had to fall back on power-only versions of both calculations.
+The reverse calculation of option B does not use the subject turbine anemometer and so can be performed
+in full, unlike wind-up v0, which had to fall back on power-only versions of both calculations.
 
-## Part C: the campaign
+### 14. Estimate uncertainty
 
-### 11. Select and screen reference turbines
+This revision of the method addresses the central (P50) estimate only. The uncertainty method of
+wind-up v0 (statistical, block bootstrap and reversibility components, combined across reference and
+test turbines) is the starting point for the uncertainty of v1.
 
-A set of reference turbines is chosen for each test turbine. These are the power references: turbines
-whose power is used to predict the test turbine's power. The selection has two stages: a ranked pool
-of candidates, and a screen that runs the estimator of Part B with each candidate in the role of test
-turbine.
-
-**Candidates.** Every unchanged turbine (step 1) is a candidate. The following factors are considered
-when ranking them:
-
-- i. Turbines for which the active power correlates most strongly with the test turbine are favoured.
-  Normally these are also the closest turbines to the test turbine, and in practice the nearest
-  eligible turbines within 20 rotor diameters are taken.
-- ii. A candidate must have data over the whole of the periods of step 7, should have no known
-  performance issues, and must not have a change of its own (step 1) inside those periods. A
-  candidate with such a change is ineligible; the periods are not trimmed to keep it (step 7).
-- iii. It helps where possible for a reference turbine to be un-waked in the predominant wind direction,
-  especially by the test turbine itself.
-
-At least three reference turbines are required, and more can be used where available. The number
-used is a trade-off. Each reference's own drift relative to the test turbine is averaged down as more
-references are added, but the usable data is the intersection of the references' valid data
-(step 8 i), so each added reference costs hours. The tool reports usable hours against number of
-references so the analyst can see the cost.
-
-Every other turbine on the wind farm, including other test turbines and turbines excluded as power
-references, still contribute to the waking scenario (step 5).
-
-**Screen.** The estimator (steps 7 to 10) is run with each candidate in turn as the test turbine,
-predicted from the other candidates, with the same periods, matching and features. The expectation is
-that 0 % uplift is measured for each candidate. The purpose is to detect any bias in the references,
-by seeing whether any of them have a measurable change in performance relative to the others.
-
-A candidate whose uplift differs from the median of the candidates by more than a floor (2.5
-percentage points by default) is excluded as a power reference and the remaining candidates are
-judged again, excluding at most one turbine per pass. The median rather than zero is used because the
-reference turbines may all drift together, which is not a source of bias. When a candidate is
-excluded the next in the ranking takes its place. The screen requires at least three candidates and
-enough after-period data to separate a bad reference from noise. Because the columns of step 5 do
-not depend on the reference set, excluding a candidate changes nothing in Part A. The screened set is
-the set of power references used for the test turbine in step 12.
-
-The combined reference uplift (step 14) is reported alongside every result as the campaign's own check
-of bias, and the spread of the individual reference uplifts as its own measure of noise. It is
-reported both before and after the screen: the value after the screen is near zero partly by
-construction, so the value before it is the more honest check.
-
-The reference uplifts could also be used to correct the test turbine uplift. This is not done, because
-the references would then read 0 % by construction and could no longer be used as a check of bias.
-
-**Joint or paired references.** By default the references are analysed together as one model for each
-test turbine (step 9), not one test-reference pair at a time. A single-reference estimate carries
-roughly twice the shared bias of a multi-reference one, and each reference's own drift relative to
-the test turbine is averaged down as more references are added.
-
-- **Option A (current default).** One joint model per test turbine.
-- **Option B.** The estimator is run once per test-reference pair and the pair results are combined.
-  This keeps more data, because the validity of step 8 i is not unioned across references, and lets
-  a reference be dropped after the fact without re-running. Whether its larger shared bias remains
-  once the rest of the method is in place is decided by validation.
-
-### 12. Calculate the test turbine uplift
-
-The estimator of Part B (steps 7 to 10) is run for the test turbine with the screened reference set
-of step 11. Its output is the headline uplift of the test turbine.
-
-### 13. Calculate uplift distributions
+### 15. Calculate uplift distributions
 
 Uplift is calculated as a function of condition variables specified by the analyst. Uplift against
 wind speed is generally the most important for pre-construction inputs, but it has to be based on a
 stable, free-stream wind speed estimate derived from the reference turbines (power and pitch angle), not
-from the test turbine. For certain upgrades other conditions are important, for example wake steering
+from the subject turbine. For certain upgrades other conditions are important, for example wake steering
 also requires uplift against direction and atmospheric stability.
 
-Records are assigned to a bin by an upgrade-invariant variable, never by the test turbine's measured
+Records are assigned to a bin by an upgrade-invariant variable, never by the subject turbine's measured
 power, which would select each bin on its own noise. The binned uplifts are scaled so that they combine
-to the headline uplift of step 12. The tool should also determine which variables the uplift is
+to the headline uplift of step 13. The tool should also determine which variables the uplift is
 sensitive to.
 
-### 14. Combine turbines
+This step is run for the test turbine (step 10). It is off by default for the candidates of the screen
+(step 9), where only the headline uplift is needed.
+
+## Part D: across turbines
+
+### 16. Combine turbines
 
 Turbine results are combined where the turbines have the same role or upgrade. Test turbines that have
 received the same upgrade are combined into one uplift, and all reference turbines are combined into one
@@ -515,19 +534,21 @@ $$
 U_{combined} = \frac{\sum_t \sum_A y_t}{\sum_t \sum_A y_t / (1 + U_t)} - 1
 $$
 
-### 15. Estimate the annual energy production uplift
+The combined reference uplift is reported alongside every result as the campaign's own check of bias,
+and the spread of the individual reference uplifts (step 9) as its own measure of noise. It is reported
+both before and after the screen: the value after the screen is near zero partly by construction, so
+the value before it is the more honest check.
 
-For most upgrades the uplift against wind speed (step 13) combined with a long-term wind speed
+The reference uplifts could also be used to correct the test turbine uplift. This is not done, because
+the references would then read 0 % by construction and could no longer be used as a check of bias.
+
+### 17. Estimate the annual energy production uplift
+
+For most upgrades the uplift against wind speed (step 15) combined with a long-term wind speed
 distribution is sufficient to estimate the uplift in annual energy production (AEP). The measured
 uplift distribution only covers the conditions seen during the campaign: it needs to be extended to the
 long-term distribution, with the uncertainty increased for conditions that were not covered. ERA5 is
 used to estimate the long-term wind speed distribution.
-
-### 16. Estimate uncertainty
-
-This revision of the method addresses the central (P50) estimate only. The uncertainty method of
-wind-up v0 (statistical, block bootstrap and reversibility components, combined across reference and
-test turbines) is the starting point for the uncertainty of v1.
 
 ## Validation
 
@@ -545,13 +566,13 @@ The options above are decided by these criteria.
 
 ## Open questions
 
-- Which before period (step 7 options) is preferred once matching (step 8) is in place.
-- How the ERA5 stability proxy and weather cells of step 8 are defined, and the minimum hours per cell.
-- Whether a mismatch in waking configurations between the periods (step 8 ii) is a measurable source of
-  bias now that offline references are excluded by step 8 i, and so how much the 24 hour rule matters.
-- How the free-stream wind speed estimate of step 13 is constructed.
+- Which before period (step 7 options) is preferred once matching (step 11) is in place.
+- How the ERA5 stability proxy and weather cells of step 11 are defined, and the minimum hours per cell.
+- Whether a mismatch in waking configurations between the periods (step 11 ii) is a measurable source of
+  bias now that offline references are excluded by step 11 i, and so how much the 24 hour rule matters.
+- How the free-stream wind speed estimate of step 15 is constructed.
 - How site-specific operating states (step 2) reach wind-up: pre-labelled data or a labelling schema.
-- How many references to use by default (step 11), given the union of invalid data in step 8 i.
+- How many references to use by default (step 8), given the union of invalid data in step 11 i.
 
 ## References
 
