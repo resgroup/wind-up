@@ -189,6 +189,7 @@ northing step. It is not stuck.
 | `campaign_resolved.yaml` | the campaign as wind-up understood it: your declaration with every default filled in and every timestamp resolved to UTC |
 | `analysis_plans.yaml` | for a campaign declared by its works: each upgraded turbine's span, pre and post lengths, power references, and whether the pool rule held (with the reason when it did not) |
 | `analysis_plans.csv` | every other turbine's role for each upgraded turbine — power reference, reserve or waking only — with its distance and the reason it is not a power reference |
+| `analysis_timeline_<turbine>.png` | the chosen span drawn over every turbine's data, works and exclusions, each turbine labelled with its role ([how the analysis period is chosen](analysis-period.md)) |
 
 ### Start with `reference_stability.csv`
 

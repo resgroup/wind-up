@@ -36,77 +36,12 @@ rather than as one span for the whole campaign (`CampaignSpec.uses_plans`). In p
 whenever the campaign is declared by a works table.
 
 Each upgraded turbine gets its own span and its own reference set, because a staggered rollout
-means every turbine's usable window is different.
-
-### What makes a turbine eligible as a power reference
-
-Over a candidate span `[start, end)`, another turbine is an eligible power reference when all three
-hold:
-
-1. **it has data over the whole span** — its data extent is its first finite active power to its
-   last, plus one timebase;
-2. **no works window of its own overlaps the span** — a turbine changed entirely before the span
-   starts or entirely after it ends is fine; one changed during it is not;
-3. **it is within 20 rotor diameters** (`max_reference_distance_d`) of the test turbine.
-
-Distance stands in for how well two turbines' power correlates.
-
-### How a span is chosen
-
-The search is exact over a finite set of candidate edges, so there is no optimiser to get stuck.
-The candidate **starts** are:
-
-- the test turbine's own first data;
-- the longest pre side sought, `changeover − pre_cap` (24 months);
-- the edge that yields `pre_cap` of *usable* time once exclusions are subtracted (`reach`, which
-  iterates because masked time can push an edge back into more masked time);
-- every other candidate's works window **end**, where that ends before the test turbine's works;
-- every candidate's own **data start**, so the selector can give up some pre period to reach a
-  reference whose data begins late.
-
-The candidate **ends** mirror these, with `side_cap` (12 months) in place of `pre_cap`, works
-window **starts**, and candidates' data ends.
-
-Every start × end combination is evaluated. A span is **viable** when both sides are at least
-`min_side` (3 months by default) of usable time *after subtracting exclusions*, and it has at least
-`min_references` (3) eligible power references. If none is viable, the turbine is **not analysed**
-— it is reported under `unplanned` with the reason, left out of the estimate and out of the farm
-headline, and the campaign continues with the others. Only when no turbine can be planned does the
-campaign fail.
-
-The viable spans are then ranked, in this order:
-
-| rank by | detail |
-|---|---|
-| 1. the pool rule | of the test turbine's 4 nearest candidates (`pool_size`), the **nearest must be eligible** and at least 3 of the 4 must be eligible within 20 D |
-| 2. the longer short side | `min(pre, post)`, capped at 12 months |
-| 3. the longer post | capped at 12 months |
-| 4. the longer pre | capped at 24 months |
-| 5. more power references | |
-| 6. the nearer furthest reference | |
-| 7. the later start, then the earlier end | a determinism tiebreak; among otherwise equal spans it prefers the shortest |
-
-The pool rule is a strong **preference**, not a filter: a span that breaks it is still chosen if
-nothing else is viable, and the plan records `pool_rule_met: false` with the reason.
-
-The chosen span's power references are the **nearest `k`** (4 by default) of its eligible
-candidates. Everything else gets a role and a reason, recorded in `analysis_plans.csv`:
-
-- **reserve** — eligible and within reach, but beyond the nearest `k`. Reserves are what the
-  reference screen promotes from when it rules a reference out.
-- **waking only** — not eligible, with the reason: `works … overlap the span`, `no data over the
-  whole span`, `beyond 20 D`, or `not offered as a reference`.
-
-The plan also records a **reading pool** per reference and reserve — the eligible turbines within
-20 D *of that reference*, nearest first, the test turbine left out — which is what each reference is
-read against in `reference_stability.csv`. A reference is therefore judged against its own
-neighbours rather than against the test turbine's.
-
-### A declared span
-
-Declaring `analysis_period`, for the campaign or per turbine, skips the search: the span is used as
-given. Declared `references` are then **forced in** as power references even when their works
-overlap that span, with a warning. A declared span with no power reference at all raises.
+means every turbine's usable window is different. The span and the power references are chosen
+together from the works windows, the data extents and the exclusions, never from anything measured:
+a candidate is eligible when it has data over the whole span and no works inside it, and the span
+is the one that keeps the nearest candidates eligible with the longest sides. A turbine no viable
+span can be found for is reported under `unplanned` and left out of the farm headline. The rules,
+the ranking and the settings are in [how the analysis period is chosen](analysis-period.md).
 
 ## Exclusions and held-back rows
 

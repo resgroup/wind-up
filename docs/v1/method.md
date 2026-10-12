@@ -40,9 +40,9 @@ The wind-up methodology comprises the following steps, in four parts.
 - **Part A, data preparation (steps 1 to 6)** is done once per dataset. It depends on the test turbines only
   as the set declared for the campaign, and not on which turbines are their references, so it is never
   repeated.
-- **Part B, the campaign for one test turbine (steps 7 to 10)** defines the before and after periods from
-  the test turbine alone, ranks the candidate references, screens them by measuring each candidate as if
-  it were a test turbine, and then measures the test turbine with the screened references.
+- **Part B, the campaign for one test turbine (steps 7 to 10)** chooses the before and after periods and
+  the candidate references together from the campaign timeline, screens the candidates by measuring each
+  as if it were a test turbine, and then measures the test turbine with the screened references.
 - **Part C, the measurement of one turbine's uplift (steps 11 to 15)** is a procedure that takes one
   subject turbine, one set of power references and the before and after periods, and returns an uplift.
   It is the same procedure whether the subject is the test turbine (step 10) or a candidate reference
@@ -52,8 +52,9 @@ The wind-up methodology comprises the following steps, in four parts.
 
 This separation is what resolves a circularity that is otherwise easy to fall into: the usable data
 depends on the references, the references depend on a screen, and the screen needs the usable data.
-Here the periods are defined from the test turbine alone, the references are screened with those
-periods fixed, and the test turbine's uplift is then calculated with the screened references.
+Here the periods and the candidate references are chosen from the campaign timeline alone, which is
+declared rather than measured; the references are screened with those periods fixed; and the test
+turbine's uplift is then calculated with the screened references.
 
 ## Part A: data preparation
 
@@ -300,25 +301,29 @@ test turbine (the periods and the power references) and call the measurement of 
 candidate reference as the subject, to screen the references (step 9), then with the test turbine as
 the subject and the screened references as its power references (step 10).
 
-### 7. Define the before and after periods
+### 7. Choose the before and after periods
 
 The dataset is divided into two periods: before and after the upgrade. For a toggle test these two
 periods are the toggle off and toggle on data, respectively. For a non-toggle (prepost) test the after
-period starts when the upgrade installation of the test turbine is complete and will normally run until
-the day when the analysis is conducted, to use as much data as possible. Where turbines are upgraded
-one after another, each test turbine has its own before and after periods.
+period starts when the upgrade installation of the test turbine is complete, and the before period ends
+when that installation starts. Where turbines are upgraded one after another, each test turbine has its
+own before and after periods.
 
-The periods are defined from the test turbine alone: its upgrade date, and any other known change to
-the test turbine (step 1), which neither period may include. They do not depend on the references. A
-candidate reference that has a change of its own inside the periods is ineligible (step 8) rather
-than the periods being trimmed to accommodate it. Where a valuable reference would be kept by a
-shorter before period, that is a deliberate choice the analyst makes by setting the period, and the
-tool reports the trade-off.
+The periods are chosen together with the candidate references (step 8), from the campaign timeline
+alone: the works windows and data extents of every turbine and the declared exclusions, never anything
+measured. Longer periods are preferred, each up to a cap (24 months before and 12 months after by
+default), but neither period may include a known change to the test turbine (step 1), and a period is
+shortened where that keeps enough good references unchanged: a span that ends at a neighbour's upgrade
+and keeps four unchanged references nearby beats a longer one that leaves only distant references.
+When no span gives both periods a minimum length (3 months by default) with enough references, the
+test turbine is reported as not analysed, with the reason, and the campaign continues without it. The
+analyst can instead declare the periods, which are then used as given. How the trade-off is made is
+described in [analysis-period.md](../analysis-period.md).
 
 The length of the before period is chosen as follows.
 
-- **Option A (current default).** Use all available data before the upgrade, up to a cap of 24 months,
-  with every record weighted equally.
+- **Option A (current default).** Use all available data before the upgrade, up to the cap above, with
+  every record weighted equally.
 - **Option B.** Use the same calendar months as the after period, in the previous year or years (the
   seasonal matching of wind-up v0). The same effect can be had analytically by including calendar time
   among the conditions matched in step 11, which is the form in which this option is tested.
@@ -335,20 +340,20 @@ whose power is used to predict the test turbine's power. The selection has two s
 of candidates (this step) and a screen that measures each candidate as if it were a test turbine
 (step 9).
 
-Every unchanged turbine (step 1) is a candidate. The following factors are considered when ranking
-them:
+A candidate is eligible for the periods of step 7 when it has data over the whole of them and no change
+of its own (step 1) inside them; a turbine changed entirely before or entirely after the periods is
+eligible. The eligible candidates are ranked by their distance from the test turbine in rotor
+diameters, which stands in for how strongly their power correlates with it, and those within a distance
+limit (20 rotor diameters by default) are taken nearest first, up to the number of power references
+sought (four by default). The remaining eligible candidates within the limit are reserves, from which
+the screen (step 9) refills the set when it rules a reference out. The periods of step 7 are chosen so
+that, wherever the timeline allows, the nearest candidate is eligible and most of the nearest few are.
+It also helps where possible for a reference turbine to be un-waked in the predominant wind direction,
+especially by the test turbine itself.
 
-- i. Turbines for which the active power correlates most strongly with the test turbine are favoured.
-  Normally these are also the closest turbines to the test turbine, and in practice the nearest
-  eligible turbines within 20 rotor diameters are taken.
-- ii. A candidate must have data over the whole of the periods of step 7, should have no known
-  performance issues, and must not have a change of its own (step 1) inside those periods. A
-  candidate with such a change is ineligible; the periods are not trimmed to keep it (step 7). An
-  indicator of an undeclared change (step 1) inside the periods, for example a change in reactive
-  power behaviour, is reported as a warning against the candidate, so that the analyst can declare
-  the change or exclude the turbine; it does not by itself make the candidate ineligible.
-- iii. It helps where possible for a reference turbine to be un-waked in the predominant wind direction,
-  especially by the test turbine itself.
+An indicator of an undeclared change (step 1) inside the periods, for example a change in reactive
+power behaviour, is reported as a warning against the candidate, so that the analyst can declare the
+change or exclude the turbine; it does not by itself make the candidate ineligible.
 
 At least three reference turbines are required, and more can be used where available. The number
 used is a trade-off. Each reference's own drift relative to the test turbine is averaged down as more
@@ -372,7 +377,7 @@ A candidate whose uplift differs from the median of the candidates by more than 
 percentage points by default) is excluded as a power reference and the remaining candidates are
 judged again, excluding at most one turbine per pass. The median rather than zero is used because the
 reference turbines may all drift together, which is not a source of bias. When a candidate is
-excluded the next in the ranking takes its place. The screen requires at least three candidates and
+excluded the nearest reserve (step 8) takes its place. The screen requires at least three candidates and
 enough after-period data to separate a bad reference from noise. Because the columns of step 5 do
 not depend on the reference set, excluding a candidate changes nothing in Part A. The screened set is
 the set of power references used for the test turbine in step 10.
