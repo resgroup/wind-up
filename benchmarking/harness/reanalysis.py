@@ -119,12 +119,13 @@ def interpolate_era5(era5_hourly_df: pd.DataFrame, *, index: pd.DatetimeIndex, t
     the wind vector at the same height. Hour-ending fields take the value of the hour ending after
     the period's centre. Outside the ERA5 record the values are NaN. Every column keeps its Open-Meteo
     name, and :data:`ERA5_WS` / :data:`ERA5_WD` are added when the hub-height columns are present.
-    A frame already on ``timebase`` (shorter than an hour) is taken as aligned and only reindexed.
+    A frame already on ``timebase`` is taken as aligned and only reindexed: on a timebase shorter than
+    an hour its step says so, and on an hourly timebase its aliases do.
 
     :raises ValueError: if a column is not a known ERA5 field, a direction has no speed at its height,
         or the record has a gap (a missing hour, or a NaN inside it)
     """
-    if timebase < _HOUR and len(era5_hourly_df) > 1 and _step(era5_hourly_df.index) == timebase:
+    if _is_aligned(era5_hourly_df, timebase=timebase):
         return _with_aliases(era5_hourly_df.drop(columns=[ERA5_WS, ERA5_WD], errors="ignore").reindex(index))
     era5 = _validated(era5_hourly_df)
     hours = era5.index.asi8.astype(float)
@@ -142,6 +143,13 @@ def interpolate_era5(era5_hourly_df: pd.DataFrame, *, index: pd.DatetimeIndex, t
         else:
             out[col] = np.where(inside, np.interp(centres, hours, values), np.nan)
     return _with_aliases(out)
+
+
+def _is_aligned(frame: pd.DataFrame, *, timebase: pd.Timedelta) -> bool:
+    """Whether ``frame`` is already on the SCADA timebase rather than the hourly ERA5 record."""
+    if len(frame) < 2 or _step(frame.index) != timebase:  # noqa: PLR2004
+        return False
+    return timebase < _HOUR or bool({ERA5_WS, ERA5_WD} & set(frame.columns))
 
 
 def _step(index: pd.Index) -> pd.Timedelta:

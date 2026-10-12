@@ -75,6 +75,14 @@ class TestInterpolate:
         again = interpolate_era5(aligned, index=index[1:], timebase=TIMEBASE)
         pd.testing.assert_frame_equal(again, aligned.iloc[1:])
 
+    def test_an_aligned_frame_on_an_hourly_timebase_is_only_reindexed(self) -> None:
+        # Hourly SCADA: the aligned frame has the same step as raw ERA5, and only its aliases tell them apart.
+        hour = pd.Timedelta(hours=1)
+        index = pd.date_range("2020-01-01", periods=3, freq=hour, tz="UTC")
+        aligned = interpolate_era5(hourly(4, temperature_2m=[0.0, 6.0, 3.0, 9.0]), index=index, timebase=hour)
+        again = interpolate_era5(aligned, index=index[1:], timebase=hour)
+        pd.testing.assert_frame_equal(again, aligned.iloc[1:])
+
     def test_aligning_once_then_subsetting_matches_aligning_the_subset(self) -> None:
         era5 = hourly(
             4,
