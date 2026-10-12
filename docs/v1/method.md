@@ -309,47 +309,35 @@ period starts when the upgrade installation of the test turbine is complete, and
 when that installation starts. Where turbines are upgraded one after another, each test turbine has its
 own before and after periods.
 
-The periods are chosen together with the candidate references (step 8), from the campaign timeline
-alone: the works windows and data extents of every turbine and the declared exclusions, never anything
-measured. Longer periods are preferred, each up to a cap (24 months before and 12 months after by
-default), but neither period may include a known change to the test turbine (step 1), and a period is
-shortened where that keeps enough good references unchanged: a span that ends at a neighbour's upgrade
-and keeps four unchanged references nearby beats a longer one that leaves only distant references.
-When no span gives both periods a minimum length (3 months by default) with enough references, the
-test turbine is reported as not analysed, with the reason, and the campaign continues without it. The
-analyst can instead declare the periods, which are then used as given. How the trade-off is made is
-described in [analysis-period.md](../analysis-period.md).
+The periods are chosen so that enough nearby turbines stay eligible as references (step 8), from the
+campaign timeline alone: the works windows and data extents of every turbine and the declared
+exclusions, never anything measured. Longer periods are preferred, each up to a cap (24 months before
+and 12 months after by default), but neither period may include a known change to the test turbine
+(step 1), and a period is shortened where that keeps enough good references unchanged: a span that
+ends at a neighbour's upgrade and keeps four unchanged references nearby beats a longer one that leaves
+only distant references. When no span gives both periods a minimum length (3 months by default) with
+enough references, the test turbine is reported as not analysed, with the reason, and the campaign
+continues without it. The analyst can instead declare the periods, which are then used as given. How
+the trade-off is made is described in [analysis-period.md](../analysis-period.md).
 
-The length of the before period is chosen as follows.
-
-- **Option A (current default).** Use all available data before the upgrade, up to the cap above, with
-  every record weighted equally.
-- **Option B.** Use the same calendar months as the after period, in the previous year or years (the
-  seasonal matching of wind-up v0). The same effect can be had analytically by including calendar time
-  among the conditions matched in step 11, which is the form in which this option is tested.
-
-A long before period gives the counterfactual model (step 12) more data and generalises better to the
-after period. A matched before period exposes both periods to the same conditions. Evidence to
-date favours each in different circumstances, and the matching step (step 11) may make the choice less
-important, so it is decided by validation.
+Every record of the before period is weighted equally. A long before period gives the counterfactual
+model (step 12) more data and generalises better to the after period; the matching of step 11 is what
+exposes both periods to the same conditions.
 
 ### 8. Rank the candidate references
 
 A set of reference turbines is chosen for each test turbine. These are the power references: turbines
-whose power is used to predict the test turbine's power. The selection has two stages: a ranked pool
-of candidates (this step) and a screen that measures each candidate as if it were a test turbine
-(step 9).
+whose power is used to predict the test turbine's power. This step decides, from the timeline alone,
+which turbines may serve and in what order; step 9 then tests them on their data and may replace some.
 
-A candidate is eligible for the periods of step 7 when it has data over the whole of them and no change
-of its own (step 1) inside them; a turbine changed entirely before or entirely after the periods is
-eligible. The eligible candidates are ranked by their distance from the test turbine in rotor
-diameters, which stands in for how strongly their power correlates with it, and those within a distance
-limit (20 rotor diameters by default) are taken nearest first, up to the number of power references
-sought (four by default). The remaining eligible candidates within the limit are reserves, from which
-the screen (step 9) refills the set when it rules a reference out. The periods of step 7 are chosen so
-that, wherever the timeline allows, the nearest candidate is eligible and most of the nearest few are.
-It also helps where possible for a reference turbine to be un-waked in the predominant wind direction,
-especially by the test turbine itself.
+A candidate is eligible when it has data over the whole of the periods of step 7, no change of its own
+(step 1) inside them, and lies within a distance limit of the test turbine (20 rotor diameters by
+default). A turbine changed entirely before or entirely after the periods is eligible. The eligible
+candidates are ranked by distance, which stands in for how strongly their power correlates with the
+test turbine's. The nearest few (four by default) are the power references the screen starts from; the
+rest, in order, are reserves, from which the screen draws a replacement for each reference it rules
+out. It also helps where possible for a reference turbine to be un-waked in the predominant wind
+direction, especially by the test turbine itself.
 
 An indicator of an undeclared change (step 1) inside the periods, for example a change in reactive
 power behaviour, is reported as a warning against the candidate, so that the analyst can declare the
@@ -433,7 +421,7 @@ either. Nothing in Part C changes the reference set or the periods.
   - **Option A (current default).** No weather matching beyond the choice of period in step 7.
   - **Option B.** Common-support trimming: coarsen ERA5 wind speed, direction and a stability proxy
     into cells, and drop the records of either period that fall in cells with less than a minimum
-    number of hours in the other period. Calendar time may be added as a condition (step 7 Option B).
+    number of hours in the other period. Calendar time may be added as a condition.
 
 Trimming is kept as natural as possible: where practical, whole days are removed rather than individual
 records, so that the retained data stays contiguous and autocorrelated in the same way in both periods.
@@ -571,7 +559,6 @@ The options above are decided by these criteria.
 
 ## Open questions
 
-- Which before period (step 7 options) is preferred once matching (step 11) is in place.
 - How the ERA5 stability proxy and weather cells of step 11 are defined, and the minimum hours per cell.
 - Whether a mismatch in waking configurations between the periods (step 11 ii) is a measurable source of
   bias now that offline references are excluded by step 11 i, and so how much the 24 hour rule matters.
