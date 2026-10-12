@@ -40,15 +40,17 @@ import pandas as pd
 from matplotlib.colors import TwoSlopeNorm
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
+from benchmarking.campaigns.loader import operating_state_config
 from benchmarking.campaigns.real import label_hot_operating_states
 from benchmarking.harness.northing import era5_direction, northing_rows
+from benchmarking.harness.operating_state import label_operating_states
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
 from benchmarking.synthetic.sources import greenbyte
 from benchmarking.synthetic.sources.hill_of_towie import get_data_dir, load_hot_metadata, load_hot_scada
 from wind_up.circular_math import circ_diff
 from wind_up.geodesy import local_east_north
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, Layout
-from wind_up.northing import north_farm, write_north_table_yaml, yaw_usable
+from wind_up.northing import north_farm, write_north_table_yaml
 from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:
@@ -72,38 +74,6 @@ def default_output_root() -> Path:
     """Return the directory this driver writes plots under (``WIND_UP_BENCHMARKING_OUTPUT_DIR`` overrides)."""
     root = Path(os.getenv("WIND_UP_BENCHMARKING_OUTPUT_DIR", Path.home() / "temp" / "wind-up-benchmarking"))
     return root / "wake_nadir_golden"
-
-
-def _inputs_from_frames(
-    *,
-    index: pd.DatetimeIndex,
-    reference: np.ndarray,
-    direction: dict[str, np.ndarray],
-    power: dict[str, np.ndarray],
-    wind_speed: dict[str, np.ndarray],
-    availability: dict[str, np.ndarray],
-    rated_power_kw: float,
-) -> dict:
-    """Assemble north_farm inputs, deriving the ``yaw_usable`` mask, exactly as ``north_scada`` does."""
-    timebase_s = 600.0
-    usable = {
-        turbine: yaw_usable(
-            power=power[turbine],
-            downtime_s=timebase_s - np.nan_to_num(availability[turbine], nan=0.0),
-            reference_deg=reference,
-            rated_power=rated_power_kw,
-            timebase_s=timebase_s,
-        )
-        for turbine in direction
-    }
-    return {
-        "index": index,
-        "reference": reference,
-        "direction": direction,
-        "usable": usable,
-        "power": power,
-        "wind_speed": wind_speed,
-    }
 
 
 def _era5_reference(lat: float, lon: float, *, index: pd.DatetimeIndex, start: str, end: str) -> np.ndarray:
@@ -166,7 +136,11 @@ def hot_inputs(*, start: str, end: str) -> tuple[Layout, dict]:
 def greenbyte_inputs(
     farm: greenbyte.GreenbyteFarm, *, rotor_diameter_m: float, start: str, end: str
 ) -> tuple[Layout, dict]:
-    """Return a Greenbyte farm's (Kelmarsh / Penmanshiel) layout and north_farm inputs for a window."""
+    """Return a Greenbyte farm's (Kelmarsh / Penmanshiel) layout and north_farm inputs for a window.
+
+    The usable rows are the composed run's with the generic operating states only: valid for northing and
+    generating above 5% of rated, where the reanalysis direction is finite.
+    """
     meta = greenbyte.load_greenbyte_metadata(farm)
     layout = Layout.from_frame(
         pd.DataFrame(
@@ -197,23 +171,33 @@ def greenbyte_inputs(
     if nacelle_position is None:
         msg = f"{farm.name} has no nacelle position column, so it cannot be northed"
         raise ValueError(msg)
+    labelled = label_operating_states(
+        scada,
+        columns=columns,
+        config=operating_state_config(None),
+        timebase=pd.Timedelta(seconds=greenbyte.TIMEBASE_S),
+        rated_power_kw=farm.rated_power_kw,
+    )
+    labelled["_northing_rows"] = northing_rows(labelled, columns=columns, rated_power_kw=farm.rated_power_kw).astype(
+        float
+    )
 
     def by_turbine(col: str) -> dict[str, np.ndarray]:
         out = {}
         for turbine in turbines:
-            rows = scada[scada[columns.turbine] == turbine]
+            rows = labelled[labelled[columns.turbine] == turbine]
             out[turbine] = rows[~rows.index.duplicated()].reindex(index)[col].to_numpy(dtype=float)
         return out
 
-    return layout, _inputs_from_frames(
-        index=index,
-        reference=reference,
-        direction=by_turbine(nacelle_position),
-        power=by_turbine(columns.active_power),
-        wind_speed=by_turbine(columns.wind_speed),
-        availability=by_turbine(columns.availability),
-        rated_power_kw=farm.rated_power_kw,
-    )
+    rows = by_turbine("_northing_rows")
+    return layout, {
+        "index": index,
+        "reference": reference,
+        "direction": by_turbine(nacelle_position),
+        "usable": {t: (v == 1.0) & np.isfinite(reference) for t, v in rows.items()},
+        "power": by_turbine(columns.active_power),
+        "wind_speed": by_turbine(columns.wind_speed),
+    }
 
 
 def golden_tables(layout: Layout, inputs: dict) -> tuple[dict[str, pd.DataFrame], dict[str, float]]:

@@ -119,8 +119,8 @@ turbine's residual error. A nadir that is unbracketed, not convex, too shallow o
 is rejected.
 
 The figure shows one pair on Hill of Towie: T21 waking T19. Before the shift (red), T19's power and
-wind speed, relative to T21's, reach their nadir 6.3 degrees before T21's northed direction reaches the bearing
-between them. T21's shift of +6.3 degrees moves the nadir onto the bearing (blue).
+wind speed, relative to T21's, reach their nadir 6.2 degrees before T21's northed direction reaches the bearing
+between them. T21's shift of +6.2 degrees moves the nadir onto the bearing (blue).
 
 ![T19's power and wind-speed ratio to T21, binned by T21's direction, before and after the wake-nadir shift](images/northing/wake_nadir_pair_T21_T19.png)
 
