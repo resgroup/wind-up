@@ -336,8 +336,7 @@ default). A turbine changed entirely before or entirely after the periods is eli
 candidates are ranked by distance, which stands in for how strongly their power correlates with the
 test turbine's. The nearest few (four by default) are the power references the screen starts from; the
 rest, in order, are reserves, from which the screen draws a replacement for each reference it rules
-out. It also helps where possible for a reference turbine to be un-waked in the predominant wind
-direction, especially by the test turbine itself.
+out.
 
 An indicator of an undeclared change (step 1) inside the periods, for example a change in reactive
 power behaviour, is reported as a warning against the candidate, so that the analyst can declare the
@@ -346,29 +345,46 @@ change or exclude the turbine; it does not by itself make the candidate ineligib
 At least three reference turbines are required, and more can be used where available. The number
 used is a trade-off. Each reference's own drift relative to the test turbine is averaged down as more
 references are added, but the usable data is the intersection of the references' valid data
-(step 11 i), so each added reference costs hours. The tool reports usable hours against number of
-references so the analyst can see the cost.
+(step 11 i), so each added reference costs hours. The data screen of step 9 reports that cost.
 
 Every other turbine on the wind farm, including other test turbines and turbines excluded as power
 references, still contribute to the waking scenario (step 5).
 
 ### 9. Screen the references
 
-The measurement of Part C (steps 11 to 14) is run with each candidate in turn as the subject turbine,
-predicted from the other candidates, with the periods of step 7 and the same matching and features.
-The uplift distributions of step 15 are not needed for the screen and are off by default. The
-expectation is that 0 % uplift is measured for each candidate. The purpose is to detect any bias in
-the references, by seeing whether any of them have a measurable change in performance relative to the
-others.
+The power references of step 8 are screened in two passes, the first on what each candidate's data can
+support and the second on what it shows. A candidate dropped by either pass is replaced by the nearest
+reserve (step 8), which is screened in its turn. The order is always by distance: the screen only
+removes and replaces, it never re-ranks.
+
+**Pass 1: the data screen.** For each candidate, the record selection of step 11 is applied to the pair
+of the test turbine and that candidate alone: both valid for uplift (step 2), neither inside an
+exclusion window (step 1), and no changed turbine upwind of either (step 5 iv), the test turbine
+included. From the records that survive, the usable hours in each period and the correlation of the
+candidate's power with the test turbine's over all usable records are computed. Correlation is
+insensitive to a scale change, so the after period contributes to it without the upgrade leaking
+in. A candidate is dropped when its usable hours in either period are below half the median of the
+candidates, or its correlation is more than 0.05 below their median; both defaults are decided by
+validation. This is what catches a reference that sits downwind of the test turbine in the prevailing
+wind: it is close and unchanged, but most of its records are lost to the changed-upwind rule, and
+keeping it would cost every other reference those hours too (step 11 i). Every candidate's hours and
+correlation are reported, and with them usable hours against number of references, so the analyst
+can see the cost of each reference.
+
+**Pass 2: the measurement screen.** The measurement of Part C (steps 11 to 14) is run with each
+remaining candidate in turn as the subject turbine, predicted from the other candidates, with the
+periods of step 7 and the same matching and features. The uplift distributions of step 15 are not
+needed for the screen and are off by default. The expectation is that 0 % uplift is measured for each
+candidate. The purpose is to detect any bias in the references, by seeing whether any of them have a
+measurable change in performance relative to the others.
 
 A candidate whose uplift differs from the median of the candidates by more than a floor (2.5
 percentage points by default) is excluded as a power reference and the remaining candidates are
 judged again, excluding at most one turbine per pass. The median rather than zero is used because the
-reference turbines may all drift together, which is not a source of bias. When a candidate is
-excluded the nearest reserve (step 8) takes its place. The screen requires at least three candidates and
-enough after-period data to separate a bad reference from noise. Because the columns of step 5 do
-not depend on the reference set, excluding a candidate changes nothing in Part A. The screened set is
-the set of power references used for the test turbine in step 10.
+reference turbines may all drift together, which is not a source of bias. The screen requires at
+least three candidates and enough after-period data to separate a bad reference from noise. Because
+the columns of step 5 do not depend on the reference set, excluding a candidate changes nothing in
+Part A. The screened set is the set of power references used for the test turbine in step 10.
 
 Each candidate's measurement is kept and reported: the combined reference uplift of step 16, before and
 after the screen, is the campaign's own check of bias.
@@ -565,6 +581,8 @@ The options above are decided by these criteria.
 - How the free-stream wind speed estimate of step 15 is constructed.
 - How site-specific operating states (step 2) reach wind-up: pre-labelled data or a labelling schema.
 - How many references to use by default (step 8), given the union of invalid data in step 11 i.
+- The data screen's thresholds (step 9): the usable-hours fraction and the correlation margin below
+  which a candidate is dropped.
 
 ## References
 
