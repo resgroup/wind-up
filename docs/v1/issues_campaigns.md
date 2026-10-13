@@ -324,7 +324,7 @@ clears their acceptance test — 38 of 38 cells ok, no `unplanned` turbine, ever
 3 power references. The selector now tries each candidate's data extents as span edges, an
 unplannable turbine is reported rather than fatal, and the two Greenbyte sites start on their
 Zenodo commercial operations dates. **How the method works today is written up** in
-[estimating uplift](../estimating-uplift.md) and [prepost campaigns](../prepost-campaigns.md); read
+[the method](method.md) and [prepost campaigns](../prepost-campaigns.md); read
 those before changing anything here.
 
 **The decision (2026-10-01): chase the method defects first; the big run waits.** CF26 shows the

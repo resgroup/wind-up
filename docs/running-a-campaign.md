@@ -12,7 +12,7 @@ one YAML file and run from the command line.
 
 This page assumes the upgraded turbines are already chosen. To choose them, see
 [designing a campaign](designing-a-campaign.md). For what wind-up does with the data once it has
-it, see [how wind-up estimates uplift](estimating-uplift.md) and, for a campaign with a single
+it, see [the method](v1/method.md) and, for a campaign with a single
 changeover, [how wind-up handles a prepost campaign](prepost-campaigns.md).
 
 ## 1. Describe the campaign

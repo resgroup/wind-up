@@ -2,7 +2,7 @@
 
 A **prepost** campaign changed the turbine once and left it changed. Everything before the
 changeover is the baseline; everything after is the upgraded period. This page covers only what
-prepost adds to, or changes about, [the core estimator](estimating-uplift.md).
+prepost adds to, or changes about, [the method](v1/method.md).
 
 The contrast is the simplest one wind-up has, and the hardest to get right. In a toggle campaign
 the two states interleave in the same weather, so the comparison is between rows that sit minutes or hours
@@ -51,7 +51,7 @@ Three different things remove a turbine's data, and wind-up distinguishes them:
 | the turbine's own **works window** | its data is never usable | no |
 | a **farm-wide** exclusion | nobody's data is usable | no |
 | the turbine's **own** exclusion | its data is not usable for uplift | **yes**, marked invalid |
-TODO exclusions are a general concept that toggle tests would use too but they are not explained in docs/estimating-uplift.md
+TODO exclusions are a general concept that toggle tests would use too but they are not explained in docs/v1/method.md
 
 The third is what `held_back_mask` picks out. Those rows stay in the frame so that the waking
 scenarios can still read *whether the turbine was running* over them, even though its power may not
