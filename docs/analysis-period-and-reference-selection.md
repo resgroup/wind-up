@@ -146,15 +146,74 @@ exclusions.
 The benchmark's prepost campaign matrix lowers `min_side` to 14 days so that synthetic rollouts
 with short gaps between works still yield a reading; a real campaign should not.
 
+## The data screen
+
+The plan's power references and reserves are then screened on their data (method step 9, pass 1), in
+`benchmarking/campaigns/data_screen.py`. The selector chose them from the timeline; the screen checks
+that each one's records can support the measurement. It runs once per test turbine, on the span, before
+any method sees the plan, so the measurement screen of pass 2 starts from the references it keeps.
+
+**Records.** Each candidate is paired with the test turbine alone, and the pair's records go through the
+record selection of method step 11 (`benchmarking/harness/record_selection.py`). Each lost record is
+labelled with the first reason that applies, in this order:
+
+| reason | the record is lost because |
+|---|---|
+| `excluded` | the test turbine or the candidate is inside a declared exclusion or a works window |
+| `subject invalid` | the test turbine's record is not valid for uplift (step 2), or missing |
+| `reference invalid` | the candidate's record is not valid for uplift, or missing |
+| `changed upwind of subject` | a turbine is upwind of the test turbine (step 5) while it counts as changed |
+| `changed upwind of reference` | a turbine is upwind of the candidate while it counts as changed |
+| `upwind unknown` | the upwind turbines of either are unknown |
+
+A turbine is changed when it has a works window overlapping the span; the test turbine is always
+changed. When it counts as changed depends on how far each works window is from the test turbine's
+changeover (method step 11 iii). A window less than 6 months from it makes the turbine changed over
+the whole span. A window further away makes it changed only on the far side: from the start of the
+works for a change after the changeover, until the end of the works for one before it. A neighbour
+upgraded a year after the test turbine therefore costs only the records from its works onward, not its
+upwind directions over the whole span. The measurement itself uses the same selection over the test turbine and all its power
+references at once, so a record is used only when every pair would keep it. Without the step 5 upwind
+column (the prepost matrix and the synthetic paths skip Part A) the three upwind reasons are skipped,
+with a warning.
+
+**Judging.** For each candidate the screen counts the usable hours before and after (for toggle, the
+off and on records) and the Pearson correlation of its power with the test turbine's over every usable
+record, both periods pooled. The medians are taken over every candidate, power references and reserves
+alike. A candidate fails when its hours in either period are below `hours_fraction` of the median, or
+its correlation is more than `correlation_margin` below the median correlation. A candidate with no
+usable records has no correlation and fails.
+
+**The walk.** The candidates are walked in rank order. The first `k` that pass are the power
+references, the other passers stay reserves in order, and the failures become wake contributors and
+leave every reading pool. Fewer than `k` passers keeps those that pass and warns that the pool rule is
+broken. Declared references are screened like any other. The step 8 table keeps the ranking from
+before the screen.
+
+`DataScreenSettings` holds the two thresholds, passed to `estimate_campaign` and `run_declaration` as
+`data_screen` (`None` turns the screen off):
+
+| setting | default | meaning |
+|---|---|---|
+| `hours_fraction` | 0.5 | the fewest usable hours a candidate may have in each period, as a fraction of the median |
+| `correlation_margin` | 0.2 | how far below the median correlation a candidate's may fall |
+
 ## What the run writes
 
-Under the report's `B_campaign/`, for every upgraded turbine, planned or not:
+Under the report's `B_campaign/`, for every upgraded turbine (the data screen's files for every analysed one):
 
 | file | what it says |
 |---|---|
 | `07_periods/periods.csv` | one row per upgraded turbine: its before and after periods and their lengths, whether the span was declared, whether the pool rule held (with the reason when it did not), any warning of a possible undeclared change inside its periods, and for a turbine no span could be found for, the reason |
 | `07_periods/analysis_timeline_<turbine>.png` | the figures on this page: the span over every turbine's data, works and exclusions, each turbine labelled with its role |
 | `08_candidates/candidates.csv` | every other turbine for each upgraded turbine, ranked by distance, with its role, the reason it is not a power reference, and any warning of a possible undeclared change inside the span |
+| `09_screen/reference_data.csv` | one row per test turbine and candidate: its rank, distance, usable hours before and after, correlation, the three medians, and its verdict (`kept`, `spare` or `dropped`) with the reason when dropped |
+| `09_screen/reference_hours.csv` | per test turbine, the joint usable hours before and after for the nearest 1, 2, ... of the screened references (kept first, then spares) |
+| `09_screen/data_screen_<turbine>.png` | each candidate's hours before and after and its correlation, in rank order, against the thresholds, coloured by verdict, with the `k` cut-off |
+| `09_screen/record_losses_<turbine>.png` | each candidate's records of the span split by loss reason |
+| `09_screen/reference_hours_<turbine>.png` | joint usable hours against the number of references, with the number chosen |
+| `09_screen/reference_map_<turbine>.png` | the layout: the test turbine, the candidates coloured by verdict and labelled with their usable share, the changed turbines ringed (solid when changed over the whole span, dashed and dated when changed from or until a date), and a wind rose of the test turbine's waking direction over the span |
+| `09_screen/correlation_map_<turbine>.png` | the layout with each candidate as a bubble sized and coloured by its correlation; a dropped candidate has a dashed outline |
 
 The warnings come from the possible yaw-alignment changes found in method step 4: one inside a
 test turbine's before or after period, or inside a power reference's or reserve's span, is reported

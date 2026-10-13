@@ -168,6 +168,12 @@ copied whole.
 **not** add a subdirectory under it. Give each run its own `--out`, or a second run will overwrite
 the first. Omit `--out` and the report goes to `$WIND_UP_BENCHMARKING_OUTPUT_DIR/<name>` instead.
 
+Add `--reference-plots` to also get the full set of measurement plots for each reference, the same
+plots a test turbine gets. They go in `C_turbine_measurement/<reference>_reference_for_<test turbine>/`,
+one folder per reference per test turbine it serves, since a reference shared by several test
+turbines is measured once for each. Each reference is then refitted rather than read from the
+screen, so the run is slower; it suits a campaign with few references.
+
 The run also writes its log to `<out>/run.log`. Read it: some of what the run decided is reported
 nowhere else, in particular the reference screen's thresholds, how big a pool it had, and whether
 it stopped early.
@@ -188,8 +194,10 @@ northing step. It is not stuck.
 | `northing/` | the direction corrections that were discovered, with plots |
 | `campaign_resolved.yaml` | the campaign as wind-up understood it: your declaration with every default filled in and every timestamp resolved to UTC |
 | `07_periods/periods.csv` | each upgraded turbine's before and after periods, whether they were declared or chosen, whether the pool rule held (with the reason when it did not), and for a turbine no span could be found for, the reason |
-| `07_periods/analysis_timeline_<turbine>.png` | the span drawn over every turbine's data, works and exclusions, each turbine labelled with its role ([how the analysis period is chosen](analysis-period.md)) |
+| `07_periods/analysis_timeline_<turbine>.png` | the span drawn over every turbine's data, works and exclusions, each turbine labelled with its role ([how the analysis period is chosen](analysis-period-and-reference-selection.md)) |
 | `08_candidates/candidates.csv` | every other turbine ranked by distance for each upgraded turbine — power reference, reserve or waking only — with the reason it is not a power reference and any warning of a possible undeclared change |
+| `09_screen/reference_data.csv` | the data screen: each candidate reference's usable hours before and after and its power correlation with the test turbine, and whether it was kept, held as a spare or dropped, with plots of the same per upgraded turbine ([the data screen](analysis-period-and-reference-selection.md#the-data-screen)) |
+| `09_screen/reference_hours.csv` | the usable hours left as references are added, nearest first |
 
 ### Start with `reference_stability.csv`
 

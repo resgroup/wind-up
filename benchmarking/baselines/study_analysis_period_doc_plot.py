@@ -1,4 +1,4 @@
-"""Draw the ``docs/analysis-period.md`` figures on Hill of Towie: the timeline the period selector chooses from.
+"""Draw the ``docs/analysis-period-and-reference-selection.md`` figures on Hill of Towie: the period timeline.
 
 Every turbine's works come from the Zenodo AeroUp install-dates table, the data extents from the
 SCADA over ``WINDOW``, and the one farm-wide exclusion from the real T13 declaration

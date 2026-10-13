@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from benchmarking.campaigns.data_screen import write_data_screen
 from benchmarking.campaigns.runner import per_turbine_table
 from benchmarking.campaigns.uplift_plots import write_uplift_plots
 from benchmarking.diagnostics import stages
@@ -38,7 +39,8 @@ def write_report(report: CampaignReport, *, out_dir: Path, farm_dir: Path | None
     Writes ``per_turbine.csv`` at the root and, in a folder per method step, ``periods.csv`` (each
     upgraded turbine's before and after periods, or the reason none could be chosen) with an
     ``analysis_timeline_<turbine>.png`` per upgraded turbine, ``candidates.csv`` (every other
-    turbine's rank, role and reason for each upgraded turbine, with any warning against it),
+    turbine's rank, role and reason for each upgraded turbine, with any warning against it), the data
+    screen's ``reference_data.csv`` and ``reference_hours.csv`` with five plots per upgraded turbine,
     ``reference_stability.csv`` (each candidate reference estimated as if it were a test turbine,
     which a healthy campaign reads near 0%) and, for a method reporting per-condition estimates,
     ``conditional.csv`` with one plot per condition.
@@ -54,6 +56,13 @@ def write_report(report: CampaignReport, *, out_dir: Path, farm_dir: Path | None
     report.per_turbine.to_csv(out_dir / "per_turbine.csv", index=False)
     report.farm.to_csv(farm / "farm_uplift.csv", index=False)
     (out_dir / stages.SCREEN).mkdir(exist_ok=True)
+    write_data_screen(
+        report.data_screens,
+        layout=report.spec.layout,
+        scada_df=report.scada_df,
+        turbine_col=report.spec.turbine_col,
+        out_dir=out_dir / stages.SCREEN,
+    )
     report.reference_stability.to_csv(out_dir / stages.SCREEN / "reference_stability.csv", index=False)
     _write_detail(report.farm_uplifts, out_dir=farm)
     write_uplift_plots(

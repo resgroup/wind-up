@@ -40,7 +40,7 @@ together from the works windows, the data extents and the exclusions, never from
 a candidate is eligible when it has data over the whole span and no works inside it, and the span
 is the one that keeps the nearest candidates eligible with the longest sides. A turbine no viable
 span can be found for is reported under `unplanned` and left out of the farm headline. The rules,
-the ranking and the settings are in [how the analysis period is chosen](analysis-period.md).
+the ranking and the settings are in [how the analysis period is chosen](analysis-period-and-reference-selection.md).
 
 ## Exclusions and held-back rows
 

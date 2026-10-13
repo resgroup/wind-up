@@ -12,7 +12,7 @@ from benchmarking.campaigns.context import context_for_plan
 from benchmarking.campaigns.plans import plans_for
 from benchmarking.harness.context import CampaignContext
 from benchmarking.synthetic import HOT_COLUMNS
-from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec
+from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec, utc
 
 
 def test_the_context_carries_only_the_documented_answers() -> None:
@@ -31,6 +31,7 @@ def test_the_context_carries_only_the_documented_answers() -> None:
         "reserve_references",
         "reading_pools",
         "reading_pool_size",
+        "changed_turbines",
     }
 
 
@@ -62,6 +63,27 @@ class TestAContextFromAPlan:
         _, _, context = self.build(scada=hourly_scada([*[f"T{i}" for i in range(7)], "T9"]))
         assert "T9" in context.wake_contributors
         assert "T9" not in context.candidate_references
+
+    def test_a_change_near_the_changeover_counts_over_the_whole_span(self) -> None:
+        _, plan, context = self.build()
+        assert plan.start < utc("2019-09-01") < plan.end
+        assert context.changed_turbines == {"T0": ((None, None),), "T6": ((None, None),)}
+
+    def test_a_change_far_from_the_changeover_counts_on_its_far_side(self) -> None:
+        works = {
+            "T0": [(utc("2019-06-01"), utc("2019-06-06"))],
+            "T6": [(utc("2019-09-01"), utc("2019-09-04"))],
+            "T5": [(utc("2018-03-01"), utc("2018-03-05"))],
+        }
+        _, plan, context = self.build(works=works)
+        assert plan.start < utc("2018-03-01")
+        assert context.changed_turbines["T5"] == ((None, utc("2018-03-05")),)
+
+    def test_works_outside_the_span_do_not_make_a_turbine_changed(self) -> None:
+        _, _, context = self.build(
+            works={"T0": [(utc("2019-06-01"), utc("2019-06-06"))], "T6": [(utc("2017-01-01"), utc("2017-01-02"))]}
+        )
+        assert context.changed_turbines == {"T0": ((None, None),)}
 
     def test_reserves_and_reading_pools_are_carried(self) -> None:
         _, plan, context = self.build()

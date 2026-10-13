@@ -9,13 +9,16 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from benchmarking.synthetic import treated_mask
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, PlanSettings, plan_analysis
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    import numpy.typing as npt
+
     from benchmarking.campaigns.declaration import CampaignSpec, Window
-    from benchmarking.synthetic import ColumnSchema
+    from benchmarking.synthetic import ColumnSchema, ToggleSchedule
 
 logger = logging.getLogger(__name__)
 
@@ -156,3 +159,12 @@ def plan_warnings(plan: AnalysisPlan, *, possible_changes: Mapping[str, Sequence
             days = ", ".join(t.strftime("%Y-%m-%d") for t in inside)
             found[turbine] = f"possible undeclared change on {days}"
     return found
+
+
+def treated_activity(
+    index: pd.DatetimeIndex, *, timing: pd.Timestamp | ToggleSchedule, window: Window
+) -> npt.NDArray[np.bool_]:
+    """Return the test turbine's treated rows within ``window``, its after period."""
+    start, end = window
+    in_activity = np.asarray((index >= start) & (index < end))
+    return treated_mask(index, timing) & in_activity

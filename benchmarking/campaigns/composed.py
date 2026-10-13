@@ -26,6 +26,7 @@ import yaml
 
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.power_model.features import era5_feature_frame
+from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
 from benchmarking.campaigns.declaration import layout_coords
 from benchmarking.campaigns.loader import era5_window, load_declaration
 from benchmarking.campaigns.report import write_report
@@ -128,6 +129,8 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
 - `{MEASUREMENT_DIRNAME}/<turbine>/`: part C, one folder per measured turbine, over its span and with
   its power references. Its results are in CSVs; its plots are under `plots/`, one folder per step.
   `plots/{stages.VALID_RECORDS}/` has the records used and not used for uplift, coloured by state.
+- `{MEASUREMENT_DIRNAME}/<reference>_reference_for_<turbine>/`: when reference plots are asked for, the same
+  for each power reference measured as if it were a test turbine (step 9), once per test turbine it serves.
 - `{FARM_DIRNAME}/`: part D, the results across turbines: the farm uplift (step 16) and the uplift plots.
 """
 
@@ -141,6 +144,7 @@ def wind_up_method(
     screen_cache: dict | None = None,
     era5_label: str = ERA5_UNLOCATED,
     run_subdir: bool = True,
+    reference_plots_dir: Path | None = None,
 ) -> Method:
     """Build ``wind-up``'s estimator for one campaign.
 
@@ -158,6 +162,7 @@ def wind_up_method(
         it fetched from
     :param run_subdir: write into a named, timestamped folder under ``out_dir``, as a study comparing
         many runs wants; a campaign gives each test turbine its own ``out_dir`` and passes ``False``
+    :param reference_plots_dir: where each reference measurement writes its own plots; ``None`` writes none
     """
     return PowerModelMethod(
         name=WIND_UP,
@@ -171,6 +176,7 @@ def wind_up_method(
         screen_cache=screen_cache,
         era5_label=era5_label,
         run_subdir=run_subdir,
+        reference_plots_dir=reference_plots_dir,
     )
 
 
@@ -213,6 +219,8 @@ def run_declaration(
     era5_hourly_df: pd.DataFrame | None = None,
     plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
     input_plots_dir: Path | None = None,
+    data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
+    reference_plots: bool = False,
 ) -> CampaignReport:
     """Run the campaign declared at ``path`` and write its report.
 
@@ -221,6 +229,9 @@ def run_declaration(
     :param era5_hourly_df: reanalysis to use instead of self-serving it from the farm centroid,
         for a caller that already holds it
     :param plan_settings: how a planned campaign's spans and power references are chosen
+    :param data_screen: how each plan's power references are screened on their data; ``None`` skips it
+    :param reference_plots: also write the plots of each reference measurement, in
+        ``C_turbine_measurement/<reference>_reference_for_<test turbine>/``
     :param input_plots_dir: where the plots of every turbine and every record go (steps 1 and 2, and
         the northing and waking validity), in a folder per step; defaults to the run's data-preparation folder
     :return: the truth-free campaign report, which is also written under ``out_dir``
@@ -255,7 +266,11 @@ def run_declaration(
     )
     changeovers = declaration.spec.changeovers()
     write_input_data_plots(
-        scada_df, columns=declaration.columns, out_dir=input_plots / stages.CHANGES, changeovers=changeovers
+        scada_df,
+        columns=declaration.columns,
+        out_dir=input_plots / stages.CHANGES,
+        changeovers=changeovers,
+        rated_power_kw=declaration.spec.rated_power_kw,
     )
     write_operating_state_plots(
         scada_df,
@@ -343,10 +358,12 @@ def run_declaration(
                 screen_cache=screen_cache,
                 era5_label=era5_source_label(*declaration.centroid),
                 run_subdir=False,
+                reference_plots_dir=out_dir / MEASUREMENT_DIRNAME if reference_plots else None,
             )
         ],
         columns=declaration.columns,
         plan_settings=plan_settings,
+        data_screen=data_screen,
         possible_changes={
             str(t): list(rows["timestamp"]) for t, rows in possible_changes.groupby("turbine", sort=True)
         },

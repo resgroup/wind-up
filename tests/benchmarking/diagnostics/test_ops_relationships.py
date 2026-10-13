@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from benchmarking.diagnostics.context import DiagnosticContext
-from benchmarking.diagnostics.input_data import write_input_data_plots
+from benchmarking.diagnostics.input_data import monthly_capacity_factor, write_input_data_plots
 from benchmarking.diagnostics.ops_relationships import (
     PAIRS,
     monthly_binned_means,
@@ -232,3 +232,20 @@ class TestTheFarmWidePlots:
         columns = NO_PITCH_OR_REACTIVE
         paths = write_input_data_plots(_farm(["T1"]), columns=columns, out_dir=tmp_path)
         assert "power_factor.png" not in {p.name for p in paths}
+
+    def test_the_power_factor_figure_is_drawn_with_a_rated_power(self, tmp_path: Path) -> None:
+        paths = write_input_data_plots(_farm(["T1", "T2"]), columns=COLUMNS, out_dir=tmp_path, rated_power_kw=2000.0)
+        assert "power_factor.png" in {p.name for p in paths}
+
+
+class TestMonthlyCapacityFactor:
+    def test_it_is_the_monthly_mean_power_over_rated(self) -> None:
+        index = pd.date_range("2020-01-01", "2020-03-01", freq="1D", inclusive="left", tz="UTC")
+        power = pd.Series(np.where(index.month == 1, 500.0, 1000.0), index=index)
+        got = monthly_capacity_factor(power, rated_power_kw=2000.0)
+        assert list(got.to_numpy()) == [0.25, 0.5]
+
+    def test_missing_records_are_left_out(self) -> None:
+        index = pd.date_range("2020-01-01", periods=4, freq="1D", tz="UTC")
+        power = pd.Series([1000.0, np.nan, 1000.0, np.nan], index=index)
+        assert monthly_capacity_factor(power, rated_power_kw=2000.0).iloc[0] == 0.5

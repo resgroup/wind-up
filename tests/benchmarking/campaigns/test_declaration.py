@@ -10,6 +10,7 @@ import pytest
 
 from benchmarking.campaigns import CampaignSpec, SyntheticCampaign, layout_from_coords
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange, ToggleSchedule
+from tests.benchmarking.campaigns.timeline_fixtures import shared_power
 
 PERIOD = (pd.Timestamp("2020-01-01", tz="UTC"), pd.Timestamp("2020-07-01", tz="UTC"))
 CHANGEOVER = pd.Timestamp("2020-04-01", tz="UTC")
@@ -31,14 +32,14 @@ def campaign(*, upgrades: list | None = None, upgrade_timing: object = CHANGEOVE
 
 
 def scada(turbines: tuple[str, ...] = ("T1", "T2", "T3", "T4", "T5")) -> pd.DataFrame:
-    """A tiny hourly frame over the campaign period, flat power, fully available."""
+    """A tiny hourly frame over the campaign period, fully available, power following one signal."""
     index = pd.date_range(PERIOD[0], PERIOD[1], freq="1h", tz="UTC", inclusive="left")
     return pd.concat(
         [
             pd.DataFrame(
                 {
                     HOT_COLUMNS.turbine: wtg,
-                    HOT_COLUMNS.active_power: 900.0,
+                    HOT_COLUMNS.active_power: shared_power(index),
                     HOT_COLUMNS.active_power_min: 850.0,
                     HOT_COLUMNS.wind_speed: 8.0,
                     HOT_COLUMNS.wind_speed_sd: 0.8,

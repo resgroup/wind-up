@@ -23,7 +23,7 @@ from benchmarking.baselines.power_model.diagnostics import (
     plot_conditional_diagnostics,
 )
 from benchmarking.diagnostics import stages
-from benchmarking.diagnostics.features import category_shares_figure, write_feature_outputs
+from benchmarking.diagnostics.features import category_shares_figure, era5_feature_figure, write_feature_outputs
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
 
@@ -304,3 +304,18 @@ def test_the_step_6_outputs_cover_every_era5_feature_and_turbine(tmp_path: Path)
     table = pd.read_csv(tmp_path / "era5_features.csv")
     assert list(table["feature"]) == ["air_density @ ERA5_57.50_-3.25", "gust_ratio @ ERA5_57.50_-3.25"]
     assert list(table["unit"].fillna("")) == ["kg/m³", "-"]
+
+
+def test_an_era5_histogram_shows_every_value_and_piles_nothing_into_its_end_bins() -> None:
+    idx = pd.date_range("2020-01-01", periods=10_000, freq="1h", tz="UTC")
+    values = pd.Series(np.random.default_rng(0).normal(0.2, 0.05, len(idx)), index=idx)
+    values.iloc[:5] = 1.0
+    fig = era5_feature_figure(values, label="shear_exponent")
+    hist_ax = fig.axes[0]
+    low, high = hist_ax.get_xlim()
+    assert low < values.min()
+    assert high > 1.0
+    heights = np.array([patch.get_height() for patch in hist_ax.patches])
+    assert 0 < heights[-1] < heights.max() / 100
+    assert "max 1" in fig.texts[0].get_text()
+    plt.close(fig)

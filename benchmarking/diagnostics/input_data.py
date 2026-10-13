@@ -35,6 +35,7 @@ def write_input_data_plots(
     columns: ColumnSchema,
     out_dir: Path,
     changeovers: Mapping[str, Sequence[pd.Timestamp]] | None = None,
+    rated_power_kw: float | None = None,
 ) -> list[Path]:
     """Write the farm-wide input-data plots for every turbine in ``scada_df`` and return their paths.
 
@@ -45,6 +46,8 @@ def write_input_data_plots(
     :param columns: the schema ``scada_df`` is keyed by
     :param out_dir: the folder written to
     :param changeovers: each turbine's changeover dates, marked on its operating-relationships figure
+    :param rated_power_kw: the turbines' rated power, for the capacity factor under the power factor; without it
+        the monthly mean power is drawn instead
     """
     changeovers = changeovers or {}
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -67,7 +70,9 @@ def write_input_data_plots(
             written.append(path)
     written.append(_plot_coverage(by_turbine, columns=columns, index=index, timebase=timebase, out_dir=out_dir))
     if columns.reactive_power is not None and columns.reactive_power in scada_df.columns:
-        written.append(_plot_power_factor(by_turbine, columns=columns, index=index, out_dir=out_dir))
+        written.append(
+            _plot_power_factor(by_turbine, columns=columns, index=index, out_dir=out_dir, rated_power_kw=rated_power_kw)
+        )
     logger.info("Wrote %d input-data plots for %d turbines to %s", len(written), len(turbines), out_dir)
     return written
 
@@ -108,32 +113,45 @@ def _plot_coverage(
     return path
 
 
+def monthly_capacity_factor(active: pd.Series, *, rated_power_kw: float) -> pd.Series:
+    """Monthly mean active power over the records present, as a fraction of ``rated_power_kw``."""
+    return active.resample("MS").mean() / rated_power_kw
+
+
 def _plot_power_factor(
-    by_turbine: dict[str, pd.DataFrame], *, columns: ColumnSchema, index: pd.DatetimeIndex, out_dir: Path
+    by_turbine: dict[str, pd.DataFrame],
+    *,
+    columns: ColumnSchema,
+    index: pd.DatetimeIndex,
+    out_dir: Path,
+    rated_power_kw: float | None,
 ) -> Path:
-    """Monthly active-power-weighted power factor of each turbine over the whole record."""
-    fig, ax = plt.subplots(figsize=(14, 6))
+    """Monthly active-power-weighted power factor of each turbine over the whole record, its capacity factor below."""
+    fig, (top, bottom) = plt.subplots(2, 1, figsize=(14, 10), sharex=True, layout="constrained")
     for position, (turbine, rows) in enumerate(by_turbine.items()):
-        monthly = monthly_power_factor(
-            _aligned(rows, columns.active_power, index=index),
-            _aligned(rows, columns.reactive_power, index=index),  # type: ignore[arg-type]  # checked by the caller
-        )
+        active = _aligned(rows, columns.active_power, index=index)
+        reactive = _aligned(rows, columns.reactive_power, index=index)  # type: ignore[arg-type]  # checked by caller
+        if rated_power_kw is None:
+            output = active.resample("MS").mean()
+        else:
+            output = monthly_capacity_factor(active, rated_power_kw=rated_power_kw)
         colour, dash = series_style(position)
-        ax.plot(
-            monthly.index.to_numpy(),
-            monthly.to_numpy(),
-            linewidth=1.0,
-            marker=".",
-            markersize=3,
-            label=turbine,
-            color=colour,
-            linestyle=dash,
-        )
-    ax.set_xlabel("date")
-    ax.set_ylabel("power factor (active-power-weighted monthly mean)")
-    ax.set_title(f"power factor over time, every turbine, {_period(index)} (all data provided)")
-    apply_grid(ax)
-    ax.legend(ncol=2, fontsize="small", loc="lower left")
+        style = {"linewidth": 1.0, "marker": ".", "markersize": 3, "color": colour, "linestyle": dash}
+        monthly = monthly_power_factor(active, reactive)
+        top.plot(monthly.index.to_numpy(), monthly.to_numpy(), label=turbine, **style)
+        bottom.plot(output.index.to_numpy(), output.to_numpy(), **style)
+    top.set_ylabel("power factor (active-power-weighted monthly mean)")
+    top.set_title(f"power factor over time, every turbine, {_period(index)} (all data provided)")
+    top.legend(ncol=2, fontsize="small", loc="lower left")
+    if rated_power_kw is None:
+        bottom.set_ylabel(f"monthly mean {columns.active_power}")
+        bottom.set_title("mean power over the records present")
+    else:
+        bottom.set_ylabel("capacity factor")
+        bottom.set_title(f"capacity factor: monthly mean power over the records present / {rated_power_kw:g} kW")
+    bottom.set_xlabel("date")
+    for ax in (top, bottom):
+        apply_grid(ax)
     path = out_dir / "power_factor.png"
     save_fig(fig, path)
     return path

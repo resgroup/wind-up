@@ -247,6 +247,57 @@ class TestAPlannedCampaign:
         ).any()
 
 
+class TestTheDataScreen:
+    """Each plan is screened on its data before any method sees it."""
+
+    @staticmethod
+    def screened() -> tuple:
+        from tests.benchmarking.campaigns.test_data_screen import _invalid, _scada  # noqa: PLC0415
+        from tests.benchmarking.campaigns.timeline_fixtures import staggered_spec  # noqa: PLC0415
+
+        method = FixedMethod()
+        report = estimate_campaign(
+            staggered_spec(north_offsets=[]),
+            _invalid(_scada(), "T2", before="2019-04-01"),
+            build_methods=lambda _wtg: [method],
+            columns=HOT_COLUMNS,
+        )
+        return report, method
+
+    def test_a_dropped_candidate_is_not_a_power_reference(self) -> None:
+        _, method = self.screened()
+        context = method.seen["T0"].context
+        assert context.candidate_references == ["T1", "T3", "T4", "T5"]
+        assert "T2" in context.wake_contributors
+        assert context.reserve_references == []
+
+    def test_the_step_8_plan_keeps_the_ranking_before_the_screen(self) -> None:
+        report, _ = self.screened()
+        assert report.plans["T0"].power_references == ("T1", "T2", "T3", "T4")
+
+    def test_the_report_carries_the_screen_tables(self) -> None:
+        report, _ = self.screened()
+        assert set(report.reference_data["test_wtg"]) == {"T0", "T6"}
+        dropped = report.reference_data[report.reference_data["verdict"] == "dropped"]
+        assert ("T0", "T2") in set(zip(dropped["test_wtg"], dropped["candidate"], strict=True))
+        assert set(report.reference_hours["test_wtg"]) == {"T0", "T6"}
+
+    def test_the_screen_can_be_turned_off(self) -> None:
+        from tests.benchmarking.campaigns.test_data_screen import _invalid, _scada  # noqa: PLC0415
+        from tests.benchmarking.campaigns.timeline_fixtures import staggered_spec  # noqa: PLC0415
+
+        method = FixedMethod()
+        report = estimate_campaign(
+            staggered_spec(north_offsets=[]),
+            _invalid(_scada(), "T2", before="2019-04-01"),
+            build_methods=lambda _wtg: [method],
+            columns=HOT_COLUMNS,
+            data_screen=None,
+        )
+        assert method.seen["T0"].context.candidate_references == ["T1", "T2", "T3", "T4"]
+        assert report.reference_data.empty
+
+
 class TestAnUnplannableTurbine:
     """A turbine the selector cannot plan is reported; the rest of the campaign still runs."""
 

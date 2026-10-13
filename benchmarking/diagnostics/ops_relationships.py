@@ -10,7 +10,7 @@ means. The turbine's own wind speed is used: this is inspection, not a model inp
 
 * :func:`monthly_binned_means` -- the tidy frame, one row per month and bin.
 * :func:`plot_ops_relationships` -- one figure per turbine: each relationship as a time series per
-  bin and as a curve per month.
+  bin and as a curve per month, both coloured by date.
 * :func:`plot_run_ops_relationships` -- the figures for a run's test turbine and power references.
 """
 
@@ -23,7 +23,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.cm import ScalarMappable
-from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap, Normalize
+from matplotlib.collections import LineCollection
+from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize
 
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.style import apply_grid, save_fig
@@ -116,27 +117,78 @@ def _ramp(n: int) -> list[tuple[float, float, float, float]]:
 def _draw_by_bin(
     ax: plt.Axes, cells: pd.DataFrame, *, x_label: str, y_label: str, changeovers: Sequence[pd.Timestamp]
 ) -> None:
-    """Bin-mean ``y`` over months, one line per bin, coloured by bin; a gap where a month has no data."""
+    """Draw bin-mean ``y`` over months, one line per bin labelled with its range, coloured by date.
+
+    A month with no data leaves a gap.
+    """
     months = pd.date_range(cells["month"].min(), cells["month"].max(), freq="MS")
     wide = cells.pivot_table(index="month", columns="bin", values="y_mean").reindex(months)
-    bins = list(wide.columns)
-    colours = _ramp(len(bins))
-    for colour, b in zip(colours, bins, strict=True):
-        ax.plot(wide.index.to_numpy(), wide[b].to_numpy(), color=colour, linewidth=1.5, marker=".", markersize=3)
-    edges = cells.drop_duplicates("bin").sort_values("bin")
-    boundaries = [*edges["x_lo"], float(edges["x_hi"].iloc[-1])]
-    if len(set(boundaries)) == len(boundaries):
-        mappable = ScalarMappable(norm=BoundaryNorm(boundaries, len(colours)), cmap=_listed(colours))
-        bar = ax.figure.colorbar(mappable, ax=ax, pad=0.01)
-        bar.set_label(f"{x_label} bin", fontsize="small")
-        bar.ax.tick_params(labelsize="x-small")
+    norm = _month_norm(cells)
+    when = mdates.date2num(months.to_pydatetime())
+    colours = np.array([_colour(float(norm(t))) for t in when])
+    edges = cells.drop_duplicates("bin").set_index("bin")
+    levels: dict[str, float] = {}
+    for b in wide.columns:
+        y = wide[b].to_numpy(dtype=float)
+        joined = np.isfinite(y[:-1]) & np.isfinite(y[1:])
+        segments = np.stack([np.column_stack([when[:-1], y[:-1]]), np.column_stack([when[1:], y[1:]])], axis=1)
+        ax.add_collection(LineCollection(segments[joined], colors=colours[1:][joined], linewidths=1.5))
+        finite = np.isfinite(y)
+        ax.scatter(when[finite], y[finite], c=colours[finite], s=6, zorder=3)
+        if finite.any():
+            levels[f"{_short(edges.loc[b, 'x_lo'])}-{_short(edges.loc[b, 'x_hi'])}"] = float(np.median(y[finite]))
+    ax.set_xlim(when[0] - 15, when[-1] + 15)
+    ax.autoscale(axis="y")
+    _label_lines(ax, levels)
     for changeover in changeovers:
         ax.axvline(changeover, color="k", linestyle="--", linewidth=1.2)
     locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
     ax.xaxis.set_major_locator(locator)
     ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
     ax.set_ylabel(y_label)
+    ax.set_title(f"{y_label} by {x_label} bin (labelled at right), monthly mean", fontsize="medium")
     apply_grid(ax)
+
+
+def _short(value: float) -> str:
+    """Return a bin edge rounded to suit its size."""
+    size = abs(value)
+    return f"{value:.0f}" if size >= 100 else f"{value:.1f}" if size >= 10 else f"{value:.2f}"  # noqa: PLR2004
+
+
+def _label_lines(ax: plt.Axes, levels: dict[str, float], *, gap: float = 0.06) -> None:
+    """Write each label just right of the axes at its level, pushed apart so none overlap."""
+    if not levels:
+        return
+    low, high = ax.get_ylim()
+    order = sorted(levels, key=levels.__getitem__)
+    spots = [(levels[name] - low) / (high - low) for name in order]
+    for i in range(1, len(spots)):
+        spots[i] = max(spots[i], spots[i - 1] + gap)
+    overshoot = spots[-1] - 1.0
+    if overshoot > 0:
+        spots = [spot - overshoot for spot in spots]
+        for i in range(len(spots) - 2, -1, -1):
+            spots[i] = min(spots[i], spots[i + 1] - gap)
+    for name, spot in zip(order, spots, strict=True):
+        ax.annotate(
+            name,
+            (1.0, spot),
+            xycoords="axes fraction",
+            xytext=(3, 0),
+            textcoords="offset points",
+            va="center",
+            fontsize="xx-small",
+            color="0.3",
+            annotation_clip=False,
+        )
+
+
+def _month_norm(cells: pd.DataFrame) -> Normalize:
+    """Return the date scale every panel of a relationship is coloured on."""
+    months = sorted(cells["month"].unique())
+    first, last = mdates.date2num(months[0]), mdates.date2num(months[-1])
+    return Normalize(vmin=first, vmax=max(last, first + 1))
 
 
 def _draw_by_month(
@@ -144,8 +196,7 @@ def _draw_by_month(
 ) -> None:
     """Bin-mean ``y`` against bin-mean ``x``, one line per month, coloured by date; changeovers on the colour bar."""
     months = sorted(cells["month"].unique())
-    first, last = mdates.date2num(months[0]), mdates.date2num(months[-1])
-    norm = Normalize(vmin=first, vmax=max(last, first + 1))
+    norm = _month_norm(cells)
     for month in months:
         cell = cells[cells["month"] == month].sort_values("bin")
         colour = _colour(float(norm(mdates.date2num(month))))
@@ -209,7 +260,6 @@ def plot_ops_relationships(
     fig, axes = plt.subplots(len(panels), 2, figsize=(16, 3.4 * len(panels)), squeeze=False, layout="constrained")
     for (x_col, y_col, cells), (left, right) in zip(panels, axes, strict=True):
         _draw_by_bin(left, cells, x_label=x_col, y_label=y_col, changeovers=changeovers)
-        left.set_title(f"{y_col} by {x_col} bin, monthly mean", fontsize="medium")
         _draw_by_month(right, cells, x_label=x_col, y_label=y_col, changeovers=changeovers)
         right.set_title(f"{y_col} vs {x_col}, one line per month", fontsize="medium")
     index = pd.DatetimeIndex(rows.index)

@@ -318,7 +318,7 @@ ends at a neighbour's upgrade and keeps four unchanged references nearby beats a
 only distant references. When no span gives both periods a minimum length (3 months by default) with
 enough references, the test turbine is reported as not analysed, with the reason, and the campaign
 continues without it. The analyst can instead declare the periods, which are then used as given. How
-the trade-off is made is described in [analysis-period.md](../analysis-period.md).
+the trade-off is made is described in [analysis-period-and-reference-selection.md](../analysis-period-and-reference-selection.md).
 
 Every record of the before period is weighted equally. A long before period gives the counterfactual
 model (step 12) more data and generalises better to the after period; the matching of step 11 is what
@@ -359,17 +359,18 @@ removes and replaces, it never re-ranks.
 
 **Pass 1: the data screen.** For each candidate, the record selection of step 11 is applied to the pair
 of the test turbine and that candidate alone: both valid for uplift (step 2), neither inside an
-exclusion window (step 1), and no changed turbine upwind of either (step 5 iv), the test turbine
-included. From the records that survive, the usable hours in each period and the correlation of the
+exclusion window (step 1), and no turbine upwind of either while it counts as changed (step 11 iii),
+the test turbine included. From the records that survive, the usable hours in each period and the correlation of the
 candidate's power with the test turbine's over all usable records are computed. Correlation is
 insensitive to a scale change, so the after period contributes to it without the upgrade leaking
 in. A candidate is dropped when its usable hours in either period are below half the median of the
-candidates, or its correlation is more than 0.05 below their median; both defaults are decided by
+candidates, or its correlation is more than 0.2 below their median; both defaults are decided by
 validation. This is what catches a reference that sits downwind of the test turbine in the prevailing
 wind: it is close and unchanged, but most of its records are lost to the changed-upwind rule, and
 keeping it would cost every other reference those hours too (step 11 i). Every candidate's hours and
 correlation are reported, and with them usable hours against number of references, so the analyst
-can see the cost of each reference.
+can see the cost of each reference. The mechanics are in
+[analysis-period-and-reference-selection.md](../analysis-period-and-reference-selection.md).
 
 **Pass 2: the measurement screen.** The measurement of Part C (steps 11 to 14) is run with each
 remaining candidate in turn as the subject turbine, predicted from the other candidates, with the
@@ -425,11 +426,22 @@ either. Nothing in Part C changes the reference set or the periods.
 - iii. **Changed turbines upwind.** For this measurement, a turbine is changed if it has a change
   (step 1) between the start of the before period and the end of the after period.
   A turbine whose changes all fall outside that span casts the same wake in both periods. Records in
-  which a changed turbine is upwind of the subject turbine or of a reference (step 5 iv), or in which
-  either upwind column is "unknown", are dropped. An upgrade can change the wake a turbine casts, and
-  the rule depends only on direction, so it drops the same conditions from both periods: it would not
-  make sense to keep records with the test turbine upwind in one period and drop them in the other.
-  The analyst can override the rule where the wake is known not to change.
+  which a turbine is upwind of the subject turbine or of a reference (step 5 iv) at a time it counts as
+  changed, or in which either upwind column is "unknown", are dropped. When it counts as changed
+  depends on how far its change is from the test turbine's changeover:
+  - **Near** (less than 6 months between the two works windows, the default; the test turbine itself
+    is always near): changed over the whole span. An upgrade can change the wake a turbine casts, so
+    the rule depends only on direction and drops the same conditions from both periods: it would not
+    make sense to keep records with the test turbine upwind in one period and drop them in the other.
+  - **Far**: changed only on the side of its works window away from the changeover, the window
+    included. A turbine upgraded late in the after period costs only the records from the start of its
+    works; one upgraded early in the before period costs only the records until the end of its works.
+    The records kept see it in the state it had at the changeover. Its wake is the same in all of them,
+    and dropping its upwind directions for the whole span would waste most of the data when the
+    neighbours are upgraded one after another.
+
+  Each works window of a turbine is treated this way and the dropped times add up. The analyst can
+  override the rule where the wake is known not to change.
 - iv. **Weather.** Both periods should see the same weather. For a toggle test a toggle pairing filter
   is applied, which only keeps data where the time difference between a data record and the nearest
   valid record with the opposite toggle state is within expected limits. For a prepost test one of the

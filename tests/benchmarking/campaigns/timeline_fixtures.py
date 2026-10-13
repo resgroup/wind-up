@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 
+import numpy as np
 import pandas as pd
 
 from benchmarking.campaigns import CampaignSpec, layout_from_coords
@@ -50,15 +51,21 @@ def staggered_spec(**overrides: object) -> CampaignSpec:
     return dataclasses.replace(spec, **overrides)
 
 
+def shared_power(index: pd.DatetimeIndex) -> np.ndarray:
+    """One power signal every turbine follows, so each pair of turbines correlates perfectly."""
+    hours = ((index - index[0]) / pd.Timedelta(hours=1)).to_numpy()
+    return 900.0 + 400.0 * np.sin(2.0 * np.pi * hours / 37.0)
+
+
 def hourly_scada(turbines: list[str] | None = None) -> pd.DataFrame:
-    """Flat, fully available hourly SCADA for every turbine over the data extent."""
+    """Fully available hourly SCADA for every turbine over the data extent, power following one signal."""
     index = pd.date_range(DATA_START, DATA_END, freq="1h", inclusive="left")
     return pd.concat(
         [
             pd.DataFrame(
                 {
                     HOT_COLUMNS.turbine: wtg,
-                    HOT_COLUMNS.active_power: 900.0,
+                    HOT_COLUMNS.active_power: shared_power(index),
                     HOT_COLUMNS.active_power_min: 850.0,
                     HOT_COLUMNS.wind_speed: 8.0,
                     HOT_COLUMNS.wind_speed_sd: 0.8,

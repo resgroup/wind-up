@@ -33,7 +33,7 @@ place that pins the accepted defaults and gives it the name `wind-up`.
 
 | step | scope | what it does |
 |---|---|---|
-| plan | per upgraded turbine | choose each turbine's analysis span and power references (prepost only — see [how the analysis period is chosen](analysis-period.md)) |
+| plan | per upgraded turbine | choose each turbine's analysis span and power references (prepost only — see [how the analysis period is chosen](analysis-period-and-reference-selection.md)) |
 | northing | whole farm, once | discover and apply each turbine's north calibration ([how northing works](northing.md)) |
 | estimate | per upgraded turbine | screen the references, fit the counterfactual, take the energy ratio, report each reference |
 | aggregate | whole campaign | combine the per-turbine uplifts into one energy-weighted farm number |

@@ -236,6 +236,15 @@ class TestPeriodsAndCandidates:
         assert row["before_days"] == pytest.approx(plan.pre / pd.Timedelta(days=1), abs=0.01)
         assert bool(row["pool_rule_met"]) is True
 
+    def test_the_data_screen_is_written_with_its_plots(self, tmp_path: Path) -> None:
+        write_report(self.planned_report(), out_dir=tmp_path)
+        screen = tmp_path / "09_screen"
+        data = pd.read_csv(screen / "reference_data.csv")
+        assert set(data["test_wtg"]) == {"T0", "T6"}
+        assert set(pd.read_csv(screen / "reference_hours.csv")["test_wtg"]) == {"T0", "T6"}
+        for name in ("data_screen", "record_losses", "reference_hours", "reference_map", "correlation_map"):
+            assert (screen / f"{name}_T0.png").exists()
+
     def test_each_turbines_candidates_are_ranked_by_distance(self, tmp_path: Path) -> None:
         report = self.planned_report()
         write_report(report, out_dir=tmp_path)

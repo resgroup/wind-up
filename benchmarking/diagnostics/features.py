@@ -79,12 +79,16 @@ def category_shares_figure(values: pd.Series, *, segments: Mapping[str, np.ndarr
 
 
 def era5_feature_figure(values: pd.Series, *, label: str, changeovers: Sequence[pd.Timestamp] = ()) -> plt.Figure:
-    """Distribution over the whole record beside the monthly mean over time; changeovers dashed."""
+    """Distribution over the whole record beside the monthly mean over time; changeovers dashed.
+
+    The histogram covers every finite value; the title gives the extremes.
+    """
     finite = values[np.isfinite(values.to_numpy(dtype=float))]
     fig, (hist_ax, time_ax) = plt.subplots(1, 2, figsize=(14, 5), gridspec_kw={"width_ratios": [1, 2]})
+    extent = ""
     if len(finite):
-        lo, hi = np.percentile(finite, [0.5, 99.5])
-        hist_ax.hist(finite.clip(lo, hi), bins=50, density=True, color="C0", alpha=0.8)
+        hist_ax.hist(finite, bins=100, density=True, color="C0", alpha=0.8)
+        extent = f", min {finite.min():.3g}, max {finite.max():.3g}"
         monthly = finite.resample("MS").mean()
         time_ax.plot(monthly.index, monthly.to_numpy(), color="C0", marker="o", markersize=3)
     for changeover in sorted(set(changeovers)):
@@ -95,7 +99,7 @@ def era5_feature_figure(values: pd.Series, *, label: str, changeovers: Sequence[
     for ax in (hist_ax, time_ax):
         apply_grid(ax)
     dashed = "; dashed: changeovers" if changeovers else ""
-    fig.suptitle(f"{label}: whole record ({len(finite)} records, 0.5-99.5th percentile shown{dashed})")
+    fig.suptitle(f"{label}: whole record ({len(finite)} records{extent}{dashed})")
     return fig
 
 

@@ -35,6 +35,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="where the plots of every turbine and record go (default: the run's A_data_preparation)",
     )
+    run.add_argument(
+        "--reference-plots",
+        action="store_true",
+        help="also write the plots of each reference measurement (one folder per reference and test turbine)",
+    )
     return parser.parse_args(argv)
 
 
@@ -42,7 +47,9 @@ def main(argv: list[str] | None = None) -> None:
     """Run the declared campaign."""
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    run_declaration(args.declaration, out_dir=args.out, input_plots_dir=args.input_plots)
+    run_declaration(
+        args.declaration, out_dir=args.out, input_plots_dir=args.input_plots, reference_plots=args.reference_plots
+    )
 
 
 if __name__ == "__main__":

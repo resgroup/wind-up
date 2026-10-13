@@ -19,6 +19,7 @@ from benchmarking.harness.toggle import is_toggle
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from benchmarking.harness.record_selection import ChangedTimes
     from benchmarking.synthetic import ToggleSchedule
 
 
@@ -41,9 +42,9 @@ class CampaignContext:
     :param valid_for_uplift: boolean, timestamps x the turbines this context screens (the test
         turbine and its candidate references, plus any other turbine the campaign declares, so a
         method co-analysing several is covered too) -- may this turbine's data at this timestamp
-        contribute to the uplift estimate? A ``False``
-        reference cell drops that reference for that row only, leaving the row usable; a
-        ``False`` test-turbine cell drops the row outright. Deliberately named for its purpose:
+        contribute to the uplift estimate? A ``False`` cell of the test turbine or of a power
+        reference drops the row; a ``False`` wake-contributor cell drops only that turbine's
+        record. Deliberately named for its purpose:
         a curtailed record is invalid for uplift while staying valid for a northing analysis.
         Its index **covers** the frame's timestamps rather than matching them, so narrowing the
         frame does not invalidate it; narrow with :meth:`valid_over`.
@@ -52,6 +53,10 @@ class CampaignContext:
     :param reading_pools: per candidate reference or reserve, the turbines to read it against when
         estimating its own uplift, nearest first. ``None`` reads each against the other candidates.
     :param reading_pool_size: how many of a reading pool to use
+    :param changed_turbines: each changed turbine and the times it counts as changed, the test
+        turbine among them (see :func:`~benchmarking.harness.record_selection.changed_times`). A
+        record with a turbine upwind of the subject or a power reference while it counts as changed
+        is not used.
     """
 
     test_wtg: str
@@ -64,6 +69,7 @@ class CampaignContext:
     reserve_references: list[str] = field(default_factory=list)
     reading_pools: dict[str, list[str]] | None = None
     reading_pool_size: int | None = None
+    changed_turbines: ChangedTimes = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Raise when a turbine holds two roles, or a reserve is not a wake contributor."""
@@ -162,4 +168,5 @@ class CampaignContext:
             candidate_references=references,
             wake_contributors=[],
             valid_for_uplift=pd.DataFrame(data=True, index=index, columns=sorted({test_wtg, *references})),
+            changed_turbines={test_wtg: ((None, None),)},
         )

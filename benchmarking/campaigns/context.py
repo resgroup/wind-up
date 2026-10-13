@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from benchmarking.campaigns.plans import campaign_works
 from benchmarking.harness.context import CampaignContext
+from benchmarking.harness.record_selection import changed_times
 
 if TYPE_CHECKING:
     from benchmarking.campaigns.declaration import CampaignSpec
@@ -27,7 +29,8 @@ def context_for_plan(spec: CampaignSpec, plan: AnalysisPlan, *, scada_df: pd.Dat
     The plan's power references are the candidates and its reserves wait among the wake
     contributors; a turbine the frame carries no rows for is dropped from every list, with a
     warning for a power reference. Every other turbine with data contributes its wake. Each
-    turbine's validity comes from the campaign's own per-turbine rule.
+    turbine's validity comes from the campaign's own per-turbine rule. The changed turbines are the
+    test turbine and those with works inside the span, each with the times it counts as changed.
 
     :param spec: the campaign's public facts
     :param plan: the turbine's analysis plan
@@ -54,6 +57,13 @@ def context_for_plan(spec: CampaignSpec, plan: AnalysisPlan, *, scada_df: pd.Dat
         reserve_references=[r for r in plan.reserves if r in present],
         reading_pools={r: [x for x in pool if x in present] for r, pool in plan.reading_pools.items() if r in present},
         reading_pool_size=plan.k,
+        changed_turbines=changed_times(
+            test_wtg=plan.turbine,
+            works=campaign_works(spec),
+            changeover=plan.works,
+            start=plan.start,
+            end=plan.end,
+        ),
     )
 
 

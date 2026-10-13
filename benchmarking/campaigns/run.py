@@ -15,10 +15,17 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.campaigns.context import context_for_plan
-from benchmarking.campaigns.plans import CampaignPlans, plans_for
+from benchmarking.campaigns.data_screen import (
+    DEFAULT_DATA_SCREEN,
+    DataScreen,
+    DataScreenSettings,
+    reference_data_table,
+    reference_hours_table,
+    screen_plan,
+)
+from benchmarking.campaigns.plans import CampaignPlans, plans_for, treated_activity
 from benchmarking.harness import MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
-from benchmarking.synthetic import treated_mask
 from wind_up import TurbineUplift, farm_uplift
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.northing import DEFAULT_NORTHING
@@ -29,9 +36,9 @@ if TYPE_CHECKING:
 
     import numpy.typing as npt
 
-    from benchmarking.campaigns.declaration import CampaignSpec, Window
+    from benchmarking.campaigns.declaration import CampaignSpec
     from benchmarking.harness import Method, MethodOutput
-    from benchmarking.synthetic import ColumnSchema, ToggleSchedule
+    from benchmarking.synthetic import ColumnSchema
     from wind_up import FarmUplift
     from wind_up.analysis_period import AnalysisPlan, PlanSettings
     from wind_up.northing import NorthingSettings
@@ -71,6 +78,7 @@ class CampaignReport:
     :param wall_time_s: how long each ``(method, turbine)`` estimate took
     :param timeline: each upgraded turbine's analysis plan, or the reason none could be chosen,
         with the works and data extents they were chosen from and the warnings against them
+    :param data_screens: each analysed turbine's data screen, empty when the screen is off
     """
 
     spec: CampaignSpec
@@ -83,11 +91,22 @@ class CampaignReport:
     outputs: dict[tuple[str, str], MethodOutput]
     wall_time_s: dict[tuple[str, str], float]
     timeline: CampaignPlans = field(default_factory=CampaignPlans)
+    data_screens: dict[str, DataScreen] = field(default_factory=dict)
 
     @property
     def plans(self) -> dict[str, AnalysisPlan]:
         """Each analysed turbine's plan."""
         return self.timeline.plans
+
+    @property
+    def reference_data(self) -> pd.DataFrame:
+        """Every analysed turbine's candidates with their usable hours, correlation and verdict."""
+        return reference_data_table(self.data_screens)
+
+    @property
+    def reference_hours(self) -> pd.DataFrame:
+        """Every analysed turbine's joint usable hours against the number of references."""
+        return reference_hours_table(self.data_screens)
 
     @property
     def unplanned(self) -> dict[str, str]:
@@ -175,6 +194,7 @@ def estimate_campaign(
     northing_plots: bool = True,
     plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
     possible_changes: Mapping[str, Sequence[pd.Timestamp]] | None = None,
+    data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
 ) -> CampaignReport:
     """Estimate every applicable method on every upgraded turbine and aggregate to one headline.
 
@@ -193,6 +213,8 @@ def estimate_campaign(
     :param plan_settings: how each turbine's span and power references are chosen
     :param possible_changes: each turbine's indicators of an undeclared change, reported as warnings
         against the plans they fall inside
+    :param data_screen: how each plan's power references and reserves are screened on their data;
+        ``None`` uses the plans as chosen
     """
     resolved = plans_for(spec, scada_df, columns=columns, settings=plan_settings, possible_changes=possible_changes)
     plans, unplanned = resolved.plans, resolved.unplanned
@@ -217,16 +239,19 @@ def estimate_campaign(
     per_turbine_rows: list[dict[str, object]] = []
     reference_frames: list[pd.DataFrame] = []
     conditional_frames: list[pd.DataFrame] = []
+    screens: dict[str, DataScreen] = {}
 
     # Sorted rather than in declaration order, so a glance at the log says how far through the
     # campaign a run is, whatever order the turbines were declared in.
     for wtg, plan in sorted(plans.items()):
         timing = spec.timing_for(wtg)
         frame = visible[(visible.index >= plan.start) & (visible.index < plan.end)]
-        context = context_for_plan(spec, plan, scada_df=frame)
+        if data_screen is not None:
+            screens[wtg] = screen_plan(plan, frame, spec=spec, columns=columns, settings=data_screen)
+        context = context_for_plan(spec, screens[wtg].plan if wtg in screens else plan, scada_df=frame)
         rows = frame[frame[spec.turbine_col] == wtg]
         row_index = pd.DatetimeIndex(rows.index)
-        treated = _treated_activity(row_index, timing=timing, window=plan.after)
+        treated = treated_activity(row_index, timing=timing, window=plan.after)
         treated &= spec.usable_mask(wtg, row_index)
         energy, n_records = _actual_energy(rows, columns=columns, mask=treated)
 
@@ -270,6 +295,7 @@ def estimate_campaign(
         outputs=outputs,
         wall_time_s=wall_time_s,
         timeline=resolved,
+        data_screens=screens,
     )
 
 
@@ -293,15 +319,6 @@ def _stack(frames: list[pd.DataFrame], *, lead: Sequence[str]) -> pd.DataFrame:
     stacked = pd.concat(frames, ignore_index=True)
     ordered = [c for c in lead if c in stacked.columns]
     return stacked[[*ordered, *[c for c in stacked.columns if c not in ordered]]]
-
-
-def _treated_activity(
-    index: pd.DatetimeIndex, *, timing: pd.Timestamp | ToggleSchedule, window: Window
-) -> npt.NDArray[np.bool_]:
-    """Return the test turbine's treated rows within ``window``, its after period."""
-    start, end = window
-    in_activity = np.asarray((index >= start) & (index < end))
-    return treated_mask(index, timing) & in_activity
 
 
 def _actual_energy(rows: pd.DataFrame, *, columns: ColumnSchema, mask: npt.NDArray[np.bool_]) -> tuple[float, int]:

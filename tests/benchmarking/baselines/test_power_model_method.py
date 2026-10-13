@@ -26,6 +26,7 @@ from benchmarking.baselines.power_model.method import (
     _combine_uplift,
     _implied_shrinkage,
     _reference_input,
+    reference_measurement_dirname,
     reference_overall_uplift,
 )
 from benchmarking.baselines.power_model.screening import ScreenResult
@@ -34,8 +35,9 @@ from benchmarking.harness.conditions import CONDITIONS
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL
+from benchmarking.harness.record_selection import USABLE
 from benchmarking.harness.toggle import resolve_toggle
-from benchmarking.harness.waking import WAKING_SCENARIO_COL
+from benchmarking.harness.waking import UPWIND_COL, WAKING_SCENARIO_COL
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
 
 if TYPE_CHECKING:
@@ -844,7 +846,7 @@ class TestCampaignContext:
             )
         )
 
-    def test_rows_a_reference_may_not_contribute_are_dropped(self) -> None:
+    def test_an_invalid_record_of_a_power_reference_drops_the_row(self) -> None:
         scada, changeover = self._fixture()
         context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
         valid = context.valid_for_uplift.copy()
@@ -852,9 +854,35 @@ class TestCampaignContext:
         object.__setattr__(context, "valid_for_uplift", valid)
         with_holes = self._estimate(scada, test_wtg="T1", campaign_context=context)
 
-        holed = scada[~((scada.index < valid.index[200]) & (scada[_TURBINE] == "R1"))]
+        cut = scada[scada.index >= valid.index[200]]
         assert with_holes == pytest.approx(
-            self._estimate(holed, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+            self._estimate(cut, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+        )
+
+    def test_an_invalid_record_of_a_wake_contributor_keeps_the_row(self) -> None:
+        scada, changeover = self._fixture()
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        context = dataclasses.replace(context, candidate_references=["R1", "R2"], wake_contributors=["R3"])
+        whole = self._estimate(scada, test_wtg="T1", campaign_context=context)
+        valid = context.valid_for_uplift.copy()
+        valid.loc[valid.index[:200], "R3"] = False
+        holed = self._estimate(
+            scada, test_wtg="T1", campaign_context=dataclasses.replace(context, valid_for_uplift=valid)
+        )
+        assert holed == pytest.approx(whole)
+
+    def test_a_changed_turbine_upwind_drops_the_row(self) -> None:
+        scada, changeover = self._fixture()
+        first = scada.index.unique()[:300]
+        upwind = np.where((scada[_TURBINE] == "R2") & scada.index.isin(first), "T1", "none")
+        scada = scada.assign(**{UPWIND_COL: upwind})
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        assert context.changed_turbines == {"T1": ((None, None),)}
+        dropped = self._estimate(scada, test_wtg="T1", campaign_context=context)
+
+        cut = scada[~scada.index.isin(first)]
+        assert dropped == pytest.approx(
+            self._estimate(cut, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
         )
 
 
@@ -1102,8 +1130,29 @@ class TestReferenceUpliftReuse:
         assert survivor["uplift"] != pytest.approx(first["R2"])
 
 
-class TestADegenerateReferenceDoesNotSinkTheCampaign:
-    """A reference too poor to estimate is reported as unknown, not raised out of the estimate."""
+class TestReferencePlots:
+    """Optionally, each reference measurement writes its own plots, in a folder naming its test turbine."""
+
+    def test_each_reference_gets_a_folder_named_for_its_test_turbine(self, tmp_path: Path) -> None:
+        mi, _ = _screen_case(step=0.0)
+        method = _screen_method(reference_plots_dir=tmp_path)
+        refs = method.reference_uplifts(mi, power_free=(), screen=method.screen_references(mi))
+        folders = sorted(p.name for p in tmp_path.iterdir())
+        assert folders == sorted(f"{r}_reference_for_T1" for r in refs["turbine"])
+        assert all(any((tmp_path / f).rglob("*.png")) for f in folders)
+
+    def test_the_numbers_are_those_without_plots(self, tmp_path: Path) -> None:
+        mi, _ = _screen_case(step=0.0)
+        plain = _screen_method().reference_uplifts(mi)
+        plotted = _screen_method(reference_plots_dir=tmp_path).reference_uplifts(mi)
+        assert list(plotted["uplift"]) == pytest.approx(list(plain["uplift"]))
+
+    def test_the_folder_name(self) -> None:
+        assert reference_measurement_dirname("T14", test_wtg="T13") == "T14_reference_for_T13"
+
+
+class TestADeadReference:
+    """A power reference without valid records costs every row; its own uplift is reported as unknown."""
 
     def _mi_with_a_dead_reference(self) -> tuple[MethodInput, pd.Timestamp]:
         mi, changeover = _screen_case(step=0.0)
@@ -1111,21 +1160,16 @@ class TestADegenerateReferenceDoesNotSinkTheCampaign:
         scada.loc[scada[_TURBINE] == "R1", _POWER] = np.nan  # R1 never reports power
         return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE), changeover
 
-    def test_the_headline_still_comes_back(self) -> None:
+    def test_as_a_power_reference_it_leaves_nothing_to_fit(self) -> None:
         mi, _ = self._mi_with_a_dead_reference()
-        assert np.isfinite(_screen_method().estimate(mi).p50_overall)
+        with pytest.raises(ValueError, match="baseline rows"):
+            _screen_method(reference_screen=False, report_reference_uplifts=False).estimate(mi)
 
-    def test_the_dead_reference_is_reported_as_unknown(self) -> None:
+    def test_its_own_uplift_is_reported_as_unknown(self) -> None:
         mi, _ = self._mi_with_a_dead_reference()
-        refs = _screen_method().estimate(mi).reference_uplifts
-        assert refs is not None
+        refs = _screen_method().reference_uplifts(mi, power_free=("R1",))
         assert not np.isfinite(refs.loc[refs["turbine"] == "R1", "uplift"]).any()
         assert np.isfinite(refs.loc[refs["turbine"] != "R1", "uplift"]).all()
-
-    def test_the_screen_rules_it_out_rather_than_failing(self) -> None:
-        """Surviving a reference this bad is the whole point of the screen."""
-        mi, _ = self._mi_with_a_dead_reference()
-        assert _screen_method().screen_references(mi).screened == ("R1",)
 
 
 class TestAShrunkenPoolIsAnnounced:
@@ -1669,6 +1713,38 @@ class TestTheScreenRunsOncePerCampaign:
         assert again.passes is first.passes
         assert again.screened == first.screened
 
+    def test_the_changed_times_are_part_of_the_key(self) -> None:
+        cache: dict = {}
+        mi, _ = _screen_case(step=0.08)
+        first = _screen_method(screen_cache=cache).screen_references(mi)
+        other = MethodInput(
+            scada_df=mi.scada_df,
+            test_wtg=mi.test_wtg,
+            campaign_context=dataclasses.replace(
+                mi.context, changed_turbines={"T1": ((None, None),), "R9": ((None, None),)}
+            ),
+        )
+        again = _screen_method(screen_cache=cache).screen_references(other)
+        assert again.passes is not first.passes
+        assert len(cache) == 2
+
+    def test_a_change_of_changed_times_alone_is_a_new_key(self) -> None:
+        cache: dict = {}
+        mi, _ = _screen_case(step=0.08)
+        late = mi.scada_df.index[-1]
+        keys = [
+            {"T1": ((None, None),), "R9": ((None, None),)},
+            {"T1": ((None, None),), "R9": ((late, None),)},
+        ]
+        for changed in keys:
+            other = MethodInput(
+                scada_df=mi.scada_df,
+                test_wtg=mi.test_wtg,
+                campaign_context=dataclasses.replace(mi.context, changed_turbines=changed),
+            )
+            _screen_method(screen_cache=cache).screen_references(other)
+        assert len(cache) == 2
+
     def test_without_a_cache_it_screens_every_time(self) -> None:
         mi, _ = _screen_case(step=0.08)
         first = _screen_method().screen_references(mi)
@@ -1946,9 +2022,10 @@ class TestValidUpliftRows:
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=scada.index[3], turbine_col=_TURBINE)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         y = scada[scada[_TURBINE] == "T1"][_POWER]
-        return _fundamentals_method()._select_rows(  # noqa: SLF001
-            scada, mi=mi, index=index, y=y, timebase=pd.Timedelta(minutes=10)
+        reasons = _fundamentals_method()._loss_reasons(  # noqa: SLF001
+            mi, index=index, references=["R1", "R2", "R3"], timebase=pd.Timedelta(minutes=10)
         )
+        return np.asarray(reasons == USABLE) & np.isfinite(y.to_numpy(dtype=float))
 
     def test_a_labelled_frame_keeps_only_valid_uplift_rows(self) -> None:
         scada = _toy_scada(6, uplift=0.0, treated=np.zeros(6, dtype=bool))

@@ -61,6 +61,7 @@ from benchmarking.harness.conditions import (
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
 from benchmarking.harness.reanalysis import interpolate_era5
+from benchmarking.harness.record_selection import USABLE, loss_reasons
 from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrade_start
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
 from wind_up.farm import TurbineUplift, farm_uplift
@@ -133,6 +134,11 @@ _DEFAULT_SCREEN_FLOOR = 0.025
 # the driver is campaign length rather than pool size. 150 days sits clear of both: a 3-month
 # campaign (~90 days of data) is not screened, a 6-month one (~182) is.
 _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS = 150.0
+
+
+def reference_measurement_dirname(reference: str, *, test_wtg: str) -> str:
+    """Return the folder of one reference's measurement for one test turbine."""
+    return f"{reference}_reference_for_{test_wtg}"
 
 
 def reference_overall_uplift(reference_uplifts: pd.DataFrame, *, rated_power_kw: float) -> float:
@@ -352,6 +358,10 @@ class PowerModelMethod:
         writes straight into ``out_dir`` with plain names (``results.csv``, ...), for a caller that
         already gives every run its own folder, as a campaign does per test turbine.
     :param save_plots: also write the diagnostic plots
+    :param reference_plots_dir: when set, each reference measurement of the reference-uplift report
+        writes its own plots and diagnostics, as a test turbine's would, under
+        ``reference_plots_dir / reference_measurement_dirname(reference, test_wtg=...)``; its
+        estimate is then always refitted rather than taken from the screen
     :param seed: seed for the baseline holdout split and the LightGBM ``random_state`` (a caller-supplied
         ``random_state`` in ``model_params`` still wins)
     :param model_params: LightGBM overrides passed to the outcome model; merged **over** the tuned
@@ -448,11 +458,12 @@ class PowerModelMethod:
     # era5_source_label() of the point it fetched, so a reader can tell which series was used.
     era5_label: str = ERA5_UNLOCATED
     run_subdir: bool = True
+    reference_plots_dir: Path | None = None
     # A campaign's screen verdict is one answer for the whole campaign: the same pool judged across
     # the same contrast. Every test turbine would otherwise re-run the identical round-robin. A
     # campaign passes one dict to every turbine's method; None means screen per estimate. Every
     # method sharing a cache must share its configuration, since the key does not carry it.
-    screen_cache: dict[tuple[tuple[str, ...], str, str, str], ScreenResult] | None = field(
+    screen_cache: dict[tuple[tuple[str, ...], str, str, str, tuple[str, ...]], ScreenResult] | None = field(
         default=None, repr=False, compare=False
     )
 
@@ -506,7 +517,10 @@ class PowerModelMethod:
 
         toggle_rows = resolve_toggle(mi.upgrade_timing, index)
         t = toggle_rows.upgraded
-        selected = self._select_rows(scada, mi=mi, index=index, y=y, timebase=timebase)
+        reasons = self._loss_reasons(
+            mi, index=index, references=[r for r in references if r not in power_free], timebase=timebase
+        )
+        selected = np.asarray(reasons == USABLE) & np.isfinite(y.to_numpy(dtype=float))
         # The counterfactual is fitted on the lenient training baseline (pre-campaign U off-blocks);
         # more upgrade-invariant data helps. The conditional matching step below instead uses the
         # strict campaign_baseline (off-blocks only), so it never matches pre-campaign against on rows.
@@ -544,6 +558,7 @@ class PowerModelMethod:
                 features=features,
                 y=y_arr,
                 selected=selected,
+                reasons=reasons,
                 baseline_sel=baseline_sel,
                 upgraded_sel=upgraded_sel,
                 fit=fit,
@@ -920,14 +935,32 @@ class PowerModelMethod:
         days_outside = np.maximum(seconds_outside / 86400.0, 0.0)
         return np.asarray(0.5 ** (days_outside / half_life), dtype=float)
 
-    def _select_rows(
-        self, scada: pd.DataFrame, *, mi: MethodInput, index: pd.DatetimeIndex, y: pd.Series, timebase: pd.Timedelta
-    ) -> np.ndarray:
-        """Boolean over ``index``: the test turbine's valid-uplift rows with finite outcome."""
-        test_rows = scada[scada[mi.turbine_col] == mi.test_wtg].sort_index()
-        keep = self._valid_uplift(test_rows, timebase=timebase)
-        keep = keep[~keep.index.duplicated()].reindex(index, fill_value=False)
-        return keep.to_numpy() & np.isfinite(y.to_numpy(dtype=float))
+    def _loss_reasons(
+        self, mi: MethodInput, *, index: pd.DatetimeIndex, references: Sequence[str], timebase: pd.Timedelta
+    ) -> pd.Series:
+        """Return why each record of ``index`` is lost with ``references`` as the power references, or usable.
+
+        Generic states are labelled first when the frame has no ``valid_uplift`` column.
+        """
+        turbines = [mi.test_wtg, *references]
+        scada = mi.scada_df[mi.scada_df[mi.turbine_col].isin(turbines)]
+        if VALID_UPLIFT_COL not in scada.columns:
+            scada = label_operating_states(
+                scada,
+                columns=self.columns,
+                config=OperatingStateConfig(),
+                timebase=timebase,
+                rated_power_kw=self.baseline_rated_power_kw,
+            )
+        return loss_reasons(
+            scada,
+            subject=mi.test_wtg,
+            references=references,
+            changed=mi.context.changed_turbines,
+            turbine_col=mi.turbine_col,
+            usable=mi.context.valid_over(index),
+            index=index,
+        )
 
     def _valid_uplift(self, rows: pd.DataFrame, *, timebase: pd.Timedelta) -> pd.Series:
         """Return the rows' ``valid_uplift`` column, labelling generic states first when the frame has none."""
@@ -990,6 +1023,7 @@ class PowerModelMethod:
         features: pd.DataFrame,
         y: np.ndarray,
         selected: np.ndarray,
+        reasons: pd.Series,
         baseline_sel: np.ndarray,
         upgraded_sel: np.ndarray,
         fit: dict[str, Any],
@@ -1010,6 +1044,7 @@ class PowerModelMethod:
                 "actual_kw": y,
                 "counterfactual_kw": counterfactual,
                 "selected": np.asarray(selected, dtype=bool),
+                "loss_reason": reasons.astype(str).to_numpy(),
                 "baseline": np.asarray(baseline_sel, dtype=bool),
                 "upgraded": np.asarray(upgraded_sel, dtype=bool),
                 "reference_mean_ws": reference_mean_wind_speed(
@@ -1128,7 +1163,11 @@ class PowerModelMethod:
         demoted = set(power_free)
         surviving = [r for r in pool if r not in demoted]
         clone = self._reference_clone()
-        reusable = self._reusable_screen_estimates(mi, screen=screen, ruled_out=demoted, pool=surviving)
+        reusable = (
+            {}
+            if self.reference_plots_dir is not None
+            else self._reusable_screen_estimates(mi, screen=screen, ruled_out=demoted, pool=surviving)
+        )
         # A reference the screen moved out of a refilled pool is still read and reported.
         targets = [*pool, *(r for r in (screen.screened if screen is not None else ()) if r not in pool)]
         present = {str(t) for t in mi.scada_df[mi.turbine_col].unique()}
@@ -1146,7 +1185,10 @@ class PowerModelMethod:
                 continue
             sub_input = _reference_input(mi, target=target, references=refs)
             energy, n_records = self._upgraded_energy(sub_input, turbine=target)
-            uplift = reusable[target] if target in reusable else self._reference_uplift(clone, sub_input)
+            if target in reusable:
+                uplift = reusable[target]
+            else:
+                uplift = self._reference_uplift(self._plotting(clone, target=target, mi=mi), sub_input)
             rows.append(
                 {
                     "turbine": target,
@@ -1158,6 +1200,19 @@ class PowerModelMethod:
                 }
             )
         return pd.DataFrame(rows) if rows else empty_reference_uplifts()
+
+    def _plotting(self, clone: PowerModelMethod, *, target: str, mi: MethodInput) -> PowerModelMethod:
+        """Return ``clone`` writing its plots and diagnostics for ``target``, when reference plots are on."""
+        if self.reference_plots_dir is None:
+            return clone
+        return dataclasses.replace(
+            clone,
+            conditions=self.conditions,
+            save_plots=True,
+            write_diagnostics=True,
+            out_dir=self.reference_plots_dir / reference_measurement_dirname(target, test_wtg=mi.test_wtg),
+            run_subdir=False,
+        )
 
     def _reference_uplift(self, clone: PowerModelMethod, sub_input: MethodInput) -> float:
         """One reference's own uplift, or NaN when its data cannot support an estimate.
@@ -1208,7 +1263,7 @@ class PowerModelMethod:
         the frame can span a year while one candidate has a fortnight of campaign data, and that
         candidate is then estimated in exactly the short-data regime the gate exists to avoid.
 
-        Rows are counted through the same valid-uplift mask :meth:`_select_rows` fits on, so a
+        Rows are counted through the turbine's own valid-uplift mask, so a
         turbine with a year of readings but a fortnight of valid ones is judged on the fortnight.
         """
         scada = mi.context.select(mi.scada_df)
@@ -1329,7 +1384,13 @@ class PowerModelMethod:
         if not pool:
             return ScreenResult(screened=(), passes=_empty_screen_passes(), screenable=False)
         timing = self.screening_timing(mi)
-        cache_key = (tuple(pool), str(timing), str(mi.scada_df.index.min()), str(mi.scada_df.index.max()))
+        cache_key = (
+            tuple(pool),
+            str(timing),
+            str(mi.scada_df.index.min()),
+            str(mi.scada_df.index.max()),
+            tuple(f"{turbine} {times}" for turbine, times in sorted(context.changed_turbines.items())),
+        )
         if self.screen_cache is not None and cache_key in self.screen_cache:
             # Re-stamped: the pool decides the screening estimates, but which candidates were held
             # out of it is this test turbine's own, and two of them can share a pool.
