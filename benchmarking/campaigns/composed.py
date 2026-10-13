@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,35 +24,14 @@ import pandas as pd
 import yaml
 
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
-from benchmarking.baselines.power_model.features import era5_feature_frame
 from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
-from benchmarking.campaigns.declaration import layout_coords
 from benchmarking.campaigns.loader import era5_window, load_declaration
+from benchmarking.campaigns.preparation import prepare_data
 from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label, infer_timebase
-from benchmarking.diagnostics.features import write_feature_outputs
-from benchmarking.diagnostics.input_data import write_input_data_plots
-from benchmarking.diagnostics.operating_states import (
-    NORTHING_VIEWS,
-    WAKING_VIEWS,
-    write_operating_state_plots,
-    write_validity_plots,
-)
-from benchmarking.diagnostics.reanalysis import write_reanalysis_outputs
-from benchmarking.diagnostics.waking_scenarios import write_waking_outputs
-from benchmarking.diagnostics.yaw_changes import write_possible_yaw_changes
-from benchmarking.harness.northing import (
-    DEFAULT_NORTHING_ROLES,
-    apply_north_tables,
-    north_offsets_of,
-    north_tables,
-    northing_rows,
-)
-from benchmarking.harness.operating_state import VALID_NORTHING_COL, label_operating_states
-from benchmarking.harness.reanalysis import ERA5_WD_RAW, normalise_timestamps, prepare_reanalysis
-from benchmarking.harness.waking import WAKING_COLUMNS, add_waking_scenarios, waking_directions
+from benchmarking.harness.reanalysis import normalise_timestamps
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up_v0.era5 import get_era5_hourly_df
 
@@ -257,104 +235,30 @@ def run_declaration(
     timebase = infer_timebase(pd.DatetimeIndex(scada_df.index.unique()).sort_values())
     scada_df = normalise_timestamps(scada_df, timestamps=declaration.timestamps, timebase=timebase)
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
-    scada_df = label_operating_states(
-        scada_df,
-        columns=declaration.columns,
-        config=declaration.operating_state,
-        timebase=timebase,
-        rated_power_kw=declaration.spec.rated_power_kw,
-    )
-    changeovers = declaration.spec.changeovers()
-    write_input_data_plots(
-        scada_df,
-        columns=declaration.columns,
-        out_dir=input_plots / stages.CHANGES,
-        changeovers=changeovers,
-        rated_power_kw=declaration.spec.rated_power_kw,
-    )
-    write_operating_state_plots(
-        scada_df,
-        columns=declaration.columns,
-        timebase=timebase,
-        out_dir=input_plots / stages.OPERATING_STATES,
-        changeovers=changeovers,
-    )
-    # The northing views draw the rows northing learns from, before the reanalysis is consulted.
-    used_for_northing = scada_df.assign(
-        **{
-            VALID_NORTHING_COL: northing_rows(
-                scada_df, columns=declaration.columns, rated_power_kw=declaration.spec.rated_power_kw
-            )
-        }
-    )
-    for frame, views, stage in (
-        (used_for_northing, NORTHING_VIEWS, stages.NORTHING),
-        (scada_df, WAKING_VIEWS, stages.WAKING),
-    ):
-        write_validity_plots(
-            frame, views=views, columns=declaration.columns, timebase=timebase, out_dir=input_plots / stage
-        )
     reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration, index=index)
-    spec = declaration.spec
-    prepared = prepare_reanalysis(
-        reanalysis,
-        scada_df=scada_df,
+    prepared = prepare_data(
+        scada_df,
+        spec=declaration.spec,
         columns=declaration.columns,
-        unchanged=[
-            w for w in layout_coords(spec.layout) if w not in set(spec.upgraded_turbines) | set(spec.excluded_turbines)
-        ],
-        timebase=timebase,
-    )
-    write_reanalysis_outputs(
-        prepared,
         era5_hourly_df=reanalysis,
+        operating_state=declaration.operating_state,
         cell_selection=declaration.cell_selection,
-        out_dir=input_plots / stages.REANALYSIS,
-    )
-    tables = north_tables(
-        scada_df,
-        columns=declaration.columns,
-        north_offsets=spec.north_offsets,
-        rated_power_kw=spec.rated_power_kw,
-        layout=spec.layout,
-        era5_wd=prepared.aligned[ERA5_WD_RAW],
-        out_dir=preparation / stages.NORTHING,
-    )
-    possible_changes = write_possible_yaw_changes(
-        scada_df,
-        tables=tables,
-        columns=declaration.columns,
-        rated_power_kw=spec.rated_power_kw,
-        timebase=timebase,
-        changeovers=changeovers,
-        analysis_period=spec.period_bounds(),
-        out_dir=input_plots / stages.NORTHING,
-    )
-    scada_df = _add_waking(
-        scada_df, spec=spec, tables=tables, columns=declaration.columns, timebase=timebase, out_dir=input_plots
-    )
-    write_feature_outputs(
-        scada_df,
-        era5_features=era5_feature_frame(prepared.aligned),
-        era5_label=era5_source_label(*declaration.centroid),
-        turbine_col=declaration.columns.turbine,
-        changeovers=changeovers,
-        out_dir=input_plots / stages.FEATURES,
+        out_dir=input_plots,
     )
     # The whole park's north tables over the whole record, applied as declared to what each method sees.
-    spec = replace(spec, north_offsets=north_offsets_of(tables))
+    spec = prepared.with_north_offsets(declaration.spec)
     # One screen verdict for the campaign: every test turbine is judged against the same references.
     screen_cache: dict = {}
 
     report = estimate_campaign(
         spec,
-        scada_df,
+        prepared.scada_df,
         build_methods=lambda wtg: [
             wind_up_method(
                 spec,
                 columns=declaration.columns,
                 out_dir=out_dir / MEASUREMENT_DIRNAME / wtg,
-                era5_hourly_df=prepared.aligned,
+                era5_hourly_df=prepared.aligned_era5,
                 screen_cache=screen_cache,
                 era5_label=era5_source_label(*declaration.centroid),
                 run_subdir=False,
@@ -364,49 +268,11 @@ def run_declaration(
         columns=declaration.columns,
         plan_settings=plan_settings,
         data_screen=data_screen,
-        possible_changes={
-            str(t): list(rows["timestamp"]) for t, rows in possible_changes.groupby("turbine", sort=True)
-        },
+        possible_changes=prepared.possible_changes_by_turbine(),
     )
     write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME, farm_dir=out_dir / FARM_DIRNAME)
     logger.info("Wrote the %r report to %s", declaration.name, out_dir)
     return report
-
-
-def _add_waking(
-    scada_df: pd.DataFrame,
-    *,
-    spec: CampaignSpec,
-    tables: dict[str, pd.DataFrame],
-    columns: ColumnSchema,
-    timebase: pd.Timedelta,
-    out_dir: Path,
-) -> pd.DataFrame:
-    """Return ``scada_df`` with the step 5 waking columns, found from the northed direction, and write their outputs.
-
-    Returns ``scada_df`` unchanged when it has no nacelle position.
-    """
-    if columns.nacelle_position is None or columns.nacelle_position not in scada_df.columns:
-        logger.warning("no waking scenarios: the SCADA has no nacelle position")
-        return scada_df
-    northed = apply_north_tables(scada_df, tables=tables, columns=columns, roles=DEFAULT_NORTHING_ROLES)
-    directions = waking_directions(northed, columns=columns, layout=spec.layout, test_turbines=spec.upgraded_turbines)
-    waking = add_waking_scenarios(
-        northed,
-        columns=columns,
-        layout=spec.layout,
-        test_turbines=spec.upgraded_turbines,
-        directions=directions,
-    )
-    write_waking_outputs(
-        waking,
-        directions=directions,
-        layout=spec.layout,
-        columns=columns,
-        timebase=timebase,
-        out_dir=out_dir / stages.WAKING,
-    )
-    return scada_df.assign(**{col: waking[col].to_numpy() for col in WAKING_COLUMNS})
 
 
 def reanalysis_window(index: pd.DatetimeIndex) -> tuple[str, str]:

@@ -11,24 +11,32 @@ import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import yaml
 
 from benchmarking.baselines.prepost_matrix.cells import REAL_SITE, Cell, campaign_seed, draw_exclusions
-from benchmarking.campaigns.composed import WIND_UP, wind_up_method
-from benchmarking.campaigns.loader import centroid, era5_window, load_declaration
+from benchmarking.campaigns.composed import DATA_PREPARATION_DIRNAME, WIND_UP, wind_up_method
+from benchmarking.campaigns.loader import centroid, era5_window, load_declaration, operating_state_config
+from benchmarking.campaigns.preparation import prepare_data
 from benchmarking.campaigns.real import (
     HOT_AEROUP_T13_END,
     HOT_AEROUP_T13_START,
     HOT_AEROUP_WORKS,
+    HOT_OPERATING_STATE,
+    HOT_STATE_COL,
+    label_hot_site_states,
     write_hot_aeroup_t13,
 )
 from benchmarking.campaigns.rollout import draw_rollout, hot_site, kelmarsh_site, penmanshiel_site, rollout_campaign
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.campaigns.runner import CampaignRunner, per_turbine_table
+from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import era5_source_label
-from benchmarking.harness.northing import NORTH_TABLE_YAML, era5_direction
+from benchmarking.harness.northing import NORTH_TABLE_YAML
+from benchmarking.harness.operating_state import OperatingStateConfig
+from benchmarking.harness.reanalysis import normalise_timestamps
 from benchmarking.synthetic.sources.greenbyte import (
     KELMARSH,
     PENMANSHIEL,
@@ -57,7 +65,6 @@ GREENBYTE_FARMS = {"pen": PENMANSHIEL, "kel": KELMARSH}
 HOT_METADATA = "Hill_of_Towie_turbine_metadata.csv"
 SOURCES_DIRNAME = "sources"
 METHOD_DIRNAME = "method"
-NORTHING_DIRNAME = "northing"
 REAL_T13 = "T13"
 
 
@@ -215,29 +222,36 @@ def _execute_synthetic(
     start, end = draw.data_window(cell.post_months)
     scada = _read_scada(_site_scada_path(detail_dir, cell.site), start=start, end=end)
     dataset = campaign.generate(scada)
-    spec = campaign.spec()
-    era5 = _site_reanalysis(site)
-    index = pd.DatetimeIndex(dataset.synthetic_df.index.unique()).sort_values()
+    labelled, operating_state = site_operating_state(cell.site, dataset.synthetic_df)
+    prepared = prepare_data(
+        labelled,
+        spec=campaign.spec(),
+        columns=site.columns,
+        era5_hourly_df=_site_reanalysis(site),
+        operating_state=operating_state,
+        out_dir=cell_dir / DATA_PREPARATION_DIRNAME,
+        plots=False,
+    )
+    spec = prepared.with_north_offsets(campaign.spec())
     screen_cache: dict = {}
     label = era5_source_label(*centroid(dict(site.coords)))
     result = CampaignRunner(
         spec,
-        dataset,
+        replace(dataset, synthetic_df=prepared.scada_df),
         build_methods=lambda wtg: [
             _matrix_method(
                 spec,
                 columns=site.columns,
                 out_dir=cell_dir / METHOD_DIRNAME / wtg,
-                era5=era5,
+                era5=prepared.aligned_era5,
                 screen_cache=screen_cache,
                 era5_label=label,
                 method_overrides=method_overrides,
             )
         ],
-        era5_wd=era5_direction(era5, index),
-        northing_out_dir=cell_dir / NORTHING_DIRNAME,
         northing_plots=False,
         plan_settings=plan_settings(cell, settings=settings),
+        possible_changes=prepared.possible_changes_by_turbine(),
     ).run()
 
     per_turbine = per_turbine_table(result)
@@ -268,32 +282,41 @@ def _execute_real(
     method_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     declaration = load_declaration(_real_declaration_path(detail_dir))
-    spec = declaration.spec
-    end = pd.Timestamp(spec.timing_for(REAL_T13)) + pd.DateOffset(months=cell.post_months)  # type: ignore[arg-type]
+    end = pd.Timestamp(declaration.spec.timing_for(REAL_T13)) + pd.DateOffset(months=cell.post_months)  # type: ignore[arg-type]
     scada = _read_scada(declaration.scada_path, end=end)
-    era5 = _real_reanalysis(declaration.centroid)
-    index = pd.DatetimeIndex(scada.index.unique()).sort_values()
+    timebase = pd.Timedelta(np.median(np.diff(pd.DatetimeIndex(scada.index.unique()).sort_values().to_numpy())))
+    scada = normalise_timestamps(scada, timestamps=declaration.timestamps, timebase=timebase)
+    prepared = prepare_data(
+        scada,
+        spec=declaration.spec,
+        columns=declaration.columns,
+        era5_hourly_df=_real_reanalysis(declaration.centroid),
+        operating_state=declaration.operating_state,
+        cell_selection=declaration.cell_selection,
+        out_dir=cell_dir / DATA_PREPARATION_DIRNAME,
+        plots=False,
+    )
+    spec = prepared.with_north_offsets(declaration.spec)
     screen_cache: dict = {}
     label = era5_source_label(*declaration.centroid)
     report = estimate_campaign(
         spec,
-        scada,
+        prepared.scada_df,
         build_methods=lambda wtg: [
             _matrix_method(
                 spec,
                 columns=declaration.columns,
                 out_dir=cell_dir / METHOD_DIRNAME / wtg,
-                era5=era5,
+                era5=prepared.aligned_era5,
                 screen_cache=screen_cache,
                 era5_label=label,
                 method_overrides=method_overrides,
             )
         ],
         columns=declaration.columns,
-        era5_wd=era5_direction(era5, index),
-        northing_out_dir=cell_dir / NORTHING_DIRNAME,
         northing_plots=False,
         plan_settings=plan_settings(cell, settings=settings),
+        possible_changes=prepared.possible_changes_by_turbine(),
     )
     per_turbine = report.per_turbine[report.per_turbine["method"] == WIND_UP]
     return {
@@ -304,6 +327,17 @@ def _execute_real(
         "farm": {"estimate": float(report.farm.set_index("method").loc[WIND_UP, "estimate"]), "truth": None},
         **diagnostics(report.reference_stability, plans=report.plans, unplanned=report.unplanned, cell_dir=cell_dir),
     }
+
+
+def site_operating_state(site_key: str, scada: pd.DataFrame) -> tuple[pd.DataFrame, OperatingStateConfig]:
+    """Return ``scada`` with the site's operating-state labels, and the labels' validity.
+
+    Hill of Towie gets its site labels; the other sites have the generic states alone.
+    """
+    if site_key == "hot":
+        labelled = scada.assign(**{HOT_STATE_COL: label_hot_site_states(scada)})
+        return labelled, operating_state_config(HOT_OPERATING_STATE)
+    return scada, OperatingStateConfig()
 
 
 def plan_settings(cell: Cell, *, settings: MatrixSettings) -> PlanSettings:
@@ -353,7 +387,7 @@ def diagnostics(
         }
         for r in references.itertuples()
     ]
-    table_path = cell_dir / NORTHING_DIRNAME / NORTH_TABLE_YAML
+    table_path = cell_dir / DATA_PREPARATION_DIRNAME / stages.NORTHING / NORTH_TABLE_YAML
     table = yaml.safe_load(table_path.read_text()) or [] if table_path.exists() else []
     northing = [[str(device), str(stamp), float(offset)] for device, stamp, offset in table]
     return {

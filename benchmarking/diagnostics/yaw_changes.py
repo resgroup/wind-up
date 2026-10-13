@@ -42,8 +42,50 @@ def write_possible_yaw_changes(
     changeovers: Mapping[str, Sequence[pd.Timestamp]],
     analysis_period: tuple[pd.Timestamp, pd.Timestamp] | None,
     out_dir: Path,
+    plots: bool = True,
 ) -> pd.DataFrame:
     """Write the possible yaw-alignment changes of every turbine in ``tables`` and return them.
+
+    Takes the arguments of :func:`possible_yaw_change_report`, plus:
+
+    :param out_dir: the folder written to
+    :param plots: also write the apparent-Cp plots
+    :return: one row per candidate (:data:`REPORT_COLUMNS`)
+    """
+    found, scans = possible_yaw_change_report(
+        labelled,
+        tables=tables,
+        columns=columns,
+        rated_power_kw=rated_power_kw,
+        timebase=timebase,
+        changeovers=changeovers,
+        analysis_period=analysis_period,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    found.to_csv(out_dir / POSSIBLE_YAW_CHANGES_CSV, index=False)
+    if plots:
+        for turbine, scan in scans.items():
+            _plot_scan(
+                scan,
+                turbine=turbine,
+                candidates=found[found["turbine"] == turbine],
+                changeovers=changeovers.get(turbine, ()),
+                out_dir=out_dir,
+            )
+    return found
+
+
+def possible_yaw_change_report(
+    labelled: pd.DataFrame,
+    *,
+    tables: Mapping[str, pd.DataFrame],
+    columns: ColumnSchema,
+    rated_power_kw: float,
+    timebase: pd.Timedelta,
+    changeovers: Mapping[str, Sequence[pd.Timestamp]],
+    analysis_period: tuple[pd.Timestamp, pd.Timestamp] | None,
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    """Return the possible yaw-alignment changes of every turbine in ``tables``, and each turbine's apparent-Cp scan.
 
     :param labelled: long-format SCADA with the operating-state columns, every record, indexed by timestamp
     :param tables: each turbine's north table
@@ -52,8 +94,7 @@ def write_possible_yaw_changes(
     :param timebase: the records' period
     :param changeovers: each turbine's declared changeover dates
     :param analysis_period: the outer bounds of the analysis period, or ``None`` when undeclared
-    :param out_dir: the folder written to
-    :return: one row per candidate (:data:`REPORT_COLUMNS`)
+    :return: one row per candidate (:data:`REPORT_COLUMNS`), and the scan per turbine
     """
     index = pd.DatetimeIndex(labelled.index.unique()).sort_values()
     rows = northing_rows(labelled, columns=columns, rated_power_kw=rated_power_kw) & labelled[VALID_UPLIFT_COL].fillna(
@@ -80,19 +121,9 @@ def write_possible_yaw_changes(
     found["in_analysis_period"] = [
         analysis_period is not None and analysis_period[0] <= t < analysis_period[1] for t in found["timestamp"]
     ]
-    out_dir.mkdir(parents=True, exist_ok=True)
     found = found[list(REPORT_COLUMNS)]
-    found.to_csv(out_dir / POSSIBLE_YAW_CHANGES_CSV, index=False)
-    for turbine, scan in scans.items():
-        _plot_scan(
-            scan,
-            turbine=turbine,
-            candidates=found[found["turbine"] == turbine],
-            changeovers=changeovers.get(turbine, ()),
-            out_dir=out_dir,
-        )
     logger.info("Found %d possible yaw-alignment change(s) on %d turbine(s)", len(found), len(scans))
-    return found
+    return found, scans
 
 
 def _days_from_nearest(t: pd.Timestamp, dates: Sequence[pd.Timestamp]) -> float:

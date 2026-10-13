@@ -21,7 +21,13 @@ from benchmarking.baselines.prepost_matrix.cells import (
     draw_exclusions,
     matrix_cells,
 )
-from benchmarking.baselines.prepost_matrix.execute import _matrix_method, describe_cell, diagnostics, plan_settings
+from benchmarking.baselines.prepost_matrix.execute import (
+    _matrix_method,
+    describe_cell,
+    diagnostics,
+    plan_settings,
+    site_operating_state,
+)
 from benchmarking.baselines.prepost_matrix.metrics import (
     baseline_tables,
     compare_tables,
@@ -47,6 +53,10 @@ from benchmarking.baselines.prepost_matrix.study import (
     study_settings,
     study_size,
 )
+from benchmarking.campaigns.composed import DATA_PREPARATION_DIRNAME
+from benchmarking.diagnostics import stages
+from benchmarking.harness.northing import NORTH_TABLE_YAML
+from benchmarking.harness.operating_state import OperatingStateConfig
 from benchmarking.synthetic import HOT_COLUMNS
 from wind_up.analysis_period import PlanSettings
 
@@ -266,6 +276,25 @@ def test_the_cell_record_names_each_unplanned_turbine(tmp_path: Path) -> None:
     references = pd.DataFrame(columns=["method", "test_wtg", "turbine", "uplift", "n_records", "screened", "unjudged"])
     record = diagnostics(references, plans={}, unplanned={"T02": "T02: no span"}, cell_dir=tmp_path)
     assert record["unplanned"] == {"T02": "T02: no span"}
+
+
+def test_the_cell_record_reads_the_north_table_of_part_a(tmp_path: Path) -> None:
+    table_dir = tmp_path / DATA_PREPARATION_DIRNAME / stages.NORTHING
+    table_dir.mkdir(parents=True)
+    (table_dir / NORTH_TABLE_YAML).write_text(
+        "- [T01, '2017-01-01T00:00:00+00:00', 3.0]\n- [T02, '2017-01-01T00:00:00+00:00', -1.5]\n"
+    )
+    references = pd.DataFrame(columns=["method", "test_wtg", "turbine", "uplift", "n_records", "screened", "unjudged"])
+    record = diagnostics(references, plans={}, unplanned={}, cell_dir=tmp_path)
+    assert record["northing"] == [["T01", "2017-01-01T00:00:00+00:00", 3.0], ["T02", "2017-01-01T00:00:00+00:00", -1.5]]
+    assert record["n_northing_changepoints"] == 0
+
+
+def test_a_greenbyte_site_has_the_generic_operating_states_alone() -> None:
+    frame = pd.DataFrame({"a": [1.0]})
+    labelled, config = site_operating_state("kel", frame)
+    assert labelled is frame
+    assert config == OperatingStateConfig()
 
 
 def test_a_study_is_named_by_commit_and_size_beside_its_detail_directory(tmp_path: Path) -> None:

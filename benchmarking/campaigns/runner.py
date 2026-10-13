@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
 from benchmarking.campaigns.run import CampaignReport, estimate_campaign, visible_mask
 from benchmarking.harness import CampaignWindow, Replicate, score_output, truth_mask
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES
@@ -14,7 +15,7 @@ from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.northing import DEFAULT_NORTHING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     import numpy as np
@@ -75,6 +76,9 @@ class CampaignRunner:
     :param northing_out_dir: where the shared step writes its table and plots when it discovers corrections
     :param northing_plots: write the shared step's plots as well as its table
     :param plan_settings: how a planning campaign's spans and power references are chosen
+    :param possible_changes: each turbine's indicators of an undeclared change, reported as warnings
+        against the plans they fall inside
+    :param data_screen: how each plan's power references are screened on their data; ``None`` skips it
     """
 
     def __init__(
@@ -89,6 +93,8 @@ class CampaignRunner:
         northing_out_dir: Path | None = None,
         northing_plots: bool = True,
         plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
+        possible_changes: Mapping[str, Sequence[pd.Timestamp]] | None = None,
+        data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
     ) -> None:
         """Store the campaign, its data and the per-turbine method factory."""
         self._spec = spec
@@ -100,6 +106,8 @@ class CampaignRunner:
         self._northing_out_dir = northing_out_dir
         self._northing_plots = northing_plots
         self._plan_settings = plan_settings
+        self._possible_changes = possible_changes
+        self._data_screen = data_screen
 
     def run(self) -> CampaignResult:
         """Estimate the campaign on the truth-free core, then score what it produced against truth."""
@@ -115,6 +123,8 @@ class CampaignRunner:
             northing_out_dir=self._northing_out_dir,
             northing_plots=self._northing_plots,
             plan_settings=self._plan_settings,
+            possible_changes=self._possible_changes,
+            data_screen=self._data_screen,
         )
         visible = self._visible_dataset(report)
 
