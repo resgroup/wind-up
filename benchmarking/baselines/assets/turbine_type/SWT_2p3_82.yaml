@@ -1,0 +1,7 @@
+# Vendored from resgroup/hill-of-towie-open-source-analysis
+# scripts/uplift_analysis_2025/wind_up_config/asset/turbine_type/SWT_2p3_82.yaml
+turbine_type: SWT-2.3-82
+rated_power_kw: 2300
+rotor_diameter_m: 82
+normal_operation_pitch_range: [-10,40]
+normal_operation_genrpm_range: [500,1600]

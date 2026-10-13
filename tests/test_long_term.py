@@ -3,8 +3,8 @@ from pathlib import Path
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
-from wind_up.long_term import calc_lt_dfs_raw_filt
-from wind_up.models import WindUpConfig
+from wind_up_v0.long_term import calc_lt_dfs_raw_filt
+from wind_up_v0.models import WindUpConfig
 
 
 def test_calc_turbine_lt_dfs_raw_filt(test_lsa_t13_config: WindUpConfig) -> None:

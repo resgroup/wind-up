@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 import pandas as pd
 from scipy.stats import circmean
 
-from wind_up.caching import with_parquet_cache
-from wind_up.constants import PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
+from wind_up_v0.caching import with_parquet_cache
+from wind_up_v0.constants import PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
 
 if TYPE_CHECKING:
     FilePathOrBuffer = str | bytearray

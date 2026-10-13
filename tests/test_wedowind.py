@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import wind_up
+import wind_up_v0
 from examples.helpers import setup_logger
 from examples.wedowind_example import main_wedowind_analysis
 from tests.conftest import TEST_DATA_FLD
@@ -145,7 +145,7 @@ def test_wedowind_pitch_angle(wedowind_expected_pitch_angle_results: pd.DataFram
         analysis_output_dir=tmp_path,
         bootstrap_runs_override=40,  # to speed up test
     )
-    assert actual["wind_up_version"].squeeze() == wind_up.__version__
+    assert actual["wind_up_version"].squeeze() == wind_up_v0.__version__
     pd.testing.assert_frame_equal(
         actual.drop(columns=["time_calculated", "wind_up_version"]), wedowind_expected_pitch_angle_results
     )
@@ -167,7 +167,7 @@ def test_wedowind_vortex_generators(wedowind_expected_vg_results: pd.DataFrame, 
         analysis_output_dir=tmp_path,
         bootstrap_runs_override=40,  # to speed up test
     )
-    assert actual["wind_up_version"].squeeze() == wind_up.__version__
+    assert actual["wind_up_version"].squeeze() == wind_up_v0.__version__
     pd.testing.assert_frame_equal(
         actual.drop(columns=["time_calculated", "wind_up_version"]), wedowind_expected_vg_results
     )

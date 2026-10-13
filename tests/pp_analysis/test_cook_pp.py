@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wind_up.constants import DataColumns
-from wind_up.pp_analysis import _cook_pp, _pp_raw_df
-from wind_up.result_manager import result_manager
+from wind_up_v0.constants import DataColumns
+from wind_up_v0.pp_analysis import _cook_pp, _pp_raw_df
+from wind_up_v0.result_manager import result_manager
 
 # ---------------------------------------------------------------------------
 # Helpers
