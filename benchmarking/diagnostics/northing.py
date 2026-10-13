@@ -85,7 +85,7 @@ def _northing_error_figure(
     era5_wd = ctx.era5_df[ERA5_WD_COL].reindex(ctx.index)
     fig, ax = plt.subplots(figsize=(12, 6))
     shade_segments(ax, ctx)
-    for position, turbine in enumerate([ctx.test_wtg, *ctx.references()]):
+    for position, turbine in enumerate([ctx.test_wtg, *ctx.plotted_references()]):
         nacelle = ctx.turbine_series(turbine, nacelle_col)
         power = ctx.turbine_series(turbine, ctx.columns.active_power)
         rated = np.nanpercentile(power.to_numpy(dtype=float), _RATED_PERCENTILE) if power.notna().any() else np.nan

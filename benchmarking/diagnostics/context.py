@@ -124,6 +124,10 @@ class DiagnosticContext:
         """Sorted reference turbine names (every turbine present except the test turbine)."""
         return sorted(t for t in self.scada_df[self.turbine_col].unique() if t != self.test_wtg)
 
+    def plotted_references(self) -> list[str]:
+        """Return the turbines drawn beside the test turbine: its power references, else every other turbine."""
+        return list(self.power_references) if self.power_references is not None else self.references()
+
     def has_column(self, col: str | None) -> bool:
         """Return True if ``col`` is named (not ``None``) and present in the SCADA frame."""
         return col is not None and col in self.scada_df.columns

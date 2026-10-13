@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from benchmarking.diagnostics import stages
+from benchmarking.diagnostics.common import write_common_diagnostics
 from benchmarking.diagnostics.context import DiagnosticContext
 from benchmarking.diagnostics.input_data import monthly_capacity_factor, write_input_data_plots
 from benchmarking.diagnostics.ops_relationships import (
@@ -172,13 +174,14 @@ class TestTheFigure:
         assert plot_ops_relationships(rows, turbine="T1", columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path) is None
         assert not list(tmp_path.iterdir())
 
-    def test_it_covers_the_five_relationships(self) -> None:
+    def test_it_covers_the_six_relationships_vs_wind_speed_then_vs_power(self) -> None:
         assert [(x, y) for x, y in PAIRS] == [
             ("wind_speed", "active_power"),
-            ("active_power", "gen_rpm"),
-            ("active_power", "pitch"),
+            ("active_power", "reactive_power"),
             ("wind_speed", "gen_rpm"),
+            ("active_power", "gen_rpm"),
             ("wind_speed", "pitch"),
+            ("active_power", "pitch"),
         ]
 
 
@@ -249,3 +252,21 @@ class TestMonthlyCapacityFactor:
         index = pd.date_range("2020-01-01", periods=4, freq="1D", tz="UTC")
         power = pd.Series([1000.0, np.nan, 1000.0, np.nan], index=index)
         assert monthly_capacity_factor(power, rated_power_kw=2000.0).iloc[0] == 0.5
+
+
+class TestThePlottedTurbines:
+    def test_the_subject_and_its_power_references(self, tmp_path: Path) -> None:
+        assert _context(tmp_path, power_references=["T3", "T2"]).plotted_references() == ["T3", "T2"]
+
+    def test_every_other_turbine_when_the_method_names_none(self, tmp_path: Path) -> None:
+        assert _context(tmp_path, power_references=None).plotted_references() == ["T2", "T3", "T4"]
+
+
+class TestSkippedStages:
+    def test_a_skipped_stage_writes_no_folder(self, tmp_path: Path) -> None:
+        ctx = _context(tmp_path, power_references=["T2", "T3"])
+        paths = write_common_diagnostics(ctx, skip_stages=frozenset({stages.CHANGES, stages.OPERATING_STATES}))
+        folders = {p.parent.name for p in paths}
+        assert stages.CHANGES not in folders
+        assert stages.OPERATING_STATES not in folders
+        assert stages.VALID_RECORDS in folders

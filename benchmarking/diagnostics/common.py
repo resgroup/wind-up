@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.coverage import (
     plot_excluded_fraction,
     plot_filter_coverage,
@@ -36,28 +37,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Every shared plot, in a sensible reading order. Each takes the context and returns a path, a
-# list of paths for a plot drawn once per turbine, or None when it has nothing to draw.
-_PLOTS: tuple[Callable[[DiagnosticContext], Path | list[Path] | None], ...] = (
-    plot_input_timeline,
-    plot_input_coverage,
-    plot_filter_coverage,
-    plot_excluded_fraction,
-    plot_condition_histograms,
-    plot_run_uplift_validity,
-    plot_ops_curves_excluded,
-    plot_curves_by_upgrade,
-    plot_reactive_vs_active,
-    plot_power_factor,
-    plot_run_ops_relationships,
-    plot_run_operating_states,
-    plot_northing_error,
-    plot_northed_error,
+# Every shared plot with the stage folder it writes to, in a sensible reading order. Each takes the
+# context and returns a path, a list of paths for a plot drawn once per turbine, or None when it has
+# nothing to draw.
+_PLOTS: tuple[tuple[str, Callable[[DiagnosticContext], Path | list[Path] | None]], ...] = (
+    (stages.CHANGES, plot_input_timeline),
+    (stages.CHANGES, plot_input_coverage),
+    (stages.VALID_RECORDS, plot_filter_coverage),
+    (stages.VALID_RECORDS, plot_excluded_fraction),
+    (stages.VALID_RECORDS, plot_condition_histograms),
+    (stages.VALID_RECORDS, plot_run_uplift_validity),
+    (stages.VALID_RECORDS, plot_ops_curves_excluded),
+    (stages.VALID_RECORDS, plot_curves_by_upgrade),
+    (stages.CHANGES, plot_reactive_vs_active),
+    (stages.CHANGES, plot_power_factor),
+    (stages.CHANGES, plot_run_ops_relationships),
+    (stages.OPERATING_STATES, plot_run_operating_states),
+    (stages.NORTHING, plot_northing_error),
+    (stages.NORTHING, plot_northed_error),
 )
 
 
-def write_common_diagnostics(ctx: DiagnosticContext) -> list[Path]:
-    """Write every shared diagnostic plot for ``ctx``; return the paths actually written."""
+def write_common_diagnostics(ctx: DiagnosticContext, *, skip_stages: frozenset[str] = frozenset()) -> list[Path]:
+    """Write every shared diagnostic plot for ``ctx``, except those of ``skip_stages``; return the paths written."""
     n = len(ctx.index)
     excluded_n = None if ctx.excluded_ts is None else len(ctx.excluded_ts)
     if len(ctx.treated_ts) != n or len(ctx.used_ts) != n or excluded_n not in (None, n):
@@ -72,7 +74,9 @@ def write_common_diagnostics(ctx: DiagnosticContext) -> list[Path]:
         return []
     ctx.plots_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    for plot in _PLOTS:
+    for stage, plot in _PLOTS:
+        if stage in skip_stages:
+            continue
         try:
             path = plot(ctx)
         except Exception:

@@ -30,6 +30,7 @@ from benchmarking.baselines.power_model.method import (
     reference_overall_uplift,
 )
 from benchmarking.baselines.power_model.screening import ScreenResult
+from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.conditions import CONDITIONS
 from benchmarking.harness.context import CampaignContext
@@ -1146,6 +1147,13 @@ class TestReferencePlots:
         plain = _screen_method().reference_uplifts(mi)
         plotted = _screen_method(reference_plots_dir=tmp_path).reference_uplifts(mi)
         assert list(plotted["uplift"]) == pytest.approx(list(plain["uplift"]))
+
+    def test_the_plots_the_test_turbine_run_already_has_are_skipped(self, tmp_path: Path) -> None:
+        mi, _ = _screen_case(step=0.0)
+        _screen_method(reference_plots_dir=tmp_path).reference_uplifts(mi)
+        written = {p.parent.name for p in tmp_path.rglob("*.png")}
+        assert not written & {stages.CHANGES, stages.OPERATING_STATES, stages.NORTHING}
+        assert stages.UPLIFT in written
 
     def test_the_folder_name(self) -> None:
         assert reference_measurement_dirname("T14", test_wtg="T13") == "T14_reference_for_T13"

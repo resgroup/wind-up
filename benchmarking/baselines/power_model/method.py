@@ -136,6 +136,10 @@ _DEFAULT_SCREEN_FLOOR = 0.025
 _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS = 150.0
 
 
+# The plot stages a reference measurement leaves to the test turbine's run.
+_SHARED_STAGES = frozenset({stages.CHANGES, stages.OPERATING_STATES, stages.NORTHING})
+
+
 def reference_measurement_dirname(reference: str, *, test_wtg: str) -> str:
     """Return the folder of one reference's measurement for one test turbine."""
     return f"{reference}_reference_for_{test_wtg}"
@@ -362,6 +366,8 @@ class PowerModelMethod:
         writes its own plots and diagnostics, as a test turbine's would, under
         ``reference_plots_dir / reference_measurement_dirname(reference, test_wtg=...)``; its
         estimate is then always refitted rather than taken from the screen
+    :param repeat_shared_plots: also write the step 1, 2 and 4 plots; a reference measurement leaves
+        them out, as the test turbine's run already draws the same turbines
     :param seed: seed for the baseline holdout split and the LightGBM ``random_state`` (a caller-supplied
         ``random_state`` in ``model_params`` still wins)
     :param model_params: LightGBM overrides passed to the outcome model; merged **over** the tuned
@@ -459,6 +465,7 @@ class PowerModelMethod:
     era5_label: str = ERA5_UNLOCATED
     run_subdir: bool = True
     reference_plots_dir: Path | None = None
+    repeat_shared_plots: bool = True
     # A campaign's screen verdict is one answer for the whole campaign: the same pool judged across
     # the same contrast. Every test turbine would otherwise re-run the identical round-robin. A
     # campaign passes one dict to every turbine's method; None means screen per estimate. Every
@@ -1212,6 +1219,7 @@ class PowerModelMethod:
             write_diagnostics=True,
             out_dir=self.reference_plots_dir / reference_measurement_dirname(target, test_wtg=mi.test_wtg),
             run_subdir=False,
+            repeat_shared_plots=False,
         )
 
     def _reference_uplift(self, clone: PowerModelMethod, sub_input: MethodInput) -> float:
@@ -1694,7 +1702,7 @@ class PowerModelMethod:
             era5_label=self.era5_label,
             power_references=power_references,
         )
-        write_common_diagnostics(ctx)
+        write_common_diagnostics(ctx, skip_stages=frozenset() if self.repeat_shared_plots else _SHARED_STAGES)
         write_run_config(ctx, method_name=self.name, method_params=self._config_params())
 
     def _config_params(self) -> dict[str, Any]:

@@ -116,7 +116,8 @@ def plot_operating_states(
 ) -> Path | None:
     """Write ``<name>_<turbine>.png``: each relationship of the step 1 pairs, coloured by state.
 
-    A pair whose signals are unset or absent is left out. Nothing is written, and ``None`` returned,
+    The pairs sit two to a row, against wind speed on the left and against power on the right; a pair
+    whose signals are unset or absent leaves its slot empty. Nothing is written, and ``None`` returned,
     when ``rows`` carries no states or no pair can be drawn.
 
     :param rows: one turbine's labelled records, indexed by timestamp
@@ -130,11 +131,8 @@ def plot_operating_states(
     """
     if STATE_COL not in rows.columns or rows.empty:
         return None
-    pairs = [
-        (getattr(columns, x), getattr(columns, y))
-        for x, y in PAIRS
-        if getattr(columns, x) in rows.columns and getattr(columns, y) in rows.columns
-    ]
+    slots = [(getattr(columns, x), getattr(columns, y)) for x, y in PAIRS]
+    pairs = [(x, y) for x, y in slots if x in rows.columns and y in rows.columns]
     if not pairs:
         return None
     states = rows[STATE_COL].astype(str)
@@ -144,9 +142,12 @@ def plot_operating_states(
     hours = states[drawn].value_counts() * (timebase / pd.Timedelta(hours=1))
 
     n_cols = 2
-    n_rows = math.ceil(len(pairs) / n_cols)
+    n_rows = math.ceil(len(slots) / n_cols)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 4.5 * n_rows), squeeze=False, layout="constrained")
-    for ax, (x_col, y_col) in zip(axes.flat, pairs, strict=False):
+    for ax, (x_col, y_col) in zip(axes.flat, slots, strict=True):
+        if (x_col, y_col) not in pairs:
+            ax.set_visible(False)
+            continue
         for state in order:
             chosen = (states == state).to_numpy() & drawn
             ax.plot(
@@ -165,8 +166,6 @@ def plot_operating_states(
         ax.set_ylabel(y_col)
         ax.set_title(f"{y_col} vs {x_col}", fontsize="medium")
         apply_grid(ax)
-    for ax in axes.flat[len(pairs) :]:
-        ax.set_visible(False)
     handles = [
         Line2D([], [], linestyle="none", marker="o", color=colours[s], label=f"{s} ({hours[s]:,.0f} h)")
         for s in order
@@ -318,7 +317,7 @@ def plot_run_operating_states(ctx: DiagnosticContext) -> list[Path]:
     """Write the scatters for a run's test turbine and power references over the span the run sees."""
     if STATE_COL not in ctx.scada_df.columns:
         return []
-    references = ctx.power_references if ctx.power_references is not None else ctx.references()
+    references = ctx.plotted_references()
     out_dir = ctx.stage_dir(stages.OPERATING_STATES)
     written: list[Path] = []
     for turbine in [ctx.test_wtg, *sorted(r for r in references if r != ctx.test_wtg)]:
@@ -394,7 +393,7 @@ def plot_run_uplift_validity(ctx: DiagnosticContext) -> list[Path]:
     """Write the uplift-validity scatters for a run's test turbine and power references over the span."""
     if STATE_COL not in ctx.scada_df.columns:
         return []
-    references = ctx.power_references if ctx.power_references is not None else ctx.references()
+    references = ctx.plotted_references()
     out_dir = ctx.stage_dir(stages.VALID_RECORDS)
     written: list[Path] = []
     for turbine in [ctx.test_wtg, *sorted(r for r in references if r != ctx.test_wtg)]:

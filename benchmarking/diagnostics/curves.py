@@ -169,7 +169,7 @@ def _reactive_panel_turbines(ctx: DiagnosticContext) -> list[tuple[str, float]]:
     power factors rather than alphabetically -- both extremes are kept, since an unusual reactive
     signature is what this plot is read for.
     """
-    factors = {t: _overall_power_factor(ctx, t) for t in [ctx.test_wtg, *ctx.references()]}
+    factors = {t: _overall_power_factor(ctx, t) for t in [ctx.test_wtg, *ctx.plotted_references()]}
     others = sorted((t for t in factors if t != ctx.test_wtg), key=lambda t: (np.isnan(factors[t]), factors[t]))
     slots = _MAX_REACTIVE_PANELS - 1
     if len(others) > slots:
@@ -181,8 +181,8 @@ def _reactive_panel_turbines(ctx: DiagnosticContext) -> list[tuple[str, float]]:
 def plot_reactive_vs_active(ctx: DiagnosticContext) -> Path | None:
     """Reactive vs active power by upgrade state, one panel per turbine. None if no reactive tag.
 
-    At most :data:`_MAX_REACTIVE_PANELS` panels: the test turbine and a spread of the others by
-    power factor, so a whole farm stays readable.
+    The test turbine and the plotted references, on shared axes. At most :data:`_MAX_REACTIVE_PANELS`
+    panels: beyond that, a spread of the references by power factor, so a whole farm stays readable.
     """
     if not ctx.has_column(ctx.columns.reactive_power):
         return None
@@ -190,7 +190,9 @@ def plot_reactive_vs_active(ctx: DiagnosticContext) -> Path | None:
     turbines = [t for t, _ in panels]
     ncols = min(3, len(turbines))
     nrows = int(np.ceil(len(turbines) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.5 * nrows), squeeze=False)
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(5 * ncols, 4.5 * nrows), squeeze=False, sharex=True, sharey=True, layout="constrained"
+    )
     flat = axes.flatten()
     for ax, (turbine, power_factor) in zip(flat, panels, strict=False):
         active = ctx.turbine_series(turbine, ctx.columns.active_power).to_numpy(dtype=float)
@@ -204,8 +206,12 @@ def plot_reactive_vs_active(ctx: DiagnosticContext) -> Path | None:
         ax.legend()
     for ax in flat[len(turbines) :]:
         ax.set_visible(False)
-    drawn, total = len(turbines), 1 + len(ctx.references())
-    shown = f"{drawn} of {total} turbines, spread by power factor" if drawn < total else "every turbine"
+    drawn, total = len(turbines), 1 + len(ctx.plotted_references())
+    shown = (
+        f"{drawn} of {total} turbines, spread by power factor"
+        if drawn < total
+        else "the test turbine and its references"
+    )
     fig.suptitle(f"reactive vs active power by upgrade state ({shown})")
     path = ctx.stage_dir(stages.CHANGES) / "reactive_vs_active.png"
     save_fig(fig, path)
@@ -218,7 +224,7 @@ def plot_power_factor(ctx: DiagnosticContext) -> Path | None:
         return None
     fig, ax = plt.subplots(figsize=(12, 6))
     shade_segments(ax, ctx)
-    for position, turbine in enumerate([ctx.test_wtg, *ctx.references()]):
+    for position, turbine in enumerate([ctx.test_wtg, *ctx.plotted_references()]):
         monthly = _monthly_power_factor(ctx, turbine)
         label = f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}"
         colour, dash = series_style(position)

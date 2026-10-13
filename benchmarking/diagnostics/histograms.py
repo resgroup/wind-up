@@ -81,11 +81,11 @@ def _conditions(ctx: DiagnosticContext) -> list[tuple[str, np.ndarray, np.ndarra
 
 
 def _robust_bins(values: np.ndarray, *, bins: int = 30) -> np.ndarray | int:
-    """Bin edges over the 1st-99th percentile of the finite values, so outliers don't dominate."""
+    """Bin edges over every finite value."""
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return bins
-    lo, hi = np.percentile(finite, [1, 99])
+    lo, hi = float(finite.min()), float(finite.max())
     if hi <= lo:
         return bins
     return np.linspace(lo, hi, bins + 1)

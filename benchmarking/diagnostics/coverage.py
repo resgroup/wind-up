@@ -50,7 +50,7 @@ def _present_runs(index: pd.DatetimeIndex, present: np.ndarray) -> list[tuple[fl
 def plot_input_timeline(ctx: DiagnosticContext) -> Path:
     """Window timeline: data-present periods per turbine (+ ERA5), with baseline/upgraded bands."""
     rows: list[tuple[str, np.ndarray]] = []
-    for turbine in [ctx.test_wtg, *ctx.references()]:
+    for turbine in [ctx.test_wtg, *ctx.plotted_references()]:
         label = f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}: {ctx.columns.active_power}"
         rows.append((label, ctx.turbine_series(turbine, ctx.columns.active_power).notna().to_numpy()))
     if ctx.era5_df is not None and ERA5_WS_COL in ctx.era5_df.columns:
@@ -89,7 +89,7 @@ def plot_input_coverage(ctx: DiagnosticContext) -> Path:
     """Weekly %-coverage line per turbine's power (+ ERA5 wind speed), before any filtering."""
     fig, ax = plt.subplots(figsize=(12, 6))
     shade_segments(ax, ctx)
-    for position, turbine in enumerate([ctx.test_wtg, *ctx.references()]):
+    for position, turbine in enumerate([ctx.test_wtg, *ctx.plotted_references()]):
         present = pd.Series(ctx.turbine_series(turbine, ctx.columns.active_power).notna().to_numpy(), index=ctx.index)
         weekly = weekly_coverage(present, timebase=ctx.timebase)
         label = f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}"

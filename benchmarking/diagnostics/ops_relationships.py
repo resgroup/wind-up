@@ -37,13 +37,15 @@ if TYPE_CHECKING:
     from benchmarking.diagnostics.context import DiagnosticContext
     from benchmarking.synthetic import ColumnSchema
 
-# (x role, y role) on the ColumnSchema, in reading order.
+# (x role, y role) on the ColumnSchema, in reading order: each row a signal against wind speed, then
+# against power.
 PAIRS: tuple[tuple[str, str], ...] = (
     ("wind_speed", "active_power"),
-    ("active_power", "gen_rpm"),
-    ("active_power", "pitch"),
+    ("active_power", "reactive_power"),
     ("wind_speed", "gen_rpm"),
+    ("active_power", "gen_rpm"),
     ("wind_speed", "pitch"),
+    ("active_power", "pitch"),
 )
 
 N_BINS = 10
@@ -275,7 +277,7 @@ def plot_ops_relationships(
 
 def plot_run_ops_relationships(ctx: DiagnosticContext) -> list[Path]:
     """Write the figures for a run's test turbine and power references, over the span the run sees."""
-    references = ctx.power_references if ctx.power_references is not None else ctx.references()
+    references = ctx.plotted_references()
     start = upgrade_start(ctx) if ctx.mode == "prepost" else None
     changeovers = [start] if start is not None else []
     written: list[Path] = []
