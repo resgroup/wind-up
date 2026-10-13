@@ -29,8 +29,6 @@ def test_the_context_carries_only_the_documented_answers() -> None:
         "valid_for_uplift",
         "coords",
         "reserve_references",
-        "reading_pools",
-        "reading_pool_size",
         "changed_turbines",
     }
 
@@ -85,11 +83,9 @@ class TestAContextFromAPlan:
         )
         assert context.changed_turbines == {"T0": ((None, None),)}
 
-    def test_reserves_and_reading_pools_are_carried(self) -> None:
+    def test_reserves_are_carried(self) -> None:
         _, plan, context = self.build()
         assert context.reserve_references == list(plan.reserves)
-        assert context.reading_pools == {r: list(p) for r, p in plan.reading_pools.items()}
-        assert context.reading_pool_size == plan.k
 
     def test_turbines_without_data_are_dropped_from_every_list(self, caplog: pytest.LogCaptureFixture) -> None:
         spec, plan, _ = self.build()
@@ -99,7 +95,6 @@ class TestAContextFromAPlan:
             context = context_for_plan(spec, plan, scada_df=full[full["TurbineName"] != missing])
         assert missing not in context.candidate_references
         assert missing not in context.wake_contributors
-        assert all(missing not in pool for pool in (context.reading_pools or {}).values())
         assert missing in caplog.text
 
     def test_validity_covers_every_turbine_present(self) -> None:

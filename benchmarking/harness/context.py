@@ -50,9 +50,6 @@ class CampaignContext:
         frame does not invalidate it; narrow with :meth:`valid_over`.
     :param reserve_references: wake contributors that may replace a candidate reference a method
         rules out, nearest first
-    :param reading_pools: per candidate reference or reserve, the turbines to read it against when
-        estimating its own uplift, nearest first. ``None`` reads each against the other candidates.
-    :param reading_pool_size: how many of a reading pool to use
     :param changed_turbines: each changed turbine and the times it counts as changed, the test
         turbine among them (see :func:`~benchmarking.harness.record_selection.changed_times`). A
         record with a turbine upwind of the subject or a power reference while it counts as changed
@@ -67,8 +64,6 @@ class CampaignContext:
     valid_for_uplift: pd.DataFrame
     coords: dict[str, tuple[float, float]] | None = None
     reserve_references: list[str] = field(default_factory=list)
-    reading_pools: dict[str, list[str]] | None = None
-    reading_pool_size: int | None = None
     changed_turbines: ChangedTimes = field(default_factory=dict)
 
     def __post_init__(self) -> None:

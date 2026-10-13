@@ -334,8 +334,6 @@ def _reference_input(
         timing=context.timing if timing is None else timing,
         # A single reference's estimate neither refills nor reads its own references.
         reserve_references=[],
-        reading_pools=None,
-        reading_pool_size=None,
     )
     return MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
 
@@ -431,8 +429,7 @@ class PowerModelMethod:
     ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
     them power-free rather than removing them from it. When the context offers reserve references,
     a reference the screen rules out becomes a wake contributor instead and the nearest reserve
-    takes its place, and the refilled pool is screened again. When the context offers reading
-    pools, each reference's own uplift is read against its own pool.
+    takes its place, and the refilled pool is screened again.
 
     The toggle headline is always the counterfactual energy ratio ``Σactual/Σprediction - 1``.
     """
@@ -1177,17 +1174,9 @@ class PowerModelMethod:
         )
         # A reference the screen moved out of a refilled pool is still read and reported.
         targets = [*pool, *(r for r in (screen.screened if screen is not None else ()) if r not in pool)]
-        present = {str(t) for t in mi.scada_df[mi.turbine_col].unique()}
         rows: list[dict[str, object]] = []
         for target in targets:
-            if context.reading_pools is None:
-                refs = [r for r in surviving if r != target]
-            else:
-                refs = [
-                    r
-                    for r in context.reading_pools.get(target, [])
-                    if r not in ruled_out and r not in demoted and r != mi.test_wtg and r in present
-                ][: context.reading_pool_size]
+            refs = [r for r in surviving if r != target]
             if not refs:
                 continue
             sub_input = _reference_input(mi, target=target, references=refs)
@@ -1243,7 +1232,7 @@ class PowerModelMethod:
         reference report uses, and it ran the campaign's own contrast -- the case for a healthy
         prepost campaign. Any other combination refits, because the pools or the contrast differ.
         """
-        if screen is None or ruled_out or screen.passes.empty or mi.context.reading_pools is not None:
+        if screen is None or ruled_out or screen.passes.empty:
             return {}
         if is_toggle(mi.context.timing) or self.screening_timing(mi) != mi.context.timing:
             return {}

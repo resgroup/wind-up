@@ -90,11 +90,6 @@ candidates. Everything else gets a role and a reason, recorded in `candidates.cs
 - **waking only**: not eligible, with the reason: `works … overlap the span`, `no data over the
   whole span`, `beyond 20 D`, or `not offered as a reference`.
 
-The plan also records a **reading pool** per reference and reserve: the eligible turbines within
-20 D *of that reference*, nearest first, the test turbine left out, which is what each reference is
-read against in `reference_stability.csv`. A reference is therefore judged against its own
-neighbours rather than against the test turbine's.
-
 ## When no span is viable
 
 If no start and end give both periods `min_side` with `min_references` eligible references, the
@@ -185,9 +180,8 @@ its correlation is more than `correlation_margin` below the median correlation. 
 usable records has no correlation and fails.
 
 **The walk.** The candidates are walked in rank order. The first `k` that pass are the power
-references, the other passers stay reserves in order, and the failures become wake contributors and
-leave every reading pool. Fewer than `k` passers keeps those that pass and warns that the pool rule is
-broken. Declared references are screened like any other. The step 8 table keeps the ranking from
+references, the other passers stay reserves in order, and the failures become wake contributors.
+Fewer than `k` passers keeps those that pass and warns that the pool rule is broken. Declared references are screened like any other. The step 8 table keeps the ranking from
 before the screen.
 
 `DataScreenSettings` holds the two thresholds, passed to `estimate_campaign` and `run_declaration` as

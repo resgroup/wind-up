@@ -173,14 +173,7 @@ def screen_plan(
 
     failed = set(candidates) - set(passers)
     _log(plan, table=table, kept=kept, failed=failed)
-    screened = dataclasses.replace(
-        plan,
-        power_references=tuple(kept),
-        reserves=tuple(spares),
-        reading_pools={
-            r: tuple(x for x in pool if x not in failed) for r, pool in plan.reading_pools.items() if r not in failed
-        },
-    )
+    screened = dataclasses.replace(plan, power_references=tuple(kept), reserves=tuple(spares))
     return DataScreen(
         plan=screened,
         table=table,

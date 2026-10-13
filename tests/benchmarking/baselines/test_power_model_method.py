@@ -1842,14 +1842,11 @@ def _planned_case(
         for col in (_POWER, _POWER_MIN, _POWER_MAX):
             scada.loc[rows, col] = scada.loc[rows, col] * (1.0 + step)
     base = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
-    everyone = ["R1", "R2", "R3", "R4", *reserves]
     context = dataclasses.replace(
         base,
         candidate_references=["R1", "R2", "R3", "R4"],
         wake_contributors=list(reserves),
         reserve_references=list(reserves),
-        reading_pools={r: [x for x in everyone if x != r] for r in everyone},
-        reading_pool_size=4,
     )
     return MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
 
@@ -1908,15 +1905,9 @@ class TestTheScreenCacheKnowsTheSpan:
         assert len(cache) == 2
 
 
-class TestReadingPools:
-    def test_each_reference_is_read_against_its_own_pool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestReferenceReadings:
+    def test_each_reference_is_read_against_the_other_candidates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mi = _planned_case(step=0.0, reserves=("R5",))
-        context = dataclasses.replace(
-            mi.context,
-            reading_pools={"R1": ["R5", "R2"], "R2": ["R1"], "R3": ["R4", "R1"], "R4": ["R3"]},
-            reading_pool_size=2,
-        )
-        mi = MethodInput(scada_df=mi.scada_df, test_wtg="T1", campaign_context=context)
         seen: dict[str, list[str]] = {}
 
         def record(self: PowerModelMethod, clone: PowerModelMethod, sub_input: MethodInput) -> float:  # noqa: ARG001
@@ -1925,7 +1916,12 @@ class TestReadingPools:
 
         monkeypatch.setattr(PowerModelMethod, "_reference_uplift", record)
         _screen_method(reference_screen=False).reference_uplifts(mi)
-        assert seen == {"R1": ["R5", "R2"], "R2": ["R1"], "R3": ["R4", "R1"], "R4": ["R3"]}
+        assert seen == {
+            "R1": ["R2", "R3", "R4"],
+            "R2": ["R1", "R3", "R4"],
+            "R3": ["R1", "R2", "R4"],
+            "R4": ["R1", "R2", "R3"],
+        }
 
     def test_the_test_turbine_is_a_wake_contributor_of_every_reading(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mi = _planned_case(step=0.0, reserves=())
@@ -1947,7 +1943,7 @@ def _held_back_case(*, days: int = 3) -> MethodInput:
     valid = mi.context.valid_for_uplift.copy()
     held = valid.index < valid.index.min() + pd.Timedelta(days=days)
     valid.loc[held, "R1"] = False
-    context = dataclasses.replace(mi.context, valid_for_uplift=valid, reading_pools=None, reading_pool_size=None)
+    context = dataclasses.replace(mi.context, valid_for_uplift=valid)
     return MethodInput(scada_df=mi.scada_df, test_wtg="T1", campaign_context=context)
 
 

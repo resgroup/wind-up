@@ -55,8 +55,6 @@ def context_for_plan(spec: CampaignSpec, plan: AnalysisPlan, *, scada_df: pd.Dat
         valid_for_uplift=_validity(spec, scada_df=scada_df, present=present),
         coords=dict(spec.coords),
         reserve_references=[r for r in plan.reserves if r in present],
-        reading_pools={r: [x for x in pool if x in present] for r, pool in plan.reading_pools.items() if r in present},
-        reading_pool_size=plan.k,
         changed_turbines=changed_times(
             test_wtg=plan.turbine,
             works=campaign_works(spec),

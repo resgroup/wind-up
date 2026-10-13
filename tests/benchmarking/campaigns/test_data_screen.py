@@ -105,11 +105,6 @@ class TestLowHours:
         assert screen.plan.power_references == ("T1", "T3", "T4", "T5")
         assert screen.plan.reserves == ()
 
-    def test_the_reading_pools_are_pruned(self) -> None:
-        screen = _screen(_invalid(_scada(), "T2", before="2019-04-01"))
-        assert "T2" not in screen.plan.reading_pools
-        assert all("T2" not in pool for pool in screen.plan.reading_pools.values())
-
     def test_the_medians_are_over_every_eligible_candidate(self) -> None:
         screen = _screen(_invalid(_scada(), "T2", before="2019-04-01"))
         table = screen.table

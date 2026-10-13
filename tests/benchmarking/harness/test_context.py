@@ -193,5 +193,3 @@ def test_the_plan_fields_default_to_none() -> None:
         valid_for_uplift=pd.DataFrame(),
     )
     assert context.reserve_references == []
-    assert context.reading_pools is None
-    assert context.reading_pool_size is None

@@ -141,11 +141,6 @@ class TestReferences:
         assert p.waking_only["T4"] == "reserve: beyond the nearest 3"
         assert p.waking_only["T7"] == "beyond 20 D (21.0 D)"
 
-    def test_reading_pools_leave_out_the_test_turbine(self) -> None:
-        p = plan(line(6))
-        assert p.reading_pools["T1"] == ("T2", "T3", "T4", "T5")
-        assert "T0" not in p.reading_pools["T3"]
-
     def test_distances_are_in_the_test_turbines_rotor_diameters(self) -> None:
         assert plan(line(4)).distances_d == pytest.approx({"T1": 3.0, "T2": 6.0, "T3": 9.0}, rel=1e-6)
 

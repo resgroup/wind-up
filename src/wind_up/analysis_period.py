@@ -71,8 +71,6 @@ class AnalysisPlan:
     :param post: usable time after the works window
     :param power_references: nearest first, then any forced in
     :param reserves: further eligible turbines within the distance limit, nearest first
-    :param reading_pools: for each power reference and reserve, the other eligible turbines within
-        the distance limit of it, nearest first, the test turbine left out
     :param waking_only: every other turbine that is not a power reference, with the reason
     :param distances_d: every other turbine's distance, in the test turbine's rotor diameters
     :param forced: declared references used although their works overlap the span
@@ -90,7 +88,6 @@ class AnalysisPlan:
     post: pd.Timedelta
     power_references: tuple[str, ...]
     reserves: tuple[str, ...]
-    reading_pools: dict[str, tuple[str, ...]]
     waking_only: dict[str, str]
     distances_d: dict[str, float]
     forced: tuple[str, ...]
@@ -413,7 +410,6 @@ def plan_analysis(
         post=option.post,
         power_references=references,
         reserves=reserves,
-        reading_pools={r: _reading_pool(timeline, r, start=start, end=end) for r in (*references, *reserves)},
         waking_only=waking_only,
         distances_d=timeline.distances_d,
         forced=forced_in,
@@ -422,14 +418,6 @@ def plan_analysis(
         pool_rule_reason=timeline.pool_reason(start, end),
         k=settings.k,
     )
-
-
-def _reading_pool(timeline: _Timeline, reference: str, *, start: pd.Timestamp, end: pd.Timestamp) -> tuple[str, ...]:
-    """Return the eligible turbines within the distance limit of ``reference``, nearest first, bar the test turbine."""
-    distances = timeline.distances_from(reference)
-    limit = timeline.settings.max_reference_distance_d
-    pool = [r for r in timeline.ranked if r != reference and distances[r] <= limit and timeline.eligible(r, start, end)]
-    return tuple(sorted(pool, key=lambda r: (distances[r], r)))
 
 
 def _length(length: pd.Timedelta, *, digits: int | None = None) -> str:
