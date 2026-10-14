@@ -151,6 +151,7 @@ def test_a_campaign_with_no_methods_still_returns_an_indexable_farm_table() -> N
         "n_guarded",
         "reference_uplift_before_screen",
         "reference_uplift_after_screen",
+        "reference_uplift_spread",
     ]
     assert result.farm.empty
 

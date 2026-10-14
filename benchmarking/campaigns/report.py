@@ -234,6 +234,7 @@ _PERCENT_COLUMNS = {
     "uplift_spread": "spread [%]",
     "reference_uplift_before_screen": "reference uplift before screen [%]",
     "reference_uplift_after_screen": "reference uplift after screen [%]",
+    "reference_uplift_spread": "reference spread [%]",
 }
 # actual_energy is a sum of mean power, not energy; the log converts it and says which it is.
 _ENERGY_COLUMN = "actual_energy"

@@ -39,6 +39,7 @@ _FARM_COLUMNS = (
     "n_guarded",
     "reference_uplift_before_screen",
     "reference_uplift_after_screen",
+    "reference_uplift_spread",
 )
 
 
@@ -215,6 +216,7 @@ class CampaignRunner:
             "n_guarded": int((result.turbines["guard"] != "").sum()),
             "reference_uplift_before_screen": float(references["reference_uplift_before_screen"]),
             "reference_uplift_after_screen": float(references["reference_uplift_after_screen"]),
+            "reference_uplift_spread": float(references["reference_uplift_spread"]),
         }
 
     def _visible_dataset(self, report: CampaignReport) -> SyntheticDataset:

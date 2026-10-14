@@ -143,6 +143,7 @@ class TestCombinedReferenceUplift:
         expected = 2000.0 / (1000.0 / 1.001 + 1000.0 / 1.002) - 1.0
         assert row["reference_uplift_before_screen"] == pytest.approx(expected)
         assert row["reference_uplift_after_screen"] == pytest.approx(expected)
+        assert row["reference_uplift_spread"] == pytest.approx(0.001)
 
     def test_a_screened_reference_counts_before_the_screen_only(self) -> None:
         class Screening(ReferenceReportingMethod):
@@ -156,6 +157,7 @@ class TestCombinedReferenceUplift:
 
         row = run([Screening()]).farm.set_index("method").loc["screening"]
         assert row["reference_uplift_after_screen"] == pytest.approx(0.001)
+        assert np.isnan(row["reference_uplift_spread"])
         assert row["reference_uplift_before_screen"] == pytest.approx(2000.0 / (1000.0 / 1.001 + 1000.0 / 1.5) - 1.0)
 
 

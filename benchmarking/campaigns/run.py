@@ -54,6 +54,7 @@ _FARM_COLUMNS = (
     "n_guarded",
     "reference_uplift_before_screen",
     "reference_uplift_after_screen",
+    "reference_uplift_spread",
 )
 _REFERENCE_COLUMNS = (
     "method",
@@ -79,7 +80,8 @@ class CampaignReport:
         ``estimate``
     :param farm: one row per method -- ``estimate``, ``uplift_spread``, ``n_guarded`` and the
         combined reference uplift before and after the screen (``reference_uplift_before_screen``,
-        ``reference_uplift_after_screen``)
+        ``reference_uplift_after_screen``) with the spread of the references after it
+        (``reference_uplift_spread``)
     :param farm_uplifts: each method's :class:`~wind_up.FarmUplift`, including per-turbine detail
     :param reference_stability: each method's per-reference self-uplift, the campaign's own
         analysis turned on the turbines it used as references. A healthy campaign reads near 0%.
@@ -312,9 +314,10 @@ def estimate_campaign(
     )
 
 
-def _farm_row(method: str, result: FarmUplift, *, references: tuple[float, float] | None) -> dict[str, object]:
-    """One method's farm headline row; ``references`` is its combined reference uplift before and after the screen."""
-    before, after = references if references is not None else (float("nan"), float("nan"))
+def _farm_row(method: str, result: FarmUplift, *, references: tuple[float, float, float] | None) -> dict[str, object]:
+    """One method's farm headline row; ``references`` is from :func:`reference_headlines`."""
+    nan = float("nan")
+    before, after, spread = references if references is not None else (nan, nan, nan)
     return {
         "method": method,
         "estimate": result.uplift,
@@ -322,14 +325,16 @@ def _farm_row(method: str, result: FarmUplift, *, references: tuple[float, float
         "n_guarded": int((result.turbines["guard"] != "").sum()),
         "reference_uplift_before_screen": before,
         "reference_uplift_after_screen": after,
+        "reference_uplift_spread": spread,
     }
 
 
-def reference_headlines(stability: pd.DataFrame, *, rated_power_kw: float) -> dict[str, tuple[float, float]]:
-    """Return each method's combined reference uplift before and after the screen (method step 16).
+def reference_headlines(stability: pd.DataFrame, *, rated_power_kw: float) -> dict[str, tuple[float, float, float]]:
+    """Return each method's combined reference uplift before and after the screen, and the spread after it.
 
     Each reference counts once per method, as the median of its readings across the test turbines;
-    it is screened or unjudged when any test turbine's screen says so.
+    it is screened or unjudged when any test turbine's screen says so. The spread is the largest
+    minus the smallest uplift of the references the screen kept, NaN below two (method step 16).
     """
     if stability.empty:
         return {}
@@ -344,9 +349,20 @@ def reference_headlines(stability: pd.DataFrame, *, rated_power_kw: float) -> di
         str(method): (
             reference_overall_uplift(rows, rated_power_kw=rated_power_kw, after_screen=False),
             reference_overall_uplift(rows, rated_power_kw=rated_power_kw, after_screen=True),
+            _spread(rows),
         )
         for method, rows in once.groupby("method")
     }
+
+
+def _spread(once: pd.DataFrame) -> float:
+    """Return the largest minus the smallest finite uplift of the references the screen kept; NaN below two."""
+    kept = once[np.isfinite(once["uplift"].to_numpy(dtype=float))]
+    for column in ("screened", "unjudged"):
+        if column in kept.columns:
+            kept = kept[~kept[column].astype(bool)]
+    values = kept["uplift"].to_numpy(dtype=float)
+    return float(values.max() - values.min()) if len(values) > 1 else float("nan")
 
 
 def _stack(frames: list[pd.DataFrame], *, lead: Sequence[str]) -> pd.DataFrame:

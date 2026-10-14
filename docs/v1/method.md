@@ -393,8 +393,9 @@ percentage points by default) is excluded as a power reference and the remaining
 judged again, excluding at most one turbine per pass. The median rather than zero is used because the
 reference turbines may all drift together, which is not a source of bias. The screen requires at
 least three candidates, and a candidate is only judged when it has enough after-period data to
-separate a bad reference from noise (150 days of usable after-period data by default; the value is
-decided by validation). A candidate with less is not judged: it is not used as a power reference,
+separate a bad reference from noise (150 days of the candidate's own after-period records valid for
+uplift (step 2) by default, counted before the record selection of step 11; the value is decided by
+validation). A candidate with less is not judged: it is not used as a power reference,
 and it is reported as unjudged rather than ruled out. Because the columns of step 5 do not depend
 on the reference set, excluding a candidate changes nothing in Part A. The screened set is the set
 of power references used for the test turbine in step 10.
@@ -411,8 +412,8 @@ before and after the screen, is the campaign's own check of bias.
 ### 10. Measure the test turbine
 
 The measurement of Part C (steps 11 to 15) is run for the test turbine with the screened reference set
-of step 9 and the periods of step 7. Its output is the headline uplift of the test turbine with its
-uncertainty, and its uplift distributions with an uncertainty for each bin.
+of step 9 and the periods of step 7. Its output is the headline uplift of the test turbine and its
+uplift distributions, each with an uncertainty once step 14 is specified.
 
 ## Part C: measure one turbine's uplift
 
@@ -433,12 +434,15 @@ either. Nothing in Part C changes the reference set or the periods.
 - ii. **Waking configuration.** For each record, the configuration is the combination of the waking
   scenarios (step 5 iii) of the subject turbine and all of its power references, taken together. Only
   configurations with at least 24 hours of data in both periods are retained, in the same way that
-  wind-up v0 retained only the waking scenarios with at least one day of data. By default any
-  configuration in which a scenario contains a part waking turbine or is "unknown" is dropped, however
-  much data it has. A configuration seen in one period only is one the model has rarely or never
-  seen, and its prediction for it is an extrapolation. The hours this part removes are reported by
-  the measurement beside the losses of parts i and iii, since the data screen (step 9) applies only
-  the per-turbine part of this rule.
+  wind-up v0 retained only the waking scenarios with at least one day of data. By default a record is
+  also dropped when the scenario of the subject turbine or of any power reference contains a part
+  waking turbine or is "unknown", however much data its configuration has. This is the per-turbine
+  part of the rule, which the data screen (step 9) applies too; the records of part iii without a
+  direction are among those it drops. A configuration seen in one period only is one the model has
+  rarely or never seen, and its prediction for it is an extrapolation. For a toggle test the two
+  periods are the toggle on and toggle off data, and a record from before toggling began (step 7) is
+  dropped when its configuration is rare in them. The hours each part removes are reported by the
+  measurement, in hours per period.
 - iii. **Changed turbines upwind.** For this measurement, a turbine is changed if it has a change
   (step 1) between the start of the before period and the end of the after period.
   A turbine whose changes all fall outside that span casts the same wake in both periods. Records in
@@ -460,16 +464,17 @@ either. Nothing in Part C changes the reference set or the periods.
   override the rule where the wake is known not to change.
 - iv. **Weather.** Both periods should see the same weather. For a toggle test a toggle pairing filter
   is applied, which only keeps data where the time difference between a data record and the nearest
-  valid record with the opposite toggle state is within expected limits. For a prepost test one of the
-  following is used.
+  valid record with the opposite toggle state is within a limit, one toggle cycle (the on and off
+  durations together) by default. For a prepost test one of the following is used.
   - **Option A (current default).** No weather matching beyond the choice of period in step 7.
   - **Option B.** Common-support trimming: coarsen ERA5 wind speed, direction and a stability proxy
     into cells, and drop the records of either period that fall in cells with less than a minimum
     number of hours in the other period. Calendar time is not a condition: matching the months of
     the two periods would shorten the before period, which step 7 keeps long on purpose.
 
-Trimming is kept as natural as possible: where practical, whole days are removed rather than individual
-records, so that the retained data stays contiguous and autocorrelated in the same way in both periods.
+Under option B, trimming is kept as natural as possible: where practical, whole days are removed rather
+than individual records, so that the retained data stays contiguous and autocorrelated in the same way
+in both periods.
 
 Features that reveal the period rather than the conditions, such as a signal that only exists in one
 period, must not be used for matching. Weighting the records by a model of the probability of belonging
@@ -484,8 +489,9 @@ ratio of wind speeds by direction bin, the model learns how the subject turbine'
 references under every combination of weather and waking state present in the data. Only the records
 retained by step 11 are used.
 
-The model is a gradient-boosted tree regressor minimising squared error. It is configured to give
-identical results on any machine.
+The model is a gradient-boosted tree regressor minimising squared error. It is configured so that
+repeated runs on one machine give identical results; results on different machines can differ by a
+few tenths of a percentage point.
 
 **Joint or paired references.** By default the references are analysed together as one model for each
 subject turbine, not one subject-reference pair at a time. A single-reference estimate carries
@@ -511,10 +517,11 @@ $$
 U_{fwd} = \frac{\sum_A y}{\sum_A \hat f_B} - 1
 $$
 
-This compares a measured sum with a predicted one, and is biased by any error the model makes on
-average when predicting data unlike its training data. That error grows with the time separating the
-two periods and is the main source of bias left once steps 5, 6, 7 and 11 are applied. One of the
-following is used to remove it:
+Each prediction is clipped to the range from zero to the larger of the rated power and the largest
+power the model was trained on. This compares a measured sum with a predicted one, and is biased by
+any error the model makes on average when predicting data unlike its training data. That error grows
+with the time separating the two periods and is the main source of bias left once steps 5, 6, 7 and
+11 are applied. One of the following is used to remove it:
 
 - **Option A (current default).** The forward uplift alone.
 - **Option B, reversibility.** As in wind-up v0, the calculation is also performed in reverse: a
@@ -564,19 +571,25 @@ step 12 has a conditional bias that integrates to about zero over the whole wind
 a bin: it over-predicts low power and under-predicts high power, so a plain per-bin ratio shows a
 spurious slope even where the true uplift is flat. The bin shape is therefore estimated with the
 full reversal of step 13 option B applied per bin, on records matched between the periods as in
-step 11 iv option B: the before and after records are matched on coarsened ERA5 cells, a model is
-fitted in each direction on the matched records, and each bin's uplift is the geometric combination
-of the forward and reverse ratios, which cancels the conditional bias common to both. A bin with
-too few matched hours on either side is not measured; its value is filled from its neighbours (0 %
-at and above rated by default). The measured and filled bins are then scaled so that, weighted by
-the after-period energy in each bin, they combine to the headline uplift of step 13; the headline
-itself is never moved by this step. Each bin is reported with its uncertainty (step 14).
+step 11 iv option B: the before and after records are matched on coarsened ERA5 cells (100 m wind
+speed in 2 m/s steps, 10 m gust in 3 m/s steps and 100 m direction in 20° sectors by default), cells
+present in one period only are dropped, and in every other cell the larger side is subsampled to the
+size of the smaller so the two sides carry equal weight per cell; a model is fitted in each direction
+on the matched records, and each bin's uplift is the geometric combination of the forward and reverse
+ratios, which cancels the conditional bias common to both. A bin with too few matched hours on either
+side (8 hours by default) is not measured; its value is filled from the nearest measured bin above it,
+and the bins above the last measured bin take 0 %, since at and above rated the baseline and the
+upgraded turbine produce the same power. The measured bins are then scaled by one factor, with the
+filled bins held as filled, so that, weighted by the after-period energy in each bin, they combine to
+the headline uplift of step 13; the headline itself is never moved by this step. Each bin is reported
+with its uncertainty (step 14).
 
 Records are assigned to a bin by an upgrade-invariant variable, never by any signal of the subject
 turbine: not its measured power, which would select each bin on its own noise, and not its nacelle
-wind speed or turbulence. The variables available are the counterfactual power prediction (as a
-fraction of rated), the ERA5 variables of step 6 iii, and a free-stream wind speed derived from the
-references once one is defined (open question).
+wind speed or turbulence. By default the uplift is reported against the counterfactual power
+prediction (as a fraction of rated, in six bins) and against the ERA5 100 m wind speed (in 2 m/s
+bins). The other variables available are the ERA5 variables of step 6 iii and a free-stream wind
+speed derived from the references once one is defined (open question).
 
 This step is run for the test turbine (step 10). It is off by default for the candidates of the screen
 (step 9), where only the headline uplift is needed.
@@ -595,9 +608,10 @@ U_{combined} = \frac{\sum_t \sum_A y_t}{\sum_t \sum_A y_t / (1 + U_t)} - 1
 $$
 
 The combined reference uplift is reported alongside every result as the campaign's own check of bias,
-and the spread of the individual reference uplifts (step 9) as its own measure of noise. It is reported
-both before and after the screen: the value after the screen is near zero partly by construction, so
-the value before it is the more honest check.
+and the spread of the individual reference uplifts (step 9), the largest minus the smallest, as its
+own measure of noise. The combined uplift is reported both before and after the screen: the value
+after the screen is near zero partly by construction, so the value before it is the more honest
+check.
 
 The reference uplifts could also be used to correct the test turbine uplift. This is not done, because
 the references would then read 0 % by construction and could no longer be used as a check of bias.
