@@ -49,8 +49,8 @@ finite, so it cannot change any uplift result. The bootstrap sees sampling varia
 sigma under-covers where the method is biased.
 
 Each run writes a per-run folder ``toggle_specialist_<test>_<upgradestart>_<lastdate>/``
-(v0-style naming) under ``out_dir`` (a temp dir by default), holding a per-segment data-stats CSV,
-a headline results CSV, the per-leg selection and reference-subset CSVs, and -- when
+under ``out_dir`` (a temp dir by default), holding CSVs named ``<kind>_<write time>.csv``: a
+per-segment data-stats CSV, a headline results CSV, the per-leg selection and reference-subset CSVs, and -- when
 ``save_plots`` -- four diagnostic plots (a test-vs-reference scatter, a per-segment daily-ratio
 timeseries, a per-segment used-data-coverage timeseries, and a pairing-gap histogram).
 The rich stats let a human confirm the right data was received and interpreted: each leg's uplift
@@ -1049,9 +1049,9 @@ class ToggleSpecialistMethod:
         )
         run_dir = out_root / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
-        ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S")
 
-        stats.to_csv(run_dir / f"{run_name}_data_stats_{ts}.csv", index=False)
+        stats.to_csv(run_dir / f"data_stats_{ts}.csv", index=False)
 
         used_base = int(stats.loc[stats["segment"] == "baseline", "n_used_timestamps"].iloc[0])
         used_up = int(stats.loc[stats["segment"] == "upgraded", "n_used_timestamps"].iloc[0])
@@ -1080,17 +1080,17 @@ class ToggleSpecialistMethod:
                 }
             ]
         )
-        results.to_csv(run_dir / f"{run_name}_results_{ts}.csv", index=False)
+        results.to_csv(run_dir / f"results_{ts}.csv", index=False)
 
         if est.per_bin is not None:
-            est.per_bin.to_csv(run_dir / f"{run_name}_by_power_bin_{ts}.csv", index=False)
-        est.diagnostics.to_csv(run_dir / f"{run_name}_uncertainty_{ts}.csv", index=False)
+            est.per_bin.to_csv(run_dir / f"by_power_bin_{ts}.csv", index=False)
+        est.diagnostics.to_csv(run_dir / f"uncertainty_{ts}.csv", index=False)
         if subsets is not None:
-            subsets.to_csv(run_dir / f"{run_name}_reference_subsets_{ts}.csv", index=False)
+            subsets.to_csv(run_dir / f"reference_subsets_{ts}.csv", index=False)
         # Every leg's row selection, so the blend's two selections can be told apart.
         pd.concat(
             [component.accounting.assign(component=mode) for mode, component in components.items()], ignore_index=True
-        ).to_csv(run_dir / f"{run_name}_selection_{ts}.csv", index=False)
+        ).to_csv(run_dir / f"selection_{ts}.csv", index=False)
 
         if self.save_plots:
             # Scatter and ratio plots of one leg's own rows against its own reference.

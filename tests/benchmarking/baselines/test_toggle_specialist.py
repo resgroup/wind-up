@@ -363,14 +363,14 @@ class TestPerBinDiagnostics:
             rated_power_kw=_RATED_KW,
             out_dir=tmp_path,
         ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
-        assert list(tmp_path.rglob("*_by_power_bin_*.csv"))
+        assert list(tmp_path.rglob("by_power_bin_*.csv"))
 
     def test_no_per_bin_csv_when_conditioning_is_off(self, tmp_path: Path) -> None:
         scada, schedule, _ = _toggle_case(uplift=0.03)
         ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM, out_dir=tmp_path).estimate(
             MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
-        assert not list(tmp_path.rglob("*_by_power_bin_*.csv"))
+        assert not list(tmp_path.rglob("by_power_bin_*.csv"))
 
     def test_per_bin_plot_written_with_save_plots(self, tmp_path: Path) -> None:
         scada, schedule = _varying_rho_case(uplift=0.05)
@@ -587,7 +587,7 @@ class TestPlotSeries:
 def _read_only_csv(folder: Path, kind: str) -> pd.DataFrame:
     run_dirs = [p for p in Path(folder).iterdir() if p.is_dir()]
     assert len(run_dirs) == 1, f"expected exactly one run dir, found {run_dirs}"
-    matches = list(run_dirs[0].glob(f"*_{kind}_*.csv"))
+    matches = list(run_dirs[0].glob(f"{kind}_*.csv"))
     assert len(matches) == 1, f"expected one {kind} csv, found {matches}"
     return pd.read_csv(matches[0])
 
@@ -851,7 +851,7 @@ class TestUncertaintyInTheWrittenOutputs:
     def test_results_csv_records_the_sigma_and_the_bootstrap_config(self, tmp_path: Path) -> None:
         scada, schedule = _noisy_toggle_case()
         out = _estimate(scada, schedule, out_dir=tmp_path, block_hours=24.0)
-        results = pd.concat([pd.read_csv(p) for p in tmp_path.glob("*/*_results_*.csv")])
+        results = pd.concat([pd.read_csv(p) for p in tmp_path.glob("*/results_*.csv")])
         assert results["uplift_sigma_frc"].iloc[0] == pytest.approx(out.sigma_overall)
         assert results["block_hours"].iloc[0] == 24.0
         assert results["n_resamples"].iloc[0] == 1000
@@ -859,7 +859,7 @@ class TestUncertaintyInTheWrittenOutputs:
     def test_an_uncertainty_csv_is_written(self, tmp_path: Path) -> None:
         scada, schedule = _noisy_toggle_case()
         _estimate(scada, schedule, out_dir=tmp_path, conditions=("power",), rated_power_kw=_RATED_KW)
-        written = list(tmp_path.glob("*/*_uncertainty_*.csv"))
+        written = list(tmp_path.glob("*/uncertainty_*.csv"))
         assert len(written) == 1
         frame = pd.read_csv(written[0])
         assert "n_upgraded_records" in frame.columns
