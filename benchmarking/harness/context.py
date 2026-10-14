@@ -54,6 +54,8 @@ class CampaignContext:
         turbine among them (see :func:`~benchmarking.harness.record_selection.changed_times`). A
         record with a turbine upwind of the subject or a power reference while it counts as changed
         is not used.
+    :param works: the test turbine's works window ``[start, end)``, between the before and after
+        periods. A measurement with another turbine as the subject uses no record inside it either.
     """
 
     test_wtg: str
@@ -65,6 +67,7 @@ class CampaignContext:
     coords: dict[str, tuple[float, float]] | None = None
     reserve_references: list[str] = field(default_factory=list)
     changed_turbines: ChangedTimes = field(default_factory=dict)
+    works: tuple[pd.Timestamp, pd.Timestamp] | None = None
 
     def __post_init__(self) -> None:
         """Raise when a turbine holds two roles, or a reserve is not a wake contributor."""

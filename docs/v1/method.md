@@ -397,8 +397,9 @@ least three candidates, and a candidate is only judged when it has enough after-
 separate a bad reference from noise (150 days of the candidate's own after-period records valid for
 uplift (step 2) by default, counted before the record selection of step 11; the value is decided by
 validation). A candidate with less is not judged: it is not used as a power reference,
-and it is reported as unjudged rather than ruled out. When no candidate has enough, the screen is
-not run and every candidate stays a power reference. Because the columns of step 5 do not depend
+and it is reported as unjudged rather than ruled out; like a dropped candidate, it is replaced by
+the nearest reserve. When no candidate has enough, the screen is not run and every candidate stays a
+power reference. Because the columns of step 5 do not depend
 on the reference set, excluding a candidate changes nothing in Part A. The screened set is the set
 of power references used for the test turbine in step 10.
 

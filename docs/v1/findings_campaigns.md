@@ -12,6 +12,56 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF30 — The composed run now follows method.md steps 1 to 15, and the matrix drives it: the real T13 cell reproduces the composed run to 0.005 pp. The new headline sigma puts T13 at +2.84 % ± 0.21 pp, while its references read 2.5 to 7 sigma from zero, so F2 is a bias far beyond sampling noise. Laptop dry runs of every arm pass, after a fix without which every synthetic cell would have failed
+
+*2026-10-14, branch v1-C3. Reproduce: `python -m benchmarking.campaigns run <hot_aeroup_t13 campaign.yaml>` and
+`python -m benchmarking.baselines.study_prepost_campaign_matrix run-cell <big study dir> <cell id>` for the
+cells below.*
+
+**Steps 10 to 15 at their defaults.** Each period needs 24 usable hours. Waking configurations with
+under 24 h in either period are dropped. Toggle records are paired within one toggle cycle. The uplift
+distributions are reported against the counterfactual power and the ERA5 100 m wind speed. On the
+real Hill of Towie AeroUp T13 campaign the headline moved from +2.817 % to +2.831 %. The references
+read T09 −0.48, T11 +0.30, T12 −0.74 and T14 +1.10 %, combined +0.05 %.
+
+**The sampling sigma (step 14).** The after period is block-bootstrapped with the model fixed. T13
+reads 0.21 pp at the default 1-day block, and 0.17 to 0.21 pp from 6 hours to 28 days. Its references
+read z = −2.7, +2.5, −5.1 and +7.3 against their truth of zero. The sigma prices sampling alone; the
+reference error is systematic, and it is that error the systematic component of step 14 must carry.
+
+**The matrix drives the shipped method.** The real cell `hot_t13_K4_L12` reads +2.836 % against the
+composed run's +2.831 %, with the same span, references and screen. The residual is Part A seeing
+data cut at the cell's end, which moves north offsets by about 0.07°.
+
+**A broken commit, caught by a dry run.** From the commit that added the headline sigma, every
+synthetic cell failed in scoring: the uncertainty row carried a `sigma` column the harness reserves.
+The real cells are not scored, so they hid it. Only the slow matrix test scores a synthetic cell end
+to end; run it before any HPC launch.
+
+**Laptop dry runs (12 cores), with the reverse direction recorded:**
+
+| Cell | Wall | Peak RSS | Notes |
+|---|---|---|---|
+| `hot_s00_m+1_K4_L12` | 1150 s | 7.7 GB | 7 test turbines; truth and sigma per bin on both axes |
+| `hot_t13_K4_L1` | 282 s | 5.7 GB | T13 +2.55 % ± 0.57 |
+| `hot_t13_K4_L3` | 346 s | 5.6 GB | T13 +3.24 % ± 0.38 |
+| `hot_s01_m+0_K3_L1` | 262 s | 4.0 GB | placebo errors +0.4, −2.8, +4.3 pp at sigma 0.5, 3.4, 8.5 |
+| `hot_s02_m-1_K4_L6_excl` | 620 s | 6.2 GB | forward reads 0.7 to 0.9 pp more negative than truth |
+| `hot_s02_m+1_K6_L9` | 599 s | 6.6 GB | errors −0.3 to +0.1 pp |
+
+Costs are at or below those the study's `plan` uses.
+
+**Two observations for later work.**
+- *The reverse direction is unusable on a 1-month after period:* one turbine reads +62 % reverse
+  from 228 usable hours. Its fixed-model bootstrap sigma, 5.5 pp, does not see the error of fitting
+  a model on so little data. A lambda weighted by that sigma would trust the reverse too much; the
+  precision of step 13 option B needs folds or refits.
+- *The waking configuration rule (step 11 ii) is not cheap:* on real T13 it removes 296 of about 1600
+  after-period hours at a 3-month after period. Whether that buys accuracy is one of method.md's open
+  questions. The matrix now records the hours lost per reason for every test turbine.
+
+---
+
 ## CF29 — Repeating pass 2 by re-northing every unsettled turbine at once could flip-flop instead of converging; re-northing them one at a time against the latest tables fixes it. It exposed a fragile spot in the wake-nadir shift: one marginal wake pair can swing a turbine's correction by ~4 deg
 
 *2026-09-30. Reproduce: `test_changepoints_v_consensus_converges_when_neighbours_share_excursions` in

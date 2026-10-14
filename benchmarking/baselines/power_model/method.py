@@ -382,14 +382,21 @@ def _reference_input(
     """Return the input for estimating reference ``target`` against ``references``.
 
     Every turbine the campaign's estimate keeps stays in, so the test turbine and any reference left
-    out of ``references`` join the wake contributors.
+    out of ``references`` join the wake contributors. ``target``'s records inside the test turbine's
+    works window are not valid for uplift, so its before period ends where the test turbine's does.
 
     :param timing: the contrast to estimate across; the campaign's own when ``None``
     """
     context = mi.context
     kept = [mi.test_wtg, *context.candidate_references, *context.wake_contributors]
+    valid = context.valid_for_uplift
+    if context.works is not None and target in valid.columns:
+        start, end = context.works
+        valid = valid.copy()
+        valid.loc[(valid.index >= start) & (valid.index < end), target] = False
     sub_context = dataclasses.replace(
         context,
+        valid_for_uplift=valid,
         test_wtg=target,
         candidate_references=list(references),
         # Sorted, not in the order the campaign's own estimate happened to hold them: that order
@@ -507,8 +514,8 @@ class PowerModelMethod:
     The reference pool is the campaign's candidate references (the context's
     ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
     them power-free rather than removing them from it. When the context offers reserve references,
-    a reference the screen rules out becomes a wake contributor instead and the nearest reserve
-    takes its place, and the refilled pool is screened again.
+    a reference the screen rules out, or cannot judge for want of campaign data, becomes a wake
+    contributor instead and the nearest reserve takes its place, and the refilled pool is screened again.
 
     The toggle headline is always the counterfactual energy ratio ``Σactual/Σprediction - 1``.
     """
@@ -552,7 +559,7 @@ class PowerModelMethod:
     # the same contrast. Every test turbine would otherwise re-run the identical round-robin. A
     # campaign passes one dict to every turbine's method; None means screen per estimate. Every
     # method sharing a cache must share its configuration, since the key does not carry it.
-    screen_cache: dict[tuple[tuple[str, ...], str, str, str, tuple[str, ...]], ScreenResult] | None = field(
+    screen_cache: dict[tuple[tuple[str, ...], str, str, str, tuple[str, ...], str], ScreenResult] | None = field(
         default=None, repr=False, compare=False
     )
 
@@ -591,14 +598,14 @@ class PowerModelMethod:
             self.era5_hourly_df.columns if self.era5_hourly_df is not None else ()
         )
         screen = self.screen_references(mi) if self.reference_screen else None
-        if screen is not None and screen.screened and mi.context.reserve_references:
+        if screen is not None and screen.power_free and mi.context.reserve_references:
             mi, screen = self.refill_screened(mi, screen)
             scada = mi.context.select(mi.scada_df)
             references = self._candidate_references(scada, mi=mi)
             n_refs = len(references)
         # Without reserves the screen does not shrink the pool: a reference it ruled out, or could
         # not judge for want of campaign data, stays in the pool and contributes no features. With
-        # reserves a ruled-out reference has already left the pool for the wake contributors.
+        # reserves it has already left the pool for the wake contributors.
         power_free = tuple(r for r in screen.power_free if r in references) if screen is not None else ()
         features = self._reference_features(scada, mi=mi, references=references, power_free=power_free)
         features, era5 = self._add_era5(features, index=index, timebase=timebase)
@@ -1461,6 +1468,7 @@ class PowerModelMethod:
         pool = self._candidate_references(context.select(mi.scada_df), mi=mi)
         ruled_out = set(screen.screened if screen is not None else ())
         demoted = set(power_free)
+        unjudged = (demoted | set(screen.unjudged if screen is not None else ())) - ruled_out
         surviving = [r for r in pool if r not in demoted]
         clone = self._reference_clone()
         reusable = (
@@ -1469,7 +1477,7 @@ class PowerModelMethod:
             else self._reusable_screen_estimates(mi, screen=screen, ruled_out=demoted, pool=surviving)
         )
         # A reference the screen moved out of a refilled pool is still read and reported.
-        targets = [*pool, *(r for r in (screen.screened if screen is not None else ()) if r not in pool)]
+        targets = [*pool, *(r for r in (screen.power_free if screen is not None else ()) if r not in pool)]
         rows: list[dict[str, object]] = []
         for target in targets:
             refs = [r for r in surviving if r != target]
@@ -1489,7 +1497,7 @@ class PowerModelMethod:
                     "actual_energy": energy,
                     "n_records": n_records,
                     "screened": target in ruled_out,
-                    "unjudged": target in demoted and target not in ruled_out,
+                    "unjudged": target in unjudged,
                     **{k: v for k, v in reading.items() if k != "uplift"},
                 }
             )
@@ -1689,6 +1697,7 @@ class PowerModelMethod:
             str(mi.scada_df.index.min()),
             str(mi.scada_df.index.max()),
             tuple(f"{turbine} {times}" for turbine, times in sorted(context.changed_turbines.items())),
+            str(context.works),
         )
         if self.screen_cache is not None and cache_key in self.screen_cache:
             # Re-stamped: the pool decides the screening estimates, but which candidates were held
@@ -1752,23 +1761,27 @@ class PowerModelMethod:
         return dataclasses.replace(result, unjudged=tuple(unjudged))
 
     def refill_screened(self, mi: MethodInput, screen: ScreenResult) -> tuple[MethodInput, ScreenResult]:
-        """Replace each reference the screen ruled out with the nearest reserve, and screen again.
+        """Replace each reference the screen ruled out or could not judge with the nearest reserve, and screen again.
 
-        A ruled-out reference becomes a wake contributor. Rounds continue until a screen rules out
-        nobody new or the reserves run out, when the pool shrinks and a warning says so.
+        A replaced reference becomes a wake contributor. Rounds continue until a screen rules out and
+        holds out nobody new or the reserves run out, when the pool shrinks and a warning says so.
 
         :return: the input with the refilled context, and every round's result combined: every
-            ruled-out reference in order, every round's passes numbered on from the last
+            ruled-out reference in order, every unjudged one, every round's passes numbered on from the last
         """
         context = mi.context
         ejected: list[str] = []
+        ruled_out: list[str] = []
+        unjudged: set[str] = set()
         rounds = [screen.passes]
         result = screen
         while True:
-            new = [r for r in result.screened if r not in ejected and r in context.candidate_references]
+            new = [r for r in result.power_free if r not in ejected and r in context.candidate_references]
             if not new:
                 break
             ejected.extend(new)
+            ruled_out.extend(r for r in new if r in result.screened)
+            unjudged |= {r for r in new if r not in result.screened}
             promoted = list(context.reserve_references[: len(new)])
             context = dataclasses.replace(
                 context,
@@ -1779,8 +1792,8 @@ class PowerModelMethod:
             mi = MethodInput(scada_df=mi.scada_df, test_wtg=mi.test_wtg, campaign_context=context)
             if len(promoted) < len(new):
                 logger.warning(
-                    "%s %s: the screen ruled out %s and the reserves ran out; the pool is %d, so the pool rule is "
-                    "broken",
+                    "%s %s: the screen ruled out or could not judge %s and the reserves ran out; the pool is %d, so "
+                    "the pool rule is broken",
                     self.name,
                     mi.test_wtg,
                     ejected,
@@ -1795,7 +1808,13 @@ class PowerModelMethod:
             return mi, screen
         recorded = [r for r in rounds if not r.empty]
         passes = pd.concat(recorded, ignore_index=True) if recorded else screen.passes
-        return mi, dataclasses.replace(result, screened=tuple(ejected), passes=passes, screenable=True)
+        return mi, dataclasses.replace(
+            result,
+            screened=tuple(ruled_out),
+            unjudged=tuple(sorted(unjudged | set(result.unjudged))),
+            passes=passes,
+            screenable=True,
+        )
 
     def _validate_model_config(self) -> None:
         """Fail loudly on config combinations that would silently misbehave."""

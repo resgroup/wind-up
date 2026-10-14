@@ -1900,6 +1900,44 @@ class TestTheScreenRefillsItsPool:
         assert bool(refs.loc[refs["turbine"] == "R1", "screened"].iloc[0])
         assert np.isfinite(out.p50_overall)
 
+    @staticmethod
+    def _short_r1(reserves: tuple[str, ...] = ("R5", "R6")) -> MethodInput:
+        """The clean pool with R1 valid for uplift on only its first two days after the changeover."""
+        mi = _planned_case(step=0.0, reserves=reserves)
+        valid = mi.context.valid_for_uplift.copy()
+        changeover = pd.Timestamp(mi.context.timing)  # type: ignore[arg-type]
+        valid.loc[valid.index >= changeover + pd.Timedelta(days=2), "R1"] = False
+        return MethodInput(
+            scada_df=mi.scada_df,
+            test_wtg="T1",
+            campaign_context=dataclasses.replace(mi.context, valid_for_uplift=valid),
+        )
+
+    def test_a_reference_too_short_to_judge_is_replaced_by_the_nearest_reserve(self) -> None:
+        mi = self._short_r1()
+        method = _screen_method(screen_min_campaign_days=5.0)
+        screen = method.screen_references(mi)
+        assert screen.unjudged == ("R1",)
+        refilled, after = method.refill_screened(mi, screen)
+        assert refilled.context.candidate_references == ["R2", "R3", "R4", "R5"]
+        assert "R1" in refilled.context.wake_contributors
+        assert after.screened == ()
+        assert after.unjudged == ("R1",)
+
+    def test_a_replaced_unjudged_reference_is_still_read_and_flagged(self) -> None:
+        out = _screen_method(screen_min_campaign_days=5.0).estimate(self._short_r1())
+        refs = out.reference_uplifts.set_index("turbine")
+        assert set(refs.index) == {"R1", "R2", "R3", "R4", "R5"}
+        assert bool(refs.loc["R1", "unjudged"])
+        assert not refs.loc[["R2", "R3", "R4", "R5"], "unjudged"].any()
+        assert not refs["screened"].any()
+
+    def test_without_reserves_an_unjudged_reference_stays_in_the_pool_without_power(self) -> None:
+        out = _screen_method(screen_min_campaign_days=5.0).estimate(self._short_r1(reserves=()))
+        refs = out.reference_uplifts.set_index("turbine")
+        assert set(refs.index) == {"R1", "R2", "R3", "R4"}
+        assert bool(refs.loc["R1", "unjudged"])
+
     def test_without_reserves_a_clean_pool_is_untouched(self) -> None:
         mi = _planned_case(step=0.0, reserves=())
         method = _screen_method()
@@ -1937,6 +1975,20 @@ class TestReferenceReadings:
             "R3": ["R1", "R2", "R4"],
             "R4": ["R1", "R2", "R3"],
         }
+
+    def test_a_reading_uses_no_record_inside_the_test_turbines_works_window(self) -> None:
+        mi = _planned_case(step=0.0, reserves=())
+        changeover = pd.Timestamp(mi.context.timing)  # type: ignore[arg-type]
+        works = (changeover - pd.Timedelta(days=2), changeover)
+        mi = MethodInput(
+            scada_df=mi.scada_df, test_wtg="T1", campaign_context=dataclasses.replace(mi.context, works=works)
+        )
+        valid = _reference_input(mi, target="R1", references=["R2", "R3", "R4"]).context.valid_for_uplift
+        inside = (valid.index >= works[0]) & (valid.index < works[1])
+        assert not valid.loc[inside, "R1"].any()
+        assert valid.loc[~inside, "R1"].all()
+        assert valid.loc[inside, "R2"].all()
+        assert mi.context.valid_for_uplift["R1"].all()
 
     def test_the_test_turbine_is_a_wake_contributor_of_every_reading(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mi = _planned_case(step=0.0, reserves=())

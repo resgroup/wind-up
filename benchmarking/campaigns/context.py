@@ -30,7 +30,8 @@ def context_for_plan(spec: CampaignSpec, plan: AnalysisPlan, *, scada_df: pd.Dat
     contributors; a turbine the frame carries no rows for is dropped from every list, with a
     warning for a power reference. Every other turbine with data contributes its wake. Each
     turbine's validity comes from the campaign's own per-turbine rule. The changed turbines are the
-    test turbine and those with works inside the span, each with the times it counts as changed.
+    test turbine and those with works inside the span, each with the times it counts as changed. The
+    test turbine's works window is carried, so no measurement uses a record inside it.
 
     :param spec: the campaign's public facts
     :param plan: the turbine's analysis plan
@@ -62,6 +63,7 @@ def context_for_plan(spec: CampaignSpec, plan: AnalysisPlan, *, scada_df: pd.Dat
             start=plan.start,
             end=plan.end,
         ),
+        works=(pd.Timestamp(plan.works[0]), pd.Timestamp(plan.works[1])),
     )
 
 

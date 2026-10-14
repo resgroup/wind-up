@@ -30,6 +30,7 @@ def test_the_context_carries_only_the_documented_answers() -> None:
         "coords",
         "reserve_references",
         "changed_turbines",
+        "works",
     }
 
 
@@ -82,6 +83,11 @@ class TestAContextFromAPlan:
             works={"T0": [(utc("2019-06-01"), utc("2019-06-06"))], "T6": [(utc("2017-01-01"), utc("2017-01-02"))]}
         )
         assert context.changed_turbines == {"T0": ((None, None),)}
+
+    def test_the_test_turbines_works_window_is_carried(self) -> None:
+        _, plan, context = self.build()
+        assert context.works == plan.works
+        assert context.works[1] == context.timing
 
     def test_reserves_are_carried(self) -> None:
         _, plan, context = self.build()
