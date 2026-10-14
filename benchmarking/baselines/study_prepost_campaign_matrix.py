@@ -11,6 +11,7 @@ workers of the HPC. It is one resumable invocation, meant for tmux on a shared b
     uv run python -m benchmarking.baselines.study_prepost_campaign_matrix merge STUDY_DIR
     uv run python -m benchmarking.baselines.study_prepost_campaign_matrix compare STUDY_DIR [--accept-candidate]
     uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run-cell STUDY_DIR CELL_ID
+    uv run python -m benchmarking.baselines.study_prepost_campaign_matrix validate STUDY_DIR
     uv run python -m benchmarking.baselines.study_prepost_campaign_matrix list
 
 Settings come from the environment or a ``.env`` file at the repository root (copy ``.env.example``):
@@ -57,6 +58,7 @@ from benchmarking.baselines.prepost_matrix.study import (
     single_thread_env,
     study_settings,
 )
+from benchmarking.baselines.prepost_matrix.validation import write_report
 from benchmarking.env import load_env
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     one = sub.add_parser("run-cell", help="run one cell in the foreground")
     one.add_argument("study_dir", type=Path)
     one.add_argument("cell_id")
+    validate = sub.add_parser("validate", help="judge the finished cells against method.md's validation targets")
+    validate.add_argument("study_dir", type=Path)
     listing = sub.add_parser("list", help="list the study directories")
     listing.add_argument("--root", type=Path, default=None)
     return parser.parse_args(argv)
@@ -141,6 +145,8 @@ def main(argv: list[str] | None = None) -> None:
             record["wall_time_s"],
             record["peak_rss_mb"],
         )
+    elif args.command == "validate":
+        print(write_report(args.study_dir))  # noqa: T201
     elif args.command == "list":
         print(list_studies(args.root).to_string(index=False))  # noqa: T201
 
