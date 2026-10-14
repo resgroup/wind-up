@@ -27,7 +27,8 @@ POOLED_SITE = "all"
 GROUP_KEYS = ["arm", "site", "k", "post_months", "multiplier"]
 LINE_KEYS = ["arm", "site", "k", "post_months"]
 REAL_KEYS = ["k", "post_months"]
-TABLE_KEYS = {"groups": GROUP_KEYS, "linearity": LINE_KEYS, "real": REAL_KEYS}
+BIN_KEYS = [*GROUP_KEYS, "condition", "condition_bin"]
+TABLE_KEYS = {"groups": GROUP_KEYS, "linearity": LINE_KEYS, "real": REAL_KEYS, "bins": BIN_KEYS}
 # A value that moves by more than this between baselines is flagged: 0.1 pp on an uplift.
 MATERIAL = 0.001
 _CELL_KEYS = ["arm", "site", "seed_index", "k", "post_months", "multiplier"]
@@ -36,10 +37,11 @@ _REFERENCE_METRICS = ["ref_mean", "ref_median", "ref_sd", "ref_worst_abs", "ref_
 
 
 def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
-    """Flatten ok cell records into ``turbines``, ``farm`` and ``references`` frames."""
+    """Flatten ok cell records into ``turbines``, ``farm``, ``references`` and ``bins`` frames."""
     turbines: list[dict[str, Any]] = []
     farm: list[dict[str, Any]] = []
     references: list[dict[str, Any]] = []
+    bins: list[dict[str, Any]] = []
     for record in records:
         if record.get("status") != "ok":
             continue
@@ -47,6 +49,7 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
         turbines.extend({**keys, **row} for row in record["turbines"])
         farm.append({**keys, **record["farm"]})
         references.extend({**keys, **row} for row in record["references"])
+        bins.extend({**keys, **row} for row in record.get("bins", []))
     return {
         "turbines": pd.DataFrame(
             turbines, columns=[*_CELL_KEYS, "turbine", "estimate", "truth", *_sigma_keys(turbines)]
@@ -54,6 +57,9 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
         "farm": pd.DataFrame(farm, columns=[*_CELL_KEYS, "estimate", "truth"]),
         "references": pd.DataFrame(
             references, columns=[*_CELL_KEYS, "test_wtg", "turbine", "uplift", "screened", *_sigma_keys(references)]
+        ),
+        "bins": pd.DataFrame(
+            bins, columns=[*_CELL_KEYS, "test_wtg", "condition", "condition_bin", "estimate", "truth", "sigma"]
         ),
     }
 
@@ -90,7 +96,7 @@ def _calibration(turbines: pd.DataFrame, references: pd.DataFrame) -> dict[str, 
 
 
 def baseline_tables(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
-    """Return the ``groups``, ``linearity`` and ``real`` tables of ``records``."""
+    """Return the ``groups``, ``linearity``, ``real`` and ``bins`` tables of ``records``."""
     frames = cell_frames(records)
     synthetic = {name: frame[frame["arm"] != "real"] for name, frame in frames.items()}
     real = {name: frame[frame["arm"] == "real"] for name, frame in frames.items()}
@@ -98,7 +104,33 @@ def baseline_tables(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame
         "groups": _groups(synthetic),
         "linearity": _linearity(synthetic["turbines"]),
         "real": _real(real),
+        "bins": _bins(synthetic["bins"]),
     }
+
+
+def _bins(bins: pd.DataFrame) -> pd.DataFrame:
+    """Per group and condition bin: the error metrics of the per-bin estimates and the calibration of their sigma."""
+    rows = []
+    for key, group in _with_pooled(bins).groupby(BIN_KEYS, dropna=False):
+        errors = (group["estimate"] - group["truth"]).to_numpy(dtype=float)
+        rows.append(
+            {
+                **dict(zip(BIN_KEYS, key, strict=True)),
+                **_error_metrics(errors, prefix="bin"),
+                **calibration_metrics(errors, group["sigma"].to_numpy(dtype=float), prefix="bin"),
+            }
+        )
+    columns = [
+        *BIN_KEYS,
+        "bin_bias",
+        "bin_spread",
+        "bin_score",
+        "bin_n",
+        "bin_coverage",
+        "bin_z_sd",
+        "bin_sigma_median",
+    ]
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _with_pooled(frame: pd.DataFrame) -> pd.DataFrame:

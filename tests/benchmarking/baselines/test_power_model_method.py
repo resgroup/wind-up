@@ -34,7 +34,7 @@ from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.conditions import CONDITION_BINS
 from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.method import MethodInput
+from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL
 from benchmarking.harness.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE
 from benchmarking.harness.toggle import resolve_toggle
@@ -464,7 +464,7 @@ class TestConditionalUplift:
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         out = method.estimate(mi)
         bc = out.p50_by_condition
-        assert list(bc.columns) == ["condition", "condition_bin", "p50_uplift"]
+        assert list(bc.columns) == ["condition", "condition_bin", "p50_uplift", "sigma_uplift"]
         assert set(bc["condition"]) == {"power", "era5_ws"}
         # power uses the 6 fraction-of-rated bins; era5_ws the shared 2 m/s wind-speed bins
         assert (bc["condition"] == "power").sum() == 6
@@ -675,7 +675,7 @@ class TestConditional:
         # matched i.i.d. weather -> shrinkage ~1, forward-only overall recovers the true uplift
         assert out.p50_overall == pytest.approx(0.05, abs=0.02)
         assert set(out.p50_by_condition["condition"]) == {"power", "era5_ws"}
-        assert list(out.p50_by_condition.columns) == ["condition", "condition_bin", "p50_uplift"]
+        assert list(out.p50_by_condition.columns) == ["condition", "condition_bin", "p50_uplift", "sigma_uplift"]
 
     def test_overall_matches_conditional_off_and_bins_aggregate_to_it(self, tmp_path: Path) -> None:
         n = 4000
@@ -2311,3 +2311,42 @@ class TestHeadlineUncertainty:
         reused = method.reference_uplifts(mi, power_free=(), screen=screen).set_index("turbine")
         for turbine in reused.index:
             assert reused.loc[turbine, "sigma"] == pytest.approx(final.loc[turbine, "sigma"])
+
+
+class TestPerBinUncertainty:
+    """Each measured bin of the uplift distributions carries a sigma from the matched rows' bootstrap."""
+
+    @staticmethod
+    def _run(**overrides: object) -> MethodOutput:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        scada = _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover))
+        method = PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            era5_hourly_df=_toy_era5(idx),
+            model_params=_FAST_PARAMS,
+            **overrides,  # type: ignore[arg-type]
+        )
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        return method.estimate(mi)
+
+    def test_measured_bins_carry_a_sigma_and_filled_bins_none(self, tmp_path: Path) -> None:
+        out = self._run(out_dir=tmp_path, run_subdir=False)
+        bc = out.p50_by_condition
+        assert list(bc.columns) == ["condition", "condition_bin", "p50_uplift", "sigma_uplift"]
+        per_bin = pd.read_csv(tmp_path / "conditional" / "conditional_by_bin.csv")
+        covered = per_bin["covered"].to_numpy(dtype=bool)
+        assert covered.any()
+        assert not covered.all()
+        sigma = per_bin["sigma_uplift"].to_numpy(dtype=float)
+        assert np.isfinite(sigma[covered]).all()
+        assert (sigma[covered] > 0).all()
+        assert np.isnan(sigma[~covered]).all()
+        assert (sigma[covered] < 0.05).all()
+
+    def test_the_per_bin_bootstrap_never_moves_the_estimates(self) -> None:
+        a = self._run().p50_by_condition
+        b = self._run(n_resamples=50, bootstrap_seed=3).p50_by_condition
+        pd.testing.assert_series_equal(a["p50_uplift"], b["p50_uplift"])

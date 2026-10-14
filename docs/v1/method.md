@@ -413,7 +413,7 @@ before and after the screen, is the campaign's own check of bias.
 
 The measurement of Part C (steps 11 to 15) is run for the test turbine with the screened reference set
 of step 9 and the periods of step 7. Its output is the headline uplift of the test turbine and its
-uplift distributions, each with an uncertainty once step 14 is specified.
+uplift distributions, each with the uncertainty of step 14.
 
 ## Part C: measure one turbine's uplift
 
@@ -553,10 +553,28 @@ in full, unlike wind-up v0, which had to fall back on power-only versions of bot
 
 ### 14. Estimate uncertainty
 
-An uncertainty is reported for the headline uplift of step 13 and for each bin of the uplift
-distributions of step 15. How it is calculated is not yet specified. The uncertainty method of
-wind-up v0 (statistical, block bootstrap and reversibility components, combined across reference and
-test turbines) is the starting point for the uncertainty of v1.
+An uncertainty is reported for the headline uplift of step 13 and for each measured bin of the
+uplift distributions of step 15. It has two components, reported apart: a sampling component, and a
+systematic component for the error that remains when the reference turbines or the model are
+biased. Only the sampling component is calculated so far.
+
+The sampling component is a circular block bootstrap with the model of step 12 fixed. The after
+period's records of the subject turbine, each with its measured and its counterfactual power, are
+resampled in blocks of wall-clock time (one day by default) tiled over the after period, the ratio
+of sums of step 13 is re-formed for each resample, and the sigma is the standard deviation of the
+resampled uplifts. Each bin of step 15 is treated the same way over the records matched for it,
+with the two direction models fixed and the bin labels frozen, so the uncertainty never moves an
+uplift; a bin that was filled rather than measured has no sigma. The sigma is also recorded at
+other block lengths (6 hours, 1 day, 7 days and 28 days by default) so that validation can choose
+the block length by the coverage of the sigma against known truth. Every reference turbine
+measured in step 9 carries the same sigma, so its reading against the expected 0 % can be judged
+in sigmas.
+
+The systematic component is not yet specified. The candidates are the reversal disagreement of
+step 13 option B and the spread of the reference uplifts of step 16, as in wind-up v0, which took
+the largest of its statistical, bootstrap and reversibility sigmas and floored it at the weighted
+mean absolute reference uplift. How sigmas combine across references and across test turbines is
+left until the components are trusted.
 
 ### 15. Calculate uplift distributions
 
@@ -634,7 +652,10 @@ real campaigns where the reference turbines provide truth of zero. The target is
 - ii. on synthetic upgrades of known size, a straight line fitted to measured against true uplift has a
   slope of 1 and an intercept of 0, with as little scatter as possible;
 - iii. neither depends on the length of the after period, the number of reference turbines or the
-  season of the upgrade.
+  season of the upgrade;
+- iv. the reported sigma covers the error at the rate it claims: about 68 % of the errors against
+  truth, headline and per bin, fall within one sigma, and the reference uplifts read 0 % within
+  their sigmas at the same rate.
 
 The options above are decided by these criteria, one at a time rather than in every combination:
 

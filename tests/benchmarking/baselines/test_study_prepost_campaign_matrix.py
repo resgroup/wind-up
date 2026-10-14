@@ -27,6 +27,7 @@ from benchmarking.baselines.prepost_matrix.execute import (
     diagnostics,
     plan_settings,
     site_operating_state,
+    with_reanalysis_wind_speed,
 )
 from benchmarking.baselines.prepost_matrix.metrics import (
     baseline_tables,
@@ -656,6 +657,24 @@ def _sigma_records() -> list[dict[str, Any]]:
                     {"test_wtg": "T01", "turbine": "T02", "uplift": ref, "screened": False, "sigma": 0.01},
                     {"test_wtg": "T01", "turbine": "T03", "uplift": 0.0, "screened": False, "sigma": 0.02},
                 ],
+                bins=[
+                    {
+                        "test_wtg": "T01",
+                        "condition": "power",
+                        "condition_bin": "(0, 1]",
+                        "estimate": 0.05 + error,
+                        "truth": 0.05,
+                        "sigma": 0.01,
+                    },
+                    {
+                        "test_wtg": "T01",
+                        "condition": "power",
+                        "condition_bin": "(1, 2]",
+                        "estimate": 0.03,
+                        "truth": 0.03,
+                        "sigma": float("nan"),
+                    },
+                ],
             )
         )
     return records
@@ -675,3 +694,27 @@ def test_merge_computes_the_coverage_of_every_sigma() -> None:
 def test_records_without_a_sigma_report_no_calibration() -> None:
     groups = baseline_tables(_line_records())["groups"]
     assert "test_coverage" not in groups.columns
+
+
+def test_merge_computes_the_per_bin_error_and_coverage() -> None:
+    bins = baseline_tables(_sigma_records())["bins"]
+    pooled = bins[bins["site"] == "all"].set_index("condition_bin")
+    assert pooled.loc["(0, 1]", "bin_bias"] == pytest.approx(np.mean([0.005, 0.02]))
+    assert pooled.loc["(0, 1]", "bin_coverage"] == pytest.approx(0.5)
+    assert pooled.loc["(0, 1]", "bin_n"] == 2
+    assert pooled.loc["(1, 2]", "bin_bias"] == pytest.approx(0.0)
+    assert np.isnan(pooled.loc["(1, 2]", "bin_coverage"])
+
+
+def test_records_without_bins_give_an_empty_bins_table() -> None:
+    assert baseline_tables(_line_records())["bins"].empty
+
+
+def test_the_truth_rows_gain_the_aligned_reanalysis_wind_speed() -> None:
+    index = pd.date_range("2020-01-01", periods=4, freq="10min", tz="UTC")
+    original = pd.DataFrame({"TurbineName": ["T01"] * 4 + ["T02"] * 4, "power": 1.0}, index=index.append(index))
+    aligned = pd.DataFrame({"wind_speed_100m": [5.0, 6.0, 7.0, 8.0], "other": 0.0}, index=index)
+    joined = with_reanalysis_wind_speed(original, aligned)
+    assert list(joined.columns) == ["TurbineName", "power", "wind_speed_100m"]
+    assert joined["wind_speed_100m"].tolist() == [5.0, 6.0, 7.0, 8.0] * 2
+    assert with_reanalysis_wind_speed(original, None) is original

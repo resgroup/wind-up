@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import pandas as pd
 
-from benchmarking.baselines.block_bootstrap import bootstrap_energy_ratio
+from benchmarking.baselines.block_bootstrap import bootstrap_energy_ratio, bootstrap_ratio_uplift
 from benchmarking.baselines.power_model import diagnostics as diag
 from benchmarking.baselines.power_model.conditional import impute_uncovered_bins, relevel_conditional
 from benchmarking.baselines.power_model.features import (
@@ -74,6 +74,8 @@ from wind_up.farm import TurbineUplift, farm_uplift
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+
+    import numpy.typing as npt
 
     from benchmarking.synthetic import ColumnSchema
 
@@ -725,7 +727,8 @@ class PowerModelMethod:
                 upgraded_sel=upgraded_sel,
                 fit=fit,
                 overall_ratio=uplift,
-                hours_per_record=hours_per_record,
+                index=index,
+                timebase=timebase,
                 # non-None whenever conditions are requested; _validate_model_config enforces it
                 run_dir=run_dir,  # type: ignore[arg-type]
             )
@@ -793,7 +796,8 @@ class PowerModelMethod:
         upgraded_sel: np.ndarray,
         fit: dict[str, Any],
         overall_ratio: float,
-        hours_per_record: float,
+        index: pd.DatetimeIndex,
+        timebase: pd.Timedelta,
         run_dir: Path,
     ) -> pd.DataFrame | None:
         """Per-bin conditional uplift via a two-direction, ERA5-weather-matched cross-prediction (method step 15).
@@ -836,9 +840,14 @@ class PowerModelMethod:
             actual_full=fit["y_upgraded"],
             pred_upgraded=fit["pred_upgraded"],
             overall_ratio=overall_ratio,
-            hours_per_record=hours_per_record,
+            index=index,
+            timebase=timebase,
         )
-        by_condition = per_bin[["condition", "condition_bin", "p50_uplift"]].copy() if per_bin is not None else None
+        by_condition = (
+            per_bin[["condition", "condition_bin", "p50_uplift", "sigma_uplift"]].copy()
+            if per_bin is not None
+            else None
+        )
         self._write_conditional(
             mi, run_dir=run_dir, match=match, r_fwd=r_fwd, r_rev=r_rev, uplift=overall_ratio, per_bin=per_bin
         )
@@ -884,7 +893,8 @@ class PowerModelMethod:
         actual_full: np.ndarray,
         pred_upgraded: np.ndarray,
         overall_ratio: float,
-        hours_per_record: float,
+        index: pd.DatetimeIndex,
+        timebase: pd.Timedelta,
     ) -> pd.DataFrame | None:
         """Per-bin two-direction uplift on each axis, imputed where uncovered and re-leveled onto the headline.
 
@@ -909,33 +919,91 @@ class PowerModelMethod:
             "pred_rev": pred_base,
             "actual_full": actual_full,
             "one_plus_overall": one_plus_overall,
-            "hours_per_record": hours_per_record,
+            "hours_per_record": timebase / pd.Timedelta(hours=1),
         }
-        frames = []
+        axes: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, list[float]]] = {}
         if "era5_ws" in self.conditions:
             ws = era5[ERA5_WS_RAW].to_numpy(dtype=float)
-            frames.append(
-                _condition_frame(
-                    "era5_ws",
-                    fwd_cond=ws[mu],
-                    rev_cond=ws[mb],
-                    full_cond=ws[upgraded_pos],
-                    bins=CONDITION_BINS["era5_ws"],
-                    **common,
-                )
-            )
+            axes["era5_ws"] = (ws[mu], ws[mb], ws[upgraded_pos], CONDITION_BINS["era5_ws"])
         if "power" in self.conditions:
-            frames.append(
-                _condition_frame(
-                    "power",
-                    fwd_cond=pred_up,
-                    rev_cond=pred_base,
-                    full_cond=pred_upgraded,
-                    bins=condition_bins("power", rated_power_kw=self.baseline_rated_power_kw),
-                    **common,
-                )
+            axes["power"] = (
+                pred_up,
+                pred_base,
+                pred_upgraded,
+                condition_bins("power", rated_power_kw=self.baseline_rated_power_kw),
             )
-        return pd.concat(frames, ignore_index=True) if frames else None
+        if not axes:
+            return None
+        frames = [
+            _condition_frame(name, fwd_cond=fwd, rev_cond=rev, full_cond=full, bins=bins, **common)
+            for name, (fwd, rev, full, bins) in axes.items()
+        ]
+        per_bin = pd.concat(frames, ignore_index=True)
+        sigma = self._per_bin_sigma(
+            {name: (fwd, rev, bins) for name, (fwd, rev, _, bins) in axes.items()},
+            y=y,
+            mb=mb,
+            mu=mu,
+            pred_up=pred_up,
+            pred_base=pred_base,
+            index=index,
+            timebase=timebase,
+        )
+        keys = list(zip(per_bin["condition"], per_bin["condition_bin"], strict=True))
+        per_bin["sigma_uplift"] = [
+            sigma.get(k, float("nan")) if c else float("nan") for k, c in zip(keys, per_bin["covered"], strict=True)
+        ]
+        return per_bin
+
+    def _per_bin_sigma(
+        self,
+        axes: dict[str, tuple[np.ndarray, np.ndarray, list[float]]],
+        *,
+        y: np.ndarray,
+        mb: np.ndarray,
+        mu: np.ndarray,
+        pred_up: np.ndarray,
+        pred_base: np.ndarray,
+        index: pd.DatetimeIndex,
+        timebase: pd.Timedelta,
+    ) -> dict[tuple[str, str], float]:
+        """Bootstrap each bin's two-direction shape over the matched rows, the direction models fixed.
+
+        The matched baseline and upgraded rows are resampled in circular wall-clock blocks of
+        ``block_hours`` over the whole span, each bin a cell whose labels are frozen, and the shape
+        ``sqrt((1 + r_fwd) / (1 + r_rev)) - 1`` is re-formed per resample. Returns the sigma per
+        ``(condition, condition_bin)``.
+        """
+        membership: dict[str, npt.NDArray[np.bool_]] = {}
+        for name, (fwd, rev, bins) in axes.items():
+            labels = np.concatenate([pd.cut(rev, bins=bins).astype(str), pd.cut(fwd, bins=bins).astype(str)])
+            for label in pd.cut([], bins=bins).categories.astype(str):
+                membership[f"{name}|{label}"] = labels == label
+        result = bootstrap_ratio_uplift(
+            times=index[np.concatenate([mb, mu])],
+            test_power=np.concatenate([y[mb], y[mu]]),
+            ref_total=np.concatenate([pred_base, pred_up]),
+            upgraded=np.concatenate([np.zeros(len(mb), dtype=bool), np.ones(len(mu), dtype=bool)]),
+            baseline=np.concatenate([np.ones(len(mb), dtype=bool), np.zeros(len(mu), dtype=bool)]),
+            cell_membership=membership,
+            campaign_start=index.min(),
+            campaign_end=index.max(),
+            timebase=timebase,
+            block_hours=self.block_hours,
+            n_resamples=self.n_resamples,
+            seed=self.bootstrap_seed,
+        )
+        sigma: dict[tuple[str, str], float] = {}
+        for cell in membership:
+            draws = result.resamples.get(cell)
+            name, label = cell.split("|", 1)
+            if draws is None:
+                sigma[name, label] = float("nan")
+                continue
+            ratio = 1.0 + np.asarray(draws, dtype=float)
+            shape = np.sqrt(ratio[np.isfinite(ratio) & (ratio > 0)]) - 1.0
+            sigma[name, label] = float(shape.std(ddof=1)) if len(shape) > 1 else float("nan")
+        return sigma
 
     def _write_conditional(
         self,

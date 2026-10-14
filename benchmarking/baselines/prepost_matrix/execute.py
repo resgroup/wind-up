@@ -36,7 +36,8 @@ from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.northing import NORTH_TABLE_YAML
 from benchmarking.harness.operating_state import OperatingStateConfig
-from benchmarking.harness.reanalysis import normalise_timestamps
+from benchmarking.harness.reanalysis import ERA5_WS_RAW, normalise_timestamps
+from benchmarking.synthetic.ground_truth import ERA5_WIND_SPEED_COL
 from benchmarking.synthetic.sources.greenbyte import (
     KELMARSH,
     PENMANSHIEL,
@@ -237,7 +238,11 @@ def _execute_synthetic(
     label = era5_source_label(*centroid(dict(site.coords)))
     result = CampaignRunner(
         spec,
-        replace(dataset, synthetic_df=prepared.scada_df),
+        replace(
+            dataset,
+            synthetic_df=prepared.scada_df,
+            original_df=with_reanalysis_wind_speed(dataset.original_df, prepared.aligned_era5),
+        ),
         build_methods=lambda wtg: [
             _matrix_method(
                 spec,
@@ -269,6 +274,7 @@ def _execute_synthetic(
             for r in per_turbine.itertuples()
         ],
         "farm": {"estimate": float(farm["estimate"]), "truth": float(farm["truth"])},
+        "bins": scored_bins(result.scores),
         **diagnostics(
             result.report.reference_stability,
             plans=result.report.plans,
@@ -336,6 +342,7 @@ def _execute_real(
             for r in per_turbine.itertuples()
         ],
         "farm": {"estimate": float(report.farm.set_index("method").loc[WIND_UP, "estimate"]), "truth": None},
+        "bins": reported_bins(report.outputs),
         **diagnostics(report.reference_stability, plans=report.plans, unplanned=report.unplanned, cell_dir=cell_dir),
     }
 
@@ -414,6 +421,51 @@ def diagnostics(
         "northing": northing,
         "n_northing_changepoints": len(northing) - len({device for device, _, _ in northing}),
     }
+
+
+def with_reanalysis_wind_speed(original_df: pd.DataFrame, aligned_era5: pd.DataFrame | None) -> pd.DataFrame:
+    """Return ``original_df`` with the aligned ERA5 100 m wind speed joined on by timestamp, for the per-bin truth."""
+    if aligned_era5 is None or ERA5_WS_RAW not in aligned_era5.columns:
+        return original_df
+    return original_df.join(aligned_era5[[ERA5_WS_RAW]].rename(columns={ERA5_WS_RAW: ERA5_WIND_SPEED_COL}), how="left")
+
+
+def scored_bins(scores: pd.DataFrame) -> list[dict[str, Any]]:
+    """Return ``wind-up``'s per-bin rows of the harness scores: estimate, truth and sigma per condition bin."""
+    rows = scores[(scores["method"] == WIND_UP) & (scores["condition"] != "overall")]
+    return [
+        {
+            "test_wtg": str(r.test_wtg),
+            "condition": str(r.condition),
+            "condition_bin": str(r.condition_bin),
+            "estimate": float(r.estimate),
+            "truth": float(r.truth),
+            "sigma": float(r.sigma),
+        }
+        for r in rows.itertuples()
+    ]
+
+
+def reported_bins(outputs: Mapping[tuple[str, str], MethodOutput]) -> list[dict[str, Any]]:
+    """Return ``wind-up``'s per-bin rows from its outputs, with no truth."""
+    rows: list[dict[str, Any]] = []
+    for (method, wtg), output in sorted(outputs.items()):
+        if method != WIND_UP or output.p50_by_condition is None:
+            continue
+        frame = output.p50_by_condition
+        sigma = frame["sigma_uplift"] if "sigma_uplift" in frame.columns else pd.Series(np.nan, index=frame.index)
+        rows.extend(
+            {
+                "test_wtg": wtg,
+                "condition": str(c),
+                "condition_bin": str(b),
+                "estimate": float(e),
+                "truth": None,
+                "sigma": float(s),
+            }
+            for c, b, e, s in zip(frame["condition"], frame["condition_bin"], frame["p50_uplift"], sigma, strict=True)
+        )
+    return rows
 
 
 def sigmas(output: MethodOutput) -> dict[str, float]:
