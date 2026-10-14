@@ -69,6 +69,32 @@ def campaign_works(spec: CampaignSpec) -> dict[str, list[Window]]:
     return works
 
 
+def other_works(spec: CampaignSpec, turbine: str) -> list[Window]:
+    """Return an upgraded turbine's declared works windows other than its upgrade.
+
+    A staggered campaign's only works window is its upgrade. Under a shared changeover the upgrade
+    is any window that contains the changeover, and every window of a toggle campaign is another change.
+    """
+    windows = list(spec.works.get(turbine, []))
+    if spec.mode == "toggle":
+        return windows
+    if spec.upgrade_timing is None:
+        return []
+    changeover = pd.Timestamp(spec.upgrade_timing)  # type: ignore[arg-type]
+    return [(w0, w1) for w0, w1 in windows if not w0 <= changeover <= w1]
+
+
+def extent_around_works(extent: Window, *, upgrade: Window, others: Sequence[Window]) -> Window:
+    """Return ``extent`` cut to between the nearest of ``others`` before ``upgrade`` and after it."""
+    first, last = extent
+    for w0, w1 in others:
+        if w1 <= upgrade[0]:
+            first = max(first, w1)
+        elif w0 >= upgrade[1]:
+            last = min(last, w0)
+    return first, last
+
+
 def plans_for(
     spec: CampaignSpec,
     scada_df: pd.DataFrame,
@@ -108,13 +134,18 @@ def plans_for(
     warnings: dict[str, dict[str, str]] = {}
     for turbine in sorted(spec.upgraded_turbines):
         span = spec.period_for(turbine)
+        others = other_works(spec, turbine)
+        # The test turbine's own extent is cut so that neither period holds another of its changes.
+        own_extents = dict(extents)
+        if others and turbine in extents:
+            own_extents[turbine] = extent_around_works(extents[turbine], upgrade=works[turbine][0], others=others)
         try:
             plan = plan_analysis(
                 spec.layout,
                 turbine=turbine,
                 works=works,
                 exclusions=spec.exclusions,
-                extents=extents,
+                extents=own_extents,
                 candidates=candidates,
                 span=span,
                 forced=candidates if spec.references_declared and span is not None else (),
@@ -139,6 +170,10 @@ def plans_for(
         )
         plans[turbine] = plan
         warnings[turbine] = plan_warnings(plan, possible_changes=possible_changes or {})
+        inside = [(w0, w1) for w0, w1 in others if w0 < plan.end and w1 > plan.start]
+        if inside:
+            days = ", ".join(f"{w0:%Y-%m-%d}..{w1:%Y-%m-%d}" for w0, w1 in inside)
+            warnings[turbine][turbine] = f"declared works {days} inside the declared span"
         for other, warning in warnings[turbine].items():
             logger.warning("%s: %s: %s", turbine, other, warning)
     return CampaignPlans(plans=plans, unplanned=unplanned, works=works, extents=extents, warnings=warnings)
