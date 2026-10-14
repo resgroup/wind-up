@@ -637,3 +637,41 @@ def test_method_overrides_reach_the_matrix_method(tmp_path: Path) -> None:
     assert dumped.row_dump_dir == tmp_path / "dump"  # type: ignore[attr-defined]
     # the matrix's own overrides survive
     assert dumped.model_params["n_jobs"] == 1  # type: ignore[attr-defined]
+
+
+def _sigma_records() -> list[dict[str, Any]]:
+    """Two campaigns whose test error and reference readings sit at known multiples of their sigma."""
+    records = []
+    for site, seed, error, ref in (("hot", 0, 0.005, 0.015), ("pen", 1, 0.02, 0.005)):
+        records.append(
+            _record(
+                site,
+                seed,
+                1,
+                turbines=[
+                    {"turbine": "T01", "estimate": 0.04 + error, "truth": 0.04, "sigma": 0.01, "sigma_block_6h": 0.03}
+                ],
+                farm={"estimate": 0.04 + error, "truth": 0.04},
+                references=[
+                    {"test_wtg": "T01", "turbine": "T02", "uplift": ref, "screened": False, "sigma": 0.01},
+                    {"test_wtg": "T01", "turbine": "T03", "uplift": 0.0, "screened": False, "sigma": 0.02},
+                ],
+            )
+        )
+    return records
+
+
+def test_merge_computes_the_coverage_of_every_sigma() -> None:
+    groups = baseline_tables(_sigma_records())["groups"]
+    row = groups[(groups["site"] == "all") & (groups["multiplier"] == 1)].iloc[0]
+    assert row["test_coverage"] == pytest.approx(0.5)  # 0.005 within 0.01, 0.02 not
+    assert row["test_z_sd"] == pytest.approx(np.std([0.5, 2.0]))
+    assert row["test_sigma_median"] == pytest.approx(0.01)
+    assert row["test_block_6h_coverage"] == pytest.approx(1.0)
+    assert row["ref_coverage"] == pytest.approx(0.75)  # 0.015/0.01 is the only reading past one sigma
+    assert row["ref_sigma_median"] == pytest.approx(0.015)
+
+
+def test_records_without_a_sigma_report_no_calibration() -> None:
+    groups = baseline_tables(_line_records())["groups"]
+    assert "test_coverage" not in groups.columns

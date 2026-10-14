@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 # Each table's columns, named here so a campaign with nothing to report still returns a frame
 # consumers can index.
-_PER_TURBINE_COLUMNS = ("method", "test_wtg", "estimate")
+_PER_TURBINE_COLUMNS = ("method", "test_wtg", "estimate", "sigma")
 _FARM_COLUMNS = (
     "method",
     "estimate",
@@ -61,6 +61,7 @@ _REFERENCE_COLUMNS = (
     "test_wtg",
     "turbine",
     "uplift",
+    "sigma",
     "actual_energy",
     "n_records",
     "screened",
@@ -77,7 +78,7 @@ class CampaignReport:
     :param scada_df: the frame the methods were given -- every turbine, clipped to the analysis
         period and north-calibrated by the shared northing step
     :param per_turbine: one row per method and upgraded turbine -- ``method``, ``test_wtg``,
-        ``estimate``
+        ``estimate`` and ``sigma`` (NaN for a method that reports no uncertainty)
     :param farm: one row per method -- ``estimate``, ``uplift_spread``, ``n_guarded`` and the
         combined reference uplift before and after the screen (``reference_uplift_before_screen``,
         ``reference_uplift_after_screen``) with the spread of the references after it
@@ -278,7 +279,14 @@ def estimate_campaign(
             output = method.estimate(method_input)
             wall_time_s[method.name, wtg] = time.perf_counter() - start
             outputs[method.name, wtg] = output
-            per_turbine_rows.append({"method": method.name, "test_wtg": wtg, "estimate": output.p50_overall})
+            per_turbine_rows.append(
+                {
+                    "method": method.name,
+                    "test_wtg": wtg,
+                    "estimate": output.p50_overall,
+                    "sigma": float("nan") if output.sigma_overall is None else float(output.sigma_overall),
+                }
+            )
             estimates.setdefault(method.name, []).append(
                 TurbineUplift(
                     turbine=wtg,

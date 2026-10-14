@@ -248,4 +248,4 @@ class CampaignRunner:
 def per_turbine_table(result: CampaignResult) -> pd.DataFrame:
     """Return the per-turbine headline rows: one per method and upgraded turbine."""
     overall = result.scores[result.scores["condition"] == "overall"]
-    return overall[["method", "test_wtg", "estimate", "truth", "signed_error"]].reset_index(drop=True)
+    return overall[["method", "test_wtg", "estimate", "sigma", "truth", "signed_error"]].reset_index(drop=True)

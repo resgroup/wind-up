@@ -1290,7 +1290,15 @@ class TestReferenceUpliftsSchema:
         """One candidate reference leaves it no pool to be estimated against."""
         refs = _screen_method().reference_uplifts(self._single_reference_mi())
         assert refs.empty
-        assert list(refs.columns) == ["turbine", "uplift", "actual_energy", "n_records", "screened", "unjudged"]
+        assert list(refs.columns) == [
+            "turbine",
+            "uplift",
+            "actual_energy",
+            "n_records",
+            "screened",
+            "unjudged",
+            "sigma",
+        ]
         # the documented mask still works on an empty frame
         assert refs.loc[refs["screened"], "turbine"].tolist() == []
 
@@ -1917,7 +1925,7 @@ class TestReferenceReadings:
 
         def record(self: PowerModelMethod, clone: PowerModelMethod, sub_input: MethodInput) -> float:  # noqa: ARG001
             seen[sub_input.test_wtg] = list(sub_input.context.candidate_references)
-            return 0.0
+            return {"uplift": 0.0, "sigma": float("nan")}
 
         monkeypatch.setattr(PowerModelMethod, "_reference_uplift", record)
         _screen_method(reference_screen=False).reference_uplifts(mi)
@@ -1934,7 +1942,7 @@ class TestReferenceReadings:
 
         def record(self: PowerModelMethod, clone: PowerModelMethod, sub_input: MethodInput) -> float:  # noqa: ARG001
             wakes.append("T1" in sub_input.context.wake_contributors)
-            return 0.0
+            return {"uplift": 0.0, "sigma": float("nan")}
 
         monkeypatch.setattr(PowerModelMethod, "_reference_uplift", record)
         _screen_method(reference_screen=False).reference_uplifts(mi)
@@ -2222,3 +2230,84 @@ class TestRecordLosses:
         assert losses.loc[EXCLUDED, "hours_after"] == pytest.approx(0.0)
         assert losses.loc[USABLE, "hours_before"] == pytest.approx((2000 - 60) / 6.0)
         assert losses.loc[USABLE, "hours_after"] == pytest.approx(2000 / 6.0)
+
+
+class TestHeadlineUncertainty:
+    """The cheap sigma: a circular block bootstrap of the after period's (actual, counterfactual) pairs."""
+
+    @staticmethod
+    def _case(n: int = 4000, *, toggle: bool = False) -> MethodInput:
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        if toggle:
+            schedule = ToggleSchedule(period=pd.Timedelta(hours=4))
+            treated = np.asarray(resolve_toggle(schedule, idx).upgraded)
+            timing: object = schedule
+        else:
+            timing = pd.Timestamp(idx[n // 2])
+            treated = np.asarray(idx >= timing)
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=timing, turbine_col=_TURBINE)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _method(**overrides: object) -> PowerModelMethod:
+        return _fundamentals_method(model_params=_FAST_PARAMS, **overrides)
+
+    def test_the_headline_carries_a_sigma_by_default(self) -> None:
+        out = self._method().estimate(self._case())
+        assert out.sigma_overall is not None
+        assert np.isfinite(out.sigma_overall)
+        assert 0 < out.sigma_overall < 0.02
+
+    def test_the_sweep_over_block_lengths_is_reported_on_the_headline_row(self) -> None:
+        out = self._method().estimate(self._case())
+        diagnostics = out.uncertainty_diagnostics
+        assert diagnostics is not None
+        assert list(zip(diagnostics["condition"], diagnostics["condition_bin"], strict=True)) == [
+            ("overall", "overall")
+        ]
+        row = diagnostics.iloc[0]
+        assert row["block_hours"] == 24.0
+        assert row["sigma_block_24h"] == pytest.approx(out.sigma_overall)
+        for hours in (6, 24, 168, 672):
+            assert f"sigma_block_{hours}h" in diagnostics.columns
+        assert row["n_blocks"] == 14  # 2000 upgraded records of 10 min over 24 h blocks
+        assert row["frac_resamples_finite"] == 1.0
+
+    def test_the_default_block_length_is_a_setting(self) -> None:
+        out = self._method(block_hours=6.0).estimate(self._case())
+        row = out.uncertainty_diagnostics.iloc[0]
+        assert out.sigma_overall == pytest.approx(row["sigma_block_6h"])
+        assert row["block_hours"] == 6.0
+
+    def test_the_bootstrap_never_moves_the_headline(self) -> None:
+        mi = self._case()
+        a = self._method().estimate(mi).p50_overall
+        b = self._method(n_resamples=50, bootstrap_seed=7).estimate(mi).p50_overall
+        assert a == b
+
+    def test_a_toggle_headline_carries_a_sigma_too(self) -> None:
+        out = self._method().estimate(self._case(toggle=True))
+        assert out.sigma_overall is not None
+        assert np.isfinite(out.sigma_overall)
+
+    def test_the_sweep_is_written_to_the_run_folder(self, tmp_path: Path) -> None:
+        self._method(out_dir=tmp_path, run_subdir=False).estimate(self._case())
+        table = pd.read_csv(tmp_path / "uncertainty.csv")
+        assert list(table["block_hours"]) == [6.0, 24.0, 168.0, 672.0]
+        assert {"sigma", "sigma_robust", "n_blocks", "frac_resamples_finite"} <= set(table.columns)
+
+    def test_every_reference_reading_carries_its_sigma(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        refs = _screen_method().reference_uplifts(mi)
+        assert np.isfinite(refs["sigma"]).all()
+        assert (refs["sigma"] > 0).all()
+        assert "sigma_block_168h" in refs.columns
+
+    def test_a_reference_reused_from_the_screen_keeps_the_sigma_it_was_screened_with(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        method = _screen_method()
+        screen = method.screen_references(mi)
+        final = screen.passes[screen.passes["pass"] == screen.passes["pass"].max()].set_index("turbine")
+        reused = method.reference_uplifts(mi, power_free=(), screen=screen).set_index("turbine")
+        for turbine in reused.index:
+            assert reused.loc[turbine, "sigma"] == pytest.approx(final.loc[turbine, "sigma"])

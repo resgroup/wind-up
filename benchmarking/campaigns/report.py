@@ -232,6 +232,7 @@ _PERCENT_COLUMNS = {
     "estimate": "measured uplift [%]",
     "uplift": "measured uplift [%]",
     "uplift_spread": "spread [%]",
+    "sigma": "sigma [%]",
     "reference_uplift_before_screen": "reference uplift before screen [%]",
     "reference_uplift_after_screen": "reference uplift after screen [%]",
     "reference_uplift_spread": "reference spread [%]",

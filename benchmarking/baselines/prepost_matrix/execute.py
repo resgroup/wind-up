@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from benchmarking.baselines.prepost_matrix.cells import MatrixSettings
     from benchmarking.campaigns.declaration import CampaignSpec, Exclusion
     from benchmarking.campaigns.rollout import RolloutDraw, RolloutSite
-    from benchmarking.harness import Method
+    from benchmarking.harness import Method, MethodOutput
     from benchmarking.synthetic import ColumnSchema
     from wind_up.analysis_period import AnalysisPlan
 
@@ -260,7 +260,12 @@ def _execute_synthetic(
     return {
         **describe_cell(cell, settings=settings),
         "turbines": [
-            {"turbine": str(r.test_wtg), "estimate": float(r.estimate), "truth": float(r.truth)}
+            {
+                "turbine": str(r.test_wtg),
+                "estimate": float(r.estimate),
+                "truth": float(r.truth),
+                **sigmas(result.outputs[WIND_UP, str(r.test_wtg)]),
+            }
             for r in per_turbine.itertuples()
         ],
         "farm": {"estimate": float(farm["estimate"]), "truth": float(farm["truth"])},
@@ -322,7 +327,13 @@ def _execute_real(
     return {
         "draw": {"data_end": str(end)},
         "turbines": [
-            {"turbine": str(r.test_wtg), "estimate": float(r.estimate), "truth": None} for r in per_turbine.itertuples()
+            {
+                "turbine": str(r.test_wtg),
+                "estimate": float(r.estimate),
+                "truth": None,
+                **sigmas(report.outputs[WIND_UP, str(r.test_wtg)]),
+            }
+            for r in per_turbine.itertuples()
         ],
         "farm": {"estimate": float(report.farm.set_index("method").loc[WIND_UP, "estimate"]), "truth": None},
         **diagnostics(report.reference_stability, plans=report.plans, unplanned=report.unplanned, cell_dir=cell_dir),
@@ -376,16 +387,18 @@ def diagnostics(
 ) -> dict[str, Any]:
     """Return the reference readings, the plans and unplanned turbines, the screen's ejections and the northing."""
     references = references[references["method"] == WIND_UP]
+    sigma_columns = [c for c in references.columns if c == "sigma" or str(c).startswith("sigma_block_")]
     readings = [
         {
-            "test_wtg": str(r.test_wtg),
-            "turbine": str(r.turbine),
-            "uplift": float(r.uplift),
-            "n_records": int(r.n_records),
-            "screened": bool(r.screened),
-            "unjudged": bool(r.unjudged),
+            "test_wtg": str(row["test_wtg"]),
+            "turbine": str(row["turbine"]),
+            "uplift": float(row["uplift"]),
+            "n_records": int(row["n_records"]),
+            "screened": bool(row["screened"]),
+            "unjudged": bool(row["unjudged"]),
+            **{c: float(row[c]) for c in sigma_columns},
         }
-        for r in references.itertuples()
+        for _, row in references.iterrows()
     ]
     table_path = cell_dir / DATA_PREPARATION_DIRNAME / stages.NORTHING / NORTH_TABLE_YAML
     table = yaml.safe_load(table_path.read_text()) or [] if table_path.exists() else []
@@ -401,6 +414,16 @@ def diagnostics(
         "northing": northing,
         "n_northing_changepoints": len(northing) - len({device for device, _, _ in northing}),
     }
+
+
+def sigmas(output: MethodOutput) -> dict[str, float]:
+    """Return a measurement's ``sigma`` and its ``sigma_block_<h>h`` sweep, NaN when it reports none."""
+    out = {"sigma": float("nan") if output.sigma_overall is None else float(output.sigma_overall)}
+    diagnostics = output.uncertainty_diagnostics
+    if diagnostics is not None and not diagnostics.empty:
+        row = diagnostics.iloc[0]
+        out.update({str(c): float(row[c]) for c in diagnostics.columns if str(c).startswith("sigma_block_")})
+    return out
 
 
 def _plan_record(plan: AnalysisPlan) -> dict[str, object]:

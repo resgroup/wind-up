@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
+from benchmarking.harness.calibration import calibration_summary
 from benchmarking.harness.metrics import summarize_errors
 
 if TYPE_CHECKING:
@@ -47,10 +48,45 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
         farm.append({**keys, **record["farm"]})
         references.extend({**keys, **row} for row in record["references"])
     return {
-        "turbines": pd.DataFrame(turbines, columns=[*_CELL_KEYS, "turbine", "estimate", "truth"]),
+        "turbines": pd.DataFrame(
+            turbines, columns=[*_CELL_KEYS, "turbine", "estimate", "truth", *_sigma_keys(turbines)]
+        ),
         "farm": pd.DataFrame(farm, columns=[*_CELL_KEYS, "estimate", "truth"]),
-        "references": pd.DataFrame(references, columns=[*_CELL_KEYS, "test_wtg", "turbine", "uplift", "screened"]),
+        "references": pd.DataFrame(
+            references, columns=[*_CELL_KEYS, "test_wtg", "turbine", "uplift", "screened", *_sigma_keys(references)]
+        ),
     }
+
+
+def _sigma_keys(rows: list[dict[str, Any]]) -> list[str]:
+    """Return the sigma columns the rows carry: ``sigma`` first, then the block-length sweep."""
+    keys = {k for row in rows for k in row if k == "sigma" or str(k).startswith("sigma_block_")}
+    return ["sigma", *sorted(k for k in keys if k != "sigma")] if keys else []
+
+
+def calibration_metrics(errors: np.ndarray, sigmas: np.ndarray, *, prefix: str) -> dict[str, float]:
+    """Return ``<prefix>_coverage`` (fraction within one sigma), ``<prefix>_z_sd`` and ``<prefix>_sigma_median``."""
+    summary = calibration_summary(errors, sigmas)
+    finite = np.asarray(sigmas, dtype=float)
+    finite = finite[np.isfinite(finite) & (finite > 0)]
+    return {
+        f"{prefix}_coverage": summary.coverage_1sigma,
+        f"{prefix}_z_sd": summary.z_spread,
+        f"{prefix}_sigma_median": float(np.median(finite)) if finite.size else np.nan,
+    }
+
+
+def _calibration(turbines: pd.DataFrame, references: pd.DataFrame) -> dict[str, float]:
+    """Calibration of every sigma column: test turbines against truth, references against zero."""
+    out: dict[str, float] = {}
+    for frame, error, prefix in (
+        (turbines, (turbines["estimate"] - turbines["truth"]).to_numpy(dtype=float), "test"),
+        (references, references["uplift"].to_numpy(dtype=float), "ref"),
+    ):
+        for column in [c for c in frame.columns if c == "sigma" or str(c).startswith("sigma_block_")]:
+            suffix = "" if column == "sigma" else f"_{column.removeprefix('sigma_')}"
+            out |= calibration_metrics(error, frame[column].to_numpy(dtype=float), prefix=f"{prefix}{suffix}")
+    return out
 
 
 def baseline_tables(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
@@ -106,6 +142,7 @@ def _groups(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
         row |= _error_metrics((turbines["estimate"] - turbines["truth"]).to_numpy(dtype=float), prefix="test")
         row |= _error_metrics((farm["estimate"] - farm["truth"]).to_numpy(dtype=float), prefix="farm")
         row |= reference_metrics(references["uplift"].to_numpy(dtype=float))
+        row |= _calibration(turbines, references)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -161,15 +198,19 @@ def _real(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     rows = []
     turbines = frames["turbines"]
     for key, group in frames["references"].groupby(REAL_KEYS):
-        estimate = turbines[(turbines["k"] == key[0]) & (turbines["post_months"] == key[1])]["estimate"]
+        t13 = turbines[(turbines["k"] == key[0]) & (turbines["post_months"] == key[1])]
+        estimate = t13["estimate"]
         rows.append(
             {
                 **dict(zip(REAL_KEYS, key, strict=True)),
                 **reference_metrics(group["uplift"].to_numpy(dtype=float)),
                 "t13_estimate": float(estimate.iloc[0]) if len(estimate) else float("nan"),
+                "t13_sigma": float(t13["sigma"].iloc[0]) if len(t13) and "sigma" in t13.columns else float("nan"),
+                **{k: v for k, v in _calibration(t13, group).items() if k.startswith("ref")},
             }
         )
-    return pd.DataFrame(rows, columns=[*REAL_KEYS, *_REFERENCE_METRICS, "t13_estimate"])
+    columns = [*REAL_KEYS, *_REFERENCE_METRICS, "t13_estimate", "t13_sigma"]
+    return pd.DataFrame(rows, columns=columns + [c for c in (rows[0] if rows else {}) if c not in columns])
 
 
 def leak_check(records: Iterable[dict[str, Any]]) -> pd.DataFrame:

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import pandas as pd
 
+from benchmarking.baselines.block_bootstrap import bootstrap_energy_ratio
 from benchmarking.baselines.power_model import diagnostics as diag
 from benchmarking.baselines.power_model.conditional import impute_uncovered_bins, relevel_conditional
 from benchmarking.baselines.power_model.features import (
@@ -103,6 +104,13 @@ TUNED_MODEL_PARAMS: dict[str, Any] = {"min_child_samples": 50}
 # its neighbours (method step 15).
 _MIN_BIN_MATCHED_HOURS = 8.0
 
+# The headline's block bootstrap (method step 14): the block length its sigma is reported at, and
+# the lengths it is also recorded at.
+_DEFAULT_BLOCK_HOURS = 24.0
+_DEFAULT_BLOCK_HOURS_SWEEP: tuple[float, ...] = (6.0, 24.0, 168.0, 672.0)
+_DEFAULT_N_RESAMPLES = 1000
+_UNCERTAINTY_COLUMNS = ("block_hours", "sigma", "sigma_robust", "n_blocks", "frac_resamples_finite")
+
 # Matching set + bin widths for the two-direction conditional step: wind_speed_100m binned finest,
 # wind_gusts_10m coarser, and wind_direction_100m in 20° sectors. Fixed sectors, no wraparound.
 _DEFAULT_MATCHING_VARS: tuple[str, ...] = ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
@@ -142,6 +150,30 @@ _SHARED_STAGES = frozenset({stages.CHANGES, stages.OPERATING_STATES, stages.NORT
 def reference_measurement_dirname(reference: str, *, test_wtg: str) -> str:
     """Return the folder of one reference's measurement for one test turbine."""
     return f"{reference}_reference_for_{test_wtg}"
+
+
+def sigma_column(block_hours: float) -> str:
+    """Return the column name of the sigma at ``block_hours``, for example ``sigma_block_24h``."""
+    return f"sigma_block_{block_hours:g}h"
+
+
+def empty_uncertainty() -> pd.DataFrame:
+    """Return the empty block-length sweep, typed as a populated one would be."""
+    return pd.DataFrame({c: pd.Series(dtype=int if c == "n_blocks" else float) for c in _UNCERTAINTY_COLUMNS})
+
+
+def uncertainty_summary(sweep: pd.DataFrame, *, block_hours: float) -> dict[str, float]:
+    """Return the headline's sigma at ``block_hours`` and at every length of ``sweep``, as one row's columns.
+
+    ``sigma`` is the sigma at ``block_hours``; ``sigma_block_<h>h`` the sigma at each length.
+    """
+    by_hours = sweep.set_index("block_hours") if not sweep.empty else sweep
+    row: dict[str, float] = {"block_hours": float(block_hours)}
+    for column in ("sigma", "sigma_robust", "n_blocks", "frac_resamples_finite"):
+        row[column] = float(by_hours.loc[block_hours, column]) if block_hours in by_hours.index else float("nan")
+    for hours in by_hours.index:
+        row[sigma_column(float(hours))] = float(by_hours.loc[hours, "sigma"])
+    return row
 
 
 def reference_overall_uplift(
@@ -190,8 +222,29 @@ def empty_reference_uplifts() -> pd.DataFrame:
             "n_records": pd.Series(dtype=int),
             "screened": pd.Series(dtype=bool),
             "unjudged": pd.Series(dtype=bool),
+            "sigma": pd.Series(dtype=float),
         }
     )
+
+
+def _reading(output: MethodOutput) -> dict[str, float]:
+    """Return one measurement's uplift with its sigma and the block-length sweep, as columns."""
+    reading = {"uplift": float(output.p50_overall), "sigma": float(output.sigma_overall or float("nan"))}
+    if output.uncertainty_diagnostics is not None and not output.uncertainty_diagnostics.empty:
+        row = output.uncertainty_diagnostics.iloc[0]
+        reading.update({c: float(row[c]) for c in row.index if str(c).startswith("sigma_block_")})
+    return reading
+
+
+def _with_sigmas(passes: pd.DataFrame, readings: dict[str, dict[str, float]]) -> pd.DataFrame:
+    """Return ``passes`` with each turbine's sigma columns from its latest reading."""
+    if passes.empty or not readings:
+        return passes
+    columns = sorted({c for reading in readings.values() for c in reading if c != "uplift"})
+    out = passes.copy()
+    for column in columns:
+        out[column] = [readings.get(str(t), {}).get(column, float("nan")) for t in out["turbine"]]
+    return out
 
 
 def _ratio(actual: np.ndarray, counterfactual: np.ndarray) -> float:
@@ -383,6 +436,12 @@ class PowerModelMethod:
         expensive part — and return only the overall P50.
     :param pairing_max_gap: for a toggle campaign, a record of one state is used only when a usable
         record of the other state lies within this gap; ``None`` (default) means one toggle cycle
+    :param block_hours: block length of the headline's circular block bootstrap over the after
+        period's (actual, counterfactual) records; its sigma is ``sigma_overall``
+    :param block_hours_sweep: block lengths the sigma is also recorded at, in the
+        ``uncertainty_diagnostics`` row and the run's ``uncertainty.csv``
+    :param n_resamples: bootstrap resamples
+    :param bootstrap_seed: RNG seed of the bootstrap
     :param matching_vars: ERA5 columns matched on for the conditional step (default: the curated set)
     :param matching_bin_edges: per-variable CEM bin edges; the curated defaults are used when ``None``
     :param reference_stat_cols: extra per-reference value columns to carry as features beside active power
@@ -449,6 +508,10 @@ class PowerModelMethod:
     timebase: pd.Timedelta | None = None
     conditions: tuple[str, ...] = _SUPPORTED_CONDITIONS
     pairing_max_gap: pd.Timedelta | None = None
+    block_hours: float = _DEFAULT_BLOCK_HOURS
+    block_hours_sweep: tuple[float, ...] = _DEFAULT_BLOCK_HOURS_SWEEP
+    n_resamples: int = _DEFAULT_N_RESAMPLES
+    bootstrap_seed: int = 0
     matching_vars: tuple[str, ...] = _DEFAULT_MATCHING_VARS
     matching_bin_edges: dict[str, list[float]] | None = None
     reference_stat_cols: tuple[str, ...] = ()
@@ -566,6 +629,15 @@ class PowerModelMethod:
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
+        uncertainty = self._headline_uncertainty(
+            index[upgraded_sel],
+            actual=fit["y_upgraded"],
+            counterfactual=fit["pred_upgraded"],
+            period_start=toggle_upgrade_start(mi.upgrade_timing, index),
+            period_end=index.max(),
+            timebase=timebase,
+        )
+        summary = uncertainty_summary(uncertainty, block_hours=self.block_hours)
         if self.row_dump_dir is not None:
             self._write_row_dump(
                 scada,
@@ -615,6 +687,7 @@ class PowerModelMethod:
                 losses=record_losses(
                     reasons, before=toggle_rows.campaign_baseline, after=t, hours_per_record=hours_per_record
                 ),
+                uncertainty=uncertainty,
             )
             if self.save_plots:
                 self._write_shared_diagnostics(
@@ -664,9 +737,50 @@ class PowerModelMethod:
         return MethodOutput(
             p50_overall=uplift,
             p50_by_condition=by_condition,
+            sigma_overall=summary["sigma"],
+            uncertainty_diagnostics=pd.DataFrame([{"condition": "overall", "condition_bin": "overall", **summary}]),
             reference_uplifts=reference_uplifts,
             screen_passes=screen.passes if screen is not None else None,
         )
+
+    def _headline_uncertainty(
+        self,
+        times: pd.DatetimeIndex,
+        *,
+        actual: np.ndarray,
+        counterfactual: np.ndarray,
+        period_start: pd.Timestamp,
+        period_end: pd.Timestamp,
+        timebase: pd.Timedelta,
+    ) -> pd.DataFrame:
+        """Bootstrap the headline's sigma at ``block_hours`` and every length of ``block_hours_sweep``.
+
+        One row per block length, with :data:`_UNCERTAINTY_COLUMNS`. The model is fixed: the
+        after period's (actual, counterfactual) records are resampled in circular wall-clock blocks.
+        """
+        rows = []
+        for hours in sorted({float(self.block_hours), *(float(h) for h in self.block_hours_sweep)}):
+            result = bootstrap_energy_ratio(
+                times=times,
+                actual=np.asarray(actual, dtype=float),
+                counterfactual=np.asarray(counterfactual, dtype=float),
+                period_start=period_start,
+                period_end=period_end,
+                timebase=timebase,
+                block_hours=hours,
+                n_resamples=self.n_resamples,
+                seed=self.bootstrap_seed,
+            )
+            rows.append(
+                {
+                    "block_hours": hours,
+                    "sigma": result.sigma,
+                    "sigma_robust": result.sigma_robust,
+                    "n_blocks": result.n_blocks,
+                    "frac_resamples_finite": result.frac_resamples_finite,
+                }
+            )
+        return pd.DataFrame(rows, columns=list(_UNCERTAINTY_COLUMNS)) if rows else empty_uncertainty()
 
     def _estimate_conditional(
         self,
@@ -1205,18 +1319,20 @@ class PowerModelMethod:
                 continue
             sub_input = _reference_input(mi, target=target, references=refs)
             energy, n_records = self._upgraded_energy(sub_input, turbine=target)
-            if target in reusable:
-                uplift = reusable[target]
-            else:
-                uplift = self._reference_uplift(self._plotting(clone, target=target, mi=mi), sub_input)
+            reading = (
+                reusable[target]
+                if target in reusable
+                else self._reference_uplift(self._plotting(clone, target=target, mi=mi), sub_input)
+            )
             rows.append(
                 {
                     "turbine": target,
-                    "uplift": uplift,
+                    "uplift": reading["uplift"],
                     "actual_energy": energy,
                     "n_records": n_records,
                     "screened": target in ruled_out,
                     "unjudged": target in demoted and target not in ruled_out,
+                    **{k: v for k, v in reading.items() if k != "uplift"},
                 }
             )
         return pd.DataFrame(rows) if rows else empty_reference_uplifts()
@@ -1235,21 +1351,21 @@ class PowerModelMethod:
             repeat_shared_plots=False,
         )
 
-    def _reference_uplift(self, clone: PowerModelMethod, sub_input: MethodInput) -> float:
-        """One reference's own uplift, or NaN when its data cannot support an estimate.
+    def _reference_uplift(self, clone: PowerModelMethod, sub_input: MethodInput) -> dict[str, float]:
+        """One reference's own uplift and sigmas, or NaN when its data cannot support an estimate.
 
         This pass runs after the headline is already computed, so a reference too degenerate to
         estimate is reported as unknown rather than taking a good campaign result down with it.
         """
         try:
-            return float(clone.estimate(sub_input).p50_overall)
+            return _reading(clone.estimate(sub_input))
         except ValueError as e:
             logger.warning("%s: no reference uplift for %s (%s)", self.name, sub_input.test_wtg, e)
-            return float("nan")
+            return {"uplift": float("nan"), "sigma": float("nan")}
 
     def _reusable_screen_estimates(
         self, mi: MethodInput, *, screen: ScreenResult | None, ruled_out: set[str], pool: Sequence[str] | None = None
-    ) -> dict[str, float]:
+    ) -> dict[str, dict[str, float]]:
         """Screen estimates that already answer the reference-uplift question, so no refit is needed.
 
         Only when nobody lost their power after the screen ran, the screen covered the same pool the
@@ -1264,7 +1380,11 @@ class PowerModelMethod:
         final = screen.passes[screen.passes["pass"] == screen.passes["pass"].max()]
         if set(final["turbine"].astype(str)) != set(reported):
             return {}
-        return {str(r.turbine): float(r.estimate) for r in final.itertuples()}
+        sigma_columns = [c for c in final.columns if c == "sigma" or c.startswith("sigma_block_")]
+        return {
+            str(row["turbine"]): {"uplift": float(row["estimate"]), **{c: float(row[c]) for c in sigma_columns}}
+            for _, row in final.iterrows()
+        }
 
     def _upgraded_energy(self, mi: MethodInput, *, turbine: str) -> tuple[float, int]:
         """Energy a turbine produced over the campaign's upgraded rows, and how many records it covers."""
@@ -1437,11 +1557,15 @@ class PowerModelMethod:
         # Why each candidate could not be estimated, so a screen that gives up can say what stopped
         # it rather than only that it gave up.
         causes: dict[str, str] = {}
+        # Each candidate's sigmas from its latest estimate, to go with its uplift in the passes.
+        readings: dict[str, dict[str, float]] = {}
 
         def estimate_one(target: str, refs: list[str]) -> float:
             sub_input = _reference_input(mi, target=target, references=refs, timing=timing)
             try:
-                return float(clone.estimate(sub_input).p50_overall)
+                reading = _reading(clone.estimate(sub_input))
+                readings[target] = reading
+                return reading["uplift"]
             except ValueError as e:
                 # NaN ranks worst, so the candidate is ruled out rather than aborting the estimate:
                 # surviving a reference this bad is what the screen is for.
@@ -1457,6 +1581,7 @@ class PowerModelMethod:
             detail = "; ".join(f"{target}: {cause}" for target, cause in sorted(causes.items()))
             msg = f"{e} What stopped each of them: {detail}"
             raise ValueError(msg) from e
+        result = dataclasses.replace(result, passes=_with_sigmas(result.passes, readings))
         if result.screened:
             logger.info(
                 "%s %s: reference screen ruled out %s; they contribute a waking feature and nothing else",
@@ -1644,10 +1769,12 @@ class PowerModelMethod:
         sum_counter: float,
         n_refs: int,
         losses: pd.DataFrame,
+        uncertainty: pd.DataFrame,
     ) -> None:
         """Assemble the diagnostic data and write the CSVs (+ plots), logging the top features."""
         run_name, ts = self._csv_naming(run_dir)
         losses.to_csv(run_dir / diag.csv_name("record_losses", run_name=run_name, ts=ts), index=False)
+        uncertainty.to_csv(run_dir / diag.csv_name("uncertainty", run_name=run_name, ts=ts), index=False)
 
         x_sel = features.iloc[selected]
         data = diag.DiagnosticData(
@@ -1735,4 +1862,8 @@ class PowerModelMethod:
             "screen_min_campaign_days": self.screen_min_campaign_days,
             "report_reference_uplifts": self.report_reference_uplifts,
             "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
+            "block_hours": self.block_hours,
+            "block_hours_sweep": list(self.block_hours_sweep),
+            "n_resamples": self.n_resamples,
+            "bootstrap_seed": self.bootstrap_seed,
         }
