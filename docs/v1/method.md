@@ -118,8 +118,9 @@ The states distinguished in this example are:
 - v. **partial downtime**: the availability (ready-to-operate) counter is above zero and below the
   full period, or the rotor is parked (pitch beyond a threshold declared for the turbine type);
 - vi. **full downtime**: the availability counter is zero;
-- vii. **missing**: the signals are absent or out of range, or stuck (unchanged from the turbine's
-  own previous record while the wind is not calm), which indicates frozen telemetry. The calm test
+- vii. **missing**: the active power or the availability counter is absent or out of range, or stuck
+  (unchanged from the turbine's own previous record while the wind is not calm), which indicates
+  frozen telemetry. The calm test
   reads the nacelle anemometer: this is the one exception to the rule that the anemometer does not
   define a state, because no upgrade-invariant wind signal exists before step 3.
 
@@ -213,8 +214,8 @@ every record of every turbine. They are learnt from the records valid for northi
 the turbine generates more than 5% of its rated power, because wind veer is larger at low wind speed.
 
 Small north changes on an individual turbine are reported as possible yaw alignment changes, since these
-are a candidate cause of performance change (step 1). A north change of 30° or more that returns within
-90 days is a north calibration excursion; one that does not return is a re-calibration and becomes the
+are a candidate cause of performance change (step 1). A north change of 30° or more that lasts less
+than 90 days is a north calibration excursion; one that lasts longer is a re-calibration and becomes the
 new reference frame. Every other change, between two segments in the reference frame, is a candidate yaw
 alignment change. For each candidate, the change in the turbine's apparent power coefficient (its power
 divided by the cube of its own nacelle wind speed, binned by wind speed) is measured between the 60 days
@@ -251,8 +252,8 @@ the features of step 6 depend on it and because it must not change when a refere
   later chosen or dropped as references.
 - iii. **Waking scenario.** For each turbine, the turbines upwind of it are found for each record:
   those within the IEC 61400-12-1 disturbed sector [1] for the direction of ii, given the turbine
-  positions and rotor diameters. A waking scenario column is recorded per turbine (for example
-  `T01_waking_scenario`). Its value is:
+  positions and rotor diameters. A waking scenario is recorded for every turbine and record. Its
+  value is:
   - "normal" when no turbine is upwind or every upwind turbine is waking;
   - otherwise a descriptive label of what is abnormal, listing the abnormal upwind turbines and their
     waking state, for example "T03 not waking; T04 part waking; T05 not waking". The turbines are listed in
@@ -266,7 +267,7 @@ the features of step 6 depend on it and because it must not change when a refere
   and work out for itself which ones matter, and it lets the before and after periods be matched on
   like-for-like waking scenarios (step 11). Records with part waking upwind turbines are labelled
   explicitly because their wake effect is too ambiguous, and they are not used by default.
-- iv. **Upwind turbines.** A second column per turbine (for example `T05_upwind`) lists every turbine
+- iv. **Upwind turbines.** A second value per turbine and record lists every turbine
   within its disturbed sector for the direction of ii, whatever its waking state, in a fixed order. Its
   value is "none" when no turbine is upwind and "unknown" when the direction of ii is unavailable. Which
   of these turbines count as changed depends on the before and after periods of the test turbine, so
@@ -274,9 +275,10 @@ the features of step 6 depend on it and because it must not change when a refere
 
 ### 6. Engineer features
 
-The features from which the test turbine's power is predicted are computed for every record. They are
-computed for every unchanged turbine, so that any of them can serve as a power reference without
-repeating this step. The model of step 12 uses those of the reference set it is given.
+The features from which the test turbine's power is predicted are defined here for every record and
+every unchanged turbine, from the outputs of steps 2 to 5, so that any turbine can serve as a power
+reference without repeating Part A. The measurement of Part C assembles those of the reference set it is
+given.
 
 - i. **Power references:** for every unchanged turbine, active power and the north-calibrated nacelle
   direction (step 4) as sine and cosine. The direction is a feature in both options below: the test
@@ -326,7 +328,8 @@ ends at a neighbour's upgrade and keeps four unchanged references nearby beats a
 only distant references. When no span gives both periods a minimum length (3 months by default) with
 enough references, the test turbine is reported as not analysed, with the reason, and the campaign
 continues without it. The analyst can instead declare the periods, which are then used as given. How
-the trade-off is made is described in [analysis-period-and-reference-selection.md](../analysis-period-and-reference-selection.md).
+the trade-off is made is described in
+[analysis-period-and-reference-selection.md](../analysis-period-and-reference-selection.md).
 
 Every record of the before period is weighted equally. A long before period gives the counterfactual
 model (step 12) more data and generalises better to the after period; the matching of step 11 is what
@@ -604,13 +607,16 @@ side (8 hours by default) is not measured; its value is filled from the nearest 
 and the bins above the last measured bin take 0 %, since at and above rated the baseline and the
 upgraded turbine produce the same power. The measured bins are then scaled by one factor, with the
 filled bins held as filled, so that, weighted by the after-period energy in each bin, they combine to
-the headline uplift of step 13; the headline itself is never moved by this step. Each bin is reported
-with its uncertainty (step 14).
+the headline uplift of step 13; the headline itself is never moved by this step. When no positive
+factor does so (no bin was measured, or the filled bins alone hold more than the headline's
+counterfactual energy), every bin reports the headline uplift. Each bin is reported with its
+uncertainty (step 14).
 
 Records are assigned to a bin by an upgrade-invariant variable, never by any signal of the subject
 turbine: not its measured power, which would select each bin on its own noise, and not its nacelle
 wind speed or turbulence. By default the uplift is reported against the counterfactual power
-prediction (as a fraction of rated, in six bins) and against the ERA5 100 m wind speed (in 2 m/s
+prediction (as a fraction of rated, in six bins; the before-period records of the reverse direction are
+labelled by the reverse model's prediction) and against the ERA5 100 m wind speed (in 2 m/s
 bins). The other variables available are the ERA5 variables of step 6 iii and a free-stream wind
 speed derived from the references once one is defined (open question).
 
