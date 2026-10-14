@@ -25,6 +25,7 @@ from benchmarking.baselines.prepost_matrix.execute import (
     _matrix_method,
     describe_cell,
     diagnostics,
+    measurement_details,
     plan_settings,
     site_operating_state,
     with_reanalysis_wind_speed,
@@ -35,6 +36,7 @@ from benchmarking.baselines.prepost_matrix.metrics import (
     leak_check,
     line_fit,
     reference_metrics,
+    reversal_uplift,
 )
 from benchmarking.baselines.prepost_matrix.plan import makespan_s, measured_costs, plan_study
 from benchmarking.baselines.prepost_matrix.study import (
@@ -638,6 +640,7 @@ def test_method_overrides_reach_the_matrix_method(tmp_path: Path) -> None:
     assert dumped.row_dump_dir == tmp_path / "dump"  # type: ignore[attr-defined]
     # the matrix's own overrides survive
     assert dumped.model_params["n_jobs"] == 1  # type: ignore[attr-defined]
+    assert dumped.record_reversal is True  # type: ignore[attr-defined]
 
 
 def _sigma_records() -> list[dict[str, Any]]:
@@ -706,6 +709,81 @@ def test_merge_computes_the_per_bin_error_and_coverage() -> None:
     assert np.isnan(pooled.loc["(1, 2]", "bin_coverage"])
 
 
+def _reversal_records() -> list[dict[str, Any]]:
+    """Two campaigns whose directions are recorded: the full reversal reads truth, the forward 1 pp high."""
+    records = []
+    for site, seed in (("hot", 0), ("pen", 1)):
+        for m in (1, 0, -1):
+            truth = 0.04 * m
+            forward = truth + 0.01
+            reverse = (1 + forward) / (1 + truth) ** 2 - 1  # makes the full reversal exactly truth
+            records.append(
+                _record(
+                    site,
+                    seed,
+                    m,
+                    turbines=[
+                        {
+                            "turbine": "T01",
+                            "estimate": forward,
+                            "truth": truth,
+                            "uplift_forward": forward,
+                            "uplift_reverse": reverse,
+                            "sigma_reverse": 0.01,
+                        }
+                    ],
+                    farm={
+                        "estimate": forward,
+                        "truth": truth,
+                        "reference_uplift_before_screen": 0.004,
+                        "reference_uplift_after_screen": 0.002,
+                        "reference_uplift_spread": 0.01,
+                    },
+                    references=[
+                        {
+                            "test_wtg": "T01",
+                            "turbine": "T02",
+                            "uplift": 0.01,
+                            "screened": False,
+                            "uplift_forward": 0.01,
+                            "uplift_reverse": 0.01,
+                            "sigma_reverse": 0.01,
+                        }
+                    ],
+                )
+            )
+    return records
+
+
+def test_merge_scores_the_full_reversal_beside_the_forward_headline() -> None:
+    tables = baseline_tables(_reversal_records())
+    row = tables["groups"].set_index(["site", "multiplier"]).loc[("all", 1)]
+    assert row["test_bias"] == pytest.approx(0.01)
+    assert row["rev_test_bias"] == pytest.approx(0.0, abs=1e-12)
+    assert row["rev_ref_mean"] == pytest.approx(0.0, abs=1e-12)  # equal directions cancel
+    linearity = tables["linearity"].set_index("site")
+    assert linearity.loc["all", "line_bias_mean"] == pytest.approx(0.01)
+    assert linearity.loc["all", "rev_line_scale_mean"] == pytest.approx(1.0)
+    assert linearity.loc["all", "rev_line_bias_mean"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_merge_scores_the_combined_reference_uplift_against_zero() -> None:
+    row = baseline_tables(_reversal_records())["groups"].set_index(["site", "multiplier"]).loc[("all", 0)]
+    assert row["combined_ref_before_bias"] == pytest.approx(0.004)
+    assert row["combined_ref_after_bias"] == pytest.approx(0.002)
+    assert row["combined_ref_after_n"] == 2
+
+
+def test_records_without_the_reverse_direction_report_no_reversal_metrics() -> None:
+    tables = baseline_tables(_line_records())
+    assert not any(str(c).startswith("rev_") for c in tables["groups"].columns)
+    assert not any(str(c).startswith("rev_") for c in tables["linearity"].columns)
+
+
+def test_reversal_uplift_is_nan_where_a_ratio_is_not_positive() -> None:
+    assert reversal_uplift(np.array([0.21, -1.5]), np.array([0.0, 0.0])) == pytest.approx([0.1, np.nan], nan_ok=True)
+
+
 def test_records_without_bins_give_an_empty_bins_table() -> None:
     assert baseline_tables(_line_records())["bins"].empty
 
@@ -718,3 +796,27 @@ def test_the_truth_rows_gain_the_aligned_reanalysis_wind_speed() -> None:
     assert list(joined.columns) == ["TurbineName", "power", "wind_speed_100m"]
     assert joined["wind_speed_100m"].tolist() == [5.0, 6.0, 7.0, 8.0] * 2
     assert with_reanalysis_wind_speed(original, None) is original
+
+
+def test_a_cell_records_each_test_turbines_losses_and_data_screen(tmp_path: Path) -> None:
+    run_dir = tmp_path / "method" / "T01" / "power_model_T01_20200101_20210101"
+    run_dir.mkdir(parents=True)
+    pd.DataFrame({"reason": ["usable", "rare waking configuration"], "hours_before": [100.0, 2.5]}).to_csv(
+        run_dir / "power_model_T01_20200101_20210101_record_losses_20261014.csv", index=False
+    )
+    screen = SimpleNamespace(
+        table=pd.DataFrame({"candidate": ["T02"], "correlation": [0.9], "verdict": ["kept"], "rank": [1]}),
+        hours=pd.DataFrame({"n_references": [1], "hours_before": [np.nan]}),
+    )
+    details = measurement_details({"T01": screen, "T03": screen}, cell_dir=tmp_path)  # type: ignore[dict-item]
+    assert details["record_losses"] == {
+        "T01": [
+            {"reason": "usable", "hours_before": 100.0},
+            {"reason": "rare waking configuration", "hours_before": 2.5},
+        ]
+    }
+    assert details["data_screen"]["T01"]["candidates"] == [
+        {"candidate": "T02", "correlation": 0.9, "verdict": "kept", "rank": 1.0}
+    ]
+    assert details["data_screen"]["T03"]["hours"] == [{"n_references": 1.0, "hours_before": None}]
+    json.dumps(details)

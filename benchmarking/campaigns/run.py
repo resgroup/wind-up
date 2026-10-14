@@ -7,8 +7,9 @@ layers truth, scoring and truth-vs-estimate plots on top; see
 
 from __future__ import annotations
 
+import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
     from wind_up import FarmUplift
     from wind_up.analysis_period import AnalysisPlan, PlanSettings
     from wind_up.northing import NorthingSettings
+
+logger = logging.getLogger(__name__)
 
 # Each table's columns, named here so a campaign with nothing to report still returns a frame
 # consumers can index.
@@ -123,7 +126,7 @@ class CampaignReport:
 
     @property
     def unplanned(self) -> dict[str, str]:
-        """Each upgraded turbine no plan could be chosen for, with the reason; it has no estimate."""
+        """Each upgraded turbine no plan could be chosen for or no measurement made of, with the reason."""
         return self.timeline.unplanned
 
 
@@ -213,6 +216,8 @@ def estimate_campaign(
 
     Each upgraded turbine runs over its own span against its own power references, chosen from
     the campaign timeline or used as declared.
+    A turbine a method cannot measure (its estimate raises ``ValueError``) is reported in
+    ``unplanned`` with the reason, and the campaign continues without it.
 
     :param spec: the public campaign facts; methods see nothing else
     :param scada_df: long-format source-native SCADA covering the campaign
@@ -253,6 +258,7 @@ def estimate_campaign(
     reference_frames: list[pd.DataFrame] = []
     conditional_frames: list[pd.DataFrame] = []
     screens: dict[str, DataScreen] = {}
+    unmeasured: dict[str, str] = {}
 
     # Sorted rather than in declaration order, so a glance at the log says how far through the
     # campaign a run is, whatever order the turbines were declared in.
@@ -268,6 +274,7 @@ def estimate_campaign(
         treated &= spec.usable_mask(wtg, row_index)
         energy, n_records = _actual_energy(rows, columns=columns, mask=treated)
 
+        measured: list[tuple[str, MethodOutput, float]] = []
         for method in build_methods(wtg):
             method_input = MethodInput(
                 scada_df=frame,
@@ -276,18 +283,27 @@ def estimate_campaign(
                 campaign_context=context,
             )
             start = time.perf_counter()
-            output = method.estimate(method_input)
-            wall_time_s[method.name, wtg] = time.perf_counter() - start
-            outputs[method.name, wtg] = output
+            try:
+                output = method.estimate(method_input)
+            except ValueError as e:
+                logger.warning("%s: not measured by %s: %s", wtg, method.name, e)
+                unmeasured[wtg] = f"not measured by {method.name}: {e}"
+                break
+            measured.append((method.name, output, time.perf_counter() - start))
+        if wtg in unmeasured:
+            continue
+        for name, output, seconds in measured:
+            wall_time_s[name, wtg] = seconds
+            outputs[name, wtg] = output
             per_turbine_rows.append(
                 {
-                    "method": method.name,
+                    "method": name,
                     "test_wtg": wtg,
                     "estimate": output.p50_overall,
                     "sigma": float("nan") if output.sigma_overall is None else float(output.sigma_overall),
                 }
             )
-            estimates.setdefault(method.name, []).append(
+            estimates.setdefault(name, []).append(
                 TurbineUplift(
                     turbine=wtg,
                     uplift=output.p50_overall,
@@ -297,10 +313,19 @@ def estimate_campaign(
                 )
             )
             if output.reference_uplifts is not None:
-                reference_frames.append(output.reference_uplifts.assign(method=method.name, test_wtg=wtg))
+                reference_frames.append(output.reference_uplifts.assign(method=name, test_wtg=wtg))
             if output.p50_by_condition is not None:
-                conditional_frames.append(output.p50_by_condition.assign(method=method.name, test_wtg=wtg))
+                conditional_frames.append(output.p50_by_condition.assign(method=name, test_wtg=wtg))
 
+    if unmeasured:
+        if len(unmeasured) == len(plans):
+            msg = "no upgraded turbine could be measured: " + "; ".join(f"{t}: {r}" for t, r in unmeasured.items())
+            raise ValueError(msg)
+        resolved = replace(
+            resolved,
+            plans={t: p for t, p in plans.items() if t not in unmeasured},
+            unplanned={**unplanned, **unmeasured},
+        )
     farm_uplifts = {name: farm_uplift(rows) for name, rows in estimates.items()}
     stability = _stack(reference_frames, lead=_REFERENCE_COLUMNS)
     headlines = reference_headlines(stability, rated_power_kw=spec.rated_power_kw)

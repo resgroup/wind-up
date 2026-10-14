@@ -3,11 +3,16 @@
 Every uplift is a fraction, as in the cell records. The tables:
 
 - ``groups``: per (arm, site, K, L, multiplier), the test turbines' and the farm's ``bias``,
-  ``spread`` and ``score``, and the reference readings' ``mean``, ``median``, ``sd``, ``worst_abs``
-  and ``n``. Site ``all`` pools every site.
+  ``spread`` and ``score``, the reference readings' ``mean``, ``median``, ``sd``, ``worst_abs``
+  and ``n``, the combined reference uplift before and after the screen as errors against 0 %, and
+  the calibration of every sigma. Where the cells recorded the reverse direction, ``rev_test_*`` and
+  ``rev_ref_*`` repeat the test and reference metrics for the full reversal (method step 13 option B
+  at lambda 1). Site ``all`` pools every site.
 - ``linearity``: per (arm, site, K, L), the mean and sd over campaigns and test turbines of the line
-  ``estimate = line_scale * truth + line_bias`` fitted across a campaign's multipliers.
+  ``estimate = line_scale * truth + line_bias`` fitted across a campaign's multipliers, and
+  ``rev_line_*`` for the full reversal.
 - ``real``: per (K, L), the real campaign's reference metrics and T13's own estimate.
+- ``bins``: per group, condition and bin, the per-bin errors and the calibration of their sigma.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
+from benchmarking.baselines.power_model.method import REVERSAL_COLUMNS, is_reading_column
 from benchmarking.harness.calibration import calibration_summary
 from benchmarking.harness.metrics import summarize_errors
 
@@ -34,6 +40,7 @@ MATERIAL = 0.001
 _CELL_KEYS = ["arm", "site", "seed_index", "k", "post_months", "multiplier"]
 _MIN_LINE_POINTS = 2
 _REFERENCE_METRICS = ["ref_mean", "ref_median", "ref_sd", "ref_worst_abs", "ref_n"]
+_COMBINED_REFERENCES = ("reference_uplift_before_screen", "reference_uplift_after_screen", "reference_uplift_spread")
 
 
 def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
@@ -51,12 +58,17 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
         references.extend({**keys, **row} for row in record["references"])
         bins.extend({**keys, **row} for row in record.get("bins", []))
     return {
-        "turbines": pd.DataFrame(
-            turbines, columns=[*_CELL_KEYS, "turbine", "estimate", "truth", *_sigma_keys(turbines)]
+        "turbines": _with_reversal(
+            pd.DataFrame(turbines, columns=[*_CELL_KEYS, "turbine", "estimate", "truth", *_reading_keys(turbines)])
         ),
-        "farm": pd.DataFrame(farm, columns=[*_CELL_KEYS, "estimate", "truth"]),
-        "references": pd.DataFrame(
-            references, columns=[*_CELL_KEYS, "test_wtg", "turbine", "uplift", "screened", *_sigma_keys(references)]
+        "farm": pd.DataFrame(
+            farm, columns=[*_CELL_KEYS, "estimate", "truth", *(k for k in _COMBINED_REFERENCES if _has(farm, k))]
+        ),
+        "references": _with_reversal(
+            pd.DataFrame(
+                references,
+                columns=[*_CELL_KEYS, "test_wtg", "turbine", "uplift", "screened", *_reading_keys(references)],
+            )
         ),
         "bins": pd.DataFrame(
             bins, columns=[*_CELL_KEYS, "test_wtg", "condition", "condition_bin", "estimate", "truth", "sigma"]
@@ -64,10 +76,30 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
     }
 
 
-def _sigma_keys(rows: list[dict[str, Any]]) -> list[str]:
-    """Return the sigma columns the rows carry: ``sigma`` first, then the block-length sweep."""
-    keys = {k for row in rows for k in row if k == "sigma" or str(k).startswith("sigma_block_")}
+def _reading_keys(rows: list[dict[str, Any]]) -> list[str]:
+    """Return the reading columns the rows carry: ``sigma`` first, then the sweep and the reverse direction."""
+    keys = {k for row in rows for k in row if is_reading_column(k)}
     return ["sigma", *sorted(k for k in keys if k != "sigma")] if keys else []
+
+
+def _has(rows: list[dict[str, Any]], key: str) -> bool:
+    return any(key in row for row in rows)
+
+
+def reversal_uplift(forward: np.ndarray | pd.Series, reverse: np.ndarray | pd.Series) -> np.ndarray:
+    """Return the full reversal ``sqrt((1 + forward) / (1 + reverse)) - 1``; NaN where either ratio is not positive."""
+    a = 1.0 + np.asarray(forward, dtype=float)
+    b = 1.0 + np.asarray(reverse, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = np.sqrt(a / b) - 1.0
+    return np.where((a > 0) & (b > 0), out, np.nan)
+
+
+def _with_reversal(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return ``frame`` with ``reversal``, the full-reversal uplift, where it carries both directions."""
+    if not set(REVERSAL_COLUMNS[:2]) <= set(frame.columns):
+        return frame
+    return frame.assign(reversal=reversal_uplift(frame["uplift_forward"], frame["uplift_reverse"]))
 
 
 def calibration_metrics(errors: np.ndarray, sigmas: np.ndarray, *, prefix: str) -> dict[str, float]:
@@ -174,6 +206,16 @@ def _groups(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
         row |= _error_metrics((turbines["estimate"] - turbines["truth"]).to_numpy(dtype=float), prefix="test")
         row |= _error_metrics((farm["estimate"] - farm["truth"]).to_numpy(dtype=float), prefix="farm")
         row |= reference_metrics(references["uplift"].to_numpy(dtype=float))
+        for column, prefix in (
+            ("reference_uplift_before_screen", "combined_ref_before"),
+            ("reference_uplift_after_screen", "combined_ref_after"),
+        ):
+            if column in farm.columns:
+                row |= _error_metrics(farm[column].to_numpy(dtype=float), prefix=prefix)
+        if "reversal" in turbines.columns:
+            row |= _error_metrics((turbines["reversal"] - turbines["truth"]).to_numpy(dtype=float), prefix="rev_test")
+        if "reversal" in references.columns:
+            row |= {f"rev_{k}": v for k, v in reference_metrics(references["reversal"].to_numpy(dtype=float)).items()}
         row |= _calibration(turbines, references)
         rows.append(row)
     return pd.DataFrame(rows)
@@ -198,31 +240,28 @@ def line_fit(truth: Sequence[float] | np.ndarray, estimate: Sequence[float] | np
 
 
 def _linearity(turbines: pd.DataFrame) -> pd.DataFrame:
+    estimates = {"line": "estimate", **({"rev_line": "reversal"} if "reversal" in turbines.columns else {})}
     fits = []
     for key, group in turbines.groupby(["arm", "site", "seed_index", "k", "post_months", "turbine"]):
-        scale, bias = line_fit(group["truth"], group["estimate"])
-        fits.append(
-            {
-                **dict(zip(["arm", "site", "seed_index", "k", "post_months"], key[:5], strict=True)),
-                "line_scale": scale,
-                "line_bias": bias,
-            }
-        )
+        fit: dict[str, Any] = dict(zip(["arm", "site", "seed_index", "k", "post_months"], key[:5], strict=True))
+        for prefix, column in estimates.items():
+            fit[f"{prefix}_scale"], fit[f"{prefix}_bias"] = line_fit(group["truth"], group[column])
+        fits.append(fit)
     if not fits:
         return pd.DataFrame(columns=[*LINE_KEYS, "line_scale_mean", "line_scale_sd", "line_bias_mean", "line_bias_sd"])
     rows = []
     for key, group in _with_pooled(pd.DataFrame(fits)).groupby(LINE_KEYS):
-        finite = group.dropna(subset=["line_scale", "line_bias"])
-        rows.append(
-            {
-                **dict(zip(LINE_KEYS, key, strict=True)),
-                "line_scale_mean": float(finite["line_scale"].mean()),
-                "line_scale_sd": float(finite["line_scale"].std(ddof=0)),
-                "line_bias_mean": float(finite["line_bias"].mean()),
-                "line_bias_sd": float(finite["line_bias"].std(ddof=0)),
-                "line_n": len(finite),
+        row: dict[str, Any] = dict(zip(LINE_KEYS, key, strict=True))
+        for prefix in estimates:
+            finite = group.dropna(subset=[f"{prefix}_scale", f"{prefix}_bias"])
+            row |= {
+                f"{prefix}_scale_mean": float(finite[f"{prefix}_scale"].mean()),
+                f"{prefix}_scale_sd": float(finite[f"{prefix}_scale"].std(ddof=0)),
+                f"{prefix}_bias_mean": float(finite[f"{prefix}_bias"].mean()),
+                f"{prefix}_bias_sd": float(finite[f"{prefix}_bias"].std(ddof=0)),
+                f"{prefix}_n": len(finite),
             }
-        )
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -237,12 +276,22 @@ def _real(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
                 **dict(zip(REAL_KEYS, key, strict=True)),
                 **reference_metrics(group["uplift"].to_numpy(dtype=float)),
                 "t13_estimate": float(estimate.iloc[0]) if len(estimate) else float("nan"),
-                "t13_sigma": float(t13["sigma"].iloc[0]) if len(t13) and "sigma" in t13.columns else float("nan"),
+                "t13_sigma": _first(t13, "sigma"),
+                "t13_reversal": _first(t13, "reversal"),
+                **(
+                    {f"rev_{k}": v for k, v in reference_metrics(group["reversal"].to_numpy(dtype=float)).items()}
+                    if "reversal" in group.columns
+                    else {}
+                ),
                 **{k: v for k, v in _calibration(t13, group).items() if k.startswith("ref")},
             }
         )
     columns = [*REAL_KEYS, *_REFERENCE_METRICS, "t13_estimate", "t13_sigma"]
     return pd.DataFrame(rows, columns=columns + [c for c in (rows[0] if rows else {}) if c not in columns])
+
+
+def _first(frame: pd.DataFrame, column: str) -> float:
+    return float(frame[column].iloc[0]) if len(frame) and column in frame.columns else float("nan")
 
 
 def leak_check(records: Iterable[dict[str, Any]]) -> pd.DataFrame:

@@ -112,6 +112,8 @@ _DEFAULT_BLOCK_HOURS = 24.0
 _DEFAULT_BLOCK_HOURS_SWEEP: tuple[float, ...] = (6.0, 24.0, 168.0, 672.0)
 _DEFAULT_N_RESAMPLES = 1000
 _UNCERTAINTY_COLUMNS = ("block_hours", "sigma", "sigma_robust", "n_blocks", "frac_resamples_finite")
+# The reverse-direction reading ``record_reversal`` adds to the uncertainty row (method step 13 option B).
+REVERSAL_COLUMNS: tuple[str, ...] = ("uplift_forward", "uplift_reverse", "sigma_reverse")
 
 # Matching set + bin widths for the two-direction conditional step: wind_speed_100m binned finest,
 # wind_gusts_10m coarser, and wind_direction_100m in 20° sectors. Fixed sectors, no wraparound.
@@ -157,6 +159,14 @@ def reference_measurement_dirname(reference: str, *, test_wtg: str) -> str:
 def sigma_column(block_hours: float) -> str:
     """Return the column name of the sigma at ``block_hours``, for example ``sigma_block_24h``."""
     return f"sigma_block_{block_hours:g}h"
+
+
+def is_reading_column(name: object) -> bool:
+    """Whether ``name`` is a column a measurement's reading carries beside its uplift.
+
+    These are ``sigma``, the block-length sweep ``sigma_block_<h>h`` and :data:`REVERSAL_COLUMNS`.
+    """
+    return name == "sigma" or str(name).startswith("sigma_block_") or name in REVERSAL_COLUMNS
 
 
 def empty_uncertainty() -> pd.DataFrame:
@@ -234,7 +244,7 @@ def _reading(output: MethodOutput) -> dict[str, float]:
     reading = {"uplift": float(output.p50_overall), "sigma": float(output.sigma_overall or float("nan"))}
     if output.uncertainty_diagnostics is not None and not output.uncertainty_diagnostics.empty:
         row = output.uncertainty_diagnostics.iloc[0]
-        reading.update({c: float(row[c]) for c in row.index if str(c).startswith("sigma_block_")})
+        reading.update({str(c): float(row[c]) for c in row.index if is_reading_column(c) and c != "sigma"})
     return reading
 
 
@@ -476,6 +486,10 @@ class PowerModelMethod:
         ``"reversal"`` (the reversal correction) also fits the reverse direction (train the upgraded
         rows, predict the baseline rows) and reports ``sqrt((1+r_fwd)/(1+r_rev)) - 1``, so a shrinkage
         common to both directions cancels. Costs one extra model fit per estimate. Toggle is unaffected
+    :param record_reversal: also fit the reverse direction of a prepost estimate and record it, without
+        changing the headline: the ``uncertainty_diagnostics`` row gains ``uplift_forward``,
+        ``uplift_reverse`` and ``sigma_reverse`` (the reverse ratio's block bootstrap over the before
+        period at ``block_hours``). NaN for a toggle estimate. Costs one extra model fit per estimate
     :param write_diagnostics: write the per-run diagnostics folder. ``False`` for the clones that
         estimate one reference during screening or reporting: ``out_dir=None`` does not suppress
         them, it makes a temp directory per run, and there are O(N) such runs per estimate
@@ -525,6 +539,7 @@ class PowerModelMethod:
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
     headline_estimator: Literal["forward", "reversal"] = "forward"
+    record_reversal: bool = False
     write_diagnostics: bool = True
     row_dump_dir: Path | None = None
     # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
@@ -662,10 +677,20 @@ class PowerModelMethod:
         # reverse fit trains the upgraded rows and predicts the baseline rows for 1+r_rev, and
         # _combine_uplift returns sqrt((1+r_fwd)/(1+r_rev))-1 so a shrinkage common to both directions
         # cancels. Toggle keeps the forward ratio: its off-blocks already interleave, so no shift.
-        if self.headline_estimator == "reversal" and not is_toggle(mi.upgrade_timing) and np.isfinite(uplift):
-            pred_baseline = self._fit_direction(features, y_arr, train=upgraded_sel, predict=baseline_sel)
-            r_rev = _ratio(y_arr[baseline_sel], pred_baseline)
-            uplift = float(_combine_uplift(np.array([uplift]), np.array([r_rev]))[0])
+        reversal = self._reverse_direction(
+            mi,
+            features=features,
+            y=y_arr,
+            baseline_sel=baseline_sel,
+            upgraded_sel=upgraded_sel,
+            forward=uplift,
+            index=index,
+            timebase=timebase,
+        )
+        if self.headline_estimator == "reversal" and np.isfinite(reversal.get("uplift_reverse", np.nan)):
+            uplift = float(_combine_uplift(np.array([uplift]), np.array([reversal["uplift_reverse"]]))[0])
+        if not self.record_reversal:
+            reversal = {}
 
         # A clone that estimates one reference during screening or reporting writes nothing:
         # out_dir=None does not suppress diagnostics, it makes a temp directory per run.
@@ -718,20 +743,23 @@ class PowerModelMethod:
             # is already era-insensitive (its common shrinkage cancels), and weighting the direction fits
             # only churns the sparse extreme-condition tail bins (and slightly worsens ws spread) without
             # helping the populated bins — so the corrections are spent on the overall headline instead.
-            by_condition = self._estimate_conditional(
-                mi=mi,
-                features=features,
-                era5=era5,  # type: ignore[arg-type]
-                y=y_arr,
-                baseline_sel=selected & toggle_rows.campaign_baseline,
-                upgraded_sel=upgraded_sel,
-                fit=fit,
-                overall_ratio=uplift,
-                index=index,
-                timebase=timebase,
-                # non-None whenever conditions are requested; _validate_model_config enforces it
-                run_dir=run_dir,  # type: ignore[arg-type]
-            )
+            try:
+                by_condition = self._estimate_conditional(
+                    mi=mi,
+                    features=features,
+                    era5=era5,  # type: ignore[arg-type]
+                    y=y_arr,
+                    baseline_sel=selected & toggle_rows.campaign_baseline,
+                    upgraded_sel=upgraded_sel,
+                    fit=fit,
+                    overall_ratio=uplift,
+                    index=index,
+                    timebase=timebase,
+                    # non-None whenever conditions are requested; _validate_model_config enforces it
+                    run_dir=run_dir,  # type: ignore[arg-type]
+                )
+            except ValueError as e:
+                logger.warning("%s: no uplift distributions for %s (%s)", self.name, mi.test_wtg, e)
         # Reported post-screen: the sanity check asks what the *final* analysis says its references
         # did, so a ruled-out reference is listed but does not drag the headline.
         reference_uplifts = (
@@ -741,7 +769,16 @@ class PowerModelMethod:
             p50_overall=uplift,
             p50_by_condition=by_condition,
             sigma_overall=summary["sigma"],
-            uncertainty_diagnostics=pd.DataFrame([{"condition": "overall", "condition_bin": "overall", **summary}]),
+            uncertainty_diagnostics=pd.DataFrame(
+                [
+                    {
+                        "condition": "overall",
+                        "condition_bin": "overall",
+                        **{k: v for k, v in summary.items() if k != "sigma"},
+                        **reversal,
+                    }
+                ]
+            ),
             reference_uplifts=reference_uplifts,
             screen_passes=screen.passes if screen is not None else None,
         )
@@ -784,6 +821,59 @@ class PowerModelMethod:
                 }
             )
         return pd.DataFrame(rows, columns=list(_UNCERTAINTY_COLUMNS)) if rows else empty_uncertainty()
+
+    def _reverse_direction(
+        self,
+        mi: MethodInput,
+        *,
+        features: pd.DataFrame,
+        y: np.ndarray,
+        baseline_sel: np.ndarray,
+        upgraded_sel: np.ndarray,
+        forward: float,
+        index: pd.DatetimeIndex,
+        timebase: pd.Timedelta,
+    ) -> dict[str, float]:
+        """Return the :data:`REVERSAL_COLUMNS` of a prepost estimate: the reverse fit's ratio and its sigma.
+
+        NaN for a toggle estimate, a non-finite forward ratio, or when neither ``headline_estimator``
+        nor ``record_reversal`` asks for the reverse direction.
+        """
+        out = dict.fromkeys(REVERSAL_COLUMNS, float("nan"))
+        wanted = self.headline_estimator == "reversal" or self.record_reversal
+        if not wanted or is_toggle(mi.upgrade_timing) or not np.isfinite(forward):
+            return out
+        pred_baseline = self._fit_direction(features, y, train=upgraded_sel, predict=baseline_sel)
+        return {
+            "uplift_forward": forward,
+            "uplift_reverse": _ratio(y[baseline_sel], pred_baseline),
+            "sigma_reverse": self._reverse_sigma(
+                index[baseline_sel], actual=y[baseline_sel], counterfactual=pred_baseline, timebase=timebase
+            ),
+        }
+
+    def _reverse_sigma(
+        self,
+        times: pd.DatetimeIndex,
+        *,
+        actual: np.ndarray,
+        counterfactual: np.ndarray,
+        timebase: pd.Timedelta,
+    ) -> float:
+        """Bootstrap the reverse ratio's sigma at ``block_hours`` over the before period, the model fixed."""
+        if times.empty:
+            return float("nan")
+        return bootstrap_energy_ratio(
+            times=times,
+            actual=np.asarray(actual, dtype=float),
+            counterfactual=np.asarray(counterfactual, dtype=float),
+            period_start=times.min(),
+            period_end=times.max(),
+            timebase=timebase,
+            block_hours=float(self.block_hours),
+            n_resamples=self.n_resamples,
+            seed=self.bootstrap_seed,
+        ).sigma
 
     def _estimate_conditional(
         self,
@@ -1448,9 +1538,9 @@ class PowerModelMethod:
         final = screen.passes[screen.passes["pass"] == screen.passes["pass"].max()]
         if set(final["turbine"].astype(str)) != set(reported):
             return {}
-        sigma_columns = [c for c in final.columns if c == "sigma" or c.startswith("sigma_block_")]
+        reading_columns = [c for c in final.columns if is_reading_column(c)]
         return {
-            str(row["turbine"]): {"uplift": float(row["estimate"]), **{c: float(row[c]) for c in sigma_columns}}
+            str(row["turbine"]): {"uplift": float(row["estimate"]), **{c: float(row[c]) for c in reading_columns}}
             for _, row in final.iterrows()
         }
 

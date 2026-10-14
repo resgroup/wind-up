@@ -212,16 +212,16 @@ The north tables are found once for the whole wind farm over the whole SCADA rec
 every record of every turbine. They are learnt from the records valid for northing (step 2) in which
 the turbine generates more than 5% of its rated power, because wind veer is larger at low wind speed.
 
-Small north changes on an individual turbine are reported as possible yaw alignment changes, since
-these are a candidate cause of performance change (step 1). A north change of 30° or more that returns
-within 90 days is a north calibration excursion; one that does not return is a re-calibration and
-becomes the new reference frame. Every other change, between two segments in the reference frame, is
-a candidate yaw alignment change. For each candidate, the change in the turbine's apparent power
-coefficient (its power divided by the cube of its own nacelle wind speed, binned by wind speed) is
-measured between the 60 days before and the 60 days after, using the records valid for northing and
-for uplift. It is compared with the largest such change at any other date of the turbine's record
-that is more than 60 days from every candidate. The report is for the analyst to inspect alongside the
-declared changes; it does not change the uplift calculation.
+Small north changes on an individual turbine are reported as possible yaw alignment changes, since these
+are a candidate cause of performance change (step 1). A north change of 30° or more that returns within
+90 days is a north calibration excursion; one that does not return is a re-calibration and becomes the
+new reference frame. Every other change, between two segments in the reference frame, is a candidate yaw
+alignment change. For each candidate, the change in the turbine's apparent power coefficient (its power
+divided by the cube of its own nacelle wind speed, binned by wind speed) is measured between the 60 days
+before and the 60 days after, using the records valid for northing (above 5% of rated power, as for the
+north tables) and for uplift. It is compared with the largest such change at any other date of the
+turbine's record that is more than 60 days from every candidate. The report is for the analyst to inspect
+alongside the declared changes; it does not change the uplift calculation.
 
 ### 5. Determine waking state and waking scenarios
 
@@ -255,7 +255,7 @@ the features of step 6 depend on it and because it must not change when a refere
   `T01_waking_scenario`). Its value is:
   - "normal" when no turbine is upwind or every upwind turbine is waking;
   - otherwise a descriptive label of what is abnormal, listing the abnormal upwind turbines and their
-    waking state, for example "T03 offline; T04 part waking; T05 offline". The turbines are listed in
+    waking state, for example "T03 not waking; T04 part waking; T05 not waking". The turbines are listed in
     a fixed order so that the same situation always gives the same label;
   - "unknown" when the direction of ii is unavailable or the waking state of any upwind turbine is
     missing.
@@ -388,15 +388,17 @@ needed for the screen and are off by default. The expectation is that 0 % uplift
 candidate. The purpose is to detect any bias in the references, by seeing whether any of them have a
 measurable change in performance relative to the others.
 
-A candidate whose uplift differs from the median of the candidates by more than a floor (2.5
+A candidate whose uplift differs from the median of the candidates by at least a floor (2.5
 percentage points by default) is excluded as a power reference and the remaining candidates are
-judged again, excluding at most one turbine per pass. The median rather than zero is used because the
-reference turbines may all drift together, which is not a source of bias. The screen requires at
+judged again, excluding at most one turbine per pass and fewer than half of the candidates in all.
+The median rather than zero is used because the reference turbines may all drift together, which is
+not a source of bias. The screen requires at
 least three candidates, and a candidate is only judged when it has enough after-period data to
 separate a bad reference from noise (150 days of the candidate's own after-period records valid for
 uplift (step 2) by default, counted before the record selection of step 11; the value is decided by
 validation). A candidate with less is not judged: it is not used as a power reference,
-and it is reported as unjudged rather than ruled out. Because the columns of step 5 do not depend
+and it is reported as unjudged rather than ruled out. When no candidate has enough, the screen is
+not run and every candidate stays a power reference. Because the columns of step 5 do not depend
 on the reference set, excluding a candidate changes nothing in Part A. The screened set is the set
 of power references used for the test turbine in step 10.
 
@@ -430,7 +432,8 @@ either. Nothing in Part C changes the reference set or the periods.
   the references' invalid data: a record in which any one reference is in downtime is lost for all of
   them. This puts pressure against using many references, and is one side of the trade-off of
   step 8. A measurement needs a minimum of usable data in each period (24 hours by default); below
-  it no uplift is returned. Quantities here are hours, not records.
+  it no uplift is returned, and a test turbine is reported as not analysed with the reason, as in
+  step 7. Quantities here are hours, not records.
 - ii. **Waking configuration.** For each record, the configuration is the combination of the waking
   scenarios (step 5 iii) of the subject turbine and all of its power references, taken together. Only
   configurations with at least 24 hours of data in both periods are retained, in the same way that
@@ -517,11 +520,12 @@ $$
 U_{fwd} = \frac{\sum_A y}{\sum_A \hat f_B} - 1
 $$
 
-Each prediction is clipped to the range from zero to the larger of the rated power and the largest
-power the model was trained on. This compares a measured sum with a predicted one, and is biased by
-any error the model makes on average when predicting data unlike its training data. That error grows
-with the time separating the two periods and is the main source of bias left once steps 5, 6, 7 and
-11 are applied. One of the following is used to remove it:
+Each prediction is clipped to the range from the smaller of zero and the lowest power the model was
+trained on to the larger of the rated power and the largest power the model was trained on. This compares
+a measured sum with a predicted one, and is biased by any error the model makes on average when
+predicting data unlike its training data. That error grows with the time separating the two periods and
+is the main source of bias left once steps 5, 6, 7 and 11 are applied. One of the following is used to
+remove it:
 
 - **Option A (current default).** The forward uplift alone.
 - **Option B, reversibility.** As in wind-up v0, the calculation is also performed in reverse: a

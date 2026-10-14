@@ -201,6 +201,36 @@ class TestVisibleFrame:
         assert "T5" in set(visible[HOT_COLUMNS.turbine])
 
 
+class FailingMethod(FixedMethod):
+    """Cannot measure the turbines named, as the power model cannot below its hour floor."""
+
+    name = "fixed"
+
+    def __init__(self, failing: set[str]) -> None:
+        super().__init__()
+        self.failing = failing
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:
+        """Raise for a failing turbine; report the fixed uplift otherwise."""
+        if mi.test_wtg in self.failing:
+            msg = "too few usable hours"
+            raise ValueError(msg)
+        return super().estimate(mi)
+
+
+def test_a_turbine_that_cannot_be_measured_is_reported_and_the_campaign_continues() -> None:
+    report = run([FailingMethod({"T1"})])
+    assert report.per_turbine["test_wtg"].tolist() == ["T2"]
+    assert set(report.plans) == {"T2"}
+    assert report.unplanned == {"T1": "not measured by fixed: too few usable hours"}
+    assert float(report.farm.set_index("method").loc["fixed", "estimate"]) == pytest.approx(0.02)
+
+
+def test_a_campaign_none_of_whose_turbines_can_be_measured_raises() -> None:
+    with pytest.raises(ValueError, match="no upgraded turbine could be measured"):
+        run([FailingMethod({"T1", "T2"})])
+
+
 def test_a_toggle_campaign_runs_through_the_same_core() -> None:
     spec = campaign(upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=8), start=CHANGEOVER)).spec()
     report = estimate_campaign(spec, scada(), build_methods=lambda _wtg: [FixedMethod()], columns=HOT_COLUMNS)

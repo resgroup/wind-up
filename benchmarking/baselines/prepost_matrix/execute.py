@@ -16,6 +16,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import yaml
 
+from benchmarking.baselines.power_model.method import is_reading_column
 from benchmarking.baselines.prepost_matrix.cells import REAL_SITE, Cell, campaign_seed, draw_exclusions
 from benchmarking.campaigns.composed import DATA_PREPARATION_DIRNAME, WIND_UP, wind_up_method
 from benchmarking.campaigns.loader import centroid, era5_window, load_declaration, operating_state_config
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from benchmarking.baselines.prepost_matrix.cells import MatrixSettings
+    from benchmarking.campaigns.data_screen import DataScreen
     from benchmarking.campaigns.declaration import CampaignSpec, Exclusion
     from benchmarking.campaigns.rollout import RolloutDraw, RolloutSite
     from benchmarking.harness import Method, MethodOutput
@@ -66,6 +68,8 @@ GREENBYTE_FARMS = {"pen": PENMANSHIEL, "kel": KELMARSH}
 HOT_METADATA = "Hill_of_Towie_turbine_metadata.csv"
 SOURCES_DIRNAME = "sources"
 METHOD_DIRNAME = "method"
+# The test turbine's measurement folder holds one ``*_record_losses_*.csv``.
+RECORD_LOSSES_STEM = "_record_losses_"
 REAL_T13 = "T13"
 
 
@@ -273,7 +277,7 @@ def _execute_synthetic(
             }
             for r in per_turbine.itertuples()
         ],
-        "farm": {"estimate": float(farm["estimate"]), "truth": float(farm["truth"])},
+        "farm": {"estimate": float(farm["estimate"]), "truth": float(farm["truth"]), **combined_references(farm)},
         "bins": scored_bins(result.scores),
         **diagnostics(
             result.report.reference_stability,
@@ -281,6 +285,7 @@ def _execute_synthetic(
             unplanned=result.report.unplanned,
             cell_dir=cell_dir,
         ),
+        **measurement_details(result.report.data_screens, cell_dir=cell_dir),
     }
 
 
@@ -341,9 +346,14 @@ def _execute_real(
             }
             for r in per_turbine.itertuples()
         ],
-        "farm": {"estimate": float(report.farm.set_index("method").loc[WIND_UP, "estimate"]), "truth": None},
+        "farm": {
+            "estimate": float(report.farm.set_index("method").loc[WIND_UP, "estimate"]),
+            "truth": None,
+            **combined_references(report.farm.set_index("method").loc[WIND_UP]),
+        },
         "bins": reported_bins(report.outputs),
         **diagnostics(report.reference_stability, plans=report.plans, unplanned=report.unplanned, cell_dir=cell_dir),
+        **measurement_details(report.data_screens, cell_dir=cell_dir),
     }
 
 
@@ -373,14 +383,18 @@ def _matrix_method(
     era5_label: str,
     method_overrides: Mapping[str, Any] | None = None,
 ) -> Method:
-    """Return shipped ``wind-up`` on one thread, without plots.
+    """Return shipped ``wind-up`` on one thread, without plots, recording the reverse-direction reading.
 
     ``method_overrides`` is applied last, so a probe's field wins over the matrix's own.
     """
     method = wind_up_method(
         spec, columns=columns, out_dir=out_dir, era5_hourly_df=era5, screen_cache=screen_cache, era5_label=era5_label
     )
-    overrides: dict[str, Any] = {"save_plots": False, "model_params": {**method.model_params, "n_jobs": 1}}  # type: ignore[attr-defined]
+    overrides: dict[str, Any] = {
+        "save_plots": False,
+        "model_params": {**method.model_params, "n_jobs": 1},  # type: ignore[attr-defined]
+        "record_reversal": True,
+    }
     overrides.update(method_overrides or {})
     return replace(method, **overrides)  # type: ignore[type-var]
 
@@ -394,7 +408,7 @@ def diagnostics(
 ) -> dict[str, Any]:
     """Return the reference readings, the plans and unplanned turbines, the screen's ejections and the northing."""
     references = references[references["method"] == WIND_UP]
-    sigma_columns = [c for c in references.columns if c == "sigma" or str(c).startswith("sigma_block_")]
+    reading_columns = [c for c in references.columns if is_reading_column(c)]
     readings = [
         {
             "test_wtg": str(row["test_wtg"]),
@@ -403,7 +417,7 @@ def diagnostics(
             "n_records": int(row["n_records"]),
             "screened": bool(row["screened"]),
             "unjudged": bool(row["unjudged"]),
-            **{c: float(row[c]) for c in sigma_columns},
+            **{c: float(row[c]) for c in reading_columns},
         }
         for _, row in references.iterrows()
     ]
@@ -421,6 +435,41 @@ def diagnostics(
         "northing": northing,
         "n_northing_changepoints": len(northing) - len({device for device, _, _ in northing}),
     }
+
+
+def measurement_details(data_screens: Mapping[str, DataScreen], *, cell_dir: Path) -> dict[str, Any]:
+    """Return each test turbine's hours lost per reason and period, and its data screen.
+
+    ``record_losses`` is read from the test turbine's measurement folder under ``cell_dir``; a
+    turbine without one is left out. ``data_screen`` holds the candidates' table and the joint usable
+    hours against the number of references.
+    """
+    losses: dict[str, list[dict[str, Any]]] = {}
+    for wtg in sorted(data_screens):
+        found = sorted((cell_dir / METHOD_DIRNAME / wtg).glob(f"*/*{RECORD_LOSSES_STEM}*.csv"))
+        if found:
+            losses[wtg] = _plain_rows(pd.read_csv(found[-1]))
+    screens = {
+        wtg: {"candidates": _plain_rows(screen.table), "hours": _plain_rows(screen.hours)}
+        for wtg, screen in sorted(data_screens.items())
+    }
+    return {"record_losses": losses, "data_screen": screens}
+
+
+def _plain_rows(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    """Return ``frame``'s rows as JSON-ready dicts: numbers as floats, NaN as None, the rest as strings."""
+    rows = []
+    for row in frame.to_dict(orient="records"):
+        plain: dict[str, Any] = {}
+        for key, value in row.items():
+            if isinstance(value, (bool, np.bool_)):
+                plain[str(key)] = bool(value)
+            elif isinstance(value, (int, float, np.integer, np.floating)):
+                plain[str(key)] = None if pd.isna(value) else float(value)
+            else:
+                plain[str(key)] = None if value is None else str(value)
+        rows.append(plain)
+    return rows
 
 
 def with_reanalysis_wind_speed(original_df: pd.DataFrame, aligned_era5: pd.DataFrame | None) -> pd.DataFrame:
@@ -469,13 +518,25 @@ def reported_bins(outputs: Mapping[tuple[str, str], MethodOutput]) -> list[dict[
 
 
 def sigmas(output: MethodOutput) -> dict[str, float]:
-    """Return a measurement's ``sigma`` and its ``sigma_block_<h>h`` sweep, NaN when it reports none."""
+    """Return a measurement's ``sigma``, its ``sigma_block_<h>h`` sweep and its reverse-direction reading.
+
+    NaN where it reports none.
+    """
     out = {"sigma": float("nan") if output.sigma_overall is None else float(output.sigma_overall)}
     diagnostics = output.uncertainty_diagnostics
     if diagnostics is not None and not diagnostics.empty:
         row = diagnostics.iloc[0]
-        out.update({str(c): float(row[c]) for c in diagnostics.columns if str(c).startswith("sigma_block_")})
+        out.update({str(c): float(row[c]) for c in diagnostics.columns if is_reading_column(c) and c != "sigma"})
     return out
+
+
+def combined_references(farm: pd.Series) -> dict[str, float]:
+    """Return the farm row's combined reference uplift before and after the screen, and the reference spread."""
+    return {
+        key: float(farm[key])
+        for key in ("reference_uplift_before_screen", "reference_uplift_after_screen", "reference_uplift_spread")
+        if key in farm.index
+    }
 
 
 def _plan_record(plan: AnalysisPlan) -> dict[str, object]:

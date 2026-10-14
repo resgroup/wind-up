@@ -22,6 +22,7 @@ from benchmarking.baselines.power_model.features import ERA5_FEATURES, QUALIFIER
 from benchmarking.baselines.power_model.method import (
     _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
     _TIME_DECAY_CAMPAIGN_MULTIPLE,
+    REVERSAL_COLUMNS,
     _clip_predictions,
     _combine_uplift,
     _implied_shrinkage,
@@ -37,6 +38,7 @@ from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL
 from benchmarking.harness.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE
+from benchmarking.harness.scoring import _merge_diagnostics
 from benchmarking.harness.toggle import resolve_toggle
 from benchmarking.harness.waking import UPWIND_COL, WAKING_SCENARIO_COL
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
@@ -2232,21 +2234,26 @@ class TestRecordLosses:
         assert losses.loc[USABLE, "hours_after"] == pytest.approx(2000 / 6.0)
 
 
+def _uncertainty_case(n: int = 4000, *, toggle: bool = False) -> MethodInput:
+    """A toy prepost or toggle campaign with a 5 % uplift, for the uncertainty tests."""
+    idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+    if toggle:
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=4))
+        treated = np.asarray(resolve_toggle(schedule, idx).upgraded)
+        timing: object = schedule
+    else:
+        timing = pd.Timestamp(idx[n // 2])
+        treated = np.asarray(idx >= timing)
+    scada = _toy_scada(n, uplift=0.05, treated=treated)
+    return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=timing, turbine_col=_TURBINE)  # type: ignore[arg-type]
+
+
 class TestHeadlineUncertainty:
     """The cheap sigma: a circular block bootstrap of the after period's (actual, counterfactual) pairs."""
 
     @staticmethod
     def _case(n: int = 4000, *, toggle: bool = False) -> MethodInput:
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        if toggle:
-            schedule = ToggleSchedule(period=pd.Timedelta(hours=4))
-            treated = np.asarray(resolve_toggle(schedule, idx).upgraded)
-            timing: object = schedule
-        else:
-            timing = pd.Timestamp(idx[n // 2])
-            treated = np.asarray(idx >= timing)
-        scada = _toy_scada(n, uplift=0.05, treated=treated)
-        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=timing, turbine_col=_TURBINE)  # type: ignore[arg-type]
+        return _uncertainty_case(n, toggle=toggle)
 
     @staticmethod
     def _method(**overrides: object) -> PowerModelMethod:
@@ -2285,6 +2292,13 @@ class TestHeadlineUncertainty:
         b = self._method(n_resamples=50, bootstrap_seed=7).estimate(mi).p50_overall
         assert a == b
 
+    def test_the_headline_row_merges_onto_the_harness_scores(self) -> None:
+        out = self._method(record_reversal=True).estimate(self._case())
+        rows: list[dict[str, object]] = [{"condition": "overall", "condition_bin": "overall"}]
+        _merge_diagnostics(rows, out.uncertainty_diagnostics)
+        assert rows[0]["sigma_block_24h"] == pytest.approx(out.sigma_overall)
+        assert "uplift_reverse" in rows[0]
+
     def test_a_toggle_headline_carries_a_sigma_too(self) -> None:
         out = self._method().estimate(self._case(toggle=True))
         assert out.sigma_overall is not None
@@ -2311,6 +2325,50 @@ class TestHeadlineUncertainty:
         reused = method.reference_uplifts(mi, power_free=(), screen=screen).set_index("turbine")
         for turbine in reused.index:
             assert reused.loc[turbine, "sigma"] == pytest.approx(final.loc[turbine, "sigma"])
+
+
+class TestRecordedReversal:
+    """``record_reversal`` records the reverse direction beside the headline without moving it."""
+
+    @staticmethod
+    def _method(**overrides: object) -> PowerModelMethod:
+        return _fundamentals_method(model_params=_FAST_PARAMS, **overrides)
+
+    def test_is_off_by_default(self) -> None:
+        method = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
+        assert method.record_reversal is False
+        out = self._method().estimate(_uncertainty_case())
+        assert not set(REVERSAL_COLUMNS) & set(out.uncertainty_diagnostics.columns)
+
+    def test_records_both_directions_without_moving_the_headline(self) -> None:
+        mi = _uncertainty_case()
+        forward = self._method().estimate(mi)
+        recorded = self._method(record_reversal=True).estimate(mi)
+        assert recorded.p50_overall == forward.p50_overall
+        assert recorded.sigma_overall == forward.sigma_overall
+        row = recorded.uncertainty_diagnostics.iloc[0]
+        assert row["uplift_forward"] == forward.p50_overall
+        assert row["uplift_reverse"] == pytest.approx(-0.05 / 1.05, abs=0.02)
+        assert 0 < row["sigma_reverse"] < 0.02
+
+    def test_the_recorded_directions_combine_to_the_reversal_headline(self) -> None:
+        mi = _uncertainty_case()
+        row = self._method(record_reversal=True).estimate(mi).uncertainty_diagnostics.iloc[0]
+        reversal = self._method(headline_estimator="reversal").estimate(mi).p50_overall
+        combined = np.sqrt((1 + row["uplift_forward"]) / (1 + row["uplift_reverse"])) - 1
+        assert combined == pytest.approx(reversal)
+
+    def test_a_toggle_estimate_records_nan(self) -> None:
+        out = self._method(record_reversal=True).estimate(_uncertainty_case(toggle=True))
+        row = out.uncertainty_diagnostics.iloc[0]
+        assert all(np.isnan(row[c]) for c in REVERSAL_COLUMNS)
+
+    def test_every_reference_reading_carries_both_directions(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        refs = _screen_method(record_reversal=True).reference_uplifts(mi)
+        assert set(REVERSAL_COLUMNS) <= set(refs.columns)
+        assert np.isfinite(refs["uplift_reverse"]).all()
+        assert refs["uplift_forward"].to_numpy() == pytest.approx(refs["uplift"].to_numpy())
 
 
 class TestPerBinUncertainty:
