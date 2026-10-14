@@ -35,14 +35,13 @@ from benchmarking.baselines.study_power_model_compare import (
     record_baseline,
 )
 from benchmarking.harness import StudyConfig
-from benchmarking.harness.conditions import CONDITIONS
 
 
 def test_make_power_model_defaults_to_conditional_on(tmp_path: Path) -> None:
     era5 = pd.DataFrame({"wind_speed_100m": [1.0]})
     method = _make_power_model(tmp_path, era5_hourly_df=era5)
     # the compare sweep runs power_model at its default: conditional uplift on, matching on the curated set
-    assert method.conditions == CONDITIONS
+    assert method.conditions == ("power", "era5_ws")
     assert method.matching_vars == ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
 
 

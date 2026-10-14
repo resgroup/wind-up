@@ -160,6 +160,8 @@ labelled with the first reason that applies, in this order:
 | `changed upwind of subject` | a turbine is upwind of the test turbine (step 5) while it counts as changed |
 | `changed upwind of reference` | a turbine is upwind of the candidate while it counts as changed |
 | `upwind unknown` | the upwind turbines of either are unknown |
+| `part waking or missing upwind of subject` | the test turbine's waking scenario (step 5) is unknown or names a part waking turbine |
+| `part waking or missing upwind of reference` | the candidate's waking scenario is unknown or names a part waking turbine |
 
 A turbine is changed when it has a works window overlapping the span; the test turbine is always
 changed. When it counts as changed depends on how far each works window is from the test turbine's
@@ -168,8 +170,13 @@ the whole span. A window further away makes it changed only on the far side: fro
 works for a change after the changeover, until the end of the works for one before it. A neighbour
 upgraded a year after the test turbine therefore costs only the records from its works onward, not its
 upwind directions over the whole span. The measurement itself uses the same selection over the test turbine and all its power
-references at once, so a record is used only when every pair would keep it. Without the step 5 upwind
-column (the prepost matrix and the synthetic paths skip Part A) the three upwind reasons are skipped,
+references at once, so a record is used only when every pair would keep it, and then applies the two
+rules that need the whole reference set: the waking configuration rule of method step 11 ii (`rare
+waking configuration`: the scenarios of the subject and its references together have under 24 hours in
+either period) and, for a toggle test, the pairing filter of step 11 iv (`unpaired toggle record`: no
+usable record of the other state within one toggle cycle). The hours lost to every reason in each period
+are written as `record_losses.csv` in the turbine's measurement folder. Without the step 5 columns
+(the prepost matrix and the synthetic paths skip Part A) the upwind and scenario reasons are skipped,
 with a warning.
 
 **Judging.** For each candidate the screen counts the usable hours before and after (for toggle, the

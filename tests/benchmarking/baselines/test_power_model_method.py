@@ -32,11 +32,11 @@ from benchmarking.baselines.power_model.method import (
 from benchmarking.baselines.power_model.screening import ScreenResult
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import era5_source_label
-from benchmarking.harness.conditions import CONDITIONS
+from benchmarking.harness.conditions import CONDITION_BINS
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL
-from benchmarking.harness.record_selection import USABLE
+from benchmarking.harness.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE
 from benchmarking.harness.toggle import resolve_toggle
 from benchmarking.harness.waking import UPWIND_COL, WAKING_SCENARIO_COL
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
@@ -314,7 +314,7 @@ class TestModelFundamentals:
         scada = _toy_scada(n, uplift=0.04, treated=treated)
         method = _fundamentals_method(
             model_params=_FAST_PARAMS,
-            conditions=CONDITIONS,
+            conditions=PowerModelMethod.conditions,
             era5_hourly_df=_toy_era5(idx),
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
@@ -395,14 +395,18 @@ class TestConditionsSelection:
         out = self._run(conditions=("power",))
         assert set(out.p50_by_condition["condition"]) == {"power"}
 
-    def test_ws_only_reports_ws_alone(self) -> None:
-        out = self._run(conditions=("ws",))
-        assert set(out.p50_by_condition["condition"]) == {"ws"}
+    def test_era5_ws_only_reports_era5_ws_alone(self) -> None:
+        out = self._run(conditions=("era5_ws",))
+        assert set(out.p50_by_condition["condition"]) == {"era5_ws"}
 
-    def test_default_reports_all_three(self) -> None:
-        # back-compat: the promoted default is unchanged for every existing caller
+    def test_default_reports_power_and_era5_wind_speed(self) -> None:
         out = self._run()
-        assert set(out.p50_by_condition["condition"]) == {"ws", "ti", "power"}
+        assert set(out.p50_by_condition["condition"]) == {"power", "era5_ws"}
+
+    def test_the_subject_turbines_own_signals_are_not_condition_axes(self) -> None:
+        for axis in ("ws", "ti"):
+            with pytest.raises(ValueError, match="does not support"):
+                PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(axis,))
 
     def test_empty_conditions_skips_the_conditional_step(self) -> None:
         out = self._run(conditions=())
@@ -445,7 +449,7 @@ class TestConditionalWithoutItsMatchingColumns:
 
 
 class TestConditionalUplift:
-    def test_emits_conditional_uplift_by_ws_ti_and_power(self) -> None:
+    def test_emits_conditional_uplift_by_power_and_era5_wind_speed(self) -> None:
         n = 4000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = idx[n // 2]
@@ -461,9 +465,10 @@ class TestConditionalUplift:
         out = method.estimate(mi)
         bc = out.p50_by_condition
         assert list(bc.columns) == ["condition", "condition_bin", "p50_uplift"]
-        assert set(bc["condition"]) == {"ws", "ti", "power"}
-        # power uses the 6 fraction-of-rated bins
+        assert set(bc["condition"]) == {"power", "era5_ws"}
+        # power uses the 6 fraction-of-rated bins; era5_ws the shared 2 m/s wind-speed bins
         assert (bc["condition"] == "power").sum() == 6
+        assert (bc["condition"] == "era5_ws").sum() == len(CONDITION_BINS["era5_ws"]) - 1
         # Issue 14: imputation fills every uncovered bin, so the reported per-bin estimate is never NaN
         # (a bare NaN would let abstention game the conditional score, which drops non-finite errors).
         assert bc["p50_uplift"].notna().all()
@@ -494,7 +499,7 @@ class TestConditionalUplift:
 
     def test_count_floor_marks_sparse_bins_uncovered(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # force every bin below an impossibly-high floor (string target avoids a function-level import)
-        monkeypatch.setattr("benchmarking.baselines.power_model.method._MIN_BIN_MATCHED_COUNT", 10**9)
+        monkeypatch.setattr("benchmarking.baselines.power_model.method._MIN_BIN_MATCHED_HOURS", 1e9)
         n = 4000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = idx[n // 2]
@@ -669,7 +674,7 @@ class TestConditional:
         out = method.estimate(mi)
         # matched i.i.d. weather -> shrinkage ~1, forward-only overall recovers the true uplift
         assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-        assert set(out.p50_by_condition["condition"]) == {"ws", "ti", "power"}
+        assert set(out.p50_by_condition["condition"]) == {"power", "era5_ws"}
         assert list(out.p50_by_condition.columns) == ["condition", "condition_bin", "p50_uplift"]
 
     def test_overall_matches_conditional_off_and_bins_aggregate_to_it(self, tmp_path: Path) -> None:
@@ -784,8 +789,8 @@ def _shrinkage_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 
 
 
 def _ws_bin_bias(by_condition: pd.DataFrame) -> pd.Series:
-    """Per-ws-bin uplift indexed by bin (truth is 0 at placebo, so the value *is* the bias)."""
-    ws = by_condition[by_condition["condition"] == "ws"]
+    """Per-ERA5-wind-speed-bin uplift indexed by bin (truth is 0 at placebo, so the value *is* the bias)."""
+    ws = by_condition[by_condition["condition"] == "era5_ws"]
     return ws.set_index("condition_bin")["p50_uplift"]
 
 
@@ -1170,7 +1175,7 @@ class TestADeadReference:
 
     def test_as_a_power_reference_it_leaves_nothing_to_fit(self) -> None:
         mi, _ = self._mi_with_a_dead_reference()
-        with pytest.raises(ValueError, match="baseline rows"):
+        with pytest.raises(ValueError, match="usable hours in the before period"):
             _screen_method(reference_screen=False, report_reference_uplifts=False).estimate(mi)
 
     def test_its_own_uplift_is_reported_as_unknown(self) -> None:
@@ -1467,7 +1472,7 @@ def test_no_diagnostics_with_conditions_raises() -> None:
         PowerModelMethod(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            conditions=("ws",),
+            conditions=("power",),
             write_diagnostics=False,
         ).estimate(_screen_case(step=0.0)[0])
 
@@ -2044,3 +2049,176 @@ class TestValidUpliftRows:
         test = (scada[_TURBINE] == "T1").to_numpy()
         scada.loc[test & (scada.index == scada.index[4]), _POWER] = 5000.0
         assert self._selected(scada).tolist() == [True, True, True, True, False, True]
+
+
+def _context_estimate(scada: pd.DataFrame, *, changeover: pd.Timestamp, **overrides: object) -> float:
+    """Estimate T1 from a campaign-free context over ``scada``, with the fast model."""
+    context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+    method = PowerModelMethod(
+        columns=_COLUMNS,
+        baseline_rated_power_kw=2300.0,
+        conditions=(),
+        model_params=_FAST_PARAMS,
+        **overrides,  # type: ignore[arg-type]
+    )
+    return method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)).p50_overall
+
+
+class TestRecordFloors:
+    """A measurement needs 24 hours of usable data in each period (method step 11 i)."""
+
+    @staticmethod
+    def _scada(n_before: int, n_after: int) -> tuple[pd.DataFrame, pd.Timestamp]:
+        n = n_before + n_after
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = pd.Timestamp(idx[n_before])
+        return _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover)), changeover
+
+    def test_a_before_period_under_24_hours_is_refused(self) -> None:
+        scada, changeover = self._scada(143, 300)
+        with pytest.raises(ValueError, match="24"):
+            _context_estimate(scada, changeover=changeover)
+
+    def test_an_after_period_under_24_hours_is_refused(self) -> None:
+        scada, changeover = self._scada(300, 143)
+        with pytest.raises(ValueError, match="24"):
+            _context_estimate(scada, changeover=changeover)
+
+    def test_24_hours_in_each_period_is_enough(self) -> None:
+        scada, changeover = self._scada(144, 144)
+        assert np.isfinite(_context_estimate(scada, changeover=changeover))
+
+
+class TestWakingConfiguration:
+    """Method step 11 ii: the scenarios of the subject and its references together, 24 hours a period."""
+
+    @staticmethod
+    def _fixture() -> tuple[pd.DataFrame, pd.Timestamp]:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        scada = _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover))
+        return scada.assign(**{UPWIND_COL: "none", WAKING_SCENARIO_COL: "normal"}), pd.Timestamp(changeover)
+
+    def test_a_configuration_under_24_hours_in_a_period_is_dropped(self) -> None:
+        scada, changeover = self._fixture()
+        stamps = scada.index.unique()
+        rare = stamps[:100]  # 16.7 hours before the changeover, none after
+        scada.loc[(scada[_TURBINE] == "R1") & scada.index.isin(rare), WAKING_SCENARIO_COL] = "R3 not waking"
+        dropped = _context_estimate(scada, changeover=changeover)
+        assert dropped == pytest.approx(_context_estimate(scada[~scada.index.isin(rare)], changeover=changeover))
+
+    def test_a_configuration_with_24_hours_in_both_periods_is_kept(self) -> None:
+        scada, changeover = self._fixture()
+        stamps = scada.index.unique()
+        common = stamps[:200].union(stamps[2000:2200])  # 33 hours each side
+        scada.loc[(scada[_TURBINE] == "R1") & scada.index.isin(common), WAKING_SCENARIO_COL] = "R3 not waking"
+        with_scenario = _context_estimate(scada, changeover=changeover)
+        without = _context_estimate(scada[~scada.index.isin(common)], changeover=changeover)
+        assert with_scenario != pytest.approx(without)
+        assert with_scenario == pytest.approx(0.05, abs=0.02)
+
+    def test_a_wake_contributors_scenario_is_not_part_of_the_configuration(self) -> None:
+        scada, changeover = self._fixture()
+        stamps = scada.index.unique()
+        scada.loc[(scada[_TURBINE] == "R3") & scada.index.isin(stamps[:100]), WAKING_SCENARIO_COL] = "R1 not waking"
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        context = dataclasses.replace(context, candidate_references=["R1", "R2"], wake_contributors=["R3"])
+        method = PowerModelMethod(
+            columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(), model_params=_FAST_PARAMS
+        )
+        whole = method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)).p50_overall
+        plain = scada.assign(**{WAKING_SCENARIO_COL: "normal"})
+        assert whole == pytest.approx(
+            method.estimate(MethodInput(scada_df=plain, test_wtg="T1", campaign_context=context)).p50_overall
+        )
+
+    def test_the_dropped_rows_are_named_in_the_row_dump(self, tmp_path: Path) -> None:
+        scada, changeover = self._fixture()
+        stamps = scada.index.unique()
+        scada.loc[(scada[_TURBINE] == "T1") & scada.index.isin(stamps[:100]), WAKING_SCENARIO_COL] = "R3 not waking"
+        _context_estimate(scada, changeover=changeover, row_dump_dir=tmp_path)
+        rows = pd.read_parquet(tmp_path / "T1" / "rows.parquet")
+        assert (rows["loss_reason"].iloc[:100] == RARE_CONFIGURATION).all()
+        assert (rows["loss_reason"].iloc[100:] == USABLE).all()
+
+
+class TestTogglePairing:
+    """Method step 11 iv: a toggle record is used only with a record of the other state within a cycle."""
+
+    @staticmethod
+    def _fixture() -> tuple[pd.DataFrame, ToggleSchedule, np.ndarray]:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=4))
+        treated = np.asarray(resolve_toggle(schedule, idx).upgraded)
+        return _toy_scada(n, uplift=0.04, treated=treated), schedule, treated
+
+    @staticmethod
+    def _estimate(scada: pd.DataFrame, schedule: ToggleSchedule, **overrides: object) -> float:
+        method = PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            conditions=(),
+            model_params=_FAST_PARAMS,
+            **overrides,  # type: ignore[arg-type]
+        )
+        return method.estimate(
+            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        ).p50_overall
+
+    def test_on_records_a_cycle_from_any_off_record_are_dropped(self, tmp_path: Path) -> None:
+        scada, schedule, treated = self._fixture()
+        stamps = scada.index.unique()
+        # Remove every off record over a day: the on records inside it sit a cycle or more from any off record.
+        gap = stamps[1000:1144]
+        off_in_gap = gap[~treated[1000:1144]]
+        holed = scada[~scada.index.isin(off_in_gap)]
+        self._estimate(holed, schedule, row_dump_dir=tmp_path)
+        rows = pd.read_parquet(tmp_path / "T1" / "rows.parquet").set_index("timestamp")
+        on_in_gap = gap[treated[1000:1144]]
+        inside = rows.loc[on_in_gap, "loss_reason"]
+        far = inside.index[(inside.index - gap[0] > schedule.period) & (gap[-1] - inside.index > schedule.period)]
+        assert (rows.loc[far, "loss_reason"] == UNPAIRED).all()
+        assert (rows.loc[rows.index.difference(on_in_gap), "loss_reason"] == USABLE).all()
+
+    def test_a_complete_toggle_drops_nothing(self, tmp_path: Path) -> None:
+        scada, schedule, _ = self._fixture()
+        self._estimate(scada, schedule, row_dump_dir=tmp_path)
+        rows = pd.read_parquet(tmp_path / "T1" / "rows.parquet")
+        assert (rows["loss_reason"] == USABLE).all()
+
+    def test_the_gap_can_be_stated(self, tmp_path: Path) -> None:
+        scada, schedule, treated = self._fixture()
+        stamps = scada.index.unique()
+        gap = stamps[1000:1144]
+        holed = scada[~scada.index.isin(gap[~treated[1000:1144]])]
+        self._estimate(holed, schedule, row_dump_dir=tmp_path, pairing_max_gap=pd.Timedelta(days=2))
+        rows = pd.read_parquet(tmp_path / "T1" / "rows.parquet")
+        assert (rows["loss_reason"] == USABLE).all()
+
+
+class TestRecordLosses:
+    def test_the_measurement_writes_its_record_losses_in_hours(self, tmp_path: Path) -> None:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = pd.Timestamp(idx[n // 2])
+        scada = _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover))
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        valid = context.valid_for_uplift.copy()
+        valid.loc[valid.index[:60], "R1"] = False
+        context = dataclasses.replace(context, valid_for_uplift=valid)
+        method = PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            conditions=(),
+            model_params=_FAST_PARAMS,
+            out_dir=tmp_path,
+            run_subdir=False,
+        )
+        method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context))
+        losses = pd.read_csv(tmp_path / "record_losses.csv").set_index("reason")
+        assert losses.loc[EXCLUDED, "hours_before"] == pytest.approx(10.0)
+        assert losses.loc[EXCLUDED, "hours_after"] == pytest.approx(0.0)
+        assert losses.loc[USABLE, "hours_before"] == pytest.approx((2000 - 60) / 6.0)
+        assert losses.loc[USABLE, "hours_after"] == pytest.approx(2000 / 6.0)

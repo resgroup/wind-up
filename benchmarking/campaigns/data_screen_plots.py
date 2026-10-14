@@ -12,7 +12,7 @@ from matplotlib.patches import Circle
 
 from benchmarking.campaigns.data_screen import DROPPED, KEPT, SPARE
 from benchmarking.diagnostics.style import apply_grid, save_fig
-from benchmarking.harness.record_selection import CATEGORIES, USABLE
+from benchmarking.harness.record_selection import PAIR_CATEGORIES, USABLE
 from benchmarking.harness.waking import DIRECTION_COL
 from wind_up.geodesy import local_east_north
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from wind_up.layout import Layout
 
 VERDICT_COLOURS = {KEPT: "C2", SPARE: "C0", DROPPED: "C3"}
-REASON_COLOURS = dict(zip(CATEGORIES, ("C7", "C1", "C4", "C3", "C6", "C8", "C2"), strict=True))
+REASON_COLOURS = dict(zip(PAIR_CATEGORIES, ("C7", "C1", "C4", "C3", "C6", "C8", "C9", "C5", "C2"), strict=True))
 OTHER_COLOUR = "0.75"
 _ROSE_SECTORS = 16
 _MIN_COLOUR_SPAN = 0.1
@@ -98,13 +98,13 @@ def plot_record_losses(screen: DataScreen) -> plt.Figure:
     losses = screen.losses
     candidates = list(screen.table["candidate"])
     counts = losses.pivot_table(index="candidate", columns="reason", values="records", aggfunc="sum", observed=False)
-    counts = counts.reindex(index=candidates, columns=list(CATEGORIES), fill_value=0).fillna(0)
+    counts = counts.reindex(index=candidates, columns=list(PAIR_CATEGORIES), fill_value=0).fillna(0)
     totals = counts.sum(axis=1).replace(0, 1)
     shares = counts.div(totals, axis=0) * 100.0
     fig, ax = plt.subplots(figsize=(9.0, max(3.0, 0.5 * len(candidates) + 1.5)))
     y = np.arange(len(candidates))
     left = np.zeros(len(candidates))
-    for reason in CATEGORIES:
+    for reason in PAIR_CATEGORIES:
         ax.barh(y, shares[reason], left=left, color=REASON_COLOURS[reason], label=reason, edgecolor="white")
         left += shares[reason].to_numpy()
     ax.set_yticks(y, candidates)

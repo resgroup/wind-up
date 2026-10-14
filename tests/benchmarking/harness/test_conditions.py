@@ -49,8 +49,8 @@ def test_bin_edges_have_expected_width() -> None:
     assert TI_BINS[0] == 0.0
     assert TI_BINS[-1] == 0.5
     assert np.allclose(np.diff(TI_BINS), 0.05)
-    assert CONDITIONS == ("ws", "ti", "power")
-    assert CONDITION_BINS == {"ws": WS_BINS, "ti": TI_BINS}
+    assert CONDITIONS == ("ws", "ti", "power", "era5_ws")
+    assert CONDITION_BINS == {"ws": WS_BINS, "ti": TI_BINS, "era5_ws": WS_BINS}
 
 
 def test_power_fraction_edges_center_bins_on_round_fractions() -> None:

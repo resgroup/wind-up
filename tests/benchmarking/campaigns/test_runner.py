@@ -142,7 +142,16 @@ def test_toggle_treats_fewer_records_than_prepost_over_the_same_period() -> None
 
 def test_a_campaign_with_no_methods_still_returns_an_indexable_farm_table() -> None:
     result = run([])
-    assert list(result.farm.columns) == ["method", "estimate", "truth", "signed_error", "uplift_spread", "n_guarded"]
+    assert list(result.farm.columns) == [
+        "method",
+        "estimate",
+        "truth",
+        "signed_error",
+        "uplift_spread",
+        "n_guarded",
+        "reference_uplift_before_screen",
+        "reference_uplift_after_screen",
+    ]
     assert result.farm.empty
 
 

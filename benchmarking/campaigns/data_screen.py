@@ -21,7 +21,7 @@ from benchmarking.baselines.power_model.screening import MIN_POOL_TO_SCREEN
 from benchmarking.campaigns.plans import campaign_works, treated_activity
 from benchmarking.diagnostics.context import infer_timebase
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
-from benchmarking.harness.record_selection import CATEGORIES, USABLE, changed_times, pair_reasons
+from benchmarking.harness.record_selection import PAIR_CATEGORIES, USABLE, changed_times, pair_reasons
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -285,7 +285,7 @@ def _losses(reasons: pd.DataFrame, *, test: str) -> pd.DataFrame:
             "records": int((reasons[candidate] == reason).sum()),
         }
         for candidate in reasons.columns
-        for reason in CATEGORIES
+        for reason in PAIR_CATEGORIES
     ]
     return pd.DataFrame(rows, columns=list(LOSS_COLUMNS))
 

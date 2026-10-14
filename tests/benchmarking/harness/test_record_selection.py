@@ -14,16 +14,22 @@ from benchmarking.harness.record_selection import (
     CHANGED_UPWIND_OF_REFERENCE,
     CHANGED_UPWIND_OF_SUBJECT,
     EXCLUDED,
+    PART_WAKING_UPWIND_OF_REFERENCE,
+    PART_WAKING_UPWIND_OF_SUBJECT,
+    RARE_CONFIGURATION,
     REFERENCE_INVALID,
     SUBJECT_INVALID,
+    UNPAIRED,
     UPWIND_UNKNOWN,
     USABLE,
     changed_times,
     loss_reasons,
     pair_reasons,
+    rare_configurations,
+    record_losses,
     selected,
 )
-from benchmarking.harness.waking import UPWIND_COL
+from benchmarking.harness.waking import UPWIND_COL, WAKING_SCENARIO_COL
 
 if TYPE_CHECKING:
     from benchmarking.harness.record_selection import ChangedTimes
@@ -36,6 +42,7 @@ def frame(
     *,
     valid: dict[str, list[bool]] | None = None,
     upwind: dict[str, list[str]] | None = None,
+    scenario: dict[str, list[str]] | None = None,
     drop: dict[str, list[int]] | None = None,
 ) -> pd.DataFrame:
     """Long SCADA of three turbines, every record valid with nothing upwind unless overridden."""
@@ -46,6 +53,7 @@ def frame(
                 "TurbineName": turbine,
                 VALID_UPLIFT_COL: (valid or {}).get(turbine, [True] * len(INDEX)),
                 UPWIND_COL: (upwind or {}).get(turbine, ["none"] * len(INDEX)),
+                WAKING_SCENARIO_COL: (scenario or {}).get(turbine, ["normal"] * len(INDEX)),
             },
             index=INDEX,
         )
@@ -105,6 +113,33 @@ class TestLossReasons:
             USABLE,
         ]
 
+    def test_a_part_waking_or_missing_turbine_upwind_drops_the_record(self) -> None:
+        scada = frame(
+            scenario={
+                "T01": ["normal", "T02 part waking", "normal", "unknown", *["normal"] * 4],
+                "T03": ["normal", "normal", "T01 not waking; T02 part waking", "normal", "unknown", *["normal"] * 3],
+            }
+        )
+        got = reasons(scada)
+        assert list(got) == [
+            USABLE,
+            PART_WAKING_UPWIND_OF_SUBJECT,
+            PART_WAKING_UPWIND_OF_REFERENCE,
+            PART_WAKING_UPWIND_OF_SUBJECT,
+            PART_WAKING_UPWIND_OF_REFERENCE,
+            USABLE,
+            USABLE,
+            USABLE,
+        ]
+
+    def test_a_not_waking_turbine_upwind_keeps_the_record(self) -> None:
+        got = reasons(frame(scenario={"T01": ["T02 not waking"] * 8, "T02": ["T03 not waking"] * 8}))
+        assert (got == USABLE).all()
+
+    def test_an_unknown_upwind_is_reported_as_unknown_not_part_waking(self) -> None:
+        got = reasons(frame(upwind={"T02": ["unknown"] * 8}, scenario={"T02": ["unknown"] * 8}))
+        assert (got == UPWIND_UNKNOWN).all()
+
     def test_the_first_reason_wins(self) -> None:
         scada = frame(valid={"T01": [False] * 8, "T02": [False] * 8}, upwind={"T01": ["unknown"] * 8})
         got = reasons(scada, T03=[0])
@@ -136,6 +171,10 @@ class TestLossReasons:
             CHANGED_UPWIND_OF_SUBJECT,
             CHANGED_UPWIND_OF_REFERENCE,
             UPWIND_UNKNOWN,
+            PART_WAKING_UPWIND_OF_SUBJECT,
+            PART_WAKING_UPWIND_OF_REFERENCE,
+            RARE_CONFIGURATION,
+            UNPAIRED,
             USABLE,
         ]
 
@@ -161,6 +200,64 @@ class TestMissingUpwind:
             got = reasons(scada)
         assert (got == USABLE).all()
         assert UPWIND_COL in caplog.text
+
+    def test_the_scenario_rule_is_skipped_with_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        scada = frame(scenario={"T01": ["T02 part waking"] * 8}).drop(columns=[WAKING_SCENARIO_COL])
+        with caplog.at_level(logging.WARNING):
+            got = reasons(scada)
+        assert (got == USABLE).all()
+        assert WAKING_SCENARIO_COL in caplog.text
+
+
+class TestRareConfigurations:
+    """A configuration is the scenarios of the subject and its references taken together."""
+
+    @staticmethod
+    def _scenarios(subject: list[str], reference: list[str]) -> pd.DataFrame:
+        return pd.DataFrame({"waking_scenario @ test": subject, "waking_scenario @ T02": reference}, index=INDEX)
+
+    def test_a_configuration_with_enough_hours_in_both_periods_is_kept(self) -> None:
+        scenarios = self._scenarios(["normal"] * 8, ["normal"] * 8)
+        before = np.array([True] * 4 + [False] * 4)
+        rare = rare_configurations(scenarios, before=before, after=~before, hours_per_record=1.0, min_hours=4.0)
+        assert not rare.any()
+
+    def test_a_configuration_short_in_one_period_is_rare(self) -> None:
+        subject = ["normal"] * 3 + ["T03 not waking"] + ["normal"] * 2 + ["T03 not waking"] * 2
+        scenarios = self._scenarios(subject, ["normal"] * 8)
+        before = np.array([True] * 4 + [False] * 4)
+        rare = rare_configurations(scenarios, before=before, after=~before, hours_per_record=1.0, min_hours=2.0)
+        assert list(rare) == [False, False, False, True, False, False, True, True]
+
+    def test_a_configuration_seen_in_one_period_only_is_rare(self) -> None:
+        scenarios = self._scenarios(["normal"] * 8, ["normal"] * 4 + ["T03 not waking"] * 4)
+        before = np.array([True] * 4 + [False] * 4)
+        rare = rare_configurations(scenarios, before=before, after=~before, hours_per_record=1.0, min_hours=1.0)
+        assert rare.all()
+
+    def test_the_configuration_is_the_combination_not_each_column(self) -> None:
+        subject = ["normal", "normal", "T03 not waking", "T03 not waking"] * 2
+        reference = ["normal", "T03 not waking"] * 4
+        scenarios = self._scenarios(subject, reference)
+        before = np.array([True] * 4 + [False] * 4)
+        rare = rare_configurations(scenarios, before=before, after=~before, hours_per_record=1.0, min_hours=1.0)
+        assert not rare.any()
+        rare = rare_configurations(scenarios, before=before, after=~before, hours_per_record=1.0, min_hours=2.0)
+        assert rare.all()
+
+    def test_records_outside_both_periods_follow_their_configuration(self) -> None:
+        scenarios = self._scenarios(["T03 not waking"] * 2 + ["normal"] * 6, ["normal"] * 8)
+        before = np.array([False, False, True, True, True, False, False, False])
+        after = np.array([False] * 5 + [True] * 3)
+        rare = rare_configurations(scenarios, before=before, after=after, hours_per_record=1.0, min_hours=1.0)
+        assert list(rare) == [True, True, False, False, False, False, False, False]
+
+    def test_hours_are_records_times_the_timebase(self) -> None:
+        scenarios = self._scenarios(["normal"] * 8, ["normal"] * 8)
+        before = np.array([True] * 4 + [False] * 4)
+        kwargs = {"before": before, "after": ~before, "hours_per_record": 0.5}
+        assert not rare_configurations(scenarios, min_hours=2.0, **kwargs).any()
+        assert rare_configurations(scenarios, min_hours=2.5, **kwargs).all()
 
 
 class TestPairReasons:
@@ -277,3 +374,26 @@ class TestChangedTimes:
     def test_a_change_of_no_length_inside_the_span_counts(self) -> None:
         moment = day("2021-09-01")
         assert self.times({"T02": [(moment, moment)]})["T02"] == ((moment, None),)
+
+
+class TestRecordLosses:
+    def test_hours_per_reason_and_period(self) -> None:
+        got = reasons(frame(valid={"T01": [True, False, *[True] * 6]}))
+        before = np.array([True] * 3 + [False] * 5)
+        after = np.array([False] * 3 + [True] * 4 + [False])
+        losses = record_losses(got, before=before, after=after, hours_per_record=0.5).set_index("reason")
+        assert list(losses.index) == [
+            EXCLUDED,
+            SUBJECT_INVALID,
+            REFERENCE_INVALID,
+            CHANGED_UPWIND_OF_SUBJECT,
+            CHANGED_UPWIND_OF_REFERENCE,
+            UPWIND_UNKNOWN,
+            PART_WAKING_UPWIND_OF_SUBJECT,
+            PART_WAKING_UPWIND_OF_REFERENCE,
+            RARE_CONFIGURATION,
+            UNPAIRED,
+            USABLE,
+        ]
+        assert losses.loc[SUBJECT_INVALID].tolist() == [0.5, 0.0, 0.0]
+        assert losses.loc[USABLE].tolist() == [1.0, 2.0, 0.5]

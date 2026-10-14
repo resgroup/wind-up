@@ -228,7 +228,13 @@ def _log_guards(farm_uplifts: dict) -> None:
 
 
 # Uplift columns are reported as percentages, named for what they are rather than for the estimator.
-_PERCENT_COLUMNS = {"estimate": "measured uplift [%]", "uplift": "measured uplift [%]", "uplift_spread": "spread [%]"}
+_PERCENT_COLUMNS = {
+    "estimate": "measured uplift [%]",
+    "uplift": "measured uplift [%]",
+    "uplift_spread": "spread [%]",
+    "reference_uplift_before_screen": "reference uplift before screen [%]",
+    "reference_uplift_after_screen": "reference uplift after screen [%]",
+}
 # actual_energy is a sum of mean power, not energy; the log converts it and says which it is.
 _ENERGY_COLUMN = "actual_energy"
 _ENERGY_SHOWN = "treated energy [MWh]"

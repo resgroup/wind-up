@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 
 WS_BINS: list[float] = [float(x) for x in np.arange(0.0, 28.0, 2.0)]  # 0,2,…,26
 TI_BINS: list[float] = [round(float(x), 2) for x in np.arange(0.0, 0.55, 0.05)]  # 0,0.05,…,0.50
-CONDITIONS: tuple[str, ...] = ("ws", "ti", "power")
-CONDITION_BINS: dict[str, list[float]] = {"ws": WS_BINS, "ti": TI_BINS}
+CONDITIONS: tuple[str, ...] = ("ws", "ti", "power", "era5_ws")
+CONDITION_BINS: dict[str, list[float]] = {"ws": WS_BINS, "ti": TI_BINS, "era5_ws": WS_BINS}
 
 # ``power`` edges are a fraction of rated (so they scale with the turbine), unlike the fixed ws/ti
 # edges, hence they live in ``condition_bins()`` not ``CONDITION_BINS``. The outer edges sit just

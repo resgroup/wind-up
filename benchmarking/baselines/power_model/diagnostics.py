@@ -72,9 +72,6 @@ class DiagnosticData:
     sum_counterfactual_kw: float
     n_refs: int  # candidate references in the pool, screened ones included
     era5_label: str = ERA5_UNLOCATED
-    # test-turbine ws/TI row-aligned to each segment's residuals (None when no wind-speed col)
-    cond_upgraded: pd.DataFrame | None = None
-    cond_baseline_valid: pd.DataFrame | None = None
 
 
 def feature_importance_long(data: DiagnosticData) -> pd.DataFrame:

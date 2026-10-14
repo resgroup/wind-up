@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from benchmarking.baselines.power_model.method import reference_overall_uplift
 from benchmarking.campaigns.context import context_for_plan
 from benchmarking.campaigns.data_screen import (
     DEFAULT_DATA_SCREEN,
@@ -46,7 +47,14 @@ if TYPE_CHECKING:
 # Each table's columns, named here so a campaign with nothing to report still returns a frame
 # consumers can index.
 _PER_TURBINE_COLUMNS = ("method", "test_wtg", "estimate")
-_FARM_COLUMNS = ("method", "estimate", "uplift_spread", "n_guarded")
+_FARM_COLUMNS = (
+    "method",
+    "estimate",
+    "uplift_spread",
+    "n_guarded",
+    "reference_uplift_before_screen",
+    "reference_uplift_after_screen",
+)
 _REFERENCE_COLUMNS = (
     "method",
     "test_wtg",
@@ -69,7 +77,9 @@ class CampaignReport:
         period and north-calibrated by the shared northing step
     :param per_turbine: one row per method and upgraded turbine -- ``method``, ``test_wtg``,
         ``estimate``
-    :param farm: one row per method -- ``estimate``, ``uplift_spread``, ``n_guarded``
+    :param farm: one row per method -- ``estimate``, ``uplift_spread``, ``n_guarded`` and the
+        combined reference uplift before and after the screen (``reference_uplift_before_screen``,
+        ``reference_uplift_after_screen``)
     :param farm_uplifts: each method's :class:`~wind_up.FarmUplift`, including per-turbine detail
     :param reference_stability: each method's per-reference self-uplift, the campaign's own
         analysis turned on the turbines it used as references. A healthy campaign reads near 0%.
@@ -282,15 +292,18 @@ def estimate_campaign(
                 conditional_frames.append(output.p50_by_condition.assign(method=method.name, test_wtg=wtg))
 
     farm_uplifts = {name: farm_uplift(rows) for name, rows in estimates.items()}
+    stability = _stack(reference_frames, lead=_REFERENCE_COLUMNS)
+    headlines = reference_headlines(stability, rated_power_kw=spec.rated_power_kw)
     return CampaignReport(
         spec=spec,
         scada_df=visible,
         per_turbine=pd.DataFrame(per_turbine_rows, columns=list(_PER_TURBINE_COLUMNS)),
         farm=pd.DataFrame(
-            [_farm_row(name, result) for name, result in farm_uplifts.items()], columns=list(_FARM_COLUMNS)
+            [_farm_row(name, result, references=headlines.get(name)) for name, result in farm_uplifts.items()],
+            columns=list(_FARM_COLUMNS),
         ),
         farm_uplifts=farm_uplifts,
-        reference_stability=_stack(reference_frames, lead=_REFERENCE_COLUMNS),
+        reference_stability=stability,
         conditional=_stack(conditional_frames, lead=_CONDITIONAL_COLUMNS),
         outputs=outputs,
         wall_time_s=wall_time_s,
@@ -299,13 +312,40 @@ def estimate_campaign(
     )
 
 
-def _farm_row(method: str, result: FarmUplift) -> dict[str, object]:
-    """One method's farm headline row."""
+def _farm_row(method: str, result: FarmUplift, *, references: tuple[float, float] | None) -> dict[str, object]:
+    """One method's farm headline row; ``references`` is its combined reference uplift before and after the screen."""
+    before, after = references if references is not None else (float("nan"), float("nan"))
     return {
         "method": method,
         "estimate": result.uplift,
         "uplift_spread": result.uplift_spread,
         "n_guarded": int((result.turbines["guard"] != "").sum()),
+        "reference_uplift_before_screen": before,
+        "reference_uplift_after_screen": after,
+    }
+
+
+def reference_headlines(stability: pd.DataFrame, *, rated_power_kw: float) -> dict[str, tuple[float, float]]:
+    """Return each method's combined reference uplift before and after the screen (method step 16).
+
+    Each reference counts once per method, as the median of its readings across the test turbines;
+    it is screened or unjudged when any test turbine's screen says so.
+    """
+    if stability.empty:
+        return {}
+    flags = {c: (c, "any") for c in ("screened", "unjudged") if c in stability.columns}
+    once = stability.groupby(["method", "turbine"], as_index=False).agg(
+        uplift=("uplift", "median"),
+        actual_energy=("actual_energy", "median"),
+        n_records=("n_records", "median"),
+        **flags,
+    )
+    return {
+        str(method): (
+            reference_overall_uplift(rows, rated_power_kw=rated_power_kw, after_screen=False),
+            reference_overall_uplift(rows, rated_power_kw=rated_power_kw, after_screen=True),
+        )
+        for method, rows in once.groupby("method")
     }
 
 

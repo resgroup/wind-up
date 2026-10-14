@@ -30,7 +30,16 @@ if TYPE_CHECKING:
 
 # The farm table's columns, named here so a campaign with nothing to aggregate still returns a
 # frame consumers can index.
-_FARM_COLUMNS = ("method", "estimate", "truth", "signed_error", "uplift_spread", "n_guarded")
+_FARM_COLUMNS = (
+    "method",
+    "estimate",
+    "truth",
+    "signed_error",
+    "uplift_spread",
+    "n_guarded",
+    "reference_uplift_before_screen",
+    "reference_uplift_after_screen",
+)
 
 
 @dataclass
@@ -39,8 +48,8 @@ class CampaignResult:
 
     :param spec: the campaign that was run
     :param scores: the tidy harness rows, one set per upgraded turbine at n=1
-    :param farm: one row per method -- ``estimate``, ``truth``, ``signed_error``, ``uplift_spread``
-        and ``n_guarded``
+    :param farm: one row per method -- ``estimate``, ``truth``, ``signed_error``, ``uplift_spread``,
+        ``n_guarded`` and the combined reference uplift before and after the screen
     :param farm_uplifts: each method's :class:`~wind_up.FarmUplift`, including per-turbine detail
     :param truth_farm_uplift: the exact pooled farm truth
     :param outputs: each ``(method, turbine)``'s raw :class:`~benchmarking.harness.MethodOutput`
@@ -161,9 +170,10 @@ class CampaignRunner:
                 )
 
         truth_farm = visible.true_farm_uplift(test_wtgs=analysed, masks=truth_masks)
+        references = report.farm.set_index("method")
         farm = pd.DataFrame(
             [
-                self._farm_row(name, result, visible=visible, masks=truth_masks)
+                self._farm_row(name, result, visible=visible, masks=truth_masks, references=references.loc[name])
                 for name, result in report.farm_uplifts.items()
             ],
             columns=_FARM_COLUMNS,
@@ -185,6 +195,7 @@ class CampaignRunner:
         *,
         visible: SyntheticDataset,
         masks: dict[str, np.ndarray],
+        references: pd.Series,
     ) -> dict[str, object]:
         """One method's farm row, with its truth pooled over the turbines it actually used.
 
@@ -202,6 +213,8 @@ class CampaignRunner:
             "signed_error": result.uplift - truth,
             "uplift_spread": result.uplift_spread,
             "n_guarded": int((result.turbines["guard"] != "").sum()),
+            "reference_uplift_before_screen": float(references["reference_uplift_before_screen"]),
+            "reference_uplift_after_screen": float(references["reference_uplift_after_screen"]),
         }
 
     def _visible_dataset(self, report: CampaignReport) -> SyntheticDataset:

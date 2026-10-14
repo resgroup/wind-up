@@ -37,7 +37,6 @@ from benchmarking.baselines.power_model.features import (
     era5_feature_frame,
     extract_outcome,
     reference_mean_wind_speed,
-    test_condition_signals,
     waking_scenario_features,
 )
 from benchmarking.baselines.power_model.fitting import make_outcome_model, model_safe_features, time_block_folds
@@ -53,16 +52,22 @@ from benchmarking.diagnostics import DiagnosticContext, stages, write_common_dia
 from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.harness.conditions import (
     CONDITION_BINS,
-    CONDITIONS,
     condition_bins,
     energy_ratio_by_bin,
     validate_conditions,
 )
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
-from benchmarking.harness.reanalysis import interpolate_era5
-from benchmarking.harness.record_selection import USABLE, loss_reasons
-from benchmarking.harness.toggle import is_toggle, resolve_toggle, toggle_upgrade_start
+from benchmarking.harness.reanalysis import ERA5_WS_RAW, interpolate_era5
+from benchmarking.harness.record_selection import (
+    RARE_CONFIGURATION,
+    UNPAIRED,
+    USABLE,
+    loss_reasons,
+    rare_configurations,
+    record_losses,
+)
+from benchmarking.harness.toggle import is_toggle, pair_within, resolve_toggle, toggle_cycle, toggle_upgrade_start
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
 from wind_up.farm import TurbineUplift, farm_uplift
 
@@ -73,7 +78,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_MIN_BASELINE_ROWS = 10
+# The fewest usable hours a measurement needs in each period (method step 11 i).
+_MIN_PERIOD_HOURS = 24.0
 _MIN_HOLDOUT_ROWS = 20  # below this, report the in-sample fit (no point splitting off a tiny valid set)
 # Time-blocked split shape for the baseline holdout diagnostic (``_holdout_fit`` takes fold 0 as the
 # held-out slice): 25 contiguous blocks round-robin over 5 folds, so each fold is ~20% of the rows
@@ -93,24 +99,17 @@ _MIN_TIME_DECAY_DURATION_DAYS = 1.0  # floor the campaign duration so the half-l
 # unchanged; drivers pass this instead.
 TUNED_MODEL_PARAMS: dict[str, Any] = {"min_child_samples": 50}
 
-# Per-reporting-bin matched-count floor for the two-direction conditional combine (Issue 14). Below this
-# many matched rows *per side* in a ws/TI reporting bin, the combine overshoots — the sparse-extreme
-# tail (e.g. TI (0.45,0.50] swinging -77 to +93 pp between replicates) — so the bin is marked uncovered and
-# filled by the physics-informed imputer instead of trusting its noisy shape. Compared against the raw
-# per-side matched count today; if the per-bin balance reweighting (A5) is adopted it becomes the Kish
-# ESS. The value is chosen on placebo/benchmark evidence across many bins, not tuned to the
-# one known bad TI bin.
-_MIN_BIN_MATCHED_COUNT = 50
+# A reporting bin with fewer matched hours than this on either side is not measured but filled from
+# its neighbours (method step 15).
+_MIN_BIN_MATCHED_HOURS = 8.0
 
-# Matching set + bin widths for the bias-cancellation correction, verified on real HoT by the CEM
-# coverage sweep (docs/v1/findings.md). wind_speed_100m (dominant) is binned finest, wind_gusts_10m
-# coarser, and wind_direction_100m in 20° sectors (a reanalysis direction — finer is finer than the
-# signal). Fixed sectors, no wraparound (adjacent sectors are just separate cells, per the CEM utility).
+# Matching set + bin widths for the two-direction conditional step: wind_speed_100m binned finest,
+# wind_gusts_10m coarser, and wind_direction_100m in 20° sectors. Fixed sectors, no wraparound.
 _DEFAULT_MATCHING_VARS: tuple[str, ...] = ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
-# This method can report every condition axis: its ws/TI come from the test turbine's own measurements
-# (post-treatment, accepted per design-note §3) and its power axis is labelled by the counterfactual
-# prediction. The default reports all three, preserving the behaviour of every existing caller.
-_SUPPORTED_CONDITIONS: tuple[str, ...] = CONDITIONS
+# The condition axes this method reports: upgrade-invariant only. ``power`` is labelled by the
+# counterfactual prediction as a fraction of rated and ``era5_ws`` by the aligned ERA5 100 m wind
+# speed; the subject turbine's own wind speed and turbulence are never used.
+_SUPPORTED_CONDITIONS: tuple[str, ...] = ("power", "era5_ws")
 _DEFAULT_MATCHING_BIN_EDGES: dict[str, list[float]] = {
     "wind_speed_100m": [float(x) for x in np.arange(0.0, 34.0, 2.0)],  # 0,2,…,32
     "wind_gusts_10m": [float(x) for x in np.arange(0.0, 48.0, 3.0)],  # 0,3,…,45
@@ -145,19 +144,24 @@ def reference_measurement_dirname(reference: str, *, test_wtg: str) -> str:
     return f"{reference}_reference_for_{test_wtg}"
 
 
-def reference_overall_uplift(reference_uplifts: pd.DataFrame, *, rated_power_kw: float) -> float:
-    """Combine surviving references into one energy-weighted uplift -- the campaign sanity check.
+def reference_overall_uplift(
+    reference_uplifts: pd.DataFrame, *, rated_power_kw: float, after_screen: bool = True
+) -> float:
+    """Combine the references into one energy-weighted uplift, the campaign's check of bias (method step 16).
 
-    Screened references are excluded: the number answers what the *final* analysis says its
-    references did, and a healthy campaign reads near 0%. NaN when nothing survives.
-
-    Combined through ``farm_uplift``, the same path the test turbines take, so the reference
-    headline and the test headline are the same kind of number.
+    After the screen, the references the screen ruled out or did not judge are left out; before it,
+    every reference with a finite uplift counts. Combined through ``farm_uplift``, the path the test
+    turbines take. NaN when no reference counts.
     """
     if reference_uplifts.empty:
         return float("nan")
-    surviving = reference_uplifts[~reference_uplifts["screened"].astype(bool)]
-    if surviving.empty:
+    rows = reference_uplifts[np.isfinite(reference_uplifts["uplift"].to_numpy(dtype=float))]
+    if after_screen:
+        out = rows["screened"].astype(bool).to_numpy()
+        if "unjudged" in rows.columns:
+            out |= rows["unjudged"].astype(bool).to_numpy()
+        rows = rows[~out]
+    if rows.empty:
         return float("nan")
     turbines = [
         TurbineUplift(
@@ -167,7 +171,7 @@ def reference_overall_uplift(reference_uplifts: pd.DataFrame, *, rated_power_kw:
             n_records=int(row.n_records),
             rated_power_kw=rated_power_kw,
         )
-        for row in surviving.itertuples()
+        for row in rows.itertuples()
     ]
     return float(farm_uplift(turbines).uplift)
 
@@ -233,17 +237,15 @@ def _condition_frame(
     actual_full: np.ndarray,
     bins: list[float],
     one_plus_overall: float,
+    hours_per_record: float,
 ) -> pd.DataFrame:
     """One condition axis' per-bin two-direction uplift, imputed where uncovered and re-leveled to the headline.
 
-    The three ``*_cond`` arrays label each side's rows by the reporting axis: for ws/TI they are the same
-    signal read off every side; for power they are each side's counterfactual prediction (forward =
-    ``pred_up``, reverse = ``pred_base``, full = the full-fit counterfactual). Labelling every power side by
-    its prediction — never by the actual outcome that also sits in that side's ratio numerator — is what
-    keeps the reverse ratio free of a regression-to-the-mean tilt (see the power-frame note in
-    ``_conditional_by_bin``). The forward/reverse energy ratios give the shrinkage-free per-bin
-    shape; uncovered bins are imputed (``impute_uncovered_bins``) and the whole thing is re-leveled onto the
-    headline by full-upgraded energy so measured + imputed aggregate to ``one_plus_overall``.
+    The three ``*_cond`` arrays label each side's rows by the reporting axis: the forward (matched
+    upgraded) rows, the reverse (matched baseline) rows and the full upgraded rows that weight the
+    re-level. A bin with under ``_MIN_BIN_MATCHED_HOURS`` matched hours on either side is imputed
+    (``impute_uncovered_bins``); measured and imputed bins are then re-leveled by full-upgraded
+    energy so they aggregate to ``one_plus_overall``.
     """
     fwd = energy_ratio_by_bin(fwd_cond, y_fwd, pred_fwd, bins=bins)
     rev = energy_ratio_by_bin(rev_cond, y_rev, pred_rev, bins=bins)
@@ -263,10 +265,9 @@ def _condition_frame(
     r_rev = merged["p50_uplift_rev"].to_numpy()
     shape = 1.0 + _combine_uplift(r_fwd, r_rev)  # shrinkage-free shape (NaN if degenerate)
     sum_actual_full = merged["sum_actual_full"].to_numpy()
-    # A bin is covered only if its shape is finite AND both directions have enough matched rows;
-    # below the floor the two-direction combine overshoots, so the bin is imputed instead.
     per_side = np.minimum(merged["n_records_fwd"].to_numpy(), merged["n_records_rev"].to_numpy())
-    measured = np.isfinite(shape) & (per_side >= _MIN_BIN_MATCHED_COUNT)
+    per_side_hours = per_side * hours_per_record
+    measured = np.isfinite(shape) & (per_side_hours >= _MIN_BIN_MATCHED_HOURS)
     imputed_shape = impute_uncovered_bins(shape, condition=name, measured=measured, one_plus_overall=one_plus_overall)
     releveled = relevel_conditional(
         sum_actual_full, imputed_shape, measured=measured, one_plus_overall=one_plus_overall
@@ -344,9 +345,9 @@ class PowerModelMethod:
 
     :param columns: **required** source-native column schema — the single source of the method's
         column names. It reads the ``active_power`` (the outcome ``Y`` and the reference active-power
-        feature), ``availability`` (drives the test-turbine downtime filter), ``wind_speed`` (its
-        reference mean feeds the stuck-filter calm exemption) and ``wind_speed_sd`` (the
-        turbulence-intensity signal) roles; the remaining roles feed only the shared diagnostics.
+        feature), ``availability`` (drives the test-turbine downtime filter) and ``wind_speed`` (its
+        reference mean feeds the stuck-filter calm exemption) roles; the remaining roles feed only
+        the shared diagnostics.
     :param baseline_rated_power_kw: **required** rated power of the turbine over the data the model is
         fitted on — today every fit is on baseline rows, so this is the baseline rating. It caps the
         clipped counterfactual predictions. (A future cross-predict direction that trains on upgraded
@@ -372,13 +373,16 @@ class PowerModelMethod:
         default ``TUNED_MODEL_PARAMS`` (``min_child_samples=50``), so a bare method already carries
         the accepted capacity and any key here wins
     :param timebase: analysis timebase; inferred from the data when ``None``
-    :param conditions: which condition axes to report a per-bin conditional uplift over — any of
-        ``"ws"`` / ``"ti"`` / ``"power"`` (default: all three). The overall P50 is a single
-        baseline→upgraded fit regardless; when ``conditions`` is non-empty an extra two-direction,
-        ERA5-weather-matched (CEM) cross-prediction runs **last** to estimate the conditional shape
-        (its common per-bin shrinkage cancels), then re-levels onto the headline. That step
-        **requires ERA5** (the matching axis is the ERA5 columns). Pass ``()`` to skip that
-        cross-prediction — the expensive part — and return only the overall P50.
+    :param conditions: which condition axes to report a per-bin conditional uplift over: ``"power"``
+        (the counterfactual prediction as a fraction of rated) and ``"era5_ws"`` (the aligned ERA5
+        100 m wind speed), both by default. The overall P50 is a single baseline→upgraded fit
+        regardless; when ``conditions`` is non-empty an extra two-direction, ERA5-weather-matched
+        (CEM) cross-prediction runs **last** to estimate the conditional shape (its common per-bin
+        shrinkage cancels), then re-levels onto the headline. That step **requires ERA5** (the
+        matching axis is the ERA5 columns). Pass ``()`` to skip that cross-prediction — the
+        expensive part — and return only the overall P50.
+    :param pairing_max_gap: for a toggle campaign, a record of one state is used only when a usable
+        record of the other state lies within this gap; ``None`` (default) means one toggle cycle
     :param matching_vars: ERA5 columns matched on for the conditional step (default: the curated set)
     :param matching_bin_edges: per-variable CEM bin edges; the curated defaults are used when ``None``
     :param reference_stat_cols: extra per-reference value columns to carry as features beside active power
@@ -444,6 +448,7 @@ class PowerModelMethod:
     model_params: dict[str, Any] = field(default_factory=dict)
     timebase: pd.Timedelta | None = None
     conditions: tuple[str, ...] = _SUPPORTED_CONDITIONS
+    pairing_max_gap: pd.Timedelta | None = None
     matching_vars: tuple[str, ...] = _DEFAULT_MATCHING_VARS
     matching_bin_edges: dict[str, list[float]] | None = None
     reference_stat_cols: tuple[str, ...] = ()
@@ -473,7 +478,7 @@ class PowerModelMethod:
 
     def __post_init__(self) -> None:
         """Validate ``columns`` names every role this method reads, and the requested ``conditions``."""
-        self.columns.require_roles(("active_power", "availability", "wind_speed", "wind_speed_sd"))
+        self.columns.require_roles(("active_power", "availability", "wind_speed"))
         if self.direction_feature:
             self.columns.require_roles(("nacelle_position",))
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
@@ -521,8 +526,15 @@ class PowerModelMethod:
 
         toggle_rows = resolve_toggle(mi.upgrade_timing, index)
         t = toggle_rows.upgraded
-        reasons = self._loss_reasons(
-            mi, index=index, references=[r for r in references if r not in power_free], timebase=timebase
+        power_references = [r for r in references if r not in power_free]
+        reasons = self._select_records(
+            scada,
+            mi=mi,
+            index=index,
+            references=power_references,
+            timebase=timebase,
+            before=toggle_rows.campaign_baseline,
+            after=t,
         )
         selected = np.asarray(reasons == USABLE) & np.isfinite(y.to_numpy(dtype=float))
         # The counterfactual is fitted on the lenient training baseline (pre-campaign U off-blocks);
@@ -530,12 +542,15 @@ class PowerModelMethod:
         # strict campaign_baseline (off-blocks only), so it never matches pre-campaign against on rows.
         baseline_sel = selected & toggle_rows.training_baseline
         upgraded_sel = selected & t
-        if int(baseline_sel.sum()) < _MIN_BASELINE_ROWS:
-            msg = f"too few normally-operating baseline rows ({int(baseline_sel.sum())}) to fit the power model."
-            raise ValueError(msg)
-        if not upgraded_sel.any():
-            msg = "no normally-operating upgraded rows to estimate uplift over."
-            raise ValueError(msg)
+        hours_per_record = timebase / pd.Timedelta(hours=1)
+        for period, rows in (("before", selected & toggle_rows.campaign_baseline), ("after", upgraded_sel)):
+            hours = float(np.count_nonzero(rows)) * hours_per_record
+            if hours < _MIN_PERIOD_HOURS:
+                msg = (
+                    f"{mi.test_wtg}: {hours:.1f} usable hours in the {period} period, under the {_MIN_PERIOD_HOURS:g} "
+                    f"needed in each period to measure an uplift."
+                )
+                raise ValueError(msg)
 
         y_arr = y.to_numpy(dtype=float)
         weights = self._time_decay_weights(
@@ -578,19 +593,6 @@ class PowerModelMethod:
             r_rev = _ratio(y_arr[baseline_sel], pred_baseline)
             uplift = float(_combine_uplift(np.array([uplift]), np.array([r_rev]))[0])
 
-        # ws/TI row-aligned to each segment's residuals, for the overall shrinkage-check diagnostics (cheap,
-        # plots only). Computed here so the run folder's step-5 residual plots are drawn whether or not the
-        # optional conditional step runs.
-        conditions = test_condition_signals(
-            scada,
-            test_wtg=mi.test_wtg,
-            turbine_col=mi.turbine_col,
-            wind_speed_col=self.columns.wind_speed,
-            wind_speed_sd_col=self.columns.wind_speed_sd,
-        )
-        cond_upgraded = conditions.iloc[upgraded_sel].reset_index(drop=True)
-        cond_baseline_valid = conditions.iloc[fit["baseline_valid_pos"]].reset_index(drop=True)
-
         # A clone that estimates one reference during screening or reporting writes nothing:
         # out_dir=None does not suppress diagnostics, it makes a temp directory per run.
         run_dir = self._run_dir(mi, index) if self.write_diagnostics else None
@@ -610,8 +612,9 @@ class PowerModelMethod:
                 sum_actual=sum_actual,
                 sum_counter=sum_counter,
                 n_refs=n_refs,
-                cond_upgraded=cond_upgraded,
-                cond_baseline_valid=cond_baseline_valid,
+                losses=record_losses(
+                    reasons, before=toggle_rows.campaign_baseline, after=t, hours_per_record=hours_per_record
+                ),
             )
             if self.save_plots:
                 self._write_shared_diagnostics(
@@ -641,7 +644,6 @@ class PowerModelMethod:
             # only churns the sparse extreme-condition tail bins (and slightly worsens ws spread) without
             # helping the populated bins — so the corrections are spent on the overall headline instead.
             by_condition = self._estimate_conditional(
-                scada,
                 mi=mi,
                 features=features,
                 era5=era5,  # type: ignore[arg-type]
@@ -650,6 +652,7 @@ class PowerModelMethod:
                 upgraded_sel=upgraded_sel,
                 fit=fit,
                 overall_ratio=uplift,
+                hours_per_record=hours_per_record,
                 # non-None whenever conditions are requested; _validate_model_config enforces it
                 run_dir=run_dir,  # type: ignore[arg-type]
             )
@@ -667,7 +670,6 @@ class PowerModelMethod:
 
     def _estimate_conditional(
         self,
-        scada: pd.DataFrame,
         *,
         mi: MethodInput,
         features: pd.DataFrame,
@@ -677,16 +679,16 @@ class PowerModelMethod:
         upgraded_sel: np.ndarray,
         fit: dict[str, Any],
         overall_ratio: float,
+        hours_per_record: float,
         run_dir: Path,
     ) -> pd.DataFrame | None:
-        """Per-(ws, TI)-bin conditional uplift via a two-direction, ERA5-weather-matched cross-prediction.
+        """Per-bin conditional uplift via a two-direction, ERA5-weather-matched cross-prediction (method step 15).
 
         Match the baseline and upgraded periods on ERA5 weather, then fit/predict in both directions and
-        combine so the common per-bin shrinkage cancels (by design); the decomposition is re-leveled onto the
+        combine so the common per-bin shrinkage cancels; the decomposition is re-leveled onto the
         already-computed overall headline (``overall_ratio``, from the single full fit ``fit``) so the per-bin
         MWh partitions it. Requires ERA5: the matching axis is the aligned ERA5 columns ``era5``. Returns
-        the ``[condition, condition_bin, p50_uplift]`` frame (or ``None`` when no wind-speed column), and
-        writes the per-run diagnostics.
+        the ``[condition, condition_bin, p50_uplift]`` frame and writes the per-run diagnostics.
         """
         # Matched two-direction fits, for the per-bin shape only. Matching is required: without it the reverse
         # model (train upgraded, predict baseline) would extrapolate out-of-distribution across the prepost
@@ -710,8 +712,7 @@ class PowerModelMethod:
         r_rev = _ratio(y[mb], pred_base)
 
         per_bin = self._conditional_by_bin(
-            scada,
-            mi=mi,
+            era5=era5,
             y=y,
             mb=mb,
             mu=mu,
@@ -721,6 +722,7 @@ class PowerModelMethod:
             actual_full=fit["y_upgraded"],
             pred_upgraded=fit["pred_upgraded"],
             overall_ratio=overall_ratio,
+            hours_per_record=hours_per_record,
         )
         by_condition = per_bin[["condition", "condition_bin", "p50_uplift"]].copy() if per_bin is not None else None
         self._write_conditional(
@@ -757,9 +759,8 @@ class PowerModelMethod:
 
     def _conditional_by_bin(
         self,
-        scada: pd.DataFrame,
         *,
-        mi: MethodInput,
+        era5: pd.DataFrame,
         y: np.ndarray,
         mb: np.ndarray,
         mu: np.ndarray,
@@ -769,57 +770,46 @@ class PowerModelMethod:
         actual_full: np.ndarray,
         pred_upgraded: np.ndarray,
         overall_ratio: float,
+        hours_per_record: float,
     ) -> pd.DataFrame | None:
-        """Per-(ws, TI, power)-bin two-direction uplift, imputed where uncovered and re-leveled onto the headline.
+        """Per-bin two-direction uplift on each axis, imputed where uncovered and re-leveled onto the headline.
 
-        The measured **shape** ``1+u_b = sqrt((1+r_fwd_b)/(1+r_rev_b))`` comes from the matched
-        forward/reverse fits; a bin is ``covered`` (trusted) only when that shape is finite (Issue 14 adds
-        the per-bin matched-count floor to this test). Uncovered bins are filled by
-        :func:`~benchmarking.baselines.power_model.conditional.impute_uncovered_bins` (ws: bfill then 0 at
-        rated; ti: the overall uplift) so every bin carries a best estimate rather than a bare NaN. The
-        re-level **weights** are the *full-upgraded* actual energy per bin (``actual_full`` over
-        ``upgraded_pos``): imputed bins are pinned and one λ scales the measured bins so measured + imputed
-        together energy-aggregate to ``1 + overall_ratio`` exactly (corrected for uncovered-bin energy).
-        The returned frame carries a ``covered`` flag (a per-run diagnostic — the harness seam only sees
-        ``p50_uplift``).
+        The measured shape ``1+u_b = sqrt((1+r_fwd_b)/(1+r_rev_b))`` comes from the matched
+        forward/reverse fits; a bin is ``covered`` when that shape is finite and both sides hold enough
+        matched hours. Uncovered bins are filled by
+        :func:`~benchmarking.baselines.power_model.conditional.impute_uncovered_bins`. The re-level
+        weights are the full-upgraded actual energy per bin (``actual_full`` over ``upgraded_pos``):
+        imputed bins are pinned and one scale moves the measured bins so measured + imputed together
+        energy-aggregate to ``1 + overall_ratio``. The returned frame carries a ``covered`` flag.
+
+        The power axis labels every side by its counterfactual prediction (forward rows by
+        ``pred_up``, reverse rows by ``pred_base``, the re-level weights by ``pred_upgraded``), never by
+        the actual power that is also that side's ratio numerator. The ERA5 wind speed axis labels
+        every side by the aligned 100 m wind speed.
         """
-        conditions = test_condition_signals(
-            scada,
-            test_wtg=mi.test_wtg,
-            turbine_col=mi.turbine_col,
-            wind_speed_col=self.columns.wind_speed,
-            wind_speed_sd_col=self.columns.wind_speed_sd,
-        )
-        cond_up = conditions.iloc[mu].reset_index(drop=True)  # matched-upgraded (forward binning)
-        cond_base = conditions.iloc[mb].reset_index(drop=True)  # matched-baseline (reverse binning)
-        cond_full = conditions.iloc[upgraded_pos].reset_index(drop=True)  # all upgraded (re-level weights)
         one_plus_overall = 1.0 + overall_ratio
-        frames = [
-            _condition_frame(
-                name,
-                fwd_cond=cond_up[name].to_numpy(),
-                rev_cond=cond_base[name].to_numpy(),
-                full_cond=cond_full[name].to_numpy(),
-                y_fwd=y[mu],
-                pred_fwd=pred_up,
-                y_rev=y[mb],
-                pred_rev=pred_base,
-                actual_full=actual_full,
-                bins=CONDITION_BINS[name],
-                one_plus_overall=one_plus_overall,
+        common = {
+            "y_fwd": y[mu],
+            "pred_fwd": pred_up,
+            "y_rev": y[mb],
+            "pred_rev": pred_base,
+            "actual_full": actual_full,
+            "one_plus_overall": one_plus_overall,
+            "hours_per_record": hours_per_record,
+        }
+        frames = []
+        if "era5_ws" in self.conditions:
+            ws = era5[ERA5_WS_RAW].to_numpy(dtype=float)
+            frames.append(
+                _condition_frame(
+                    "era5_ws",
+                    fwd_cond=ws[mu],
+                    rev_cond=ws[mb],
+                    full_cond=ws[upgraded_pos],
+                    bins=CONDITION_BINS["era5_ws"],
+                    **common,
+                )
             )
-            for name in ("ws", "ti")
-            if name in conditions.columns and name in self.conditions
-        ]
-        # power: the baseline operating point, and every side is labelled by its *counterfactual
-        # prediction* — forward (upgraded) rows by ``pred_up``, reverse (baseline) rows by ``pred_base``,
-        # the full re-level weights by ``pred_upgraded``. The reverse side must NOT be labelled by its
-        # actual power ``y[mb]``: ``y[mb]`` is also the reverse ratio's numerator, so binning on it selects
-        # each bin on its own noise and pulls in a regression-to-the-mean tilt (spuriously positive uplift
-        # at low power, negative at high — flat truth reads as a slope). Labelling both sides by the
-        # prediction keeps the per-bin shrinkage common so it cancels in the two-direction combine, which is
-        # the whole premise of ``_combine_uplift``. Edges scale with the baseline rating (§2 of the design),
-        # so power is not in the fixed ``CONDITION_BINS``.
         if "power" in self.conditions:
             frames.append(
                 _condition_frame(
@@ -827,13 +817,8 @@ class PowerModelMethod:
                     fwd_cond=pred_up,
                     rev_cond=pred_base,
                     full_cond=pred_upgraded,
-                    y_fwd=y[mu],
-                    pred_fwd=pred_up,
-                    y_rev=y[mb],
-                    pred_rev=pred_base,
-                    actual_full=actual_full,
                     bins=condition_bins("power", rated_power_kw=self.baseline_rated_power_kw),
-                    one_plus_overall=one_plus_overall,
+                    **common,
                 )
             )
         return pd.concat(frames, ignore_index=True) if frames else None
@@ -939,10 +924,49 @@ class PowerModelMethod:
         days_outside = np.maximum(seconds_outside / 86400.0, 0.0)
         return np.asarray(0.5 ** (days_outside / half_life), dtype=float)
 
+    def _select_records(
+        self,
+        scada: pd.DataFrame,
+        *,
+        mi: MethodInput,
+        index: pd.DatetimeIndex,
+        references: Sequence[str],
+        timebase: pd.Timedelta,
+        before: np.ndarray,
+        after: np.ndarray,
+    ) -> pd.Series:
+        """Return why each record of ``index`` is lost with ``references`` as the power references, or usable.
+
+        The per-turbine rules of method step 11 i and iii come first, then the waking configuration
+        rule of step 11 ii over the usable records, then for a toggle campaign the pairing filter of
+        step 11 iv. ``scada`` is the frame the campaign selected; ``before`` and ``after`` are the
+        two periods over ``index``.
+        """
+        reasons = self._loss_reasons(mi, index=index, references=references, timebase=timebase)
+        usable = np.asarray(reasons == USABLE)
+        if WAKING_SCENARIO_COL in scada.columns and references:
+            scenarios = waking_scenario_features(
+                scada, test_wtg=mi.test_wtg, references=references, turbine_col=mi.turbine_col
+            ).reindex(index)
+            rare = rare_configurations(
+                scenarios,
+                before=usable & before,
+                after=usable & after,
+                hours_per_record=timebase / pd.Timedelta(hours=1),
+            )
+            reasons[usable & rare] = RARE_CONFIGURATION
+            usable &= ~rare
+        if is_toggle(mi.upgrade_timing):
+            gap = self.pairing_max_gap if self.pairing_max_gap is not None else toggle_cycle(mi.upgrade_timing, index)
+            paired = pair_within(index, baseline=usable & before, upgraded=usable & after, max_gap=gap)
+            unpaired = usable & (before | after) & ~(paired.baseline | paired.upgraded)
+            reasons[unpaired] = UNPAIRED
+        return reasons
+
     def _loss_reasons(
         self, mi: MethodInput, *, index: pd.DatetimeIndex, references: Sequence[str], timebase: pd.Timedelta
     ) -> pd.Series:
-        """Return why each record of ``index`` is lost with ``references`` as the power references, or usable.
+        """Return why each record of ``index`` is lost to the per-turbine rules, or usable.
 
         Generic states are labelled first when the frame has no ``valid_uplift`` column.
         """
@@ -1619,11 +1643,11 @@ class PowerModelMethod:
         sum_actual: float,
         sum_counter: float,
         n_refs: int,
-        cond_upgraded: pd.DataFrame | None = None,
-        cond_baseline_valid: pd.DataFrame | None = None,
+        losses: pd.DataFrame,
     ) -> None:
         """Assemble the diagnostic data and write the CSVs (+ plots), logging the top features."""
         run_name, ts = self._csv_naming(run_dir)
+        losses.to_csv(run_dir / diag.csv_name("record_losses", run_name=run_name, ts=ts), index=False)
 
         x_sel = features.iloc[selected]
         data = diag.DiagnosticData(
@@ -1648,8 +1672,6 @@ class PowerModelMethod:
             sum_counterfactual_kw=sum_counter,
             n_refs=n_refs,
             era5_label=self.era5_label,
-            cond_upgraded=cond_upgraded,
-            cond_baseline_valid=cond_baseline_valid,
         )
         importance = diag.write_csvs(run_dir, run_name, ts, data)
         diag.log_top_features(importance, active_power_col=self.columns.active_power)
@@ -1701,7 +1723,6 @@ class PowerModelMethod:
             "availability_col": self.columns.availability,
             "baseline_rated_power_kw": self.baseline_rated_power_kw,
             "wind_speed_col": self.columns.wind_speed,
-            "wind_speed_sd_col": self.columns.wind_speed_sd,
             "seed": self.seed,
             "has_era5": self.era5_hourly_df is not None,
             "reference_stat_cols": list(self.reference_stat_cols),
@@ -1713,4 +1734,5 @@ class PowerModelMethod:
             "screen_floor": self.screen_floor,
             "screen_min_campaign_days": self.screen_min_campaign_days,
             "report_reference_uplifts": self.report_reference_uplifts,
+            "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
         }

@@ -1,9 +1,15 @@
 """Which records a subject turbine's uplift may be measured on, and why each other record is lost.
 
 A record is used when the subject and every power reference are inside the usable frame and valid for
-uplift, no turbine changed at that time is upwind of any of them, and none of their upwind columns is
-unknown.
+uplift, no turbine changed at that time is upwind of any of them, none of their upwind columns is
+unknown, and none of their waking scenarios has a part waking or missing turbine upwind.
 Each lost record takes the first reason, in :data:`LOSS_REASONS` order, that applies to it.
+
+:func:`rare_configurations` is the rule over the whole reference set: a waking configuration (the
+scenarios of the subject and its references together) with too few hours in either period is dropped.
+A measurement labels the records it drops this way :data:`RARE_CONFIGURATION`, and a toggle record
+without a record of the other state nearby :data:`UNPAIRED`. :func:`record_losses` sums the hours
+lost to each reason in each period.
 """
 
 from __future__ import annotations
@@ -14,8 +20,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.operating_state import VALID_UPLIFT_COL
-from benchmarking.harness.waking import UNKNOWN, UPWIND_COL
+from benchmarking.harness.operating_state import PART_WAKING, VALID_UPLIFT_COL
+from benchmarking.harness.waking import UNKNOWN, UPWIND_COL, WAKING_SCENARIO_COL
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -30,6 +36,10 @@ REFERENCE_INVALID = "reference invalid"
 CHANGED_UPWIND_OF_SUBJECT = "changed upwind of subject"
 CHANGED_UPWIND_OF_REFERENCE = "changed upwind of reference"
 UPWIND_UNKNOWN = "upwind unknown"
+PART_WAKING_UPWIND_OF_SUBJECT = "part waking or missing upwind of subject"
+PART_WAKING_UPWIND_OF_REFERENCE = "part waking or missing upwind of reference"
+RARE_CONFIGURATION = "rare waking configuration"
+UNPAIRED = "unpaired toggle record"
 USABLE = "usable"
 LOSS_REASONS = (
     EXCLUDED,
@@ -38,12 +48,16 @@ LOSS_REASONS = (
     CHANGED_UPWIND_OF_SUBJECT,
     CHANGED_UPWIND_OF_REFERENCE,
     UPWIND_UNKNOWN,
+    PART_WAKING_UPWIND_OF_SUBJECT,
+    PART_WAKING_UPWIND_OF_REFERENCE,
 )
-CATEGORIES = (*LOSS_REASONS, USABLE)
+PAIR_CATEGORIES = (*LOSS_REASONS, USABLE)
+CATEGORIES = (*LOSS_REASONS, RARE_CONFIGURATION, UNPAIRED, USABLE)
 
 _SEPARATOR = "; "
 
 NEAR_CHANGEOVER = pd.Timedelta(days=183)
+MIN_CONFIGURATION_HOURS = 24.0
 
 Interval = tuple[pd.Timestamp | None, pd.Timestamp | None]
 """A half-open ``[start, end)`` stretch of time; ``None`` leaves that side unbounded."""
@@ -198,6 +212,14 @@ class _Flags:
                 turbines[0],
                 UPWIND_COL,
             )
+        has_scenario = WAKING_SCENARIO_COL in scada.columns
+        if not has_scenario:
+            logger.warning(
+                "%s: no %r column (method step 5), so records are not dropped for a part waking or missing turbine "
+                "upwind",
+                turbines[0],
+                WAKING_SCENARIO_COL,
+            )
         names = scada[turbine_col].astype(str).to_numpy()
         n = len(index)
         at = changed_at(changed, index=index)
@@ -205,6 +227,7 @@ class _Flags:
         self.invalid: dict[str, npt.NDArray[np.bool_]] = {}
         self.changed_upwind: dict[str, npt.NDArray[np.bool_]] = {}
         self.unknown: dict[str, npt.NDArray[np.bool_]] = {}
+        self.part_waking: dict[str, npt.NDArray[np.bool_]] = {}
         for turbine in dict.fromkeys(turbines):
             in_frame = usable[turbine].reindex(index, fill_value=False) if turbine in usable.columns else None
             if in_frame is None:
@@ -215,6 +238,11 @@ class _Flags:
             rows = rows[~rows.index.duplicated()]
             valid = rows[VALID_UPLIFT_COL].astype(bool).reindex(index, fill_value=False)
             self.invalid[turbine] = ~valid.to_numpy(dtype=bool)
+            self.part_waking[turbine] = (
+                _scenario_unusable(rows[WAKING_SCENARIO_COL].reindex(index))
+                if has_scenario
+                else np.zeros(n, dtype=bool)
+            )
             if not has_upwind:
                 self.changed_upwind[turbine] = np.zeros(n, dtype=bool)
                 self.unknown[turbine] = np.zeros(n, dtype=bool)
@@ -243,9 +271,45 @@ class _Flags:
             self.changed_upwind[subject],
             _any(self.changed_upwind, refs, n=len(self.index)),
             _any(self.unknown, both, n=len(self.index)),
+            self.part_waking[subject],
+            _any(self.part_waking, refs, n=len(self.index)),
         ]
         labels = np.select(conditions, list(LOSS_REASONS), default=USABLE)
         return pd.Series(pd.Categorical(labels, categories=list(CATEGORIES)), index=self.index)
+
+
+def _scenario_unusable(scenario: pd.Series) -> npt.NDArray[np.bool_]:
+    """Return where a waking scenario is unknown or names a part waking turbine."""
+    text = scenario.fillna(UNKNOWN).astype(str)
+    return ((text == UNKNOWN) | text.str.contains(PART_WAKING, regex=False)).to_numpy()
+
+
+def rare_configurations(
+    scenarios: pd.DataFrame,
+    *,
+    before: npt.NDArray[np.bool_],
+    after: npt.NDArray[np.bool_],
+    hours_per_record: float,
+    min_hours: float = MIN_CONFIGURATION_HOURS,
+) -> npt.NDArray[np.bool_]:
+    """Return, per row of ``scenarios``, whether its waking configuration is rare.
+
+    A configuration is the row's scenarios taken together. It is rare when it has under ``min_hours``
+    of rows in ``before`` or in ``after``. Rows outside both periods are rare when their
+    configuration is.
+
+    :param scenarios: one waking scenario column per turbine, the subject and its power references
+    :param before: the rows of the before period
+    :param after: the rows of the after period
+    :param hours_per_record: the timebase, in hours
+    :param min_hours: the fewest hours a configuration needs in each period
+    """
+    codes, _ = pd.factorize(pd.MultiIndex.from_frame(scenarios.astype(str)))
+    n_codes = int(codes.max()) + 1 if len(codes) else 0
+    hours_before = np.bincount(codes[before], minlength=n_codes) * hours_per_record
+    hours_after = np.bincount(codes[after], minlength=n_codes) * hours_per_record
+    rare = (hours_before < min_hours) | (hours_after < min_hours)
+    return rare[codes]
 
 
 def _any(flags: Mapping[str, npt.NDArray[np.bool_]], turbines: Sequence[str], *, n: int) -> npt.NDArray[np.bool_]:
@@ -254,3 +318,29 @@ def _any(flags: Mapping[str, npt.NDArray[np.bool_]], turbines: Sequence[str], *,
     for turbine in turbines:
         out |= flags[turbine]
     return out
+
+
+def record_losses(
+    reasons: pd.Series,
+    *,
+    before: npt.NDArray[np.bool_],
+    after: npt.NDArray[np.bool_],
+    hours_per_record: float,
+) -> pd.DataFrame:
+    """Return the hours of each reason in :data:`CATEGORIES` in the before and after periods, and outside both.
+
+    :param reasons: per record, its loss reason or :data:`USABLE`
+    :param before: the records of the before period
+    :param after: the records of the after period
+    :param hours_per_record: the timebase, in hours
+    """
+    labels = reasons.astype(str).to_numpy()
+    outside = ~(np.asarray(before, dtype=bool) | np.asarray(after, dtype=bool))
+    return pd.DataFrame(
+        {
+            "reason": list(CATEGORIES),
+            "hours_before": [float(np.count_nonzero((labels == r) & before)) * hours_per_record for r in CATEGORIES],
+            "hours_after": [float(np.count_nonzero((labels == r) & after)) * hours_per_record for r in CATEGORIES],
+            "hours_outside": [float(np.count_nonzero((labels == r) & outside)) * hours_per_record for r in CATEGORIES],
+        }
+    )

@@ -129,6 +129,34 @@ def test_reference_stability_is_empty_when_no_method_reports_references() -> Non
     report = run([FixedMethod()])
     assert report.reference_stability.empty
     assert {"method", "test_wtg", "turbine", "uplift"} <= set(report.reference_stability.columns)
+    row = report.farm.set_index("method").loc["fixed"]
+    assert np.isnan(row["reference_uplift_before_screen"])
+    assert np.isnan(row["reference_uplift_after_screen"])
+
+
+class TestCombinedReferenceUplift:
+    """The farm table carries the references combined by energy, before and after the screen."""
+
+    def test_each_reference_counts_once_and_nothing_screened_reads_the_same_both_ways(self) -> None:
+        report = run([ReferenceReportingMethod()])
+        row = report.farm.set_index("method").loc["with_refs"]
+        expected = 2000.0 / (1000.0 / 1.001 + 1000.0 / 1.002) - 1.0
+        assert row["reference_uplift_before_screen"] == pytest.approx(expected)
+        assert row["reference_uplift_after_screen"] == pytest.approx(expected)
+
+    def test_a_screened_reference_counts_before_the_screen_only(self) -> None:
+        class Screening(ReferenceReportingMethod):
+            name = "screening"
+
+            def estimate(self, mi: MethodInput) -> MethodOutput:
+                out = super().estimate(mi)
+                refs = out.reference_uplifts
+                refs.loc[refs["turbine"] == "T4", ["uplift", "screened"]] = [0.5, True]
+                return out
+
+        row = run([Screening()]).farm.set_index("method").loc["screening"]
+        assert row["reference_uplift_after_screen"] == pytest.approx(0.001)
+        assert row["reference_uplift_before_screen"] == pytest.approx(2000.0 / (1000.0 / 1.001 + 1000.0 / 1.5) - 1.0)
 
 
 def test_conditional_estimates_are_carried_per_method_and_turbine() -> None:

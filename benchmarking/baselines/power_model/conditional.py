@@ -12,6 +12,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+# Axes along which uplift saturates towards 0 at the top: filled from above, 0 beyond the last bin.
+_ORDERED_AXES = ("ws", "era5_ws", "power")
+
 
 def impute_uncovered_bins(
     one_plus_u: np.ndarray,
@@ -25,23 +28,18 @@ def impute_uncovered_bins(
     Bins **must** be in ascending bin order (low ws / low TI first). ``measured`` is the trust mask
     (``True`` = keep the two-direction shape). Uncovered bins:
 
-    - ``ws`` / ``power``: backward-fill from the nearest covered bin above (uplift is Cp-shaped and
-      monotone-saturating in both, so a low gap looks most like the next covered bin up), then any
-      bins above the last covered one take ``1.0`` — 0 uplift, since at rated both baseline and
-      upgraded hit rated power. This 0-at-rated prior is wrong for uprating / power-boost upgrades; it
-      is a documented, replaceable default.
+    - a wind speed (``ws``, ``era5_ws``) or ``power``: backward-fill from the nearest covered bin
+      above, then any bins above the last covered one take ``1.0`` (0 uplift at and above rated).
     - ``ti``: no ordering physics, so uncovered bins take the overall uplift (``one_plus_overall``).
 
-    The result is always all-finite: ws/power fall back to ``1.0`` (even with no measured bins), ti to
-    ``one_plus_overall``. Raises for a ``condition`` other than ``"ws"`` / ``"ti"`` / ``"power"`` so a
-    mistyped axis fails loudly rather than silently taking the ti branch.
+    The result is always all-finite. Raises for an unknown ``condition``.
     """
-    if condition not in ("ws", "ti", "power"):
-        msg = f"unknown condition {condition!r}; expected 'ws', 'ti' or 'power'"
+    if condition not in _ORDERED_AXES and condition != "ti":
+        msg = f"unknown condition {condition!r}; expected one of {(*_ORDERED_AXES, 'ti')}"
         raise ValueError(msg)
     s = pd.Series(np.asarray(one_plus_u, dtype=float))
     s[~np.asarray(measured, dtype=bool)] = np.nan
-    s = s.bfill().fillna(1.0) if condition in ("ws", "power") else s.fillna(float(one_plus_overall))
+    s = s.bfill().fillna(1.0) if condition in _ORDERED_AXES else s.fillna(float(one_plus_overall))
     return s.to_numpy()
 
 

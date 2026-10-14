@@ -105,7 +105,8 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
   - `{stages.SCREEN}/`: step 9, each candidate reference estimated as if it were a test turbine.
   - `{stages.UPLIFT_DISTRIBUTIONS}/`: step 15, the conditional uplift collected across test turbines.
 - `{MEASUREMENT_DIRNAME}/<turbine>/`: part C, one folder per measured turbine, over its span and with
-  its power references. Its results are in CSVs; its plots are under `plots/`, one folder per step.
+  its power references. Its results are in CSVs (`record_losses.csv` is the hours lost to each rule of
+  step 11 in each period); its plots are under `plots/`, one folder per step.
   `plots/{stages.VALID_RECORDS}/` has the records used and not used for uplift, coloured by state.
 - `{MEASUREMENT_DIRNAME}/<reference>_reference_for_<turbine>/`: when reference plots are asked for, the same
   for each power reference measured as if it were a test turbine (step 9), once per test turbine it serves.
