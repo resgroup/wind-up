@@ -12,6 +12,35 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF32 — A synthetic upgrade now respects a record's power setpoint: on Hill of Towie noise mode it injected about 10 % too much gain, because a record well below its setpoint still spends part of its 10 minutes at it
+
+*2026-10-15, branch v1-C3. Measured on the Hill of Towie 2016-2020 SCADA with the AeroUp shape at multiplier 1.*
+
+**The record mean is not the problem.** Capping each record's mean power at its setpoint removed 0.007 % of
+the injected energy farm-wide. The gap is within the record. A record touches its limit at some point in
+its 10 minutes at the same rate for the same distance below that limit, whether the limit is rated or a
+noise setpoint (1993, 2116 or 2207 kW): always within 400 kW of it, and 27 to 54 % of records 800 to
+1200 kW below it.
+
+**The fix.** The region-2 taper, which fades a Cp change out as mean power approaches rated, now
+fades it out as the power approaches the record's limit: the higher of its start and end setpoints,
+or rated where unknown. The power is also capped at that limit. Sources whose schema names no setpoint
+(Kelmarsh, Penmanshiel) are unchanged.
+
+| | Injected uplift before | After |
+|---|---|---|
+| Noise-mode records | +5.01 % | +4.52 % |
+| T16 | +5.11 % | +4.65 % |
+| T17 | +4.59 % | +4.48 % |
+| T19 | +3.92 % | +3.91 % |
+| Normal operation | unchanged | unchanged |
+
+**Implication.** Truth is computed from the injected power, so it follows the change. Synthetic Hill of
+Towie cells with T16 or T17 under test now carry a smaller, more realistic noise-mode gain. The matrix
+run at 36058e2 predates this change.
+
+---
+
 ## CF31 — The first big matrix run, stopped at 663 of 1098 cells, says less than its verdicts claimed: its cells were far from independent. On Hill of Towie the method passes targets i and ii once noise-mode T16 is set aside, but the sigma covers 44 % of the errors, not 68 %. The matrix now tiles each site's data, and `validate` clusters its standard errors by campaign
 
 *2026-10-15, branch v1-C3. The run was `study_prepost_campaign_matrix run --size big --workers 10` at 83e8491 on a

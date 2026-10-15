@@ -437,6 +437,7 @@ _TAG_AVAILABILITY = "wtc_ScReToOp_timeon"
 _TAG_ACTIVE_POWER_MAX = "wtc_ActPower_max"
 _TAG_ACTIVE_POWER_MIN = "wtc_ActPower_min"
 _TAG_ACTIVE_POWER_SD = "wtc_ActPower_stddev"
+_TAG_POWER_SETPOINT = "wtc_PowerRef_endvalue"
 
 
 hill_of_towie_fields = [
@@ -481,6 +482,7 @@ HOT_COLUMNS = ColumnSchema(
     nacelle_position=_TAG_NACELLE_POSITION_MEAN,
     ambient_temp=_TAG_AMBIENT_TEMP_MEAN,
     availability=_TAG_AVAILABILITY,
+    power_setpoint=_TAG_POWER_SETPOINT,
 )
 
 # Baseline rated power of the Hill of Towie test turbines (kW); matches the synthetic generator's
@@ -488,7 +490,7 @@ HOT_COLUMNS = ColumnSchema(
 HOT_RATED_POWER_KW = 2300.0
 
 # The power setpoint at the end of each record (kW), which the site operating-state labels read.
-HOT_POWER_SETPOINT_COL = "wtc_PowerRef_endvalue"
+HOT_POWER_SETPOINT_COL = _TAG_POWER_SETPOINT
 # The record's largest active power (kW); a reduced setpoint is curtailment only when it reaches
 # HOT_CURTAILMENT_REACH of that setpoint.
 HOT_ACTIVE_POWER_MAX_COL = _TAG_ACTIVE_POWER_MAX

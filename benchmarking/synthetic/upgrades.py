@@ -580,13 +580,36 @@ def apply_rated_change(
     return np.minimum(lifted, new_rated_kw)
 
 
+def power_limit(rows: pd.DataFrame, *, columns: ColumnSchema) -> npt.NDArray[np.float64] | None:
+    """Return each of one turbine's records' power limit, the higher of its start and end setpoints.
+
+    The start setpoint is the previous record's end setpoint when that record is one step earlier,
+    the step being the most common spacing of ``rows``. ``None`` when ``columns`` names no setpoint
+    or ``rows`` lacks it.
+
+    :param rows: one turbine's records, indexed by timestamp in time order
+    :param columns: the source-native column schema ``rows`` is keyed by
+    """
+    if columns.power_setpoint is None or columns.power_setpoint not in rows.columns:
+        return None
+    end = rows[columns.power_setpoint].to_numpy(dtype=float)
+    stamps = pd.DatetimeIndex(rows.index)
+    start = np.full(len(end), np.nan)
+    if len(end) > 1:
+        steps = np.diff(stamps.asi8)
+        follows = steps == pd.Series(steps).mode().iloc[0]
+        start[1:] = np.where(follows, end[:-1], np.nan)
+    return np.fmax(start, end)
+
+
 def apply_upgrades(
     rows: pd.DataFrame, upgrades: list, *, cp: CpCore, columns: ColumnSchema = HOT_COLUMNS
 ) -> pd.DataFrame:
     """Resolve and apply a list of upgrades to one test turbine's treated rows.
 
     Cp ratios from all upgrades multiply together and are applied to the original power
-    through the Cp core (region-2 weighted, rated-clipped); rpm tracks the resulting
+    through the Cp core (region-2 weighted, clipped at rated or the record's setpoint, see
+    :func:`power_limit`); rpm tracks the resulting
     power change and the nacelle wind speed is scaled by the combined ws factor. The
     input ``rows`` is not mutated.
 
@@ -614,7 +637,12 @@ def apply_upgrades(
         if effect.new_rated_power_kw is not None:
             new_rated_power_kw = effect.new_rated_power_kw
 
-    new_power = power_from_cp_change(baseline_power, cp_ratio=cp_ratio, rated_power_kw=cp.rated_power_kw)
+    new_power = power_from_cp_change(
+        baseline_power,
+        cp_ratio=cp_ratio,
+        rated_power_kw=cp.rated_power_kw,
+        power_limit_kw=power_limit(rows, columns=columns),
+    )
     if new_rated_power_kw is not None:
         new_power = apply_rated_change(
             new_power,
