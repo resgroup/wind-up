@@ -81,6 +81,16 @@ def test_per_turbine_detail_is_written_for_each_turbine(tmp_path: Path) -> None:
     assert {"guard", "used", "counterfactual_energy", "method"} <= set(detail.columns)
 
 
+def test_the_results_across_turbines_go_under_the_farm_folder(tmp_path: Path) -> None:
+    result, dataset = _result([ZeroMethod()])
+    write_campaign_report(result, dataset, out_dir=tmp_path / "campaign", farm_dir=tmp_path / "farm")
+    farm = pd.read_csv(tmp_path / "farm" / "farm_uplift.csv")
+    assert "truth" in farm.columns
+    assert (tmp_path / "farm" / "farm_uplift_detail.csv").exists()
+    assert not (tmp_path / "campaign" / "farm_uplift.csv").exists()
+    assert (tmp_path / "campaign" / "per_turbine.csv").exists()
+
+
 def test_report_returns_the_directory_it_wrote_to(tmp_path: Path) -> None:
     result, dataset = _result([ZeroMethod()])
     assert write_campaign_report(result, dataset, out_dir=tmp_path) == tmp_path

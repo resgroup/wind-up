@@ -92,17 +92,21 @@ def write_report(report: CampaignReport, *, out_dir: Path, farm_dir: Path | None
     return out_dir
 
 
-def write_campaign_report(result: CampaignResult, dataset: SyntheticDataset, *, out_dir: Path) -> Path:
+def write_campaign_report(
+    result: CampaignResult, dataset: SyntheticDataset, *, out_dir: Path, farm_dir: Path | None = None
+) -> Path:
     """Write the benchmark report under ``out_dir`` and return it.
 
-    The analyst report plus what truth adds: ``per_turbine.csv`` and ``farm_uplift.csv`` gain
+    The analyst report of :func:`write_report`, the results across turbines under ``farm_dir`` (by
+    default ``out_dir``), plus what truth adds: ``per_turbine.csv`` and ``farm_uplift.csv`` gain
     their truth and signed-error columns, ``scores.csv`` carries the tidy harness rows, and each
     conditional plot gains its true-uplift series.
     """
-    write_report(result.report, out_dir=out_dir)
+    farm = farm_dir if farm_dir is not None else out_dir
+    write_report(result.report, out_dir=out_dir, farm_dir=farm)
     per_turbine = per_turbine_table(result)
     per_turbine.to_csv(out_dir / "per_turbine.csv", index=False)
-    result.farm.to_csv(out_dir / "farm_uplift.csv", index=False)
+    result.farm.to_csv(farm / "farm_uplift.csv", index=False)
     result.scores.to_csv(out_dir / "scores.csv", index=False)
 
     label = result.spec.change_label()

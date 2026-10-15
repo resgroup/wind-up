@@ -11,6 +11,7 @@ workers of the HPC. It is one resumable invocation, meant for tmux on a shared b
     uv run python -m benchmarking.baselines.study_prepost_campaign_matrix merge STUDY_DIR
     uv run python -m benchmarking.baselines.study_prepost_campaign_matrix compare STUDY_DIR [--accept-candidate]
     uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run-cell STUDY_DIR CELL_ID
+    uv run python -m benchmarking.baselines.study_prepost_campaign_matrix plot-cell STUDY_DIR CELL_ID OUT_DIR
     uv run python -m benchmarking.baselines.study_prepost_campaign_matrix validate STUDY_DIR
     uv run python -m benchmarking.baselines.study_prepost_campaign_matrix list
 
@@ -27,6 +28,10 @@ detail directory, runs every cell without a record, then merges the cells into
 ``study_prepost_campaign_matrix_baseline_<size>.json``. Re-running the same command resumes; a failed
 cell is kept as a result unless ``--retry-failed``. Progress is one line per cell in the study's
 ``run.log``.
+
+``plot-cell`` runs one of a study's cells with every plot on into ``OUT_DIR/<cell id>/``, laid out as a
+composed run (A data preparation, B campaign, C turbine measurements, D farm), with its record as
+``record.json``; the study's own records are not touched. The study need only hold its ``run_meta.json``.
 
 The study directory, ``prepost_matrix__<commit7>[-dirty]__<size>`` under
 ``WIND_UP_BENCHMARKING_OUTPUT_DIR``, is the one to download: merge and compare need only it. Its
@@ -53,6 +58,7 @@ from benchmarking.baselines.prepost_matrix.study import (
     detail_dir,
     list_studies,
     merge_study,
+    plot_cell,
     run_cell,
     run_study,
     single_thread_env,
@@ -93,6 +99,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     one = sub.add_parser("run-cell", help="run one cell in the foreground")
     one.add_argument("study_dir", type=Path)
     one.add_argument("cell_id")
+    plotted = sub.add_parser("plot-cell", help="run one cell with every plot on, laid out as a composed run")
+    plotted.add_argument("study_dir", type=Path)
+    plotted.add_argument("cell_id")
+    plotted.add_argument("out_dir", type=Path)
     validate = sub.add_parser("validate", help="judge the finished cells against method.md's validation targets")
     validate.add_argument("study_dir", type=Path)
     listing = sub.add_parser("list", help="list the study directories")
@@ -129,7 +139,7 @@ def main(argv: list[str] | None = None) -> None:
         compare_study(args.study_dir)
         if args.accept_candidate:
             accept_candidate(args.study_dir)
-    elif args.command == "run-cell":
+    elif args.command in {"run-cell", "plot-cell"}:
         settings = study_settings(args.study_dir)
         cells = {c.cell_id: c for c in matrix_cells(settings)}
         if args.cell_id not in cells:
@@ -137,6 +147,9 @@ def main(argv: list[str] | None = None) -> None:
         cell = cells[args.cell_id]
         single_thread_env()
         prefetch(detail_dir(args.study_dir), [cell])
+        if args.command == "plot-cell":
+            logger.info("wrote %s", plot_cell(args.study_dir, cell, settings=settings, out_dir=args.out_dir))
+            return
         record = run_cell(args.study_dir, cell, settings=settings)
         logger.info(
             "%s %s in %.0f s, peak RSS %.0f MB",

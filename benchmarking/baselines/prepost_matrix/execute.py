@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -18,7 +18,14 @@ import yaml
 
 from benchmarking.baselines.power_model.method import is_reading_column
 from benchmarking.baselines.prepost_matrix.cells import REAL_SITES, Cell, campaign_seed, draw_exclusions
-from benchmarking.campaigns.composed import DATA_PREPARATION_DIRNAME, WIND_UP, wind_up_method
+from benchmarking.campaigns.composed import (
+    CAMPAIGN_DIRNAME,
+    DATA_PREPARATION_DIRNAME,
+    FARM_DIRNAME,
+    MEASUREMENT_DIRNAME,
+    WIND_UP,
+    wind_up_method,
+)
 from benchmarking.campaigns.loader import centroid, era5_window, load_declaration, operating_state_config
 from benchmarking.campaigns.preparation import prepare_data
 from benchmarking.campaigns.real import (
@@ -30,6 +37,7 @@ from benchmarking.campaigns.real import (
     label_hot_site_states,
     write_real_campaign,
 )
+from benchmarking.campaigns.report import write_campaign_report, write_report
 from benchmarking.campaigns.rollout import draw_rollout, hot_site, kelmarsh_site, penmanshiel_site, rollout_campaign
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.campaigns.runner import CampaignRunner, per_turbine_table
@@ -57,7 +65,9 @@ if TYPE_CHECKING:
     from benchmarking.baselines.prepost_matrix.cells import MatrixSettings
     from benchmarking.campaigns.data_screen import DataScreen
     from benchmarking.campaigns.declaration import CampaignSpec, Exclusion
+    from benchmarking.campaigns.preparation import PreparedData
     from benchmarking.campaigns.rollout import RolloutDraw, RolloutSite
+    from benchmarking.campaigns.run import CampaignReport
     from benchmarking.harness import Method, MethodOutput
     from benchmarking.synthetic import ColumnSchema
     from wind_up.analysis_period import AnalysisPlan
@@ -169,6 +179,7 @@ def execute_cell(
     cell_dir: Path,
     settings: MatrixSettings,
     method_overrides: Mapping[str, Any] | None = None,
+    plots: bool = False,
 ) -> dict[str, Any]:
     """Run ``cell`` and return what it recorded: estimates, truths, reference readings and diagnostics.
 
@@ -178,9 +189,23 @@ def execute_cell(
     :param settings: the matrix, for its master seed
     :param method_overrides: fields replaced on every turbine's method after the matrix's own, for a
         probe that needs the method configured differently (the level probe's ``row_dump_dir``)
+    :param plots: also write every plot and the campaign and farm reports under ``cell_dir``, laid out
+        as a composed run
     """
     run = _execute_real if cell.arm == "real" else _execute_synthetic
-    return run(cell, detail_dir=detail_dir, cell_dir=cell_dir, settings=settings, method_overrides=method_overrides)
+    return run(
+        cell,
+        detail_dir=detail_dir,
+        cell_dir=cell_dir,
+        settings=settings,
+        method_overrides=method_overrides,
+        plots=plots,
+    )
+
+
+def method_dir(cell_dir: Path, *, plots: bool) -> Path:
+    """Return where a cell's measurements write: the composed run's measurement folder when plotting."""
+    return cell_dir / (MEASUREMENT_DIRNAME if plots else METHOD_DIRNAME)
 
 
 def describe_cell(cell: Cell, *, settings: MatrixSettings) -> dict[str, Any]:
@@ -218,6 +243,64 @@ def _draw(cell: Cell, *, settings: MatrixSettings) -> tuple[RolloutSite, int, Ro
     return site, seed, draw, exclusions
 
 
+@dataclass(frozen=True)
+class _Prepared:
+    """A cell's data after Part A, its spec with the north offsets found, and its methods per test turbine."""
+
+    data: PreparedData
+    spec: CampaignSpec
+    build_methods: Callable[[str], list[Method]]
+
+
+def _prepare(
+    scada: pd.DataFrame,
+    *,
+    spec: CampaignSpec,
+    columns: ColumnSchema,
+    era5: pd.DataFrame,
+    operating_state: OperatingStateConfig,
+    centroid_deg: tuple[float, float],
+    cell_dir: Path,
+    method_overrides: Mapping[str, Any] | None,
+    plots: bool,
+    cell_selection: Literal["land", "sea"] = "land",
+) -> _Prepared:
+    """Run Part A on ``scada`` and return it with the spec and the matrix's methods, one screen per campaign."""
+    data = prepare_data(
+        scada,
+        spec=spec,
+        columns=columns,
+        era5_hourly_df=era5,
+        operating_state=operating_state,
+        cell_selection=cell_selection,
+        out_dir=cell_dir / DATA_PREPARATION_DIRNAME,
+        plots=plots,
+    )
+    spec = data.with_north_offsets(spec)
+    screen_cache: dict = {}
+    measurements = method_dir(cell_dir, plots=plots)
+    overrides = {
+        **({"save_plots": True, "run_subdir": False, "reference_plots_dir": measurements} if plots else {}),
+        **(method_overrides or {}),
+    }
+    label = era5_source_label(*centroid_deg)
+
+    def build_methods(wtg: str) -> list[Method]:
+        return [
+            _matrix_method(
+                spec,
+                columns=columns,
+                out_dir=measurements / wtg,
+                era5=data.aligned_era5,
+                screen_cache=screen_cache,
+                era5_label=label,
+                method_overrides=overrides,
+            )
+        ]
+
+    return _Prepared(data=data, spec=spec, build_methods=build_methods)
+
+
 def _execute_synthetic(
     cell: Cell,
     *,
@@ -225,6 +308,7 @@ def _execute_synthetic(
     cell_dir: Path,
     settings: MatrixSettings,
     method_overrides: Mapping[str, Any] | None = None,
+    plots: bool = False,
 ) -> dict[str, Any]:
     site, _, draw, exclusions = _draw(cell, settings=settings)
     campaign = rollout_campaign(draw, multiplier=float(cell.multiplier), post_months=cell.post_months)  # type: ignore[arg-type]
@@ -234,40 +318,32 @@ def _execute_synthetic(
     scada = _read_scada(_site_scada_path(detail_dir, cell.site), start=start, end=end)
     dataset = campaign.generate(scada)
     labelled, operating_state = site_operating_state(cell.site, dataset.synthetic_df)
-    prepared = prepare_data(
+    prepared = _prepare(
         labelled,
         spec=campaign.spec(),
         columns=site.columns,
-        era5_hourly_df=_site_reanalysis(site),
+        era5=_site_reanalysis(site),
         operating_state=operating_state,
-        out_dir=cell_dir / DATA_PREPARATION_DIRNAME,
-        plots=False,
+        centroid_deg=centroid(dict(site.coords)),
+        cell_dir=cell_dir,
+        method_overrides=method_overrides,
+        plots=plots,
     )
-    spec = prepared.with_north_offsets(campaign.spec())
-    screen_cache: dict = {}
-    label = era5_source_label(*centroid(dict(site.coords)))
+    visible = replace(
+        dataset,
+        synthetic_df=prepared.data.scada_df,
+        original_df=with_reanalysis_wind_speed(dataset.original_df, prepared.data.aligned_era5),
+    )
     result = CampaignRunner(
-        spec,
-        replace(
-            dataset,
-            synthetic_df=prepared.scada_df,
-            original_df=with_reanalysis_wind_speed(dataset.original_df, prepared.aligned_era5),
-        ),
-        build_methods=lambda wtg: [
-            _matrix_method(
-                spec,
-                columns=site.columns,
-                out_dir=cell_dir / METHOD_DIRNAME / wtg,
-                era5=prepared.aligned_era5,
-                screen_cache=screen_cache,
-                era5_label=label,
-                method_overrides=method_overrides,
-            )
-        ],
-        northing_plots=False,
+        prepared.spec,
+        visible,
+        build_methods=prepared.build_methods,
+        northing_plots=plots,
         plan_settings=plan_settings(cell, settings=settings),
-        possible_changes=prepared.possible_changes_by_turbine(),
+        possible_changes=prepared.data.possible_changes_by_turbine(),
     ).run()
+    if plots:
+        write_campaign_report(result, visible, out_dir=cell_dir / CAMPAIGN_DIRNAME, farm_dir=cell_dir / FARM_DIRNAME)
 
     per_turbine = per_turbine_table(result)
     per_turbine = per_turbine[per_turbine["method"] == WIND_UP]
@@ -285,13 +361,7 @@ def _execute_synthetic(
         ],
         "farm": {"estimate": float(farm["estimate"]), "truth": float(farm["truth"]), **combined_references(farm)},
         "bins": scored_bins(result.scores),
-        **diagnostics(
-            result.report.reference_stability,
-            plans=result.report.plans,
-            unplanned=result.report.unplanned,
-            cell_dir=cell_dir,
-        ),
-        **measurement_details(result.report.data_screens, cell_dir=cell_dir),
+        **_report_record(result.report, cell_dir=cell_dir, plots=plots),
     }
 
 
@@ -302,6 +372,7 @@ def _execute_real(
     cell_dir: Path,
     settings: MatrixSettings,
     method_overrides: Mapping[str, Any] | None = None,
+    plots: bool = False,
 ) -> dict[str, Any]:
     campaign = _real_campaign(cell.site)
     declaration = load_declaration(_real_declaration_path(detail_dir, cell.site))
@@ -313,39 +384,31 @@ def _execute_real(
     scada = _read_scada(declaration.scada_path, end=end)
     timebase = pd.Timedelta(np.median(np.diff(pd.DatetimeIndex(scada.index.unique()).sort_values().to_numpy())))
     scada = normalise_timestamps(scada, timestamps=declaration.timestamps, timebase=timebase)
-    prepared = prepare_data(
+    prepared = _prepare(
         scada,
         spec=declaration.spec,
         columns=declaration.columns,
-        era5_hourly_df=_real_reanalysis(campaign, site_centroid=declaration.centroid),
+        era5=_real_reanalysis(campaign, site_centroid=declaration.centroid),
         operating_state=declaration.operating_state,
+        centroid_deg=declaration.centroid,
+        cell_dir=cell_dir,
+        method_overrides=method_overrides,
+        plots=plots,
         cell_selection=declaration.cell_selection,
-        out_dir=cell_dir / DATA_PREPARATION_DIRNAME,
-        plots=False,
     )
-    spec = prepared.with_north_offsets(declaration.spec)
-    screen_cache: dict = {}
-    label = era5_source_label(*declaration.centroid)
     report = estimate_campaign(
-        spec,
-        prepared.scada_df,
-        build_methods=lambda wtg: [
-            _matrix_method(
-                spec,
-                columns=declaration.columns,
-                out_dir=cell_dir / METHOD_DIRNAME / wtg,
-                era5=prepared.aligned_era5,
-                screen_cache=screen_cache,
-                era5_label=label,
-                method_overrides=method_overrides,
-            )
-        ],
+        prepared.spec,
+        prepared.data.scada_df,
+        build_methods=prepared.build_methods,
         columns=declaration.columns,
-        northing_plots=False,
+        northing_plots=plots,
         plan_settings=plan_settings(cell, settings=settings),
-        possible_changes=prepared.possible_changes_by_turbine(),
+        possible_changes=prepared.data.possible_changes_by_turbine(),
     )
+    if plots:
+        write_report(report, out_dir=cell_dir / CAMPAIGN_DIRNAME, farm_dir=cell_dir / FARM_DIRNAME)
     per_turbine = report.per_turbine[report.per_turbine["method"] == WIND_UP]
+    farm = report.farm.set_index("method").loc[WIND_UP]
     return {
         "draw": {"data_end": str(end)},
         "turbines": [
@@ -357,14 +420,17 @@ def _execute_real(
             }
             for r in per_turbine.itertuples()
         ],
-        "farm": {
-            "estimate": float(report.farm.set_index("method").loc[WIND_UP, "estimate"]),
-            "truth": None,
-            **combined_references(report.farm.set_index("method").loc[WIND_UP]),
-        },
+        "farm": {"estimate": float(farm["estimate"]), "truth": None, **combined_references(farm)},
         "bins": reported_bins(report.outputs),
+        **_report_record(report, cell_dir=cell_dir, plots=plots),
+    }
+
+
+def _report_record(report: CampaignReport, *, cell_dir: Path, plots: bool) -> dict[str, Any]:
+    """Return the record fields every cell takes from its campaign report: diagnostics and measurement details."""
+    return {
         **diagnostics(report.reference_stability, plans=report.plans, unplanned=report.unplanned, cell_dir=cell_dir),
-        **measurement_details(report.data_screens, cell_dir=cell_dir),
+        **measurement_details(report.data_screens, method_dir=method_dir(cell_dir, plots=plots)),
     }
 
 
@@ -450,17 +516,17 @@ def diagnostics(
     }
 
 
-def measurement_details(data_screens: Mapping[str, DataScreen], *, cell_dir: Path) -> dict[str, Any]:
+def measurement_details(data_screens: Mapping[str, DataScreen], *, method_dir: Path) -> dict[str, Any]:
     """Return each test turbine's hours lost per reason and period, and its data screen.
 
-    ``record_losses`` is read from the test turbine's measurement folder under ``cell_dir``, from its
-    run folder or, for a run without one, the folder itself; a turbine without one is left out.
+    ``record_losses`` is read from the test turbine's folder under ``method_dir``, from its run folder
+    or, for a run without one, the folder itself; a turbine without one is left out.
     ``data_screen`` holds the candidates' table and the joint usable hours against the number of
     references.
     """
     losses: dict[str, list[dict[str, Any]]] = {}
     for wtg in sorted(data_screens):
-        wtg_dir = cell_dir / METHOD_DIRNAME / wtg
+        wtg_dir = method_dir / wtg
         found = sorted(wtg_dir.glob(f"*/*{RECORD_LOSSES_STEM}*.csv")) or sorted(wtg_dir.glob(PLAIN_RECORD_LOSSES))
         if found:
             losses[wtg] = _plain_rows(pd.read_csv(found[-1]))

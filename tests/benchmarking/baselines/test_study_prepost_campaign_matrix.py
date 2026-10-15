@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -49,6 +50,7 @@ from benchmarking.baselines.prepost_matrix.study import (
     list_studies,
     merge_study,
     open_study,
+    plot_cell,
     read_cell,
     record_path,
     run_cell,
@@ -871,7 +873,7 @@ def test_a_cell_records_each_test_turbines_losses_and_data_screen(tmp_path: Path
         table=pd.DataFrame({"candidate": ["T02"], "correlation": [0.9], "verdict": ["kept"], "rank": [1]}),
         hours=pd.DataFrame({"n_references": [1], "hours_before": [np.nan]}),
     )
-    details = measurement_details({"T01": screen, "T03": screen}, cell_dir=tmp_path)  # type: ignore[dict-item]
+    details = measurement_details({"T01": screen, "T03": screen}, method_dir=tmp_path / "method")  # type: ignore[dict-item]
     assert details["record_losses"] == {
         "T01": [
             {"reason": "usable", "hours_before": 100.0},
@@ -890,5 +892,23 @@ def test_a_cell_reads_the_losses_a_plots_run_writes_without_a_run_folder(tmp_pat
     wtg_dir.mkdir(parents=True)
     pd.DataFrame({"reason": ["usable"], "hours_before": [100.0]}).to_csv(wtg_dir / "record_losses.csv", index=False)
     screen = SimpleNamespace(table=pd.DataFrame({"candidate": []}), hours=pd.DataFrame({"n_references": []}))
-    details = measurement_details({"T01": screen}, cell_dir=tmp_path)  # type: ignore[dict-item]
+    details = measurement_details({"T01": screen}, method_dir=tmp_path / "method")  # type: ignore[dict-item]
     assert details["record_losses"] == {"T01": [{"reason": "usable", "hours_before": 100.0}]}
+
+
+def test_plot_cell_runs_with_plots_into_its_own_folder_and_leaves_the_study_alone(tmp_path: Path) -> None:
+    study, cell = tmp_path / "study", matrix_cells(SMALL)[0]
+    detail_dir(study).mkdir(parents=True)
+    calls: list[bool] = []
+
+    def execute(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: MatrixSettings, plots: bool) -> dict:  # noqa: ARG001
+        calls.append(plots)
+        logging.getLogger("test").warning("measuring %s", cell.cell_id)
+        return {"turbines": []}
+
+    out = plot_cell(study, cell, settings=SMALL, out_dir=tmp_path / "plots", execute=execute)
+    assert out == tmp_path / "plots" / cell.cell_id
+    assert calls == [True]
+    assert json.loads((out / "record.json").read_text()) == {"turbines": []}
+    assert "measuring" in (out / "run.log").read_text()
+    assert not record_path(study, cell).exists()

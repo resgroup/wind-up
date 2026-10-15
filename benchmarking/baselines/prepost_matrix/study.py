@@ -59,6 +59,8 @@ BASELINE_SCHEMA = "prepost_campaign_matrix_baseline_v1"
 RUN_META = "run_meta.json"
 CELLS_DIRNAME = "cells"
 CELL_LOG = "cell.log"
+PLOT_LOG = "run.log"
+PLOT_RECORD = "record.json"
 CANDIDATE = "candidate_baseline.json"
 # Rebuild the worker pool at most this many times after a worker dies (for instance, out of memory).
 MAX_POOL_RESTARTS = 3
@@ -207,6 +209,22 @@ def run_cell(
     partial.write_text(json.dumps(record, indent=2, default=str) + "\n")
     partial.replace(record_file)
     return record
+
+
+def plot_cell(
+    study_dir: Path, cell: Cell, *, settings: MatrixSettings, out_dir: Path, execute: Execute = execute_cell
+) -> Path:
+    """Run ``cell`` with every plot on into ``out_dir/<cell id>``, laid out as a composed run; return that folder.
+
+    Its record goes to ``record.json`` and its log to ``run.log`` there; the study's own records are
+    left as they are. An exception is raised, not recorded.
+    """
+    directory = out_dir / cell.cell_id
+    directory.mkdir(parents=True, exist_ok=True)
+    with _cell_log(directory / PLOT_LOG):
+        record = execute(cell, detail_dir=detail_dir(study_dir), cell_dir=directory, settings=settings, plots=True)
+    (directory / PLOT_RECORD).write_text(json.dumps(record, indent=2, default=str) + "\n")
+    return directory
 
 
 @contextmanager
