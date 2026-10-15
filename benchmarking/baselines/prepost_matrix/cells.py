@@ -1,8 +1,10 @@
 """The prepost campaign matrix's cells: one full ``wind-up`` run each, named and seeded stably.
 
 A cell is one (campaign, multiplier, K, post length). The cell list is a pure function of the
-:class:`MatrixSettings`; each campaign draw depends only on ``(master_seed, site, seed index)``, so
-a cell's id and its campaign do not depend on which other cells are in the matrix. A real campaign runs
+:class:`MatrixSettings`. A synthetic site's campaigns are its tiles, seed index ``i`` being tile ``i``
+(see :func:`benchmarking.campaigns.rollout.draw_tiles`); tile ``i`` depends only on ``master_seed``,
+the site and the seed indices up to ``i``, so a cell's id and its campaign do not depend on how many
+seeds the matrix runs. A real campaign runs
 the post lengths its data holds, and Lmax, all of it, where :data:`REAL_SITES` says so.
 """
 
@@ -52,7 +54,7 @@ EXCLUSION_DAYS = (3, 14)
 class MatrixSettings:
     """The axes of the matrix and the seed every campaign is drawn from.
 
-    :param seeds: campaigns per synthetic site, keyed ``hot``, ``pen``, ``kel``
+    :param seeds: campaigns (tiles) per synthetic site, keyed ``hot``, ``pen``, ``kel``
     :param multipliers: the AeroUp shape's scalings, paired within a campaign
     :param ks: power references per test turbine
     :param post_months: months of data after the last trial works end (after the changeover for a real campaign)
@@ -124,7 +126,12 @@ class Cell:
     @property
     def full_rollout(self) -> bool:
         """Whether this campaign rolls the upgrade out to every other turbine: every even seed index."""
-        return self.seed_index is not None and self.seed_index % 2 == 0
+        return self.seed_index is not None and is_full_rollout(self.seed_index)
+
+
+def is_full_rollout(seed_index: int) -> bool:
+    """Whether a synthetic site's campaign ``seed_index`` rolls the upgrade out to every other turbine."""
+    return seed_index % 2 == 0
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ import pytest
 
 from benchmarking.baselines.prepost_matrix.validation import (
     TARGET_COVERAGE,
+    clustered_se,
     describe,
     lambda_star,
     lambda_uplift,
@@ -46,6 +47,19 @@ def test_lambda_uplift_runs_from_forward_to_full_reversal() -> None:
 
 def test_season_is_meteorological() -> None:
     assert [season(f"2020-{m:02d}-15") for m in (1, 4, 7, 10, 12)] == ["DJF", "MAM", "JJA", "SON", "DJF"]
+
+
+def test_clustered_se_ignores_repeats_within_a_campaign() -> None:
+    values = np.array([0.01, -0.02, 0.03, 0.0])
+    campaigns = np.array(["a", "b", "c", "d"])
+    once = clustered_se(values, campaigns)
+    repeated = clustered_se(np.repeat(values, 5), np.repeat(campaigns, 5))
+    assert repeated == pytest.approx(once)
+    assert once == pytest.approx(np.sqrt(4 / 3) * values.std(ddof=0) / 2)
+
+
+def test_clustered_se_needs_two_campaigns() -> None:
+    assert np.isnan(clustered_se(np.array([0.01, 0.02]), np.array(["a", "a"])))
 
 
 def _records(n_seeds: int = 6) -> list[dict[str, Any]]:

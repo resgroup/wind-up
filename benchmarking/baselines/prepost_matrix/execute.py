@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, replace
+from functools import cache
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -17,7 +18,13 @@ import pyarrow.parquet as pq
 import yaml
 
 from benchmarking.baselines.power_model.method import is_reading_column
-from benchmarking.baselines.prepost_matrix.cells import REAL_SITES, Cell, campaign_seed, draw_exclusions
+from benchmarking.baselines.prepost_matrix.cells import (
+    REAL_SITES,
+    Cell,
+    campaign_seed,
+    draw_exclusions,
+    is_full_rollout,
+)
 from benchmarking.campaigns.composed import (
     CAMPAIGN_DIRNAME,
     DATA_PREPARATION_DIRNAME,
@@ -38,7 +45,7 @@ from benchmarking.campaigns.real import (
     write_real_campaign,
 )
 from benchmarking.campaigns.report import write_campaign_report, write_report
-from benchmarking.campaigns.rollout import draw_rollout, hot_site, kelmarsh_site, penmanshiel_site, rollout_campaign
+from benchmarking.campaigns.rollout import draw_tiles, hot_site, kelmarsh_site, penmanshiel_site, rollout_campaign
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.campaigns.runner import CampaignRunner, per_turbine_table
 from benchmarking.diagnostics import stages
@@ -231,16 +238,27 @@ def describe_cell(cell: Cell, *, settings: MatrixSettings) -> dict[str, Any]:
 
 
 def _draw(cell: Cell, *, settings: MatrixSettings) -> tuple[RolloutSite, int, RolloutDraw, list[Exclusion]]:
-    """Return a synthetic cell's site, campaign seed, rollout draw and reference exclusions."""
+    """Return a synthetic cell's site, campaign seed, rollout draw (its tile of the site) and reference exclusions."""
     site = SITES[cell.site]()
-    seed = campaign_seed(settings.master_seed, site=cell.site, seed_index=cell.seed_index)  # type: ignore[arg-type]
-    draw = draw_rollout(site, seed=seed, full_rollout=cell.full_rollout)
+    index: int = cell.seed_index  # type: ignore[assignment]
+    seed = campaign_seed(settings.master_seed, site=cell.site, seed_index=index)
+    draw = _site_tiles(cell.site, master_seed=settings.master_seed, count=index + 1)[index]
     exclusions: list[Exclusion] = []
     if cell.has_exclusions:
         exclusions = draw_exclusions(
-            [t for t in site.coords if t not in draw.trial], start=site.data_start, end=site.data_end, seed=seed
+            [t for t in site.coords if t not in draw.trial], start=draw.data_start, end=site.data_end, seed=seed
         )
     return site, seed, draw, exclusions
+
+
+@cache
+def _site_tiles(site_key: str, *, master_seed: int, count: int) -> list[RolloutDraw]:
+    """Return the first ``count`` tiles of a synthetic site."""
+    return draw_tiles(
+        SITES[site_key](),
+        seeds=[campaign_seed(master_seed, site=site_key, seed_index=i) for i in range(count)],
+        full_rollouts=[is_full_rollout(i) for i in range(count)],
+    )
 
 
 @dataclass(frozen=True)

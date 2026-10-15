@@ -4,11 +4,12 @@ A campaign draws a trial of a few turbines from :func:`~wind_up.campaign_design.
 schedules their works on UK working days with one or two teams, and optionally rolls the upgrade
 out to every other turbine some months later. The upgrade injected is the AeroUp shape, scaled by
 a multiplier. The works become a works table, so the period selector chooses each analysed
-turbine's span as it would for a real campaign.
+turbine's span as it would for a real campaign. A site's campaigns tile its data: each tile's
+trial starts at its own place in the data, and tests turbines the earlier tiles did not.
 
 Draw a campaign and build it for one multiplier and post length::
 
-    draw = draw_rollout(hot_site(), seed=7, full_rollout=True)
+    draw = draw_rollout(hot_site(), seed=7, full_rollout=True, tile=2)
     campaign = rollout_campaign(draw, multiplier=1.0, post_months=6)
     scada, _ = load_hot_scada(start_dt=draw.data_window(6)[0], end_dt_excl=draw.data_window(6)[1])
     dataset = campaign.generate(scada)
@@ -37,7 +38,7 @@ from benchmarking.synthetic.sources.hill_of_towie import HOT_COORDINATES, HOT_RA
 from wind_up.campaign_design import design_campaign
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
     from pathlib import Path
 
     from benchmarking.synthetic import ColumnSchema
@@ -51,6 +52,10 @@ TRIAL_TEAMS = (1, 2)
 ROLLOUT_TEAMS = (1, 2)
 TRIAL_PRE_MONTHS = (12, 24)
 TRIAL_MIN_POST_MONTHS = 12
+# Room left after a trial's start for its works, beyond their scheduled length.
+TRIAL_START_MARGIN_DAYS = 31
+# Tile i's trial starts at the fractional part of i times this along the span trials may start in.
+TILE_STEP = (np.sqrt(5.0) - 1.0) / 2.0
 ROLLOUT_LAG_MONTHS = (6, 9)
 # The Christmas shutdown runs from 24 December to 2 January inclusive.
 SHUTDOWN_FROM = (12, 24)
@@ -82,6 +87,7 @@ class RolloutSite:
     :param columns: the source-native column schema of its SCADA
     :param data_start: the first SCADA timestamp
     :param data_end: the end of its SCADA, exclusive
+    :param never_tested: turbines never drawn as test turbines; they may be references
     """
 
     name: str
@@ -91,6 +97,7 @@ class RolloutSite:
     columns: ColumnSchema
     data_start: pd.Timestamp
     data_end: pd.Timestamp
+    never_tested: frozenset[str] = frozenset()
 
     def layout_frame(self) -> pd.DataFrame:
         """Return the campaign-design layout of the site."""
@@ -106,7 +113,7 @@ class RolloutSite:
 
 
 def hot_site() -> RolloutSite:
-    """Return Hill of Towie over 2016-2020, before its real AeroUp works."""
+    """Return Hill of Towie over 2016-2020, before its real AeroUp works; noise-mode T16 and T17 are never tested."""
     return RolloutSite(
         name="Hill of Towie",
         coords=dict(HOT_COORDINATES),
@@ -115,6 +122,7 @@ def hot_site() -> RolloutSite:
         columns=HOT_COLUMNS,
         data_start=pd.Timestamp("2016-01-01", tz="UTC"),
         data_end=pd.Timestamp("2021-01-01", tz="UTC"),
+        never_tested=frozenset({"T16", "T17"}),
     )
 
 
@@ -285,6 +293,7 @@ class RolloutDraw:
     :param trial: the trial turbines, the analysed ones
     :param rollout: the turbines worked in the full rollout; empty without one
     :param works: every worked turbine's works window
+    :param data_start: the first SCADA timestamp the campaign sees
     """
 
     site: RolloutSite
@@ -292,6 +301,7 @@ class RolloutDraw:
     trial: tuple[str, ...]
     rollout: tuple[str, ...]
     works: Mapping[str, Window]
+    data_start: pd.Timestamp
 
     @property
     def trial_start(self) -> pd.Timestamp:
@@ -309,37 +319,63 @@ class RolloutDraw:
 
     def data_window(self, post_months: int) -> Window:
         """Return the ``(start, end)`` of the SCADA a campaign with ``post_months`` is built on."""
-        return self.site.data_start, self.data_end(post_months)
+        return self.data_start, self.data_end(post_months)
 
 
-def draw_rollout(site: RolloutSite, *, seed: int, full_rollout: bool) -> RolloutDraw:
-    """Draw a trial-then-rollout campaign on ``site``.
+def draw_rollout(
+    site: RolloutSite,
+    *,
+    seed: int,
+    full_rollout: bool,
+    tile: int = 0,
+    tested: Collection[str] = (),
+) -> RolloutDraw:
+    """Draw a trial-then-rollout campaign on ``site``, as its tile ``tile``.
 
     The trial is a compliant campaign design with between one and one fewer than the most test
-    turbines the site allows. Its works start 12 to 24 months into the data, with one or two
-    teams, and leave at least 12 months of data after them. A full rollout works every other
-    turbine, starting 6 to 9 months after the last trial works end.
+    turbines the site allows, none of them ``site.never_tested``, preferring turbines not in
+    ``tested``. Its works start at the fractional part of ``tile * TILE_STEP`` along the days from
+    12 months into the data to the last day that leaves room for the works and 12 months after them,
+    with one or two teams. The campaign's data starts 12 to 24 months before the trial, or at the
+    site's data start. A full rollout works every other turbine, starting 6 to 9 months after the
+    last trial works end.
 
     :param site: the site to draw on
-    :param seed: the draw's seed; the same seed gives the same draw
+    :param seed: the draw's seed; the same seed, tile and ``tested`` give the same draw
     :param full_rollout: whether every other turbine is worked after the trial
+    :param tile: which of the site's tiles; sets where in the data the trial starts
+    :param tested: turbines earlier tiles tested
     :raises ValueError: if the site's data is too short for the trial
     """
     rng = np.random.default_rng(seed)
     layout = site.layout_frame()
-    most = design_campaign(layout).max_test_turbines
-    priority = [str(t) for t in rng.permutation(list(site.coords))]
+    never = sorted(site.never_tested)
+    most = design_campaign(layout, reference_only=never).max_test_turbines
+    order = [str(t) for t in rng.permutation(list(site.coords)) if t not in site.never_tested]
+    priority = [t for t in order if t not in tested] + [t for t in order if t in tested]
     n_trial = int(rng.integers(1, max(1, most - 1) + 1))
-    design = design_campaign(layout, test_priority=priority, n_test=n_trial)
+    design = design_campaign(layout, test_priority=priority, reference_only=never, n_test=n_trial)
     trial = tuple(t for t in priority if t in design.test_turbines)
 
+    n_teams = int(rng.choice(TRIAL_TEAMS))
+    days_seed = int(rng.integers(2**32))
     earliest = (site.data_start + pd.DateOffset(months=TRIAL_PRE_MONTHS[0])).date()
-    latest = min(
-        site.data_start + pd.DateOffset(months=TRIAL_PRE_MONTHS[1]),
-        site.data_end - pd.DateOffset(months=TRIAL_MIN_POST_MONTHS),
+    nominal = works_schedule(trial, start=earliest, n_teams=n_teams, rng=np.random.default_rng(days_seed))
+    length = max(end for _, end in nominal.values()) - min(start for start, _ in nominal.values())
+    latest = (
+        site.data_end
+        - pd.DateOffset(months=TRIAL_MIN_POST_MONTHS)
+        - length
+        - pd.Timedelta(days=TRIAL_START_MARGIN_DAYS)
     ).date()
-    start = _working_day_between(earliest, latest, rng=rng)
-    works = works_schedule(trial, start=start, n_teams=int(rng.choice(TRIAL_TEAMS)), rng=rng)
+    if latest < earliest:
+        msg = (
+            f"{site.name}: no room for a trial {TRIAL_PRE_MONTHS[0]} months in and {TRIAL_MIN_POST_MONTHS} from the end"
+        )
+        raise ValueError(msg)
+    offset = int(np.floor(((tile * TILE_STEP) % 1.0) * ((latest - earliest).days + 1)))
+    start = earliest + dt.timedelta(days=offset)
+    works = works_schedule(trial, start=start, n_teams=n_teams, rng=np.random.default_rng(days_seed))
     last_trial_end = max(end for _, end in works.values())
     if last_trial_end + pd.DateOffset(months=TRIAL_MIN_POST_MONTHS) > site.data_end:
         msg = (
@@ -347,6 +383,9 @@ def draw_rollout(site: RolloutSite, *, seed: int, full_rollout: bool) -> Rollout
             f"{TRIAL_MIN_POST_MONTHS} months of data after them"
         )
         raise ValueError(msg)
+    pre_months = int(rng.integers(TRIAL_PRE_MONTHS[0], TRIAL_PRE_MONTHS[1] + 1))
+    trial_start = min(s for s, _ in works.values())
+    data_start = max(site.data_start, trial_start - pd.DateOffset(months=pre_months))
 
     rollout: tuple[str, ...] = ()
     if full_rollout:
@@ -357,7 +396,31 @@ def draw_rollout(site: RolloutSite, *, seed: int, full_rollout: bool) -> Rollout
             rng=rng,
         )
         works |= works_schedule(rollout, start=lag_start, n_teams=int(rng.choice(ROLLOUT_TEAMS)), rng=rng)
-    return RolloutDraw(site=site, seed=seed, trial=trial, rollout=rollout, works=works)
+    return RolloutDraw(
+        site=site, seed=seed, trial=trial, rollout=rollout, works=works, data_start=pd.Timestamp(data_start)
+    )
+
+
+def draw_tiles(site: RolloutSite, *, seeds: Sequence[int], full_rollouts: Sequence[bool]) -> list[RolloutDraw]:
+    """Draw ``site``'s tiles in order, tile ``i`` from ``seeds[i]``, each preferring turbines no earlier tile tested.
+
+    Once every turbine that may be tested has been, the preference starts afresh. Tile ``i`` depends
+    only on the first ``i + 1`` seeds and rollouts.
+
+    :param site: the site to draw on
+    :param seeds: each tile's seed
+    :param full_rollouts: whether each tile rolls the upgrade out to every other turbine
+    """
+    testable = set(site.coords) - site.never_tested
+    tested: set[str] = set()
+    draws = []
+    for tile, (seed, full_rollout) in enumerate(zip(seeds, full_rollouts, strict=True)):
+        if testable <= tested:
+            tested = set()
+        draw = draw_rollout(site, seed=seed, full_rollout=full_rollout, tile=tile, tested=frozenset(tested))
+        tested |= set(draw.trial)
+        draws.append(draw)
+    return draws
 
 
 def _working_day_between(first: dt.date, last: dt.date, *, rng: np.random.Generator) -> dt.date:

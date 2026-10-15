@@ -12,6 +12,53 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF31 — The first big matrix run, stopped at 663 of 1098 cells, says less than its verdicts claimed: its cells were far from independent. On Hill of Towie the method passes targets i and ii once noise-mode T16 is set aside, but the sigma covers 44 % of the errors, not 68 %. The matrix now tiles each site's data, and `validate` clusters its standard errors by campaign
+
+*2026-10-15, branch v1-C3. The run was `study_prepost_campaign_matrix run --size big --workers 10` at 83e8491 on a
+32-core server; `validate` read the 603 cells finished at the time (360 synthetic Hill of Towie, 18 real T13, 225
+Penmanshiel, no Kelmarsh). The Penmanshiel cells predate the corrected Greenbyte labels and are not judged here.*
+
+**No cell failed.** Hill of Towie cells took 160 to 2060 s (median 460 s) at up to 9.5 GB.
+
+**Real T13.** All 18 cells read +2.3 to +3.3 % (sigma 0.2 to 0.6 pp), with combined references at +0.01 to
++0.24 %. T14 reads about +1.2 % as a reference in every cell.
+
+**Synthetic Hill of Towie.** One turbine dominates the error. T16 is in noise mode 57 % of the time in
+2016-2018, and 80 to 95 % of it from August 2017 to February 2018. Noise mode is not valid for uplift, so
+only a direction- and time-selected slice of T16 is ever measured. Its placebos read -11 to +15 %. As T15's
+reference it reads +17 % (sigma about 4 %), and the screen keeps it. Its labels are complete: the setpoints
+match the declared noise steps. Without T16, the placebo bias is -0.01 pp, the slope 1.017 and the intercept
+0.00 pp. The error RMS, however, is 1.3 pp against a median sigma of 0.5 pp: coverage 0.45, z spread 1.7.
+
+**The cells were not independent.** The -1, 0 and +1 multipliers of one draw share its data, and their
+errors correlate at 0.93 to 0.95. The post lengths are nested and the K values share most references.
+Half of the error variance sits between the 18 (draw, turbine) pairs, so the 360 cells hold about 18
+independent readings. `validate` treated every cell as independent, so its standard errors were 4 to 5
+times too small. Clustered by campaign, the same 603 cells pass targets i and ii on all estimators. Season
+dependence still fails (SON -0.64 pp, z -4.2), and so does coverage (0.44 ± 0.04).
+
+**The draws were also bunched.** Every trial started 12 to 24 months into the data, with the before
+period from the data start. All five Hill of Towie draws used 2016 as baseline and ended by mid-2018, so
+2018-2020 went unused and the seasons were uneven (DJF 614 readings, JJA 156).
+
+**Changes.**
+- A synthetic site's campaigns are now tiles (`draw_tiles`). Tile i's trial starts at the fractional part
+  of i times 0.618 along the days that leave 12 months before and after, so any number of tiles spreads
+  evenly over the record.
+- A tile's data starts 12 to 24 months before its trial, not at the site's data start.
+- Each tile prefers turbines no earlier tile tested.
+- Hill of Towie's noise-mode T16 and T17 are never test turbines (`RolloutSite.never_tested`); they stay
+  candidate references.
+- `validate` clusters every mean and coverage standard error by campaign, and gives a verdict from five
+  campaigns up.
+
+**Implication.** Precision is the open target: the sigma needs a component for the persistent
+per-campaign error the after-period bootstrap cannot see. The run is restarted on the tiled draw. The
+before periods of overlapping tiles still share data; full independence would need disjoint before
+periods, which this record length cannot give at 12 to 24 months each.
+
+---
+
 ## CF30 — The composed run now follows method.md steps 1 to 15, and the matrix drives it: the real T13 cell reproduces the composed run to 0.005 pp. The new headline sigma puts T13 at +2.84 % ± 0.21 pp, while its references read 2.5 to 7 sigma from zero, so F2 is a bias far beyond sampling noise. Laptop dry runs of every arm pass, after a fix without which every synthetic cell would have failed
 
 *2026-10-14, branch v1-C3. Reproduce: `python -m benchmarking.campaigns run <hot_aeroup_t13 campaign.yaml>` and

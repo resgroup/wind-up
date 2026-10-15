@@ -17,6 +17,9 @@ one-line verdict; :func:`write_report` saves the tables as CSV beside the study 
 - **open questions** the error against the share of after-period hours the waking configuration rule
   removes (step 11 ii), and the reference readings against the data screen's measures (step 9).
 
+Cells of one campaign share its data, so each mean's standard error is clustered by campaign (a
+synthetic site's tile, or a real campaign), and a verdict needs at least ``MIN_N`` campaigns.
+
 Every uplift is a fraction; the text prints percentage points.
 """
 
@@ -35,11 +38,11 @@ if TYPE_CHECKING:
 
 # The share of a normal distribution within one sigma.
 TARGET_COVERAGE = 0.6827
-# A coverage within this of the target, or within two binomial standard errors, is calibrated.
+# A coverage within this of the target, or within two of its clustered standard errors, is calibrated.
 COVERAGE_TOLERANCE = 0.05
 # A mean further than this many standard errors from its target fails.
 Z_LIMIT = 2.0
-# Below this many values a verdict is not given.
+# Below this many campaigns a verdict is not given.
 MIN_N = 5
 ESTIMATORS = ("forward", "reversal", "lambda")
 RARE_CONFIGURATION = "rare waking configuration"
@@ -90,7 +93,15 @@ def lambda_uplift(forward: np.ndarray | pd.Series, reverse: np.ndarray | pd.Seri
 
 
 def _keys(record: dict[str, Any]) -> dict[str, Any]:
-    return {k: record[k] for k in ("cell_id", "arm", "site", "seed_index", "k", "post_months", "multiplier")}
+    keys = {k: record[k] for k in ("cell_id", "arm", "site", "seed_index", "k", "post_months", "multiplier")}
+    return {**keys, "campaign": campaign_key(record)}
+
+
+def campaign_key(record: dict[str, Any]) -> str:
+    """Return the campaign a cell belongs to: ``site_sNN`` for a synthetic tile, the site for a real campaign."""
+    if record.get("seed_index") is None:
+        return str(record["site"])
+    return f"{record['site']}_s{int(record['seed_index']):02d}"
 
 
 def turbine_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
@@ -172,13 +183,25 @@ def _with_estimators(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _mean_se(values: pd.Series | np.ndarray) -> dict[str, float]:
+def _mean_se(values: pd.Series | np.ndarray, campaigns: pd.Series | np.ndarray) -> dict[str, float]:
+    """Return the mean of ``values``, its standard error clustered by ``campaigns``, its z, and both counts."""
     v = np.asarray(values, dtype=float)
-    v = v[np.isfinite(v)]
+    ok = np.isfinite(v)
+    v, groups = v[ok], np.asarray(campaigns)[ok]
     n = v.size
     mean = float(v.mean()) if n else np.nan
-    se = float(v.std(ddof=1) / np.sqrt(n)) if n > 1 else np.nan
-    return {"mean": mean, "se": se, "z": mean / se if se and np.isfinite(se) and se > 0 else np.nan, "n": n}
+    se = clustered_se(v, groups) if n else np.nan
+    z = mean / se if np.isfinite(se) and se > 0 else np.nan
+    return {"mean": mean, "se": se, "z": z, "n": n, "campaigns": len(set(groups.tolist()))}
+
+
+def clustered_se(values: np.ndarray, campaigns: np.ndarray) -> float:
+    """Return the standard error of the mean of ``values`` clustered by ``campaigns`` (CR1); NaN below 2 campaigns."""
+    sums = pd.Series(values - values.mean()).groupby(campaigns).sum().to_numpy()
+    g = sums.size
+    if g < 2:  # noqa: PLR2004 - a spread needs two campaigns
+        return np.nan
+    return float(np.sqrt(g / (g - 1) * np.sum(sums**2)) / values.size)
 
 
 def _errors(frame: pd.DataFrame, estimator: str) -> pd.Series:
@@ -194,13 +217,13 @@ def references_table(records: list[dict[str, Any]], turbines: pd.DataFrame) -> p
     farms = pd.DataFrame([{**_keys(r), **r["farm"]} for r in records])
     columns = [c for c in ("reference_uplift_before_screen", "reference_uplift_after_screen") if c in farms.columns]
     rows = [
-        {"site": site, "quantity": column, **_mean_se(group[column])}
+        {"site": site, "quantity": column, **_mean_se(group[column], group["campaign"])}
         for site, group in _site_groups(farms)
         for column in columns
     ]
     placebo = turbines[(turbines["multiplier"] == 0) & (turbines["arm"] != "real")]
     rows += [
-        {"site": site, "quantity": f"placebo_{estimator}", **_mean_se(_errors(group, estimator))}
+        {"site": site, "quantity": f"placebo_{estimator}", **_mean_se(_errors(group, estimator), group["campaign"])}
         for site, group in _site_groups(placebo)
         for estimator in ESTIMATORS
     ]
@@ -213,12 +236,13 @@ def linearity_table(turbines: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for estimator in ESTIMATORS:
         fits = []
-        for key, group in synthetic.groupby(["site", "seed_index", "arm", "k", "post_months", "turbine"]):
+        for key, group in synthetic.groupby(["site", "campaign", "arm", "k", "post_months", "turbine"]):
             scale, bias = line_fit(group["truth"], group[estimator])
-            fits.append({"site": key[0], "scale": scale, "bias": bias})
-        frame = pd.DataFrame(fits, columns=["site", "scale", "bias"])
+            fits.append({"site": key[0], "campaign": key[1], "scale": scale, "bias": bias})
+        frame = pd.DataFrame(fits, columns=["site", "campaign", "scale", "bias"])
         for site, group in _site_groups(frame):
-            slope, intercept = _mean_se(group["scale"] - 1.0), _mean_se(group["bias"])
+            slope = _mean_se(group["scale"] - 1.0, group["campaign"])
+            intercept = _mean_se(group["bias"], group["campaign"])
             rows.append(
                 {
                     "estimator": estimator,
@@ -231,6 +255,7 @@ def linearity_table(turbines: pd.DataFrame) -> pd.DataFrame:
                     "intercept_z": intercept["z"],
                     "slope_sd": float(group["scale"].std(ddof=0)) if len(group) else np.nan,
                     "n": slope["n"],
+                    "campaigns": slope["campaigns"],
                 }
             )
     return pd.DataFrame(rows)
@@ -244,27 +269,31 @@ def dependence_table(turbines: pd.DataFrame) -> pd.DataFrame:
         for value, group in synthetic.groupby(axis):
             for estimator in ESTIMATORS:
                 errors = _errors(group, estimator).to_numpy(dtype=float)
-                errors = errors[np.isfinite(errors)]
+                finite = errors[np.isfinite(errors)]
                 rows.append(
                     {
                         "axis": axis,
                         "value": str(value),
                         "estimator": estimator,
-                        **_mean_se(errors),
-                        "rmse": float(np.sqrt(np.mean(errors**2))) if errors.size else np.nan,
+                        **_mean_se(errors, group["campaign"]),
+                        "rmse": float(np.sqrt(np.mean(finite**2))) if finite.size else np.nan,
                     }
                 )
     return pd.DataFrame(rows)
 
 
-def _coverage(errors: np.ndarray, sigmas: np.ndarray) -> dict[str, float]:
+def _coverage(errors: np.ndarray, sigmas: np.ndarray, campaigns: np.ndarray) -> dict[str, float]:
     ok = np.isfinite(errors) & np.isfinite(sigmas) & (sigmas > 0)
     z = errors[ok] / sigmas[ok]
+    within = (np.abs(z) <= 1.0).astype(float)
+    groups = np.asarray(campaigns)[ok]
     return {
-        "coverage": float(np.mean(np.abs(z) <= 1.0)) if z.size else np.nan,
+        "coverage": float(np.mean(within)) if z.size else np.nan,
+        "coverage_se": clustered_se(within, groups) if z.size else np.nan,
         "z_sd": float(np.std(z)) if z.size else np.nan,
         "sigma_median": float(np.median(sigmas[ok])) if z.size else np.nan,
         "n": int(z.size),
+        "campaigns": len(set(groups.tolist())),
     }
 
 
@@ -276,12 +305,13 @@ def coverage_table(records: list[dict[str, Any]], turbines: pd.DataFrame, refere
             continue
         for column in [c for c in frame.columns if c == "sigma" or str(c).startswith("sigma_block_")]:
             errors = _errors(frame, "forward").to_numpy(dtype=float)
+            sigmas = frame[column].to_numpy(dtype=float)
             rows.append(
-                {"quantity": quantity, "block": column, **_coverage(errors, frame[column].to_numpy(dtype=float))}
+                {"quantity": quantity, "block": column, **_coverage(errors, sigmas, frame["campaign"].to_numpy())}
             )
     bins = pd.DataFrame(
         [{**_keys(r), **b} for r in records if r["arm"] != "real" for b in r.get("bins", [])],
-        columns=["condition", "estimate", "truth", "sigma"],
+        columns=["campaign", "condition", "estimate", "truth", "sigma"],
     )
     for condition, group in bins.groupby("condition"):
         errors = group["estimate"].to_numpy(dtype=float) - pd.to_numeric(group["truth"]).to_numpy(dtype=float)
@@ -289,7 +319,7 @@ def coverage_table(records: list[dict[str, Any]], turbines: pd.DataFrame, refere
             {
                 "quantity": f"bins_{condition}",
                 "block": "sigma",
-                **_coverage(errors, group["sigma"].to_numpy(dtype=float)),
+                **_coverage(errors, group["sigma"].to_numpy(dtype=float), group["campaign"].to_numpy()),
             }
         )
     return pd.DataFrame(rows)
@@ -329,11 +359,11 @@ def configuration_rule_table(turbines: pd.DataFrame) -> pd.DataFrame:
             {
                 "rare_share": str(interval),
                 "share_median": float(group["rare_share_after"].median()),
-                **_mean_se(errors),
+                **_mean_se(errors, group["campaign"]),
                 "rmse": float(np.sqrt(np.nanmean(errors**2))),
             }
         )
-    return pd.DataFrame(rows, columns=["rare_share", "share_median", "mean", "se", "z", "n", "rmse"])
+    return pd.DataFrame(rows, columns=["rare_share", "share_median", "mean", "se", "z", "n", "campaigns", "rmse"])
 
 
 def screen_table(references: pd.DataFrame) -> pd.DataFrame:
@@ -382,18 +412,17 @@ def validation_tables(records: list[dict[str, Any]]) -> dict[str, pd.DataFrame]:
 
 
 def _verdict_mean(row: pd.Series) -> str:
-    if row["n"] < MIN_N or not np.isfinite(row["z"]):
+    if row["campaigns"] < MIN_N or not np.isfinite(row["z"]):
         return "too few"
     return "pass" if abs(row["z"]) <= Z_LIMIT else "FAIL"
 
 
 def _verdict_coverage(row: pd.Series) -> str:
-    """Pass within the tolerance or two binomial standard errors of the target, whichever is wider."""
-    if row["n"] < MIN_N or not np.isfinite(row["coverage"]):
+    """Pass within the tolerance or two clustered standard errors of the target, whichever is wider."""
+    if row["campaigns"] < MIN_N or not np.isfinite(row["coverage"]) or not np.isfinite(row["coverage_se"]):
         return "too few"
     gap = row["coverage"] - TARGET_COVERAGE
-    binomial_se = np.sqrt(TARGET_COVERAGE * (1.0 - TARGET_COVERAGE) / row["n"])
-    if abs(gap) <= max(COVERAGE_TOLERANCE, Z_LIMIT * binomial_se):
+    if abs(gap) <= max(COVERAGE_TOLERANCE, Z_LIMIT * row["coverage_se"]):
         return "pass"
     return "FAIL (sigma too small)" if gap < 0 else "FAIL (sigma too large)"
 
@@ -404,24 +433,28 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int) -> str:
     refs = tables["i_references"]
     lines.append("## i. References and placebos read 0 %")
     lines += [
-        f"- {row.quantity}: {row.mean * _PP:+.3f} ± {row.se * _PP:.3f} pp (n {row.n}): "
+        f"- {row.quantity}: {row.mean * _PP:+.3f} ± {row.se * _PP:.3f} pp (n {row.n}, {row.campaigns} campaigns): "
         f"{_verdict_mean(pd.Series(row._asdict()))}"
         for row in refs[refs["site"] == "all"].itertuples()
     ]
     lines += ["", "## ii. Measured against true uplift: slope 1, intercept 0"]
     for row in tables["ii_linearity"].query("site == 'all'").itertuples():
-        slope_ok = _verdict_mean(pd.Series({"z": row.slope_z, "n": row.n}))
-        intercept_ok = _verdict_mean(pd.Series({"z": row.intercept_z, "n": row.n}))
+        slope_ok = _verdict_mean(pd.Series({"z": row.slope_z, "campaigns": row.campaigns}))
+        intercept_ok = _verdict_mean(pd.Series({"z": row.intercept_z, "campaigns": row.campaigns}))
         lines.append(
             f"- {row.estimator}: slope {row.slope:.3f} ± {row.slope_se:.3f} ({slope_ok}), intercept "
-            f"{row.intercept * _PP:+.3f} ± {row.intercept_se * _PP:.3f} pp ({intercept_ok}), n {row.n}"
+            f"{row.intercept * _PP:+.3f} ± {row.intercept_se * _PP:.3f} pp ({intercept_ok}), n {row.n}, "
+            f"{row.campaigns} campaigns"
         )
     lines += ["", "## iii. No dependence on after-period length, references or season (forward)"]
     dep = tables["iii_dependence"]
     for axis, group in dep[dep["estimator"] == "forward"].groupby("axis", sort=False):
         spread = group["mean"].max() - group["mean"].min()
         worst = group.loc[group["z"].abs().idxmax()] if group["z"].notna().any() else None
-        verdict = "too few" if worst is None else ("pass" if abs(worst["z"]) <= Z_LIMIT else "FAIL")
+        if worst is None or worst["campaigns"] < MIN_N:
+            verdict = "too few"
+        else:
+            verdict = "pass" if abs(worst["z"]) <= Z_LIMIT else "FAIL"
         detail = (
             "" if worst is None else f"; worst {worst['value']} at {worst['mean'] * _PP:+.3f} pp (z {worst['z']:+.1f})"
         )
@@ -429,7 +462,8 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int) -> str:
     lines += ["", "## iv. Sigma covers 68 % of the errors"]
     for row in tables["iv_coverage"].itertuples():
         lines.append(
-            f"- {row.quantity} {row.block}: {row.coverage:.2f} (z sd {row.z_sd:.2f}, n {row.n}): "
+            f"- {row.quantity} {row.block}: {row.coverage:.2f} ± {row.coverage_se:.2f} (z sd {row.z_sd:.2f}, "
+            f"n {row.n}, {row.campaigns} campaigns): "
             f"{_verdict_coverage(pd.Series(row._asdict()))}"
         )
     lines += ["", "## Option 2: forward, full reversal and computed lambda (RMSE, pp)"]
