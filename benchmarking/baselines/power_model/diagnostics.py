@@ -411,10 +411,18 @@ def _importance_figure(importance: pd.DataFrame, *, test_wtg: str, left_out: Seq
     ax.barh(top["feature"], top["gain"], color="C0")
     ax.set_xscale("log")
     ax.set_xlabel("gain (log scale)")
-    title = f"{test_wtg}: power-model feature importance"
+    ax.set_title(f"{test_wtg}: power-model feature importance")
     if left_out:
-        title += "\nleft out, one value in every record used: " + ", ".join(left_out)
-    ax.set_title(title)
+        ax.text(
+            0.99,
+            0.02,
+            "\n".join(["left out, one value in every record used:", *left_out]),
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize="x-small",
+            color="0.3",
+        )
     apply_grid(ax)
     return fig
 
