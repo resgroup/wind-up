@@ -72,6 +72,7 @@ class DiagnosticData:
     sum_counterfactual_kw: float
     n_refs: int  # candidate references in the pool, screened ones included
     era5_label: str = ERA5_UNLOCATED
+    constant_features: tuple[str, ...] = ()  # left out of the model: one value over the selected rows
 
 
 def feature_importance_long(data: DiagnosticData) -> pd.DataFrame:
@@ -382,7 +383,7 @@ def save_plots(plots_dir: Path, data: DiagnosticData, importance: pd.DataFrame) 
     """Write the power-model diagnostic plots into their analysis-stage subfolders."""
     model_dir = plots_dir / stages.RELATE_REFERENCES
     model_dir.mkdir(parents=True, exist_ok=True)
-    _plot_importance(model_dir, importance, test_wtg=data.test_wtg)
+    _plot_importance(model_dir, importance, test_wtg=data.test_wtg, left_out=data.constant_features)
     _plot_predicted_vs_actual(model_dir, data)
 
     results_dir = plots_dir / stages.UPLIFT
@@ -395,19 +396,25 @@ def save_plots(plots_dir: Path, data: DiagnosticData, importance: pd.DataFrame) 
     _save_feature_histograms(inputs_dir / "feature_histograms", data)
 
 
-def _plot_importance(plots_dir: Path, importance: pd.DataFrame, *, test_wtg: str) -> None:
+def _plot_importance(plots_dir: Path, importance: pd.DataFrame, *, test_wtg: str, left_out: Sequence[str] = ()) -> None:
     """Write the top features by gain for the single power model."""
-    save_fig(_importance_figure(importance, test_wtg=test_wtg), plots_dir / "feature_importance.png")
+    save_fig(_importance_figure(importance, test_wtg=test_wtg, left_out=left_out), plots_dir / "feature_importance.png")
 
 
-def _importance_figure(importance: pd.DataFrame, *, test_wtg: str) -> plt.Figure:
-    """Draw the top 20 features by gain on a log scale; a feature of no gain has no bar."""
+def _importance_figure(importance: pd.DataFrame, *, test_wtg: str, left_out: Sequence[str] = ()) -> plt.Figure:
+    """Draw the top 20 features by gain on a log scale; a feature of no gain has no bar.
+
+    ``left_out`` names the features left out of the model for holding one value in its records.
+    """
     top = importance.head(20).iloc[::-1]
     fig, ax = plt.subplots(figsize=(11, max(6.0, 0.4 * len(top))))
     ax.barh(top["feature"], top["gain"], color="C0")
     ax.set_xscale("log")
     ax.set_xlabel("gain (log scale)")
-    ax.set_title(f"{test_wtg}: power-model feature importance")
+    title = f"{test_wtg}: power-model feature importance"
+    if left_out:
+        title += "\nleft out, one value in every record used: " + ", ".join(left_out)
+    ax.set_title(title)
     apply_grid(ax)
     return fig
 

@@ -261,6 +261,11 @@ class TestTheImportancePlots:
         assert "expect" not in fig.axes[0].get_title()
         plt.close(fig)
 
+    def test_features_left_out_of_the_model_are_named(self) -> None:
+        fig = _importance_figure(self.IMPORTANCE, test_wtg="T13", left_out=["waking_scenario @ T04"])
+        assert "left out, one value in every record used: waking_scenario @ T04" in fig.axes[0].get_title()
+        plt.close(fig)
+
     def test_the_feature_overview_is_on_a_log_scale(self) -> None:
         catalogue = self.IMPORTANCE.assign(coverage_pct=100.0)
         fig = _feature_overview_figure(catalogue)

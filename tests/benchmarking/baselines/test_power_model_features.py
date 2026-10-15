@@ -19,6 +19,7 @@ from benchmarking.baselines.power_model.features import (
     era5_feature_frame,
     extract_outcome,
     waking_scenario_features,
+    without_constant_scenarios,
 )
 from benchmarking.harness.reanalysis import ERA5_WD, ERA5_WS
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
@@ -374,3 +375,19 @@ class TestWakingScenarioFeatures:
     def test_raises_without_the_scenario_column(self) -> None:
         with pytest.raises(ValueError, match=WAKING_SCENARIO_COL):
             waking_scenario_features(_scada(_index(12)), test_wtg="T1", references=_REFS, turbine_col=_TURBINE)
+
+
+def test_a_scenario_column_with_one_value_over_the_rows_is_left_out() -> None:
+    index = pd.date_range("2020-01-01", periods=4, freq="10min", tz="UTC")
+    dtype = pd.CategoricalDtype(["T03 not waking", "normal"])
+    features = pd.DataFrame(
+        {
+            f"{WAKING_SCENARIO_COL}{QUALIFIER}test": pd.Categorical(["normal"] * 3 + ["T03 not waking"], dtype=dtype),
+            f"{WAKING_SCENARIO_COL}{QUALIFIER}T02": pd.Categorical(["normal", "T03 not waking"] * 2, dtype=dtype),
+            f"power{QUALIFIER}T02": [1.0, 1.0, 1.0, 1.0],
+        },
+        index=index,
+    )
+    kept, constant = without_constant_scenarios(features, rows=np.array([True, True, True, False]))
+    assert constant == [f"{WAKING_SCENARIO_COL}{QUALIFIER}test"]
+    assert list(kept.columns) == [f"{WAKING_SCENARIO_COL}{QUALIFIER}T02", f"power{QUALIFIER}T02"]

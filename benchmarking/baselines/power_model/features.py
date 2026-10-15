@@ -107,6 +107,18 @@ def build_reference_features(
     return features
 
 
+def without_constant_scenarios(features: pd.DataFrame, *, rows: np.ndarray) -> tuple[pd.DataFrame, list[str]]:
+    """Return ``features`` without the waking-scenario columns holding one value over ``rows``, and those columns.
+
+    :param features: the model's feature frame
+    :param rows: the records the model is fitted and predicts on
+    """
+    prefix = f"{WAKING_SCENARIO_COL}{QUALIFIER}"
+    used = features.iloc[np.flatnonzero(rows)]
+    constant = [c for c in features.columns if str(c).startswith(prefix) and len(pd.unique(used[c])) <= 1]
+    return features.drop(columns=constant), constant
+
+
 def waking_scenario_features(
     scada_df: pd.DataFrame, *, test_wtg: str, references: Sequence[str], turbine_col: str
 ) -> pd.DataFrame:

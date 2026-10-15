@@ -676,7 +676,9 @@ The options above are decided by these criteria, one at a time rather than in ev
 2. step 13 option B with the calculated $\lambda$ is added (option A is its $\lambda = 0$ limit);
 3. step 11 iv option B is added on top of that result, since trimming and the reversal correction
    both act on the model's extrapolation between the periods;
-4. step 6 i option B is added last.
+4. step 6 i option B is added last;
+5. at lower priority, step 11 ii with a minimum below 24 hours, so that more configurations with a
+   turbine offline upwind are kept for the model to learn from rather than dropped as rare.
 
 An option is kept when it improves the criteria above. Step 12 option B is not run.
 

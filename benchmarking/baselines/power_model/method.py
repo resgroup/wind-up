@@ -39,6 +39,7 @@ from benchmarking.baselines.power_model.features import (
     extract_outcome,
     reference_mean_wind_speed,
     waking_scenario_features,
+    without_constant_scenarios,
 )
 from benchmarking.baselines.power_model.fitting import make_outcome_model, model_safe_features, time_block_folds
 from benchmarking.baselines.power_model.matching import coarsened_exact_match
@@ -624,6 +625,7 @@ class PowerModelMethod:
             after=t,
         )
         selected = np.asarray(reasons == USABLE) & np.isfinite(y.to_numpy(dtype=float))
+        features, constant_scenarios = without_constant_scenarios(features, rows=selected)
         # The counterfactual is fitted on the lenient training baseline (pre-campaign U off-blocks);
         # more upgrade-invariant data helps. The conditional matching step below instead uses the
         # strict campaign_baseline (off-blocks only), so it never matches pre-campaign against on rows.
@@ -718,6 +720,7 @@ class PowerModelMethod:
                 sum_actual=sum_actual,
                 sum_counter=sum_counter,
                 n_refs=n_refs,
+                constant_features=constant_scenarios,
                 losses=record_losses(
                     reasons, before=toggle_rows.campaign_baseline, after=t, hours_per_record=hours_per_record
                 ),
@@ -1945,6 +1948,7 @@ class PowerModelMethod:
         sum_actual: float,
         sum_counter: float,
         n_refs: int,
+        constant_features: list[str],
         losses: pd.DataFrame,
         uncertainty: pd.DataFrame,
     ) -> None:
@@ -1976,6 +1980,7 @@ class PowerModelMethod:
             sum_counterfactual_kw=sum_counter,
             n_refs=n_refs,
             era5_label=self.era5_label,
+            constant_features=tuple(constant_features),
         )
         importance = diag.write_csvs(run_dir, run_name, ts, data)
         diag.log_top_features(importance, active_power_col=self.columns.active_power)
