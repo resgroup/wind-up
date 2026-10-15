@@ -14,6 +14,7 @@ from benchmarking.diagnostics.context import DiagnosticContext
 from benchmarking.diagnostics.input_data import monthly_capacity_factor, write_input_data_plots
 from benchmarking.diagnostics.ops_relationships import (
     PAIRS,
+    WIND_SPEED_EXTRA_QUANTILES,
     monthly_binned_means,
     operating_mask,
     plot_ops_relationships,
@@ -129,6 +130,15 @@ class TestMonthlyBinnedMeans:
         result = monthly_binned_means(x, y, timebase=TIMEBASE, n_bins=10)
         assert result["y_mean"].notna().all()
 
+    def test_extra_quantiles_split_a_bin(self, two_months: tuple[pd.Series, pd.Series]) -> None:
+        x, y = two_months
+        rng = np.random.default_rng(3)
+        x = _series(rng.uniform(0, 20, len(x)), x.index)
+        result = monthly_binned_means(x, y, timebase=TIMEBASE, n_bins=10, extra_quantiles=(0.95,))
+        edges = sorted(set(result["x_lo"]) | set(result["x_hi"]))
+        assert len(edges) == 12
+        assert edges[-2] == pytest.approx(np.quantile(x, 0.95))
+
     def test_no_data_gives_an_empty_frame(self) -> None:
         empty = pd.Series([], index=pd.DatetimeIndex([], tz="UTC"), dtype=float)
         assert monthly_binned_means(empty, empty, timebase=TIMEBASE).empty
@@ -173,6 +183,9 @@ class TestTheFigure:
         rows = _farm(["T1"]).assign(power=0.0)
         assert plot_ops_relationships(rows, turbine="T1", columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path) is None
         assert not list(tmp_path.iterdir())
+
+    def test_only_the_wind_speed_axis_splits_its_top_decile(self) -> None:
+        assert WIND_SPEED_EXTRA_QUANTILES == (0.95,)
 
     def test_it_covers_the_six_relationships_vs_wind_speed_then_vs_power(self) -> None:
         assert [(x, y) for x, y in PAIRS] == [

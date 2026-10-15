@@ -3,7 +3,8 @@
 Step 1 of the method looks for undeclared changes in the relationship between power, wind speed,
 pitch angle and rotor speed. Each relationship is summarised by binning the y signal by the x signal
 and taking the bin means per calendar month, with the bin edges fixed over the whole record so the
-months can be compared. A change shows as a step in one or more bins' monthly series.
+months can be compared. The bins are deciles of x; against wind speed the top decile is split at
+the 95th percentile. A change shows as a step in one or more bins' monthly series.
 
 Only producing, fully available records are binned, so downtime and start-up do not mix into the
 means. The turbine's own wind speed is used: this is inspection, not a model input.
@@ -49,6 +50,8 @@ PAIRS: tuple[tuple[str, str], ...] = (
 )
 
 N_BINS = 10
+# Quantiles added to the deciles' edges when binning by wind speed.
+WIND_SPEED_EXTRA_QUANTILES: tuple[float, ...] = (0.95,)
 MIN_HOURS = 6.0
 
 _COLUMNS = ["month", "bin", "x_lo", "x_hi", "x_mean", "y_mean", "hours"]
@@ -69,6 +72,7 @@ def monthly_binned_means(
     *,
     timebase: pd.Timedelta,
     n_bins: int = N_BINS,
+    extra_quantiles: Sequence[float] = (),
     min_hours: float = MIN_HOURS,
 ) -> pd.DataFrame:
     """Return the mean of ``x`` and ``y`` per calendar month and quantile bin of ``x``.
@@ -82,6 +86,7 @@ def monthly_binned_means(
     :param y: the binned signal, on the same index
     :param timebase: the records' period, to express the data behind each mean in hours
     :param n_bins: how many quantile bins of ``x``
+    :param extra_quantiles: quantiles of ``x`` added as edges, splitting the bins they fall in
     :param min_hours: the least data a month-bin cell needs to be kept
     :return: one row per kept cell, columns ``month`` (start of the UTC calendar month), ``bin``,
         ``x_lo``/``x_hi`` (the bin's edges), ``x_mean``, ``y_mean`` and ``hours``
@@ -89,7 +94,8 @@ def monthly_binned_means(
     frame = pd.DataFrame({"x": x.to_numpy(dtype=float), "y": y.to_numpy(dtype=float)}, index=x.index).dropna()
     if frame.empty:
         return pd.DataFrame(columns=_COLUMNS)
-    edges = np.unique(np.quantile(frame["x"].to_numpy(), np.linspace(0, 1, n_bins + 1)))
+    levels = np.unique([*np.linspace(0, 1, n_bins + 1), *extra_quantiles])
+    edges = np.unique(np.quantile(frame["x"].to_numpy(), levels))
     if len(edges) < 2:  # noqa: PLR2004 - a constant signal has one value and so one bin
         edges = np.array([edges[0], edges[0]])
         frame["bin"] = 0
@@ -253,7 +259,14 @@ def plot_ops_relationships(
         x_col, y_col = getattr(columns, x_role), getattr(columns, y_role)
         if x_col is None or y_col is None or x_col not in kept.columns or y_col not in kept.columns:
             continue
-        cells = monthly_binned_means(kept[x_col], kept[y_col], timebase=timebase, n_bins=n_bins, min_hours=min_hours)
+        cells = monthly_binned_means(
+            kept[x_col],
+            kept[y_col],
+            timebase=timebase,
+            n_bins=n_bins,
+            extra_quantiles=WIND_SPEED_EXTRA_QUANTILES if x_role == "wind_speed" else (),
+            min_hours=min_hours,
+        )
         if not cells.empty:
             panels.append((x_col, y_col, cells))
     if not panels:
