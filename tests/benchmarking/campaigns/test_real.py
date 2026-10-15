@@ -23,9 +23,11 @@ from benchmarking.campaigns.real import (
 )
 from benchmarking.harness.operating_state import PARTIAL_DOWNTIME
 from benchmarking.synthetic.sources.hill_of_towie import (
+    HOT_ACTIVE_POWER_MAX_COL,
     HOT_AMBIENT_TEMP_COL,
     HOT_COLUMNS,
     HOT_POWER_SETPOINT_COL,
+    HOT_RATED_POWER_KW,
     HOT_TURBINE_COL,
 )
 from wind_up.analysis_period import MONTH
@@ -76,9 +78,10 @@ def setpoints(
     start: str = "2019-01-01",
     wind_speed: float | list[float] = 8.0,
     power: float | list[float] = 1000.0,
+    power_max: float | list[float] | None = None,
     ambient: float | list[float] = 10.0,
 ) -> pd.DataFrame:
-    """One turbine's consecutive ten-minute records with the given end setpoints."""
+    """One turbine's consecutive ten-minute records with the given end setpoints; power max defaults to rated."""
     index = pd.date_range(start, periods=len(values), freq="10min", tz="UTC")
     return pd.DataFrame(
         {
@@ -86,6 +89,7 @@ def setpoints(
             HOT_POWER_SETPOINT_COL: values,
             HOT_COLUMNS.wind_speed: wind_speed,
             HOT_COLUMNS.active_power: power,
+            HOT_ACTIVE_POWER_MAX_COL: HOT_RATED_POWER_KW if power_max is None else power_max,
             HOT_AMBIENT_TEMP_COL: ambient,
         },
         index=index,
@@ -122,6 +126,15 @@ def test_a_reduced_setpoint_is_curtailment_only_from_the_bm_start() -> None:
     assert hot_labels(scada) == [None, None, BM_CURTAILMENT, None]
     # Rated, and a NaN setpoint, are not reduced.
     assert hot_labels(setpoints("T13", [2300.0, np.nan, 2300.0])) == [None, None, None]
+
+
+def test_a_reduced_setpoint_the_power_never_reaches_is_not_curtailment() -> None:
+    # Power max reaches 90 % of the setpoint at either end only in the second and third records.
+    scada = setpoints("T13", [2300.0, 1000.0, 1000.0, 1000.0], power=600.0, power_max=[700.0, 950.0, 900.0, 899.0])
+    assert hot_labels(scada) == [None, BM_CURTAILMENT, BM_CURTAILMENT, None]
+    # The record after a release still reaches the setpoint it started at.
+    scada = setpoints("T13", [1000.0, 2300.0, 2300.0], power=900.0, power_max=[950.0, 1500.0, 1500.0])
+    assert hot_labels(scada) == [BM_CURTAILMENT, BM_CURTAILMENT, None]
 
 
 def test_a_noise_setpoint_is_noise_mode_on_its_own_turbine_only() -> None:

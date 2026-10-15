@@ -20,10 +20,12 @@ import yaml
 from benchmarking.campaigns.loader import operating_state_config
 from benchmarking.harness.operating_state import PARTIAL_DOWNTIME, label_operating_states
 from benchmarking.synthetic.sources.hill_of_towie import (
+    HOT_ACTIVE_POWER_MAX_COL,
     HOT_AMBIENT_TEMP_COL,
     HOT_BM_START,
     HOT_COLUMNS,
     HOT_COORDINATES,
+    HOT_CURTAILMENT_REACH,
     HOT_HIGH_WIND_DERATE_MS,
     HOT_ICING_MAX_TEMP_C,
     HOT_ICING_MIN_BIN_RECORDS,
@@ -114,7 +116,8 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
     3. high wind derate: wind speed at or above ``HOT_HIGH_WIND_DERATE_MS`` and a setpoint below rated
        that is not one of the turbine's noise setpoints;
     4. BM curtailment: from the Balancing Mechanism start, below that wind speed, a setpoint below
-       rated that is not one of the turbine's noise setpoints;
+       rated that is not one of the turbine's noise setpoints and that the record's power max reaches
+       ``HOT_CURTAILMENT_REACH`` of, or a missing power max;
     5. noise mode: one of the turbine's noise setpoints.
 
     A record without a setpoint label is icing when it is cold and produces under a fraction of the
@@ -135,6 +138,7 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
     start[~follows] = np.nan
     wind_speed = scada_long[HOT_COLUMNS.wind_speed].to_numpy(dtype=float)[order]
     high_wind = wind_speed >= HOT_HIGH_WIND_DERATE_MS
+    power_max = scada_long[HOT_ACTIVE_POWER_MAX_COL].to_numpy(dtype=float)[order]
 
     def noise(setpoint: np.ndarray) -> np.ndarray:
         hit = np.zeros(len(setpoint), dtype=bool)
@@ -149,7 +153,9 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
         return high_wind & reduced(setpoint)
 
     def curtailed(setpoint: np.ndarray) -> np.ndarray:
-        return (when >= HOT_BM_START) & ~high_wind & reduced(setpoint)
+        with np.errstate(invalid="ignore"):
+            reached = ~(power_max < HOT_CURTAILMENT_REACH * setpoint)
+        return (when >= HOT_BM_START) & ~high_wind & reduced(setpoint) & reached
 
     def either(rule: Callable[[np.ndarray], np.ndarray]) -> np.ndarray:
         return rule(end) | rule(start)

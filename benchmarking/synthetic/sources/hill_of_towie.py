@@ -489,6 +489,10 @@ HOT_RATED_POWER_KW = 2300.0
 
 # The power setpoint at the end of each record (kW), which the site operating-state labels read.
 HOT_POWER_SETPOINT_COL = "wtc_PowerRef_endvalue"
+# The record's largest active power (kW); a reduced setpoint is curtailment only when it reaches
+# HOT_CURTAILMENT_REACH of that setpoint.
+HOT_ACTIVE_POWER_MAX_COL = _TAG_ACTIVE_POWER_MAX
+HOT_CURTAILMENT_REACH = 0.9
 # The ambient temperature the icing label reads.
 HOT_AMBIENT_TEMP_COL = _TAG_AMBIENT_TEMP_MEAN
 # A setpoint of 0 is a stop or a curtailment to zero; 100 kW is the one-interval limit after cut-in.
