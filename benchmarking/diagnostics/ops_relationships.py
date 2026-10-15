@@ -4,7 +4,7 @@ Step 1 of the method looks for undeclared changes in the relationship between po
 pitch angle and rotor speed. Each relationship is summarised by binning the y signal by the x signal
 and taking the bin means per calendar month, with the bin edges fixed over the whole record so the
 months can be compared. The bins are deciles of x; against wind speed the top decile is split at
-the 95th percentile. A change shows as a step in one or more bins' monthly series.
+the 95th and 97.5th percentiles. A change shows as a step in one or more bins' monthly series.
 
 Only producing, fully available records are binned, so downtime and start-up do not mix into the
 means. The turbine's own wind speed is used: this is inspection, not a model input.
@@ -51,7 +51,7 @@ PAIRS: tuple[tuple[str, str], ...] = (
 
 N_BINS = 10
 # Quantiles added to the deciles' edges when binning by wind speed.
-WIND_SPEED_EXTRA_QUANTILES: tuple[float, ...] = (0.95,)
+WIND_SPEED_EXTRA_QUANTILES: tuple[float, ...] = (0.95, 0.975)
 MIN_HOURS = 6.0
 
 _COLUMNS = ["month", "bin", "x_lo", "x_hi", "x_mean", "y_mean", "hours"]

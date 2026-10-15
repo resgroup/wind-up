@@ -185,7 +185,7 @@ class TestTheFigure:
         assert not list(tmp_path.iterdir())
 
     def test_only_the_wind_speed_axis_splits_its_top_decile(self) -> None:
-        assert WIND_SPEED_EXTRA_QUANTILES == (0.95,)
+        assert WIND_SPEED_EXTRA_QUANTILES == (0.95, 0.975)
 
     def test_it_covers_the_six_relationships_vs_wind_speed_then_vs_power(self) -> None:
         assert [(x, y) for x, y in PAIRS] == [
