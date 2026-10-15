@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from benchmarking.diagnostics import operating_states
 from benchmarking.diagnostics.context import DiagnosticContext
 from benchmarking.diagnostics.operating_states import (
     NORTHING_VIEWS,
@@ -33,6 +34,9 @@ from benchmarking.synthetic import ColumnSchema
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
+    from matplotlib.figure import Figure
 
 TIMEBASE = pd.Timedelta(minutes=10)
 COLUMNS = ColumnSchema(
@@ -101,11 +105,31 @@ def test_an_unlabelled_frame_gets_no_operating_state_plots(tmp_path: Path) -> No
     assert write_operating_state_plots(_farm(["T1"]), columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path) == []
 
 
-def test_a_turbine_without_pitch_skips_the_pitch_panels(tmp_path: Path) -> None:
+def test_a_panel_that_cannot_be_drawn_says_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    figures: list[Figure] = []
+    monkeypatch.setattr(operating_states, "save_fig", lambda fig, path: (figures.append(fig), path.touch()))
     rows = _labelled(_farm(["T1"]).drop(columns="pitch"), columns=NO_PITCH)
+    rows["rpm"] = np.nan
     path = plot_operating_states(rows, turbine="T1", columns=NO_PITCH, timebase=TIMEBASE, out_dir=tmp_path)
     assert path is not None
     assert path.exists()
+    notes = [[t.get_text() for t in ax.texts] for ax in figures[0].axes]
+    assert notes == [
+        [],
+        ["no reactive power field in the schema"],
+        ["gen rpm (rpm) has no values"],
+        ["gen rpm (rpm) has no values"],
+        ["no pitch field in the schema"],
+        ["no pitch field in the schema"],
+    ]
+
+
+def test_a_column_named_but_not_loaded_says_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    figures: list[Figure] = []
+    monkeypatch.setattr(operating_states, "save_fig", lambda fig, path: (figures.append(fig), path.touch()))
+    rows = _labelled(_farm(["T1"])).drop(columns="pitch")
+    plot_operating_states(rows, turbine="T1", columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path)
+    assert [t.get_text() for t in figures[0].axes[4].texts] == ["pitch (pitch) not loaded"]
 
 
 def _run_context(tmp_path: Path) -> DiagnosticContext:

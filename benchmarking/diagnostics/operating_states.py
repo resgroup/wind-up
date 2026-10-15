@@ -117,8 +117,8 @@ def plot_operating_states(
     """Write ``<name>_<turbine>.png``: each relationship of the step 1 pairs, coloured by state.
 
     The pairs sit two to a row, against wind speed on the left and against power on the right; a pair
-    whose signals are unset or absent leaves its slot empty. Nothing is written, and ``None`` returned,
-    when ``rows`` carries no states or no pair can be drawn.
+    whose signals are unset, absent or empty shows why in its slot. Nothing is written, and ``None``
+    returned, when ``rows`` carries no states or no pair can be drawn.
 
     :param rows: one turbine's labelled records, indexed by timestamp
     :param turbine: the turbine's name, for the file and title
@@ -132,8 +132,8 @@ def plot_operating_states(
     if STATE_COL not in rows.columns or rows.empty:
         return None
     slots = [(getattr(columns, x), getattr(columns, y)) for x, y in PAIRS]
-    pairs = [(x, y) for x, y in slots if x in rows.columns and y in rows.columns]
-    if not pairs:
+    missing = [_missing_reason(rows, roles=roles, columns=columns) for roles in PAIRS]
+    if all(missing):
         return None
     states = rows[STATE_COL].astype(str)
     order = state_order(states.unique())
@@ -144,9 +144,10 @@ def plot_operating_states(
     n_cols = 2
     n_rows = math.ceil(len(slots) / n_cols)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 4.5 * n_rows), squeeze=False, layout="constrained")
-    for ax, (x_col, y_col) in zip(axes.flat, slots, strict=True):
-        if (x_col, y_col) not in pairs:
-            ax.set_visible(False)
+    for ax, (x_col, y_col), reason in zip(axes.flat, slots, missing, strict=True):
+        if reason is not None:
+            ax.set_axis_off()
+            ax.text(0.5, 0.5, reason, ha="center", va="center", wrap=True, color="0.4", transform=ax.transAxes)
             continue
         for state in order:
             chosen = (states == state).to_numpy() & drawn
@@ -179,6 +180,21 @@ def plot_operating_states(
     path = out_dir / f"{name}_{turbine}.png"
     save_fig(fig, path)
     return path
+
+
+def _missing_reason(rows: pd.DataFrame, *, roles: tuple[str, str], columns: ColumnSchema) -> str | None:
+    """Return why the pair of ``roles`` cannot be drawn from ``rows``, or ``None`` when it can."""
+    reasons = []
+    for role in roles:
+        label = role.replace("_", " ")
+        column = getattr(columns, role)
+        if column is None:
+            reasons.append(f"no {label} field in the schema")
+        elif column not in rows.columns:
+            reasons.append(f"{label} ({column}) not loaded")
+        elif rows[column].isna().all():
+            reasons.append(f"{label} ({column}) has no values")
+    return "\n".join(reasons) or None
 
 
 def _limits(values: pd.Series) -> tuple[float, float]:
