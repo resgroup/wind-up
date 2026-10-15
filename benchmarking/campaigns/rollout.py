@@ -87,7 +87,6 @@ class RolloutSite:
     :param columns: the source-native column schema of its SCADA
     :param data_start: the first SCADA timestamp
     :param data_end: the end of its SCADA, exclusive
-    :param never_tested: turbines never drawn as test turbines; they may be references
     """
 
     name: str
@@ -97,7 +96,6 @@ class RolloutSite:
     columns: ColumnSchema
     data_start: pd.Timestamp
     data_end: pd.Timestamp
-    never_tested: frozenset[str] = frozenset()
 
     def layout_frame(self) -> pd.DataFrame:
         """Return the campaign-design layout of the site."""
@@ -113,7 +111,7 @@ class RolloutSite:
 
 
 def hot_site() -> RolloutSite:
-    """Return Hill of Towie over 2016-2020, before its real AeroUp works; noise-mode T16 and T17 are never tested."""
+    """Return Hill of Towie over 2016-2020, before its real AeroUp works."""
     return RolloutSite(
         name="Hill of Towie",
         coords=dict(HOT_COORDINATES),
@@ -122,7 +120,6 @@ def hot_site() -> RolloutSite:
         columns=HOT_COLUMNS,
         data_start=pd.Timestamp("2016-01-01", tz="UTC"),
         data_end=pd.Timestamp("2021-01-01", tz="UTC"),
-        never_tested=frozenset({"T16", "T17"}),
     )
 
 
@@ -333,12 +330,11 @@ def draw_rollout(
     """Draw a trial-then-rollout campaign on ``site``, as its tile ``tile``.
 
     The trial is a compliant campaign design with between one and one fewer than the most test
-    turbines the site allows, none of them ``site.never_tested``, preferring turbines not in
-    ``tested``. Its works start at the fractional part of ``tile * TILE_STEP`` along the days from
-    12 months into the data to the last day that leaves room for the works and 12 months after them,
-    with one or two teams. The campaign's data starts 12 to 24 months before the trial, or at the
-    site's data start. A full rollout works every other turbine, starting 6 to 9 months after the
-    last trial works end.
+    turbines the site allows, preferring turbines not in ``tested``. Its works start at the
+    fractional part of ``tile * TILE_STEP`` along the days from 12 months into the data to the last
+    day that leaves room for the works and 12 months after them, with one or two teams. The
+    campaign's data starts 12 to 24 months before the trial, or at the site's data start. A full
+    rollout works every other turbine, starting 6 to 9 months after the last trial works end.
 
     :param site: the site to draw on
     :param seed: the draw's seed; the same seed, tile and ``tested`` give the same draw
@@ -349,12 +345,11 @@ def draw_rollout(
     """
     rng = np.random.default_rng(seed)
     layout = site.layout_frame()
-    never = sorted(site.never_tested)
-    most = design_campaign(layout, reference_only=never).max_test_turbines
-    order = [str(t) for t in rng.permutation(list(site.coords)) if t not in site.never_tested]
+    most = design_campaign(layout).max_test_turbines
+    order = [str(t) for t in rng.permutation(list(site.coords))]
     priority = [t for t in order if t not in tested] + [t for t in order if t in tested]
     n_trial = int(rng.integers(1, max(1, most - 1) + 1))
-    design = design_campaign(layout, test_priority=priority, reference_only=never, n_test=n_trial)
+    design = design_campaign(layout, test_priority=priority, n_test=n_trial)
     trial = tuple(t for t in priority if t in design.test_turbines)
 
     n_teams = int(rng.choice(TRIAL_TEAMS))
@@ -404,14 +399,14 @@ def draw_rollout(
 def draw_tiles(site: RolloutSite, *, seeds: Sequence[int], full_rollouts: Sequence[bool]) -> list[RolloutDraw]:
     """Draw ``site``'s tiles in order, tile ``i`` from ``seeds[i]``, each preferring turbines no earlier tile tested.
 
-    Once every turbine that may be tested has been, the preference starts afresh. Tile ``i`` depends
+    Once every turbine has been tested, the preference starts afresh. Tile ``i`` depends
     only on the first ``i + 1`` seeds and rollouts.
 
     :param site: the site to draw on
     :param seeds: each tile's seed
     :param full_rollouts: whether each tile rolls the upgrade out to every other turbine
     """
-    testable = set(site.coords) - site.never_tested
+    testable = set(site.coords)
     tested: set[str] = set()
     draws = []
     for tile, (seed, full_rollout) in enumerate(zip(seeds, full_rollouts, strict=True)):

@@ -47,8 +47,10 @@ period from the data start. All five Hill of Towie draws used 2016 as baseline a
   evenly over the record.
 - A tile's data starts 12 to 24 months before its trial, not at the site's data start.
 - Each tile prefers turbines no earlier tile tested.
-- Hill of Towie's noise-mode T16 and T17 are never test turbines (`RolloutSite.never_tested`); they stay
-  candidate references.
+- Noise mode is now valid for uplift at Hill of Towie, in the real AeroUp and TuneUp campaigns and the
+  synthetic tiles. T16 and T17 stay test turbines, so the matrix shows whether the method copes with a
+  turbine whose noise-mode share moves between the periods. (A first version of this change kept them
+  out of the trials instead; it never ran beyond 7 cells.)
 - `validate` clusters every mean and coverage standard error by campaign, and gives a verdict from five
   campaigns up.
 

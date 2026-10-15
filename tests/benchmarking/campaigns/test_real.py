@@ -240,7 +240,7 @@ def test_the_t13_declaration_carries_the_site_states(tmp_path: Path) -> None:
     assert config.label_column == HOT_STATE_COL
     assert config.parked_pitch_above_deg == 45
     assert set(config.labels) == {NOISE_MODE, BM_CURTAILMENT, HIGH_WIND_DERATE, ICING}
-    assert not config.labels[NOISE_MODE].uplift
+    assert config.labels[NOISE_MODE].uplift
     assert config.labels[BM_CURTAILMENT].waking == "part waking"
     for label in (HIGH_WIND_DERATE, ICING):
         assert not config.labels[label].uplift
