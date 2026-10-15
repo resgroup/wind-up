@@ -57,10 +57,11 @@ from benchmarking.baselines.prepost_matrix.study import (
     study_size,
 )
 from benchmarking.campaigns.composed import DATA_PREPARATION_DIRNAME
+from benchmarking.campaigns.loader import operating_state_config
 from benchmarking.diagnostics import stages
 from benchmarking.harness.northing import NORTH_TABLE_YAML
-from benchmarking.harness.operating_state import OperatingStateConfig
 from benchmarking.synthetic import HOT_COLUMNS
+from benchmarking.synthetic.sources.greenbyte import GREENBYTE_OPERATING_STATE, GREENBYTE_STATE_COL
 from wind_up.analysis_period import PlanSettings
 
 if TYPE_CHECKING:
@@ -293,11 +294,13 @@ def test_the_cell_record_reads_the_north_table_of_part_a(tmp_path: Path) -> None
     assert record["n_northing_changepoints"] == 0
 
 
-def test_a_greenbyte_site_has_the_generic_operating_states_alone() -> None:
+@pytest.mark.parametrize("site", ["kel", "pen"])
+def test_a_greenbyte_site_reads_the_labels_its_loader_wrote(site: str) -> None:
     frame = pd.DataFrame({"a": [1.0]})
-    labelled, config = site_operating_state("kel", frame)
+    labelled, config = site_operating_state(site, frame)
     assert labelled is frame
-    assert config == OperatingStateConfig()
+    assert config == operating_state_config(GREENBYTE_OPERATING_STATE)
+    assert config.label_column == GREENBYTE_STATE_COL
 
 
 def test_a_study_is_named_by_commit_and_size_beside_its_detail_directory(tmp_path: Path) -> None:

@@ -2,27 +2,35 @@
 
 The published zips are hundreds of megabytes, so these build the export layout instead: nine
 comment lines, a ``#``-prefixed header, then rows. What is worth pinning is the parsing contract
-and the two source quirks the adapter exists to absorb -- availability published as a fraction,
-and a trailing blank row in Penmanshiel's metadata.
+and the source quirks the adapter exists to absorb -- availability published as a fraction and
+zero while the turbine produces, power limits known only from the status log or the pitch, and a
+trailing blank row in Penmanshiel's metadata.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 from zipfile import ZipFile
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from benchmarking.synthetic.sources import greenbyte, hill_of_towie
 from benchmarking.synthetic.sources.greenbyte import (
+    AMBIENT_TEMP,
     AVAILABILITY,
     GREENBYTE_COLUMNS,
+    GREENBYTE_STATE_COL,
     KELMARSH,
     NACELLE_POSITION,
     PENMANSHIEL,
+    PITCH,
     POWER,
+    POWER_LIMITED,
     POWER_MIN,
+    REACTIVE_POWER,
     TIMEBASE_S,
     TURBINE,
     ensure_greenbyte_data,
@@ -37,20 +45,54 @@ _PREAMBLE = "\n".join(f"# comment line {i}" for i in range(9))
 _HEADER = (
     "# Date and time,Wind speed (m/s),"
     '"Wind speed, Standard deviation (m/s)",Power (kW),"Power, Minimum (kW)",'
-    "Nacelle position (°),Time-based System Avail.,Generator RPM (RPM)"
+    "Nacelle position (°),Time-based System Avail.,Generator RPM (RPM),Blade angle (pitch position) A (°),"
+    "Reactive power (kvar),Nacelle ambient temperature (°C)"
+)
+_STATUS_HEADER = (
+    "Timestamp start,Timestamp end,Duration,Status,Code,Message,Comment,Service contract category,IEC category"
 )
 
 
-def _turbine_csv(*, rows: int, start: str, power: float, nacelle: float, availability: float) -> str:
-    """One turbine's data file in the published layout."""
+def _turbine_csv(
+    *,
+    rows: int,
+    start: str,
+    power: float | Sequence[float],
+    nacelle: float,
+    availability: float | Sequence[float],
+    pitch: float | Sequence[float] = 0.0,
+) -> str:
+    """One turbine's data file in the published layout; a sequence gives each row its own value."""
     index = pd.date_range(start=start, periods=rows, freq=f"{TIMEBASE_S}s")
+
+    def per_row(value: float | Sequence[float]) -> Sequence[float]:
+        return value if isinstance(value, Sequence) else [value] * rows
+
     body = "\n".join(
-        f"{ts:%Y-%m-%d %H:%M:%S},8.0,0.5,{power},{power * 0.9},{nacelle},{availability},1500.0" for ts in index
+        f"{ts:%Y-%m-%d %H:%M:%S},8.0,0.5,{pw},{pw * 0.9},{nacelle},{av},1500.0,{pi},-50.0,12.0"
+        for ts, pw, av, pi in zip(index, per_row(power), per_row(availability), per_row(pitch), strict=True)
     )
     return f"{_PREAMBLE}\n{_HEADER}\n{body}\n"
 
 
-def _write_zip(path: Path, *, farm: str, turbines: range, year: int, rows: int = 6, availability: float = 1.0) -> None:
+def _status_csv(events: Sequence[tuple[str, str, int, str]] = ()) -> str:
+    """One turbine's status log in the published layout, from (start, end, code, message) events."""
+    lines = [f"{start},{end},00:10:00,Warning,{code},{message},,," for start, end, code, message in events]
+    return "\n".join([_PREAMBLE, _STATUS_HEADER, *lines]) + "\n"
+
+
+def _write_zip(
+    path: Path,
+    *,
+    farm: str,
+    turbines: range,
+    year: int,
+    rows: int = 6,
+    power: float | Sequence[float] | None = None,
+    availability: float | Sequence[float] = 1.0,
+    pitch: float | Sequence[float] = 0.0,
+    events: Sequence[tuple[str, str, int, str]] = (),
+) -> None:
     """A published SCADA zip: one data file and one status file per turbine."""
     with ZipFile(path, "w") as archive:
         for number in turbines:
@@ -60,13 +102,13 @@ def _write_zip(path: Path, *, farm: str, turbines: range, year: int, rows: int =
                 _turbine_csv(
                     rows=rows,
                     start=f"{year}-01-01",
-                    power=100.0 * number,
+                    power=100.0 * number if power is None else power,
                     nacelle=10.0 * number,
                     availability=availability,
+                    pitch=pitch,
                 ),
             )
-            # status files sit alongside the data and must be ignored
-            archive.writestr(f"Status_{stem}.csv", "irrelevant\n")
+            archive.writestr(f"Status_{stem}.csv", _status_csv(events))
 
 
 @pytest.fixture
@@ -106,7 +148,7 @@ class TestLoadScada:
         assert (scada[AVAILABILITY] == TIMEBASE_S * 0.5).all()
         assert "Time-based System Avail." not in scada.columns
 
-    def test_status_files_are_ignored(self, kelmarsh_dir: Path) -> None:
+    def test_status_files_do_not_become_scada_rows(self, kelmarsh_dir: Path) -> None:
         scada = load_greenbyte_scada(KELMARSH, years=[2017], data_dir=kelmarsh_dir)
         assert scada[POWER].notna().all()
 
@@ -130,14 +172,84 @@ class TestLoadScada:
 
     def test_the_columns_the_schema_names_are_present(self, kelmarsh_dir: Path) -> None:
         scada = load_greenbyte_scada(KELMARSH, years=[2017], data_dir=kelmarsh_dir)
-        for role in ("turbine", "active_power", "wind_speed", "wind_speed_sd", "availability", "nacelle_position"):
+        for role in (
+            "turbine",
+            "active_power",
+            "wind_speed",
+            "wind_speed_sd",
+            "availability",
+            "nacelle_position",
+            "pitch",
+            "reactive_power",
+            "ambient_temp",
+        ):
             assert getattr(GREENBYTE_COLUMNS, role) in scada.columns, role
+
+    def test_pitch_reactive_power_and_ambient_temperature_are_mapped(self, kelmarsh_dir: Path) -> None:
+        scada = load_greenbyte_scada(KELMARSH, years=[2017], data_dir=kelmarsh_dir)
+        assert (GREENBYTE_COLUMNS.pitch, GREENBYTE_COLUMNS.reactive_power, GREENBYTE_COLUMNS.ambient_temp) == (
+            PITCH,
+            REACTIVE_POWER,
+            AMBIENT_TEMP,
+        )
+        assert (scada[REACTIVE_POWER] == -50.0).all()
+        assert (scada[AMBIENT_TEMP] == 12.0).all()
 
     def test_values_land_in_the_right_columns(self, kelmarsh_dir: Path) -> None:
         scada = load_greenbyte_scada(KELMARSH, years=[2017], data_dir=kelmarsh_dir)
         t02 = scada[scada[TURBINE] == "T02"]
         assert (t02[POWER] == 200.0).all()
         assert (t02[NACELLE_POSITION] == 20.0).all()
+
+
+class TestCorrectedAvailability:
+    """A record the turbine produced in is never fully unavailable."""
+
+    def test_a_zero_while_producing_after_producing_becomes_the_full_period(self, tmp_path: Path) -> None:
+        _write_zip(
+            tmp_path / "Kelmarsh_SCADA_2017.zip",
+            farm="Kelmarsh",
+            turbines=range(1, 2),
+            year=2017,
+            power=[-2.0, 500.0, 600.0, 700.0, -2.0, 0.0],
+            availability=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        )
+        scada = load_greenbyte_scada(KELMARSH, years=[2017], data_dir=tmp_path)
+        corrected = scada[AVAILABILITY].to_numpy()
+        assert corrected[0] == 0.0
+        assert np.isnan(corrected[1])  # the first producing record: how long it ran is unknown
+        assert list(corrected[2:]) == [TIMEBASE_S, TIMEBASE_S, 0.0, 0.0]
+
+
+class TestPowerLimited:
+    """Records the turbine could have produced more in carry the site label."""
+
+    def test_a_power_reduction_event_labels_the_records_it_overlaps(self, tmp_path: Path) -> None:
+        _write_zip(
+            tmp_path / "Kelmarsh_SCADA_2017.zip",
+            farm="Kelmarsh",
+            turbines=range(1, 2),
+            year=2017,
+            events=[
+                ("2017-01-01 00:15:00", "2017-01-01 00:25:00", 245, "Parameterized P red."),
+                ("2017-01-01 00:40:00", "2017-01-01 00:50:00", 2125, "Timeout brake closed"),
+            ],
+        )
+        scada = load_greenbyte_scada(KELMARSH, years=[2017], data_dir=tmp_path)
+        assert list(scada[GREENBYTE_STATE_COL]) == [None, POWER_LIMITED, POWER_LIMITED, None, None, None]
+
+    def test_pitch_above_normal_operation_at_its_power_labels_the_record(self, tmp_path: Path) -> None:
+        rated = KELMARSH.rated_power_kw
+        _write_zip(
+            tmp_path / "Kelmarsh_SCADA_2017.zip",
+            farm="Kelmarsh",
+            turbines=range(1, 2),
+            year=2017,
+            power=[0.8 * rated, 0.8 * rated, 0.05 * rated, 0.95 * rated, 0.5 * rated, 0.5 * rated],
+            pitch=[1.0, 8.0, 20.0, 15.0, 1.0, 3.0],
+        )
+        scada = load_greenbyte_scada(KELMARSH, years=[2017], data_dir=tmp_path)
+        assert list(scada[GREENBYTE_STATE_COL]) == [None, POWER_LIMITED, None, None, None, POWER_LIMITED]
 
 
 class TestMissingData:
@@ -275,11 +387,11 @@ def test_each_zenodo_record_downloads_into_its_own_directory(tmp_path: Path, mon
 
 
 class TestDataStart:
-    """Each farm's data starts on its Zenodo commercial operations date, not on 1 January of its first year."""
+    """Each farm's data starts no earlier than its Zenodo commercial operations date."""
 
-    def test_kelmarsh_starts_on_its_commercial_operations_date(self) -> None:
-        # the published static file gives 2016-04-15 for every turbine
-        assert pd.Timestamp("2016-04-15", tz="UTC") == KELMARSH.data_start
+    def test_kelmarsh_starts_once_its_2016_power_cap_is_lifted(self) -> None:
+        # the published static file gives 2016-04-15 for every turbine; the cap lasts until November
+        assert pd.Timestamp("2016-12-01", tz="UTC") == KELMARSH.data_start
 
     def test_penmanshiel_starts_on_its_commercial_operations_date(self) -> None:
         # the published static file gives 2016-09-01 for every turbine

@@ -40,6 +40,7 @@ from benchmarking.harness.operating_state import OperatingStateConfig
 from benchmarking.harness.reanalysis import ERA5_WS_RAW, normalise_timestamps
 from benchmarking.synthetic.ground_truth import ERA5_WIND_SPEED_COL
 from benchmarking.synthetic.sources.greenbyte import (
+    GREENBYTE_OPERATING_STATE,
     KELMARSH,
     PENMANSHIEL,
     ensure_greenbyte_data,
@@ -360,11 +361,13 @@ def _execute_real(
 def site_operating_state(site_key: str, scada: pd.DataFrame) -> tuple[pd.DataFrame, OperatingStateConfig]:
     """Return ``scada`` with the site's operating-state labels, and the labels' validity.
 
-    Hill of Towie gets its site labels; the other sites have the generic states alone.
+    Hill of Towie gets its site labels; Kelmarsh and Penmanshiel carry theirs from the loader.
     """
     if site_key == "hot":
         labelled = scada.assign(**{HOT_STATE_COL: label_hot_site_states(scada)})
         return labelled, operating_state_config(HOT_OPERATING_STATE)
+    if site_key in GREENBYTE_FARMS:
+        return scada, operating_state_config(GREENBYTE_OPERATING_STATE)
     return scada, OperatingStateConfig()
 
 
