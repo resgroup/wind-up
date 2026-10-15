@@ -465,22 +465,23 @@ test-turbine sd growing.
 
 ---
 
-## C4 — TuneUp (controller), toggle, multi-turbine
+## C4 — TuneUp (controller), prepost, multi-turbine
 
 **Real counterpart:** `scripts/uplift_analysis_2025/tune_up.py`
 (`HoT_PitchTuneUp2024_{east,north,south}.yaml`) — the farm split into zones, each with
-its own test set and references.
+its own test set and references. The real TuneUp was **prepost**: nine turbines changed together on
+2024-03-14, analysed to the end of August 2024. It runs as the prepost matrix's second real campaign,
+`hot_tuneup` (C3).
 
-**Goal:** a realistic **toggle** campaign with ~9 upgraded turbines and a
+**Goal:** a realistic **prepost** campaign with ~9 upgraded turbines and a
 TI/stability-shaped effect, exercising multi-turbine toggle handling and the farm uplift
 at scale.
 
 **Scope**
 - `SyntheticCampaign` with a condition-dependent (stability/TI-shaped) Cp change on
-  ~9 turbines, a `ToggleSchedule` (~50-min period, per the real trial), ~10
-  references.
-- Multi-turbine toggle: per-turbine estimates across many upgraded turbines, the
-  campaign-only data split, and the energy-weighted farm uplift across them.
+  ~9 turbines sharing one changeover, ~10 references.
+- Multi-turbine prepost: per-turbine estimates across many upgraded turbines and the
+  energy-weighted farm uplift across them.
 - `toggle_specialist` and the other methods self-configure from the `CampaignSpec`.
 
 **Done when:** the campaign runs whole-farm; per-turbine + farm-uplift estimates track

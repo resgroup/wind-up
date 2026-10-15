@@ -134,6 +134,7 @@ class Declaration:
                 "window": "the whole SCADA record, in whole calendar years",
             },
             "operating_state": _resolved_operating_state(self.operating_state),
+            "wake_unchanged": spec.wake_unchanged,
         }
         if spec.works:
             resolved["works"] = {t: [[str(s), str(e)] for s, e in windows] for t, windows in spec.works.items()}
@@ -180,6 +181,8 @@ def load_declaration(path: str | Path) -> Declaration:
     exclusions = _exclusions(raw.get("exclusions") or [])
     _check_known({w: None for w, _, _ in exclusions if w is not None}, coords=coords, what="the exclusions")
     timing = _timing(_section(raw, "timing"), has_works=bool(works))
+    if isinstance(timing, pd.Timestamp):
+        _check_works_clear_of(timing, works={w: works.get(w, []) for w in upgraded})
     period = _analysis_period(raw.get("analysis_period"), upgraded=upgraded)
 
     spec = CampaignSpec(
@@ -195,6 +198,7 @@ def load_declaration(path: str | Path) -> Declaration:
         works=works,
         exclusions=exclusions,
         references_declared=bool(declared_references),
+        wake_unchanged=_flag(raw.get("wake_unchanged", False), what="wake_unchanged"),
     )
     return Declaration(
         name=_path_component(str(raw["name"]), what="campaign name"),
@@ -232,6 +236,25 @@ def read_works(path: Path) -> dict[str, list[Window]]:
             raise ValueError(msg)
         works.setdefault(turbine, []).append((start, end))
     return {turbine: sorted(windows) for turbine, windows in works.items()}
+
+
+def _flag(value: object, *, what: str) -> bool:
+    """Return a declared true/false value, raising on anything else."""
+    if not isinstance(value, bool):
+        msg = f"{what} must be true or false, got {value!r}"
+        raise TypeError(msg)
+    return value
+
+
+def _check_works_clear_of(changeover: pd.Timestamp, *, works: dict[str, list[Window]]) -> None:
+    """Raise naming the upgraded turbines with a works window over the shared changeover."""
+    over = sorted(w for w, windows in works.items() if any(s < changeover < e for s, e in windows))
+    if over:
+        msg = (
+            f"{over} have a works window over timing.changeover; with a shared changeover the works "
+            f"table holds a turbine's other works"
+        )
+        raise ValueError(msg)
 
 
 def _check_known(named: dict[str, Any], *, coords: dict[str, tuple[float, float]], what: str) -> None:
@@ -452,9 +475,6 @@ def _timing(block: dict, *, has_works: bool) -> pd.Timestamp | ToggleSchedule | 
     mode = str(block.get("mode", ""))
     if mode == "prepost":
         changeover = block.get("changeover")
-        if changeover is not None and has_works:
-            msg = "declare either timing.changeover or a works table (data.works), not both"
-            raise ValueError(msg)
         if changeover is None and not has_works:
             msg = "a prepost declaration needs timing.changeover or a works table (data.works)"
             raise ValueError(msg)

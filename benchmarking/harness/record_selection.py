@@ -74,13 +74,15 @@ def changed_times(
     start: pd.Timestamp,
     end: pd.Timestamp,
     near: pd.Timedelta = NEAR_CHANGEOVER,
+    test_wake_changed: bool = True,
 ) -> ChangedTimes:
     """Return the times each turbine counts as changed over the span ``[start, end)``.
 
-    The test turbine counts as changed throughout. Every other turbine is changed by each works window
-    overlapping the span: throughout, when the window is less than ``near`` from ``changeover``;
-    otherwise from the window's start when it follows the changeover, or until its end when it
-    precedes it. A works window of no length counts when it falls inside the span.
+    The test turbine counts as changed throughout, unless ``test_wake_changed`` is False. Every other
+    turbine is changed by each works window overlapping the span: throughout, when the window is less
+    than ``near`` from ``changeover``; otherwise from the window's start when it follows the
+    changeover, or until its end when it precedes it. A works window of no length counts when it
+    falls inside the span.
 
     :param test_wtg: the test turbine
     :param works: every turbine's works windows
@@ -88,9 +90,10 @@ def changed_times(
     :param start: the span's start
     :param end: the span's end, exclusive
     :param near: how close to the changeover a change counts as changed throughout
+    :param test_wake_changed: whether the test turbine's change alters its wake
     """
     c0, c1 = changeover
-    changed: ChangedTimes = {test_wtg: ((None, None),)}
+    changed: ChangedTimes = {test_wtg: ((None, None),)} if test_wake_changed else {}
     for turbine, windows in works.items():
         if turbine == test_wtg:
             continue

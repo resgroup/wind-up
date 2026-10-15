@@ -1,4 +1,4 @@
-"""The prepost campaign matrix: shipped ``wind-up`` over the real HoT T13 campaign and many synthetic ones.
+"""The prepost campaign matrix: shipped ``wind-up`` over the real HoT campaigns and many synthetic ones.
 
 Each cell is one full ``wind-up`` run on one (campaign, multiplier, K, post length). A study is run at
 a size: ``small``, a smoke test of every arm for a laptop, or ``big``, sized to about 11.5 h on 16

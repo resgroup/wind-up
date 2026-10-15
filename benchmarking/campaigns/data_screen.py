@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.power_model.screening import MIN_POOL_TO_SCREEN
-from benchmarking.campaigns.plans import campaign_works, treated_activity
+from benchmarking.campaigns.plans import changed_works, treated_activity
 from benchmarking.diagnostics.context import infer_timebase
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
 from benchmarking.harness.record_selection import PAIR_CATEGORIES, USABLE, changed_times, pair_reasons
@@ -130,7 +130,12 @@ def screen_plan(
     present = sorted({str(t) for t in scada[spec.turbine_col].unique()} | {test, *candidates})
     usable = pd.DataFrame({t: spec.usable_mask(t, index) for t in present}, index=index, dtype=bool)
     changed = changed_times(
-        test_wtg=test, works=campaign_works(spec), changeover=plan.works, start=plan.start, end=plan.end
+        test_wtg=test,
+        works=changed_works(spec),
+        changeover=plan.works,
+        start=plan.start,
+        end=plan.end,
+        test_wake_changed=not spec.wake_unchanged,
     )
     reasons = pair_reasons(
         scada,

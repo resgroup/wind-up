@@ -17,18 +17,18 @@ import pyarrow.parquet as pq
 import yaml
 
 from benchmarking.baselines.power_model.method import is_reading_column
-from benchmarking.baselines.prepost_matrix.cells import REAL_SITE, Cell, campaign_seed, draw_exclusions
+from benchmarking.baselines.prepost_matrix.cells import REAL_SITES, Cell, campaign_seed, draw_exclusions
 from benchmarking.campaigns.composed import DATA_PREPARATION_DIRNAME, WIND_UP, wind_up_method
 from benchmarking.campaigns.loader import centroid, era5_window, load_declaration, operating_state_config
 from benchmarking.campaigns.preparation import prepare_data
 from benchmarking.campaigns.real import (
-    HOT_AEROUP_T13_END,
-    HOT_AEROUP_T13_START,
     HOT_AEROUP_WORKS,
     HOT_OPERATING_STATE,
     HOT_STATE_COL,
+    REAL_CAMPAIGNS,
+    RealCampaign,
     label_hot_site_states,
-    write_hot_aeroup_t13,
+    write_real_campaign,
 )
 from benchmarking.campaigns.rollout import draw_rollout, hot_site, kelmarsh_site, penmanshiel_site, rollout_campaign
 from benchmarking.campaigns.run import estimate_campaign
@@ -71,7 +71,7 @@ SOURCES_DIRNAME = "sources"
 METHOD_DIRNAME = "method"
 # The test turbine's measurement folder holds one ``*_record_losses_*.csv``.
 RECORD_LOSSES_STEM = "_record_losses_"
-REAL_T13 = "T13"
+PLAIN_RECORD_LOSSES = "record_losses.csv"
 
 
 def sources_dir(detail_dir: Path) -> Path:
@@ -83,8 +83,12 @@ def _site_scada_path(detail_dir: Path, site: str) -> Path:
     return sources_dir(detail_dir) / f"{site}.parquet"
 
 
-def _real_declaration_path(detail_dir: Path) -> Path:
-    return sources_dir(detail_dir) / REAL_SITE / "campaign.yaml"
+def _real_declaration_path(detail_dir: Path, site: str) -> Path:
+    return sources_dir(detail_dir) / site / "campaign.yaml"
+
+
+def _real_campaign(site: str) -> RealCampaign:
+    return REAL_CAMPAIGNS[REAL_SITES[site].campaign]
 
 
 def download_sources(cells: Iterable[Cell]) -> None:
@@ -93,10 +97,11 @@ def download_sources(cells: Iterable[Cell]) -> None:
     Files already present are not fetched again, so this makes no network call once complete.
     """
     for site_key in sorted({cell.site for cell in cells}):
-        if site_key == REAL_SITE:
-            years = range(HOT_AEROUP_T13_START.year, HOT_AEROUP_T13_END.year)
+        if site_key in REAL_SITES:
+            campaign = _real_campaign(site_key)
+            years = range(campaign.start.year, (campaign.end - pd.Timedelta(1)).year + 1)
             ensure_hot_data_files([*(f"{y}.zip" for y in years), HOT_AEROUP_WORKS, HOT_METADATA])
-            _real_reanalysis(centroid(dict(HOT_COORDINATES)))
+            _real_reanalysis(campaign, site_centroid=centroid(dict(HOT_COORDINATES)))
             continue
         if site_key in GREENBYTE_FARMS:
             ensure_greenbyte_data(GREENBYTE_FARMS[site_key])
@@ -117,10 +122,10 @@ def prefetch(detail_dir: Path, cells: Iterable[Cell]) -> None:
     download_sources(cells)
     sources_dir(detail_dir).mkdir(parents=True, exist_ok=True)
     for site_key in sorted({cell.site for cell in cells}):
-        if site_key == REAL_SITE:
-            path = _real_declaration_path(detail_dir)
+        if site_key in REAL_SITES:
+            path = _real_declaration_path(detail_dir, site_key)
             if not path.exists():
-                write_hot_aeroup_t13(path.parent)
+                write_real_campaign(path.parent, campaign=_real_campaign(site_key))
             continue
         path = _site_scada_path(detail_dir, site_key)
         if not path.exists():
@@ -145,8 +150,8 @@ def _site_reanalysis(site: RolloutSite) -> pd.DataFrame:
     return get_era5_hourly_df(lat=lat, lon=lon, start_date=start, end_date=end)
 
 
-def _real_reanalysis(site_centroid: tuple[float, float]) -> pd.DataFrame:
-    start, end = era5_window(HOT_AEROUP_T13_START, HOT_AEROUP_T13_END)
+def _real_reanalysis(campaign: RealCampaign, *, site_centroid: tuple[float, float]) -> pd.DataFrame:
+    start, end = era5_window(campaign.start, campaign.end)
     return get_era5_hourly_df(lat=site_centroid[0], lon=site_centroid[1], start_date=start, end_date=end)
 
 
@@ -186,7 +191,7 @@ def describe_cell(cell: Cell, *, settings: MatrixSettings) -> dict[str, Any]:
     if cell.arm == "real":
         return {}
     _, seed, draw, exclusions = _draw(cell, settings=settings)
-    start, end = draw.data_window(cell.post_months)
+    start, end = draw.data_window(cell.post_months)  # type: ignore[arg-type]
     return {
         "draw": {
             "campaign_seed": seed,
@@ -225,7 +230,7 @@ def _execute_synthetic(
     campaign = rollout_campaign(draw, multiplier=float(cell.multiplier), post_months=cell.post_months)  # type: ignore[arg-type]
     if cell.has_exclusions:
         campaign = replace(campaign, exclusions=exclusions)
-    start, end = draw.data_window(cell.post_months)
+    start, end = draw.data_window(cell.post_months)  # type: ignore[arg-type]
     scada = _read_scada(_site_scada_path(detail_dir, cell.site), start=start, end=end)
     dataset = campaign.generate(scada)
     labelled, operating_state = site_operating_state(cell.site, dataset.synthetic_df)
@@ -298,8 +303,13 @@ def _execute_real(
     settings: MatrixSettings,
     method_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    declaration = load_declaration(_real_declaration_path(detail_dir))
-    end = pd.Timestamp(declaration.spec.timing_for(REAL_T13)) + pd.DateOffset(months=cell.post_months)  # type: ignore[arg-type]
+    campaign = _real_campaign(cell.site)
+    declaration = load_declaration(_real_declaration_path(detail_dir, cell.site))
+    end = (
+        campaign.end
+        if cell.post_months is None
+        else declaration.spec.treatment_start + pd.DateOffset(months=cell.post_months)
+    )
     scada = _read_scada(declaration.scada_path, end=end)
     timebase = pd.Timedelta(np.median(np.diff(pd.DatetimeIndex(scada.index.unique()).sort_values().to_numpy())))
     scada = normalise_timestamps(scada, timestamps=declaration.timestamps, timebase=timebase)
@@ -307,7 +317,7 @@ def _execute_real(
         scada,
         spec=declaration.spec,
         columns=declaration.columns,
-        era5_hourly_df=_real_reanalysis(declaration.centroid),
+        era5_hourly_df=_real_reanalysis(campaign, site_centroid=declaration.centroid),
         operating_state=declaration.operating_state,
         cell_selection=declaration.cell_selection,
         out_dir=cell_dir / DATA_PREPARATION_DIRNAME,
@@ -443,13 +453,15 @@ def diagnostics(
 def measurement_details(data_screens: Mapping[str, DataScreen], *, cell_dir: Path) -> dict[str, Any]:
     """Return each test turbine's hours lost per reason and period, and its data screen.
 
-    ``record_losses`` is read from the test turbine's measurement folder under ``cell_dir``; a
-    turbine without one is left out. ``data_screen`` holds the candidates' table and the joint usable
-    hours against the number of references.
+    ``record_losses`` is read from the test turbine's measurement folder under ``cell_dir``, from its
+    run folder or, for a run without one, the folder itself; a turbine without one is left out.
+    ``data_screen`` holds the candidates' table and the joint usable hours against the number of
+    references.
     """
     losses: dict[str, list[dict[str, Any]]] = {}
     for wtg in sorted(data_screens):
-        found = sorted((cell_dir / METHOD_DIRNAME / wtg).glob(f"*/*{RECORD_LOSSES_STEM}*.csv"))
+        wtg_dir = cell_dir / METHOD_DIRNAME / wtg
+        found = sorted(wtg_dir.glob(f"*/*{RECORD_LOSSES_STEM}*.csv")) or sorted(wtg_dir.glob(PLAIN_RECORD_LOSSES))
         if found:
             losses[wtg] = _plain_rows(pd.read_csv(found[-1]))
     screens = {

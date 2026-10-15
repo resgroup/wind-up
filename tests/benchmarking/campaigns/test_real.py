@@ -15,11 +15,15 @@ from benchmarking.campaigns.real import (
     BM_CURTAILMENT,
     HIGH_WIND_DERATE,
     HOT_AEROUP_T13,
+    HOT_AEROUP_T13_CAMPAIGN,
     HOT_STATE_COL,
+    HOT_TUNEUP,
+    HOT_TUNEUP_CAMPAIGN,
     ICING,
     NOISE_MODE,
+    REAL_CAMPAIGNS,
     label_hot_site_states,
-    write_hot_aeroup_t13,
+    write_real_campaign,
 )
 from benchmarking.harness.operating_state import PARTIAL_DOWNTIME
 from benchmarking.synthetic.sources.hill_of_towie import (
@@ -56,9 +60,36 @@ def test_the_t13_declaration_loads(tmp_path: Path) -> None:
     assert spec.exclusions == [(None, pd.Timestamp("2022-09-03", tz="UTC"), pd.Timestamp("2023-02-12", tz="UTC"))]
 
 
+def test_the_tuneup_declaration_loads(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "scada.parquet").write_bytes(b"")
+    (data / "works.csv").write_text(WORKS + "T02,2022-07-18,2022-07-28\n")
+    names = sorted({*HOT_TUNEUP["turbines"]["upgraded"], "T14"})
+    (data / "turbines.csv").write_text(
+        "name,latitude,longitude,rotor_diameter_m\n"
+        + "".join(f"{name},{57.5 + i / 100},-3.08,82\n" for i, name in enumerate(names))
+    )
+    (tmp_path / "campaign.yaml").write_text(yaml.safe_dump(HOT_TUNEUP))
+    spec = load_declaration(tmp_path / "campaign.yaml").spec
+    changeover = pd.Timestamp("2024-03-14 18:00", tz="UTC")
+    assert len(spec.upgraded_turbines) == 9
+    assert {spec.timing_for(t) for t in spec.upgraded_turbines} == {changeover}
+    assert spec.candidate_references == ["T14"]
+    assert spec.changeovers()["T13"] == [pd.Timestamp("2021-09-30", tz="UTC"), changeover]
+    assert spec.wake_unchanged
+
+
+def test_the_real_campaigns_end_their_scada_where_declared() -> None:
+    assert set(REAL_CAMPAIGNS) == {"hot_aeroup_t13", "hot_tuneup"}
+    assert HOT_TUNEUP_CAMPAIGN.end == pd.Timestamp("2024-09-01", tz="UTC")
+    for campaign in REAL_CAMPAIGNS.values():
+        assert campaign.start < campaign.end
+
+
 @pytest.mark.slow
 def test_the_t13_folder_plans_sensibly(tmp_path: Path) -> None:
-    declaration = load_declaration(write_hot_aeroup_t13(tmp_path))
+    declaration = load_declaration(write_real_campaign(tmp_path, campaign=HOT_AEROUP_T13_CAMPAIGN))
     scada = pd.read_parquet(declaration.scada_path)
     plan = plans_for(declaration.spec, scada, columns=declaration.columns).plans["T13"]
     assert plan.pool_rule_met

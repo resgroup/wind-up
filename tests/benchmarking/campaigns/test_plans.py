@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
-from benchmarking.campaigns.plans import data_extents, extent_around_works, other_works, plans_for
+from benchmarking.campaigns.plans import changed_works, data_extents, extent_around_works, other_works, plans_for
 from benchmarking.synthetic import HOT_COLUMNS
 from tests.benchmarking.campaigns.timeline_fixtures import DATA_END, hourly_scada, staggered_spec, utc
 from wind_up.analysis_period import PlanSettings
@@ -191,3 +191,14 @@ def test_other_works_inside_a_declared_span_are_a_warning() -> None:
     resolved = resolve(shared(T0_UPGRADE, T0_EARLIER, analysis_period=span))
     assert (resolved.plans["T0"].start, resolved.plans["T0"].end) == span
     assert "declared works 2018-09-01..2018-09-03 inside the declared span" in resolved.warnings["T0"]["T0"]
+
+
+def test_the_changed_upwind_rule_sees_every_declared_window_and_each_upgrade() -> None:
+    works = changed_works(shared(T0_EARLIER))
+    assert works["T0"] == [T0_EARLIER, (CHANGEOVER, CHANGEOVER)]
+    assert works["T6"] == [(CHANGEOVER, CHANGEOVER)]
+    assert changed_works(staggered_spec()) == staggered_spec().works
+
+
+def test_with_the_wake_unchanged_the_upgrade_is_left_out() -> None:
+    assert changed_works(shared(T0_EARLIER, wake_unchanged=True)) == {"T0": [T0_EARLIER]}

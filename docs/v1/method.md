@@ -468,7 +468,9 @@ either. Nothing in Part C changes the reference set or the periods.
     neighbours are upgraded one after another.
 
   Each works window of a turbine is treated this way and the dropped times add up. The analyst can
-  override the rule where the wake is known not to change.
+  override the rule where the wake is known not to change: a campaign declared to leave the wakes as
+  they were (`wake_unchanged`) does not count the test turbines as changed for that change, while their
+  other works and every other turbine's still count.
 - iv. **Weather.** Both periods should see the same weather. For a toggle test a toggle pairing filter
   is applied, which only keeps data where the time difference between a data record and the nearest
   valid record with the opposite toggle state is within a limit, one toggle cycle (the on and off

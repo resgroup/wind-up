@@ -13,6 +13,7 @@ import pytest
 
 from benchmarking.baselines import study_prepost_campaign_matrix as driver
 from benchmarking.baselines.prepost_matrix.cells import (
+    REAL_SITES,
     SIZES,
     Cell,
     MatrixSettings,
@@ -58,6 +59,7 @@ from benchmarking.baselines.prepost_matrix.study import (
 )
 from benchmarking.campaigns.composed import DATA_PREPARATION_DIRNAME
 from benchmarking.campaigns.loader import operating_state_config
+from benchmarking.campaigns.real import REAL_CAMPAIGNS
 from benchmarking.diagnostics import stages
 from benchmarking.harness.northing import NORTH_TABLE_YAML
 from benchmarking.synthetic import HOT_COLUMNS
@@ -67,7 +69,7 @@ from wind_up.analysis_period import PlanSettings
 if TYPE_CHECKING:
     from pathlib import Path
 
-SMALL = MatrixSettings(seeds={"hot": 2}, multipliers=(1, 0, -1), ks=(4,), post_months=(1, 6), real=False)
+SMALL = MatrixSettings(seeds={"hot": 2}, multipliers=(1, 0, -1), ks=(4,), post_months=(1, 6), real=())
 SIZE = "test"
 
 
@@ -79,6 +81,7 @@ def test_cell_ids_are_readable() -> None:
     assert Cell("main", "pen", 7, -1, 4, 6).cell_id == "pen_s07_m-1_K4_L6"
     assert Cell("excl", "kel", 0, 0, 4, 12).cell_id == "kel_s00_m+0_K4_L12_excl"
     assert Cell("real", "hot_t13", None, None, 4, 6).cell_id == "hot_t13_K4_L6"
+    assert Cell("real", "hot_tuneup", None, None, 4, None).cell_id == "hot_tuneup_K4_Lmax"
 
 
 def test_cell_ids_are_unique() -> None:
@@ -90,8 +93,34 @@ def test_the_default_matrix_size() -> None:
     settings = MatrixSettings()
     n_campaigns = sum(settings.seeds.values())
     per_campaign = len(settings.multipliers) * len(settings.post_months)
-    expected = n_campaigns * per_campaign * (len(settings.ks) + 1) + len(settings.ks) * len(settings.post_months)
-    assert len(matrix_cells(settings)) == expected
+    real = len(settings.ks) * (len(settings.post_months) + len([1, 2, 3, None]))
+    assert len(matrix_cells(settings)) == n_campaigns * per_campaign * (len(settings.ks) + 1) + real
+
+
+def test_tuneup_runs_the_post_lengths_its_data_holds_and_lmax() -> None:
+    cells = matrix_cells(MatrixSettings(seeds={}, ks=(4,), real=("hot_tuneup",)))
+    assert sorted(c.cell_id for c in cells) == [
+        "hot_tuneup_K4_L1",
+        "hot_tuneup_K4_L2",
+        "hot_tuneup_K4_L3",
+        "hot_tuneup_K4_Lmax",
+    ]
+
+
+def test_each_real_site_holds_its_longest_post_length() -> None:
+    for site in REAL_SITES.values():
+        campaign = REAL_CAMPAIGNS[site.campaign]
+        timing = campaign.declaration["timing"].get("changeover")
+        if timing is None:
+            continue
+        changeover = pd.Timestamp(timing)
+        assert changeover + pd.DateOffset(months=site.longest_post_months) <= campaign.end
+        assert changeover + pd.DateOffset(months=site.longest_post_months + 1) > campaign.end
+
+
+def test_an_older_real_flag_reads_as_the_t13_campaign() -> None:
+    assert MatrixSettings.from_json({**MatrixSettings().to_json(), "real": True}).real == ("hot_t13",)
+    assert MatrixSettings.from_json({**MatrixSettings().to_json(), "real": False}).real == ()
 
 
 def test_a_cell_does_not_depend_on_the_other_cells() -> None:
@@ -104,7 +133,7 @@ def test_a_cell_does_not_depend_on_the_other_cells() -> None:
 
 
 def test_cells_run_most_expensive_first() -> None:
-    cells = matrix_cells(MatrixSettings(seeds={"hot": 1, "kel": 1}, post_months=(1, 12)))
+    cells = matrix_cells(MatrixSettings(seeds={"hot": 1, "kel": 1}, post_months=(1, 12), real=("hot_t13",)))
     costs = [cell_cost_s(c) for c in cells]
     assert costs == sorted(costs, reverse=True)
     assert (cells[0].site, cells[0].k) == ("hot", 6)
@@ -113,7 +142,7 @@ def test_cells_run_most_expensive_first() -> None:
 
 def test_the_small_and_big_sizes() -> None:
     small, big = matrix_cells(SIZES["small"].settings), matrix_cells(SIZES["big"].settings)
-    assert (len(small), len(big)) == (26, 1098)
+    assert (len(small), len(big)) == (28, 1110)
     assert "hot" not in {c.site for c in small}
     assert {c.arm for c in small} == {"main", "excl", "real"}
     assert (SIZES["small"].workers, SIZES["big"].workers) == (3, 16)
@@ -130,7 +159,7 @@ def test_the_makespan_of_a_greedy_longest_first_schedule() -> None:
     assert makespan_s([], workers=4) == 0
 
 
-KEL_PAIR = MatrixSettings(seeds={"kel": 2}, multipliers=(1,), ks=(4,), post_months=(1,), exclusion_arms=(), real=False)
+KEL_PAIR = MatrixSettings(seeds={"kel": 2}, multipliers=(1,), ks=(4,), post_months=(1,), exclusion_arms=(), real=())
 
 
 def test_plan_projects_cpu_hours_wall_time_and_memory() -> None:
@@ -144,10 +173,10 @@ def test_plan_projects_cpu_hours_wall_time_and_memory() -> None:
 def test_the_plan_command_prints_a_sizes_projection(capsys: pytest.CaptureFixture[str]) -> None:
     driver.main(["plan", "--size", "small"])
     out = capsys.readouterr().out
-    assert "26 cells" in out
+    assert "28 cells" in out
     assert "on 3 worker(s)" in out
     driver.main(["plan", "--size", "big", "--workers", "8"])
-    assert "1098 cells" in capsys.readouterr().out
+    assert "1110 cells" in capsys.readouterr().out
 
 
 def test_run_and_download_need_a_size() -> None:
@@ -370,7 +399,7 @@ def test_run_retries_failed_cells_when_asked(tmp_path: Path) -> None:
 
 
 def test_run_on_worker_processes(tmp_path: Path) -> None:
-    settings = MatrixSettings(seeds={"hot": 1}, multipliers=(1,), ks=(4,), post_months=(1,), real=False)
+    settings = MatrixSettings(seeds={"hot": 1}, multipliers=(1,), ks=(4,), post_months=(1,), real=())
     study = _run(settings, tmp_path, workers=2)
     statuses = pd.read_csv(study / "cells.csv")["status"]
     assert list(statuses) == ["ok"] * 2
@@ -512,24 +541,57 @@ def test_reference_metrics_ignore_non_finite_readings() -> None:
     assert reference_metrics([])["ref_n"] == 0
 
 
-def test_real_rows_are_kept_separate() -> None:
-    real = {
+def _real_record(site: str, post_months: int | None, turbines: list[str], **farm: float) -> dict[str, Any]:
+    return {
         "arm": "real",
-        "site": "hot_t13",
+        "site": site,
         "seed_index": None,
         "k": 4,
-        "post_months": 6,
+        "post_months": post_months,
         "multiplier": None,
         "status": "ok",
-        "turbines": [{"turbine": "T13", "estimate": 0.027, "truth": None}],
-        "farm": {"estimate": 0.027, "truth": None},
-        "references": [{"test_wtg": "T13", "turbine": "T14", "uplift": 0.005, "screened": False}],
+        "turbines": [{"turbine": t, "estimate": 0.027, "truth": None, "sigma": 0.002} for t in turbines],
+        "farm": {"estimate": 0.011, "truth": None, **farm},
+        "references": [
+            {"test_wtg": turbines[0], "turbine": "T14", "uplift": 0.005, "screened": False},
+            {"test_wtg": turbines[0], "turbine": "T17", "uplift": 0.04, "screened": True},
+        ],
+        "record_losses": {
+            t: [
+                {"reason": "changed upwind of subject", "hours_before": hours, "hours_after": 10.0},
+                {"reason": "changed upwind of reference", "hours_before": 100.0, "hours_after": 10.0},
+                {"reason": "usable", "hours_before": 800.0 - hours, "hours_after": 80.0},
+            ]
+            for t, hours in zip(turbines, [100.0, 300.0], strict=False)
+        },
+        "data_screen": {turbines[0]: {"candidates": [{"candidate": "T15", "verdict": "dropped"}], "hours": []}},
     }
+
+
+def test_real_rows_are_kept_separate() -> None:
+    real = _real_record("hot_t13", 6, ["T13"])
     tables = baseline_tables([*_line_records(), real])
     assert "hot_t13" not in set(tables["groups"]["site"])
     row = tables["real"].iloc[0]
-    assert row["t13_estimate"] == pytest.approx(0.027)
-    assert row["ref_mean"] == pytest.approx(0.005)
+    assert row["test_estimate"] == pytest.approx(0.011)
+    assert row["test_sigma"] == pytest.approx(0.002)
+    assert row["ref_mean"] == pytest.approx(0.0225)
+
+
+def test_the_real_table_has_a_row_per_campaign_and_keeps_lmax() -> None:
+    tuneup = _real_record(
+        "hot_tuneup", None, ["T02", "T03"], reference_uplift_before_screen=0.004, reference_uplift_after_screen=0.001
+    )
+    real = baseline_tables([_real_record("hot_t13", 6, ["T13"]), tuneup])["real"]
+    assert list(zip(real["site"], real["post_months"], strict=True)) == [("hot_t13", 6), ("hot_tuneup", pd.NA)]
+    row = real.iloc[1]
+    assert np.isnan(row["test_sigma"])
+    assert row["test_n"] == 2
+    assert (row["combined_ref_before"], row["combined_ref_after"]) == (0.004, 0.001)
+    # Changed upwind is (100 + 100) / 900 of T02's before hours and (300 + 100) / 900 of T03's.
+    assert row["changed_upwind_share_median"] == pytest.approx(300 / 900)
+    assert row["changed_upwind_share_max"] == pytest.approx(400 / 900)
+    assert (row["data_screen_dropped"], row["screen_ejections"]) == (1, 1)
 
 
 def test_failed_cells_are_left_out_of_the_metrics() -> None:
@@ -603,9 +665,7 @@ def test_compare_flags_a_value_present_on_one_side_only() -> None:
 
 @pytest.mark.slow
 def test_one_small_campaign_runs_end_to_end(tmp_path: Path) -> None:
-    settings = MatrixSettings(
-        seeds={"hot": 1}, multipliers=(1,), ks=(3,), post_months=(1,), real=False, exclusion_arms=()
-    )
+    settings = MatrixSettings(seeds={"hot": 1}, multipliers=(1,), ks=(3,), post_months=(1,), real=(), exclusion_arms=())
     study = run_study(settings, size=SIZE, root=tmp_path, workers=1, baseline_path=tmp_path / "none.json")
     (cell,) = matrix_cells(settings)
     record = read_cell(study, cell)
@@ -823,3 +883,12 @@ def test_a_cell_records_each_test_turbines_losses_and_data_screen(tmp_path: Path
     ]
     assert details["data_screen"]["T03"]["hours"] == [{"n_references": 1.0, "hours_before": None}]
     json.dumps(details)
+
+
+def test_a_cell_reads_the_losses_a_plots_run_writes_without_a_run_folder(tmp_path: Path) -> None:
+    wtg_dir = tmp_path / "method" / "T01"
+    wtg_dir.mkdir(parents=True)
+    pd.DataFrame({"reason": ["usable"], "hours_before": [100.0]}).to_csv(wtg_dir / "record_losses.csv", index=False)
+    screen = SimpleNamespace(table=pd.DataFrame({"candidate": []}), hours=pd.DataFrame({"n_references": []}))
+    details = measurement_details({"T01": screen}, cell_dir=tmp_path)  # type: ignore[dict-item]
+    assert details["record_losses"] == {"T01": [{"reason": "usable", "hours_before": 100.0}]}

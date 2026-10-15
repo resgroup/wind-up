@@ -74,8 +74,8 @@ exclusions:                      # optional; end exclusive
 - **The works table** has a `Turbine` column and the first columns whose names start `First date`
   and `Last date` (the Zenodo Hill of Towie AeroUp table works as it is). Dates are whole days: a
   window covers the first day through the end of the last. Any turbine may appear, analysed or not,
-  and a turbine may appear more than once. Each upgraded turbine needs exactly one window, and its
-  changeover is the end of that window. Its own works rows are never used.
+  and a turbine may appear more than once. With no shared changeover, each upgraded turbine needs
+  exactly one window, and its changeover is the end of that window. Its own works rows are never used.
 - **Exclusions** are periods whose data is not used, for one turbine or `ALL`. A turbine's *own*
   exclusion leaves its rows in the analysis marked unusable, so the model can still tell whether
   it was running and making a wake over them; a farm-wide exclusion removes the records outright.
@@ -95,7 +95,12 @@ exclusions:                      # optional; end exclusive
 - **To fix the span yourself**, declare `analysis_period`, once for the campaign or per turbine
   (`analysis_period: {T13: {start: ..., end: ...}}`). Declared `references` are then used as power
   references even when their works overlap that span, with a warning.
-- `timing.changeover` with no works table still works as before.
+- **`wake_unchanged: true`** declares that the change leaves the upgraded turbines' wakes as they were,
+  for example a small control change. Records with an upgraded turbine upwind are then kept rather
+  than dropped for that change; every other works window still drops them as usual. It defaults to false.
+- **A shared `timing.changeover`** is every upgraded turbine's changeover. With a works table beside
+  it, the table holds every turbine's other works, the upgraded turbines' included; no works window
+  of an upgraded turbine may cover the changeover.
 
 ### The fields that need a decision
 

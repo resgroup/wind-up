@@ -69,6 +69,19 @@ def campaign_works(spec: CampaignSpec) -> dict[str, list[Window]]:
     return works
 
 
+def changed_works(spec: CampaignSpec) -> dict[str, list[Window]]:
+    """Every turbine's works windows as the changed-upwind rule sees them: every declared window and each upgrade.
+
+    With ``spec.wake_unchanged`` the upgrades are left out.
+    """
+    works = {t: list(w) for t, w in spec.works.items()}
+    if spec.wake_unchanged:
+        return works
+    for turbine in spec.upgraded_turbines:
+        works[turbine] = sorted({*works.get(turbine, []), *campaign_works(spec)[turbine]})
+    return works
+
+
 def other_works(spec: CampaignSpec, turbine: str) -> list[Window]:
     """Return an upgraded turbine's declared works windows other than its upgrade.
 

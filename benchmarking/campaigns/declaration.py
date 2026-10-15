@@ -87,6 +87,8 @@ class CampaignSpec:
         is farm-wide
     :param references_declared: ``candidate_references`` was declared rather than defaulted, so a
         declared span may force them in as power references
+    :param wake_unchanged: the change leaves the upgraded turbines' wakes as they were, so records with
+        one of them upwind are not dropped for it
     """
 
     upgraded_turbines: list[str]
@@ -101,6 +103,7 @@ class CampaignSpec:
     works: dict[str, list[Window]] = field(default_factory=dict)
     exclusions: list[Exclusion] = field(default_factory=list)
     references_declared: bool = False
+    wake_unchanged: bool = False
 
     def __post_init__(self) -> None:
         """Raise when the timing does not give every upgraded turbine one changeover."""

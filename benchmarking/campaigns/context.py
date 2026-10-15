@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from benchmarking.campaigns.plans import campaign_works
+from benchmarking.campaigns.plans import changed_works
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.record_selection import changed_times
 
@@ -58,10 +58,11 @@ def context_for_plan(spec: CampaignSpec, plan: AnalysisPlan, *, scada_df: pd.Dat
         reserve_references=[r for r in plan.reserves if r in present],
         changed_turbines=changed_times(
             test_wtg=plan.turbine,
-            works=campaign_works(spec),
+            works=changed_works(spec),
             changeover=plan.works,
             start=plan.start,
             end=plan.end,
+            test_wake_changed=not spec.wake_unchanged,
         ),
         works=(pd.Timestamp(plan.works[0]), pd.Timestamp(plan.works[1])),
     )

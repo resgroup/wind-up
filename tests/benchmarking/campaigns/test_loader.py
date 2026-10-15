@@ -461,9 +461,24 @@ class TestTheWorksTable:
         with pytest.raises(ValueError, match="T99"):
             load_staggered(tmp_path, works=WORKS_CSV + "T99,2018-01-01,2018-01-02\n")
 
-    def test_a_changeover_and_a_works_table_together_are_rejected(self, tmp_path: Path) -> None:
-        text = STAGGERED.replace("mode: prepost", "mode: prepost\n  changeover: 2018-02-01T00:00:00Z")
-        with pytest.raises(ValueError, match="either"):
+    def test_a_changeover_with_a_works_table_is_shared_and_the_table_holds_other_works(self, tmp_path: Path) -> None:
+        text = STAGGERED.replace("upgraded: [T01]", "upgraded: [T01, T02]").replace(
+            "mode: prepost", "mode: prepost\n  changeover: 2018-12-01T00:00:00Z"
+        )
+        spec = load_staggered(tmp_path, text).spec
+        assert spec.timing_for("T01") == spec.timing_for("T02") == utc("2018-12-01")
+        assert len(spec.works["T02"]) == 2
+        assert spec.changeovers()["T02"] == [utc("2018-06-02"), utc("2018-09-04"), utc("2018-12-01")]
+
+    def test_a_declared_unchanged_wake_is_carried_and_resolved(self, tmp_path: Path) -> None:
+        declaration = load_staggered(tmp_path, STAGGERED + "\nwake_unchanged: true\n")
+        assert declaration.spec.wake_unchanged
+        assert declaration.resolved()["wake_unchanged"] is True
+        assert not load_staggered(tmp_path).spec.wake_unchanged
+
+    def test_a_works_window_over_the_shared_changeover_is_rejected(self, tmp_path: Path) -> None:
+        text = STAGGERED.replace("mode: prepost", "mode: prepost\n  changeover: 2018-01-11T00:00:00Z")
+        with pytest.raises(ValueError, match="T01"):
             load_staggered(tmp_path, text)
 
     def test_neither_a_changeover_nor_a_works_table_is_rejected(self, tmp_path: Path) -> None:

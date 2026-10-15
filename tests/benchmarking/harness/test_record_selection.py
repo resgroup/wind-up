@@ -360,6 +360,18 @@ class TestChangedTimes:
         )
         assert got["T02"] == ((day("2021-06-01"), None),)
 
+    def test_the_test_turbine_is_not_changed_when_its_wake_is_not(self) -> None:
+        far = (day("2020-03-01"), day("2020-03-03"))
+        got = changed_times(
+            test_wtg="T01",
+            works={"T01": [self.CHANGEOVER], "T02": [far]},
+            changeover=self.CHANGEOVER,
+            start=self.START,
+            end=self.END,
+            test_wake_changed=False,
+        )
+        assert got == {"T02": ((None, far[1]),)}
+
     def test_each_window_counts(self) -> None:
         works = {"T02": [(day("2020-03-01"), day("2020-03-03")), (day("2021-09-01"), day("2021-09-03"))]}
         assert self.times(works)["T02"] == ((None, day("2020-03-03")), (day("2021-09-01"), None))

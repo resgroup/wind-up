@@ -11,7 +11,10 @@ Every uplift is a fraction, as in the cell records. The tables:
 - ``linearity``: per (arm, site, K, L), the mean and sd over campaigns and test turbines of the line
   ``estimate = line_scale * truth + line_bias`` fitted across a campaign's multipliers, and
   ``rev_line_*`` for the full reversal.
-- ``real``: per (K, L), the real campaign's reference metrics and T13's own estimate.
+- ``real``: per (real campaign, K, L), the reference metrics, the combined reference uplift before and
+  after the screen, the farm estimate of the test turbines, the share of each test turbine's
+  before-period hours lost to a changed turbine upwind, and how many references each screen dropped.
+  Lmax is ``post_months`` ``None``.
 - ``bins``: per group, condition and bin, the per-bin errors and the calibration of their sigma.
 """
 
@@ -23,8 +26,10 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.power_model.method import REVERSAL_COLUMNS, is_reading_column
+from benchmarking.campaigns.data_screen import DROPPED
 from benchmarking.harness.calibration import calibration_summary
 from benchmarking.harness.metrics import summarize_errors
+from benchmarking.harness.record_selection import CHANGED_UPWIND_OF_REFERENCE, CHANGED_UPWIND_OF_SUBJECT
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -32,7 +37,7 @@ if TYPE_CHECKING:
 POOLED_SITE = "all"
 GROUP_KEYS = ["arm", "site", "k", "post_months", "multiplier"]
 LINE_KEYS = ["arm", "site", "k", "post_months"]
-REAL_KEYS = ["k", "post_months"]
+REAL_KEYS = ["site", "k", "post_months"]
 BIN_KEYS = [*GROUP_KEYS, "condition", "condition_bin"]
 TABLE_KEYS = {"groups": GROUP_KEYS, "linearity": LINE_KEYS, "real": REAL_KEYS, "bins": BIN_KEYS}
 # A value that moves by more than this between baselines is flagged: 0.1 pp on an uplift.
@@ -44,11 +49,17 @@ _COMBINED_REFERENCES = ("reference_uplift_before_screen", "reference_uplift_afte
 
 
 def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
-    """Flatten ok cell records into ``turbines``, ``farm``, ``references`` and ``bins`` frames."""
+    """Flatten ok cell records into ``turbines``, ``farm``, ``references``, ``bins``, ``losses`` and ``candidates``.
+
+    ``losses`` holds each test turbine's hours lost per reason, ``candidates`` its data screen's verdicts.
+    ``post_months`` is a nullable integer, missing for Lmax.
+    """
     turbines: list[dict[str, Any]] = []
     farm: list[dict[str, Any]] = []
     references: list[dict[str, Any]] = []
     bins: list[dict[str, Any]] = []
+    losses: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     for record in records:
         if record.get("status") != "ok":
             continue
@@ -57,7 +68,14 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
         farm.append({**keys, **record["farm"]})
         references.extend({**keys, **row} for row in record["references"])
         bins.extend({**keys, **row} for row in record.get("bins", []))
-    return {
+        for wtg, rows in record.get("record_losses", {}).items():
+            losses.extend({**keys, "test_wtg": wtg, **row} for row in rows)
+        for wtg, screen in record.get("data_screen", {}).items():
+            candidates.extend(
+                {**keys, "test_wtg": wtg, "candidate": row["candidate"], "verdict": row["verdict"]}
+                for row in screen.get("candidates", [])
+            )
+    frames = {
         "turbines": _with_reversal(
             pd.DataFrame(turbines, columns=[*_CELL_KEYS, "turbine", "estimate", "truth", *_reading_keys(turbines)])
         ),
@@ -73,7 +91,10 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
         "bins": pd.DataFrame(
             bins, columns=[*_CELL_KEYS, "test_wtg", "condition", "condition_bin", "estimate", "truth", "sigma"]
         ),
+        "losses": pd.DataFrame(losses, columns=[*_CELL_KEYS, "test_wtg", "reason", "hours_before", "hours_after"]),
+        "candidates": pd.DataFrame(candidates, columns=[*_CELL_KEYS, "test_wtg", "candidate", "verdict"]),
     }
+    return {name: frame.astype({"post_months": "Int64"}) for name, frame in frames.items()}
 
 
 def _reading_keys(rows: list[dict[str, Any]]) -> list[str]:
@@ -195,7 +216,10 @@ def reference_metrics(uplifts: Sequence[float] | np.ndarray) -> dict[str, float]
 
 
 def _groups(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    grouped = {name: _with_pooled(frame).groupby(GROUP_KEYS, dropna=False) for name, frame in frames.items()}
+    grouped = {
+        name: _with_pooled(frames[name]).groupby(GROUP_KEYS, dropna=False)
+        for name in ("turbines", "farm", "references", "bins")
+    }
     keys = sorted(set().union(*(g.groups for g in grouped.values())), key=str)
     rows = []
     for key in keys:
@@ -267,27 +291,54 @@ def _linearity(turbines: pd.DataFrame) -> pd.DataFrame:
 
 def _real(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     rows = []
-    turbines = frames["turbines"]
-    for key, group in frames["references"].groupby(REAL_KEYS):
-        t13 = turbines[(turbines["k"] == key[0]) & (turbines["post_months"] == key[1])]
-        estimate = t13["estimate"]
-        rows.append(
-            {
-                **dict(zip(REAL_KEYS, key, strict=True)),
-                **reference_metrics(group["uplift"].to_numpy(dtype=float)),
-                "t13_estimate": float(estimate.iloc[0]) if len(estimate) else float("nan"),
-                "t13_sigma": _first(t13, "sigma"),
-                "t13_reversal": _first(t13, "reversal"),
-                **(
-                    {f"rev_{k}": v for k, v in reference_metrics(group["reversal"].to_numpy(dtype=float)).items()}
-                    if "reversal" in group.columns
-                    else {}
-                ),
-                **{k: v for k, v in _calibration(t13, group).items() if k.startswith("ref")},
-            }
+    for key, farm in frames["farm"].groupby(REAL_KEYS, dropna=False):
+        turbines, references, losses, candidates = (
+            _at(frames[name], key) for name in ("turbines", "references", "losses", "candidates")
         )
-    columns = [*REAL_KEYS, *_REFERENCE_METRICS, "t13_estimate", "t13_sigma"]
+        single = turbines if len(turbines) == 1 else turbines.iloc[:0]
+        row: dict[str, Any] = {
+            **dict(zip(REAL_KEYS, key, strict=True)),
+            **reference_metrics(references["uplift"].to_numpy(dtype=float)),
+            "test_estimate": float(farm["estimate"].iloc[0]),
+            "test_sigma": _first(single, "sigma"),
+            "test_reversal": _first(single, "reversal"),
+            "test_n": len(turbines),
+            "combined_ref_before": _first(farm, "reference_uplift_before_screen"),
+            "combined_ref_after": _first(farm, "reference_uplift_after_screen"),
+            **_changed_upwind_shares(losses),
+            "data_screen_dropped": int((candidates["verdict"] == DROPPED).sum()),
+            "screen_ejections": int(references["screened"].astype(bool).sum()),
+        }
+        if "reversal" in references.columns:
+            row |= {f"rev_{k}": v for k, v in reference_metrics(references["reversal"].to_numpy(dtype=float)).items()}
+        row |= {k: v for k, v in _calibration(single, references).items() if k.startswith("ref")}
+        rows.append(row)
+    columns = [*REAL_KEYS, *_REFERENCE_METRICS, "test_estimate", "test_sigma"]
     return pd.DataFrame(rows, columns=columns + [c for c in (rows[0] if rows else {}) if c not in columns])
+
+
+def _at(frame: pd.DataFrame, key: tuple) -> pd.DataFrame:
+    """Return the rows of ``frame`` at ``key`` on :data:`REAL_KEYS`, a missing value matching a missing one."""
+    mask = np.ones(len(frame), dtype=bool)
+    for column, value in zip(REAL_KEYS, key, strict=True):
+        column_values = frame[column]
+        mask &= (
+            column_values.isna().to_numpy()
+            if pd.isna(value)
+            else column_values.eq(value).fillna(value=False).to_numpy(dtype=bool)
+        )
+    return frame[mask]
+
+
+def _changed_upwind_shares(losses: pd.DataFrame) -> dict[str, float]:
+    """Return the median and largest share of a test turbine's before-period hours lost to a changed turbine upwind."""
+    changed = losses["reason"].isin([CHANGED_UPWIND_OF_SUBJECT, CHANGED_UPWIND_OF_REFERENCE])
+    by_turbine = losses.assign(changed=losses["hours_before"].where(changed, 0.0)).groupby("test_wtg")
+    totals = by_turbine["hours_before"].sum()
+    shares = (by_turbine["changed"].sum() / totals)[totals > 0].to_numpy(dtype=float)
+    if shares.size == 0:
+        return {"changed_upwind_share_median": np.nan, "changed_upwind_share_max": np.nan}
+    return {"changed_upwind_share_median": float(np.median(shares)), "changed_upwind_share_max": float(shares.max())}
 
 
 def _first(frame: pd.DataFrame, column: str) -> float:

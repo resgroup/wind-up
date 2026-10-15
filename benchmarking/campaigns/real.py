@@ -1,8 +1,8 @@
 """Real campaigns declared from open data, written as campaign folders ``wind-up`` can run.
 
-Write the Hill of Towie AeroUp T13 campaign::
+Write the Hill of Towie AeroUp T13 campaign, or another of :data:`REAL_CAMPAIGNS`::
 
-    python -m benchmarking.campaigns.real OUT_DIR
+    python -m benchmarking.campaigns.real OUT_DIR [--campaign hot_tuneup]
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,8 +53,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HOT_AEROUP_WORKS = "Hill_of_Towie_AeroUp_install_dates.csv"
-HOT_AEROUP_T13_START = pd.Timestamp("2019-01-01", tz="UTC")
-HOT_AEROUP_T13_END = pd.Timestamp("2023-01-01", tz="UTC")
 
 # Hill of Towie's site operating states, written into the campaign's SCADA as HOT_STATE_COL.
 HOT_STATE_COL = "state"
@@ -88,6 +87,53 @@ HOT_AEROUP_T13: dict[str, Any] = {
     "northing": {"discover": True},
     "operating_state": HOT_OPERATING_STATE,
 }
+
+# The 2024 pitch TuneUp on nine turbines, sharing one changeover, declared to leave their wakes as they
+# were. Every turbine's AeroUp works are in the works table; the second exclusion is the TuneUp deployment.
+HOT_TUNEUP: dict[str, Any] = {
+    "name": "hot_tuneup",
+    "data": dict(HOT_AEROUP_T13["data"]),
+    "turbines": {
+        "upgraded": ["T02", "T03", "T06", "T08", "T09", "T13", "T16", "T20", "T21"],
+        "rated_power_kw": 2300.0,
+    },
+    "timing": {"mode": "prepost", "changeover": "2024-03-14T18:00:00Z"},
+    "exclusions": [
+        {"turbine": "ALL", "start": "2022-09-03T00:00:00Z", "end": "2023-02-12T00:00:00Z"},
+        {"turbine": "ALL", "start": "2024-03-14T07:00:00Z", "end": "2024-03-14T18:00:00Z"},
+    ],
+    "northing": {"discover": True},
+    "operating_state": HOT_OPERATING_STATE,
+    "wake_unchanged": True,
+}
+
+
+@dataclass(frozen=True)
+class RealCampaign:
+    """A real Hill of Towie campaign: its declaration and the span of SCADA written with it.
+
+    :param declaration: the contents of its ``campaign.yaml``
+    :param start: the first SCADA record written
+    :param end: the end of the SCADA written, exclusive
+    """
+
+    declaration: dict[str, Any]
+    start: pd.Timestamp
+    end: pd.Timestamp
+
+    @property
+    def name(self) -> str:
+        """The campaign's declared name."""
+        return str(self.declaration["name"])
+
+
+HOT_AEROUP_T13_CAMPAIGN = RealCampaign(
+    HOT_AEROUP_T13, start=pd.Timestamp("2019-01-01", tz="UTC"), end=pd.Timestamp("2023-01-01", tz="UTC")
+)
+HOT_TUNEUP_CAMPAIGN = RealCampaign(
+    HOT_TUNEUP, start=pd.Timestamp("2022-01-01", tz="UTC"), end=pd.Timestamp("2024-09-01", tz="UTC")
+)
+REAL_CAMPAIGNS: dict[str, RealCampaign] = {c.name: c for c in (HOT_AEROUP_T13_CAMPAIGN, HOT_TUNEUP_CAMPAIGN)}
 
 
 def label_hot_operating_states(scada_long: pd.DataFrame) -> pd.DataFrame:
@@ -204,27 +250,25 @@ def _iced(scada_long: pd.DataFrame, *, order: np.ndarray, follows: np.ndarray, u
     return low & (run_length >= HOT_ICING_MIN_RUN_RECORDS)
 
 
-def write_hot_aeroup_t13(
+def write_real_campaign(
     out_dir: Path,
     *,
-    start: pd.Timestamp = HOT_AEROUP_T13_START,
-    end: pd.Timestamp = HOT_AEROUP_T13_END,
+    campaign: RealCampaign,
     data_dir: Path | None = None,
 ) -> Path:
-    """Write the Hill of Towie AeroUp T13 campaign folder under ``out_dir`` and return its declaration.
+    """Write ``campaign``'s folder under ``out_dir`` and return its declaration.
 
-    Writes ``campaign.yaml`` and, under ``data/``, every turbine's SCADA over ``[start, end)`` with its
-    site operating-state labels, the turbines file and the published AeroUp works table.
+    Writes ``campaign.yaml`` and, under ``data/``, every turbine's SCADA over the campaign's span with
+    its site operating-state labels, the turbines file and the published AeroUp works table.
 
     :param out_dir: the campaign folder
-    :param start: the first SCADA record written
-    :param end: the end of the SCADA written, exclusive
+    :param campaign: which campaign
     :param data_dir: the Hill of Towie download cache; defaults to its usual place
     """
     data_dir = data_dir if data_dir is not None else get_data_dir()
     data = out_dir / "data"
     data.mkdir(parents=True, exist_ok=True)
-    scada, _ = load_hot_scada(start_dt=start, end_dt_excl=end, data_dir=data_dir)
+    scada, _ = load_hot_scada(start_dt=campaign.start, end_dt_excl=campaign.end, data_dir=data_dir)
     scada[HOT_STATE_COL] = label_hot_site_states(scada)
     scada.to_parquet(data / "scada.parquet")
     pd.DataFrame(
@@ -238,18 +282,21 @@ def write_hot_aeroup_t13(
     ensure_hot_data_files([HOT_AEROUP_WORKS], data_dir=data_dir)
     shutil.copyfile(data_dir / HOT_AEROUP_WORKS, data / "works.csv")
     path = out_dir / "campaign.yaml"
-    path.write_text(yaml.safe_dump(HOT_AEROUP_T13, sort_keys=False))
-    logger.info("Wrote the Hill of Towie AeroUp T13 campaign to %s", out_dir)
+    path.write_text(yaml.safe_dump(campaign.declaration, sort_keys=False))
+    logger.info("Wrote the Hill of Towie campaign %s to %s", campaign.name, out_dir)
     return path
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Write the Hill of Towie AeroUp T13 campaign folder."""
+    """Write a real campaign's folder."""
     parser = argparse.ArgumentParser(prog="python -m benchmarking.campaigns.real", description=__doc__)
     parser.add_argument("out_dir", type=Path, help="the campaign folder to write")
+    parser.add_argument(
+        "--campaign", choices=list(REAL_CAMPAIGNS), default=HOT_AEROUP_T13_CAMPAIGN.name, help="which campaign"
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    write_hot_aeroup_t13(args.out_dir)
+    write_real_campaign(args.out_dir, campaign=REAL_CAMPAIGNS[args.campaign])
 
 
 if __name__ == "__main__":
