@@ -35,9 +35,10 @@ or rated where unknown. The power is also capped at that limit. Sources whose sc
 | T19 | +3.92 % | +3.91 % |
 | Normal operation | unchanged | unchanged |
 
-**Implication.** Truth is computed from the injected power, so it follows the change. Synthetic Hill of
-Towie cells with T16 or T17 under test now carry a smaller, more realistic noise-mode gain. The matrix
-run at 36058e2 predates this change.
+**Implication.** Truth is computed from the injected power, so it follows the change. With T16 and T17
+excluded from the matrix (CF31), it mainly touches T19's noise mode and the reduced setpoints of
+curtailment and derating; their records are not valid for uplift, but they count in the truth. The
+matrix run at 36058e2 predates this change.
 
 ---
 
@@ -76,14 +77,17 @@ period from the data start. All five Hill of Towie draws used 2016 as baseline a
   evenly over the record.
 - A tile's data starts 12 to 24 months before its trial, not at the site's data start.
 - Each tile prefers turbines no earlier tile tested.
-- Noise mode is now valid for uplift at Hill of Towie, in the real AeroUp and TuneUp campaigns and the
-  synthetic tiles. T16 and T17 stay test turbines, so the matrix shows whether the method copes with a
-  turbine whose noise-mode share moves between the periods. (A first version of this change kept them
-  out of the trials instead; it never ran beyond 7 cells.)
-- After the second run, T16 is excluded from the synthetic Hill of Towie campaigns, as neither a test turbine nor a
-  reference (`RolloutSite.excluded`). Its yaw re-calibration of about 98 deg on 2017-05-19 rotated the true wind
-  directions its noise mode covers by about 100 deg, so its noise-mode share, and its wake on T17, changed
-  part way through the record. The real campaigns keep it.
+- Noise mode was briefly made valid for uplift at Hill of Towie; the second run (36058e2, all 1110 cells ok)
+  used it. There T16, tested once, read well (+0.8 pp at L12), but T17 placebos read -3 to -10 pp: its
+  after period (September to December 2017) fell when T16's noise-mode sectors had just moved.
+  Noise mode is back to not valid for uplift. It should count only where the analyst is sure its
+  behaviour did not change between the periods, and here it did.
+- T16 and T17 are excluded from the synthetic Hill of Towie campaigns, as neither test turbines nor
+  references (`RolloutSite.excluded`). T16's yaw re-calibration of about 98 deg on 2017-05-19 rotated the
+  true wind directions its noise mode covers by about 100 deg, since its noise schedule is fixed in its
+  own nacelle frame. T17's placebo error on the T17 cell analysed sits below 10 m/s in easterly to
+  southerly winds, with no northing change of its own; its mechanism is not settled. The real campaigns
+  keep both turbines.
 - `validate` clusters every mean and coverage standard error by campaign, and gives a verdict from five
   campaigns up.
 

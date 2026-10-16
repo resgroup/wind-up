@@ -114,9 +114,10 @@ class RolloutSite:
 
 
 def hot_site() -> RolloutSite:
-    """Return Hill of Towie over 2016-2020, before its real AeroUp works, without T16.
+    """Return Hill of Towie over 2016-2020, before its real AeroUp works, without T16 and T17.
 
-    T16's noise-mode sectors move with its 2017 yaw re-calibration, so it is neither tested nor a reference.
+    Neither noise-mode turbine is tested or used as a reference: T16's noise-mode sectors move with its
+    2017 yaw re-calibration, and T17 sits in its wake.
     """
     return RolloutSite(
         name="Hill of Towie",
@@ -126,7 +127,7 @@ def hot_site() -> RolloutSite:
         columns=HOT_COLUMNS,
         data_start=pd.Timestamp("2016-01-01", tz="UTC"),
         data_end=pd.Timestamp("2021-01-01", tz="UTC"),
-        excluded=frozenset({"T16"}),
+        excluded=frozenset({"T16", "T17"}),
     )
 
 

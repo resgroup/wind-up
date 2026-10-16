@@ -195,8 +195,8 @@ def test_a_tile_prefers_turbines_no_earlier_tile_tested() -> None:
 
 def test_an_excluded_turbine_is_neither_tested_nor_a_reference() -> None:
     for draw in _tiles(8):
-        assert "T16" not in draw.trial
-        assert "T16" not in rollout_campaign(draw, multiplier=1.0, post_months=6).candidate_references
+        assert not {"T16", "T17"} & set(draw.trial)
+        assert not {"T16", "T17"} & set(rollout_campaign(draw, multiplier=1.0, post_months=6).candidate_references)
 
 
 def test_a_tile_depends_only_on_the_tiles_up_to_it() -> None:

@@ -64,7 +64,7 @@ HOT_OPERATING_STATE: dict[str, Any] = {
     "label_column": HOT_STATE_COL,
     "parked_pitch_above_deg": 45,
     "labels": {
-        NOISE_MODE: {"northing": "valid", "waking": "waking", "uplift": "valid"},
+        NOISE_MODE: {"northing": "valid", "waking": "waking", "uplift": "not valid"},
         BM_CURTAILMENT: {"northing": "valid", "waking": "part waking", "uplift": "not valid"},
         HIGH_WIND_DERATE: {"northing": "valid", "waking": "part waking", "uplift": "not valid"},
         ICING: {"northing": "not valid", "waking": "part waking", "uplift": "not valid"},
