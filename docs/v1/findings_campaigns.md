@@ -12,6 +12,74 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF33 — Trimming the periods to common weather support does not help: at 3742175 the reference bias has gone (+0.04 ± 0.11 pp over 494 cells), the between-period shift does not predict a reading's error, and every trim costs precision. The error of a reading is block-scale variation in the subject-to-reference relation, present just as strongly inside the before period
+
+*2026-10-16, branch v1-C3. An offline probe over the power model's per-row dumps (`row_dump_dir`) of 27 big-matrix
+cells at 3742175 on the HPC: synthetic Hill of Towie s00-s04 at multiplier 0, K4, L1/L3/L12, two uplift cells,
+Kelmarsh s00-s03 at K4, L1/L12, and the real T13 K4 L12 and TuneUp K4 Lmax cells. 264 subjects (56 test
+turbines, 208 reference readings; a reading reused from the screen is not dumped). The probe refits the same
+LightGBM on the dumped rows and reproduces every dumped uplift exactly, then re-estimates each variant. Judged on
+the 232 placebo subjects (truth 0 %). The probe script is not kept.*
+
+**There is no reference bias to remove at this commit.** Validating the first 494 cells of the run at 3742175
+(T16 and T17 excluded, noise mode not valid for uplift) gives combined references of +0.04 ± 0.11 pp before the
+screen and +0.02 ± 0.10 pp after, over 13 campaigns, against +0.16 and +0.12 pp at 36058e2. Hill of Towie
+synthetic references read +0.04 ± 0.15 pp (five campaigns), Penmanshiel 0.00 ± 0.12 pp. The 304 reference
+readings in the 27 probe cells average +0.03 ± 0.08 pp. TuneUp's references still read +0.31 pp and T13's
++0.09 pp (one campaign each).
+
+**The periods are not distinguishable by the features.** A classifier told the after rows from the before rows
+with an out-of-fold AUC of 0.53 on all features, 0.53 on ERA5 alone and 0.50 on reference power alone. Only
+0.5 % of after rows lie outside the training range of any feature. On cells of 2 m/s ERA5 wind speed, 30
+degree sector and ERA5 shear exponent, 39 % of after hours fall in a cell with under 24 before hours, but that
+is the fineness of the cells, not a weather mismatch: the total variation distance between the two periods'
+cell distributions is 0.3 to 0.4 at every length.
+
+**No shift measure predicts the error.** Across the placebo subjects the Spearman correlation of the forward
+error with the unsupported share, the total variation distance, the out-of-range share, the ERA5 wind speed
+shift and the classifier AUC is within ±0.10. The mean-power shift between the periods has the sign the
+model's conditional bias predicts (a windier after period reads higher) but explains only about ±0.2 pp at
+the extremes: +0.55 pp per unit of relative shift, correlation +0.13. The strongest correlates are within the
+subject, the slope of the after residual against predicted power (+0.54) and the residual's correlation with
+the model's leaf sparsity (-0.62): a reading's error is carried by its high-power, sparsely trained rows,
+whatever the weather of the period.
+
+**Every trim costs precision and buys nothing.** Placebo mean and RMSE in pp over 232 subjects:
+
+| Variant | Mean | RMSE | After hours kept |
+|---|---|---|---|
+| Forward (baseline) | -0.04 ± 0.10 | 1.57 | 100 % |
+| Drop after records in cells with < 6 / 24 / 72 before hours | -0.13 / +0.02 / +0.18 | 1.89 / 2.03 / 2.24 | 82 / 55 / 22 % |
+| Same at 24 h, two-sided (before rows in cells unseen after dropped, refit) | +0.01 | 2.10 | 55 % |
+| Whole days: drop after days with > 50 % unsupported hours (one- / two-sided) | -0.04 / -0.08 | 2.02 / 2.07 | 59 % |
+| Drop the sparsest decile of after rows by leaf occupancy | -0.07 | 1.65 | 90 % |
+| Reweight after rows to the before cell density | +0.04 | 2.24 | 100 % |
+| Isotonic / linear calibration on out-of-fold baseline residuals | -0.16 / -0.35 | 1.58 / 1.70 | 100 % |
+| Nearest-neighbour whole days on daily ERA5 summaries | -0.05 | 1.61 | 96 % |
+
+By length the baseline RMSE is 1.83 pp at L1, 1.40 at L3 and 1.01 at L12; the 24 h cell trim gives 2.01, 2.15
+and 1.61. The two uplift cells (eight subjects) behave the same way. On the real cells the TuneUp references and
+the T13 test turbine move by a few tenths of a point under each variant with no consistent direction.
+
+**The error is block-scale variation, not extrapolation or model variance.** Refitting with five bagged seeds
+moves a reading by 0.07 pp (median spread; 0.14 pp RMS). Holding out the last block of the before period,
+as long as the after period, and predicting it from the rest gives an error RMSE of 2.1 pp at L1 and 2.7 pp
+at L3, at least as large as the real after error, and the block one step earlier 2.3 and 2.6 pp. Weighting
+the training rows by a half-life of 90, 180 or 365 days towards the changeover changes the mean by under
+0.07 pp and the RMSE by under 0.03 pp. Training on the last 3, 6 or 9 months only raises the RMSE to 4.0,
+2.2 and 1.9 pp. The relation between a turbine and its references varies at the scale of weeks to months
+in a way that no feature carries and no training window reaches, and the model's fixed-model bootstrap
+sigma (0.4 to 0.5 pp median) cannot see it.
+
+**Implication.** Step 11 iv option B is not adopted; option A stays. The question is no longer the
+reference bias but the precision of a reading and the sigma that should cover it: a contiguous-block
+holdout inside the before period, at the after period's length, reproduces the size of the after error
+and is a candidate for the systematic component of step 14. What drives the block-scale variation (the
+subject's own state, direction-dependent terrain or wake effects, or stability that ERA5 does not
+resolve) is open; more references and longer after periods are the known remedies (CF3, CF31).
+
+---
+
 ## CF32 — A synthetic upgrade now respects a record's power setpoint: on Hill of Towie noise mode it injected about 10 % too much gain, because a record well below its setpoint still spends part of its 10 minutes at it
 
 *2026-10-15, branch v1-C3. Measured on the Hill of Towie 2016-2020 SCADA with the AeroUp shape at multiplier 1.*

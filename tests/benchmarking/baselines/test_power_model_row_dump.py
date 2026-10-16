@@ -91,11 +91,14 @@ def test_the_dump_carries_every_documented_column(tmp_path: Path) -> None:
     assert sidecar["baseline_rated_power_kw"] == 2300.0
 
 
-def test_a_reference_reading_lands_in_its_own_folder(tmp_path: Path) -> None:
+def test_a_reference_reading_lands_under_its_test_turbine(tmp_path: Path) -> None:
     _method(out_dir=tmp_path / "diag", row_dump_dir=tmp_path / "dump", report_reference_uplifts=True).estimate(_mi())
-    for turbine in ("T1", *_REFERENCES):
-        assert (tmp_path / "dump" / turbine / "rows.parquet").is_file()
-        assert (tmp_path / "dump" / turbine / "rows.json").is_file()
+    assert (tmp_path / "dump" / "T1" / "rows.parquet").is_file()
+    for reference in _REFERENCES:
+        folder = tmp_path / "dump" / "T1" / "references" / reference
+        assert (folder / "rows.parquet").is_file()
+        assert json.loads((folder / "rows.json").read_text())["test_wtg"] == reference
+        assert not (tmp_path / "dump" / reference).exists()
 
 
 def test_the_screening_clone_does_not_dump(tmp_path: Path) -> None:

@@ -509,8 +509,9 @@ class PowerModelMethod:
     :param row_dump_dir: when set, write the estimate's per-row frame (actual, counterfactual, row
         selection and the full feature matrix under its original names) to
         ``<row_dump_dir>/<test_wtg>/rows.parquet`` with a ``rows.json`` sidecar, for the level probe.
-        A reference-reading clone dumps under its own turbine's folder; the screening clone does not
-        dump. ``None`` (**default**) writes nothing
+        A reference reading of the reference-uplift report dumps under
+        ``<row_dump_dir>/<test_wtg>/references/<reference>/``; the screening clone does not dump.
+        ``None`` (**default**) writes nothing
 
     The reference pool is the campaign's candidate references (the context's
     ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
@@ -1474,6 +1475,8 @@ class PowerModelMethod:
         unjudged = (demoted | set(screen.unjudged if screen is not None else ())) - ruled_out
         surviving = [r for r in pool if r not in demoted]
         clone = self._reference_clone()
+        if self.row_dump_dir is not None:
+            clone = dataclasses.replace(clone, row_dump_dir=Path(self.row_dump_dir) / mi.test_wtg / "references")
         reusable = (
             {}
             if self.reference_plots_dir is not None
