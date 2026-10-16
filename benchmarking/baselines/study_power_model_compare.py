@@ -58,7 +58,7 @@ tally and the per-bin verdict use one materiality band (:data:`_MATERIAL_PP`).
 Run from the repo root::
 
     uv run python -m benchmarking.baselines.study_power_model_compare \
-        --reference-dir "~/temp/wind-up-benchmarking/badass overnight 20260708"
+        --reference-dir "~/temp/wind-up-benchmarking/hpc overnight 20260708"
 
 For fast feedback on a power_model change, restrict to one mode and one profile — e.g.
 ``--modes prepost --profiles cp_0pct`` fits a single case in ~minutes (vs ~30 for the full sweep) and
@@ -127,7 +127,7 @@ SEED = 0
 
 # Keys that identify one scored case independently of the method.
 _CASE_KEYS = ["profile", "test_wtg", "campaign_months", "treatment_start"]
-_DEFAULT_REFERENCE_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "badass overnight 20260708"
+_DEFAULT_REFERENCE_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "hpc overnight 20260708"
 _DEFAULT_OUTPUT_DIR = Path.home() / "temp" / "wind-up-benchmarking" / "power_model_compare"
 
 # The committed power_model benchmark: its bias/spread/score per (mode, profile, campaign) frozen at
@@ -202,10 +202,8 @@ def _make_power_model(
     protocol), e.g. ``{"matching_vars": ["wind_speed_100m"]}``; unknown field names fail loudly and
     JSON lists are coerced to the tuples the dataclass fields expect.
     """
-    # Only data-schema description is passed here now: the accepted behaviour defaults
-    # (availability_feature/era5_exclude, min_child_samples) live on the PowerModelMethod class,
-    # so a bare method already *is* the benchmarked config. The reference active-power minimum is
-    # carried by HOT_COLUMNS' active_power_min role, so no specialist config is needed here either.
+    # Only data-schema description is passed here now: the accepted behaviour defaults live on the
+    # PowerModelMethod class, so a bare method already *is* the benchmarked config.
     kwargs: dict[str, Any] = {
         "columns": HOT_COLUMNS,
         "baseline_rated_power_kw": HOT_RATED_POWER_KW,

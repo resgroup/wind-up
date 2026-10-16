@@ -8,7 +8,7 @@ It writes the design to ``examples/v1/output/design_hill_of_towie/`` and copies 
 ``docs/images/designing-a-campaign/``, which ``docs/designing-a-campaign.md`` shows.
 
 Turbine coordinates: Clerc, A. and Lingkan, E. (2026). Hill of Towie wind farm open dataset
-(2.0.0) [Data set]. Zenodo. https://doi.org/10.5281/zenodo.20204946, CC BY 4.0.
+(2.1.0) [Data set]. Zenodo. https://doi.org/10.5281/zenodo.22662930, CC BY 4.0.
 """
 
 from __future__ import annotations

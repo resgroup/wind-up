@@ -41,7 +41,7 @@ mpl.use("Agg")  # headless: the campaign path writes plots without a display
 import pandas as pd
 
 from benchmarking.baselines.hot_context import build_hot_v0_context
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
+from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.campaigns.placebo import (
     PLACEBO_CAMPAIGN_START,
     placebo_analysis_period,
@@ -300,7 +300,7 @@ def probe_arms() -> list[Arm]:
         ),
         Arm(
             name="era5_sync_absent",
-            what=f"ERA5 {' + '.join(ERA5_SYNC_COLS)} missing (what the lag sync locks onto)",
+            what=f"ERA5 {' + '.join(ERA5_SYNC_COLS)} missing (the hub-height wind)",
             shape="absent",
             era5=lambda df: drop_columns(df, columns=ERA5_SYNC_COLS),
         ),
@@ -334,8 +334,6 @@ def _power_model_only(spec: object, *, out_dir: Path, era5_hourly_df: pd.DataFra
             baseline_rated_power_kw=spec.rated_power_kw,  # type: ignore[attr-defined]
             era5_hourly_df=era5_hourly_df,
             seed=seed,
-            era5_exclude=CURATED_ERA5_EXCLUDE,
-            availability_feature=False,
             model_params=dict(TUNED_MODEL_PARAMS),
             out_dir=out_dir / "power_model",
             save_plots=True,

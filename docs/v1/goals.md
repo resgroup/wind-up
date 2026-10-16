@@ -86,6 +86,6 @@ post-processing. *(Lower priority than G1–G4; high practical value.)*
   methodology candidate and staged plan.
 - Example v0 uplift reports (Hill of Towie AeroUp/Pitch, Tallentire, Earlseat,
   wake-steering) — basis for the report-generation gap analysis (G6).
-- Key open data: Hill of Towie SCADA (Zenodo 20204946) and
+- Key open data: Hill of Towie SCADA (Zenodo 22662930) and
   `resgroup/hill-of-towie-open-source-analysis`.
 - Other open data: SMARTEOLE (see existing wind-up example notebook), Kelmarsh (https://zenodo.org/records/16807551), Penmanshiel (https://zenodo.org/records/16807304), WeDoWind (pitch-angle and vortex-generator examples in wind-up).

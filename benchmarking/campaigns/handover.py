@@ -92,7 +92,7 @@ def campaign_brief(campaign: SyntheticCampaign, *, farm: str = "Hill of Towie") 
     :param farm: the wind farm's name, as the brief addresses it
     """
     timing = campaign.upgrade_timing
-    start, end = campaign.analysis_period
+    start, end = _declared_period(campaign)
     if isinstance(timing, ToggleSchedule):
         began = timing.start if timing.start is not None else start
         minutes = int(timing.period.total_seconds() // 60)
@@ -225,7 +225,7 @@ def _write_design(design: CampaignDesign, *, out_dir: Path) -> None:
 
 def _ground_truth(campaign: SyntheticCampaign, dataset: SyntheticDataset) -> dict[str, Any]:
     """Return the answer key: what was injected, into which turbines, and what it really came to."""
-    start, end = campaign.analysis_period
+    start, end = _declared_period(campaign)
     timing: dict[str, Any] = {"mode": "toggle" if isinstance(campaign.upgrade_timing, ToggleSchedule) else "prepost"}
     if isinstance(campaign.upgrade_timing, ToggleSchedule):
         timing["start"] = str(campaign.upgrade_timing.start)
@@ -259,3 +259,12 @@ def _true_farm_uplift(campaign: SyntheticCampaign, dataset: SyntheticDataset) ->
         rows = dataset.synthetic_df[dataset.synthetic_df[dataset.columns.turbine] == wtg]
         masks[wtg] = treated_mask(pd.DatetimeIndex(rows.index), campaign.upgrade_timing)
     return float(dataset.true_farm_uplift(test_wtgs=list(campaign.upgraded_turbines), masks=masks))
+
+
+def _declared_period(campaign: SyntheticCampaign) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Return the campaign's one declared analysis period; a handover campaign always declares one."""
+    period = campaign.analysis_period
+    if not isinstance(period, tuple):
+        msg = "a handover campaign declares one analysis period (start, end)"
+        raise TypeError(msg)
+    return period

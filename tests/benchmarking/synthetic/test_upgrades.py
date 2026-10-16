@@ -14,6 +14,7 @@ from benchmarking.synthetic.upgrades import (
     RatedPowerChange,
     WindSpeedCpChange,
     apply_upgrades,
+    power_limit,
 )
 
 
@@ -137,3 +138,32 @@ def test_upgrades_compose() -> None:
     f = region2_fraction(1000.0)
     assert power[0] == pytest.approx(1000.0 * (1.0 + f * 0.10))  # region 2: +Cp, below downrate
     assert power[1] == pytest.approx(2000.0)  # near rated: clipped to the downrate
+
+
+def _limited_rows(setpoints: list[float], *, power: float = 1700.0, gap_after: int | None = None) -> pd.DataFrame:
+    rows = _rows([power] * len(setpoints))
+    stamps = pd.date_range("2020-01-01", periods=len(setpoints), freq="10min", tz="UTC")
+    if gap_after is not None:
+        stamps = stamps.where(np.arange(len(stamps)) <= gap_after, stamps + pd.Timedelta(hours=1))
+    return rows.assign(**{HOT_COLUMNS.power_setpoint: setpoints}).set_index(stamps)
+
+
+def test_a_record_is_limited_by_the_higher_of_its_start_and_end_setpoints() -> None:
+    rows = _limited_rows([1993.0, 2300.0, 1993.0, 1993.0])
+    assert power_limit(rows, columns=HOT_COLUMNS).tolist() == [1993.0, 2300.0, 2300.0, 1993.0]
+
+
+def test_a_record_after_a_gap_takes_its_end_setpoint_alone() -> None:
+    rows = _limited_rows([2300.0, 2300.0, 1993.0, 1993.0], gap_after=1)
+    assert power_limit(rows, columns=HOT_COLUMNS).tolist() == [2300.0, 2300.0, 1993.0, 1993.0]
+
+
+def test_rows_without_a_setpoint_have_no_limit() -> None:
+    assert power_limit(_rows([1700.0]), columns=HOT_COLUMNS) is None
+
+
+def test_a_noise_setpoint_shrinks_the_power_change() -> None:
+    upgrade = [ConstantCpChange(delta=0.10)]
+    free = apply_upgrades(_limited_rows([2300.0, 2300.0]), upgrade, cp=CpCore())[HOT_COLUMNS.active_power]
+    noise = apply_upgrades(_limited_rows([1993.0, 1993.0]), upgrade, cp=CpCore())[HOT_COLUMNS.active_power]
+    assert (noise - 1700.0).iloc[1] < 0.5 * (free - 1700.0).iloc[1]

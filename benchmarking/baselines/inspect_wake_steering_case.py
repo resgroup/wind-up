@@ -59,7 +59,7 @@ import yaml
 from benchmarking.baselines.hot_context import NORTHING_YAML, build_hot_v0_context
 from benchmarking.baselines.inspect_prepost_hard_case import conditional_truth_vs_estimate
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
+from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import (
     CONDITIONS,
@@ -188,8 +188,6 @@ def _power_model(out_dir: Path, era5_hourly_df: pd.DataFrame) -> PowerModelMetho
         columns=HOT_COLUMNS,
         baseline_rated_power_kw=HOT_RATED_POWER_KW,
         era5_hourly_df=era5_hourly_df,
-        availability_feature=False,
-        era5_exclude=CURATED_ERA5_EXCLUDE,
         model_params=dict(TUNED_MODEL_PARAMS),
         out_dir=out_dir,
         save_plots=True,

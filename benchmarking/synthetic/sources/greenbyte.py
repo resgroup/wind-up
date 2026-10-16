@@ -6,8 +6,15 @@ and fourteen Senvion turbines against HoT's twenty-one -- which makes them a use
 third site for anything that must not be tuned to one farm.
 
 The adapter returns the same long, source-native shape the rest of the benchmarking layer speaks,
-with one normalisation: Greenbyte reports availability as a **fraction** of the period, so it is
-converted to seconds here to match :data:`~benchmarking.synthetic.sources.hill_of_towie.HOT_COLUMNS`.
+with these changes:
+
+* Greenbyte reports availability as a **fraction** of the period; it is converted to seconds to
+  match :data:`~benchmarking.synthetic.sources.hill_of_towie.HOT_COLUMNS`, and corrected where it
+  says the turbine was down while it produced (:data:`AVAILABILITY`).
+* Each record gets a site operating-state label (:data:`GREENBYTE_STATE_COL`): power limited when a
+  power-reduction event of the turbine's status log overlaps it, or its pitch is above what normal
+  operation reaches at its power.
+
 Source-specific knowledge belongs in the source adapter, not in the methods.
 
 Datasets:
@@ -20,19 +27,25 @@ from __future__ import annotations
 
 import io
 import logging
-import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from zipfile import ZipFile
 
+import numpy as np
 import pandas as pd
 
 from benchmarking.synthetic.schema import ColumnSchema
+from benchmarking.synthetic.sources.hill_of_towie import (
+    ZENODO_METADATA_FILENAME,
+    download_zenodo_data,
+    zenodo_record_dir,
+    zenodo_record_files,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +61,13 @@ NACELLE_POSITION = "Nacelle position (°)"
 WIND_SPEED = "Wind speed (m/s)"
 WIND_SPEED_SD = "Wind speed, Standard deviation (m/s)"
 GEN_RPM = "Generator RPM (RPM)"
-AVAILABILITY = "availability_s"
+PITCH = "Blade angle (pitch position) A (°)"
+REACTIVE_POWER = "Reactive power (kvar)"
+AMBIENT_TEMP = "Nacelle ambient temperature (°C)"
+PUBLISHED_AVAILABILITY = "Time-based System Avail."
+# The published availability in seconds, with a record the turbine produced in never zero: a zero
+# becomes the full period when the turbine also produced in the record before, and NaN otherwise.
+AVAILABILITY = "corrected Time-based System Avail. (s)"
 TURBINE = "TurbineName"
 
 GREENBYTE_COLUMNS = ColumnSchema(
@@ -59,8 +78,28 @@ GREENBYTE_COLUMNS = ColumnSchema(
     wind_speed_sd=WIND_SPEED_SD,
     gen_rpm=GEN_RPM,
     availability=AVAILABILITY,
+    pitch=PITCH,
+    reactive_power=REACTIVE_POWER,
     nacelle_position=NACELLE_POSITION,
+    ambient_temp=AMBIENT_TEMP,
 )
+
+# The site operating states, written into the SCADA as GREENBYTE_STATE_COL.
+GREENBYTE_STATE_COL = "state"
+POWER_LIMITED = "power limited"
+GREENBYTE_OPERATING_STATE: dict[str, Any] = {
+    "label_column": GREENBYTE_STATE_COL,
+    "parked_pitch_above_deg": 60,
+    "labels": {POWER_LIMITED: {"northing": "valid", "waking": "part waking", "uplift": "not valid"}},
+}
+# Status-log codes whose events reduce the turbine's power output.
+POWER_REDUCTION_CODES = frozenset({75, 77, 245, 3220, 3543, 9000})
+# A record with power between these fractions of rated and pitch above its farm's pitch limit at that
+# power is power limited.
+PITCH_LIMIT_POWER_FRACTIONS = (0.1, 0.9)
+_STATUS_START = "Timestamp start"
+_STATUS_END = "Timestamp end"
+_STATUS_CODE = "Code"
 
 
 @dataclass(frozen=True)
@@ -72,6 +111,10 @@ class GreenbyteFarm:
     :param years: the calendar years published for this farm
     :param rated_power_kw: the turbines' rated power
     :param rotor_diameter_m: the turbines' rotor diameter
+    :param data_start: the first timestamp a campaign on this farm may use, no earlier than its
+        commercial operations date, so no commissioning data is analysed
+    :param pitch_limit_deg: the highest pitch (deg) normal operation reaches at each fraction of
+        rated power, as (fraction, pitch) points interpolated between
     """
 
     name: str
@@ -79,6 +122,8 @@ class GreenbyteFarm:
     years: tuple[int, ...]
     rated_power_kw: float
     rotor_diameter_m: float
+    data_start: pd.Timestamp
+    pitch_limit_deg: tuple[tuple[float, float], ...]
 
     @property
     def static_file(self) -> str:
@@ -90,31 +135,83 @@ class GreenbyteFarm:
 # the loader globs rather than naming files, so either layout works and so do the shorter names a
 # manual download tends to leave behind.
 # Kelmarsh is six Senvion MM92 turbines; Penmanshiel is Senvion MM82s.
+#
+# Neither farm's record starts at commercial operation. The published static files give every
+# turbine a commercial operations date of 2016-04-15 at Kelmarsh and 2016-09-01 at Penmanshiel.
+# Kelmarsh's record begins 2016-01-03, its turbines first produce between 2016-01-21 and 2016-02-05,
+# and coverage is ~97% or better from March. Penmanshiel's record begins 2016-06-02, its turbines
+# first produce between 2016-06-02 and 2016-07-27, T08-T15 record 0-43% of June-August, and
+# coverage is ~100% from September. So a Penmanshiel campaign starts on its commercial operations
+# date, as the Zenodo record gives it. Kelmarsh ran capped near 1,700 kW until November 2016, so a
+# Kelmarsh campaign starts on 2016-12-01.
 KELMARSH = GreenbyteFarm(
-    name="Kelmarsh", record="5841834", years=tuple(range(2016, 2022)), rated_power_kw=2050.0, rotor_diameter_m=92.0
+    name="Kelmarsh",
+    record="5841834",
+    years=tuple(range(2016, 2022)),
+    rated_power_kw=2050.0,
+    rotor_diameter_m=92.0,
+    data_start=pd.Timestamp("2016-12-01", tz="UTC"),
+    pitch_limit_deg=((0.1, 1.0), (0.5, 1.5), (0.6, 2.0), (0.7, 2.5), (0.8, 3.5), (0.9, 5.5)),
 )
 PENMANSHIEL = GreenbyteFarm(
-    name="Penmanshiel", record="5946808", years=tuple(range(2016, 2022)), rated_power_kw=2050.0, rotor_diameter_m=82.0
+    name="Penmanshiel",
+    record="5946808",
+    years=tuple(range(2016, 2022)),
+    rated_power_kw=2050.0,
+    rotor_diameter_m=82.0,
+    data_start=pd.Timestamp("2016-09-01", tz="UTC"),
+    pitch_limit_deg=((0.1, 1.0), (0.5, 2.0), (0.6, 2.5), (0.7, 3.0), (0.8, 4.5), (0.9, 7.0)),
 )
 
 FARMS = {farm.name.lower(): farm for farm in (KELMARSH, PENMANSHIEL)}
 
 
-def get_data_dir() -> Path:
-    """Return the local cache directory for these datasets, creating it if needed."""
-    root = Path(os.getenv("WIND_UP_BENCHMARKING_DATA_DIR", Path.home() / "temp" / "wind-up-benchmarking" / "data"))
-    path = root / "zenodo"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def get_data_dir(farm: GreenbyteFarm) -> Path:
+    """Return where ``farm``'s Zenodo record is downloaded, creating it if needed."""
+    return zenodo_record_dir(farm.record)
 
 
 def _turbine_name(member: str) -> str:
-    """``Turbine_Data_Kelmarsh_3_2017-...csv`` -> ``T03``; the farm's own numbering, zero-padded."""
-    match = re.search(r"Turbine_Data_[A-Za-z]+_(\d+)_", member)
+    """``Turbine_Data_Kelmarsh_3_2017-...csv`` or ``Status_Kelmarsh_3_2017-...csv`` -> ``T03``, zero-padded."""
+    match = re.search(r"^(?:Turbine_Data|Status)_[A-Za-z]+_(\d+)_", member)
     if match is None:
         msg = f"cannot read a turbine number from {member!r}"
         raise ValueError(msg)
     return f"T{int(match.group(1)):02d}"
+
+
+def ensure_greenbyte_data(
+    farm: GreenbyteFarm, *, years: Sequence[int] | None = None, data_dir: Path | None = None
+) -> None:
+    """Download ``farm``'s turbine metadata and SCADA zips for ``years`` (default: all) from Zenodo.
+
+    A year counts as present when at least as many local zips match it as the record publishes,
+    whatever they are named. Makes no network call when everything is present.
+    """
+    directory = data_dir or get_data_dir(farm)
+    years = list(farm.years if years is None else years)
+    have_static = (directory / farm.static_file).is_file()
+    metadata_cached = (directory / ZENODO_METADATA_FILENAME).is_file()
+    if not metadata_cached and have_static and all(_local_zips(farm, year, directory) for year in years):
+        return
+    remote = zenodo_record_files(farm.record, output_dir=directory)
+    sizes = {f["key"]: int(f["size"]) for f in remote}
+    wanted = [] if have_static else [farm.static_file]
+    for year in years:
+        keys = [k for k in sizes if re.fullmatch(rf"{farm.name}_SCADA_{year}_.*\.zip", k)]
+        complete = [
+            p for p in _local_zips(farm, year, directory) if p.stat().st_size == sizes.get(p.name, p.stat().st_size)
+        ]
+        if len(complete) < len(keys):
+            wanted.extend(k for k in keys if directory / k not in complete)
+    if not wanted:
+        return
+    logger.info("Downloading %s from Zenodo record %s into %s: %s", farm.name, farm.record, directory, wanted)
+    download_zenodo_data(farm.record, output_dir=directory, filenames=wanted)
+
+
+def _local_zips(farm: GreenbyteFarm, year: int, directory: Path) -> list[Path]:
+    return sorted(directory.glob(f"{farm.name}*SCADA*{year}*.zip"))
 
 
 def load_greenbyte_metadata(farm: GreenbyteFarm, *, data_dir: Path | None = None) -> pd.DataFrame:
@@ -122,7 +219,7 @@ def load_greenbyte_metadata(farm: GreenbyteFarm, *, data_dir: Path | None = None
 
     Names are normalised to ``T01``-style so they match the SCADA frame.
     """
-    path = (data_dir or get_data_dir()) / farm.static_file
+    path = (data_dir or get_data_dir(farm)) / farm.static_file
     static = pd.read_csv(path, encoding="utf-8-sig")
     # Penmanshiel's CSV carries a trailing blank row, so rows without a turbine number are dropped
     numbers = static["Title"].astype(str).str.extract(r"(\d+)$")[0]
@@ -141,21 +238,33 @@ def load_greenbyte_scada(
     *,
     years: Sequence[int],
     data_dir: Path | None = None,
-    columns: Sequence[str] = (POWER, POWER_MIN, NACELLE_POSITION, WIND_SPEED, WIND_SPEED_SD, GEN_RPM),
+    columns: Sequence[str] = (
+        POWER,
+        POWER_MIN,
+        NACELLE_POSITION,
+        WIND_SPEED,
+        WIND_SPEED_SD,
+        GEN_RPM,
+        PITCH,
+        REACTIVE_POWER,
+        AMBIENT_TEMP,
+    ),
 ) -> pd.DataFrame:
     """Return long, timestamp-indexed SCADA for ``farm`` over ``years``.
 
-    One row per turbine per 10-minute period, with :data:`TURBINE` naming the turbine and
-    availability converted from Greenbyte's fraction to seconds.
+    One row per turbine per 10-minute period, with :data:`TURBINE` naming the turbine, the corrected
+    availability in seconds (:data:`AVAILABILITY`) and the site label (:data:`GREENBYTE_STATE_COL`).
 
     :param years: calendar years to load; each must be published for this farm
     :param data_dir: where the Zenodo zips are cached; defaults to :func:`get_data_dir`
-    :param columns: the source-native value columns to keep besides availability
+    :param columns: the source-native value columns to keep besides availability; power and pitch
+        are always kept
     :raises FileNotFoundError: if a year's zip has not been downloaded
     """
-    directory = data_dir or get_data_dir()
-    wanted = [_TIMESTAMP, *columns, "Time-based System Avail."]
-    frames = []
+    directory = data_dir or get_data_dir(farm)
+    wanted = list(dict.fromkeys([_TIMESTAMP, *columns, POWER, PITCH, PUBLISHED_AVAILABILITY]))
+    frames: list[pd.DataFrame] = []
+    events: list[pd.DataFrame] = []
     for year in years:
         if year not in farm.years:
             msg = f"{farm.name} has no published SCADA for {year}; have {list(farm.years)}"
@@ -168,26 +277,115 @@ def load_greenbyte_scada(
             )
             raise FileNotFoundError(msg)
         for path in paths:
-            frames.extend(_read_zip(path, wanted=wanted))
+            data, status = _read_zip(path, wanted=wanted)
+            frames.extend(data)
+            events.extend(status)
     scada = pd.concat(frames).sort_index()
-    scada[AVAILABILITY] = scada.pop("Time-based System Avail.").astype(float) * TIMEBASE_S
+    scada[AVAILABILITY] = corrected_availability(scada) * TIMEBASE_S
+    scada = scada.drop(columns=PUBLISHED_AVAILABILITY)
+    reduced = pd.concat(events) if events else pd.DataFrame(columns=[TURBINE, _STATUS_START, _STATUS_END])
+    scada[GREENBYTE_STATE_COL] = label_greenbyte_site_states(
+        scada, reductions=reduced, rated_power_kw=farm.rated_power_kw, pitch_limit_deg=farm.pitch_limit_deg
+    )
     return scada
 
 
-def _read_zip(path: Path, *, wanted: Sequence[str]) -> list[pd.DataFrame]:
-    """Read every turbine's data file out of one published zip."""
+def corrected_availability(scada: pd.DataFrame) -> pd.Series:
+    """Return the published availability fraction, corrected where the turbine produced while it reads zero.
+
+    A record with a zero fraction and positive power becomes 1 when the same turbine also produced in
+    the record before it, and NaN otherwise.
+    """
+    published = scada[PUBLISHED_AVAILABILITY].astype(float)
+    producing = scada[POWER].astype(float) > 0
+    turbine = scada[TURBINE].astype(str)
+    stamps = pd.Series(pd.DatetimeIndex(scada.index).asi8, index=scada.index)
+    previous_producing = producing.groupby(turbine.to_numpy(), sort=False).shift(1, fill_value=False)
+    previous_stamp = stamps.groupby(turbine.to_numpy(), sort=False).shift(1)
+    follows = (stamps - previous_stamp) == TIMEBASE_S * 10**9
+    contradicted = (published <= 0) & producing
+    corrected = published.copy()
+    corrected[contradicted] = np.where((previous_producing & follows)[contradicted], 1.0, np.nan)
+    return corrected
+
+
+def label_greenbyte_site_states(
+    scada: pd.DataFrame,
+    *,
+    reductions: pd.DataFrame,
+    rated_power_kw: float,
+    pitch_limit_deg: tuple[tuple[float, float], ...],
+) -> pd.Series:
+    """Return each record's site operating-state label, None where it has none.
+
+    A record is :data:`POWER_LIMITED` when one of its turbine's ``reductions`` overlaps it, or its
+    pitch is above ``pitch_limit_deg`` at its power, within :data:`PITCH_LIMIT_POWER_FRACTIONS` of
+    rated.
+
+    :param scada: long Greenbyte SCADA, indexed by each record's start
+    :param reductions: the power-reduction events, columns :data:`TURBINE`, start and end
+    :param rated_power_kw: the turbines' rated power
+    :param pitch_limit_deg: the farm's :attr:`GreenbyteFarm.pitch_limit_deg`
+    """
+    fraction = scada[POWER].to_numpy(dtype=float) / rated_power_kw
+    pitch = scada[PITCH].to_numpy(dtype=float) if PITCH in scada.columns else np.full(len(scada), np.nan)
+    points, limits = zip(*pitch_limit_deg, strict=True)
+    limit = np.interp(fraction, points, limits)
+    low, high = PITCH_LIMIT_POWER_FRACTIONS
+    limited = (fraction >= low) & (fraction < high) & (pitch > limit)
+    limited |= _in_events(scada, events=reductions)
+    labels = np.full(len(scada), None, dtype=object)
+    labels[limited] = POWER_LIMITED
+    return pd.Series(labels, index=scada.index, dtype=object)
+
+
+def _in_events(scada: pd.DataFrame, *, events: pd.DataFrame) -> np.ndarray:
+    """Return True for each record of a turbine that overlaps one of that turbine's ``events``."""
+    hit = np.zeros(len(scada), dtype=bool)
+    turbine = scada[TURBINE].astype(str).to_numpy()
+    starts = pd.DatetimeIndex(scada.index).asi8
+    period = TIMEBASE_S * 10**9
+    for name, group in events.groupby(TURBINE):
+        rows = np.flatnonzero(turbine == name)
+        order = rows[np.argsort(starts[rows], kind="stable")]
+        record_starts = starts[order]
+        for begin, end in zip(group[_STATUS_START].to_numpy(), group[_STATUS_END].to_numpy(), strict=True):
+            first = np.searchsorted(record_starts, pd.Timestamp(begin).value - period, side="right")
+            last = np.searchsorted(record_starts, pd.Timestamp(end).value, side="left")
+            hit[order[first:last]] = True
+    return hit
+
+
+def _read_zip(path: Path, *, wanted: Sequence[str]) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
+    """Read every turbine's data file and power-reduction events out of one published zip."""
     logger.info("reading %s", path.name)
     frames = []
+    events = []
     with ZipFile(path) as archive:
         for member in sorted(archive.namelist()):
-            if not member.startswith("Turbine_Data"):
-                continue
-            raw = pd.read_csv(
-                io.BytesIO(archive.read(member)),
-                skiprows=_HEADER_ROW,
-                usecols=lambda c, wanted=tuple(wanted): c in wanted,
-                parse_dates=[_TIMESTAMP],
-            )
-            raw[TURBINE] = _turbine_name(member)
-            frames.append(raw.set_index(_TIMESTAMP).tz_localize("UTC"))
-    return frames
+            if member.startswith("Turbine_Data"):
+                raw = pd.read_csv(
+                    io.BytesIO(archive.read(member)),
+                    skiprows=_HEADER_ROW,
+                    usecols=lambda c, wanted=tuple(wanted): c in wanted,
+                    parse_dates=[_TIMESTAMP],
+                )
+                raw[TURBINE] = _turbine_name(member)
+                frames.append(raw.set_index(_TIMESTAMP).tz_localize("UTC"))
+            elif member.startswith("Status"):
+                events.append(_power_reductions(archive.read(member), turbine=_turbine_name(member)))
+    return frames, events
+
+
+def _power_reductions(status_csv: bytes, *, turbine: str) -> pd.DataFrame:
+    """Return the status log's events with a :data:`POWER_REDUCTION_CODES` code and an end, in UTC."""
+    log = pd.read_csv(io.BytesIO(status_csv), skiprows=_HEADER_ROW, dtype=str)
+    codes = pd.to_numeric(log[_STATUS_CODE], errors="coerce")
+    chosen = log[codes.isin(POWER_REDUCTION_CODES) & (log[_STATUS_END] != "-")]
+    return pd.DataFrame(
+        {
+            TURBINE: turbine,
+            _STATUS_START: pd.to_datetime(chosen[_STATUS_START]).dt.tz_localize("UTC"),
+            _STATUS_END: pd.to_datetime(chosen[_STATUS_END]).dt.tz_localize("UTC"),
+        }
+    )

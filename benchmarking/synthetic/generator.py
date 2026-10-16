@@ -9,6 +9,7 @@ retained alongside so the true uplift can always be derived by comparison.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -181,7 +182,7 @@ def generate_dataset(
     test_wtgs: list[str],
     upgrades: list,
     mode: Literal["prepost", "toggle"],
-    upgrade_timing: pd.Timestamp | ToggleSchedule,
+    upgrade_timing: pd.Timestamp | ToggleSchedule | Mapping[str, pd.Timestamp],
     faults: list | None = None,
     cp_params: CpParams = HOT_CP_MODEL,
     rated_power_kw: float = 2300.0,
@@ -194,7 +195,8 @@ def generate_dataset(
     :param test_wtgs: turbine name(s) to upgrade
     :param upgrades: upgrade callables applied to each test turbine's treated rows
     :param mode: ``"prepost"`` (changeover date) or ``"toggle"``
-    :param upgrade_timing: changeover timestamp (prepost) or toggle schedule
+    :param upgrade_timing: changeover timestamp (prepost), toggle schedule, or a changeover per
+        test turbine (prepost)
     :param faults: undeclared corruptions injected after the upgrades, into the synthetic frame
         only, leaving the ground truth derived against ``original_df`` unaffected. Most change a
         reading rather than power; one that changes power may only target a reference, which is
@@ -220,10 +222,18 @@ def generate_dataset(
         if callable(prepare):
             prepare(scada_df, columns=columns)
 
-    treated = _treated_mask(synthetic_df.index, mode=mode, upgrade_timing=upgrade_timing)
+    if isinstance(upgrade_timing, Mapping):
+        if mode != "prepost":
+            msg = "a per-turbine changeover map is prepost only"
+            raise TypeError(msg)
+        missing = sorted(set(test_wtgs) - set(upgrade_timing))
+        if missing:
+            msg = f"the changeover map has no changeover for test turbines {missing}"
+            raise ValueError(msg)
     for wtg in test_wtgs:
+        timing = upgrade_timing[wtg] if isinstance(upgrade_timing, Mapping) else upgrade_timing
         is_test = (synthetic_df[columns.turbine] == wtg).to_numpy()
-        mask = is_test & treated
+        mask = is_test & _treated_mask(synthetic_df.index, mode=mode, upgrade_timing=timing)
         if not mask.any():
             continue
         cp = CpCore(rated_power_kw=rated_power_kw, cp_params=cp_params)
@@ -240,7 +250,11 @@ def generate_dataset(
     run_metadata = {
         "test_wtgs": list(test_wtgs),
         "mode": mode,
-        "upgrade_timing": str(upgrade_timing),
+        "upgrade_timing": (
+            {w: str(t) for w, t in upgrade_timing.items()}
+            if isinstance(upgrade_timing, Mapping)
+            else str(upgrade_timing)
+        ),
         "upgrades": [u.description for u in upgrades],
         "faults": [f.description for f in faults],
         "rated_power_kw": rated_power_kw,

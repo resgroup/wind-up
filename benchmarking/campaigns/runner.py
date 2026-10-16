@@ -7,13 +7,15 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
 from benchmarking.campaigns.run import CampaignReport, estimate_campaign, visible_mask
 from benchmarking.harness import CampaignWindow, Replicate, score_output, truth_mask
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES
+from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.northing import DEFAULT_NORTHING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     import numpy as np
@@ -22,12 +24,23 @@ if TYPE_CHECKING:
     from benchmarking.harness import Method, MethodOutput
     from benchmarking.synthetic import SyntheticDataset
     from wind_up import FarmUplift
+    from wind_up.analysis_period import AnalysisPlan, PlanSettings
     from wind_up.northing import NorthingSettings
 
 
 # The farm table's columns, named here so a campaign with nothing to aggregate still returns a
 # frame consumers can index.
-_FARM_COLUMNS = ("method", "estimate", "truth", "signed_error", "uplift_spread", "n_guarded")
+_FARM_COLUMNS = (
+    "method",
+    "estimate",
+    "truth",
+    "signed_error",
+    "uplift_spread",
+    "n_guarded",
+    "reference_uplift_before_screen",
+    "reference_uplift_after_screen",
+    "reference_uplift_spread",
+)
 
 
 @dataclass
@@ -36,8 +49,8 @@ class CampaignResult:
 
     :param spec: the campaign that was run
     :param scores: the tidy harness rows, one set per upgraded turbine at n=1
-    :param farm: one row per method -- ``estimate``, ``truth``, ``signed_error``, ``uplift_spread``
-        and ``n_guarded``
+    :param farm: one row per method -- ``estimate``, ``truth``, ``signed_error``, ``uplift_spread``,
+        ``n_guarded`` and the combined reference uplift before and after the screen
     :param farm_uplifts: each method's :class:`~wind_up.FarmUplift`, including per-turbine detail
     :param truth_farm_uplift: the exact pooled farm truth
     :param outputs: each ``(method, turbine)``'s raw :class:`~benchmarking.harness.MethodOutput`
@@ -53,6 +66,11 @@ class CampaignResult:
     outputs: dict[tuple[str, str], MethodOutput]
     report: CampaignReport
 
+    @property
+    def unplanned(self) -> dict[str, str]:
+        """Each upgraded turbine the period selector could not plan, with its reason; truth leaves them out too."""
+        return self.report.unplanned
+
 
 class CampaignRunner:
     """Turn a campaign spec plus its generated dataset into per-turbine and farm results.
@@ -65,7 +83,12 @@ class CampaignRunner:
         needs none.
     :param northing_roles: the direction roles the shared step corrects
     :param northing_settings: how the shared step's changepoint search is bounded
-    :param northing_out_dir: where the shared step writes its plots when it discovers corrections
+    :param northing_out_dir: where the shared step writes its table and plots when it discovers corrections
+    :param northing_plots: write the shared step's plots as well as its table
+    :param plan_settings: how a planning campaign's spans and power references are chosen
+    :param possible_changes: each turbine's indicators of an undeclared change, reported as warnings
+        against the plans they fall inside
+    :param data_screen: how each plan's power references are screened on their data; ``None`` skips it
     """
 
     def __init__(
@@ -78,6 +101,10 @@ class CampaignRunner:
         northing_roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
         northing_settings: NorthingSettings = DEFAULT_NORTHING,
         northing_out_dir: Path | None = None,
+        northing_plots: bool = True,
+        plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
+        possible_changes: Mapping[str, Sequence[pd.Timestamp]] | None = None,
+        data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
     ) -> None:
         """Store the campaign, its data and the per-turbine method factory."""
         self._spec = spec
@@ -87,6 +114,10 @@ class CampaignRunner:
         self._northing_roles = tuple(northing_roles)
         self._northing_settings = northing_settings
         self._northing_out_dir = northing_out_dir
+        self._northing_plots = northing_plots
+        self._plan_settings = plan_settings
+        self._possible_changes = possible_changes
+        self._data_screen = data_screen
 
     def run(self) -> CampaignResult:
         """Estimate the campaign on the truth-free core, then score what it produced against truth."""
@@ -100,20 +131,27 @@ class CampaignRunner:
             northing_roles=self._northing_roles,
             northing_settings=self._northing_settings,
             northing_out_dir=self._northing_out_dir,
+            northing_plots=self._northing_plots,
+            plan_settings=self._plan_settings,
+            possible_changes=self._possible_changes,
+            data_screen=self._data_screen,
         )
         visible = self._visible_dataset(report)
-        window = self._window()
 
         score_rows: list[dict[str, object]] = []
         truth_masks: dict[str, np.ndarray] = {}
-        for wtg in sorted(spec.upgraded_turbines):
+        analysed = sorted(t for t in spec.upgraded_turbines if t not in report.unplanned)
+        for wtg in analysed:
+            window = self._window(report.plans[wtg])
             replicate = Replicate(
                 dataset=visible,
                 test_wtg=wtg,
-                treatment_start=spec.treatment_start,
+                treatment_start=window.treatment_start,
                 upgrade_timing=spec.timing_for(wtg),
             )
-            mask = truth_mask(replicate, window)
+            synthetic = visible.synthetic_df
+            test_index = pd.DatetimeIndex(synthetic.index[(synthetic[spec.turbine_col] == wtg).to_numpy()])
+            mask = truth_mask(replicate, window) & spec.usable_mask(wtg, test_index)
             truth_masks[wtg] = mask
             truth = replicate.true_uplift(mask=mask).overall
             for (method_name, turbine), output in report.outputs.items():
@@ -132,10 +170,11 @@ class CampaignRunner:
                     )
                 )
 
-        truth_farm = visible.true_farm_uplift(test_wtgs=list(spec.upgraded_turbines), masks=truth_masks)
+        truth_farm = visible.true_farm_uplift(test_wtgs=analysed, masks=truth_masks)
+        references = report.farm.set_index("method")
         farm = pd.DataFrame(
             [
-                self._farm_row(name, result, visible=visible, masks=truth_masks)
+                self._farm_row(name, result, visible=visible, masks=truth_masks, references=references.loc[name])
                 for name, result in report.farm_uplifts.items()
             ],
             columns=_FARM_COLUMNS,
@@ -157,6 +196,7 @@ class CampaignRunner:
         *,
         visible: SyntheticDataset,
         masks: dict[str, np.ndarray],
+        references: pd.Series,
     ) -> dict[str, object]:
         """One method's farm row, with its truth pooled over the turbines it actually used.
 
@@ -174,6 +214,9 @@ class CampaignRunner:
             "signed_error": result.uplift - truth,
             "uplift_spread": result.uplift_spread,
             "n_guarded": int((result.turbines["guard"] != "").sum()),
+            "reference_uplift_before_screen": float(references["reference_uplift_before_screen"]),
+            "reference_uplift_after_screen": float(references["reference_uplift_after_screen"]),
+            "reference_uplift_spread": float(references["reference_uplift_spread"]),
         }
 
     def _visible_dataset(self, report: CampaignReport) -> SyntheticDataset:
@@ -184,14 +227,14 @@ class CampaignRunner:
             original_df=self._dataset.original_df[visible_mask(self._spec, self._dataset.original_df)],
         )
 
-    def _window(self) -> CampaignWindow:
-        """Return one window spanning the whole campaign, so the harness scores it at n=1.
+    def _window(self, plan: AnalysisPlan) -> CampaignWindow:
+        """Return one window spanning the planned turbine's campaign, so the harness scores it at n=1.
 
-        ``length`` is the activity span in whole months; it labels the result rows and is not
-        used to select records.
+        The window is the plan's span, treated from the start of its after period. ``length`` is
+        the activity span in whole months; it labels the result rows and is not used to select records.
         """
-        start, end = self._spec.analysis_period
-        treatment_start = self._spec.treatment_start
+        start, end = plan.start, plan.end
+        treatment_start = plan.after[0]
         months = (end.year - treatment_start.year) * 12 + (end.month - treatment_start.month)
         return CampaignWindow(
             length=months,
@@ -205,4 +248,4 @@ class CampaignRunner:
 def per_turbine_table(result: CampaignResult) -> pd.DataFrame:
     """Return the per-turbine headline rows: one per method and upgraded turbine."""
     overall = result.scores[result.scores["condition"] == "overall"]
-    return overall[["method", "test_wtg", "estimate", "truth", "signed_error"]].reset_index(drop=True)
+    return overall[["method", "test_wtg", "estimate", "sigma", "truth", "signed_error"]].reset_index(drop=True)

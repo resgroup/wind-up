@@ -86,6 +86,8 @@ dev = [
     'scikit-learn',
     "pytest-xdist>=3.8.0",
     "pytest-cov>=7.1.0",
+    "psutil>=7.2.2",
+    "python-dotenv>=1.2.2",
 ]
 
 [tool.setuptools.packages.find]
@@ -97,6 +99,9 @@ where = ["src", "."]
 # DOES add `benchmarking` to any wheel/sdist built from this repo. It MUST be removed before
 # the v1.0.0 release so the harness is not shipped (tracked as a W2 cleanup item).
 include = ["wind_up*", "wind_up_v0*", "benchmarking*"]
+# Only directories with an __init__.py are packages, so a stray folder (a leftover __pycache__ after a
+# branch switch) cannot become a namespace package that breaks the build.
+namespaces = false
 
 [tool.uv]
 # Dev/CI-only constraint (not part of published metadata, so consumers are unaffected).
@@ -149,7 +154,7 @@ max-args = 17 # try to bring this down to 5
 [tool.mypy]
 plugins = ["pydantic.mypy"]
 python_version = "3.10"
-exclude = "build|tests|venv|.venv|__ignore__"
+exclude = "build|tests|venv|.venv|__ignore__|extra_docs"
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
@@ -168,6 +173,7 @@ module = [
     "openmeteo_requests",
     "requests_cache",
     "retry_requests",
+    "psutil",
 ]
 disable_error_code = ["name-defined"]
 ignore_missing_imports = true

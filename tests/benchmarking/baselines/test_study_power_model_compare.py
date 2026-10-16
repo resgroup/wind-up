@@ -12,7 +12,7 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS
+from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS
 from benchmarking.baselines.study_power_model_compare import (
     _BASELINE_SCHEMA,
     _MATERIAL_PP,
@@ -35,14 +35,13 @@ from benchmarking.baselines.study_power_model_compare import (
     record_baseline,
 )
 from benchmarking.harness import StudyConfig
-from benchmarking.harness.conditions import CONDITIONS
 
 
 def test_make_power_model_defaults_to_conditional_on(tmp_path: Path) -> None:
     era5 = pd.DataFrame({"wind_speed_100m": [1.0]})
     method = _make_power_model(tmp_path, era5_hourly_df=era5)
     # the compare sweep runs power_model at its default: conditional uplift on, matching on the curated set
-    assert method.conditions == CONDITIONS
+    assert method.conditions == ("power", "era5_ws")
     assert method.matching_vars == ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
 
 
@@ -51,12 +50,7 @@ def test_thinned_driver_matches_promoted_defaults(tmp_path: Path) -> None:
     # constructed method must still carry the benchmarked defaults.
     era5 = pd.DataFrame({"wind_speed_100m": [1.0]})
     method = _make_power_model(tmp_path, era5_hourly_df=era5)
-    assert method.availability_feature is False
-    assert method.era5_exclude == CURATED_ERA5_EXCLUDE
     assert method._make_model().get_params()["min_child_samples"] == TUNED_MODEL_PARAMS["min_child_samples"]  # noqa: SLF001
-    # the reference active-power minimum is now carried by the schema's active_power_min role, so the
-    # driver needs no specialist reference_stat_cols config for it.
-    assert method.columns.active_power_min == "wtc_ActPower_min"
     assert method.reference_stat_cols == ()
 
 

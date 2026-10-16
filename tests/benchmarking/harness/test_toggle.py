@@ -18,6 +18,7 @@ from benchmarking.harness.toggle import (
     build_toggle_df,
     is_toggle,
     resolve_toggle,
+    toggle_cycle,
     toggle_upgrade_start,
 )
 from benchmarking.synthetic import ToggleSchedule, treated_mask
@@ -178,3 +179,26 @@ def test_toggle_upgrade_start_frame_never_on_falls_back_to_index_min() -> None:
     index = pd.date_range("2025-01-01", periods=3, freq="10min")
     toggle_df = _toggle_df(index, on=[False, False, False], off=[True, True, True])
     assert toggle_upgrade_start(toggle_df, index) == index.min()
+
+
+class TestToggleCycle:
+    def test_a_schedule_states_its_cycle(self) -> None:
+        index = pd.date_range("2025-01-01", periods=12, freq="10min", tz="UTC")
+        assert toggle_cycle(ToggleSchedule(period=pd.Timedelta(hours=4)), index) == pd.Timedelta(hours=4)
+
+    def test_a_toggle_frame_gives_twice_the_median_run_length(self) -> None:
+        index = pd.date_range("2025-01-01", periods=12, freq="10min", tz="UTC")
+        on = [True, True, True, False, False, False, True, True, True, False, False, False]
+        frame = _toggle_df(index, on, [not x for x in on])
+        assert toggle_cycle(frame, index) == pd.Timedelta(hours=1)
+
+    def test_rows_in_neither_state_do_not_break_a_run(self) -> None:
+        index = pd.date_range("2025-01-01", periods=8, freq="10min", tz="UTC")
+        on = [True, True, False, False, False, False, True, True]
+        off = [False, False, True, False, False, True, False, False]
+        assert toggle_cycle(_toggle_df(index, on, off), index) == pd.Timedelta(minutes=40)
+
+    def test_a_frame_with_one_row_has_no_cycle(self) -> None:
+        index = pd.date_range("2025-01-01", periods=3, freq="10min", tz="UTC")
+        with pytest.raises(ValueError, match="toggle cycle"):
+            toggle_cycle(_toggle_df(index, [True, False, False], [False, False, False]), index)

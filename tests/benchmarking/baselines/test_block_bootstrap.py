@@ -12,7 +12,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.block_bootstrap import bootstrap_ratio_uplift, combine_estimates, relative_scatter
+from benchmarking.baselines.block_bootstrap import (
+    RatioUncertainty,
+    bootstrap_energy_ratio,
+    bootstrap_ratio_uplift,
+    combine_estimates,
+    relative_scatter,
+)
 
 _TIMEBASE = pd.Timedelta(minutes=10)
 
@@ -515,3 +521,105 @@ class TestCombineEstimatesRefusesUnpairedResamples:
     def test_different_resample_counts_raise(self) -> None:
         with pytest.raises(ValueError, match="resample"):
             combine_estimates((0.0, 1.0, np.zeros(100)), (0.0, 1.0, np.zeros(99)))
+
+
+# --- the single-segment energy ratio (the power model's headline) --------------------------------
+
+
+def _ratio_case(
+    n: int = 4320, *, uplift: float = 0.03, noise: float = 0.05, seed: int = 0, correlated: bool = False
+) -> dict:
+    """An after period whose actual power is the counterfactual times ``1 + uplift`` plus noise.
+
+    ``correlated`` smooths the noise over about a day, so blocks shorter than that under-read the
+    estimator's spread.
+    """
+    rng = np.random.default_rng(seed)
+    times = _timeline(n)
+    counterfactual = 800.0 * (1.2 + np.sin(np.arange(n) / 144.0))
+    eps = rng.standard_normal(n)
+    if correlated:
+        kernel = np.ones(144) / 144.0
+        eps = np.convolve(eps, kernel, mode="same") * np.sqrt(144.0)
+    actual = counterfactual * (1.0 + uplift) * (1.0 + noise * eps)
+    return {
+        "times": times,
+        "actual": actual,
+        "counterfactual": counterfactual,
+        "period_start": times[0],
+        "period_end": times[-1],
+        "timebase": _TIMEBASE,
+    }
+
+
+def _run_ratio(case: dict, *, block_hours: float = 24.0, n_resamples: int = 500, seed: int = 0) -> RatioUncertainty:
+    return bootstrap_energy_ratio(**case, block_hours=block_hours, n_resamples=n_resamples, seed=seed)
+
+
+class TestEnergyRatio:
+    def test_sigma_is_finite_and_positive(self) -> None:
+        result = _run_ratio(_ratio_case())
+        assert np.isfinite(result.sigma)
+        assert result.sigma > 0
+        assert result.frac_resamples_finite == 1.0
+        assert result.n_blocks == 30
+
+    def test_an_exact_ratio_has_no_spread(self) -> None:
+        case = _ratio_case(noise=0.0)
+        result = _run_ratio(case)
+        assert result.sigma == pytest.approx(0.0, abs=1e-12)
+        assert result.sigma_robust == pytest.approx(0.0, abs=1e-12)
+
+    def test_sigma_matches_the_actual_scatter_of_the_estimator(self) -> None:
+        estimates = []
+        for seed in range(80):
+            case = _ratio_case(seed=seed)
+            estimates.append(case["actual"].sum() / case["counterfactual"].sum() - 1.0)
+        actual_spread = float(np.std(estimates, ddof=1))
+        sigma = _run_ratio(_ratio_case(seed=0), block_hours=6.0, n_resamples=2000).sigma
+        assert sigma == pytest.approx(actual_spread, rel=0.35)
+
+    def test_correlated_noise_needs_blocks_longer_than_its_scale(self) -> None:
+        estimates = []
+        for seed in range(80):
+            case = _ratio_case(seed=seed, correlated=True)
+            estimates.append(case["actual"].sum() / case["counterfactual"].sum() - 1.0)
+        actual_spread = float(np.std(estimates, ddof=1))
+        short = _run_ratio(_ratio_case(correlated=True), block_hours=1.0, n_resamples=2000).sigma
+        long = _run_ratio(_ratio_case(correlated=True), block_hours=72.0, n_resamples=2000).sigma
+        assert short < 0.5 * actual_spread
+        assert long == pytest.approx(actual_spread, rel=0.5)
+
+    def test_blocks_tile_the_period_not_the_records(self) -> None:
+        case = _ratio_case()
+        keep = np.ones(len(case["times"]), dtype=bool)
+        keep[1000:2000] = False  # a week-long gap in the usable records
+        gappy = {**case, "times": case["times"][keep], "actual": case["actual"][keep]}
+        gappy["counterfactual"] = case["counterfactual"][keep]
+        assert _run_ratio(gappy).n_blocks == _run_ratio(case).n_blocks
+
+    def test_a_block_longer_than_the_period_gives_no_sigma(self) -> None:
+        result = _run_ratio(_ratio_case(n=144), block_hours=48.0)
+        assert result.n_blocks == 1
+        assert np.isnan(result.sigma)
+
+    def test_same_seed_gives_the_same_sigma_and_seeds_agree_to_noise(self) -> None:
+        case = _ratio_case()
+        assert _run_ratio(case, seed=1).sigma == _run_ratio(case, seed=1).sigma
+        a, b = _run_ratio(case, seed=1, n_resamples=2000).sigma, _run_ratio(case, seed=2, n_resamples=2000).sigma
+        assert a == pytest.approx(b, rel=0.1)
+
+    def test_unsorted_input_is_sorted_rather_than_trusted(self) -> None:
+        case = _ratio_case()
+        order = np.random.default_rng(3).permutation(len(case["times"]))
+        shuffled = {**case, "times": case["times"][order], "actual": case["actual"][order]}
+        shuffled["counterfactual"] = case["counterfactual"][order]
+        assert _run_ratio(shuffled).sigma == pytest.approx(_run_ratio(case).sigma)
+
+    def test_no_records_gives_nan(self) -> None:
+        case = _ratio_case(n=10)
+        empty = {**case, "times": case["times"][:0], "actual": case["actual"][:0]}
+        empty["counterfactual"] = case["counterfactual"][:0]
+        result = _run_ratio(empty)
+        assert np.isnan(result.sigma)
+        assert result.n_blocks == 0

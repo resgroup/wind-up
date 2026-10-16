@@ -167,3 +167,11 @@ def test_farm_truth_is_nan_when_no_energy_survives() -> None:
     synthetic, original = _farm_frames({"T1": [0.0, 0.0]}, {})
     masks = {"T1": np.array([True, True])}
     assert np.isnan(true_farm_uplift(synthetic, original, test_wtgs=["T1"], masks=masks))
+
+
+def test_per_condition_breakdown_by_era5_wind_speed_needs_the_aligned_column() -> None:
+    original, synthetic = _paired([800.0, 800.0, 1500.0, 1500.0], [880.0, 880.0, 1530.0, 1530.0])
+    assert true_uplift(synthetic, original, test_wtg="T01", by="era5_ws", bins=[5.0, 8.0, 12.0]).by_condition is None
+    original = original.assign(wind_speed_100m=[6.0, 6.0, 10.0, 10.0])
+    result = true_uplift(synthetic, original, test_wtg="T01", by="era5_ws", bins=[5.0, 8.0, 12.0])
+    np.testing.assert_allclose(result.by_condition["true_uplift"].to_numpy(), [0.10, 0.02])

@@ -46,7 +46,6 @@ import pandas as pd
 from sklearn.inspection import permutation_importance
 
 from benchmarking.baselines.era5_derived import shear_exponent
-from benchmarking.baselines.era5_sync import sync_era5
 from benchmarking.baselines.example_prepost_study import (
     DEFAULT_END_DT_EXCL,
     DEFAULT_START_DT,
@@ -59,11 +58,11 @@ from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.baselines.power_model.features import (
     era5_feature_frame,
     extract_outcome,
-    reference_mean_wind_speed,
 )
 from benchmarking.baselines.power_model.fitting import make_outcome_model
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.style import apply_grid, save_fig
+from benchmarking.harness.reanalysis import interpolate_era5
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
 
@@ -112,20 +111,13 @@ def build_era5_and_outcome(scada_df: pd.DataFrame, *, test_wtg: str) -> tuple[pd
     y = extract_outcome(
         scada_df, test_wtg=test_wtg, turbine_col=HOT_COLUMNS.turbine, active_power_col=HOT_COLUMNS.active_power
     )
-    references = sorted({str(t) for t in scada_df[HOT_COLUMNS.turbine].unique()} - {test_wtg})
-    reference_ws = reference_mean_wind_speed(
-        scada_df, references=references, turbine_col=HOT_COLUMNS.turbine, wind_speed_col=HOT_COLUMNS.wind_speed
-    )
-    synced = sync_era5(
-        context.reanalysis_datasets[0].data, target_index=index, reference_ws=reference_ws, timebase=timebase
-    )
-    raw = era5_feature_frame(synced.aligned)
-    logger.info("ERA5 synced: lag=%d rows, corr=%.3f", synced.best_lag_rows, synced.best_corr)
+    aligned = interpolate_era5(context.reanalysis_datasets[0].data, index=index, timebase=timebase)
+    raw = era5_feature_frame(aligned)
 
     test_rows = scada_df[scada_df[HOT_COLUMNS.turbine] == test_wtg].sort_index()
     keep = NormalOperationFilter(
         active_power_col=HOT_COLUMNS.active_power,
-        wind_speed_col=HOT_COLUMNS.wind_speed,
+        columns=HOT_COLUMNS,
         availability_col=HOT_COLUMNS.availability,
     ).keep_mask(test_rows, timebase=timebase)
     keep = keep[~keep.index.duplicated()].reindex(index, fill_value=False).to_numpy()

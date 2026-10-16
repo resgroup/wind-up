@@ -2,7 +2,7 @@
 
 ``northing_farm_inputs.parquet`` is written by ``benchmarking.baselines.make_northing_farm_fixture``
 from exactly the inputs ``study_northing_degradation`` northes: every turbine's yaw, power and
-nacelle wind speed on its ``yaw_usable`` rows, and the ERA5 direction, for 2017-2020. Signals are
+nacelle wind speed on its rows usable for northing, and the ERA5 direction, for 2017-2020. Signals are
 stored integer-scaled and blanked off a turbine's usable rows, so its usable mask is where its yaw
 is present.
 """

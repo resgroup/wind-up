@@ -6,7 +6,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.power_model.fitting import make_outcome_model, model_safe_features, time_block_folds
+from benchmarking.baselines.power_model.fitting import (
+    make_outcome_model,
+    make_propensity_model,
+    model_safe_features,
+    purged_time_block_folds,
+    time_block_folds,
+)
 
 
 class TestTimeBlockFolds:
@@ -94,3 +100,65 @@ class TestModelSafeNames:
         model = make_outcome_model(n_estimators=5, random_state=0)
         model.fit(model_safe_features(frame), rng.normal(1000, 50, 200))
         assert model.predict(model_safe_features(frame)).shape == (200,)
+
+
+class TestPurgedTimeBlockFolds:
+    @staticmethod
+    def _timestamps(n: int = 2000) -> pd.DatetimeIndex:
+        # an hour-long hole in the middle, as real campaigns have
+        idx = pd.date_range("2020-01-01", periods=n, freq="10min", tz="UTC")
+        return idx[(idx < idx[900]) | (idx > idx[906])]
+
+    def test_every_row_is_held_out_exactly_once(self) -> None:
+        ts = self._timestamps()
+        folds = purged_time_block_folds(ts, n_folds=5, embargo=pd.Timedelta("1D"))
+        assert len(folds) == 5
+        held = np.concatenate([test for _, test in folds])
+        assert np.array_equal(np.sort(held), np.arange(len(ts)))
+
+    def test_held_out_blocks_are_contiguous(self) -> None:
+        folds = purged_time_block_folds(self._timestamps(), n_folds=5, embargo=pd.Timedelta("1D"))
+        for _, test in folds:
+            assert np.array_equal(test, np.arange(test[0], test[-1] + 1))
+
+    def test_no_training_row_sits_within_the_embargo(self) -> None:
+        ts = self._timestamps()
+        embargo = pd.Timedelta("6h")
+        for train, test in purged_time_block_folds(ts, n_folds=5, embargo=embargo):
+            lo, hi = ts[test].min(), ts[test].max()
+            train_ts = ts[train]
+            assert not ((train_ts >= lo - embargo) & (train_ts <= hi + embargo)).any()
+            assert len(np.intersect1d(train, test)) == 0
+            assert len(train) > 0
+
+    def test_strata_are_blocked_separately_so_every_fold_keeps_both(self) -> None:
+        # a prepost split: the period is time, so unstratified blocks would hold one period out whole
+        ts = self._timestamps()
+        strata = np.arange(len(ts)) >= 1200
+        embargo = pd.Timedelta("6h")
+        folds = purged_time_block_folds(ts, n_folds=5, embargo=embargo, strata=strata)
+        held = np.concatenate([test for _, test in folds])
+        assert np.array_equal(np.sort(held), np.arange(len(ts)))
+        for train, test in folds:
+            for stratum in (False, True):
+                in_test = test[strata[test] == stratum]
+                # one contiguous block per stratum, about a fifth of it
+                assert np.array_equal(in_test, np.arange(in_test[0], in_test[-1] + 1))
+                assert abs(len(in_test) - (strata == stratum).sum() / 5) <= 1
+                lo, hi = ts[in_test].min(), ts[in_test].max()
+                assert not ((ts[train] >= lo - embargo) & (ts[train] <= hi + embargo)).any()
+            assert set(strata[train]) == {False, True}
+
+    def test_too_few_folds_raises(self) -> None:
+        with pytest.raises(ValueError, match="n_folds"):
+            purged_time_block_folds(self._timestamps(), n_folds=1, embargo=pd.Timedelta("1D"))
+
+
+class TestMakePropensityModel:
+    def test_is_a_classifier_with_the_common_parameters(self) -> None:
+        model = make_propensity_model(n_estimators=7)
+        params = model.get_params()
+        assert params["objective"] == "binary"
+        assert params["n_estimators"] == 7
+        assert params["deterministic"] is True
+        assert hasattr(model, "predict_proba")
