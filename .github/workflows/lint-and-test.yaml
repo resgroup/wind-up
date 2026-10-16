@@ -59,3 +59,14 @@ jobs:
     - name: "test"
       run: |
         uv run poe test
+
+  # Single stable check name for the branch ruleset, independent of the job matrices.
+  lint-and-test:
+    if: always()
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Require all lint and test jobs to pass
+      run: |
+        test "${{ needs.lint.result }}" = "success"
+        test "${{ needs.test.result }}" = "success"
