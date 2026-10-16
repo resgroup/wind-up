@@ -93,7 +93,9 @@ def lambda_uplift(forward: np.ndarray | pd.Series, reverse: np.ndarray | pd.Seri
 
 
 def _keys(record: dict[str, Any]) -> dict[str, Any]:
-    keys = {k: record[k] for k in ("cell_id", "arm", "site", "seed_index", "k", "post_months", "multiplier")}
+    keys = {
+        k: record[k] for k in ("cell_id", "arm", "site", "seed_index", "k", "pre_months", "post_months", "multiplier")
+    }
     return {**keys, "campaign": campaign_key(record)}
 
 
@@ -262,10 +264,10 @@ def linearity_table(turbines: pd.DataFrame) -> pd.DataFrame:
 
 
 def dependence_table(turbines: pd.DataFrame) -> pd.DataFrame:
-    """Target iii: the synthetic error by after-period length, number of references and season."""
+    """Target iii: the synthetic error by before-period length, after-period length, number of references and season."""
     synthetic = turbines[turbines["arm"] == "main"]
     rows = []
-    for axis in ("post_months", "k", "season"):
+    for axis in ("pre_months", "post_months", "k", "season"):
         for value, group in synthetic.groupby(axis):
             for estimator in ESTIMATORS:
                 errors = _errors(group, estimator).to_numpy(dtype=float)
@@ -323,6 +325,52 @@ def coverage_table(records: list[dict[str, Any]], turbines: pd.DataFrame, refere
             }
         )
     return pd.DataFrame(rows)
+
+
+def period_coverage_table(turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
+    """Target iv by before and after length: the forward error's RMSE and the headline sigma's coverage."""
+    rows = []
+    for quantity, frame in (("test", turbines[turbines["arm"] != "real"]), ("reference", references)):
+        if frame.empty:
+            continue
+        for (pre, post), group in frame.groupby(["pre_months", "post_months"]):
+            errors = _errors(group, "forward").to_numpy(dtype=float)
+            finite = errors[np.isfinite(errors)]
+            rows.append(
+                {
+                    "quantity": quantity,
+                    "pre_months": int(pre),
+                    "post_months": int(post),
+                    "rmse": float(np.sqrt(np.mean(finite**2))) if finite.size else np.nan,
+                    **_coverage(errors, group["sigma"].to_numpy(dtype=float), group["campaign"].to_numpy()),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def unmeasured_table(records: list[dict[str, Any]]) -> pd.DataFrame:
+    """How many test turbines each (before length, after length) left unmeasured, and how many for too few hours."""
+    rows = []
+    for record in records:
+        if record["arm"] == "real":
+            continue
+        unplanned = record.get("unplanned", {})
+        rows.append(
+            {
+                "pre_months": record["pre_months"],
+                "post_months": record["post_months"],
+                "measured": len(record["turbines"]),
+                "unmeasured": len(unplanned),
+                "too_few_hours": sum("usable hours" in str(reason) for reason in unplanned.values()),
+            }
+        )
+    if not rows:
+        return pd.DataFrame(
+            columns=["pre_months", "post_months", "measured", "unmeasured", "too_few_hours", "unmeasured_share"]
+        )
+    table = pd.DataFrame(rows).groupby(["pre_months", "post_months"], as_index=False).sum()
+    table["unmeasured_share"] = table["unmeasured"] / (table["measured"] + table["unmeasured"])
+    return table
 
 
 def reversal_table(turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
@@ -405,6 +453,8 @@ def validation_tables(records: list[dict[str, Any]]) -> dict[str, pd.DataFrame]:
         "ii_linearity": linearity_table(turbines),
         "iii_dependence": dependence_table(turbines),
         "iv_coverage": coverage_table(records, turbines, references),
+        "iv_coverage_by_period": period_coverage_table(turbines, references),
+        "unmeasured": unmeasured_table(records),
         "option2_reversal": reversal_table(turbines, references),
         "open_configuration_rule": configuration_rule_table(turbines),
         "open_screen": screen_table(references),
@@ -446,7 +496,7 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int) -> str:
             f"{row.intercept * _PP:+.3f} ± {row.intercept_se * _PP:.3f} pp ({intercept_ok}), n {row.n}, "
             f"{row.campaigns} campaigns"
         )
-    lines += ["", "## iii. No dependence on after-period length, references or season (forward)"]
+    lines += ["", "## iii. No dependence on before-period length, after-period length, references or season (forward)"]
     dep = tables["iii_dependence"]
     for axis, group in dep[dep["estimator"] == "forward"].groupby("axis", sort=False):
         spread = group["mean"].max() - group["mean"].min()
@@ -465,6 +515,20 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int) -> str:
             f"- {row.quantity} {row.block}: {row.coverage:.2f} ± {row.coverage_se:.2f} (z sd {row.z_sd:.2f}, "
             f"n {row.n}, {row.campaigns} campaigns): "
             f"{_verdict_coverage(pd.Series(row._asdict()))}"
+        )
+    lines += ["", "## iv by period: test coverage (RMSE pp) per before length P and after length L"]
+    by_period = tables["iv_coverage_by_period"]
+    for pre, group in by_period[by_period["quantity"] == "test"].groupby("pre_months"):
+        cells = ", ".join(f"L{int(r.post_months)} {r.coverage:.2f} ({r.rmse * _PP:.2f})" for r in group.itertuples())
+        lines.append(f"- P{int(pre)}: {cells}")
+    unmeasured = tables["unmeasured"]
+    if not unmeasured.empty:
+        total = int(unmeasured["unmeasured"].sum())
+        hours = int(unmeasured["too_few_hours"].sum())
+        worst = unmeasured.loc[unmeasured["unmeasured_share"].idxmax()]
+        lines.append(
+            f"- unmeasured test turbines: {total} ({hours} for too few usable hours); worst "
+            f"P{int(worst['pre_months'])} L{int(worst['post_months'])} at {worst['unmeasured_share']:.0%}"
         )
     lines += ["", "## Option 2: forward, full reversal and computed lambda (RMSE, pp)"]
     for row in tables["option2_reversal"].itertuples():

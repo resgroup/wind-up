@@ -12,11 +12,11 @@ Cases:
 * ``hot`` -- the Hill of Towie whole-farm reference arm at changeover 2018-09-01 (12 months of
   baseline into a 6-month campaign, T13 the declared test turbine, every other turbine a candidate
   reference, screen off). Every reading has a truth of 0.
-* ``pen`` -- the prepost matrix cell ``pen_s00_m+0_K4_L12`` in its ``main`` and ``excl`` arms. Each
+* ``pen`` -- the prepost matrix cell ``pen_s00_m+0_K4_P12_L12`` in its ``main`` and ``excl`` arms. Each
   of its five test turbines is analysed in each arm. Its reference readings are not analysed: the
   same reference read for different test turbines lands in one folder. ``analyse`` of an older run
   with the ``excl_booleans`` and ``excl_nan`` arms also writes the difference between them.
-* ``kel`` -- the matrix cell ``kel_s00_m+0_K4_L12`` in the same arms, CF26's worst placebo
+* ``kel`` -- the matrix cell ``kel_s00_m+0_K4_P12_L12`` in the same arms, CF26's worst placebo
   group (T06 reads +1.10 pp in ``main``, its references +0.6 to +1.0 pp). One test turbine, so its
   reference readings are analysed too.
 
@@ -368,11 +368,14 @@ def run_hot(*, turbines: Sequence[str] | None = None, analyse_all: bool = False,
 
 
 def matrix_cells(case: str) -> list[Any]:
-    """Return a matrix case's cells: its site's ``s00_m+0_K4_L12`` cell in each of the three arms."""
+    """Return a matrix case's cells: its site's ``s00_m+0_K4_P12_L12`` cell in each of the three arms."""
     from benchmarking.baselines.prepost_matrix.cells import Cell  # noqa: PLC0415
 
     site = MATRIX_CASES[case]["site"]
-    return [Cell(arm=arm, site=site, seed_index=0, multiplier=0, k=4, post_months=12) for arm in MATRIX_ARMS]  # type: ignore[arg-type]
+    return [
+        Cell(arm=arm, site=site, seed_index=0, multiplier=0, k=4, pre_months=12, post_months=12)  # type: ignore[arg-type]
+        for arm in MATRIX_ARMS
+    ]
 
 
 def run_matrix_case(case: str, *, execute: Callable[..., dict[str, Any]] | None = None) -> Path:

@@ -14,6 +14,7 @@ from benchmarking.campaigns.loader import read_works
 from benchmarking.campaigns.rollout import (
     AEROUP_DELTAS,
     AEROUP_WS_POINTS,
+    TRIAL_MAX_TEST_TURBINES,
     RolloutSite,
     aeroup_upgrade,
     bank_holidays,
@@ -149,9 +150,9 @@ def test_works_table_round_trips_through_the_loader(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("seed", SEEDS)
-def test_trial_is_a_compliant_design_below_its_maximum(seed: int) -> None:
+def test_trial_is_a_compliant_design_of_at_most_three_turbines(seed: int) -> None:
     draw = draw_rollout(hot_site(), seed=seed, full_rollout=False)
-    assert 1 <= len(draw.trial) <= 10 - 1  # Hill of Towie allows 10 test turbines
+    assert 1 <= len(draw.trial) <= TRIAL_MAX_TEST_TURBINES
     assert set(draw.works) == set(draw.trial)
     assert draw.rollout == ()
 
@@ -160,19 +161,24 @@ def test_trial_is_a_compliant_design_below_its_maximum(seed: int) -> None:
 def test_trial_start_leaves_the_pre_and_post_data(seed: int) -> None:
     site = hot_site()
     draw = draw_rollout(site, seed=seed, full_rollout=False, tile=seed)
-    assert site.data_start + pd.DateOffset(months=12) <= draw.trial_start
+    assert site.data_start + pd.DateOffset(months=24) <= draw.trial_start
     assert draw.last_trial_end + pd.DateOffset(months=12) <= site.data_end
     assert min(s for s, _ in draw.works.values()) == draw.trial_start
 
 
 @pytest.mark.parametrize("seed", SEEDS)
-def test_the_data_starts_12_to_24_months_before_the_trial_or_at_the_site_start(seed: int) -> None:
+@pytest.mark.parametrize("pre_months", [6, 12, 24])
+def test_the_data_starts_the_pre_length_before_the_trial(seed: int, pre_months: int) -> None:
     site = hot_site()
     draw = draw_rollout(site, seed=seed, full_rollout=False, tile=seed)
-    if draw.data_start > site.data_start:
-        assert draw.trial_start - pd.DateOffset(months=24) <= draw.data_start
-        assert draw.data_start <= draw.trial_start - pd.DateOffset(months=12)
-    assert draw.data_window(6)[0] == draw.data_start
+    assert draw.data_start(pre_months) == draw.trial_start - pd.DateOffset(months=pre_months)
+    assert draw.data_start(pre_months) >= site.data_start
+    assert draw.data_window(pre_months=pre_months, post_months=6) == (draw.data_start(pre_months), draw.data_end(6))
+
+
+def test_the_data_start_is_floored_at_the_site_start() -> None:
+    draw = draw_rollout(hot_site(), seed=0, full_rollout=False, tile=0)
+    assert draw.data_start(60) == hot_site().data_start
 
 
 def _tiles(n: int) -> list:
@@ -182,7 +188,7 @@ def _tiles(n: int) -> list:
 def test_tiles_spread_the_trials_over_the_data() -> None:
     starts = sorted(d.trial_start for d in _tiles(8))
     site = hot_site()
-    assert starts[0] < site.data_start + pd.DateOffset(months=13)
+    assert starts[0] < site.data_start + pd.DateOffset(months=25)
     assert starts[-1] > site.data_end - pd.DateOffset(months=24)
     gaps = np.diff([s.value for s in starts]) / DAY.value
     assert gaps.max() < 365
@@ -194,9 +200,10 @@ def test_a_tile_prefers_turbines_no_earlier_tile_tested() -> None:
 
 
 def test_an_excluded_turbine_is_neither_tested_nor_a_reference() -> None:
+    eastern = {"T16", "T17", "T18", "T19", "T20", "T21"}
     for draw in _tiles(8):
-        assert not {"T16", "T17"} & set(draw.trial)
-        assert not {"T16", "T17"} & set(rollout_campaign(draw, multiplier=1.0, post_months=6).candidate_references)
+        assert not eastern & set(draw.trial)
+        assert not eastern & set(rollout_campaign(draw, multiplier=1.0, post_months=6).candidate_references)
 
 
 def test_a_tile_depends_only_on_the_tiles_up_to_it() -> None:
@@ -258,7 +265,6 @@ def test_a_zero_multiplier_injects_nothing() -> None:
 def test_data_end_is_the_last_trial_end_plus_the_post_length(post_months: int) -> None:
     draw = draw_rollout(hot_site(), seed=4, full_rollout=False)
     assert draw.data_end(post_months) == draw.last_trial_end + pd.DateOffset(months=post_months)
-    assert draw.data_window(post_months) == (draw.data_start, draw.data_end(post_months))
 
 
 def test_other_upgraded_turbines_are_injected_from_their_own_works_end() -> None:

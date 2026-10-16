@@ -708,6 +708,39 @@ benchmarks are re-recorded.
 
 ---
 
+## C10 — Campaign design that accounts for the changed-upwind data loss (TODO, pick up 2026-10-19)
+
+**Why:** in run 3 of the prepost matrix the largest loss of usable hours in every campaign is
+"changed upwind of reference", 36 to 65 % of the before period even for a lone test turbine with
+no rollout. The record-selection rule counts the test turbine as changed throughout, so a record
+is lost whenever the subject is upwind of any of its own nearest references, and with four
+references around it that is roughly half of all directions. Capping the trial at three test
+turbines (done 2026-10-16) only trims the second-order terms: other test turbines upwind of the
+subject, or of its references. The campaign design utility (`wind_up.campaign_design`, CF16)
+knows nothing of this: it places references by distance and the IEC front-row rule alone.
+
+**Scope:**
+- The design takes an **expected wake change** for the upgrade: large for wake steering, small
+  for a light TuneUp, something in between for a blade enhancement. It converts that into the
+  **maximum distance over which a changed turbine is considered upwind** in the IEC-style
+  equation (20 D, 10 D, 5 D or 0 D), so that an upgrade whose wake barely moves does not lose the
+  sector at all. This is the same quantity the declaration's `wake_unchanged` flag sets to
+  nothing today, made graded and explicit.
+- The design loads **historic ERA5** for the site so it knows the typical wind rose, and weighs
+  each lost sector by how often the wind blows from it.
+- It places test and reference turbines so that **test turbines do not knock out much data by
+  waking references**: their own references and the references of other test turbines. The
+  objective is usable hours per test turbine, not distance alone.
+- The matrix's rollout draws use the same design, so the synthetic campaigns stop paying the
+  cost real campaigns would be designed around.
+
+**Done when:** on run 3's campaigns the usable share of the before period rises materially
+(it is 13 to 40 % today) without the reference count or the reference distance limit changing,
+and the design's report shows, per test turbine, the hours expected to be lost to each
+changed-upwind sector.
+
+---
+
 # Robustness issues (R-series)
 
 Failure modes real SCADA throws at wind-up, synthesized with known ground truth so we

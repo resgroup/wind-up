@@ -7,11 +7,12 @@ a multiplier. The works become a works table, so the period selector chooses eac
 turbine's span as it would for a real campaign. A site's campaigns tile its data: each tile's
 trial starts at its own place in the data, and tests turbines the earlier tiles did not.
 
-Draw a campaign and build it for one multiplier and post length::
+Draw a campaign and build it for one multiplier, on 12 months of data before it and 6 after::
 
     draw = draw_rollout(hot_site(), seed=7, full_rollout=True, tile=2)
     campaign = rollout_campaign(draw, multiplier=1.0, post_months=6)
-    scada, _ = load_hot_scada(start_dt=draw.data_window(6)[0], end_dt_excl=draw.data_window(6)[1])
+    start, end = draw.data_window(pre_months=12, post_months=6)
+    scada, _ = load_hot_scada(start_dt=start, end_dt_excl=end)
     dataset = campaign.generate(scada)
 """
 
@@ -50,8 +51,10 @@ AEROUP_DELTAS = (0.07, 0.07, 0.045, 0.0)
 WORKING_DAYS_PER_TURBINE = (5, 12)
 TRIAL_TEAMS = (1, 2)
 ROLLOUT_TEAMS = (1, 2)
-TRIAL_PRE_MONTHS = (12, 24)
+# A trial starts this far into the site's data, so a campaign can see up to this much before it.
+TRIAL_PRE_MONTHS = 24
 TRIAL_MIN_POST_MONTHS = 12
+TRIAL_MAX_TEST_TURBINES = 3
 # Room left after a trial's start for its works, beyond their scheduled length.
 TRIAL_START_MARGIN_DAYS = 31
 # Tile i's trial starts at the fractional part of i times this along the span trials may start in.
@@ -114,10 +117,11 @@ class RolloutSite:
 
 
 def hot_site() -> RolloutSite:
-    """Return Hill of Towie over 2016-2020, before its real AeroUp works, without T16 and T17.
+    """Return Hill of Towie over 2016-2020, before its real AeroUp works, without its eastern turbines.
 
-    Neither noise-mode turbine is tested or used as a reference: T16's noise-mode sectors move with its
-    2017 yaw re-calibration, and T17 sits in its wake.
+    T16 to T21 are neither tested nor used as references: T16's noise-mode sectors move with its
+    2017 yaw re-calibration, T17 sits in its wake, and the rest of the eastern group is left out
+    with them.
     """
     return RolloutSite(
         name="Hill of Towie",
@@ -127,7 +131,7 @@ def hot_site() -> RolloutSite:
         columns=HOT_COLUMNS,
         data_start=pd.Timestamp("2016-01-01", tz="UTC"),
         data_end=pd.Timestamp("2021-01-01", tz="UTC"),
-        excluded=frozenset({"T16", "T17"}),
+        excluded=frozenset({"T16", "T17", "T18", "T19", "T20", "T21"}),
     )
 
 
@@ -298,7 +302,6 @@ class RolloutDraw:
     :param trial: the trial turbines, the analysed ones
     :param rollout: the turbines worked in the full rollout; empty without one
     :param works: every worked turbine's works window
-    :param data_start: the first SCADA timestamp the campaign sees
     """
 
     site: RolloutSite
@@ -306,7 +309,6 @@ class RolloutDraw:
     trial: tuple[str, ...]
     rollout: tuple[str, ...]
     works: Mapping[str, Window]
-    data_start: pd.Timestamp
 
     @property
     def trial_start(self) -> pd.Timestamp:
@@ -318,13 +320,17 @@ class RolloutDraw:
         """When the last trial works end."""
         return max(self.works[t][1] for t in self.trial)
 
+    def data_start(self, pre_months: int) -> pd.Timestamp:
+        """Return the start of the data a campaign with ``pre_months`` before the first trial works sees."""
+        return max(self.site.data_start, self.trial_start - pd.DateOffset(months=pre_months))
+
     def data_end(self, post_months: int) -> pd.Timestamp:
         """Return the end of the data a campaign with ``post_months`` after the last trial works sees."""
         return min(self.site.data_end, self.last_trial_end + pd.DateOffset(months=post_months))
 
-    def data_window(self, post_months: int) -> Window:
-        """Return the ``(start, end)`` of the SCADA a campaign with ``post_months`` is built on."""
-        return self.data_start, self.data_end(post_months)
+    def data_window(self, *, pre_months: int, post_months: int) -> Window:
+        """Return the ``(start, end)`` of the SCADA a campaign with these pre and post lengths is built on."""
+        return self.data_start(pre_months), self.data_end(post_months)
 
 
 def draw_rollout(
@@ -337,12 +343,13 @@ def draw_rollout(
 ) -> RolloutDraw:
     """Draw a trial-then-rollout campaign on ``site``, as its tile ``tile``.
 
-    The trial is a compliant campaign design with between one and one fewer than the most test
-    turbines the site allows, none of ``site.excluded``, preferring turbines not in ``tested``. Its works start at the
-    fractional part of ``tile * TILE_STEP`` along the days from 12 months into the data to the last
-    day that leaves room for the works and 12 months after them, with one or two teams. The
-    campaign's data starts 12 to 24 months before the trial, or at the site's data start. A full
-    rollout works every other turbine, starting 6 to 9 months after the last trial works end.
+    The trial is a compliant campaign design of one to three test turbines, never more than one
+    fewer than the site allows, none of ``site.excluded``, preferring turbines not in ``tested``.
+    Its works start at the fractional part of ``tile * TILE_STEP`` along the days from 24 months
+    into the data to the last day that leaves room for the works and 12 months after them, with
+    one or two teams. How much data before the trial a campaign sees is chosen when the campaign
+    is built (see :meth:`RolloutDraw.data_window`). A full rollout works every other turbine,
+    starting 6 to 9 months after the last trial works end.
 
     :param site: the site to draw on
     :param seed: the draw's seed; the same seed, tile and ``tested`` give the same draw
@@ -357,13 +364,13 @@ def draw_rollout(
     most = design_campaign(layout, excluded=excluded).max_test_turbines
     order = [str(t) for t in rng.permutation(list(site.coords)) if t not in site.excluded]
     priority = [t for t in order if t not in tested] + [t for t in order if t in tested]
-    n_trial = int(rng.integers(1, max(1, most - 1) + 1))
+    n_trial = int(rng.integers(1, max(1, min(most - 1, TRIAL_MAX_TEST_TURBINES)) + 1))
     design = design_campaign(layout, test_priority=priority, excluded=excluded, n_test=n_trial)
     trial = tuple(t for t in priority if t in design.test_turbines)
 
     n_teams = int(rng.choice(TRIAL_TEAMS))
     days_seed = int(rng.integers(2**32))
-    earliest = (site.data_start + pd.DateOffset(months=TRIAL_PRE_MONTHS[0])).date()
+    earliest = (site.data_start + pd.DateOffset(months=TRIAL_PRE_MONTHS)).date()
     nominal = works_schedule(trial, start=earliest, n_teams=n_teams, rng=np.random.default_rng(days_seed))
     length = max(end for _, end in nominal.values()) - min(start for start, _ in nominal.values())
     latest = (
@@ -373,9 +380,7 @@ def draw_rollout(
         - pd.Timedelta(days=TRIAL_START_MARGIN_DAYS)
     ).date()
     if latest < earliest:
-        msg = (
-            f"{site.name}: no room for a trial {TRIAL_PRE_MONTHS[0]} months in and {TRIAL_MIN_POST_MONTHS} from the end"
-        )
+        msg = f"{site.name}: no room for a trial {TRIAL_PRE_MONTHS} months in and {TRIAL_MIN_POST_MONTHS} from the end"
         raise ValueError(msg)
     offset = int(np.floor(((tile * TILE_STEP) % 1.0) * ((latest - earliest).days + 1)))
     start = earliest + dt.timedelta(days=offset)
@@ -387,10 +392,6 @@ def draw_rollout(
             f"{TRIAL_MIN_POST_MONTHS} months of data after them"
         )
         raise ValueError(msg)
-    pre_months = int(rng.integers(TRIAL_PRE_MONTHS[0], TRIAL_PRE_MONTHS[1] + 1))
-    trial_start = min(s for s, _ in works.values())
-    data_start = max(site.data_start, trial_start - pd.DateOffset(months=pre_months))
-
     rollout: tuple[str, ...] = ()
     if full_rollout:
         rollout = tuple(str(t) for t in rng.permutation([t for t in site.coords if t not in trial]))
@@ -400,9 +401,7 @@ def draw_rollout(
             rng=rng,
         )
         works |= works_schedule(rollout, start=lag_start, n_teams=int(rng.choice(ROLLOUT_TEAMS)), rng=rng)
-    return RolloutDraw(
-        site=site, seed=seed, trial=trial, rollout=rollout, works=works, data_start=pd.Timestamp(data_start)
-    )
+    return RolloutDraw(site=site, seed=seed, trial=trial, rollout=rollout, works=works)
 
 
 def draw_tiles(site: RolloutSite, *, seeds: Sequence[int], full_rollouts: Sequence[bool]) -> list[RolloutDraw]:
@@ -449,9 +448,10 @@ def rollout_campaign(draw: RolloutDraw, *, multiplier: float, post_months: int) 
 
     The trial turbines are analysed; every other turbine not in ``site.excluded`` is a candidate
     reference. The data ends ``post_months`` after the last trial works (see
-    :meth:`RolloutDraw.data_window`), and only works starting before then are declared. The change
-    is injected into the trial and any rollout turbine from its own works end. The analysis span is
-    left to the period selector.
+    :meth:`RolloutDraw.data_window`), and only works starting before then are declared; how much
+    data the campaign sees before the trial is the SCADA window's choice. The change is injected
+    into the trial and any rollout turbine from its own works end. The analysis span is left to the
+    period selector.
 
     :param draw: the drawn campaign
     :param multiplier: scales the AeroUp change; 0 injects nothing

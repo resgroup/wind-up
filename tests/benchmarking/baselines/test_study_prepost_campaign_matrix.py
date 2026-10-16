@@ -22,6 +22,7 @@ from benchmarking.baselines.prepost_matrix.cells import (
     cell_cost_s,
     draw_exclusions,
     matrix_cells,
+    real_pre_months,
 )
 from benchmarking.baselines.prepost_matrix.execute import (
     _matrix_method,
@@ -79,11 +80,11 @@ SIZE = "test"
 
 
 def test_cell_ids_are_readable() -> None:
-    assert Cell("main", "pen", 7, 1, 4, 6).cell_id == "pen_s07_m+1_K4_L6"
-    assert Cell("main", "pen", 7, -1, 4, 6).cell_id == "pen_s07_m-1_K4_L6"
-    assert Cell("excl", "kel", 0, 0, 4, 12).cell_id == "kel_s00_m+0_K4_L12_excl"
-    assert Cell("real", "hot_t13", None, None, 4, 6).cell_id == "hot_t13_K4_L6"
-    assert Cell("real", "hot_tuneup", None, None, 4, None).cell_id == "hot_tuneup_K4_Lmax"
+    assert Cell("main", "pen", 7, 1, 4, 12, 6).cell_id == "pen_s07_m+1_K4_P12_L6"
+    assert Cell("main", "pen", 7, -1, 4, 6, 6).cell_id == "pen_s07_m-1_K4_P6_L6"
+    assert Cell("excl", "kel", 0, 0, 4, 24, 12).cell_id == "kel_s00_m+0_K4_P24_L12_excl"
+    assert Cell("real", "hot_t13", None, None, 4, 24, 6).cell_id == "hot_t13_K4_P24_L6"
+    assert Cell("real", "hot_tuneup", None, None, 4, None, None).cell_id == "hot_tuneup_K4_Pmax_Lmax"
 
 
 def test_cell_ids_are_unique() -> None:
@@ -94,19 +95,53 @@ def test_cell_ids_are_unique() -> None:
 def test_the_default_matrix_size() -> None:
     settings = MatrixSettings()
     n_campaigns = sum(settings.seeds.values())
-    per_campaign = len(settings.multipliers) * len(settings.post_months)
-    real = len(settings.ks) * (len(settings.post_months) + len([1, 2, 3, None]))
+    per_campaign = len(settings.multipliers) * len(settings.pre_months) * len(settings.post_months)
+    t13 = len([6, 12, 24]) * len(settings.post_months)
+    tuneup = len([6, 12, None]) * len([1, 2, 3, None])
+    real = len(settings.ks) * (t13 + tuneup)
     assert len(matrix_cells(settings)) == n_campaigns * per_campaign * (len(settings.ks) + 1) + real
 
 
 def test_tuneup_runs_the_post_lengths_its_data_holds_and_lmax() -> None:
     cells = matrix_cells(MatrixSettings(seeds={}, ks=(4,), real=("hot_tuneup",)))
     assert sorted(c.cell_id for c in cells) == [
-        "hot_tuneup_K4_L1",
-        "hot_tuneup_K4_L2",
-        "hot_tuneup_K4_L3",
-        "hot_tuneup_K4_Lmax",
+        "hot_tuneup_K4_P12_L1",
+        "hot_tuneup_K4_P12_L2",
+        "hot_tuneup_K4_P12_L3",
+        "hot_tuneup_K4_P12_Lmax",
+        "hot_tuneup_K4_P6_L1",
+        "hot_tuneup_K4_P6_L2",
+        "hot_tuneup_K4_P6_L3",
+        "hot_tuneup_K4_P6_Lmax",
+        "hot_tuneup_K4_Pmax_L1",
+        "hot_tuneup_K4_Pmax_L2",
+        "hot_tuneup_K4_Pmax_L3",
+        "hot_tuneup_K4_Pmax_Lmax",
     ]
+
+
+def test_real_campaigns_run_the_pre_lengths_their_data_holds_then_pmax() -> None:
+    settings = MatrixSettings()
+    assert real_pre_months("hot_t13", settings) == [6, 12, 24]
+    assert real_pre_months("hot_tuneup", settings) == [6, 12, None]
+    assert real_pre_months("hot_t13", MatrixSettings(pre_months=(12,))) == [12, None]
+
+
+def test_each_real_site_holds_its_longest_pre_length() -> None:
+    for key, site in REAL_SITES.items():
+        campaign = REAL_CAMPAIGNS[site.campaign]
+        timing = campaign.declaration["timing"].get("changeover")
+        if timing is None:
+            continue
+        changeover = pd.Timestamp(timing)
+        blocked = [
+            pd.Timestamp(e["end"])
+            for e in campaign.declaration["exclusions"]
+            if e["turbine"] == "ALL" and pd.Timestamp(e["end"]) < changeover
+        ]
+        usable_from = max([campaign.start, *blocked])
+        assert usable_from + pd.DateOffset(months=site.longest_pre_months) <= changeover, key
+        assert usable_from + pd.DateOffset(months=site.longest_pre_months + 1) > changeover, key
 
 
 def test_each_real_site_holds_its_longest_post_length() -> None:
@@ -144,7 +179,7 @@ def test_cells_run_most_expensive_first() -> None:
 
 def test_the_small_and_big_sizes() -> None:
     small, big = matrix_cells(SIZES["small"].settings), matrix_cells(SIZES["big"].settings)
-    assert (len(small), len(big)) == (28, 1110)
+    assert (len(small), len(big)) == (28, 3330)
     assert "hot" not in {c.site for c in small}
     assert {c.arm for c in small} == {"main", "excl", "real"}
     assert (SIZES["small"].workers, SIZES["big"].workers) == (3, 16)
@@ -161,13 +196,15 @@ def test_the_makespan_of_a_greedy_longest_first_schedule() -> None:
     assert makespan_s([], workers=4) == 0
 
 
-KEL_PAIR = MatrixSettings(seeds={"kel": 2}, multipliers=(1,), ks=(4,), post_months=(1,), exclusion_arms=(), real=())
+KEL_PAIR = MatrixSettings(
+    seeds={"kel": 2}, multipliers=(1,), ks=(4,), pre_months=(12,), post_months=(1,), exclusion_arms=(), real=()
+)
 
 
 def test_plan_projects_cpu_hours_wall_time_and_memory() -> None:
     plan = plan_study(KEL_PAIR, workers=2)
     assert plan.n_cells == {"kel": 2}
-    assert plan.cpu_hours == pytest.approx(2 * cell_cost_s(Cell("main", "kel", 0, 1, 4, 1)) / 3600)
+    assert plan.cpu_hours == pytest.approx(2 * cell_cost_s(Cell("main", "kel", 0, 1, 4, 12, 1)) / 3600)
     assert plan.wall_hours == pytest.approx(plan.cpu_hours / 2)
     assert plan.peak_memory_gb > 0
 
@@ -178,7 +215,7 @@ def test_the_plan_command_prints_a_sizes_projection(capsys: pytest.CaptureFixtur
     assert "28 cells" in out
     assert "on 3 worker(s)" in out
     driver.main(["plan", "--size", "big", "--workers", "8"])
-    assert "1110 cells" in capsys.readouterr().out
+    assert "3330 cells" in capsys.readouterr().out
 
 
 def test_run_and_download_need_a_size() -> None:
@@ -209,7 +246,7 @@ def test_plan_can_use_a_studys_measured_costs(tmp_path: Path) -> None:
 
 
 def test_half_the_campaigns_roll_out_to_the_whole_farm() -> None:
-    assert [Cell("main", "hot", i, 1, 4, 6).full_rollout for i in range(4)] == [True, False, True, False]
+    assert [Cell("main", "hot", i, 1, 4, 12, 6).full_rollout for i in range(4)] == [True, False, True, False]
 
 
 def test_settings_round_trip_through_json() -> None:
@@ -304,7 +341,7 @@ def test_a_failed_cell_still_records_its_campaign_draw(tmp_path: Path) -> None:
 
 
 def test_the_real_campaign_describes_no_draw_before_it_runs() -> None:
-    assert describe_cell(Cell("real", "hot_t13", None, None, 4, 3), settings=SMALL) == {}
+    assert describe_cell(Cell("real", "hot_t13", None, None, 4, 12, 3), settings=SMALL) == {}
 
 
 def test_the_cell_record_names_each_unplanned_turbine(tmp_path: Path) -> None:
@@ -401,7 +438,7 @@ def test_run_retries_failed_cells_when_asked(tmp_path: Path) -> None:
 
 
 def test_run_on_worker_processes(tmp_path: Path) -> None:
-    settings = MatrixSettings(seeds={"hot": 1}, multipliers=(1,), ks=(4,), post_months=(1,), real=())
+    settings = MatrixSettings(seeds={"hot": 1}, multipliers=(1,), ks=(4,), pre_months=(12,), post_months=(1,), real=())
     study = _run(settings, tmp_path, workers=2)
     statuses = pd.read_csv(study / "cells.csv")["status"]
     assert list(statuses) == ["ok"] * 2
@@ -473,6 +510,7 @@ def _record(site: str, seed: int, multiplier: int, **fields: object) -> dict[str
         "site": site,
         "seed_index": seed,
         "k": 4,
+        "pre_months": 12,
         "post_months": 6,
         "multiplier": multiplier,
         "status": "ok",
@@ -549,6 +587,7 @@ def _real_record(site: str, post_months: int | None, turbines: list[str], **farm
         "site": site,
         "seed_index": None,
         "k": 4,
+        "pre_months": 24,
         "post_months": post_months,
         "multiplier": None,
         "status": "ok",
@@ -667,7 +706,9 @@ def test_compare_flags_a_value_present_on_one_side_only() -> None:
 
 @pytest.mark.slow
 def test_one_small_campaign_runs_end_to_end(tmp_path: Path) -> None:
-    settings = MatrixSettings(seeds={"hot": 1}, multipliers=(1,), ks=(3,), post_months=(1,), real=(), exclusion_arms=())
+    settings = MatrixSettings(
+        seeds={"hot": 1}, multipliers=(1,), ks=(3,), pre_months=(12,), post_months=(1,), real=(), exclusion_arms=()
+    )
     study = run_study(settings, size=SIZE, root=tmp_path, workers=1, baseline_path=tmp_path / "none.json")
     (cell,) = matrix_cells(settings)
     record = read_cell(study, cell)
@@ -683,7 +724,7 @@ def test_one_small_campaign_runs_end_to_end(tmp_path: Path) -> None:
 
 
 def test_the_period_selector_takes_the_cells_k_and_the_matrix_shortest_side() -> None:
-    chosen = plan_settings(Cell("main", "hot", 0, 1, 6, 1), settings=MatrixSettings(min_side_days=10))
+    chosen = plan_settings(Cell("main", "hot", 0, 1, 6, 12, 1), settings=MatrixSettings(min_side_days=10))
     assert chosen.k == 6
     assert chosen.min_side == pd.Timedelta(days=10)
     assert chosen.pre_cap == PlanSettings().pre_cap

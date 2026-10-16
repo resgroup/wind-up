@@ -2127,7 +2127,7 @@ def _context_estimate(scada: pd.DataFrame, *, changeover: pd.Timestamp, **overri
 
 
 class TestRecordFloors:
-    """A measurement needs 24 hours of usable data in each period (method step 11 i)."""
+    """A measurement needs 96 hours of usable data in each period (method step 11 i)."""
 
     @staticmethod
     def _scada(n_before: int, n_after: int) -> tuple[pd.DataFrame, pd.Timestamp]:
@@ -2136,18 +2136,18 @@ class TestRecordFloors:
         changeover = pd.Timestamp(idx[n_before])
         return _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover)), changeover
 
-    def test_a_before_period_under_24_hours_is_refused(self) -> None:
-        scada, changeover = self._scada(143, 300)
-        with pytest.raises(ValueError, match="24"):
+    def test_a_before_period_under_96_hours_is_refused(self) -> None:
+        scada, changeover = self._scada(575, 800)
+        with pytest.raises(ValueError, match="96"):
             _context_estimate(scada, changeover=changeover)
 
-    def test_an_after_period_under_24_hours_is_refused(self) -> None:
-        scada, changeover = self._scada(300, 143)
-        with pytest.raises(ValueError, match="24"):
+    def test_an_after_period_under_96_hours_is_refused(self) -> None:
+        scada, changeover = self._scada(800, 575)
+        with pytest.raises(ValueError, match="96"):
             _context_estimate(scada, changeover=changeover)
 
-    def test_24_hours_in_each_period_is_enough(self) -> None:
-        scada, changeover = self._scada(144, 144)
+    def test_96_hours_in_each_period_is_enough(self) -> None:
+        scada, changeover = self._scada(576, 576)
         assert np.isfinite(_context_estimate(scada, changeover=changeover))
 
 

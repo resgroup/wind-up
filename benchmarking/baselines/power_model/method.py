@@ -83,7 +83,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # The fewest usable hours a measurement needs in each period (method step 11 i).
-_MIN_PERIOD_HOURS = 24.0
+_MIN_PERIOD_HOURS = 96.0
 _MIN_HOLDOUT_ROWS = 20  # below this, report the in-sample fit (no point splitting off a tiny valid set)
 # Time-blocked split shape for the baseline holdout diagnostic (``_holdout_fit`` takes fold 0 as the
 # held-out slice): 25 contiguous blocks round-robin over 5 folds, so each fold is ~20% of the rows

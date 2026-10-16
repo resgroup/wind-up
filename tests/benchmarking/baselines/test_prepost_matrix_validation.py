@@ -79,6 +79,7 @@ def _records(n_seeds: int = 6) -> list[dict[str, Any]]:
                     "site": "kel",
                     "seed_index": seed,
                     "k": 4,
+                    "pre_months": 12,
                     "post_months": 6,
                     "multiplier": m,
                     "turbines": [
@@ -167,7 +168,7 @@ def test_the_tables_judge_each_target() -> None:
     assert coverage.loc[("test", "sigma_block_6h"), "coverage"] == 0.0
     assert coverage.loc[("bins_power", "sigma"), "coverage"] == 1.0
     assert coverage.loc[("reference", "sigma"), "coverage"] == 1.0
-    assert set(tables["iii_dependence"]["axis"]) == {"post_months", "k", "season"}
+    assert set(tables["iii_dependence"]["axis"]) == {"pre_months", "post_months", "k", "season"}
     assert len(tables["open_configuration_rule"]) == 3
     assert set(tables["open_screen"]["measure"]) == {"correlation_margin", "hours_fraction"}
 

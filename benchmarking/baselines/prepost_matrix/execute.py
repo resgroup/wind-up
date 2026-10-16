@@ -223,7 +223,7 @@ def describe_cell(cell: Cell, *, settings: MatrixSettings) -> dict[str, Any]:
     if cell.arm == "real":
         return {}
     _, seed, draw, exclusions = _draw(cell, settings=settings)
-    start, end = draw.data_window(cell.post_months)  # type: ignore[arg-type]
+    start, end = draw.data_window(pre_months=cell.pre_months, post_months=cell.post_months)  # type: ignore[arg-type]
     return {
         "draw": {
             "campaign_seed": seed,
@@ -246,7 +246,10 @@ def _draw(cell: Cell, *, settings: MatrixSettings) -> tuple[RolloutSite, int, Ro
     exclusions: list[Exclusion] = []
     if cell.has_exclusions:
         exclusions = draw_exclusions(
-            [t for t in site.coords if t not in draw.trial], start=draw.data_start, end=site.data_end, seed=seed
+            [t for t in site.coords if t not in draw.trial],
+            start=draw.data_start(cell.pre_months),  # type: ignore[arg-type]
+            end=site.data_end,
+            seed=seed,
         )
     return site, seed, draw, exclusions
 
@@ -332,7 +335,7 @@ def _execute_synthetic(
     campaign = rollout_campaign(draw, multiplier=float(cell.multiplier), post_months=cell.post_months)  # type: ignore[arg-type]
     if cell.has_exclusions:
         campaign = replace(campaign, exclusions=exclusions)
-    start, end = draw.data_window(cell.post_months)  # type: ignore[arg-type]
+    start, end = draw.data_window(pre_months=cell.pre_months, post_months=cell.post_months)  # type: ignore[arg-type]
     scada = _read_scada(_site_scada_path(detail_dir, cell.site), start=start, end=end)
     dataset = campaign.generate(scada)
     labelled, operating_state = site_operating_state(cell.site, dataset.synthetic_df)
@@ -394,12 +397,10 @@ def _execute_real(
 ) -> dict[str, Any]:
     campaign = _real_campaign(cell.site)
     declaration = load_declaration(_real_declaration_path(detail_dir, cell.site))
-    end = (
-        campaign.end
-        if cell.post_months is None
-        else declaration.spec.treatment_start + pd.DateOffset(months=cell.post_months)
-    )
-    scada = _read_scada(declaration.scada_path, end=end)
+    changeover = declaration.spec.treatment_start
+    start = None if cell.pre_months is None else changeover - pd.DateOffset(months=cell.pre_months)
+    end = campaign.end if cell.post_months is None else changeover + pd.DateOffset(months=cell.post_months)
+    scada = _read_scada(declaration.scada_path, start=start, end=end)
     timebase = pd.Timedelta(np.median(np.diff(pd.DatetimeIndex(scada.index.unique()).sort_values().to_numpy())))
     scada = normalise_timestamps(scada, timestamps=declaration.timestamps, timebase=timebase)
     prepared = _prepare(

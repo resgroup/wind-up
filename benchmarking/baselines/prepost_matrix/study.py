@@ -190,6 +190,7 @@ def run_cell(
         "seed_index": cell.seed_index,
         "multiplier": cell.multiplier,
         "k": cell.k,
+        "pre_months": cell.pre_months,
         "post_months": cell.post_months,
     }
     with _cell_log(directory / CELL_LOG), _PeakRss() as rss:
@@ -416,6 +417,7 @@ def merge_study(study_dir: Path) -> dict[str, Any]:
                 "seed_index": c.seed_index,
                 "multiplier": c.multiplier,
                 "k": c.k,
+                "pre_months": c.pre_months,
                 "post_months": c.post_months,
                 "status": by_id.get(c.cell_id, {}).get("status", "pending"),
                 "error_type": by_id.get(c.cell_id, {}).get("error_type", ""),
@@ -451,7 +453,10 @@ def merge_study(study_dir: Path) -> dict[str, Any]:
             "Leak check: the largest move of one reference reading across multipliers is %.3f pp "
             "(%s); median %.3f pp over %d readings",
             100 * leaks["leak"].iloc[0],
-            ", ".join(f"{k}={leaks[k].iloc[0]}" for k in ("arm", "site", "seed_index", "k", "post_months", "turbine")),
+            ", ".join(
+                f"{k}={leaks[k].iloc[0]}"
+                for k in ("arm", "site", "seed_index", "k", "pre_months", "post_months", "turbine")
+            ),
             100 * leaks["leak"].median(),
             len(leaks),
         )

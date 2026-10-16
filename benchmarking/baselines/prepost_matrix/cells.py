@@ -28,18 +28,20 @@ class RealSite:
     """A real campaign of the matrix.
 
     :param campaign: its name in :data:`benchmarking.campaigns.real.REAL_CAMPAIGNS`
+    :param longest_pre_months: the most whole months its usable data holds before the changeover
     :param longest_post_months: the most whole months its data holds after the changeover
     :param lmax: also run one cell on all the data after the changeover
     """
 
     campaign: str
+    longest_pre_months: int
     longest_post_months: int
     lmax: bool = False
 
 
 REAL_SITES: dict[str, RealSite] = {
-    "hot_t13": RealSite("hot_aeroup_t13", longest_post_months=15),
-    "hot_tuneup": RealSite("hot_tuneup", longest_post_months=5, lmax=True),
+    "hot_t13": RealSite("hot_aeroup_t13", longest_pre_months=24, longest_post_months=15),
+    "hot_tuneup": RealSite("hot_tuneup", longest_pre_months=13, longest_post_months=5, lmax=True),
 }
 # The arms whose references are given synthetic exclusions.
 EXCLUSION_ARMS: tuple[str, ...] = ("excl",)
@@ -57,6 +59,7 @@ class MatrixSettings:
     :param seeds: campaigns (tiles) per synthetic site, keyed ``hot``, ``pen``, ``kel``
     :param multipliers: the AeroUp shape's scalings, paired within a campaign
     :param ks: power references per test turbine
+    :param pre_months: months of data before the first trial works start (before the changeover for a real campaign)
     :param post_months: months of data after the last trial works end (after the changeover for a real campaign)
     :param exclusion_k: the one K the exclusion arms run at
     :param exclusion_arms: which of the exclusion arms run
@@ -68,6 +71,7 @@ class MatrixSettings:
     seeds: dict[str, int] = field(default_factory=lambda: {"hot": 16, "pen": 12, "kel": 4})
     multipliers: tuple[int, ...] = (1, 0, -1)
     ks: tuple[int, ...] = (3, 4, 6)
+    pre_months: tuple[int, ...] = (6, 12, 24)
     post_months: tuple[int, ...] = (1, 2, 3, 6, 9, 12)
     exclusion_k: int = 4
     exclusion_arms: tuple[str, ...] = EXCLUSION_ARMS
@@ -97,6 +101,8 @@ class Cell:
     :param seed_index: which of the site's campaigns; ``None`` for a real campaign
     :param multiplier: the AeroUp scaling; ``None`` for a real campaign
     :param k: power references per test turbine
+    :param pre_months: months of data before the (first trial) works start; ``None`` for all of a real
+        campaign's data, Pmax
     :param post_months: months of data after the (last trial) works end; ``None`` for all of a real
         campaign's data, Lmax
     """
@@ -106,17 +112,18 @@ class Cell:
     seed_index: int | None
     multiplier: int | None
     k: int
+    pre_months: int | None
     post_months: int | None
 
     @property
     def cell_id(self) -> str:
-        """A readable, stable id, such as ``pen_s07_m+1_K4_L6``, ``hot_t13_K4_L6`` or ``hot_tuneup_K4_Lmax``."""
+        """A readable, stable id: ``pen_s07_m+1_K4_P12_L6``, ``hot_t13_K4_P24_L6`` or ``hot_tuneup_K4_Pmax_Lmax``."""
+        pre = "max" if self.pre_months is None else self.pre_months
+        post = "max" if self.post_months is None else self.post_months
+        periods = f"P{pre}_L{post}"
         if self.arm == "real":
-            return f"{self.site}_K{self.k}_L{'max' if self.post_months is None else self.post_months}"
-        return (
-            f"{self.site}_s{self.seed_index:02d}_m{self.multiplier:+d}_K{self.k}_L{self.post_months}"
-            f"{_ARM_SUFFIX[self.arm]}"
-        )
+            return f"{self.site}_K{self.k}_{periods}"
+        return f"{self.site}_s{self.seed_index:02d}_m{self.multiplier:+d}_K{self.k}_{periods}{_ARM_SUFFIX[self.arm]}"
 
     @property
     def has_exclusions(self) -> bool:
@@ -145,40 +152,40 @@ class StudySize:
 SIZES: dict[str, StudySize] = {
     # A laptop smoke test of every arm and the real campaign; a synthetic HOT cell alone costs ~20 min.
     "small": StudySize(
-        MatrixSettings(seeds={"hot": 0, "pen": 1, "kel": 1}, ks=(4,), post_months=(3, 12)),
+        MatrixSettings(seeds={"hot": 0, "pen": 1, "kel": 1}, ks=(4,), pre_months=(24,), post_months=(3, 12)),
         workers=3,
     ),
-    # About 9.4 h of cells on 16 workers; check with ``plan`` before a run.
+    # About 170 CPU-hours of cells; check with ``plan`` before a run.
     "big": StudySize(MatrixSettings(seeds={"hot": 5, "pen": 6, "kel": 4}), workers=16),
 }
 
-# Mean wall seconds of one cell per (site, K), measured on the HPC at 57e4aeb; hot_tuneup K4 on a laptop,
-# K3 and K6 scaled from it as hot_t13's. Post length barely matters, as the pre-period dominates; the
+# Median wall seconds of one cell per (site, K), measured on the HPC at 3742175 over 12 to 24 months of
+# data before the trial. Post length matters less than the pre-period, which dominates the data; the
 # exclusion arms run at K4 and cost about what main K4 does.
 CELL_COST_S: dict[tuple[str, int], float] = {
-    ("hot", 3): 911.0,
-    ("hot", 4): 1085.0,
-    ("hot", 6): 1616.0,
-    ("pen", 3): 154.0,
-    ("pen", 4): 169.0,
-    ("pen", 6): 287.0,
-    ("kel", 3): 83.0,
-    ("kel", 4): 91.0,
-    ("kel", 6): 92.0,
-    ("hot_t13", 3): 298.0,
-    ("hot_t13", 4): 346.0,
-    ("hot_t13", 6): 458.0,
-    ("hot_tuneup", 3): 990.0,
-    ("hot_tuneup", 4): 1150.0,
-    ("hot_tuneup", 6): 1520.0,
+    ("hot", 3): 180.0,
+    ("hot", 4): 187.0,
+    ("hot", 6): 394.0,
+    ("pen", 3): 108.0,
+    ("pen", 4): 102.0,
+    ("pen", 6): 136.0,
+    ("kel", 3): 46.0,
+    ("kel", 4): 59.0,
+    ("kel", 6): 64.0,
+    ("hot_t13", 3): 219.0,
+    ("hot_t13", 4): 242.0,
+    ("hot_t13", 6): 266.0,
+    ("hot_tuneup", 3): 361.0,
+    ("hot_tuneup", 4): 414.0,
+    ("hot_tuneup", 6): 525.0,
 }
 # The largest peak resident memory of one cell per site, in MB, measured alongside CELL_COST_S.
 PEAK_RSS_MB: dict[str, float] = {
-    "hot": 7165.0,
-    "pen": 4082.0,
-    "kel": 4178.0,
-    "hot_t13": 5465.0,
-    "hot_tuneup": 7127.0,
+    "hot": 7800.0,
+    "pen": 4800.0,
+    "kel": 3600.0,
+    "hot_t13": 8600.0,
+    "hot_tuneup": 5600.0,
 }
 
 
@@ -192,18 +199,32 @@ def matrix_cells(settings: MatrixSettings) -> list[Cell]:
     cells: list[Cell] = []
     for site in settings.real:
         cells.extend(
-            Cell("real", site, None, None, k, n) for k in settings.ks for n in real_post_months(site, settings)
+            Cell("real", site, None, None, k, p, n)
+            for k in settings.ks
+            for p in real_pre_months(site, settings)
+            for n in real_post_months(site, settings)
         )
     for site, n_seeds in settings.seeds.items():
         for index in range(n_seeds):
             for multiplier in settings.multipliers:
-                for n in settings.post_months:
-                    cells.extend(Cell("main", site, index, multiplier, k, n) for k in settings.ks)
-                    cells.extend(
-                        Cell(arm, site, index, multiplier, settings.exclusion_k, n)  # type: ignore[arg-type]
-                        for arm in settings.exclusion_arms
-                    )
+                for p in settings.pre_months:
+                    for n in settings.post_months:
+                        cells.extend(Cell("main", site, index, multiplier, k, p, n) for k in settings.ks)
+                        cells.extend(
+                            Cell(arm, site, index, multiplier, settings.exclusion_k, p, n)  # type: ignore[arg-type]
+                            for arm in settings.exclusion_arms
+                        )
     return sorted(cells, key=lambda c: (-cell_cost_s(c), c.cell_id))
+
+
+def real_pre_months(site: str, settings: MatrixSettings) -> list[int | None]:
+    """Return the pre lengths a real campaign runs: the matrix's that its data holds, then ``None`` for Pmax.
+
+    Pmax is left out when the longest length its data holds is one of the matrix's.
+    """
+    real = REAL_SITES[site]
+    fitting: list[int | None] = [p for p in settings.pre_months if p <= real.longest_pre_months]
+    return fitting if real.longest_pre_months in settings.pre_months else [*fitting, None]
 
 
 def real_post_months(site: str, settings: MatrixSettings) -> list[int | None]:

@@ -435,7 +435,7 @@ either. Nothing in Part C changes the reference set or the periods.
   (step 1). Because the references are modelled together (step 12), the loss of data is the union of
   the references' invalid data: a record in which any one reference is in downtime is lost for all of
   them. This puts pressure against using many references, and is one side of the trade-off of
-  step 8. A measurement needs a minimum of usable data in each period (24 hours by default); below
+  step 8. A measurement needs a minimum of usable data in each period (96 hours by default); below
   it no uplift is returned, and a test turbine is reported as not analysed with the reason, as in
   step 7. Quantities here are hours, not records.
 - ii. **Waking configuration.** For each record, the configuration is the combination of the waking

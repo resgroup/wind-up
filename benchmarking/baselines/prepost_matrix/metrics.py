@@ -2,19 +2,19 @@
 
 Every uplift is a fraction, as in the cell records. The tables:
 
-- ``groups``: per (arm, site, K, L, multiplier), the test turbines' and the farm's ``bias``,
+- ``groups``: per (arm, site, K, P, L, multiplier), the test turbines' and the farm's ``bias``,
   ``spread`` and ``score``, the reference readings' ``mean``, ``median``, ``sd``, ``worst_abs``
   and ``n``, the combined reference uplift before and after the screen as errors against 0 %, and
   the calibration of every sigma. Where the cells recorded the reverse direction, ``rev_test_*`` and
   ``rev_ref_*`` repeat the test and reference metrics for the full reversal (method step 13 option B
   at lambda 1). Site ``all`` pools every site.
-- ``linearity``: per (arm, site, K, L), the mean and sd over campaigns and test turbines of the line
+- ``linearity``: per (arm, site, K, P, L), the mean and sd over campaigns and test turbines of the line
   ``estimate = line_scale * truth + line_bias`` fitted across a campaign's multipliers, and
   ``rev_line_*`` for the full reversal.
-- ``real``: per (real campaign, K, L), the reference metrics, the combined reference uplift before and
+- ``real``: per (real campaign, K, P, L), the reference metrics, the combined reference uplift before and
   after the screen, the farm estimate of the test turbines, the share of each test turbine's
   before-period hours lost to a changed turbine upwind, and how many references each screen dropped.
-  Lmax is ``post_months`` ``None``.
+  Pmax is ``pre_months`` ``None`` and Lmax ``post_months`` ``None``.
 - ``bins``: per group, condition and bin, the per-bin errors and the calibration of their sigma.
 """
 
@@ -35,14 +35,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
 POOLED_SITE = "all"
-GROUP_KEYS = ["arm", "site", "k", "post_months", "multiplier"]
-LINE_KEYS = ["arm", "site", "k", "post_months"]
-REAL_KEYS = ["site", "k", "post_months"]
+GROUP_KEYS = ["arm", "site", "k", "pre_months", "post_months", "multiplier"]
+LINE_KEYS = ["arm", "site", "k", "pre_months", "post_months"]
+REAL_KEYS = ["site", "k", "pre_months", "post_months"]
 BIN_KEYS = [*GROUP_KEYS, "condition", "condition_bin"]
 TABLE_KEYS = {"groups": GROUP_KEYS, "linearity": LINE_KEYS, "real": REAL_KEYS, "bins": BIN_KEYS}
 # A value that moves by more than this between baselines is flagged: 0.1 pp on an uplift.
 MATERIAL = 0.001
-_CELL_KEYS = ["arm", "site", "seed_index", "k", "post_months", "multiplier"]
+_CELL_KEYS = ["arm", "site", "seed_index", "k", "pre_months", "post_months", "multiplier"]
 _MIN_LINE_POINTS = 2
 _REFERENCE_METRICS = ["ref_mean", "ref_median", "ref_sd", "ref_worst_abs", "ref_n"]
 _COMBINED_REFERENCES = ("reference_uplift_before_screen", "reference_uplift_after_screen", "reference_uplift_spread")
@@ -52,7 +52,7 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
     """Flatten ok cell records into ``turbines``, ``farm``, ``references``, ``bins``, ``losses`` and ``candidates``.
 
     ``losses`` holds each test turbine's hours lost per reason, ``candidates`` its data screen's verdicts.
-    ``post_months`` is a nullable integer, missing for Lmax.
+    ``pre_months`` and ``post_months`` are nullable integers, missing for Pmax and Lmax.
     """
     turbines: list[dict[str, Any]] = []
     farm: list[dict[str, Any]] = []
@@ -94,7 +94,7 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
         "losses": pd.DataFrame(losses, columns=[*_CELL_KEYS, "test_wtg", "reason", "hours_before", "hours_after"]),
         "candidates": pd.DataFrame(candidates, columns=[*_CELL_KEYS, "test_wtg", "candidate", "verdict"]),
     }
-    return {name: frame.astype({"post_months": "Int64"}) for name, frame in frames.items()}
+    return {name: frame.astype({"pre_months": "Int64", "post_months": "Int64"}) for name, frame in frames.items()}
 
 
 def _reading_keys(rows: list[dict[str, Any]]) -> list[str]:
@@ -266,8 +266,10 @@ def line_fit(truth: Sequence[float] | np.ndarray, estimate: Sequence[float] | np
 def _linearity(turbines: pd.DataFrame) -> pd.DataFrame:
     estimates = {"line": "estimate", **({"rev_line": "reversal"} if "reversal" in turbines.columns else {})}
     fits = []
-    for key, group in turbines.groupby(["arm", "site", "seed_index", "k", "post_months", "turbine"]):
-        fit: dict[str, Any] = dict(zip(["arm", "site", "seed_index", "k", "post_months"], key[:5], strict=True))
+    for key, group in turbines.groupby(["arm", "site", "seed_index", "k", "pre_months", "post_months", "turbine"]):
+        fit: dict[str, Any] = dict(
+            zip(["arm", "site", "seed_index", "k", "pre_months", "post_months"], key[:6], strict=True)
+        )
         for prefix, column in estimates.items():
             fit[f"{prefix}_scale"], fit[f"{prefix}_bias"] = line_fit(group["truth"], group[column])
         fits.append(fit)
@@ -348,12 +350,12 @@ def _first(frame: pd.DataFrame, column: str) -> float:
 def leak_check(records: Iterable[dict[str, Any]]) -> pd.DataFrame:
     """Return, per reference reading, how far it moves across one campaign's multipliers.
 
-    One row per (arm, site, seed index, K, L, test turbine, reference) read under more than one
+    One row per (arm, site, seed index, K, P, L, test turbine, reference) read under more than one
     multiplier, largest ``leak`` first. The upgrade should not move a reference's reading.
     """
     references = cell_frames(records)["references"]
     references = references[references["arm"] != "real"]
-    keys = ["arm", "site", "seed_index", "k", "post_months", "test_wtg", "turbine"]
+    keys = ["arm", "site", "seed_index", "k", "pre_months", "post_months", "test_wtg", "turbine"]
     grouped = references.groupby(keys)["uplift"]
     table = pd.DataFrame({"leak": grouped.max() - grouped.min(), "n_multipliers": grouped.count()}).reset_index()
     table = table[table["n_multipliers"] > 1].astype({"seed_index": "Int64"})
