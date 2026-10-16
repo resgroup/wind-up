@@ -80,6 +80,10 @@ period from the data start. All five Hill of Towie draws used 2016 as baseline a
   synthetic tiles. T16 and T17 stay test turbines, so the matrix shows whether the method copes with a
   turbine whose noise-mode share moves between the periods. (A first version of this change kept them
   out of the trials instead; it never ran beyond 7 cells.)
+- After the second run, T16 is excluded from the synthetic Hill of Towie campaigns, as neither a test turbine nor a
+  reference (`RolloutSite.excluded`). Its yaw re-calibration of about 98 deg on 2017-05-19 rotated the true wind
+  directions its noise mode covers by about 100 deg, so its noise-mode share, and its wake on T17, changed
+  part way through the record. The real campaigns keep it.
 - `validate` clusters every mean and coverage standard error by campaign, and gives a verdict from five
   campaigns up.
 

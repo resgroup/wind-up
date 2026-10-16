@@ -193,6 +193,12 @@ def test_a_tile_prefers_turbines_no_earlier_tile_tested() -> None:
     assert len(set(second.trial) & set(first.trial)) < len(second.trial) / 2
 
 
+def test_an_excluded_turbine_is_neither_tested_nor_a_reference() -> None:
+    for draw in _tiles(8):
+        assert "T16" not in draw.trial
+        assert "T16" not in rollout_campaign(draw, multiplier=1.0, post_months=6).candidate_references
+
+
 def test_a_tile_depends_only_on_the_tiles_up_to_it() -> None:
     assert _tiles(3)[2] == _tiles(6)[2]
 
@@ -234,7 +240,7 @@ def test_rollout_campaign_declares_works_and_leaves_the_span_to_the_selector() -
     assert sorted(campaign.upgraded_turbines) == sorted(draw.trial)
     assert campaign.upgrade_timing is None
     assert campaign.analysis_period is None
-    assert set(campaign.candidate_references) == set(site.coords) - set(draw.trial)
+    assert set(campaign.candidate_references) == set(site.coords) - set(draw.trial) - site.excluded
     assert campaign.north_offsets is None
     assert campaign.upgrades == [aeroup_upgrade(1.0)]
     # rollout works after the data end are not declared, nor injected
