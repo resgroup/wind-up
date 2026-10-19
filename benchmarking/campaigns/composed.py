@@ -26,6 +26,7 @@ import yaml
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
 from benchmarking.campaigns.loader import era5_window, load_declaration
+from benchmarking.campaigns.plans import with_wake_ranking
 from benchmarking.campaigns.preparation import prepare_data
 from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
@@ -267,7 +268,12 @@ def run_declaration(
             )
         ],
         columns=declaration.columns,
-        plan_settings=plan_settings,
+        plan_settings=with_wake_ranking(
+            plan_settings,
+            spec=spec,
+            era5_df=prepared.aligned_era5,
+            source=era5_source_label(*declaration.centroid),
+        ),
         data_screen=data_screen,
         possible_changes=prepared.possible_changes_by_turbine(),
     )

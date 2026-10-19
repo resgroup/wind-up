@@ -135,7 +135,8 @@ def screen_plan(
         changeover=plan.works,
         start=plan.start,
         end=plan.end,
-        test_wake_changed=not spec.wake_unchanged,
+        test_reach_d=spec.reach_of(test, plan.works),
+        layout=spec.layout,
     )
     reasons = pair_reasons(
         scada,

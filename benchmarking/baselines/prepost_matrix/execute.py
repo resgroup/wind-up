@@ -34,6 +34,7 @@ from benchmarking.campaigns.composed import (
     wind_up_method,
 )
 from benchmarking.campaigns.loader import centroid, era5_window, load_declaration, operating_state_config
+from benchmarking.campaigns.plans import with_wake_ranking
 from benchmarking.campaigns.preparation import prepare_data
 from benchmarking.campaigns.real import (
     HOT_AEROUP_WORKS,
@@ -45,7 +46,17 @@ from benchmarking.campaigns.real import (
     write_real_campaign,
 )
 from benchmarking.campaigns.report import write_campaign_report, write_report
-from benchmarking.campaigns.rollout import draw_tiles, hot_site, kelmarsh_site, penmanshiel_site, rollout_campaign
+from benchmarking.campaigns.rollout import (
+    AEROUP_EXPECTED_UPLIFT,
+    SMALL_EXPECTED_UPLIFT,
+    SMALL_MULTIPLIER,
+    draw_tiles,
+    hot_site,
+    kelmarsh_site,
+    penmanshiel_site,
+    rollout_campaign,
+    site_rose,
+)
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.campaigns.runner import CampaignRunner, per_turbine_table
 from benchmarking.diagnostics import stages
@@ -242,7 +253,7 @@ def _draw(cell: Cell, *, settings: MatrixSettings) -> tuple[RolloutSite, int, Ro
     site = SITES[cell.site]()
     index: int = cell.seed_index  # type: ignore[assignment]
     seed = campaign_seed(settings.master_seed, site=cell.site, seed_index=index)
-    draw = _site_tiles(cell.site, master_seed=settings.master_seed, count=index + 1)[index]
+    draw = _site_tiles(cell.site, master_seed=settings.master_seed, count=index + 1, small=cell.is_small)[index]
     exclusions: list[Exclusion] = []
     if cell.has_exclusions:
         exclusions = draw_exclusions(
@@ -255,10 +266,13 @@ def _draw(cell: Cell, *, settings: MatrixSettings) -> tuple[RolloutSite, int, Ro
 
 
 @cache
-def _site_tiles(site_key: str, *, master_seed: int, count: int) -> list[RolloutDraw]:
-    """Return the first ``count`` tiles of a synthetic site."""
+def _site_tiles(site_key: str, *, master_seed: int, count: int, small: bool = False) -> list[RolloutDraw]:
+    """Return the first ``count`` tiles of a synthetic site, designed for a small change or the AeroUp."""
+    site = SITES[site_key]()
     return draw_tiles(
-        SITES[site_key](),
+        site,
+        rose=site_rose(site),
+        expected_uplift=SMALL_EXPECTED_UPLIFT if small else AEROUP_EXPECTED_UPLIFT,
         seeds=[campaign_seed(master_seed, site=site_key, seed_index=i) for i in range(count)],
         full_rollouts=[is_full_rollout(i) for i in range(count)],
     )
@@ -332,7 +346,12 @@ def _execute_synthetic(
     plots: bool = False,
 ) -> dict[str, Any]:
     site, _, draw, exclusions = _draw(cell, settings=settings)
-    campaign = rollout_campaign(draw, multiplier=float(cell.multiplier), post_months=cell.post_months)  # type: ignore[arg-type]
+    campaign = rollout_campaign(
+        draw,
+        multiplier=float(cell.multiplier) * (SMALL_MULTIPLIER if cell.is_small else 1.0),  # type: ignore[arg-type]
+        post_months=cell.post_months,  # type: ignore[arg-type]
+        expected_uplift=SMALL_EXPECTED_UPLIFT if cell.is_small else AEROUP_EXPECTED_UPLIFT,
+    )
     if cell.has_exclusions:
         campaign = replace(campaign, exclusions=exclusions)
     start, end = draw.data_window(pre_months=cell.pre_months, post_months=cell.post_months)  # type: ignore[arg-type]
@@ -360,7 +379,12 @@ def _execute_synthetic(
         visible,
         build_methods=prepared.build_methods,
         northing_plots=plots,
-        plan_settings=plan_settings(cell, settings=settings),
+        plan_settings=with_wake_ranking(
+            plan_settings(cell, settings=settings),
+            spec=prepared.spec,
+            era5_df=prepared.data.aligned_era5,
+            source=era5_source_label(*centroid(dict(site.coords))),
+        ),
         possible_changes=prepared.data.possible_changes_by_turbine(),
     ).run()
     if plots:
@@ -421,7 +445,12 @@ def _execute_real(
         build_methods=prepared.build_methods,
         columns=declaration.columns,
         northing_plots=plots,
-        plan_settings=plan_settings(cell, settings=settings),
+        plan_settings=with_wake_ranking(
+            plan_settings(cell, settings=settings),
+            spec=prepared.spec,
+            era5_df=prepared.data.aligned_era5,
+            source=era5_source_label(*declaration.centroid),
+        ),
         possible_changes=prepared.data.possible_changes_by_turbine(),
     )
     if plots:

@@ -143,7 +143,7 @@ def test_works_table_round_trips_through_the_loader(tmp_path: Path) -> None:
     )
     path = tmp_path / "works.csv"
     works_table(works).to_csv(path, index=False)
-    assert read_works(path) == {t: [w] for t, w in works.items()}
+    assert read_works(path) == ({t: [w] for t, w in works.items()}, {})
 
 
 # --- the trial-then-rollout draw ---------------------------------------------------------------

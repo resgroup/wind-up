@@ -37,6 +37,10 @@ turbines:
   rated_power_kw: 2300.0
   # references and excluded are optional; the defaults are every other turbine, and none
 
+upgrade:
+  expected_uplift: 0.05         # the AEP uplift expected of the change, a fraction
+  # wake_reach_d: 12            # optional: how far its wake change reaches, in rotor diameters
+
 timing:
   mode: prepost
   changeover: 2018-01-01T00:00:00Z
@@ -61,6 +65,9 @@ data:
   turbines: data/turbines.csv
   works: data/works.csv          # Turbine, First date of works, Last date of works
 
+upgrade:
+  expected_uplift: 0.05
+
 timing:
   mode: prepost                  # no changeover: each turbine's is the end of its works
 
@@ -76,12 +83,17 @@ exclusions:                      # optional; end exclusive
   window covers the first day through the end of the last. Any turbine may appear, analysed or not,
   and a turbine may appear more than once. With no shared changeover, each upgraded turbine needs
   exactly one window, and its changeover is the end of that window. Its own works rows are never used.
+  Two optional columns give a row its own wake reach, matched by prefix like the dates: `Expected
+  uplift` (a fraction, turned into a reach as below) and `Wake reach` (rotor diameters), which wins.
+  A row with neither takes the campaign's `upgrade` reach.
 - **Exclusions** are periods whose data is not used, for one turbine or `ALL`. A turbine's *own*
   exclusion leaves its rows in the analysis marked unusable, so the model can still tell whether
   it was running and making a wake over them; a farm-wide exclusion removes the records outright.
 - **The span.** For each upgraded turbine wind-up picks the start and end of its analysis, and its
-  **power references**: the nearest 4 turbines with data over the whole span and no works inside
-  it, within 20 rotor diameters. A turbine changed entirely before or after the span is fine. A
+  **power references**: the best-ranked 4 turbines with data over the whole span and no works inside
+  it, within 20 rotor diameters. Turbines are ranked by distance, except that one the test turbine is
+  upwind of for more than 20 % of the site's wind, within the wake reach, ranks behind every one it
+  is not. A turbine changed entirely before or after the span is fine. A
   chosen span gives both sides at least 3 months of usable time and has at least 3 power
   references; when none does, the turbine is not analysed — it is listed under `unplanned` with
   the reason and left out of the farm headline, and the other turbines still run. Among the spans
@@ -95,9 +107,6 @@ exclusions:                      # optional; end exclusive
 - **To fix the span yourself**, declare `analysis_period`, once for the campaign or per turbine
   (`analysis_period: {T13: {start: ..., end: ...}}`). Declared `references` are then used as power
   references even when their works overlap that span, with a warning.
-- **`wake_unchanged: true`** declares that the change leaves the upgraded turbines' wakes as they were,
-  for example a small control change. Records with an upgraded turbine upwind are then kept rather
-  than dropped for that change; every other works window still drops them as usual. It defaults to false.
 - **A shared `timing.changeover`** is every upgraded turbine's changeover. With a works table beside
   it, the table holds every turbine's other works, the upgraded turbines' included; no works window
   of an upgraded turbine may cover the changeover.
@@ -118,8 +127,23 @@ same effect; listing it records the decision.
 compares against every reference offered. Reference count is the single biggest lever on its
 accuracy: a handful of references is noticeably worse than fifteen. Offer every turbine you have no
 reason to distrust and let the automatic screen (below) rule out the ones that misbehave. A campaign
-declared by its works uses the nearest 4 instead; when the screen rules one out, the next nearest
+declared by its works uses the best-ranked 4 instead; when the screen rules one out, the next best-ranked
 takes its place.
+
+**`upgrade`.** `expected_uplift` is required: the AEP uplift you expect of the change, as a fraction
+(a vendor's claim will do), negative for a change expected to lose energy. It sets the change's
+**wake reach**: how far, in the changed turbine's rotor diameters, its changed wake is taken to
+disturb another turbine. A record is lost when a changed turbine is upwind of the subject or of a
+power reference within that reach (method step 11 iii); beyond it the change is ignored.
+
+| Expected uplift (magnitude) | 0 | 1 % | 3 % | 5 % | 10 % or more |
+|---|---|---|---|---|---|
+| Wake reach | 0 D | 4 D | 8 D | 12 D | 20 D |
+
+Between the points the reach is interpolated. Offshore (`site.offshore: true`) the reach is doubled,
+up to 20 D, since wakes persist further over the sea. `wake_reach_d` overrides the table; `0` declares
+that the change leaves the wakes as they were (it replaces the old `wake_unchanged: true`, which is
+now refused). The reach also ranks the power references (see the span, above).
 
 **`timing.mode`.**
 

@@ -15,18 +15,22 @@ lost to each reason in each period.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import pandas as pd
 
 from benchmarking.harness.operating_state import PART_WAKING, VALID_UPLIFT_COL
 from benchmarking.harness.waking import UNKNOWN, UPWIND_COL, WAKING_SCENARIO_COL
+from wind_up.layout import NAME_COL, ROTOR_DIAMETER_COL
+from wind_up.wake_reach import MAX_REACH_D
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     import numpy.typing as npt
+
+    from wind_up.layout import Layout
 
 logger = logging.getLogger(__name__)
 
@@ -59,65 +63,109 @@ _SEPARATOR = "; "
 NEAR_CHANGEOVER = pd.Timedelta(days=183)
 MIN_CONFIGURATION_HOURS = 24.0
 
-Interval = tuple[pd.Timestamp | None, pd.Timestamp | None]
-"""A half-open ``[start, end)`` stretch of time; ``None`` leaves that side unbounded."""
 
-ChangedTimes = dict[str, tuple[Interval, ...]]
+class ChangedInterval(NamedTuple):
+    """A half-open ``[start, end)`` stretch of time a turbine counts as changed; ``None`` leaves a side unbounded.
+
+    ``reaches`` names the turbines it counts as changed upwind of; ``None`` is every turbine.
+    """
+
+    start: pd.Timestamp | None
+    end: pd.Timestamp | None
+    reaches: frozenset[str] | None = None
+
+
+ChangedTimes = dict[str, tuple[ChangedInterval, ...]]
 """Each changed turbine and the times it counts as changed."""
+
+WorksWindow = tuple[pd.Timestamp, pd.Timestamp, float]
+"""A works window ``[start, end)`` and the reach of its wake change, in rotor diameters."""
 
 
 def changed_times(
     *,
     test_wtg: str,
-    works: Mapping[str, Sequence[tuple[pd.Timestamp, pd.Timestamp]]],
+    works: Mapping[str, Sequence[WorksWindow]],
     changeover: tuple[pd.Timestamp, pd.Timestamp],
     start: pd.Timestamp,
     end: pd.Timestamp,
     near: pd.Timedelta = NEAR_CHANGEOVER,
-    test_wake_changed: bool = True,
+    test_reach_d: float = MAX_REACH_D,
+    layout: Layout | None = None,
 ) -> ChangedTimes:
     """Return the times each turbine counts as changed over the span ``[start, end)``.
 
-    The test turbine counts as changed throughout, unless ``test_wake_changed`` is False. Every other
-    turbine is changed by each works window overlapping the span: throughout, when the window is less
-    than ``near`` from ``changeover``; otherwise from the window's start when it follows the
-    changeover, or until its end when it precedes it. A works window of no length counts when it
-    falls inside the span.
+    The test turbine counts as changed throughout. Every other turbine is changed by each works
+    window overlapping the span: throughout, when the window is less than ``near`` from
+    ``changeover``; otherwise from the window's start when it follows the changeover, or until its
+    end when it precedes it. A works window of no length counts when it falls inside the span.
+
+    A change counts only upwind of the turbines within its reach, in the changed turbine's rotor
+    diameters; a reach of :data:`~wind_up.wake_reach.MAX_REACH_D` or more counts upwind of every
+    turbine, and a change that reaches no turbine is left out.
 
     :param test_wtg: the test turbine
-    :param works: every turbine's works windows
+    :param works: every turbine's works windows, each with its reach
     :param changeover: the test turbine's works window
     :param start: the span's start
     :param end: the span's end, exclusive
     :param near: how close to the changeover a change counts as changed throughout
-    :param test_wake_changed: whether the test turbine's change alters its wake
+    :param test_reach_d: the reach of the test turbine's change
+    :param layout: the farm layout, needed for a reach under the maximum
     """
     c0, c1 = changeover
-    changed: ChangedTimes = {test_wtg: ((None, None),)} if test_wake_changed else {}
+    changed: ChangedTimes = {}
+    reaches = _reaches(layout, waker=test_wtg, reach_d=test_reach_d)
+    if reaches is None or reaches:
+        changed[test_wtg] = (ChangedInterval(None, None, reaches),)
     for turbine, windows in works.items():
         if turbine == test_wtg:
             continue
-        times: list[Interval] = []
-        for w0, w1 in windows:
+        times: list[ChangedInterval] = []
+        for w0, w1, reach_d in windows:
             if not (w0 < end and (w1 > start or w0 == w1 >= start)):
                 continue
+            reaches = _reaches(layout, waker=turbine, reach_d=reach_d)
+            if reaches is not None and not reaches:
+                continue
             if w0 - c1 >= near:
-                times.append((w0, None))
+                times.append(ChangedInterval(w0, None, reaches))
             elif c0 - w1 >= near:
-                times.append((None, w1))
+                times.append(ChangedInterval(None, w1, reaches))
             else:
-                times.append((None, None))
+                times.append(ChangedInterval(None, None, reaches))
         if times:
             changed[turbine] = tuple(times)
     return changed
 
 
-def changed_at(changed: ChangedTimes, *, index: pd.DatetimeIndex) -> dict[str, npt.NDArray[np.bool_]]:
-    """Return, per changed turbine, whether it counts as changed at each timestamp of ``index``."""
+def _reaches(layout: Layout | None, *, waker: str, reach_d: float) -> frozenset[str] | None:
+    """Return the turbines within ``reach_d`` of ``waker`` in its rotor diameters, ``None`` for every turbine."""
+    if reach_d >= MAX_REACH_D:
+        return None
+    if layout is None:
+        msg = f"a reach of {reach_d} D for {waker} needs the farm layout"
+        raise ValueError(msg)
+    row = layout.index_of(waker)
+    distance_d = layout.distance_m[row] / float(layout.frame[ROTOR_DIAMETER_COL].iloc[row])
+    names = layout.frame[NAME_COL].to_numpy()
+    within = (distance_d <= reach_d) & (np.arange(len(names)) != row)
+    return frozenset(str(n) for n in names[within])
+
+
+def changed_at(
+    changed: ChangedTimes, *, index: pd.DatetimeIndex, waked: str | None = None
+) -> dict[str, npt.NDArray[np.bool_]]:
+    """Return, per changed turbine, whether it counts as changed at each timestamp of ``index``.
+
+    With ``waked``, only the intervals that reach that turbine count.
+    """
     out = {}
     for turbine, times in changed.items():
         mask = np.zeros(len(index), dtype=bool)
-        for t0, t1 in times:
+        for t0, t1, reaches in times:
+            if waked is not None and reaches is not None and waked not in reaches:
+                continue
             inside = np.ones(len(index), dtype=bool)
             if t0 is not None:
                 inside &= np.asarray(index >= t0)
@@ -225,7 +273,6 @@ class _Flags:
             )
         names = scada[turbine_col].astype(str).to_numpy()
         n = len(index)
-        at = changed_at(changed, index=index)
         self.excluded: dict[str, npt.NDArray[np.bool_]] = {}
         self.invalid: dict[str, npt.NDArray[np.bool_]] = {}
         self.changed_upwind: dict[str, npt.NDArray[np.bool_]] = {}
@@ -250,6 +297,7 @@ class _Flags:
                 self.changed_upwind[turbine] = np.zeros(n, dtype=bool)
                 self.unknown[turbine] = np.zeros(n, dtype=bool)
                 continue
+            at = changed_at(changed, index=index, waked=turbine)
             upwind = rows[UPWIND_COL].reindex(index)
             # A record the turbine has no row for is already invalid; unknown covers a row without a label.
             text = upwind.fillna(UNKNOWN).astype(str)

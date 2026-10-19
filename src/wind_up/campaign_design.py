@@ -17,13 +17,22 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 
 from wind_up.campaign_design_plots import save_design_maps
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL, WIND_FARM_COL, Layout, front_row
+from wind_up.wake_reach import DEFAULT_DEMOTION_SHARE, candidate_cost, kept_share, reach_from_uplift, union_share
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     import numpy.typing as npt
 
+    from wind_up.wake_reach import LossSector, Rose
+
 REFERENCES_PER_TEST_TURBINE = 3
+DEFAULT_MIN_KEPT_SHARE = 0.5
+# How far below the best total kept share a design may fall and still count as optimal.
+OBJECTIVE_TOLERANCE = 1e-6
+# A pairwise loss under this share of the rose is left out of the solver.
+_MIN_PAIR_LOSS = 1e-9
+WAKE_LOSS_COLUMNS = ("test_turbine", "waked", "waker", "distance_d", "centre_deg", "half_width_deg", "rose_share")
 # The columns of ComplianceReport.table, in order: one row per test turbine.
 COMPLIANCE_COLUMNS: tuple[str, ...] = (
     "test_turbine",
@@ -33,21 +42,29 @@ COMPLIANCE_COLUMNS: tuple[str, ...] = (
         for k in range(1, REFERENCES_PER_TEST_TURBINE + 1)
         for suffix in ("", "_distance_m", "_distance_d", "_front_row", "_rank")
     ),
+    "kept_share",
+    "lost_own_references",
+    "lost_other_tests",
     "compliant",
 )
 
 
 @dataclass(frozen=True, eq=False)
 class ComplianceReport:
-    """The outcome of :func:`check_design`; ``table`` has one row per test turbine."""
+    """The outcome of :func:`check_design`.
+
+    ``table`` has one row per test turbine; ``wake_losses`` one row per sector a test turbine loses
+    to a changed turbine upwind of it or of one of its references, with :data:`WAKE_LOSS_COLUMNS`.
+    """
 
     compliant: bool
     problems: tuple[str, ...]
     table: pd.DataFrame
     summary: dict[str, object]
+    wake_losses: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=list(WAKE_LOSS_COLUMNS)))
 
     def __eq__(self, other: object) -> bool:
-        """Compare field by field, the table by value."""
+        """Compare field by field, the tables by value."""
         if not isinstance(other, ComplianceReport):
             return NotImplemented
         return (
@@ -55,6 +72,7 @@ class ComplianceReport:
             and self.problems == other.problems
             and self.summary == other.summary
             and self.table.equals(other.table)
+            and self.wake_losses.equals(other.wake_losses)
         )
 
     __hash__ = None  # type: ignore[assignment]
@@ -79,9 +97,9 @@ class CandidateOutcome:
 class CampaignDesign:
     """The outcome of :func:`design_campaign`.
 
-    ``reference_limit_d`` is the reference-distance limit, in rotor diameters, the candidates not in
-    ``test_priority`` were chosen under: the least that still allows the design's size alongside the
-    listed turbines kept.
+    ``reference_limit_d`` is the furthest reference any test turbine uses, in its rotor diameters.
+    ``lone_kept_share`` is each available farm turbine's kept share as a lone test turbine with its
+    own best-ranked references; NaN where it has too few.
     """
 
     wind_farm: str | None
@@ -99,6 +117,13 @@ class CampaignDesign:
     front_row_min_clear_deg: float
     compliance: ComplianceReport
     layout: Layout = field(repr=False)
+    wake_reach_d: float = 0.0
+    expected_uplift: float | None = None
+    min_kept_share: float = DEFAULT_MIN_KEPT_SHARE
+    demotion_share: float = DEFAULT_DEMOTION_SHARE
+    wind_rose: Rose | None = field(default=None, repr=False, compare=False)
+    rose_label: str = "none"
+    lone_kept_share: dict[str, float] = field(default_factory=dict)
 
     def roles(self) -> dict[str, list[str]]:
         """Return the campaign declaration roles: every available non-test farm turbine is a reference."""
@@ -123,11 +148,19 @@ def check_design(
     reference_pool_size: int = 4,
     max_reference_distance_d: float = 20.0,
     front_row_min_clear_deg: float = 90.0,
+    expected_uplift: float | None = None,
+    wake_reach_d: float | None = None,
+    wind_rose: Rose | None = None,
+    offshore: bool = False,
+    min_kept_share: float = DEFAULT_MIN_KEPT_SHARE,
+    demotion_share: float = DEFAULT_DEMOTION_SHARE,
+    rose_label: str = "given",
 ) -> ComplianceReport:
     """Check ``test_turbines`` against the rules in ``docs/designing-a-campaign.md``.
 
     Raises only on malformed input: an unknown or repeated name, a name in more than one role, an
-    ambiguous ``wind_farm``. Non-compliance is reported in the returned :class:`ComplianceReport`.
+    ambiguous ``wind_farm``, a reach above 0 without a rose. Non-compliance is reported in the
+    returned :class:`ComplianceReport`. The wake arguments are those of :func:`design_campaign`.
     """
     site = _Site.build(
         layout,
@@ -137,6 +170,15 @@ def check_design(
         reference_pool_size=reference_pool_size,
         max_reference_distance_d=max_reference_distance_d,
         front_row_min_clear_deg=front_row_min_clear_deg,
+        wake=_Wake.resolve(
+            expected_uplift=expected_uplift,
+            wake_reach_d=wake_reach_d,
+            wind_rose=wind_rose,
+            offshore=offshore,
+            min_kept_share=min_kept_share,
+            demotion_share=demotion_share,
+            rose_label=rose_label,
+        ),
     )
     if len(set(test_turbines)) != len(test_turbines):
         msg = f"test_turbines names a turbine more than once: {list(test_turbines)}"
@@ -156,6 +198,13 @@ def design_campaign(
     reference_pool_size: int = 4,
     max_reference_distance_d: float = 20.0,
     front_row_min_clear_deg: float = 90.0,
+    expected_uplift: float | None = None,
+    wake_reach_d: float | None = None,
+    wind_rose: Rose | None = None,
+    offshore: bool = False,
+    min_kept_share: float = DEFAULT_MIN_KEPT_SHARE,
+    demotion_share: float = DEFAULT_DEMOTION_SHARE,
+    rose_label: str = "given",
 ) -> CampaignDesign:
     """Choose test turbines for a campaign on the farm ``wind_farm`` of ``layout``.
 
@@ -163,18 +212,28 @@ def design_campaign(
         outside the farm under design only block wakes.
     :param wind_farm: the farm under design; defaults to the only ``wind_farm`` in the layout, or
         to every turbine when the layout names no wind farm
-    :param test_priority: farm turbines to test first, highest priority first; every other
-        candidate follows in an order drawn from ``seed``, restricted to the nearest references
-        a design of this size allows
+    :param test_priority: farm turbines to test first, highest priority first; the rest of the
+        design is the one with the highest total kept share, then the nearest references, then
+        the first in an order drawn from ``seed``
     :param reference_only: farm turbines that are never tested but may be references
     :param excluded: farm turbines that are neither tested nor references; they still block wakes
     :param n_test: how many test turbines; ``None`` takes the most a compliant design allows
     :param seed: seeds the order of the candidates not in ``test_priority``
-    :param reference_pool_size: how many nearest reference-eligible turbines form a test
+    :param reference_pool_size: how many best-ranked reference-eligible turbines form a test
         turbine's pool
     :param max_reference_distance_d: the furthest a reference may be, in the test turbine's rotor
         diameters
     :param front_row_min_clear_deg: the contiguous clear arc that makes a turbine front row
+    :param expected_uplift: the AEP uplift expected of the change, a fraction; sets the wake reach
+    :param wake_reach_d: the wake reach in rotor diameters, overriding ``expected_uplift``; with
+        neither, the reach is 0 and no wind is lost to a test turbine's wake change
+    :param wind_rose: the site's wind rose, needed for a reach above 0;
+        :func:`~wind_up.wake_reach.uniform_rose` for a site without one
+    :param offshore: doubles the reach taken from ``expected_uplift``
+    :param min_kept_share: the least share of the rose a test turbine may keep clear of changed turbines
+    :param demotion_share: a candidate reference the test turbine is upwind of for more than this share
+        of the rose ranks behind the others
+    :param rose_label: what the rose is, for the reports
     :raises ValueError: on malformed input, when no compliant design exists, or when ``n_test`` is
         more than the most a compliant design allows
     """
@@ -186,6 +245,15 @@ def design_campaign(
         reference_pool_size=reference_pool_size,
         max_reference_distance_d=max_reference_distance_d,
         front_row_min_clear_deg=front_row_min_clear_deg,
+        wake=_Wake.resolve(
+            expected_uplift=expected_uplift,
+            wake_reach_d=wake_reach_d,
+            wind_rose=wind_rose,
+            offshore=offshore,
+            min_kept_share=min_kept_share,
+            demotion_share=demotion_share,
+            rose_label=rose_label,
+        ),
     )
     order, listed = site.priority_order(test_priority=test_priority, seed=seed)
     most = site.max_count()
@@ -203,8 +271,10 @@ def design_campaign(
     limit_d = None
     for rank, row in enumerate(order, start=1):
         if limit_d is None and row not in listed:
-            limit_d = site.tightest_limit_d(n=n, fixed=committed)
-            walking = site.at_limit(limit_d)
+            # The unlisted rest: the best total kept share, then the nearest references, then the seeded order.
+            floored = replace(site, floor=site.best_objective(n=n, fixed=committed))
+            limit_d = floored.tightest_limit_d(n=n, fixed=committed)
+            walking = floored.at_limit(limit_d)
         outcome: Literal["test", "skipped", "not needed"]
         reason = None
         if len(committed) == n:
@@ -221,11 +291,9 @@ def design_campaign(
                 name=site.name(row), rank=rank, from_test_priority=row in listed, outcome=outcome, reason=reason
             )
         )
-    if limit_d is None:
-        limit_d = site.tightest_limit_d(n=n, fixed=committed)
-
     report = site.check(committed)
     table = report.table.set_index("test_turbine")
+    distances = table[[f"reference_{k}_distance_d" for k in range(1, REFERENCES_PER_TEST_TURBINE + 1)]]
     references = {
         name: tuple(str(table.loc[name, f"reference_{k}"]) for k in range(1, REFERENCES_PER_TEST_TURBINE + 1))
         for name in table.index
@@ -242,21 +310,29 @@ def design_campaign(
         filled_rotor_diameters=site.layout.filled_rotor_diameters,
         reference_pool_size=reference_pool_size,
         max_reference_distance_d=max_reference_distance_d,
-        reference_limit_d=limit_d,
+        reference_limit_d=float(np.nanmax(distances.to_numpy(dtype=float))),
         front_row_min_clear_deg=front_row_min_clear_deg,
         compliance=report,
         layout=site.layout,
+        wake_reach_d=site.wake.reach_d,
+        expected_uplift=site.wake.expected_uplift,
+        min_kept_share=site.wake.min_kept_share,
+        demotion_share=site.wake.demotion_share,
+        wind_rose=site.wake.rose,
+        rose_label=site.wake.rose_label,
+        lone_kept_share={site.name(r): site.lone.get(r, math.nan) for r in site.available},
     )
 
 
 def write_design(design: CampaignDesign, *, out_dir: str | Path) -> None:
     """Write ``design`` to ``out_dir``.
 
-    Files: ``compliance.csv`` (one row per test turbine), ``summary.yaml`` (counts, the front-row
-    share, the most test turbines possible, any problems), ``turbines.csv`` (every farm turbine's
-    role, references served, priority and outcome), ``roles.yaml`` (a campaign declaration
-    ``turbines:`` block), and the maps ``design_map.png``, ``design_map_latlon.png`` and
-    ``front_row_map.png``.
+    Files: ``compliance.csv`` (one row per test turbine), ``wake_losses.csv`` (one row per sector a
+    test turbine loses), ``summary.yaml`` (counts, the front-row share, the wake reach and kept
+    shares, the most test turbines possible, any problems), ``turbines.csv`` (every farm turbine's
+    role, references served, priority, outcome and kept share as a lone test turbine), ``roles.yaml``
+    (a campaign declaration ``turbines:`` block), and the maps ``design_map.png``,
+    ``design_map_latlon.png``, ``front_row_map.png`` and ``coverage_map.png``.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -271,7 +347,7 @@ def write_design(design: CampaignDesign, *, out_dir: str | Path) -> None:
 
 
 def write_compliance(report: ComplianceReport, *, out_dir: str | Path) -> None:
-    """Write ``compliance.csv`` and ``summary.yaml`` for ``report`` to ``out_dir``."""
+    """Write ``compliance.csv``, ``wake_losses.csv`` and ``summary.yaml`` for ``report`` to ``out_dir``."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     _write_report(report, out_dir=out, extra={})
@@ -279,6 +355,7 @@ def write_compliance(report: ComplianceReport, *, out_dir: str | Path) -> None:
 
 def _write_report(report: ComplianceReport, *, out_dir: Path, extra: dict[str, object]) -> None:
     report.table.to_csv(out_dir / "compliance.csv", index=False)
+    report.wake_losses.to_csv(out_dir / "wake_losses.csv", index=False)
     summary = {"compliant": report.compliant, "problems": list(report.problems), **extra, **report.summary}
     (out_dir / "summary.yaml").write_text(yaml.safe_dump(summary, sort_keys=False))
 
@@ -315,6 +392,7 @@ def _turbines_table(design: CampaignDesign) -> pd.DataFrame:
                 "from_test_priority": outcome.from_test_priority if outcome else None,
                 "outcome": outcome.outcome if outcome else None,
                 "reason": outcome.reason if outcome else None,
+                "lone_kept_share": design.lone_kept_share.get(name, math.nan),
                 "latitude": row[LATITUDE_COL],
                 "longitude": row[LONGITUDE_COL],
                 "rotor_diameter_m": row[ROTOR_DIAMETER_COL],
@@ -324,8 +402,70 @@ def _turbines_table(design: CampaignDesign) -> pd.DataFrame:
 
 
 @dataclass(frozen=True)
+class _Wake:
+    """How far a test turbine's wake change reaches, the rose it is weighed by, and the rules on it."""
+
+    reach_d: float
+    rose: Rose | None = field(repr=False, compare=False)
+    min_kept_share: float
+    demotion_share: float
+    expected_uplift: float | None
+    rose_label: str
+
+    @classmethod
+    def resolve(
+        cls,
+        *,
+        expected_uplift: float | None,
+        wake_reach_d: float | None,
+        wind_rose: Rose | None,
+        offshore: bool,
+        min_kept_share: float,
+        demotion_share: float,
+        rose_label: str,
+    ) -> _Wake:
+        """Return the wake settings: the given reach, else the one of ``expected_uplift``, else 0."""
+        if wake_reach_d is not None:
+            reach = float(wake_reach_d)
+        elif expected_uplift is not None:
+            reach = reach_from_uplift(expected_uplift, offshore=offshore)
+        else:
+            reach = 0.0
+        if not reach >= 0:
+            msg = f"wake_reach_d must be at least 0 rotor diameters, not {wake_reach_d}"
+            raise ValueError(msg)
+        if reach > 0 and wind_rose is None:
+            msg = (
+                f"a wake reach of {reach:g} D needs a wind rose; pass wind_up.wake_reach.uniform_rose() for a "
+                "site without one"
+            )
+            raise ValueError(msg)
+        return cls(
+            reach_d=reach,
+            rose=wind_rose,
+            min_kept_share=min_kept_share,
+            demotion_share=demotion_share,
+            expected_uplift=expected_uplift,
+            rose_label=rose_label if wind_rose is not None else "none",
+        )
+
+    @property
+    def active(self) -> bool:
+        """Whether a test turbine's wake change costs any wind."""
+        return self.reach_d > 0 and self.rose is not None
+
+
+@dataclass(frozen=True)
 class _Site:
-    """The farm under design, its roles, and each turbine's ranked neighbours."""
+    """The farm under design, its roles, and each turbine's ranked neighbours.
+
+    ``lone`` is each available turbine's kept share as a lone test turbine with its first
+    references in ``within``, and ``pair_loss[(j, i)]`` the further share candidate ``i`` loses when
+    candidate ``j`` is a test turbine too. ``floor`` is the least total kept share a design may have.
+    ``cuts`` are the configurations found to break the kept-share rule exactly, ``(tested, untested)``:
+    no design tests every turbine of the first and none of the second. They hold for the site's
+    pools, so copies under a floor share them and copies at another limit start afresh.
+    """
 
     layout: Layout
     farm: str | None
@@ -338,6 +478,11 @@ class _Site:
     distance_d: npt.NDArray[np.float64]
     ranked: dict[int, list[int]]
     within: dict[int, list[int]]
+    wake: _Wake
+    lone: dict[int, float]
+    pair_loss: dict[tuple[int, int], float]
+    floor: float | None = None
+    cuts: list[tuple[frozenset[int], frozenset[int]]] = field(default_factory=list)
 
     @classmethod
     def build(
@@ -350,6 +495,7 @@ class _Site:
         reference_pool_size: int,
         max_reference_distance_d: float,
         front_row_min_clear_deg: float,
+        wake: _Wake,
     ) -> _Site:
         layout = Layout.from_frame(layout_frame)
         frame = layout.frame
@@ -372,11 +518,28 @@ class _Site:
         ranked: dict[int, list[int]] = {}
         within: dict[int, list[int]] = {}
         for i in farm_rows:
+
+            def demoted(j: int, *, test: int = i) -> bool:
+                if not wake.active:
+                    return False
+                cost = candidate_cost(
+                    layout,
+                    test=str(frame[NAME_COL].iloc[test]),
+                    candidate=str(frame[NAME_COL].iloc[j]),
+                    reach_d=wake.reach_d,
+                    rose=wake.rose,  # type: ignore[arg-type]
+                )
+                return cost > wake.demotion_share
+
             others = sorted(
-                (j for j in available if j != i), key=lambda j: (layout.distance_m[i, j], frame[NAME_COL].iloc[j])
+                (j for j in available if j != i),
+                key=lambda j: (demoted(j), layout.distance_m[i, j], frame[NAME_COL].iloc[j]),
             )
             ranked[i] = others
             within[i] = [j for j in others if distance_d[i, j] <= max_reference_distance_d]
+        candidates = [i for i in available if i not in reference_only_rows]
+        pools = {i: within[i][:reference_pool_size] for i in available}
+        lone, pair_loss = _wake_terms(layout, pools=pools, available=available, candidates=candidates, wake=wake)
         return cls(
             layout=layout,
             farm=farm,
@@ -389,6 +552,9 @@ class _Site:
             distance_d=distance_d,
             ranked=ranked,
             within=within,
+            wake=wake,
+            lone=lone,
+            pair_loss=pair_loss,
         )
 
     @property
@@ -458,9 +624,12 @@ class _Site:
                 problems.append(f"{self.name(row)} is reference-only, so it cannot be a test turbine")
 
         records = []
+        losses: list[dict[str, object]] = []
+        kept_total = 0.0
         for row in tests:
             ok = row in self.farm_rows
             refs: list[int] = []
+            kept: tuple[float, float] = (1.0, 0.0)
             if ok:
                 pool = self.pool(row)
                 refs = [j for j in pool if j not in test_set][:REFERENCES_PER_TEST_TURBINE]
@@ -476,9 +645,20 @@ class _Site:
                     ok = False
                 nearest = self.nearest(row)
                 if nearest is not None and nearest in test_set:
-                    problems.append(f"{self.name(row)}'s nearest neighbour {self.name(nearest)} is a test turbine")
+                    word = self.neighbour_word(row)
+                    problems.append(f"{self.name(row)}'s {word} neighbour {self.name(nearest)} is a test turbine")
                     ok = False
-            records.append(self._table_row(row, refs=refs, compliant=ok and row in self.candidates))
+                share, lost_own, sectors = self.kept(row, refs=refs, tests=tests)
+                kept = (share, lost_own)
+                losses += [{"test_turbine": self.name(row), **_sector_record(sector)} for sector in sectors]
+                if share < self.wake.min_kept_share:
+                    problems.append(
+                        f"{self.name(row)} keeps {share:.0%} of the wind clear of changed turbines upwind of it or "
+                        f"its references, under the minimum {self.wake.min_kept_share:.0%}"
+                    )
+                    ok = False
+            kept_total += kept[0]
+            records.append(self._table_row(row, refs=refs, kept=kept, compliant=ok and row in self.candidates))
 
         n = len(tests)
         front_tests = sum(1 for r in tests if r in self.farm_rows and self.front[r])
@@ -508,10 +688,45 @@ class _Site:
             "reference_pool_size": self.reference_pool_size,
             "max_reference_distance_d": self.max_reference_distance_d,
             "filled_rotor_diameters": list(self.layout.filled_rotor_diameters),
+            "wake_reach_d": self.wake.reach_d,
+            "expected_uplift": self.wake.expected_uplift,
+            "min_kept_share": self.wake.min_kept_share,
+            "demotion_share": self.wake.demotion_share,
+            "total_kept_share": kept_total,
+            "rose": self.wake.rose_label,
         }
-        return ComplianceReport(compliant=not problems, problems=tuple(problems), table=table, summary=summary)
+        return ComplianceReport(
+            compliant=not problems,
+            problems=tuple(problems),
+            table=table,
+            summary=summary,
+            wake_losses=pd.DataFrame.from_records(losses, columns=list(WAKE_LOSS_COLUMNS)),
+        )
 
-    def _table_row(self, row: int, *, refs: list[int], compliant: bool) -> dict[str, object]:
+    def kept(
+        self, row: int, *, refs: Sequence[int], tests: Sequence[int]
+    ) -> tuple[float, float, tuple[LossSector, ...]]:
+        """Return ``row``'s kept share, the share it loses to its own wake change, and its loss sectors."""
+        if not self.wake.active:
+            return 1.0, 0.0, ()
+        rose = self.wake.rose
+        share, sectors = kept_share(
+            self.layout,
+            test=self.name(row),
+            references=[self.name(r) for r in refs],
+            other_tests=[self.name(t) for t in tests if t != row],
+            reach_d=self.wake.reach_d,
+            rose=rose,  # type: ignore[arg-type]
+        )
+        own = [sector for sector in sectors if sector.waker == self.name(row)]
+        return share, union_share(own, rose=rose), sectors  # type: ignore[arg-type]
+
+    def neighbour_word(self, row: int) -> str:
+        """Return how the rules name ``row``'s first-ranked neighbour: nearest, unless demotion moved it."""
+        by_distance = min(self.ranked[row], key=lambda j: self.layout.distance_m[row, j], default=None)
+        return "nearest" if by_distance == self.nearest(row) else "best-ranked"
+
+    def _table_row(self, row: int, *, refs: list[int], kept: tuple[float, float], compliant: bool) -> dict[str, object]:
         frame = self.layout.frame
         record: dict[str, object] = {"test_turbine": self.name(row), "front_row": bool(self.front[row])}
         diameter = float(frame[ROTOR_DIAMETER_COL].iloc[row])
@@ -534,65 +749,161 @@ class _Site:
                     f"reference_{k}_front_row": None,
                     f"reference_{k}_rank": None,
                 }
+        share, lost_own = kept
+        record |= {"kept_share": share, "lost_own_references": lost_own, "lost_other_tests": 1.0 - share - lost_own}
         record["compliant"] = compliant
         if tuple(record) != COMPLIANCE_COLUMNS:
             msg = f"compliance row columns {list(record)} are not COMPLIANCE_COLUMNS"
             raise RuntimeError(msg)
         return record
 
-    def solve(self, *, n: int | None, fixed: Iterable[int] = ()) -> npt.NDArray[np.float64] | None:
+    def solve(
+        self, *, n: int | None, fixed: Iterable[int] = (), optimise: bool = False
+    ) -> npt.NDArray[np.float64] | None:
         """Return a compliant assignment of ``n`` test turbines including ``fixed``, or ``None`` if none exists.
 
-        With ``n=None`` the assignment maximises the count under the pool and nearest-neighbour rules
-        alone, ignoring the front-row share.
+        With ``n=None`` the assignment maximises the count under the pool, nearest-neighbour and kept-share
+        rules alone, ignoring the front-row share. With ``optimise`` it maximises the total kept share,
+        each pair of test turbines within reach adding its loss. Rule 5 and the total are linear in the
+        pair losses, which overcount where sectors overlap. Under a :attr:`floor`, only assignments whose
+        total reaches it are compliant.
         """
         cands = self.candidates
         if not cands:
             return None
         index = {row: k for k, row in enumerate(cands)}
         m = len(cands)
-        lower = np.zeros(m)
-        upper = np.ones(m)
+        pairs = sorted(
+            {(min(index[i], index[j]), max(index[i], index[j])) for j, i in self.pair_loss if i in index and j in index}
+        )
+        program = _Program(width=m + len(pairs))
         for row in fixed:
-            lower[index[row]] = 1
-        rows: list[npt.NDArray[np.float64]] = []
-        lows: list[float] = []
-        highs: list[float] = []
-        for row in cands:
-            k = index[row]
+            program.lower[index[row]] = 1
+        self._spacing_rows(program, index=index)
+        weights = self._wake_rows(program, index=index, pairs=pairs)
+        if self.floor is not None:
+            program.add(weights, low=self.floor - OBJECTIVE_TOLERANCE, high=np.inf)
+        if (program.lower > program.upper).any():
+            return None
+        count = np.zeros(program.width)
+        count[:m] = 1
+        if n is not None:
+            program.add(count, low=n, high=n)
+            a, f = len(self.available), int(self.front[self.available].sum())
+            share = np.zeros(program.width)
+            share[:m] = [2.0 * a if self.front[row] else 0.0 for row in cands]
+            program.add(share, low=2 * n * f - a, high=2 * n * f + a)
+        objective = np.zeros(program.width)
+        if optimise:
+            objective = -weights
+        elif n is None:
+            objective = -count
+        solution = self._solve_with_cuts(program, objective=objective, index=index)
+        return None if solution is None else solution[:m]
+
+    def _solve_with_cuts(
+        self, program: _Program, *, objective: npt.NDArray[np.float64], index: dict[int, int]
+    ) -> npt.NDArray[np.float64] | None:
+        """Solve ``program`` under every known cut, adding a cut and solving again while a test turbine fails rule 5."""
+        for cut in self.cuts:
+            _add_cut(program, cut=cut, index=index)
+        while True:
+            solution = program.solve(objective)
+            if solution is None:
+                return None
+            found = self.exact_cuts([row for row, k in index.items() if solution[k]])
+            if not found:
+                return solution
+            for cut in found:
+                self.cuts.append(cut)
+                _add_cut(program, cut=cut, index=index)
+
+    def exact_cuts(self, tests: Sequence[int]) -> list[tuple[frozenset[int], frozenset[int]]]:
+        """Return a cut for each of ``tests`` whose exact kept share is under the minimum.
+
+        The cut is the test turbine with the tested turbines of its pool and those whose sectors it
+        loses, against its pool's untested turbines: with exactly those its references are the same,
+        and more test turbines only lose it more.
+        """
+        if not self.wake.active or self.wake.min_kept_share <= 0:
+            return []
+        cuts = []
+        for test in tests:
+            pool = self.pool(test)
+            refs = [j for j in pool if j not in tests][:REFERENCES_PER_TEST_TURBINE]
+            share, _, sectors = self.kept(test, refs=refs, tests=tests)
+            if share >= self.wake.min_kept_share:
+                continue
+            tested = {test, *(j for j in pool if j in tests), *(self.row_of(x.waker) for x in sectors)}
+            cuts.append((frozenset(tested), frozenset(j for j in pool if j not in tests)))
+        return cuts
+
+    def _spacing_rows(self, program: _Program, *, index: dict[int, int]) -> None:
+        """Add the pool and nearest-neighbour rules; a candidate with too few references is never tested."""
+        for row, k in index.items():
             if len(self.within[row]) < REFERENCES_PER_TEST_TURBINE:
-                upper[k] = 0
+                program.upper[k] = 0
                 continue
             pool = self.pool(row)
-            coeffs = np.zeros(m)
+            coeffs = np.zeros(program.width)
             coeffs[k] = REFERENCES_PER_TEST_TURBINE
             for j in pool:
                 if j in index:
                     coeffs[index[j]] += 1
-            rows.append(coeffs)
-            lows.append(-np.inf)
-            highs.append(len(pool))
+            program.add(coeffs, low=-np.inf, high=len(pool))
             nearest = self.nearest(row)
             if nearest is not None and nearest in index:
-                pair = np.zeros(m)
+                pair = np.zeros(program.width)
                 pair[k] = pair[index[nearest]] = 1
-                rows.append(pair)
-                lows.append(-np.inf)
-                highs.append(1)
-        if (lower > upper).any():
+                program.add(pair, low=-np.inf, high=1)
+
+    def _wake_rows(
+        self, program: _Program, *, index: dict[int, int], pairs: Sequence[tuple[int, int]]
+    ) -> npt.NDArray[np.float64]:
+        """Add a product variable per pair and the kept-share rule; return the total kept share's coefficients."""
+        cands = list(index)
+        m = len(cands)
+        weights = np.zeros(program.width)
+        kept_rows = {row: np.zeros(program.width) for row in cands}
+        for row, k in index.items():
+            weights[k] = self.lone.get(row, 0.0)
+            kept_rows[row][k] = self.lone.get(row, 0.0) - self.wake.min_kept_share
+        for p, (a, b) in enumerate(pairs, start=m):
+            i, j = cands[a], cands[b]
+            for row, other in ((i, j), (j, i)):
+                loss = self.pair_loss.get((other, row), 0.0)
+                weights[p] -= loss
+                kept_rows[row][p] -= loss
+            for k in (a, b):
+                link = np.zeros(program.width)
+                link[p], link[k] = 1, -1
+                program.add(link, low=-np.inf, high=0)
+            both = np.zeros(program.width)
+            both[a], both[b], both[p] = 1, 1, -1
+            program.add(both, low=-np.inf, high=1)
+        if self.wake.active and self.wake.min_kept_share > 0:
+            for row, k in index.items():
+                if program.upper[k]:
+                    program.add(kept_rows[row], low=0, high=np.inf)
+        return weights
+
+    def best_objective(self, *, n: int, fixed: Iterable[int] = ()) -> float | None:
+        """Return the highest total kept share of a compliant design of ``n`` including ``fixed``, or None."""
+        if not self.wake.active:
             return None
-        if n is not None:
-            rows.append(np.ones(m))
-            lows.append(n)
-            highs.append(n)
-            a, f = len(self.available), int(self.front[self.available].sum())
-            rows.append(np.array([2.0 * a if self.front[row] else 0.0 for row in cands]))
-            lows.append(2 * n * f - a)
-            highs.append(2 * n * f + a)
-        objective = np.zeros(m) if n is not None else -np.ones(m)
-        constraints = [LinearConstraint(np.array(rows), lows, highs)] if rows else []
-        result = milp(objective, integrality=np.ones(m), bounds=Bounds(lower, upper), constraints=constraints)
-        return np.round(result.x) if result.status == 0 else None
+        cands = self.candidates
+        solution = self.solve(n=n, fixed=fixed, optimise=True)
+        if solution is None:
+            return None
+        chosen = [row for row, x in zip(cands, solution, strict=True) if x]
+        return self.linear_total(chosen)
+
+    def linear_total(self, tests: Sequence[int]) -> float:
+        """Return the solver's total kept share of ``tests``: lone shares less every pair loss."""
+        chosen = set(tests)
+        return sum(self.lone.get(t, 0.0) for t in tests) - sum(
+            loss for (j, i), loss in self.pair_loss.items() if i in chosen and j in chosen
+        )
 
     def max_count(self) -> int:
         """Return the most test turbines a compliant design allows (0 if none)."""
@@ -607,12 +918,14 @@ class _Site:
     def at_limit(self, limit_d: float) -> _Site:
         """Return this site with references limited to ``limit_d`` rotor diameters."""
         within = {i: [j for j in self.ranked[i] if self.distance_d[i, j] <= limit_d] for i in self.farm_rows}
-        return replace(self, within=within, max_reference_distance_d=limit_d)
+        return replace(self, within=within, max_reference_distance_d=limit_d, cuts=[])
 
     def tightest_limit_d(self, *, n: int, fixed: list[int]) -> float:
         """Return the least reference-distance limit at which a design of ``n`` including ``fixed`` exists.
 
-        The site's own limit is the fallback, since the walk only calls this when a design exists there.
+        A binary search, then a scan up from where it ends, since a test turbine's references, and so
+        its kept share, can change with the limit. The site's own limit is the fallback, since the walk
+        only calls this when a design exists there.
         """
         limits = sorted(
             {float(self.distance_d[i, j]) for i in self.candidates for j in self.within[i]}
@@ -625,7 +938,10 @@ class _Site:
                 high = middle
             else:
                 low = middle + 1
-        return limits[low]
+        return next(
+            (limit for limit in limits[low:-1] if self.at_limit(limit).solve(n=n, fixed=fixed) is not None),
+            limits[-1],
+        )
 
     def why_no_design(self) -> str:
         """Say why no set of test turbines complies."""
@@ -647,6 +963,7 @@ class _Site:
         return (
             self._spacing_conflict(row, committed=committed)
             or self._share_conflict(row, committed=committed, n=n)
+            or self._wake_conflict(row, committed=committed)
             or f"no compliant design of {n} includes it alongside the higher-priority picks"
         )
 
@@ -655,10 +972,10 @@ class _Site:
         tests = {*committed, row}
         conflict = next((tk for tk in committed if self.nearest(tk) == row), None)
         if conflict is not None:
-            return f"reference of {self.name(conflict)} (its nearest neighbour)"
+            return f"reference of {self.name(conflict)} (its {self.neighbour_word(conflict)} neighbour)"
         nearest = self.nearest(row)
         if nearest is not None and nearest in tests:
-            return f"{self.name(nearest)} is its nearest neighbour"
+            return f"{self.name(nearest)} is its {self.neighbour_word(row)} neighbour"
         starved = next(
             (tk for tk in committed if sum(j not in tests for j in self.pool(tk)) < REFERENCES_PER_TEST_TURBINE), None
         )
@@ -667,6 +984,21 @@ class _Site:
         crowding = [self.name(j) for j in self.pool(row) if j in tests]
         if len(self.pool(row)) - len(crowding) < REFERENCES_PER_TEST_TURBINE:
             return f"too few references among its {len(self.pool(row))} nearest ({_and_list(crowding)} tested)"
+        return None
+
+    def _wake_conflict(self, row: int, *, committed: list[int]) -> str | None:
+        """Return which test turbine would keep too little wind beside ``committed``, if any."""
+        if not self.wake.active:
+            return None
+        tests = [*committed, row]
+        for test in tests:
+            share = self.lone.get(test, 0.0) - sum(self.pair_loss.get((j, test), 0.0) for j in tests)
+            if share < self.wake.min_kept_share:
+                whose = "it" if test == row else self.name(test)
+                return (
+                    f"{whose} would keep about {share:.0%} of the wind clear of changed turbines, under the "
+                    f"minimum {self.wake.min_kept_share:.0%}"
+                )
         return None
 
     def _share_conflict(self, row: int, *, committed: list[int], n: int) -> str | None:
@@ -678,6 +1010,112 @@ class _Site:
         if not self.front[row] and len(committed) - front_committed >= n - min(counts):
             return "the rest-of-farm share is full"
         return None
+
+
+@dataclass
+class _Program:
+    """A binary linear program's bounds and constraint rows, built up one row at a time."""
+
+    width: int
+    rows: list[npt.NDArray[np.float64]] = field(default_factory=list)
+    lows: list[float] = field(default_factory=list)
+    highs: list[float] = field(default_factory=list)
+    lower: npt.NDArray[np.float64] = field(init=False)
+    upper: npt.NDArray[np.float64] = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Start every variable free between 0 and 1."""
+        self.lower = np.zeros(self.width)
+        self.upper = np.ones(self.width)
+
+    def add(self, coeffs: npt.NDArray[np.float64], *, low: float, high: float) -> None:
+        """Add the constraint ``low <= coeffs @ x <= high``."""
+        self.rows.append(coeffs)
+        self.lows.append(low)
+        self.highs.append(high)
+
+    def solve(self, objective: npt.NDArray[np.float64]) -> npt.NDArray[np.float64] | None:
+        """Return the binary ``x`` minimising ``objective @ x``, or None when there is none."""
+        constraints = [LinearConstraint(np.array(self.rows), self.lows, self.highs)] if self.rows else []
+        result = milp(
+            objective,
+            integrality=np.ones(self.width),
+            bounds=Bounds(self.lower, self.upper),
+            constraints=constraints,
+        )
+        return np.round(result.x) if result.status == 0 else None
+
+
+def _add_cut(program: _Program, *, cut: tuple[frozenset[int], frozenset[int]], index: dict[int, int]) -> None:
+    """Add a cut: not every turbine of its first set tested while none of its second is."""
+    tested, untested = cut
+    if not tested <= set(index):
+        return
+    coeffs = np.zeros(program.width)
+    for row in tested:
+        coeffs[index[row]] = 1
+    for row in untested:
+        if row in index:
+            coeffs[index[row]] = -1
+    program.add(coeffs, low=-np.inf, high=len(tested) - 1)
+
+
+def _wake_terms(
+    layout: Layout,
+    *,
+    pools: dict[int, list[int]],
+    available: Sequence[int],
+    candidates: Sequence[int],
+    wake: _Wake,
+) -> tuple[dict[int, float], dict[tuple[int, int], float]]:
+    """Return each available turbine's lone kept share and each ordered pair of candidates' further loss.
+
+    A turbine's references are the first :data:`REFERENCES_PER_TEST_TURBINE` of its pool that are not
+    tested; one with too few has no kept share. ``(j, i)`` is the share ``i`` loses when ``j`` is
+    tested too, beyond what it keeps alone, with ``j`` taken out of its references; negative when
+    the reference that replaces ``j`` costs less.
+    """
+    names = [str(n) for n in layout.frame[NAME_COL]]
+
+    def share(i: int, tested: Sequence[int]) -> float | None:
+        refs = [j for j in pools[i] if j not in tested][:REFERENCES_PER_TEST_TURBINE]
+        if len(refs) < REFERENCES_PER_TEST_TURBINE:
+            return None
+        if not wake.active:
+            return 1.0
+        kept, _ = kept_share(
+            layout,
+            test=names[i],
+            references=[names[j] for j in refs],
+            other_tests=[names[j] for j in tested],
+            reach_d=wake.reach_d,
+            rose=wake.rose,  # type: ignore[arg-type]
+        )
+        return kept
+
+    lone = {i: kept for i in available if (kept := share(i, ())) is not None}
+    pair_loss = {}
+    if wake.active:
+        for i in candidates:
+            if i not in lone:
+                continue
+            for j in candidates:
+                kept = share(i, (j,)) if j != i else None
+                if kept is not None and abs(lone[i] - kept) > _MIN_PAIR_LOSS:
+                    pair_loss[j, i] = lone[i] - kept
+    return lone, pair_loss
+
+
+def _sector_record(sector: LossSector) -> dict[str, object]:
+    """Return a loss sector as a ``wake_losses.csv`` row, without its test turbine."""
+    return {
+        "waked": sector.waked,
+        "waker": sector.waker,
+        "distance_d": sector.distance_d,
+        "centre_deg": sector.centre_deg,
+        "half_width_deg": sector.half_width_deg,
+        "rose_share": sector.rose_share,
+    }
 
 
 def _resolve_farm(frame: pd.DataFrame, *, wind_farm: str | None) -> str | None:

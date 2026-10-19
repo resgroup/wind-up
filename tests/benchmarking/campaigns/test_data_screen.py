@@ -20,6 +20,7 @@ from benchmarking.campaigns.data_screen import (
 from benchmarking.campaigns.data_screen_plots import plot_correlation_map, plot_reference_map
 from benchmarking.campaigns.plans import plans_for
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL
+from benchmarking.harness.record_selection import ChangedInterval
 from benchmarking.harness.waking import DIRECTION_COL, UPWIND_COL
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec, utc
@@ -174,7 +175,7 @@ class TestAFarChange:
         scada = _scada()
         scada.loc[scada[TURBINE] == "T1", UPWIND_COL] = "T5"
         screen = _screen(scada, spec=_far_spec())
-        assert screen.changed["T5"] == ((None, utc("2018-03-05")),)
+        assert screen.changed["T5"] == (ChangedInterval(None, utc("2018-03-05")),)
         frame = scada[(scada.index >= screen.plan.start) & (scada.index < screen.plan.end)]
         lost = frame[(frame[TURBINE] == "T1") & (frame.index < utc("2018-03-05"))]
         losses = screen.losses.set_index(["candidate", "reason"])["records"]

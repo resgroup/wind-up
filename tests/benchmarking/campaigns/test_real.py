@@ -56,6 +56,7 @@ def test_the_t13_declaration_loads(tmp_path: Path) -> None:
     (tmp_path / "campaign.yaml").write_text(yaml.safe_dump(HOT_AEROUP_T13))
     spec = load_declaration(tmp_path / "campaign.yaml").spec
     assert spec.timing_for("T13") == pd.Timestamp("2021-09-30", tz="UTC")
+    assert spec.wake_reach_d == pytest.approx(12.0)
     assert spec.analysis_period is None
     assert spec.exclusions == [(None, pd.Timestamp("2022-09-03", tz="UTC"), pd.Timestamp("2023-02-12", tz="UTC"))]
 
@@ -77,7 +78,8 @@ def test_the_tuneup_declaration_loads(tmp_path: Path) -> None:
     assert {spec.timing_for(t) for t in spec.upgraded_turbines} == {changeover}
     assert spec.candidate_references == ["T14"]
     assert spec.changeovers()["T13"] == [pd.Timestamp("2021-09-30", tz="UTC"), changeover]
-    assert spec.wake_unchanged
+    assert spec.wake_reach_d == pytest.approx(4.0)
+    assert spec.reach_of("T02", (pd.Timestamp("2022-07-18", tz="UTC"), pd.Timestamp("2022-07-29", tz="UTC"))) == 4.0
 
 
 def test_the_real_campaigns_end_their_scada_where_declared() -> None:

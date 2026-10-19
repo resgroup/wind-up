@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
-import pytest  # noqa: TC002 - caplog fixtures are runtime types
+import pytest
 
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL
 from benchmarking.harness.record_selection import (
@@ -29,10 +29,16 @@ from benchmarking.harness.record_selection import (
     record_losses,
     selected,
 )
+from benchmarking.harness.record_selection import (
+    ChangedInterval as Changed,
+)
 from benchmarking.harness.waking import UPWIND_COL, WAKING_SCENARIO_COL
+from tests.wind_up.layouts import line_layout
+from wind_up.layout import Layout
+from wind_up.wake_reach import MAX_REACH_D
 
 if TYPE_CHECKING:
-    from benchmarking.harness.record_selection import ChangedTimes
+    from benchmarking.harness.record_selection import ChangedTimes, WorksWindow
 
 INDEX = pd.date_range("2020-01-01", periods=8, freq="10min", tz="UTC")
 TURBINES = ("T01", "T02", "T03")
@@ -64,7 +70,7 @@ def frame(
 
 def always(*turbines: str) -> ChangedTimes:
     """Each turbine changed over the whole span."""
-    return dict.fromkeys(turbines, ((None, None),))
+    return dict.fromkeys(turbines, (Changed(None, None),))
 
 
 def usable_frame(**false_at: list[int]) -> pd.DataFrame:
@@ -297,17 +303,17 @@ class TestPairReasons:
 
 class TestChangedTimesUpwind:
     def test_a_turbine_is_upwind_as_changed_only_inside_its_times(self) -> None:
-        changed = {"T01": ((None, None),), "T03": ((INDEX[5], None),)}
+        changed = {"T01": (Changed(None, None),), "T03": (Changed(INDEX[5], None),)}
         got = reasons(frame(upwind={"T01": ["T03"] * 8}), changed=changed)
         assert list(got) == [USABLE] * 5 + [CHANGED_UPWIND_OF_SUBJECT] * 3
 
     def test_an_early_change_counts_before_its_end(self) -> None:
-        changed = {"T01": ((None, None),), "T03": ((None, INDEX[2]),)}
+        changed = {"T01": (Changed(None, None),), "T03": (Changed(None, INDEX[2]),)}
         got = reasons(frame(upwind={"T02": ["T03"] * 8}), changed=changed)
         assert list(got) == [CHANGED_UPWIND_OF_REFERENCE] * 2 + [USABLE] * 6
 
     def test_any_changed_name_in_the_label_counts(self) -> None:
-        changed = {"T01": ((None, None),), "T03": ((INDEX[6], None),), "T02": ((None, INDEX[1]),)}
+        changed = {"T01": (Changed(None, None),), "T03": (Changed(INDEX[6], None),), "T02": (Changed(None, INDEX[1]),)}
         got = reasons(frame(upwind={"T01": ["T02; T03"] * 8}), changed=changed)
         assert list(got) == [CHANGED_UPWIND_OF_SUBJECT] + [USABLE] * 5 + [CHANGED_UPWIND_OF_SUBJECT] * 2
 
@@ -316,76 +322,139 @@ def day(text: str) -> pd.Timestamp:
     return pd.Timestamp(text, tz="UTC")
 
 
+# T01, T02 and T03 on an east-west line, 300 m (3 D) apart.
+LINE = Layout.from_frame(line_layout([0.0, 300.0, 600.0]).replace({"name": {"T0": "T01", "T1": "T02", "T2": "T03"}}))
+
+
+def at_max_reach(works: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]]) -> dict[str, list[WorksWindow]]:
+    return {t: [(w0, w1, MAX_REACH_D) for w0, w1 in windows] for t, windows in works.items()}
+
+
+class TestReach:
+    def test_a_change_counts_only_upwind_of_the_turbines_it_reaches(self) -> None:
+        # T03 reaches T02 at 3 D but not T01 at 6 D.
+        changed = {"T01": (Changed(None, None, frozenset()),), "T03": (Changed(None, None, frozenset({"T02"})),)}
+        got = reasons(frame(upwind={"T01": ["T03"] * 8, "T02": ["T03"] * 8}), changed=changed)
+        assert list(got) == [CHANGED_UPWIND_OF_REFERENCE] * 8
+
+    def test_a_four_diameter_reach_keeps_a_six_and_drops_a_three(self) -> None:
+        changed = changed_times(
+            test_wtg="T02",
+            works={"T03": [(day("2020-01-01"), day("2020-01-01"), 4.0)]},
+            changeover=(day("2020-01-01"), day("2020-01-01")),
+            start=day("2019-01-01"),
+            end=day("2021-01-01"),
+            test_reach_d=0.0,
+            layout=LINE,
+        )
+        scada = frame(upwind={"T01": ["T03"] * 8, "T02": ["T03"] * 8})
+        args = {"changed": changed, "turbine_col": "TurbineName", "usable": usable_frame(), "index": INDEX}
+        assert list(loss_reasons(scada, subject="T01", references=["T03"], **args)) == [USABLE] * 8
+        assert list(loss_reasons(scada, subject="T02", references=["T03"], **args)) == [CHANGED_UPWIND_OF_SUBJECT] * 8
+
+
 class TestChangedTimes:
     START = day("2020-01-01")
     END = day("2022-01-01")
     CHANGEOVER = (day("2021-01-01"), day("2021-01-08"))
 
     def times(self, works: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]]) -> ChangedTimes:
-        return changed_times(test_wtg="T01", works=works, changeover=self.CHANGEOVER, start=self.START, end=self.END)
+        return changed_times(
+            test_wtg="T01", works=at_max_reach(works), changeover=self.CHANGEOVER, start=self.START, end=self.END
+        )
 
     def test_the_test_turbine_is_changed_over_the_whole_span(self) -> None:
-        assert self.times({"T01": [self.CHANGEOVER]}) == {"T01": ((None, None),)}
+        assert self.times({"T01": [self.CHANGEOVER]}) == {"T01": (Changed(None, None),)}
 
     def test_a_change_near_the_changeover_is_changed_over_the_whole_span(self) -> None:
         got = self.times({"T02": [(day("2021-06-01"), day("2021-06-03"))]})
-        assert got["T02"] == ((None, None),)
+        assert got["T02"] == (Changed(None, None),)
 
     def test_a_change_far_after_the_changeover_counts_from_its_start(self) -> None:
         got = self.times({"T02": [(day("2021-09-01"), day("2021-09-03"))]})
-        assert got["T02"] == ((day("2021-09-01"), None),)
+        assert got["T02"] == (Changed(day("2021-09-01"), None),)
 
     def test_a_change_far_before_the_changeover_counts_until_its_end(self) -> None:
         got = self.times({"T02": [(day("2020-03-01"), day("2020-03-03"))]})
-        assert got["T02"] == ((None, day("2020-03-03")),)
+        assert got["T02"] == (Changed(None, day("2020-03-03")),)
 
     def test_six_months_from_the_changeover_is_far(self) -> None:
         start = self.CHANGEOVER[1] + pd.Timedelta(days=183)
         got = self.times({"T02": [(start, start + pd.Timedelta(days=1))]})
-        assert got["T02"] == ((start, None),)
+        assert got["T02"] == (Changed(start, None),)
 
     def test_just_under_six_months_is_near(self) -> None:
         end = self.CHANGEOVER[0] - pd.Timedelta(days=182)
         got = self.times({"T02": [(end - pd.Timedelta(days=1), end)]})
-        assert got["T02"] == ((None, None),)
+        assert got["T02"] == (Changed(None, None),)
 
     def test_the_distance_is_a_setting(self) -> None:
         got = changed_times(
             test_wtg="T01",
-            works={"T02": [(day("2021-06-01"), day("2021-06-03"))]},
+            works={"T02": [(day("2021-06-01"), day("2021-06-03"), MAX_REACH_D)]},
             changeover=self.CHANGEOVER,
             start=self.START,
             end=self.END,
             near=pd.Timedelta(days=30),
         )
-        assert got["T02"] == ((day("2021-06-01"), None),)
+        assert got["T02"] == (Changed(day("2021-06-01"), None),)
 
-    def test_the_test_turbine_is_not_changed_when_its_wake_is_not(self) -> None:
+    def test_a_test_turbine_of_no_reach_is_not_changed(self) -> None:
         far = (day("2020-03-01"), day("2020-03-03"))
         got = changed_times(
             test_wtg="T01",
-            works={"T01": [self.CHANGEOVER], "T02": [far]},
+            works={"T01": [(*self.CHANGEOVER, 0.0)], "T02": [(*far, MAX_REACH_D)]},
             changeover=self.CHANGEOVER,
             start=self.START,
             end=self.END,
-            test_wake_changed=False,
+            test_reach_d=0.0,
+            layout=LINE,
         )
-        assert got == {"T02": ((None, far[1]),)}
+        assert got == {"T02": (Changed(None, far[1]),)}
+
+    def test_the_maximum_reach_reaches_every_turbine(self) -> None:
+        works = {"T02": [(day("2021-06-01"), day("2021-06-03"), MAX_REACH_D)]}
+        got = changed_times(
+            test_wtg="T01", works=works, changeover=self.CHANGEOVER, start=self.START, end=self.END, layout=LINE
+        )
+        assert got == {"T01": (Changed(None, None),), "T02": (Changed(None, None),)}
+
+    def test_a_reach_names_the_turbines_within_it(self) -> None:
+        works = {"T03": [(day("2021-06-01"), day("2021-06-03"), 4.0)]}
+        got = changed_times(
+            test_wtg="T01",
+            works=works,
+            changeover=self.CHANGEOVER,
+            start=self.START,
+            end=self.END,
+            test_reach_d=3.0,
+            layout=LINE,
+        )
+        assert got == {
+            "T01": (Changed(None, None, frozenset({"T02"})),),
+            "T03": (Changed(None, None, frozenset({"T02"})),),
+        }
+
+    def test_a_reach_under_the_maximum_needs_the_layout(self) -> None:
+        with pytest.raises(ValueError, match="needs the farm layout"):
+            changed_times(
+                test_wtg="T01", works={}, changeover=self.CHANGEOVER, start=self.START, end=self.END, test_reach_d=4.0
+            )
 
     def test_each_window_counts(self) -> None:
         works = {"T02": [(day("2020-03-01"), day("2020-03-03")), (day("2021-09-01"), day("2021-09-03"))]}
-        assert self.times(works)["T02"] == ((None, day("2020-03-03")), (day("2021-09-01"), None))
+        assert self.times(works)["T02"] == (Changed(None, day("2020-03-03")), Changed(day("2021-09-01"), None))
 
     def test_works_outside_the_span_mean_not_changed(self) -> None:
         works = {
             "T02": [(day("2019-06-01"), day("2019-06-03"))],
             "T03": [(self.END, self.END + pd.Timedelta(days=1))],
         }
-        assert self.times(works) == {"T01": ((None, None),)}
+        assert self.times(works) == {"T01": (Changed(None, None),)}
 
     def test_a_change_of_no_length_inside_the_span_counts(self) -> None:
         moment = day("2021-09-01")
-        assert self.times({"T02": [(moment, moment)]})["T02"] == ((moment, None),)
+        assert self.times({"T02": [(moment, moment)]})["T02"] == (Changed(moment, None),)
 
 
 class TestRecordLosses:

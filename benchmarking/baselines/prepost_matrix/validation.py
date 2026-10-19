@@ -47,6 +47,15 @@ MIN_N = 5
 ESTIMATORS = ("forward", "reversal", "lambda")
 RARE_CONFIGURATION = "rare waking configuration"
 USABLE = "usable"
+CHANGED_UPWIND_OF_REFERENCE = "changed upwind of reference"
+CHANGED_UPWIND_OF_SUBJECT = "changed upwind of subject"
+_SHARE_REASONS = {
+    "usable": USABLE,
+    "changed_upwind_of_reference": CHANGED_UPWIND_OF_REFERENCE,
+    "changed_upwind_of_subject": CHANGED_UPWIND_OF_SUBJECT,
+}
+# Run 4 (b045d99), before the wake reach: the median usable share of before hours by site and K.
+RUN4_USABLE_BEFORE = "0.17 to 0.37"
 _SEASONS = {12: "DJF", 1: "DJF", 2: "DJF", 3: "MAM", 4: "MAM", 5: "MAM", 6: "JJA", 7: "JJA", 8: "JJA"}
 _PP = 100.0
 
@@ -444,6 +453,45 @@ def _thirds(values: pd.Series) -> pd.Series:
     return pd.qcut(values, 3, duplicates="drop").astype(str)
 
 
+def usable_share_table(records: list[dict[str, Any]]) -> pd.DataFrame:
+    """Return the median shares of each test turbine's before and after hours that are usable or lost upwind.
+
+    One row per synthetic arm, site and (P, L), and one per arm and site over all of them. The losses
+    are to a changed turbine upwind of a reference and of the subject.
+    """
+    rows = []
+    for record in records:
+        if record["arm"] == "real":
+            continue
+        for rows_of_turbine in record.get("record_losses", {}).values():
+            hours = {r["reason"]: r for r in rows_of_turbine}
+            row: dict[str, Any] = {k: record[k] for k in ("arm", "site", "pre_months", "post_months")}
+            for side in ("before", "after"):
+                total = sum(float(r.get(f"hours_{side}") or 0.0) for r in rows_of_turbine)
+                for name, reason in _SHARE_REASONS.items():
+                    lost = float((hours.get(reason) or {}).get(f"hours_{side}") or 0.0)
+                    row[f"{name}_{side}"] = lost / total if total else np.nan
+            rows.append(row)
+    shares = [f"{name}_{side}" for side in ("before", "after") for name in _SHARE_REASONS]
+    columns = ["arm", "site", "pre_months", "post_months", "turbines", *shares]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    frame = pd.DataFrame(rows)
+    by_period = frame.groupby(["arm", "site", "pre_months", "post_months"], as_index=False)
+    overall = frame.groupby(["arm", "site"], as_index=False)
+    table = pd.concat(
+        [
+            by_period[shares].median().merge(by_period.size().rename(columns={"size": "turbines"})),
+            overall[shares]
+            .median()
+            .merge(overall.size().rename(columns={"size": "turbines"}))
+            .assign(pre_months="all", post_months="all"),
+        ],
+        ignore_index=True,
+    )
+    return table[columns]
+
+
 def validation_tables(records: list[dict[str, Any]]) -> dict[str, pd.DataFrame]:
     """Return every target's table for ``records``."""
     turbines = turbine_frame(records)
@@ -455,6 +503,7 @@ def validation_tables(records: list[dict[str, Any]]) -> dict[str, pd.DataFrame]:
         "iv_coverage": coverage_table(records, turbines, references),
         "iv_coverage_by_period": period_coverage_table(turbines, references),
         "unmeasured": unmeasured_table(records),
+        "usable_share": usable_share_table(records),
         "option2_reversal": reversal_table(turbines, references),
         "open_configuration_rule": configuration_rule_table(turbines),
         "open_screen": screen_table(references),
@@ -530,6 +579,16 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int) -> str:
             f"- unmeasured test turbines: {total} ({hours} for too few usable hours); worst "
             f"P{int(worst['pre_months'])} L{int(worst['post_months'])} at {worst['unmeasured_share']:.0%}"
         )
+    usable = tables["usable_share"]
+    if not usable.empty:
+        lines += ["", f"## Usable hours (C10); run 4 median usable share of before hours {RUN4_USABLE_BEFORE}"]
+        for row in usable[usable["pre_months"] == "all"].itertuples():
+            lines.append(
+                f"- usable share of before hours: {row.arm} {row.site} {row.usable_before:.2f}, after "
+                f"{row.usable_after:.2f}; lost before to changed upwind of reference "
+                f"{row.changed_upwind_of_reference_before:.2f}, of subject {row.changed_upwind_of_subject_before:.2f} "
+                f"({row.turbines} test turbines)"
+            )
     lines += ["", "## Option 2: forward, full reversal and computed lambda (RMSE, pp)"]
     for row in tables["option2_reversal"].itertuples():
         lines.append(

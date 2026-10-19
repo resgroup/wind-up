@@ -74,7 +74,7 @@ def main(*, out_dir: Path = DOCS_IMAGES_DIR) -> dict[str, AnalysisPlan | str]:
     turbines = list(layout.frame["name"])
     data_dir = get_data_dir()
     ensure_hot_data_files([WORKS_FILENAME], data_dir=data_dir)
-    works = read_works(data_dir / WORKS_FILENAME)
+    works, _ = read_works(data_dir / WORKS_FILENAME)
     scada, _ = load_hot_scada(
         start_dt=pd.Timestamp(WINDOW[0], tz="UTC"),
         end_dt_excl=pd.Timestamp(WINDOW[1], tz="UTC"),

@@ -114,6 +114,9 @@ turbines:
   excluded:   []
   rated_power_kw: {rated_kw}
 
+upgrade:
+  expected_uplift: 0.05
+
 timing:
 {timing}
 

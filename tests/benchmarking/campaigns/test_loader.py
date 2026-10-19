@@ -37,6 +37,9 @@ turbines:
   excluded:   [T04]
   rated_power_kw: 2050
 
+upgrade:
+  expected_uplift: 0.05
+
 timing:
   mode: prepost
   changeover: 2018-01-01T00:00:00Z
@@ -356,8 +359,8 @@ class TestACampaignDesignFeedsTheDeclaration:
         (tmp_path / "scada.parquet").write_bytes(b"")
         roles = (tmp_path / "design" / "roles.yaml").read_text()
         rest = textwrap.dedent(PREPOST)
-        rest = rest[: rest.index("turbines:\n  upgraded")] + rest[rest.index("timing:") :]
-        declaration_text = rest.replace("timing:", roles.rstrip() + "\n  rated_power_kw: 2300\n\ntiming:")
+        rest = rest[: rest.index("turbines:\n  upgraded")] + rest[rest.index("upgrade:") :]
+        declaration_text = rest.replace("upgrade:", roles.rstrip() + "\n  rated_power_kw: 2300\n\nupgrade:", 1)
         (tmp_path / "campaign.yaml").write_text(declaration_text)
         spec = load_declaration(tmp_path / "campaign.yaml").spec
         # roles() is what was written, and it sorts: a declaration should not carry the order the
@@ -401,6 +404,9 @@ data:
 turbines:
   upgraded: [T01]
   rated_power_kw: 2050
+
+upgrade:
+  expected_uplift: 0.05
 
 timing:
   mode: prepost
@@ -470,11 +476,31 @@ class TestTheWorksTable:
         assert len(spec.works["T02"]) == 2
         assert spec.changeovers()["T02"] == [utc("2018-06-02"), utc("2018-09-04"), utc("2018-12-01")]
 
-    def test_a_declared_unchanged_wake_is_carried_and_resolved(self, tmp_path: Path) -> None:
-        declaration = load_staggered(tmp_path, STAGGERED + "\nwake_unchanged: true\n")
-        assert declaration.spec.wake_unchanged
-        assert declaration.resolved()["wake_unchanged"] is True
-        assert not load_staggered(tmp_path).spec.wake_unchanged
+    def test_the_old_wake_unchanged_flag_is_rejected_naming_its_replacement(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match=r"upgrade\.wake_reach_d: 0"):
+            load_staggered(tmp_path, STAGGERED + "\nwake_unchanged: true\n")
+
+    def test_a_row_takes_the_campaign_reach_by_default(self, tmp_path: Path) -> None:
+        spec = load_staggered(tmp_path).spec
+        assert spec.works_reach_d == {}
+        assert spec.reach_of("T02", spec.works["T02"][0]) == pytest.approx(12.0)
+
+    def test_a_row_reach_comes_from_its_expected_uplift_or_its_own_reach(self, tmp_path: Path) -> None:
+        works = (
+            "Turbine,First date,Last date,Expected uplift (fraction),Wake reach (D)\n"
+            "T01,2018-01-10,2018-01-12,,\n"
+            "T02,2018-06-01,2018-06-01,0.01,\n"
+            "T02,2018-09-01,2018-09-03,0.01,2\n"
+        )
+        spec = load_staggered(tmp_path, works=works).spec
+        assert spec.reach_of("T01", spec.works["T01"][0]) == pytest.approx(12.0)
+        assert spec.reach_of("T02", spec.works["T02"][0]) == pytest.approx(4.0)
+        assert spec.reach_of("T02", spec.works["T02"][1]) == pytest.approx(2.0)
+
+    def test_a_negative_row_reach_is_rejected(self, tmp_path: Path) -> None:
+        works = "Turbine,First date,Last date,Wake reach\nT01,2018-01-10,2018-01-12,-1\n"
+        with pytest.raises(ValueError, match="at least 0"):
+            load_staggered(tmp_path, works=works)
 
     def test_a_works_window_over_the_shared_changeover_is_rejected(self, tmp_path: Path) -> None:
         text = STAGGERED.replace("mode: prepost", "mode: prepost\n  changeover: 2018-01-11T00:00:00Z")
@@ -534,7 +560,40 @@ class TestExclusionsAndPeriods:
             "start": "2018-03-01 00:00:00+00:00",
             "end": "2018-03-02 00:00:00+00:00",
         }
-        assert resolved["works"]["T01"] == [["2018-01-10 00:00:00+00:00", "2018-01-13 00:00:00+00:00"]]
+        assert resolved["works"]["T01"] == [["2018-01-10 00:00:00+00:00", "2018-01-13 00:00:00+00:00", 12.0]]
+        assert resolved["upgrade"] == {"expected_uplift": 0.05, "wake_reach_d": 12.0}
+
+
+class TestTheUpgrade:
+    def test_the_reach_comes_from_the_expected_uplift(self, tmp_path: Path) -> None:
+        declaration = load(tmp_path)
+        assert declaration.expected_uplift == 0.05
+        assert declaration.spec.wake_reach_d == pytest.approx(12.0)
+
+    def test_a_negative_uplift_reaches_by_its_magnitude(self, tmp_path: Path) -> None:
+        text = PREPOST.replace("expected_uplift: 0.05", "expected_uplift: -0.01")
+        assert load(tmp_path, text).spec.wake_reach_d == pytest.approx(4.0)
+
+    def test_offshore_doubles_the_reach(self, tmp_path: Path) -> None:
+        text = PREPOST.replace("expected_uplift: 0.05", "expected_uplift: 0.03") + "site:\n  offshore: true\n"
+        assert load(tmp_path, text).spec.wake_reach_d == pytest.approx(16.0)
+
+    def test_a_declared_reach_overrides_the_table(self, tmp_path: Path) -> None:
+        text = PREPOST.replace("expected_uplift: 0.05", "expected_uplift: 0.05\n  wake_reach_d: 0")
+        assert load(tmp_path, text).spec.wake_reach_d == 0.0
+
+    def test_an_expected_uplift_is_required(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match=r"upgrade\.expected_uplift"):
+            load(tmp_path, PREPOST.replace("upgrade:\n  expected_uplift: 0.05\n", ""))
+
+    @pytest.mark.parametrize("value", ["five", "true", ".nan"])
+    def test_an_expected_uplift_that_is_not_a_number_is_rejected(self, tmp_path: Path, value: str) -> None:
+        with pytest.raises(ValueError, match="finite number"):
+            load(tmp_path, PREPOST.replace("expected_uplift: 0.05", f"expected_uplift: {value}"))
+
+    def test_an_unknown_upgrade_key_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="unknown keys"):
+            load(tmp_path, PREPOST.replace("expected_uplift: 0.05", "expected_uplift: 0.05\n  wake: 3"))
 
 
 def test_the_greenbyte_schema_is_declarable(tmp_path: Path) -> None:

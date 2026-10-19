@@ -1,5 +1,8 @@
 """Design an upgrade campaign on Hill of Towie's 21 turbines, with T17 reference-only and no test priority.
 
+The upgrade is expected to give 5 % more energy, so its wake change reaches 12 rotor diameters, and the
+design weighs the wind each test turbine loses by the site's wind rose.
+
 Run it from the repository root::
 
     uv run python examples/v1/design_hill_of_towie.py
@@ -9,6 +12,10 @@ It writes the design to ``examples/v1/output/design_hill_of_towie/`` and copies 
 
 Turbine coordinates: Clerc, A. and Lingkan, E. (2026). Hill of Towie wind farm open dataset
 (2.1.0) [Data set]. Zenodo. https://doi.org/10.5281/zenodo.22662930, CC BY 4.0.
+
+Wind rose: the share of hours per 1 degree of 100 m wind direction, 2016 to 2020, at (57.51, -3.07),
+from ERA5 (Hersbach et al. (2023), ERA5 hourly data on single levels from 1940 to present, Copernicus
+Climate Change Service Climate Data Store, https://doi.org/10.24381/cds.adbb2d47) through Open-Meteo.
 """
 
 from __future__ import annotations
@@ -27,15 +34,24 @@ if TYPE_CHECKING:
 
 HERE = Path(__file__).parent
 TURBINES_CSV = HERE / "hill_of_towie_turbines.csv"
+WIND_ROSE_CSV = HERE / "hill_of_towie_wind_rose.csv"
+EXPECTED_UPLIFT = 0.05
 OUTPUT_DIR = HERE / "output" / "design_hill_of_towie"
 DOCS_IMAGES_DIR = HERE.parents[1] / "docs" / "images" / "designing-a-campaign"
-DOCS_MAPS = ("design_map.png", "front_row_map.png")
+DOCS_MAPS = ("design_map.png", "front_row_map.png", "coverage_map.png")
 
 
 def main(*, out_dir: Path = OUTPUT_DIR, docs_images_dir: Path | None = DOCS_IMAGES_DIR) -> CampaignDesign:
     """Design the campaign, write it to ``out_dir``, and copy its maps to ``docs_images_dir`` unless it is ``None``."""
     layout = pd.read_csv(TURBINES_CSV)
-    design = design_campaign(layout, reference_only=["T17"])
+    rose = pd.read_csv(WIND_ROSE_CSV)["share"].to_numpy(dtype=float)
+    design = design_campaign(
+        layout,
+        reference_only=["T17"],
+        expected_uplift=EXPECTED_UPLIFT,
+        wind_rose=rose / rose.sum(),
+        rose_label="ERA5 2016-2020",
+    )
     write_design(design, out_dir=out_dir)
     if docs_images_dir is not None:
         docs_images_dir.mkdir(parents=True, exist_ok=True)
@@ -50,6 +66,7 @@ def main(*, out_dir: Path = OUTPUT_DIR, docs_images_dir: Path | None = DOCS_IMAG
     )
     print(f"front row: {summary['front_row_test_turbines']} tested, fair share {summary['fair_front_row_share']:.2f}")
     print(f"furthest reference: {furthest:.1f} rotor diameters")
+    print(f"wake reach {design.wake_reach_d:g} D, total kept share {summary['total_kept_share']:.2f}")
     print(f"written to {out_dir}")
     return design
 

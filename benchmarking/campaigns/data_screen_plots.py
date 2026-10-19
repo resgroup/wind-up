@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from matplotlib.transforms import Transform
 
     from benchmarking.campaigns.data_screen import DataScreen
-    from benchmarking.harness.record_selection import Interval
+    from benchmarking.harness.record_selection import ChangedInterval
     from wind_up.layout import Layout
 
 VERDICT_COLOURS = {KEPT: "C2", SPARE: "C0", DROPPED: "C3"}
@@ -241,14 +241,14 @@ class _RingHandler(HandlerPatch):
         return [ring]
 
 
-def _throughout(times: tuple[Interval, ...]) -> bool:
+def _throughout(times: tuple[ChangedInterval, ...]) -> bool:
     """Return whether a turbine counts as changed over the whole span."""
-    return (None, None) in times
+    return any(t.start is None and t.end is None for t in times)
 
 
-def _changed_label(times: tuple[Interval, ...]) -> str:
+def _changed_label(times: tuple[ChangedInterval, ...]) -> str:
     """Return when a turbine counts as changed, as ``from <date>`` and ``until <date>`` parts."""
-    parts = [f"from {t0:%Y-%m-%d}" if t0 is not None else f"until {t1:%Y-%m-%d}" for t0, t1 in times]
+    parts = [f"from {t.start:%Y-%m-%d}" if t.start is not None else f"until {t.end:%Y-%m-%d}" for t in times]
     return ", ".join(parts)
 
 

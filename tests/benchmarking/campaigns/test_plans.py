@@ -13,6 +13,7 @@ from benchmarking.campaigns.plans import changed_works, data_extents, extent_aro
 from benchmarking.synthetic import HOT_COLUMNS
 from tests.benchmarking.campaigns.timeline_fixtures import DATA_END, hourly_scada, staggered_spec, utc
 from wind_up.analysis_period import PlanSettings
+from wind_up.wake_reach import MAX_REACH_D
 
 
 def resolve(spec=None, scada=None, **kwargs):  # noqa: ANN001, ANN003, ANN201
@@ -195,10 +196,16 @@ def test_other_works_inside_a_declared_span_are_a_warning() -> None:
 
 def test_the_changed_upwind_rule_sees_every_declared_window_and_each_upgrade() -> None:
     works = changed_works(shared(T0_EARLIER))
-    assert works["T0"] == [T0_EARLIER, (CHANGEOVER, CHANGEOVER)]
-    assert works["T6"] == [(CHANGEOVER, CHANGEOVER)]
-    assert changed_works(staggered_spec()) == staggered_spec().works
+    assert works["T0"] == [(*T0_EARLIER, MAX_REACH_D), (CHANGEOVER, CHANGEOVER, MAX_REACH_D)]
+    assert works["T6"] == [(CHANGEOVER, CHANGEOVER, MAX_REACH_D)]
+    assert changed_works(staggered_spec()) == {
+        t: [(w0, w1, MAX_REACH_D) for w0, w1 in windows] for t, windows in staggered_spec().works.items()
+    }
 
 
-def test_with_the_wake_unchanged_the_upgrade_is_left_out() -> None:
-    assert changed_works(shared(T0_EARLIER, wake_unchanged=True)) == {"T0": [T0_EARLIER]}
+def test_each_window_carries_its_reach() -> None:
+    spec = shared(T0_EARLIER, wake_reach_d=0.0, works_reach_d={"T0": {T0_EARLIER: 4.0}})
+    assert changed_works(spec) == {
+        "T0": [(*T0_EARLIER, 4.0), (CHANGEOVER, CHANGEOVER, 0.0)],
+        "T6": [(CHANGEOVER, CHANGEOVER, 0.0)],
+    }

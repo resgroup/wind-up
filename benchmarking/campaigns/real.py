@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -18,7 +17,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from benchmarking.campaigns.loader import operating_state_config
+from benchmarking.campaigns.loader import EXPECTED_UPLIFT_PREFIX, operating_state_config
 from benchmarking.harness.operating_state import PARTIAL_DOWNTIME, label_operating_states
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_ACTIVE_POWER_MAX_COL,
@@ -53,6 +52,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HOT_AEROUP_WORKS = "Hill_of_Towie_AeroUp_install_dates.csv"
+AEROUP_EXPECTED_UPLIFT = 0.05
 
 # Hill of Towie's site operating states, written into the campaign's SCADA as HOT_STATE_COL.
 HOT_STATE_COL = "state"
@@ -83,13 +83,14 @@ HOT_AEROUP_T13: dict[str, Any] = {
     },
     "turbines": {"upgraded": ["T13"], "rated_power_kw": 2300.0},
     "timing": {"mode": "prepost"},
+    "upgrade": {"expected_uplift": AEROUP_EXPECTED_UPLIFT},
     "exclusions": [{"turbine": "ALL", "start": "2022-09-03T00:00:00Z", "end": "2023-02-12T00:00:00Z"}],
     "northing": {"discover": True},
     "operating_state": HOT_OPERATING_STATE,
 }
 
-# The 2024 pitch TuneUp on nine turbines, sharing one changeover, declared to leave their wakes as they
-# were. Every turbine's AeroUp works are in the works table; the second exclusion is the TuneUp deployment.
+# The 2024 pitch TuneUp on nine turbines, sharing one changeover. Every turbine's AeroUp works are in the
+# works table at the AeroUp's expected uplift; the second exclusion is the TuneUp deployment.
 HOT_TUNEUP: dict[str, Any] = {
     "name": "hot_tuneup",
     "data": dict(HOT_AEROUP_T13["data"]),
@@ -98,13 +99,13 @@ HOT_TUNEUP: dict[str, Any] = {
         "rated_power_kw": 2300.0,
     },
     "timing": {"mode": "prepost", "changeover": "2024-03-14T18:00:00Z"},
+    "upgrade": {"expected_uplift": 0.01},
     "exclusions": [
         {"turbine": "ALL", "start": "2022-09-03T00:00:00Z", "end": "2023-02-12T00:00:00Z"},
         {"turbine": "ALL", "start": "2024-03-14T07:00:00Z", "end": "2024-03-14T18:00:00Z"},
     ],
     "northing": {"discover": True},
     "operating_state": HOT_OPERATING_STATE,
-    "wake_unchanged": True,
 }
 
 
@@ -115,11 +116,14 @@ class RealCampaign:
     :param declaration: the contents of its ``campaign.yaml``
     :param start: the first SCADA record written
     :param end: the end of the SCADA written, exclusive
+    :param works_expected_uplift: the expected uplift written on every row of the works table, or None
+        for rows that take the campaign's upgrade
     """
 
     declaration: dict[str, Any]
     start: pd.Timestamp
     end: pd.Timestamp
+    works_expected_uplift: float | None = None
 
     @property
     def name(self) -> str:
@@ -131,7 +135,10 @@ HOT_AEROUP_T13_CAMPAIGN = RealCampaign(
     HOT_AEROUP_T13, start=pd.Timestamp("2019-01-01", tz="UTC"), end=pd.Timestamp("2023-01-01", tz="UTC")
 )
 HOT_TUNEUP_CAMPAIGN = RealCampaign(
-    HOT_TUNEUP, start=pd.Timestamp("2022-01-01", tz="UTC"), end=pd.Timestamp("2024-09-01", tz="UTC")
+    HOT_TUNEUP,
+    start=pd.Timestamp("2022-01-01", tz="UTC"),
+    end=pd.Timestamp("2024-09-01", tz="UTC"),
+    works_expected_uplift=AEROUP_EXPECTED_UPLIFT,
 )
 REAL_CAMPAIGNS: dict[str, RealCampaign] = {c.name: c for c in (HOT_AEROUP_T13_CAMPAIGN, HOT_TUNEUP_CAMPAIGN)}
 
@@ -259,7 +266,8 @@ def write_real_campaign(
     """Write ``campaign``'s folder under ``out_dir`` and return its declaration.
 
     Writes ``campaign.yaml`` and, under ``data/``, every turbine's SCADA over the campaign's span with
-    its site operating-state labels, the turbines file and the published AeroUp works table.
+    its site operating-state labels, the turbines file and the published AeroUp works table, with
+    ``works_expected_uplift`` on every row when the campaign gives one.
 
     :param out_dir: the campaign folder
     :param campaign: which campaign
@@ -280,7 +288,10 @@ def write_real_campaign(
         }
     ).to_csv(data / "turbines.csv", index=False)
     ensure_hot_data_files([HOT_AEROUP_WORKS], data_dir=data_dir)
-    shutil.copyfile(data_dir / HOT_AEROUP_WORKS, data / "works.csv")
+    works = pd.read_csv(data_dir / HOT_AEROUP_WORKS)
+    if campaign.works_expected_uplift is not None:
+        works[EXPECTED_UPLIFT_PREFIX] = campaign.works_expected_uplift
+    works.to_csv(data / "works.csv", index=False)
     path = out_dir / "campaign.yaml"
     path.write_text(yaml.safe_dump(campaign.declaration, sort_keys=False))
     logger.info("Wrote the Hill of Towie campaign %s to %s", campaign.name, out_dir)

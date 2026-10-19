@@ -20,7 +20,7 @@ import pandas as pd
 if TYPE_CHECKING:
     from benchmarking.campaigns.declaration import Exclusion
 
-Arm = Literal["main", "excl", "real"]
+Arm = Literal["main", "excl", "small", "real"]
 
 
 @dataclass(frozen=True)
@@ -45,7 +45,9 @@ REAL_SITES: dict[str, RealSite] = {
 }
 # The arms whose references are given synthetic exclusions.
 EXCLUSION_ARMS: tuple[str, ...] = ("excl",)
-_ARM_SUFFIX = {"main": "", "excl": "_excl", "real": ""}
+# The arms whose campaigns are a small change: about 1 % AEP, declared as 1 %.
+SMALL_ARMS: tuple[str, ...] = ("small",)
+_ARM_SUFFIX = {"main": "", "excl": "_excl", "small": "_1pc", "real": ""}
 
 # Synthetic reference exclusions for the exclusion arms: per turbine, this many periods, each this many days.
 EXCLUSIONS_PER_TURBINE = (0, 2)
@@ -61,8 +63,9 @@ class MatrixSettings:
     :param ks: power references per test turbine
     :param pre_months: months of data before the first trial works start (before the changeover for a real campaign)
     :param post_months: months of data after the last trial works end (after the changeover for a real campaign)
-    :param exclusion_k: the one K the exclusion arms run at
+    :param exclusion_k: the one K the exclusion and small-change arms run at
     :param exclusion_arms: which of the exclusion arms run
+    :param small_arms: which of the small-change arms run
     :param real: the real campaigns included, keys of :data:`REAL_SITES`
     :param min_side_days: the shortest side the period selector may choose, so that every post length is analysed
     :param master_seed: every campaign draw is keyed on it
@@ -75,6 +78,7 @@ class MatrixSettings:
     post_months: tuple[int, ...] = (1, 2, 3, 6, 9, 12)
     exclusion_k: int = 4
     exclusion_arms: tuple[str, ...] = EXCLUSION_ARMS
+    small_arms: tuple[str, ...] = SMALL_ARMS
     real: tuple[str, ...] = tuple(REAL_SITES)
     min_side_days: int = 14
     master_seed: int = 0
@@ -96,7 +100,8 @@ class MatrixSettings:
 class Cell:
     """One run of the matrix.
 
-    :param arm: ``main``; ``excl``, whose references have synthetic exclusions; or ``real``
+    :param arm: ``main``; ``excl``, whose references have synthetic exclusions; ``small``, a change of
+        about 1 % declared as 1 %; or ``real``
     :param site: ``hot``, ``pen``, ``kel`` or a key of :data:`REAL_SITES`
     :param seed_index: which of the site's campaigns; ``None`` for a real campaign
     :param multiplier: the AeroUp scaling; ``None`` for a real campaign
@@ -129,6 +134,11 @@ class Cell:
     def has_exclusions(self) -> bool:
         """Whether this cell's references are given synthetic exclusions."""
         return self.arm in EXCLUSION_ARMS
+
+    @property
+    def is_small(self) -> bool:
+        """Whether this cell's campaign is a small change, about 1 % AEP, declared as 1 %."""
+        return self.arm in SMALL_ARMS
 
     @property
     def full_rollout(self) -> bool:
@@ -212,7 +222,7 @@ def matrix_cells(settings: MatrixSettings) -> list[Cell]:
                         cells.extend(Cell("main", site, index, multiplier, k, p, n) for k in settings.ks)
                         cells.extend(
                             Cell(arm, site, index, multiplier, settings.exclusion_k, p, n)  # type: ignore[arg-type]
-                            for arm in settings.exclusion_arms
+                            for arm in (*settings.exclusion_arms, *settings.small_arms)
                         )
     return sorted(cells, key=lambda c: (-cell_cost_s(c), c.cell_id))
 

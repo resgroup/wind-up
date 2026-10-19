@@ -29,7 +29,7 @@ day the nearest turbine T14 started its own AeroUp works, because a span that ra
 as a power reference. T10 and T08, 16 D away, started their works earlier in August 2022 and so are
 waking only: ending the span before their works would have kept them eligible as reserves, at the
 cost of 26 days of after period, and the selector prefers the longer side. T07, 17 D away, is a
-reserve: eligible, within reach, but beyond the nearest four. The farm-wide exclusion from September 2022 to February 2023 falls after the span. The
+reserve: eligible, within reach, but beyond the best-ranked four. The farm-wide exclusion from September 2022 to February 2023 falls after the span. The
 figures on this page are drawn by `benchmarking/baselines/study_analysis_period_doc_plot.py`.
 
 ## What makes a turbine eligible as a power reference
@@ -46,6 +46,19 @@ hold:
 Distance stands in for how well two turbines' power correlates. Other upgraded turbines are eligible
 on the same terms, so a rollout's earlier test turbines can serve as references for its later ones
 once their own works are over.
+
+## How the candidates are ranked
+
+Candidates are ranked by distance, nearest first, except that a candidate the test turbine wakes too
+often is **demoted** behind every candidate that is not. Its cost is the share of the site's wind
+rose in which the test turbine is upwind of it, within the IEC disturbed sector and the change's wake
+reach (method step 11 iii); above `demotion_share` (20 %) it is demoted. Those records would be lost
+to the test turbine's changed wake, so a slightly further candidate the test turbine does not wake
+serves better. The campaign runner builds the rose from the step 3 reanalysis direction over the
+campaign's data; without a rose (`rose=None`) the ranking is by distance alone. Every "nearest" below
+reads "best-ranked" under this order, and `candidates.csv` gives each candidate's `cost_share` and,
+for a demoted one, the reason, e.g. `demoted: the test turbine is upwind of it 27 % of the time within
+12 D`.
 
 ## How a span is chosen
 
@@ -71,7 +84,7 @@ The viable spans are then ranked, in this order:
 
 | rank by | detail |
 |---|---|
-| 1. the pool rule | of the test turbine's 4 nearest candidates (`pool_size`), the **nearest must be eligible** and at least 3 of the 4 must be eligible within 20 D |
+| 1. the pool rule | of the test turbine's 4 best-ranked candidates (`pool_size`), the **first must be eligible** and at least 3 of the 4 must be eligible within 20 D |
 | 2. the longer short period | `min(before, after)`, capped at 12 months |
 | 3. the longer after period | capped at 12 months |
 | 4. the longer before period | capped at 24 months |
@@ -82,10 +95,10 @@ The viable spans are then ranked, in this order:
 The pool rule is a strong **preference**, not a filter: a span that breaks it is still chosen if
 nothing else is viable, and the plan records `pool_rule_met: false` with the reason.
 
-The chosen span's power references are the **nearest `k`** (4 by default) of its eligible
+The chosen span's power references are the **best-ranked `k`** (4 by default) of its eligible
 candidates. Everything else gets a role and a reason, recorded in `candidates.csv`:
 
-- **reserve**: eligible and within reach, but beyond the nearest `k`. Reserves are what the
+- **reserve**: eligible and within reach, but beyond the best-ranked `k`. Reserves are what the
   reference screen promotes from when it rules a reference out.
 - **waking only**: not eligible, with the reason: `works … overlap the span`, `no data over the
   whole span`, `beyond 20 D`, or `not offered as a reference`.
@@ -114,7 +127,7 @@ unchanged for each test turbine.
 ## A declared span
 
 Declaring `analysis_period`, for the campaign or per turbine, skips the search: the span is used as
-given, and the candidates are still ranked by distance with the nearest `k` as power references.
+given, and the candidates are still ranked with the best-ranked `k` as power references.
 Declared `references` whose works overlap that span are **forced in** as power references, with a
 warning. A declared span with no power reference at all raises.
 
@@ -133,10 +146,14 @@ exclusions.
 | `pre_cap` | 24 months | the longest before period sought |
 | `side_cap` | 12 months | the longest short period, and the longest after period, sought |
 | `min_side` | 3 months | the shortest period a chosen span may have |
-| `pool_size` | 4 | how many nearest candidates the pool rule looks at |
+| `pool_size` | 4 | how many best-ranked candidates the pool rule looks at |
 | `pool_min_eligible` | 3 | how many of those must be eligible and within the distance limit |
 | `max_reference_distance_d` | 20 | the furthest a power reference may be, in rotor diameters |
 | `min_references` | 3 | the fewest power references a chosen span may have |
+| `wake_reach_d` | 20 | how far the test turbine's wake change reaches, in its rotor diameters; the runner sets the campaign's |
+| `rose` | none | the site's wind rose; none ranks by distance alone |
+| `demotion_share` | 0.20 | the share of the rose above which a candidate is demoted |
+| `rose_source` | `none` | what the rose was built from, for the reports |
 
 The benchmark's prepost campaign matrix lowers `min_side` to 14 days so that synthetic rollouts
 with short gaps between works still yield a reading; a real campaign should not.

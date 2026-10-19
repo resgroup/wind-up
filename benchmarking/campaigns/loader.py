@@ -6,6 +6,8 @@ Campaign facts only. Method configuration stays on the method, the deliberate br
 
 from __future__ import annotations
 
+import math
+import numbers
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -19,6 +21,7 @@ from benchmarking.harness.reanalysis import TimestampConvention
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from benchmarking.synthetic.sources.greenbyte import GREENBYTE_COLUMNS
 from wind_up.layout import Layout
+from wind_up.wake_reach import reach_from_uplift
 
 if TYPE_CHECKING:
     from benchmarking.campaigns.declaration import Exclusion, Window
@@ -42,6 +45,10 @@ _OPERATING_STATE_KEYS = ("label_column", "parked_pitch_above_deg", "parked_pitch
 _STATE_VALIDITY_KEYS = ("northing", "waking", "uplift")
 _TIMESTAMP_KEYS = ("convention", "time_zone")
 _SITE_KEYS = ("offshore",)
+_UPGRADE_KEYS = ("expected_uplift", "wake_reach_d")
+# The works table's optional per-row reach columns, matched by prefix.
+EXPECTED_UPLIFT_PREFIX = "Expected uplift"
+WAKE_REACH_PREFIX = "Wake reach"
 
 # The reanalysis centroid is rounded to this many decimals, and taken over the whole turbines
 # file rather than the declared roles, so every campaign on one site shares a cache entry and
@@ -78,6 +85,7 @@ class Declaration:
         only when none is declared
     :param timestamps: the SCADA timestamp convention and time zone; period start, UTC by default
     :param offshore: whether reanalysis is drawn from a sea grid cell rather than a land one
+    :param expected_uplift: the AEP uplift expected of the change, a fraction
     """
 
     name: str
@@ -88,6 +96,7 @@ class Declaration:
     operating_state: OperatingStateConfig = field(default_factory=OperatingStateConfig)
     timestamps: TimestampConvention = field(default_factory=TimestampConvention)
     offshore: bool = False
+    expected_uplift: float | None = None
 
     @property
     def cell_selection(self) -> Literal["land", "sea"]:
@@ -134,10 +143,12 @@ class Declaration:
                 "window": "the whole SCADA record, in whole calendar years",
             },
             "operating_state": _resolved_operating_state(self.operating_state),
-            "wake_unchanged": spec.wake_unchanged,
+            "upgrade": {"expected_uplift": self.expected_uplift, "wake_reach_d": spec.wake_reach_d},
         }
         if spec.works:
-            resolved["works"] = {t: [[str(s), str(e)] for s, e in windows] for t, windows in spec.works.items()}
+            resolved["works"] = {
+                t: [[str(s), str(e), spec.reach_of(t, (s, e))] for s, e in windows] for t, windows in spec.works.items()
+            }
         if spec.exclusions:
             resolved["exclusions"] = [
                 {"turbine": ALL_TURBINES if who is None else who, "start": str(s), "end": str(e)}
@@ -176,7 +187,19 @@ def load_declaration(path: str | Path) -> Declaration:
     )
     _check_roles(upgraded=upgraded, references=references, excluded=excluded, coords=coords)
 
-    works = read_works(_resolve(root, str(data["works"]), what="works")) if data.get("works") else {}
+    if "wake_unchanged" in raw:
+        msg = (
+            "wake_unchanged is no longer declared: a change that leaves the wakes as they were declares "
+            "upgrade.wake_reach_d: 0"
+        )
+        raise ValueError(msg)
+    offshore = _offshore(raw.get("site"))
+    expected_uplift, wake_reach_d = _upgrade(raw.get("upgrade"), offshore=offshore)
+    works, works_reach_d = (
+        read_works(_resolve(root, str(data["works"]), what="works"), offshore=offshore)
+        if data.get("works")
+        else ({}, {})
+    )
     _check_known(works, coords=coords, what="the works table")
     exclusions = _exclusions(raw.get("exclusions") or [])
     _check_known({w: None for w, _, _ in exclusions if w is not None}, coords=coords, what="the exclusions")
@@ -198,7 +221,8 @@ def load_declaration(path: str | Path) -> Declaration:
         works=works,
         exclusions=exclusions,
         references_declared=bool(declared_references),
-        wake_unchanged=_flag(raw.get("wake_unchanged", False), what="wake_unchanged"),
+        wake_reach_d=wake_reach_d,
+        works_reach_d=works_reach_d,
     )
     return Declaration(
         name=_path_component(str(raw["name"]), what="campaign name"),
@@ -208,17 +232,22 @@ def load_declaration(path: str | Path) -> Declaration:
         centroid=centroid(coords),
         operating_state=operating_state_config(raw.get("operating_state")),
         timestamps=_timestamps(data.get("timestamps")),
-        offshore=_offshore(raw.get("site")),
+        offshore=offshore,
+        expected_uplift=expected_uplift,
     )
 
 
-def read_works(path: Path) -> dict[str, list[Window]]:
+def read_works(path: Path, *, offshore: bool = False) -> tuple[dict[str, list[Window]], dict[str, dict[Window, float]]]:
     """Read a works table: ``Turbine`` plus the first ``First date...`` and ``Last date...`` columns.
 
     Each row is one window of whole days, ``[first 00:00, last + 1 day 00:00)`` UTC. A turbine may
-    have several rows.
+    have several rows. Returns the windows, and per turbine the windows with a reach of their own:
+    from the optional ``Wake reach...`` column (rotor diameters), else from the optional
+    ``Expected uplift...`` column (a fraction) through the reach table.
     """
     frame = pd.read_csv(path)
+    uplift_col = next((c for c in frame.columns if str(c).startswith(EXPECTED_UPLIFT_PREFIX)), None)
+    reach_col = next((c for c in frame.columns if str(c).startswith(WAKE_REACH_PREFIX)), None)
     first = next((c for c in frame.columns if str(c).startswith("First date")), None)
     last = next((c for c in frame.columns if str(c).startswith("Last date")), None)
     if "Turbine" not in frame.columns or first is None or last is None:
@@ -228,22 +257,66 @@ def read_works(path: Path) -> dict[str, list[Window]]:
         )
         raise ValueError(msg)
     works: dict[str, list[Window]] = {}
-    for turbine, first_day, last_day in zip(frame["Turbine"].astype(str), frame[first], frame[last], strict=True):
+    reaches: dict[str, dict[Window, float]] = {}
+    for row, (turbine, first_day, last_day) in enumerate(
+        zip(frame["Turbine"].astype(str), frame[first], frame[last], strict=True)
+    ):
         start = _timestamp(pd.Timestamp(first_day).normalize())
         end = _timestamp(pd.Timestamp(last_day).normalize()) + pd.Timedelta(days=1)
         if end <= start:
             msg = f"the works table {path.name} gives {turbine} a last date before its first"
             raise ValueError(msg)
         works.setdefault(turbine, []).append((start, end))
-    return {turbine: sorted(windows) for turbine, windows in works.items()}
+        reach = _row_reach(frame, row=row, uplift_col=uplift_col, reach_col=reach_col, offshore=offshore)
+        if reach is not None:
+            reaches.setdefault(turbine, {})[(start, end)] = reach
+    return {turbine: sorted(windows) for turbine, windows in works.items()}, reaches
 
 
-def _flag(value: object, *, what: str) -> bool:
-    """Return a declared true/false value, raising on anything else."""
-    if not isinstance(value, bool):
-        msg = f"{what} must be true or false, got {value!r}"
-        raise TypeError(msg)
-    return value
+def _row_reach(frame: pd.DataFrame, *, row: int, uplift_col: object, reach_col: object, offshore: bool) -> float | None:
+    """Return a works table row's own reach, or None when it takes the campaign's."""
+    if reach_col is not None and pd.notna(frame[reach_col].iloc[row]):
+        return _reach(frame[reach_col].iloc[row], what=f"works table row {row + 1} {reach_col}")
+    if uplift_col is not None and pd.notna(frame[uplift_col].iloc[row]):
+        uplift = _number(frame[uplift_col].iloc[row], what=f"works table row {row + 1} {uplift_col}")
+        return reach_from_uplift(uplift, offshore=offshore)
+    return None
+
+
+def _upgrade(block: dict | None, *, offshore: bool) -> tuple[float, float]:
+    """Read the ``upgrade`` block: the expected uplift and the reach, the declared one or the table's."""
+    if block is None or "expected_uplift" not in block:
+        msg = (
+            "the declaration needs upgrade.expected_uplift: the AEP uplift expected of the change, a fraction "
+            "(e.g. 0.05), which sets how far its wake change reaches"
+        )
+        raise ValueError(msg)
+    stray = sorted(set(map(str, block)) - set(_UPGRADE_KEYS))
+    if stray:
+        msg = f"upgrade has unknown keys {stray}; known keys are {list(_UPGRADE_KEYS)}"
+        raise ValueError(msg)
+    expected_uplift = _number(block["expected_uplift"], what="upgrade.expected_uplift")
+    declared = block.get("wake_reach_d")
+    if declared is not None:
+        return expected_uplift, _reach(declared, what="upgrade.wake_reach_d")
+    return expected_uplift, reach_from_uplift(expected_uplift, offshore=offshore)
+
+
+def _number(value: object, *, what: str) -> float:
+    """Return a declared finite number, raising on anything else."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(value):
+        msg = f"{what} must be a finite number, not {value!r}"
+        raise ValueError(msg)
+    return float(value)
+
+
+def _reach(value: object, *, what: str) -> float:
+    """Return a declared reach in rotor diameters, raising unless it is a finite number at least 0."""
+    reach = _number(value, what=what)
+    if reach < 0:
+        msg = f"{what} must be at least 0 rotor diameters, not {reach}"
+        raise ValueError(msg)
+    return reach
 
 
 def _check_works_clear_of(changeover: pd.Timestamp, *, works: dict[str, list[Window]]) -> None:

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
+from benchmarking.harness.wind_rose import era5_rose, rose_label
 from benchmarking.synthetic import treated_mask
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, PlanSettings, plan_analysis
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from benchmarking.campaigns.declaration import CampaignSpec, Window
+    from benchmarking.harness.record_selection import WorksWindow
     from benchmarking.synthetic import ColumnSchema, ToggleSchedule
 
 logger = logging.getLogger(__name__)
@@ -54,6 +56,24 @@ class CampaignPlans:
     warnings: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
+def with_wake_ranking(
+    settings: PlanSettings, *, spec: CampaignSpec, era5_df: pd.DataFrame, source: str
+) -> PlanSettings:
+    """Return ``settings`` ranking references with the campaign's wake reach and the rose of ``era5_df``.
+
+    :param settings: the period selector's settings
+    :param spec: the campaign, for its reach
+    :param era5_df: the reanalysis the rose is built from, over the campaign's data
+    :param source: what the reanalysis is, for the reports
+    """
+    return replace(
+        settings,
+        wake_reach_d=spec.wake_reach_d,
+        rose=era5_rose(era5_df),
+        rose_source=rose_label(era5_df, source=source),
+    )
+
+
 def campaign_works(spec: CampaignSpec) -> dict[str, list[Window]]:
     """Every turbine's works windows, each upgraded turbine given one.
 
@@ -69,17 +89,15 @@ def campaign_works(spec: CampaignSpec) -> dict[str, list[Window]]:
     return works
 
 
-def changed_works(spec: CampaignSpec) -> dict[str, list[Window]]:
-    """Every turbine's works windows as the changed-upwind rule sees them: every declared window and each upgrade.
+def changed_works(spec: CampaignSpec) -> dict[str, list[WorksWindow]]:
+    """Every turbine's works windows as the changed-upwind rule sees them, each with its reach.
 
-    With ``spec.wake_unchanged`` the upgrades are left out.
+    Every declared window and each upgrade.
     """
     works = {t: list(w) for t, w in spec.works.items()}
-    if spec.wake_unchanged:
-        return works
     for turbine in spec.upgraded_turbines:
         works[turbine] = sorted({*works.get(turbine, []), *campaign_works(spec)[turbine]})
-    return works
+    return {t: [(w0, w1, spec.reach_of(t, (w0, w1))) for w0, w1 in windows] for t, windows in works.items()}
 
 
 def other_works(spec: CampaignSpec, turbine: str) -> list[Window]:

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from tests.wind_up.layouts import line_layout
+from tests.wind_up.layouts import line_layout, scatter_layout
 from wind_up.analysis_period import MONTH, AnalysisPlan, PlanSettings, intervals_duration, plan_analysis
 from wind_up.layout import Layout
 
@@ -138,7 +139,7 @@ class TestReferences:
         p = plan(line(8), settings=PlanSettings(k=3))
         assert p.power_references == ("T1", "T2", "T3")
         assert p.reserves == ("T4", "T5", "T6")
-        assert p.waking_only["T4"] == "reserve: beyond the nearest 3"
+        assert p.waking_only["T4"] == "reserve: beyond the best-ranked 3"
         assert p.waking_only["T7"] == "beyond 20 D (21.0 D)"
 
     def test_distances_are_in_the_test_turbines_rotor_diameters(self) -> None:
@@ -150,8 +151,8 @@ class TestFallback:
         works = {w: [(utc("2020-03-01"), utc("2020-03-05"))] for w in ("T1", "T2")}
         p = plan(line(6), works=works, settings=PlanSettings(min_side=6 * MONTH))
         assert not p.pool_rule_met
-        assert "nearest T1 is not eligible (works 2020-03-01..2020-03-04 overlap the span)" in p.pool_rule_reason
-        assert "only 2 of the 4 nearest are eligible within 20 D: T3, T4" in p.pool_rule_reason
+        assert "best-ranked T1 is not eligible (works 2020-03-01..2020-03-04 overlap the span)" in p.pool_rule_reason
+        assert "only 2 of the 4 best-ranked are eligible within 20 D: T3, T4" in p.pool_rule_reason
 
     def test_no_span_with_both_sides_long_enough_raises(self) -> None:
         extents = dict.fromkeys([f"T{i}" for i in range(6)], (utc("2019-12-01"), utc("2020-02-01")))
@@ -242,6 +243,7 @@ def test_the_plan_table_lists_every_other_turbine_once() -> None:
     table = plan(line(8), settings=PlanSettings(k=3)).table()
     assert list(table["turbine"]) == ["T1", "T2", "T3", "T4", "T5", "T6", "T7"]
     assert list(table["role"]) == ["power_reference"] * 3 + ["reserve"] * 3 + ["waking_only"]
+    assert list(table.columns) == ["turbine", "role", "distance_d", "cost_share", "reason"]
 
 
 def test_the_summary_is_plain_data() -> None:
@@ -255,3 +257,48 @@ def test_the_before_and_after_periods_bracket_the_works_window() -> None:
     chosen = plan(line(6))
     assert chosen.before == (chosen.start, chosen.works[0])
     assert chosen.after == (chosen.works[1], chosen.end)
+
+
+def westerly() -> np.ndarray:
+    """A rose with all the wind from the west."""
+    rose = np.zeros(360)
+    rose[270] = 1.0
+    return rose
+
+
+def cross_layout() -> Layout:
+    """T0 at the origin; T1 3 D east (downwind in a westerly), T2 5 D north, T3 5.5 D south, T4 6 D north."""
+    points = [(0.0, 0.0), (300.0, 0.0), (0.0, 500.0), (0.0, -550.0), (50.0, 600.0)]
+    return Layout.from_frame(scatter_layout(points, rotor_diameter_m=ROTOR_D))
+
+
+class TestDemotion:
+    def test_without_a_rose_the_order_is_by_distance(self) -> None:
+        chosen = plan(cross_layout(), settings=PlanSettings(k=3))
+        assert chosen.power_references == ("T1", "T2", "T3")
+        assert set(chosen.table()["cost_share"]) == {0.0}
+
+    def test_a_near_downwind_candidate_is_demoted_behind_farther_crosswind_ones(self) -> None:
+        settings = PlanSettings(k=3, rose=westerly(), wake_reach_d=12.0)
+        chosen = plan(cross_layout(), settings=settings)
+        assert chosen.power_references == ("T2", "T3", "T4")
+        assert chosen.reserves == ("T1",)
+        row = chosen.table().set_index("turbine").loc["T1"]
+        assert row["role"] == "reserve"
+        assert row["cost_share"] == pytest.approx(1.0)
+        assert row["reason"] == "demoted: the test turbine is upwind of it 100 % of the time within 12 D"
+
+    def test_a_candidate_beyond_the_reach_is_not_demoted(self) -> None:
+        chosen = plan(cross_layout(), settings=PlanSettings(k=3, rose=westerly(), wake_reach_d=2.0))
+        assert chosen.power_references == ("T1", "T2", "T3")
+
+    def test_a_cost_at_the_threshold_is_not_demoted(self) -> None:
+        settings = PlanSettings(k=3, rose=westerly(), wake_reach_d=12.0, demotion_share=1.0)
+        assert plan(cross_layout(), settings=settings).power_references == ("T1", "T2", "T3")
+
+    def test_the_summary_records_the_reach_and_the_rose(self) -> None:
+        settings = PlanSettings(rose=westerly(), wake_reach_d=12.0, rose_source="ERA5 2018-2020")
+        summary = plan(cross_layout(), settings=settings).summary()
+        assert summary["wake_reach_d"] == 12.0
+        assert summary["demotion_share"] == 0.2
+        assert summary["rose"] == "ERA5 2018-2020"

@@ -4,21 +4,28 @@ A power reference must have data over the whole span and no works window inside 
 has at least ``min_references`` of them. Among the candidate spans, the pool rule comes first, then
 the shorter side, then post, then pre, then how many power references there are and how far the
 furthest is.
+
+Candidates are ranked by distance, except that a candidate the test turbine is upwind of for more
+than ``demotion_share`` of the wind rose, within the wake effect reach, ranks behind every candidate
+that is not.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from wind_up.campaign_design import REFERENCES_PER_TEST_TURBINE
 from wind_up.layout import NAME_COL, ROTOR_DIAMETER_COL, Layout
+from wind_up.wake_reach import DEFAULT_DEMOTION_SHARE, MAX_REACH_D, candidate_cost
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+    from wind_up.wake_reach import Rose
 
 Window = tuple[pd.Timestamp, pd.Timestamp]
 # (turbine, start, end), end exclusive; turbine None is farm-wide.
@@ -26,7 +33,7 @@ Exclusion = tuple[str | None, pd.Timestamp, pd.Timestamp]
 
 MONTH = pd.Timedelta(days=365.25 / 12)
 
-TABLE_COLUMNS = ("turbine", "role", "distance_d", "reason")
+TABLE_COLUMNS = ("turbine", "role", "distance_d", "cost_share", "reason")
 
 # Masked time can extend an edge into more masked time; a few steps settle any realistic timeline.
 _REACH_ITERATIONS = 20
@@ -44,6 +51,10 @@ class PlanSettings:
     :param pool_min_eligible: how many of those must be eligible and within the distance limit
     :param max_reference_distance_d: the furthest a power reference may be, in rotor diameters
     :param min_references: the fewest power references a chosen span may have
+    :param wake_reach_d: how far the test turbine's wake change reaches, in its rotor diameters
+    :param rose: the site's wind rose; ``None`` ranks by distance alone
+    :param demotion_share: the share of the rose above which a candidate is demoted
+    :param rose_source: what the rose was built from, for the reports
     """
 
     k: int = 4
@@ -54,6 +65,10 @@ class PlanSettings:
     pool_min_eligible: int = REFERENCES_PER_TEST_TURBINE
     max_reference_distance_d: float = 20.0
     min_references: int = REFERENCES_PER_TEST_TURBINE
+    wake_reach_d: float = MAX_REACH_D
+    rose: Rose | None = field(default=None, compare=False, repr=False)
+    demotion_share: float = DEFAULT_DEMOTION_SHARE
+    rose_source: str = "none"
 
 
 DEFAULT_PLAN_SETTINGS = PlanSettings()
@@ -69,8 +84,8 @@ class AnalysisPlan:
     :param works: the test turbine's works window; no length for a shared changeover
     :param pre: usable time before the works window
     :param post: usable time after the works window
-    :param power_references: nearest first, then any forced in
-    :param reserves: further eligible turbines within the distance limit, nearest first
+    :param power_references: best-ranked first, then any forced in
+    :param reserves: further eligible turbines within the distance limit, best-ranked first
     :param waking_only: every other turbine that is not a power reference, with the reason
     :param distances_d: every other turbine's distance, in the test turbine's rotor diameters
     :param forced: declared references used although their works overlap the span
@@ -78,6 +93,8 @@ class AnalysisPlan:
     :param pool_rule_met: whether the pool rule holds over the span
     :param pool_rule_reason: why it does not; empty when it does
     :param k: power references sought
+    :param costs: every other turbine's rose share with the test turbine upwind of it within the reach
+    :param settings: how the plan was chosen
     """
 
     turbine: str
@@ -95,6 +112,12 @@ class AnalysisPlan:
     pool_rule_met: bool
     pool_rule_reason: str
     k: int
+    costs: dict[str, float] = field(default_factory=dict)
+    settings: PlanSettings = field(default_factory=PlanSettings, repr=False)
+
+    def demoted(self, other: str) -> bool:
+        """Return whether ``other`` ranks behind the candidates the test turbine does not wake as much."""
+        return self.costs.get(other, 0.0) > self.settings.demotion_share
 
     @property
     def before(self) -> Window:
@@ -107,7 +130,7 @@ class AnalysisPlan:
         return (self.works[1], self.end)
 
     def table(self) -> pd.DataFrame:
-        """One row per other turbine, nearest first: ``turbine``, ``role``, ``distance_d``, ``reason``."""
+        """One row per other turbine, nearest first, with :data:`TABLE_COLUMNS`."""
         rows = []
         for other, distance in sorted(self.distances_d.items(), key=lambda item: (item[1], item[0])):
             if other in self.forced:
@@ -118,7 +141,14 @@ class AnalysisPlan:
                 role, reason = "reserve", self.waking_only[other]
             else:
                 role, reason = "waking_only", self.waking_only[other]
-            rows.append({"turbine": other, "role": role, "distance_d": distance, "reason": reason})
+            cost = self.costs.get(other, 0.0)
+            if self.demoted(other):
+                demotion = (
+                    f"demoted: the test turbine is upwind of it {cost * 100:.0f} % of the time within "
+                    f"{self.settings.wake_reach_d:g} D"
+                )
+                reason = demotion if role in ("power_reference", "reserve") else f"{reason}; {demotion}"
+            rows.append({"turbine": other, "role": role, "distance_d": distance, "cost_share": cost, "reason": reason})
         return pd.DataFrame(rows, columns=list(TABLE_COLUMNS))
 
     def summary(self) -> dict[str, object]:
@@ -135,6 +165,10 @@ class AnalysisPlan:
             "forced": list(self.forced),
             "pool_rule_met": self.pool_rule_met,
             "pool_rule_reason": self.pool_rule_reason,
+            "wake_reach_d": self.settings.wake_reach_d,
+            "demotion_share": self.settings.demotion_share,
+            "rose": self.settings.rose_source,
+            "demoted": sorted(o for o in self.costs if self.demoted(o)),
         }
 
 
@@ -202,7 +236,23 @@ class _Timeline:
         self.masked = [(s, e) for who, s, e in exclusions if who in (None, turbine)]
         self.distances_d = self.distances_from(turbine)
         offered = set(candidates) - {turbine}
-        self.ranked = sorted(offered & set(self.distances_d), key=lambda r: (self.distances_d[r], r))
+        self.costs = self.wake_costs()
+        self.ranked = sorted(
+            offered & set(self.distances_d),
+            key=lambda r: (self.costs[r] > settings.demotion_share, self.distances_d[r], r),
+        )
+
+    def wake_costs(self) -> dict[str, float]:
+        """Return each other turbine's rose share with the test turbine upwind of it, 0 without a rose."""
+        rose = self.settings.rose
+        if rose is None:
+            return dict.fromkeys(self.distances_d, 0.0)
+        return {
+            other: candidate_cost(
+                self.layout, test=self.turbine, candidate=other, reach_d=self.settings.wake_reach_d, rose=rose
+            )
+            for other in self.distances_d
+        }
 
     def distances_from(self, turbine: str) -> dict[str, float]:
         return distances_in_diameters(self.layout, turbine=turbine)
@@ -232,7 +282,7 @@ class _Timeline:
         return f"beyond {self.settings.max_reference_distance_d:g} D ({self.distances_d[other]:.1f} D)"
 
     def usable_eligible(self, start: pd.Timestamp, end: pd.Timestamp) -> list[str]:
-        """Eligible candidates within the distance limit, nearest first."""
+        """Eligible candidates within the distance limit, best-ranked first."""
         return [r for r in self.ranked if self.within(r) and self.eligible(r, start, end)]
 
     def pool_met(self, start: pd.Timestamp, end: pd.Timestamp) -> bool:
@@ -248,14 +298,14 @@ class _Timeline:
         if not pool:
             return "no candidate references"
         parts = []
-        nearest = pool[0]
-        if not (self.within(nearest) and self.eligible(nearest, start, end)):
-            parts.append(f"nearest {nearest} is not eligible ({self.why_not(nearest, start, end)})")
+        best = pool[0]
+        if not (self.within(best) and self.eligible(best, start, end)):
+            parts.append(f"best-ranked {best} is not eligible ({self.why_not(best, start, end)})")
         good = [r for r in pool if self.within(r) and self.eligible(r, start, end)]
         if len(good) < self.settings.pool_min_eligible:
             names = f": {', '.join(good)}" if good else ""
             parts.append(
-                f"only {len(good)} of the {len(pool)} nearest are eligible within "
+                f"only {len(good)} of the {len(pool)} best-ranked are eligible within "
                 f"{self.settings.max_reference_distance_d:g} D{names}"
             )
         return "; ".join(parts)
@@ -396,7 +446,9 @@ def plan_analysis(
     reserves = tuple(r for r in eligible if r not in references)
     waking_only = {
         other: (
-            f"reserve: beyond the nearest {settings.k}" if other in reserves else timeline.why_not(other, start, end)
+            f"reserve: beyond the best-ranked {settings.k}"
+            if other in reserves
+            else timeline.why_not(other, start, end)
         )
         for other in timeline.distances_d
         if other not in references
@@ -417,6 +469,8 @@ def plan_analysis(
         pool_rule_met=option.pool_met,
         pool_rule_reason=timeline.pool_reason(start, end),
         k=settings.k,
+        costs=timeline.costs,
+        settings=settings,
     )
 
 

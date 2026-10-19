@@ -62,7 +62,8 @@ def context_for_plan(spec: CampaignSpec, plan: AnalysisPlan, *, scada_df: pd.Dat
             changeover=plan.works,
             start=plan.start,
             end=plan.end,
-            test_wake_changed=not spec.wake_unchanged,
+            test_reach_d=spec.reach_of(plan.turbine, plan.works),
+            layout=spec.layout,
         ),
         works=(pd.Timestamp(plan.works[0]), pd.Timestamp(plan.works[1])),
     )

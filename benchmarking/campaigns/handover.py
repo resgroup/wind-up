@@ -141,6 +141,10 @@ turbines:
   # excluded:   []       # never use as a reference; their wake still counts
   rated_power_kw:
 
+upgrade:
+  expected_uplift:       # the AEP uplift expected of the change, a fraction (e.g. 0.05)
+  # wake_reach_d:        # how far its wake change reaches, in rotor diameters; overrides the uplift
+
 timing:
   mode:                  # prepost or toggle
   # prepost:

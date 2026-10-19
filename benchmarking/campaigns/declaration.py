@@ -14,6 +14,7 @@ import pandas as pd
 
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, generate_dataset
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL, Layout
+from wind_up.wake_reach import MAX_REACH_D
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -87,8 +88,10 @@ class CampaignSpec:
         is farm-wide
     :param references_declared: ``candidate_references`` was declared rather than defaulted, so a
         declared span may force them in as power references
-    :param wake_unchanged: the change leaves the upgraded turbines' wakes as they were, so records with
-        one of them upwind are not dropped for it
+    :param wake_reach_d: how far, in the changed turbine's rotor diameters, the upgrade's wake change
+        reaches; a record with an upgraded turbine upwind of a turbine within it is dropped. 0 leaves
+        the wakes as they were. The reach of every works window without its own.
+    :param works_reach_d: per turbine, the works windows with a reach of their own
     """
 
     upgraded_turbines: list[str]
@@ -103,7 +106,8 @@ class CampaignSpec:
     works: dict[str, list[Window]] = field(default_factory=dict)
     exclusions: list[Exclusion] = field(default_factory=list)
     references_declared: bool = False
-    wake_unchanged: bool = False
+    wake_reach_d: float = MAX_REACH_D
+    works_reach_d: dict[str, dict[Window, float]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Raise when the timing does not give every upgraded turbine one changeover."""
@@ -167,6 +171,10 @@ class CampaignSpec:
             msg = "a toggle campaign has no works windows"
             raise TypeError(msg)
         return self.works[turbine][0] if self.upgrade_timing is None else (timing, timing)
+
+    def reach_of(self, turbine: str, window: Window) -> float:
+        """Return the wake effect reach, in rotor diameters, of ``turbine``'s works ``window``."""
+        return self.works_reach_d.get(turbine, {}).get(window, self.wake_reach_d)
 
     def period_for(self, turbine: str) -> Window | None:
         """Return the declared span for ``turbine``, or None when wind-up chooses it."""
@@ -233,6 +241,7 @@ class SyntheticCampaign:
     :param exclusions: excluded periods (see :class:`CampaignSpec`)
     :param other_upgraded: turbines the upgrades are injected into but that are not analysed, each
         changed at the end of its works window, or at the shared changeover
+    :param wake_reach_d: the declared reach of the upgrade's wake change (see :class:`CampaignSpec`)
     """
 
     upgraded_turbines: list[str]
@@ -250,6 +259,7 @@ class SyntheticCampaign:
     works: dict[str, list[Window]] = field(default_factory=dict)
     exclusions: list[Exclusion] = field(default_factory=list)
     other_upgraded: list[str] = field(default_factory=list)
+    wake_reach_d: float = MAX_REACH_D
 
     @property
     def turbines(self) -> list[str]:
@@ -273,6 +283,7 @@ class SyntheticCampaign:
             turbine_col=self.columns.turbine,
             works={t: list(w) for t, w in self.works.items()},
             exclusions=list(self.exclusions),
+            wake_reach_d=self.wake_reach_d,
         )
 
     def generate(self, scada_df: pd.DataFrame) -> SyntheticDataset:

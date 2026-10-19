@@ -16,6 +16,7 @@ from benchmarking.baselines.prepost_matrix.validation import (
     lambda_uplift,
     season,
     turbine_frame,
+    usable_share_table,
     validation_tables,
     write_report,
 )
@@ -190,3 +191,25 @@ def test_the_report_is_written_beside_the_study(tmp_path: Path) -> None:
     assert text.startswith("# Validation of 18 ok cells")
     assert (tmp_path / "validation" / "validation.md").read_text() == text
     assert (tmp_path / "validation" / "ii_linearity.csv").exists()
+
+
+def test_the_usable_share_table_gives_median_shares_per_site_and_period() -> None:
+    records = _records(n_seeds=2)
+    for record in records:
+        record["record_losses"] = {
+            "T01": [
+                {"reason": "usable", "hours_before": 300.0, "hours_after": 600.0},
+                {"reason": "changed upwind of reference", "hours_before": 500.0, "hours_after": 300.0},
+                {"reason": "changed upwind of subject", "hours_before": 200.0, "hours_after": 100.0},
+            ]
+        }
+    table = usable_share_table(records).set_index(["arm", "site", "pre_months", "post_months"])
+    row = table.loc[("main", "kel", 12, 6)]
+    assert row["usable_before"] == pytest.approx(0.3)
+    assert row["usable_after"] == pytest.approx(0.6)
+    assert row["changed_upwind_of_reference_before"] == pytest.approx(0.5)
+    assert row["changed_upwind_of_subject_before"] == pytest.approx(0.2)
+    assert row["turbines"] == len(records)
+    assert table.loc[("main", "kel", "all", "all"), "usable_before"] == pytest.approx(0.3)
+    text = describe(validation_tables(records), n_cells=len(records))
+    assert "usable share of before hours: main kel 0.30" in text

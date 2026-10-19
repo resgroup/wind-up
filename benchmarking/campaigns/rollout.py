@@ -27,6 +27,8 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.campaigns.declaration import SyntheticCampaign, Window, layout_from_coords
+from benchmarking.campaigns.loader import centroid, era5_window
+from benchmarking.harness.wind_rose import era5_rose
 from benchmarking.synthetic import HOT_COLUMNS, WindSpeedCpChange
 from benchmarking.synthetic.sources.greenbyte import (
     GREENBYTE_COLUMNS,
@@ -37,16 +39,25 @@ from benchmarking.synthetic.sources.greenbyte import (
 )
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COORDINATES, HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M
 from wind_up.campaign_design import design_campaign
+from wind_up.wake_reach import reach_from_uplift, uniform_rose
+from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
     from pathlib import Path
 
     from benchmarking.synthetic import ColumnSchema
+    from wind_up.campaign_design import CampaignDesign
+    from wind_up.wake_reach import Rose
 
 # The AeroUp shape: a region-2 Cp gain tailing to nothing by rated.
 AEROUP_WS_POINTS = (4.0, 8.0, 12.0, 16.0)
 AEROUP_DELTAS = (0.07, 0.07, 0.045, 0.0)
+# What a vendor would claim for the AeroUp, declared by every rollout campaign whatever its multiplier.
+AEROUP_EXPECTED_UPLIFT = 0.05
+# The multiplier of the AeroUp shape that gives about 1 % AEP, and what a campaign of it declares.
+SMALL_MULTIPLIER = 0.22
+SMALL_EXPECTED_UPLIFT = 0.01
 
 WORKING_DAYS_PER_TURBINE = (5, 12)
 TRIAL_TEAMS = (1, 2)
@@ -153,6 +164,17 @@ def greenbyte_site(farm: GreenbyteFarm, *, data_dir: Path | None = None) -> Roll
         data_start=farm.data_start,
         data_end=pd.Timestamp(year=max(farm.years) + 1, month=1, day=1, tz="UTC"),
     )
+
+
+def site_rose(site: RolloutSite) -> Rose:
+    """Return the site's wind rose from the reanalysis at its centroid over its whole data span.
+
+    Fetches through the reanalysis cache, which needs network on a miss.
+    """
+    lat, lon = centroid(dict(site.coords))
+    start, end = era5_window(site.data_start, site.data_end)
+    era5 = get_era5_hourly_df(lat=lat, lon=lon, start_date=start, end_date=end)
+    return era5_rose(era5, start=site.data_start, end=site.data_end)
 
 
 def penmanshiel_site(*, data_dir: Path | None = None) -> RolloutSite:
@@ -340,11 +362,15 @@ def draw_rollout(
     full_rollout: bool,
     tile: int = 0,
     tested: Collection[str] = (),
+    rose: Rose | None = None,
+    expected_uplift: float = AEROUP_EXPECTED_UPLIFT,
 ) -> RolloutDraw:
     """Draw a trial-then-rollout campaign on ``site``, as its tile ``tile``.
 
     The trial is a compliant campaign design of one to three test turbines, never more than one
-    fewer than the site allows, none of ``site.excluded``, preferring turbines not in ``tested``.
+    fewer than the site allows, none of ``site.excluded``: the design with the highest total kept
+    share for an upgrade expected to give ``expected_uplift`` under ``rose``, among the turbines not
+    in ``tested``, or among all of them when those cannot make the trial.
     Its works start at the fractional part of ``tile * TILE_STEP`` along the days from 24 months
     into the data to the last day that leaves room for the works and 12 months after them, with
     one or two teams. How much data before the trial a campaign sees is chosen when the campaign
@@ -356,17 +382,27 @@ def draw_rollout(
     :param full_rollout: whether every other turbine is worked after the trial
     :param tile: which of the site's tiles; sets where in the data the trial starts
     :param tested: turbines earlier tiles tested
+    :param rose: the site's wind rose (see :func:`site_rose`); uniform when not given
+    :param expected_uplift: what the campaign declares, which sets the wake reach the trial is designed for
     :raises ValueError: if the site's data is too short for the trial
     """
     rng = np.random.default_rng(seed)
     layout = site.layout_frame()
     excluded = sorted(site.excluded)
-    most = design_campaign(layout, excluded=excluded).max_test_turbines
+    rose = rose if rose is not None else uniform_rose()
+    most = design_campaign(layout, excluded=excluded, expected_uplift=expected_uplift, wind_rose=rose).max_test_turbines
     order = [str(t) for t in rng.permutation(list(site.coords)) if t not in site.excluded]
-    priority = [t for t in order if t not in tested] + [t for t in order if t in tested]
     n_trial = int(rng.integers(1, max(1, min(most - 1, TRIAL_MAX_TEST_TURBINES)) + 1))
-    design = design_campaign(layout, test_priority=priority, excluded=excluded, n_test=n_trial)
-    trial = tuple(t for t in priority if t in design.test_turbines)
+    design = _trial_design(
+        layout,
+        excluded=excluded,
+        tested=sorted(set(tested) - site.excluded),
+        n_trial=n_trial,
+        rose=rose,
+        expected_uplift=expected_uplift,
+        seed=seed,
+    )
+    trial = tuple(t for t in order if t in design.test_turbines)
 
     n_teams = int(rng.choice(TRIAL_TEAMS))
     days_seed = int(rng.integers(2**32))
@@ -404,8 +440,44 @@ def draw_rollout(
     return RolloutDraw(site=site, seed=seed, trial=trial, rollout=rollout, works=works)
 
 
-def draw_tiles(site: RolloutSite, *, seeds: Sequence[int], full_rollouts: Sequence[bool]) -> list[RolloutDraw]:
-    """Draw ``site``'s tiles in order, tile ``i`` from ``seeds[i]``, each preferring turbines no earlier tile tested.
+def _trial_design(
+    layout: pd.DataFrame,
+    *,
+    excluded: Sequence[str],
+    tested: Sequence[str],
+    n_trial: int,
+    rose: Rose,
+    expected_uplift: float,
+    seed: int,
+) -> CampaignDesign:
+    """Return the best trial of ``n_trial`` among the untested turbines, else among all of them."""
+
+    def design(reference_only: Sequence[str]) -> CampaignDesign:
+        return design_campaign(
+            layout,
+            excluded=excluded,
+            reference_only=reference_only,
+            n_test=n_trial,
+            expected_uplift=expected_uplift,
+            wind_rose=rose,
+            seed=seed,
+        )
+
+    try:
+        return design(tested)
+    except ValueError:
+        return design(())
+
+
+def draw_tiles(
+    site: RolloutSite,
+    *,
+    seeds: Sequence[int],
+    full_rollouts: Sequence[bool],
+    rose: Rose | None = None,
+    expected_uplift: float = AEROUP_EXPECTED_UPLIFT,
+) -> list[RolloutDraw]:
+    """Draw ``site``'s tiles in order, tile ``i`` from ``seeds[i]``, each among turbines no earlier tile tested.
 
     Once every turbine that may be tested has been, the preference starts afresh. Tile ``i`` depends
     only on the first ``i + 1`` seeds and rollouts.
@@ -413,6 +485,8 @@ def draw_tiles(site: RolloutSite, *, seeds: Sequence[int], full_rollouts: Sequen
     :param site: the site to draw on
     :param seeds: each tile's seed
     :param full_rollouts: whether each tile rolls the upgrade out to every other turbine
+    :param rose: the site's wind rose; uniform when not given
+    :param expected_uplift: what the campaigns declare (see :func:`draw_rollout`)
     """
     testable = set(site.coords) - site.excluded
     tested: set[str] = set()
@@ -420,7 +494,15 @@ def draw_tiles(site: RolloutSite, *, seeds: Sequence[int], full_rollouts: Sequen
     for tile, (seed, full_rollout) in enumerate(zip(seeds, full_rollouts, strict=True)):
         if testable <= tested:
             tested = set()
-        draw = draw_rollout(site, seed=seed, full_rollout=full_rollout, tile=tile, tested=frozenset(tested))
+        draw = draw_rollout(
+            site,
+            seed=seed,
+            full_rollout=full_rollout,
+            tile=tile,
+            tested=frozenset(tested),
+            rose=rose,
+            expected_uplift=expected_uplift,
+        )
         tested |= set(draw.trial)
         draws.append(draw)
     return draws
@@ -443,7 +525,9 @@ def aeroup_upgrade(multiplier: float) -> WindSpeedCpChange:
     return WindSpeedCpChange(ws_points=AEROUP_WS_POINTS, deltas=tuple(multiplier * d for d in AEROUP_DELTAS))
 
 
-def rollout_campaign(draw: RolloutDraw, *, multiplier: float, post_months: int) -> SyntheticCampaign:
+def rollout_campaign(
+    draw: RolloutDraw, *, multiplier: float, post_months: int, expected_uplift: float = AEROUP_EXPECTED_UPLIFT
+) -> SyntheticCampaign:
     """Build the campaign of ``draw`` with the AeroUp change scaled by ``multiplier``.
 
     The trial turbines are analysed; every other turbine not in ``site.excluded`` is a candidate
@@ -451,11 +535,12 @@ def rollout_campaign(draw: RolloutDraw, *, multiplier: float, post_months: int) 
     :meth:`RolloutDraw.data_window`), and only works starting before then are declared; how much
     data the campaign sees before the trial is the SCADA window's choice. The change is injected
     into the trial and any rollout turbine from its own works end. The analysis span is left to the
-    period selector.
+    period selector. The campaign declares ``expected_uplift`` whatever ``multiplier`` is.
 
     :param draw: the drawn campaign
     :param multiplier: scales the AeroUp change; 0 injects nothing
     :param post_months: months of data after the last trial works end
+    :param expected_uplift: the uplift the campaign declares, which sets its wake reach
     """
     site = draw.site
     end = draw.data_end(post_months)
@@ -473,4 +558,5 @@ def rollout_campaign(draw: RolloutDraw, *, multiplier: float, post_months: int) 
         seed=draw.seed,
         works=works,
         other_upgraded=[t for t in draw.rollout if t in works],
+        wake_reach_d=reach_from_uplift(expected_uplift),
     )

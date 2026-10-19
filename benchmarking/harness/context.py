@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import pandas as pd
 
+from benchmarking.harness.record_selection import ChangedInterval
 from benchmarking.harness.toggle import is_toggle
 
 if TYPE_CHECKING:
@@ -166,5 +167,5 @@ class CampaignContext:
             candidate_references=references,
             wake_contributors=[],
             valid_for_uplift=pd.DataFrame(data=True, index=index, columns=sorted({test_wtg, *references})),
-            changed_turbines={test_wtg: ((None, None),)},
+            changed_turbines={test_wtg: (ChangedInterval(None, None),)},
         )

@@ -99,7 +99,8 @@ def test_the_default_matrix_size() -> None:
     t13 = len([6, 12, 24]) * len(settings.post_months)
     tuneup = len([6, 12, None]) * len([1, 2, 3, None])
     real = len(settings.ks) * (t13 + tuneup)
-    assert len(matrix_cells(settings)) == n_campaigns * per_campaign * (len(settings.ks) + 1) + real
+    arms_at_one_k = len(settings.exclusion_arms) + len(settings.small_arms)
+    assert len(matrix_cells(settings)) == n_campaigns * per_campaign * (len(settings.ks) + arms_at_one_k) + real
 
 
 def test_tuneup_runs_the_post_lengths_its_data_holds_and_lmax() -> None:
@@ -179,9 +180,9 @@ def test_cells_run_most_expensive_first() -> None:
 
 def test_the_small_and_big_sizes() -> None:
     small, big = matrix_cells(SIZES["small"].settings), matrix_cells(SIZES["big"].settings)
-    assert (len(small), len(big)) == (28, 3330)
+    assert (len(small), len(big)) == (40, 4140)
     assert "hot" not in {c.site for c in small}
-    assert {c.arm for c in small} == {"main", "excl", "real"}
+    assert {c.arm for c in small} == {"main", "excl", "small", "real"}
     assert (SIZES["small"].workers, SIZES["big"].workers) == (3, 16)
     assert {c.cell_id for c in small} <= {c.cell_id for c in matrix_cells(MatrixSettings())}
 
@@ -197,7 +198,14 @@ def test_the_makespan_of_a_greedy_longest_first_schedule() -> None:
 
 
 KEL_PAIR = MatrixSettings(
-    seeds={"kel": 2}, multipliers=(1,), ks=(4,), pre_months=(12,), post_months=(1,), exclusion_arms=(), real=()
+    seeds={"kel": 2},
+    multipliers=(1,),
+    ks=(4,),
+    pre_months=(12,),
+    post_months=(1,),
+    exclusion_arms=(),
+    small_arms=(),
+    real=(),
 )
 
 
@@ -212,10 +220,10 @@ def test_plan_projects_cpu_hours_wall_time_and_memory() -> None:
 def test_the_plan_command_prints_a_sizes_projection(capsys: pytest.CaptureFixture[str]) -> None:
     driver.main(["plan", "--size", "small"])
     out = capsys.readouterr().out
-    assert "28 cells" in out
+    assert "40 cells" in out
     assert "on 3 worker(s)" in out
     driver.main(["plan", "--size", "big", "--workers", "8"])
-    assert "3330 cells" in capsys.readouterr().out
+    assert "4140 cells" in capsys.readouterr().out
 
 
 def test_run_and_download_need_a_size() -> None:
@@ -243,6 +251,16 @@ def test_plan_can_use_a_studys_measured_costs(tmp_path: Path) -> None:
     plan = plan_study(KEL_PAIR, workers=1, measured=tmp_path)
     assert plan.cpu_hours == pytest.approx(300 / 3600)
     assert plan.peak_memory_gb == pytest.approx(2.0)
+
+
+def test_the_small_change_arm_runs_at_the_exclusion_k_with_its_own_ids() -> None:
+    cells = matrix_cells(
+        MatrixSettings(seeds={"kel": 1}, multipliers=(1,), pre_months=(12,), post_months=(6,), real=())
+    )
+    small = [c for c in cells if c.arm == "small"]
+    assert [c.cell_id for c in small] == ["kel_s00_m+1_K4_P12_L6_1pc"]
+    assert small[0].is_small
+    assert not any(c.is_small for c in cells if c.arm != "small")
 
 
 def test_half_the_campaigns_roll_out_to_the_whole_farm() -> None:
@@ -441,7 +459,7 @@ def test_run_on_worker_processes(tmp_path: Path) -> None:
     settings = MatrixSettings(seeds={"hot": 1}, multipliers=(1,), ks=(4,), pre_months=(12,), post_months=(1,), real=())
     study = _run(settings, tmp_path, workers=2)
     statuses = pd.read_csv(study / "cells.csv")["status"]
-    assert list(statuses) == ["ok"] * 2
+    assert list(statuses) == ["ok"] * 3
 
 
 def test_a_study_directory_refuses_another_matrix(tmp_path: Path) -> None:

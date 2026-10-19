@@ -37,7 +37,7 @@ from benchmarking.harness.conditions import CONDITION_BINS
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL
-from benchmarking.harness.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE
+from benchmarking.harness.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE, ChangedInterval
 from benchmarking.harness.scoring import _merge_diagnostics
 from benchmarking.harness.toggle import resolve_toggle
 from benchmarking.harness.waking import UPWIND_COL, WAKING_SCENARIO_COL
@@ -885,7 +885,7 @@ class TestCampaignContext:
         upwind = np.where((scada[_TURBINE] == "R2") & scada.index.isin(first), "T1", "none")
         scada = scada.assign(**{UPWIND_COL: upwind})
         context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
-        assert context.changed_turbines == {"T1": ((None, None),)}
+        assert context.changed_turbines == {"T1": (ChangedInterval(None, None),)}
         dropped = self._estimate(scada, test_wtg="T1", campaign_context=context)
 
         cut = scada[~scada.index.isin(first)]
@@ -1744,7 +1744,8 @@ class TestTheScreenRunsOncePerCampaign:
             scada_df=mi.scada_df,
             test_wtg=mi.test_wtg,
             campaign_context=dataclasses.replace(
-                mi.context, changed_turbines={"T1": ((None, None),), "R9": ((None, None),)}
+                mi.context,
+                changed_turbines={"T1": (ChangedInterval(None, None),), "R9": (ChangedInterval(None, None),)},
             ),
         )
         again = _screen_method(screen_cache=cache).screen_references(other)
@@ -1756,8 +1757,8 @@ class TestTheScreenRunsOncePerCampaign:
         mi, _ = _screen_case(step=0.08)
         late = mi.scada_df.index[-1]
         keys = [
-            {"T1": ((None, None),), "R9": ((None, None),)},
-            {"T1": ((None, None),), "R9": ((late, None),)},
+            {"T1": (ChangedInterval(None, None),), "R9": (ChangedInterval(None, None),)},
+            {"T1": (ChangedInterval(None, None),), "R9": (ChangedInterval(late, None),)},
         ]
         for changed in keys:
             other = MethodInput(

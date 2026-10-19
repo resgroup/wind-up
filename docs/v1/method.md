@@ -345,9 +345,14 @@ A candidate is eligible when it has data over the whole of the periods of step 7
 (step 1) inside them, and lies within a distance limit of the test turbine (20 rotor diameters by
 default). A turbine changed entirely before or entirely after the periods is eligible. The eligible
 candidates are ranked by distance, which stands in for how strongly their power correlates with the
-test turbine's. The nearest few (four by default) are the power references the screen starts from; the
-rest, in order, are reserves, from which the screen draws a replacement for each reference it rules
-out.
+test turbine's, with one exception: a candidate the test turbine is upwind of, within the wake reach of
+the change (step 11 iii), for more than a share of the site's wind (20 % by default) is **demoted**
+behind every candidate that is not. Its records would be lost in those directions (step 11 iii), so a
+slightly further candidate that the test turbine does not wake is the better reference. The share is
+the part of the wind rose, built from the step 3 reanalysis direction over the campaign's data, inside
+the IEC disturbed sector of the test turbine as seen from the candidate. The best-ranked few (four by
+default) are the power references the screen starts from; the rest, in order, are reserves, from which
+the screen draws a replacement for each reference it rules out.
 
 An indicator of an undeclared change (step 1) inside the periods, for example a change in reactive
 power behaviour, is reported as a warning against the candidate, so that the analyst can declare the
@@ -365,8 +370,8 @@ references, still contribute to the waking scenario (step 5).
 
 The power references of step 8 are screened in two passes, the first on what each candidate's data can
 support and the second on what it shows. A candidate dropped by either pass is replaced by the nearest
-reserve (step 8), which is screened in its turn. The order is always by distance: the screen only
-removes and replaces, it never re-ranks.
+reserve (step 8), which is screened in its turn. The order is always step 8's ranking: the screen
+only removes and replaces, it never re-ranks.
 
 **Pass 1: the data screen.** For each candidate, the record selection of step 11 is applied to the pair
 of the test turbine and that candidate alone. The filters that apply to each turbine on its own are
@@ -454,7 +459,14 @@ either. Nothing in Part C changes the reference set or the periods.
   (step 1) between the start of the before period and the end of the after period.
   A turbine whose changes all fall outside that span casts the same wake in both periods. Records in
   which a turbine is upwind of the subject turbine or of a reference (step 5 iv) at a time it counts as
-  changed, or in which either upwind column is "unknown", are dropped. When it counts as changed
+  changed, or in which either upwind column is "unknown", are dropped. A change counts only within its
+  **wake reach**: upwind of a turbine at most that many of the changed turbine's rotor diameters away.
+  The reach follows from the AEP uplift expected of the change, declared with the campaign: 0 D for
+  no uplift, 4 D at 1 %, 8 D at 3 %, 12 D at 5 % and 20 D at 10 % or more, interpolated between and
+  doubled offshore up to 20 D. It is the largest spacing at which a wake model (FLORIS, with the gain
+  taken from induction, the upper bound on wake change) puts the reference's sector-mean energy change,
+  times the sector's share of a uniform rose, above 0.05 pp. A declared reach overrides it, and each
+  works window may carry its own. When it counts as changed
   depends on how far its change is from the test turbine's changeover:
   - **Near** (less than 6 months between the two works windows, the default; the test turbine itself
     is always near): changed over the whole span. An upgrade can change the wake a turbine casts, so
@@ -467,10 +479,9 @@ either. Nothing in Part C changes the reference set or the periods.
     and dropping its upwind directions for the whole span would waste most of the data when the
     neighbours are upgraded one after another.
 
-  Each works window of a turbine is treated this way and the dropped times add up. The analyst can
-  override the rule where the wake is known not to change: a campaign declared to leave the wakes as
-  they were (`wake_unchanged`) does not count the test turbines as changed for that change, while their
-  other works and every other turbine's still count.
+  Each works window of a turbine is treated this way and the dropped times add up. Where the wake is
+  known not to change the analyst declares a reach of 0, so the change costs no records, while the
+  turbine's other works and every other turbine's still count.
 - iv. **Weather.** Both periods should see the same weather. For a toggle test a toggle pairing filter
   is applied, which only keeps data where the time difference between a data record and the nearest
   valid record with the opposite toggle state is within a limit, one toggle cycle (the on and off
