@@ -165,8 +165,8 @@ SIZES: dict[str, StudySize] = {
         MatrixSettings(seeds={"hot": 0, "pen": 1, "kel": 1}, ks=(4,), pre_months=(24,), post_months=(3, 12)),
         workers=3,
     ),
-    # About 170 CPU-hours of cells; check with ``plan`` before a run.
-    "big": StudySize(MatrixSettings(seeds={"hot": 5, "pen": 6, "kel": 4}), workers=16),
+    # About 115 CPU-hours of cells, main at K3 and K4; check with ``plan`` before a run.
+    "big": StudySize(MatrixSettings(seeds={"hot": 5, "pen": 6, "kel": 4}, ks=(3, 4)), workers=12),
 }
 
 # Median wall seconds of one cell per (site, K), measured on the HPC at 3742175 over 12 to 24 months of
