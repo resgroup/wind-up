@@ -180,7 +180,7 @@ def test_cells_run_most_expensive_first() -> None:
 
 def test_the_small_and_big_sizes() -> None:
     small, big = matrix_cells(SIZES["small"].settings), matrix_cells(SIZES["big"].settings)
-    assert (len(small), len(big)) == (40, 3330)
+    assert (len(small), len(big)) == (40, 3300)
     assert "hot" not in {c.site for c in small}
     assert {c.arm for c in small} == {"main", "excl", "small", "real"}
     assert (SIZES["small"].workers, SIZES["big"].workers) == (3, 12)
@@ -223,7 +223,7 @@ def test_the_plan_command_prints_a_sizes_projection(capsys: pytest.CaptureFixtur
     assert "40 cells" in out
     assert "on 3 worker(s)" in out
     driver.main(["plan", "--size", "big", "--workers", "8"])
-    assert "3330 cells" in capsys.readouterr().out
+    assert "3300 cells" in capsys.readouterr().out
 
 
 def test_run_and_download_need_a_size() -> None:
