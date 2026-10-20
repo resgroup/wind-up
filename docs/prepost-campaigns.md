@@ -96,7 +96,7 @@ further from the baseline it is compared against. [CF24](v1/findings_campaigns.m
 thing from the other side — balancing the two periods so they hold the same months record for
 record removes about two thirds of the placebo bias, and nearly all of the between-turbine spread.
 
-**A long post period is also not the post period you asked for.** The window runs to the last trial
+**A long post period is also not the post period requested.** The window runs to the last trial
 turbine's works end plus the requested length, and the selector then truncates it at the first
 rollout turbine whose works fall inside. So "12 months" delivered 266 to 326 days above, and at
 Kelmarsh it also cost a power reference (4 asked, 3 chosen).

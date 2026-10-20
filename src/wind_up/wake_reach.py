@@ -138,7 +138,7 @@ def union_share(sectors: Sequence[LossSector], *, rose: Rose) -> float:
     return float(rose[lost].sum())
 
 
-def kept_share(
+def kept_wind_share(
     layout: Layout,
     *,
     test: str,

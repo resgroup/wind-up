@@ -6,7 +6,7 @@ from wind_up.layout import Layout, iec_disturbed_sector_deg
 from wind_up.wake_reach import (
     MAX_REACH_D,
     candidate_cost,
-    kept_share,
+    kept_wind_share,
     loss_sector,
     reach_from_uplift,
     uniform_rose,
@@ -92,7 +92,7 @@ def test_candidate_cost_is_the_rose_share_with_the_test_turbine_upwind() -> None
 def test_kept_share_is_one_minus_the_union_of_the_sectors() -> None:
     # T1 and T2 are both due north of T0 (the reference): their sectors overlap almost entirely.
     layout = Layout.from_frame(scatter_layout([(0.0, 0.0), (0.0, 500.0), (10.0, 600.0)]))
-    share, sectors = kept_share(
+    share, sectors = kept_wind_share(
         layout, test="T1", references=["T0"], other_tests=["T2"], reach_d=12.0, rose=uniform_rose()
     )
     assert {(s.waked, s.waker) for s in sectors} == {("T0", "T1"), ("T0", "T2"), ("T1", "T2")}
@@ -104,7 +104,7 @@ def test_kept_share_is_one_minus_the_union_of_the_sectors() -> None:
 
 
 def test_kept_share_is_one_with_nothing_in_reach() -> None:
-    share, sectors = kept_share(
+    share, sectors = kept_wind_share(
         north_pair(5.0), test="T1", references=["T0"], other_tests=[], reach_d=0.0, rose=uniform_rose()
     )
     assert share == 1.0

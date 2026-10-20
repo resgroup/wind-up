@@ -15,7 +15,7 @@ This page assumes the upgraded turbines are already chosen. To choose them, see
 it, see [the method](v1/method.md) and, for a campaign with a single
 changeover, [how wind-up handles a prepost campaign](prepost-campaigns.md).
 
-## 1. Describe the campaign
+## 1. The campaign declaration
 
 ```yaml
 name: my_campaign          # identifies the run; also the default output directory name
@@ -33,7 +33,7 @@ site:
   offshore: false
 
 turbines:
-  upgraded:   [T06, T11]        # the turbines whose uplift you want
+  upgraded:   [T06, T11]        # the turbines whose uplift is measured
   rated_power_kw: 2300.0
   # references and excluded are optional; the defaults are every other turbine, and none
 
@@ -53,9 +53,9 @@ northing:
   discover: true
 ```
 
-### Staggered changes: declare the works instead of a date
+### Staggered changes: works dates instead of a changeover
 
-When the turbines were changed on different days, give wind-up the works dates rather than a
+When the turbines were changed on different days, the works dates are declared rather than a
 changeover and a period:
 
 ```yaml
@@ -104,7 +104,7 @@ exclusions:                      # optional; end exclusive
   what the preferences above want. Exclusions do not count towards either side's length. Every
   other turbine enters only for its wake. [How wind-up handles a prepost
   campaign](prepost-campaigns.md) describes the whole selection.
-- **To fix the span yourself**, declare `analysis_period`, once for the campaign or per turbine
+- **To fix the span by hand**, `analysis_period` is declared, once for the campaign or per turbine
   (`analysis_period: {T13: {start: ..., end: ...}}`). Declared `references` are then used as power
   references even when their works overlap that span, with a warning.
 - **A shared `timing.changeover`** is every upgraded turbine's changeover. With a works table beside
@@ -125,12 +125,13 @@ same effect; listing it records the decision.
 
 **More references is better** for a campaign declared with one changeover and period, which
 compares against every reference offered. Reference count is the single biggest lever on its
-accuracy: a handful of references is noticeably worse than fifteen. Offer every turbine you have no
-reason to distrust and let the automatic screen (below) rule out the ones that misbehave. A campaign
+accuracy: a handful of references is noticeably worse than fifteen. Every turbine with no known
+reason for distrust should be offered, leaving the automatic screen (below) to rule out those that
+misbehave. A campaign
 declared by its works uses the best-ranked 4 instead; when the screen rules one out, the next best-ranked
 takes its place.
 
-**`upgrade`.** `expected_uplift` is required: the AEP uplift you expect of the change, as a fraction
+**`upgrade`.** `expected_uplift` is required: the AEP uplift expected of the change, as a fraction
 (a vendor's claim will do), negative for a change expected to lose energy. It sets the change's
 **wake reach**: how far, in the changed turbine's rotor diameters, its changed wake is taken to
 disturb another turbine. A record is lost when a changed turbine is upwind of the subject or of a
@@ -152,19 +153,19 @@ now refused). The reach also ranks the power references (see the span, above).
 - `toggle` — the change was switched on and off in alternating blocks, so both states are sampled
   in the same weather. Needs `start` and `period` (a full on/off cycle, e.g. `100min`).
 
-**`analysis_period`.** `end` is **exclusive**. For `prepost`, give the treated period **the same
-length as the baseline, and the same months of the year** — a full year of baseline against six
-months of treated data compares two different seasons, and the seasonal difference lands in your
-answer as if it were uplift. `toggle` does not have this problem, because its blocks interleave.
+**`analysis_period`.** `end` is **exclusive**. For `prepost`, the treated period should have **the
+same length as the baseline, and the same months of the year** — a full year of baseline against six
+months of treated data compares two different seasons, and the seasonal difference lands in the
+result as if it were uplift. `toggle` does not have this problem, because its blocks interleave.
 
 **`northing.discover`.** Nacelle position sensors drift and get re-zeroed, which corrupts every
 direction-dependent calculation. `true` (the default) finds those steps in the data and corrects
-them, writing plots of what it did ([how northing works](northing.md)). Use `false` with a
-`table:` only when you already have a trusted correction table.
+them, writing plots of what it did ([how northing works](northing.md)). `false` with a `table:` is
+used only when a trusted correction table already exists.
 
 **Timezones.** Every time is UTC. A time written without a timezone is read as UTC; a time written
-with an offset is converted to UTC. Whatever you write, the resolved values are echoed into
-`campaign_resolved.yaml` in the output — check it if a result looks shifted.
+with an offset is converted to UTC. The resolved values are echoed into `campaign_resolved.yaml`
+in the output, which should be checked if a result looks shifted.
 
 **`data.timestamps`.** Whether a SCADA timestamp labels the `start` or the `end` of its period, and
 the time zone the SCADA is in. The SCADA timestamps must be timezone-aware and in that time zone,
@@ -172,45 +173,45 @@ or the run stops. wind-up checks the declaration against the reanalysis: it warn
 lines up best with a shift of more than 30 minutes, and stops at 1 hour or more, which usually means
 the time zone or convention is wrong.
 
-**`site.offshore`.** Set `true` for an offshore farm. wind-up does not work this out from the turbine
-positions, and without it the reanalysis for an offshore farm comes from a land grid cell (one of
-similar elevation to the site, possibly on the nearest coast), whose wind is unlike the farm's. The run
-log and `campaign_resolved.yaml` say which kind of cell was used (`land` or `sea`): check them for an
-offshore or coastal site.
+**`site.offshore`.** Set `true` for an offshore farm. wind-up does not work this out from the
+turbine positions, and without it the reanalysis for an offshore farm comes from a land grid cell
+(one of similar elevation to the site, possibly on the nearest coast), whose wind is unlike the
+farm's. The run log and `campaign_resolved.yaml` say which kind of cell was used (`land` or `sea`),
+and should be checked for an offshore or coastal site.
 
 **Reanalysis is not declared.** wind-up fetches the weather reanalysis it needs by itself, from
 the centre of every turbine in `turbines.csv` — the whole site, not just the turbines this
 campaign names, so changing the roles never moves it — over the whole SCADA record. The first
 run for a site downloads it; later runs on that site reuse the cache.
 
-## 2. Run it
+## 2. Running a campaign
 
 ```
 python -m benchmarking.campaigns run campaign.yaml --out out
 ```
 
-Run it from the directory holding `campaign.yaml`, or give the path to it; the `data:` paths inside
-the declaration are read relative to the declaration itself, so a campaign folder can be moved or
-copied whole.
+The command is run from the directory holding `campaign.yaml`, or given the path to it; the `data:`
+paths inside the declaration are read relative to the declaration itself, so a campaign folder can
+be moved or copied whole.
 
 `--out` is the directory the report is written to, and it is used exactly as given: `name` does
-**not** add a subdirectory under it. Give each run its own `--out`, or a second run will overwrite
-the first. Omit `--out` and the report goes to `$WIND_UP_BENCHMARKING_OUTPUT_DIR/<name>` instead.
+**not** add a subdirectory under it. Each run needs its own `--out`, or a second run overwrites the
+first. Without `--out` the report goes to `$WIND_UP_BENCHMARKING_OUTPUT_DIR/<name>` instead.
 
-Add `--reference-plots` to also get the full set of measurement plots for each reference, the same
-plots a test turbine gets. They go in `C_turbine_measurement/<reference>_reference_for_<test turbine>/`,
-one folder per reference per test turbine it serves, since a reference shared by several test
-turbines is measured once for each. Each reference is then refitted rather than read from the
-screen, so the run is slower; it suits a campaign with few references.
+`--reference-plots` adds the full set of measurement plots for each reference, the same plots a test
+turbine gets. They go in `C_turbine_measurement/<reference>_reference_for_<test turbine>/`, one
+folder per reference per test turbine it serves, since a reference shared by several test turbines
+is measured once for each. Each reference is then refitted rather than read from the screen, so the
+run is slower; it suits a campaign with few references.
 
-The run also writes its log to `<out>/run.log`. Read it: some of what the run decided is reported
-nowhere else, in particular the reference screen's thresholds, how big a pool it had, and whether
-it stopped early.
+The run also writes its log to `<out>/run.log`, which should be read: some of what the run decided
+is reported nowhere else, in particular the reference screen's thresholds, how big a pool it had,
+and whether it stopped early.
 
-Expect roughly **three minutes per upgraded turbine**, plus a couple of minutes for the shared
-northing step. It is not stuck.
+A run takes roughly **three minutes per upgraded turbine**, plus a couple of minutes for the shared
+northing step.
 
-## 3. Read the outputs
+## 3. The outputs
 
 | file | what it says |
 |---|---|
@@ -221,20 +222,20 @@ northing step. It is not stuck.
 | `15_uplift_distributions/` | `conditional.csv` and its plots: uplift split by wind speed, turbulence and power |
 | `wind-up/` | the campaign's uplift plots, in a folder per method that ran |
 | `northing/` | the direction corrections that were discovered, with plots |
-| `campaign_resolved.yaml` | the campaign as wind-up understood it: your declaration with every default filled in and every timestamp resolved to UTC |
+| `campaign_resolved.yaml` | the campaign as wind-up understood it: the declaration with every default filled in and every timestamp resolved to UTC |
 | `07_periods/periods.csv` | each upgraded turbine's before and after periods, whether they were declared or chosen, whether the pool rule held (with the reason when it did not), and for a turbine no span could be found for, the reason |
 | `07_periods/analysis_timeline_<turbine>.png` | the span drawn over every turbine's data, works and exclusions, each turbine labelled with its role ([how the analysis period is chosen](analysis-period-and-reference-selection.md)) |
 | `08_candidates/candidates.csv` | every other turbine ranked by distance for each upgraded turbine — power reference, reserve or waking only — with the reason it is not a power reference and any warning of a possible undeclared change |
 | `09_screen/reference_data.csv` | the data screen: each candidate reference's usable hours before and after and its power correlation with the test turbine, and whether it was kept, held as a spare or dropped, with plots of the same per upgraded turbine ([the data screen](analysis-period-and-reference-selection.md#the-data-screen)) |
 | `09_screen/reference_hours.csv` | the usable hours left as references are added, nearest first |
 
-### Start with `reference_stability.csv`
+### First, `reference_stability.csv`
 
 This is the campaign checking its own references. Each candidate reference is run through the same
 analysis as a test turbine. **A healthy campaign reads near 0% for every reference**, because
 nothing happened to them. A reference reading well away from zero either changed during the
 campaign, or has a sensor fault, or is being waked differently — and if it is being used as a
-reference, its problem is now inside your headline number with the sign reversed.
+reference, its problem is now inside the headline number with the sign reversed.
 
 Rows with `screened = True` were ruled out automatically and contributed no power to the estimate.
 Rows with `unjudged = True` contributed no power either, for a different reason: the campaign does
@@ -250,18 +251,18 @@ takes nobody's power away. `run.log` names who it ruled out and who it held out.
 
 ### Judging scale from that one table
 
-`reference_stability.csv` is also your noise yardstick, and it comes from the same single run. The
+`reference_stability.csv` is also the noise yardstick, and it comes from the same single run. The
 references are turbines where nothing happened, so **the spread of their readings is what this
-campaign can resolve**. Compare your upgraded turbines against that spread:
+campaign can resolve**. The upgraded turbines are compared against that spread:
 
 - upgraded turbines sitting inside the reference spread → not distinguishable from zero
 - upgraded turbines clearly outside it, and agreeing with each other → a real effect
 
-You should not need to re-run the campaign with a different reference set to answer that. If you
-find yourself wanting to, say so in your report — it means this run did not give you enough to
-judge on, which is a limitation of the tool rather than of the data.
+It should not be necessary to re-run the campaign with a different reference set to answer that.
+If a re-run seems necessary, that should be stated in the report: it means this run did not give
+enough to judge on, which is a limitation of the tool rather than of the data.
 
-### Then the headline
+### Then, the headline
 
 `farm_uplift.csv` carries `estimate`, plus:
 
@@ -274,9 +275,9 @@ judge on, which is a limitation of the tool rather than of the data.
 ### Reading zero
 
 An estimate is never exactly zero, and a small number is not automatically a real effect. Two
-things help you judge scale: the spread across turbines in `per_turbine.csv`, and how far the
-references sit from zero in `reference_stability.csv`. If your upgraded turbines and your
-references are the same distance from zero, you are looking at the noise floor, not a change.
+things help to judge scale: the spread across turbines in `per_turbine.csv`, and how far the
+references sit from zero in `reference_stability.csv`. If the upgraded turbines and the
+references sit the same distance from zero, the reading is the noise floor, not a change.
 
 ## Known limits
 

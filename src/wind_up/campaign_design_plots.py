@@ -41,7 +41,7 @@ def plot_design_map(design: CampaignDesign, *, latlon: bool = False) -> Figure:
     """Draw ``design`` on a map, in east/north metres or, with ``latlon``, in degrees.
 
     Metres are measured from the minimum easting and northing of every turbine in the layout. Test
-    turbines are red and joined to their references (blue), labelled with their kept share; other
+    turbines are red and joined to their references (blue), labelled with their kept wind share; other
     available turbines are grey, excluded turbines crosses, and front-row turbines ringed.
     Turbines outside the farm under design are small, coloured by wind farm. The view is the farm
     under design plus a margin. The metre map draws each changed turbine's wake as a wedge from it
@@ -61,7 +61,7 @@ def plot_design_map(design: CampaignDesign, *, latlon: bool = False) -> Figure:
     tests = set(design.test_turbines)
     in_use = {r for refs in design.references.values() for r in refs}
     excluded = set(design.excluded)
-    kept = dict(zip(design.compliance.table["test_turbine"], design.compliance.table["kept_share"], strict=True))
+    kept = dict(zip(design.compliance.table["test_turbine"], design.compliance.table["kept_wind_share"], strict=True))
     for i in np.flatnonzero(in_farm):
         name = str(frame[NAME_COL].iloc[i])
         front = name in design.front_row
@@ -88,15 +88,15 @@ def plot_design_map(design: CampaignDesign, *, latlon: bool = False) -> Figure:
 
 
 def plot_coverage_map(design: CampaignDesign) -> Figure:
-    """Draw every available farm turbine coloured by its kept share as a lone test turbine, in east/north metres.
+    """Draw every available farm turbine coloured by its kept wind share as a lone test turbine, in east/north metres.
 
-    The kept share is with the turbine's own best-ranked references; turbines with too few are grey
+    The kept wind share is with the turbine's own best-ranked references; turbines with too few are grey
     crosses. Excluded turbines and those of other farms are small and grey. The wind rose is beside it.
     """
     frame = design.layout.frame
     fig, ax, x, y, in_farm, side = _start_map(design, latlon=False, side=design.wind_rose is not None)
     names = [None if n is None else str(n) for n in frame[NAME_COL]]
-    shares = np.array([design.lone_kept_share.get(n, np.nan) if n is not None else np.nan for n in names])
+    shares = np.array([design.lone_kept_wind_share.get(n, np.nan) if n is not None else np.nan for n in names])
     rated = np.isfinite(shares)
     rest = ~rated
     ax.scatter(x[rest], y[rest], s=20, marker="x", color=UNUSED_COLOUR, zorder=2)
@@ -125,12 +125,14 @@ def plot_coverage_map(design: CampaignDesign) -> Figure:
     )
     handles = [Line2D([], [], marker="x", ls="", color=UNUSED_COLOUR, label="too few references or not available")]
     if side is None:
-        fig.colorbar(points, ax=ax, shrink=0.7, label="kept share as a lone test turbine")
+        fig.colorbar(points, ax=ax, shrink=0.7, label="kept wind share as a lone test turbine")
         ax.legend(handles=handles, loc="best", fontsize=8)
     else:
         key, rose = side
         key.legend(handles=handles, loc="upper left", fontsize=8, frameon=False)
-        fig.colorbar(points, cax=key.inset_axes((0.05, 0.05, 0.1, 0.75)), label="kept share as a lone test turbine")
+        fig.colorbar(
+            points, cax=key.inset_axes((0.05, 0.05, 0.1, 0.75)), label="kept wind share as a lone test turbine"
+        )
         _draw_rose(rose, design=design)
     fig.tight_layout()
     return fig
@@ -322,8 +324,8 @@ def _title(design: CampaignDesign) -> str:
         f"{farm}: {summary['test_turbines']} test turbines of {summary['available_turbines']} available "
         f"(most possible {design.max_test_turbines})\n"
         f"front row: {summary['front_row_test_turbines']} tested against a fair share of "
-        f"{summary['fair_front_row_share']:.2f}; wake reach {design.wake_reach_d:g} D, total kept share "
-        f"{summary['total_kept_share']:.2f}"
+        f"{summary['fair_front_row_share']:.2f}; wake reach {design.wake_reach_d:g} D, mean kept wind share "
+        f"{summary['mean_kept_wind_share']:.2f}"
     )
 
 

@@ -166,7 +166,12 @@ def _wake_design() -> object:
     rose = np.full(360, 0.4 / 360)
     rose[270] += 0.6
     return design_campaign(
-        _layout_with_a_neighbour(), wind_farm="Home", n_test=3, wake_reach_d=12.0, wind_rose=rose, min_kept_share=0.0
+        _layout_with_a_neighbour(),
+        wind_farm="Home",
+        n_test=3,
+        wake_reach_d=12.0,
+        wind_rose=rose,
+        min_kept_wind_share=0.0,
     )
 
 
@@ -179,7 +184,7 @@ def test_wake_losses_csv_has_a_row_per_lost_sector(tmp_path: Path) -> None:
     assert len(written) == len(design.compliance.wake_losses) > 0
     summary = yaml.safe_load((tmp_path / "summary.yaml").read_text())
     assert summary["wake_reach_d"] == 12.0
-    assert summary["total_kept_share"] == pytest.approx(design.compliance.table["kept_share"].sum())
+    assert summary["mean_kept_wind_share"] == pytest.approx(design.compliance.table["kept_wind_share"].mean())
 
 
 def test_the_metre_map_draws_a_wedge_per_lost_sector_and_the_rose() -> None:
@@ -191,10 +196,10 @@ def test_the_metre_map_draws_a_wedge_per_lost_sector_and_the_rose() -> None:
     plt.close(fig)
 
 
-def test_the_coverage_map_colours_every_available_turbine_by_its_lone_kept_share() -> None:
+def test_the_coverage_map_colours_every_available_turbine_by_its_lone_kept_wind_share() -> None:
     design = _wake_design()
     fig = plot_coverage_map(design)
     coloured = next(c for c in fig.axes[0].collections if c.get_array() is not None)
-    rated = [v for v in design.lone_kept_share.values() if np.isfinite(v)]
+    rated = [v for v in design.lone_kept_wind_share.values() if np.isfinite(v)]
     assert sorted(np.asarray(coloured.get_array())) == pytest.approx(sorted(rated))
     plt.close(fig)
