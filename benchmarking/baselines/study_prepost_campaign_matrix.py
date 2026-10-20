@@ -1,7 +1,7 @@
 """The prepost campaign matrix: shipped ``wind-up`` over the real HoT campaigns and many synthetic ones.
 
 Each cell is one full ``wind-up`` run on one (campaign, multiplier, K, pre length, post length). A study is run at
-a size: ``small``, a smoke test of every arm for a laptop, or ``big``, sized to about 9.5 h on 12
+a size: ``small``, a smoke test of every arm for a laptop, or ``big``, sized to about 12 h on 12
 workers of the HPC. It is one resumable invocation, meant for tmux on a shared box::
 
     uv run python -m benchmarking.baselines.study_prepost_campaign_matrix plan --size big

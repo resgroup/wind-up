@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.toggle_specialist import ToggleSpecialistMethod
+from benchmarking.campaigns.declaration import layout_coords
+from benchmarking.campaigns.loader import centroid
 from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
@@ -40,7 +42,8 @@ def carried_forward_methods(
 
     :param spec: the campaign being run
     :param out_dir: the turbine's output folder; each method gets a subfolder named after it
-    :param era5_hourly_df: reanalysis for the power model; omit to run it without ERA5 features
+    :param era5_hourly_df: reanalysis for the power model's conditional step; omit to report the overall
+        estimate only
     :param include_power_model: build the power model. It is the method under test, so this is
         off only to avoid the ``ml`` dependency group -- a campaign without it is not testing
         v1 wind-up
@@ -81,6 +84,7 @@ def carried_forward_methods(
                 columns=HOT_COLUMNS,
                 baseline_rated_power_kw=spec.rated_power_kw,
                 era5_hourly_df=era5_hourly_df,
+                site_location=centroid(layout_coords(spec.layout)),
                 conditions=PowerModelMethod.conditions if era5_hourly_df is not None else (),
                 reference_stat_cols=reference_stat_cols,
                 model_params=dict(TUNED_MODEL_PARAMS),

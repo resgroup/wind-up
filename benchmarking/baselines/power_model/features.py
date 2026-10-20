@@ -1,11 +1,11 @@
 """Build the power-model's feature matrix (method step 6).
 
 Every feature is upgrade-invariant: it comes from the power references, from waking scenarios that
-do not depend on the test turbine's own signals, or from ERA5.
+do not depend on the test turbine's own signals, or from the site's position.
 
 * per power reference: active power and, optionally, the north-calibrated direction as ``sin``/``cos``;
 * the waking scenario (step 5) of the test turbine and of each power reference, as a categorical;
-* ERA5: :data:`ERA5_FEATURES`.
+* the sun's elevation at the site, :data:`SOLAR_ELEVATION`.
 
 Reference columns are named ``"<tag>{QUALIFIER}<turbine>"``; the test turbine's waking scenario is
 named ``"waking_scenario{QUALIFIER}test"``. :func:`check_reference_only` rejects any column qualified
@@ -19,9 +19,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+import pvlib
 
-from benchmarking.baselines.era5_derived import era5_derived_frame
-from benchmarking.harness.reanalysis import ERA5_WD_RAW, ERA5_WS_RAW
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
 if TYPE_CHECKING:
@@ -34,16 +33,9 @@ TEST_LABEL = "test"
 # The prefix the shared northing step puts on a north-calibrated column.
 _NORTHED_PREFIX = "northed_"
 
-ERA5_DERIVED = ("air_density", "shear_exponent", "gust_ratio")
-ERA5_FEATURES = (ERA5_WS_RAW, f"{ERA5_WD_RAW}_sin", f"{ERA5_WD_RAW}_cos", *ERA5_DERIVED)
-ERA5_UNITS = {
-    ERA5_WS_RAW: "m/s",
-    f"{ERA5_WD_RAW}_sin": "-",
-    f"{ERA5_WD_RAW}_cos": "-",
-    "air_density": "kg/m³",
-    "shear_exponent": "-",
-    "gust_ratio": "-",
-}
+SOLAR_ELEVATION = "solar_elevation"
+# Units of the features that carry no turbine.
+SITE_FEATURE_UNITS = {SOLAR_ELEVATION: "°"}
 
 logger = logging.getLogger(__name__)
 
@@ -184,25 +176,20 @@ def _direction_features(
     return kept, pd.DataFrame(columns, index=index)
 
 
-def era5_feature_frame(aligned_era5: pd.DataFrame) -> pd.DataFrame:
-    """Return :data:`ERA5_FEATURES` from aligned ERA5 with Open-Meteo column names.
+def solar_elevation_frame(
+    index: pd.DatetimeIndex, *, timebase: pd.Timedelta, latitude: float, longitude: float
+) -> pd.DataFrame:
+    """Return :data:`SOLAR_ELEVATION`, the sun's apparent elevation in degrees, at the middle of each period.
 
-    Raises when a column they are derived from is missing.
+    ``index`` holds timezone-aware period starts, each period ``timebase`` long. Negative values are
+    below the horizon. Raises on a timezone-naive index.
     """
-    missing = sorted({ERA5_WS_RAW, ERA5_WD_RAW} - set(aligned_era5.columns))
-    if missing:
-        msg = f"aligned ERA5 is missing columns {missing}; have {list(aligned_era5.columns)}"
+    if index.tz is None:
+        msg = "solar elevation needs timezone-aware timestamps"
         raise ValueError(msg)
-    rad = np.deg2rad(aligned_era5[ERA5_WD_RAW].to_numpy(dtype=float))
-    out = pd.DataFrame(
-        {
-            ERA5_WS_RAW: aligned_era5[ERA5_WS_RAW].to_numpy(dtype=float),
-            f"{ERA5_WD_RAW}_sin": np.sin(rad),
-            f"{ERA5_WD_RAW}_cos": np.cos(rad),
-        },
-        index=aligned_era5.index,
-    )
-    return out.join(era5_derived_frame(aligned_era5, derivations=ERA5_DERIVED))
+    middle = pd.DatetimeIndex(index).tz_convert("UTC") + timebase / 2
+    position = pvlib.solarposition.get_solarposition(middle, latitude, longitude)
+    return pd.DataFrame({SOLAR_ELEVATION: position["apparent_elevation"].to_numpy(dtype=float)}, index=index)
 
 
 def extract_outcome(

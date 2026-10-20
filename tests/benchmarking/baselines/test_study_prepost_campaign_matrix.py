@@ -68,6 +68,7 @@ from benchmarking.harness.northing import NORTH_TABLE_YAML
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.greenbyte import GREENBYTE_OPERATING_STATE, GREENBYTE_STATE_COL
 from wind_up.analysis_period import PlanSettings
+from wind_up.layout import Layout
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -99,8 +100,8 @@ def test_the_default_matrix_size() -> None:
     t13 = len([6, 12, 24]) * len(settings.post_months)
     tuneup = len([6, 12, None]) * len([1, 2, 3, None])
     real = len(settings.ks) * (t13 + tuneup)
-    arms_at_one_k = len(settings.exclusion_arms) + len(settings.small_arms)
-    assert len(matrix_cells(settings)) == n_campaigns * per_campaign * (len(settings.ks) + arms_at_one_k) + real
+    arms = len(settings.ks) * (1 + len(settings.small_arms)) + len(settings.exclusion_arms)
+    assert len(matrix_cells(settings)) == n_campaigns * per_campaign * arms + real
 
 
 def test_tuneup_runs_the_post_lengths_its_data_holds_and_lmax() -> None:
@@ -180,7 +181,9 @@ def test_cells_run_most_expensive_first() -> None:
 
 def test_the_small_and_big_sizes() -> None:
     small, big = matrix_cells(SIZES["small"].settings), matrix_cells(SIZES["big"].settings)
-    assert (len(small), len(big)) == (40, 3300)
+    assert (len(small), len(big)) == (40, 4164)
+    assert {c.arm for c in big} == {"main", "small", "real"}
+    assert sum(c.arm == "main" for c in big) == sum(c.arm == "small" for c in big)
     assert "hot" not in {c.site for c in small}
     assert {c.arm for c in small} == {"main", "excl", "small", "real"}
     assert (SIZES["small"].workers, SIZES["big"].workers) == (3, 12)
@@ -223,7 +226,7 @@ def test_the_plan_command_prints_a_sizes_projection(capsys: pytest.CaptureFixtur
     assert "40 cells" in out
     assert "on 3 worker(s)" in out
     driver.main(["plan", "--size", "big", "--workers", "8"])
-    assert "3300 cells" in capsys.readouterr().out
+    assert "4164 cells" in capsys.readouterr().out
 
 
 def test_run_and_download_need_a_size() -> None:
@@ -253,12 +256,13 @@ def test_plan_can_use_a_studys_measured_costs(tmp_path: Path) -> None:
     assert plan.peak_memory_gb == pytest.approx(2.0)
 
 
-def test_the_small_change_arm_runs_at_the_exclusion_k_with_its_own_ids() -> None:
+def test_the_small_change_arm_runs_at_every_k_with_its_own_ids() -> None:
     cells = matrix_cells(
-        MatrixSettings(seeds={"kel": 1}, multipliers=(1,), pre_months=(12,), post_months=(6,), real=())
+        MatrixSettings(seeds={"kel": 1}, multipliers=(1,), ks=(3, 4), pre_months=(12,), post_months=(6,), real=())
     )
     small = [c for c in cells if c.arm == "small"]
-    assert [c.cell_id for c in small] == ["kel_s00_m+1_K4_P12_L6_1pc"]
+    assert sorted(c.cell_id for c in small) == ["kel_s00_m+1_K3_P12_L6_1pc", "kel_s00_m+1_K4_P12_L6_1pc"]
+    assert [c.k for c in cells if c.arm == "excl"] == [4]
     assert small[0].is_small
     assert not any(c.is_small for c in cells if c.arm != "small")
 
@@ -725,7 +729,14 @@ def test_compare_flags_a_value_present_on_one_side_only() -> None:
 @pytest.mark.slow
 def test_one_small_campaign_runs_end_to_end(tmp_path: Path) -> None:
     settings = MatrixSettings(
-        seeds={"hot": 1}, multipliers=(1,), ks=(3,), pre_months=(12,), post_months=(1,), real=(), exclusion_arms=()
+        seeds={"hot": 1},
+        multipliers=(1,),
+        ks=(3,),
+        pre_months=(12,),
+        post_months=(1,),
+        real=(),
+        exclusion_arms=(),
+        small_arms=(),
     )
     study = run_study(settings, size=SIZE, root=tmp_path, workers=1, baseline_path=tmp_path / "none.json")
     (cell,) = matrix_cells(settings)
@@ -752,7 +763,10 @@ def test_the_period_selector_takes_the_cells_k_and_the_matrix_shortest_side() ->
 
 
 def test_method_overrides_reach_the_matrix_method(tmp_path: Path) -> None:
-    spec = SimpleNamespace(rated_power_kw=2300.0)
+    layout = Layout.from_frame(
+        pd.DataFrame({"name": ["T01"], "latitude": [57.5], "longitude": [-3.1], "rotor_diameter_m": [82.0]})
+    )
+    spec = SimpleNamespace(rated_power_kw=2300.0, layout=layout)
     common = {"columns": HOT_COLUMNS, "out_dir": tmp_path, "era5": None, "screen_cache": {}, "era5_label": "x"}
     plain = _matrix_method(spec, **common)  # type: ignore[arg-type]
     assert plain.row_dump_dir is None  # type: ignore[attr-defined]

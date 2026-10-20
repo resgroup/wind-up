@@ -63,7 +63,7 @@ class MatrixSettings:
     :param ks: power references per test turbine
     :param pre_months: months of data before the first trial works start (before the changeover for a real campaign)
     :param post_months: months of data after the last trial works end (after the changeover for a real campaign)
-    :param exclusion_k: the one K the exclusion and small-change arms run at
+    :param exclusion_k: the one K the exclusion arms run at; the small-change arms run at every K of ``ks``
     :param exclusion_arms: which of the exclusion arms run
     :param small_arms: which of the small-change arms run
     :param real: the real campaigns included, keys of :data:`REAL_SITES`
@@ -165,8 +165,12 @@ SIZES: dict[str, StudySize] = {
         MatrixSettings(seeds={"hot": 0, "pen": 1, "kel": 1}, ks=(4,), pre_months=(24,), post_months=(3, 12)),
         workers=3,
     ),
-    # About 115 CPU-hours of cells, main at K3 and K4; check with ``plan`` before a run.
-    "big": StudySize(MatrixSettings(seeds={"hot": 5, "pen": 6, "kel": 4}, ks=(3, 4)), workers=12),
+    # About 142 CPU-hours of cells, 5 % and 1 % campaigns in equal numbers at K3 and K4; check with ``plan``
+    # before a run.
+    "big": StudySize(
+        MatrixSettings(seeds={"hot": 6, "pen": 7, "kel": 6}, ks=(3, 4), exclusion_arms=()),
+        workers=12,
+    ),
 }
 
 # Median wall seconds of one cell per (site, K), measured on the HPC at 3742175 over 12 to 24 months of
@@ -219,10 +223,12 @@ def matrix_cells(settings: MatrixSettings) -> list[Cell]:
             for multiplier in settings.multipliers:
                 for p in settings.pre_months:
                     for n in settings.post_months:
-                        cells.extend(Cell("main", site, index, multiplier, k, p, n) for k in settings.ks)
+                        for k in settings.ks:
+                            cells.append(Cell("main", site, index, multiplier, k, p, n))
+                            cells.extend(Cell(arm, site, index, multiplier, k, p, n) for arm in settings.small_arms)  # type: ignore[arg-type]
                         cells.extend(
                             Cell(arm, site, index, multiplier, settings.exclusion_k, p, n)  # type: ignore[arg-type]
-                            for arm in (*settings.exclusion_arms, *settings.small_arms)
+                            for arm in settings.exclusion_arms
                         )
     return sorted(cells, key=lambda c: (-cell_cost_s(c), c.cell_id))
 

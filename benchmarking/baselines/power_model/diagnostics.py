@@ -23,9 +23,8 @@ import pandas as pd
 from matplotlib.colors import Normalize
 from matplotlib.patches import Patch
 
-from benchmarking.baselines.power_model.features import ERA5_UNITS, QUALIFIER
+from benchmarking.baselines.power_model.features import QUALIFIER, SITE_FEATURE_UNITS
 from benchmarking.diagnostics import stages
-from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.features import category_shares_figure
 from benchmarking.diagnostics.style import apply_grid, save_fig
@@ -71,7 +70,6 @@ class DiagnosticData:
     sum_actual_kw: float
     sum_counterfactual_kw: float
     n_refs: int  # candidate references in the pool, screened ones included
-    era5_label: str = ERA5_UNLOCATED
     constant_features: tuple[str, ...] = ()  # left out of the model: one value over the selected rows
 
 
@@ -81,7 +79,7 @@ def feature_importance_long(data: DiagnosticData) -> pd.DataFrame:
     An alternative learner injected via the model-factory seam has no ``booster_``; the table then
     carries NaN importances (the feature *catalogue* still works) rather than failing the run.
     """
-    names = [_sourced(name, era5_label=data.era5_label) for name in data.feature_names]
+    names = list(data.feature_names)
     booster = getattr(data.outcome_model, "booster_", None)
     if booster is None:
         return pd.DataFrame({"feature": names, "gain": np.nan, "split_count": np.nan})
@@ -92,15 +90,6 @@ def feature_importance_long(data: DiagnosticData) -> pd.DataFrame:
             "split_count": booster.feature_importance(importance_type="split"),
         }
     ).sort_values("gain", ascending=False, ignore_index=True)
-
-
-def _sourced(feature: str, *, era5_label: str) -> str:
-    """Return ``feature`` naming where it came from, for output only.
-
-    Reference features already carry their turbine. Everything else in the matrix is reanalysis,
-    which is named for the point it was drawn from so a reader can tell one series from another.
-    """
-    return feature if QUALIFIER in feature else f"{feature}{QUALIFIER}{era5_label}"
 
 
 def log_top_features(importance: pd.DataFrame, *, active_power_col: str = "") -> None:
@@ -190,11 +179,10 @@ def feature_catalogue(data: DiagnosticData) -> pd.DataFrame:
     for feature in data.feature_names:
         col = _numeric(data.feature_values[feature])
         finite = np.isfinite(col)
-        sourced = _sourced(feature, era5_label=data.era5_label)
-        tag, _, source = sourced.partition(QUALIFIER)
+        tag, _, source = feature.partition(QUALIFIER)
         rows.append(
             {
-                "feature": sourced,
+                "feature": feature,
                 "source_tag": tag,
                 "turbine": source,
                 "coverage_pct": float(100.0 * finite.mean()) if len(col) else np.nan,
@@ -202,7 +190,7 @@ def feature_catalogue(data: DiagnosticData) -> pd.DataFrame:
                 "std": float(np.nanstd(col)) if finite.any() else np.nan,
                 "min": float(np.nanmin(col)) if finite.any() else np.nan,
                 "max": float(np.nanmax(col)) if finite.any() else np.nan,
-                "gain": float(importance["gain"].get(sourced, 0.0)),
+                "gain": float(importance["gain"].get(feature, 0.0)),
                 "abs_corr_with_power": _abs_corr(col, data.y_selected),
             }
         )
@@ -451,7 +439,7 @@ def _save_feature_histograms(out_dir: Path, data: DiagnosticData) -> None:
     """One baseline-vs-upgraded distribution plot per model input feature.
 
     A numeric feature gets a density histogram; a categorical one gets the share of records in each
-    category. ERA5 features are labelled with their source and units.
+    category. A site feature is labelled with its units.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     sel = np.asarray(data.selected_all, dtype=bool)
@@ -459,7 +447,7 @@ def _save_feature_histograms(out_dir: Path, data: DiagnosticData) -> None:
     groups = _histogram_groups(data.feature_names)
     for feature in data.feature_names:
         values = data.feature_values[feature]
-        label = _sourced(feature, era5_label=data.era5_label)
+        label = feature
         if isinstance(values.dtype, pd.CategoricalDtype):
             fig = category_shares_figure(
                 values,
@@ -479,7 +467,7 @@ def _histogram_figure(vals: np.ndarray, *, treated: np.ndarray, label: str, test
         seg_vals = vals[seg & np.isfinite(vals)]
         if seg_vals.size:
             ax.hist(seg_vals, bins=bins, density=True, histtype="stepfilled", alpha=0.45, color=color, label=seg_label)
-    unit = ERA5_UNITS.get(label.partition(QUALIFIER)[0])
+    unit = SITE_FEATURE_UNITS.get(label)
     ax.set_xlabel(f"{label} [{unit}]" if unit else label)
     ax.set_ylabel("density")
     ax.set_title(f"{test_wtg}: {label}\n(used rows, baseline vs upgraded)")

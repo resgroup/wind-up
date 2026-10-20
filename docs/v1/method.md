@@ -163,7 +163,9 @@ here to check the labels, never to make them.
 
 Reanalysis data (ERA5) is merged with the SCADA data. ERA5 is used as a source of upgrade-invariant
 weather information: it is unaffected by any change to the turbines. This is done once, in data
-preparation, and every later step uses the same aligned ERA5.
+preparation, and every later step uses the same aligned ERA5. It serves the time-alignment check
+below, northing (step 4), the wind rose of the reference ranking (step 8) and the conditional uplift
+(step 15); it is not a feature of the power model (step 6).
 
 ERA5 is obtained from the Open-Meteo archive API with the ERA5 model selected, at the centroid of the
 wind farm and over the whole SCADA record provided. Its values are interpreted as follows:
@@ -194,6 +196,11 @@ The hourly values are aligned to the SCADA timebase as follows.
 - **Gaps and coverage.** ERA5 is not extrapolated beyond its record. A gap in the ERA5 record (a
   missing hour or a missing value) is an error. Where ERA5 does not cover the whole SCADA record a
   warning is given.
+
+  > **TODO (ERA5 missing at the end of the record).** ERA5 lags real time, so the latest month or two
+  > of a live campaign's SCADA may have no ERA5. Test that an ERA5 record ending one to two months
+  > before the SCADA leaves only that tail uncovered, with the warning, and that a fetch on a cache miss
+  > does not store hours the archive cannot yet provide, so that they are fetched again later.
 - **Time-shift check.** The time shift (searched over ±24 hours) that maximises the correlation between
   ERA5 100 m wind speed and the mean nacelle wind speed of the unchanged turbines (step 1, records valid
   for northing in step 2) is found as a check only, and is never applied. A best shift of more than
@@ -223,6 +230,12 @@ before and the 60 days after, using the records valid for northing (above 5% of 
 north tables) and for uplift. It is compared with the largest such change at any other date of the
 turbine's record that is more than 60 days from every candidate. The report is for the analyst to inspect
 alongside the declared changes; it does not change the uplift calculation.
+
+> **TODO (ERA5 missing at the end of the record).** The reanalysis anchor cannot find a north change in
+> a tail with no ERA5. On a farm with enough turbines the changes are then found against the farm
+> consensus, which does not need ERA5; on a smaller farm they are found against reanalysis, and a change
+> in the tail would go undetected. Test with a north step placed in an ERA5-less tail, on a large and a
+> small farm, and decide what the small farm falls back to.
 
 ### 5. Determine waking state and waking scenarios
 
@@ -282,22 +295,26 @@ given.
 
 - i. **Power references:** for every unchanged turbine, active power and the north-calibrated nacelle
   direction (step 4) as sine and cosine. The direction is a feature in both options below: the test
-  turbine's wake exposure within the "normal" scenario varies with direction, and ERA5 direction is
-  too coarse to resolve it.
-  - **Option A (current default).** No further signals. ERA5 resolves the very low and very high wind
-    speeds where reference power carries little information.
+  turbine's wake exposure within the "normal" scenario varies with direction.
+  - **Option A (current default).** No further signals.
   - **Option B.** Pitch angle and rotor speed are added, which allows high wind speed operation to be
     resolved.
 - ii. **Waking scenarios:** the waking scenario column (step 5 iii) of the test turbine and of each
   power reference, as a categorical feature. They carry the waking state of every other turbine on
   the wind farm, which contributes no feature of its own. After the matching of step 11 most values
   are "normal", so these features only act where a non-normal scenario was retained in both periods.
-- iii. **ERA5:** a short list of variables with a clear physical reason to affect the test turbine's
-  power relative to its references: 100 m wind speed, 100 m wind direction (as sine and cosine), air
-  density derived from temperature, pressure and humidity, a shear exponent derived from the 10 m and
-  100 m wind speeds, and a turbulence proxy derived from the gust and mean 10 m wind speeds.
-- iv. **Optional: atmospheric stability.** Possible candidates are the solar position or the
-  irradiation from ERA5.
+- iii. **Solar elevation:** the sun's apparent elevation at the centroid of the turbines, at the middle
+  of each record's period. It correlates with atmospheric stability, and so with shear, and needs
+  nothing beyond the timestamp, so it covers every record.
+
+ERA5 is not a feature. A model fitted on one period leans on ERA5 in a way that does not carry over to a
+period it has not seen, and the references then read about +0.1 pp; ERA5 also lags real time, so the
+last month or two of a live campaign may have none (CF34). Without ERA5 and with solar elevation the
+estimator's bias is about +0.07 pp, which still fails the validation target.
+
+> **TODO (bias correction).** Estimate the estimator's out-of-sample bias inside the before period, from
+> a contiguous holdout as long as the after period, and subtract it. Measure its precision cost on the
+> matrix.
 
 Adding more information about the references has not reduced bias to date. Features are therefore kept
 to those with a clear physical justification.
@@ -630,11 +647,18 @@ turbine: not its measured power, which would select each bin on its own noise, a
 wind speed or turbulence. By default the uplift is reported against the counterfactual power
 prediction (as a fraction of rated, in six bins; the before-period records of the reverse direction are
 labelled by the reverse model's prediction) and against the ERA5 100 m wind speed (in 2 m/s
-bins). The other variables available are the ERA5 variables of step 6 iii and a free-stream wind
+bins). The other variables available are the aligned ERA5 variables of step 3 and a free-stream wind
 speed derived from the references once one is defined (open question).
 
 This step is run for the test turbine (step 10). It is off by default for the candidates of the screen
 (step 9), where only the headline uplift is needed.
+
+> **TODO (ERA5 missing at the end of the record).** The matching cells and the ERA5 wind speed axis
+> need ERA5, so the records without it are left out of the bin shape without being reported, and the
+> shape is measured on fewer after-period hours and a different mix of seasons. ERA5 is no longer a
+> feature of the model (step 6), so match on variables that are always available, such as the
+> references' mean power or the solar elevation, and make the reference-derived wind speed the default
+> axis.
 
 ## Part D: across turbines
 

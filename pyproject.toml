@@ -51,6 +51,7 @@ era5 = [
 ]
 ml = [
     'lightgbm',
+    'pvlib',
     'scikit-learn',
 ]
 examples = [
@@ -174,6 +175,7 @@ module = [
     "requests_cache",
     "retry_requests",
     "psutil",
+    "pvlib",
 ]
 disable_error_code = ["name-defined"]
 ignore_missing_imports = true

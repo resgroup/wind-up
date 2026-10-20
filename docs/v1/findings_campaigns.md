@@ -12,6 +12,76 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
+## CF34 — The reference bias at ca1d996 (+0.11 pp) is the power model's out-of-sample bias, and ERA5 features carry most of it. ERA5 is removed from the model and the sun's elevation added: the estimator's bias falls from +0.13 to +0.07 pp and the placebo RMSE from 0.66 to 0.52 pp. No feature set without ERA5 reaches 0.0 pp, so the rest must come from a correction
+
+*2026-10-20, branch v1-C3. Run 5 of the big prepost matrix at ca1d996 (3300 cells, 0 failed, 12 workers, 9.5 h on
+the HPC), then offline probes and matrix-cell variants on the HPC. The variants rerun 90 cells of run 5 (main arm,
+multiplier 0, K4, all three sites, P6/P12/P24, L3/L12) with the power model's features patched, and pair every
+reference reading and placebo test turbine with its run 5 counterpart by (cell, test turbine, turbine). Standard
+errors are clustered by campaign. The probe and variant scripts are not kept.*
+
+**Run 5 fails target i on the references.** C10 raised the usable share from 0.17-0.37 to 0.53-0.84 and left 12
+test turbines unmeasured instead of 414. Placebo test turbines (+0.03 pp) and the slope pass; coverage still
+fails (0.46 tests, 0.42 references). The combined references read +0.107 ± 0.040 pp: with more usable data the
+noise no longer hides the bias that run 4 also had (+0.08 ± 0.08 pp; the same bias per reading).
+
+**A reading is the sum of the estimator's bias and a real change.** Each reading has a forward value
+(after over the prediction of a model trained before) and a reverse one (before over the prediction of a
+model trained after). Their mean, the *common* part, is the estimator's out-of-sample bias; half their
+difference, the *shift*, is a real change in the subject-to-reference relation. Over run 5 the common part is
++0.124 ± 0.018 pp at every site. At Hill of Towie a shift of +0.13 pp adds to it: T08 to T11 drift up by +0.4
+to +1.4 pp over 2016-2020 (T09 +1.4, T11 +0.8, T10 +0.6, T08 +0.4) and are not screened out.
+
+**The bias comes from time separation and shrinks with training length.** Fitting common = (b(P) + b(L))/2
+over the matrix's before and after lengths gives b = 0.23, 0.15, 0.12, 0.09 and 0.05 pp at 3, 6, 9, 12 and 24
+months of training (residuals within 0.012 pp). The forward reading's bias is b(P), and the reversal
+correction over-corrects when L < P, which is why it reads about -0.07 pp. Holding out four contiguous time
+chunks of the before period reproduces the bias (+0.078 ± 0.017 pp); a shuffled holdout of the same size does
+not (+0.001 pp). LightGBM capacity, regularisation and an init score made no difference.
+
+**The ERA5 features carry most of it.** Added one at a time to a model of reference features alone, on the
+contiguous holdout (pp, change in bias against that model, RMSE in brackets; the model alone reads -0.007,
+RMSE 1.17):
+
+| Added | Bias change | RMSE |
+|---|---|---|
+| shear exponent | +0.039 | 0.98 |
+| wind speed | +0.058 | 1.03 |
+| air density | +0.061 | 1.24 |
+| direction, gust ratio | about +0.012 | |
+| shear and wind speed | +0.062 | 0.88 |
+| all six (run 5) | +0.085 | 0.96 |
+
+Rounding the shear exponent to 0.05 kept most of its precision at +0.009 bias. A monotone constraint on
+density or wind speed, and density-normalised wind speed, did not help. ERA5 has none of the slow drift and
+exposure change the references share with the test turbine, so the model leans on it, and the lean does not
+transfer across time. ERA5 also lags real time by months, so a live campaign cannot rely on it as a feature.
+
+**Without ERA5, the sun's elevation gives the best precision.** Paired over the 90 cells against run 5 (pp;
+the reference RMSE is of the forward reading):
+
+| Features (none uses ERA5 unless named) | Common | Forward | Reference RMSE | Placebo tests (RMSE) |
+|---|---|---|---|---|
+| Run 5: references and six ERA5 features | +0.126 | +0.123 | 0.81 | +0.03 (0.66) |
+| References alone | +0.055 ± 0.023 | +0.077 | 0.99 | -0.02 (0.76) |
+| + solar elevation and azimuth | +0.058 ± 0.035 | | 0.77 | (0.56) |
+| + solar elevation | +0.072 ± 0.030 | +0.089 | 0.77 | +0.07 (0.52) |
+| + site-median ambient temperature | +0.113 ± 0.029 | +0.130 | 1.00 | +0.24 (1.06) |
+| + each reference's pitch and generator speed | +0.346 ± 0.178 | +0.134 | 1.08 | +0.10 (0.86) |
+| + farm-wide mean power | +0.041 ± 0.018 | +0.109 | 0.93 | -0.00 (0.69) |
+
+Ambient temperature behaves like ERA5 air density, so gap-filling density from SCADA temperature would carry
+the same bias. Pitch and generator speed follow the references' own control (Penmanshiel's common part
++0.95 pp). Farm-wide power has the least bias but costs precision. By site, solar elevation leaves Hill of
+Towie's common part at +0.125 pp and Penmanshiel's at +0.017 pp.
+
+**Implication.** The power model no longer takes ERA5 features; ERA5 remains only in the conditional step. It
+takes the sun's apparent elevation at the site, at the middle of each period (pvlib). The remaining
+estimator bias of about +0.07 pp still fails target i at one decimal place, and no feature set without ERA5
+removes it. The next step is a correction estimated inside the before period from a contiguous holdout and
+subtracted (option B of the F2 plan), with its precision cost measured. Hill of Towie's drifting turbines are
+a matter for the data screen.
+
 ## CF33 — Trimming the periods to common weather support does not help: at 3742175 the reference bias has gone (+0.04 ± 0.11 pp over 494 cells), the between-period shift does not predict a reading's error, and every trim costs precision. The error of a reading is block-scale variation in the subject-to-reference relation, present just as strongly inside the before period
 
 *2026-10-16, branch v1-C3. An offline probe over the power model's per-row dumps (`row_dump_dir`) of 27 big-matrix

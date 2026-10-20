@@ -22,7 +22,7 @@ from benchmarking.baselines.power_model.diagnostics import (
     log_top_features,
     plot_conditional_diagnostics,
 )
-from benchmarking.diagnostics.features import category_shares_figure, era5_feature_figure, write_feature_outputs
+from benchmarking.diagnostics.features import category_shares_figure, site_feature_figure, write_feature_outputs
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
 
@@ -115,14 +115,12 @@ class TestFeatureHistogramFolders:
 
 
 class TestFeatureDistributionFigures:
-    def test_an_era5_histogram_names_its_source_and_units(self) -> None:
-        vals = np.linspace(1.1, 1.3, 50)
-        fig = _histogram_figure(
-            vals, treated=np.arange(50) >= 25, label="air_density @ ERA5_57.50_-3.25", test_wtg="T1"
-        )
+    def test_a_site_feature_histogram_names_its_units(self) -> None:
+        vals = np.linspace(-10.0, 50.0, 50)
+        fig = _histogram_figure(vals, treated=np.arange(50) >= 25, label="solar_elevation", test_wtg="T1")
         ax = fig.axes[0]
-        assert ax.get_xlabel() == "air_density @ ERA5_57.50_-3.25 [kg/m³]"
-        assert "@ ERA5_57.50_-3.25" in ax.get_title()
+        assert ax.get_xlabel() == "solar_elevation [°]"
+        assert "solar_elevation" in ax.get_title()
         plt.close(fig)
 
     def test_a_categorical_feature_is_labelled_by_its_category_names(self) -> None:
@@ -177,7 +175,7 @@ class TestWhatTheFeatureLogSays:
         assert [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
-def test_the_step_6_outputs_cover_every_era5_feature_and_turbine(tmp_path: Path) -> None:
+def test_the_step_6_outputs_cover_every_site_feature_and_turbine(tmp_path: Path) -> None:
     idx = pd.date_range("2020-01-01", periods=200, freq="6h", tz="UTC")
     scada = pd.concat(
         pd.DataFrame(
@@ -185,25 +183,23 @@ def test_the_step_6_outputs_cover_every_era5_feature_and_turbine(tmp_path: Path)
         )
         for t in ("T1", "T2")
     )
-    era5 = pd.DataFrame({"air_density": np.linspace(1.2, 1.3, 200), "gust_ratio": 1.5}, index=idx)
-    write_feature_outputs(
-        scada, era5_features=era5, era5_label="ERA5_57.50_-3.25", turbine_col="turbine", out_dir=tmp_path
-    )
-    assert sorted(p.name for p in (tmp_path / "era5").iterdir()) == ["air_density.png", "gust_ratio.png"]
+    site = pd.DataFrame({"solar_elevation": np.linspace(-10, 50, 200), "other": 1.5}, index=idx)
+    write_feature_outputs(scada, site_features=site, turbine_col="turbine", out_dir=tmp_path)
+    assert sorted(p.name for p in (tmp_path / "site").iterdir()) == ["other.png", "solar_elevation.png"]
     assert sorted(p.name for p in (tmp_path / "waking_scenarios").iterdir()) == [
         "waking_scenario_T1.png",
         "waking_scenario_T2.png",
     ]
-    table = pd.read_csv(tmp_path / "era5_features.csv")
-    assert list(table["feature"]) == ["air_density @ ERA5_57.50_-3.25", "gust_ratio @ ERA5_57.50_-3.25"]
-    assert list(table["unit"].fillna("")) == ["kg/m³", "-"]
+    table = pd.read_csv(tmp_path / "site_features.csv")
+    assert list(table["feature"]) == ["solar_elevation", "other"]
+    assert list(table["unit"].fillna("")) == ["°", ""]
 
 
-def test_an_era5_histogram_shows_every_value_and_piles_nothing_into_its_end_bins() -> None:
+def test_a_site_feature_histogram_shows_every_value_and_piles_nothing_into_its_end_bins() -> None:
     idx = pd.date_range("2020-01-01", periods=10_000, freq="1h", tz="UTC")
     values = pd.Series(np.random.default_rng(0).normal(0.2, 0.05, len(idx)), index=idx)
     values.iloc[:5] = 1.0
-    fig = era5_feature_figure(values, label="shear_exponent")
+    fig = site_feature_figure(values, label="solar_elevation")
     hist_ax = fig.axes[0]
     low, high = hist_ax.get_xlim()
     assert low < values.min()

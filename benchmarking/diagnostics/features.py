@@ -2,9 +2,9 @@
 
 :func:`write_feature_outputs` writes, into one folder:
 
-* ``era5/<feature>.png``: each ERA5 feature's distribution over the whole record and its monthly mean
-  over time, labelled with its source and units, changeovers dashed;
-* ``era5_features.csv``: each ERA5 feature's coverage and summary statistics;
+* ``site/<feature>.png``: each site feature's distribution over the whole record and its monthly mean
+  over time, labelled with its units, changeovers dashed;
+* ``site_features.csv``: each site feature's coverage and summary statistics;
 * ``waking_scenarios/waking_scenario_<turbine>.png``: the share of each turbine's hours in each
   waking scenario.
 
@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from benchmarking.baselines.power_model.features import ERA5_UNITS, QUALIFIER
+from benchmarking.baselines.power_model.features import SITE_FEATURE_UNITS
 from benchmarking.diagnostics.style import apply_grid, save_fig
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
@@ -36,10 +36,10 @@ MISSING_CATEGORY = "(missing)"
 _COLORS = ("C0", "C1", "C2", "C3")
 
 
-def era5_label_with_units(feature: str, *, era5_label: str) -> str:
-    """Return ``"<feature> @ <era5_label> [<units>]"``, without units where none are known."""
-    unit = ERA5_UNITS.get(feature)
-    return f"{feature}{QUALIFIER}{era5_label}" + (f" [{unit}]" if unit else "")
+def label_with_units(feature: str) -> str:
+    """Return ``"<feature> [<units>]"``, without units where none are known."""
+    unit = SITE_FEATURE_UNITS.get(feature)
+    return feature + (f" [{unit}]" if unit else "")
 
 
 def category_shares_figure(values: pd.Series, *, segments: Mapping[str, np.ndarray], title: str) -> plt.Figure:
@@ -78,7 +78,7 @@ def category_shares_figure(values: pd.Series, *, segments: Mapping[str, np.ndarr
     return fig
 
 
-def era5_feature_figure(values: pd.Series, *, label: str, changeovers: Sequence[pd.Timestamp] = ()) -> plt.Figure:
+def site_feature_figure(values: pd.Series, *, label: str, changeovers: Sequence[pd.Timestamp] = ()) -> plt.Figure:
     """Distribution over the whole record beside the monthly mean over time; changeovers dashed.
 
     The histogram covers every finite value; the title gives the extremes.
@@ -106,8 +106,7 @@ def era5_feature_figure(values: pd.Series, *, label: str, changeovers: Sequence[
 def write_feature_outputs(
     scada_df: pd.DataFrame,
     *,
-    era5_features: pd.DataFrame,
-    era5_label: str,
+    site_features: pd.DataFrame,
     turbine_col: str,
     changeovers: Mapping[str, Sequence[pd.Timestamp]] | None = None,
     out_dir: Path,
@@ -115,32 +114,30 @@ def write_feature_outputs(
     """Write the step 6 plots and table over the whole record; returns the files written.
 
     :param scada_df: long SCADA with the step 5 waking scenario column; turbines without it are skipped
-    :param era5_features: the ERA5 features on the SCADA timestamps
-    :param era5_label: where the ERA5 came from, as named in labels
+    :param site_features: the features that carry no turbine, on the SCADA timestamps
     :param turbine_col: the turbine-identifier column
-    :param changeovers: each turbine's changeover dates, all drawn on the ERA5 plots
+    :param changeovers: each turbine's changeover dates, all drawn on the site feature plots
     :param out_dir: the folder written into
     """
     dates = [d for days in (changeovers or {}).values() for d in days]
     written: list[Path] = []
-    era5_dir = out_dir / "era5"
-    era5_dir.mkdir(parents=True, exist_ok=True)
+    site_dir = out_dir / "site"
+    site_dir.mkdir(parents=True, exist_ok=True)
     rows = []
-    for feature in era5_features.columns:
-        values = era5_features[feature].astype(float)
-        label = era5_label_with_units(feature, era5_label=era5_label)
-        path = era5_dir / f"{feature}.png"
-        save_fig(era5_feature_figure(values, label=label, changeovers=dates), path)
+    for feature in site_features.columns:
+        values = site_features[feature].astype(float)
+        path = site_dir / f"{feature}.png"
+        save_fig(site_feature_figure(values, label=label_with_units(feature), changeovers=dates), path)
         written.append(path)
         rows.append(
             {
-                "feature": f"{feature}{QUALIFIER}{era5_label}",
-                "unit": ERA5_UNITS.get(feature, ""),
+                "feature": feature,
+                "unit": SITE_FEATURE_UNITS.get(feature, ""),
                 "coverage_pct": 100.0 * float(values.notna().mean()),
                 **values.describe().drop("count").to_dict(),
             }
         )
-    table = out_dir / "era5_features.csv"
+    table = out_dir / "site_features.csv"
     pd.DataFrame(rows).to_csv(table, index=False)
     written.append(table)
     if WAKING_SCENARIO_COL not in scada_df.columns:

@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 
-from benchmarking.baselines.power_model.features import era5_feature_frame
+from benchmarking.baselines.power_model.features import solar_elevation_frame
 from benchmarking.campaigns.declaration import layout_coords
 from benchmarking.campaigns.loader import centroid
 from benchmarking.diagnostics import stages
-from benchmarking.diagnostics.context import era5_source_label, infer_timebase
+from benchmarking.diagnostics.context import infer_timebase
 from benchmarking.diagnostics.features import write_feature_outputs
 from benchmarking.diagnostics.input_data import write_input_data_plots
 from benchmarking.diagnostics.operating_states import (
@@ -185,10 +185,15 @@ def prepare_data(
         out_dir=out_dir / stages.WAKING if draw and out_dir is not None else None,
     )
     if out_dir is not None and draw:
+        latitude, longitude = centroid(layout_coords(spec.layout))
         write_feature_outputs(
             scada_df,
-            era5_features=era5_feature_frame(reanalysis.aligned),
-            era5_label=era5_source_label(*centroid(layout_coords(spec.layout))),
+            site_features=solar_elevation_frame(
+                pd.DatetimeIndex(scada_df.index.unique()).sort_values(),
+                timebase=timebase,
+                latitude=latitude,
+                longitude=longitude,
+            ),
             turbine_col=columns.turbine,
             changeovers=changeovers,
             out_dir=out_dir / stages.FEATURES,

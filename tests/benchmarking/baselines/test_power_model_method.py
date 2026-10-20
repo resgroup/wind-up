@@ -18,7 +18,7 @@ import pandas as pd
 import pytest
 
 from benchmarking.baselines.power_model import PowerModelMethod
-from benchmarking.baselines.power_model.features import ERA5_FEATURES, QUALIFIER
+from benchmarking.baselines.power_model.features import QUALIFIER, SOLAR_ELEVATION
 from benchmarking.baselines.power_model.method import (
     _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
     _TIME_DECAY_CAMPAIGN_MULTIPLE,
@@ -32,7 +32,6 @@ from benchmarking.baselines.power_model.method import (
 )
 from benchmarking.baselines.power_model.screening import ScreenResult
 from benchmarking.diagnostics import stages
-from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.conditions import CONDITION_BINS
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput, MethodOutput
@@ -581,12 +580,13 @@ class TestFeatureConfig:
         assert {f"{_POWER_SD} @ R1", f"{_POWER_MAX} @ R2", f"{_POWER_MIN} @ R3"} <= fitted
         assert not any(name.endswith(" @ T1") for name in fitted)
 
-    def test_the_era5_features_are_the_curated_list(self, tmp_path: Path) -> None:
+    def test_era5_is_never_a_feature_and_the_located_site_adds_solar_elevation(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
         method = PowerModelMethod(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
+            site_location=(57.506, -3.068),
             conditions=(),
             model_params=_FAST_PARAMS,
             out_dir=tmp_path,
@@ -594,8 +594,8 @@ class TestFeatureConfig:
         out = method.estimate(mi)
         assert out.p50_overall == pytest.approx(0.05, abs=0.02)
         fitted = self._fitted_feature_names(tmp_path)
-        era5 = {name.removesuffix(" @ ERA5") for name in fitted if name.endswith(" @ ERA5")}
-        assert era5 == set(ERA5_FEATURES)
+        site = {name for name in fitted if QUALIFIER not in name}
+        assert site == {SOLAR_ELEVATION}
 
     def test_power_and_direction_are_all_a_reference_contributes(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
@@ -1658,7 +1658,7 @@ def _with_a_changed_neighbour(*, as_reference: bool = False, n: int = 4000) -> M
 class TestReanalysisIsIdentified:
     """Output names the reanalysis point, so a reader can tell which series a run used."""
 
-    def test_era5_features_carry_their_source_in_the_importance_table(self, tmp_path: Path) -> None:
+    def test_the_importance_table_names_solar_elevation_and_the_reference_features(self, tmp_path: Path) -> None:
         n = 4000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         treated = np.asarray(idx >= idx[n // 2])
@@ -1666,16 +1666,15 @@ class TestReanalysisIsIdentified:
         method = PowerModelMethod(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(idx),
+            site_location=(57.4979, -3.2513),
             conditions=(),
             model_params=_FAST_PARAMS,
             out_dir=tmp_path,
-            era5_label=era5_source_label(57.4979, -3.2513),
         )
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
         method.estimate(mi)
         importance = pd.read_csv(sorted(tmp_path.rglob("*_feature_importance_*.csv"))[-1])
-        assert "wind_speed_100m @ ERA5_57.50_-3.25" in set(importance["feature"])
+        assert SOLAR_ELEVATION in set(importance["feature"])
         assert any(f.endswith(" @ R1") for f in importance["feature"]), "turbine features keep their own source"
 
     def test_unlocated_reanalysis_is_still_named(self) -> None:

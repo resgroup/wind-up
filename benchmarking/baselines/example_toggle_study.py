@@ -116,7 +116,7 @@ def run_toggle_study(
                 out_dir=out_dir / "naive_runs",
             )
         )
-        # Power model after the naive floor, before slow v0; curated reference-only features + ERA5.
+        # Power model after the naive floor, before slow v0; curated reference-only features.
         methods.append(
             PowerModelMethod(
                 columns=HOT_COLUMNS,

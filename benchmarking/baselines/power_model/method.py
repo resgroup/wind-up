@@ -7,10 +7,8 @@ counterfactual power over the upgraded period, and take the energy ratio
 cross-fitting — fit on the baseline, predict on the disjoint upgraded window, so there is no
 in-sample leakage to correct for.
 
-The feature set is curated to the *causes* of test-turbine power — weather (all raw ERA5) and
-wakes (each reference's active power + availability). Expressing expected power *through the
-references* forms the test-vs-reference contrast that cancels common-mode seasonal/long-term
-drift.
+The features are the power references' active power and nacelle direction, the waking scenarios,
+and the sun's elevation at the site. ERA5 is not a feature; it feeds only the conditional step.
 
 It is v0-independent — ERA5 is supplied as a plain hourly DataFrame (the driver fetches it), so
 this package imports nothing from ``wind_up``.
@@ -35,9 +33,9 @@ from benchmarking.baselines.power_model.conditional import impute_uncovered_bins
 from benchmarking.baselines.power_model.features import (
     build_reference_features,
     check_reference_only,
-    era5_feature_frame,
     extract_outcome,
     reference_mean_wind_speed,
+    solar_elevation_frame,
     waking_scenario_features,
     without_constant_scenarios,
 )
@@ -426,7 +424,9 @@ class PowerModelMethod:
         clipped counterfactual predictions. (A future cross-predict direction that trains on upgraded
         data would need the upgraded rating; that is out of scope here.)
     :param era5_hourly_df: optional ERA5 (Open-Meteo columns), hourly or already aligned to the SCADA
-        periods; added as features when given
+        periods; used only by the conditional step, never as a model feature
+    :param site_location: the site's ``(latitude, longitude)`` in degrees; when given the sun's elevation
+        there is a model feature
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param run_subdir: write each run into its own ``power_model_<wtg>_<start>_<end>`` folder under
@@ -525,6 +525,7 @@ class PowerModelMethod:
     columns: ColumnSchema
     baseline_rated_power_kw: float
     era5_hourly_df: pd.DataFrame | None = None
+    site_location: tuple[float, float] | None = None
     name: str = "power_model"
     out_dir: Path | None = None
     save_plots: bool = False
@@ -610,7 +611,8 @@ class PowerModelMethod:
         # reserves it has already left the pool for the wake contributors.
         power_free = tuple(r for r in screen.power_free if r in references) if screen is not None else ()
         features = self._reference_features(scada, mi=mi, references=references, power_free=power_free)
-        features, era5 = self._add_era5(features, index=index, timebase=timebase)
+        features = self._add_site_features(features, index=index, timebase=timebase)
+        era5 = self._aligned_era5(index=index, timebase=timebase)
         check_reference_only(features.columns.tolist(), test_wtg=mi.test_wtg)
 
         toggle_rows = resolve_toggle(mi.upgrade_timing, index)
@@ -1165,15 +1167,21 @@ class PowerModelMethod:
             raise ValueError(msg)
         return {v: _DEFAULT_MATCHING_BIN_EDGES[v] for v in self.matching_vars}
 
-    def _add_era5(
+    def _add_site_features(
         self, features: pd.DataFrame, *, index: pd.DatetimeIndex, timebase: pd.Timedelta
-    ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
-        """Align ERA5 (if supplied) to the SCADA periods and append its features."""
+    ) -> pd.DataFrame:
+        """Append the sun's elevation at the site, when the site's location is known."""
+        if self.site_location is None:
+            return features
+        latitude, longitude = self.site_location
+        solar = solar_elevation_frame(index, timebase=timebase, latitude=latitude, longitude=longitude)
+        return pd.concat([features, solar], axis=1)
+
+    def _aligned_era5(self, *, index: pd.DatetimeIndex, timebase: pd.Timedelta) -> pd.DataFrame | None:
+        """Return ERA5 aligned to the SCADA periods, or ``None`` when none was supplied."""
         if self.era5_hourly_df is None:
-            return features, None
-        aligned = interpolate_era5(self.era5_hourly_df, index=index, timebase=timebase)
-        era5_features = era5_feature_frame(aligned)
-        return pd.concat([features, era5_features], axis=1), aligned
+            return None
+        return interpolate_era5(self.era5_hourly_df, index=index, timebase=timebase)
 
     def _effective_half_life(self, *, campaign_start: pd.Timestamp, campaign_end: pd.Timestamp) -> float | None:
         """Return the time-decay half-life (days) for this campaign, or ``None`` when decay is off.
@@ -1414,7 +1422,7 @@ class PowerModelMethod:
     def reference_features(self, mi: MethodInput, *, power_free: Sequence[str] = ()) -> pd.DataFrame:
         """Build this method's reference feature matrix for ``mi``, with ``power_free`` references left out.
 
-        The same matrix :meth:`estimate` fits on, before ERA5 is added, exposed so a caller can
+        The same matrix :meth:`estimate` fits on, before the solar elevation is added, exposed so a caller can
         inspect what the screen changed.
         """
         scada = mi.context.select(mi.scada_df)
@@ -1982,7 +1990,6 @@ class PowerModelMethod:
             sum_actual_kw=sum_actual,
             sum_counterfactual_kw=sum_counter,
             n_refs=n_refs,
-            era5_label=self.era5_label,
             constant_features=tuple(constant_features),
         )
         importance = diag.write_csvs(run_dir, run_name, ts, data)
@@ -2037,6 +2044,7 @@ class PowerModelMethod:
             "wind_speed_col": self.columns.wind_speed,
             "seed": self.seed,
             "has_era5": self.era5_hourly_df is not None,
+            "site_location": list(self.site_location) if self.site_location is not None else None,
             "reference_stat_cols": list(self.reference_stat_cols),
             "direction_feature": self.direction_feature,
             "model_params": {**TUNED_MODEL_PARAMS, **self.model_params},

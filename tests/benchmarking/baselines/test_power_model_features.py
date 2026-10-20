@@ -1,7 +1,7 @@
 """Tests for the power-model feature builder (method step 6).
 
 Covers the reference feature pivot (active power per reference, original tag names, NaN-preserving),
-the waking scenario categoricals, the ERA5 feature list, the outcome extraction and the
+the waking scenario categoricals, the solar elevation, the outcome extraction and the
 reference-only guard.
 """
 
@@ -12,16 +12,15 @@ import pandas as pd
 import pytest
 
 from benchmarking.baselines.power_model.features import (
-    ERA5_FEATURES,
     QUALIFIER,
+    SOLAR_ELEVATION,
     build_reference_features,
     check_reference_only,
-    era5_feature_frame,
     extract_outcome,
+    solar_elevation_frame,
     waking_scenario_features,
     without_constant_scenarios,
 )
-from benchmarking.harness.reanalysis import ERA5_WD, ERA5_WS
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
 _TURBINE = "TurbineName"
@@ -162,54 +161,54 @@ class TestBuildReferenceFeatures:
         assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
 
 
-def _aligned_era5(idx: pd.DatetimeIndex) -> pd.DataFrame:
-    n = len(idx)
-    return pd.DataFrame(
-        {
-            "wind_speed_100m": np.linspace(5, 10, n),
-            "wind_direction_100m": np.linspace(0, 270, n),
-            "wind_speed_10m": np.linspace(4, 8, n),
-            "wind_direction_10m": np.linspace(0, 270, n),
-            "wind_gusts_10m": np.linspace(6, 12, n),
-            "temperature_2m": np.linspace(1, 6, n),
-            "surface_pressure": np.linspace(990, 1010, n),
-            "relative_humidity_2m": np.linspace(60, 90, n),
-            "cloud_cover": np.linspace(0, 100, n),
-            ERA5_WS: np.linspace(5, 10, n),
-            ERA5_WD: np.linspace(0, 270, n),
-        },
-        index=idx,
-    )
+# Denver, CO, and sunrise and sunset there on 19 May 2025 (timeanddate.com, in UTC).
+_DENVER = {"latitude": 39.7392, "longitude": -104.9903}
+_DENVER_SUNRISE = pd.Timestamp("2025-05-19 11:42", tz="UTC")
+_DENVER_SUNSET = pd.Timestamp("2025-05-20 02:11", tz="UTC")
+_HILL_OF_TOWIE = {"latitude": 57.506, "longitude": -3.068}
+_TEN_MINUTES = pd.Timedelta(minutes=10)
 
 
-class TestEra5FeatureFrame:
-    def test_returns_exactly_the_era5_feature_list(self) -> None:
-        out = era5_feature_frame(_aligned_era5(_index(6)))
-        assert list(out.columns) == list(ERA5_FEATURES)
+def _elevation(starts: list[pd.Timestamp], *, timebase: pd.Timedelta = _TEN_MINUTES, **site: float) -> np.ndarray:
+    index = pd.DatetimeIndex(starts)
+    return solar_elevation_frame(index, timebase=timebase, **site)[SOLAR_ELEVATION].to_numpy()
 
-    def test_direction_is_sin_and_cos_of_the_100m_direction(self) -> None:
-        aligned = _aligned_era5(_index(6))
-        out = era5_feature_frame(aligned)
-        rad = np.deg2rad(aligned["wind_direction_100m"].to_numpy())
-        np.testing.assert_allclose(out["wind_direction_100m_sin"].to_numpy(), np.sin(rad))
-        np.testing.assert_allclose(out["wind_direction_100m_cos"].to_numpy(), np.cos(rad))
 
-    def test_shear_and_gust_ratio_follow_their_definitions(self) -> None:
-        aligned = _aligned_era5(_index(6))
-        out = era5_feature_frame(aligned)
-        ws10 = aligned["wind_speed_10m"].to_numpy()
-        np.testing.assert_allclose(
-            out["shear_exponent"].to_numpy(), np.log(aligned["wind_speed_100m"].to_numpy() / ws10) / np.log(10.0)
+class TestSolarElevationFrame:
+    def test_the_sun_is_on_the_horizon_at_sunrise_and_sunset(self) -> None:
+        # Each period starts five minutes before the event, so its middle is the event.
+        starts = [_DENVER_SUNRISE - _TEN_MINUTES / 2, _DENVER_SUNSET - _TEN_MINUTES / 2]
+        np.testing.assert_allclose(_elevation(starts, **_DENVER), [0.0, 0.0], atol=0.2)
+
+    def test_it_is_evaluated_at_the_middle_of_each_period(self) -> None:
+        hourly = _elevation([_DENVER_SUNRISE - pd.Timedelta(minutes=30)], timebase=pd.Timedelta(hours=1), **_DENVER)
+        instant = _elevation([_DENVER_SUNRISE], timebase=pd.Timedelta(0), **_DENVER)
+        assert hourly == pytest.approx(instant)
+        start = _elevation([_DENVER_SUNRISE - pd.Timedelta(minutes=30)], timebase=pd.Timedelta(0), **_DENVER)
+        assert abs(start[0] - instant[0]) > 1.0
+
+    def test_a_timestamp_in_another_zone_is_the_same_instant(self) -> None:
+        utc = _elevation([_DENVER_SUNRISE], **_DENVER)
+        local = _elevation([_DENVER_SUNRISE.tz_convert("America/Denver")], **_DENVER)
+        np.testing.assert_allclose(local, utc)
+
+    def test_the_index_is_kept(self) -> None:
+        index = _index(6)
+        out = solar_elevation_frame(index, timebase=_TEN_MINUTES, **_HILL_OF_TOWIE)
+        assert list(out.columns) == [SOLAR_ELEVATION]
+        assert out.index.equals(index)
+
+    def test_hill_of_towie_midsummer(self) -> None:
+        noon, midnight = _elevation(
+            [pd.Timestamp("2018-06-21 12:10", tz="UTC"), pd.Timestamp("2018-06-21 00:10", tz="UTC")],
+            **_HILL_OF_TOWIE,
         )
-        np.testing.assert_allclose(out["gust_ratio"].to_numpy(), aligned["wind_gusts_10m"].to_numpy() / ws10)
+        assert noon == pytest.approx(55.9, abs=0.5)
+        assert midnight < 0.0
 
-    def test_air_density_is_plausible(self) -> None:
-        out = era5_feature_frame(_aligned_era5(_index(6)))
-        assert out["air_density"].between(1.2, 1.3).all()
-
-    def test_raises_without_an_input(self) -> None:
-        with pytest.raises(ValueError, match="surface_pressure"):
-            era5_feature_frame(_aligned_era5(_index(6)).drop(columns=["surface_pressure"]))
+    def test_raises_on_timezone_naive_timestamps(self) -> None:
+        with pytest.raises(ValueError, match="timezone-aware"):
+            _elevation([pd.Timestamp("2025-05-19 11:42")], **_DENVER)
 
 
 class TestOutcomeAndGuard:
