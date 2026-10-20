@@ -41,12 +41,28 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from benchmarking.campaigns.composed import output_root
-from benchmarking.campaigns.level_probe import PROBE_JSON, PROBE_LOG, _log_to
 from benchmarking.env import load_env
 from wind_up.geodesy import distance_and_bearing
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
+
+PROBE_JSON = "probe.json"
+PROBE_LOG = "probe.log"
+_LOG_HANDLER_NAME = "v0_probe"
+
+
+def _log_to(path: Path) -> None:
+    """Send the root logger to ``path`` too, replacing the file a previous case in this process opened."""
+    root = logging.getLogger()
+    for stale in [h for h in root.handlers if getattr(h, "name", None) == _LOG_HANDLER_NAME]:
+        root.removeHandler(stale)
+        stale.close()
+    handler = logging.FileHandler(path, mode="a")
+    handler.name = _LOG_HANDLER_NAME
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root.addHandler(handler)
+
 
 logger = logging.getLogger(__name__)
 
