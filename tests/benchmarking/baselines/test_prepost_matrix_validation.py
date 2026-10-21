@@ -6,14 +6,18 @@ import json
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from benchmarking.baselines.prepost_matrix.validation import (
     TARGET_COVERAGE,
     clustered_se,
+    component_sigmas,
     describe,
+    in_domain,
     lambda_star,
     lambda_uplift,
+    period_months,
     season,
     turbine_frame,
     usable_share_table,
@@ -174,8 +178,81 @@ def test_the_tables_judge_each_target() -> None:
     assert set(tables["open_screen"]["measure"]) == {"correlation_margin", "hours_fraction"}
 
 
+def test_the_headline_is_judged_and_forward_is_the_recorded_forward_reading() -> None:
+    records = _records()
+    for record in records:
+        turbine = record["turbines"][0]
+        turbine["estimate"] = turbine["truth"]  # a corrected headline that removes the 0.2 pp
+    tables = validation_tables(records)
+    refs = tables["i_references"].set_index(["site", "quantity"])
+    assert refs.loc[("all", "placebo_headline"), "mean"] == pytest.approx(0.0, abs=1e-12)
+    assert refs.loc[("all", "placebo_forward"), "mean"] == pytest.approx(0.002, abs=0.001)
+    by_period = tables["iv_coverage_by_period"].set_index("quantity")
+    assert by_period.loc["test", "rmse"] == pytest.approx(0.0, abs=1e-12)
+    coverage = tables["iv_coverage"].set_index(["quantity", "block"])
+    assert coverage.loc[("test", "sigma"), "coverage"] == 1.0
+
+
+def test_without_a_recorded_forward_reading_forward_is_the_headline() -> None:
+    records = _records(n_seeds=1)
+    for record in records:
+        for key in ("uplift_forward", "uplift_reverse", "sigma_reverse"):
+            del record["turbines"][0][key]
+    frame = turbine_frame(records)
+    assert frame["forward"].to_numpy() == pytest.approx(frame["headline"].to_numpy())
+
+
+def test_the_sigma_components_are_judged_alone_and_in_pairs() -> None:
+    records = _records()
+    for record in records:
+        record["turbines"][0].update({"sigma_sampling": 0.0001, "sigma_reference": 0.0001, "sigma_holdout": 0.01})
+    tables = validation_tables(records)
+    coverage = tables["iv_coverage"].set_index(["quantity", "block"])
+    assert coverage.loc[("test", "sampling"), "coverage"] == 0.0
+    assert coverage.loc[("test", "sampling+reference"), "coverage"] == 0.0
+    assert coverage.loc[("test", "sampling+holdout"), "coverage"] == 1.0
+    by_period = tables["iv_coverage_by_period"].set_index("quantity")
+    assert by_period.loc["test", "coverage_sampling+holdout"] == 1.0
+
+
+def test_component_sigmas_leave_out_what_is_not_recorded() -> None:
+    frame = pd.DataFrame({"sigma_sampling": [0.03], "sigma_holdout": [0.04]})
+    out = component_sigmas(frame)
+    assert set(out) == {"sampling", "sampling+holdout"}
+    assert out["sampling+holdout"][0] == pytest.approx(0.05)
+
+
+def test_the_domain_needs_twelve_months_before_and_six_after() -> None:
+    record = _records(n_seeds=1)[0]
+    assert in_domain(record)
+    assert not in_domain({**record, "pre_months": 6})
+    assert not in_domain({**record, "post_months": 3})
+
+
+def test_a_cell_taking_all_the_data_is_measured_by_its_shortest_plan() -> None:
+    record = {**_records(n_seeds=1)[0], "pre_months": None, "post_months": None}
+    record["plans"] = {"T01": {"pre_days": 400.0, "post_days": 170.0}, "T02": {"pre_days": 380.0, "post_days": 200.0}}
+    assert period_months(record, side="pre") == pytest.approx(380.0 / (365.25 / 12))
+    assert period_months(record, side="post") == pytest.approx(170.0 / (365.25 / 12))
+    assert not in_domain(record)
+
+
+def test_the_targets_leave_out_the_cells_outside_the_domain_and_the_periods_keep_them() -> None:
+    inside = _records()
+    outside = [
+        {**r, "cell_id": f"{r['cell_id']}_short", "post_months": 1, "turbines": [{**r["turbines"][0], "estimate": 0.5}]}
+        for r in _records()
+    ]
+    tables = validation_tables(inside + outside)
+    refs = tables["i_references"].set_index(["site", "quantity"])
+    assert refs.loc[("all", "placebo_headline"), "mean"] == pytest.approx(0.002, abs=0.001)
+    by_period = tables["iv_coverage_by_period"].set_index(["quantity", "post_months"])
+    assert by_period.loc[("test", 1), "bias"] > 0.4
+    assert by_period.loc[("test", 6), "bias"] == pytest.approx(0.002, abs=0.001)
+
+
 def test_the_text_gives_a_verdict_per_check() -> None:
-    text = describe(validation_tables(_records()), n_cells=18)
+    text = describe(validation_tables(_records()), n_cells=18, n_domain=18)
     assert "reference_uplift_after_screen: +1.000" in text
     assert "FAIL" in text  # the after-screen reference reads +1 % exactly, with no spread
     assert "test sigma_block_6h: 0.00" in text
@@ -211,5 +288,5 @@ def test_the_usable_share_table_gives_median_shares_per_site_and_period() -> Non
     assert row["changed_upwind_of_subject_before"] == pytest.approx(0.2)
     assert row["turbines"] == len(records)
     assert table.loc[("main", "kel", "all", "all"), "usable_before"] == pytest.approx(0.3)
-    text = describe(validation_tables(records), n_cells=len(records))
+    text = describe(validation_tables(records), n_cells=len(records), n_domain=len(records))
     assert "usable share of before hours: main kel 0.30" in text

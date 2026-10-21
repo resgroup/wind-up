@@ -11,11 +11,20 @@ one-line verdict; :func:`write_report` saves the tables as CSV beside the study 
   season of the changeover;
 - **iv** the sigma covers the error at the 68 % it claims, for the headline, the references and the
   bins, at every recorded block length;
-- **option 2** the forward headline against the full reversal (lambda 1) and against the computed
+- **option 2** the headline and the forward reading against the full reversal (lambda 1) and against the computed
   lambda of the reversal spec, here from the recorded fixed-model bootstrap sigmas, which leave out the
   fitting error and so overstate the reverse direction's precision on short after periods;
 - **open questions** the error against the share of after-period hours the waking configuration rule
   removes (step 11 ii), and the reference readings against the data screen's measures (step 9).
+
+The headline is the reported uplift (the reference-corrected one by default) and ``forward`` the forward
+reading it was corrected from. Targets i to iv judge the headline. A reference reading is never corrected,
+so for a reference the two are the same.
+
+The targets are judged on the method's intended domain only: cells with at least
+``DOMAIN_PRE_MONTHS`` before and ``DOMAIN_POST_MONTHS`` after. The rest of the matrix shows how the method
+degrades outside it, in the per-period table of every cell (bias, RMSE and coverage per before and after
+length) and the tables after it.
 
 Cells of one campaign share its data, so each mean's standard error is clustered by campaign (a
 synthetic site's tile, or a real campaign), and a verdict needs at least ``MIN_N`` campaigns.
@@ -44,7 +53,11 @@ COVERAGE_TOLERANCE = 0.05
 Z_LIMIT = 2.0
 # Below this many campaigns a verdict is not given.
 MIN_N = 5
-ESTIMATORS = ("forward", "reversal", "lambda")
+ESTIMATORS = ("headline", "forward", "reversal", "lambda")
+# The intended domain the targets are judged on (method.md, Validation).
+DOMAIN_PRE_MONTHS = 12
+DOMAIN_POST_MONTHS = 6
+_DAYS_PER_MONTH = 365.25 / 12
 RARE_CONFIGURATION = "rare waking configuration"
 USABLE = "usable"
 CHANGED_UPWIND_OF_REFERENCE = "changed upwind of reference"
@@ -99,6 +112,27 @@ def lambda_uplift(forward: np.ndarray | pd.Series, reverse: np.ndarray | pd.Seri
     f = np.log1p(np.asarray(forward, dtype=float))
     g = np.log1p(np.asarray(reverse, dtype=float))
     return np.expm1(f - lam * (f + g) / 2.0)
+
+
+def period_months(record: dict[str, Any], *, side: str) -> float:
+    """Return a cell's ``side`` (``"pre"`` or ``"post"``) period length in months.
+
+    The cell's own ``pre_months`` or ``post_months``; for a cell that takes all the data there is,
+    the shortest of its plans' periods. NaN without either.
+    """
+    months = record.get(f"{side}_months")
+    if months is not None:
+        return float(months)
+    days = [plan[f"{side}_days"] for plan in record.get("plans", {}).values() if plan.get(f"{side}_days") is not None]
+    return min(days) / _DAYS_PER_MONTH if days else np.nan
+
+
+def in_domain(record: dict[str, Any]) -> bool:
+    """Whether a cell has at least ``DOMAIN_PRE_MONTHS`` before and ``DOMAIN_POST_MONTHS`` after."""
+    return bool(
+        period_months(record, side="pre") >= DOMAIN_PRE_MONTHS
+        and period_months(record, side="post") >= DOMAIN_POST_MONTHS
+    )
 
 
 def _keys(record: dict[str, Any]) -> dict[str, Any]:
@@ -175,10 +209,18 @@ def _hours_fraction(screen: dict[str, Any]) -> float:
 
 
 def _with_estimators(frame: pd.DataFrame) -> pd.DataFrame:
-    """Add ``forward``, ``reversal``, ``lambda`` and ``lambda_star`` where both directions are recorded."""
+    """Add ``headline``, ``forward``, and ``reversal``, ``lambda`` and ``lambda_star`` where recorded.
+
+    ``reversal``, ``lambda`` and ``lambda_star`` need both directions recorded.
+
+    ``forward`` is the recorded forward reading, or the headline where none is recorded.
+    """
     if frame.empty:
         return frame
-    frame = frame.assign(forward=frame["estimate"])
+    forward = (
+        frame["uplift_forward"].fillna(frame["estimate"]) if "uplift_forward" in frame.columns else frame["estimate"]
+    )
+    frame = frame.assign(headline=frame["estimate"], forward=forward)
     if not {"uplift_forward", "uplift_reverse", "sigma_reverse"} <= set(frame.columns):
         return frame.assign(reversal=np.nan, lambda_star=np.nan, **{"lambda": np.nan})
     lam = lambda_star(
@@ -308,6 +350,23 @@ def _coverage(errors: np.ndarray, sigmas: np.ndarray, campaigns: np.ndarray) -> 
     }
 
 
+def component_sigmas(frame: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Return the headline sigma's recorded components alone and in quadrature pairs, by name.
+
+    The components are ``sampling``, ``reference`` (the correction's standard error) and ``holdout``;
+    a combination is left out when a component it needs is not recorded.
+    """
+    columns = {"sampling": "sigma_sampling", "reference": "sigma_reference", "holdout": "sigma_holdout"}
+    parts = {name: frame[c].to_numpy(dtype=float) for name, c in columns.items() if c in frame.columns}
+    out: dict[str, np.ndarray] = {}
+    if "sampling" in parts:
+        out["sampling"] = parts["sampling"]
+        for other in ("reference", "holdout"):
+            if other in parts:
+                out[f"sampling+{other}"] = np.hypot(parts["sampling"], parts[other])
+    return out
+
+
 def coverage_table(records: list[dict[str, Any]], turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
     """Target iv: how often the error falls within one sigma, per quantity and recorded block length."""
     rows = []
@@ -315,11 +374,16 @@ def coverage_table(records: list[dict[str, Any]], turbines: pd.DataFrame, refere
         if frame.empty:
             continue
         for column in [c for c in frame.columns if c == "sigma" or str(c).startswith("sigma_block_")]:
-            errors = _errors(frame, "forward").to_numpy(dtype=float)
+            errors = _errors(frame, "headline").to_numpy(dtype=float)
             sigmas = frame[column].to_numpy(dtype=float)
             rows.append(
                 {"quantity": quantity, "block": column, **_coverage(errors, sigmas, frame["campaign"].to_numpy())}
             )
+        errors = _errors(frame, "headline").to_numpy(dtype=float)
+        rows += [
+            {"quantity": quantity, "block": name, **_coverage(errors, sigmas, frame["campaign"].to_numpy())}
+            for name, sigmas in component_sigmas(frame).items()
+        ]
     bins = pd.DataFrame(
         [{**_keys(r), **b} for r in records if r["arm"] != "real" for b in r.get("bins", [])],
         columns=["campaign", "condition", "estimate", "truth", "sigma"],
@@ -337,21 +401,31 @@ def coverage_table(records: list[dict[str, Any]], turbines: pd.DataFrame, refere
 
 
 def period_coverage_table(turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
-    """Target iv by before and after length: the forward error's RMSE and the headline sigma's coverage."""
+    """Every before and after length: the headline error's bias, its RMSE and the headline sigma's coverage.
+
+    ``coverage_<component>`` is the coverage of each of :func:`component_sigmas` the test turbines record.
+    """
     rows = []
     for quantity, frame in (("test", turbines[turbines["arm"] != "real"]), ("reference", references)):
         if frame.empty:
             continue
         for (pre, post), group in frame.groupby(["pre_months", "post_months"]):
-            errors = _errors(group, "forward").to_numpy(dtype=float)
+            errors = _errors(group, "headline").to_numpy(dtype=float)
             finite = errors[np.isfinite(errors)]
+            bias = _mean_se(errors, group["campaign"])
             rows.append(
                 {
                     "quantity": quantity,
                     "pre_months": int(pre),
                     "post_months": int(post),
+                    "bias": bias["mean"],
+                    "bias_se": bias["se"],
                     "rmse": float(np.sqrt(np.mean(finite**2))) if finite.size else np.nan,
                     **_coverage(errors, group["sigma"].to_numpy(dtype=float), group["campaign"].to_numpy()),
+                    **{
+                        f"coverage_{name}": _coverage(errors, sigmas, group["campaign"].to_numpy())["coverage"]
+                        for name, sigmas in component_sigmas(group).items()
+                    },
                 }
             )
     return pd.DataFrame(rows)
@@ -383,7 +457,7 @@ def unmeasured_table(records: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 def reversal_table(turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
-    """Option 2: forward, full reversal and computed lambda, per after-period length, on test and reference error."""
+    """Option 2: the headline, forward, full reversal and computed lambda per after length, test and reference."""
     rows = []
     for quantity, frame in (("test", turbines[turbines["arm"] != "real"]), ("reference", references)):
         if frame.empty:
@@ -407,11 +481,11 @@ def reversal_table(turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataF
 
 
 def configuration_rule_table(turbines: pd.DataFrame) -> pd.DataFrame:
-    """Open question (step 11 ii): the forward error by the share of after-period hours the rule removes, in thirds."""
+    """Open question (step 11 ii): the headline error by the after-period share the rule removes, in thirds."""
     frame = turbines[(turbines["arm"] != "real") & turbines["rare_share_after"].notna()]
     rows = []
     for interval, group in frame.groupby(_thirds(frame["rare_share_after"])):
-        errors = _errors(group, "forward").to_numpy(dtype=float)
+        errors = _errors(group, "headline").to_numpy(dtype=float)
         rows.append(
             {
                 "rare_share": str(interval),
@@ -493,14 +567,17 @@ def usable_share_table(records: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 def validation_tables(records: list[dict[str, Any]]) -> dict[str, pd.DataFrame]:
-    """Return every target's table for ``records``."""
+    """Return every target's table for ``records``: targets i to iv on the domain's cells, the rest on all."""
+    domain = [r for r in records if in_domain(r)]
     turbines = turbine_frame(records)
     references = reference_frame(records)
+    domain_turbines = turbine_frame(domain)
+    domain_references = reference_frame(domain)
     return {
-        "i_references": references_table(records, turbines),
-        "ii_linearity": linearity_table(turbines),
-        "iii_dependence": dependence_table(turbines),
-        "iv_coverage": coverage_table(records, turbines, references),
+        "i_references": references_table(domain, domain_turbines),
+        "ii_linearity": linearity_table(domain_turbines),
+        "iii_dependence": dependence_table(domain_turbines),
+        "iv_coverage": coverage_table(domain, domain_turbines, domain_references),
         "iv_coverage_by_period": period_coverage_table(turbines, references),
         "unmeasured": unmeasured_table(records),
         "usable_share": usable_share_table(records),
@@ -526,11 +603,21 @@ def _verdict_coverage(row: pd.Series) -> str:
     return "FAIL (sigma too small)" if gap < 0 else "FAIL (sigma too large)"
 
 
-def describe(tables: dict[str, pd.DataFrame], *, n_cells: int) -> str:
+def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int) -> str:
     """Return the report as markdown: one verdict line per check, then each table."""
-    lines = [f"# Validation of {n_cells} ok cells", ""]
+    lines = [
+        f"# Validation of {n_cells} ok cells",
+        "",
+        f"Targets i to iv are judged on the {n_domain} cells with at least {DOMAIN_PRE_MONTHS} months before and "
+        f"{DOMAIN_POST_MONTHS} months after; the per-period section covers every cell.",
+        "",
+    ]
     refs = tables["i_references"]
     lines.append("## i. References and placebos read 0 %")
+    lines.append(
+        "- the reference readings are forward readings; a reference-corrected headline removes their mean, so the "
+        "placebo headline is its check"
+    )
     lines += [
         f"- {row.quantity}: {row.mean * _PP:+.3f} ± {row.se * _PP:.3f} pp (n {row.n}, {row.campaigns} campaigns): "
         f"{_verdict_mean(pd.Series(row._asdict()))}"
@@ -545,9 +632,9 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int) -> str:
             f"{row.intercept * _PP:+.3f} ± {row.intercept_se * _PP:.3f} pp ({intercept_ok}), n {row.n}, "
             f"{row.campaigns} campaigns"
         )
-    lines += ["", "## iii. No dependence on before-period length, after-period length, references or season (forward)"]
+    lines += ["", "## iii. No dependence on before-period length, after-period length, references or season (headline)"]
     dep = tables["iii_dependence"]
-    for axis, group in dep[dep["estimator"] == "forward"].groupby("axis", sort=False):
+    for axis, group in dep[dep["estimator"] == "headline"].groupby("axis", sort=False):
         spread = group["mean"].max() - group["mean"].min()
         worst = group.loc[group["z"].abs().idxmax()] if group["z"].notna().any() else None
         if worst is None or worst["campaigns"] < MIN_N:
@@ -565,10 +652,17 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int) -> str:
             f"n {row.n}, {row.campaigns} campaigns): "
             f"{_verdict_coverage(pd.Series(row._asdict()))}"
         )
-    lines += ["", "## iv by period: test coverage (RMSE pp) per before length P and after length L"]
+    lines += [
+        "",
+        "## Every period, in and out of the domain: test bias ± se, RMSE (pp) and coverage per before length P and "
+        "after length L",
+    ]
     by_period = tables["iv_coverage_by_period"]
     for pre, group in by_period[by_period["quantity"] == "test"].groupby("pre_months"):
-        cells = ", ".join(f"L{int(r.post_months)} {r.coverage:.2f} ({r.rmse * _PP:.2f})" for r in group.itertuples())
+        cells = ", ".join(
+            f"L{int(r.post_months)} {r.bias * _PP:+.2f} ± {r.bias_se * _PP:.2f}, {r.rmse * _PP:.2f}, {r.coverage:.2f}"
+            for r in group.itertuples()
+        )
         lines.append(f"- P{int(pre)}: {cells}")
     unmeasured = tables["unmeasured"]
     if not unmeasured.empty:
@@ -589,10 +683,11 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int) -> str:
                 f"{row.changed_upwind_of_reference_before:.2f}, of subject {row.changed_upwind_of_subject_before:.2f} "
                 f"({row.turbines} test turbines)"
             )
-    lines += ["", "## Option 2: forward, full reversal and computed lambda (RMSE, pp)"]
+    lines += ["", "## Option 2: the headline, forward, full reversal and computed lambda (RMSE, pp)"]
     for row in tables["option2_reversal"].itertuples():
         lines.append(
-            f"- {row.quantity} L{row.post_months}: forward {row.forward_rmse * _PP:.3f}, reversal "
+            f"- {row.quantity} L{row.post_months}: headline {row.headline_rmse * _PP:.3f}, forward "
+            f"{row.forward_rmse * _PP:.3f}, reversal "
             f"{row.reversal_rmse * _PP:.3f}, lambda {row.lambda_rmse * _PP:.3f} (median lambda "
             f"{row.lambda_star_median:.2f}, n {row.n})"
         )
@@ -615,6 +710,6 @@ def write_report(study_dir: Path) -> str:
     out.mkdir(exist_ok=True)
     for name, table in tables.items():
         table.to_csv(out / f"{name}.csv", index=False)
-    text = describe(tables, n_cells=len(records))
+    text = describe(tables, n_cells=len(records), n_domain=sum(in_domain(r) for r in records))
     (out / "validation.md").write_text(text)
     return text
