@@ -500,7 +500,7 @@ either. Nothing in Part C changes the reference set or the periods.
   valid record with the opposite toggle state is within a limit, one toggle cycle (the on and off
   durations together) by default. For a prepost test one of the following is used.
   - **Option A (current default).** No weather matching beyond the choice of period in step 7.
-  - **Option B.** Common-support trimming: coarsen ERA5 wind speed, direction and a stability proxy
+  - **Option B (not adopted, CF33).** Common-support trimming: coarsen ERA5 wind speed, direction and a stability proxy
     into cells, and drop the records of either period that fall in cells with less than a minimum
     number of hours in the other period. Calendar time is not a condition: matching the months of
     the two periods would shorten the before period, which step 7 keeps long on purpose.
@@ -588,7 +588,8 @@ in full, unlike wind-up v0, which had to fall back on power-only versions of bot
 - **Option C, reference correction (current default).** The screen of step 9 has already measured each
   power reference as if it were a test turbine, with the same periods, the same kind of model and the
   other references as its power references. A reference has no upgrade, so its forward uplift $U_i$ is
-  the model's error over those periods, and the test turbine's forward uplift carries the same error.
+  the model's error over those periods, and the test turbine's forward uplift carries much of the same
+  error.
   The uplift is the forward uplift less the mean of the $K$ references kept by the screen, in log space:
 
   $$
@@ -601,10 +602,10 @@ in full, unlike wind-up v0, which had to fall back on power-only versions of bot
   to the headline. The combined reference uplift of step 16 is unchanged, since the references
   themselves are not corrected, but it is no longer an independent check of the test turbine's bias:
   validation rests on placebo test turbines instead. The references' own uplifts, before any
-correction, are still reported for every test turbine together with the correction made from them,
-and a correction far from zero raises the uncertainty (step 14).
+  correction, are still reported for every test turbine together with the correction made from them,
+  and a correction far from zero raises the uncertainty (step 14).
 
-  On the prepost campaign matrix the correction takes the mean error of the synthetic test turbines from
+  Re-scored on the records of the prepost campaign matrix's run 6, the correction takes the mean error of the synthetic test turbines from
   +0.07 pp to −0.01 pp, within 0.1 pp at every combination of before and after period length, and lowers
   the error's scatter at every one. Option B over-corrects when the after period is shorter than the
   before period, because the model's error depends on how much data it was trained on and the reverse
@@ -614,7 +615,7 @@ and a correction far from zero raises the uncertainty (step 14).
 
 An uncertainty is reported for the headline uplift of step 13 and for each measured bin of the
 uplift distributions of step 15. It has three components, reported apart: a sampling component, the
-standard error of the reference correction of step 13 option C, and a systematic component for the
+uncertainty of the reference correction of step 13 option C, and a systematic component for the
 error that remains when the relation between the subject turbine and its references changes within the
 campaign. They combine in quadrature.
 
@@ -627,8 +628,8 @@ with the two direction models fixed and the bin labels frozen, so the uncertaint
 uplift; a bin that was filled rather than measured has no sigma. The sigma is also recorded at
 other block lengths (6 hours, 1 day, 7 days and 28 days by default) so that validation can choose
 the block length by the coverage of the sigma against known truth. Every reference turbine
-measured in step 9 carries the same sigma, so its reading against the expected 0 % can be judged
-in sigmas.
+measured in step 9 carries the same sampling sigma, so its reading against the expected 0 % can be
+judged in sigmas.
 
 The uncertainty of the reference correction is the standard deviation of the kept references'
 $\ln(1 + U_i)$ over $\sqrt{K}$, in quadrature with half the size of their mean, scaled to the uplift:
@@ -646,8 +647,8 @@ window, or the rest of the before period, with fewer usable hours than step 11 i
 With no upgrade in the before period each reading is an error. Its spread is the readings' root mean
 square less their own sampling sigmas (the same bootstrap, per window) in quadrature, floored at
 zero, and multiplied by the one-sigma quantile of Student's $t$ with as many degrees of freedom as
-windows, since a few windows estimate it poorly. It is added to the headline and to each measured
-bin. It is a sigma only: the readings' mean is not used to correct the uplift. Each window costs one
+windows, since a few windows estimate it poorly; with no window left it is not known and neither is
+the sigma. It is added to the headline and to each measured bin. It is a sigma only: the readings' mean is not used to correct the uplift. Each window costs one
 model fit. A toggle test has no systematic component, since its periods interleave.
 
 wind-up v0 instead took the largest of its statistical, bootstrap and reversibility sigmas and
@@ -757,10 +758,12 @@ The options above are decided by these criteria, one at a time rather than in ev
 
 1. the current defaults, with step 11 ii and step 15 as written above, give the baseline;
 2. step 13 option B with the calculated $\lambda$ is added (option A is its $\lambda = 0$ limit); it
-   failed the slope of ii and over-corrects short after periods, and option C, which passes i to iii,
-   replaced option A as the default;
-3. step 11 iv option B is added on top of that result, since trimming and the reversal correction
-   both act on the model's extrapolation between the periods;
+   failed the slope of ii and over-corrects short after periods. Option C replaced option A as the
+   default: re-scored on run 6's records it passed i and ii, and iii except a marginal dependence on
+   the after-period length (−0.18 pp at 3 months, z −2.0), over the whole matrix rather than the
+   domain below. Run 7 judges it as built, with the sigma of step 14;
+3. step 11 iv option B was tried on top of the forward uplift and not adopted (CF33): no shift between
+   the periods predicted a reading's error, and every trim cost precision;
 4. step 6 i option B is added last;
 5. at lower priority, step 11 ii with a minimum below 24 hours, so that more configurations with a
    turbine offline upwind are kept for the model to learn from rather than dropped as rare.
