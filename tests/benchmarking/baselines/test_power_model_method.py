@@ -9,6 +9,7 @@ recovers the uplift — for both prepost and toggle. Also checks the reference-o
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import logging
 import tempfile
 from typing import TYPE_CHECKING
@@ -16,17 +17,25 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import stats
 
 from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.baselines.power_model.features import QUALIFIER, SOLAR_ELEVATION
 from benchmarking.baselines.power_model.method import (
     _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
     _TIME_DECAY_CAMPAIGN_MULTIPLE,
+    CORRECTION_COLUMNS,
+    HOLDOUT_COLUMNS,
     REVERSAL_COLUMNS,
     _clip_predictions,
     _combine_uplift,
     _implied_shrinkage,
     _reference_input,
+    headline_detail,
+    holdout_excess,
+    holdout_windows,
+    is_reading_column,
+    kept_reference_correction,
     reference_measurement_dirname,
     reference_overall_uplift,
 )
@@ -134,10 +143,6 @@ class TestReversalCorrection:
     common shrinkage cancels, ``u`` survives), and a bad value is rejected.
     """
 
-    def test_defaults_to_forward(self) -> None:
-        method = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
-        assert method.headline_estimator == "forward"
-
     def test_recovers_known_uplift_prepost(self) -> None:
         mi, _ = _prepost_case(uplift=0.05)
         out = _fundamentals_method(model_params=_FAST_PARAMS, headline_estimator="reversal").estimate(mi)
@@ -153,6 +158,212 @@ class TestReversalCorrection:
         method = _fundamentals_method(model_params=_FAST_PARAMS, headline_estimator="sideways")
         with pytest.raises(ValueError, match="headline_estimator"):
             method.estimate(mi)
+
+
+def _kept_rows(**columns: list[object]) -> pd.DataFrame:
+    n = len(columns["uplift"])
+    defaults: dict[str, list[object]] = {"screened": [False] * n, "unjudged": [False] * n}
+    return pd.DataFrame({"turbine": [f"R{i}" for i in range(n)], **defaults, **columns})
+
+
+class TestKeptReferenceCorrection:
+    """The correction is the kept references' mean reading in log space, with its standard error."""
+
+    def test_is_the_mean_of_the_kept_readings_in_log_space(self) -> None:
+        out = kept_reference_correction(_kept_rows(uplift=[0.01, 0.03, -0.01]))
+        logs = np.log1p([0.01, 0.03, -0.01])
+        assert out["reference_correction"] == pytest.approx(np.expm1(logs.mean()))
+        assert out["sigma_reference_log"] == pytest.approx(np.hypot(logs.std(ddof=1) / np.sqrt(3), logs.mean() / 2))
+        assert out["n_correction_references"] == 3
+
+    def test_leaves_out_screened_unjudged_and_unread_references(self) -> None:
+        rows = _kept_rows(
+            uplift=[0.01, 0.20, -0.30, float("nan"), 0.03],
+            screened=[False, True, False, False, False],
+            unjudged=[False, False, True, False, False],
+        )
+        out = kept_reference_correction(rows)
+        assert out["n_correction_references"] == 2
+        assert out["reference_correction"] == pytest.approx(np.expm1(np.log1p([0.01, 0.03]).mean()))
+
+    def test_a_larger_correction_is_less_certain(self) -> None:
+        small = kept_reference_correction(_kept_rows(uplift=[0.00, 0.01, 0.02]))
+        large = kept_reference_correction(_kept_rows(uplift=[0.03, 0.04, 0.05]))
+        assert large["sigma_reference_log"] > small["sigma_reference_log"]
+
+    def test_one_kept_reading_corrects_but_has_no_standard_error(self) -> None:
+        out = kept_reference_correction(_kept_rows(uplift=[0.02]))
+        assert out["reference_correction"] == pytest.approx(0.02)
+        assert np.isnan(out["sigma_reference_log"])
+
+    def test_no_kept_reading_gives_nan(self) -> None:
+        out = kept_reference_correction(_kept_rows(uplift=[0.02], screened=[True]))
+        assert np.isnan(out["reference_correction"])
+        assert out["n_correction_references"] == 0
+
+
+class TestReferenceCorrectedHeadline:
+    """The default prepost headline: the forward reading less its kept references' mean reading."""
+
+    @staticmethod
+    def _pair(*, step: float = 0.03, **overrides: object) -> tuple[MethodOutput, MethodOutput]:
+        mi, _ = _screen_case(step=step)
+        corrected = _screen_method(**overrides).estimate(mi)
+        forward = _screen_method(headline_estimator="forward", **overrides).estimate(mi)
+        return corrected, forward
+
+    def test_is_the_default(self) -> None:
+        method = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
+        assert method.headline_estimator == "reference_corrected"
+
+    def test_divides_the_forward_reading_by_the_kept_references_mean(self) -> None:
+        corrected, forward = self._pair()
+        refs = corrected.reference_uplifts
+        assert refs["screened"].any()  # the stepped reference is ruled out and left out of the mean
+        kept = refs[~refs["screened"] & ~refs["unjudged"]]
+        mean = np.expm1(np.log1p(kept["uplift"].to_numpy(dtype=float)).mean())
+        assert corrected.p50_overall == pytest.approx((1 + forward.p50_overall) / (1 + mean) - 1)
+        row = corrected.uncertainty_diagnostics.iloc[0]
+        assert row["reference_correction"] == pytest.approx(mean)
+        assert row["n_correction_references"] == len(kept)
+
+    def test_adds_the_corrections_standard_error_to_the_sampling_sigma(self) -> None:
+        corrected, forward = self._pair()
+        row = corrected.uncertainty_diagnostics.iloc[0]
+        assert row["sigma_sampling"] == pytest.approx(forward.uncertainty_diagnostics.iloc[0]["sigma_block_24h"])
+        assert row["sigma_sampling"] == pytest.approx(row["sigma_block_24h"])
+        expected = np.sqrt(row["sigma_sampling"] ** 2 + row["sigma_reference"] ** 2 + row["sigma_holdout"] ** 2)
+        assert corrected.sigma_overall == pytest.approx(expected)
+        assert row["sigma_reference"] > 0
+
+    def test_a_forward_headline_records_no_correction(self) -> None:
+        _, forward = self._pair()
+        assert not set(CORRECTION_COLUMNS) & set(forward.uncertainty_diagnostics.columns)
+
+    def test_a_toggle_headline_is_not_corrected(self) -> None:
+        mi = _uncertainty_case(toggle=True)
+        corrected = _fundamentals_method(model_params=_FAST_PARAMS).estimate(mi)
+        forward = _fundamentals_method(model_params=_FAST_PARAMS, headline_estimator="forward").estimate(mi)
+        assert corrected.p50_overall == forward.p50_overall
+        assert corrected.sigma_overall == forward.sigma_overall
+        row = corrected.uncertainty_diagnostics.iloc[0]
+        assert np.isnan(row["reference_correction"])
+        assert row["sigma_reference"] == 0.0
+        assert row["n_correction_references"] == 0
+
+    def test_needs_the_reference_readings(self) -> None:
+        mi, _ = _screen_case(step=0.0, n=200)
+        with pytest.raises(ValueError, match="report_reference_uplifts"):
+            _screen_method(report_reference_uplifts=False).estimate(mi)
+
+    def test_the_references_are_read_forward(self) -> None:
+        method = _screen_method()
+        assert method._reference_clone().headline_estimator == "forward"  # noqa: SLF001
+        assert method._screening_clone().headline_estimator == "forward"  # noqa: SLF001
+
+    def test_the_correction_is_recorded_beside_the_matrix_readings(self) -> None:
+        corrected, _ = self._pair()
+        assert all(is_reading_column(c) for c in CORRECTION_COLUMNS)
+        assert set(CORRECTION_COLUMNS) <= set(corrected.uncertainty_diagnostics.columns)
+
+
+class TestHoldoutWindows:
+    """The before period is held out in windows of the after length, tiled back from its last record."""
+
+    @staticmethod
+    def _before(days: int = 100) -> pd.DatetimeIndex:
+        return pd.date_range("2020-01-01", periods=days * 24, freq="1h", tz="UTC")
+
+    def test_tile_back_from_the_last_record(self) -> None:
+        before = self._before()
+        windows = holdout_windows(before, after_length=pd.Timedelta(days=10), max_blocks=12)
+        assert len(windows) == 10
+        assert windows[0] == (before[-1] - pd.Timedelta(days=10), before[-1])
+        for (start, _), (_, end) in itertools.pairwise(windows):
+            assert end == start
+
+    def test_stop_at_the_most_blocks(self) -> None:
+        windows = holdout_windows(self._before(), after_length=pd.Timedelta(days=10), max_blocks=4)
+        assert len(windows) == 4
+
+    def test_are_at_most_half_the_before_period(self) -> None:
+        before = self._before()
+        windows = holdout_windows(before, after_length=pd.Timedelta(days=80), max_blocks=12)
+        assert [end - start for start, end in windows] == [(before[-1] - before[0]) / 2] * 2
+
+    def test_none_without_blocks_or_records(self) -> None:
+        assert holdout_windows(self._before(), after_length=pd.Timedelta(days=10), max_blocks=0) == []
+        assert holdout_windows(pd.DatetimeIndex([], tz="UTC"), after_length=pd.Timedelta(days=10), max_blocks=12) == []
+
+
+class TestHoldoutExcess:
+    """The held-out readings' spread beyond their own sampling sigma, inflated for few blocks."""
+
+    def test_is_the_rms_beyond_sampling_times_the_one_sigma_t_quantile(self) -> None:
+        out = holdout_excess(np.array([0.03, -0.01, 0.02]), sampling_sigmas=np.array([0.01, 0.01, 0.01]))
+        rms2 = np.mean(np.square([0.03, -0.01, 0.02]))
+        assert out == pytest.approx(np.sqrt(rms2 - 0.01**2) * stats.t.ppf(stats.norm.cdf(1.0), 3))
+
+    def test_is_zero_when_the_readings_are_within_their_sampling_sigma(self) -> None:
+        assert holdout_excess(np.array([0.005, -0.005]), sampling_sigmas=np.array([0.01, 0.01])) == 0.0
+
+    def test_is_nan_without_a_reading(self) -> None:
+        assert np.isnan(holdout_excess(np.array([]), sampling_sigmas=np.array([])))
+
+    def test_leaves_out_unfinished_readings(self) -> None:
+        a = holdout_excess(np.array([0.03, np.nan]), sampling_sigmas=np.array([0.01, 0.01]))
+        b = holdout_excess(np.array([0.03]), sampling_sigmas=np.array([0.01]))
+        assert a == pytest.approx(b)
+
+
+class TestHoldoutSigma:
+    """The systematic component of the headline sigma (method step 14), from the held-out before period."""
+
+    @staticmethod
+    def _method(**overrides: object) -> PowerModelMethod:
+        return _screen_method(**overrides)
+
+    def test_holds_out_up_to_twelve_blocks_by_default(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).holdout_max_blocks == 12
+
+    def test_joins_the_sampling_and_correction_sigmas_in_quadrature(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        out = self._method().estimate(mi)
+        row = out.uncertainty_diagnostics.iloc[0]
+        assert row["n_holdout_blocks"] == 2  # a fortnight before, held out a week at a time
+        assert np.isfinite(row["sigma_holdout"])
+        assert row["sigma_holdout"] >= 0
+        expected = np.sqrt(row["sigma_sampling"] ** 2 + row["sigma_reference"] ** 2 + row["sigma_holdout"] ** 2)
+        assert out.sigma_overall == pytest.approx(expected)
+
+    def test_never_moves_the_headline(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        on = self._method().estimate(mi)
+        off = self._method(holdout_max_blocks=0).estimate(mi)
+        assert on.p50_overall == off.p50_overall
+        assert not set(HOLDOUT_COLUMNS) & set(off.uncertainty_diagnostics.columns)
+        row = off.uncertainty_diagnostics.iloc[0]
+        assert off.sigma_overall == pytest.approx(np.hypot(row["sigma_sampling"], row["sigma_reference"]))
+
+    def test_a_forward_headline_carries_it_too(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        out = self._method(headline_estimator="forward").estimate(mi)
+        row = out.uncertainty_diagnostics.iloc[0]
+        assert out.sigma_overall == pytest.approx(np.hypot(row["sigma_block_24h"], row["sigma_holdout"]))
+
+    def test_a_toggle_estimate_holds_nothing_out(self) -> None:
+        out = _fundamentals_method(model_params=_FAST_PARAMS).estimate(_uncertainty_case(toggle=True))
+        row = out.uncertainty_diagnostics.iloc[0]
+        assert row["n_holdout_blocks"] == 0
+        assert row["sigma_holdout"] == 0.0
+
+    def test_the_references_hold_nothing_out(self) -> None:
+        method = self._method()
+        assert method._reference_clone().holdout_max_blocks == 0  # noqa: SLF001
+        assert method._screening_clone().holdout_max_blocks == 0  # noqa: SLF001
+
+    def test_is_recorded_beside_the_matrix_readings(self) -> None:
+        assert all(is_reading_column(c) for c in HOLDOUT_COLUMNS)
 
 
 class TestRecovery:
@@ -1178,7 +1389,9 @@ class TestADeadReference:
     def test_as_a_power_reference_it_leaves_nothing_to_fit(self) -> None:
         mi, _ = self._mi_with_a_dead_reference()
         with pytest.raises(ValueError, match="usable hours in the before period"):
-            _screen_method(reference_screen=False, report_reference_uplifts=False).estimate(mi)
+            _screen_method(
+                reference_screen=False, report_reference_uplifts=False, headline_estimator="forward"
+            ).estimate(mi)
 
     def test_its_own_uplift_is_reported_as_unknown(self) -> None:
         mi, _ = self._mi_with_a_dead_reference()
@@ -1395,19 +1608,22 @@ class TestReferenceUpliftReportingIsOptional:
 
     def test_it_can_be_skipped(self) -> None:
         mi, _ = _screen_case(step=0.0)
-        assert _screen_method(report_reference_uplifts=False).estimate(mi).reference_uplifts is None
+        assert (
+            _screen_method(report_reference_uplifts=False, headline_estimator="forward").estimate(mi).reference_uplifts
+            is None
+        )
 
     def test_skipping_it_does_not_change_the_estimate(self) -> None:
-        """It is a report, not an input: turning it off must not move the headline."""
+        """Under a forward headline it is a report, not an input: turning it off must not move the headline."""
         mi, _ = _screen_case(step=0.0)
-        on = _screen_method(report_reference_uplifts=True).estimate(mi).p50_overall
-        off = _screen_method(report_reference_uplifts=False).estimate(mi).p50_overall
+        on = _screen_method(report_reference_uplifts=True, headline_estimator="forward").estimate(mi).p50_overall
+        off = _screen_method(report_reference_uplifts=False, headline_estimator="forward").estimate(mi).p50_overall
         assert on == pytest.approx(off)
 
     def test_the_screen_still_runs_and_is_still_reported(self) -> None:
         """Skipping the report must not silently skip the screening that changes the estimate."""
         mi, _ = _screen_case(step=0.08)
-        out = _screen_method(report_reference_uplifts=False).estimate(mi)
+        out = _screen_method(report_reference_uplifts=False, headline_estimator="forward").estimate(mi)
         assert out.screen_passes is not None
         assert bool(out.screen_passes["dropped"].any())
 
@@ -1784,7 +2000,7 @@ class TestWakeContributors:
         assert not [c for c in features.columns if c.endswith(" @ W1")]
 
     def test_its_change_does_not_reach_the_estimate(self) -> None:
-        method = _screen_method(reference_screen=False, report_reference_uplifts=False)
+        method = _screen_method(reference_screen=False, report_reference_uplifts=False, headline_estimator="forward")
         as_wake = method.estimate(_with_a_changed_neighbour()).p50_overall
         as_reference = method.estimate(_with_a_changed_neighbour(as_reference=True)).p50_overall
         assert abs(as_reference - 0.05) > 0.01, "the control: W1's power would carry its step into T1's estimate"
@@ -2041,7 +2257,9 @@ class TestWakingScenarioFeatures:
 
     def test_the_estimate_recovers_the_uplift_with_them(self, tmp_path: Path) -> None:
         mi = _with_scenarios(_with_a_changed_neighbour())
-        method = _screen_method(reference_screen=False, report_reference_uplifts=False, out_dir=tmp_path)
+        method = _screen_method(
+            reference_screen=False, report_reference_uplifts=False, headline_estimator="forward", out_dir=tmp_path
+        )
         assert method.estimate(mi).p50_overall == pytest.approx(0.05, abs=0.005)
         importance = pd.read_csv(sorted(tmp_path.rglob("*_feature_importance_*.csv"))[-1])
         assert f"{WAKING_SCENARIO_COL}{QUALIFIER}test" in set(importance["feature"])
@@ -2309,7 +2527,9 @@ class TestHeadlineUncertainty:
 
     @staticmethod
     def _method(**overrides: object) -> PowerModelMethod:
-        return _fundamentals_method(model_params=_FAST_PARAMS, **overrides)
+        return _fundamentals_method(
+            **{"model_params": _FAST_PARAMS, "headline_estimator": "forward", "holdout_max_blocks": 0, **overrides}
+        )
 
     def test_the_headline_carries_a_sigma_by_default(self) -> None:
         out = self._method().estimate(self._case())
@@ -2384,7 +2604,7 @@ class TestRecordedReversal:
 
     @staticmethod
     def _method(**overrides: object) -> PowerModelMethod:
-        return _fundamentals_method(model_params=_FAST_PARAMS, **overrides)
+        return _fundamentals_method(**{"model_params": _FAST_PARAMS, "headline_estimator": "forward", **overrides})
 
     def test_is_off_by_default(self) -> None:
         method = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
@@ -2460,3 +2680,30 @@ class TestPerBinUncertainty:
         a = self._run().p50_by_condition
         b = self._run(n_resamples=50, bootstrap_seed=3).p50_by_condition
         pd.testing.assert_series_equal(a["p50_uplift"], b["p50_uplift"])
+
+    def test_a_corrected_headline_moves_every_bin_and_adds_its_standard_error(self) -> None:
+        corrected = self._run()
+        forward = self._run(headline_estimator="forward")
+        row = corrected.uncertainty_diagnostics.iloc[0]
+        a = corrected.p50_by_condition.set_index(["condition", "condition_bin"])
+        b = forward.p50_by_condition.set_index(["condition", "condition_bin"])
+        assert not np.allclose(a["p50_uplift"], b["p50_uplift"])
+        measured = np.isfinite(b["sigma_uplift"].to_numpy(dtype=float))
+        np.testing.assert_allclose(
+            a["sigma_uplift"].to_numpy(dtype=float)[measured],
+            np.hypot(b["sigma_uplift"].to_numpy(dtype=float)[measured], row["sigma_reference"]),
+        )
+
+
+class TestHeadlineDetail:
+    """The reference correction and sigma components a report shows beside each headline."""
+
+    def test_carries_the_correction_and_the_sigma_components(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        detail = headline_detail(_screen_method().estimate(mi))
+        assert set(detail) == {*CORRECTION_COLUMNS, *HOLDOUT_COLUMNS}
+
+    def test_is_empty_without_them(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        out = _screen_method(headline_estimator="forward", holdout_max_blocks=0).estimate(mi)
+        assert headline_detail(out) == {}

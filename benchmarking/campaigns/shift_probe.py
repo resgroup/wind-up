@@ -223,6 +223,7 @@ def run_arm(
             era5_label=era5_source_label(HOT_LAT, HOT_LON),
             reference_screen=False,
             report_reference_uplifts=False,
+            headline_estimator="forward",
         ),
         era5_wd=era5_direction(era5_df, index),
         northing_out_dir=out_dir / "northing",

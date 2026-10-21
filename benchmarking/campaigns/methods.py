@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
     import pandas as pd
 
+    from benchmarking.baselines.power_model.method import HeadlineEstimator
     from benchmarking.campaigns.declaration import CampaignSpec
     from benchmarking.harness import Method
 
@@ -32,6 +33,7 @@ def carried_forward_methods(
     era5_label: str = ERA5_UNLOCATED,
     reference_screen: bool = True,
     report_reference_uplifts: bool = True,
+    headline_estimator: HeadlineEstimator = PowerModelMethod.headline_estimator,
     row_dump_dir: Path | None = None,
 ) -> list[Method]:
     """Build the methods applicable to ``spec``, each writing into its own subfolder of ``out_dir``.
@@ -58,8 +60,10 @@ def carried_forward_methods(
     :param reference_screen: run the power model's reference screen. Off holds the reference pool
         identical across the arms of a study whose campaigns differ in length or coverage.
     :param report_reference_uplifts: report each candidate reference's own uplift. It costs a model
-        fit per reference per test turbine and never moves a headline, so a study that scores only
-        its test turbines turns it off.
+        fit per reference per test turbine, and the default reference-corrected headline needs it, so a
+        study that turns it off passes ``headline_estimator="forward"`` too.
+    :param headline_estimator: the power model's prepost headline; see
+        :class:`~benchmarking.baselines.power_model.PowerModelMethod`
     :param row_dump_dir: where the power model dumps each estimate's rows, for the level probe;
         ``None`` dumps nothing
     """
@@ -94,6 +98,7 @@ def carried_forward_methods(
                 era5_label=era5_label,
                 reference_screen=reference_screen,
                 report_reference_uplifts=report_reference_uplifts,
+                headline_estimator=headline_estimator,
                 row_dump_dir=row_dump_dir,
             )
         )

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from benchmarking.baselines.power_model.method import reference_overall_uplift
+from benchmarking.baselines.power_model.method import headline_detail, reference_overall_uplift
 from benchmarking.campaigns.context import context_for_plan
 from benchmarking.campaigns.data_screen import (
     DEFAULT_DATA_SCREEN,
@@ -81,7 +81,10 @@ class CampaignReport:
     :param scada_df: the frame the methods were given -- every turbine, clipped to the analysis
         period and north-calibrated by the shared northing step
     :param per_turbine: one row per method and upgraded turbine -- ``method``, ``test_wtg``,
-        ``estimate`` and ``sigma`` (NaN for a method that reports no uncertainty)
+        ``estimate`` and ``sigma`` (NaN for a method that reports no uncertainty), and the power
+        model's reference correction and sigma components where it reports them (``reference_correction``,
+        the kept references' mean uncorrected reading, ``sigma_sampling``, ``sigma_reference``,
+        ``sigma_holdout`` and the counts behind them)
     :param farm: one row per method -- ``estimate``, ``uplift_spread``, ``n_guarded`` and the
         combined reference uplift before and after the screen (``reference_uplift_before_screen``,
         ``reference_uplift_after_screen``) with the spread of the references after it
@@ -301,6 +304,7 @@ def estimate_campaign(
                     "test_wtg": wtg,
                     "estimate": output.p50_overall,
                     "sigma": float("nan") if output.sigma_overall is None else float(output.sigma_overall),
+                    **headline_detail(output),
                 }
             )
             estimates.setdefault(name, []).append(

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from benchmarking.baselines.power_model.method import CORRECTION_COLUMNS, HOLDOUT_COLUMNS
 from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
 from benchmarking.campaigns.run import CampaignReport, estimate_campaign, visible_mask
 from benchmarking.harness import CampaignWindow, Replicate, score_output, truth_mask
@@ -246,6 +247,11 @@ class CampaignRunner:
 
 
 def per_turbine_table(result: CampaignResult) -> pd.DataFrame:
-    """Return the per-turbine headline rows: one per method and upgraded turbine."""
+    """Return the per-turbine headline rows: one per method and upgraded turbine.
+
+    The power model's reference correction and sigma components follow ``sigma`` where it reports them.
+    """
     overall = result.scores[result.scores["condition"] == "overall"]
-    return overall[["method", "test_wtg", "estimate", "sigma", "truth", "signed_error"]].reset_index(drop=True)
+    detail = [c for c in (*CORRECTION_COLUMNS, *HOLDOUT_COLUMNS) if c in overall.columns]
+    columns = ["method", "test_wtg", "estimate", "sigma", *detail, "truth", "signed_error"]
+    return overall[columns].reset_index(drop=True)

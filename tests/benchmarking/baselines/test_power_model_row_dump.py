@@ -44,6 +44,7 @@ def _method(**overrides: object) -> PowerModelMethod:
         "conditions": (),
         "reference_screen": False,
         "report_reference_uplifts": False,
+        "headline_estimator": "forward",
         "model_params": _FAST_PARAMS,
         **overrides,
     }

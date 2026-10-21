@@ -310,11 +310,7 @@ given.
 ERA5 is not a feature. A model fitted on one period leans on ERA5 in a way that does not carry over to a
 period it has not seen, and the references then read about +0.1 pp; ERA5 also lags real time, so the
 last month or two of a live campaign may have none (CF34). Without ERA5 and with solar elevation the
-estimator's bias is about +0.07 pp, which still fails the validation target.
-
-> **TODO (bias correction).** Estimate the estimator's out-of-sample bias inside the before period, from
-> a contiguous holdout as long as the after period, and subtract it. Measure its precision cost on the
-> matrix.
+estimator's bias is about +0.07 pp, which still fails the validation target; step 13 option C removes it.
 
 Adding more information about the references has not reduced bias to date. Features are therefore kept
 to those with a clear physical justification.
@@ -561,7 +557,7 @@ predicting data unlike its training data. That error grows with the time separat
 is the main source of bias left once steps 5, 6, 7 and 11 are applied. One of the following is used to
 remove it:
 
-- **Option A (current default).** The forward uplift alone.
+- **Option A.** The forward uplift alone.
 - **Option B, reversibility.** As in wind-up v0, the calculation is also performed in reverse: a
   second model $\hat f_A$ is trained on the after period and predicts the before period,
 
@@ -589,12 +585,38 @@ remove it:
 The reverse calculation of option B does not use the subject turbine anemometer and so can be performed
 in full, unlike wind-up v0, which had to fall back on power-only versions of both calculations.
 
+- **Option C, reference correction (current default).** The screen of step 9 has already measured each
+  power reference as if it were a test turbine, with the same periods, the same kind of model and the
+  other references as its power references. A reference has no upgrade, so its forward uplift $U_i$ is
+  the model's error over those periods, and the test turbine's forward uplift carries the same error.
+  The uplift is the forward uplift less the mean of the $K$ references kept by the screen, in log space:
+
+  $$
+  \ln(1 + U) = \ln(1 + U_{fwd}) - \frac{1}{K}\sum_{i=1}^{K} \ln(1 + U_i)
+  $$
+
+  The references ruled out or not judged by the screen, and any that could not be measured, are left
+  out of the mean; with no reference left the uplift is not reported. It needs no extra model fits, as
+  the reference measurements of step 9 are reused. The bins of step 15 move with it, as they are scaled
+  to the headline. The combined reference uplift of step 16 is unchanged, since the references
+  themselves are not corrected, but it is no longer an independent check of the test turbine's bias:
+  validation rests on placebo test turbines instead. The references' own uplifts, before any
+correction, are still reported for every test turbine together with the correction made from them,
+and a correction far from zero raises the uncertainty (step 14).
+
+  On the prepost campaign matrix the correction takes the mean error of the synthetic test turbines from
+  +0.07 pp to −0.01 pp, within 0.1 pp at every combination of before and after period length, and lowers
+  the error's scatter at every one. Option B over-corrects when the after period is shorter than the
+  before period, because the model's error depends on how much data it was trained on and the reverse
+  model is trained on less.
+
 ### 14. Estimate uncertainty
 
 An uncertainty is reported for the headline uplift of step 13 and for each measured bin of the
-uplift distributions of step 15. It has two components, reported apart: a sampling component, and a
-systematic component for the error that remains when the reference turbines or the model are
-biased. Only the sampling component is calculated so far.
+uplift distributions of step 15. It has three components, reported apart: a sampling component, the
+standard error of the reference correction of step 13 option C, and a systematic component for the
+error that remains when the relation between the subject turbine and its references changes within the
+campaign. They combine in quadrature.
 
 The sampling component is a circular block bootstrap with the model of step 12 fixed. The after
 period's records of the subject turbine, each with its measured and its counterfactual power, are
@@ -608,11 +630,29 @@ the block length by the coverage of the sigma against known truth. Every referen
 measured in step 9 carries the same sigma, so its reading against the expected 0 % can be judged
 in sigmas.
 
-The systematic component is not yet specified. The candidates are the reversal disagreement of
-step 13 option B and the spread of the reference uplifts of step 16, as in wind-up v0, which took
-the largest of its statistical, bootstrap and reversibility sigmas and floored it at the weighted
-mean absolute reference uplift. How sigmas combine across references and across test turbines is
-left until the components are trusted.
+The uncertainty of the reference correction is the standard deviation of the kept references'
+$\ln(1 + U_i)$ over $\sqrt{K}$, in quadrature with half the size of their mean, scaled to the uplift:
+a large correction means the model extrapolated poorly between the periods, and the test turbine's
+error then follows its references' less closely. With a single kept reference it is not known and
+neither is the sigma. It is added in quadrature to the headline's sampling sigma and to each measured
+bin's, since the correction moves every bin by the same factor. The sampling sigma alone is recorded
+too.
+
+The systematic component is measured inside the before period. Windows as long as the after period,
+or half the before period when that is shorter, are held out of the before period in turn, tiled
+back from its end (at most 12 by default). For each window the model of step 12 is trained on the
+rest of the before period and predicts the window, which is read as if it were an after period; a
+window, or the rest of the before period, with fewer usable hours than step 11 i requires is skipped.
+With no upgrade in the before period each reading is an error. Its spread is the readings' root mean
+square less their own sampling sigmas (the same bootstrap, per window) in quadrature, floored at
+zero, and multiplied by the one-sigma quantile of Student's $t$ with as many degrees of freedom as
+windows, since a few windows estimate it poorly. It is added to the headline and to each measured
+bin. It is a sigma only: the readings' mean is not used to correct the uplift. Each window costs one
+model fit. A toggle test has no systematic component, since its periods interleave.
+
+wind-up v0 instead took the largest of its statistical, bootstrap and reversibility sigmas and
+floored it at the weighted mean absolute reference uplift. How sigmas combine across references and
+across test turbines is left until the components are trusted.
 
 ### 15. Calculate uplift distributions
 
@@ -679,8 +719,9 @@ own measure of noise. The combined uplift is reported both before and after the 
 after the screen is near zero partly by construction, so the value before it is the more honest
 check.
 
-The reference uplifts could also be used to correct the test turbine uplift. This is not done, because
-the references would then read 0 % by construction and could no longer be used as a check of bias.
+The reference uplifts are used to correct the test turbine uplift (step 13 option C). The combined
+reference uplift reported here is of the references' own, uncorrected uplifts: it measures the bias the
+correction removes, and is no longer a check that the corrected test turbine uplift is unbiased.
 
 ### 17. Estimate the annual energy production uplift
 
@@ -695,20 +736,29 @@ used to estimate the long-term wind speed distribution.
 The method is judged on synthetic campaigns with known ground truth, built from real SCADA data, and on
 real campaigns where the reference turbines provide truth of zero. The target is:
 
-- i. the combined reference uplift and the uplift of placebo test turbines (upgraded with zero effect)
-  are 0.0 % on average, within the noise of the campaigns;
+- i. the uplift of placebo test turbines (upgraded with zero effect) is 0.0 % on average, within the
+  noise of the campaigns, and so is the combined reference uplift for any option that does not correct
+  by the references (step 13 option C makes them read 0 % by construction);
 - ii. on synthetic upgrades of known size, a straight line fitted to measured against true uplift has a
   slope of 1 and an intercept of 0, with as little scatter as possible;
-- iii. neither depends on the length of the after period, the number of reference turbines or the
-  season of the upgrade;
+- iii. neither depends on the length of the before or after period, the number of reference turbines
+  or the season of the upgrade;
 - iv. the reported sigma covers the error at the rate it claims: about 68 % of the errors against
   truth, headline and per bin, fall within one sigma, and the reference uplifts read 0 % within
   their sigmas at the same rate.
 
+The targets are expected to pass only where the method is meant to be used: at least 12 months of
+before data, and at least 6 months of after data, ideally fewer. The campaign matrix also runs shorter
+periods (6 months before, 1 to 3 months after) and fewer references. They are not judged against the
+targets. Instead they show whether the method degrades gracefully: its error grows, but stays
+unbiased, and the sigma grows with it rather than claiming a precision the data cannot give.
+
 The options above are decided by these criteria, one at a time rather than in every combination:
 
 1. the current defaults, with step 11 ii and step 15 as written above, give the baseline;
-2. step 13 option B with the calculated $\lambda$ is added (option A is its $\lambda = 0$ limit);
+2. step 13 option B with the calculated $\lambda$ is added (option A is its $\lambda = 0$ limit); it
+   failed the slope of ii and over-corrects short after periods, and option C, which passes i to iii,
+   replaced option A as the default;
 3. step 11 iv option B is added on top of that result, since trimming and the reversal correction
    both act on the model's extrapolation between the periods;
 4. step 6 i option B is added last;
@@ -716,6 +766,20 @@ The options above are decided by these criteria, one at a time rather than in ev
    turbine offline upwind are kept for the model to learn from rather than dropped as rare.
 
 An option is kept when it improves the criteria above. Step 12 option B is not run.
+
+### Where the method is valid
+
+Once the targets pass, this section states the situations the method is validated for, from the
+campaign matrix: the shortest before and after periods, the fewest reference turbines, the sites
+and kinds of upgrade tested, and how the accuracy and the sigma behave outside them. Until then the
+intended domain is at least 12 months before and at least 6 months after.
+
+| Condition | Validated for | Outside it |
+| --- | --- | --- |
+| Before period | to be decided, intended 12 months or more | to be decided |
+| After period | to be decided, intended 6 months or more | to be decided |
+| Reference turbines kept | to be decided | to be decided |
+| Upgrade size | to be decided | to be decided |
 
 ## Open questions
 

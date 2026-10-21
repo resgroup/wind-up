@@ -22,10 +22,12 @@ import logging
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
+from scipy.stats import t as student_t
 
 from benchmarking.baselines.block_bootstrap import bootstrap_energy_ratio, bootstrap_ratio_uplift
 from benchmarking.baselines.power_model import diagnostics as diag
@@ -113,6 +115,21 @@ _DEFAULT_N_RESAMPLES = 1000
 _UNCERTAINTY_COLUMNS = ("block_hours", "sigma", "sigma_robust", "n_blocks", "frac_resamples_finite")
 # The reverse-direction reading ``record_reversal`` adds to the uncertainty row (method step 13 option B).
 REVERSAL_COLUMNS: tuple[str, ...] = ("uplift_forward", "uplift_reverse", "sigma_reverse")
+# What the reference-corrected headline adds to the uncertainty row (method step 13 option C): the kept
+# references' mean reading it removed, the forward reading's sampling sigma, the correction's standard
+# error and how many references it averaged.
+CORRECTION_COLUMNS: tuple[str, ...] = (
+    "reference_correction",
+    "sigma_sampling",
+    "sigma_reference",
+    "n_correction_references",
+)
+# What the held-out before period adds to a prepost uncertainty row (method step 14): the systematic
+# sigma and how many windows it was read over.
+HOLDOUT_COLUMNS: tuple[str, ...] = ("sigma_holdout", "n_holdout_blocks")
+_DEFAULT_HOLDOUT_MAX_BLOCKS = 12
+HeadlineEstimator = Literal["forward", "reversal", "reference_corrected"]
+HEADLINE_ESTIMATORS: tuple[str, ...] = get_args(HeadlineEstimator)
 
 # Matching set + bin widths for the two-direction conditional step: wind_speed_100m binned finest,
 # wind_gusts_10m coarser, and wind_direction_100m in 20° sectors. Fixed sectors, no wraparound.
@@ -163,9 +180,28 @@ def sigma_column(block_hours: float) -> str:
 def is_reading_column(name: object) -> bool:
     """Whether ``name`` is a column a measurement's reading carries beside its uplift.
 
-    These are ``sigma``, the block-length sweep ``sigma_block_<h>h`` and :data:`REVERSAL_COLUMNS`.
+    These are ``sigma``, the block-length sweep ``sigma_block_<h>h``, :data:`REVERSAL_COLUMNS`,
+    :data:`CORRECTION_COLUMNS` and :data:`HOLDOUT_COLUMNS`.
     """
-    return name == "sigma" or str(name).startswith("sigma_block_") or name in REVERSAL_COLUMNS
+    return (
+        name == "sigma"
+        or str(name).startswith("sigma_block_")
+        or name in REVERSAL_COLUMNS
+        or name in CORRECTION_COLUMNS
+        or name in HOLDOUT_COLUMNS
+    )
+
+
+def headline_detail(output: MethodOutput) -> dict[str, float]:
+    """Return the :data:`CORRECTION_COLUMNS` and :data:`HOLDOUT_COLUMNS` a headline reports, as one row's columns.
+
+    Empty for an output that reports none of them.
+    """
+    diagnostics = output.uncertainty_diagnostics
+    if diagnostics is None or diagnostics.empty:
+        return {}
+    row = diagnostics.iloc[0]
+    return {c: float(row[c]) for c in (*CORRECTION_COLUMNS, *HOLDOUT_COLUMNS) if c in diagnostics.columns}
 
 
 def empty_uncertainty() -> pd.DataFrame:
@@ -217,6 +253,74 @@ def reference_overall_uplift(
         for row in rows.itertuples()
     ]
     return float(farm_uplift(turbines).uplift)
+
+
+def kept_reference_correction(reference_uplifts: pd.DataFrame | None) -> dict[str, float]:
+    """Return the kept references' mean reading in log space and its standard error (method step 13 option C).
+
+    A reference is kept when it has a finite reading above -100 % and was neither ruled out nor left
+    unjudged by the screen. ``reference_correction`` is ``exp(mean(ln(1 + u))) - 1`` over the kept
+    readings and ``n_correction_references`` their number. ``sigma_reference_log`` is the standard
+    deviation of ``ln(1 + u)`` over the root of their number, in quadrature with half the mean's size,
+    so a larger correction is less certain; NaN below two readings. The correction is NaN when none
+    is kept.
+    """
+    logs = np.array([], dtype=float)
+    if reference_uplifts is not None and not reference_uplifts.empty:
+        rows = reference_uplifts
+        out = rows["screened"].astype(bool).to_numpy()
+        if "unjudged" in rows.columns:
+            out |= rows["unjudged"].astype(bool).to_numpy()
+        uplift = rows["uplift"].to_numpy(dtype=float)[~out]
+        uplift = uplift[np.isfinite(uplift) & (uplift > -1.0)]
+        logs = np.log1p(uplift)
+    k = logs.size
+    return {
+        "reference_correction": float(np.expm1(logs.mean())) if k else float("nan"),
+        "sigma_reference_log": float(np.hypot(logs.std(ddof=1) / np.sqrt(k), logs.mean() / 2))
+        if k > 1
+        else float("nan"),
+        "n_correction_references": float(k),
+    }
+
+
+def holdout_windows(
+    before_times: pd.DatetimeIndex, *, after_length: pd.Timedelta, max_blocks: int
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Return the ``(start, end]`` windows the before period is held out in, latest first (method step 14).
+
+    Each window is as long as the after period or half the before period's span, whichever is shorter.
+    They tile back from the last before record without overlap, at most ``max_blocks`` of them, while
+    a window still ends after the first record.
+    """
+    if before_times.empty or max_blocks <= 0:
+        return []
+    first, last = before_times.min(), before_times.max()
+    length = min(after_length, (last - first) / 2)
+    if length <= pd.Timedelta(0):
+        return []
+    windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    end = last
+    while len(windows) < max_blocks and end > first:
+        windows.append((end - length, end))
+        end -= length
+    return windows
+
+
+def holdout_excess(readings: np.ndarray, *, sampling_sigmas: np.ndarray) -> float:
+    """Return the held-out readings' spread beyond their own sampling sigma, inflated for few readings.
+
+    ``sqrt(max(mean(reading²) - mean(sigma²), 0))`` over the finite pairs, times the one-sigma
+    quantile of Student's t with as many degrees of freedom as readings. NaN without a reading.
+    """
+    readings = np.asarray(readings, dtype=float)
+    sampling_sigmas = np.asarray(sampling_sigmas, dtype=float)
+    ok = np.isfinite(readings) & np.isfinite(sampling_sigmas)
+    n = int(np.count_nonzero(ok))
+    if n == 0:
+        return float("nan")
+    excess = max(float(np.mean(readings[ok] ** 2) - np.mean(sampling_sigmas[ok] ** 2)), 0.0)
+    return float(np.sqrt(excess) * student_t.ppf(norm.cdf(1.0), n))
 
 
 def empty_reference_uplifts() -> pd.DataFrame:
@@ -488,12 +592,26 @@ class PowerModelMethod:
     :param report_reference_uplifts: report each candidate reference's own uplift, the standard
         campaign sanity check (a healthy campaign's references read near 0%). Costs one extra model
         fit per reference, so a method sweep that scores estimators rather than reporting campaigns
-        turns it off. It is a report, not an input: turning it off never moves the headline
-    :param headline_estimator: how the prepost headline is formed. ``"forward"`` (default) is the
+        turns it off. The reference-corrected headline needs it; under the other headlines it is a
+        report, not an input, and turning it off never moves the headline
+    :param headline_estimator: how the prepost headline is formed. ``"forward"`` is the
         counterfactual energy ratio ``Σactual/Σprediction - 1`` from the baseline-trained model.
-        ``"reversal"`` (the reversal correction) also fits the reverse direction (train the upgraded
-        rows, predict the baseline rows) and reports ``sqrt((1+r_fwd)/(1+r_rev)) - 1``, so a shrinkage
-        common to both directions cancels. Costs one extra model fit per estimate. Toggle is unaffected
+        ``"reference_corrected"`` (default) divides ``1 +`` the forward ratio by ``1 +`` the kept
+        references' mean reading (:func:`kept_reference_correction`), so the headline and every bin of
+        the uplift distributions move together, and its sigma is the forward sampling sigma in
+        quadrature with the correction's standard error; the uncertainty row gains
+        :data:`CORRECTION_COLUMNS`. It needs ``report_reference_uplifts``, and the headline is NaN
+        when no reference is kept. ``"reversal"`` (the reversal correction) also fits the reverse
+        direction (train the upgraded rows, predict the baseline rows) and reports
+        ``sqrt((1+r_fwd)/(1+r_rev)) - 1``, so a shrinkage common to both directions cancels; it costs
+        one extra model fit per estimate. Toggle is always the forward ratio
+    :param holdout_max_blocks: the most windows of the before period a prepost estimate holds out in
+        turn (:func:`holdout_windows`), refitting the model on the rest and reading each window as if
+        it were the after period. Their spread beyond their own sampling sigma (:func:`holdout_excess`)
+        is ``sigma_holdout``, joined in quadrature to the headline sigma and to each measured bin's;
+        the uncertainty row gains :data:`HOLDOUT_COLUMNS`. A window or remainder under the usable-hours
+        floor is skipped, and ``sigma_holdout`` is NaN when none is left. Costs one model fit per
+        window; ``0`` turns it off. A toggle estimate holds nothing out
     :param record_reversal: also fit the reverse direction of a prepost estimate and record it, without
         changing the headline: the ``uncertainty_diagnostics`` row gains ``uplift_forward``,
         ``uplift_reverse`` and ``sigma_reverse`` (the reverse ratio's block bootstrap over the before
@@ -548,7 +666,8 @@ class PowerModelMethod:
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
     report_reference_uplifts: bool = True
-    headline_estimator: Literal["forward", "reversal"] = "forward"
+    headline_estimator: HeadlineEstimator = "reference_corrected"
+    holdout_max_blocks: int = _DEFAULT_HOLDOUT_MAX_BLOCKS
     record_reversal: bool = False
     write_diagnostics: bool = True
     row_dump_dir: Path | None = None
@@ -704,6 +823,19 @@ class PowerModelMethod:
         if not self.record_reversal:
             reversal = {}
 
+        # Reported post-screen: the sanity check asks what the *final* analysis says its references
+        # did, so a ruled-out reference is listed but does not drag the headline.
+        reference_uplifts = (
+            self.reference_uplifts(mi, power_free=power_free, screen=screen) if self.report_reference_uplifts else None
+        )
+        uplift, sigma, correction = self._reference_corrected(
+            mi, forward=uplift, sigma_sampling=summary["sigma"], reference_uplifts=reference_uplifts
+        )
+        holdout = self._holdout_sigma(
+            mi, features=features, y=y_arr, baseline_sel=baseline_sel, upgraded_sel=upgraded_sel, index=index
+        )
+        sigma = float(np.hypot(sigma, holdout.get("sigma_holdout", 0.0)))
+
         # A clone that estimates one reference during screening or reporting writes nothing:
         # out_dir=None does not suppress diagnostics, it makes a temp directory per run.
         run_dir = self._run_dir(mi, index) if self.write_diagnostics else None
@@ -766,6 +898,9 @@ class PowerModelMethod:
                     upgraded_sel=upgraded_sel,
                     fit=fit,
                     overall_ratio=uplift,
+                    level_sigma=float(
+                        np.hypot(correction.get("sigma_reference", 0.0), holdout.get("sigma_holdout", 0.0))
+                    ),
                     index=index,
                     timebase=timebase,
                     # non-None whenever conditions are requested; _validate_model_config enforces it
@@ -773,15 +908,10 @@ class PowerModelMethod:
                 )
             except ValueError as e:
                 logger.warning("%s: no uplift distributions for %s (%s)", self.name, mi.test_wtg, e)
-        # Reported post-screen: the sanity check asks what the *final* analysis says its references
-        # did, so a ruled-out reference is listed but does not drag the headline.
-        reference_uplifts = (
-            self.reference_uplifts(mi, power_free=power_free, screen=screen) if self.report_reference_uplifts else None
-        )
         return MethodOutput(
             p50_overall=uplift,
             p50_by_condition=by_condition,
-            sigma_overall=summary["sigma"],
+            sigma_overall=sigma,
             uncertainty_diagnostics=pd.DataFrame(
                 [
                     {
@@ -789,6 +919,8 @@ class PowerModelMethod:
                         "condition_bin": "overall",
                         **{k: v for k, v in summary.items() if k != "sigma"},
                         **reversal,
+                        **correction,
+                        **holdout,
                     }
                 ]
             ),
@@ -834,6 +966,118 @@ class PowerModelMethod:
                 }
             )
         return pd.DataFrame(rows, columns=list(_UNCERTAINTY_COLUMNS)) if rows else empty_uncertainty()
+
+    def _reference_corrected(
+        self,
+        mi: MethodInput,
+        *,
+        forward: float,
+        sigma_sampling: float,
+        reference_uplifts: pd.DataFrame | None,
+    ) -> tuple[float, float, dict[str, float]]:
+        """Return the reference-corrected headline, its sigma and the :data:`CORRECTION_COLUMNS` row.
+
+        Another ``headline_estimator`` keeps ``forward`` and ``sigma_sampling`` and records nothing; a
+        toggle estimate keeps them and records no correction, with a zero standard error.
+        """
+        if self.headline_estimator != "reference_corrected":
+            return forward, sigma_sampling, {}
+        if is_toggle(mi.upgrade_timing):
+            return (
+                forward,
+                sigma_sampling,
+                {
+                    "reference_correction": float("nan"),
+                    "sigma_sampling": sigma_sampling,
+                    "sigma_reference": 0.0,
+                    "n_correction_references": 0.0,
+                },
+            )
+        kept = kept_reference_correction(reference_uplifts)
+        uplift = (1.0 + forward) / (1.0 + kept["reference_correction"]) - 1.0
+        sigma_reference = (1.0 + uplift) * kept["sigma_reference_log"]
+        if not np.isfinite(uplift):
+            logger.warning("%s: %s has no kept reference reading to correct by", self.name, mi.test_wtg)
+        logger.info(
+            "%s %s: forward %+.3f%%, kept references' mean %+.3f%% (%d), corrected %+.3f%%",
+            self.name,
+            mi.test_wtg,
+            100 * forward,
+            100 * kept["reference_correction"],
+            int(kept["n_correction_references"]),
+            100 * uplift,
+        )
+        return (
+            uplift,
+            float(np.hypot(sigma_sampling, sigma_reference)),
+            {
+                "reference_correction": kept["reference_correction"],
+                "sigma_sampling": sigma_sampling,
+                "sigma_reference": sigma_reference,
+                "n_correction_references": kept["n_correction_references"],
+            },
+        )
+
+    def _holdout_sigma(
+        self,
+        mi: MethodInput,
+        *,
+        features: pd.DataFrame,
+        y: np.ndarray,
+        baseline_sel: np.ndarray,
+        upgraded_sel: np.ndarray,
+        index: pd.DatetimeIndex,
+    ) -> dict[str, float]:
+        """Return the :data:`HOLDOUT_COLUMNS` of a prepost estimate (see ``holdout_max_blocks``).
+
+        Empty when ``holdout_max_blocks`` is 0; no window and a zero sigma for a toggle estimate.
+        """
+        if self.holdout_max_blocks <= 0:
+            return {}
+        if is_toggle(mi.upgrade_timing):
+            return {"sigma_holdout": 0.0, "n_holdout_blocks": 0.0}
+        timebase = self.timebase if self.timebase is not None else _infer_timebase(index)
+        hours_per_record = timebase / pd.Timedelta(hours=1)
+        before_pos = np.flatnonzero(baseline_sel)
+        before_times = index[before_pos]
+        after_times = index[upgraded_sel]
+        windows = holdout_windows(
+            before_times,
+            after_length=after_times.max() - after_times.min() + timebase,
+            max_blocks=self.holdout_max_blocks,
+        )
+        readings, sigmas = [], []
+        for start, end in windows:
+            held = np.asarray((before_times > start) & (before_times <= end))
+            if min(np.count_nonzero(held), np.count_nonzero(~held)) * hours_per_record < _MIN_PERIOD_HOURS:
+                continue
+            train, predict = before_pos[~held], before_pos[held]
+            pred = self._fit_direction(features, y, train=train, predict=predict)
+            readings.append(_ratio(y[predict], pred))
+            sigmas.append(
+                bootstrap_energy_ratio(
+                    times=index[predict],
+                    actual=y[predict],
+                    counterfactual=pred,
+                    period_start=index[predict].min(),
+                    period_end=index[predict].max(),
+                    timebase=timebase,
+                    block_hours=float(self.block_hours),
+                    n_resamples=self.n_resamples,
+                    seed=self.bootstrap_seed,
+                ).sigma
+            )
+        logger.info(
+            "%s %s: %d held-out windows of the before period read %s",
+            self.name,
+            mi.test_wtg,
+            len(readings),
+            ", ".join(f"{100 * r:+.2f}%" for r in readings),
+        )
+        return {
+            "sigma_holdout": holdout_excess(np.array(readings), sampling_sigmas=np.array(sigmas)),
+            "n_holdout_blocks": float(len(readings)),
+        }
 
     def _reverse_direction(
         self,
@@ -899,6 +1143,7 @@ class PowerModelMethod:
         upgraded_sel: np.ndarray,
         fit: dict[str, Any],
         overall_ratio: float,
+        level_sigma: float,
         index: pd.DatetimeIndex,
         timebase: pd.Timedelta,
         run_dir: Path,
@@ -907,9 +1152,10 @@ class PowerModelMethod:
 
         Match the baseline and upgraded periods on ERA5 weather, then fit/predict in both directions and
         combine so the common per-bin shrinkage cancels; the decomposition is re-leveled onto the
-        already-computed overall headline (``overall_ratio``, from the single full fit ``fit``) so the per-bin
-        MWh partitions it. Requires ERA5: the matching axis is the aligned ERA5 columns ``era5``. Returns
-        the ``[condition, condition_bin, p50_uplift]`` frame and writes the per-run diagnostics.
+        already-computed overall headline (``overall_ratio``) so the per-bin MWh partitions it, and
+        ``level_sigma``, the headline's correction sigma, is added in quadrature to each measured bin's
+        sigma. Requires ERA5: the matching axis is the aligned ERA5 columns ``era5``. Returns the
+        ``[condition, condition_bin, p50_uplift]`` frame and writes the per-run diagnostics.
         """
         # Matched two-direction fits, for the per-bin shape only. Matching is required: without it the reverse
         # model (train upgraded, predict baseline) would extrapolate out-of-distribution across the prepost
@@ -946,6 +1192,8 @@ class PowerModelMethod:
             index=index,
             timebase=timebase,
         )
+        if per_bin is not None:
+            per_bin["sigma_uplift"] = np.hypot(per_bin["sigma_uplift"].to_numpy(dtype=float), level_sigma)
         by_condition = (
             per_bin[["condition", "condition_bin", "p50_uplift", "sigma_uplift"]].copy()
             if per_bin is not None
@@ -1618,7 +1866,7 @@ class PowerModelMethod:
         return self._pass_clone("reference")
 
     def _pass_clone(self, suffix: str) -> PowerModelMethod:
-        """Return a clone for estimating one reference: no conditional step, no plots, neither pass.
+        """Return a clone for estimating one reference: forward, no holdout or conditional step, no plots, no pass.
 
         Both passes must be off, not just the screen. A clone that still reports reference uplifts
         runs the whole reference pass itself, and its clones run it again, so the work is
@@ -1628,6 +1876,8 @@ class PowerModelMethod:
             self,
             reference_screen=False,
             report_reference_uplifts=False,
+            headline_estimator="forward",
+            holdout_max_blocks=0,
             conditions=(),
             save_plots=False,
             write_diagnostics=False,
@@ -1832,8 +2082,14 @@ class PowerModelMethod:
 
     def _validate_model_config(self) -> None:
         """Fail loudly on config combinations that would silently misbehave."""
-        if self.headline_estimator not in ("forward", "reversal"):
-            msg = f"headline_estimator must be 'forward' or 'reversal', got {self.headline_estimator!r}"
+        if self.headline_estimator not in HEADLINE_ESTIMATORS:
+            msg = f"headline_estimator must be one of {HEADLINE_ESTIMATORS}, got {self.headline_estimator!r}"
+            raise ValueError(msg)
+        if self.headline_estimator == "reference_corrected" and not self.report_reference_uplifts:
+            msg = (
+                "headline_estimator='reference_corrected' corrects by the references' own readings, so it needs "
+                "report_reference_uplifts=True. Turn the readings on, or pass headline_estimator='forward'."
+            )
             raise ValueError(msg)
         if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
             msg = f"time_decay_half_life_days must be positive, got {self.time_decay_half_life_days}"
