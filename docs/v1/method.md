@@ -5,10 +5,9 @@ some way such as a turbine upgrade or implementation of wind farm control. The w
 best practice from the turbine power performance standard IEC 61400-12-1 [1] and adds innovative steps to
 achieve additional goals such as measurement of uplift under all conditions (including waked operation).
 
-The wind-up tool can use met mast data and LiDAR data to measure uplift of upgraded test turbines as would
-be the case in an IEC 61400-12-1 power performance test. However, this document focuses on the case where
-mast and LiDAR data is not available. In that case neighbouring turbines that have not been changed are
-used as reference turbines to measure the uplift of upgraded test turbines.
+Met mast or LiDAR data could serve as the reference, as in an IEC 61400-12-1 power performance test,
+but this document covers only the case where they are not available. Neighbouring turbines that have
+not been changed are then used as reference turbines to measure the uplift of upgraded test turbines.
 
 This document describes the target state of the v1 method. Where more than one approach is still under
 consideration the options are listed, with the current default marked. An option is retired once the
@@ -307,13 +306,10 @@ given.
   of each record's period. It correlates with atmospheric stability, and so with shear, and needs
   nothing beyond the timestamp, so it covers every record.
 
-ERA5 is not a feature. A model fitted on one period leans on ERA5 in a way that does not carry over to a
-period it has not seen, and the references then read about +0.1 pp; ERA5 also lags real time, so the
-last month or two of a live campaign may have none (CF34). Without ERA5 and with solar elevation the
-estimator's bias is about +0.07 pp, which still fails the validation target; step 13 option C removes it.
-
-Adding more information about the references has not reduced bias to date. Features are therefore kept
-to those with a clear physical justification.
+ERA5 is not a feature: a model fitted on one period leans on it in a way that does not carry over to a
+period it has not seen, and it lags real time, so the last month or two of a live campaign may have
+none (CF34). Features are kept to those with a clear physical justification; adding more information
+about the references has not reduced bias to date.
 
 ## Part B: the campaign for one test turbine
 
@@ -456,18 +452,20 @@ either. Nothing in Part C changes the reference set or the periods.
   step 8. A measurement needs a minimum of usable data in each period (96 hours by default); below
   it no uplift is returned, and a test turbine is reported as not analysed with the reason, as in
   step 7. Quantities here are hours, not records.
-- ii. **Waking configuration.** For each record, the configuration is the combination of the waking
-  scenarios (step 5 iii) of the subject turbine and all of its power references, taken together. Only
-  configurations with at least 24 hours of data in both periods are retained, in the same way that
-  wind-up v0 retained only the waking scenarios with at least one day of data. By default a record is
-  also dropped when the scenario of the subject turbine or of any power reference contains a part
-  waking turbine or is "unknown", however much data its configuration has. This is the per-turbine
-  part of the rule, which the data screen (step 9) applies too; the records of part iii without a
-  direction are among those it drops. A configuration seen in one period only is one the model has
-  rarely or never seen, and its prediction for it is an extrapolation. For a toggle test the two
-  periods are the toggle on and toggle off data, and a record from before toggling began (step 7) is
-  dropped when its configuration is rare in them. The hours each part removes are reported by the
-  measurement, in hours per period.
+- ii. **Waking configuration.** A record's configuration is the waking scenarios (step 5 iii) of the
+  subject turbine and all of its power references, taken together. Two rules apply:
+  - a record is dropped when any of those scenarios contains a part waking turbine or is "unknown"
+    (this includes the records of part iii without a direction). This rule looks at each turbine on its
+    own, so the data screen (step 9) applies it too;
+  - a record is dropped when its configuration has less than 24 hours of data in either period, as
+    wind-up v0 kept only the waking scenarios with at least a day of data. A configuration seen in one
+    period only is one the model must extrapolate to. For a toggle test the periods are the toggle on
+    and off data, and a record from before toggling began (step 7) is dropped when its configuration is
+    rare in them.
+
+  The hours each rule removes are reported per period. The second rule fragments as references are
+  added, since every combination of their scenarios is its own configuration, and the campaign matrix
+  shows a small bias where it removes the most hours (open question).
 - iii. **Changed turbines upwind.** For this measurement, a turbine is changed if it has a change
   (step 1) between the start of the before period and the end of the after period.
   A turbine whose changes all fall outside that span casts the same wake in both periods. Records in
@@ -496,23 +494,12 @@ either. Nothing in Part C changes the reference set or the periods.
   known not to change the analyst declares a reach of 0, so the change costs no records, while the
   turbine's other works and every other turbine's still count.
 - iv. **Weather.** Both periods should see the same weather. For a toggle test a toggle pairing filter
-  is applied, which only keeps data where the time difference between a data record and the nearest
-  valid record with the opposite toggle state is within a limit, one toggle cycle (the on and off
-  durations together) by default. For a prepost test one of the following is used.
-  - **Option A (current default).** No weather matching beyond the choice of period in step 7.
-  - **Option B (not adopted, CF33).** Common-support trimming: coarsen ERA5 wind speed, direction and a stability proxy
-    into cells, and drop the records of either period that fall in cells with less than a minimum
-    number of hours in the other period. Calendar time is not a condition: matching the months of
-    the two periods would shorten the before period, which step 7 keeps long on purpose.
-
-Under option B, trimming is kept as natural as possible: where practical, whole days are removed rather
-than individual records, so that the retained data stays contiguous and autocorrelated in the same way
-in both periods.
-
-Features that reveal the period rather than the conditions, such as a signal that only exists in one
-period, must not be used for matching. Weighting the records by a model of the probability of belonging
-to each period is not used, because on real data the period is almost perfectly predictable from such
-features.
+  keeps a record only when the nearest valid record with the opposite toggle state is within one toggle
+  cycle (the on and off durations together, by default). A prepost test has no weather matching beyond
+  the choice of period in step 7. Trimming both periods to common ERA5 weather support was tried and not
+  adopted: no shift between the periods predicted a reading's error, and every trim cost precision
+  (CF33). Weighting records by their probability of belonging to each period is not used either, since
+  on real data the period is almost perfectly predictable.
 
 ### 12. Relate the reference measurements to the subject turbine measurements
 
@@ -526,19 +513,12 @@ The model is a gradient-boosted tree regressor minimising squared error. It is c
 repeated runs on one machine give identical results; results on different machines can differ by a
 few tenths of a percentage point.
 
-**Joint or paired references.** By default the references are analysed together as one model for each
-subject turbine, not one subject-reference pair at a time. A single-reference estimate carries
-roughly twice the shared bias of a multi-reference one, and each reference's own drift relative to
-the subject turbine is averaged down as more references are added.
-
-- **Option A (current default).** One joint model per subject turbine.
-- **Option B (not pursued in this revision).** Steps 11 to 13 are run once per subject-reference
-  pair and the pair results are combined. This keeps more data, because the validity of step 11 i
-  is not unioned across references, and lets a reference be dropped after the fact without
-  re-running. It is not tested now: the data cost of the joint model is already measured and
-  reported by the data screen (step 9), the number of references is the lever that trades it off,
-  and a paired method would need its own screen, its own step 13 and its own step 16. It is
-  revisited only if validation shows the data lost in step 11 i is what limits accuracy.
+The references are modelled together, one model per subject turbine, not one subject-reference pair at
+a time: a single-reference estimate carries roughly twice the shared bias of a multi-reference one, and
+each reference's own drift relative to the subject turbine is averaged down as more are added. Pairs
+would keep more data, since the validity of step 11 i would not be unioned across references, but would
+need their own screen and their own steps 13 and 16; they are revisited only if validation shows the
+data lost in step 11 i limits accuracy.
 
 ### 13. Calculate the uplift
 
@@ -551,46 +531,18 @@ U_{fwd} = \frac{\sum_A y}{\sum_A \hat f_B} - 1
 $$
 
 Each prediction is clipped to the range from the smaller of zero and the lowest power the model was
-trained on to the larger of the rated power and the largest power the model was trained on. This compares
-a measured sum with a predicted one, and is biased by any error the model makes on average when
-predicting data unlike its training data. That error grows with the time separating the two periods and
-is the main source of bias left once steps 5, 6, 7 and 11 are applied. One of the following is used to
-remove it:
+trained on to the larger of the rated power and the largest power the model was trained on.
 
-- **Option A.** The forward uplift alone.
-- **Option B, reversibility.** As in wind-up v0, the calculation is also performed in reverse: a
-  second model $\hat f_A$ is trained on the after period and predicts the before period,
-
-  $$
-  U_{rev} = \frac{\sum_B y}{\sum_B \hat f_A} - 1
-  $$
-
-  With no bias, $(1 + U_{rev}) = 1/(1 + U_{fwd})$. A bias common to both directions cancels in
-
-  $$
-  U = \sqrt{\frac{1 + U_{fwd}}{1 + U_{rev}}} - 1
-  $$
-
-  This removes the bias on long campaigns but is harmful on short ones (below about six months),
-  where the reverse model is trained on too little data to generalise. The correction is therefore
-  weighted: in log space, with $f = \ln(1 + U_{fwd})$, $g = \ln(1 + U_{rev})$ and the estimated bias
-  $\hat\beta = (f + g)/2$, the uplift is $\ln(1 + U) = f - \lambda\hat\beta$, where $\lambda$ between 0
-  (forward only) and 1 (full reversal) is calculated from the measured precision of the two directions
-  to minimise the expected error. The precision of each direction is estimated within this step, from
-  the spread of its uplift over time-blocked folds of its training data or over a block bootstrap of
-  it; it does not depend on step 14. Option A is the $\lambda = 0$ limit of option B, so the two are
-  not compared as alternatives: validation checks that $\lambda$ falls towards 0 on short after
-  periods and that the reference turbines read 0 % at every campaign length.
-
-The reverse calculation of option B does not use the subject turbine anemometer and so can be performed
-in full, unlike wind-up v0, which had to fall back on power-only versions of both calculations.
+The forward uplift is biased by any error the model makes on average when predicting data unlike its
+training data. That error grows with the time separating the two periods and is the main source of bias
+left once steps 5, 6, 7 and 11 are applied. It is removed with the references (option C, the default).
 
 - **Option C, reference correction (current default).** The screen of step 9 has already measured each
   power reference as if it were a test turbine, with the same periods, the same kind of model and the
   other references as its power references. A reference has no upgrade, so its forward uplift $U_i$ is
   the model's error over those periods, and the test turbine's forward uplift carries much of the same
-  error.
-  The uplift is the forward uplift less the mean of the $K$ references kept by the screen, in log space:
+  error. The uplift is the forward uplift less the mean of the $K$ references kept by the screen, in log
+  space:
 
   $$
   \ln(1 + U) = \ln(1 + U_{fwd}) - \frac{1}{K}\sum_{i=1}^{K} \ln(1 + U_i)
@@ -599,17 +551,22 @@ in full, unlike wind-up v0, which had to fall back on power-only versions of bot
   The references ruled out or not judged by the screen, and any that could not be measured, are left
   out of the mean; with no reference left the uplift is not reported. It needs no extra model fits, as
   the reference measurements of step 9 are reused. The bins of step 15 move with it, as they are scaled
-  to the headline. The combined reference uplift of step 16 is unchanged, since the references
-  themselves are not corrected, but it is no longer an independent check of the test turbine's bias:
-  validation rests on placebo test turbines instead. The references' own uplifts, before any
-  correction, are still reported for every test turbine together with the correction made from them,
-  and a correction far from zero raises the uncertainty (step 14).
+  to the headline. The references themselves are not corrected: their own uplifts are reported for every
+  test turbine together with the correction made from them, and a correction far from zero raises the
+  uncertainty (step 14).
+- **Option A, the forward uplift alone,** is what option C corrects.
+- **Option B, reversibility (tried, not adopted).** As in wind-up v0, a second model $\hat f_A$ is
+  trained on the after period and predicts the before period,
 
-  Re-scored on the records of the prepost campaign matrix's run 6, the correction takes the mean error of the synthetic test turbines from
-  +0.07 pp to −0.01 pp, within 0.1 pp at every combination of before and after period length, and lowers
-  the error's scatter at every one. Option B over-corrects when the after period is shorter than the
-  before period, because the model's error depends on how much data it was trained on and the reverse
-  model is trained on less.
+  $$
+  U_{rev} = \frac{\sum_B y}{\sum_B \hat f_A} - 1, \qquad U = \sqrt{\frac{1 + U_{fwd}}{1 + U_{rev}}} - 1,
+  $$
+
+  which cancels a bias common to both directions; a weighted form shrinks the correction by a
+  calculated $\lambda$ between 0 (forward) and 1 (full reversal). It over-corrects when the after period
+  is shorter than the before period, because the reverse model is trained on less data, and failed the
+  slope target of the validation. Step 15 still uses the full reversal per bin. Unlike wind-up v0 it
+  needs no anemometer, so both directions are computed in full.
 
 ### 14. Estimate uncertainty
 
@@ -624,10 +581,8 @@ references, and the systematic component measures that same kind of error. They 
 $$\sigma^2 = \sigma_{\text{sampling}}^2 + \sigma_{\text{reference}}^2 + \sigma_{\text{systematic}}^2
 - 2\rho\,\sigma_{\text{reference}}\,\sigma_{\text{systematic}},$$
 
-with $\rho = 0.5$ by default and the last three terms floored at zero together. Re-scored on run 7 of the
-campaign matrix, $\rho = 0$ (plain quadrature) covered 82 % of the errors within one sigma, $\rho = 0.5$
-covered 76 % (95 % within two sigma, as a normal error would), and $\rho = 1$ covered 64 %. A sigma a
-little too large is preferred to one too small.
+with $\rho = 0.5$ by default (set by validation) and the reference and systematic terms together
+floored at zero. A sigma a little too large is preferred to one too small.
 
 The sampling component is a circular block bootstrap with the model of step 12 fixed. The after
 period's records of the subject turbine, each with its measured and its counterfactual power, are
@@ -658,8 +613,8 @@ With no upgrade in the before period each reading is an error. Its spread is the
 square less their own sampling sigmas (the same bootstrap, per window) in quadrature, floored at
 zero, and multiplied by the one-sigma quantile of Student's $t$ with as many degrees of freedom as
 windows, since a few windows estimate it poorly; with no window left it is not known and neither is
-the sigma. It is added to the headline and to each measured bin, as above. It is a sigma only: the readings' mean is not used to correct the uplift. Each window costs one
-model fit. A toggle test has no systematic component, since its periods interleave.
+the sigma. It is added to the headline and to each measured bin, as above. It is a sigma only: the
+readings' mean is not used to correct the uplift. Each window costs one model fit. A toggle test has no systematic component, since its periods interleave.
 
 wind-up v0 instead took the largest of its statistical, bootstrap and reversibility sigmas and
 floored it at the weighted mean absolute reference uplift. How sigmas combine across references and
@@ -677,8 +632,8 @@ The binned uplift is not the ratio of the headline's per-record sums within each
 step 12 has a conditional bias that integrates to about zero over the whole window but not within
 a bin: it over-predicts low power and under-predicts high power, so a plain per-bin ratio shows a
 spurious slope even where the true uplift is flat. The bin shape is therefore estimated with the
-full reversal of step 13 option B applied per bin, on records matched between the periods as in
-step 11 iv option B: the before and after records are matched on coarsened ERA5 cells (100 m wind
+full reversal of step 13 option B applied per bin, on records matched between the periods: the
+before and after records are matched on coarsened ERA5 cells (100 m wind
 speed in 2 m/s steps, 10 m gust in 3 m/s steps and 100 m direction in 20° sectors by default), cells
 present in one period only are dropped, and in every other cell the larger side is subsampled to the
 size of the smaller so the two sides carry equal weight per cell; a model is fitted in each direction
@@ -765,25 +720,32 @@ periods (6 months before, 1 to 3 months after) and fewer references. They are no
 targets. Instead they show whether the method degrades gracefully: its error grows, but stays
 unbiased, and the sigma grows with it rather than claiming a precision the data cannot give.
 
-The options above are decided by these criteria, one at a time rather than in every combination:
+The options above are decided by these criteria, one at a time rather than in every combination. An
+option is kept when it improves them.
 
-1. the current defaults, with step 11 ii and step 15 as written above, give the baseline;
-2. step 13 option B with the calculated $\lambda$ is added (option A is its $\lambda = 0$ limit); it
-   failed the slope of ii and over-corrects short after periods. Option C replaced option A as the
-   default: re-scored on run 6's records it passed i and ii, and iii except a marginal dependence on
-   the after-period length (−0.18 pp at 3 months, z −2.0), over the whole matrix rather than the
-   domain below. Run 7 judged it as built, in the domain: i, ii and iii pass except the season of
-   the upgrade (spring +0.35 pp, z 2.8), which that matrix could not tell apart from the campaign,
-   since each campaign's works fall in one season. A season study runs every campaign in all four
-   seasons to judge it within a campaign. The sigma of step 14 over-covered with its components in
-   quadrature (82 %), which set $\rho$;
-3. step 11 iv option B was tried on top of the forward uplift and not adopted (CF33): no shift between
-   the periods predicted a reading's error, and every trim cost precision;
-4. step 6 i option B is added last;
-5. at lower priority, step 11 ii with a minimum below 24 hours, so that more configurations with a
-   turbine offline upwind are kept for the model to learn from rather than dropped as rare.
+Decided so far, on the prepost campaign matrix:
 
-An option is kept when it improves the criteria above. Step 12 option B is not run.
+- **Step 6: ERA5 out of the model, solar elevation in (CF34).** With ERA5 as features the references
+  read about +0.1 pp; without it, and with solar elevation, the estimator's bias fell from +0.13 to
+  +0.07 pp and the placebo RMSE from 0.66 to 0.52 pp. No feature set without ERA5 reached 0.0 pp.
+- **Step 11 iv: no weather trimming (CF33).** No shift between the periods predicted a reading's error,
+  and every trim cost precision.
+- **Step 13: option C.** Option B, with the calculated $\lambda$ or in full, failed the slope of ii and
+  over-corrects short after periods. Re-scored on run 6's records, option C took the synthetic test
+  turbines' mean error from +0.07 to −0.01 pp, within 0.1 pp at every combination of period lengths,
+  and lowered the scatter at every one. Run 7 judged it as built, in the domain: i, ii and iii pass
+  except the season of the upgrade (spring +0.35 pp, z 2.8), which that matrix could not tell apart
+  from the campaign, since each campaign's works fall in one season. A season study runs every
+  campaign in all four seasons to judge it within a campaign.
+- **Step 14: $\rho = 0.5$.** Re-scored on run 7, $\rho = 0$ (plain quadrature) covered 82 % of the errors
+  within one sigma, $\rho = 0.5$ 76 % (95 % within two sigma, as a normal error would) and $\rho = 1$
+  64 %.
+
+Still to try:
+
+- step 6 i option B (pitch angle and rotor speed as features);
+- step 11 ii with a minimum below 24 hours, so that more configurations with a turbine offline upwind
+  are kept for the model to learn from rather than dropped as rare.
 
 ### Where the method is valid
 
@@ -802,8 +764,10 @@ intended domain is at least 12 months before and at least 6 months after.
 ## Open questions
 
 - How the ERA5 stability proxy and weather cells of step 11 are defined, and the minimum hours per cell.
-- Whether a mismatch in waking configurations between the periods (step 11 ii) is a measurable source of
-  bias now that offline references are excluded by step 11 i, and so how much the 24 hour rule matters.
+- Whether the waking configuration rule of step 11 ii causes bias. On run 7 of the campaign matrix the
+  third of test turbines (all cells) where it removes the largest share of after-period hours read
+  −0.16 pp (z −3.1), the rest about zero; whether a lower minimum or a per-turbine rule fixes it is
+  untested.
 - How the free-stream wind speed estimate of step 15 is constructed.
 - Whether step 15 should report which condition variables the uplift is sensitive to, and how.
 - How site-specific operating states (step 2) reach wind-up: pre-labelled data or a labelling schema.
