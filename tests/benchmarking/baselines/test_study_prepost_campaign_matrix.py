@@ -63,6 +63,7 @@ from benchmarking.baselines.prepost_matrix.study import (
 from benchmarking.campaigns.composed import DATA_PREPARATION_DIRNAME
 from benchmarking.campaigns.loader import operating_state_config
 from benchmarking.campaigns.real import REAL_CAMPAIGNS
+from benchmarking.campaigns.run import NoTurbineMeasuredError
 from benchmarking.diagnostics import stages
 from benchmarking.harness.northing import NORTH_TABLE_YAML
 from benchmarking.synthetic import HOT_COLUMNS
@@ -86,6 +87,22 @@ def test_cell_ids_are_readable() -> None:
     assert Cell("excl", "kel", 0, 0, 4, 24, 12).cell_id == "kel_s00_m+0_K4_P24_L12_excl"
     assert Cell("real", "hot_t13", None, None, 4, 24, 6).cell_id == "hot_t13_K4_P24_L6"
     assert Cell("real", "hot_tuneup", None, None, 4, None, None).cell_id == "hot_tuneup_K4_Pmax_Lmax"
+
+
+def test_a_season_shift_is_named_and_shift_0_keeps_the_id() -> None:
+    assert Cell("main", "pen", 7, 1, 4, 12, 6, season_shift=3).cell_id == "pen_s07_m+1_K4_P12_L6_S3"
+    assert Cell("small", "pen", 7, 1, 4, 12, 6, season_shift=9).cell_id == "pen_s07_m+1_K4_P12_L6_S9_1pc"
+    assert Cell("main", "pen", 7, 1, 4, 12, 6, season_shift=0).cell_id == "pen_s07_m+1_K4_P12_L6"
+
+
+def test_each_season_shift_runs_every_synthetic_cell_and_the_real_ones_once() -> None:
+    settings = MatrixSettings(seeds={"kel": 1}, ks=(4,), post_months=(6,), real=("hot_t13",), season_shifts=(0, 6))
+    once = MatrixSettings(seeds={"kel": 1}, ks=(4,), post_months=(6,), real=("hot_t13",))
+    cells, base = matrix_cells(settings), matrix_cells(once)
+    synthetic = [c for c in base if c.arm != "real"]
+    assert len(cells) == len(base) + len(synthetic)
+    assert {c.season_shift for c in cells if c.arm == "real"} == {0}
+    assert {c.cell_id for c in base} <= {c.cell_id for c in cells}
 
 
 def test_cell_ids_are_unique() -> None:
@@ -190,6 +207,14 @@ def test_the_small_and_big_sizes() -> None:
     assert {c.cell_id for c in small} <= {c.cell_id for c in matrix_cells(MatrixSettings())}
 
 
+def test_the_season_size_crosses_each_in_domain_campaign_with_four_seasons() -> None:
+    cells = matrix_cells(SIZES["season"].settings)
+    assert len(cells) == 19 * 2 * 2 * 2 * 4 * 2
+    assert {c.season_shift for c in cells} == {0, 3, 6, 9}
+    assert {c.arm for c in cells} == {"main", "small"}
+    assert {(c.pre_months, c.post_months) for c in cells} == {(12, 6), (12, 12), (24, 6), (24, 12)}
+
+
 # --- planning ----------------------------------------------------------------------------------
 
 
@@ -272,7 +297,7 @@ def test_half_the_campaigns_roll_out_to_the_whole_farm() -> None:
 
 
 def test_settings_round_trip_through_json() -> None:
-    settings = MatrixSettings(seeds={"hot": 3}, ks=(4,), exclusion_arms=("excl",))
+    settings = MatrixSettings(seeds={"hot": 3}, ks=(4,), exclusion_arms=("excl",), season_shifts=(0, 6))
     assert MatrixSettings.from_json(json.loads(json.dumps(settings.to_json()))) == settings
 
 
@@ -301,6 +326,8 @@ def fake_execute(cell: Cell, *, detail_dir: Path, cell_dir: Path, settings: Matr
     if (detail_dir / f"fail_{cell.cell_id}").exists():
         msg = "this campaign is broken"
         raise RuntimeError(msg)
+    if (detail_dir / f"unmeasured_{cell.cell_id}").exists():
+        raise NoTurbineMeasuredError({"T01": "not measured by wind-up: T01: 0.0 usable hours in the before period"})
     truth = 0.04 * (cell.multiplier or 0)
     return {
         "turbines": [{"turbine": "T01", "estimate": truth + 0.001, "truth": truth}],
@@ -328,6 +355,16 @@ def test_a_raising_cell_is_recorded_as_failed_with_its_traceback(tmp_path: Path)
     assert "this campaign is broken" in record["traceback"]
     assert read_cell(study, cell) == json.loads(json.dumps(record))
     assert "this campaign is broken" in (cell_dir(study, cell) / "cell.log").read_text()
+
+
+def test_a_cell_none_of_whose_turbines_is_measured_records_why(tmp_path: Path) -> None:
+    study, cell = tmp_path / "study", matrix_cells(SMALL)[0]
+    detail_dir(study).mkdir()
+    (detail_dir(study) / f"unmeasured_{cell.cell_id}").touch()
+    record = run_cell(study, cell, settings=SMALL, execute=fake_execute)
+    assert record["status"] == "unmeasured"
+    assert record["unplanned"] == {"T01": "not measured by wind-up: T01: 0.0 usable hours in the before period"}
+    assert record["turbines"] == []
 
 
 def test_an_ok_cell_records_its_wall_time_and_peak_memory(tmp_path: Path) -> None:
@@ -360,6 +397,21 @@ def test_a_failed_cell_still_records_its_campaign_draw(tmp_path: Path) -> None:
     assert record["draw"] == describe_cell(cell, settings=SMALL)["draw"]
     assert record["draw"]["campaign_seed"] == campaign_seed(SMALL.master_seed, site="hot", seed_index=0)
     assert record["draw"]["trial"]
+
+
+def test_a_shifted_cell_records_its_shift_and_the_shifted_works(tmp_path: Path) -> None:
+    cell = matrix_cells(SMALL)[0]
+    shifted = Cell(cell.arm, cell.site, cell.seed_index, cell.multiplier, cell.k, 24, 12, season_shift=6)
+    base = Cell(cell.arm, cell.site, cell.seed_index, cell.multiplier, cell.k, 24, 12)
+    draw, base_draw = describe_cell(shifted, settings=SMALL)["draw"], describe_cell(base, settings=SMALL)["draw"]
+    assert draw["trial"] == base_draw["trial"]
+    months = {
+        (pd.Timestamp(draw["works"][t][0]).month - pd.Timestamp(base_draw["works"][t][0]).month) % 12
+        for t in draw["trial"]
+    }
+    assert months == {6}
+    record = run_cell(tmp_path / "study", shifted, settings=SMALL, execute=fake_execute)
+    assert record["season_shift"] == 6
 
 
 def test_the_real_campaign_describes_no_draw_before_it_runs() -> None:

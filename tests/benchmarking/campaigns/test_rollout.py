@@ -221,6 +221,34 @@ def test_full_rollout_works_every_other_turbine_after_the_lag(seed: int) -> None
     assert rollout_start <= draw.last_trial_end + pd.DateOffset(months=9)
 
 
+def test_a_season_shift_moves_every_works_window_by_whole_months() -> None:
+    draw = draw_rollout(hot_site(), seed=3, full_rollout=True, tile=1)
+    assert draw.shifted(0) == draw
+    shifted = draw.shifted(3)
+    assert (shifted.trial, shifted.rollout) == (draw.trial, draw.rollout)
+    for turbine, (start, end) in draw.works.items():
+        assert shifted.works[turbine] == (start + pd.DateOffset(months=3), end + pd.DateOffset(months=3))
+
+
+def test_a_season_shift_that_leaves_too_little_data_wraps_by_a_year() -> None:
+    site = hot_site()
+    starts = {d.trial_start: d for d in _tiles(8)}
+    draw = starts[max(starts)]
+    shifted = draw.shifted(9)
+    assert shifted.trial_start.month == (draw.trial_start + pd.DateOffset(months=9)).month
+    assert shifted.trial_start == draw.trial_start + pd.DateOffset(months=-3)
+    assert shifted.last_trial_end + pd.DateOffset(months=12) <= site.data_end
+
+
+def test_every_season_shift_of_every_tile_fits_the_data() -> None:
+    site = hot_site()
+    for draw in _tiles(8):
+        for months in (3, 6, 9):
+            shifted = draw.shifted(months)
+            assert shifted.trial_start >= site.data_start + pd.DateOffset(months=24)
+            assert shifted.last_trial_end + pd.DateOffset(months=12) <= site.data_end
+
+
 def test_the_same_seed_gives_the_same_draw() -> None:
     assert draw_rollout(hot_site(), seed=5, full_rollout=True) == draw_rollout(hot_site(), seed=5, full_rollout=True)
     assert draw_rollout(hot_site(), seed=5, full_rollout=True) != draw_rollout(hot_site(), seed=6, full_rollout=True)

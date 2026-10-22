@@ -46,6 +46,7 @@ from benchmarking.baselines.prepost_matrix.cells import Cell, MatrixSettings, ma
 from benchmarking.baselines.prepost_matrix.execute import METHOD_DIRNAME, describe_cell, execute_cell, prefetch
 from benchmarking.baselines.prepost_matrix.metrics import TABLE_KEYS, baseline_tables, compare_tables, leak_check
 from benchmarking.campaigns.composed import output_root
+from benchmarking.campaigns.run import NoTurbineMeasuredError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -62,6 +63,8 @@ CELL_LOG = "cell.log"
 PLOT_LOG = "run.log"
 PLOT_RECORD = "record.json"
 CANDIDATE = "candidate_baseline.json"
+# The status of a cell whose campaign ran but could measure none of its test turbines.
+UNMEASURED = "unmeasured"
 # Rebuild the worker pool at most this many times after a worker dies (for instance, out of memory).
 MAX_POOL_RESTARTS = 3
 _THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
@@ -175,7 +178,9 @@ def run_cell(
 ) -> dict[str, Any]:
     """Run ``cell``, write its record last, and return it. Never raises.
 
-    An exception is recorded as ``status="failed"`` with its traceback. The cell's logging goes to
+    A campaign none of whose test turbines could be measured is recorded as ``status="unmeasured"``
+    with each turbine's reason under ``unplanned``; any other exception as ``status="failed"`` with
+    its traceback. The cell's logging goes to
     its own ``cell.log``. A successful cell's method diagnostics are removed.
     """
     directory = cell_dir(study_dir, cell)
@@ -192,6 +197,7 @@ def run_cell(
         "k": cell.k,
         "pre_months": cell.pre_months,
         "post_months": cell.post_months,
+        "season_shift": cell.season_shift,
     }
     with _cell_log(directory / CELL_LOG), _PeakRss() as rss:
         start = time.perf_counter()
@@ -199,6 +205,9 @@ def run_cell(
             record |= describe_cell(cell, settings=settings)
             record |= execute(cell, detail_dir=detail_dir(study_dir), cell_dir=directory, settings=settings)
             record["status"] = "ok"
+        except NoTurbineMeasuredError as exc:
+            logger.warning("cell %s measured no test turbine: %s", cell.cell_id, exc)
+            record |= {"status": UNMEASURED, "turbines": [], "unplanned": exc.unmeasured}
         except Exception as exc:
             logger.exception("cell %s failed", cell.cell_id)
             record |= {"status": "failed", "error_type": type(exc).__name__, "traceback": traceback.format_exc()}
@@ -460,7 +469,15 @@ def merge_study(study_dir: Path) -> dict[str, Any]:
             100 * leaks["leak"].median(),
             len(leaks),
         )
-    logger.info("Merged %d ok and %d failed of %d cells into %s", n_ok, n_failed, len(cells), study_dir / CANDIDATE)
+    n_unmeasured = sum(r["status"] == UNMEASURED for r in records)
+    logger.info(
+        "Merged %d ok, %d with no test turbine measured and %d failed of %d cells into %s",
+        n_ok,
+        n_unmeasured,
+        n_failed,
+        len(cells),
+        study_dir / CANDIDATE,
+    )
     return doc
 
 

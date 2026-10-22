@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.campaigns.run import estimate_campaign, visible_mask, visible_scada
+from benchmarking.campaigns.run import NoTurbineMeasuredError, estimate_campaign, visible_mask, visible_scada
 from benchmarking.harness import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
@@ -227,8 +227,10 @@ def test_a_turbine_that_cannot_be_measured_is_reported_and_the_campaign_continue
 
 
 def test_a_campaign_none_of_whose_turbines_can_be_measured_raises() -> None:
-    with pytest.raises(ValueError, match="no upgraded turbine could be measured"):
+    with pytest.raises(NoTurbineMeasuredError, match="no upgraded turbine could be measured") as caught:
         run([FailingMethod({"T1", "T2"})])
+    assert set(caught.value.unmeasured) == {"T1", "T2"}
+    assert isinstance(caught.value, ValueError)
 
 
 def test_a_toggle_campaign_runs_through_the_same_core() -> None:

@@ -8,7 +8,8 @@ one-line verdict; :func:`write_report` saves the tables as CSV beside the study 
   read 0 % within their standard error;
 - **ii** the line of measured against true uplift has slope 1 and intercept 0;
 - **iii** the error does not depend on the after-period length, the number of references or the
-  season of the changeover;
+  season of the changeover; ``season_within`` compares each turbine's error with its mean over the same
+  campaign's season shifts, so it needs a matrix whose campaigns run in more than one season;
 - **iv** the sigma covers the error at the 68 % it claims, for the headline, the references and the
   bins, at every recorded block length;
 - **option 2** the headline and the forward reading against the full reversal (lambda 1) and against the computed
@@ -43,12 +44,15 @@ import pandas as pd
 from benchmarking.baselines.prepost_matrix.metrics import line_fit, reversal_uplift
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 # The share of a normal distribution within one sigma.
 TARGET_COVERAGE = 0.6827
 # A coverage within this of the target, or within two of its clustered standard errors, is calibrated.
 COVERAGE_TOLERANCE = 0.05
+# A coverage above the target passes as a wide sigma up to this; above it the sigma is too large to be useful.
+COVERAGE_CEILING = 0.90
 # A mean further than this many standard errors from its target fails.
 Z_LIMIT = 2.0
 # Below this many campaigns a verdict is not given.
@@ -73,10 +77,10 @@ _SEASONS = {12: "DJF", 1: "DJF", 2: "DJF", 3: "MAM", 4: "MAM", 5: "MAM", 6: "JJA
 _PP = 100.0
 
 
-def study_records(study_dir: Path) -> list[dict[str, Any]]:
-    """Return the ok cell records of ``study_dir``."""
+def study_records(study_dir: Path, *, status: str = "ok") -> list[dict[str, Any]]:
+    """Return the cell records of ``study_dir`` with ``status``: ``"ok"``, or ``"unmeasured"`` for none measured."""
     records = [json.loads(path.read_text()) for path in sorted((study_dir / "cells").glob("*.json"))]
-    return [r for r in records if r.get("status") == "ok"]
+    return [r for r in records if r.get("status") == status]
 
 
 def season(timestamp: str | pd.Timestamp) -> str:
@@ -139,7 +143,7 @@ def _keys(record: dict[str, Any]) -> dict[str, Any]:
     keys = {
         k: record[k] for k in ("cell_id", "arm", "site", "seed_index", "k", "pre_months", "post_months", "multiplier")
     }
-    return {**keys, "campaign": campaign_key(record)}
+    return {**keys, "season_shift": record.get("season_shift", 0), "campaign": campaign_key(record)}
 
 
 def campaign_key(record: dict[str, Any]) -> str:
@@ -332,7 +336,33 @@ def dependence_table(turbines: pd.DataFrame) -> pd.DataFrame:
                         "rmse": float(np.sqrt(np.mean(finite**2))) if finite.size else np.nan,
                     }
                 )
+    rows += _season_within_rows(synthetic)
     return pd.DataFrame(rows)
+
+
+def _season_within_rows(synthetic: pd.DataFrame) -> list[dict[str, Any]]:
+    """Return the error less its mean over the same campaign turbine's seasons, by season, where it has several."""
+    if "season" not in synthetic.columns or synthetic.empty:
+        return []
+    keys = ["campaign", "arm", "multiplier", "k", "pre_months", "post_months", "turbine"]
+    crossed = synthetic[synthetic.groupby(keys, dropna=False)["season"].transform("nunique") > 1]
+    rows = []
+    for estimator in ESTIMATORS:
+        error = _errors(crossed, estimator)
+        within = error - error.groupby([crossed[k] for k in keys], dropna=False).transform("mean")
+        for value, group in within.groupby(crossed["season"]):
+            finite = group.to_numpy(dtype=float)
+            finite = finite[np.isfinite(finite)]
+            rows.append(
+                {
+                    "axis": "season_within",
+                    "value": str(value),
+                    "estimator": estimator,
+                    **_mean_se(group, crossed.loc[group.index, "campaign"]),
+                    "rmse": float(np.sqrt(np.mean(finite**2))) if finite.size else np.nan,
+                }
+            )
+    return rows
 
 
 def _coverage(errors: np.ndarray, sigmas: np.ndarray, campaigns: np.ndarray) -> dict[str, float]:
@@ -566,8 +596,13 @@ def usable_share_table(records: list[dict[str, Any]]) -> pd.DataFrame:
     return table[columns]
 
 
-def validation_tables(records: list[dict[str, Any]]) -> dict[str, pd.DataFrame]:
-    """Return every target's table for ``records``: targets i to iv on the domain's cells, the rest on all."""
+def validation_tables(
+    records: list[dict[str, Any]], *, unmeasured: Sequence[dict[str, Any]] = ()
+) -> dict[str, pd.DataFrame]:
+    """Return every target's table for ``records``: targets i to iv on the domain's cells, the rest on all.
+
+    ``unmeasured`` are the cells that measured no test turbine; only the unmeasured table counts them.
+    """
     domain = [r for r in records if in_domain(r)]
     turbines = turbine_frame(records)
     references = reference_frame(records)
@@ -579,7 +614,7 @@ def validation_tables(records: list[dict[str, Any]]) -> dict[str, pd.DataFrame]:
         "iii_dependence": dependence_table(domain_turbines),
         "iv_coverage": coverage_table(domain, domain_turbines, domain_references),
         "iv_coverage_by_period": period_coverage_table(turbines, references),
-        "unmeasured": unmeasured_table(records),
+        "unmeasured": unmeasured_table([*records, *unmeasured]),
         "usable_share": usable_share_table(records),
         "option2_reversal": reversal_table(turbines, references),
         "open_configuration_rule": configuration_rule_table(turbines),
@@ -593,20 +628,27 @@ def _verdict_mean(row: pd.Series) -> str:
     return "pass" if abs(row["z"]) <= Z_LIMIT else "FAIL"
 
 
-def _verdict_coverage(row: pd.Series) -> str:
-    """Pass within the tolerance or two clustered standard errors of the target, whichever is wider."""
+def verdict_coverage(row: pd.Series) -> str:
+    """Judge a coverage: a sigma too small fails, one a little too large passes as wide.
+
+    Within the tolerance or two clustered standard errors of the target, whichever is wider, passes;
+    below that fails; above it passes as wide up to ``COVERAGE_CEILING``, and fails beyond.
+    """
     if row["campaigns"] < MIN_N or not np.isfinite(row["coverage"]) or not np.isfinite(row["coverage_se"]):
         return "too few"
     gap = row["coverage"] - TARGET_COVERAGE
     if abs(gap) <= max(COVERAGE_TOLERANCE, Z_LIMIT * row["coverage_se"]):
         return "pass"
-    return "FAIL (sigma too small)" if gap < 0 else "FAIL (sigma too large)"
+    if gap < 0:
+        return "FAIL (sigma too small)"
+    return "pass (sigma wide)" if row["coverage"] <= COVERAGE_CEILING else "FAIL (sigma too large)"
 
 
-def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int) -> str:
+def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int, n_unmeasured: int = 0) -> str:
     """Return the report as markdown: one verdict line per check, then each table."""
+    unmeasured = f" ({n_unmeasured} more measured no test turbine)" if n_unmeasured else ""
     lines = [
-        f"# Validation of {n_cells} ok cells",
+        f"# Validation of {n_cells} ok cells{unmeasured}",
         "",
         f"Targets i to iv are judged on the {n_domain} cells with at least {DOMAIN_PRE_MONTHS} months before and "
         f"{DOMAIN_POST_MONTHS} months after; the per-period section covers every cell.",
@@ -650,7 +692,7 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int) ->
         lines.append(
             f"- {row.quantity} {row.block}: {row.coverage:.2f} ± {row.coverage_se:.2f} (z sd {row.z_sd:.2f}, "
             f"n {row.n}, {row.campaigns} campaigns): "
-            f"{_verdict_coverage(pd.Series(row._asdict()))}"
+            f"{verdict_coverage(pd.Series(row._asdict()))}"
         )
     lines += [
         "",
@@ -705,11 +747,14 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int) ->
 def write_report(study_dir: Path) -> str:
     """Write ``validation/*.csv`` and ``validation/validation.md`` into ``study_dir`` and return the text."""
     records = study_records(study_dir)
-    tables = validation_tables(records)
+    unmeasured = study_records(study_dir, status="unmeasured")
+    tables = validation_tables(records, unmeasured=unmeasured)
     out = study_dir / "validation"
     out.mkdir(exist_ok=True)
     for name, table in tables.items():
         table.to_csv(out / f"{name}.csv", index=False)
-    text = describe(tables, n_cells=len(records), n_domain=sum(in_domain(r) for r in records))
+    text = describe(
+        tables, n_cells=len(records), n_domain=sum(in_domain(r) for r in records), n_unmeasured=len(unmeasured)
+    )
     (out / "validation.md").write_text(text)
     return text

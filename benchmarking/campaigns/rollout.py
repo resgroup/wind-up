@@ -19,7 +19,7 @@ Draw a campaign and build it for one multiplier, on 12 months of data before it 
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cache
 from typing import TYPE_CHECKING
 
@@ -341,6 +341,28 @@ class RolloutDraw:
     def last_trial_end(self) -> pd.Timestamp:
         """When the last trial works end."""
         return max(self.works[t][1] for t in self.trial)
+
+    def shifted(self, months: int) -> RolloutDraw:
+        """Return this draw with every works window ``months`` later, in the same season as that.
+
+        When the shifted trial would start less than ``TRIAL_PRE_MONTHS`` into the data, or end less
+        than ``TRIAL_MIN_POST_MONTHS`` before its end, it moves a whole number of years back or
+        forward until it fits.
+
+        :raises ValueError: if no year fits
+        """
+        if months == 0:
+            return self
+        earliest = self.site.data_start + pd.DateOffset(months=TRIAL_PRE_MONTHS)
+        for years in (0, -1, 1, -2, 2):
+            offset = pd.DateOffset(months=months + 12 * years)
+            draw = replace(self, works={t: (start + offset, end + offset) for t, (start, end) in self.works.items()})
+            if draw.trial_start >= earliest and (
+                draw.last_trial_end + pd.DateOffset(months=TRIAL_MIN_POST_MONTHS) <= self.site.data_end
+            ):
+                return draw
+        msg = f"{self.site.name}: no year fits the trial shifted by {months} months"
+        raise ValueError(msg)
 
     def data_start(self, pre_months: int) -> pd.Timestamp:
         """Return the start of the data a campaign with ``pre_months`` before the first trial works sees."""

@@ -22,6 +22,7 @@ from benchmarking.baselines.prepost_matrix.validation import (
     turbine_frame,
     usable_share_table,
     validation_tables,
+    verdict_coverage,
     write_report,
 )
 
@@ -178,6 +179,44 @@ def test_the_tables_judge_each_target() -> None:
     assert set(tables["open_screen"]["measure"]) == {"correlation_margin", "hours_fraction"}
 
 
+def test_season_within_a_campaign_removes_each_campaigns_own_error() -> None:
+    records = []
+    for record in _records():
+        for shift, month in ((0, "01"), (3, "04"), (6, "07"), (9, "10")):
+            shifted = json.loads(json.dumps(record))
+            offset = 0.01 * record["seed_index"] + (0.004 if month == "04" else 0.0)
+            shifted["season_shift"] = shift
+            shifted["turbines"][0]["estimate"] = shifted["turbines"][0]["truth"] + offset
+            shifted["plans"]["T01"]["works"] = [f"2020-{month}-01", f"2020-{month}-02"]
+            records.append(shifted)
+    dep = validation_tables(records)["iii_dependence"]
+    within = dep[(dep["axis"] == "season_within") & (dep["estimator"] == "headline")].set_index("value")
+    assert within.loc["MAM", "mean"] == pytest.approx(0.003)
+    assert within.loc["DJF", "mean"] == pytest.approx(-0.001)
+    assert within.loc["MAM", "campaigns"] == 6
+
+
+def test_a_cell_with_no_turbine_measured_counts_as_unmeasured() -> None:
+    unmeasured = {
+        "cell_id": "kel_s09_m+0",
+        "status": "unmeasured",
+        "arm": "main",
+        "site": "kel",
+        "seed_index": 9,
+        "pre_months": 12,
+        "post_months": 6,
+        "turbines": [],
+        "unplanned": {"T01": "T01: 0.0 usable hours in the before period"},
+    }
+    table = validation_tables(_records(n_seeds=1), unmeasured=[unmeasured])["unmeasured"].iloc[0]
+    assert (table["measured"], table["unmeasured"], table["too_few_hours"]) == (3, 1, 1)
+
+
+def test_season_within_needs_a_campaign_in_more_than_one_season() -> None:
+    dep = validation_tables(_records())["iii_dependence"]
+    assert "season_within" not in set(dep["axis"])
+
+
 def test_the_headline_is_judged_and_forward_is_the_recorded_forward_reading() -> None:
     records = _records()
     for record in records:
@@ -257,6 +296,25 @@ def test_the_text_gives_a_verdict_per_check() -> None:
     assert "FAIL" in text  # the after-screen reference reads +1 % exactly, with no spread
     assert "test sigma_block_6h: 0.00" in text
     assert f"{TARGET_COVERAGE:.0%}"[:2] in text
+
+
+@pytest.mark.parametrize(
+    ("coverage", "verdict"),
+    [
+        (0.50, "FAIL (sigma too small)"),
+        (0.70, "pass"),
+        (0.82, "pass (sigma wide)"),
+        (0.95, "FAIL (sigma too large)"),
+    ],
+)
+def test_a_wide_sigma_passes_up_to_the_ceiling_and_a_narrow_one_fails(coverage: float, verdict: str) -> None:
+    row = pd.Series({"coverage": coverage, "coverage_se": 0.01, "campaigns": 10})
+    assert verdict_coverage(row) == verdict
+
+
+def test_the_report_counts_the_cells_that_measured_no_turbine() -> None:
+    text = describe(validation_tables(_records()), n_cells=18, n_domain=18, n_unmeasured=2)
+    assert text.startswith("# Validation of 18 ok cells (2 more measured no test turbine)")
 
 
 def test_the_report_is_written_beside_the_study(tmp_path: Path) -> None:

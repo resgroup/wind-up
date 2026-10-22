@@ -86,7 +86,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     download = sub.add_parser("download", help="download the open data and reanalysis every cell needs")
     download.add_argument("--size", required=True, choices=sizes)
     run = sub.add_parser("run", help="run (or resume) the study, then merge and compare")
-    run.add_argument("--size", required=True, choices=sizes, help="small: a laptop smoke test; big: the HPC")
+    run.add_argument(
+        "--size",
+        required=True,
+        choices=sizes,
+        help="small: a laptop smoke test; big: the HPC; season: the HPC, each campaign in four seasons",
+    )
     run.add_argument("--workers", type=int, default=None, help="override the size's worker count")
     run.add_argument("--limit", type=int, default=None, help="run only the first N cells (a timing trial)")
     run.add_argument("--root", type=Path, default=None, help="where the study directory goes")

@@ -239,6 +239,7 @@ def describe_cell(cell: Cell, *, settings: MatrixSettings) -> dict[str, Any]:
         "draw": {
             "campaign_seed": seed,
             "full_rollout": cell.full_rollout,
+            "season_shift": cell.season_shift,
             "trial": list(draw.trial),
             "rollout": list(draw.rollout),
             "works": {t: [str(s), str(e)] for t, (s, e) in draw.works.items()},
@@ -253,7 +254,8 @@ def _draw(cell: Cell, *, settings: MatrixSettings) -> tuple[RolloutSite, int, Ro
     site = SITES[cell.site]()
     index: int = cell.seed_index  # type: ignore[assignment]
     seed = campaign_seed(settings.master_seed, site=cell.site, seed_index=index)
-    draw = _site_tiles(cell.site, master_seed=settings.master_seed, count=index + 1, small=cell.is_small)[index]
+    tile = _site_tiles(cell.site, master_seed=settings.master_seed, count=index + 1, small=cell.is_small)[index]
+    draw = tile.shifted(cell.season_shift)
     exclusions: list[Exclusion] = []
     if cell.has_exclusions:
         exclusions = draw_exclusions(

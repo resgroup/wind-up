@@ -200,6 +200,17 @@ def visible_scada(
     )
 
 
+class NoTurbineMeasuredError(ValueError):
+    """No upgraded turbine of a campaign could be measured; ``unmeasured`` gives each one's reason."""
+
+    def __init__(self, unmeasured: Mapping[str, str]) -> None:
+        """Keep each unmeasured turbine's reason and name them all in the message."""
+        self.unmeasured = dict(unmeasured)
+        super().__init__(
+            "no upgraded turbine could be measured: " + "; ".join(f"{t}: {r}" for t, r in unmeasured.items())
+        )
+
+
 def estimate_campaign(
     spec: CampaignSpec,
     scada_df: pd.DataFrame,
@@ -323,8 +334,7 @@ def estimate_campaign(
 
     if unmeasured:
         if len(unmeasured) == len(plans):
-            msg = "no upgraded turbine could be measured: " + "; ".join(f"{t}: {r}" for t, r in unmeasured.items())
-            raise ValueError(msg)
+            raise NoTurbineMeasuredError(unmeasured)
         resolved = replace(
             resolved,
             plans={t: p for t, p in plans.items() if t not in unmeasured},

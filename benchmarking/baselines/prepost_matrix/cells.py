@@ -10,6 +10,7 @@ the post lengths its data holds, and Lmax, all of it, where :data:`REAL_SITES` s
 
 from __future__ import annotations
 
+import itertools
 import zlib
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -69,6 +70,8 @@ class MatrixSettings:
     :param real: the real campaigns included, keys of :data:`REAL_SITES`
     :param min_side_days: the shortest side the period selector may choose, so that every post length is analysed
     :param master_seed: every campaign draw is keyed on it
+    :param season_shifts: months each synthetic campaign's works are moved by (see
+        :meth:`~benchmarking.campaigns.rollout.RolloutDraw.shifted`), each a cell of its own
     """
 
     seeds: dict[str, int] = field(default_factory=lambda: {"hot": 16, "pen": 12, "kel": 4})
@@ -82,6 +85,7 @@ class MatrixSettings:
     real: tuple[str, ...] = tuple(REAL_SITES)
     min_side_days: int = 14
     master_seed: int = 0
+    season_shifts: tuple[int, ...] = (0,)
 
     def to_json(self) -> dict[str, object]:
         """Return the settings as plain data, lists in place of tuples."""
@@ -110,6 +114,7 @@ class Cell:
         campaign's data, Pmax
     :param post_months: months of data after the (last trial) works end; ``None`` for all of a real
         campaign's data, Lmax
+    :param season_shift: months the synthetic campaign's works are moved by; 0 for a real campaign
     """
 
     arm: Arm
@@ -119,13 +124,17 @@ class Cell:
     k: int
     pre_months: int | None
     post_months: int | None
+    season_shift: int = 0
 
     @property
     def cell_id(self) -> str:
-        """A readable, stable id: ``pen_s07_m+1_K4_P12_L6``, ``hot_t13_K4_P24_L6`` or ``hot_tuneup_K4_Pmax_Lmax``."""
+        """A readable, stable id: ``pen_s07_m+1_K4_P12_L6``, ``hot_t13_K4_P24_L6`` or ``hot_tuneup_K4_Pmax_Lmax``.
+
+        A season shift adds ``_S<months>`` after the periods: ``pen_s07_m+1_K4_P12_L6_S3``.
+        """
         pre = "max" if self.pre_months is None else self.pre_months
         post = "max" if self.post_months is None else self.post_months
-        periods = f"P{pre}_L{post}"
+        periods = f"P{pre}_L{post}" + (f"_S{self.season_shift}" if self.season_shift else "")
         if self.arm == "real":
             return f"{self.site}_K{self.k}_{periods}"
         return f"{self.site}_s{self.seed_index:02d}_m{self.multiplier:+d}_K{self.k}_{periods}{_ARM_SUFFIX[self.arm]}"
@@ -169,6 +178,21 @@ SIZES: dict[str, StudySize] = {
     # before a run.
     "big": StudySize(
         MatrixSettings(seeds={"hot": 6, "pen": 7, "kel": 6}, ks=(3, 4), exclusion_arms=()),
+        workers=12,
+    ),
+    # The big matrix's campaigns in the validation domain, each with its works in all four seasons, so
+    # the season of the upgrade can be judged within a campaign; no real campaign.
+    "season": StudySize(
+        MatrixSettings(
+            seeds={"hot": 6, "pen": 7, "kel": 6},
+            multipliers=(1, 0),
+            ks=(4,),
+            pre_months=(12, 24),
+            post_months=(6, 12),
+            exclusion_arms=(),
+            real=(),
+            season_shifts=(0, 3, 6, 9),
+        ),
         workers=12,
     ),
 }
@@ -220,16 +244,16 @@ def matrix_cells(settings: MatrixSettings) -> list[Cell]:
         )
     for site, n_seeds in settings.seeds.items():
         for index in range(n_seeds):
-            for multiplier in settings.multipliers:
-                for p in settings.pre_months:
-                    for n in settings.post_months:
-                        for k in settings.ks:
-                            cells.append(Cell("main", site, index, multiplier, k, p, n))
-                            cells.extend(Cell(arm, site, index, multiplier, k, p, n) for arm in settings.small_arms)  # type: ignore[arg-type]
-                        cells.extend(
-                            Cell(arm, site, index, multiplier, settings.exclusion_k, p, n)  # type: ignore[arg-type]
-                            for arm in settings.exclusion_arms
-                        )
+            for multiplier, p, n, shift in itertools.product(
+                settings.multipliers, settings.pre_months, settings.post_months, settings.season_shifts
+            ):
+                for k in settings.ks:
+                    cells.append(Cell("main", site, index, multiplier, k, p, n, shift))
+                    cells.extend(Cell(arm, site, index, multiplier, k, p, n, shift) for arm in settings.small_arms)  # type: ignore[arg-type]
+                cells.extend(
+                    Cell(arm, site, index, multiplier, settings.exclusion_k, p, n, shift)  # type: ignore[arg-type]
+                    for arm in settings.exclusion_arms
+                )
     return sorted(cells, key=lambda c: (-cell_cost_s(c), c.cell_id))
 
 
