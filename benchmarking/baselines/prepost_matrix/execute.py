@@ -63,8 +63,7 @@ from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.northing import NORTH_TABLE_YAML
 from benchmarking.harness.operating_state import OperatingStateConfig
-from benchmarking.harness.reanalysis import ERA5_WS_RAW, normalise_timestamps
-from benchmarking.synthetic.ground_truth import ERA5_WIND_SPEED_COL
+from benchmarking.harness.reanalysis import normalise_timestamps
 from benchmarking.synthetic.sources.greenbyte import (
     GREENBYTE_OPERATING_STATE,
     KELMARSH,
@@ -374,7 +373,7 @@ def _execute_synthetic(
     visible = replace(
         dataset,
         synthetic_df=prepared.data.scada_df,
-        original_df=with_reanalysis_wind_speed(dataset.original_df, prepared.data.aligned_era5),
+        original_df=dataset.original_df,
     )
     result = CampaignRunner(
         prepared.spec,
@@ -601,13 +600,6 @@ def _plain_rows(frame: pd.DataFrame) -> list[dict[str, Any]]:
                 plain[str(key)] = None if value is None else str(value)
         rows.append(plain)
     return rows
-
-
-def with_reanalysis_wind_speed(original_df: pd.DataFrame, aligned_era5: pd.DataFrame | None) -> pd.DataFrame:
-    """Return ``original_df`` with the aligned ERA5 100 m wind speed joined on by timestamp, for the per-bin truth."""
-    if aligned_era5 is None or ERA5_WS_RAW not in aligned_era5.columns:
-        return original_df
-    return original_df.join(aligned_era5[[ERA5_WS_RAW]].rename(columns={ERA5_WS_RAW: ERA5_WIND_SPEED_COL}), how="left")
 
 
 def scored_bins(scores: pd.DataFrame) -> list[dict[str, Any]]:

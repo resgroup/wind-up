@@ -25,7 +25,7 @@ import yaml
 
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
-from benchmarking.campaigns.declaration import layout_coords
+from benchmarking.campaigns.declaration import layout_coords, layout_rotor_diameters
 from benchmarking.campaigns.loader import centroid, era5_window, load_declaration
 from benchmarking.campaigns.plans import with_wake_ranking
 from benchmarking.campaigns.preparation import prepare_data
@@ -135,8 +135,7 @@ def wind_up_method(
     :param spec: the campaign being run; supplies the turbine rating
     :param columns: the source-native schema the SCADA is keyed by
     :param out_dir: where the method writes its own diagnostics
-    :param era5_hourly_df: reanalysis, hourly or already aligned to the SCADA periods; without it the
-        per-condition estimates are not reported
+    :param era5_hourly_df: reanalysis, hourly or already aligned to the SCADA periods
     :param screen_cache: one dict shared across the campaign's turbines, so the reference screen
         runs once rather than once per test turbine
     :param era5_label: how reanalysis is named in this run's output; the campaign passes the point
@@ -151,7 +150,7 @@ def wind_up_method(
         baseline_rated_power_kw=spec.rated_power_kw,
         era5_hourly_df=era5_hourly_df,
         site_location=centroid(layout_coords(spec.layout)),
-        conditions=PowerModelMethod.conditions if era5_hourly_df is not None else (),
+        rotor_diameters_m=layout_rotor_diameters(spec.layout),
         model_params=dict(TUNED_MODEL_PARAMS),
         out_dir=out_dir,
         save_plots=True,

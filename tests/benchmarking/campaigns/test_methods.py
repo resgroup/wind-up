@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from benchmarking.baselines.power_model import PowerModelMethod
+from benchmarking.campaigns.declaration import layout_rotor_diameters
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
@@ -41,10 +43,12 @@ def test_power_model_is_included_when_asked(tmp_path: Path) -> None:
     assert "power_model" in [m.name for m in methods]
 
 
-def test_power_model_reports_no_conditions_without_era5(tmp_path: Path) -> None:
-    methods = carried_forward_methods(campaign().spec(), out_dir=tmp_path, include_power_model=True)
+def test_power_model_reports_its_uplift_distributions_without_era5(tmp_path: Path) -> None:
+    spec = campaign().spec()
+    methods = carried_forward_methods(spec, out_dir=tmp_path, include_power_model=True)
     power_model = next(m for m in methods if m.name == "power_model")
-    assert power_model.conditions == ()
+    assert power_model.conditions == PowerModelMethod.conditions
+    assert power_model.rotor_diameters_m == layout_rotor_diameters(spec.layout)
 
 
 def test_each_method_writes_into_its_own_subfolder(tmp_path: Path) -> None:

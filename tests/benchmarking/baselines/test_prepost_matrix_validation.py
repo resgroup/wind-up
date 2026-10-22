@@ -179,6 +179,22 @@ def test_the_tables_judge_each_target() -> None:
     assert set(tables["open_screen"]["measure"]) == {"correlation_margin", "hours_fraction"}
 
 
+def test_the_shape_table_scores_each_axis_bin_against_truth_and_the_flat_headline() -> None:
+    shape = validation_tables(_records())["v_shape"].set_index(["condition", "condition_bin"])
+    row = shape.loc[("power", "(0, 1]")]
+    assert row["bias"] == pytest.approx(0.0)
+    assert row["rmse"] == pytest.approx(0.0)
+    assert row["rmse_flat"] > 0.0
+    assert row["coverage"] == 1.0
+    assert row["campaigns"] == 6
+
+
+def test_the_text_judges_each_axis_against_the_flat_headline() -> None:
+    text = describe(validation_tables(_records()), n_cells=18, n_domain=18)
+    assert "## v. Uplift distributions" in text
+    assert "power: RMSE 0.000 pp against 0.188 pp flat (beats flat)" in text
+
+
 def test_season_within_a_campaign_removes_each_campaigns_own_error() -> None:
     records = []
     for record in _records():

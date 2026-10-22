@@ -42,14 +42,14 @@ from benchmarking.baselines.power_model.method import (
 )
 from benchmarking.baselines.power_model.screening import ScreenResult
 from benchmarking.diagnostics import stages
-from benchmarking.harness.conditions import CONDITION_BINS
+from benchmarking.harness.conditions import label_column
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL
 from benchmarking.harness.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE, ChangedInterval
 from benchmarking.harness.scoring import _merge_diagnostics
 from benchmarking.harness.toggle import resolve_toggle
-from benchmarking.harness.waking import UPWIND_COL, WAKING_SCENARIO_COL
+from benchmarking.harness.waking import DIRECTION_COL, NONE, UPWIND_COL, WAKING_SCENARIO_COL
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
 
 if TYPE_CHECKING:
@@ -599,153 +599,6 @@ class TestClipPredictions:
         assert clipped.tolist() == [-30.0]
 
 
-class TestConditionsSelection:
-    """``conditions`` selects which axes are reported; ``()`` skips the conditional step entirely."""
-
-    def _run(self, **kwargs: object) -> MethodInput:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        treated = np.asarray(idx >= changeover)
-        scada = _toy_scada(n, uplift=0.05, treated=treated)
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(idx),
-            model_params=_FAST_PARAMS,
-            **kwargs,  # type: ignore[arg-type]
-        )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        return method.estimate(mi)  # type: ignore[return-value]
-
-    def test_power_only_reports_power_alone(self) -> None:
-        out = self._run(conditions=("power",))
-        assert set(out.p50_by_condition["condition"]) == {"power"}
-
-    def test_era5_ws_only_reports_era5_ws_alone(self) -> None:
-        out = self._run(conditions=("era5_ws",))
-        assert set(out.p50_by_condition["condition"]) == {"era5_ws"}
-
-    def test_default_reports_power_and_era5_wind_speed(self) -> None:
-        out = self._run()
-        assert set(out.p50_by_condition["condition"]) == {"power", "era5_ws"}
-
-    def test_the_subject_turbines_own_signals_are_not_condition_axes(self) -> None:
-        for axis in ("ws", "ti"):
-            with pytest.raises(ValueError, match="does not support"):
-                PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(axis,))
-
-    def test_empty_conditions_skips_the_conditional_step(self) -> None:
-        out = self._run(conditions=())
-        assert out.p50_by_condition is None
-
-    def test_unknown_condition_raises(self) -> None:
-        with pytest.raises(ValueError, match="unknown condition"):
-            PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=("bogus",))
-
-
-class TestConditionalWithoutItsMatchingColumns:
-    """A reanalysis delivery without a matching column stops the run."""
-
-    def _case(self, **overrides: object) -> tuple[PowerModelMethod, MethodInput]:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        scada = _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover))
-        era5 = _toy_era5(idx).drop(columns=["wind_gusts_10m"])  # a matching axis never arrived
-        kwargs: dict[str, object] = {
-            "columns": _COLUMNS,
-            "baseline_rated_power_kw": 2300.0,
-            "era5_hourly_df": era5,
-            "model_params": _FAST_PARAMS,
-            **overrides,
-        }
-        method = PowerModelMethod(**kwargs)  # type: ignore[arg-type]
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        return method, mi
-
-    def test_a_missing_matching_column_raises(self) -> None:
-        method, mi = self._case()
-        with pytest.raises(ValueError, match="wind_gusts_10m"):
-            method.estimate(mi)
-
-    def test_an_explicitly_named_missing_column_raises(self) -> None:
-        method, mi = self._case(matching_vars=("wind_speed_100m", "wind_gusts_10m"))
-        with pytest.raises(ValueError, match="wind_gusts_10m"):
-            method.estimate(mi)
-
-
-class TestConditionalUplift:
-    def test_emits_conditional_uplift_by_power_and_era5_wind_speed(self) -> None:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        treated = np.asarray(idx >= changeover)
-        scada = _toy_scada(n, uplift=0.05, treated=treated)  # now includes _WS_SD
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(idx),  # conditional uplift (default on) matches on ERA5 weather
-            model_params=_FAST_PARAMS,
-        )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        out = method.estimate(mi)
-        bc = out.p50_by_condition
-        assert list(bc.columns) == ["condition", "condition_bin", "p50_uplift", "sigma_uplift"]
-        assert set(bc["condition"]) == {"power", "era5_ws"}
-        # power uses the 6 fraction-of-rated bins; era5_ws the shared 2 m/s wind-speed bins
-        assert (bc["condition"] == "power").sum() == 6
-        assert (bc["condition"] == "era5_ws").sum() == len(CONDITION_BINS["era5_ws"]) - 1
-        # Issue 14: imputation fills every uncovered bin, so the reported per-bin estimate is never NaN
-        # (a bare NaN would let abstention game the conditional score, which drops non-finite errors).
-        assert bc["p50_uplift"].notna().all()
-
-    def test_conditional_csv_carries_covered_flag(self, tmp_path: Path) -> None:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        treated = np.asarray(idx >= changeover)
-        scada = _toy_scada(n, uplift=0.05, treated=treated)
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(idx),
-            model_params=_FAST_PARAMS,
-            out_dir=tmp_path,
-        )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        method.estimate(mi)
-        files = sorted(tmp_path.rglob("*_conditional_by_bin_*.csv"))
-        assert files, "no conditional_by_bin CSV written"
-        per_bin = pd.read_csv(files[0])
-        assert "covered" in per_bin.columns
-        # don't assert the CSV round-trip dtype (read_csv bool inference is version-dependent); the
-        # column's meaning is what matters — at least some bins measured in well-populated toy data.
-        assert per_bin["covered"].any()
-        assert per_bin["p50_uplift"].notna().all()  # measured-or-imputed, never bare NaN
-
-    def test_count_floor_marks_sparse_bins_uncovered(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # force every bin below an impossibly-high floor (string target avoids a function-level import)
-        monkeypatch.setattr("benchmarking.baselines.power_model.method._MIN_BIN_MATCHED_HOURS", 1e9)
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        treated = np.asarray(idx >= changeover)
-        scada = _toy_scada(n, uplift=0.05, treated=treated)
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(idx),
-            model_params=_FAST_PARAMS,
-            out_dir=tmp_path,
-        )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        method.estimate(mi)
-        per_bin = pd.read_csv(sorted(tmp_path.rglob("*_conditional_by_bin_*.csv"))[0])
-        assert (~per_bin["covered"]).all()  # nothing clears an impossibly-high floor
-        assert per_bin["p50_uplift"].notna().all()  # all imputed, still never NaN
-
-
 def _toy_era5(scada_idx: pd.DatetimeIndex, *, seed: int = 0) -> pd.DataFrame:
     """Hourly ERA5 covering the toy window with the three matching columns, i.i.d. over the window.
 
@@ -871,100 +724,6 @@ class TestCombineDirections:
         assert np.isnan(out).tolist() == [True, True]
 
 
-class TestConditional:
-    def test_requires_era5(self) -> None:
-        n = 300
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        treated = np.asarray(idx >= idx[n // 2])
-        scada = _toy_scada(n, uplift=0.05, treated=treated)
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            model_params=_FAST_PARAMS,  # conditional on by default, but no era5_hourly_df -> must raise
-        )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
-        with pytest.raises(ValueError, match="ERA5"):
-            method.estimate(mi)
-
-    def test_recovers_known_uplift_through_two_directions(self) -> None:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        treated = np.asarray(idx >= changeover)
-        scada = _toy_scada(n, uplift=0.05, treated=treated)
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(idx),
-            model_params=_FAST_PARAMS,
-        )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        out = method.estimate(mi)
-        # matched i.i.d. weather -> shrinkage ~1, forward-only overall recovers the true uplift
-        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-        assert set(out.p50_by_condition["condition"]) == {"power", "era5_ws"}
-        assert list(out.p50_by_condition.columns) == ["condition", "condition_bin", "p50_uplift", "sigma_uplift"]
-
-    def test_overall_matches_conditional_off_and_bins_aggregate_to_it(self, tmp_path: Path) -> None:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        treated = np.asarray(idx >= changeover)
-        scada = _toy_scada(n, uplift=0.03, treated=treated)
-        config = {
-            "columns": _COLUMNS,
-            "baseline_rated_power_kw": 2300.0,
-            "era5_hourly_df": _toy_era5(idx),  # same features both ways, so the headline is comparable
-            "model_params": _FAST_PARAMS,
-        }
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        overall_only = PowerModelMethod(**config, conditions=()).estimate(mi).p50_overall
-        method = PowerModelMethod(**config, out_dir=tmp_path)  # conditional on by default
-        out = method.estimate(mi)
-
-        # 1. the headline is the single full-data fit; computing the conditional step leaves it unchanged
-        assert out.p50_overall == pytest.approx(overall_only, rel=1e-9)
-        # 2. self-consistency: each of the ws and ti decompositions energy-aggregates back to that overall
-        run_dir = next(p for p in tmp_path.iterdir() if p.is_dir())
-        by_bin = pd.read_csv(next((run_dir / "conditional").glob("*_conditional_by_bin_*.csv")))
-        for _cond, g in by_bin.groupby("condition"):
-            good = g[np.isfinite(g["p50_uplift"])]
-            agg = good["sum_actual"].sum() / (good["sum_actual"] / (1.0 + good["p50_uplift"])).sum()
-            assert agg == pytest.approx(1.0 + out.p50_overall, rel=1e-6)
-
-    def test_writes_shrinkage_and_cem_balance_diagnostics(self, tmp_path: Path) -> None:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        treated = np.asarray(idx >= changeover)
-        scada = _toy_scada(n, uplift=0.05, treated=treated)
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(idx),
-            out_dir=tmp_path,
-            model_params=_FAST_PARAMS,
-        )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        method.estimate(mi)
-
-        run_dirs = [p for p in tmp_path.iterdir() if p.is_dir()]
-        assert len(run_dirs) == 1
-        conditional_dir = run_dirs[0] / "conditional"
-        overall = pd.read_csv(next(conditional_dir.glob("*_conditional_overall_*.csv")))
-        by_bin = pd.read_csv(next(conditional_dir.glob("*_conditional_by_bin_*.csv")))
-        balance = pd.read_csv(next(conditional_dir.glob("*_cem_balance_*.csv")))
-        assert next(conditional_dir.glob("*_cem_cells_*.csv"), None) is not None
-        # implied shrinkage s is surfaced overall and per-bin; matched weather -> s ~ 1
-        assert "implied_shrinkage" in overall.columns
-        assert overall["implied_shrinkage"].iloc[0] == pytest.approx(1.0, abs=0.1)
-        assert {"condition", "condition_bin", "r_fwd", "r_rev", "implied_shrinkage", "p50_uplift"} <= set(
-            by_bin.columns
-        )
-        # CEM balance carries the coverage numbers
-        assert {"n_matched_per_side", "retained_fraction_baseline", "n_cells_one_sided"} <= set(balance.columns)
-
-
 def _shrinkage_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0) -> pd.DataFrame:
     """Attenuation-shrinkage toy: references are *noisy* proxies of a steep power curve.
 
@@ -1016,38 +775,135 @@ def _shrinkage_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 
     return pd.concat(parts)
 
 
-def _ws_bin_bias(by_condition: pd.DataFrame) -> pd.Series:
-    """Per-ERA5-wind-speed-bin uplift indexed by bin (truth is 0 at placebo, so the value *is* the bias)."""
-    ws = by_condition[by_condition["condition"] == "era5_ws"]
-    return ws.set_index("condition_bin")["p50_uplift"]
+def _with_part_a(scada: pd.DataFrame) -> pd.DataFrame:
+    """Add step 5's direction and upwind columns: the northed direction, and R1 upwind of T1 half the time."""
+    out = scada.copy()
+    out[DIRECTION_COL] = out[_NORTHED_YAW]
+    out[UPWIND_COL] = np.where(np.sin(np.radians(out[_NORTHED_YAW])) > -0.5, "R1", NONE)
+    return out
 
 
-class TestConditionalRegression:
-    def test_conditional_flat_at_shrinkage_placebo(self) -> None:
-        # Bias guard (design note §8-analog): on a placebo whose references are noisy proxies of a steep
-        # power curve, a single counterfactual fit shrinks and reads a spurious per-ws-bin uplift tilt
-        # (the shrinkage mechanism). The two-direction matched conditional cancels that common shrinkage, so the
-        # (default) conditional uplift must read ~flat-zero in every bin against the flat-0 truth.
+def _shape_case(*, uplift: float = 0.05, n: int = 6000, part_a: bool = True) -> MethodInput:
+    idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+    changeover = idx[n // 2]
+    scada = _toy_scada(n, uplift=uplift, treated=np.asarray(idx >= changeover))
+    if part_a:
+        scada = _with_part_a(scada)
+    return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+
+
+def _shape_method(**overrides: object) -> PowerModelMethod:
+    kwargs: dict[str, object] = {
+        "columns": _COLUMNS,
+        "baseline_rated_power_kw": 2300.0,
+        "model_params": _FAST_PARAMS,
+        "rotor_diameters_m": {"T1": 90.0},
+        "site_location": (57.5, -3.0),
+        "n_resamples": 50,
+        **overrides,
+    }
+    return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
+
+
+class TestUpliftShape:
+    """Step 15: the shape against predicted power, cast to the other axes, with subsets and diagnostics."""
+
+    def test_reports_every_axis_by_default_without_reanalysis(self) -> None:
+        out = _shape_method().estimate(_shape_case())
+        assert set(out.p50_by_condition["condition"]) == {
+            "predicted_power",
+            "freestream_ws",
+            "direction",
+            "solar_elevation",
+            "waked",
+        }
+
+    def test_the_subject_turbines_own_signals_and_reanalysis_are_not_axes(self) -> None:
+        for axis in ("ws", "ti"):
+            with pytest.raises(ValueError, match="does not support"):
+                PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(axis,))
+        with pytest.raises(ValueError, match="unknown condition"):
+            PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=("era5_ws",))
+
+    def test_conditions_choose_the_casts(self) -> None:
+        out = _shape_method(conditions=("predicted_power", "direction")).estimate(_shape_case())
+        assert set(out.p50_by_condition["condition"]) == {"predicted_power", "direction"}
+
+    def test_no_conditions_skips_the_step_and_leaves_the_headline(self) -> None:
+        mi = _shape_case()
+        with_shape = _shape_method().estimate(mi)
+        without = _shape_method(conditions=()).estimate(mi)
+        assert without.p50_by_condition is None
+        assert with_shape.p50_overall == pytest.approx(without.p50_overall, rel=1e-12)
+
+    def test_predicted_power_has_eleven_bins_and_the_measured_ones_read_the_flat_uplift(self) -> None:
+        out = _shape_method().estimate(_shape_case(uplift=0.05))
+        power = out.p50_by_condition[out.p50_by_condition["condition"] == "predicted_power"]
+        assert len(power) == 11
+        assert power["kind"].eq("measured").all()
+        measured = power[np.isfinite(power["sigma_uplift"])]
+        assert len(measured) >= 2
+        assert np.allclose(measured["p50_uplift"], out.p50_overall, atol=0.01)
+
+    def test_an_unmeasured_bin_carries_the_headline_and_no_sigma(self) -> None:
+        out = _shape_method().estimate(_shape_case())
+        power = out.p50_by_condition[out.p50_by_condition["condition"] == "predicted_power"]
+        empty = power[power["hours"] == 0]
+        assert len(empty) > 0
+        assert np.allclose(empty["p50_uplift"], out.p50_overall)
+        assert empty["sigma_uplift"].isna().all()
+
+    def test_a_measured_bins_sigma_includes_the_headlines_level_terms(self) -> None:
+        out = _shape_method().estimate(_shape_case())
+        row = out.uncertainty_diagnostics.iloc[0]
+        level = combined_sigma(0.0, reference=row["sigma_reference"], holdout=row["sigma_holdout"], correlation=0.5)
+        sigma = out.p50_by_condition["sigma_uplift"].to_numpy(dtype=float)
+        assert (sigma[np.isfinite(sigma)] >= level - 1e-12).all()
+
+    def test_an_axis_whose_inputs_are_missing_is_left_out(self) -> None:
+        out = _shape_method(rotor_diameters_m=None, site_location=None).estimate(_shape_case(part_a=False))
+        assert set(out.p50_by_condition["condition"]) == {"predicted_power"}
+
+    def test_each_records_labels_are_returned(self) -> None:
+        out = _shape_method().estimate(_shape_case())
+        assert {label_column(c) for c in ("predicted_power", "freestream_ws", "direction", "waked")} <= set(
+            out.labeled_rows.columns
+        )
+        assert out.labeled_rows[label_column("waked")].dropna().isin([0.0, 1.0]).all()
+
+    def test_writes_the_shape_the_subsets_and_the_reference_wind_speed_drift(self, tmp_path: Path) -> None:
+        _shape_method(out_dir=tmp_path, run_subdir=False, save_plots=False).estimate(_shape_case())
+        names = {p.name for p in (tmp_path / "conditional").iterdir()}
+        assert {"uplift_shape.csv", "uplift_subsets.csv", "reference_wind_speed_drift.csv", "freestream_scale.csv"} <= (
+            names
+        )
+        subsets = pd.read_csv(tmp_path / "conditional" / "uplift_subsets.csv")
+        assert set(subsets["axis"]) == {"direction", "solar_elevation", "waked"}
+
+    def test_draws_a_plot_per_axis_and_per_subsets_family(self, tmp_path: Path) -> None:
+        # the placebo's power spans most of rated, so each waked subset fills its power bins
         n = 5000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = idx[n // 2]
-        treated = np.asarray(idx >= changeover)
-        scada = _shrinkage_scada(n, uplift=0.0, treated=treated)  # placebo: true uplift 0 in every bin
+        scada = _with_part_a(_shrinkage_scada(n, uplift=0.0, treated=np.asarray(idx >= changeover)))
         mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=6000.0,
-            era5_hourly_df=_toy_era5(idx),
-            model_params=_FAST_PARAMS,
-        )
-        on_ws = _ws_bin_bias(method.estimate(mi).p50_by_condition)
-        bins = on_ws.dropna().index
-        on_bias = on_ws.loc[bins].abs().mean()
-        # Deterministic (fixed seeds); observed on this data: mean|bias| ≈ 0.0095, max|bias| ≈ 0.020.
-        # Thresholds sit ~2.5x above so a version/platform bump won't flake, but a regression in the
-        # matched cancellation (which would let the shrinkage tilt back in) will trip them.
-        assert on_bias < 0.025
-        assert on_ws.loc[bins].abs().max() < 0.05
+        method = _shape_method(baseline_rated_power_kw=3000.0, out_dir=tmp_path, run_subdir=False, save_plots=True)
+        method.estimate(mi)
+        plots = {p.name for p in (tmp_path / "plots").rglob("uplift_*.png")}
+        assert {"uplift_predicted_power.png", "uplift_freestream_ws.png", "uplift_subsets_waked.png"} <= plots
+
+    def test_reads_flat_on_a_shrinkage_placebo(self) -> None:
+        n = 5000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = idx[n // 2]
+        scada = _shrinkage_scada(n, uplift=0.0, treated=np.asarray(idx >= changeover))
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        out = _shape_method(baseline_rated_power_kw=6000.0).estimate(mi)
+        power = out.p50_by_condition[out.p50_by_condition["condition"] == "predicted_power"]
+        measured = power[np.isfinite(power["sigma_uplift"])]
+        assert len(measured) >= 3
+        z = (measured["p50_uplift"] - out.p50_overall) / measured["sigma_uplift"]
+        assert (z.abs() < 3.0).all()
 
 
 class TestCampaignContext:
@@ -1442,34 +1298,6 @@ class TestAShrunkenPoolIsAnnounced:
         assert "carries no data" not in caplog.text
 
 
-class TestTheConditionalGuardRunsBeforeTheScreen:
-    """An explicitly-named missing matching column stops the run before any model is fitted."""
-
-    def test_it_raises_without_ever_screening(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        scada = _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover))
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(idx).drop(columns=["wind_gusts_10m"]),
-            matching_vars=("wind_speed_100m", "wind_gusts_10m"),
-            model_params=_FAST_PARAMS,
-            screen_min_campaign_days=0.0,
-        )
-        called: list[str] = []
-        monkeypatch.setattr(
-            PowerModelMethod,
-            "screen_references",
-            lambda self, mi: called.append(mi.test_wtg),  # noqa: ARG005
-        )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        with pytest.raises(ValueError, match="wind_gusts_10m"):
-            method.estimate(mi)
-        assert called == []
-
-
 class TestTheScreenGateJudgesThePoolThatExists:
     """A declared reference with no rows must not silently disable screening for the rest."""
 
@@ -1708,12 +1536,12 @@ class TestPassClonesWriteNoDiagnostics:
 
 
 def test_no_diagnostics_with_conditions_raises() -> None:
-    """The conditional step writes into the run directory, so it needs one."""
+    """The uplift distributions write into the run directory, so they need one."""
     with pytest.raises(ValueError, match="write_diagnostics"):
         PowerModelMethod(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            conditions=("power",),
+            conditions=("predicted_power",),
             write_diagnostics=False,
         ).estimate(_screen_case(step=0.0)[0])
 
@@ -2303,20 +2131,6 @@ class TestRunFolders:
         assert {"results.csv", "data_stats.csv", "feature_importance.csv", "feature_catalogue.csv"} <= names
         assert not [n for n in names if n.startswith("power_model_")]
 
-    def test_the_conditional_csvs_are_plain_too(self, tmp_path: Path) -> None:
-        mi, _ = _prepost_case(n=2000)
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
-            out_dir=tmp_path,
-            save_plots=False,
-            run_subdir=False,
-        )
-        method.estimate(mi)
-        names = {p.name for p in (tmp_path / "conditional").iterdir()}
-        assert {"conditional_overall.csv", "cem_balance.csv", "cem_cells.csv"} <= names
-
 
 class TestValidUpliftRows:
     """The test turbine's rows are selected by the operating states' uplift validity."""
@@ -2656,58 +2470,6 @@ class TestRecordedReversal:
         assert set(REVERSAL_COLUMNS) <= set(refs.columns)
         assert np.isfinite(refs["uplift_reverse"]).all()
         assert refs["uplift_forward"].to_numpy() == pytest.approx(refs["uplift"].to_numpy())
-
-
-class TestPerBinUncertainty:
-    """Each measured bin of the uplift distributions carries a sigma from the matched rows' bootstrap."""
-
-    @staticmethod
-    def _run(**overrides: object) -> MethodOutput:
-        n = 4000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        changeover = idx[n // 2]
-        scada = _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover))
-        method = PowerModelMethod(
-            columns=_COLUMNS,
-            baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(idx),
-            model_params=_FAST_PARAMS,
-            **overrides,  # type: ignore[arg-type]
-        )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
-        return method.estimate(mi)
-
-    def test_measured_bins_carry_a_sigma_and_filled_bins_none(self, tmp_path: Path) -> None:
-        out = self._run(out_dir=tmp_path, run_subdir=False)
-        bc = out.p50_by_condition
-        assert list(bc.columns) == ["condition", "condition_bin", "p50_uplift", "sigma_uplift"]
-        per_bin = pd.read_csv(tmp_path / "conditional" / "conditional_by_bin.csv")
-        covered = per_bin["covered"].to_numpy(dtype=bool)
-        assert covered.any()
-        assert not covered.all()
-        sigma = per_bin["sigma_uplift"].to_numpy(dtype=float)
-        assert np.isfinite(sigma[covered]).all()
-        assert (sigma[covered] > 0).all()
-        assert np.isnan(sigma[~covered]).all()
-        assert (sigma[covered] < 0.05).all()
-
-    def test_the_per_bin_bootstrap_never_moves_the_estimates(self) -> None:
-        a = self._run().p50_by_condition
-        b = self._run(n_resamples=50, bootstrap_seed=3).p50_by_condition
-        pd.testing.assert_series_equal(a["p50_uplift"], b["p50_uplift"])
-
-    def test_a_corrected_headline_moves_every_bin_and_adds_its_standard_error(self) -> None:
-        corrected = self._run()
-        forward = self._run(headline_estimator="forward")
-        row = corrected.uncertainty_diagnostics.iloc[0]
-        a = corrected.p50_by_condition.set_index(["condition", "condition_bin"])
-        b = forward.p50_by_condition.set_index(["condition", "condition_bin"])
-        assert not np.allclose(a["p50_uplift"], b["p50_uplift"])
-        measured = np.isfinite(b["sigma_uplift"].to_numpy(dtype=float))
-        np.testing.assert_allclose(
-            a["sigma_uplift"].to_numpy(dtype=float)[measured],
-            np.hypot(b["sigma_uplift"].to_numpy(dtype=float)[measured], row["sigma_reference"]),
-        )
 
 
 class TestHeadlineDetail:

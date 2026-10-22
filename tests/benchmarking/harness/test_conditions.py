@@ -49,8 +49,31 @@ def test_bin_edges_have_expected_width() -> None:
     assert TI_BINS[0] == 0.0
     assert TI_BINS[-1] == 0.5
     assert np.allclose(np.diff(TI_BINS), 0.05)
-    assert CONDITIONS == ("ws", "ti", "power", "era5_ws")
-    assert CONDITION_BINS == {"ws": WS_BINS, "ti": TI_BINS, "era5_ws": WS_BINS}
+    assert CONDITIONS == (
+        "ws",
+        "ti",
+        "power",
+        "predicted_power",
+        "freestream_ws",
+        "direction",
+        "solar_elevation",
+        "waked",
+    )
+
+
+def test_the_shape_axes_have_their_edges() -> None:
+    assert CONDITION_BINS["freestream_ws"] == [float(x) for x in range(27)]
+    assert CONDITION_BINS["direction"] == [float(x) for x in range(0, 361, 30)]
+    assert CONDITION_BINS["solar_elevation"] == [-90.0, -10.0, 10.0, 90.0]
+    assert CONDITION_BINS["waked"] == [-0.5, 0.5, 1.5]
+
+
+def test_predicted_power_has_eleven_even_bins_of_rated() -> None:
+    edges = condition_bins("predicted_power", rated_power_kw=2000.0)
+    assert len(edges) == 12
+    assert edges[0] == pytest.approx(-100.0)
+    assert edges[-1] == pytest.approx(2100.0)
+    assert np.allclose(np.diff(edges), 200.0)
 
 
 def test_power_fraction_edges_center_bins_on_round_fractions() -> None:

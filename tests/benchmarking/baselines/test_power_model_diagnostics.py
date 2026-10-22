@@ -12,7 +12,6 @@ import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
 from benchmarking.baselines.power_model.diagnostics import (
     DiagnosticData,
-    _condition_diagnostic_figure,
     _energy_timeseries_figure,
     _feature_overview_figure,
     _histogram_figure,
@@ -20,57 +19,58 @@ from benchmarking.baselines.power_model.diagnostics import (
     _importance_figure,
     _robust_bins,
     log_top_features,
-    plot_conditional_diagnostics,
+    plot_uplift_shape,
 )
+from benchmarking.baselines.power_model.shape import ShapeResult
 from benchmarking.diagnostics.features import category_shares_figure, site_feature_figure, write_feature_outputs
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
 
-def _toy_per_bin() -> pd.DataFrame:
-    """A per-bin conditional frame spanning ws, ti and power with a covered/imputed mix."""
-    rows = []
-    specs = {
-        "ws": ["(4.0, 6.0]", "(6.0, 8.0]", "(8.0, 10.0]"],
-        "ti": ["(0.05, 0.1]", "(0.1, 0.15]"],
-        "power": ["(230.0, 690.0]", "(690.0, 1150.0]"],
+def test_plot_uplift_shape_draws_each_axis_each_subsets_family_and_the_drift(tmp_path: Path) -> None:
+    frame = pd.DataFrame(
+        {
+            "condition": ["predicted_power"] * 2 + ["direction"] * 2,
+            "condition_bin": ["(0.0, 500.0]", "(500.0, 1000.0]", "(0.0, 30.0]", "(30.0, 60.0]"],
+            "p50_uplift": [0.03, 0.01, 0.02, 0.02],
+            "sigma_uplift": [0.01, 0.01, 0.01, np.nan],
+            "hours": [100.0, 80.0, 150.0, 5.0],
+            "thin": [False, False, False, True],
+        }
+    )
+    subsets = pd.DataFrame(
+        {
+            "axis": "waked",
+            "subset": ["(0.5, 1.5]"] * 2,
+            "n_bins": 2,
+            "power_bin": ["(0.0, 500.0]", "(500.0, 1000.0]"],
+            "p50_uplift": [0.05, 0.0],
+            "sigma_sampling": [0.01, 0.01],
+            "overall_uplift": [0.03, 0.01],
+            "overall_sigma": [0.01, 0.01],
+            "z": [1.4, -0.7],
+            "hours": [50.0, 40.0],
+            "too_thin": False,
+            "flagged": False,
+        }
+    )
+    drift = pd.DataFrame(
+        {
+            "reference": ["R1", "R1"],
+            "month": ["2020-01", "2020-02"],
+            "ratio": [1.0, 1.05],
+            "spread": 0.05,
+            "flagged": True,
+        }
+    )
+    shape = ShapeResult(frame=frame, subsets=subsets, labels=pd.DataFrame())
+    plot_uplift_shape(tmp_path, shape=shape, drift=drift, test_wtg="T07")
+    names = {p.name for p in tmp_path.iterdir()}
+    assert names == {
+        "uplift_predicted_power.png",
+        "uplift_direction.png",
+        "uplift_subsets_waked.png",
+        "reference_wind_speed_drift.png",
     }
-    for cond, bins in specs.items():
-        for i, b in enumerate(bins):
-            rows.append(
-                {
-                    "condition": cond,
-                    "condition_bin": b,
-                    "r_fwd": 0.05 + 0.01 * i,
-                    "r_rev": -0.04 + 0.01 * i,
-                    "implied_shrinkage": 0.98 + 0.01 * i,
-                    "p50_uplift": 0.05 + 0.005 * i,
-                    "covered": i % 2 == 0,  # alternate covered / imputed
-                }
-            )
-    return pd.DataFrame(rows)
-
-
-def test_plot_conditional_diagnostics_writes_a_figure_per_condition(tmp_path: Path) -> None:
-    plot_conditional_diagnostics(tmp_path, _toy_per_bin(), test_wtg="T07")
-    for cond in ("ws", "ti", "power"):
-        assert (tmp_path / f"conditional_{cond}.png").exists()
-
-
-def test_condition_diagnostic_figure_has_four_panels() -> None:
-    sub = _toy_per_bin().query("condition == 'power'")
-    fig = _condition_diagnostic_figure(sub, condition="power", test_wtg="T07")
-    assert len(fig.axes) == 4
-    plt.close(fig)
-
-
-def test_condition_diagnostic_figure_shades_covered_and_imputed_distinctly() -> None:
-    # the uplift panel must visually separate measured (covered) bins from imputed ones
-    sub = _toy_per_bin().query("condition == 'ws'")  # covered = [True, False, True]
-    fig = _condition_diagnostic_figure(sub, condition="ws", test_wtg="T07")
-    uplift_ax = fig.axes[2]  # panels: fwd, rev, uplift, shrinkage
-    facecolors = {tuple(patch.get_facecolor()) for patch in uplift_ax.patches}
-    assert len(facecolors) >= 2  # covered and imputed bins are not the same colour
-    plt.close(fig)
 
 
 if TYPE_CHECKING:

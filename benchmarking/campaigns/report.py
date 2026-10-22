@@ -19,6 +19,7 @@ from benchmarking.campaigns.uplift_plots import write_uplift_plots
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import infer_timebase
 from benchmarking.harness import CONDITIONS, condition_bins, conditional_truth_vs_estimate, plot_conditional_uplift
+from benchmarking.harness.conditions import ORIGINAL_ROW_CONDITIONS, record_labels
 from benchmarking.harness.plots import conditional_estimates
 from benchmarking.synthetic import treated_mask
 from wind_up.analysis_period_plots import plot_analysis_timeline
@@ -339,16 +340,18 @@ def _write_conditional_plots(result: CampaignResult, dataset: SyntheticDataset, 
         reported = set(output.p50_by_condition["condition"].astype(str))
         rows = dataset.synthetic_df[dataset.synthetic_df[spec.turbine_col] == wtg]
         mask = treated_mask(pd.DatetimeIndex(rows.index), spec.timing_for(wtg))
-        truth_by_condition = {
-            condition: dataset.true_uplift(
+        truth_by_condition = {}
+        for condition in [c for c in CONDITIONS if c in reported]:
+            values = record_labels(output.labeled_rows, condition=condition, index=pd.DatetimeIndex(rows.index))
+            if values is None and condition not in ORIGINAL_ROW_CONDITIONS:
+                continue
+            truth_by_condition[condition] = dataset.true_uplift(
                 test_wtg=wtg,
                 mask=mask,
                 by=condition,
                 bins=condition_bins(condition, rated_power_kw=spec.rated_power_kw),
+                condition_values=values,
             ).by_condition
-            for condition in CONDITIONS
-            if condition in reported
-        }
         clean = {c: frame for c, frame in truth_by_condition.items() if frame is not None}
         if not clean:
             continue

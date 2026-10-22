@@ -61,6 +61,16 @@ def layout_coords(layout: Layout) -> dict[str, tuple[float, float]]:
     }
 
 
+def layout_rotor_diameters(layout: Layout) -> dict[str, float]:
+    """Turbine name to rotor diameter in metres for every named turbine in ``layout``."""
+    frame = layout.frame
+    return {
+        str(name): float(diameter)
+        for name, diameter in zip(frame[NAME_COL], frame[ROTOR_DIAMETER_COL], strict=True)
+        if name is not None
+    }
+
+
 @dataclass(frozen=True)
 class CampaignSpec:
     """The public facts of a campaign -- everything a method may see, and nothing else.

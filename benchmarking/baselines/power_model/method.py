@@ -29,10 +29,10 @@ import pandas as pd
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
-from benchmarking.baselines.block_bootstrap import bootstrap_energy_ratio, bootstrap_ratio_uplift
+from benchmarking.baselines.block_bootstrap import bootstrap_energy_ratio
 from benchmarking.baselines.power_model import diagnostics as diag
-from benchmarking.baselines.power_model.conditional import impute_uncovered_bins, relevel_conditional
 from benchmarking.baselines.power_model.features import (
+    SOLAR_ELEVATION,
     build_reference_features,
     check_reference_only,
     extract_outcome,
@@ -42,7 +42,6 @@ from benchmarking.baselines.power_model.features import (
     without_constant_scenarios,
 )
 from benchmarking.baselines.power_model.fitting import make_outcome_model, model_safe_features, time_block_folds
-from benchmarking.baselines.power_model.matching import coarsened_exact_match
 from benchmarking.baselines.power_model.screening import (
     ScreenResult,
     screen_references,
@@ -50,17 +49,24 @@ from benchmarking.baselines.power_model.screening import (
 from benchmarking.baselines.power_model.screening import (
     empty_screen_passes as _empty_screen_passes,
 )
+from benchmarking.baselines.power_model.shape import (
+    PREDICTED_POWER,
+    ShapeResult,
+    freestream_scale,
+    reference_wind_speed_drift,
+    uplift_shape,
+)
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.harness.conditions import (
     CONDITION_BINS,
     condition_bins,
-    energy_ratio_by_bin,
+    label_column,
     validate_conditions,
 )
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
-from benchmarking.harness.reanalysis import ERA5_WS_RAW, interpolate_era5
+from benchmarking.harness.reanalysis import interpolate_era5
 from benchmarking.harness.record_selection import (
     RARE_CONFIGURATION,
     UNPAIRED,
@@ -70,13 +76,11 @@ from benchmarking.harness.record_selection import (
     record_losses,
 )
 from benchmarking.harness.toggle import is_toggle, pair_within, resolve_toggle, toggle_cycle, toggle_upgrade_start
-from benchmarking.harness.waking import WAKING_SCENARIO_COL
+from benchmarking.harness.waking import DIRECTION_COL, NONE, UNKNOWN, UPWIND_COL, WAKING_SCENARIO_COL
 from wind_up.farm import TurbineUplift, farm_uplift
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
-
-    import numpy.typing as npt
+    from collections.abc import Mapping, Sequence
 
     from benchmarking.synthetic import ColumnSchema
 
@@ -103,9 +107,16 @@ _MIN_TIME_DECAY_DURATION_DAYS = 1.0  # floor the campaign duration so the half-l
 # unchanged; drivers pass this instead.
 TUNED_MODEL_PARAMS: dict[str, Any] = {"min_child_samples": 50}
 
-# A reporting bin with fewer matched hours than this on either side is not measured but filled from
-# its neighbours (method step 15).
-_MIN_BIN_MATCHED_HOURS = 8.0
+# Method step 15: a predicted-power bin needs this many after-period hours to be measured.
+_SHAPE_MIN_HOURS = 24.0
+# The electrical Cp a turbine is taken to reach between 40 % and 60 % of rated, which sets the
+# free-stream scale factor on the references' wind speed.
+_DEFAULT_TARGET_CP = 0.46
+_DEFAULT_AIR_DENSITY = 1.225
+# A reference's monthly wind speed over the others' may move this much before it is flagged.
+_ANEMOMETER_DRIFT_THRESHOLD = 0.03
+# The predicted-power bin counts a subset's shape may use, tried from the most.
+_SUBSET_POWER_BINS = (6, 5, 4)
 
 # The headline's block bootstrap (method step 14): the block length its sigma is reported at, and
 # the lengths it is also recorded at.
@@ -132,18 +143,11 @@ _DEFAULT_SYSTEMATIC_CORRELATION = 0.5
 HeadlineEstimator = Literal["forward", "reversal", "reference_corrected"]
 HEADLINE_ESTIMATORS: tuple[str, ...] = get_args(HeadlineEstimator)
 
-# Matching set + bin widths for the two-direction conditional step: wind_speed_100m binned finest,
-# wind_gusts_10m coarser, and wind_direction_100m in 20° sectors. Fixed sectors, no wraparound.
-_DEFAULT_MATCHING_VARS: tuple[str, ...] = ("wind_speed_100m", "wind_gusts_10m", "wind_direction_100m")
-# The condition axes this method reports: upgrade-invariant only. ``power`` is labelled by the
-# counterfactual prediction as a fraction of rated and ``era5_ws`` by the aligned ERA5 100 m wind
-# speed; the subject turbine's own wind speed and turbulence are never used.
-_SUPPORTED_CONDITIONS: tuple[str, ...] = ("power", "era5_ws")
-_DEFAULT_MATCHING_BIN_EDGES: dict[str, list[float]] = {
-    "wind_speed_100m": [float(x) for x in np.arange(0.0, 34.0, 2.0)],  # 0,2,…,32
-    "wind_gusts_10m": [float(x) for x in np.arange(0.0, 48.0, 3.0)],  # 0,3,…,45
-    "wind_direction_100m": [float(x) for x in np.arange(0.0, 380.0, 20.0)],  # 0,20,…,360
-}
+# The condition axes this method reports, all upgrade-invariant: the test turbine's predicted power,
+# the references' wind speed scaled to free stream, the step 5 direction, the sun's elevation and
+# whether a turbine is upwind of the test turbine.
+_SUPPORTED_CONDITIONS: tuple[str, ...] = (PREDICTED_POWER, "freestream_ws", "direction", "solar_elevation", "waked")
+_SUBSET_CONDITIONS: tuple[str, ...] = ("direction", "solar_elevation", "waked")
 
 
 # Reference-validity screen (R3). A reference whose own performance shifts across the campaign
@@ -403,71 +407,6 @@ def _implied_shrinkage(r_fwd: np.ndarray, r_rev: np.ndarray) -> np.ndarray:
     return np.divide(1.0, root, out=np.full_like(root, np.nan), where=np.isfinite(root) & (root != 0))
 
 
-def _condition_frame(
-    name: str,
-    *,
-    fwd_cond: np.ndarray,
-    rev_cond: np.ndarray,
-    full_cond: np.ndarray,
-    y_fwd: np.ndarray,
-    pred_fwd: np.ndarray,
-    y_rev: np.ndarray,
-    pred_rev: np.ndarray,
-    actual_full: np.ndarray,
-    bins: list[float],
-    one_plus_overall: float,
-    hours_per_record: float,
-) -> pd.DataFrame:
-    """One condition axis' per-bin two-direction uplift, imputed where uncovered and re-leveled to the headline.
-
-    The three ``*_cond`` arrays label each side's rows by the reporting axis: the forward (matched
-    upgraded) rows, the reverse (matched baseline) rows and the full upgraded rows that weight the
-    re-level. A bin with under ``_MIN_BIN_MATCHED_HOURS`` matched hours on either side is imputed
-    (``impute_uncovered_bins``); measured and imputed bins are then re-leveled by full-upgraded
-    energy so they aggregate to ``one_plus_overall``.
-    """
-    fwd = energy_ratio_by_bin(fwd_cond, y_fwd, pred_fwd, bins=bins)
-    rev = energy_ratio_by_bin(rev_cond, y_rev, pred_rev, bins=bins)
-    # full-upgraded actual energy per bin (counterfactual arg unused — only sum_actual is taken)
-    full = energy_ratio_by_bin(full_cond, actual_full, actual_full, bins=bins)
-    merged = fwd.merge(rev, on="condition_bin", suffixes=("_fwd", "_rev")).merge(
-        full[["condition_bin", "sum_actual"]].rename(columns={"sum_actual": "sum_actual_full"}),
-        on="condition_bin",
-    )
-    # impute_uncovered_bins needs ascending bin order (low ws/TI/power first); the merges above do not
-    # guarantee it, so pin the canonical bin order before imputing / re-leveling.
-    order = pd.cut([], bins=bins).categories.astype(str)
-    merged["condition_bin"] = pd.Categorical(merged["condition_bin"], categories=order, ordered=True)
-    merged = merged.sort_values("condition_bin").reset_index(drop=True)
-
-    r_fwd = merged["p50_uplift_fwd"].to_numpy()  # per-bin energy ratio IS the per-bin r
-    r_rev = merged["p50_uplift_rev"].to_numpy()
-    shape = 1.0 + _combine_uplift(r_fwd, r_rev)  # shrinkage-free shape (NaN if degenerate)
-    sum_actual_full = merged["sum_actual_full"].to_numpy()
-    per_side = np.minimum(merged["n_records_fwd"].to_numpy(), merged["n_records_rev"].to_numpy())
-    per_side_hours = per_side * hours_per_record
-    measured = np.isfinite(shape) & (per_side_hours >= _MIN_BIN_MATCHED_HOURS)
-    imputed_shape = impute_uncovered_bins(shape, condition=name, measured=measured, one_plus_overall=one_plus_overall)
-    releveled = relevel_conditional(
-        sum_actual_full, imputed_shape, measured=measured, one_plus_overall=one_plus_overall
-    )
-    return pd.DataFrame(
-        {
-            "condition": name,
-            "condition_bin": merged["condition_bin"].astype(str),
-            "n_records_fwd": merged["n_records_fwd"],
-            "n_records_rev": merged["n_records_rev"],
-            "sum_actual": sum_actual_full,  # full-upgraded energy per bin (the MWh re-level weight)
-            "r_fwd": r_fwd,
-            "r_rev": r_rev,
-            "implied_shrinkage": _implied_shrinkage(r_fwd, r_rev),
-            "u_b": shape - 1.0,  # measured two-direction shape (NaN where uncovered)
-            "covered": measured,  # per-run diagnostic: measured vs imputed
-            "p50_uplift": releveled - 1.0,  # measured-or-imputed, re-leveled to the headline
-        }
-    )
-
-
 def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
     """Infer the analysis timebase as the median spacing of the sorted unique timestamps."""
     unique = pd.DatetimeIndex(pd.unique(index)).sort_values()
@@ -561,14 +500,19 @@ class PowerModelMethod:
         default ``TUNED_MODEL_PARAMS`` (``min_child_samples=50``), so a bare method already carries
         the accepted capacity and any key here wins
     :param timebase: analysis timebase; inferred from the data when ``None``
-    :param conditions: which condition axes to report a per-bin conditional uplift over: ``"power"``
-        (the counterfactual prediction as a fraction of rated) and ``"era5_ws"`` (the aligned ERA5
-        100 m wind speed), both by default. The overall P50 is a single baseline→upgraded fit
-        regardless; when ``conditions`` is non-empty an extra two-direction, ERA5-weather-matched
-        (CEM) cross-prediction runs **last** to estimate the conditional shape (its common per-bin
-        shrinkage cancels), then re-levels onto the headline. That step **requires ERA5** (the
-        matching axis is the ERA5 columns). Pass ``()`` to skip that cross-prediction — the
-        expensive part — and return only the overall P50.
+    :param conditions: the axes of the uplift distributions (method step 15): ``"predicted_power"``,
+        the measured shape, and the axes it is cast to, ``"freestream_ws"`` (the power references'
+        mean wind speed times the factor that meets ``target_cp``), ``"direction"`` (step 5's
+        direction), ``"solar_elevation"`` and ``"waked"`` (a turbine upwind of the test turbine). An
+        axis whose input is missing is left out with a warning. ``()`` skips the step. It never
+        moves the headline
+    :param subset_conditions: the axes whose subsets each get their own predicted-power shape,
+        written to the run's ``conditional/uplift_subsets.csv`` and flagged where they differ
+    :param rotor_diameters_m: rotor diameter per turbine, for the free-stream wind speed
+    :param target_cp: the electrical Cp the test turbine is taken to reach between 40 % and 60 % of
+        rated in the before period, which sets the free-stream scale factor
+    :param air_density_kg_m3: the air density of that Cp
+    :param shape_min_hours: the after-period hours a predicted-power bin needs to be measured
     :param pairing_max_gap: for a toggle campaign, a record of one state is used only when a usable
         record of the other state lies within this gap; ``None`` (default) means one toggle cycle
     :param block_hours: block length of the headline's circular block bootstrap over the after
@@ -577,8 +521,6 @@ class PowerModelMethod:
         ``uncertainty_diagnostics`` row and the run's ``uncertainty.csv``
     :param n_resamples: bootstrap resamples
     :param bootstrap_seed: RNG seed of the bootstrap
-    :param matching_vars: ERA5 columns matched on for the conditional step (default: the curated set)
-    :param matching_bin_edges: per-variable CEM bin edges; the curated defaults are used when ``None``
     :param reference_stat_cols: extra per-reference value columns to carry as features beside active power
     :param direction_feature: when ``True``, each reference contributes its **north-calibrated**
         direction as ``sin``/``cos``. Requires the shared northing step to have written
@@ -666,13 +608,16 @@ class PowerModelMethod:
     model_params: dict[str, Any] = field(default_factory=dict)
     timebase: pd.Timedelta | None = None
     conditions: tuple[str, ...] = _SUPPORTED_CONDITIONS
+    subset_conditions: tuple[str, ...] = _SUBSET_CONDITIONS
+    rotor_diameters_m: Mapping[str, float] | None = None
+    target_cp: float = _DEFAULT_TARGET_CP
+    air_density_kg_m3: float = _DEFAULT_AIR_DENSITY
+    shape_min_hours: float = _SHAPE_MIN_HOURS
     pairing_max_gap: pd.Timedelta | None = None
     block_hours: float = _DEFAULT_BLOCK_HOURS
     block_hours_sweep: tuple[float, ...] = _DEFAULT_BLOCK_HOURS_SWEEP
     n_resamples: int = _DEFAULT_N_RESAMPLES
     bootstrap_seed: int = 0
-    matching_vars: tuple[str, ...] = _DEFAULT_MATCHING_VARS
-    matching_bin_edges: dict[str, list[float]] | None = None
     reference_stat_cols: tuple[str, ...] = ()
     direction_feature: bool = True
     adaptive_time_decay: bool = False
@@ -729,11 +674,6 @@ class PowerModelMethod:
 
         y = extract_outcome(
             scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, active_power_col=self.columns.active_power
-        )
-        # Decided before the screen, whose clone fits are the first expensive thing here, so a
-        # matching column named by hand and not delivered stops the run before any model is fitted.
-        conditional_runnable = self._conditional_is_runnable(
-            self.era5_hourly_df.columns if self.era5_hourly_df is not None else ()
         )
         screen = self.screen_references(mi) if self.reference_screen else None
         if screen is not None and screen.power_free and mi.context.reserve_references:
@@ -893,48 +833,32 @@ class PowerModelMethod:
                     power_references=[r for r in references if r not in power_free],
                 )
 
-        # The conditional uplift distribution is the optional, expensive last step: nothing above depends on
-        # it (eventually AEP extrapolation will). Skipped when no conditions are requested.
-        by_condition: pd.DataFrame | None = None
-        if self.conditions and conditional_runnable:
-            # The conditional two-direction step matches baseline against upgraded rows and relies on
-            # them sharing a distribution *and era* — for a toggle whose headline fit also trains on the
-            # pre-campaign baseline, only the interleaved campaign off rows qualify (the strict
-            # ``campaign_baseline``): matching pre-campaign rows against campaign on rows would read
-            # reference/era drift as per-bin uplift. The extra pre-campaign rows serve only the headline
-            # fit's training data. (Re-confirmed post-floor: unifying onto ``training_baseline``
-            # blew up tail-bin |bias|/spread — the added rows promote drift-contaminated bins past the count
-            # floor from imputed to trusted.)
-            # No time-decay weights here either (re-confirmed post-floor): the matched contrast
-            # is already era-insensitive (its common shrinkage cancels), and weighting the direction fits
-            # only churns the sparse extreme-condition tail bins (and slightly worsens ws spread) without
-            # helping the populated bins — so the corrections are spent on the overall headline instead.
-            try:
-                by_condition = self._estimate_conditional(
-                    mi=mi,
-                    features=features,
-                    era5=era5,  # type: ignore[arg-type]
-                    y=y_arr,
-                    baseline_sel=selected & toggle_rows.campaign_baseline,
-                    upgraded_sel=upgraded_sel,
-                    fit=fit,
-                    overall_ratio=uplift,
-                    level_sigma=combined_sigma(
-                        0.0,
-                        reference=correction.get("sigma_reference", 0.0),
-                        holdout=holdout.get("sigma_holdout", 0.0),
-                        correlation=self.systematic_correlation,
-                    ),
-                    index=index,
-                    timebase=timebase,
-                    # non-None whenever conditions are requested; _validate_model_config enforces it
-                    run_dir=run_dir,  # type: ignore[arg-type]
-                )
-            except ValueError as e:
-                logger.warning("%s: no uplift distributions for %s (%s)", self.name, mi.test_wtg, e)
+        # The uplift distributions are the optional last step; nothing above depends on them.
+        shape: ShapeResult | None = None
+        if self.conditions:
+            shape = self._uplift_shape(
+                mi,
+                scada=scada,
+                features=features,
+                y=y_arr,
+                baseline_sel=baseline_sel,
+                upgraded_sel=upgraded_sel,
+                fit=fit,
+                headline=uplift,
+                power_references=power_references,
+                index=index,
+                timebase=timebase,
+                level_sigma=combined_sigma(
+                    0.0,
+                    reference=correction.get("sigma_reference", 0.0),
+                    holdout=holdout.get("sigma_holdout", 0.0),
+                    correlation=self.systematic_correlation,
+                ),
+                run_dir=run_dir,
+            )
         return MethodOutput(
             p50_overall=uplift,
-            p50_by_condition=by_condition,
+            p50_by_condition=None if shape is None else self._reported_shape(shape),
             sigma_overall=sigma,
             uncertainty_diagnostics=pd.DataFrame(
                 [
@@ -950,6 +874,7 @@ class PowerModelMethod:
             ),
             reference_uplifts=reference_uplifts,
             screen_passes=screen.passes if screen is not None else None,
+            labeled_rows=None if shape is None else shape.labels,
         )
 
     def _headline_uncertainty(
@@ -1156,87 +1081,219 @@ class PowerModelMethod:
             seed=self.bootstrap_seed,
         ).sigma
 
-    def _estimate_conditional(
+    def _uplift_shape(
         self,
-        *,
         mi: MethodInput,
+        *,
+        scada: pd.DataFrame,
         features: pd.DataFrame,
-        era5: pd.DataFrame,
         y: np.ndarray,
         baseline_sel: np.ndarray,
         upgraded_sel: np.ndarray,
         fit: dict[str, Any],
-        overall_ratio: float,
-        level_sigma: float,
+        headline: float,
+        power_references: Sequence[str],
         index: pd.DatetimeIndex,
         timebase: pd.Timedelta,
-        run_dir: Path,
-    ) -> pd.DataFrame | None:
-        """Per-bin conditional uplift via a two-direction, ERA5-weather-matched cross-prediction (method step 15).
+        level_sigma: float,
+        run_dir: Path | None,
+    ) -> ShapeResult | None:
+        """Return the uplift distributions of method step 15 and write their diagnostics.
 
-        Match the baseline and upgraded periods on ERA5 weather, then fit/predict in both directions and
-        combine so the common per-bin shrinkage cancels; the decomposition is re-leveled onto the
-        already-computed overall headline (``overall_ratio``) so the per-bin MWh partitions it, and
-        ``level_sigma``, the headline's correction sigma, is added in quadrature to each measured bin's
-        sigma. Requires ERA5: the matching axis is the aligned ERA5 columns ``era5``. Returns the
-        ``[condition, condition_bin, p50_uplift]`` frame and writes the per-run diagnostics.
+        Each bin's ``sigma_uplift`` is its sampling sigma joined in quadrature with ``level_sigma``,
+        the headline's reference and holdout terms. ``None`` without an after-period record.
         """
-        # Matched two-direction fits, for the per-bin shape only. Matching is required: without it the reverse
-        # model (train upgraded, predict baseline) would extrapolate out-of-distribution across the prepost
-        # weather shift.
-        edges = self.matching_bin_edges if self.matching_bin_edges is not None else self._default_bin_edges()
-        match = coarsened_exact_match(
-            era5[list(self.matching_vars)],
+        times = index[upgraded_sel]
+        if times.empty:
+            return None
+        rated = self.baseline_rated_power_kw
+        axes, scale = self._shape_axes(
+            mi,
+            scada=scada,
+            features=features,
+            y=y,
             baseline_sel=baseline_sel,
             upgraded_sel=upgraded_sel,
-            bin_edges=edges,
-            seed=self.seed,
-        )
-        mb, mu = match.baseline_positions, match.upgraded_positions
-        # Forward (train matched-baseline, predict matched-upgraded) gives ``1+r_fwd = (1+u)/s``.
-        pred_up = self._fit_direction(features, y, train=mb, predict=mu)
-        # Reverse (train matched-upgraded, predict matched-baseline): 1+r_rev = 1/(s(1+u)). Clip reuses
-        # baseline_rated_power_kw — its upper bound max(rated, max(y_train)) already lifts the ceiling for an
-        # uprate, so no separate upgraded-rating field is needed.
-        pred_base = self._fit_direction(features, y, train=mu, predict=mb)
-        r_fwd = _ratio(y[mu], pred_up)
-        r_rev = _ratio(y[mb], pred_base)
-
-        per_bin = self._conditional_by_bin(
-            era5=era5,
-            y=y,
-            mb=mb,
-            mu=mu,
-            pred_up=pred_up,
-            pred_base=pred_base,
-            upgraded_pos=np.flatnonzero(upgraded_sel),
-            actual_full=fit["y_upgraded"],
-            pred_upgraded=fit["pred_upgraded"],
-            overall_ratio=overall_ratio,
+            power_references=power_references,
             index=index,
+        )
+        result = uplift_shape(
+            times=times,
+            actual=fit["y_upgraded"],
+            counterfactual=fit["pred_upgraded"],
+            power_edges=condition_bins(PREDICTED_POWER, rated_power_kw=rated),
+            axes={k: v for k, v in axes.items() if k in self.conditions},
+            subsets={k: v for k, v in axes.items() if k in self.subset_conditions},
+            subset_power_edges={n: [rated * (-0.05 + 1.1 * i / n) for i in range(n + 1)] for n in _SUBSET_POWER_BINS},
+            headline=headline,
+            min_hours=self.shape_min_hours,
+            hours_per_record=timebase / pd.Timedelta(hours=1),
+            period_start=times.min(),
+            period_end=times.max(),
             timebase=timebase,
+            block_hours=self.block_hours,
+            n_resamples=self.n_resamples,
+            seed=self.bootstrap_seed,
         )
-        if per_bin is not None:
-            per_bin["sigma_uplift"] = np.hypot(per_bin["sigma_uplift"].to_numpy(dtype=float), level_sigma)
-        by_condition = (
-            per_bin[["condition", "condition_bin", "p50_uplift", "sigma_uplift"]].copy()
-            if per_bin is not None
-            else None
+        result = ShapeResult(
+            frame=result.frame.assign(sigma_uplift=np.hypot(result.frame["sigma_sampling"], level_sigma)),
+            subsets=result.subsets.assign(sigma_uplift=np.hypot(result.subsets["sigma_sampling"], level_sigma)),
+            labels=result.labels.rename(columns=label_column),
         )
-        self._write_conditional(
-            mi, run_dir=run_dir, match=match, r_fwd=r_fwd, r_rev=r_rev, uplift=overall_ratio, per_bin=per_bin
+        flagged = result.subsets.loc[result.subsets["flagged"].astype(bool)]
+        for (axis, subset), _ in flagged.groupby(["axis", "subset"]):
+            logger.warning(
+                "%s %s: the power shape of %s %s differs from the whole after period's",
+                self.name,
+                mi.test_wtg,
+                axis,
+                subset,
+            )
+        drift = self._reference_wind_speed_drift(mi, scada=scada, power_references=power_references, index=index)
+        if run_dir is not None:
+            self._write_shape(mi, run_dir=run_dir, shape=result, drift=drift, scale=scale)
+        return result
+
+    def _shape_axes(
+        self,
+        mi: MethodInput,
+        *,
+        scada: pd.DataFrame,
+        features: pd.DataFrame,
+        y: np.ndarray,
+        baseline_sel: np.ndarray,
+        upgraded_sel: np.ndarray,
+        power_references: Sequence[str],
+        index: pd.DatetimeIndex,
+    ) -> tuple[dict[str, tuple[np.ndarray, list[float]]], dict[str, float]]:
+        """Return each axis's after-period values and edges, and the free-stream scale's details.
+
+        An axis whose input is missing is left out with a warning.
+        """
+        wanted = (set(self.conditions) | set(self.subset_conditions)) - {PREDICTED_POWER}
+        values: dict[str, np.ndarray] = {}
+        scale: dict[str, float] = {}
+        if "freestream_ws" in wanted:
+            freestream, scale = self._freestream_wind_speed(
+                mi, scada=scada, y=y, baseline_sel=baseline_sel, power_references=power_references, index=index
+            )
+            if freestream is not None:
+                values["freestream_ws"] = freestream
+        test_rows = scada[scada[mi.turbine_col] == mi.test_wtg]
+        test_rows = test_rows[~test_rows.index.duplicated()].reindex(index)
+        if "direction" in wanted and DIRECTION_COL in test_rows.columns:
+            values["direction"] = test_rows[DIRECTION_COL].to_numpy(dtype=float)
+        if "waked" in wanted and UPWIND_COL in test_rows.columns:
+            upwind = test_rows[UPWIND_COL].astype(object)
+            unknown = upwind.isna() | (upwind == UNKNOWN)
+            values["waked"] = np.where(unknown, np.nan, (upwind != NONE).astype(float))
+        if "solar_elevation" in wanted and SOLAR_ELEVATION in features.columns:
+            values["solar_elevation"] = features[SOLAR_ELEVATION].to_numpy(dtype=float)
+        for missing in sorted(wanted - set(values)):
+            logger.warning("%s %s: no %s axis, its input is missing", self.name, mi.test_wtg, missing)
+        axes = {name: (v[upgraded_sel], CONDITION_BINS[name]) for name, v in values.items()}
+        return axes, scale
+
+    def _freestream_wind_speed(
+        self,
+        mi: MethodInput,
+        *,
+        scada: pd.DataFrame,
+        y: np.ndarray,
+        baseline_sel: np.ndarray,
+        power_references: Sequence[str],
+        index: pd.DatetimeIndex,
+    ) -> tuple[np.ndarray | None, dict[str, float]]:
+        """Return the power references' mean wind speed scaled to free stream, and the scale's details.
+
+        The factor is fitted on the before period (:func:`freestream_scale`). ``None`` without the test
+        turbine's rotor diameter or a before-period record in the power band.
+        """
+        diameter = (self.rotor_diameters_m or {}).get(mi.test_wtg)
+        if diameter is None or not power_references:
+            return None, {}
+        ws = reference_mean_wind_speed(
+            scada, references=power_references, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
+        ).reindex(index)
+        ws_arr = ws.to_numpy(dtype=float)
+        factor = freestream_scale(
+            y[baseline_sel],
+            ws_arr[baseline_sel],
+            rated_power_kw=self.baseline_rated_power_kw,
+            rotor_diameter_m=float(diameter),
+            target_cp=self.target_cp,
+            air_density=self.air_density_kg_m3,
         )
+        details = {
+            "scale_factor": factor,
+            "target_cp": self.target_cp,
+            "air_density_kg_m3": self.air_density_kg_m3,
+            "rotor_diameter_m": float(diameter),
+        }
+        if not np.isfinite(factor):
+            return None, details
         logger.info(
-            "%s %s conditional uplift: headline=%+.3f%%  implied_s=%.3f  (r_fwd=%+.3f, r_rev=%+.3f, matched=%d/side)",
+            "%s %s: free-stream wind speed = %.3f x the power references' mean (target Cp %.2f)",
             self.name,
             mi.test_wtg,
-            100 * overall_ratio,
-            float(_implied_shrinkage(np.array([r_fwd]), np.array([r_rev]))[0]),
-            r_fwd,
-            r_rev,
-            match.n_matched_per_side,
+            factor,
+            self.target_cp,
         )
-        return by_condition
+        return ws_arr * factor, details
+
+    def _reference_wind_speed_drift(
+        self, mi: MethodInput, *, scada: pd.DataFrame, power_references: Sequence[str], index: pd.DatetimeIndex
+    ) -> pd.DataFrame:
+        """Return the power references' monthly wind speed drift against each other, warning on a flag."""
+        if len(power_references) < 2 or self.columns.wind_speed not in scada.columns:  # noqa: PLR2004 - needs others
+            return reference_wind_speed_drift(pd.DataFrame(), threshold=_ANEMOMETER_DRIFT_THRESHOLD)
+        wide = pd.DataFrame(
+            {
+                r: reference_mean_wind_speed(
+                    scada, references=[r], turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
+                ).reindex(index)
+                for r in power_references
+            }
+        )
+        drift = reference_wind_speed_drift(wide, threshold=_ANEMOMETER_DRIFT_THRESHOLD)
+        for reference, rows in drift[drift["flagged"]].groupby("reference"):
+            logger.warning(
+                "%s %s: reference %s's anemometer moves %.1f %% against the others' over the months (not corrected)",
+                self.name,
+                mi.test_wtg,
+                reference,
+                100 * float(rows["spread"].iloc[0]),
+            )
+        return drift
+
+    def _reported_shape(self, shape: ShapeResult) -> pd.DataFrame:
+        """Return the bins of the requested ``conditions`` as the method reports them."""
+        frame = shape.frame[shape.frame["condition"].isin(self.conditions)]
+        return frame[["condition", "condition_bin", "p50_uplift", "sigma_uplift", "kind", "hours", "thin"]].reset_index(
+            drop=True
+        )
+
+    def _write_shape(
+        self,
+        mi: MethodInput,
+        *,
+        run_dir: Path,
+        shape: ShapeResult,
+        drift: pd.DataFrame,
+        scale: dict[str, float],
+    ) -> None:
+        """Write the shape, the subsets, the reference wind speed drift and the free-stream scale, and plot them."""
+        out = run_dir / "conditional"
+        out.mkdir(parents=True, exist_ok=True)
+        run_name, ts = self._csv_naming(run_dir)
+        shape.frame.to_csv(out / diag.csv_name("uplift_shape", run_name=run_name, ts=ts), index=False)
+        shape.subsets.to_csv(out / diag.csv_name("uplift_subsets", run_name=run_name, ts=ts), index=False)
+        drift.to_csv(out / diag.csv_name("reference_wind_speed_drift", run_name=run_name, ts=ts), index=False)
+        pd.DataFrame([scale]).to_csv(out / diag.csv_name("freestream_scale", run_name=run_name, ts=ts), index=False)
+        if self.save_plots:
+            diag.plot_uplift_shape(
+                run_dir / "plots" / stages.UPLIFT_DISTRIBUTIONS, shape=shape, drift=drift, test_wtg=mi.test_wtg
+            )
 
     def _fit_direction(
         self, features: pd.DataFrame, y: np.ndarray, *, train: np.ndarray, predict: np.ndarray
@@ -1254,190 +1311,6 @@ class PowerModelMethod:
             y_train=y[train],
             rated_power_kw=self.baseline_rated_power_kw,
         )
-
-    def _conditional_by_bin(
-        self,
-        *,
-        era5: pd.DataFrame,
-        y: np.ndarray,
-        mb: np.ndarray,
-        mu: np.ndarray,
-        pred_up: np.ndarray,
-        pred_base: np.ndarray,
-        upgraded_pos: np.ndarray,
-        actual_full: np.ndarray,
-        pred_upgraded: np.ndarray,
-        overall_ratio: float,
-        index: pd.DatetimeIndex,
-        timebase: pd.Timedelta,
-    ) -> pd.DataFrame | None:
-        """Per-bin two-direction uplift on each axis, imputed where uncovered and re-leveled onto the headline.
-
-        The measured shape ``1+u_b = sqrt((1+r_fwd_b)/(1+r_rev_b))`` comes from the matched
-        forward/reverse fits; a bin is ``covered`` when that shape is finite and both sides hold enough
-        matched hours. Uncovered bins are filled by
-        :func:`~benchmarking.baselines.power_model.conditional.impute_uncovered_bins`. The re-level
-        weights are the full-upgraded actual energy per bin (``actual_full`` over ``upgraded_pos``):
-        imputed bins are pinned and one scale moves the measured bins so measured + imputed together
-        energy-aggregate to ``1 + overall_ratio``. The returned frame carries a ``covered`` flag.
-
-        The power axis labels every side by its counterfactual prediction (forward rows by
-        ``pred_up``, reverse rows by ``pred_base``, the re-level weights by ``pred_upgraded``), never by
-        the actual power that is also that side's ratio numerator. The ERA5 wind speed axis labels
-        every side by the aligned 100 m wind speed.
-        """
-        one_plus_overall = 1.0 + overall_ratio
-        common = {
-            "y_fwd": y[mu],
-            "pred_fwd": pred_up,
-            "y_rev": y[mb],
-            "pred_rev": pred_base,
-            "actual_full": actual_full,
-            "one_plus_overall": one_plus_overall,
-            "hours_per_record": timebase / pd.Timedelta(hours=1),
-        }
-        axes: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, list[float]]] = {}
-        if "era5_ws" in self.conditions:
-            ws = era5[ERA5_WS_RAW].to_numpy(dtype=float)
-            axes["era5_ws"] = (ws[mu], ws[mb], ws[upgraded_pos], CONDITION_BINS["era5_ws"])
-        if "power" in self.conditions:
-            axes["power"] = (
-                pred_up,
-                pred_base,
-                pred_upgraded,
-                condition_bins("power", rated_power_kw=self.baseline_rated_power_kw),
-            )
-        if not axes:
-            return None
-        frames = [
-            _condition_frame(name, fwd_cond=fwd, rev_cond=rev, full_cond=full, bins=bins, **common)
-            for name, (fwd, rev, full, bins) in axes.items()
-        ]
-        per_bin = pd.concat(frames, ignore_index=True)
-        sigma = self._per_bin_sigma(
-            {name: (fwd, rev, bins) for name, (fwd, rev, _, bins) in axes.items()},
-            y=y,
-            mb=mb,
-            mu=mu,
-            pred_up=pred_up,
-            pred_base=pred_base,
-            index=index,
-            timebase=timebase,
-        )
-        keys = list(zip(per_bin["condition"], per_bin["condition_bin"], strict=True))
-        per_bin["sigma_uplift"] = [
-            sigma.get(k, float("nan")) if c else float("nan") for k, c in zip(keys, per_bin["covered"], strict=True)
-        ]
-        return per_bin
-
-    def _per_bin_sigma(
-        self,
-        axes: dict[str, tuple[np.ndarray, np.ndarray, list[float]]],
-        *,
-        y: np.ndarray,
-        mb: np.ndarray,
-        mu: np.ndarray,
-        pred_up: np.ndarray,
-        pred_base: np.ndarray,
-        index: pd.DatetimeIndex,
-        timebase: pd.Timedelta,
-    ) -> dict[tuple[str, str], float]:
-        """Bootstrap each bin's two-direction shape over the matched rows, the direction models fixed.
-
-        The matched baseline and upgraded rows are resampled in circular wall-clock blocks of
-        ``block_hours`` over the whole span, each bin a cell whose labels are frozen, and the shape
-        ``sqrt((1 + r_fwd) / (1 + r_rev)) - 1`` is re-formed per resample. Returns the sigma per
-        ``(condition, condition_bin)``.
-        """
-        membership: dict[str, npt.NDArray[np.bool_]] = {}
-        for name, (fwd, rev, bins) in axes.items():
-            labels = np.concatenate([pd.cut(rev, bins=bins).astype(str), pd.cut(fwd, bins=bins).astype(str)])
-            for label in pd.cut([], bins=bins).categories.astype(str):
-                membership[f"{name}|{label}"] = labels == label
-        result = bootstrap_ratio_uplift(
-            times=index[np.concatenate([mb, mu])],
-            test_power=np.concatenate([y[mb], y[mu]]),
-            ref_total=np.concatenate([pred_base, pred_up]),
-            upgraded=np.concatenate([np.zeros(len(mb), dtype=bool), np.ones(len(mu), dtype=bool)]),
-            baseline=np.concatenate([np.ones(len(mb), dtype=bool), np.zeros(len(mu), dtype=bool)]),
-            cell_membership=membership,
-            campaign_start=index.min(),
-            campaign_end=index.max(),
-            timebase=timebase,
-            block_hours=self.block_hours,
-            n_resamples=self.n_resamples,
-            seed=self.bootstrap_seed,
-        )
-        sigma: dict[tuple[str, str], float] = {}
-        for cell in membership:
-            draws = result.resamples.get(cell)
-            name, label = cell.split("|", 1)
-            if draws is None:
-                sigma[name, label] = float("nan")
-                continue
-            ratio = 1.0 + np.asarray(draws, dtype=float)
-            shape = np.sqrt(ratio[np.isfinite(ratio) & (ratio > 0)]) - 1.0
-            sigma[name, label] = float(shape.std(ddof=1)) if len(shape) > 1 else float("nan")
-        return sigma
-
-    def _write_conditional(
-        self,
-        mi: MethodInput,
-        *,
-        run_dir: Path,
-        match: Any,  # noqa: ANN401 - MatchResult
-        r_fwd: float,
-        r_rev: float,
-        uplift: float,
-        per_bin: pd.DataFrame | None,
-    ) -> None:
-        """Write the conditional-step diagnostics (implied shrinkage + CEM balance) and the per-bin plot.
-
-        CSVs go in ``run_dir/conditional/``; the per-bin implied-shrinkage plot (when ``save_plots``) goes in
-        the step-7 plot folder, keeping the optional conditional outputs separate from the always-on overall
-        diagnostics in the same run folder.
-        """
-        conditional_dir = run_dir / "conditional"
-        conditional_dir.mkdir(parents=True, exist_ok=True)
-        run_name, ts = self._csv_naming(run_dir)
-        overall = {
-            "test_wtg": mi.test_wtg,
-            "mode": "toggle" if is_toggle(mi.upgrade_timing) else "prepost",
-            "r_fwd": r_fwd,
-            "r_rev": r_rev,
-            "uplift_frc": uplift,
-            "implied_shrinkage": float(_implied_shrinkage(np.array([r_fwd]), np.array([r_rev]))[0]),
-        }
-        diag.write_conditional_csvs(conditional_dir, run_name, ts, overall=overall, per_bin=per_bin, match=match)
-        if self.save_plots and per_bin is not None:
-            diag.plot_conditional_diagnostics(
-                run_dir / "plots" / stages.UPLIFT_DISTRIBUTIONS, per_bin, test_wtg=mi.test_wtg
-            )
-
-    def _conditional_is_runnable(self, era5_columns: Iterable[str]) -> bool:
-        """Whether the conditional step runs; raises when ERA5 lacks a matching column."""
-        if not self.conditions:
-            return False
-        available = set(era5_columns)
-        missing = [v for v in self.matching_vars if v not in available]
-        if missing:
-            msg = (
-                f"matching_vars names {missing}, which the ERA5 frame does not carry; the conditional step "
-                f"bins on them. Columns present: {sorted(available)}"
-            )
-            raise ValueError(msg)
-        return True
-
-    def _default_bin_edges(self) -> dict[str, list[float]]:
-        """Per-variable CEM edges for ``matching_vars`` from the curated defaults; raise on an unknown var."""
-        missing = [v for v in self.matching_vars if v not in _DEFAULT_MATCHING_BIN_EDGES]
-        if missing:
-            msg = (
-                f"no default matching bin edges for {missing}; pass matching_bin_edges explicitly for "
-                f"non-default matching_vars. Known defaults: {sorted(_DEFAULT_MATCHING_BIN_EDGES)}."
-            )
-            raise ValueError(msg)
-        return {v: _DEFAULT_MATCHING_BIN_EDGES[v] for v in self.matching_vars}
 
     def _add_site_features(
         self, features: pd.DataFrame, *, index: pd.DatetimeIndex, timebase: pd.Timedelta
@@ -2127,16 +2000,8 @@ class PowerModelMethod:
             raise ValueError(msg)
         if not self.write_diagnostics and self.conditions:
             msg = (
-                "write_diagnostics=False needs conditions=(): the conditional step writes its per-bin CSVs "
+                "write_diagnostics=False needs conditions=(): the uplift distributions write their CSVs "
                 "into the run directory, so there is nowhere for them to go."
-            )
-            raise ValueError(msg)
-        # Checked here rather than in the conditional step so a misconfiguration is reported as
-        # one, rather than surfacing later as whatever the screen or the fit happens to hit first.
-        if self.conditions and self.era5_hourly_df is None:
-            msg = (
-                "the conditional step requires ERA5 (era5_hourly_df): the matching axis is the ERA5 weather "
-                "columns. Supply era5_hourly_df, or pass conditions=() for an overall-only estimate."
             )
             raise ValueError(msg)
 

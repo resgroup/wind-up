@@ -62,6 +62,7 @@ class SyntheticDataset:
         mask: np.ndarray | None = None,
         by: str | None = None,
         bins: list | None = None,
+        condition_values: np.ndarray | None = None,
     ) -> UpliftResult:
         """Derive the true uplift by comparing synthetic to original.
 
@@ -70,7 +71,14 @@ class SyntheticDataset:
         if test_wtg is None:
             test_wtg = self.run_metadata["test_wtgs"][0]
         return true_uplift(
-            self.synthetic_df, self.original_df, test_wtg=test_wtg, mask=mask, by=by, bins=bins, columns=self.columns
+            self.synthetic_df,
+            self.original_df,
+            test_wtg=test_wtg,
+            mask=mask,
+            by=by,
+            bins=bins,
+            columns=self.columns,
+            condition_values=condition_values,
         )
 
     def true_net_uplift(self, *, upstream: str, downstream: str, mask: np.ndarray | None = None) -> float:

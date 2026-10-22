@@ -18,21 +18,20 @@ from typing import TYPE_CHECKING, Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-import numpy.typing as npt
 import pandas as pd
 from matplotlib.colors import Normalize
-from matplotlib.patches import Patch
 
 from benchmarking.baselines.power_model.features import QUALIFIER, SITE_FEATURE_UNITS
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.features import category_shares_figure
 from benchmarking.diagnostics.style import apply_grid, save_fig
-from benchmarking.harness.conditions import CONDITIONS
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
+
+    from benchmarking.baselines.power_model.shape import ShapeResult
 
 logger = logging.getLogger(__name__)
 
@@ -241,130 +240,119 @@ def write_csvs(run_dir: Path, run_name: str, ts: str, data: DiagnosticData) -> p
     return importance
 
 
-def write_conditional_csvs(
-    run_dir: Path,
-    run_name: str,
-    ts: str,
-    *,
-    overall: dict[str, Any],
-    per_bin: pd.DataFrame | None,
-    match: Any,  # noqa: ANN401 - MatchResult (avoids importing the matching module into diagnostics)
-) -> None:
-    """Write the conditional-step diagnostics: implied shrinkage ``s`` + the CEM balance.
+_AXIS_UNITS = {
+    "predicted_power": "predicted power (kW)",
+    "freestream_ws": "free-stream wind speed (m/s)",
+    "direction": "direction (deg)",
+    "solar_elevation": "solar elevation (deg)",
+    "waked": "waked (0 front row, 1 waked)",
+}
 
-    ``overall`` is the single-row headline (both directions' ratios, the headline uplift, and the
-    implied shrinkage the two directions cancelled); ``per_bin`` the same per (ws, TI) bin; ``match`` the
-    CEM balance/coverage (retained fractions, effective sample size, one-sided cells dropped) plus the
-    per-cell counts. Together they show, for one case, how much conditional shrinkage was cancelled and
-    how healthy the matching was. ``run_dir`` is the run's ``conditional/`` subfolder.
+
+def plot_uplift_shape(plots_dir: Path, *, shape: ShapeResult, drift: pd.DataFrame, test_wtg: str) -> None:
+    """Write one plot per axis, one per subsets family, and the reference wind speed drift.
+
+    Axis plots are ``uplift_<axis>.png``; subset plots ``uplift_subsets_<axis>.png``; the drift plot
+    ``reference_wind_speed_drift.png``.
     """
-    pd.DataFrame([overall]).to_csv(run_dir / csv_name("conditional_overall", run_name=run_name, ts=ts), index=False)
-    if per_bin is not None:
-        per_bin.to_csv(run_dir / csv_name("conditional_by_bin", run_name=run_name, ts=ts), index=False)
-    balance = {
-        "n_baseline_in": match.n_baseline_in,
-        "n_upgraded_in": match.n_upgraded_in,
-        "n_matched_per_side": match.n_matched_per_side,
-        "retained_fraction_baseline": match.retained_fraction_baseline,
-        "retained_fraction_upgraded": match.retained_fraction_upgraded,
-        "n_cells_two_sided": match.n_cells_two_sided,
-        "n_cells_one_sided": match.n_cells_one_sided,
-    }
-    pd.DataFrame([balance]).to_csv(run_dir / csv_name("cem_balance", run_name=run_name, ts=ts), index=False)
-    match.per_cell.to_csv(run_dir / csv_name("cem_cells", run_name=run_name, ts=ts), index=False)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    for condition, rows in shape.frame.groupby("condition", sort=False):
+        save_fig(_axis_figure(rows, condition=str(condition), test_wtg=test_wtg), plots_dir / f"uplift_{condition}.png")
+    shown = shape.subsets.loc[~shape.subsets["too_thin"].astype(bool)]
+    for axis, rows in shown.groupby("axis", sort=False):
+        save_fig(_subsets_figure(rows, axis=str(axis), test_wtg=test_wtg), plots_dir / f"uplift_subsets_{axis}.png")
+    if not drift.empty:
+        save_fig(_drift_figure(drift, test_wtg=test_wtg), plots_dir / "reference_wind_speed_drift.png")
 
 
-# covered (measured two-direction shape) vs imputed bins on the uplift panel.
-_COVERED_COLOR = "C0"
-_IMPUTED_COLOR = "0.7"
-
-
-def _condition_diagnostic_figure(sub: pd.DataFrame, *, condition: str, test_wtg: str) -> plt.Figure:
-    """Build a four-panel per-condition diagnostic: forward + reverse measurement, uplift, implied shrinkage.
-
-    ``sub`` is the per-bin rows for one condition (ascending bin order). The uplift panel shades each bar
-    by ``covered``: a measured (two-direction) bin vs an imputed one, so it is clear which per-bin uplifts
-    are backed by data. Implied shrinkage carries the ``s = 1`` reference (agreement / nothing to cancel).
-    """
-    labels = sub["condition_bin"].astype(str).to_numpy()
-    covered = sub["covered"].to_numpy(dtype=bool)
-    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
-
-    def _bars(
-        ax: plt.Axes,
-        values: npt.ArrayLike,
-        *,
-        title: str,
-        ylabel: str,
-        color: Any,  # noqa: ANN401
-        baseline: float,
-        baseline_label: str | None = None,
-    ) -> None:
-        ax.bar(labels, np.asarray(values, dtype=float), color=color)
-        ax.axhline(baseline, color="k", linewidth=1, linestyle="--", label=baseline_label)
-        ax.set_title(title)
-        ax.set_xlabel(f"{condition} bin")
-        ax.set_ylabel(ylabel)
-        ax.tick_params(axis="x", labelrotation=90)
-        apply_grid(ax)
-
-    _bars(
-        axes[0][0],
-        sub["r_fwd"],
-        title="forward measurement",
-        ylabel="forward energy ratio r_fwd",
-        color="C0",
-        baseline=0.0,
-    )
-    _bars(
-        axes[0][1],
-        sub["r_rev"],
-        title="reverse measurement",
-        ylabel="reverse energy ratio r_rev",
-        color="C1",
-        baseline=0.0,
-    )
-
-    # uplift panel: shade covered (measured) vs imputed bins.
-    uplift_colors = [_COVERED_COLOR if c else _IMPUTED_COLOR for c in covered]
-    _bars(
-        axes[1][0],
-        sub["p50_uplift"],
-        title="uplift (measured / imputed)",
-        ylabel="p50 uplift",
-        color=uplift_colors,
-        baseline=0.0,
-    )
-    handles = [
-        Patch(facecolor=_COVERED_COLOR, label="measured (covered)"),
-        Patch(facecolor=_IMPUTED_COLOR, label="imputed"),
-    ]
-    axes[1][0].legend(handles=handles, loc="best")
-
-    _bars(
-        axes[1][1],
-        sub["implied_shrinkage"],
-        title="implied shrinkage cancelled",
-        ylabel="implied shrinkage s",
-        color="C2",
-        baseline=1.0,
-        baseline_label="s = 1 (no shrinkage)",
-    )
-    axes[1][1].legend(loc="lower right")
-
-    fig.suptitle(f"{test_wtg} — {condition}: conditional two-direction diagnostics")
+def _axis_figure(rows: pd.DataFrame, *, condition: str, test_wtg: str) -> plt.Figure:
+    """Build the uplift per bin with its one-sigma bar, over the hours per bin."""
+    labels = rows["condition_bin"].astype(str).to_numpy()
+    x = np.arange(len(labels))
+    uplift = 100 * rows["p50_uplift"].to_numpy(dtype=float)
+    sigma = 100 * rows["sigma_uplift"].to_numpy(dtype=float)
+    thin = rows["thin"].to_numpy(dtype=bool)
+    fig, (ax, ax_hours) = plt.subplots(2, 1, figsize=(11, 8), sharex=True, height_ratios=[3, 1])
+    ax.errorbar(x[~thin], uplift[~thin], yerr=sigma[~thin], fmt="o", color="C0", capsize=3, label="uplift ± 1 sigma")
+    if thin.any():
+        ax.errorbar(
+            x[thin],
+            uplift[thin],
+            yerr=sigma[thin],
+            fmt="o",
+            color="C0",
+            mfc="white",
+            capsize=3,
+            label="thin bin (under the minimum hours)",
+        )
+    ax.axhline(0.0, color="k", linewidth=1)
+    ax.set_ylabel("uplift (%)")
+    ax.set_title(f"{test_wtg}: uplift against {_AXIS_UNITS.get(condition, condition)}")
+    ax.legend(loc="best")
+    apply_grid(ax)
+    ax_hours.bar(x, rows["hours"].to_numpy(dtype=float), color="0.6")
+    ax_hours.set_ylabel("after-period hours")
+    ax_hours.set_xticks(x, labels, rotation=90)
+    ax_hours.set_xlabel(_AXIS_UNITS.get(condition, condition))
+    apply_grid(ax_hours)
     fig.tight_layout()
     return fig
 
 
-def plot_conditional_diagnostics(plots_dir: Path, per_bin: pd.DataFrame, *, test_wtg: str) -> None:
-    """Write one four-panel diagnostic figure per condition (ws, ti, power) present in ``per_bin``."""
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    present = set(per_bin["condition"])
-    for cond in [c for c in CONDITIONS if c in present]:
-        sub = per_bin[per_bin["condition"] == cond]
-        fig = _condition_diagnostic_figure(sub, condition=cond, test_wtg=test_wtg)
-        save_fig(fig, plots_dir / f"conditional_{cond}.png")
+def _subsets_figure(rows: pd.DataFrame, *, axis: str, test_wtg: str) -> plt.Figure:
+    """Build one panel per subset: its own power shape beside the whole after period's on the same bins."""
+    subsets = list(dict.fromkeys(rows["subset"]))
+    fig, axes = plt.subplots(1, len(subsets), figsize=(4.5 * len(subsets), 4.5), squeeze=False, sharey=True)
+    for ax, subset in zip(axes[0], subsets, strict=True):
+        part = rows[rows["subset"] == subset]
+        x = np.arange(len(part))
+        ax.errorbar(
+            x - 0.1,
+            100 * part["overall_uplift"].to_numpy(dtype=float),
+            yerr=100 * part["overall_sigma"].to_numpy(dtype=float),
+            fmt="s",
+            color="0.5",
+            capsize=3,
+            label="whole after period",
+        )
+        ax.errorbar(
+            x + 0.1,
+            100 * part["p50_uplift"].to_numpy(dtype=float),
+            yerr=100 * part["sigma_sampling"].to_numpy(dtype=float),
+            fmt="o",
+            color="C3" if bool(part["flagged"].any()) else "C0",
+            capsize=3,
+            label="this subset",
+        )
+        ax.set_xticks(x, part["power_bin"].astype(str).to_numpy(), rotation=90)
+        ax.set_title(f"{subset}{' (differs)' if bool(part['flagged'].any()) else ''}")
+        ax.set_xlabel("predicted power (kW)")
+        apply_grid(ax)
+    axes[0][0].set_ylabel("uplift, unshifted (%)")
+    axes[0][0].legend(loc="best")
+    fig.suptitle(f"{test_wtg}: the power shape within each {_AXIS_UNITS.get(axis, axis)} subset")
+    fig.tight_layout()
+    return fig
+
+
+def _drift_figure(drift: pd.DataFrame, *, test_wtg: str) -> plt.Figure:
+    """Build each reference's monthly wind speed over the mean of the others."""
+    fig, ax = plt.subplots(figsize=(11, 5))
+    for reference, rows in drift.groupby("reference"):
+        flagged = bool(rows["flagged"].iloc[0])
+        ax.plot(
+            pd.PeriodIndex(rows["month"], freq="M").to_timestamp(),
+            rows["ratio"].to_numpy(dtype=float),
+            marker="o",
+            linestyle="-" if flagged else ":",
+            label=f"{reference}{' (flagged)' if flagged else ''}",
+        )
+    ax.set_ylabel("wind speed / mean of the other references")
+    ax.set_title(f"{test_wtg}: power references' anemometers against each other (not corrected)")
+    ax.legend(loc="best")
+    apply_grid(ax)
+    fig.tight_layout()
+    return fig
 
 
 def save_plots(plots_dir: Path, data: DiagnosticData, importance: pd.DataFrame) -> None:

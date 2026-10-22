@@ -114,6 +114,23 @@ def test_per_condition_breakdown_by_power_uses_original_untreated_power() -> Non
     np.testing.assert_allclose(by_condition["true_uplift"].to_numpy(), [1010.0 / 990.0 - 1.0, 0.02])
 
 
+def test_per_condition_breakdown_on_supplied_labels() -> None:
+    """``condition_values`` labels each test turbine record directly; a NaN label is in no bin."""
+    original, synthetic = _paired([800.0, 800.0, 1500.0, 1500.0], [880.0, 880.0, 1530.0, 1530.0])
+    result = true_uplift(
+        synthetic,
+        original,
+        test_wtg="T01",
+        by="direction",
+        bins=[0.0, 180.0, 360.0],
+        condition_values=np.array([90.0, np.nan, 270.0, 270.0]),
+    )
+    by_condition = result.by_condition
+    assert by_condition is not None
+    assert by_condition["n_records"].to_numpy().tolist() == [1, 2]
+    np.testing.assert_allclose(by_condition["true_uplift"].to_numpy(), [0.10, 0.02])
+
+
 def _farm_frames(powers: dict[str, list[float]], uplifts: dict[str, float]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Build (synthetic, original) long frames from per-turbine original powers and a flat uplift."""
     index = pd.date_range("2020-01-01", periods=len(next(iter(powers.values()))), freq="10min", tz="UTC")

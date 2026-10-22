@@ -430,6 +430,56 @@ def coverage_table(records: list[dict[str, Any]], turbines: pd.DataFrame, refere
     return pd.DataFrame(rows)
 
 
+def shape_table(records: list[dict[str, Any]]) -> pd.DataFrame:
+    """Step 15: each axis and bin's error against truth, the flat headline's, and the sigma's coverage.
+
+    The flat headline is the test turbine's headline uplift reported in every bin. Rows are the
+    synthetic cells' bins with a truth; the bias's standard error is clustered by campaign.
+    """
+    rows = []
+    for record in records:
+        if record["arm"] == "real":
+            continue
+        headline = {t["turbine"]: t["estimate"] for t in record["turbines"]}
+        rows += [
+            {
+                "campaign": campaign_key(record),
+                "condition": b["condition"],
+                "condition_bin": b["condition_bin"],
+                "error": b["estimate"] - b["truth"],
+                "flat_error": headline[b["test_wtg"]] - b["truth"],
+                "sigma": b["sigma"],
+            }
+            for b in record.get("bins", [])
+            if b.get("truth") is not None and np.isfinite(b["truth"]) and b["test_wtg"] in headline
+        ]
+    columns = ["condition", "condition_bin", "bias", "se", "z", "rmse", "rmse_flat", "coverage", "n", "campaigns"]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    frame = pd.DataFrame(rows)
+    out = []
+    for (condition, bin_label), group in frame.groupby(["condition", "condition_bin"], sort=False):
+        errors = group["error"].to_numpy(dtype=float)
+        bias = _mean_se(errors, group["campaign"])
+        out.append(
+            {
+                "condition": condition,
+                "condition_bin": bin_label,
+                "bias": bias["mean"],
+                "se": bias["se"],
+                "z": bias["z"],
+                "rmse": float(np.sqrt(np.nanmean(errors**2))),
+                "rmse_flat": float(np.sqrt(np.nanmean(group["flat_error"].to_numpy(dtype=float) ** 2))),
+                "coverage": _coverage(
+                    errors, pd.to_numeric(group["sigma"]).to_numpy(dtype=float), group["campaign"].to_numpy()
+                )["coverage"],
+                "n": bias["n"],
+                "campaigns": bias["campaigns"],
+            }
+        )
+    return pd.DataFrame(out, columns=columns)
+
+
 def period_coverage_table(turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
     """Every before and after length: the headline error's bias, its RMSE and the headline sigma's coverage.
 
@@ -614,6 +664,7 @@ def validation_tables(
         "iii_dependence": dependence_table(domain_turbines),
         "iv_coverage": coverage_table(domain, domain_turbines, domain_references),
         "iv_coverage_by_period": period_coverage_table(turbines, references),
+        "v_shape": shape_table(domain),
         "unmeasured": unmeasured_table([*records, *unmeasured]),
         "usable_share": usable_share_table(records),
         "option2_reversal": reversal_table(turbines, references),
@@ -693,6 +744,23 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int, n_
             f"- {row.quantity} {row.block}: {row.coverage:.2f} ± {row.coverage_se:.2f} (z sd {row.z_sd:.2f}, "
             f"n {row.n}, {row.campaigns} campaigns): "
             f"{verdict_coverage(pd.Series(row._asdict()))}"
+        )
+    lines += ["", "## v. Uplift distributions (step 15): per axis, against the flat headline in every bin"]
+    shape = tables["v_shape"]
+    for condition, group in shape.groupby("condition", sort=False):
+        worst = group.loc[group["z"].abs().idxmax()] if group["z"].notna().any() else None
+        low = group.loc[group["coverage"].idxmin()] if group["coverage"].notna().any() else None
+        better = float(np.sqrt(np.nanmean(group["rmse"] ** 2))) < float(np.sqrt(np.nanmean(group["rmse_flat"] ** 2)))
+        detail = (
+            ""
+            if worst is None
+            else f"; worst bin {worst['condition_bin']} {worst['bias'] * _PP:+.3f} pp (z {worst['z']:+.1f})"
+        )
+        cover = "" if low is None else f"; lowest coverage {low['coverage']:.2f} in {low['condition_bin']}"
+        lines.append(
+            f"- {condition}: RMSE {float(np.sqrt(np.nanmean(group['rmse'] ** 2))) * _PP:.3f} pp against "
+            f"{float(np.sqrt(np.nanmean(group['rmse_flat'] ** 2))) * _PP:.3f} pp flat"
+            f" ({'beats flat' if better else 'does NOT beat flat'}){detail}{cover}"
         )
     lines += [
         "",

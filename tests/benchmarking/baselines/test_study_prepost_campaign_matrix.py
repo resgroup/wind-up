@@ -31,7 +31,6 @@ from benchmarking.baselines.prepost_matrix.execute import (
     measurement_details,
     plan_settings,
     site_operating_state,
-    with_reanalysis_wind_speed,
 )
 from benchmarking.baselines.prepost_matrix.metrics import (
     baseline_tables,
@@ -976,16 +975,6 @@ def test_reversal_uplift_is_nan_where_a_ratio_is_not_positive() -> None:
 
 def test_records_without_bins_give_an_empty_bins_table() -> None:
     assert baseline_tables(_line_records())["bins"].empty
-
-
-def test_the_truth_rows_gain_the_aligned_reanalysis_wind_speed() -> None:
-    index = pd.date_range("2020-01-01", periods=4, freq="10min", tz="UTC")
-    original = pd.DataFrame({"TurbineName": ["T01"] * 4 + ["T02"] * 4, "power": 1.0}, index=index.append(index))
-    aligned = pd.DataFrame({"wind_speed_100m": [5.0, 6.0, 7.0, 8.0], "other": 0.0}, index=index)
-    joined = with_reanalysis_wind_speed(original, aligned)
-    assert list(joined.columns) == ["TurbineName", "power", "wind_speed_100m"]
-    assert joined["wind_speed_100m"].tolist() == [5.0, 6.0, 7.0, 8.0] * 2
-    assert with_reanalysis_wind_speed(original, None) is original
 
 
 def test_a_cell_records_each_test_turbines_losses_and_data_screen(tmp_path: Path) -> None:

@@ -63,6 +63,7 @@ def true_uplift(
     by: str | None = None,
     bins: npt.ArrayLike | None = None,
     columns: ColumnSchema = HOT_COLUMNS,
+    condition_values: npt.ArrayLike | None = None,
 ) -> UpliftResult:
     """Compute the true uplift of the test turbine, synthetic vs original.
 
@@ -75,6 +76,8 @@ def true_uplift(
         (``"ws"``, ``"ti"`` or an original column name)
     :param bins: bin edges for the ``by`` condition
     :param columns: the source-native column schema the frames are keyed by
+    :param condition_values: each test turbine record's value on ``by``, in time order, used instead
+        of resolving ``by`` from the original rows; a NaN value is in no bin
     :return: the overall energy-ratio uplift, and a per-condition table when ``by`` is set
     """
     if by is not None and bins is None:
@@ -96,7 +99,11 @@ def true_uplift(
     overall = synthetic_power[effective].sum() / denom - 1.0 if denom else float("nan")
 
     by_condition = None
-    condition = _condition_series(original_wtg, by, columns) if by is not None else None
+    condition = (
+        np.asarray(condition_values, dtype=float)
+        if condition_values is not None
+        else (_condition_series(original_wtg, by, columns) if by is not None else None)
+    )
     if condition is not None:
         by_condition = _uplift_by_condition(
             condition=condition[effective],

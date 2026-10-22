@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.baselines.toggle_specialist import ToggleSpecialistMethod
-from benchmarking.campaigns.declaration import layout_coords
+from benchmarking.campaigns.declaration import layout_coords, layout_rotor_diameters
 from benchmarking.campaigns.loader import centroid
 from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
@@ -89,7 +89,7 @@ def carried_forward_methods(
                 baseline_rated_power_kw=spec.rated_power_kw,
                 era5_hourly_df=era5_hourly_df,
                 site_location=centroid(layout_coords(spec.layout)),
-                conditions=PowerModelMethod.conditions if era5_hourly_df is not None else (),
+                rotor_diameters_m=layout_rotor_diameters(spec.layout),
                 reference_stat_cols=reference_stat_cols,
                 model_params=dict(TUNED_MODEL_PARAMS),
                 out_dir=out_dir / "power_model",

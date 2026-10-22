@@ -163,8 +163,8 @@ here to check the labels, never to make them.
 Reanalysis data (ERA5) is merged with the SCADA data. ERA5 is used as a source of upgrade-invariant
 weather information: it is unaffected by any change to the turbines. This is done once, in data
 preparation, and every later step uses the same aligned ERA5. It serves the time-alignment check
-below, northing (step 4), the wind rose of the reference ranking (step 8) and the conditional uplift
-(step 15); it is not a feature of the power model (step 6).
+below, northing (step 4) and the wind rose of the reference ranking (step 8); it is not a feature of
+the power model (step 6), nor an axis of the uplift distributions (step 15).
 
 ERA5 is obtained from the Open-Meteo archive API with the ERA5 model selected, at the centroid of the
 wind farm and over the whole SCADA record provided. Its values are interpreted as follows:
@@ -550,7 +550,7 @@ left once steps 5, 6, 7 and 11 are applied. It is removed with the references (o
 
   The references ruled out or not judged by the screen, and any that could not be measured, are left
   out of the mean; with no reference left the uplift is not reported. It needs no extra model fits, as
-  the reference measurements of step 9 are reused. The bins of step 15 move with it, as they are scaled
+  the reference measurements of step 9 are reused. The bins of step 15 move with it, as they are shifted
   to the headline. The references themselves are not corrected: their own uplifts are reported for every
   test turbine together with the correction made from them, and a correction far from zero raises the
   uncertainty (step 14).
@@ -588,9 +588,9 @@ The sampling component is a circular block bootstrap with the model of step 12 f
 period's records of the subject turbine, each with its measured and its counterfactual power, are
 resampled in blocks of wall-clock time (one day by default) tiled over the after period, the ratio
 of sums of step 13 is re-formed for each resample, and the sigma is the standard deviation of the
-resampled uplifts. Each bin of step 15 is treated the same way over the records matched for it,
-with the two direction models fixed and the bin labels frozen, so the uncertainty never moves an
-uplift; a bin that was filled rather than measured has no sigma. The sigma is also recorded at
+resampled uplifts. The bins of step 15 are resampled with the same blocks, each resample re-measured,
+re-shifted and re-cast, with the model and the bin labels fixed, so the uncertainty never moves an
+uplift; a bin with no measured power bin behind it has no sigma. The sigma is also recorded at
 other block lengths (6 hours, 1 day, 7 days and 28 days by default) so that validation can choose
 the block length by the coverage of the sigma against known truth. Every reference turbine
 measured in step 9 carries the same sampling sigma, so its reading against the expected 0 % can be
@@ -622,49 +622,46 @@ across test turbines is left until the components are trusted.
 
 ### 15. Calculate uplift distributions
 
-Uplift is calculated as a function of condition variables specified by the analyst. Uplift against
-wind speed is generally the most important for pre-construction inputs, but it has to be based on a
-stable, free-stream wind speed estimate derived from the reference turbines (power and pitch angle), not
-from the subject turbine. For certain upgrades other conditions are important, for example wake steering
-also requires uplift against direction and atmospheric stability.
+The headline of step 13 is distributed over conditions: against free-stream wind speed, the input a
+pre-construction or wake model needs, and against direction, a stability proxy and wake exposure. The
+distributions say what shape the uplift has; they never move the headline, and their total equals it.
 
-The binned uplift is not the ratio of the headline's per-record sums within each bin. The model of
-step 12 has a conditional bias that integrates to about zero over the whole window but not within
-a bin: it over-predicts low power and under-predicts high power, so a plain per-bin ratio shows a
-spurious slope even where the true uplift is flat. The bin shape is therefore estimated with the
-full reversal of step 13 option B applied per bin, on records matched between the periods: the
-before and after records are matched on coarsened ERA5 cells (100 m wind
-speed in 2 m/s steps, 10 m gust in 3 m/s steps and 100 m direction in 20° sectors by default), cells
-present in one period only are dropped, and in every other cell the larger side is subsampled to the
-size of the smaller so the two sides carry equal weight per cell; a model is fitted in each direction
-on the matched records, and each bin's uplift is the geometric combination of the forward and reverse
-ratios, which cancels the conditional bias common to both. A bin with too few matched hours on either
-side (8 hours by default) is not measured; its value is filled from the nearest measured bin above it,
-and the bins above the last measured bin take 0 %, since at and above rated the baseline and the
-upgraded turbine produce the same power. The measured bins are then scaled by one factor, with the
-filled bins held as filled, so that, weighted by the after-period energy in each bin, they combine to
-the headline uplift of step 13; the headline itself is never moved by this step. When no positive
-factor does so (no bin was measured, or the filled bins alone hold more than the headline's
-counterfactual energy), every bin reports the headline uplift. Each bin is reported with its
-uncertainty (step 14).
+- i. **The measured shape.** The after period's records are binned by the subject turbine's
+  counterfactual power from the model of step 12, in eleven even bins from −5 % to 105 % of rated. The
+  prediction comes from the references, so it is upgrade-invariant, and a regression model's error has
+  zero mean among the records that share a prediction, so the forward ratio of step 13 needs no
+  correction on this axis. A bin with at least 24 hours of records is measured: its uplift is
+  $\sum y / \sum \hat f_B - 1$ over its records. The measured bins are then shifted by one constant so
+  that, weighted by counterfactual energy, they combine to the headline; a bin not measured carries the
+  headline.
+- ii. **The cast to the other axes.** Each record carries its power bin's uplift, and a bin of any other
+  axis reports the counterfactual-energy-weighted mean over its records. A cast bin has no minimum, but
+  is flagged thin below 24 hours. The axes, all upgrade-invariant:
+  - **free-stream wind speed**, in 1 m/s bins: the mean wind speed of the power references in each
+    record, times one factor fitted on the before period so that the subject turbine's electrical Cp,
+    over the before-period records between 40 % and 60 % of rated power, meets a target, 0.46 by
+    default with air density 1.225 kg/m³ (the analyst may declare either). The same factor applies to
+    both periods, so the after period's labels cannot absorb the uplift. Each reference's wind speed is
+    compared month by month with the others' mean, and a reference whose ratio moves by more than 3 %
+    is reported for the analyst; it is not corrected;
+  - **direction**, in 30° sectors: the direction of step 5 ii;
+  - **solar elevation**, as a stability proxy: night (below −10°), dawn and dusk (−10° to 10°) and day;
+  - **wake exposure**: waked when a turbine is upwind of the subject turbine (step 5 iv), front row
+    otherwise.
+- iii. **The subsets check.** The cast assumes the uplift depends only on the baseline power. For
+  direction, solar elevation and wake exposure, the power shape is measured again within each sector,
+  band or side, in six power bins (five or four where six cannot each reach 24 hours; a subset that
+  cannot fill four is reported too thin). Neither the subset's shape nor the whole period's on the same
+  bins is shifted, and where any bin differs by more than two sigma of the difference the subset is
+  flagged: the variable then has an effect beyond restating the power dependence.
 
-Records are assigned to a bin by an upgrade-invariant variable, never by any signal of the subject
-turbine: not its measured power, which would select each bin on its own noise, and not its nacelle
-wind speed or turbulence. By default the uplift is reported against the counterfactual power
-prediction (as a fraction of rated, in six bins; the before-period records of the reverse direction are
-labelled by the reverse model's prediction) and against the ERA5 100 m wind speed (in 2 m/s
-bins). The other variables available are the aligned ERA5 variables of step 3 and a free-stream wind
-speed derived from the references once one is defined (open question).
+Each bin is reported with its uncertainty (step 14). The subject turbine's own signals are never an
+axis, and neither is ERA5, which may be missing for the last months of a live campaign. An upgrade
+whose effect varies with wind speed above rated cannot be told apart by the predicted-power axis, and
+measuring one needs a measured wind speed, not neighbouring turbines.
 
-This step is run for the test turbine (step 10). It is off by default for the candidates of the screen
-(step 9), where only the headline uplift is needed.
-
-> **TODO (ERA5 missing at the end of the record).** The matching cells and the ERA5 wind speed axis
-> need ERA5, so the records without it are left out of the bin shape without being reported, and the
-> shape is measured on fewer after-period hours and a different mix of seasons. ERA5 is no longer a
-> feature of the model (step 6), so match on variables that are always available, such as the
-> references' mean power or the solar elevation, and make the reference-derived wind speed the default
-> axis.
+This step is run for the test turbine (step 10). It is off for the candidates of the screen (step 9),
+where only the headline uplift is needed.
 
 ## Part D: across turbines
 
@@ -713,6 +710,9 @@ real campaigns where the reference turbines provide truth of zero. The target is
   truth, headline and per bin, fall within one sigma, and the reference uplifts read 0 % within
   their sigmas at the same rate. A sigma a little too large passes (up to 90 % within one sigma);
   one too small fails.
+- v. the uplift distributions of step 15 are unbiased in every bin of every axis, beat reporting the
+  headline in every bin (a lower RMSE against truth), and each bin's sigma covers its error as in iv,
+  judged bin by bin rather than pooled.
 
 The targets are expected to pass only where the method is meant to be used: at least 12 months of
 before data, and at least 6 months of after data, ideally fewer. The campaign matrix also runs shorter
@@ -737,6 +737,13 @@ Decided so far, on the prepost campaign matrix:
   except the season of the upgrade (spring +0.35 pp, z 2.8), which that matrix could not tell apart
   from the campaign, since each campaign's works fall in one season. A season study runs every
   campaign in all four seasons to judge it within a campaign.
+- **Step 15: one shape against predicted power, cast to the other axes.** On 104 local cells of the
+  matrix (Kelmarsh and Penmanshiel, in the domain) the forward shape against predicted power matched
+  the previous estimator (two models per direction on records matched by ERA5 weather, 0.83 against
+  0.81 pp energy-weighted RMSE), and cast to ERA5 wind speed it beat it (0.65 against 0.82 pp) without
+  the low-wind failures (0–2 m/s RMSE 2.5 against 17.8 pp). Correcting each bin by the references'
+  readings in that bin was worse than either (1.30 and 1.12 pp). Shifting the shape to the headline
+  rather than scaling it keeps placebos sound, where both are near zero.
 - **Step 14: $\rho = 0.5$.** Re-scored on run 7, $\rho = 0$ (plain quadrature) covered 82 % of the errors
   within one sigma, $\rho = 0.5$ 76 % (95 % within two sigma, as a normal error would) and $\rho = 1$
   64 %.
@@ -768,8 +775,8 @@ intended domain is at least 12 months before and at least 6 months after.
   third of test turbines (all cells) where it removes the largest share of after-period hours read
   −0.16 pp (z −3.1), the rest about zero; whether a lower minimum or a per-turbine rule fixes it is
   untested.
-- How the free-stream wind speed estimate of step 15 is constructed.
-- Whether step 15 should report which condition variables the uplift is sensitive to, and how.
+- Whether the free-stream scale factor of step 15 should depend on direction (a model of the subject
+  turbine's wind relative to its references', like the model of step 12).
 - How site-specific operating states (step 2) reach wind-up: pre-labelled data or a labelling schema.
 - How many references to use by default (step 8), given the union of invalid data in step 11 i.
 - The data screen's thresholds (step 9): the usable-hours fraction and the correlation margin below

@@ -18,8 +18,24 @@ if TYPE_CHECKING:
 
 WS_BINS: list[float] = [float(x) for x in np.arange(0.0, 28.0, 2.0)]  # 0,2,…,26
 TI_BINS: list[float] = [round(float(x), 2) for x in np.arange(0.0, 0.55, 0.05)]  # 0,0.05,…,0.50
-CONDITIONS: tuple[str, ...] = ("ws", "ti", "power", "era5_ws")
-CONDITION_BINS: dict[str, list[float]] = {"ws": WS_BINS, "ti": TI_BINS, "era5_ws": WS_BINS}
+CONDITIONS: tuple[str, ...] = (
+    "ws",
+    "ti",
+    "power",
+    "predicted_power",
+    "freestream_ws",
+    "direction",
+    "solar_elevation",
+    "waked",
+)
+CONDITION_BINS: dict[str, list[float]] = {
+    "ws": WS_BINS,
+    "ti": TI_BINS,
+    "freestream_ws": [float(x) for x in range(27)],
+    "direction": [float(x) for x in range(0, 361, 30)],
+    "solar_elevation": [-90.0, -10.0, 10.0, 90.0],
+    "waked": [-0.5, 0.5, 1.5],
+}
 
 # ``power`` edges are a fraction of rated (so they scale with the turbine), unlike the fixed ws/ti
 # edges, hence they live in ``condition_bins()`` not ``CONDITION_BINS``. The outer edges sit just
@@ -27,6 +43,32 @@ CONDITION_BINS: dict[str, list[float]] = {"ws": WS_BINS, "ti": TI_BINS, "era5_ws
 # baseline power values that fall slightly negative (cut-in noise) or slightly over rated
 # (counterfactual prediction noise) rather than dropping them to NaN.
 POWER_FRACTION_EDGES: list[float] = [-0.1, 0.1, 0.3, 0.5, 0.7, 0.9, 1.1]
+# ``predicted_power``: eleven even bins of rated, from just below 0 to just above rated.
+PREDICTED_POWER_FRACTION_EDGES: list[float] = [round(-0.05 + 0.1 * i, 6) for i in range(12)]
+
+
+# The axes the truth can be resolved for from the original rows alone; any other axis needs the
+# method's own per-record labels.
+ORIGINAL_ROW_CONDITIONS: tuple[str, ...] = ("ws", "ti", "power")
+
+
+def label_column(condition: str) -> str:
+    """Return the ``MethodOutput.labeled_rows`` column holding each record's value on ``condition``."""
+    return f"label_{condition}"
+
+
+def record_labels(
+    labeled_rows: pd.DataFrame | None, *, condition: str, index: pd.Index
+) -> npt.NDArray[np.float64] | None:
+    """Return the method's label on ``condition`` for each timestamp of ``index``, NaN where it gave none.
+
+    ``None`` when ``labeled_rows`` carries no :func:`label_column` for the condition.
+    """
+    column = label_column(condition)
+    if labeled_rows is None or column not in labeled_rows.columns:
+        return None
+    labels = labeled_rows[column]
+    return labels[~labels.index.duplicated()].reindex(index).to_numpy(dtype=float)
 
 
 def validate_conditions(conditions: Iterable[str], *, supported: Iterable[str], method_name: str) -> None:
@@ -59,11 +101,12 @@ def condition_bins(name: str, *, rated_power_kw: float | None = None) -> list[fl
     """
     if name in CONDITION_BINS:
         return CONDITION_BINS[name]
-    if name == "power":
+    fractions = {"power": POWER_FRACTION_EDGES, "predicted_power": PREDICTED_POWER_FRACTION_EDGES}.get(name)
+    if fractions is not None:
         if rated_power_kw is None:
-            msg = "rated_power_kw is required for the 'power' condition (edges scale with rating)"
+            msg = f"rated_power_kw is required for the {name!r} condition (edges scale with rating)"
             raise ValueError(msg)
-        return [round(f * float(rated_power_kw), 6) for f in POWER_FRACTION_EDGES]
+        return [round(f * float(rated_power_kw), 6) for f in fractions]
     msg = f"unknown condition {name!r}; expected one of {CONDITIONS}"
     raise ValueError(msg)
 
