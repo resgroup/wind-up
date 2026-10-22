@@ -128,6 +128,7 @@ CORRECTION_COLUMNS: tuple[str, ...] = (
 # sigma and how many windows it was read over.
 HOLDOUT_COLUMNS: tuple[str, ...] = ("sigma_holdout", "n_holdout_blocks")
 _DEFAULT_HOLDOUT_MAX_BLOCKS = 12
+_DEFAULT_SYSTEMATIC_CORRELATION = 0.5
 HeadlineEstimator = Literal["forward", "reversal", "reference_corrected"]
 HEADLINE_ESTIMATORS: tuple[str, ...] = get_args(HeadlineEstimator)
 
@@ -321,6 +322,16 @@ def holdout_excess(readings: np.ndarray, *, sampling_sigmas: np.ndarray) -> floa
         return float("nan")
     excess = max(float(np.mean(readings[ok] ** 2) - np.mean(sampling_sigmas[ok] ** 2)), 0.0)
     return float(np.sqrt(excess) * student_t.ppf(norm.cdf(1.0), n))
+
+
+def combined_sigma(sampling: float, *, reference: float, holdout: float, correlation: float) -> float:
+    """Return ``sqrt(sampling² + reference² + holdout² - 2 * correlation * reference * holdout)``.
+
+    The reference correction's error and the held-out before period's error are taken as correlated
+    by ``correlation``; their combined variance is floored at 0. NaN when any input is.
+    """
+    systematic = np.maximum(reference**2 + holdout**2 - 2.0 * correlation * reference * holdout, 0.0)
+    return float(np.sqrt(sampling**2 + systematic))
 
 
 def empty_reference_uplifts() -> pd.DataFrame:
@@ -608,10 +619,14 @@ class PowerModelMethod:
     :param holdout_max_blocks: the most windows of the before period a prepost estimate holds out in
         turn (:func:`holdout_windows`), refitting the model on the rest and reading each window as if
         it were the after period. Their spread beyond their own sampling sigma (:func:`holdout_excess`)
-        is ``sigma_holdout``, joined in quadrature to the headline sigma and to each measured bin's;
+        is ``sigma_holdout``, joined to the headline sigma and to each measured bin's
+        (see ``systematic_correlation``);
         the uncertainty row gains :data:`HOLDOUT_COLUMNS`. A window or remainder under the usable-hours
         floor is skipped, and ``sigma_holdout`` is NaN when none is left. Costs one model fit per
         window; ``0`` turns it off. A toggle estimate holds nothing out
+    :param systematic_correlation: the correlation taken between the reference correction's error and
+        the held-out before period's error when ``sigma_reference`` and ``sigma_holdout`` are joined
+        (:func:`combined_sigma`); ``0`` joins them in quadrature
     :param record_reversal: also fit the reverse direction of a prepost estimate and record it, without
         changing the headline: the ``uncertainty_diagnostics`` row gains ``uplift_forward``,
         ``uplift_reverse`` and ``sigma_reverse`` (the reverse ratio's block bootstrap over the before
@@ -668,6 +683,7 @@ class PowerModelMethod:
     report_reference_uplifts: bool = True
     headline_estimator: HeadlineEstimator = "reference_corrected"
     holdout_max_blocks: int = _DEFAULT_HOLDOUT_MAX_BLOCKS
+    systematic_correlation: float = _DEFAULT_SYSTEMATIC_CORRELATION
     record_reversal: bool = False
     write_diagnostics: bool = True
     row_dump_dir: Path | None = None
@@ -828,13 +844,18 @@ class PowerModelMethod:
         reference_uplifts = (
             self.reference_uplifts(mi, power_free=power_free, screen=screen) if self.report_reference_uplifts else None
         )
-        uplift, sigma, correction = self._reference_corrected(
+        uplift, _, correction = self._reference_corrected(
             mi, forward=uplift, sigma_sampling=summary["sigma"], reference_uplifts=reference_uplifts
         )
         holdout = self._holdout_sigma(
             mi, features=features, y=y_arr, baseline_sel=baseline_sel, upgraded_sel=upgraded_sel, index=index
         )
-        sigma = float(np.hypot(sigma, holdout.get("sigma_holdout", 0.0)))
+        sigma = combined_sigma(
+            summary["sigma"],
+            reference=correction.get("sigma_reference", 0.0),
+            holdout=holdout.get("sigma_holdout", 0.0),
+            correlation=self.systematic_correlation,
+        )
 
         # A clone that estimates one reference during screening or reporting writes nothing:
         # out_dir=None does not suppress diagnostics, it makes a temp directory per run.
@@ -898,8 +919,11 @@ class PowerModelMethod:
                     upgraded_sel=upgraded_sel,
                     fit=fit,
                     overall_ratio=uplift,
-                    level_sigma=float(
-                        np.hypot(correction.get("sigma_reference", 0.0), holdout.get("sigma_holdout", 0.0))
+                    level_sigma=combined_sigma(
+                        0.0,
+                        reference=correction.get("sigma_reference", 0.0),
+                        holdout=holdout.get("sigma_holdout", 0.0),
+                        correlation=self.systematic_correlation,
                     ),
                     index=index,
                     timebase=timebase,

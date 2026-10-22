@@ -617,7 +617,17 @@ An uncertainty is reported for the headline uplift of step 13 and for each measu
 uplift distributions of step 15. It has three components, reported apart: a sampling component, the
 uncertainty of the reference correction of step 13 option C, and a systematic component for the
 error that remains when the relation between the subject turbine and its references changes within the
-campaign. They combine in quadrature.
+campaign. The sampling component is independent of the other two, but the other two are not
+independent of each other: the correction removes the error the subject turbine shares with its
+references, and the systematic component measures that same kind of error. They combine as
+
+$$\sigma^2 = \sigma_{\text{sampling}}^2 + \sigma_{\text{reference}}^2 + \sigma_{\text{systematic}}^2
+- 2\rho\,\sigma_{\text{reference}}\,\sigma_{\text{systematic}},$$
+
+with $\rho = 0.5$ by default and the last three terms floored at zero together. Re-scored on run 7 of the
+campaign matrix, $\rho = 0$ (plain quadrature) covered 82 % of the errors within one sigma, $\rho = 0.5$
+covered 76 % (95 % within two sigma, as a normal error would), and $\rho = 1$ covered 64 %. A sigma a
+little too large is preferred to one too small.
 
 The sampling component is a circular block bootstrap with the model of step 12 fixed. The after
 period's records of the subject turbine, each with its measured and its counterfactual power, are
@@ -635,8 +645,8 @@ The uncertainty of the reference correction is the standard deviation of the kep
 $\ln(1 + U_i)$ over $\sqrt{K}$, in quadrature with half the size of their mean, scaled to the uplift:
 a large correction means the model extrapolated poorly between the periods, and the test turbine's
 error then follows its references' less closely. With a single kept reference it is not known and
-neither is the sigma. It is added in quadrature to the headline's sampling sigma and to each measured
-bin's, since the correction moves every bin by the same factor. The sampling sigma alone is recorded
+neither is the sigma. It is added to the headline's sampling sigma and to each measured bin's, as
+above, since the correction moves every bin by the same factor. The sampling sigma alone is recorded
 too.
 
 The systematic component is measured inside the before period. Windows as long as the after period,
@@ -648,7 +658,7 @@ With no upgrade in the before period each reading is an error. Its spread is the
 square less their own sampling sigmas (the same bootstrap, per window) in quadrature, floored at
 zero, and multiplied by the one-sigma quantile of Student's $t$ with as many degrees of freedom as
 windows, since a few windows estimate it poorly; with no window left it is not known and neither is
-the sigma. It is added to the headline and to each measured bin. It is a sigma only: the readings' mean is not used to correct the uplift. Each window costs one
+the sigma. It is added to the headline and to each measured bin, as above. It is a sigma only: the readings' mean is not used to correct the uplift. Each window costs one
 model fit. A toggle test has no systematic component, since its periods interleave.
 
 wind-up v0 instead took the largest of its statistical, bootstrap and reversibility sigmas and
@@ -746,7 +756,8 @@ real campaigns where the reference turbines provide truth of zero. The target is
   or the season of the upgrade;
 - iv. the reported sigma covers the error at the rate it claims: about 68 % of the errors against
   truth, headline and per bin, fall within one sigma, and the reference uplifts read 0 % within
-  their sigmas at the same rate.
+  their sigmas at the same rate. A sigma a little too large passes (up to 90 % within one sigma);
+  one too small fails.
 
 The targets are expected to pass only where the method is meant to be used: at least 12 months of
 before data, and at least 6 months of after data, ideally fewer. The campaign matrix also runs shorter
@@ -761,7 +772,11 @@ The options above are decided by these criteria, one at a time rather than in ev
    failed the slope of ii and over-corrects short after periods. Option C replaced option A as the
    default: re-scored on run 6's records it passed i and ii, and iii except a marginal dependence on
    the after-period length (−0.18 pp at 3 months, z −2.0), over the whole matrix rather than the
-   domain below. Run 7 judges it as built, with the sigma of step 14;
+   domain below. Run 7 judged it as built, in the domain: i, ii and iii pass except the season of
+   the upgrade (spring +0.35 pp, z 2.8), which that matrix could not tell apart from the campaign,
+   since each campaign's works fall in one season. A season study runs every campaign in all four
+   seasons to judge it within a campaign. The sigma of step 14 over-covered with its components in
+   quadrature (82 %), which set $\rho$;
 3. step 11 iv option B was tried on top of the forward uplift and not adopted (CF33): no shift between
    the periods predicted a reading's error, and every trim cost precision;
 4. step 6 i option B is added last;

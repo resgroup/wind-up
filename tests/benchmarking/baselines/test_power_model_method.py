@@ -31,6 +31,7 @@ from benchmarking.baselines.power_model.method import (
     _combine_uplift,
     _implied_shrinkage,
     _reference_input,
+    combined_sigma,
     headline_detail,
     holdout_excess,
     holdout_windows,
@@ -232,7 +233,9 @@ class TestReferenceCorrectedHeadline:
         row = corrected.uncertainty_diagnostics.iloc[0]
         assert row["sigma_sampling"] == pytest.approx(forward.uncertainty_diagnostics.iloc[0]["sigma_block_24h"])
         assert row["sigma_sampling"] == pytest.approx(row["sigma_block_24h"])
-        expected = np.sqrt(row["sigma_sampling"] ** 2 + row["sigma_reference"] ** 2 + row["sigma_holdout"] ** 2)
+        expected = combined_sigma(
+            row["sigma_sampling"], reference=row["sigma_reference"], holdout=row["sigma_holdout"], correlation=0.5
+        )
         assert corrected.sigma_overall == pytest.approx(expected)
         assert row["sigma_reference"] > 0
 
@@ -326,14 +329,26 @@ class TestHoldoutSigma:
     def test_holds_out_up_to_twelve_blocks_by_default(self) -> None:
         assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).holdout_max_blocks == 12
 
-    def test_joins_the_sampling_and_correction_sigmas_in_quadrature(self) -> None:
+    def test_takes_the_holdout_and_correction_errors_as_half_correlated_by_default(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).systematic_correlation == 0.5
+
+    def test_uncorrelated_errors_join_in_quadrature(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        out = self._method(systematic_correlation=0.0).estimate(mi)
+        row = out.uncertainty_diagnostics.iloc[0]
+        expected = np.sqrt(row["sigma_sampling"] ** 2 + row["sigma_reference"] ** 2 + row["sigma_holdout"] ** 2)
+        assert out.sigma_overall == pytest.approx(expected)
+
+    def test_joins_the_holdout_and_correction_sigmas_as_correlated_errors(self) -> None:
         mi, _ = _screen_case(step=0.0)
         out = self._method().estimate(mi)
         row = out.uncertainty_diagnostics.iloc[0]
         assert row["n_holdout_blocks"] == 2  # a fortnight before, held out a week at a time
         assert np.isfinite(row["sigma_holdout"])
         assert row["sigma_holdout"] >= 0
-        expected = np.sqrt(row["sigma_sampling"] ** 2 + row["sigma_reference"] ** 2 + row["sigma_holdout"] ** 2)
+        expected = combined_sigma(
+            row["sigma_sampling"], reference=row["sigma_reference"], holdout=row["sigma_holdout"], correlation=0.5
+        )
         assert out.sigma_overall == pytest.approx(expected)
 
     def test_never_moves_the_headline(self) -> None:
@@ -2707,3 +2722,11 @@ class TestHeadlineDetail:
         mi, _ = _screen_case(step=0.0)
         out = _screen_method(headline_estimator="forward", holdout_max_blocks=0).estimate(mi)
         assert headline_detail(out) == {}
+
+
+def test_combined_sigma_subtracts_the_shared_part_of_the_systematic_errors() -> None:
+    assert combined_sigma(0.3, reference=0.4, holdout=0.0, correlation=0.5) == pytest.approx(0.5)
+    assert combined_sigma(0.0, reference=0.3, holdout=0.4, correlation=0.0) == pytest.approx(0.5)
+    assert combined_sigma(0.0, reference=0.3, holdout=0.4, correlation=0.5) == pytest.approx(np.sqrt(0.25 - 0.12))
+    assert combined_sigma(0.1, reference=0.4, holdout=0.4, correlation=1.0) == pytest.approx(0.1)
+    assert combined_sigma(0.1, reference=0.1, holdout=0.4, correlation=1.0) == pytest.approx(np.hypot(0.1, 0.3))
