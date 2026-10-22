@@ -203,7 +203,7 @@ def test_the_small_and_big_sizes() -> None:
     assert sum(c.arm == "main" for c in big) == sum(c.arm == "small" for c in big)
     assert "hot" not in {c.site for c in small}
     assert {c.arm for c in small} == {"main", "excl", "small", "real"}
-    assert (SIZES["small"].workers, SIZES["big"].workers) == (3, 12)
+    assert (SIZES["small"].workers, SIZES["big"].workers) == (3, 10)
     assert {c.cell_id for c in small} <= {c.cell_id for c in matrix_cells(MatrixSettings())}
 
 

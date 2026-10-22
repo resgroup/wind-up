@@ -178,7 +178,7 @@ SIZES: dict[str, StudySize] = {
     # before a run.
     "big": StudySize(
         MatrixSettings(seeds={"hot": 6, "pen": 7, "kel": 6}, ks=(3, 4), exclusion_arms=()),
-        workers=12,
+        workers=10,
     ),
     # The big matrix's campaigns in the validation domain, each with its works in all four seasons, so
     # the season of the upgrade can be judged within a campaign; no real campaign.
@@ -193,7 +193,7 @@ SIZES: dict[str, StudySize] = {
             real=(),
             season_shifts=(0, 3, 6, 9),
         ),
-        workers=12,
+        workers=10,
     ),
 }
 
