@@ -288,12 +288,14 @@ def references_table(records: list[dict[str, Any]], turbines: pd.DataFrame) -> p
 
 
 def linearity_table(turbines: pd.DataFrame) -> pd.DataFrame:
-    """Target ii: the slope and intercept of measured against true uplift, per campaign turbine, then pooled."""
+    """Target ii: the slope and intercept of measured against true uplift, per cell turbine, then pooled."""
     synthetic = turbines[turbines["arm"] != "real"]
     rows = []
     for estimator in ESTIMATORS:
         fits = []
-        for key, group in synthetic.groupby(["site", "campaign", "arm", "k", "post_months", "turbine"]):
+        # One line per cell's data: the multipliers alone vary within a group.
+        keys = ["site", "campaign", "arm", "k", "pre_months", "post_months", "season_shift", "turbine"]
+        for key, group in synthetic.groupby(keys, dropna=False):
             scale, bias = line_fit(group["truth"], group[estimator])
             fits.append({"site": key[0], "campaign": key[1], "scale": scale, "bias": bias})
         frame = pd.DataFrame(fits, columns=["site", "campaign", "scale", "bias"])

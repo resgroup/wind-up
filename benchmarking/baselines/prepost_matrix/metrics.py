@@ -63,7 +63,7 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
     for record in records:
         if record.get("status") != "ok":
             continue
-        keys = {k: record[k] for k in _CELL_KEYS}
+        keys = {**{k: record[k] for k in _CELL_KEYS}, "season_shift": record.get("season_shift", 0)}
         turbines.extend({**keys, **row} for row in record["turbines"])
         farm.append({**keys, **record["farm"]})
         references.extend({**keys, **row} for row in record["references"])
@@ -266,7 +266,10 @@ def line_fit(truth: Sequence[float] | np.ndarray, estimate: Sequence[float] | np
 def _linearity(turbines: pd.DataFrame) -> pd.DataFrame:
     estimates = {"line": "estimate", **({"rev_line": "reversal"} if "reversal" in turbines.columns else {})}
     fits = []
-    for key, group in turbines.groupby(["arm", "site", "seed_index", "k", "pre_months", "post_months", "turbine"]):
+    if "season_shift" not in turbines.columns:
+        turbines = turbines.assign(season_shift=0)
+    cell = ["arm", "site", "seed_index", "k", "pre_months", "post_months", "season_shift", "turbine"]
+    for key, group in turbines.groupby(cell, dropna=False):
         fit: dict[str, Any] = dict(
             zip(["arm", "site", "seed_index", "k", "pre_months", "post_months"], key[:6], strict=True)
         )

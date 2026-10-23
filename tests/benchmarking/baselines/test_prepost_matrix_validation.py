@@ -179,6 +179,22 @@ def test_the_tables_judge_each_target() -> None:
     assert set(tables["open_screen"]["measure"]) == {"correlation_margin", "hours_fraction"}
 
 
+def test_the_line_is_fitted_within_one_cells_data_not_across_before_lengths_or_seasons() -> None:
+    """Two before lengths whose errors differ in level but not in slope must still read slope 1."""
+    records = []
+    for record in [r for r in _records() if r["multiplier"] != -1]:  # 0 and +1, as the season study runs
+        for pre, scale, offset in ((12, 1.0, 0.0), (24, 1.25, 0.01)):
+            shifted = json.loads(json.dumps(record))
+            truth = record["turbines"][0]["truth"] * scale
+            shifted["pre_months"] = pre
+            shifted["turbines"][0].update(
+                {"truth": truth, "estimate": truth + offset, "uplift_forward": truth + offset}
+            )
+            records.append(shifted)
+    line = validation_tables(records)["ii_linearity"].set_index(["estimator", "site"])
+    assert line.loc[("headline", "all"), "slope"] == pytest.approx(1.0)
+
+
 def test_the_shape_table_scores_each_axis_bin_against_truth_and_the_flat_headline() -> None:
     shape = validation_tables(_records())["v_shape"].set_index(["condition", "condition_bin"])
     row = shape.loc[("power", "(0, 1]")]
