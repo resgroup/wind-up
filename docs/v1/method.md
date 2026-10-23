@@ -698,6 +698,12 @@ The reference uplifts are used to correct the test turbine uplift (step 13 optio
 reference uplift reported here is of the references' own, uncorrected uplifts: it measures the bias the
 correction removes, and is no longer a check that the corrected test turbine uplift is unbiased.
 
+> **TODO (combined uplift distributions).** Combine the test turbines' uplift distributions of step 15
+> into whole-site distributions, bin by bin on each axis, weighted by each turbine's counterfactual energy
+> in the bin, so the whole-site results carry the uplift against free-stream wind speed a
+> pre-construction model needs. How the bins' sigmas combine is open: the turbines share references,
+> so their errors are partly correlated; taking them as fully correlated is the cautious choice.
+
 ### 17. Estimate the annual energy production uplift
 
 For most upgrades the uplift against wind speed (step 15) combined with a long-term wind speed
