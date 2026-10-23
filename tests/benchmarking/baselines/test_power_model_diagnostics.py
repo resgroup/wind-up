@@ -12,186 +12,81 @@ import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
 from benchmarking.baselines.power_model.diagnostics import (
     DiagnosticData,
-    _as_percent_of_power,
-    _binned_stats,
-    _condition_diagnostic_figure,
+    _energy_timeseries_figure,
+    _feature_overview_figure,
+    _histogram_figure,
     _histogram_groups,
-    _plot_residual_binned,
-    _set_ylim_from_inliers,
+    _importance_figure,
+    _robust_bins,
     log_top_features,
-    plot_conditional_diagnostics,
+    plot_uplift_shape,
 )
-from benchmarking.diagnostics import stages
+from benchmarking.baselines.power_model.shape import ShapeResult
+from benchmarking.diagnostics.features import category_shares_figure, site_feature_figure, write_feature_outputs
+from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
 
-def _toy_per_bin() -> pd.DataFrame:
-    """A per-bin conditional frame spanning ws, ti and power with a covered/imputed mix."""
-    rows = []
-    specs = {
-        "ws": ["(4.0, 6.0]", "(6.0, 8.0]", "(8.0, 10.0]"],
-        "ti": ["(0.05, 0.1]", "(0.1, 0.15]"],
-        "power": ["(230.0, 690.0]", "(690.0, 1150.0]"],
+def test_plot_uplift_shape_draws_each_axis_each_subsets_family_and_the_drift(tmp_path: Path) -> None:
+    frame = pd.DataFrame(
+        {
+            "condition": ["predicted_power"] * 2 + ["direction"] * 2,
+            "condition_bin": ["(0.0, 500.0]", "(500.0, 1000.0]", "(0.0, 30.0]", "(30.0, 60.0]"],
+            "p50_uplift": [0.03, 0.01, 0.02, 0.02],
+            "sigma_uplift": [0.01, 0.01, 0.01, np.nan],
+            "hours": [100.0, 80.0, 150.0, 5.0],
+            "thin": [False, False, False, True],
+        }
+    )
+    subsets = pd.DataFrame(
+        {
+            "axis": "waked",
+            "subset": ["(0.5, 1.5]"] * 2,
+            "n_bins": 2,
+            "power_bin": ["(0.0, 500.0]", "(500.0, 1000.0]"],
+            "p50_uplift": [0.05, 0.0],
+            "sigma_sampling": [0.01, 0.01],
+            "overall_uplift": [0.03, 0.01],
+            "overall_sigma": [0.01, 0.01],
+            "z": [1.4, -0.7],
+            "hours": [50.0, 40.0],
+            "too_thin": False,
+            "flagged": False,
+        }
+    )
+    drift = pd.DataFrame(
+        {
+            "reference": ["R1", "R1"],
+            "month": ["2020-01", "2020-02"],
+            "ratio": [1.0, 1.05],
+            "spread": 0.05,
+            "flagged": True,
+        }
+    )
+    shape = ShapeResult(frame=frame, subsets=subsets, labels=pd.DataFrame())
+    plot_uplift_shape(tmp_path, shape=shape, drift=drift, test_wtg="T07")
+    names = {p.name for p in tmp_path.iterdir()}
+    assert names == {
+        "uplift_predicted_power.png",
+        "uplift_direction.png",
+        "uplift_subsets_waked.png",
+        "reference_wind_speed_drift.png",
     }
-    for cond, bins in specs.items():
-        for i, b in enumerate(bins):
-            rows.append(
-                {
-                    "condition": cond,
-                    "condition_bin": b,
-                    "r_fwd": 0.05 + 0.01 * i,
-                    "r_rev": -0.04 + 0.01 * i,
-                    "implied_shrinkage": 0.98 + 0.01 * i,
-                    "p50_uplift": 0.05 + 0.005 * i,
-                    "covered": i % 2 == 0,  # alternate covered / imputed
-                }
-            )
-    return pd.DataFrame(rows)
-
-
-def test_plot_conditional_diagnostics_writes_a_figure_per_condition(tmp_path: Path) -> None:
-    plot_conditional_diagnostics(tmp_path, _toy_per_bin(), test_wtg="T07")
-    for cond in ("ws", "ti", "power"):
-        assert (tmp_path / f"conditional_{cond}.png").exists()
-
-
-def test_condition_diagnostic_figure_has_four_panels() -> None:
-    sub = _toy_per_bin().query("condition == 'power'")
-    fig = _condition_diagnostic_figure(sub, condition="power", test_wtg="T07")
-    assert len(fig.axes) == 4
-    plt.close(fig)
-
-
-def test_condition_diagnostic_figure_shades_covered_and_imputed_distinctly() -> None:
-    # the uplift panel must visually separate measured (covered) bins from imputed ones
-    sub = _toy_per_bin().query("condition == 'ws'")  # covered = [True, False, True]
-    fig = _condition_diagnostic_figure(sub, condition="ws", test_wtg="T07")
-    uplift_ax = fig.axes[2]  # panels: fwd, rev, uplift, shrinkage
-    facecolors = {tuple(patch.get_facecolor()) for patch in uplift_ax.patches}
-    assert len(facecolors) >= 2  # covered and imputed bins are not the same colour
-    plt.close(fig)
 
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
-def test_binned_stats_mean_sd_and_count() -> None:
-    x = np.array([0.5, 1.5, 1.6, 1.7, 10.0])  # last value falls outside the edges
-    y = np.array([1.0, 10.0, 12.0, 14.0, 999.0])
-    edges = np.array([0.0, 1.0, 2.0])
-    centers, mean, sd, count = _binned_stats(x, y, edges)
-    assert list(centers) == [0.5, 1.5]
-    # bin [0,1): a single point -> below _MIN_BIN_COUNT, so NaN mean/SD but count recorded
-    assert count[0] == 1
-    assert np.isnan(mean[0])
-    assert np.isnan(sd[0])
-    # bin [1,2): three points {10,12,14} -> mean 12, sample SD 2
-    assert count[1] == 3
-    assert mean[1] == 12.0
-    assert sd[1] == 2.0
-
-
-def test_binned_stats_all_nan_input_is_safe() -> None:
-    edges = np.array([0.0, 1.0, 2.0])
-    centers, mean, sd, count = _binned_stats(np.full(3, np.nan), np.arange(3.0), edges)
-    assert len(centers) == 2
-    assert np.isnan(mean).all()
-    assert np.isnan(sd).all()
-    assert (count == 0).all()
-
-
-def _diag_data(*, with_conditions: bool) -> DiagnosticData:
-    """A minimal DiagnosticData carrying only what the residual-binned plot reads."""
-    rng = np.random.default_rng(0)
-    n = 400
-    y_base = rng.uniform(0, 2000, n)
-    pred_base = 0.7 * y_base + 300  # deliberate shrinkage: slope < 1
-    y_up = rng.uniform(0, 2000, n)
-    pred_up = 0.7 * y_up + 300
-    cond_up = cond_base = None
-    if with_conditions:
-        cond_base = pd.DataFrame({"ws": rng.uniform(0, 25, n), "ti": rng.uniform(0, 0.4, n)})
-        cond_up = pd.DataFrame({"ws": rng.uniform(0, 25, n), "ti": rng.uniform(0, 0.4, n)})
-    return DiagnosticData(
-        test_wtg="T07",
-        mode="prepost",
-        index=pd.DatetimeIndex([]),
-        treated_all=np.array([]),
-        selected_all=np.array([]),
-        y_all=np.array([]),
-        timebase=pd.Timedelta(minutes=10),
-        upgraded_ts=pd.DatetimeIndex([]),
-        y_upgraded=y_up,
-        pred_upgraded=pred_up,
-        y_baseline_valid=y_base,
-        pred_baseline_valid=pred_base,
-        feature_names=[],
-        feature_values=pd.DataFrame(),
-        y_selected=np.array([]),
-        outcome_model=None,
-        overall_uplift=0.0,
-        sum_actual_kw=0.0,
-        sum_counterfactual_kw=0.0,
-        n_refs=3,
-        era5_lag_rows=None,
-        era5_corr=None,
-        era5_sweep=None,
-        cond_upgraded=cond_up,
-        cond_baseline_valid=cond_base,
-    )
-
-
-def test_as_percent_of_power_divides_per_bin_and_drops_nonpositive() -> None:
-    out = _as_percent_of_power(np.array([10.0, 5.0, -3.0]), np.array([100.0, 0.0, 60.0]))
-    assert out[0] == 10.0  # 10 kW of 100 kW
-    assert np.isnan(out[1])  # mean power 0 -> dropped
-    assert out[2] == -5.0  # -3 kW of 60 kW
-
-
-def test_set_ylim_from_inliers_ignores_out_of_range_points() -> None:
-    _, ax = plt.subplots()
-    # inliers within +/-30 are {-10, 20}; the -330 outlier must not stretch the limits
-    _set_ylim_from_inliers(ax, [np.array([-10.0, 20.0, -330.0, np.nan])])
-    lo, hi = ax.get_ylim()
-    assert lo < -10.0  # a small margin below the min inlier
-    assert lo > -20.0  # but nowhere near the -330 outlier
-    assert 20.0 < hi < 30.0
-    plt.close()
-
-
-def test_set_ylim_from_inliers_noop_when_no_inliers() -> None:
-    _, ax = plt.subplots()
-    before = ax.get_ylim()
-    _set_ylim_from_inliers(ax, [np.array([100.0, -330.0])])  # all outside +/-30
-    assert ax.get_ylim() == before
-    plt.close()
-
-
-def test_plot_residual_binned_writes_both_png_with_conditions(tmp_path: Path) -> None:
-    model_dir = tmp_path / stages.UPLIFT_MODELLING
-    model_dir.mkdir()
-    _plot_residual_binned(model_dir, _diag_data(with_conditions=True))
-    assert (model_dir / "residual_binned.png").exists()
-    assert (model_dir / "residual_binned_pct.png").exists()
-
-
-def test_plot_residual_binned_writes_png_without_conditions(tmp_path: Path) -> None:
-    # No ws/TI columns configured: the plot still renders the power-axis panels.
-    model_dir = tmp_path / stages.UPLIFT_MODELLING
-    model_dir.mkdir()
-    _plot_residual_binned(model_dir, _diag_data(with_conditions=False))
-    assert (model_dir / "residual_binned.png").exists()
-    assert (model_dir / "residual_binned_pct.png").exists()
-
-
 class TestFeatureHistogramFolders:
-    """One signal per folder, so a farm's worth of nacelle positions does not bury the singletons."""
+    """A signal carried by several turbines gets one folder; everything else stays at the top level."""
 
     FEATURES: ClassVar[list[str]] = [
         "wtc_ActPower_mean @ R1",
         "wtc_ActPower_mean @ R2",
         "northed_wtc_NacelPos_mean_sin @ R1",
         "northed_wtc_NacelPos_mean_cos @ R1",
+        "northed_wtc_NacelPos_mean_sin @ R2",
+        "northed_wtc_NacelPos_mean_cos @ R2",
         "cloud_cover",
         "wind_direction_100m_sin",
         "wind_direction_100m_cos",
@@ -214,9 +109,34 @@ class TestFeatureHistogramFolders:
     def test_a_lone_plot_stays_at_the_top_level(self, tmp_path: Path) -> None:
         assert self._placed(tmp_path)["cloud_cover"] == tmp_path.name
 
-    def test_a_reanalysis_field_groups_with_its_companions(self, tmp_path: Path) -> None:
+    def test_a_reanalysis_field_and_its_companions_stay_at_the_top_level(self, tmp_path: Path) -> None:
         placed = self._placed(tmp_path)
-        assert placed["wind_direction_100m"] == placed["wind_direction_100m_sin"] == "wind_direction_100m"
+        assert placed["wind_direction_100m"] == placed["wind_direction_100m_sin"] == tmp_path.name
+
+
+class TestFeatureDistributionFigures:
+    def test_a_site_feature_histogram_names_its_units(self) -> None:
+        vals = np.linspace(-10.0, 50.0, 50)
+        fig = _histogram_figure(vals, treated=np.arange(50) >= 25, label="solar_elevation", test_wtg="T1")
+        ax = fig.axes[0]
+        assert ax.get_xlabel() == "solar_elevation [°]"
+        assert "solar_elevation" in ax.get_title()
+        plt.close(fig)
+
+    def test_a_categorical_feature_is_labelled_by_its_category_names(self) -> None:
+        values = pd.Series(["normal"] * 6 + ["T03 not waking"] * 3 + [None], dtype="category")
+        fig = category_shares_figure(values, segments={"baseline": np.arange(10) < 5}, title="T1")
+        labels = [t.get_text() for t in fig.axes[0].get_yticklabels()]
+        assert labels == ["normal", "T03 not waking", "(missing)"]
+        plt.close(fig)
+
+    def test_rare_categories_are_pooled(self) -> None:
+        values = pd.Series([f"c{i:02d}" for i in range(30)] * 2, dtype="category")
+        fig = category_shares_figure(values, segments={"baseline": np.arange(60) < 30}, title="T1")
+        labels = [t.get_text() for t in fig.axes[0].get_yticklabels()]
+        assert len(labels) == 20
+        assert labels[-1] == "11 other categories"
+        plt.close(fig)
 
 
 class TestWhatTheFeatureLogSays:
@@ -253,3 +173,106 @@ class TestWhatTheFeatureLogSays:
                 self._importance("northed_wtc_NacelPos_mean_sin @ R1"), active_power_col="wtc_ActPower_mean"
             )
         assert [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_the_step_6_outputs_cover_every_site_feature_and_turbine(tmp_path: Path) -> None:
+    idx = pd.date_range("2020-01-01", periods=200, freq="6h", tz="UTC")
+    scada = pd.concat(
+        pd.DataFrame(
+            {"turbine": t, WAKING_SCENARIO_COL: np.where(np.arange(200) % 7 == 0, "R2 not waking", "normal")}, index=idx
+        )
+        for t in ("T1", "T2")
+    )
+    site = pd.DataFrame({"solar_elevation": np.linspace(-10, 50, 200), "other": 1.5}, index=idx)
+    write_feature_outputs(scada, site_features=site, turbine_col="turbine", out_dir=tmp_path)
+    assert sorted(p.name for p in (tmp_path / "site").iterdir()) == ["other.png", "solar_elevation.png"]
+    assert sorted(p.name for p in (tmp_path / "waking_scenarios").iterdir()) == [
+        "waking_scenario_T1.png",
+        "waking_scenario_T2.png",
+    ]
+    table = pd.read_csv(tmp_path / "site_features.csv")
+    assert list(table["feature"]) == ["solar_elevation", "other"]
+    assert list(table["unit"].fillna("")) == ["°", ""]
+
+
+def test_a_site_feature_histogram_shows_every_value_and_piles_nothing_into_its_end_bins() -> None:
+    idx = pd.date_range("2020-01-01", periods=10_000, freq="1h", tz="UTC")
+    values = pd.Series(np.random.default_rng(0).normal(0.2, 0.05, len(idx)), index=idx)
+    values.iloc[:5] = 1.0
+    fig = site_feature_figure(values, label="solar_elevation")
+    hist_ax = fig.axes[0]
+    low, high = hist_ax.get_xlim()
+    assert low < values.min()
+    assert high > 1.0
+    heights = np.array([patch.get_height() for patch in hist_ax.patches])
+    assert 0 < heights[-1] < heights.max() / 100
+    assert "max 1" in fig.texts[0].get_text()
+    plt.close(fig)
+
+
+def _upgraded_data(days: int = 70) -> DiagnosticData:
+    """DiagnosticData with ``days`` of 10-minute upgraded records, actual 2% above the counterfactual."""
+    index = pd.date_range("2021-01-04", periods=days * 144, freq="10min", tz="UTC")
+    pred = np.full(len(index), 1000.0)
+    return DiagnosticData(
+        test_wtg="T07",
+        mode="prepost",
+        index=index,
+        treated_all=np.ones(len(index), dtype=bool),
+        selected_all=np.ones(len(index), dtype=bool),
+        y_all=1.02 * pred,
+        timebase=pd.Timedelta(minutes=10),
+        upgraded_ts=index,
+        y_upgraded=1.02 * pred,
+        pred_upgraded=pred,
+        y_baseline_valid=np.array([]),
+        pred_baseline_valid=np.array([]),
+        feature_names=[],
+        feature_values=pd.DataFrame(),
+        y_selected=np.array([]),
+        outcome_model=None,
+        overall_uplift=0.02,
+        sum_actual_kw=0.0,
+        sum_counterfactual_kw=0.0,
+        n_refs=3,
+    )
+
+
+class TestTheEnergyTimeseries:
+    def test_it_is_weekly_with_the_weekly_uplift_below(self) -> None:
+        fig = _energy_timeseries_figure(_upgraded_data(days=70))
+        top, bottom = fig.axes
+        assert len(top.lines[0].get_xdata()) == 10
+        assert "weekly" in top.get_ylabel()
+        assert np.allclose(np.asarray(bottom.patches[0].get_height()), 2.0)
+        plt.close(fig)
+
+
+class TestTheImportancePlots:
+    IMPORTANCE = pd.DataFrame({"feature": ["a @ T1", "b @ T2", "c @ ERA5"], "gain": [1e11, 1e8, 1e3]})
+
+    def test_feature_importance_is_on_a_log_scale_with_a_plain_title(self) -> None:
+        fig = _importance_figure(self.IMPORTANCE, test_wtg="T13")
+        assert fig.axes[0].get_xscale() == "log"
+        assert "expect" not in fig.axes[0].get_title()
+        plt.close(fig)
+
+    def test_features_left_out_of_the_model_are_named(self) -> None:
+        fig = _importance_figure(self.IMPORTANCE, test_wtg="T13", left_out=["waking_scenario @ T04"])
+        notes = [t.get_text() for t in fig.axes[0].texts]
+        assert notes == ["left out, one value in every record used:\nwaking_scenario @ T04"]
+        assert "left out" not in fig.axes[0].get_title()
+        plt.close(fig)
+
+    def test_the_feature_overview_is_on_a_log_scale(self) -> None:
+        catalogue = self.IMPORTANCE.assign(coverage_pct=100.0)
+        fig = _feature_overview_figure(catalogue)
+        assert fig.axes[0].get_xscale() == "log"
+        plt.close(fig)
+
+
+def test_histogram_bins_span_every_value() -> None:
+    values = np.array([*np.linspace(0.0, 1.0, 1000), 50.0])
+    edges = _robust_bins(values)
+    assert edges[0] <= 0.0
+    assert edges[-1] >= 50.0

@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from benchmarking.harness.campaign import campaign_windows
+from benchmarking.harness.conditions import label_column
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.replicates import StudyConfig, build_replicates
 from benchmarking.harness.scoring import _merge_diagnostics, score_one, score_output, score_study, truth_mask
@@ -393,3 +394,31 @@ def test_score_output_records_the_wall_time_it_is_given() -> None:
         wall_time_s=1.25,
     )
     assert rows[0]["wall_time_s"] == 1.25
+
+
+def test_truth_for_an_axis_is_computed_on_the_methods_own_labels() -> None:
+    """A condition whose labels the method returns in ``labeled_rows`` is scored on those labels."""
+    base = _base_scada()
+    study = _study(n_replicates=1)
+    replicate = build_replicates(base, profile=PROFILE, study=study)[0]
+    window = campaign_windows(
+        replicate.treatment_start,
+        min_pre_months=study.min_pre_months,
+        campaign_months=study.campaign_months,
+        campaign_weeks=study.campaign_weeks,
+        data_start=base.index.min(),
+        data_end=base.index.max(),
+    )[0]
+    mask = truth_mask(replicate, window)
+    truth = replicate.true_uplift(mask=mask).overall
+    synthetic = replicate.synthetic_df
+    test_index = synthetic.loc[synthetic[HOT_COLUMNS.turbine] == replicate.test_wtg].index
+    labels = pd.DataFrame({label_column("direction"): 75.0}, index=test_index)
+    by_condition = pd.DataFrame(
+        {"condition": "direction", "condition_bin": ["(60.0, 90.0]", "(90.0, 120.0]"], "p50_uplift": [0.01, 0.02]}
+    )
+    output = MethodOutput(p50_overall=0.02, p50_by_condition=by_condition, labeled_rows=labels)
+    rows = score_output(output, method_name="replay", replicate=replicate, window=window, truth=truth, mask=mask)
+    by_bin = {r["condition_bin"]: r["truth"] for r in rows if r["condition"] == "direction"}
+    assert by_bin["(60.0, 90.0]"] == pytest.approx(truth)
+    assert np.isnan(by_bin["(90.0, 120.0]"])

@@ -48,6 +48,8 @@ class ColumnSchema:
     :param reactive_power: mean reactive power
     :param nacelle_position: nacelle/yaw position (wind-direction proxy; diagnostics only)
     :param ambient_temp: ambient temperature
+    :param power_setpoint: the power setpoint at the end of each record; the synthetic upgrades taper
+        and cap their power change at the higher of a record's start and end setpoints
     :param exclude_row: names a caller-supplied **boolean** column marking rows to drop from row
         selection (e.g. special operating modes the treatment cannot affect). Optional and off by
         default; when set, a method that honours it excludes the flagged timestamps alongside the
@@ -72,6 +74,7 @@ class ColumnSchema:
     reactive_power: str | None = None
     nacelle_position: str | None = None
     ambient_temp: str | None = None
+    power_setpoint: str | None = None
     exclude_row: str | None = None
     exclude_block: str | None = None
 

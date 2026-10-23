@@ -18,12 +18,16 @@ needs, so ``naive_ratio``, ``power_model`` and ``v0_binned`` all agree on which 
 Rows that are neither ``upgraded`` nor a ``training_baseline`` row (e.g. a third perturbation state,
 noise/ice rows, transition bins) are **excluded from every segment** — the "neither" case a binary
 ``treated``/``~treated`` split cannot represent.
+
+:func:`pair_within` is the toggle pairing filter of method step 11 iv: a record of one state is kept
+only when a record of the other state lies within a gap, by default one toggle cycle
+(:func:`toggle_cycle`).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -34,6 +38,72 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 _TOGGLE_COLUMNS = ("toggle_on", "toggle_off")
+
+
+class PairedRows(NamedTuple):
+    """The rows of each segment that have a row of the other segment within the pairing gap."""
+
+    baseline: npt.NDArray[np.bool_]
+    upgraded: npt.NDArray[np.bool_]
+
+
+def pair_within(
+    index: pd.DatetimeIndex,
+    *,
+    baseline: npt.NDArray[np.bool_],
+    upgraded: npt.NDArray[np.bool_],
+    max_gap: pd.Timedelta,
+) -> PairedRows:
+    """Keep each flagged row only if the other segment has a flagged row within ``max_gap``, inclusive."""
+    gap = gap_to_other_segment(index, baseline=baseline, upgraded=upgraded)
+    within = gap <= max_gap.total_seconds()
+    return PairedRows(baseline=baseline & within, upgraded=upgraded & within)
+
+
+def gap_to_other_segment(
+    index: pd.DatetimeIndex, *, baseline: npt.NDArray[np.bool_], upgraded: npt.NDArray[np.bool_]
+) -> npt.NDArray[np.float64]:
+    """Seconds from each flagged row to the nearest flagged row of the other segment; NaN if unflagged."""
+    times = index.as_unit("ns").asi8
+    gap = np.full(len(index), np.nan)
+    gap[baseline] = _nearest_gap_s(times[baseline], others=times[upgraded])
+    gap[upgraded] = _nearest_gap_s(times[upgraded], others=times[baseline])
+    return gap
+
+
+def _nearest_gap_s(times: npt.NDArray[np.int64], *, others: npt.NDArray[np.int64]) -> npt.NDArray[np.float64]:
+    if not len(others):
+        return np.full(len(times), np.inf)
+    others = np.sort(others)
+    position = np.searchsorted(others, times)
+    after = others[np.minimum(position, len(others) - 1)]
+    before = others[np.maximum(position - 1, 0)]
+    return np.minimum(np.abs(after - times), np.abs(times - before)) / 1e9
+
+
+def toggle_cycle(upgrade_timing: ToggleSchedule | pd.DataFrame, index: pd.DatetimeIndex) -> pd.Timedelta:
+    """Return the length of one on and off cycle of a toggle campaign.
+
+    A ``ToggleSchedule`` states it. For an explicit ``toggle_df`` it is twice the median length of
+    the runs of consecutive same-state rows within ``index``, each run measured from its first
+    timestamp to the start of the row after it.
+    """
+    if isinstance(upgrade_timing, ToggleSchedule):
+        return upgrade_timing.period
+    unique = pd.DatetimeIndex(pd.unique(pd.DatetimeIndex(index))).sort_values()
+    rows = resolve_toggle(upgrade_timing, unique)
+    in_campaign = rows.upgraded | rows.campaign_baseline
+    times = unique[in_campaign]
+    state = rows.upgraded[in_campaign]
+    if len(times) < 2:  # noqa: PLR2004
+        msg = "toggle_df has fewer than two on or off rows within the index, so no toggle cycle can be inferred"
+        raise ValueError(msg)
+    change = np.flatnonzero(state[1:] != state[:-1]) + 1
+    starts = np.concatenate(([0], change))
+    ends = np.concatenate((change, [len(times)]))
+    step = pd.Timedelta(np.median(np.diff(unique.to_numpy())))
+    lengths = [(times[e - 1] - times[s]) + step for s, e in zip(starts, ends, strict=True)]
+    return 2 * pd.Timedelta(np.median(np.asarray(lengths, dtype="timedelta64[ns]")))
 
 
 @dataclass(frozen=True)

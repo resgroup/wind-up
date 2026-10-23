@@ -162,3 +162,25 @@ def test_cpcore_rpm_after_tracks_power() -> None:
     core = CpCore()
     new_rpm = core.rpm_after(baseline_rpm=1392.0, baseline_power_kw=1000.0, new_power_kw=1100.0)
     assert new_rpm == pytest.approx(rpm_from_power(1100.0))
+
+
+def test_a_power_limit_shifts_the_region2_taper_to_the_limit() -> None:
+    """At 1700 kW under a 2000 kW limit the record responds as one at 2000 kW under rated."""
+    limited = power_from_cp_change(1700.0, cp_ratio=1.10, rated_power_kw=2300.0, power_limit_kw=2000.0)
+    assert limited == pytest.approx(1700.0 * (1 + 0.25 * 0.10))
+
+
+def test_a_power_limit_clips_and_freezes_records_at_it() -> None:
+    assert power_from_cp_change(1900.0, cp_ratio=5.0, rated_power_kw=2300.0, power_limit_kw=2000.0) == pytest.approx(
+        2000.0
+    )
+    assert power_from_cp_change(1995.0, cp_ratio=1.03, rated_power_kw=2300.0, power_limit_kw=2000.0) == 1995.0
+
+
+def test_an_unknown_or_above_rated_power_limit_is_rated() -> None:
+    power = np.array([800.0, 2000.0])
+    plain = power_from_cp_change(power, cp_ratio=1.10, rated_power_kw=2300.0)
+    for limit in (np.nan, 2500.0):
+        assert power_from_cp_change(power, cp_ratio=1.10, rated_power_kw=2300.0, power_limit_kw=limit) == (
+            pytest.approx(plain)
+        )

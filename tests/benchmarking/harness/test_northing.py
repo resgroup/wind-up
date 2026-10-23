@@ -10,7 +10,8 @@ import pytest
 
 from benchmarking.harness import northing as harness_northing
 from benchmarking.harness import replicates as harness_replicates
-from benchmarking.harness.northing import ERA5_WD_COL, era5_direction, north_scada
+from benchmarking.harness.northing import ERA5_WD_COL, era5_direction, north_scada, northing_rows
+from benchmarking.harness.operating_state import VALID_NORTHING_COL
 from benchmarking.harness.replicates import NorthingInputs, StudyConfig, iter_replicates
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.circular_math import circ_diff
@@ -235,14 +236,59 @@ class TestDiscovery:
             )
 
 
+class TestStepTwoValidity:
+    """A frame labelled by step 2 is northed from the rows valid for northing that are generating."""
+
+    def test_rows_not_valid_for_northing_are_not_learnt_from(self) -> None:
+        index = _index()
+        offsets = {"T01": [(_START, 0.0)], "T02": [(_START, 25.0)], "T03": [(_START, -40.0)], "T04": [(_START, 12.0)]}
+        scada, site_wd = _scada(index, offsets)
+        scada[VALID_NORTHING_COL] = True
+        corrupt = (scada[_COLUMNS.turbine] == "T03").to_numpy() & (scada.index >= _START + pd.Timedelta(days=60))
+        scada.loc[corrupt, _COLUMNS.nacelle_position] = (
+            scada.loc[corrupt, _COLUMNS.nacelle_position].to_numpy(dtype=float) + 90.0
+        ) % 360.0
+        scada.loc[corrupt, VALID_NORTHING_COL] = False
+
+        out = north_scada(
+            scada.drop(columns=[_COLUMNS.availability]),
+            columns=_COLUMNS,
+            north_offsets=None,
+            rated_power_kw=_RATED,
+            layout=None,
+            era5_wd=pd.Series(site_wd, index=index),
+        )
+
+        # the corrupted rows found no changepoint, so they keep the 90 degrees
+        later = index >= _START + pd.Timedelta(days=60)
+        assert circ_diff(_northed(out, "T03")[later], site_wd[later]).mean() == pytest.approx(90.0, abs=2.0)
+
+    def test_northing_rows_also_need_the_turbine_generating(self) -> None:
+        frame = pd.DataFrame(
+            {
+                _COLUMNS.turbine: "T01",
+                _COLUMNS.active_power: [1000.0, 50.0, 1000.0],
+                VALID_NORTHING_COL: [True, True, False],
+            }
+        )
+        assert list(northing_rows(frame, columns=_COLUMNS, rated_power_kw=_RATED)) == [True, False, False]
+
+
 class TestEra5Direction:
     def test_returns_the_direction_carried_onto_the_index(self) -> None:
         index = _index(days=2)
         hourly = pd.date_range(start=_START, periods=48, freq="h", tz="UTC")
-        era5 = pd.DataFrame({ERA5_WD_COL: np.arange(48, dtype=float)}, index=hourly)
+        era5 = pd.DataFrame({ERA5_WD_COL: np.arange(48, dtype=float), "wind_speed_100m": 9.0}, index=hourly)
         out = era5_direction(era5, index)
         assert out.index.equals(index)
-        assert out.iloc[0] == pytest.approx(0.0)
+        # interpolated to the centre of the first 10-minute period
+        assert out.iloc[0] == pytest.approx(5 / 60, abs=1e-3)
+
+    def test_other_columns_are_ignored(self) -> None:
+        index = _index(days=2)
+        hourly = pd.date_range(start=_START, periods=48, freq="h", tz="UTC")
+        era5 = pd.DataFrame({ERA5_WD_COL: 10.0, "wind_speed_100m": 9.0, "not_era5": 1.0}, index=hourly)
+        assert era5_direction(era5, index).iloc[0] == pytest.approx(10.0)
 
     def test_without_the_direction_column_raises_naming_it(self) -> None:
         index = _index(days=2)

@@ -17,12 +17,15 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 CACHE_DIR_ENV = "WIND_UP_CACHE_DIR"
+
+CellSelection = Literal["land", "sea", "nearest"]
 
 ERA5_DEFAULT_FIELDS: list[str] = [
     "temperature_2m",
@@ -85,12 +88,19 @@ def _era5_cache_path(
     fields: list[str],
     *,
     cache_dir: str | Path | None = None,
+    cell_selection: CellSelection = "land",
 ) -> Path:
     """Build a deterministic parquet cache path from the request args."""
-    args_blob = json.dumps(
-        {"lat": lat, "lon": lon, "start_date": start_date, "end_date": end_date, "fields": list(fields)},
-        sort_keys=True,
-    )
+    args: dict[str, object] = {
+        "lat": lat,
+        "lon": lon,
+        "start_date": start_date,
+        "end_date": end_date,
+        "fields": list(fields),
+    }
+    if cell_selection != "land":
+        args["cell_selection"] = cell_selection
+    args_blob = json.dumps(args, sort_keys=True)
     args_hash = hashlib.sha256(args_blob.encode("utf-8")).hexdigest()[:16]
     base = _resolve_cache_dir(cache_dir) / "era5_data"
     return base / f"ERA5_{lat:.2f}_{lon:.2f}_{start_date}_{end_date}_{args_hash}.parquet"
@@ -104,11 +114,14 @@ def get_era5_hourly_df(
     end_date: str | None = None,
     fields: list[str] | None = None,
     cache_dir: str | Path | None = None,
+    cell_selection: CellSelection = "land",
 ) -> pd.DataFrame:
     """Fetch hourly ERA5 data from Open-Meteo for any location and return as a DataFrame.
 
     ``fields`` defaults to a copy of :data:`ERA5_DEFAULT_FIELDS` when ``None``. ``end_date``
-    defaults to today (UTC) when ``None``. Each unique combination of arguments is cached to
+    defaults to today (UTC) when ``None``. ``cell_selection`` is Open-Meteo's grid-cell choice:
+    ``land`` (its default) prefers a land cell of similar elevation, ``sea`` a sea cell, ``nearest``
+    the nearest cell. Each unique combination of arguments is cached to
     its own parquet file keyed by a hash of the arguments. Delete the cache file to force a
     refetch.
     """
@@ -116,13 +129,21 @@ def get_era5_hourly_df(
         fields = list(ERA5_DEFAULT_FIELDS)
     if end_date is None:
         end_date = pd.Timestamp.now(tz="UTC").normalize().strftime("%Y-%m-%d")
-    cache_path = _era5_cache_path(lat, lon, start_date, end_date, fields, cache_dir=cache_dir)
+    cache_path = _era5_cache_path(
+        lat, lon, start_date, end_date, fields, cache_dir=cache_dir, cell_selection=cell_selection
+    )
     if cache_path.exists():
         logger.info("Reading: %s", cache_path)
         return pd.read_parquet(cache_path)
 
     df = _fetch_era5_from_open_meteo(  # pragma: no cover - live network fetch
-        lat=lat, lon=lon, start_date=start_date, end_date=end_date, fields=fields, cache_dir=cache_dir
+        lat=lat,
+        lon=lon,
+        start_date=start_date,
+        end_date=end_date,
+        fields=fields,
+        cache_dir=cache_dir,
+        cell_selection=cell_selection,
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)  # pragma: no cover - live network fetch
     logger.info("Writing: %s", cache_path)  # pragma: no cover - live network fetch
@@ -138,6 +159,7 @@ def _fetch_era5_from_open_meteo(  # pragma: no cover - live network fetch
     end_date: str,
     fields: list[str],
     cache_dir: str | Path | None,
+    cell_selection: CellSelection,
 ) -> pd.DataFrame:
     """Fetch a single Open-Meteo archive response and build the hourly DataFrame.
 
@@ -167,6 +189,7 @@ def _fetch_era5_from_open_meteo(  # pragma: no cover - live network fetch
             "hourly": fields,
             "models": "era5",
             "wind_speed_unit": "ms",
+            "cell_selection": cell_selection,
         },
     )
     return _build_era5_df(responses[0], fields)

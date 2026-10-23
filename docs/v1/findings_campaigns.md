@@ -12,7 +12,281 @@ Keep entries reproducible: name the driver and the exact configuration, not just
 
 ---
 
-## CF22 — Repeating pass 2 by re-northing every unsettled turbine at once could flip-flop instead of converging; re-northing them one at a time against the latest tables fixes it. It exposed a fragile spot in the wake-nadir shift: one marginal wake pair can swing a turbine's correction by ~4 deg
+## CF34 — The reference bias at ca1d996 (+0.11 pp) is the power model's out-of-sample bias, and ERA5 features carry most of it. ERA5 is removed from the model and the sun's elevation added: the estimator's bias falls from +0.13 to +0.07 pp and the placebo RMSE from 0.66 to 0.52 pp. No feature set without ERA5 reaches 0.0 pp, so the rest must come from a correction
+
+*2026-10-20, branch v1-C3. Run 5 of the big prepost matrix at ca1d996 (3300 cells, 0 failed, 12 workers, 9.5 h on
+the HPC), then offline probes and matrix-cell variants on the HPC. The variants rerun 90 cells of run 5 (main arm,
+multiplier 0, K4, all three sites, P6/P12/P24, L3/L12) with the power model's features patched, and pair every
+reference reading and placebo test turbine with its run 5 counterpart by (cell, test turbine, turbine). Standard
+errors are clustered by campaign. The probe and variant scripts are not kept.*
+
+**Run 5 fails target i on the references.** C10 raised the usable share from 0.17-0.37 to 0.53-0.84 and left 12
+test turbines unmeasured instead of 414. Placebo test turbines (+0.03 pp) and the slope pass; coverage still
+fails (0.46 tests, 0.42 references). The combined references read +0.107 ± 0.040 pp: with more usable data the
+noise no longer hides the bias that run 4 also had (+0.08 ± 0.08 pp; the same bias per reading).
+
+**A reading is the sum of the estimator's bias and a real change.** Each reading has a forward value
+(after over the prediction of a model trained before) and a reverse one (before over the prediction of a
+model trained after). Their mean, the *common* part, is the estimator's out-of-sample bias; half their
+difference, the *shift*, is a real change in the subject-to-reference relation. Over run 5 the common part is
++0.124 ± 0.018 pp at every site. At Hill of Towie a shift of +0.13 pp adds to it: T08 to T11 drift up by +0.4
+to +1.4 pp over 2016-2020 (T09 +1.4, T11 +0.8, T10 +0.6, T08 +0.4) and are not screened out.
+
+**The bias comes from time separation and shrinks with training length.** Fitting common = (b(P) + b(L))/2
+over the matrix's before and after lengths gives b = 0.23, 0.15, 0.12, 0.09 and 0.05 pp at 3, 6, 9, 12 and 24
+months of training (residuals within 0.012 pp). The forward reading's bias is b(P), and the reversal
+correction over-corrects when L < P, which is why it reads about -0.07 pp. Holding out four contiguous time
+chunks of the before period reproduces the bias (+0.078 ± 0.017 pp); a shuffled holdout of the same size does
+not (+0.001 pp). LightGBM capacity, regularisation and an init score made no difference.
+
+**The ERA5 features carry most of it.** Added one at a time to a model of reference features alone, on the
+contiguous holdout (pp, change in bias against that model, RMSE in brackets; the model alone reads -0.007,
+RMSE 1.17):
+
+| Added | Bias change | RMSE |
+|---|---|---|
+| shear exponent | +0.039 | 0.98 |
+| wind speed | +0.058 | 1.03 |
+| air density | +0.061 | 1.24 |
+| direction, gust ratio | about +0.012 | |
+| shear and wind speed | +0.062 | 0.88 |
+| all six (run 5) | +0.085 | 0.96 |
+
+Rounding the shear exponent to 0.05 kept most of its precision at +0.009 bias. A monotone constraint on
+density or wind speed, and density-normalised wind speed, did not help. ERA5 has none of the slow drift and
+exposure change the references share with the test turbine, so the model leans on it, and the lean does not
+transfer across time. ERA5 also lags real time by months, so a live campaign cannot rely on it as a feature.
+
+**Without ERA5, the sun's elevation gives the best precision.** Paired over the 90 cells against run 5 (pp;
+the reference RMSE is of the forward reading):
+
+| Features (none uses ERA5 unless named) | Common | Forward | Reference RMSE | Placebo tests (RMSE) |
+|---|---|---|---|---|
+| Run 5: references and six ERA5 features | +0.126 | +0.123 | 0.81 | +0.03 (0.66) |
+| References alone | +0.055 ± 0.023 | +0.077 | 0.99 | -0.02 (0.76) |
+| + solar elevation and azimuth | +0.058 ± 0.035 | | 0.77 | (0.56) |
+| + solar elevation | +0.072 ± 0.030 | +0.089 | 0.77 | +0.07 (0.52) |
+| + site-median ambient temperature | +0.113 ± 0.029 | +0.130 | 1.00 | +0.24 (1.06) |
+| + each reference's pitch and generator speed | +0.346 ± 0.178 | +0.134 | 1.08 | +0.10 (0.86) |
+| + farm-wide mean power | +0.041 ± 0.018 | +0.109 | 0.93 | -0.00 (0.69) |
+
+Ambient temperature behaves like ERA5 air density, so gap-filling density from SCADA temperature would carry
+the same bias. Pitch and generator speed follow the references' own control (Penmanshiel's common part
++0.95 pp). Farm-wide power has the least bias but costs precision. By site, solar elevation leaves Hill of
+Towie's common part at +0.125 pp and Penmanshiel's at +0.017 pp.
+
+**Implication.** The power model no longer takes ERA5 features; ERA5 remains only in the conditional step. It
+takes the sun's apparent elevation at the site, at the middle of each period (pvlib). The remaining
+estimator bias of about +0.07 pp still fails target i at one decimal place, and no feature set without ERA5
+removes it. The next step is a correction estimated inside the before period from a contiguous holdout and
+subtracted (option B of the F2 plan), with its precision cost measured. Hill of Towie's drifting turbines are
+a matter for the data screen.
+
+## CF33 — Trimming the periods to common weather support does not help: at 3742175 the reference bias has gone (+0.04 ± 0.11 pp over 494 cells), the between-period shift does not predict a reading's error, and every trim costs precision. The error of a reading is block-scale variation in the subject-to-reference relation, present just as strongly inside the before period
+
+*2026-10-16, branch v1-C3. An offline probe over the power model's per-row dumps (`row_dump_dir`) of 27 big-matrix
+cells at 3742175 on the HPC: synthetic Hill of Towie s00-s04 at multiplier 0, K4, L1/L3/L12, two uplift cells,
+Kelmarsh s00-s03 at K4, L1/L12, and the real T13 K4 L12 and TuneUp K4 Lmax cells. 264 subjects (56 test
+turbines, 208 reference readings; a reading reused from the screen is not dumped). The probe refits the same
+LightGBM on the dumped rows and reproduces every dumped uplift exactly, then re-estimates each variant. Judged on
+the 232 placebo subjects (truth 0 %). The probe script is not kept.*
+
+**There is no reference bias to remove at this commit.** Validating the first 494 cells of the run at 3742175
+(T16 and T17 excluded, noise mode not valid for uplift) gives combined references of +0.04 ± 0.11 pp before the
+screen and +0.02 ± 0.10 pp after, over 13 campaigns, against +0.16 and +0.12 pp at 36058e2. Hill of Towie
+synthetic references read +0.04 ± 0.15 pp (five campaigns), Penmanshiel 0.00 ± 0.12 pp. The 304 reference
+readings in the 27 probe cells average +0.03 ± 0.08 pp. TuneUp's references still read +0.31 pp and T13's
++0.09 pp (one campaign each).
+
+**The periods are not distinguishable by the features.** A classifier told the after rows from the before rows
+with an out-of-fold AUC of 0.53 on all features, 0.53 on ERA5 alone and 0.50 on reference power alone. Only
+0.5 % of after rows lie outside the training range of any feature. On cells of 2 m/s ERA5 wind speed, 30
+degree sector and ERA5 shear exponent, 39 % of after hours fall in a cell with under 24 before hours, but that
+is the fineness of the cells, not a weather mismatch: the total variation distance between the two periods'
+cell distributions is 0.3 to 0.4 at every length.
+
+**No shift measure predicts the error.** Across the placebo subjects the Spearman correlation of the forward
+error with the unsupported share, the total variation distance, the out-of-range share, the ERA5 wind speed
+shift and the classifier AUC is within ±0.10. The mean-power shift between the periods has the sign the
+model's conditional bias predicts (a windier after period reads higher) but explains only about ±0.2 pp at
+the extremes: +0.55 pp per unit of relative shift, correlation +0.13. The strongest correlates are within the
+subject, the slope of the after residual against predicted power (+0.54) and the residual's correlation with
+the model's leaf sparsity (-0.62): a reading's error is carried by its high-power, sparsely trained rows,
+whatever the weather of the period.
+
+**Every trim costs precision and buys nothing.** Placebo mean and RMSE in pp over 232 subjects:
+
+| Variant | Mean | RMSE | After hours kept |
+|---|---|---|---|
+| Forward (baseline) | -0.04 ± 0.10 | 1.57 | 100 % |
+| Drop after records in cells with < 6 / 24 / 72 before hours | -0.13 / +0.02 / +0.18 | 1.89 / 2.03 / 2.24 | 82 / 55 / 22 % |
+| Same at 24 h, two-sided (before rows in cells unseen after dropped, refit) | +0.01 | 2.10 | 55 % |
+| Whole days: drop after days with > 50 % unsupported hours (one- / two-sided) | -0.04 / -0.08 | 2.02 / 2.07 | 59 % |
+| Drop the sparsest decile of after rows by leaf occupancy | -0.07 | 1.65 | 90 % |
+| Reweight after rows to the before cell density | +0.04 | 2.24 | 100 % |
+| Isotonic / linear calibration on out-of-fold baseline residuals | -0.16 / -0.35 | 1.58 / 1.70 | 100 % |
+| Nearest-neighbour whole days on daily ERA5 summaries | -0.05 | 1.61 | 96 % |
+
+By length the baseline RMSE is 1.83 pp at L1, 1.40 at L3 and 1.01 at L12; the 24 h cell trim gives 2.01, 2.15
+and 1.61. The two uplift cells (eight subjects) behave the same way. On the real cells the TuneUp references and
+the T13 test turbine move by a few tenths of a point under each variant with no consistent direction.
+
+**The error is block-scale variation, not extrapolation or model variance.** Refitting with five bagged seeds
+moves a reading by 0.07 pp (median spread; 0.14 pp RMS). Holding out the last block of the before period,
+as long as the after period, and predicting it from the rest gives an error RMSE of 2.1 pp at L1 and 2.7 pp
+at L3, at least as large as the real after error, and the block one step earlier 2.3 and 2.6 pp. Weighting
+the training rows by a half-life of 90, 180 or 365 days towards the changeover changes the mean by under
+0.07 pp and the RMSE by under 0.03 pp. Training on the last 3, 6 or 9 months only raises the RMSE to 4.0,
+2.2 and 1.9 pp. The relation between a turbine and its references varies at the scale of weeks to months
+in a way that no feature carries and no training window reaches, and the model's fixed-model bootstrap
+sigma (0.4 to 0.5 pp median) cannot see it.
+
+**Implication.** Step 11 iv option B is not adopted; option A stays. The question is no longer the
+reference bias but the precision of a reading and the sigma that should cover it: a contiguous-block
+holdout inside the before period, at the after period's length, reproduces the size of the after error
+and is a candidate for the systematic component of step 14. What drives the block-scale variation (the
+subject's own state, direction-dependent terrain or wake effects, or stability that ERA5 does not
+resolve) is open; more references and longer after periods are the known remedies (CF3, CF31).
+
+---
+
+## CF32 — A synthetic upgrade now respects a record's power setpoint: on Hill of Towie noise mode it injected about 10 % too much gain, because a record well below its setpoint still spends part of its 10 minutes at it
+
+*2026-10-15, branch v1-C3. Measured on the Hill of Towie 2016-2020 SCADA with the AeroUp shape at multiplier 1.*
+
+**The record mean is not the problem.** Capping each record's mean power at its setpoint removed 0.007 % of
+the injected energy farm-wide. The gap is within the record. A record touches its limit at some point in
+its 10 minutes at the same rate for the same distance below that limit, whether the limit is rated or a
+noise setpoint (1993, 2116 or 2207 kW): always within 400 kW of it, and 27 to 54 % of records 800 to
+1200 kW below it.
+
+**The fix.** The region-2 taper, which fades a Cp change out as mean power approaches rated, now
+fades it out as the power approaches the record's limit: the higher of its start and end setpoints,
+or rated where unknown. The power is also capped at that limit. Sources whose schema names no setpoint
+(Kelmarsh, Penmanshiel) are unchanged.
+
+| | Injected uplift before | After |
+|---|---|---|
+| Noise-mode records | +5.01 % | +4.52 % |
+| T16 | +5.11 % | +4.65 % |
+| T17 | +4.59 % | +4.48 % |
+| T19 | +3.92 % | +3.91 % |
+| Normal operation | unchanged | unchanged |
+
+**Implication.** Truth is computed from the injected power, so it follows the change. With T16 and T17
+excluded from the matrix (CF31), it mainly touches T19's noise mode and the reduced setpoints of
+curtailment and derating; their records are not valid for uplift, but they count in the truth. The
+matrix run at 36058e2 predates this change.
+
+---
+
+## CF31 — The first big matrix run, stopped at 663 of 1098 cells, says less than its verdicts claimed: its cells were far from independent. On Hill of Towie the method passes targets i and ii once noise-mode T16 is set aside, but the sigma covers 44 % of the errors, not 68 %. The matrix now tiles each site's data, and `validate` clusters its standard errors by campaign
+
+*2026-10-15, branch v1-C3. The run was `study_prepost_campaign_matrix run --size big --workers 10` at 83e8491 on a
+32-core server; `validate` read the 603 cells finished at the time (360 synthetic Hill of Towie, 18 real T13, 225
+Penmanshiel, no Kelmarsh). The Penmanshiel cells predate the corrected Greenbyte labels and are not judged here.*
+
+**No cell failed.** Hill of Towie cells took 160 to 2060 s (median 460 s) at up to 9.5 GB.
+
+**Real T13.** All 18 cells read +2.3 to +3.3 % (sigma 0.2 to 0.6 pp), with combined references at +0.01 to
++0.24 %. T14 reads about +1.2 % as a reference in every cell.
+
+**Synthetic Hill of Towie.** One turbine dominates the error. T16 is in noise mode 57 % of the time in
+2016-2018, and 80 to 95 % of it from August 2017 to February 2018. Noise mode is not valid for uplift, so
+only a direction- and time-selected slice of T16 is ever measured. Its placebos read -11 to +15 %. As T15's
+reference it reads +17 % (sigma about 4 %), and the screen keeps it. Its labels are complete: the setpoints
+match the declared noise steps. Without T16, the placebo bias is -0.01 pp, the slope 1.017 and the intercept
+0.00 pp. The error RMS, however, is 1.3 pp against a median sigma of 0.5 pp: coverage 0.45, z spread 1.7.
+
+**The cells were not independent.** The -1, 0 and +1 multipliers of one draw share its data, and their
+errors correlate at 0.93 to 0.95. The post lengths are nested and the K values share most references.
+Half of the error variance sits between the 18 (draw, turbine) pairs, so the 360 cells hold about 18
+independent readings. `validate` treated every cell as independent, so its standard errors were 4 to 5
+times too small. Clustered by campaign, the same 603 cells pass targets i and ii on all estimators. Season
+dependence still fails (SON -0.64 pp, z -4.2), and so does coverage (0.44 ± 0.04).
+
+**The draws were also bunched.** Every trial started 12 to 24 months into the data, with the before
+period from the data start. All five Hill of Towie draws used 2016 as baseline and ended by mid-2018, so
+2018-2020 went unused and the seasons were uneven (DJF 614 readings, JJA 156).
+
+**Changes.**
+- A synthetic site's campaigns are now tiles (`draw_tiles`). Tile i's trial starts at the fractional part
+  of i times 0.618 along the days that leave 12 months before and after, so any number of tiles spreads
+  evenly over the record.
+- A tile's data starts 12 to 24 months before its trial, not at the site's data start.
+- Each tile prefers turbines no earlier tile tested.
+- Noise mode was briefly made valid for uplift at Hill of Towie; the second run (36058e2, all 1110 cells ok)
+  used it. There T16, tested once, read well (+0.8 pp at L12), but T17 placebos read -3 to -10 pp: its
+  after period (September to December 2017) fell when T16's noise-mode sectors had just moved.
+  Noise mode is back to not valid for uplift. It should count only where the analyst is sure its
+  behaviour did not change between the periods, and here it did.
+- T16 and T17 are excluded from the synthetic Hill of Towie campaigns, as neither test turbines nor
+  references (`RolloutSite.excluded`). T16's yaw re-calibration of about 98 deg on 2017-05-19 rotated the
+  true wind directions its noise mode covers by about 100 deg, since its noise schedule is fixed in its
+  own nacelle frame. T17's placebo error on the T17 cell analysed sits below 10 m/s in easterly to
+  southerly winds, with no northing change of its own; its mechanism is not settled. The real campaigns
+  keep both turbines.
+- `validate` clusters every mean and coverage standard error by campaign, and gives a verdict from five
+  campaigns up.
+
+**Implication.** Precision is the open target: the sigma needs a component for the persistent
+per-campaign error the after-period bootstrap cannot see. The run is restarted on the tiled draw. The
+before periods of overlapping tiles still share data; full independence would need disjoint before
+periods, which this record length cannot give at 12 to 24 months each.
+
+---
+
+## CF30 — The composed run now follows method.md steps 1 to 15, and the matrix drives it: the real T13 cell reproduces the composed run to 0.005 pp. The new headline sigma puts T13 at +2.84 % ± 0.21 pp, while its references read 2.5 to 7 sigma from zero, so F2 is a bias far beyond sampling noise. Laptop dry runs of every arm pass, after a fix without which every synthetic cell would have failed
+
+*2026-10-14, branch v1-C3. Reproduce: `python -m benchmarking.campaigns run <hot_aeroup_t13 campaign.yaml>` and
+`python -m benchmarking.baselines.study_prepost_campaign_matrix run-cell <big study dir> <cell id>` for the
+cells below.*
+
+**Steps 10 to 15 at their defaults.** Each period needs 24 usable hours. Waking configurations with
+under 24 h in either period are dropped. Toggle records are paired within one toggle cycle. The uplift
+distributions are reported against the counterfactual power and the ERA5 100 m wind speed. On the
+real Hill of Towie AeroUp T13 campaign the headline moved from +2.817 % to +2.831 %. The references
+read T09 −0.48, T11 +0.30, T12 −0.74 and T14 +1.10 %, combined +0.05 %.
+
+**The sampling sigma (step 14).** The after period is block-bootstrapped with the model fixed. T13
+reads 0.21 pp at the default 1-day block, and 0.17 to 0.21 pp from 6 hours to 28 days. Its references
+read z = −2.7, +2.5, −5.1 and +7.3 against their truth of zero. The sigma prices sampling alone; the
+reference error is systematic, and it is that error the systematic component of step 14 must carry.
+
+**The matrix drives the shipped method.** The real cell `hot_t13_K4_L12` reads +2.836 % against the
+composed run's +2.831 %, with the same span, references and screen. The residual is Part A seeing
+data cut at the cell's end, which moves north offsets by about 0.07°.
+
+**A broken commit, caught by a dry run.** From the commit that added the headline sigma, every
+synthetic cell failed in scoring: the uncertainty row carried a `sigma` column the harness reserves.
+The real cells are not scored, so they hid it. Only the slow matrix test scores a synthetic cell end
+to end; run it before any HPC launch.
+
+**Laptop dry runs (12 cores), with the reverse direction recorded:**
+
+| Cell | Wall | Peak RSS | Notes |
+|---|---|---|---|
+| `hot_s00_m+1_K4_L12` | 1150 s | 7.7 GB | 7 test turbines; truth and sigma per bin on both axes |
+| `hot_t13_K4_L1` | 282 s | 5.7 GB | T13 +2.55 % ± 0.57 |
+| `hot_t13_K4_L3` | 346 s | 5.6 GB | T13 +3.24 % ± 0.38 |
+| `hot_s01_m+0_K3_L1` | 262 s | 4.0 GB | placebo errors +0.4, −2.8, +4.3 pp at sigma 0.5, 3.4, 8.5 |
+| `hot_s02_m-1_K4_L6_excl` | 620 s | 6.2 GB | forward reads 0.7 to 0.9 pp more negative than truth |
+| `hot_s02_m+1_K6_L9` | 599 s | 6.6 GB | errors −0.3 to +0.1 pp |
+
+Costs are at or below those the study's `plan` uses.
+
+**Two observations for later work.**
+- *The reverse direction is unusable on a 1-month after period:* one turbine reads +62 % reverse
+  from 228 usable hours. Its fixed-model bootstrap sigma, 5.5 pp, does not see the error of fitting
+  a model on so little data. A lambda weighted by that sigma would trust the reverse too much; the
+  precision of step 13 option B needs folds or refits.
+- *The waking configuration rule (step 11 ii) is not cheap:* on real T13 it removes 296 of about 1600
+  after-period hours at a 3-month after period. Whether that buys accuracy is one of method.md's open
+  questions. The matrix now records the hours lost per reason for every test turbine.
+
+---
+
+## CF29 — Repeating pass 2 by re-northing every unsettled turbine at once could flip-flop instead of converging; re-northing them one at a time against the latest tables fixes it. It exposed a fragile spot in the wake-nadir shift: one marginal wake pair can swing a turbine's correction by ~4 deg
 
 *2026-09-30. Reproduce: `test_changepoints_v_consensus_converges_when_neighbours_share_excursions` in
 `tests/wind_up/test_northing.py`, and the ("365d", "late") case of
@@ -66,6 +340,554 @@ really resolved. The case is re-recorded at 4.3 deg.
 - `_aggregate` takes a plain circular median of the pairs. With few, bimodal pairs, an even count
   averages across the gap. A weighted median (e.g. by rows or fit quality), or requiring the pairs to
   agree before shifting at all, would stop one pair from deciding a turbine's correction.
+
+---
+
+## CF28 — The whole-farm v0 probe: **the power model's references do not combine to zero (+0.40 pp on clean references) and v0's power-only path does (−0.03 pp over 336 pairs)**; v0's anemometer path is 0.7 pp low because every Hill of Towie turbine's own power curve dropped 2 to 6 % between the two winters; and subtracting a pool's own reference reading corrects a level, not a turbine (correlation 0.04)
+
+*2026-10-06 to 2026-10-07. `uv run python -m benchmarking.campaigns.v0_probe hot` at `0a887c9`
+(the v0 cache fix of [CF27](#cf27--the-level-probe-and-the-v0-probe-missing-power-reference-rows-are-the-largest-single-cause-of-the-placebo-level-one-bad-reference-is-the-next-and-v0-is-not-the-level-free-yardstick-c3-assumed--on-identical-five-turbine-pools-its-headline-path-reads-03-to-06-pp-the-reference-anemometer-its-power-only-path-sits-07-pp-below-the-power-model-pair-for-pair-with-the-same-ordering-and-the-aipw-correction-fails-as-a-diagnostic) §7),
+from scratch, in series: started 2026-10-06 16:47, finished 2026-10-07 08:04, **all 21 turbines,
+no failures**. Same design as CF27 (b): each Hill of Towie turbine with its 4 nearest neighbours
+as the only candidates, 12 months of baseline into a 6-month campaign changing over 2018-09-01,
+nothing injected; the power model (screen off, per-reference readings on, each reference read
+against the other three with the test excluded) and wind-up v0 (`V0BinnedMethod`: the matching
+6 months a year earlier as pre period, one-year detrend, long-term distribution off) on exactly
+the same rows. **The season-matched power-model arm that CF27 asked for was not in the driver**,
+so the season-or-asymmetry question is still open (§6). T13's real AeroUp was September 2021, so
+every reading here has a truth of 0. Outputs: `v0_probe/hot_20261006_164724/` (`summary.csv`,
+`pairs.csv`, each turbine's v0 `*_results_per_test_ref_*.csv`).*
+
+**1. The whole farm, both methods (pp, truth 0).** "v0 power-only" is the mean of the test
+turbine's four power-only pair readings; "pm refs vs pool" is the mean of the four references'
+readings against the rest of the pool; "v0 ref pairs" is the mean of the power-only readings
+between the references.
+
+| test | refs | power model | v0 headline | v0 power-only | pm refs vs pool | v0 ref pairs (power-only) |
+|---|---|---|---|---|---|---|
+| T01 | T03 T02 T04 T05 | +0.17 | −0.57 | −0.03 | +0.20 | −0.05 |
+| T02 | T01 T05 T04 T03 | −0.14 | −0.12 | +0.71 | +0.33 | −0.11 |
+| T03 | T01 T07 T04 T05 | −0.26 | −0.94 | −0.63 | +0.47 | −0.08 |
+| T04 | T08 T03 T01 T05 | +0.20 | −0.47 | +0.05 | +0.23 | −0.17 |
+| T05 | T02 T04 T06 T01 | +1.33 | −0.41 | +0.15 | +0.45 | −0.12 |
+| T06 | T05 T15 T10 T08 | +0.08 | −1.23 | +0.01 | +0.58 | −0.07 |
+| T07 | T03 T09 T04 T08 | +0.22 | −0.64 | −0.39 | +0.25 | −0.08 |
+| T08 | T04 T10 T07 T09 | +0.19 | −1.42 | −0.71 | +0.47 | +0.00 |
+| T09 | T07 T11 T08 T12 | +1.02 | −0.16 | +0.47 | +1.08 | −0.05 |
+| T10 | T08 T06 T12 T09 | +0.56 | −0.37 | +1.50 | +0.17 | +0.17 |
+| T11 | T14 T09 T12 T13 | +0.18 | −0.13 | −0.15 | +0.63 | +0.08 |
+| T12 | T14 T11 T09 T10 | **+2.52** | +0.17 | +0.53 | +0.87 | +0.30 |
+| T13 | T14 T11 T12 T09 | **+3.47** | −1.76 | −1.66 | +0.92 | −0.00 |
+| T14 | T12 T13 T11 T09 | −0.37 | −0.51 | −0.31 | +1.10 | +0.02 |
+| T15 | T06 T10 T16 T05 | +1.01 | −0.99 | +0.02 | +0.86 | +0.00 |
+| T16 | T17 T18 T19 T15 | −0.15 | −0.30 | +0.66 | +1.25 | −0.09 |
+| T17 | T16 T19 T18 T20 | **+3.81** | +0.20 | +1.26 | +0.35 | −0.07 |
+| T18 | T17 T19 T21 T16 | +0.47 | −1.50 | −0.42 | +1.12 | +0.16 |
+| T19 | T20 T17 T21 T18 | +0.18 | +0.00 | +0.09 | +1.42 | −0.05 |
+| T20 | T19 T21 T17 T18 | +0.27 | −1.57 | −1.10 | +1.34 | −0.14 |
+| T21 | T20 T19 T18 T17 | −0.10 | −1.34 | −1.11 | +0.83 | −0.14 |
+| **mean, all 21** | | **+0.70** | **−0.67** | **−0.05** | +0.71 | −0.03 |
+| **mean excl T13, T17** | | **+0.39** (sd 0.68) | **−0.66** (sd 0.55) | **−0.03** (sd 0.64) | | |
+
+The per-turbine spread is the same for every path (sd 0.55 to 0.68): it is the relative drift
+of CF27 §3, and no path here is more precise than another. What separates them is the level.
+
+**2. The power model's references do not combine to zero; v0's power-only path's do.** The
+84 power-model readings of a reference against the rest of its pool average **+0.71 pp**
+(median +0.41). With T17 (+4.06, sd 0.24 over 5 pools: the bad reference of CF13 and CF27 §2)
+and T12 (+1.95: the outage rows of §4) taken out, the remaining 74 still average **+0.40 pp**
+(median +0.33). That is the estimator's level on turbines that did nothing, read against
+turbines that did nothing. v0's power-only path over the same pools reads **−0.03 pp** on 336
+reference pairs (−0.05 without T13 and T17 as the read turbine); its reversed estimate reads
+−0.07, the two correlate 0.93 pair for pair and differ by 0.27 pp in absolute mean. An estimator
+that fits each period on the same reference-power grid and drops bins either period lacks is
+symmetric and level-free on this farm, now measured over the whole farm rather than four pools.
+
+**3. v0's anemometer path is low by a farm-wide 0.7 pp, and the reason is in every turbine's own
+power curve.** Headline minus power-only is **−0.71 ± 0.51 pp** over the 336 pairs (CF27 had
+−0.64 ± 0.28 on 64). v0's own diagnostics say why: between the two winters **every turbine's
+power curve against its own anemometer reads lower**, by −0.5 % (T14) to −6.1 % (T15) and
+typically −4 to −5 %, with wind-speed drift against the reanalysis of 0.24 to 0.63 m/s on all
+21, generator speed −0.1 to −1.6 % and pitch −0.07 to −0.23° (T14 +0.07°). The per-pair gap
+correlates only −0.13 with the reference's own drift figure: the shift is farm-wide, not a few
+bad anemometers. Whether it is the anemometers, the nacelle transfer function or air density is
+not established and does not matter for the method: **no headline path may use a reference
+anemometer** (CF11's rule, now with a whole-farm case behind it), and any comparison against v0
+must quote its power-only path. `V0BinnedMethod`'s headline, as the probe reads it today, is the
+anemometer path.
+
+**4. The two largest power-model misses are the outage rows again.** T13 (+3.47) and T12
+(+2.52) are the two pools that hold both T14 and T11, the references that were off in December
+2018 (CF27 §1); T09 (+1.02) holds T11 and T12. v0 drops those rows pair by pair and reads T12
++0.17 and T13 **−1.76 on the anemometer path, −1.66 on the power path, and −1.75 as a reference
+in ten other pairs**: T13 genuinely moved against its neighbours in this window, which with four
+references nothing can tell from an upgrade. D4 stays the first change.
+
+**5. Subtracting the pool's own reference reading (B1 as first drafted) corrects a level, not a
+turbine.** Excluding T13 and T17 as test turbines:
+
+| estimate | mean | sd | rmse |
+|---|---|---|---|
+| power model, as read | +0.39 | 0.68 | 0.77 |
+| minus its pool's mean reference reading | −0.33 | 0.78 | 0.83 |
+| minus its pool's median reference reading | −0.11 | 0.72 | 0.71 |
+| minus its pool's mean with T17 screened out of the pool readings | −0.08 | 0.64 | 0.63 |
+| v0 anemometer path, as read | −0.66 | 0.55 | 0.85 |
+| minus its pairs' median | +0.05 | 0.50 | 0.49 |
+| v0 power-only path, as read | −0.03 | 0.64 | 0.63 |
+| minus its pairs' mean | −0.01 | 0.61 | 0.59 |
+
+A power-model test reading correlates **0.04** with its own four references' pool reading
+(v0 power-only 0.36, v0 anemometer 0.25), so the pool reading carries the farm-wide level plus
+noise and nothing about that test turbine. Per-pool subtraction with four references therefore
+adds noise, and over-corrects the five pools that hold T17 (T16 −1.40, T19 −1.24, T20 −1.07) unless
+the screen has run. Where the pool is clean (the 12 pools holding neither T13 nor T17) it does what a
+level correction should: power model +0.58 → +0.08 (rmse 0.95 → 0.63), v0 anemometer −0.60 →
++0.20 (rmse 0.75 → 0.45), v0 power-only +0.14 (rmse 0.60) unchanged. The right form of B1 is a
+**farm-wide** reference level — every screened reference's reading, pooled over many readings,
+median, shrunk — subtracted from each test, with the screen on; not a per-pool contrast.
+
+**6. What this decides for C3.** The requirement "the combined reference reading is 0.0" is met
+today by one estimator in hand, v0's power-only path, and not by the power model (+0.40 on clean
+references) nor by v0's headline (−0.66). The question CF27 left open — whether the power model's
+level is season composition (12-month baseline against a 6-month post; v0's pre period is the
+matching months) or the asymmetry of an observed sum against a modelled one — is **still open**,
+because the season-matched arm was not in this rerun; it is a power-model-only run on these
+pools and is the cheapest next experiment. D4 is confirmed as the first change and this run's
+pools are its before-picture. B1 is reshaped to a farm-wide level. The v0 yardstick becomes the
+power-only path.
+
+---
+
+## CF27 — The level probe and the v0 probe: **missing power-reference rows are the largest single cause of the placebo level**, one bad reference is the next, and **v0 is not the level-free yardstick C3 assumed** — on identical five-turbine pools its headline path reads **−0.3 to −0.6 pp** (the reference anemometer), its power-only path sits **0.7 pp below** the power model pair for pair with the same ordering, and the AIPW correction fails as a diagnostic
+
+*2026-10-02 to 2026-10-06. Two drivers. (a) `uv run python -m benchmarking.campaigns.level_probe all`
+at `d1c44df`, overnight 2026-10-01 on the HPC: the Hill of Towie whole-farm reference arm at
+changeover 2018-09 (truth 0), the Penmanshiel cell seed 0 / m+0 / K4 / L12 / T14 in all three
+arms, and a Kelmarsh cell (seed 0, m+0, K4, L12, T06); each estimate's per-row actual,
+counterfactual and features dumped (`row_dump_dir`), then `level_probe analyse` and ad-hoc refits
+over the dumps. Round robins of the power model with one reference at a time followed on the same
+dumps. (b) `uv run python -m benchmarking.campaigns.v0_probe hot` at `88a5348`, 2026-10-02 on the
+HPC: each Hill of Towie turbine with its 4 nearest neighbours as the only candidates, 12 months of
+baseline into a 6-month campaign changing over 2018-09-01, nothing injected; the power model (screen
+off, per-reference readings on) and wind-up v0 (`V0BinnedMethod`: season-matched 6-month pre
+period, one-year detrend, long-term distribution off) on exactly the same rows. **Only 4 of 21
+turbines completed** (T01, T02, T09, T16); the other 17 crashed in v0 (§7).*
+
+**1. Missing power-reference rows are the biggest single cause.** On the Hill of Towie arm T14 is
+off 14–23 December 2018 and T11 for part of December. The 7.6 % of post rows on which a power
+reference has no valid data carry **+3.25 of T13's +2.97 pp** and **+1.59 of T12's +2.28 pp**, and
+most of T10, T18, T07 and T20's. Dropping those rows from the post side moves the farm mean
+**+0.60 → +0.37 pp**; refitting without them on both sides agrees. At Penmanshiel, T13's 13-day
+outage (5.3 % of post rows) carries **−1.2 of T14's −1.6 pp**, which lands the exclusion arms at
+−0.27 pp — the main arm's reading — and T02 and T06 move the same way through T07. The
+[CF26](#cf26--the-prepost-matrixs-second-small-run-with-every-cell-reporting-wind-up-tracks-the-magnitude-and-misses-the-level-the-fitted-slope-is-0993-to-0996-while-a-placebo-readings-sd-triples-from-034-pp-to-086-pp-as-the-post-period-grows-from-3-months-to-10-penmanshiel-is-fixed-the-leak-is-unmoved-the-cost-model-is-out-by-5-to-9-times) §6 channel disagreement sits on
+the same held-back rows (T14 0.12 of 0.09 pp, T12 0.34 of 0.38, T02 0.21 of 0.31); T04 still
+differs by 0.12 pp with none, so wake-only turbines' booleans perturb the fit at a floor of about
+0.1 pp. A row on which a power reference is not operating is a configuration the trees were rarely
+or never fitted on, and the counterfactual there is extrapolation.
+
+**2. T17 is a genuinely bad reference, not an estimator effect.** Its ratio to its peers is
+0.74–0.80 in October–November 2017 and August 2018 against about 0.9 elsewhere, and it reads
+**+4.7 pp in every post month**. That is the reference screen's business
+([CF13](#cf13--the-reference-screen-works-where-it-has-data-and-references-and-nowhere-else-it-needs-a-campaign-of-150-days-and-it-finds-hill-of-towies-genuinely-bad-turbine-t17-47-on-a-19-reference-pool-two-constraints-both-measured-decide-when-it-may-run-at-all) already found it), and the screen was off in both probes.
+
+**3. What remains at Hill of Towie after 1 and 2 is small and per-turbine.** Farm mean **+0.14 pp**,
+per-turbine sd about 0.5 pp. The per-turbine offsets (T05, T09, T12, T15 about +0.8; T16, T02 about
+−0.5) do not move under a relative outcome (B2), a linear-plus-trees model (E1) or a two-model
+ratio (A1): they are genuine period-to-period movement of each turbine against its neighbours,
+which no model class removes and which only more references average down. The reference-count
+ladder on T02/T05/T09/T16 (nearest k = 1, 2, 4, 8, 19) reads a mean level of 0.43 / 0.67 / 0.59 /
+0.38 / **0.16 pp**: positives shrink with k and negatives deepen, so with many references the
+estimate converges on each turbine's own relative drift.
+
+**4. One reference at a time is the most biased estimator measured.** Hill of Towie round robin
+(21 turbines × 4 nearest references, outage rows dropped), excluding T13 and T17 as test: mean
+**+0.67 pp**, median +0.57, sd 1.17 over 76 readings; the 29 two-way pairs share **+0.87 pp**
+(sd 0.54) and their half-differences have sd 0.90. Against +0.37 raw and +0.14 cleaned for the
+19-reference model over the same turbines, a single reference carries about twice the shared bias.
+Adding the other turbines' operating booleans makes it worse (+1.02), an upwind-offline count does
+not help (+0.86). Kelmarsh's pairs are all positive (+0.9 to +2.9, mean +1.65 against +0.84 with
+three references) and Penmanshiel's mean −0.36 against −0.06. Any single-reference scheme (E2)
+needs a robust combination plus subtraction of the shared bias.
+
+**5. Kelmarsh's common-mode +0.7 to +1.1 pp is not explained by anything in the dumps.** It is
+there for every estimator including plain linear (+1.5), carried by rows on which every reference
+is normal (0.92 of 1.10 pp), uncorrelated with the weekly resource, not season composition (the
+random-fold residual by month is ±0.5 % with an implied level of about 0), concentrated at 6–14 m/s
+and in February–April 2018, and the post test power sits 2–7 % above pre at a given reference power
+in the 100–1400 kW bands. The suspects are data-side: a Kelmarsh SCADA change around September 2017
+(the power-minimum channel appears then and is 100 % NaN before it) and the curtailment or
+sector-management regime. Three references cannot average it away. Do not use Kelmarsh's placebos
+as a yardstick until this is understood.
+
+**6. The AIPW correction (A2) and the two-model ratio (A1) fail as diagnostics or fixes.** The
+propensity separates the periods on time-giveaway features (at Kelmarsh the power-minimum channel
+is absent in pre, so 75 % of rows have m̂ > 0.95); the effective sample size is 2–10 %; predicted
+against observed level correlates 0.72 at Hill of Towie (excluding T13), 0.40 at Penmanshiel and
+−0.25 at Kelmarsh, with mean absolute error 0.8–1.3 pp. A1's post-fitted model agrees with the
+forward model at Hill of Towie and is wildly off in reverse, because a model fitted on six
+seasonally incomplete months does not generalise. Fold geometry reproduces
+[CF24](#cf24--balance-the-two-periods-and-two-thirds-of-the-prepost-placebo-bias-disappears-a-whole-farm-whose-pre-and-post-hold-the-same-months-record-for-record-reads-023-pp-against-065-pp-for-six-contiguous-arms--and-every-large-per-turbine-offset-goes-with-it-t17-included-44--034)'s
+ladder inside one baseline: Kelmarsh T06 out-of-fold mean error 9.5 kW (2.1 %) on time blocks,
+2.4 kW on day blocks, 0.1 kW on random folds. Removing the reference power-minimum feature changes
+nothing at Kelmarsh and 0.06–0.22 pp at Penmanshiel; it is dropped.
+
+**7. Seventeen v0 probe turbines crashed on a v0 cache, and two of the four survivors are tainted.**
+`wind_up_v0.waking_state.upwind_wtgs_cache` keys the IEC-upwind list by position, direction and
+object name but **not by the config's turbine set**, so the second analysis in a process with a
+different subset is handed turbines it has no data for (`KeyError: ['T02'] not in index` in
+`add_waking_scen`). T01 and T02 share one turbine set and are clean; T09 and T16 ran after failed
+turbines had part-filled the cache for T07, T08 and T15's positions, so some of their pairs'
+waking scenarios were judged against the wrong upwind sets. Fixed by keying the cache on the
+config's turbine names (`tests/test_waking_state.py`); **the public `wind_up` on `main` has the
+same cache and needs the same fix.** Timing for the rerun: the first turbine took 2 h 48 min
+(cold caches), every later one about 25 min for both methods together.
+
+**8. v0 and the power model on the same four pools (truth 0 throughout):**
+
+| test | refs | power model | v0 headline | v0 power-only (mean of 4 pairs) | pm refs vs pool (mean) | v0 ref pairs, headline / power-only |
+|---|---|---|---|---|---|---|
+| T01 | T02 T03 T04 T05 | +0.17 | −0.57 | −0.03 | +0.20 | −0.75 / −0.05 |
+| T02 | T01 T03 T04 T05 | −0.14 | −0.12 | +0.71 | +0.33 | −0.62 / −0.11 |
+| T09 | T07 T08 T11 T12 | +1.02 | −0.16 | +0.47 | +1.08 (T12 +2.57) | −0.54 / −0.05 |
+| T16 | T15 T17 T18 T19 | −0.15 | −0.30 | +0.66 | +1.25 (T17 +4.13) | −0.83 / −0.09 |
+| mean | | **+0.22** | **−0.29** | **+0.45** | +0.71 (+0.35 without T17, T12) | **−0.68 / −0.08** |
+
+*v0's headline is the inverse-variance combination of its four pairs; its per-pair one-sigma is
+0.4 to 1.1 pp, so every v0 headline is within one sigma of zero and so are three of the four power
+model ones.*
+
+- **v0 has a level of its own, and it is the reference anemometer.** Over all 64 pair readings in
+  the four runs, v0's headline path (`ref_ws_est_blend`, the reference's anemometer blended with
+  its power-derived wind speed) sits **−0.64 pp below its own power-only path** (sd 0.28, range
+  −1.69 to −0.08, never positive). The power-only path is symmetric — the reversed estimate agrees
+  with it to +0.05 ± 0.23 — and reads **−0.08 pp** on the reference pairs. v0 flags reference
+  anemometer drifts of 0.34 to 0.54 m/s on these turbines. So "v0 does not show the level"
+  ([C3](issues_campaigns.md#c3--blade-enhancement-aeroup-prepost)'s premise since CF24) was an
+  artefact of which v0 path was read: its anemometer path is 0.3 to 0.8 pp *low*, its power path
+  is near zero on references.
+- **Pair for pair the two methods agree on the structure and differ by a constant.** Matching the
+  36 (test, reference) pairs that both the v0 runs and the power model round robin read: correlation
+  **0.63** between the power model's single-reference reading and v0's power-only pair (0.73 with
+  the reversed pair), and the power model is higher by **+0.71 pp** (sd 1.10, standard error 0.18).
+  The ordering within every pool matches (T09's T11 pair highest in both; T16's T18/T19 high and
+  T15/T17 low in both; T02's T03 highest in both). The per-pair structure is real relative movement
+  of the two turbines, which both methods see; what separates them is an offset.
+- **The offset cannot yet be attributed.** The power model here uses a 12-month baseline; v0's pre
+  period is the 6 calendar months matching the post, one year earlier. CF24 measured +0.65 pp for
+  contiguous arms against +0.23 pp for balanced ones on the same farm, so season matching alone
+  could account for most of the +0.71 pp. The remainder, if any, is the asymmetry of an observed
+  sum against a modelled one. One cheap arm separates them: the power model on these pools with a
+  6-month season-matched baseline (what v0 uses), added to the probe before the rerun.
+- **The reference readings disagree by more than the headlines.** The power model's reference
+  readings against the pool average +0.35 pp with T17 and T12 excluded (+0.71 with them); v0's
+  power-only reference pairs average −0.08. Both methods' test readings are consistent with their
+  own references' readings, which is what a shrunk reference correction (B1) needs.
+
+**9. What this decides for C3.** The level is three things in order of size: rows on which a
+power reference has no valid data (an outage policy, D4, not an estimator change); a bad reference
+(the screen, kept on); and a per-turbine relative drift of sd about 0.5 pp that no model class
+removes and that more references average down. The DML framing of C3's plan refresh — covariate
+shift × model error — is confirmed only in its extrapolation extreme (the outage rows); the
+propensity-based corrections built on it (A2) do not work on this data because time is almost
+perfectly predictable from the features, and A1 does not help. v0 is not a zero-level comparator:
+its two paths bracket the power model, and its anemometer path is wrong in its own way. The
+season-matched-baseline arm of the rerun decides between C1 (prefer a pre span covering the post's
+months) and A3 (common-support trimming) as the next estimator change.
+
+---
+
+## CF26 — The prepost matrix's second small run, with every cell reporting: **wind-up tracks the magnitude and misses the level**. The fitted slope is 0.993 to 0.996, while a placebo reading's sd **triples from 0.34 pp to 0.86 pp** as the post period grows from 3 months to 10. Penmanshiel is fixed; the leak is unmoved; the cost model is out by 5 to 9 times
+
+*2026-10-01. `uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run --size small`
+at `82c6398`, on the HPC with 16 workers: 38 cells (Penmanshiel and Kelmarsh one seed each, the
+real HoT T13 campaign), K4, post lengths 3 and 12 months, multipliers +1, 0, −1, both exclusion
+arms. All 38 ok in 33 min. Its candidate is now the committed `small` baseline. The study directory
+holds `cells/*.json`, `cells.csv` and `leak_check.csv`; the numbers below are read from them.*
+
+**1. The Penmanshiel fixes hold, and CF25 §3 and §4 are closed.** All 38 cells ok, **no `unplanned`
+turbine**, and every plan has 4 power references bar Kelmarsh at L12, which has 3 — the floor, met.
+Penmanshiel contributes 5 test turbines where the `1f87f6f` run lost all 18 of its cells. The two
+acceptance tests of C3's step 2 pass.
+
+**2. The method tracks the injected magnitude; what it gets wrong is the level.** Fitting
+`estimate = scale × truth + bias` across each campaign's three multipliers, pooled over both sites:
+
+| arm | post | `line_scale` | `line_bias` |
+|---|---|---|---|
+| main | 3 months | 0.996 ± 0.004 | −0.04 pp ± 0.35 |
+| main | 12 months | 0.993 ± 0.006 | +0.05 pp ± 0.54 |
+
+A slope within 0.7 % of unity on injections of ±4 to ±5.7 pp means the shape of the answer is
+right; essentially all of the error is an offset that does not depend on the upgrade. That is the
+useful framing for everything below — **the problem to solve is the level, not the response.**
+
+**3. Accuracy gets *worse* with a longer post period.** Over the 18 placebo (multiplier 0, truth
+exactly 0) test-turbine readings at each post length:
+
+| post asked | post days delivered | mean | sd | worst |
+|---|---|---|---|---|
+| 3 months | 90–110 | −0.04 pp | **0.34 pp** | 0.68 pp |
+| 12 months | 266–326 | −0.11 pp | **0.86 pp** | 1.68 pp |
+
+More data, a worse answer, so this is not a sampling-noise effect. It is the same quantity
+[CF24](#cf24--balance-the-two-periods-and-two-thirds-of-the-prepost-placebo-bias-disappears-a-whole-farm-whose-pre-and-post-hold-the-same-months-record-for-record-reads-023-pp-against-065-pp-for-six-contiguous-arms--and-every-large-per-turbine-offset-goes-with-it-t17-included-44--034) measures from the other side: a longer post period sits further from the baseline it
+is compared against, and balancing the two periods removes two thirds of the bias. The worst single
+group is Kelmarsh at L12, which reads **+1.10 pp** against a truth of 0 in the `main` arm (+1.37 and
++1.48 in the exclusion arms) — and its references read +0.62 to +0.98 pp over the same window, so
+the bias is common-mode and the references see it.
+
+**4. "L12" is never 12 months.** The data window runs to the last *trial* turbine's works end plus
+the requested length, and the selector then truncates each turbine's span at the first rollout
+turbine whose works fall inside it. Delivered: 266 to 326 days at Penmanshiel, 291 at Kelmarsh,
+where it also costs a power reference. The L axis is therefore confounded with reference
+availability, and the label overstates what was run.
+
+**5. Reference downtime has large leverage, and it is not symmetric about the changeover.**
+Penmanshiel T14 at L12, placebo, reads **−0.37 pp** in `main` and **−1.58 / −1.68 pp** in the two
+exclusion arms. Three drawn outages touch its four references; two fall in the post period (T13
+loses 13 days of August 2018, T07 4 days of June 2018) and one in the pre. That is about **1.3 % of
+its post-period reference records for a 1.3 pp move**. Its own reference-stability readings move by
+at most 0.19 pp over the same change, so **the sanity check does not see what moves the headline** —
+the test estimate is roughly seven times more sensitive to the perturbation than the readings that
+are supposed to police it.
+
+**6. The two exclusion channels disagree on identical data.** `excl_booleans` and `excl_nan` draw
+the same exclusions from the same campaign seed. Across all 141 reference readings their record
+counts are **identical to the record**, and their plans and reference sets are identical too. The
+estimates differ by up to **0.384 pp**, median 0.094 pp. The only difference between the arms is
+whether a held-back reference's `waking` and `normal_operation` booleans are recomputed from the
+unfiltered frame and joined back on. Same rows in, different answer out: a defect, not a data
+effect.
+
+**7. The leak is where CF25 left it** — it was not attempted on this commit, and these numbers
+confirm it rather than revisiting it:
+
+| arm | site | readings | median move | largest move |
+|---|---|---|---|---|
+| main | pen | 40 | 0.123 pp | 0.258 pp |
+| main | kel | 7 | 0.061 pp | 0.202 pp |
+| excl_booleans | pen | 40 | 0.119 pp | 0.304 pp |
+| excl_nan | pen | 40 | 0.119 pp | 0.346 pp |
+
+It is systematic, not noise: the pooled reference mean falls monotonically with the multiplier in
+**every** group (main, all sites, L12: +0.077 → +0.018 → −0.042 pp), which is the signature of the
+upgraded turbines' scaled power reaching the waking booleans.
+
+**8. A second channel, with a different signature: the wake-nadir shift jumps.** Discovered north
+offsets also move with the multiplier, but in discrete steps rather than monotonically —
+Penmanshiel T10 reads −1.216 / −1.316 / **+11.069** degrees across multipliers −1 / 0 / +1 at L3.
+The large movers are all test turbines, whose direction is never a model feature; **power
+references** move by at most 0.744 degrees (median 0.020). Small today, but a pass-4 answer that
+jumps by degrees when nothing geometric has changed is its own problem, tracked as
+[R9](issues_campaigns.md#r9--wake-nadir-northing-refinement-the-pass-4-shift-jumps).
+
+**9. `CELL_COST_S` is out by 5 to 9 times, and the big size is unaffordable as written.**
+
+| site | post | measured mean | `CELL_COST_S` | ratio |
+|---|---|---|---|---|
+| pen | 3 | 847 s | 169 s | **5.0×** |
+| pen | 12 | 1535 s | 169 s | **9.1×** |
+| kel | 3 / 12 | 126 / 185 s | 91 s | 1.4× / 2.0× |
+| hot_t13 | 3 / 12 | 385 / 694 s | 346 s | 1.1× / 2.0× |
+
+`plan --size big --measured <this study>` now projects **17.5 h on 16 workers** against the table's
+11.5 h — and that still prices the 450 synthetic `hot` cells, a third of the matrix, from the
+unmeasured table entry. Note the direction has flipped since CF25 §2, where L12 was *cheaper* than
+L3 because it got one reference; cost follows the reference count, and the references are now
+there. **`small` sets `hot: 0`, so no synthetic Hill of Towie cell has ever run** — the `calibrate`
+size must include one before any big run is projected.
+
+**10. The reference screen never fired.** Zero screened, zero unjudged, zero ejections across all
+38 cells. C3 claims to re-verify R3 in context on a realistic prepost campaign; on this evidence it
+does not exercise it at all.
+
+**11. The real campaign is stable.** Hill of Towie T13 AeroUp reads **+3.04 %** at L3 and **+3.02 %**
+at L12, against reference readings whose mean is +0.35 to +0.42 pp and whose worst is 0.72 to
+1.02 pp. Northing finds 4 changepoints at L3 and 5 at L12 (T11, T12, T19).
+
+---
+
+## CF25 — The prepost matrix's first small run: reference readings move with the injected upgrade by up to **0.43 pp** (median 0.16 pp), and the period selector was taking **one** power reference where three were available on a shorter span
+
+*2026-09-30. `uv run python -m benchmarking.baselines.study_prepost_campaign_matrix run --size small`
+at `682563e`, on the HPC with 16 workers: 38 cells (Penmanshiel and Kelmarsh one seed each, the real
+HoT T13 campaign), K4, post lengths 3 and 12 months, multipliers +1, 0, −1, both exclusion arms.
+All 38 ok in 8.3 min. The study directory holds `cells/*.json`, `cells.csv` and `leak_check.csv`.*
+
+**1. The leak check fails.** A reference's reading should not depend on the multiplier: its data,
+the plan and the record counts are identical across a campaign's three multipliers. It moves anyway,
+monotonically in the multiplier, in every arm and at both sites:
+
+| arm | site | readings | median move | largest move |
+|---|---|---|---|---|
+| main | pen | 17 | 0.137 pp | 0.319 pp |
+| main | kel | 7 | 0.134 pp | 0.255 pp |
+| excl_booleans | pen | 17 | 0.260 pp | 0.430 pp |
+| excl_nan | pen | 17 | 0.177 pp | 0.363 pp |
+
+The worst: Penmanshiel seed 0, L3, test turbine T12, reference T13 reads +1.159% / +1.018% /
++0.729% at multipliers −1 / 0 / +1, on 15038 records each time.
+
+*Suspected channel, not yet confirmed.* A reference reading
+(`PowerModelMethod.reference_uplifts` → `_reference_input`, `benchmarking/baselines/power_model/method.py`)
+keeps the test turbine and every other turbine of the campaign as `wake_only` features, a waking
+boolean at `WAKING_RATED_FRACTION` (5%) of rated power. The upgraded turbines' power is scaled by the
+injection, so rows near the threshold flip only in upgraded runs. If that is the channel, it reaches
+the **test turbines' own estimates** too, through the other upgraded trial turbines, and biases the
+headline, not only the sanity readings.
+
+**2. Cost depends on the reference count, not only on (site, K).** Penmanshiel K4 L3 cells took
+363 s, L12 cells 149 s. L3 plans had four power references and four readings; L12 had one and no
+readings. The `CELL_COST_S` table was measured on L6 to L12 cells alone, so `plan` under-projects
+short posts, and the big size's ~11.5 h is not to be trusted.
+
+**3. One power reference at L12.** The selector ranked span length above the reference count and
+treated the pool rule as a preference only, so for T12 at L12 it took a 360-day post with T13 alone
+over a ~282-day post with four references. Three causes combined:
+- Penmanshiel T08, T11 and T15 have no data from T12's own data start, 2016-07-02.
+- The four other trial turbines are worked inside every span.
+- Seed 0 is a full rollout, and seven more turbines are worked within the long post.
+
+Fixed in `b1beb06`: a chosen span now needs `PlanSettings.min_references` (3) power references, or
+the turbine raises.
+
+**4. Fewer trial turbines would not relieve this.** Replaying every big-matrix draw (HoT 5,
+Penmanshiel 6, Kelmarsh 4 seeds; all K and post lengths) through the selector with complete data
+extents, every test turbine meets the pool rule and none falls below 3 references. Drawing the trial
+size from 1..max−2 instead of 1..max−1 moves the mean references per test turbine by at most 0.1
+(HoT 4.19 → 4.19, Penmanshiel 4.32 → 4.33, Kelmarsh 3.74 → 3.83), and pins Kelmarsh (max 3) to a
+single trial turbine. The pressure comes from real data gaps, which the replay leaves out.
+
+---
+
+## CF24 — Balance the two periods and **two thirds of the prepost placebo bias disappears**: a whole farm whose pre and post hold the same months record for record reads **+0.23 pp** against **+0.65 pp** for six contiguous arms — and every large per-turbine offset goes with it, T17 included (+4.4 → −0.34)
+
+*2026-09-16/17. `benchmarking/campaigns/disguise_probe.py`: two years of Hill of Towie
+(2017-09-01..2019-09-01) cut into alternating day blocks and read twice. The toggle leg takes the
+record as it stands with the odd blocks toggled on; the prepost leg takes it with every timestamp
+remapped, SCADA and reanalysis together, so the even blocks become a contiguous pre period and the
+odd blocks a contiguous post period. Whole farm, T13 the test turbine and all 20 others estimated
+against the rest, screen off, nothing injected, so all 21 readings have a truth of 0. Two whole
+years makes each half a whole year, and the disguise then deals each half the same number of records
+of every calendar month. Compared against six contiguous reference arms (12-month baseline into a
+6-month campaign, changeovers 2018-03 through 2018-09) from `shift_probe references`.*
+
+| | farm mean | median | sd across turbines | worst turbine |
+|---|---|---|---|---|
+| **balanced periods** (prepost leg) | **+0.226 pp** | +0.139 | 0.269 | +0.798 |
+| **balanced periods** (toggle leg) | +0.226 | +0.139 | 0.269 | +0.798 |
+| six contiguous arms | +0.562 … +0.744, mean **+0.653** | +0.21 … +0.47 | 1.09 … 1.54 | T17 at +4.3 … +5.5 |
+
+**Every contiguous arm is positive** — +0.630, +0.611, +0.562, +0.744, +0.706, +0.666 — so the level
+is not one unlucky window.
+
+**What balancing removes.** About two thirds of the level, and nearly all of the between-turbine
+spread: sd falls from 1.1–1.5 pp to 0.26 pp. The large per-turbine offsets are the clearest part —
+T17 reads +4.3 to +5.5 pp across the contiguous arms and **−0.34 pp** here, T13 +2.9 to +3.7 against
++0.18, T12 +2.3 to +2.7 against +0.41. Those offsets are a property of comparing two different
+stretches of calendar time, not of the turbines: a reference that looks badly behaved on a
+contiguous campaign can be well behaved on the same data with the periods interleaved.
+
+**What survives it: about +0.23 pp**, which no amount of seasonal balance removes. That is the same
+quantity the holdout-geometry ladder measures — the sum bias is +0.001% when held-out rows are
+interleaved among training rows and +0.14% at ~1.5-day blocks, which is the geometry this
+construction has.
+
+**The construction checks itself.** `naive_ratio` reads 2.108402 on both legs, identical to the last
+digit: it has no time dependence, so matching to machine precision proves the legs pool the same
+rows into the same two groups. `power_model` agrees with it: **20 of the 21 turbines read bit for
+bit the same on both legs**, and the 21st (T09) differs by 0.008 pp.
+
+That last agreement needs the steps that read the whole timeline at once — the reanalysis alignment
+and northing discovery — settled once on the undisguised record and handed to both legs, which is
+what the probe does. Left to run per leg they do not agree with themselves: northing discovers 6
+changepoints on the interleaved timeline against 2 on the real one, because rearranging the days
+changes what a changepoint search sees, and that alone was a 0.008 pp mean (0.073 pp worst)
+difference between the legs. It is a property of interleaving, not a defect in either step — but it
+means a probe like this one has to hold every whole-timeline step fixed or it measures the step
+instead of the thing it is asking about.
+
+## CF23 — Removing the reference **power-minimum** feature, or **all ERA5 features**, or both, leaves the placebo reference level where it was (+0.58 pp against +0.52 to +0.62 pp): the prepost bias does not live in the auxiliary features, and ERA5's per-turbine effect cancels in the mean
+
+*2026-09-16. Whole-farm reference arm on a contiguous prepost placebo: real Hill of Towie SCADA,
+12-month baseline into a 6-month campaign changing over 2018-09-01, T13 the test turbine and all 20
+others estimated against the rest, nothing injected, reference screen off, campaign-proximity
+weighting off ([CF22](#cf22--the-campaign-proximity-time-decay-weighting-is-now-off-by-default-on-a-record-whose-pre-and-post-periods-are-the-same-days-interleaved--truth-0--it-moved-the-reading-0154-pp-and-with-it-off-the-disguised-prepost-and-toggle-legs-agree-to-the-last-digit)). Every reading's truth is 0. ERA5 is removed as a model feature with
+`era5_hourly_df=None` and still drives the shared northing step; the power minimum is removed by
+unsetting the `active_power_min` role on the column schema, which takes it out of every reference's
+feature block.*
+
+**The tested idea** was that these two groups are the ones whose relationship to the target can
+drift over a campaign for reasons unrelated to any upgrade — a reference's power *minimum* can
+change character with turbine software, and ERA5's relationship to the site can change with local
+exposure such as tree growth or a neighbouring farm — while the target itself drifts only gently
+with normal degradation. A model leaning on a drifting feature would read that drift as uplift.
+
+| arm | 20 references | all 21 turbines |
+|---|---|---|
+| full | **+0.583** pp (median +0.329) | +0.692 |
+| no power minimum | +0.619 (+0.359) | +0.727 |
+| no ERA5 | +0.518 (+0.249) | +0.670 |
+| neither | +0.563 (+0.339) | +0.701 |
+
+The whole spread across the four arms is **0.10 pp**, at the 0.127 pp placebo noise floor
+([CF14](#cf14--missing-data-is-absorbed-within-estimator-noise-with-one-exception-a-reference-that-disappears-from-the-delivery-costs-045-pp-because-it-shrinks-the-pool-rather-than-corrupting-anything-every-crash-named-someone-elses-problem-and-the-misleading-one-was-prepost-only)), so nothing here is distinguishable from nothing.
+
+**Per turbine the two groups behave very differently, which is the useful part.** Dropping the power
+minimum barely moves any turbine (correlation with `full` 0.998, mean absolute change 0.07 pp, worst
+0.22 pp) — it is close to an inert feature at the headline. Dropping ERA5 moves individual turbines
+substantially (correlation 0.951, mean absolute change 0.28 pp, worst 1.37 pp: T18 goes +0.515 →
+−0.852) and yet the farm mean barely moves, because those changes cancel. ERA5 is redistributing
+error between turbines rather than creating or removing a level.
+
+**What it implies.** The bias is not in the auxiliary features, so it is in the reference-power
+relationship itself — the part of the model that cannot be ablated, since it is the estimator. That
+is consistent with the holdout-geometry result: the same rows and weights give a sum bias of +0.001%
+when held-out rows are interleaved among the training rows and +0.47 to +0.58% when they are
+contiguous blocks. Feature choice is not the lever; what the model is asked to extrapolate across is.
+
+## CF22 — The campaign-proximity **time-decay weighting is now off by default**: on a record whose pre and post periods are the same days interleaved — truth 0 — it moved the reading **+0.154 pp**, and with it off the disguised-prepost and toggle legs agree to the last digit
+
+*2026-09-16. `benchmarking/campaigns/disguise_probe.py` (rung 1 of the bottom-up ladder): one
+window of Hill of Towie cut into alternating day blocks, read twice. The toggle leg takes the
+record as it stands with the odd blocks toggled on; the prepost leg takes it with every timestamp
+remapped, SCADA and reanalysis together, so the even blocks become a contiguous pre period and the
+odd blocks a contiguous post period. Nothing is injected, so every turbine's truth is 0, and both
+legs contrast the same rows in the same two groups. Configuration for the numbers below: T13 the
+test turbine of five over 2018-01-01..2018-03-02, one-day blocks, reference screen off, and
+reanalysis lag-matched once over the undisguised record so both legs are handed the same features.*
+
+**The readings, all against a truth of 0:**
+
+| leg | reading |
+|---|---|
+| prepost, weighting on | +0.3493% |
+| prepost, weighting off | +0.1950% |
+| toggle | +0.1950% |
+
+With the weighting off the two legs match exactly — the feature frame (0 of 34 columns differing),
+the outcome, and the train and predict selections are identical, so the prepost path returns
+bit-for-bit what the toggle path does on the same inputs. That is the rung-1 result: there is no
+defect in the prepost path itself. The whole prepost-minus-toggle difference was the weights.
+
+**Why the weighting is a prepost-only lever.** The weights are
+`0.5 ** (days_outside_campaign / half_life)`, distance measured to the *campaign interval*, with
+the adaptive half-life at twice the campaign's duration. In toggle nothing decays at all: the on
+and off rows interleave inside the interval, so every row weighs 1. In prepost every baseline row
+sits outside it, so the baseline is tilted toward the changeover — a 12-month baseline before a
+12-month campaign runs from 0.71 at its oldest row to 1.00 at its newest, and a 12-month baseline
+before a 9.5-month campaign from 0.65. That tilt works against the thing a full-year baseline is
+chosen for, which is covering every season evenly.
+
+**Decision: off by default** — `adaptive_time_decay=False` with `time_decay_half_life_days=None`,
+which is now the shipped configuration. The mechanism stays in the method for anyone who wants it.
+This supersedes the default set by Issue 15 ([F20](findings.md)), which tuned the half-life without
+a placebo that could isolate what the weighting itself contributes.
+
+**Consequences.** Recorded benchmark baselines move and need re-recording. The case the weighting
+was built for is real but different — see [R8](issues_campaigns.md) — and wants a different shape.
 
 ---
 
@@ -493,7 +1315,7 @@ not cleared.
 **The one material effect is pool shrinkage, not corruption.** Compare `ref_empty` (T15 all-NaN for
 30 days — inside the noise) against `ref_absent_entirely` (T15 gone from the whole record —
 +0.45 pp). The difference is not damaged data: it is a **2-reference pool instead of 3**, and
-[CF3](#cf3) already establishes reference count as the dominant accuracy driver. So `power_model`
+[CF3](#cf3--reaching-the-02-farm-target-is-mostly-about-reference-count-not-test-count-going-from-3-to-20-references-halved-power_models-error-before-any-cancellation-and-six-test-turbines-then-took-the-farm-result-to-0148) already establishes reference count as the dominant accuracy driver. So `power_model`
 was reflecting a known effect faithfully; what it never did was **say the pool had shrunk**. The fix
 is announcement, not adaptation — which is why R4's anticipated "discover the available signals and
 adapt" was **not** implemented: it would have converted honest raises into silent estimates.

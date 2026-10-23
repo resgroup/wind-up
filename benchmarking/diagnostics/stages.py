@@ -1,16 +1,23 @@
-"""Analysis-stage folder names for grouping the per-run diagnostic plots.
+"""Folder names for the run's outputs, one per step of ``docs/v1/method.md``.
 
-Plots are written into numbered stage subfolders of ``<run>/plots`` so a reviewer can tell at a
-glance which step of the pipeline a plot describes (feedback 2026-06-26): raw inputs, filtering,
-feature engineering, the data fed to the uplift model, the modelling itself, and the results.
+Part A writes each step's outputs under ``<run>/A_data_preparation/<step>``, Part B under
+``<run>/B_campaign/<step>`` and Part C under ``<run>/C_turbine_measurement/<turbine>/plots/<step>``,
+so a reviewer can relate each output to the method step it describes. The number is the step's
+number in the method.
 """
 
 from __future__ import annotations
 
-INPUTS = "1_inputs"
-FILTER = "2_filter"
-FEATURE_ENG = "3_feature_eng"
-UPLIFT_INPUTS = "4_uplift_inputs"
-UPLIFT_MODELLING = "5_uplift_modelling"
-UPLIFT_RESULTS = "6_uplift_results"
-CONDITIONAL_UPLIFT = "7_conditional_uplift"
+CHANGES = "01_changes"
+OPERATING_STATES = "02_operating_states"
+REANALYSIS = "03_reanalysis"
+NORTHING = "04_northing"
+WAKING = "05_waking"
+FEATURES = "06_features"
+PERIODS = "07_periods"
+CANDIDATES = "08_candidates"
+SCREEN = "09_screen"
+VALID_RECORDS = "11_valid_records"
+RELATE_REFERENCES = "12_relate_references"
+UPLIFT = "13_uplift"
+UPLIFT_DISTRIBUTIONS = "15_uplift_distributions"

@@ -46,9 +46,10 @@ large steps.
 ## The changepoint search
 
 Every step that finds changepoints uses `estimate_north_table`. It takes the circular difference
-between a turbine's direction and a reference over the rows where the turbine is generating and
-available (`yaw_usable`), and searches that residual for step changes by exact dynamic programming
-on a daily grid, then pins each step to native resolution. The residual is first normalised per
+between a turbine's direction and a reference over the rows usable for northing: valid for northing
+in the turbine's operating state (method step 2) and generating above 5% of rated power. It searches
+that residual for step changes by exact dynamic programming on a daily grid, then pins each step to
+native resolution. The residual is first normalised per
 direction sector, so site veer (a turbine reading differently from the reference depending on where
 the wind comes from) is not mistaken for a step. Each segment's offset is the circular median of
 its raw residual, so the correction stays absolute.
@@ -118,8 +119,8 @@ turbine's residual error. A nadir that is unbracketed, not convex, too shallow o
 is rejected.
 
 The figure shows one pair on Hill of Towie: T21 waking T19. Before the shift (red), T19's power and
-wind speed, relative to T21's, reach their nadir 6.3 degrees before T21's northed direction reaches the bearing
-between them. T21's shift of +6.3 degrees moves the nadir onto the bearing (blue).
+wind speed, relative to T21's, reach their nadir 6.2 degrees before T21's northed direction reaches the bearing
+between them. T21's shift of +6.2 degrees moves the nadir onto the bearing (blue).
 
 ![T19's power and wind-speed ratio to T21, binned by T21's direction, before and after the wake-nadir shift](images/northing/wake_nadir_pair_T21_T19.png)
 

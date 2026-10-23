@@ -31,3 +31,8 @@ def test_it_rejects_an_unknown_command(tmp_path: Path) -> None:
 def test_it_rejects_a_missing_declaration_argument() -> None:
     with pytest.raises(SystemExit):
         parse_args(["run"])
+
+
+def test_reference_plots_are_off_unless_asked_for(tmp_path: Path) -> None:
+    assert not parse_args(["run", str(tmp_path / "campaign.yaml")]).reference_plots
+    assert parse_args(["run", str(tmp_path / "campaign.yaml"), "--reference-plots"]).reference_plots
