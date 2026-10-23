@@ -36,9 +36,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Every shared plot, in a sensible reading order. Each takes the context and returns a path
-# (or None when it has nothing to draw for this source).
-_PLOTS: tuple[Callable[[DiagnosticContext], Path | None], ...] = (
+# Every shared plot, in a sensible reading order. Each takes the context and returns a path, a
+# list of paths for a figure drawn per turbine, or None when it has nothing to draw for this source.
+_PLOTS: tuple[Callable[[DiagnosticContext], Path | list[Path] | None], ...] = (
     plot_input_timeline,
     plot_input_coverage,
     plot_filter_coverage,
@@ -73,10 +73,12 @@ def write_common_diagnostics(ctx: DiagnosticContext) -> list[Path]:
     written: list[Path] = []
     for plot in _PLOTS:
         try:
-            path = plot(ctx)
+            result = plot(ctx)
         except Exception:
             logger.exception("diagnostic plot %s failed for %s", plot.__name__, ctx.test_wtg)
             continue
-        if path is not None:
-            written.append(path)
+        if isinstance(result, list):
+            written.extend(result)
+        elif result is not None:
+            written.append(result)
     return written

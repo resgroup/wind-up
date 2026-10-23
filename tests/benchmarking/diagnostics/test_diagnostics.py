@@ -19,7 +19,13 @@ import yaml
 from benchmarking.diagnostics import write_common_diagnostics, write_run_config
 from benchmarking.diagnostics.context import ERA5_WD_COL, ERA5_WS_COL, DiagnosticContext
 from benchmarking.diagnostics.coverage import exclusion_bucket, plot_excluded_fraction
-from benchmarking.diagnostics.curves import _overall_power_factor, _reactive_panel_turbines
+from benchmarking.diagnostics.curves import (
+    _overall_power_factor,
+    _reactive_panel_turbines,
+    plot_ops_curves,
+    plot_ops_curves_excluded,
+    plot_ops_curves_kept,
+)
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.northing import plot_northed_error, plot_northing_error
 from benchmarking.diagnostics.style import series_style
@@ -160,6 +166,80 @@ class TestExcludedRowPlots:
         """Same contract as the other masks: a length mismatch is a caller bug, not a partial plot."""
         ctx = _context(tmp_path, excluded=np.zeros(7, dtype=bool))
         assert write_common_diagnostics(ctx) == []
+
+
+class TestReferenceOpsCurves:
+    """Each reference gets the three operating-curve filter figures too, drawn from its own signals.
+
+    A reference with bad data corrupts a toggle estimate as surely as a bad test turbine, and the
+    test turbine's figures cannot show it. "Kept" for a reference is the method's used timestamps,
+    so the kept-only view shows exactly which of its rows fed the estimate.
+    """
+
+    _REF_FIGURES = ("ops_curves.png", "ops_curves_excluded.png", "ops_curves_kept_only.png")
+
+    @staticmethod
+    def _flagged_context(tmp_path: Path, *, flagged: dict[str, int]) -> DiagnosticContext:
+        """A context whose ``exclude_row`` flag is set every ``flagged[turbine]`` rows; other turbines all False."""
+        columns = dataclasses.replace(_FULL_COLUMNS, exclude_row="excl")
+        ctx = _context(tmp_path, columns=columns)
+        scada = ctx.scada_df.copy()
+        scada["excl"] = False
+        for turbine, every in flagged.items():
+            rows = scada["turbine"] == turbine
+            scada.loc[rows, "excl"] = _excluded_mask(int(rows.sum()), every=every)
+        union = scada.groupby(level=0)["excl"].any().reindex(ctx.index).to_numpy(dtype=bool)
+        return dataclasses.replace(ctx, scada_df=scada, excluded_ts=union)
+
+    @pytest.mark.slow
+    def test_the_three_figures_are_written_per_reference(self, tmp_path: Path) -> None:
+        ctx = self._flagged_context(tmp_path, flagged={"T1": 5, "T2": 7, "T3": 11})
+        written = {p.name: p for p in write_common_diagnostics(ctx)}
+        for ref in ("T2", "T3"):
+            for figure in self._REF_FIGURES:
+                assert f"{ref}_{figure}" in written
+                assert written[f"{ref}_{figure}"].parent.name == "2_filter"
+
+    @pytest.mark.slow
+    def test_the_test_turbine_filenames_are_unchanged(self, tmp_path: Path) -> None:
+        ctx = self._flagged_context(tmp_path, flagged={"T1": 5})
+        names = {p.name for p in write_common_diagnostics(ctx)}
+        assert set(self._REF_FIGURES) <= names
+        assert not {f"T1_{figure}" for figure in self._REF_FIGURES} & names
+
+    def test_a_reference_excluded_figure_uses_its_own_flag(self, tmp_path: Path) -> None:
+        """The run-wide mask is the test turbine's view; a reference that excluded nothing gets no figure."""
+        ctx = self._flagged_context(tmp_path, flagged={"T1": 5, "T2": 7})
+        assert ctx.excluded_mask() is not None
+        names = {p.name for p in plot_ops_curves_excluded(ctx)}
+        assert "ops_curves_excluded.png" in names
+        assert "T2_ops_curves_excluded.png" in names
+        assert "T3_ops_curves_excluded.png" not in names
+
+    def test_a_reference_flag_is_read_per_turbine(self, tmp_path: Path) -> None:
+        ctx = self._flagged_context(tmp_path, flagged={"T1": 5, "T2": 7})
+        t2 = ctx.turbine_excluded_mask("T2")
+        assert t2 is not None
+        np.testing.assert_array_equal(t2, _excluded_mask(300, every=7))
+        assert ctx.turbine_excluded_mask("T3") is None
+
+    def test_no_reference_excluded_figures_without_an_exclusion_concept(self, tmp_path: Path) -> None:
+        ctx = _context(tmp_path)
+        assert plot_ops_curves_excluded(ctx) == []
+
+    def test_a_reference_without_wind_speed_draws_nothing_for_itself(self, tmp_path: Path) -> None:
+        ctx = _context(tmp_path)
+        scada = ctx.scada_df.copy()
+        scada.loc[scada["turbine"] == "T3", "ws"] = np.nan
+        ctx = dataclasses.replace(ctx, scada_df=scada)
+        names = {p.name for p in [*plot_ops_curves(ctx), *plot_ops_curves_kept(ctx)]}
+        assert {
+            "ops_curves.png",
+            "T2_ops_curves.png",
+            "ops_curves_kept_only.png",
+            "T2_ops_curves_kept_only.png",
+        } <= names
+        assert not {n for n in names if n.startswith("T3_")}
 
 
 @pytest.mark.slow

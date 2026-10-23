@@ -116,6 +116,18 @@ class DiagnosticContext:
         mask = np.asarray(self.excluded_ts, dtype=bool)
         return mask if mask.any() else None
 
+    def turbine_excluded_mask(self, turbine: str) -> npt.NDArray[np.bool_] | None:
+        """One turbine's own ``ColumnSchema.exclude_row`` flags as a bool mask on the unique index.
+
+        ``None`` when the method has no exclusion concept (``excluded_ts`` unset), the flag column
+        is absent, or the turbine flagged nothing. Rows the turbine lacks count as not excluded.
+        """
+        if self.excluded_ts is None or not self.has_column(self.columns.exclude_row):
+            return None
+        flags = self.turbine_series(turbine, self.columns.exclude_row)
+        mask = flags.fillna(0.0).to_numpy(dtype=float) != 0.0
+        return mask if mask.any() else None
+
     def references(self) -> list[str]:
         """Sorted reference turbine names (every turbine present except the test turbine)."""
         return sorted(t for t in self.scada_df[self.turbine_col].unique() if t != self.test_wtg)

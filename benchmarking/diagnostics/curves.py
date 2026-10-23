@@ -1,16 +1,24 @@
-"""Operating-curve and reactive-power diagnostics for the test turbine (feedback 2026-06-26).
+"""Operating-curve and reactive-power diagnostics (feedback 2026-06-26).
 
 These are SCADA normal-operation diagnostics, so they use the **turbine's own** wind speed (the
 operationally meaningful signal), not a reference mean — even though own wind speed is never a
 *model feature* (it is post-treatment, design-note §3). Columns are labelled by their original
 source-native names.
 
+The three filter-stage figures are drawn for the test turbine and again for every reference, each
+from that turbine's own signals, since a reference with bad data spoils an estimate as surely as
+a bad test turbine. The test turbine's files keep their bare names; a reference's are prefixed
+``{ref}_``. "Kept" is the method's used timestamps for every turbine, so a reference's kept-only
+view shows exactly which of its rows fed the estimate.
+
 * :func:`plot_ops_curves` — a 2x3 figure (power curve; pitch/rpm vs power; pitch/rpm vs wind
   speed) coloured kept vs removed, so it is both the operating-curve view and the filter check
   (stage: filter).
-* :func:`plot_ops_curves_excluded` — the same figure coloured kept vs caller-excluded (stage: filter).
-* :func:`plot_curves_by_upgrade` — pitch/rpm/power vs wind speed split baseline vs upgraded
-  (stage: uplift inputs).
+* :func:`plot_ops_curves_kept` — the same figure, used rows only (stage: filter).
+* :func:`plot_ops_curves_excluded` — the same figure coloured kept vs caller-excluded, each
+  turbine by its own ``exclude_row`` flag (stage: filter).
+* :func:`plot_curves_by_upgrade` — pitch/rpm/power vs wind speed split baseline vs upgraded, test
+  turbine only (stage: uplift inputs).
 * :func:`plot_reactive_vs_active` / :func:`plot_power_factor` — reactive-power behaviour, per
   turbine (stage: inputs).
 """
@@ -42,18 +50,19 @@ _MAX_REACTIVE_PANELS = 9
 Segments = list[tuple[str, np.ndarray, str]]
 
 
-def _own_ws(ctx: DiagnosticContext) -> np.ndarray | None:
-    """Return the test turbine's own wind speed, or None if too little of it to plot a curve against."""
-    ws = ctx.test_series(ctx.columns.wind_speed).to_numpy(dtype=float)
+def _own_ws(ctx: DiagnosticContext, turbine: str) -> np.ndarray | None:
+    """Return a turbine's own wind speed, or None if too little of it to plot a curve against."""
+    ws = ctx.turbine_series(turbine, ctx.columns.wind_speed).to_numpy(dtype=float)
     return ws if np.isfinite(ws).sum() >= _MIN_FINITE else None
 
 
-def _ws_label(ctx: DiagnosticContext) -> str:
-    return f"{ctx.columns.wind_speed} @ {ctx.test_wtg}"
+def _sig_label(col: str, turbine: str) -> str:
+    return f"{col} @ {turbine}"
 
 
-def _sig_label(ctx: DiagnosticContext, col: str) -> str:
-    return f"{col} @ {ctx.test_wtg}"
+def _prefixed(ctx: DiagnosticContext, turbine: str, filename: str) -> str:
+    """Return ``filename`` bare for the test turbine, prefixed with the turbine's name for a reference."""
+    return filename if turbine == ctx.test_wtg else f"{turbine}_{filename}"
 
 
 def _segmented_panel(
@@ -72,6 +81,7 @@ def _ops_pair(
     fig: plt.Figure,
     grid: object,
     *,
+    turbine: str,
     col: int,
     x: np.ndarray,
     x_label: str,
@@ -86,22 +96,22 @@ def _ops_pair(
         if sig is None or not ctx.has_column(sig):
             ax.set_visible(False)
             continue
-        y = ctx.test_series(sig).to_numpy(dtype=float)
-        _segmented_panel(ax, x, y, segments, xlabel=x_label, ylabel=_sig_label(ctx, sig))
+        y = ctx.turbine_series(turbine, sig).to_numpy(dtype=float)
+        _segmented_panel(ax, x, y, segments, xlabel=x_label, ylabel=_sig_label(sig, turbine))
     ax_top.tick_params(labelbottom=False)
     ax_top.set_xlabel("")
 
 
 def _ops_curve_figure(
-    ctx: DiagnosticContext, *, segments: Segments, title: str, filename: str, stage: str
+    ctx: DiagnosticContext, *, turbine: str, segments: Segments, title: str, filename: str, stage: str
 ) -> Path | None:
-    """Build the shared 2x3 operating-curve figure: power curve, plus pitch(top)/rpm(bottom) vs power and vs ws."""
-    ws = _own_ws(ctx)
+    """Build one turbine's 2x3 operating-curve figure: power curve, plus pitch(top)/rpm(bottom) vs power and vs ws."""
+    ws = _own_ws(ctx, turbine)
     if ws is None or not ctx.has_column(ctx.columns.active_power):
         return None
     cols = ctx.columns
-    power = ctx.test_series(cols.active_power).to_numpy(dtype=float)
-    ws_label, power_label = _ws_label(ctx), _sig_label(ctx, cols.active_power)
+    power = ctx.turbine_series(turbine, cols.active_power).to_numpy(dtype=float)
+    ws_label, power_label = _sig_label(cols.wind_speed, turbine), _sig_label(cols.active_power, turbine)
 
     fig = plt.figure(figsize=(18, 9))
     grid = fig.add_gridspec(2, 3)
@@ -109,60 +119,79 @@ def _ops_curve_figure(
     _segmented_panel(ax_pc, ws, power, segments, xlabel=ws_label, ylabel=power_label)
     ax_pc.set_title("power curve")
     ax_pc.legend()
-    _ops_pair(
-        ctx, fig, grid, col=1, x=power, x_label=power_label, segments=segments, top=cols.pitch, bottom=cols.gen_rpm
-    )
-    _ops_pair(ctx, fig, grid, col=2, x=ws, x_label=ws_label, segments=segments, top=cols.pitch, bottom=cols.gen_rpm)
+    for col, (x, x_label) in enumerate(((power, power_label), (ws, ws_label)), start=1):
+        _ops_pair(
+            ctx,
+            fig,
+            grid,
+            turbine=turbine,
+            col=col,
+            x=x,
+            x_label=x_label,
+            segments=segments,
+            top=cols.pitch,
+            bottom=cols.gen_rpm,
+        )
 
-    fig.suptitle(f"{ctx.test_wtg}: {title}")
-    path = ctx.stage_dir(stage) / filename
+    fig.suptitle(f"{turbine}: {title}")
+    path = ctx.stage_dir(stage) / _prefixed(ctx, turbine, filename)
     save_fig(fig, path)
     return path
 
 
-def plot_ops_curves(ctx: DiagnosticContext) -> Path | None:
-    """Draw the operating-curve figure coloured kept vs removed (the filter check)."""
+def _used_figure_per_turbine(ctx: DiagnosticContext, *, segments: Segments, title: str, filename: str) -> list[Path]:
+    """Draw a filter-stage figure of the used-rows segmentation for the test turbine and each reference."""
+    paths = [
+        _ops_curve_figure(ctx, turbine=turbine, segments=segments, title=title, filename=filename, stage=stages.FILTER)
+        for turbine in (ctx.test_wtg, *ctx.references())
+    ]
+    return [p for p in paths if p is not None]
+
+
+def plot_ops_curves(ctx: DiagnosticContext) -> list[Path]:
+    """Draw the operating-curve figure coloured kept vs removed (the filter check), per turbine."""
     used = np.asarray(ctx.used_ts, dtype=bool)
     segments: Segments = [("kept", used, "C0"), ("removed", ~used, "C3")]
-    return _ops_curve_figure(
-        ctx,
-        segments=segments,
-        title="operating curves (kept vs removed by the row filter)",
-        filename="ops_curves.png",
-        stage=stages.FILTER,
+    return _used_figure_per_turbine(
+        ctx, segments=segments, title="operating curves (kept vs removed by the row filter)", filename="ops_curves.png"
     )
 
 
-def plot_ops_curves_kept(ctx: DiagnosticContext) -> Path | None:
-    """Draw the operating-curve figure for the KEPT rows only (so removed points cannot mask them)."""
+def plot_ops_curves_kept(ctx: DiagnosticContext) -> list[Path]:
+    """Draw the operating-curve figure for the KEPT rows only (so removed points cannot mask them), per turbine."""
     used = np.asarray(ctx.used_ts, dtype=bool)
     segments: Segments = [("kept", used, "C0")]
-    return _ops_curve_figure(
-        ctx,
-        segments=segments,
-        title="operating curves (used rows only)",
-        filename="ops_curves_kept_only.png",
-        stage=stages.FILTER,
+    return _used_figure_per_turbine(
+        ctx, segments=segments, title="operating curves (used rows only)", filename="ops_curves_kept_only.png"
     )
 
 
-def plot_ops_curves_excluded(ctx: DiagnosticContext) -> Path | None:
-    """Draw the operating-curve figure coloured kept vs caller-excluded (``ColumnSchema.exclude_row``).
+def plot_ops_curves_excluded(ctx: DiagnosticContext) -> list[Path]:
+    """Draw the operating-curve figure coloured kept vs caller-excluded (``ColumnSchema.exclude_row``), per turbine.
 
     The same view as :func:`plot_ops_curves`, so a special operating mode reads as a band in
-    pitch/rpm. ``None`` when the method has no exclusion mask or excluded nothing.
+    pitch/rpm. The test turbine is coloured by the run-wide ``excluded_ts`` mask, each reference
+    by its own flag; a turbine with nothing excluded gets no figure, so the list is empty when
+    the method has no exclusion concept.
     """
-    excluded = ctx.excluded_mask()
-    if excluded is None:
-        return None
-    segments: Segments = [("kept", ~excluded, "C0"), ("excluded", excluded, "C3")]
-    return _ops_curve_figure(
-        ctx,
-        segments=segments,
-        title=f"operating curves (kept vs excluded by the caller's flag; {excluded.sum()} rows excluded)",
-        filename="ops_curves_excluded.png",
-        stage=stages.FILTER,
-    )
+    masks = [(ctx.test_wtg, ctx.excluded_mask())]
+    masks += [(ref, ctx.turbine_excluded_mask(ref)) for ref in ctx.references()]
+    paths: list[Path | None] = []
+    for turbine, excluded in masks:
+        if excluded is None:
+            continue
+        segments: Segments = [("kept", ~excluded, "C0"), ("excluded", excluded, "C3")]
+        paths.append(
+            _ops_curve_figure(
+                ctx,
+                turbine=turbine,
+                segments=segments,
+                title=f"operating curves (kept vs excluded by the caller's flag; {excluded.sum()} rows excluded)",
+                filename="ops_curves_excluded.png",
+                stage=stages.FILTER,
+            )
+        )
+    return [p for p in paths if p is not None]
 
 
 def plot_curves_by_upgrade(ctx: DiagnosticContext) -> Path | None:
@@ -171,6 +200,7 @@ def plot_curves_by_upgrade(ctx: DiagnosticContext) -> Path | None:
     segments: Segments = [("baseline", used & ctx.baseline_ts, "C0"), ("upgraded", used & ctx.upgraded_ts, "C1")]
     return _ops_curve_figure(
         ctx,
+        turbine=ctx.test_wtg,
         segments=segments,
         title="operating curves by upgrade state (used rows)",
         filename="ops_curves_by_upgrade.png",
