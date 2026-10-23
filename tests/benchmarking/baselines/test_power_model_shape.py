@@ -124,8 +124,9 @@ class TestReferenceGate:
     def test_a_bin_shaped_like_the_references_reads_the_headline(self) -> None:
         records = _records(500, low=0.04, high=0.01)
         overall = (500 * 1.04 + 1500 * 1.01) / 2000 - 1
-        references = np.array([[0.04 - overall, 0.01 - overall]] * 3)
-        result = _shape(records, headline=0.02, reference_deviations=references, level_sigma=0.001)
+        # the references agree to within a small spread
+        references = np.array([[0.04 - overall, 0.01 - overall]] * 3) + np.array([[-0.001], [0.0], [0.001]])
+        result = _shape(records, headline=0.02, reference_deviations=references)
         for label in ("(-100.0, 1000.0]", "(1000.0, 2100.0]"):
             row = _row(result.frame, "predicted_power", label)
             assert not row["kept"]
@@ -135,8 +136,8 @@ class TestReferenceGate:
         records = _records(500, low=0.04, high=0.01)
         overall = (500 * 1.04 + 1500 * 1.01) / 2000 - 1
         # the references share the high bin's deviation but read flat in the low bin
-        references = np.array([[0.0, 0.01 - overall]] * 3)
-        result = _shape(records, headline=0.0, reference_deviations=references, level_sigma=0.001)
+        references = np.array([[0.0, 0.01 - overall]] * 3) + np.array([[-0.001], [0.0], [0.001]])
+        result = _shape(records, headline=0.0, reference_deviations=references)
         low = _row(result.frame, "predicted_power", "(-100.0, 1000.0]")
         high = _row(result.frame, "predicted_power", "(1000.0, 2100.0]")
         assert low["kept"]
@@ -144,9 +145,9 @@ class TestReferenceGate:
         assert low["p50_uplift"] - high["p50_uplift"] == pytest.approx(0.04 - overall)
         assert (500 * low["p50_uplift"] + 1500 * high["p50_uplift"]) / 2000 == pytest.approx(0.0, abs=1e-12)
 
-    def test_a_deviation_inside_the_level_sigma_is_not_kept(self) -> None:
+    def test_the_level_sigma_does_not_enter_the_gate(self) -> None:
         result = _shape(_records(500, low=0.04, high=0.01), headline=0.0, level_sigma=0.05)
-        assert not _row(result.frame, "predicted_power", "(-100.0, 1000.0]")["kept"]
+        assert _row(result.frame, "predicted_power", "(-100.0, 1000.0]")["kept"]
 
     def test_the_references_spread_joins_the_bin_sigma(self) -> None:
         records = _records(500, low=0.04, high=0.01)

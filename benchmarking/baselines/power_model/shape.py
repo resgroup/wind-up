@@ -4,8 +4,9 @@ The after period's records are binned by the test turbine's predicted (counterfa
 forward uplift ``sum(actual) / sum(predicted) - 1`` is measured where the bin holds enough hours, and the
 measured bins are shifted by one constant so that, weighted by predicted energy, they combine to the
 headline. A measured bin keeps its own uplift only where its deviation from the overall uplift differs
-from the references' mean deviation by more than :data:`GATE_Z` sigma; the others read the headline,
-and every measured bin then moves by one more constant so the shape still combines to the headline.
+from the references' mean deviation by more than :data:`GATE_Z` times its sampling sigma and the
+references' spread in quadrature; the others read the headline, and every measured bin then moves by
+one more constant so the shape still combines to the headline.
 Each record carries its power bin's uplift (the headline where its bin is not measured), and any other
 axis's bin reports the predicted-energy-weighted mean over its records.
 
@@ -296,7 +297,7 @@ def uplift_shape(
     ref_mean, ref_spread = reference_spread(reference_deviations, n_bins=n_power)
     spread = np.nan_to_num(ref_spread)
     deviation = power_deviations(a, c, power_edges=power_edges, min_records=min_records)
-    gate_sigma = np.sqrt(np.nan_to_num(power_sigma) ** 2 + level_sigma**2 + spread**2)
+    gate_sigma = np.sqrt(np.nan_to_num(power_sigma) ** 2 + spread**2)
     with np.errstate(invalid="ignore"):
         kept = measured & (np.abs(deviation - np.nan_to_num(ref_mean)) > GATE_Z * gate_sigma)
     point = estimate(ones, kept)

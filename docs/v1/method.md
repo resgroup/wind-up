@@ -641,9 +641,9 @@ distributions say what shape the uplift has; they never move the headline, and t
   references too, which have no uplift. Each kept reference of step 13 is measured the same way, and
   each power bin's deviation from its own overall uplift is recorded. A measured bin of the subject
   turbine keeps its own uplift only where its deviation differs from the references' mean deviation by
-  more than two sigma, the sigma joining the bin's sampling sigma, the headline's reference and
-  systematic components and the references' spread of deviations in that bin (step 14); the mean and
-  spread need two references. Every other measured bin carries the headline, and all the measured bins
+  more than two sigma, the sigma joining the bin's sampling sigma and the references' spread of
+  deviations in that bin (step 14); the headline's reference and systematic components move every bin
+  alike, so they do not enter the test. The mean and spread need two references. Every other measured bin carries the headline, and all the measured bins
   then move by one more constant so that they still combine to the headline. The references' mean is a
   test, never subtracted.
 - iii. **The cast to the other axes.** Each record carries its power bin's uplift, and a bin of any other
@@ -762,7 +762,10 @@ Decided so far, on the prepost campaign matrix:
   gate, then one constant to restore the headline, did best: RMSE 1.16 pp (flat headline 1.81), lowest
   bin −1.0 pp, free-stream 3–4 m/s −0.9 pp (from −2.4), and 80 % of bin errors within one sigma once
   the references' spread joined it (63 % without). Re-shifting only the kept bins was worse (1.31 pp),
-  and setting the others to the headline without restoring it left the total up to 1 pp off.
+  and setting the others to the headline without restoring it left the total up to 1 pp off. Leaving
+  the headline's level sigma out of the gate's sigma kept more bins (31 % against 25 %) and did better
+  again: RMSE 1.10 pp, free-stream above 12 m/s 0.4–0.9 pp against 1.1–1.2, 82 % covered; on the real
+  T13 and TuneUp campaigns the gate with it had kept 0–3 of 11 bins and flattened clear declining shapes.
 - **Step 14: $\rho = 0.5$.** Re-scored on run 7, $\rho = 0$ (plain quadrature) covered 82 % of the errors
   within one sigma, $\rho = 0.5$ 76 % (95 % within two sigma, as a normal error would) and $\rho = 1$
   64 %.
