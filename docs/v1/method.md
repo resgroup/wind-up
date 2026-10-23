@@ -667,6 +667,11 @@ distributions say what shape the uplift has; they never move the headline, and t
   bins is shifted, and where any bin differs by more than two sigma of the difference the subset is
   flagged: the variable then has an effect beyond restating the power dependence.
 
+> **TODO (no change at rated).** Most upgrades are not expected to change rated power. When the
+> analyst declares that, and the top predicted-power bin reads within its sigma of 0 %, set that bin
+> to 0 % and let the one-constant shift of i move the other measured bins so that the shape still
+> combines to the headline. This changes the distributions only, never the headline.
+
 Each bin is reported with its uncertainty (step 14). The subject turbine's own signals are never an
 axis, and neither is ERA5, which may be missing for the last months of a live campaign. An upgrade
 whose effect varies with wind speed above rated cannot be told apart by the predicted-power axis, and
@@ -702,7 +707,10 @@ correction removes, and is no longer a check that the corrected test turbine upl
 > into whole-site distributions, bin by bin on each axis, weighted by each turbine's counterfactual energy
 > in the bin, so the whole-site results carry the uplift against free-stream wind speed a
 > pre-construction model needs. How the bins' sigmas combine is open: the turbines share references,
-> so their errors are partly correlated; taking them as fully correlated is the cautious choice.
+> so their errors are partly correlated; taking them as fully correlated is the cautious choice. Each
+> bin also reports its gain in kW (the uplift times the bin's mean counterfactual power) beside the
+> percentage: near cut-in a gain of a few kW on a base of tens of kW reads as a large percentage, and a
+> pre-construction model takes either.
 
 ### 17. Estimate the annual energy production uplift
 
