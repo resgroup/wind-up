@@ -53,6 +53,7 @@ from benchmarking.baselines.power_model.shape import (
     PREDICTED_POWER,
     ShapeResult,
     freestream_scale,
+    power_deviations,
     reference_wind_speed_drift,
     uplift_shape,
 )
@@ -117,6 +118,9 @@ _DEFAULT_AIR_DENSITY = 1.225
 _ANEMOMETER_DRIFT_THRESHOLD = 0.03
 # The predicted-power bin counts a subset's shape may use, tried from the most.
 _SUBSET_POWER_BINS = (6, 5, 4)
+# A measurement's deviation of each predicted-power bin from its overall uplift, one column per bin
+# numbered from the lowest, carried with its reading so a test turbine can read its references' shape.
+SHAPE_PREFIX = "power_shape_"
 
 # The headline's block bootstrap (method step 14): the block length its sigma is reported at, and
 # the lengths it is also recorded at.
@@ -186,11 +190,11 @@ def is_reading_column(name: object) -> bool:
     """Whether ``name`` is a column a measurement's reading carries beside its uplift.
 
     These are ``sigma``, the block-length sweep ``sigma_block_<h>h``, :data:`REVERSAL_COLUMNS`,
-    :data:`CORRECTION_COLUMNS` and :data:`HOLDOUT_COLUMNS`.
+    :data:`CORRECTION_COLUMNS`, :data:`HOLDOUT_COLUMNS` and the ``power_shape_<i>`` deviations.
     """
     return (
         name == "sigma"
-        or str(name).startswith("sigma_block_")
+        or str(name).startswith(("sigma_block_", SHAPE_PREFIX))
         or name in REVERSAL_COLUMNS
         or name in CORRECTION_COLUMNS
         or name in HOLDOUT_COLUMNS
@@ -364,6 +368,25 @@ def _reading(output: MethodOutput) -> dict[str, float]:
         row = output.uncertainty_diagnostics.iloc[0]
         reading.update({str(c): float(row[c]) for c in row.index if is_reading_column(c) and c != "sigma"})
     return reading
+
+
+def _kept_shape_deviations(reference_uplifts: pd.DataFrame | None) -> np.ndarray | None:
+    """Return the ``power_shape_<i>`` deviations of the references the headline correction keeps, one row each."""
+    if reference_uplifts is None or reference_uplifts.empty:
+        return None
+    columns = sorted(
+        (c for c in reference_uplifts.columns if str(c).startswith(SHAPE_PREFIX)),
+        key=lambda c: int(str(c).removeprefix(SHAPE_PREFIX)),
+    )
+    if not columns:
+        return None
+    rows = reference_uplifts
+    uplift = rows["uplift"].to_numpy(dtype=float)
+    kept = np.isfinite(uplift) & (uplift > -1.0)
+    for flag in ("screened", "unjudged"):
+        if flag in rows.columns:
+            kept &= ~rows[flag].astype(bool).to_numpy()
+    return rows.loc[kept, columns].to_numpy(dtype=float)
 
 
 def _with_sigmas(passes: pd.DataFrame, readings: dict[str, dict[str, float]]) -> pd.DataFrame:
@@ -854,6 +877,7 @@ class PowerModelMethod:
                     holdout=holdout.get("sigma_holdout", 0.0),
                     correlation=self.systematic_correlation,
                 ),
+                reference_deviations=_kept_shape_deviations(reference_uplifts),
                 run_dir=run_dir,
             )
         return MethodOutput(
@@ -869,6 +893,7 @@ class PowerModelMethod:
                         **reversal,
                         **correction,
                         **holdout,
+                        **self._shape_deviations(fit, timebase=timebase),
                     }
                 ]
             ),
@@ -1096,12 +1121,13 @@ class PowerModelMethod:
         index: pd.DatetimeIndex,
         timebase: pd.Timedelta,
         level_sigma: float,
+        reference_deviations: np.ndarray | None,
         run_dir: Path | None,
     ) -> ShapeResult | None:
         """Return the uplift distributions of method step 15 and write their diagnostics.
 
-        Each bin's ``sigma_uplift`` is its sampling sigma joined in quadrature with ``level_sigma``,
-        the headline's reference and holdout terms. ``None`` without an after-period record.
+        ``level_sigma`` is the headline's reference and holdout terms; ``reference_deviations`` the kept
+        references' power-bin deviations the shape is gated against. ``None`` without an after-period record.
         """
         times = index[upgraded_sel]
         if times.empty:
@@ -1126,17 +1152,17 @@ class PowerModelMethod:
             subsets={k: v for k, v in axes.items() if k in self.subset_conditions},
             subset_power_edges={n: [rated * (-0.05 + 1.1 * i / n) for i in range(n + 1)] for n in _SUBSET_POWER_BINS},
             headline=headline,
+            reference_deviations=reference_deviations,
+            level_sigma=level_sigma,
             min_hours=self.shape_min_hours,
             hours_per_record=timebase / pd.Timedelta(hours=1),
-            period_start=times.min(),
-            period_end=times.max(),
             timebase=timebase,
             block_hours=self.block_hours,
             n_resamples=self.n_resamples,
             seed=self.bootstrap_seed,
         )
         result = ShapeResult(
-            frame=result.frame.assign(sigma_uplift=np.hypot(result.frame["sigma_sampling"], level_sigma)),
+            frame=result.frame,
             subsets=result.subsets.assign(sigma_uplift=np.hypot(result.subsets["sigma_sampling"], level_sigma)),
             labels=result.labels.rename(columns=label_column),
         )
@@ -1153,6 +1179,16 @@ class PowerModelMethod:
         if run_dir is not None:
             self._write_shape(mi, run_dir=run_dir, shape=result, drift=drift, scale=scale)
         return result
+
+    def _shape_deviations(self, fit: dict[str, Any], *, timebase: pd.Timedelta) -> dict[str, float]:
+        """Return the after period's :func:`power_deviations` as ``power_shape_<i>`` columns."""
+        deviations = power_deviations(
+            fit["y_upgraded"],
+            fit["pred_upgraded"],
+            power_edges=condition_bins(PREDICTED_POWER, rated_power_kw=self.baseline_rated_power_kw),
+            min_records=self.shape_min_hours / (timebase / pd.Timedelta(hours=1)),
+        )
+        return {f"{SHAPE_PREFIX}{i}": float(d) for i, d in enumerate(deviations)}
 
     def _shape_axes(
         self,

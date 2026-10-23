@@ -10,6 +10,8 @@ from benchmarking.baselines.power_model.shape import (
     bin_codes,
     block_weights,
     freestream_scale,
+    power_deviations,
+    reference_spread,
     reference_wind_speed_drift,
     uplift_shape,
 )
@@ -37,8 +39,8 @@ def _shape(records: dict[str, object], *, headline: float, **kwargs: object) -> 
         "headline": headline,
         "min_hours": MIN_HOURS,
         "hours_per_record": HOURS,
-        "period_start": times.min(),  # type: ignore[attr-defined]
-        "period_end": times.max(),  # type: ignore[attr-defined]
+        "reference_deviations": None,
+        "level_sigma": 0.0,
         "timebase": pd.Timedelta(minutes=10),
         "block_hours": 24.0,
         "n_resamples": 50,
@@ -90,6 +92,70 @@ class TestMeasuredShape:
     def test_each_bin_reports_its_hours(self) -> None:
         result = _shape(_records(500, low=0.04, high=0.01), headline=0.0)
         assert _row(result.frame, "predicted_power", "(-100.0, 1000.0]")["hours"] == pytest.approx(500 * HOURS)
+
+
+class TestPowerDeviations:
+    def test_each_bin_reads_its_uplift_less_the_overall_uplift(self) -> None:
+        records = _records(500, low=0.04, high=0.01)
+        overall = (500 * 1.04 + 1500 * 1.01) / 2000 - 1
+        deviations = power_deviations(
+            records["actual"], records["counterfactual"], power_edges=EDGES, min_records=MIN_HOURS / HOURS
+        )
+        assert deviations == pytest.approx([0.04 - overall, 0.01 - overall])
+
+    def test_a_bin_under_the_minimum_records_is_nan(self) -> None:
+        records = _records(100, low=0.04, high=0.01)
+        deviations = power_deviations(
+            records["actual"], records["counterfactual"], power_edges=EDGES, min_records=MIN_HOURS / HOURS
+        )
+        assert np.isnan(deviations).all()
+
+
+class TestReferenceSpread:
+    def test_a_bin_needs_two_references(self) -> None:
+        mean, spread = reference_spread(np.array([[0.01, np.nan], [0.03, 0.02]]), n_bins=2)
+        assert mean[0] == pytest.approx(0.02)
+        assert spread[0] == pytest.approx(np.std([0.01, 0.03], ddof=1))
+        assert np.isnan(mean[1])
+        assert np.isnan(spread[1])
+
+
+class TestReferenceGate:
+    def test_a_bin_shaped_like_the_references_reads_the_headline(self) -> None:
+        records = _records(500, low=0.04, high=0.01)
+        overall = (500 * 1.04 + 1500 * 1.01) / 2000 - 1
+        references = np.array([[0.04 - overall, 0.01 - overall]] * 3)
+        result = _shape(records, headline=0.02, reference_deviations=references, level_sigma=0.001)
+        for label in ("(-100.0, 1000.0]", "(1000.0, 2100.0]"):
+            row = _row(result.frame, "predicted_power", label)
+            assert not row["kept"]
+            assert row["p50_uplift"] == pytest.approx(0.02)
+
+    def test_a_bin_unlike_the_references_keeps_its_uplift_and_the_shape_still_meets_the_headline(self) -> None:
+        records = _records(500, low=0.04, high=0.01)
+        overall = (500 * 1.04 + 1500 * 1.01) / 2000 - 1
+        # the references share the high bin's deviation but read flat in the low bin
+        references = np.array([[0.0, 0.01 - overall]] * 3)
+        result = _shape(records, headline=0.0, reference_deviations=references, level_sigma=0.001)
+        low = _row(result.frame, "predicted_power", "(-100.0, 1000.0]")
+        high = _row(result.frame, "predicted_power", "(1000.0, 2100.0]")
+        assert low["kept"]
+        assert not high["kept"]
+        assert low["p50_uplift"] - high["p50_uplift"] == pytest.approx(0.04 - overall)
+        assert (500 * low["p50_uplift"] + 1500 * high["p50_uplift"]) / 2000 == pytest.approx(0.0, abs=1e-12)
+
+    def test_a_deviation_inside_the_level_sigma_is_not_kept(self) -> None:
+        result = _shape(_records(500, low=0.04, high=0.01), headline=0.0, level_sigma=0.05)
+        assert not _row(result.frame, "predicted_power", "(-100.0, 1000.0]")["kept"]
+
+    def test_the_references_spread_joins_the_bin_sigma(self) -> None:
+        records = _records(500, low=0.04, high=0.01)
+        references = np.array([[0.01, 0.0], [0.03, 0.0]])
+        result = _shape(records, headline=0.0, reference_deviations=references, level_sigma=0.002)
+        row = _row(result.frame, "predicted_power", "(-100.0, 1000.0]")
+        assert row["sigma_reference"] == pytest.approx(np.std([0.01, 0.03], ddof=1))
+        expected = np.sqrt(row["sigma_sampling"] ** 2 + 0.002**2 + row["sigma_reference"] ** 2)
+        assert row["sigma_uplift"] == pytest.approx(expected)
 
 
 class TestCast:

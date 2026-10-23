@@ -272,8 +272,20 @@ def _axis_figure(rows: pd.DataFrame, *, condition: str, test_wtg: str) -> plt.Fi
     uplift = 100 * rows["p50_uplift"].to_numpy(dtype=float)
     sigma = 100 * rows["sigma_uplift"].to_numpy(dtype=float)
     thin = rows["thin"].to_numpy(dtype=bool)
+    kept = rows["kept"].to_numpy(dtype=bool) if "kept" in rows.columns else np.ones(len(rows), dtype=bool)
     fig, (ax, ax_hours) = plt.subplots(2, 1, figsize=(11, 8), sharex=True, height_ratios=[3, 1])
-    ax.errorbar(x[~thin], uplift[~thin], yerr=sigma[~thin], fmt="o", color="C0", capsize=3, label="uplift ± 1 sigma")
+    own = ~thin & kept
+    ax.errorbar(x[own], uplift[own], yerr=sigma[own], fmt="o", color="C0", capsize=3, label="uplift ± 1 sigma")
+    if (~thin & ~kept).any():
+        ax.errorbar(
+            x[~thin & ~kept],
+            uplift[~thin & ~kept],
+            yerr=sigma[~thin & ~kept],
+            fmt="o",
+            color="0.55",
+            capsize=3,
+            label="reads the headline (shaped like the references)",
+        )
     if thin.any():
         ax.errorbar(
             x[thin],

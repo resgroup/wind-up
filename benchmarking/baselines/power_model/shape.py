@@ -3,15 +3,20 @@
 The after period's records are binned by the test turbine's predicted (counterfactual) power. Each bin's
 forward uplift ``sum(actual) / sum(predicted) - 1`` is measured where the bin holds enough hours, and the
 measured bins are shifted by one constant so that, weighted by predicted energy, they combine to the
-headline. Each record then carries its power bin's uplift (the headline where its bin is not measured),
-and any other axis's bin reports the predicted-energy-weighted mean over its records.
+headline. A measured bin keeps its own uplift only where its deviation from the overall uplift differs
+from the references' mean deviation by more than :data:`GATE_Z` sigma; the others read the headline,
+and every measured bin then moves by one more constant so the shape still combines to the headline.
+Each record carries its power bin's uplift (the headline where its bin is not measured), and any other
+axis's bin reports the predicted-energy-weighted mean over its records.
 
 A subset of the records (one direction sector, one solar band, waked or front row) gets its own power
 shape on coarser bins, unshifted, beside the whole period's shape on the same bins, so a variable whose
 apparent effect is only the power dependence restated is told apart from one with an effect of its own.
 
 Every number is computed from record weights: all ones for the estimate, and block-bootstrap counts for
-each resample, so a bin's sampling sigma comes from re-measuring, re-shifting and re-casting the same way.
+each resample, so a bin's sampling sigma comes from re-measuring, re-shifting and re-casting the same way,
+without the gate. A bin's ``sigma_uplift`` joins its sampling sigma, the headline's level sigma and the
+references' spread of deviations in quadrature.
 """
 
 from __future__ import annotations
@@ -34,6 +39,10 @@ CAST = "cast"
 _CHUNK = 250
 # A subset bin is flagged when its difference from the whole period's shape exceeds this many sigma.
 FLAG_Z = 2.0
+# A measured power bin keeps its own uplift when it differs from the references' shape by more than this many sigma.
+GATE_Z = 2.0
+# The references a power bin needs before their mean and spread of deviations count.
+_MIN_REFERENCES = 2
 # The power band, as fractions of rated, over which the free-stream scale factor is fitted.
 CP_BAND = (0.4, 0.6)
 _MIN_RESAMPLES = 2
@@ -46,10 +55,12 @@ class ShapeResult:
     """The shape and its casts, the subset shapes, and each record's label per axis.
 
     ``frame`` has one row per axis and bin: ``condition``, ``condition_bin``, ``kind`` (``measured`` for
-    the predicted-power shape, ``cast`` for the others), ``p50_uplift``, ``sigma_sampling``, ``hours``,
-    ``measured`` (a power bin with enough hours, or a cast bin with one behind it) and ``thin`` (fewer
-    hours than the minimum). ``subsets`` has one row per subset and power bin. ``labels`` is indexed by
-    the records' times, one column per axis.
+    the predicted-power shape, ``cast`` for the others), ``p50_uplift``, ``sigma_sampling``,
+    ``sigma_reference`` (the references' spread of deviations), ``sigma_uplift``, ``hours``, ``measured``
+    (a power bin with enough hours, or a cast bin with one behind it), ``kept`` (a measured power bin that
+    keeps its own uplift, or a cast bin with one behind it) and ``thin`` (fewer hours than the minimum).
+    ``subsets`` has one row per subset and power bin. ``labels`` is indexed by the records' times, one
+    column per axis.
     """
 
     frame: pd.DataFrame
@@ -170,6 +181,41 @@ def reference_wind_speed_drift(wind_speed: pd.DataFrame, *, threshold: float) ->
     return pd.DataFrame(rows, columns=["reference", "month", "ratio", "spread", "flagged"])
 
 
+def power_deviations(
+    actual: npt.ArrayLike,
+    counterfactual: npt.ArrayLike,
+    *,
+    power_edges: Sequence[float],
+    min_records: float,
+) -> npt.NDArray[np.float64]:
+    """Return each predicted-power bin's forward uplift less the overall forward uplift; NaN under ``min_records``."""
+    a = np.asarray(actual, dtype=float)
+    c = np.asarray(counterfactual, dtype=float)
+    finite = np.isfinite(a) & np.isfinite(c)
+    a, c = a[finite], c[finite]
+    n_power = len(power_edges) - 1
+    codes = bin_codes(c, power_edges)
+    ones = np.ones((1, len(c)))
+    counts = np.bincount(codes[codes >= 0], minlength=n_power)
+    bins = _ratio(_sums(ones, codes, a, n_power), _sums(ones, codes, c, n_power))[0]
+    overall = _ratio(np.array([a.sum()]), np.array([c.sum()]))[0]
+    return np.where(counts >= min_records, bins - overall, np.nan)
+
+
+def reference_spread(reference_deviations: npt.ArrayLike | None, *, n_bins: int) -> tuple[np.ndarray, np.ndarray]:
+    """Return the references' mean and standard deviation of deviation per bin; NaN under two references."""
+    nan = np.full(n_bins, np.nan)
+    if reference_deviations is None:
+        return nan, nan.copy()
+    d = np.asarray(reference_deviations, dtype=float).reshape(-1, n_bins)
+    count = np.isfinite(d).sum(axis=0)
+    mean, spread = nan.copy(), nan.copy()
+    for b in np.flatnonzero(count >= _MIN_REFERENCES):
+        column = d[:, b][np.isfinite(d[:, b])]
+        mean[b], spread[b] = float(column.mean()), float(column.std(ddof=1))
+    return mean, spread
+
+
 def uplift_shape(
     *,
     times: pd.DatetimeIndex,
@@ -180,10 +226,10 @@ def uplift_shape(
     subsets: Mapping[str, Axis],
     subset_power_edges: Mapping[int, Sequence[float]],
     headline: float,
+    reference_deviations: npt.ArrayLike | None,
+    level_sigma: float,
     min_hours: float,
     hours_per_record: float,
-    period_start: pd.Timestamp,
-    period_end: pd.Timestamp,
     timebase: pd.Timedelta,
     block_hours: float,
     n_resamples: int,
@@ -191,7 +237,7 @@ def uplift_shape(
 ) -> ShapeResult:
     """Measure the predicted-power shape, cast it to ``axes`` and re-measure it in each subset.
 
-    :param times: the after period's records used by the headline
+    :param times: the after period's records used by the headline; bootstrap blocks tile from the first
     :param actual: the subject turbine's power per record
     :param counterfactual: its predicted power per record
     :param power_edges: the predicted-power bin edges, in kW
@@ -200,10 +246,11 @@ def uplift_shape(
     :param subset_power_edges: the predicted-power edges a subset's shape may use, keyed by bin count;
         the most bins whose every bin reaches ``min_hours`` are used
     :param headline: the uplift the measured bins are shifted to meet
+    :param reference_deviations: each kept reference's :func:`power_deviations` on ``power_edges``, one
+        row per reference; ``None`` gates against the sigma alone
+    :param level_sigma: the headline's reference and holdout sigma, joined into every bin's sigma
     :param min_hours: the hours a power bin needs to be measured
     :param hours_per_record: the timebase in hours
-    :param period_start: the after period's first timestamp, where bootstrap blocks start tiling
-    :param period_end: its last timestamp
     :param timebase: the analysis timebase
     :param block_hours: the bootstrap block length
     :param n_resamples: bootstrap resamples
@@ -211,6 +258,7 @@ def uplift_shape(
     """
     a = np.asarray(actual, dtype=float)
     c = np.asarray(counterfactual, dtype=float)
+    period_start, period_end = times.min(), times.max()
     power_code = bin_codes(c, power_edges)
     n_power = len(power_edges) - 1
     min_records = min_hours / hours_per_record
@@ -218,9 +266,13 @@ def uplift_shape(
     measured = counts >= min_records
     axis_codes = {name: (bin_codes(values, edges), list(edges)) for name, (values, edges) in axes.items()}
 
-    def estimate(weights: npt.NDArray[np.float64]) -> dict[str, npt.NDArray[np.float64]]:
-        shifted = _shifted(
-            _sums(weights, power_code, a, n_power), _sums(weights, power_code, c, n_power), measured, headline
+    def estimate(weights: npt.NDArray[np.float64], kept: npt.NDArray[np.bool_]) -> dict[str, npt.NDArray[np.float64]]:
+        predicted = _sums(weights, power_code, c, n_power)
+        shifted = _gated(
+            _shifted(_sums(weights, power_code, a, n_power), predicted, measured, headline),
+            predicted,
+            kept=kept,
+            headline=headline,
         )
         out = {PREDICTED_POWER: shifted}
         filled = np.where(np.isfinite(shifted), shifted, headline)
@@ -229,9 +281,8 @@ def uplift_shape(
             out[name] = _cast(joint, filled)
         return out
 
-    point = estimate(np.ones((1, len(c))))
     draws = _draws(
-        estimate,
+        lambda weights: estimate(weights, measured),
         times=times,
         period_start=period_start,
         period_end=period_end,
@@ -240,28 +291,47 @@ def uplift_shape(
         n_resamples=n_resamples,
         seed=seed,
     )
+    ones = np.ones((1, len(c)))
+    power_sigma = _spread(draws[PREDICTED_POWER]) if draws is not None else np.full(n_power, np.nan)
+    ref_mean, ref_spread = reference_spread(reference_deviations, n_bins=n_power)
+    spread = np.nan_to_num(ref_spread)
+    deviation = power_deviations(a, c, power_edges=power_edges, min_records=min_records)
+    gate_sigma = np.sqrt(np.nan_to_num(power_sigma) ** 2 + level_sigma**2 + spread**2)
+    with np.errstate(invalid="ignore"):
+        kept = measured & (np.abs(deviation - np.nan_to_num(ref_mean)) > GATE_Z * gate_sigma)
+    point = estimate(ones, kept)
     rows = _shape_rows(
         PREDICTED_POWER,
         kind=MEASURED,
         point=point[PREDICTED_POWER][0],
-        draws=None if draws is None else draws[PREDICTED_POWER],
+        sigma=power_sigma,
+        sigma_reference=spread,
+        level_sigma=level_sigma,
         codes=power_code,
         edges=list(power_edges),
         has_measured=measured,
+        has_kept=kept,
         min_records=min_records,
         hours_per_record=hours_per_record,
         headline=headline,
     )
     for name, (codes, edges) in axis_codes.items():
-        behind = np.array([bool(np.any(measured[power_code[codes == q]])) for q in range(len(edges) - 1)])
+        n_axis = len(edges) - 1
+        joint = _joint_sums(ones, codes, power_code, c, n_axis=n_axis, n_power=n_power)[0]
+        energy = joint.sum(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            cast_spread = np.where(energy > 0, joint @ spread / energy, 0.0)
         rows += _shape_rows(
             name,
             kind=CAST,
             point=point[name][0],
-            draws=None if draws is None else draws[name],
+            sigma=_spread(draws[name]) if draws is not None else np.full(n_axis, np.nan),
+            sigma_reference=cast_spread,
+            level_sigma=level_sigma,
             codes=codes,
             edges=edges,
-            has_measured=behind,
+            has_measured=np.array([bool(np.any(measured[power_code[codes == q]])) for q in range(n_axis)]),
+            has_kept=np.array([bool(np.any(kept[power_code[codes == q]])) for q in range(n_axis)]),
             min_records=min_records,
             hours_per_record=hours_per_record,
             headline=headline,
@@ -343,6 +413,22 @@ def _shifted(
     return np.where(use, uplift + delta[:, None], np.nan)
 
 
+def _gated(
+    shifted: npt.NDArray[np.float64],
+    predicted_sums: npt.NDArray[np.float64],
+    *,
+    kept: npt.NDArray[np.bool_],
+    headline: float,
+) -> npt.NDArray[np.float64]:
+    """Return ``shifted`` with the measured bins outside ``kept`` at the headline, moved together to meet it."""
+    measured = np.isfinite(shifted)
+    value = np.where(kept[None, :], shifted, headline)
+    energy = np.where(measured, predicted_sums, 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        delta = headline - np.where(measured, energy * value, 0.0).sum(axis=1) / energy.sum(axis=1)
+    return np.where(measured, value + delta[:, None], np.nan)
+
+
 def _cast(joint: npt.NDArray[np.float64], filled: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Return each axis bin's predicted-energy-weighted uplift from its records' power bins."""
     energy = joint.sum(axis=2)
@@ -396,10 +482,13 @@ def _shape_rows(
     *,
     kind: str,
     point: npt.NDArray[np.float64],
-    draws: npt.NDArray[np.float64] | None,
+    sigma: npt.NDArray[np.float64],
+    sigma_reference: npt.NDArray[np.float64],
+    level_sigma: float,
     codes: npt.NDArray[np.int64],
     edges: list[float],
     has_measured: npt.NDArray[np.bool_],
+    has_kept: npt.NDArray[np.bool_],
     min_records: float,
     hours_per_record: float,
     headline: float,
@@ -407,19 +496,23 @@ def _shape_rows(
     """Return one row per bin of one axis."""
     n_bins = len(edges) - 1
     counts = np.bincount(codes[codes >= 0], minlength=n_bins)
-    sigma = _spread(draws) if draws is not None else np.full(n_bins, np.nan)
     rows = []
     for b, label in enumerate(bin_labels(edges)):
         value = point[b] if np.isfinite(point[b]) else (headline if kind == MEASURED else np.nan)
+        sampling = float(sigma[b]) if has_measured[b] else float("nan")
+        reference = float(sigma_reference[b]) if has_measured[b] else 0.0
         rows.append(
             {
                 "condition": condition,
                 "condition_bin": label,
                 "kind": kind,
                 "p50_uplift": float(value),
-                "sigma_sampling": float(sigma[b]) if has_measured[b] else float("nan"),
+                "sigma_sampling": sampling,
+                "sigma_reference": reference,
+                "sigma_uplift": float(np.sqrt(sampling**2 + level_sigma**2 + reference**2)),
                 "hours": float(counts[b] * hours_per_record),
                 "measured": bool(has_measured[b]),
+                "kept": bool(has_kept[b]),
                 "thin": bool(counts[b] < min_records),
             }
         )

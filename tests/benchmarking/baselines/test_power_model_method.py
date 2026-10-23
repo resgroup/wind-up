@@ -30,6 +30,7 @@ from benchmarking.baselines.power_model.method import (
     _clip_predictions,
     _combine_uplift,
     _implied_shrinkage,
+    _kept_shape_deviations,
     _reference_input,
     combined_sigma,
     headline_detail,
@@ -165,6 +166,21 @@ def _kept_rows(**columns: list[object]) -> pd.DataFrame:
     n = len(columns["uplift"])
     defaults: dict[str, list[object]] = {"screened": [False] * n, "unjudged": [False] * n}
     return pd.DataFrame({"turbine": [f"R{i}" for i in range(n)], **defaults, **columns})
+
+
+class TestKeptShapeDeviations:
+    def test_returns_the_kept_references_power_shape_columns_in_bin_order(self) -> None:
+        rows = _kept_rows(
+            uplift=[0.01, 0.20, 0.02, float("nan")],
+            screened=[False, True, False, False],
+            power_shape_10=[0.3, 0.4, 0.5, 0.6],
+            power_shape_2=[0.1, 0.2, 0.3, 0.4],
+        )
+        assert _kept_shape_deviations(rows).tolist() == [[0.1, 0.3], [0.3, 0.5]]
+
+    def test_none_without_deviations(self) -> None:
+        assert _kept_shape_deviations(_kept_rows(uplift=[0.01])) is None
+        assert _kept_shape_deviations(None) is None
 
 
 class TestKeptReferenceCorrection:

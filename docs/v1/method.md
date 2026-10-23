@@ -590,7 +590,10 @@ resampled in blocks of wall-clock time (one day by default) tiled over the after
 of sums of step 13 is re-formed for each resample, and the sigma is the standard deviation of the
 resampled uplifts. The bins of step 15 are resampled with the same blocks, each resample re-measured,
 re-shifted and re-cast, with the model and the bin labels fixed, so the uncertainty never moves an
-uplift; a bin with no measured power bin behind it has no sigma. The sigma is also recorded at
+uplift; the reference gate of step 15 ii is not resampled, and a bin with no measured power bin behind
+it has no sigma. Each bin's sigma also takes, in quadrature, the references' spread of deviations in
+that power bin (step 15 ii), cast to the other axes by counterfactual energy like the uplift. The sigma
+is also recorded at
 other block lengths (6 hours, 1 day, 7 days and 28 days by default) so that validation can choose
 the block length by the coverage of the sigma against known truth. Every reference turbine
 measured in step 9 carries the same sampling sigma, so its reading against the expected 0 % can be
@@ -634,7 +637,16 @@ distributions say what shape the uplift has; they never move the headline, and t
   $\sum y / \sum \hat f_B - 1$ over its records. The measured bins are then shifted by one constant so
   that, weighted by counterfactual energy, they combine to the headline; a bin not measured carries the
   headline.
-- ii. **The cast to the other axes.** Each record carries its power bin's uplift, and a bin of any other
+- ii. **The reference gate.** A model's bias against predicted power, strongest near cut-in, shows in the
+  references too, which have no uplift. Each kept reference of step 13 is measured the same way, and
+  each power bin's deviation from its own overall uplift is recorded. A measured bin of the subject
+  turbine keeps its own uplift only where its deviation differs from the references' mean deviation by
+  more than two sigma, the sigma joining the bin's sampling sigma, the headline's reference and
+  systematic components and the references' spread of deviations in that bin (step 14); the mean and
+  spread need two references. Every other measured bin carries the headline, and all the measured bins
+  then move by one more constant so that they still combine to the headline. The references' mean is a
+  test, never subtracted.
+- iii. **The cast to the other axes.** Each record carries its power bin's uplift, and a bin of any other
   axis reports the counterfactual-energy-weighted mean over its records. A cast bin has no minimum, but
   is flagged thin below 24 hours. The axes, all upgrade-invariant:
   - **free-stream wind speed**, in 1 m/s bins: the mean wind speed of the power references in each
@@ -648,7 +660,7 @@ distributions say what shape the uplift has; they never move the headline, and t
   - **solar elevation**, as a stability proxy: night (below −10°), dawn and dusk (−10° to 10°) and day;
   - **wake exposure**: waked when a turbine is upwind of the subject turbine (step 5 iv), front row
     otherwise.
-- iii. **The subsets check.** The cast assumes the uplift depends only on the baseline power. For
+- iv. **The subsets check.** The cast assumes the uplift depends only on the baseline power. For
   direction, solar elevation and wake exposure, the power shape is measured again within each sector,
   band or side, in six power bins (five or four where six cannot each reach 24 hours; a subset that
   cannot fill four is reported too thin). Neither the subset's shape nor the whole period's on the same
@@ -744,6 +756,13 @@ Decided so far, on the prepost campaign matrix:
   the low-wind failures (0–2 m/s RMSE 2.5 against 17.8 pp). Correcting each bin by the references'
   readings in that bin was worse than either (1.30 and 1.12 pp). Shifting the shape to the headline
   rather than scaling it keeps placebos sound, where both are near zero.
+- **Step 15 ii: the reference gate.** On the same 104 cells the shape read low near cut-in (lowest power
+  bin −2.8 pp, RMSE 3.7). Subtracting the references' mean deviation in each bin fixed that bin (−0.8 pp)
+  but the references' noise spread into the others (RMSE 1.46 to 1.33 pp over the power axis). The
+  gate, then one constant to restore the headline, did best: RMSE 1.16 pp (flat headline 1.81), lowest
+  bin −1.0 pp, free-stream 3–4 m/s −0.9 pp (from −2.4), and 80 % of bin errors within one sigma once
+  the references' spread joined it (63 % without). Re-shifting only the kept bins was worse (1.31 pp),
+  and setting the others to the headline without restoring it left the total up to 1 pp off.
 - **Step 14: $\rho = 0.5$.** Re-scored on run 7, $\rho = 0$ (plain quadrature) covered 82 % of the errors
   within one sigma, $\rho = 0.5$ 76 % (95 % within two sigma, as a normal error would) and $\rho = 1$
   64 %.
