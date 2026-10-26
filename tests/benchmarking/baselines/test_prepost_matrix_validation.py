@@ -380,3 +380,50 @@ def test_the_usable_share_table_gives_median_shares_per_site_and_period() -> Non
     assert table.loc[("main", "kel", "all", "all"), "usable_before"] == pytest.approx(0.3)
     text = describe(validation_tables(records), n_cells=len(records), n_domain=len(records))
     assert "usable share of before hours: main kel 0.30" in text
+
+
+def _with_directions(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Give every test turbine and reference reading the recorded directions: forward 0.2 pp high, reverse exact."""
+    for record in records:
+        for reading in [*record["turbines"], *record["references"]]:
+            truth = reading.get("truth", 0.0)
+            reading.update(
+                {
+                    "uplift_forward_corrected": truth + 0.002,
+                    "sigma_forward_corrected": 0.004,
+                    "uplift_reverse_corrected": truth,
+                    "sigma_reverse_corrected": 0.002,
+                    "uplift_symmetric": truth + 0.001,
+                    "sigma_symmetric": 0.0018,
+                }
+            )
+    return records
+
+
+def test_the_directions_table_scores_each_estimator_per_period_shape() -> None:
+    records = _with_directions(_records())
+    records[0]["pre_months"], records[0]["post_months"] = 3, 12  # one cell whose longer side is the after period
+    tables = validation_tables(records)
+    table = tables["vi_directions"].set_index(["quantity", "pre_months", "post_months"])
+    row = table.loc[("test", 12, 6)]
+    assert row["forward_corrected_bias"] == pytest.approx(0.002)
+    assert row["reverse_corrected_bias"] == pytest.approx(0.0)
+    assert row["symmetric_bias"] == pytest.approx(0.001)
+    assert row["longer_side_bias"] == pytest.approx(0.002)  # before is longer: the forward direction
+    assert row["reverse_corrected_coverage"] == 1.0
+    assert row["forward_corrected_coverage"] == 1.0
+    assert table.loc[("test", 3, 12), "longer_side_bias"] == pytest.approx(0.0)  # after is longer: the reverse
+    assert table.loc[("reference", 12, 6), "symmetric_bias"] == pytest.approx(0.001)
+    assert "headline_rmse" in table.columns
+
+
+def test_the_directions_section_names_each_estimators_rmse_per_shape() -> None:
+    tables = validation_tables(_with_directions(_records()))
+    text = describe(tables, n_cells=18, n_domain=18)
+    assert "## vi. Directions" in text
+    assert "P12 L6" in text
+    assert "longer side" in text
+
+
+def test_without_recorded_directions_the_table_is_empty() -> None:
+    assert validation_tables(_records())["vi_directions"].empty

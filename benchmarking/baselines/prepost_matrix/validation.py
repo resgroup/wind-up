@@ -58,6 +58,14 @@ Z_LIMIT = 2.0
 # Below this many campaigns a verdict is not given.
 MIN_N = 5
 ESTIMATORS = ("headline", "forward", "reversal", "lambda")
+# The estimators the directions table scores, each with the sigma its coverage is judged by.
+DIRECTION_ESTIMATORS: dict[str, str] = {
+    "headline": "sigma",
+    "forward_corrected": "sigma_forward_corrected",
+    "reverse_corrected": "sigma_reverse_corrected",
+    "symmetric": "sigma_symmetric",
+    "longer_side": "sigma_longer_side",
+}
 # The intended domain the targets are judged on (method.md, Validation).
 DOMAIN_PRE_MONTHS = 12
 DOMAIN_POST_MONTHS = 6
@@ -215,7 +223,10 @@ def _hours_fraction(screen: dict[str, Any]) -> float:
 def _with_estimators(frame: pd.DataFrame) -> pd.DataFrame:
     """Add ``headline``, ``forward``, and ``reversal``, ``lambda`` and ``lambda_star`` where recorded.
 
-    ``reversal``, ``lambda`` and ``lambda_star`` need both directions recorded.
+    ``reversal``, ``lambda`` and ``lambda_star`` need both directions recorded. Where the corrected
+    directions are recorded, ``forward_corrected``, ``reverse_corrected`` and ``symmetric`` are
+    added with their sigmas, and ``longer_side`` is the direction whose model trained on the longer
+    period: forward when the before period is at least as long as the after period.
 
     ``forward`` is the recorded forward reading, or the headline where none is recorded.
     """
@@ -225,6 +236,17 @@ def _with_estimators(frame: pd.DataFrame) -> pd.DataFrame:
         frame["uplift_forward"].fillna(frame["estimate"]) if "uplift_forward" in frame.columns else frame["estimate"]
     )
     frame = frame.assign(headline=frame["estimate"], forward=forward)
+    if "uplift_symmetric" in frame.columns:
+        before_longer = _months(frame["pre_months"]) >= _months(frame["post_months"])
+        frame = frame.assign(
+            forward_corrected=frame["uplift_forward_corrected"],
+            reverse_corrected=frame["uplift_reverse_corrected"],
+            symmetric=frame["uplift_symmetric"],
+            longer_side=np.where(before_longer, frame["uplift_forward_corrected"], frame["uplift_reverse_corrected"]),
+            sigma_longer_side=np.where(
+                before_longer, frame["sigma_forward_corrected"], frame["sigma_reverse_corrected"]
+            ),
+        )
     if not {"uplift_forward", "uplift_reverse", "sigma_reverse"} <= set(frame.columns):
         return frame.assign(reversal=np.nan, lambda_star=np.nan, **{"lambda": np.nan})
     lam = lambda_star(
@@ -238,6 +260,11 @@ def _with_estimators(frame: pd.DataFrame) -> pd.DataFrame:
         lambda_star=lam,
         **{"lambda": lambda_uplift(frame["uplift_forward"], frame["uplift_reverse"], lam)},
     )
+
+
+def _months(months: pd.Series) -> np.ndarray:
+    """Return a period-length column as floats, a cell taking all the data (``None``) counting as the longest."""
+    return pd.to_numeric(months, errors="coerce").fillna(np.inf).to_numpy(dtype=float)
 
 
 def _mean_se(values: pd.Series | np.ndarray, campaigns: pd.Series | np.ndarray) -> dict[str, float]:
@@ -562,6 +589,34 @@ def reversal_table(turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataF
     return pd.DataFrame(rows)
 
 
+def directions_table(turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
+    """Every before and after length: each direction estimator's bias, RMSE and coverage, test and reference.
+
+    The estimators are :data:`DIRECTION_ESTIMATORS`; empty when the directions are not recorded.
+    """
+    rows = []
+    for quantity, frame in (("test", turbines[turbines["arm"] != "real"]), ("reference", references)):
+        if frame.empty or "symmetric" not in frame.columns:
+            continue
+        for (pre, post), group in frame.groupby(["pre_months", "post_months"]):
+            row: dict[str, Any] = {"quantity": quantity, "pre_months": int(pre), "post_months": int(post)}
+            campaigns = group["campaign"].to_numpy()
+            for estimator, sigma in DIRECTION_ESTIMATORS.items():
+                errors = _errors(group, estimator).to_numpy(dtype=float)
+                finite = errors[np.isfinite(errors)]
+                bias = _mean_se(errors, campaigns)
+                row[f"{estimator}_bias"] = bias["mean"]
+                row[f"{estimator}_bias_se"] = bias["se"]
+                row[f"{estimator}_rmse"] = float(np.sqrt(np.mean(finite**2))) if finite.size else np.nan
+                row[f"{estimator}_coverage"] = _coverage(errors, group[sigma].to_numpy(dtype=float), campaigns)[
+                    "coverage"
+                ]
+            row["n"] = len(group)
+            row["campaigns"] = bias["campaigns"]
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def configuration_rule_table(turbines: pd.DataFrame) -> pd.DataFrame:
     """Open question (step 11 ii): the headline error by the after-period share the rule removes, in thirds."""
     frame = turbines[(turbines["arm"] != "real") & turbines["rare_share_after"].notna()]
@@ -670,6 +725,7 @@ def validation_tables(
         "unmeasured": unmeasured_table([*records, *unmeasured]),
         "usable_share": usable_share_table(records),
         "option2_reversal": reversal_table(turbines, references),
+        "vi_directions": directions_table(turbines, references),
         "open_configuration_rule": configuration_rule_table(turbines),
         "open_screen": screen_table(references),
     }
@@ -803,6 +859,7 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int, n_
             f"{row.reversal_rmse * _PP:.3f}, lambda {row.lambda_rmse * _PP:.3f} (median lambda "
             f"{row.lambda_star_median:.2f}, n {row.n})"
         )
+    lines += _directions_lines(tables["vi_directions"])
     lines += ["", "## Tables", ""]
     for name, table in tables.items():
         lines += [
@@ -812,6 +869,26 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int, n_
             "",
         ]
     return "\n".join(lines)
+
+
+def _directions_lines(directions: pd.DataFrame) -> list[str]:
+    """Return the report's section vi: each direction estimator per period shape; empty when not recorded."""
+    if directions.empty:
+        return []
+    lines = [
+        "",
+        "## vi. Directions: bias ± se, RMSE (pp) and coverage of the headline, each corrected direction, their "
+        "combination and the longer side, per before length P and after length L",
+    ]
+    for row in directions.itertuples():
+        parts = ", ".join(
+            f"{estimator.replace('_', ' ')} {getattr(row, f'{estimator}_bias') * _PP:+.2f} ± "
+            f"{getattr(row, f'{estimator}_bias_se') * _PP:.2f} / {getattr(row, f'{estimator}_rmse') * _PP:.2f} / "
+            f"{getattr(row, f'{estimator}_coverage'):.2f}"
+            for estimator in DIRECTION_ESTIMATORS
+        )
+        lines.append(f"- {row.quantity} P{row.pre_months} L{row.post_months} (n {row.n}): {parts}")
+    return lines
 
 
 def write_report(study_dir: Path) -> str:

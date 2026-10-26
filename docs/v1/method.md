@@ -742,9 +742,10 @@ real campaigns where the reference turbines provide truth of zero. The target is
 
 The targets are expected to pass only where the method is meant to be used: at least 12 months of
 before data, and at least 6 months of after data, ideally fewer. The campaign matrix also runs shorter
-periods (6 months before, 1 to 3 months after) and fewer references. They are not judged against the
-targets. Instead they show whether the method degrades gracefully: its error grows, but stays
-unbiased, and the sigma grows with it rather than claiming a precision the data cannot give.
+periods (3 and 6 months before, 1 to 3 months after, never less than 9 months in total) and fewer
+references. They are not judged against the targets. Instead they show whether the method degrades
+gracefully: its error grows, but stays unbiased, and the sigma grows with it rather than claiming a
+precision the data cannot give.
 
 The options above are decided by these criteria, one at a time rather than in every combination. An
 option is kept when it improves them.
@@ -786,6 +787,14 @@ Decided so far, on the prepost campaign matrix:
 
 Still to try:
 
+- a symmetric headline for a campaign with little before data: an after model beside the before model,
+  each direction corrected by its own held-out in-period reading, and either the two combined by
+  precision or the direction trained on the longer period alone. The matrix records both directions
+  (`vi_directions`) so the choice, and the floor under which a side gets no model, can be decided on
+  evidence. A spike on the Kelmarsh and Penmanshiel campaigns put the floor near 3 months of after
+  data, where the reverse direction stops reading low, and found the combination matching the
+  reference-corrected headline at 3 months before and 6 or more after with no reference correction,
+  but no better than the forward direction in the domain;
 - step 6 i option B (pitch angle and rotor speed as features);
 - step 11 ii with a minimum below 24 hours, so that more configurations with a turbine offline upwind
   are kept for the model to learn from rather than dropped as rare.

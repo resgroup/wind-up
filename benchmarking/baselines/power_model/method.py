@@ -142,7 +142,26 @@ CORRECTION_COLUMNS: tuple[str, ...] = (
 # What the held-out before period adds to a prepost uncertainty row (method step 14): the systematic
 # sigma and how many windows it was read over.
 HOLDOUT_COLUMNS: tuple[str, ...] = ("sigma_holdout", "n_holdout_blocks")
+# What ``record_directions`` adds to a prepost uncertainty row: each period's held-out in-period
+# reading with its sampling sigma, the held-out after period's spread and window count, the two
+# corrected directions with their sigmas, and their precision-weighted combination.
+DIRECTION_COLUMNS: tuple[str, ...] = (
+    "in_period_before",
+    "sigma_in_before",
+    "in_period_after",
+    "sigma_in_after",
+    "sigma_holdout_after",
+    "n_holdout_blocks_after",
+    "uplift_forward_corrected",
+    "sigma_forward_corrected",
+    "uplift_reverse_corrected",
+    "sigma_reverse_corrected",
+    "uplift_symmetric",
+    "sigma_symmetric",
+)
 _DEFAULT_HOLDOUT_MAX_BLOCKS = 12
+# The most windows a side of a reference reading is held out in when the directions are recorded.
+_REFERENCE_HOLDOUT_MAX_BLOCKS = 4
 _DEFAULT_SYSTEMATIC_CORRELATION = 0.5
 HeadlineEstimator = Literal["forward", "reversal", "reference_corrected"]
 HEADLINE_ESTIMATORS: tuple[str, ...] = get_args(HeadlineEstimator)
@@ -190,7 +209,8 @@ def is_reading_column(name: object) -> bool:
     """Whether ``name`` is a column a measurement's reading carries beside its uplift.
 
     These are ``sigma``, the block-length sweep ``sigma_block_<h>h``, :data:`REVERSAL_COLUMNS`,
-    :data:`CORRECTION_COLUMNS`, :data:`HOLDOUT_COLUMNS` and the ``power_shape_<i>`` deviations.
+    :data:`CORRECTION_COLUMNS`, :data:`HOLDOUT_COLUMNS`, :data:`DIRECTION_COLUMNS` and the
+    ``power_shape_<i>`` deviations.
     """
     return (
         name == "sigma"
@@ -198,6 +218,7 @@ def is_reading_column(name: object) -> bool:
         or name in REVERSAL_COLUMNS
         or name in CORRECTION_COLUMNS
         or name in HOLDOUT_COLUMNS
+        or name in DIRECTION_COLUMNS
     )
 
 
@@ -330,6 +351,41 @@ def holdout_excess(readings: np.ndarray, *, sampling_sigmas: np.ndarray) -> floa
         return float("nan")
     excess = max(float(np.mean(readings[ok] ** 2) - np.mean(sampling_sigmas[ok] ** 2)), 0.0)
     return float(np.sqrt(excess) * student_t.ppf(norm.cdf(1.0), n))
+
+
+@dataclasses.dataclass(frozen=True)
+class HeldOut:
+    """One period read window by window, each window predicted by a model fitted on the rest of the period.
+
+    ``readings`` and ``sigmas`` are per window; ``positions`` (over the analysis index) and
+    ``predictions`` cover every held-out record.
+    """
+
+    readings: np.ndarray
+    sigmas: np.ndarray
+    positions: np.ndarray
+    predictions: np.ndarray
+
+    @property
+    def excess(self) -> float:
+        """The windows' spread beyond their sampling sigma, :func:`holdout_excess`."""
+        return holdout_excess(self.readings, sampling_sigmas=self.sigmas)
+
+
+def symmetric_uplift(
+    forward: float, reverse: float, *, sigma_forward: float, sigma_reverse: float
+) -> tuple[float, float]:
+    """Combine two directions by precision in ``log(1 + u)``; return the uplift and its sigma.
+
+    A direction without a finite, positive sigma is left out; with neither, both are NaN.
+    """
+    readings = [(forward, sigma_forward), (reverse, sigma_reverse)]
+    usable = [(u, s) for u, s in readings if np.isfinite(u) and np.isfinite(s) and s > 0]
+    if not usable:
+        return float("nan"), float("nan")
+    weights = np.array([1.0 / s**2 for _, s in usable])
+    logs = np.array([np.log1p(u) for u, _ in usable])
+    return float(np.expm1(np.sum(weights * logs) / np.sum(weights))), float(np.sqrt(1.0 / np.sum(weights)))
 
 
 def combined_sigma(sampling: float, *, reference: float, holdout: float, correlation: float) -> float:
@@ -592,6 +648,13 @@ class PowerModelMethod:
     :param systematic_correlation: the correlation taken between the reference correction's error and
         the held-out before period's error when ``sigma_reference`` and ``sigma_holdout`` are joined
         (:func:`combined_sigma`); ``0`` joins them in quadrature
+    :param record_directions: also read each period held out window by window (the before period as
+        ``holdout_max_blocks`` does, the after period likewise with windows as long as the before
+        period), correct each direction by its own in-period reading, combine the two by precision,
+        and record them all as :data:`DIRECTION_COLUMNS` without changing the headline. Implies the
+        reverse direction's columns and needs ``holdout_max_blocks`` above 0. NaN for a toggle estimate.
+        Each reference reading of the report carries them too, refitted rather than reused from the
+        screen, with each side held out in at most 4 windows
     :param record_reversal: also fit the reverse direction of a prepost estimate and record it, without
         changing the headline: the ``uncertainty_diagnostics`` row gains ``uplift_forward``,
         ``uplift_reverse`` and ``sigma_reverse`` (the reverse ratio's block bootstrap over the before
@@ -653,6 +716,7 @@ class PowerModelMethod:
     holdout_max_blocks: int = _DEFAULT_HOLDOUT_MAX_BLOCKS
     systematic_correlation: float = _DEFAULT_SYSTEMATIC_CORRELATION
     record_reversal: bool = False
+    record_directions: bool = False
     write_diagnostics: bool = True
     row_dump_dir: Path | None = None
     # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
@@ -675,6 +739,9 @@ class PowerModelMethod:
         if self.direction_feature:
             self.columns.require_roles(("nacelle_position",))
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
+        if self.record_directions and self.holdout_max_blocks <= 0:
+            msg = "record_directions reads the held-out before period, so it needs holdout_max_blocks above 0"
+            raise ValueError(msg)
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
@@ -756,6 +823,7 @@ class PowerModelMethod:
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
+        forward = uplift
         uncertainty = self._headline_uncertainty(
             index[upgraded_sel],
             actual=fit["y_upgraded"],
@@ -799,7 +867,7 @@ class PowerModelMethod:
         )
         if self.headline_estimator == "reversal" and np.isfinite(reversal.get("uplift_reverse", np.nan)):
             uplift = float(_combine_uplift(np.array([uplift]), np.array([reversal["uplift_reverse"]]))[0])
-        if not self.record_reversal:
+        if not (self.record_reversal or self.record_directions):
             reversal = {}
 
         # Reported post-screen: the sanity check asks what the *final* analysis says its references
@@ -810,8 +878,22 @@ class PowerModelMethod:
         uplift, _, correction = self._reference_corrected(
             mi, forward=uplift, sigma_sampling=summary["sigma"], reference_uplifts=reference_uplifts
         )
-        holdout = self._holdout_sigma(
+        holdout, held_before = self._holdout_sigma(
             mi, features=features, y=y_arr, baseline_sel=baseline_sel, upgraded_sel=upgraded_sel, index=index
+        )
+        directions = self._directions(
+            mi,
+            features=features,
+            y=y_arr,
+            baseline_sel=baseline_sel,
+            upgraded_sel=upgraded_sel,
+            index=index,
+            timebase=timebase,
+            forward=forward,
+            sigma_sampling=summary["sigma"],
+            reversal=reversal,
+            holdout=holdout,
+            held_before=held_before,
         )
         sigma = combined_sigma(
             summary["sigma"],
@@ -893,6 +975,7 @@ class PowerModelMethod:
                         **reversal,
                         **correction,
                         **holdout,
+                        **directions,
                         **self._shape_deviations(fit, timebase=timebase),
                     }
                 ]
@@ -1001,31 +1084,58 @@ class PowerModelMethod:
         baseline_sel: np.ndarray,
         upgraded_sel: np.ndarray,
         index: pd.DatetimeIndex,
-    ) -> dict[str, float]:
-        """Return the :data:`HOLDOUT_COLUMNS` of a prepost estimate (see ``holdout_max_blocks``).
+    ) -> tuple[dict[str, float], HeldOut | None]:
+        """Return the :data:`HOLDOUT_COLUMNS` of a prepost estimate and the held-out before period.
 
-        Empty when ``holdout_max_blocks`` is 0; no window and a zero sigma for a toggle estimate.
+        See ``holdout_max_blocks``. Empty and ``None`` when it is 0; no window and a zero sigma for a
+        toggle estimate.
         """
         if self.holdout_max_blocks <= 0:
-            return {}
+            return {}, None
         if is_toggle(mi.upgrade_timing):
-            return {"sigma_holdout": 0.0, "n_holdout_blocks": 0.0}
+            return {"sigma_holdout": 0.0, "n_holdout_blocks": 0.0}, None
         timebase = self.timebase if self.timebase is not None else _infer_timebase(index)
-        hours_per_record = timebase / pd.Timedelta(hours=1)
-        before_pos = np.flatnonzero(baseline_sel)
-        before_times = index[before_pos]
         after_times = index[upgraded_sel]
-        windows = holdout_windows(
-            before_times,
-            after_length=after_times.max() - after_times.min() + timebase,
-            max_blocks=self.holdout_max_blocks,
+        held = self._held_out(
+            features,
+            y,
+            index,
+            rows=np.flatnonzero(baseline_sel),
+            other_length=after_times.max() - after_times.min() + timebase,
+            timebase=timebase,
         )
-        readings, sigmas = [], []
+        logger.info(
+            "%s %s: %d held-out windows of the before period read %s",
+            self.name,
+            mi.test_wtg,
+            len(held.readings),
+            ", ".join(f"{100 * r:+.2f}%" for r in held.readings),
+        )
+        return {"sigma_holdout": held.excess, "n_holdout_blocks": float(len(held.readings))}, held
+
+    def _held_out(
+        self,
+        features: pd.DataFrame,
+        y: np.ndarray,
+        index: pd.DatetimeIndex,
+        *,
+        rows: np.ndarray,
+        other_length: pd.Timedelta,
+        timebase: pd.Timedelta,
+    ) -> HeldOut:
+        """Read one period's ``rows`` window by window (:func:`holdout_windows`), each refitted on the rest.
+
+        A window or remainder under the usable-hours floor is skipped.
+        """
+        hours_per_record = timebase / pd.Timedelta(hours=1)
+        times = index[rows]
+        windows = holdout_windows(times, after_length=other_length, max_blocks=self.holdout_max_blocks)
+        readings, sigmas, positions, predictions = [], [], [], []
         for start, end in windows:
-            held = np.asarray((before_times > start) & (before_times <= end))
+            held = np.asarray((times > start) & (times <= end))
             if min(np.count_nonzero(held), np.count_nonzero(~held)) * hours_per_record < _MIN_PERIOD_HOURS:
                 continue
-            train, predict = before_pos[~held], before_pos[held]
+            train, predict = rows[~held], rows[held]
             pred = self._fit_direction(features, y, train=train, predict=predict)
             readings.append(_ratio(y[predict], pred))
             sigmas.append(
@@ -1041,17 +1151,112 @@ class PowerModelMethod:
                     seed=self.bootstrap_seed,
                 ).sigma
             )
+            positions.append(predict)
+            predictions.append(pred)
+        return HeldOut(
+            readings=np.array(readings),
+            sigmas=np.array(sigmas),
+            positions=np.concatenate(positions) if positions else np.array([], dtype=int),
+            predictions=np.concatenate(predictions) if predictions else np.array([]),
+        )
+
+    def _in_period(
+        self, held: HeldOut, *, y: np.ndarray, index: pd.DatetimeIndex, timebase: pd.Timedelta
+    ) -> tuple[float, float]:
+        """Return a held-out period's reading over every held-out record and its block-bootstrap sigma."""
+        if held.positions.size == 0:
+            return float("nan"), float("nan")
+        times = index[held.positions]
+        actual = y[held.positions]
+        sigma = bootstrap_energy_ratio(
+            times=times,
+            actual=actual,
+            counterfactual=held.predictions,
+            period_start=times.min(),
+            period_end=times.max(),
+            timebase=timebase,
+            block_hours=float(self.block_hours),
+            n_resamples=self.n_resamples,
+            seed=self.bootstrap_seed,
+        ).sigma
+        return _ratio(actual, held.predictions), sigma
+
+    def _directions(
+        self,
+        mi: MethodInput,
+        *,
+        features: pd.DataFrame,
+        y: np.ndarray,
+        baseline_sel: np.ndarray,
+        upgraded_sel: np.ndarray,
+        index: pd.DatetimeIndex,
+        timebase: pd.Timedelta,
+        forward: float,
+        sigma_sampling: float,
+        reversal: dict[str, float],
+        holdout: dict[str, float],
+        held_before: HeldOut | None,
+    ) -> dict[str, float]:
+        """Return the :data:`DIRECTION_COLUMNS` of a prepost estimate (see ``record_directions``).
+
+        Empty when ``record_directions`` is off; NaN for a toggle estimate.
+        """
+        if not self.record_directions:
+            return {}
+        out = dict.fromkeys(DIRECTION_COLUMNS, float("nan"))
+        if is_toggle(mi.upgrade_timing) or held_before is None:
+            return out
+        before_times = index[baseline_sel]
+        held_after = self._held_out(
+            features,
+            y,
+            index,
+            rows=np.flatnonzero(upgraded_sel),
+            other_length=before_times.max() - before_times.min() + timebase,
+            timebase=timebase,
+        )
+        in_before, sigma_in_before = self._in_period(held_before, y=y, index=index, timebase=timebase)
+        in_after, sigma_in_after = self._in_period(held_after, y=y, index=index, timebase=timebase)
+        reverse = reversal.get("uplift_reverse", float("nan"))
+        forward_corrected = (1.0 + forward) / (1.0 + in_before) - 1.0
+        reverse_corrected = (1.0 + in_after) / (1.0 + reverse) - 1.0
+        sigma_forward = float(np.sqrt(sigma_sampling**2 + sigma_in_before**2 + holdout.get("sigma_holdout", 0.0) ** 2))
+        sigma_reverse = float(
+            np.sqrt(reversal.get("sigma_reverse", float("nan")) ** 2 + sigma_in_after**2 + held_after.excess**2)
+        )
+        symmetric, sigma_symmetric = symmetric_uplift(
+            forward_corrected, reverse_corrected, sigma_forward=sigma_forward, sigma_reverse=sigma_reverse
+        )
         logger.info(
-            "%s %s: %d held-out windows of the before period read %s",
+            "%s %s: forward %+.3f%% corrected %+.3f%% ± %.3f, reverse corrected %+.3f%% ± %.3f, "
+            "symmetric %+.3f%% ± %.3f",
             self.name,
             mi.test_wtg,
-            len(readings),
-            ", ".join(f"{100 * r:+.2f}%" for r in readings),
+            100 * forward,
+            100 * forward_corrected,
+            100 * sigma_forward,
+            100 * reverse_corrected,
+            100 * sigma_reverse,
+            100 * symmetric,
+            100 * sigma_symmetric,
         )
-        return {
-            "sigma_holdout": holdout_excess(np.array(readings), sampling_sigmas=np.array(sigmas)),
-            "n_holdout_blocks": float(len(readings)),
-        }
+        out.update(
+            {
+                "in_period_before": in_before,
+                "sigma_in_before": sigma_in_before,
+                "in_period_after": in_after,
+                "sigma_in_after": sigma_in_after,
+                "sigma_holdout_after": held_after.excess,
+                "n_holdout_blocks_after": float(len(held_after.readings)),
+                "uplift_forward_corrected": forward_corrected,
+                "sigma_forward_corrected": sigma_forward,
+                "uplift_reverse_corrected": reverse_corrected,
+                "sigma_reverse_corrected": sigma_reverse,
+                "uplift_symmetric": symmetric,
+                "sigma_symmetric": sigma_symmetric,
+            }
+        )
+        return out
 
     def _reverse_direction(
         self,
@@ -1071,7 +1276,7 @@ class PowerModelMethod:
         nor ``record_reversal`` asks for the reverse direction.
         """
         out = dict.fromkeys(REVERSAL_COLUMNS, float("nan"))
-        wanted = self.headline_estimator == "reversal" or self.record_reversal
+        wanted = self.headline_estimator == "reversal" or self.record_reversal or self.record_directions
         if not wanted or is_toggle(mi.upgrade_timing) or not np.isfinite(forward):
             return out
         pred_baseline = self._fit_direction(features, y, train=upgraded_sel, predict=baseline_sel)
@@ -1733,7 +1938,7 @@ class PowerModelMethod:
         reference report uses, and it ran the campaign's own contrast -- the case for a healthy
         prepost campaign. Any other combination refits, because the pools or the contrast differ.
         """
-        if screen is None or ruled_out or screen.passes.empty:
+        if screen is None or ruled_out or screen.passes.empty or self.record_directions:
             return {}
         if is_toggle(mi.context.timing) or self.screening_timing(mi) != mi.context.timing:
             return {}
@@ -1792,11 +1997,22 @@ class PowerModelMethod:
 
         It never dumps rows: screening fits are not what the level probe analyses.
         """
-        return dataclasses.replace(self._pass_clone("screen"), row_dump_dir=None)
+        return dataclasses.replace(self._pass_clone("screen"), row_dump_dir=None, record_directions=False)
 
     def _reference_clone(self) -> PowerModelMethod:
-        """Return this method as it estimates one reference for the reference-uplift report."""
-        return self._pass_clone("reference")
+        """Return this method as it estimates one reference for the reference-uplift report.
+
+        With ``record_directions`` the reading carries the directions too, each side held out in at
+        most ``_REFERENCE_HOLDOUT_MAX_BLOCKS`` windows.
+        """
+        clone = self._pass_clone("reference")
+        if self.record_directions:
+            return dataclasses.replace(
+                clone,
+                record_directions=True,
+                holdout_max_blocks=min(self.holdout_max_blocks, _REFERENCE_HOLDOUT_MAX_BLOCKS),
+            )
+        return clone
 
     def _pass_clone(self, suffix: str) -> PowerModelMethod:
         """Return a clone for estimating one reference: forward, no holdout or conditional step, no plots, no pass.
@@ -1811,6 +2027,7 @@ class PowerModelMethod:
             report_reference_uplifts=False,
             headline_estimator="forward",
             holdout_max_blocks=0,
+            record_directions=False,
             conditions=(),
             save_plots=False,
             write_diagnostics=False,

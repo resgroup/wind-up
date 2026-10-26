@@ -511,7 +511,7 @@ def _matrix_method(
     era5_label: str,
     method_overrides: Mapping[str, Any] | None = None,
 ) -> Method:
-    """Return shipped ``wind-up`` on one thread, without plots, recording the reverse-direction reading.
+    """Return shipped ``wind-up`` on one thread, without plots, recording the reverse and corrected directions.
 
     ``method_overrides`` is applied last, so a probe's field wins over the matrix's own.
     """
@@ -522,6 +522,7 @@ def _matrix_method(
         "save_plots": False,
         "model_params": {**method.model_params, "n_jobs": 1},  # type: ignore[attr-defined]
         "record_reversal": True,
+        "record_directions": True,
     }
     overrides.update(method_overrides or {})
     return replace(method, **overrides)  # type: ignore[type-var]

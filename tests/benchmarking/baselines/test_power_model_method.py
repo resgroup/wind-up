@@ -25,6 +25,7 @@ from benchmarking.baselines.power_model.method import (
     _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
     _TIME_DECAY_CAMPAIGN_MULTIPLE,
     CORRECTION_COLUMNS,
+    DIRECTION_COLUMNS,
     HOLDOUT_COLUMNS,
     REVERSAL_COLUMNS,
     _clip_predictions,
@@ -2508,3 +2509,87 @@ def test_combined_sigma_subtracts_the_shared_part_of_the_systematic_errors() -> 
     assert combined_sigma(0.0, reference=0.3, holdout=0.4, correlation=0.5) == pytest.approx(np.sqrt(0.25 - 0.12))
     assert combined_sigma(0.1, reference=0.4, holdout=0.4, correlation=1.0) == pytest.approx(0.1)
     assert combined_sigma(0.1, reference=0.1, holdout=0.4, correlation=1.0) == pytest.approx(np.hypot(0.1, 0.3))
+
+
+class TestRecordedDirections:
+    """``record_directions``: each direction corrected by its own held-out in-period reading, and their combination."""
+
+    @staticmethod
+    def _method(**overrides: object) -> PowerModelMethod:
+        return _screen_method(**{"record_directions": True, **overrides})
+
+    def test_is_off_by_default_and_its_columns_are_reading_columns(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).record_directions is False
+        assert all(is_reading_column(c) for c in DIRECTION_COLUMNS)
+
+    def test_records_both_corrected_directions_and_their_combination(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        row = self._method().estimate(mi).uncertainty_diagnostics.iloc[0]
+        assert set(DIRECTION_COLUMNS) <= set(row.index)
+        assert all(np.isfinite(row[c]) for c in DIRECTION_COLUMNS)
+        assert row["uplift_forward_corrected"] == pytest.approx(
+            (1 + row["uplift_forward"]) / (1 + row["in_period_before"]) - 1
+        )
+        assert row["uplift_reverse_corrected"] == pytest.approx(
+            (1 + row["in_period_after"]) / (1 + row["uplift_reverse"]) - 1
+        )
+        assert row["sigma_forward_corrected"] == pytest.approx(
+            np.sqrt(row["sigma_sampling"] ** 2 + row["sigma_in_before"] ** 2 + row["sigma_holdout"] ** 2)
+        )
+        assert row["sigma_reverse_corrected"] == pytest.approx(
+            np.sqrt(row["sigma_reverse"] ** 2 + row["sigma_in_after"] ** 2 + row["sigma_holdout_after"] ** 2)
+        )
+        assert row["n_holdout_blocks_after"] >= 1
+        low, high = sorted([row["uplift_forward_corrected"], row["uplift_reverse_corrected"]])
+        assert low <= row["uplift_symmetric"] <= high
+        assert row["sigma_symmetric"] <= min(row["sigma_forward_corrected"], row["sigma_reverse_corrected"])
+
+    def test_the_combination_weighs_each_direction_by_its_precision(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        row = self._method().estimate(mi).uncertainty_diagnostics.iloc[0]
+        w_f, w_r = 1 / row["sigma_forward_corrected"] ** 2, 1 / row["sigma_reverse_corrected"] ** 2
+        expected = np.expm1(
+            (w_f * np.log1p(row["uplift_forward_corrected"]) + w_r * np.log1p(row["uplift_reverse_corrected"]))
+            / (w_f + w_r)
+        )
+        assert row["uplift_symmetric"] == pytest.approx(expected)
+        assert row["sigma_symmetric"] == pytest.approx(np.sqrt(1 / (w_f + w_r)))
+
+    def test_recovers_a_known_uplift_in_both_directions(self) -> None:
+        mi, _ = _prepost_case(uplift=0.05)
+        row = self._method().estimate(mi).uncertainty_diagnostics.iloc[0]
+        for column in ("uplift_forward_corrected", "uplift_reverse_corrected", "uplift_symmetric"):
+            assert row[column] == pytest.approx(0.05, abs=0.01), column
+
+    def test_never_moves_the_headline_or_its_sigma(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        on = self._method().estimate(mi)
+        off = self._method(record_directions=False).estimate(mi)
+        assert on.p50_overall == off.p50_overall
+        assert on.sigma_overall == off.sigma_overall
+        assert not set(DIRECTION_COLUMNS) & set(off.uncertainty_diagnostics.columns)
+
+    def test_a_toggle_estimate_records_nothing(self) -> None:
+        n = 2000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=4), start=idx[0])
+        treated = resolve_toggle(schedule, idx).upgraded
+        mi = MethodInput(
+            scada_df=_toy_scada(n, uplift=0.0, treated=treated),
+            test_wtg="T1",
+            upgrade_timing=schedule,
+            turbine_col=_TURBINE,
+        )
+        row = self._method().estimate(mi).uncertainty_diagnostics.iloc[0]
+        assert all(np.isnan(row[c]) for c in DIRECTION_COLUMNS)
+
+    def test_needs_the_held_out_before_period(self) -> None:
+        with pytest.raises(ValueError, match="holdout_max_blocks"):
+            self._method(holdout_max_blocks=0)
+
+    def test_each_reference_reading_carries_them_too(self) -> None:
+        mi, _ = _screen_case(step=0.0)
+        refs = self._method().estimate(mi).reference_uplifts
+        assert set(DIRECTION_COLUMNS) <= set(refs.columns)
+        assert refs["uplift_symmetric"].notna().all()
+        assert (refs["n_holdout_blocks"] <= 4).all()
