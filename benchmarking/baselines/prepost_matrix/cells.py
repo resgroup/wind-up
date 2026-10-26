@@ -69,6 +69,7 @@ class MatrixSettings:
     :param small_arms: which of the small-change arms run
     :param real: the real campaigns included, keys of :data:`REAL_SITES`
     :param min_side_days: the shortest side the period selector may choose, so that every post length is analysed
+    :param min_total_months: the fewest months before and after together a cell may have; shorter shapes are left out
     :param master_seed: every campaign draw is keyed on it
     :param season_shifts: months each synthetic campaign's works are moved by (see
         :meth:`~benchmarking.campaigns.rollout.RolloutDraw.shifted`), each a cell of its own
@@ -77,13 +78,14 @@ class MatrixSettings:
     seeds: dict[str, int] = field(default_factory=lambda: {"hot": 16, "pen": 12, "kel": 4})
     multipliers: tuple[int, ...] = (1, 0, -1)
     ks: tuple[int, ...] = (3, 4, 6)
-    pre_months: tuple[int, ...] = (6, 12, 24)
+    pre_months: tuple[int, ...] = (3, 6, 12, 24)
     post_months: tuple[int, ...] = (1, 2, 3, 6, 9, 12)
     exclusion_k: int = 4
     exclusion_arms: tuple[str, ...] = EXCLUSION_ARMS
     small_arms: tuple[str, ...] = SMALL_ARMS
     real: tuple[str, ...] = tuple(REAL_SITES)
     min_side_days: int = 14
+    min_total_months: int = 9
     master_seed: int = 0
     season_shifts: tuple[int, ...] = (0,)
 
@@ -180,6 +182,14 @@ SIZES: dict[str, StudySize] = {
         MatrixSettings(seeds={"hot": 6, "pen": 7, "kel": 6}, ks=(3, 4), exclusion_arms=()),
         workers=10,
     ),
+    # The big matrix's campaigns at K4, the 5 % campaign and its placebo, over every period shape, to judge
+    # the recorded directions against each other; about a third of the big matrix's cells.
+    "directions": StudySize(
+        MatrixSettings(
+            seeds={"hot": 6, "pen": 7, "kel": 6}, multipliers=(1, 0), ks=(4,), exclusion_arms=(), small_arms=()
+        ),
+        workers=10,
+    ),
     # The big matrix's campaigns in the validation domain, each with its works in all four seasons, so
     # the season of the upgrade can be judged within a campaign; no real campaign.
     "season": StudySize(
@@ -236,17 +246,23 @@ def matrix_cells(settings: MatrixSettings) -> list[Cell]:
     """Return every cell, the most expensive first, so no long cell is left to run alone at the end."""
     cells: list[Cell] = []
     for site in settings.real:
+        real = REAL_SITES[site]
         cells.extend(
             Cell("real", site, None, None, k, p, n)
             for k in settings.ks
             for p in real_pre_months(site, settings)
             for n in real_post_months(site, settings)
+            if _long_enough(
+                real.longest_pre_months if p is None else p, real.longest_post_months if n is None else n, settings
+            )
         )
     for site, n_seeds in settings.seeds.items():
         for index in range(n_seeds):
             for multiplier, p, n, shift in itertools.product(
                 settings.multipliers, settings.pre_months, settings.post_months, settings.season_shifts
             ):
+                if not _long_enough(p, n, settings):
+                    continue
                 for k in settings.ks:
                     cells.append(Cell("main", site, index, multiplier, k, p, n, shift))
                     cells.extend(Cell(arm, site, index, multiplier, k, p, n, shift) for arm in settings.small_arms)  # type: ignore[arg-type]
@@ -255,6 +271,11 @@ def matrix_cells(settings: MatrixSettings) -> list[Cell]:
                     for arm in settings.exclusion_arms
                 )
     return sorted(cells, key=lambda c: (-cell_cost_s(c), c.cell_id))
+
+
+def _long_enough(pre_months: int, post_months: int, settings: MatrixSettings) -> bool:
+    """Whether a cell's before and after lengths together reach ``min_total_months``."""
+    return pre_months + post_months >= settings.min_total_months
 
 
 def real_pre_months(site: str, settings: MatrixSettings) -> list[int | None]:

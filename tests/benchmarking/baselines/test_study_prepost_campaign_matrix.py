@@ -112,9 +112,10 @@ def test_cell_ids_are_unique() -> None:
 def test_the_default_matrix_size() -> None:
     settings = MatrixSettings()
     n_campaigns = sum(settings.seeds.values())
-    per_campaign = len(settings.multipliers) * len(settings.pre_months) * len(settings.post_months)
-    t13 = len([6, 12, 24]) * len(settings.post_months)
-    tuneup = len([6, 12, None]) * len([1, 2, 3, None])
+    shapes = [(p, n) for p in settings.pre_months for n in settings.post_months if p + n >= settings.min_total_months]
+    per_campaign = len(settings.multipliers) * len(shapes)
+    t13 = len([(p, n) for p in [3, 6, 12, 24] for n in settings.post_months if p + n >= settings.min_total_months])
+    tuneup = len([(p, n) for p in [3, 6, 12, 13] for n in [1, 2, 3, 5] if p + n >= settings.min_total_months])
     real = len(settings.ks) * (t13 + tuneup)
     arms = len(settings.ks) * (1 + len(settings.small_arms)) + len(settings.exclusion_arms)
     assert len(matrix_cells(settings)) == n_campaigns * per_campaign * arms + real
@@ -127,8 +128,6 @@ def test_tuneup_runs_the_post_lengths_its_data_holds_and_lmax() -> None:
         "hot_tuneup_K4_P12_L2",
         "hot_tuneup_K4_P12_L3",
         "hot_tuneup_K4_P12_Lmax",
-        "hot_tuneup_K4_P6_L1",
-        "hot_tuneup_K4_P6_L2",
         "hot_tuneup_K4_P6_L3",
         "hot_tuneup_K4_P6_Lmax",
         "hot_tuneup_K4_Pmax_L1",
@@ -140,8 +139,8 @@ def test_tuneup_runs_the_post_lengths_its_data_holds_and_lmax() -> None:
 
 def test_real_campaigns_run_the_pre_lengths_their_data_holds_then_pmax() -> None:
     settings = MatrixSettings()
-    assert real_pre_months("hot_t13", settings) == [6, 12, 24]
-    assert real_pre_months("hot_tuneup", settings) == [6, 12, None]
+    assert real_pre_months("hot_t13", settings) == [3, 6, 12, 24]
+    assert real_pre_months("hot_tuneup", settings) == [3, 6, 12, None]
     assert real_pre_months("hot_t13", MatrixSettings(pre_months=(12,))) == [12, None]
 
 
@@ -197,7 +196,7 @@ def test_cells_run_most_expensive_first() -> None:
 
 def test_the_small_and_big_sizes() -> None:
     small, big = matrix_cells(SIZES["small"].settings), matrix_cells(SIZES["big"].settings)
-    assert (len(small), len(big)) == (40, 4164)
+    assert (len(small), len(big)) == (40, 4390)
     assert {c.arm for c in big} == {"main", "small", "real"}
     assert sum(c.arm == "main" for c in big) == sum(c.arm == "small" for c in big)
     assert "hot" not in {c.site for c in small}
@@ -250,7 +249,7 @@ def test_the_plan_command_prints_a_sizes_projection(capsys: pytest.CaptureFixtur
     assert "40 cells" in out
     assert "on 3 worker(s)" in out
     driver.main(["plan", "--size", "big", "--workers", "8"])
-    assert "4164 cells" in capsys.readouterr().out
+    assert "4390 cells" in capsys.readouterr().out
 
 
 def test_run_and_download_need_a_size() -> None:
@@ -830,6 +829,7 @@ def test_method_overrides_reach_the_matrix_method(tmp_path: Path) -> None:
     # the matrix's own overrides survive
     assert dumped.model_params["n_jobs"] == 1  # type: ignore[attr-defined]
     assert dumped.record_reversal is True  # type: ignore[attr-defined]
+    assert dumped.record_directions is True  # type: ignore[attr-defined]
 
 
 def _sigma_records() -> list[dict[str, Any]]:
@@ -1026,3 +1026,39 @@ def test_plot_cell_runs_with_plots_into_its_own_folder_and_leaves_the_study_alon
     assert json.loads((out / "record.json").read_text()) == {"turbines": []}
     assert "measuring" in (out / "run.log").read_text()
     assert not record_path(study, cell).exists()
+
+
+def test_the_matrix_runs_three_months_before_and_drops_totals_under_nine_months() -> None:
+    settings = MatrixSettings()
+    assert settings.pre_months == (3, 6, 12, 24)
+    assert settings.min_total_months == 9
+    cells = matrix_cells(MatrixSettings(seeds={"kel": 1}, ks=(4,), real=("hot_t13",)))
+    shapes = {(c.pre_months, c.post_months) for c in cells}
+    assert {(3, 6), (6, 3), (3, 12), (24, 1)} <= shapes
+    assert not {(3, 1), (3, 2), (3, 3), (6, 1), (6, 2)} & shapes
+    assert all(p + n >= 9 for p, n in shapes)  # type: ignore[operator]
+    assert {c.site for c in cells if (c.pre_months, c.post_months) == (3, 6)} == {"kel", "hot_t13"}
+    longer = matrix_cells(MatrixSettings(seeds={"kel": 1}, ks=(4,), real=(), min_total_months=24))
+    assert {(c.pre_months, c.post_months) for c in longer} == {
+        (12, 12),
+        (24, 1),
+        (24, 2),
+        (24, 3),
+        (24, 6),
+        (24, 9),
+        (24, 12),
+    }
+
+
+def test_the_directions_size_runs_each_campaign_at_k4_over_every_period_shape() -> None:
+    cells = matrix_cells(SIZES["directions"].settings)
+    synthetic = [c for c in cells if c.arm != "real"]
+    assert {c.k for c in cells} == {4}
+    assert {c.arm for c in cells} == {"main", "real"}
+    assert {c.multiplier for c in synthetic} == {1, 0}
+    assert {(c.pre_months, c.post_months) for c in synthetic} == {
+        (p, n) for p in (3, 6, 12, 24) for n in (1, 2, 3, 6, 9, 12) if p + n >= 9
+    }
+    assert len(synthetic) == 19 * 2 * 19
+    assert {c.site for c in cells if c.arm == "real"} == {"hot_t13", "hot_tuneup"}
+    assert SIZES["directions"].workers == 10
