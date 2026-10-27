@@ -22,10 +22,11 @@ The headline is the reported uplift (the reference-corrected one by default) and
 reading it was corrected from. Targets i to iv judge the headline. A reference reading is never corrected,
 so for a reference the two are the same.
 
-The targets are judged on the method's intended domain only: cells with at least
-``DOMAIN_PRE_MONTHS`` before and ``DOMAIN_POST_MONTHS`` after. The rest of the matrix shows how the method
-degrades outside it, in the per-period table of every cell (bias, RMSE and coverage per before and after
-length) and the tables after it.
+The targets are judged on the method's intended domain only: readings whose model trained on at least
+``DOMAIN_TRAINING_MONTHS`` at ``DOMAIN_TRAINING_COVERAGE`` (a cell without the training columns counts by
+its periods, ``DOMAIN_PRE_MONTHS`` before and ``DOMAIN_POST_MONTHS`` after). The rest of the matrix shows
+how the method degrades outside it, in the per-period table of every cell (bias, RMSE and coverage per
+before and after length) and the tables after it.
 
 Cells of one campaign share its data, so each mean's standard error is clustered by campaign (a
 synthetic site's tile, or a real campaign), and a verdict needs at least ``MIN_N`` campaigns.
@@ -58,15 +59,11 @@ Z_LIMIT = 2.0
 # Below this many campaigns a verdict is not given.
 MIN_N = 5
 ESTIMATORS = ("headline", "forward", "reversal", "lambda")
-# The estimators the directions table scores, each with the sigma its coverage is judged by.
-DIRECTION_ESTIMATORS: dict[str, str] = {
-    "headline": "sigma",
-    "forward_corrected": "sigma_forward_corrected",
-    "reverse_corrected": "sigma_reverse_corrected",
-    "symmetric": "sigma_symmetric",
-    "longer_side": "sigma_longer_side",
-}
 # The intended domain the targets are judged on (method.md, Validation).
+DOMAIN_TRAINING_MONTHS = 9.0
+DOMAIN_TRAINING_COVERAGE = 0.5
+# How far under the months a training period's span may fall and still count, the works window it starts after.
+DOMAIN_MONTHS_TOLERANCE = 0.5
 DOMAIN_PRE_MONTHS = 12
 DOMAIN_POST_MONTHS = 6
 _DAYS_PER_MONTH = 365.25 / 12
@@ -139,12 +136,38 @@ def period_months(record: dict[str, Any], *, side: str) -> float:
     return min(days) / _DAYS_PER_MONTH if days else np.nan
 
 
+def reading_in_domain(reading: dict[str, Any]) -> bool:
+    """Whether a reading's model trained on at least ``DOMAIN_TRAINING_MONTHS`` at ``DOMAIN_TRAINING_COVERAGE``.
+
+    The months are judged to within ``DOMAIN_MONTHS_TOLERANCE``.
+    """
+    months, coverage = reading.get("training_months"), reading.get("training_coverage")
+    return bool(
+        months is not None
+        and coverage is not None
+        and float(months) >= DOMAIN_TRAINING_MONTHS - DOMAIN_MONTHS_TOLERANCE
+        and float(coverage) >= DOMAIN_TRAINING_COVERAGE
+    )
+
+
 def in_domain(record: dict[str, Any]) -> bool:
-    """Whether a cell has at least ``DOMAIN_PRE_MONTHS`` before and ``DOMAIN_POST_MONTHS`` after."""
+    """Whether every test turbine of a cell is in the domain (:func:`reading_in_domain`).
+
+    A cell whose readings carry no training columns counts when it has at least ``DOMAIN_PRE_MONTHS``
+    before and ``DOMAIN_POST_MONTHS`` after.
+    """
+    turbines = record.get("turbines", [])
+    if any("training_months" in t for t in turbines):
+        return all(reading_in_domain(t) for t in turbines)
     return bool(
         period_months(record, side="pre") >= DOMAIN_PRE_MONTHS
         and period_months(record, side="post") >= DOMAIN_POST_MONTHS
     )
+
+
+def _row_in_domain(reading: dict[str, Any], record: dict[str, Any]) -> bool:
+    """Return a reading's own domain verdict, or its cell's where it carries no training columns."""
+    return reading_in_domain(reading) if "training_months" in reading else in_domain(record)
 
 
 def _keys(record: dict[str, Any]) -> dict[str, Any]:
@@ -179,6 +202,7 @@ def turbine_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
                     "season": season(plan["works"][1]) if "works" in plan else None,
                     "post_days": plan.get("post_days", np.nan),
                     "rare_share_after": rare / (rare + usable) if rare is not None and usable else np.nan,
+                    "in_domain": _row_in_domain(turbine, record),
                 }
             )
     return _with_estimators(pd.DataFrame(rows))
@@ -198,6 +222,7 @@ def reference_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
                     **reading,
                     "correlation_margin": _minus(screen.get("correlation"), screen.get("median_correlation")),
                     "hours_fraction": _hours_fraction(screen),
+                    "in_domain": _row_in_domain(reading, record),
                 }
             )
     frame = pd.DataFrame(rows)
@@ -223,12 +248,8 @@ def _hours_fraction(screen: dict[str, Any]) -> float:
 def _with_estimators(frame: pd.DataFrame) -> pd.DataFrame:
     """Add ``headline``, ``forward``, and ``reversal``, ``lambda`` and ``lambda_star`` where recorded.
 
-    ``reversal``, ``lambda`` and ``lambda_star`` need both directions recorded. Where the corrected
-    directions are recorded, ``forward_corrected``, ``reverse_corrected`` and ``symmetric`` are
-    added with their sigmas, and ``longer_side`` is the direction whose model trained on the longer
-    period: forward when the before period is at least as long as the after period.
-
-    ``forward`` is the recorded forward reading, or the headline where none is recorded.
+    ``reversal``, ``lambda`` and ``lambda_star`` need both directions recorded. ``forward`` is the
+    recorded forward reading, or the headline where none is recorded.
     """
     if frame.empty:
         return frame
@@ -236,17 +257,6 @@ def _with_estimators(frame: pd.DataFrame) -> pd.DataFrame:
         frame["uplift_forward"].fillna(frame["estimate"]) if "uplift_forward" in frame.columns else frame["estimate"]
     )
     frame = frame.assign(headline=frame["estimate"], forward=forward)
-    if "uplift_symmetric" in frame.columns:
-        before_longer = _months(frame["pre_months"]) >= _months(frame["post_months"])
-        frame = frame.assign(
-            forward_corrected=frame["uplift_forward_corrected"],
-            reverse_corrected=frame["uplift_reverse_corrected"],
-            symmetric=frame["uplift_symmetric"],
-            longer_side=np.where(before_longer, frame["uplift_forward_corrected"], frame["uplift_reverse_corrected"]),
-            sigma_longer_side=np.where(
-                before_longer, frame["sigma_forward_corrected"], frame["sigma_reverse_corrected"]
-            ),
-        )
     if not {"uplift_forward", "uplift_reverse", "sigma_reverse"} <= set(frame.columns):
         return frame.assign(reversal=np.nan, lambda_star=np.nan, **{"lambda": np.nan})
     lam = lambda_star(
@@ -589,34 +599,6 @@ def reversal_table(turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataF
     return pd.DataFrame(rows)
 
 
-def directions_table(turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
-    """Every before and after length: each direction estimator's bias, RMSE and coverage, test and reference.
-
-    The estimators are :data:`DIRECTION_ESTIMATORS`; empty when the directions are not recorded.
-    """
-    rows = []
-    for quantity, frame in (("test", turbines[turbines["arm"] != "real"]), ("reference", references)):
-        if frame.empty or "symmetric" not in frame.columns:
-            continue
-        for (pre, post), group in frame.groupby(["pre_months", "post_months"]):
-            row: dict[str, Any] = {"quantity": quantity, "pre_months": int(pre), "post_months": int(post)}
-            campaigns = group["campaign"].to_numpy()
-            for estimator, sigma in DIRECTION_ESTIMATORS.items():
-                errors = _errors(group, estimator).to_numpy(dtype=float)
-                finite = errors[np.isfinite(errors)]
-                bias = _mean_se(errors, campaigns)
-                row[f"{estimator}_bias"] = bias["mean"]
-                row[f"{estimator}_bias_se"] = bias["se"]
-                row[f"{estimator}_rmse"] = float(np.sqrt(np.mean(finite**2))) if finite.size else np.nan
-                row[f"{estimator}_coverage"] = _coverage(errors, group[sigma].to_numpy(dtype=float), campaigns)[
-                    "coverage"
-                ]
-            row["n"] = len(group)
-            row["campaigns"] = bias["campaigns"]
-            rows.append(row)
-    return pd.DataFrame(rows)
-
-
 def configuration_rule_table(turbines: pd.DataFrame) -> pd.DataFrame:
     """Open question (step 11 ii): the headline error by the after-period share the rule removes, in thirds."""
     frame = turbines[(turbines["arm"] != "real") & turbines["rare_share_after"].notna()]
@@ -713,8 +695,8 @@ def validation_tables(
     domain = [r for r in records if in_domain(r)]
     turbines = turbine_frame(records)
     references = reference_frame(records)
-    domain_turbines = turbine_frame(domain)
-    domain_references = reference_frame(domain)
+    domain_turbines = turbines[turbines["in_domain"]] if not turbines.empty else turbines
+    domain_references = references[references["in_domain"]] if not references.empty else references
     return {
         "i_references": references_table(domain, domain_turbines),
         "ii_linearity": linearity_table(domain_turbines),
@@ -725,7 +707,6 @@ def validation_tables(
         "unmeasured": unmeasured_table([*records, *unmeasured]),
         "usable_share": usable_share_table(records),
         "option2_reversal": reversal_table(turbines, references),
-        "vi_directions": directions_table(turbines, references),
         "open_configuration_rule": configuration_rule_table(turbines),
         "open_screen": screen_table(references),
     }
@@ -759,8 +740,9 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int, n_
     lines = [
         f"# Validation of {n_cells} ok cells{unmeasured}",
         "",
-        f"Targets i to iv are judged on the {n_domain} cells with at least {DOMAIN_PRE_MONTHS} months before and "
-        f"{DOMAIN_POST_MONTHS} months after; the per-period section covers every cell.",
+        f"Targets i to iv are judged on the {n_domain} cells whose test turbines train on at least "
+        f"{DOMAIN_TRAINING_MONTHS:g} months at {DOMAIN_TRAINING_COVERAGE:.0%} coverage; the per-period section "
+        "covers every cell.",
         "",
     ]
     refs = tables["i_references"]
@@ -859,7 +841,6 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int, n_
             f"{row.reversal_rmse * _PP:.3f}, lambda {row.lambda_rmse * _PP:.3f} (median lambda "
             f"{row.lambda_star_median:.2f}, n {row.n})"
         )
-    lines += _directions_lines(tables["vi_directions"])
     lines += ["", "## Tables", ""]
     for name, table in tables.items():
         lines += [
@@ -869,26 +850,6 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int, n_
             "",
         ]
     return "\n".join(lines)
-
-
-def _directions_lines(directions: pd.DataFrame) -> list[str]:
-    """Return the report's section vi: each direction estimator per period shape; empty when not recorded."""
-    if directions.empty:
-        return []
-    lines = [
-        "",
-        "## vi. Directions: bias ± se, RMSE (pp) and coverage of the headline, each corrected direction, their "
-        "combination and the longer side, per before length P and after length L",
-    ]
-    for row in directions.itertuples():
-        parts = ", ".join(
-            f"{estimator.replace('_', ' ')} {getattr(row, f'{estimator}_bias') * _PP:+.2f} ± "
-            f"{getattr(row, f'{estimator}_bias_se') * _PP:.2f} / {getattr(row, f'{estimator}_rmse') * _PP:.2f} / "
-            f"{getattr(row, f'{estimator}_coverage'):.2f}"
-            for estimator in DIRECTION_ESTIMATORS
-        )
-        lines.append(f"- {row.quantity} P{row.pre_months} L{row.post_months} (n {row.n}): {parts}")
-    return lines
 
 
 def write_report(study_dir: Path) -> str:

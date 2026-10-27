@@ -268,3 +268,42 @@ class TestTheRunFolders:
     def test_studies_keep_a_named_folder_per_run(self, tmp_path: Path) -> None:
         method = wind_up_method(load(tmp_path).spec, columns=HOT_COLUMNS, out_dir=tmp_path, era5_hourly_df=era5())
         assert method.run_subdir
+
+
+class TestTheReadmeWarnings:
+    @pytest.fixture(autouse=True)
+    def _detach(self) -> Iterator[None]:
+        """Leave the root logger as the test found it."""
+        yield
+        root = logging.getLogger()
+        for handler in [h for h in root.handlers if getattr(h, "name", None) == _LOG_HANDLER_NAME]:
+            root.removeHandler(handler)
+            handler.close()
+
+    def test_the_readme_lists_the_analysis_warnings_at_the_top(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace  # noqa: PLC0415
+
+        from wind_up.analysis_warnings import AnalysisWarning  # noqa: PLC0415
+
+        warnings = (
+            AnalysisWarning(severity="high", step=12, turbine="T01", message="trains on 6.0 months"),
+            AnalysisWarning(severity="low", step=4, turbine="T02", message="a candidate yaw alignment change"),
+        )
+        monkeypatch.setattr(
+            "benchmarking.campaigns.composed.estimate_campaign",
+            lambda *_args, **_kwargs: SimpleNamespace(warnings=warnings),
+        )
+        monkeypatch.setattr("benchmarking.campaigns.composed.write_report", lambda *_args, **_kwargs: None)
+        campaign = tmp_path / "campaign"
+        campaign.mkdir()
+        declaration = write_campaign(campaign)
+        _write_small_scada(campaign / "scada.parquet")
+        run_declaration(declaration, out_dir=tmp_path / "out", era5_hourly_df=era5())
+        lines = (tmp_path / "out" / "README.md").read_text().splitlines()
+        assert lines[0] == "# Campaign run output"
+        assert lines[2] == "## Analysis warnings: 1 high, 0 medium, 1 low"
+        assert lines[4] == "- high (step 12) T01: trains on 6.0 months"
+        assert lines[5] == "- low (step 4) T02: a candidate yaw alignment change"
+        assert any(line.startswith("Laid out by the parts") for line in lines[6:])

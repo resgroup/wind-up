@@ -9,6 +9,7 @@ import pytest
 from benchmarking.campaigns.run import NoTurbineMeasuredError, estimate_campaign, visible_mask, visible_scada
 from benchmarking.harness import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from wind_up.analysis_warnings import AnalysisWarning
 
 from .test_declaration import CHANGEOVER, PERIOD, campaign, scada
 
@@ -395,3 +396,78 @@ class TestAnUnplannableTurbine:
 
     def test_a_flat_campaign_reports_none_unplanned(self) -> None:
         assert run([FixedMethod()]).unplanned == {}
+
+
+class WarningMethod(FixedMethod):
+    """Reports a fixed uplift with a high-severity analysis warning against the test turbine."""
+
+    name = "warning"
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:
+        """Report the fixed uplift and one warning of a training period under the floor."""
+        self.seen[mi.test_wtg] = mi
+        warning = AnalysisWarning(severity="high", step=12, turbine=mi.test_wtg, message="trains on 6.0 months")
+        return MethodOutput(p50_overall=self.uplift, warnings=(warning,))
+
+
+class ScreeningMethod(ReferenceReportingMethod):
+    """Reports its references with the first one ruled out by the reference screen."""
+
+    name = "screening"
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:
+        """Report zero overall, the first candidate reference screened out."""
+        output = super().estimate(mi)
+        assert output.reference_uplifts is not None
+        screened = [i == 0 for i in range(len(output.reference_uplifts))]
+        return MethodOutput(p50_overall=0.0, reference_uplifts=output.reference_uplifts.assign(screened=screened))
+
+
+class TestTheWarningsRegister:
+    """Every warning a run raises is gathered on the report with its severity, ranked."""
+
+    def test_a_methods_warnings_are_gathered_against_its_turbine(self) -> None:
+        report = run([WarningMethod()])
+        high = [w for w in report.warnings if w.severity == "high"]
+        assert {(w.step, w.turbine, w.message) for w in high} == {
+            (12, "T1", "trains on 6.0 months"),
+            (12, "T2", "trains on 6.0 months"),
+        }
+
+    def test_a_reference_the_screen_ruled_out_is_a_medium_warning_of_step_9(self) -> None:
+        report = run([ScreeningMethod()])
+        medium = [w for w in report.warnings if w.severity == "medium" and w.step == 9]
+        assert len(medium) == 2
+        assert all("ruled out" in w.message for w in medium)
+        assert {w.turbine for w in medium} == {"T1", "T2"}
+
+    def test_a_candidate_the_data_screen_dropped_is_a_medium_warning_of_step_9(self) -> None:
+        report, _ = TestTheDataScreen.screened()
+        dropped = [w for w in report.warnings if w.severity == "medium" and w.step == 9 and w.turbine == "T0"]
+        assert any("T2" in w.message and "data screen" in w.message for w in dropped)
+
+    def test_a_candidate_yaw_change_is_a_low_warning_of_step_4_and_an_undeclared_change_a_medium_of_step_8(
+        self,
+    ) -> None:
+        from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec  # noqa: PLC0415
+
+        report = estimate_campaign(
+            staggered_spec(north_offsets=[]),
+            hourly_scada(),
+            build_methods=lambda _wtg: [FixedMethod()],
+            columns=HOT_COLUMNS,
+            possible_changes={"T1": [pd.Timestamp("2019-04-15", tz="UTC")]},
+        )
+        low = [w for w in report.warnings if w.severity == "low"]
+        assert [(w.step, w.turbine) for w in low] == [(4, "T1")]
+        assert "2019-04-15" in low[0].message
+        medium = [w for w in report.warnings if w.severity == "medium" and w.step == 8]
+        assert medium
+        assert all("T1" in w.message and "undeclared change" in w.message for w in medium)
+
+    def test_the_register_is_ranked_and_empty_without_warnings(self) -> None:
+        report = run([FixedMethod()])
+        assert report.warnings == ()
+        ranked_report = run([WarningMethod(), ScreeningMethod()])
+        severities = [w.severity for w in ranked_report.warnings]
+        assert severities == sorted(severities, key=["high", "medium", "low"].index)

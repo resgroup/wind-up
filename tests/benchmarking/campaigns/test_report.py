@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import matplotlib as mpl
@@ -16,6 +17,7 @@ from benchmarking.campaigns import CampaignRunner, write_campaign_report, write_
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.harness import CONDITIONS, MethodInput, MethodOutput, condition_bins
 from benchmarking.synthetic import HOT_COLUMNS
+from wind_up.analysis_warnings import AnalysisWarning
 
 from .test_declaration import CHANGEOVER, campaign, scada
 
@@ -302,3 +304,33 @@ class TestPeriodsAndCandidates:
         assert pd.Timestamp(periods.loc["T1", "after_start"]) == CHANGEOVER
         assert (tmp_path / "07_periods" / "analysis_timeline_T1.png").exists()
         assert (tmp_path / "08_candidates" / "candidates.csv").exists()
+
+
+class WarningZeroMethod(ZeroMethod):
+    """Reports zero with a high-severity analysis warning against the test turbine."""
+
+    name = "warning_zero"
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:
+        """Report zero and one warning of a training period under the floor."""
+        warning = AnalysisWarning(severity="high", step=12, turbine=mi.test_wtg, message="trains on 6.0 months")
+        return MethodOutput(p50_overall=0.0, warnings=(warning,))
+
+
+def test_the_warnings_are_written_ranked_and_their_summary_logged(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.INFO):
+        out = write_report(_report([WarningZeroMethod()]), out_dir=tmp_path)
+    frame = pd.read_csv(out / "analysis_warnings.csv")
+    assert list(frame.columns) == ["severity", "step", "turbine", "message"]
+    assert frame["severity"].tolist() == ["high", "high"]
+    assert set(frame["turbine"]) == {"T1", "T2"}
+    assert any("Analysis warnings: 2 high, 0 medium, 0 low" in r.getMessage() for r in caplog.records)
+
+
+def test_a_run_without_warnings_writes_an_empty_register(tmp_path: Path) -> None:
+    out = write_report(_report([ZeroMethod()]), out_dir=tmp_path)
+    frame = pd.read_csv(out / "analysis_warnings.csv")
+    assert frame.empty
+    assert list(frame.columns) == ["severity", "step", "turbine", "message"]

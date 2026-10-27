@@ -160,7 +160,7 @@ def changed_at(
 
     With ``waked``, only the intervals that reach that turbine count.
     """
-    out = {}
+    out: dict[str, npt.NDArray[np.bool_]] = {}
     for turbine, times in changed.items():
         mask = np.zeros(len(index), dtype=bool)
         for t0, t1, reaches in times:

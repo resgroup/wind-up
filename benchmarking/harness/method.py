@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from benchmarking.synthetic import ToggleSchedule
+    from wind_up.analysis_warnings import AnalysisWarning
 
 
 @dataclass
@@ -127,6 +128,8 @@ class MethodOutput:
         of a method's row-selection stages (``n_kept``, ``kept_fraction``, ``stage_kept_fraction``),
         so a consumer can see how much data each stage removed and whether it treated the segments
         evenly. The harness never interprets it.
+    :param warnings: the analysis warnings the estimate raised, each with its severity, for the
+        run's warnings register
     """
 
     p50_overall: float
@@ -137,6 +140,7 @@ class MethodOutput:
     reference_uplifts: pd.DataFrame | None = None
     screen_passes: pd.DataFrame | None = None
     selection_accounting: pd.DataFrame | None = None
+    warnings: tuple[AnalysisWarning, ...] = ()
 
 
 @runtime_checkable

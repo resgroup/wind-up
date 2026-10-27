@@ -182,14 +182,6 @@ SIZES: dict[str, StudySize] = {
         MatrixSettings(seeds={"hot": 6, "pen": 7, "kel": 6}, ks=(3, 4), exclusion_arms=()),
         workers=10,
     ),
-    # The big matrix's campaigns at K4, the 5 % campaign and its placebo, over every period shape, to judge
-    # the recorded directions against each other; about a third of the big matrix's cells.
-    "directions": StudySize(
-        MatrixSettings(
-            seeds={"hot": 6, "pen": 7, "kel": 6}, multipliers=(1, 0), ks=(4,), exclusion_arms=(), small_arms=()
-        ),
-        workers=10,
-    ),
     # The big matrix's campaigns in the validation domain, each with its works in all four seasons, so
     # the season of the upgrade can be judged within a campaign; no real campaign.
     "season": StudySize(

@@ -78,6 +78,7 @@ from benchmarking.harness.record_selection import (
 )
 from benchmarking.harness.toggle import is_toggle, pair_within, resolve_toggle, toggle_cycle, toggle_upgrade_start
 from benchmarking.harness.waking import DIRECTION_COL, NONE, UNKNOWN, UPWIND_COL, WAKING_SCENARIO_COL
+from wind_up.analysis_warnings import AnalysisWarning
 from wind_up.farm import TurbineUplift, farm_uplift
 
 if TYPE_CHECKING:
@@ -142,27 +143,27 @@ CORRECTION_COLUMNS: tuple[str, ...] = (
 # What the held-out before period adds to a prepost uncertainty row (method step 14): the systematic
 # sigma and how many windows it was read over.
 HOLDOUT_COLUMNS: tuple[str, ...] = ("sigma_holdout", "n_holdout_blocks")
-# What ``record_directions`` adds to a prepost uncertainty row: each period's held-out in-period
-# reading with its sampling sigma, the held-out after period's spread and window count, the two
-# corrected directions with their sigmas, and their precision-weighted combination.
-DIRECTION_COLUMNS: tuple[str, ...] = (
-    "in_period_before",
-    "sigma_in_before",
-    "in_period_after",
-    "sigma_in_after",
-    "sigma_holdout_after",
-    "n_holdout_blocks_after",
-    "uplift_forward_corrected",
-    "sigma_forward_corrected",
-    "uplift_reverse_corrected",
-    "sigma_reverse_corrected",
-    "uplift_symmetric",
-    "sigma_symmetric",
+# Which period the model of method step 12 trained on and how much data it held: ``training_after``
+# is 1.0 when the after period trained, ``training_months`` the period's span, ``training_coverage``
+# its usable hours over its span hours and ``training_usable_hours`` those hours.
+TRAINING_COLUMNS: tuple[str, ...] = (
+    "training_after",
+    "training_months",
+    "training_coverage",
+    "training_usable_hours",
 )
 _DEFAULT_HOLDOUT_MAX_BLOCKS = 12
-# The most windows a side of a reference reading is held out in when the directions are recorded.
-_REFERENCE_HOLDOUT_MAX_BLOCKS = 4
 _DEFAULT_SYSTEMATIC_CORRELATION = 0.5
+TrainingPeriod = Literal["auto", "before", "after"]
+_DAYS_PER_MONTH = 365.25 / 12
+# The after period trains when it spans at least this many months, is longer than the before period
+# and holds more usable hours (method step 12).
+_SWAP_MIN_MONTHS = 9.0
+# The validity floor of the training period: this many months at this coverage (method step 12).
+_FLOOR_MONTHS = 9.0
+_FLOOR_COVERAGE = 0.5
+# How far under a month count a period's span may fall and still count, the works window it starts after.
+_MONTHS_TOLERANCE = 0.5
 HeadlineEstimator = Literal["forward", "reversal", "reference_corrected"]
 HEADLINE_ESTIMATORS: tuple[str, ...] = get_args(HeadlineEstimator)
 
@@ -209,7 +210,7 @@ def is_reading_column(name: object) -> bool:
     """Whether ``name`` is a column a measurement's reading carries beside its uplift.
 
     These are ``sigma``, the block-length sweep ``sigma_block_<h>h``, :data:`REVERSAL_COLUMNS`,
-    :data:`CORRECTION_COLUMNS`, :data:`HOLDOUT_COLUMNS`, :data:`DIRECTION_COLUMNS` and the
+    :data:`CORRECTION_COLUMNS`, :data:`HOLDOUT_COLUMNS`, :data:`TRAINING_COLUMNS` and the
     ``power_shape_<i>`` deviations.
     """
     return (
@@ -218,7 +219,7 @@ def is_reading_column(name: object) -> bool:
         or name in REVERSAL_COLUMNS
         or name in CORRECTION_COLUMNS
         or name in HOLDOUT_COLUMNS
-        or name in DIRECTION_COLUMNS
+        or name in TRAINING_COLUMNS
     )
 
 
@@ -372,20 +373,66 @@ class HeldOut:
         return holdout_excess(self.readings, sampling_sigmas=self.sigmas)
 
 
-def symmetric_uplift(
-    forward: float, reverse: float, *, sigma_forward: float, sigma_reverse: float
-) -> tuple[float, float]:
-    """Combine two directions by precision in ``log(1 + u)``; return the uplift and its sigma.
+def invert_uplift(uplift: float | np.ndarray) -> Any:  # noqa: ANN401
+    """Return ``1 / (1 + uplift) - 1``: the same change read the other way round."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return 1.0 / (1.0 + uplift) - 1.0
 
-    A direction without a finite, positive sigma is left out; with neither, both are NaN.
+
+def training_period(
+    *, before_months: float, after_months: float, before_hours: float, after_hours: float
+) -> Literal["before", "after"]:
+    """Return which period trains the model of method step 12, ``"before"`` or ``"after"``.
+
+    The after period trains when it spans at least ``_SWAP_MIN_MONTHS`` to within ``_MONTHS_TOLERANCE``,
+    is longer than the before period and holds more usable hours.
     """
-    readings = [(forward, sigma_forward), (reverse, sigma_reverse)]
-    usable = [(u, s) for u, s in readings if np.isfinite(u) and np.isfinite(s) and s > 0]
-    if not usable:
-        return float("nan"), float("nan")
-    weights = np.array([1.0 / s**2 for _, s in usable])
-    logs = np.array([np.log1p(u) for u, _ in usable])
-    return float(np.expm1(np.sum(weights * logs) / np.sum(weights))), float(np.sqrt(1.0 / np.sum(weights)))
+    long_enough = after_months >= _SWAP_MIN_MONTHS - _MONTHS_TOLERANCE
+    if long_enough and after_months > before_months and after_hours > before_hours:
+        return "after"
+    return "before"
+
+
+def under_training_floor(*, months: float, coverage: float) -> bool:
+    """Whether a training period is under the validity floor of ``_FLOOR_MONTHS`` at ``_FLOOR_COVERAGE``.
+
+    The months are judged to within ``_MONTHS_TOLERANCE``.
+    """
+    return bool(months < _FLOOR_MONTHS - _MONTHS_TOLERANCE or coverage < _FLOOR_COVERAGE)
+
+
+def _period_stats(
+    index: pd.DatetimeIndex, *, period: np.ndarray, selected: np.ndarray, timebase: pd.Timedelta
+) -> tuple[float, float, float]:
+    """Return a period's span in months, its usable hours and its coverage (usable over span hours)."""
+    times = index[period]
+    if times.empty:
+        return 0.0, 0.0, 0.0
+    span = times.max() - times.min() + timebase
+    usable_hours = float(np.count_nonzero(period & selected)) * (timebase / pd.Timedelta(hours=1))
+    span_hours = span / pd.Timedelta(hours=1)
+    return float(span / pd.Timedelta(days=_DAYS_PER_MONTH)), usable_hours, usable_hours / span_hours
+
+
+def _check_period_floors(test_wtg: str, *, before: np.ndarray, after: np.ndarray, hours_per_record: float) -> None:
+    """Raise when either period holds fewer usable hours than ``_MIN_PERIOD_HOURS``."""
+    for period, rows in (("before", before), ("after", after)):
+        hours = float(np.count_nonzero(rows)) * hours_per_record
+        if hours < _MIN_PERIOD_HOURS:
+            msg = (
+                f"{test_wtg}: {hours:.1f} usable hours in the {period} period, under the {_MIN_PERIOD_HOURS:g} "
+                f"needed in each period to measure an uplift."
+            )
+            raise ValueError(msg)
+
+
+def _predicted_bounds(
+    index: pd.DatetimeIndex, *, before: np.ndarray, upgrade_start: pd.Timestamp, timebase: pd.Timedelta, swapped: bool
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Return the predicted period's bounds: the after period, or the before period when ``swapped``."""
+    if swapped:
+        return index[before].min(), upgrade_start - timebase
+    return upgrade_start, index.max()
 
 
 def combined_sigma(sampling: float, *, reference: float, holdout: float, correlation: float) -> float:
@@ -648,13 +695,16 @@ class PowerModelMethod:
     :param systematic_correlation: the correlation taken between the reference correction's error and
         the held-out before period's error when ``sigma_reference`` and ``sigma_holdout`` are joined
         (:func:`combined_sigma`); ``0`` joins them in quadrature
-    :param record_directions: also read each period held out window by window (the before period as
-        ``holdout_max_blocks`` does, the after period likewise with windows as long as the before
-        period), correct each direction by its own in-period reading, combine the two by precision,
-        and record them all as :data:`DIRECTION_COLUMNS` without changing the headline. Implies the
-        reverse direction's columns and needs ``holdout_max_blocks`` above 0. NaN for a toggle estimate.
-        Each reference reading of the report carries them too, refitted rather than reused from the
-        screen, with each side held out in at most 4 windows
+    :param training_period: which period the model of a prepost estimate trains on. ``"auto"``
+        (default) trains on the before period unless the after period spans at least 9 months, is
+        longer and holds more usable hours (:func:`training_period`), decided once per estimate on
+        the candidate pool and shared with every reference reading. With the after period training,
+        the model predicts the before period, every uplift reported (the headline, the recorded
+        directions, each bin of the uplift distributions and each reference reading) is inverted to
+        read as upgraded over baseline, and the sigmas carry over. The uncertainty row records
+        :data:`TRAINING_COLUMNS`. A training period under 9 months at 50 % coverage raises a
+        high-severity :class:`~wind_up.analysis_warnings.AnalysisWarning` in the output's
+        ``warnings`` and still measures. A toggle estimate always trains on its off records
     :param record_reversal: also fit the reverse direction of a prepost estimate and record it, without
         changing the headline: the ``uncertainty_diagnostics`` row gains ``uplift_forward``,
         ``uplift_reverse`` and ``sigma_reverse`` (the reverse ratio's block bootstrap over the before
@@ -716,7 +766,7 @@ class PowerModelMethod:
     holdout_max_blocks: int = _DEFAULT_HOLDOUT_MAX_BLOCKS
     systematic_correlation: float = _DEFAULT_SYSTEMATIC_CORRELATION
     record_reversal: bool = False
-    record_directions: bool = False
+    training_period: TrainingPeriod = "auto"
     write_diagnostics: bool = True
     row_dump_dir: Path | None = None
     # How reanalysis is named in this run's plots, CSVs and logs. A campaign passes
@@ -729,7 +779,7 @@ class PowerModelMethod:
     # the same contrast. Every test turbine would otherwise re-run the identical round-robin. A
     # campaign passes one dict to every turbine's method; None means screen per estimate. Every
     # method sharing a cache must share its configuration, since the key does not carry it.
-    screen_cache: dict[tuple[tuple[str, ...], str, str, str, tuple[str, ...], str], ScreenResult] | None = field(
+    screen_cache: dict[tuple[tuple[str, ...], str, str, str, tuple[str, ...], str, str], ScreenResult] | None = field(
         default=None, repr=False, compare=False
     )
 
@@ -739,13 +789,17 @@ class PowerModelMethod:
         if self.direction_feature:
             self.columns.require_roles(("nacelle_position",))
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
-        if self.record_directions and self.holdout_max_blocks <= 0:
-            msg = "record_directions reads the held-out before period, so it needs holdout_max_blocks above 0"
+        if self.training_period not in get_args(TrainingPeriod):
+            msg = f"training_period must be one of {get_args(TrainingPeriod)}, not {self.training_period!r}"
             raise ValueError(msg)
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
         self._validate_model_config()
+        if self.training_period == "auto":
+            resolved = self._resolve_training_period(mi)
+            return dataclasses.replace(self, training_period=resolved).estimate(mi)
+        swapped = self._exchanged(mi)
         # The campaign decides which turbines are references and which rows they may contribute;
         # everything below -- outcome, features, ERA5, diagnostics -- works from this selection.
         scada = mi.context.select(mi.scada_df)
@@ -799,37 +853,44 @@ class PowerModelMethod:
         # strict campaign_baseline (off-blocks only), so it never matches pre-campaign against on rows.
         baseline_sel = selected & toggle_rows.training_baseline
         upgraded_sel = selected & t
+        before_sel = selected & toggle_rows.campaign_baseline
         hours_per_record = timebase / pd.Timedelta(hours=1)
-        for period, rows in (("before", selected & toggle_rows.campaign_baseline), ("after", upgraded_sel)):
-            hours = float(np.count_nonzero(rows)) * hours_per_record
-            if hours < _MIN_PERIOD_HOURS:
-                msg = (
-                    f"{mi.test_wtg}: {hours:.1f} usable hours in the {period} period, under the {_MIN_PERIOD_HOURS:g} "
-                    f"needed in each period to measure an uplift."
-                )
-                raise ValueError(msg)
+        _check_period_floors(mi.test_wtg, before=before_sel, after=upgraded_sel, hours_per_record=hours_per_record)
+        # With the after period training, steps 13 to 15 run with the periods exchanged: the model
+        # predicts the before period and every uplift is inverted to read as upgraded over baseline.
+        training_sel, predicted_sel = (upgraded_sel, baseline_sel) if swapped else (baseline_sel, upgraded_sel)
+        training = self._training_record(
+            mi,
+            index=index,
+            timebase=timebase,
+            selected=selected,
+            period=t if swapped else toggle_rows.training_baseline,
+        )
+        warnings = self._floor_warnings(mi, training=training)
+        upgrade_start = toggle_upgrade_start(mi.upgrade_timing, index)
+        predicted_start, predicted_end = _predicted_bounds(
+            index, before=toggle_rows.campaign_baseline, upgrade_start=upgrade_start, timebase=timebase, swapped=swapped
+        )
 
         y_arr = y.to_numpy(dtype=float)
-        weights = self._time_decay_weights(
-            index, campaign_start=toggle_upgrade_start(mi.upgrade_timing, index), campaign_end=index.max()
-        )
+        weights = self._time_decay_weights(index, campaign_start=upgrade_start, campaign_end=index.max())
         fit = self._fit_predict(
             features,
             y=y_arr,
-            baseline_sel=baseline_sel,
-            upgraded_sel=upgraded_sel,
+            baseline_sel=training_sel,
+            upgraded_sel=predicted_sel,
             weights=weights,
         )
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
         uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
-        forward = uplift
+        uplift = float(invert_uplift(uplift)) if swapped else uplift
         uncertainty = self._headline_uncertainty(
-            index[upgraded_sel],
+            index[predicted_sel],
             actual=fit["y_upgraded"],
             counterfactual=fit["pred_upgraded"],
-            period_start=toggle_upgrade_start(mi.upgrade_timing, index),
-            period_end=index.max(),
+            period_start=predicted_start,
+            period_end=predicted_end,
             timebase=timebase,
         )
         summary = uncertainty_summary(uncertainty, block_hours=self.block_hours)
@@ -845,8 +906,8 @@ class PowerModelMethod:
                 y=y_arr,
                 selected=selected,
                 reasons=reasons,
-                baseline_sel=baseline_sel,
-                upgraded_sel=upgraded_sel,
+                baseline_sel=training_sel,
+                upgraded_sel=predicted_sel,
                 fit=fit,
                 uplift=uplift,
             )
@@ -859,15 +920,16 @@ class PowerModelMethod:
             mi,
             features=features,
             y=y_arr,
-            baseline_sel=baseline_sel,
-            upgraded_sel=upgraded_sel,
+            training_sel=training_sel,
+            predicted_sel=predicted_sel,
             forward=uplift,
             index=index,
             timebase=timebase,
+            invert=swapped,
         )
         if self.headline_estimator == "reversal" and np.isfinite(reversal.get("uplift_reverse", np.nan)):
             uplift = float(_combine_uplift(np.array([uplift]), np.array([reversal["uplift_reverse"]]))[0])
-        if not (self.record_reversal or self.record_directions):
+        if not self.record_reversal:
             reversal = {}
 
         # Reported post-screen: the sanity check asks what the *final* analysis says its references
@@ -878,22 +940,8 @@ class PowerModelMethod:
         uplift, _, correction = self._reference_corrected(
             mi, forward=uplift, sigma_sampling=summary["sigma"], reference_uplifts=reference_uplifts
         )
-        holdout, held_before = self._holdout_sigma(
-            mi, features=features, y=y_arr, baseline_sel=baseline_sel, upgraded_sel=upgraded_sel, index=index
-        )
-        directions = self._directions(
-            mi,
-            features=features,
-            y=y_arr,
-            baseline_sel=baseline_sel,
-            upgraded_sel=upgraded_sel,
-            index=index,
-            timebase=timebase,
-            forward=forward,
-            sigma_sampling=summary["sigma"],
-            reversal=reversal,
-            holdout=holdout,
-            held_before=held_before,
+        holdout = self._holdout_sigma(
+            mi, features=features, y=y_arr, training_sel=training_sel, predicted_sel=predicted_sel, index=index
         )
         sigma = combined_sigma(
             summary["sigma"],
@@ -913,7 +961,7 @@ class PowerModelMethod:
                 timebase=timebase,
                 t=t,
                 selected=selected,
-                upgraded_sel=upgraded_sel,
+                upgraded_sel=predicted_sel,
                 y=y_arr,
                 features=features,
                 fit=fit,
@@ -946,10 +994,11 @@ class PowerModelMethod:
                 scada=scada,
                 features=features,
                 y=y_arr,
-                baseline_sel=baseline_sel,
-                upgraded_sel=upgraded_sel,
+                before_sel=before_sel,
+                predicted_sel=predicted_sel,
                 fit=fit,
-                headline=uplift,
+                headline=float(invert_uplift(uplift)) if swapped else uplift,
+                invert=swapped,
                 power_references=power_references,
                 index=index,
                 timebase=timebase,
@@ -975,7 +1024,7 @@ class PowerModelMethod:
                         **reversal,
                         **correction,
                         **holdout,
-                        **directions,
+                        **training,
                         **self._shape_deviations(fit, timebase=timebase),
                     }
                 ]
@@ -983,7 +1032,103 @@ class PowerModelMethod:
             reference_uplifts=reference_uplifts,
             screen_passes=screen.passes if screen is not None else None,
             labeled_rows=None if shape is None else shape.labels,
+            warnings=warnings,
         )
+
+    def _exchanged(self, mi: MethodInput) -> bool:
+        """Whether the after period trains this estimate's model; refused for a toggle campaign."""
+        if self.training_period == "after" and is_toggle(mi.upgrade_timing):
+            msg = f"{mi.test_wtg}: a toggle estimate trains on its off records; training_period cannot be after"
+            raise ValueError(msg)
+        return self.training_period == "after"
+
+    def _resolve_training_period(self, mi: MethodInput) -> Literal["before", "after"]:
+        """Return the period that trains this estimate's model (:func:`training_period`); before for toggle.
+
+        Decided on the candidate pool before the screen, so the screen's and the report's reference
+        readings share the direction.
+        """
+        if is_toggle(mi.upgrade_timing):
+            return "before"
+        scada = mi.context.select(mi.scada_df)
+        index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
+        timebase = self.timebase if self.timebase is not None else _infer_timebase(scada.index)
+        references = self._candidate_references(scada, mi=mi)
+        y = extract_outcome(
+            scada, test_wtg=mi.test_wtg, turbine_col=mi.turbine_col, active_power_col=self.columns.active_power
+        )
+        toggle_rows = resolve_toggle(mi.upgrade_timing, index)
+        reasons = self._select_records(
+            scada,
+            mi=mi,
+            index=index,
+            references=references,
+            timebase=timebase,
+            before=toggle_rows.campaign_baseline,
+            after=toggle_rows.upgraded,
+        )
+        selected = np.asarray(reasons == USABLE) & np.isfinite(y.to_numpy(dtype=float))
+        before_months, before_hours, _ = _period_stats(
+            index, period=toggle_rows.campaign_baseline, selected=selected, timebase=timebase
+        )
+        after_months, after_hours, _ = _period_stats(
+            index, period=toggle_rows.upgraded, selected=selected, timebase=timebase
+        )
+        resolved = training_period(
+            before_months=before_months, after_months=after_months, before_hours=before_hours, after_hours=after_hours
+        )
+        logger.info(
+            "%s %s: the %s period trains the model (before %.1f months, %.0f usable hours; after %.1f months, "
+            "%.0f usable hours)",
+            self.name,
+            mi.test_wtg,
+            resolved,
+            before_months,
+            before_hours,
+            after_months,
+            after_hours,
+        )
+        return resolved
+
+    def _training_record(
+        self,
+        mi: MethodInput,
+        *,
+        index: pd.DatetimeIndex,
+        timebase: pd.Timedelta,
+        selected: np.ndarray,
+        period: np.ndarray,
+    ) -> dict[str, float]:
+        """Return the :data:`TRAINING_COLUMNS` of the training ``period``."""
+        months, usable_hours, coverage = _period_stats(index, period=period, selected=selected, timebase=timebase)
+        logger.info(
+            "%s %s: trains on %.1f months at %.0f %% coverage (%.0f usable hours)",
+            self.name,
+            mi.test_wtg,
+            months,
+            100 * coverage,
+            usable_hours,
+        )
+        return {
+            "training_after": 1.0 if self.training_period == "after" else 0.0,
+            "training_months": months,
+            "training_coverage": coverage,
+            "training_usable_hours": usable_hours,
+        }
+
+    def _floor_warnings(self, mi: MethodInput, *, training: dict[str, float]) -> tuple[AnalysisWarning, ...]:
+        """Return the high-severity warning of a prepost training period under the validity floor, logged."""
+        if is_toggle(mi.upgrade_timing) or not under_training_floor(
+            months=training["training_months"], coverage=training["training_coverage"]
+        ):
+            return ()
+        message = (
+            f"the model trains on {training['training_months']:.1f} months of {self.training_period} data at "
+            f"{100 * training['training_coverage']:.0f} % coverage ({training['training_usable_hours']:.0f} usable "
+            f"hours); the method is validated for {_FLOOR_MONTHS:g} months at {100 * _FLOOR_COVERAGE:.0f} % coverage"
+        )
+        logger.warning("%s %s: %s", self.name, mi.test_wtg, message)
+        return (AnalysisWarning(severity="high", step=12, turbine=mi.test_wtg, message=message),)
 
     def _headline_uncertainty(
         self,
@@ -1081,37 +1226,36 @@ class PowerModelMethod:
         *,
         features: pd.DataFrame,
         y: np.ndarray,
-        baseline_sel: np.ndarray,
-        upgraded_sel: np.ndarray,
+        training_sel: np.ndarray,
+        predicted_sel: np.ndarray,
         index: pd.DatetimeIndex,
-    ) -> tuple[dict[str, float], HeldOut | None]:
-        """Return the :data:`HOLDOUT_COLUMNS` of a prepost estimate and the held-out before period.
+    ) -> dict[str, float]:
+        """Return the :data:`HOLDOUT_COLUMNS` of a prepost estimate from the held-out training period.
 
-        See ``holdout_max_blocks``. Empty and ``None`` when it is 0; no window and a zero sigma for a
-        toggle estimate.
+        See ``holdout_max_blocks``. Empty when it is 0; no window and a zero sigma for a toggle estimate.
         """
         if self.holdout_max_blocks <= 0:
-            return {}, None
+            return {}
         if is_toggle(mi.upgrade_timing):
-            return {"sigma_holdout": 0.0, "n_holdout_blocks": 0.0}, None
+            return {"sigma_holdout": 0.0, "n_holdout_blocks": 0.0}
         timebase = self.timebase if self.timebase is not None else _infer_timebase(index)
-        after_times = index[upgraded_sel]
+        predicted_times = index[predicted_sel]
         held = self._held_out(
             features,
             y,
             index,
-            rows=np.flatnonzero(baseline_sel),
-            other_length=after_times.max() - after_times.min() + timebase,
+            rows=np.flatnonzero(training_sel),
+            other_length=predicted_times.max() - predicted_times.min() + timebase,
             timebase=timebase,
         )
         logger.info(
-            "%s %s: %d held-out windows of the before period read %s",
+            "%s %s: %d held-out windows of the training period read %s",
             self.name,
             mi.test_wtg,
             len(held.readings),
             ", ".join(f"{100 * r:+.2f}%" for r in held.readings),
         )
-        return {"sigma_holdout": held.excess, "n_holdout_blocks": float(len(held.readings))}, held
+        return {"sigma_holdout": held.excess, "n_holdout_blocks": float(len(held.readings))}
 
     def _held_out(
         self,
@@ -1160,131 +1304,37 @@ class PowerModelMethod:
             predictions=np.concatenate(predictions) if predictions else np.array([]),
         )
 
-    def _in_period(
-        self, held: HeldOut, *, y: np.ndarray, index: pd.DatetimeIndex, timebase: pd.Timedelta
-    ) -> tuple[float, float]:
-        """Return a held-out period's reading over every held-out record and its block-bootstrap sigma."""
-        if held.positions.size == 0:
-            return float("nan"), float("nan")
-        times = index[held.positions]
-        actual = y[held.positions]
-        sigma = bootstrap_energy_ratio(
-            times=times,
-            actual=actual,
-            counterfactual=held.predictions,
-            period_start=times.min(),
-            period_end=times.max(),
-            timebase=timebase,
-            block_hours=float(self.block_hours),
-            n_resamples=self.n_resamples,
-            seed=self.bootstrap_seed,
-        ).sigma
-        return _ratio(actual, held.predictions), sigma
-
-    def _directions(
-        self,
-        mi: MethodInput,
-        *,
-        features: pd.DataFrame,
-        y: np.ndarray,
-        baseline_sel: np.ndarray,
-        upgraded_sel: np.ndarray,
-        index: pd.DatetimeIndex,
-        timebase: pd.Timedelta,
-        forward: float,
-        sigma_sampling: float,
-        reversal: dict[str, float],
-        holdout: dict[str, float],
-        held_before: HeldOut | None,
-    ) -> dict[str, float]:
-        """Return the :data:`DIRECTION_COLUMNS` of a prepost estimate (see ``record_directions``).
-
-        Empty when ``record_directions`` is off; NaN for a toggle estimate.
-        """
-        if not self.record_directions:
-            return {}
-        out = dict.fromkeys(DIRECTION_COLUMNS, float("nan"))
-        if is_toggle(mi.upgrade_timing) or held_before is None:
-            return out
-        before_times = index[baseline_sel]
-        held_after = self._held_out(
-            features,
-            y,
-            index,
-            rows=np.flatnonzero(upgraded_sel),
-            other_length=before_times.max() - before_times.min() + timebase,
-            timebase=timebase,
-        )
-        in_before, sigma_in_before = self._in_period(held_before, y=y, index=index, timebase=timebase)
-        in_after, sigma_in_after = self._in_period(held_after, y=y, index=index, timebase=timebase)
-        reverse = reversal.get("uplift_reverse", float("nan"))
-        forward_corrected = (1.0 + forward) / (1.0 + in_before) - 1.0
-        reverse_corrected = (1.0 + in_after) / (1.0 + reverse) - 1.0
-        sigma_forward = float(np.sqrt(sigma_sampling**2 + sigma_in_before**2 + holdout.get("sigma_holdout", 0.0) ** 2))
-        sigma_reverse = float(
-            np.sqrt(reversal.get("sigma_reverse", float("nan")) ** 2 + sigma_in_after**2 + held_after.excess**2)
-        )
-        symmetric, sigma_symmetric = symmetric_uplift(
-            forward_corrected, reverse_corrected, sigma_forward=sigma_forward, sigma_reverse=sigma_reverse
-        )
-        logger.info(
-            "%s %s: forward %+.3f%% corrected %+.3f%% ± %.3f, reverse corrected %+.3f%% ± %.3f, "
-            "symmetric %+.3f%% ± %.3f",
-            self.name,
-            mi.test_wtg,
-            100 * forward,
-            100 * forward_corrected,
-            100 * sigma_forward,
-            100 * reverse_corrected,
-            100 * sigma_reverse,
-            100 * symmetric,
-            100 * sigma_symmetric,
-        )
-        out.update(
-            {
-                "in_period_before": in_before,
-                "sigma_in_before": sigma_in_before,
-                "in_period_after": in_after,
-                "sigma_in_after": sigma_in_after,
-                "sigma_holdout_after": held_after.excess,
-                "n_holdout_blocks_after": float(len(held_after.readings)),
-                "uplift_forward_corrected": forward_corrected,
-                "sigma_forward_corrected": sigma_forward,
-                "uplift_reverse_corrected": reverse_corrected,
-                "sigma_reverse_corrected": sigma_reverse,
-                "uplift_symmetric": symmetric,
-                "sigma_symmetric": sigma_symmetric,
-            }
-        )
-        return out
-
     def _reverse_direction(
         self,
         mi: MethodInput,
         *,
         features: pd.DataFrame,
         y: np.ndarray,
-        baseline_sel: np.ndarray,
-        upgraded_sel: np.ndarray,
+        training_sel: np.ndarray,
+        predicted_sel: np.ndarray,
         forward: float,
         index: pd.DatetimeIndex,
         timebase: pd.Timedelta,
+        invert: bool,
     ) -> dict[str, float]:
         """Return the :data:`REVERSAL_COLUMNS` of a prepost estimate: the reverse fit's ratio and its sigma.
 
-        NaN for a toggle estimate, a non-finite forward ratio, or when neither ``headline_estimator``
-        nor ``record_reversal`` asks for the reverse direction.
+        The reverse fit trains the predicted period and predicts the training period; ``invert`` reads
+        its ratio the other way round, so it is baseline over upgraded whichever period trained. NaN
+        for a toggle estimate, a non-finite forward ratio, or when neither ``headline_estimator`` nor
+        ``record_reversal`` asks for the reverse direction.
         """
         out = dict.fromkeys(REVERSAL_COLUMNS, float("nan"))
-        wanted = self.headline_estimator == "reversal" or self.record_reversal or self.record_directions
+        wanted = self.headline_estimator == "reversal" or self.record_reversal
         if not wanted or is_toggle(mi.upgrade_timing) or not np.isfinite(forward):
             return out
-        pred_baseline = self._fit_direction(features, y, train=upgraded_sel, predict=baseline_sel)
+        pred_training = self._fit_direction(features, y, train=predicted_sel, predict=training_sel)
+        reverse = _ratio(y[training_sel], pred_training)
         return {
             "uplift_forward": forward,
-            "uplift_reverse": _ratio(y[baseline_sel], pred_baseline),
+            "uplift_reverse": float(invert_uplift(reverse)) if invert else reverse,
             "sigma_reverse": self._reverse_sigma(
-                index[baseline_sel], actual=y[baseline_sel], counterfactual=pred_baseline, timebase=timebase
+                index[training_sel], actual=y[training_sel], counterfactual=pred_training, timebase=timebase
             ),
         }
 
@@ -1318,10 +1368,11 @@ class PowerModelMethod:
         scada: pd.DataFrame,
         features: pd.DataFrame,
         y: np.ndarray,
-        baseline_sel: np.ndarray,
-        upgraded_sel: np.ndarray,
+        before_sel: np.ndarray,
+        predicted_sel: np.ndarray,
         fit: dict[str, Any],
         headline: float,
+        invert: bool,
         power_references: Sequence[str],
         index: pd.DatetimeIndex,
         timebase: pd.Timedelta,
@@ -1331,10 +1382,12 @@ class PowerModelMethod:
     ) -> ShapeResult | None:
         """Return the uplift distributions of method step 15 and write their diagnostics.
 
+        ``headline`` is the uplift the measured bins are shifted to, read in the direction the model
+        predicts; with ``invert`` every bin is then inverted to read as upgraded over baseline.
         ``level_sigma`` is the headline's reference and holdout terms; ``reference_deviations`` the kept
-        references' power-bin deviations the shape is gated against. ``None`` without an after-period record.
+        references' power-bin deviations the shape is gated against. ``None`` without a predicted record.
         """
-        times = index[upgraded_sel]
+        times = index[predicted_sel]
         if times.empty:
             return None
         rated = self.baseline_rated_power_kw
@@ -1343,8 +1396,8 @@ class PowerModelMethod:
             scada=scada,
             features=features,
             y=y,
-            baseline_sel=baseline_sel,
-            upgraded_sel=upgraded_sel,
+            before_sel=before_sel,
+            predicted_sel=predicted_sel,
             power_references=power_references,
             index=index,
         )
@@ -1366,9 +1419,16 @@ class PowerModelMethod:
             n_resamples=self.n_resamples,
             seed=self.bootstrap_seed,
         )
+        frame, subsets = result.frame, result.subsets
+        if invert:
+            frame = frame.assign(p50_uplift=invert_uplift(frame["p50_uplift"].to_numpy(dtype=float)))
+            subsets = subsets.assign(
+                p50_uplift=invert_uplift(subsets["p50_uplift"].to_numpy(dtype=float)),
+                overall_uplift=invert_uplift(subsets["overall_uplift"].to_numpy(dtype=float)),
+            )
         result = ShapeResult(
-            frame=result.frame,
-            subsets=result.subsets.assign(sigma_uplift=np.hypot(result.subsets["sigma_sampling"], level_sigma)),
+            frame=frame,
+            subsets=subsets.assign(sigma_uplift=np.hypot(subsets["sigma_sampling"], level_sigma)),
             labels=result.labels.rename(columns=label_column),
         )
         flagged = result.subsets.loc[result.subsets["flagged"].astype(bool)]
@@ -1402,12 +1462,12 @@ class PowerModelMethod:
         scada: pd.DataFrame,
         features: pd.DataFrame,
         y: np.ndarray,
-        baseline_sel: np.ndarray,
-        upgraded_sel: np.ndarray,
+        before_sel: np.ndarray,
+        predicted_sel: np.ndarray,
         power_references: Sequence[str],
         index: pd.DatetimeIndex,
     ) -> tuple[dict[str, tuple[np.ndarray, list[float]]], dict[str, float]]:
-        """Return each axis's after-period values and edges, and the free-stream scale's details.
+        """Return each axis's values over the predicted period and edges, and the free-stream scale's details.
 
         An axis whose input is missing is left out with a warning.
         """
@@ -1416,7 +1476,7 @@ class PowerModelMethod:
         scale: dict[str, float] = {}
         if "freestream_ws" in wanted:
             freestream, scale = self._freestream_wind_speed(
-                mi, scada=scada, y=y, baseline_sel=baseline_sel, power_references=power_references, index=index
+                mi, scada=scada, y=y, before_sel=before_sel, power_references=power_references, index=index
             )
             if freestream is not None:
                 values["freestream_ws"] = freestream
@@ -1432,7 +1492,7 @@ class PowerModelMethod:
             values["solar_elevation"] = features[SOLAR_ELEVATION].to_numpy(dtype=float)
         for missing in sorted(wanted - set(values)):
             logger.warning("%s %s: no %s axis, its input is missing", self.name, mi.test_wtg, missing)
-        axes = {name: (v[upgraded_sel], CONDITION_BINS[name]) for name, v in values.items()}
+        axes = {name: (v[predicted_sel], CONDITION_BINS[name]) for name, v in values.items()}
         return axes, scale
 
     def _freestream_wind_speed(
@@ -1441,14 +1501,14 @@ class PowerModelMethod:
         *,
         scada: pd.DataFrame,
         y: np.ndarray,
-        baseline_sel: np.ndarray,
+        before_sel: np.ndarray,
         power_references: Sequence[str],
         index: pd.DatetimeIndex,
     ) -> tuple[np.ndarray | None, dict[str, float]]:
         """Return the power references' mean wind speed scaled to free stream, and the scale's details.
 
-        The factor is fitted on the before period (:func:`freestream_scale`). ``None`` without the test
-        turbine's rotor diameter or a before-period record in the power band.
+        The factor is fitted on the before period's records ``before_sel`` (:func:`freestream_scale`).
+        ``None`` without the test turbine's rotor diameter or a before-period record in the power band.
         """
         diameter = (self.rotor_diameters_m or {}).get(mi.test_wtg)
         if diameter is None or not power_references:
@@ -1458,8 +1518,8 @@ class PowerModelMethod:
         ).reindex(index)
         ws_arr = ws.to_numpy(dtype=float)
         factor = freestream_scale(
-            y[baseline_sel],
-            ws_arr[baseline_sel],
+            y[before_sel],
+            ws_arr[before_sel],
             rated_power_kw=self.baseline_rated_power_kw,
             rotor_diameter_m=float(diameter),
             target_cp=self.target_cp,
@@ -1938,7 +1998,7 @@ class PowerModelMethod:
         reference report uses, and it ran the campaign's own contrast -- the case for a healthy
         prepost campaign. Any other combination refits, because the pools or the contrast differ.
         """
-        if screen is None or ruled_out or screen.passes.empty or self.record_directions:
+        if screen is None or ruled_out or screen.passes.empty:
             return {}
         if is_toggle(mi.context.timing) or self.screening_timing(mi) != mi.context.timing:
             return {}
@@ -1997,29 +2057,18 @@ class PowerModelMethod:
 
         It never dumps rows: screening fits are not what the level probe analyses.
         """
-        return dataclasses.replace(self._pass_clone("screen"), row_dump_dir=None, record_directions=False)
+        return dataclasses.replace(self._pass_clone("screen"), row_dump_dir=None)
 
     def _reference_clone(self) -> PowerModelMethod:
-        """Return this method as it estimates one reference for the reference-uplift report.
-
-        With ``record_directions`` the reading carries the directions too, each side held out in at
-        most ``_REFERENCE_HOLDOUT_MAX_BLOCKS`` windows.
-        """
-        clone = self._pass_clone("reference")
-        if self.record_directions:
-            return dataclasses.replace(
-                clone,
-                record_directions=True,
-                holdout_max_blocks=min(self.holdout_max_blocks, _REFERENCE_HOLDOUT_MAX_BLOCKS),
-            )
-        return clone
+        """Return this method as it estimates one reference for the reference-uplift report."""
+        return self._pass_clone("reference")
 
     def _pass_clone(self, suffix: str) -> PowerModelMethod:
         """Return a clone for estimating one reference: forward, no holdout or conditional step, no plots, no pass.
 
         Both passes must be off, not just the screen. A clone that still reports reference uplifts
         runs the whole reference pass itself, and its clones run it again, so the work is
-        combinatorial rather than linear.
+        combinatorial rather than linear. The clone keeps this method's resolved ``training_period``.
         """
         return dataclasses.replace(
             self,
@@ -2027,7 +2076,6 @@ class PowerModelMethod:
             report_reference_uplifts=False,
             headline_estimator="forward",
             holdout_max_blocks=0,
-            record_directions=False,
             conditions=(),
             save_plots=False,
             write_diagnostics=False,
@@ -2112,6 +2160,7 @@ class PowerModelMethod:
             str(mi.scada_df.index.max()),
             tuple(f"{turbine} {times}" for turbine, times in sorted(context.changed_turbines.items())),
             str(context.works),
+            str(self.training_period),
         )
         if self.screen_cache is not None and cache_key in self.screen_cache:
             # Re-stamped: the pool decides the screening estimates, but which candidates were held
@@ -2452,6 +2501,10 @@ class PowerModelMethod:
             "screen_floor": self.screen_floor,
             "screen_min_campaign_days": self.screen_min_campaign_days,
             "report_reference_uplifts": self.report_reference_uplifts,
+            "headline_estimator": self.headline_estimator,
+            "training_period": self.training_period,
+            "holdout_max_blocks": self.holdout_max_blocks,
+            "systematic_correlation": self.systematic_correlation,
             "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
             "block_hours": self.block_hours,
             "block_hours_sweep": list(self.block_hours_sweep),

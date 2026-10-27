@@ -30,7 +30,7 @@ EXCURSION_DEG = 30.0
 PERMANENT_RECALIBRATION = pd.Timedelta(days=90)
 CP_WINDOW = pd.Timedelta(days=60)
 CP_SCAN_STEP = pd.Timedelta(days=3)
-CP_BIN_EDGES = np.arange(4.0, 12.5, 1.0)
+CP_BIN_EDGES: npt.NDArray[np.float64] = np.arange(4.0, 12.5, 1.0, dtype=np.float64)
 MIN_BIN_HOURS = 6.0
 
 CANDIDATE_COLUMNS = ("turbine", "timestamp", "north_step_deg", "cp_shift", "cp_null_max", "cp_ratio")

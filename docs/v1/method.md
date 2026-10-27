@@ -338,7 +338,10 @@ only distant references. When no span gives both periods a minimum length (3 mon
 enough references, the test turbine is reported as not analysed, with the reason, and the campaign
 continues without it. The analyst can instead declare the periods, which are then used as given. How
 the trade-off is made is described in
-[analysis-period-and-reference-selection.md](../analysis-period-and-reference-selection.md).
+[analysis-period-and-reference-selection.md](../analysis-period-and-reference-selection.md). The
+period the model of step 12 is trained on, usually the before period, must hold at least 9 months of
+data at 50 % coverage for the method to be valid (step 12); below that the analysis still runs and
+carries a high-severity warning (see [Analysis warnings](#analysis-warnings)).
 
 Every record of the before period is weighted equally. A long before period gives the counterfactual
 model (step 12) more data and generalises better to the after period; the matching of step 11 is what
@@ -509,6 +512,29 @@ ratio of wind speeds by direction bin, the model learns how the subject turbine'
 references under every combination of weather and waking state present in the data. Only the records
 retained by step 11 are used.
 
+The model is trained on the before period, unless the after period is at least 9 months long (to within
+half a month, since it starts after the works), longer than the before period and has more usable hours
+(step 11 i): then the periods are swapped, the model is trained on the after period and predicts the
+before period. The period the model is trained on is the
+training period and the other the predicted period. Steps 13 to 15 run with the periods exchanged, so
+that in them "before" means the training period and "after" the predicted period, and every uplift
+they produce, the headline and each bin, is inverted, $U = 1 / (1 + U') - 1$, so that it still reads as
+upgraded over baseline energy; the sigmas of step 14 carry over. Each direction's precision follows
+the length of its training period, so the longer period trains; a model trained on the after period
+learns the upgraded relation, uplift structure included, and needs at least 9 months to span the
+conditions it predicts, where a model of the baseline relation does with less. Which period trains is
+decided once per test turbine, on the candidate references before the screen of step 9, and every
+reference reading of steps 9 and 13 trains on the same period, so that the references' readings and
+the subject's are the same kind of number and the correction of step 13 cancels the same bias.
+
+The method is valid when the training period holds at least 9 months of data (to within the same half
+month) at 50 % coverage, where coverage is the usable hours of step 11 i divided by the hours in the
+period, about 3300 usable hours.
+Below that the analysis still runs: its result carries a high-severity warning (see
+[Analysis warnings](#analysis-warnings)), and the sigma of step 14 is expected to grow with the
+shortfall. The hard floors of steps 7 and 11 i, below which no model can be trained, still stop the
+analysis of a test turbine.
+
 The model is a gradient-boosted tree regressor minimising squared error. It is configured so that
 repeated runs on one machine give identical results; results on different machines can differ by a
 few tenths of a percentage point.
@@ -522,9 +548,9 @@ data lost in step 11 i limits accuracy.
 
 ### 13. Calculate the uplift
 
-The model of step 12 trained on the before period, $\hat f_B$, predicts the subject turbine's power in
-the after period. Writing $y$ for measured subject turbine power and $A$ and $B$ for the after and
-before records, the forward uplift is
+The model of step 12 trained on the before period (the training period, when step 12 swaps),
+$\hat f_B$, predicts the subject turbine's power in the after period. Writing $y$ for measured
+subject turbine power and $A$ and $B$ for the after and before records, the forward uplift is
 
 $$
 U_{fwd} = \frac{\sum_A y}{\sum_A \hat f_B} - 1
@@ -720,6 +746,18 @@ uplift distribution only covers the conditions seen during the campaign: it need
 long-term distribution, with the uncertainty increased for conditions that were not covered. ERA5 is
 used to estimate the long-term wind speed distribution.
 
+## Analysis warnings
+
+Everything the analysis finds that an analyst should look at, but which does not stop it, is gathered
+as an analysis warning with a severity: high, medium or low. The outputs (the report, the analyst
+handover and the log) show the warnings ranked by severity, with a count per severity at the top, so
+that the state of a run can be read at a glance, in the spirit of wind-up v0's warning counts. A
+high-severity warning is one that questions the headline: a training period under the validity floor
+of step 12 (9 months at 50 % coverage). A medium-severity warning changes the inputs of a measurement
+without questioning its result: a reference ruled out by the screen of step 9, or an indicator of an
+undeclared change against a candidate reference (step 8). A low-severity warning is for the analyst's
+attention only: a candidate yaw alignment change found by the northing of step 4.
+
 ## Validation
 
 The method is judged on synthetic campaigns with known ground truth, built from real SCADA data, and on
@@ -740,10 +778,11 @@ real campaigns where the reference turbines provide truth of zero. The target is
   headline in every bin (a lower RMSE against truth), and each bin's sigma covers its error as in iv,
   judged bin by bin rather than pooled.
 
-The targets are expected to pass only where the method is meant to be used: at least 12 months of
-before data, and at least 6 months of after data, ideally fewer. The campaign matrix also runs shorter
-periods (3 and 6 months before, 1 to 3 months after, never less than 9 months in total) and fewer
-references. They are not judged against the targets. Instead they show whether the method degrades
+The targets are expected to pass only where the method is meant to be used: a training period of at
+least 9 months at 50 % coverage (step 12). The campaign matrix judges them on the readings whose
+training period meets that floor. The matrix also runs shorter periods (3 and 6 months before, 1 to 3
+months after, never less than 9 months in total) and fewer references. Readings under the floor are
+not judged against the targets. Instead they show whether the method degrades
 gracefully: its error grows, but stays unbiased, and the sigma grows with it rather than claiming a
 precision the data cannot give.
 
@@ -784,17 +823,25 @@ Decided so far, on the prepost campaign matrix:
 - **Step 14: $\rho = 0.5$.** Re-scored on run 7, $\rho = 0$ (plain quadrature) covered 82 % of the errors
   within one sigma, $\rho = 0.5$ 76 % (95 % within two sigma, as a normal error would) and $\rho = 1$
   64 %.
+- **Step 12: train on the longer period, floor of 9 months at 50 % coverage.** A directions run of the
+  matrix (751 cells at four references, 3 to 24 months before, 1 to 12 after, never under 9 months in
+  total) recorded both directions for every test and reference turbine. A model's precision follows
+  the length of its training period whichever side it is: 1 and 2 month models are useless (6 pp RMSE),
+  3 months reads 1.0 to 1.2 pp, 6 months 0.8 to 1.0, 12 months 0.6, 24 months 0.5. In the domain the
+  forward direction is the best single estimator (test turbines +0.15 ± 0.1 pp, RMSE 0.49) and nothing
+  beats the reference-corrected headline (RMSE 0.53). Correcting each direction by its own held-out
+  in-period reading added noise (the reading itself has an RMS of 0.5 to 0.8 pp from 2 to 4 windows),
+  and combining the directions by precision never beat the better one by more than 0.1 pp while its
+  sigma covered 40 to 65 %. With 3 months before, the reverse direction with the reference correction
+  read 0.0 pp with RMSE 0.81 to 0.95 against the headline's −0.3 to −0.5 pp and 1.2 to 1.35, so the
+  longer period trains. On the real T13 campaign the after-period model read 4 to 10 % at 6 months
+  after for every before length, where the four references read within 1 %, and 2.5 to 3.1 % from
+  9 months, with its sigma growing to 2 pp there: hence 9 months. Across runs 8 and the directions run,
+  a test turbine's error is flat above 50 % coverage of the training period and reads low below it
+  (−0.4 to −1.0 pp between 30 and 50 %, RMSE 0.9 to 1.4 pp under 2000 usable hours).
 
 Still to try:
 
-- a symmetric headline for a campaign with little before data: an after model beside the before model,
-  each direction corrected by its own held-out in-period reading, and either the two combined by
-  precision or the direction trained on the longer period alone. The matrix records both directions
-  (`vi_directions`) so the choice, and the floor under which a side gets no model, can be decided on
-  evidence. A spike on the Kelmarsh and Penmanshiel campaigns put the floor near 3 months of after
-  data, where the reverse direction stops reading low, and found the combination matching the
-  reference-corrected headline at 3 months before and 6 or more after with no reference correction,
-  but no better than the forward direction in the domain;
 - step 6 i option B (pitch angle and rotor speed as features);
 - step 11 ii with a minimum below 24 hours, so that more configurations with a turbine offline upwind
   are kept for the model to learn from rather than dropped as rare.
@@ -802,14 +849,15 @@ Still to try:
 ### Where the method is valid
 
 Once the targets pass, this section states the situations the method is validated for, from the
-campaign matrix: the shortest before and after periods, the fewest reference turbines, the sites
-and kinds of upgrade tested, and how the accuracy and the sigma behave outside them. Until then the
-intended domain is at least 12 months before and at least 6 months after.
+campaign matrix: the shortest training and predicted periods, the fewest reference turbines, the
+sites and kinds of upgrade tested, and how the accuracy and the sigma behave outside them. The
+method is valid for a training period of at least 9 months at 50 % coverage (step 12); the rest is
+to be decided.
 
 | Condition | Validated for | Outside it |
 | --- | --- | --- |
-| Before period | to be decided, intended 12 months or more | to be decided |
-| After period | to be decided, intended 6 months or more | to be decided |
+| Training period (step 12) | 9 months or more at 50 % coverage, about 3300 usable hours: a test turbine reads within 0.4 to 0.6 pp RMSE at 12 months or more | 6 months 0.6 to 1.0 pp, 3 months 1.0 to 1.4 pp and reading low; under 50 % coverage reading low by 0.4 to 1 pp; the result carries a high-severity warning |
+| Predicted period | 3 months or more: 0.4 to 0.6 pp RMSE with 12 months of training | 2 months 0.7 to 0.9 pp, 1 month about 1.0 pp, with the sigma growing to match |
 | Reference turbines kept | to be decided | to be decided |
 | Upgrade size | to be decided | to be decided |
 

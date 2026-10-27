@@ -216,6 +216,7 @@ northing step.
 | file | what it says |
 |---|---|
 | `per_turbine.csv` | the uplift estimate for each upgraded turbine |
+| `analysis_warnings.csv` | every warning the run raised, ranked by severity: high questions a headline (a training period under 9 months at 50 % coverage, [method step 12](v1/method.md#12-relate-the-reference-measurements-to-the-subject-turbine-measurements)), medium changed the inputs of a measurement (a reference the screens ruled out, an indicator of an undeclared change), low is for attention only (a candidate yaw-alignment change). The counts and the list also open the run's `README.md` and close its log |
 | `farm_uplift.csv` | one headline number for the whole campaign, weighted by energy |
 | `farm_uplift_detail.csv` | how each turbine contributed, and whether any was dropped |
 | `09_screen/reference_stability.csv` | **each reference estimated as if it were a test turbine** |

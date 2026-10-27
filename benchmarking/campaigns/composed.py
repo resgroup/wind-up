@@ -35,15 +35,19 @@ from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label, infer_timebase
 from benchmarking.harness.reanalysis import normalise_timestamps
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
+from wind_up.analysis_warnings import summary
 from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from benchmarking.campaigns.declaration import CampaignSpec
     from benchmarking.campaigns.loader import Declaration
     from benchmarking.campaigns.run import CampaignReport
     from benchmarking.harness import Method
     from benchmarking.synthetic import ColumnSchema
     from wind_up.analysis_period import PlanSettings
+    from wind_up.analysis_warnings import AnalysisWarning
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +81,8 @@ MEASUREMENT_DIRNAME = "C_turbine_measurement"
 FARM_DIRNAME = "D_farm"
 README_FILENAME = "README.md"
 
+_README_TITLE = "# Campaign run output"
 _README = f"""\
-# Campaign run output
-
 Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
 
 - `{RESOLVED_FILENAME}`: the campaign as wind-up understood it.
@@ -223,7 +226,7 @@ def run_declaration(
     log_path = log_to_file(out_dir)
     resolved = yaml.safe_dump(declaration.resolved(), sort_keys=False, default_flow_style=False)
     (out_dir / RESOLVED_FILENAME).write_text(_RESOLVED_HEADER + resolved)
-    (out_dir / README_FILENAME).write_text(_README)
+    write_readme(out_dir)
     preparation = out_dir / DATA_PREPARATION_DIRNAME
     input_plots = input_plots_dir if input_plots_dir is not None else preparation
     logger.info(
@@ -279,8 +282,20 @@ def run_declaration(
         possible_changes=prepared.possible_changes_by_turbine(),
     )
     write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME, farm_dir=out_dir / FARM_DIRNAME)
+    write_readme(out_dir, warnings=report.warnings)
     logger.info("Wrote the %r report to %s", declaration.name, out_dir)
     return report
+
+
+def write_readme(out_dir: Path, *, warnings: Sequence[AnalysisWarning] | None = None) -> Path:
+    """Write the run's README under ``out_dir``: the title, the analysis warnings when given, then the layout."""
+    parts = [_README_TITLE, ""]
+    if warnings is not None:
+        parts += [f"## {summary(warnings)}".replace("\n", "\n\n", 1), ""]
+    parts.append(_README)
+    path = out_dir / README_FILENAME
+    path.write_text("\n".join(parts))
+    return path
 
 
 def reanalysis_window(index: pd.DatetimeIndex) -> tuple[str, str]:

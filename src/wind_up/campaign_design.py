@@ -797,7 +797,7 @@ class _Site:
             share = np.zeros(program.width)
             share[:m] = [2.0 * a if self.front[row] else 0.0 for row in cands]
             program.add(share, low=2 * n * f - a, high=2 * n * f + a)
-        objective = np.zeros(program.width)
+        objective: npt.NDArray[np.float64] = np.zeros(program.width)
         if optimise:
             objective = -weights
         elif n is None:

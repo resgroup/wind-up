@@ -25,9 +25,9 @@ from benchmarking.baselines.power_model.method import (
     _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
     _TIME_DECAY_CAMPAIGN_MULTIPLE,
     CORRECTION_COLUMNS,
-    DIRECTION_COLUMNS,
     HOLDOUT_COLUMNS,
     REVERSAL_COLUMNS,
+    TRAINING_COLUMNS,
     _clip_predictions,
     _combine_uplift,
     _implied_shrinkage,
@@ -37,10 +37,13 @@ from benchmarking.baselines.power_model.method import (
     headline_detail,
     holdout_excess,
     holdout_windows,
+    invert_uplift,
     is_reading_column,
     kept_reference_correction,
     reference_measurement_dirname,
     reference_overall_uplift,
+    training_period,
+    under_training_floor,
 )
 from benchmarking.baselines.power_model.screening import ScreenResult
 from benchmarking.diagnostics import stages
@@ -93,13 +96,13 @@ _FAST_PARAMS = {
 }
 
 
-def _toy_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0) -> pd.DataFrame:
+def _toy_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0, freq: str = "10min") -> pd.DataFrame:
     """Long SCADA: references drive the test power; the upgrade scales test power on ``treated`` rows.
 
     Weather is i.i.d. across the whole window so baseline and upgraded share a distribution (this
     isolates the estimator mechanics from the prepost confounding that the real study probes).
     """
-    idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC", name="timestamp")
+    idx = pd.date_range("2019-01-01", periods=n, freq=freq, tz="UTC", name="timestamp")
     rng = np.random.default_rng(seed)
     r1 = rng.normal(900, 150, n)
     r2 = rng.normal(850, 150, n)
@@ -120,7 +123,7 @@ def _toy_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0) -> 
             {
                 _TURBINE: name,
                 _POWER: power,
-                _AVAIL: 600.0,
+                _AVAIL: pd.Timedelta(idx.freq).total_seconds(),
                 _WS: power / 100.0,
                 _WS_SD: power / 1000.0,
                 # active-power companion statistics (Issue 11 reference_stat_cols candidates)
@@ -2511,85 +2514,136 @@ def test_combined_sigma_subtracts_the_shared_part_of_the_systematic_errors() -> 
     assert combined_sigma(0.1, reference=0.1, holdout=0.4, correlation=1.0) == pytest.approx(np.hypot(0.1, 0.3))
 
 
-class TestRecordedDirections:
-    """``record_directions``: each direction corrected by its own held-out in-period reading, and their combination."""
+class TestTrainingPeriodRule:
+    """Step 12: the longer period trains when the after period is long enough, and the validity floor."""
+
+    def test_the_before_period_trains_under_nine_months_after(self) -> None:
+        assert training_period(before_months=3.0, after_months=8.4, before_hours=1000.0, after_hours=5000.0) == "before"
+
+    def test_nine_months_is_judged_to_within_the_works_window(self) -> None:
+        assert training_period(before_months=3.0, after_months=8.6, before_hours=1000.0, after_hours=5000.0) == "after"
+
+    def test_the_after_period_trains_when_longer_with_more_usable_hours(self) -> None:
+        assert training_period(before_months=6.0, after_months=12.0, before_hours=3000.0, after_hours=6000.0) == "after"
+
+    def test_the_before_period_trains_when_it_is_longer(self) -> None:
+        assert (
+            training_period(before_months=24.0, after_months=12.0, before_hours=9000.0, after_hours=6000.0) == "before"
+        )
+
+    def test_the_before_period_trains_when_it_has_more_usable_hours(self) -> None:
+        assert (
+            training_period(before_months=9.0, after_months=12.0, before_hours=6000.0, after_hours=5000.0) == "before"
+        )
+
+    def test_inverting_an_uplift_reads_it_the_other_way_round(self) -> None:
+        assert invert_uplift(0.05) == pytest.approx(1 / 1.05 - 1)
+        assert invert_uplift(invert_uplift(0.034)) == pytest.approx(0.034)
+        assert np.isnan(invert_uplift(float("nan")))
+        inverted = invert_uplift(np.array([0.05, -0.02]))
+        assert inverted == pytest.approx(1 / np.array([1.05, 0.98]) - 1)
+
+    def test_the_floor_is_nine_months_at_half_coverage(self) -> None:
+        assert not under_training_floor(months=9.0, coverage=0.5)
+        assert not under_training_floor(months=8.6, coverage=0.5)
+        assert under_training_floor(months=8.4, coverage=0.9)
+        assert under_training_floor(months=24.0, coverage=0.49)
+
+
+def _long_case(*, before_months: int, after_months: int, uplift: float = 0.05) -> MethodInput:
+    """An hourly toy prepost campaign with the given period lengths, in calendar months."""
+    start = pd.Timestamp("2019-01-01", tz="UTC")
+    changeover = start + pd.DateOffset(months=before_months)
+    end = changeover + pd.DateOffset(months=after_months)
+    n = int((end - start) / pd.Timedelta(hours=1))
+    idx = pd.date_range(start, periods=n, freq="h", tz="UTC")
+    scada = _toy_scada(n, uplift=uplift, treated=np.asarray(idx >= changeover), freq="h")
+    return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+
+
+class TestTrainingPeriod:
+    """Step 12 in the estimator: the swap, the inversion of every uplift, and the floor's warning."""
 
     @staticmethod
     def _method(**overrides: object) -> PowerModelMethod:
-        return _screen_method(**{"record_directions": True, **overrides})
+        return _screen_method(**{"holdout_max_blocks": 2, **overrides})
 
-    def test_is_off_by_default_and_its_columns_are_reading_columns(self) -> None:
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).record_directions is False
-        assert all(is_reading_column(c) for c in DIRECTION_COLUMNS)
+    def test_resolves_automatically_by_default_and_records_which_period_trained(self) -> None:
+        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).training_period == "auto"
+        assert all(is_reading_column(c) for c in TRAINING_COLUMNS)
+        row = self._method().estimate(_screen_case(step=0.0)[0]).uncertainty_diagnostics.iloc[0]
+        assert row["training_after"] == 0.0
+        assert 0.0 < row["training_months"] < 1.0
+        assert 0.0 < row["training_coverage"] <= 1.0
+        assert row["training_usable_hours"] > 0.0
 
-    def test_records_both_corrected_directions_and_their_combination(self) -> None:
-        mi, _ = _screen_case(step=0.0)
-        row = self._method().estimate(mi).uncertainty_diagnostics.iloc[0]
-        assert set(DIRECTION_COLUMNS) <= set(row.index)
-        assert all(np.isfinite(row[c]) for c in DIRECTION_COLUMNS)
-        assert row["uplift_forward_corrected"] == pytest.approx(
-            (1 + row["uplift_forward"]) / (1 + row["in_period_before"]) - 1
-        )
-        assert row["uplift_reverse_corrected"] == pytest.approx(
-            (1 + row["in_period_after"]) / (1 + row["uplift_reverse"]) - 1
-        )
-        assert row["sigma_forward_corrected"] == pytest.approx(
-            np.sqrt(row["sigma_sampling"] ** 2 + row["sigma_in_before"] ** 2 + row["sigma_holdout"] ** 2)
-        )
-        assert row["sigma_reverse_corrected"] == pytest.approx(
-            np.sqrt(row["sigma_reverse"] ** 2 + row["sigma_in_after"] ** 2 + row["sigma_holdout_after"] ** 2)
-        )
-        assert row["n_holdout_blocks_after"] >= 1
-        low, high = sorted([row["uplift_forward_corrected"], row["uplift_reverse_corrected"]])
-        assert low <= row["uplift_symmetric"] <= high
-        assert row["sigma_symmetric"] <= min(row["sigma_forward_corrected"], row["sigma_reverse_corrected"])
-
-    def test_the_combination_weighs_each_direction_by_its_precision(self) -> None:
-        mi, _ = _screen_case(step=0.0)
-        row = self._method().estimate(mi).uncertainty_diagnostics.iloc[0]
-        w_f, w_r = 1 / row["sigma_forward_corrected"] ** 2, 1 / row["sigma_reverse_corrected"] ** 2
-        expected = np.expm1(
-            (w_f * np.log1p(row["uplift_forward_corrected"]) + w_r * np.log1p(row["uplift_reverse_corrected"]))
-            / (w_f + w_r)
-        )
-        assert row["uplift_symmetric"] == pytest.approx(expected)
-        assert row["sigma_symmetric"] == pytest.approx(np.sqrt(1 / (w_f + w_r)))
-
-    def test_recovers_a_known_uplift_in_both_directions(self) -> None:
+    def test_a_forced_after_period_recovers_the_uplift_read_as_upgraded_over_baseline(self) -> None:
         mi, _ = _prepost_case(uplift=0.05)
-        row = self._method().estimate(mi).uncertainty_diagnostics.iloc[0]
-        for column in ("uplift_forward_corrected", "uplift_reverse_corrected", "uplift_symmetric"):
-            assert row[column] == pytest.approx(0.05, abs=0.01), column
+        out = self._method(training_period="after").estimate(mi)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.01)
+        row = out.uncertainty_diagnostics.iloc[0]
+        assert row["training_after"] == 1.0
+        assert np.isfinite(out.sigma_overall)
+        assert row["n_holdout_blocks"] >= 1
 
-    def test_never_moves_the_headline_or_its_sigma(self) -> None:
+    def test_the_references_read_in_the_same_direction_and_near_zero(self) -> None:
         mi, _ = _screen_case(step=0.0)
-        on = self._method().estimate(mi)
-        off = self._method(record_directions=False).estimate(mi)
-        assert on.p50_overall == off.p50_overall
-        assert on.sigma_overall == off.sigma_overall
-        assert not set(DIRECTION_COLUMNS) & set(off.uncertainty_diagnostics.columns)
+        method = self._method(training_period="after")
+        assert method._reference_clone().training_period == "after"  # noqa: SLF001
+        assert method._screening_clone().training_period == "after"  # noqa: SLF001
+        refs = method.estimate(mi).reference_uplifts
+        assert refs["uplift"].abs().max() < 0.02
+        assert (refs["training_after"] == 1.0).all()
 
-    def test_a_toggle_estimate_records_nothing(self) -> None:
-        n = 2000
-        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
-        schedule = ToggleSchedule(period=pd.Timedelta(hours=4), start=idx[0])
-        treated = resolve_toggle(schedule, idx).upgraded
-        mi = MethodInput(
-            scada_df=_toy_scada(n, uplift=0.0, treated=treated),
-            test_wtg="T1",
-            upgrade_timing=schedule,
-            turbine_col=_TURBINE,
+    def test_the_reverse_reading_is_inverted_too(self) -> None:
+        mi, _ = _prepost_case(uplift=0.05)
+        row = self._method(training_period="after", record_reversal=True).estimate(mi).uncertainty_diagnostics.iloc[0]
+        assert row["uplift_forward"] == pytest.approx(0.05, abs=0.01)
+        assert row["uplift_reverse"] == pytest.approx(invert_uplift(0.05), abs=0.01)
+
+    def test_every_bin_of_the_uplift_distributions_is_inverted(self) -> None:
+        out = _shape_method(training_period="after", holdout_max_blocks=0).estimate(_shape_case(uplift=0.05))
+        bins = out.p50_by_condition
+        measured = bins[(bins["condition"] == "predicted_power") & ~bins["thin"]]
+        assert not measured.empty
+        assert measured["p50_uplift"].between(0.0, 0.1).all()
+
+    def test_the_longer_after_period_trains_automatically(self) -> None:
+        out = self._method(model_params={**_FAST_PARAMS, "n_estimators": 20}).estimate(
+            _long_case(before_months=4, after_months=10)
         )
-        row = self._method().estimate(mi).uncertainty_diagnostics.iloc[0]
-        assert all(np.isnan(row[c]) for c in DIRECTION_COLUMNS)
+        row = out.uncertainty_diagnostics.iloc[0]
+        assert row["training_after"] == 1.0
+        assert row["training_months"] == pytest.approx(10.0, abs=0.2)
+        assert out.p50_overall == pytest.approx(0.05, abs=0.01)
+        assert out.warnings == ()
 
-    def test_needs_the_held_out_before_period(self) -> None:
-        with pytest.raises(ValueError, match="holdout_max_blocks"):
-            self._method(holdout_max_blocks=0)
+    def test_a_training_period_under_the_floor_warns_at_high_severity_and_still_measures(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING):
+            out = self._method(training_period="before").estimate(_prepost_case(uplift=0.05)[0])
+        assert out.p50_overall == pytest.approx(0.05, abs=0.01)
+        (warning,) = out.warnings
+        assert warning.severity == "high"
+        assert warning.step == 12
+        assert warning.turbine == "T1"
+        assert "9 months" in warning.message
+        assert "coverage" in warning.message
+        assert any(warning.message in r.getMessage() for r in caplog.records)
 
-    def test_each_reference_reading_carries_them_too(self) -> None:
+    def test_a_toggle_estimate_never_swaps(self) -> None:
+        out = _fundamentals_method(model_params=_FAST_PARAMS).estimate(_uncertainty_case(toggle=True))
+        row = out.uncertainty_diagnostics.iloc[0]
+        assert row["training_after"] == 0.0
+        with pytest.raises(ValueError, match="toggle"):
+            _fundamentals_method(model_params=_FAST_PARAMS, training_period="after").estimate(
+                _uncertainty_case(toggle=True)
+            )
+
+    def test_the_screen_cache_is_keyed_by_the_training_period(self) -> None:
         mi, _ = _screen_case(step=0.0)
-        refs = self._method().estimate(mi).reference_uplifts
-        assert set(DIRECTION_COLUMNS) <= set(refs.columns)
-        assert refs["uplift_symmetric"].notna().all()
-        assert (refs["n_holdout_blocks"] <= 4).all()
+        cache: dict = {}
+        self._method(screen_cache=cache, training_period="before").estimate(mi)
+        self._method(screen_cache=cache, training_period="after").estimate(mi)
+        assert len(cache) == 2

@@ -829,7 +829,6 @@ def test_method_overrides_reach_the_matrix_method(tmp_path: Path) -> None:
     # the matrix's own overrides survive
     assert dumped.model_params["n_jobs"] == 1  # type: ignore[attr-defined]
     assert dumped.record_reversal is True  # type: ignore[attr-defined]
-    assert dumped.record_directions is True  # type: ignore[attr-defined]
 
 
 def _sigma_records() -> list[dict[str, Any]]:
@@ -1048,17 +1047,3 @@ def test_the_matrix_runs_three_months_before_and_drops_totals_under_nine_months(
         (24, 9),
         (24, 12),
     }
-
-
-def test_the_directions_size_runs_each_campaign_at_k4_over_every_period_shape() -> None:
-    cells = matrix_cells(SIZES["directions"].settings)
-    synthetic = [c for c in cells if c.arm != "real"]
-    assert {c.k for c in cells} == {4}
-    assert {c.arm for c in cells} == {"main", "real"}
-    assert {c.multiplier for c in synthetic} == {1, 0}
-    assert {(c.pre_months, c.post_months) for c in synthetic} == {
-        (p, n) for p in (3, 6, 12, 24) for n in (1, 2, 3, 6, 9, 12) if p + n >= 9
-    }
-    assert len(synthetic) == 19 * 2 * 19
-    assert {c.site for c in cells if c.arm == "real"} == {"hot_t13", "hot_tuneup"}
-    assert SIZES["directions"].workers == 10

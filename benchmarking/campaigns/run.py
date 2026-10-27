@@ -19,6 +19,7 @@ from benchmarking.baselines.power_model.method import headline_detail, reference
 from benchmarking.campaigns.context import context_for_plan
 from benchmarking.campaigns.data_screen import (
     DEFAULT_DATA_SCREEN,
+    DROPPED,
     DataScreen,
     DataScreenSettings,
     reference_data_table,
@@ -30,6 +31,7 @@ from benchmarking.harness import MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
 from wind_up import TurbineUplift, farm_uplift
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
+from wind_up.analysis_warnings import AnalysisWarning, ranked
 from wind_up.northing import DEFAULT_NORTHING
 
 if TYPE_CHECKING:
@@ -98,6 +100,7 @@ class CampaignReport:
     :param timeline: each upgraded turbine's analysis plan, or the reason none could be chosen,
         with the works and data extents they were chosen from and the warnings against them
     :param data_screens: each analysed turbine's data screen, empty when the screen is off
+    :param warnings: every analysis warning the run raised, ranked by severity
     """
 
     spec: CampaignSpec
@@ -111,6 +114,7 @@ class CampaignReport:
     wall_time_s: dict[tuple[str, str], float]
     timeline: CampaignPlans = field(default_factory=CampaignPlans)
     data_screens: dict[str, DataScreen] = field(default_factory=dict)
+    warnings: tuple[AnalysisWarning, ...] = ()
 
     @property
     def plans(self) -> dict[str, AnalysisPlan]:
@@ -358,7 +362,52 @@ def estimate_campaign(
         wall_time_s=wall_time_s,
         timeline=resolved,
         data_screens=screens,
+        warnings=analysis_warnings(
+            outputs=outputs, screens=screens, timeline=resolved, possible_changes=possible_changes or {}
+        ),
     )
+
+
+def analysis_warnings(
+    *,
+    outputs: Mapping[tuple[str, str], MethodOutput],
+    screens: Mapping[str, DataScreen],
+    timeline: CampaignPlans,
+    possible_changes: Mapping[str, Sequence[pd.Timestamp]],
+) -> tuple[AnalysisWarning, ...]:
+    """Return every analysis warning of a run, ranked by severity.
+
+    The methods' own warnings are kept as raised. A reference the reference screen ruled out or the data
+    screen dropped is a medium warning of step 9 against its test turbine; an indicator of an undeclared
+    change inside a plan's periods a medium warning of step 8; a candidate yaw-alignment change a low
+    warning of step 4 against that turbine.
+    """
+    found: list[AnalysisWarning] = []
+    several = len({name for name, _ in outputs}) > 1
+    for (name, wtg), output in outputs.items():
+        found.extend(output.warnings)
+        references = output.reference_uplifts
+        if references is None or "screened" not in references.columns:
+            continue
+        by = f" by {name}" if several else ""
+        found.extend(
+            AnalysisWarning("medium", 9, wtg, f"the reference screen ruled out {reference}{by}")
+            for reference in references.loc[references["screened"].astype(bool), "turbine"]
+        )
+    for wtg, screen in screens.items():
+        dropped = screen.table[screen.table["verdict"] == DROPPED]
+        found.extend(
+            AnalysisWarning("medium", 9, wtg, f"the data screen dropped {candidate}: {reason}")
+            for candidate, reason in zip(dropped["candidate"], dropped["reason"], strict=True)
+        )
+    for wtg, others in timeline.warnings.items():
+        found.extend(AnalysisWarning("medium", 8, wtg, f"{other}: {message}") for other, message in others.items())
+    for turbine, times in possible_changes.items():
+        found.extend(
+            AnalysisWarning("low", 4, turbine, f"a candidate yaw alignment change on {pd.Timestamp(t):%Y-%m-%d}")
+            for t in times
+        )
+    return tuple(ranked(found))
 
 
 def _farm_row(method: str, result: FarmUplift, *, references: tuple[float, float, float] | None) -> dict[str, object]:

@@ -23,6 +23,7 @@ from benchmarking.harness.conditions import ORIGINAL_ROW_CONDITIONS, record_labe
 from benchmarking.harness.plots import conditional_estimates
 from benchmarking.synthetic import treated_mask
 from wind_up.analysis_period_plots import plot_analysis_timeline
+from wind_up.analysis_warnings import summary, warnings_frame
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -37,7 +38,8 @@ logger = logging.getLogger(__name__)
 def write_report(report: CampaignReport, *, out_dir: Path, farm_dir: Path | None = None) -> Path:
     """Write the analyst-facing campaign report under ``out_dir`` and return it.
 
-    Writes ``per_turbine.csv`` at the root and, in a folder per method step, ``periods.csv`` (each
+    Writes ``per_turbine.csv`` and ``analysis_warnings.csv`` (the run's warnings ranked by severity,
+    whose summary is also logged) at the root and, in a folder per method step, ``periods.csv`` (each
     upgraded turbine's before and after periods, or the reason none could be chosen) with an
     ``analysis_timeline_<turbine>.png`` per upgraded turbine, ``candidates.csv`` (every other
     turbine's rank, role and reason for each upgraded turbine, with any warning against it), the data
@@ -55,6 +57,7 @@ def write_report(report: CampaignReport, *, out_dir: Path, farm_dir: Path | None
     _write_periods(report, out_dir=out_dir / stages.PERIODS)
     _write_candidates(report, out_dir=out_dir / stages.CANDIDATES)
     report.per_turbine.to_csv(out_dir / "per_turbine.csv", index=False)
+    warnings_frame(report.warnings).to_csv(out_dir / "analysis_warnings.csv", index=False)
     report.farm.to_csv(farm / "farm_uplift.csv", index=False)
     (out_dir / stages.SCREEN).mkdir(exist_ok=True)
     write_data_screen(
@@ -84,6 +87,7 @@ def write_report(report: CampaignReport, *, out_dir: Path, farm_dir: Path | None
         report.reference_stability,
         timebase=infer_timebase(pd.DatetimeIndex(report.scada_df.index.unique()).sort_values()),
     )
+    logger.log(logging.WARNING if report.warnings else logging.INFO, "%s", summary(report.warnings))
 
     if not report.conditional.empty:
         distributions = out_dir / stages.UPLIFT_DISTRIBUTIONS
