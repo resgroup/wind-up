@@ -101,7 +101,7 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
 Learned the hard way while landing R1, which changed a **shared** feature-engineering step and
 so moved every frozen artefact at once. Read this before accepting any benchmark change.
 
-- **There are four frozen baselines, not one.** `study_power_model_compare_baseline.json` plus
+- **There are four frozen baselines, not one** (scripts and baselines since removed). `study_power_model_compare_baseline.json` plus
   `study_toggle_methods_compare_baseline_{linux,portable,win32}.json`. A method-internal change
   usually touches one; a change to a shared step touches all of them, because every study driver
   inherits it.
@@ -310,7 +310,19 @@ prepost split.
 **Re-verifies:** the shared northing step (R1) and the reference-validity screen (R3),
 now in-context on a realistic prepost campaign.
 
-### Status and next steps (2026-10-07)
+### Status (2026-10-27)
+
+**Where C3 stands.** The method is written in [method.md](method.md) and built as steps 1 to 15 at their
+defaults, with the campaign runner and the prepost campaign matrix driving the same code; the plan below
+(2026-10-07) is superseded by the decisions recorded in method.md under "Decided so far" and by CF30 to
+CF34. Against the original "done when": the campaign is declared and run whole-farm; per-turbine and
+farm estimates track truth on the matrix's validation domain (run 8 at f4c85a2, 4164 cells: targets i to
+iv pass, test sigma coverage 0.76, reference sigma coverage 0.42 fails); the report shows the periods,
+the references and how each was used. Still open before C3 closes: the reference sigma, the step 15 bins
+near cut-in, an accepted `big` baseline, and the validation of the training-period swap (run 9 at 55386ca).
+R1 and R3 are re-verified in context by the matrix's northing step and reference screen on every cell.
+
+### Status and next steps (2026-10-07, superseded)
 
 The prepost campaign matrix (`benchmarking/baselines/study_prepost_campaign_matrix.py`) runs at a
 size: `small` (38 cells, ~33 min on 16 workers) or `big`. Each study writes a directory to download
@@ -708,7 +720,7 @@ benchmarks are re-recorded.
 
 ---
 
-## C10 — Campaign design that accounts for the changed-upwind data loss (TODO, pick up 2026-10-19)
+## C10 — Campaign design that accounts for the changed-upwind data loss (done 2026-10-20, run 5)
 
 **Why:** in run 3 of the prepost matrix the largest loss of usable hours in every campaign is
 "changed upwind of reference", 36 to 65 % of the before period even for a lone test turbine with
@@ -860,7 +872,7 @@ invariance (injecting sensor drift/steps barely moves `power_model`'s error).
 
 **Status:** ✅ Done (2026-09-07). A method-internal reference-validity screen landed in
 `power_model`, with `ReferenceCpChange` as the generator-side fault and three drivers
-(`screen_calibration`, `reference_fixture`, `screen_roadtest`) behind the numbers — see CF13 in
+(`screen_calibration`, `reference_fixture`, `screen_roadtest`; the first and last since removed) behind the numbers — see CF13 in
 [findings_campaigns.md](findings_campaigns.md). Each candidate reference is estimated as if it
 were a test turbine against the others, and a clear outlier from the pool median is made
 **power-free**: it keeps its direction features and gains a `waking` boolean, so its wake
@@ -921,7 +933,7 @@ channels / gaps.
 there. The heading above is wrong about where this failure mode lives.
 
 **Signal discovery was measured and deliberately not built.** The probe
-(`benchmarking.campaigns.outage_probe`) showed the absent/empty split *is* the fault line —
+(`benchmarking.campaigns.outage_probe`, since removed) showed the absent/empty split *is* the fault line —
 every NaN-shaped outage already returns a number, every absent-column one raises — so
 "discover and adapt" would have converted honest raises into silent estimates, the wrong
 direction. Missing data turned out to be absorbed within a 0.127 pp estimator-noise floor

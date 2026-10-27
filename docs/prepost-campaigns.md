@@ -27,6 +27,12 @@ deliberate use of the strict `campaign_baseline` has no effect here.
 Each upgraded turbine has **its own changeover**. With a works table, it is the end of that
 turbine's works window; with a declared `timing.changeover`, every turbine shares one.
 
+Which period the model trains on follows [method step 12](v1/method.md#12-relate-the-reference-measurements-to-the-subject-turbine-measurements):
+the before period, unless the after period spans at least 9 months, is longer and holds more usable
+hours, in which case the model trains on the after period, predicts the before period, and every
+uplift is inverted to read as upgraded over baseline. A training period under 9 months at 50 %
+coverage raises a high-severity analysis warning.
+
 ## Choosing the span and the power references
 
 This is the largest piece of prepost-only machinery: `wind_up.analysis_period`
@@ -51,7 +57,9 @@ Three different things remove a turbine's data, and wind-up distinguishes them:
 | the turbine's own **works window** | its data is never usable | no |
 | a **farm-wide** exclusion | nobody's data is usable | no |
 | the turbine's **own** exclusion | its data is not usable for uplift | **yes**, marked invalid |
-TODO exclusions are a general concept that toggle tests would use too but they are not explained in docs/v1/method.md
+
+Exclusions apply to a toggle campaign in the same way; the method describes them under
+[step 1](v1/method.md#1-identify-changes-to-the-wind-farm) and [step 7](v1/method.md#7-choose-the-before-and-after-periods).
 
 The third is what `held_back_mask` picks out. Those rows stay in the frame so that the waking
 scenarios can still read *whether the turbine was running* over them, even though its power may not
@@ -73,48 +81,26 @@ uplift. Its waking state still reaches the other turbines' waking scenarios (met
 |---|---|
 | **the reference screen** | runs on prepost only. A reference is screened across the campaign's own changeover (`screening_timing`). Toggle is skipped entirely: a reference change before the test is common-mode across every on and off block, so the on/off contrast is blind to it, and splitting the test period in half leaves too little a side to see one |
 | **reserves and refilling** | only a planned campaign supplies reserves, so only prepost refills a screened-out reference. A flat campaign's screened reference stays in the pool and goes power-free (contributes no features) instead |
-| **`headline_estimator="reversal"`** | applies to prepost only. It also fits the reverse direction — train the upgraded rows, predict the baseline rows — and reports `sqrt((1+r_fwd)/(1+r_rev)) − 1`, so a shrinkage common to both directions cancels. **Off by default**; toggle always keeps the forward ratio |
+| **the reference correction** | the default prepost headline ([method step 13](v1/method.md#13-calculate-the-uplift), option C): the forward ratio divided by the kept references' mean reading, so the estimator's own level on turbines that did nothing is removed; its standard error joins the sigma. Toggle keeps the forward ratio |
+| **the training-period swap** | prepost only (method step 12): the after period trains the model when it is at least 9 months long, longer than the before period and has more usable hours |
+| **the held-out training period** | prepost only ([method step 14](v1/method.md#14-estimate-uncertainty)): the training period is read window by window, each refitted on the rest, and the spread beyond the sampling sigma joins the headline's sigma |
+| **`headline_estimator="reversal"`** | an alternative prepost headline, off by default: it also fits the reverse direction and reports `sqrt((1+r_fwd)/(1+r_rev)) − 1`. Not adopted on the campaign matrix (method.md, "Decided so far") |
 | **campaign-proximity time decay** | a prepost-only lever, because in toggle the on and off rows interleave inside the campaign interval and every row weighs 1. **Off by default** since [CF22](v1/findings_campaigns.md): on a record whose pre and post periods were the same days interleaved — truth 0 — it moved the reading +0.154 pp, and with it off the disguised-prepost and toggle legs agreed to the last digit. The tilt works against the thing a full-year baseline is chosen for, which is covering every season evenly |
 
-## Known weak spots
+## What the campaign matrix measures
 
-These are measured, not suspected. The evidence is the prepost campaign matrix
-(`benchmarking/baselines/study_prepost_campaign_matrix.py`), whose small size runs Penmanshiel and
-Kelmarsh rollout campaigns at three injected magnitudes — including **zero**, where the correct
-answer is exactly 0 — and the probes recorded in [findings_campaigns.md](v1/findings_campaigns.md).
+The evidence for every prepost choice is the prepost campaign matrix
+(`benchmarking/baselines/study_prepost_campaign_matrix.py`): synthetic rollout campaigns on three open
+sites at injected magnitudes including **zero**, where the correct answer is exactly 0, plus two real
+campaigns whose references provide a truth of zero. [Method.md's validation section](v1/method.md#validation)
+states the targets, the decisions they led to (no weather trimming, ERA5 out of the model, the
+reference correction, the training-period swap, the sigma's terms) and where the method is valid; the
+runs are recorded as CF25 onward in [findings_campaigns.md](v1/findings_campaigns.md). Two things the
+matrix found that a prepost analyst should keep in mind:
 
-**Accuracy gets worse as the post period grows.** From the `82c6398` small run, over the 18
-placebo (truth 0) test-turbine readings at each post length:
-
-| post length asked | post days delivered | sd of the reading | worst reading |
-|---|---|---|---|
-| 3 months | 90–110 | **0.34 pp** | 0.68 pp |
-| 12 months | 266–326 | **0.86 pp** | 1.68 pp |
-
-More data, a worse answer. That is the seasonal mismatch doing its work: a longer post period sits
-further from the baseline it is compared against. [CF24](v1/findings_campaigns.md) measures the same
-thing from the other side — balancing the two periods so they hold the same months record for
-record removes about two thirds of the placebo bias, and nearly all of the between-turbine spread.
-
-**A long post period is also not the post period requested.** The window runs to the last trial
-turbine's works end plus the requested length, and the selector then truncates it at the first
-rollout turbine whose works fall inside. So "12 months" delivered 266 to 326 days above, and at
-Kelmarsh it also cost a power reference (4 asked, 3 chosen).
-
-**Reference downtime has large leverage, and it is not symmetric about the changeover.** Adding a
-few random outages to the reference turbines moved one Penmanshiel test turbine's placebo reading
-from −0.37 pp to −1.6 pp. Three outages touched its four references; two of them fell in the post
-period, costing it about 1.3 % of its post-period reference records, and the third fell in the pre
-period. Its own reference-stability readings moved by at most 0.19 pp over the same change, so the
-sanity check did not see what moved the headline.
-
-**The two exclusion channels disagree.** Across 141 reference readings in that run, `"booleans"` and
-`"nan"` dropped bit-for-bit identical record counts, on identical plans and identical reference
-sets, and still produced estimates differing by up to 0.38 pp (median 0.09 pp). Same rows in,
-different answer out.
-
-**A reference reading is not independent of the upgrade.** A reference's reading should not change
-when the injected upgrade's magnitude changes, since none of its own data moves. It does, by a
-median of 0.12 pp and up to 0.35 pp, monotonically in the magnitude — the signature of the upgraded
-turbine's scaled power reaching the waking booleans the references are read against
-([CF25](v1/findings_campaigns.md) §1).
+- **A placebo reading's error is block-scale variation of the subject-to-reference relation** (CF33),
+  present inside the before period as strongly as between the periods, which is why the sigma reads the
+  held-out training period rather than a fixed model's resampling alone.
+- **Reference downtime has leverage.** A row on which a power reference has no valid data is dropped
+  from both periods (method step 11 i), because a few reference outages moved a placebo reading by
+  more than 1 pp before that rule (CF27).

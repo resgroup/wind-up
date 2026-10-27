@@ -153,10 +153,12 @@ now refused). The reach also ranks the power references (see the span, above).
 - `toggle` — the change was switched on and off in alternating blocks, so both states are sampled
   in the same weather. Needs `start` and `period` (a full on/off cycle, e.g. `100min`).
 
-**`analysis_period`.** `end` is **exclusive**. For `prepost`, the treated period should have **the
-same length as the baseline, and the same months of the year** — a full year of baseline against six
-months of treated data compares two different seasons, and the seasonal difference lands in the
-result as if it were uplift. `toggle` does not have this problem, because its blocks interleave.
+**`analysis_period`.** `end` is **exclusive**. For `prepost`, longer is better on both sides: the
+method ([step 7](v1/method.md#7-choose-the-before-and-after-periods)) seeks up to 24 months before and
+12 after, and the reference turbines' own readings correct what the seasons leave in the result
+(step 13). The model trains on the longer period once the after period reaches 9 months (step 12), and
+a result whose training period is under 9 months at 50 % coverage carries a high-severity warning.
+`toggle` interleaves its blocks, so the seasons cancel by construction.
 
 **`northing.discover`.** Nacelle position sensors drift and get re-zeroed, which corrupts every
 direction-dependent calculation. `true` (the default) finds those steps in the data and corrects
@@ -208,27 +210,29 @@ The run also writes its log to `<out>/run.log`, which should be read: some of wh
 is reported nowhere else, in particular the reference screen's thresholds, how big a pool it had,
 and whether it stopped early.
 
-A run takes roughly **three minutes per upgraded turbine**, plus a couple of minutes for the shared
-northing step.
+A run takes roughly **ten minutes per upgraded turbine** at the default periods on a laptop (the
+reference readings and the held-out windows of step 14 are most of it), plus a couple of minutes for
+the shared northing step.
 
 ## 3. The outputs
 
 | file | what it says |
 |---|---|
-| `per_turbine.csv` | the uplift estimate for each upgraded turbine |
-| `analysis_warnings.csv` | every warning the run raised, ranked by severity: high questions a headline (a training period under 9 months at 50 % coverage, [method step 12](v1/method.md#12-relate-the-reference-measurements-to-the-subject-turbine-measurements)), medium changed the inputs of a measurement (a reference the screens ruled out, an indicator of an undeclared change), low is for attention only (a candidate yaw-alignment change). The counts and the list also open the run's `README.md` and close its log |
-| `farm_uplift.csv` | one headline number for the whole campaign, weighted by energy |
-| `farm_uplift_detail.csv` | how each turbine contributed, and whether any was dropped |
-| `09_screen/reference_stability.csv` | **each reference estimated as if it were a test turbine** |
-| `15_uplift_distributions/` | `conditional.csv` and its plots: uplift split by wind speed, turbulence and power |
-| `wind-up/` | the campaign's uplift plots, in a folder per method that ran |
-| `northing/` | the direction corrections that were discovered, with plots |
+| `B_campaign/per_turbine.csv` | the uplift estimate for each upgraded turbine |
+| `B_campaign/analysis_warnings.csv` | every warning the run raised, ranked by severity: high questions a headline (a training period under 9 months at 50 % coverage, [method step 12](v1/method.md#12-relate-the-reference-measurements-to-the-subject-turbine-measurements)), medium changed the inputs of a measurement (a reference the screens ruled out, an indicator of an undeclared change), low is for attention only (a candidate yaw-alignment change). The counts and the list also open the run's `README.md` and close its log |
+| `D_farm/farm_uplift.csv` | one headline number for the whole campaign, weighted by energy |
+| `D_farm/farm_uplift_detail.csv` | how each turbine contributed, and whether any was dropped |
+| `B_campaign/09_screen/reference_stability.csv` | **each reference estimated as if it were a test turbine** |
+| `B_campaign/15_uplift_distributions/` | `conditional.csv` and its plots: uplift split by wind speed, turbulence and power |
+| `D_farm/wind-up/` | the campaign's uplift plots, in a folder per method that ran |
+| `A_data_preparation/04_northing/` | the direction corrections that were discovered, with plots, and the possible yaw-alignment changes |
+| `C_turbine_measurement/<turbine>/` | one folder per measured turbine: its CSVs (`record_losses.csv` is the hours lost to each rule of step 11) and its plots, one folder per step |
 | `campaign_resolved.yaml` | the campaign as wind-up understood it: the declaration with every default filled in and every timestamp resolved to UTC |
-| `07_periods/periods.csv` | each upgraded turbine's before and after periods, whether they were declared or chosen, whether the pool rule held (with the reason when it did not), and for a turbine no span could be found for, the reason |
-| `07_periods/analysis_timeline_<turbine>.png` | the span drawn over every turbine's data, works and exclusions, each turbine labelled with its role ([how the analysis period is chosen](analysis-period-and-reference-selection.md)) |
-| `08_candidates/candidates.csv` | every other turbine ranked by distance for each upgraded turbine — power reference, reserve or waking only — with the reason it is not a power reference and any warning of a possible undeclared change |
-| `09_screen/reference_data.csv` | the data screen: each candidate reference's usable hours before and after and its power correlation with the test turbine, and whether it was kept, held as a spare or dropped, with plots of the same per upgraded turbine ([the data screen](analysis-period-and-reference-selection.md#the-data-screen)) |
-| `09_screen/reference_hours.csv` | the usable hours left as references are added, nearest first |
+| `B_campaign/07_periods/periods.csv` | each upgraded turbine's before and after periods, whether they were declared or chosen, whether the pool rule held (with the reason when it did not), and for a turbine no span could be found for, the reason |
+| `B_campaign/07_periods/analysis_timeline_<turbine>.png` | the span drawn over every turbine's data, works and exclusions, each turbine labelled with its role ([how the analysis period is chosen](analysis-period-and-reference-selection.md)) |
+| `B_campaign/08_candidates/candidates.csv` | every other turbine ranked by distance for each upgraded turbine — power reference, reserve or waking only — with the reason it is not a power reference and any warning of a possible undeclared change |
+| `B_campaign/09_screen/reference_data.csv` | the data screen: each candidate reference's usable hours before and after and its power correlation with the test turbine, and whether it was kept, held as a spare or dropped, with plots of the same per upgraded turbine ([the data screen](analysis-period-and-reference-selection.md#the-data-screen)) |
+| `B_campaign/09_screen/reference_hours.csv` | the usable hours left as references are added, nearest first |
 
 ### First, `reference_stability.csv`
 
@@ -286,4 +290,4 @@ references sit the same distance from zero, the reading is the noise floor, not 
   works table.
 - Every turbine's data is trusted for its wake. A turbine whose power reads high while it is in
   fact stopped would be counted as waking its neighbours.
-- The result is a P50 estimate. There is no uncertainty interval yet.
+- The result is a P50 estimate with a one-sigma uncertainty ([step 14](v1/method.md#14-estimate-uncertainty)); there is no P95 yet.

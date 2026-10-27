@@ -1088,7 +1088,7 @@ a backlog), which is where W3's output now goes for triage.
 
 ## CF17 — Keeping every turbine as a wake contributor is neutral on the placebo (**+0.027 pp** at farm level) but flipped one borderline screen verdict in the benchmark, costing **+0.25 / +0.29 pp** on two 6-month prepost cells. The false positive sits **0.1 pp** from a true bad reference, so the 2.5 pp floor cannot separate them — screen changes wait for a benchmark with larger turbine groups
 
-*2026-09-12, branch `v1-w1a` at 85667b3. `study_power_model_compare` (both modes, 7 profiles,
+*2026-09-12, branch `v1-w1a` at 85667b3. `study_power_model_compare` (since removed; both modes, 7 profiles,
 1/2/3/6/12 months, 4 replicates, seed 0) and `study_toggle_methods_compare --update-baseline`,
 re-recorded from a clean tree; the placebo pair is `placebo_instance("prepost", seed=1)`, 9 test
 turbines of 21, run once from a 4ab8259 snapshot on `PYTHONPATH` and once from HEAD.*
@@ -1283,7 +1283,7 @@ MM82 nameplate 2050 kW) would have given the wrong answer against the observed 2
 
 ## CF14 — Missing data is absorbed within estimator noise, with one exception: a reference that **disappears from the delivery** costs **+0.45 pp**, because it shrinks the pool rather than corrupting anything. Every crash named someone else's problem, and the misleading one was **prepost-only**
 
-*2026-09-08. R4, stage 1 + stage 2. Driver: `benchmarking.campaigns.outage_probe` — 19 arms over
+*2026-09-08. R4, stage 1 + stage 2. Driver: `benchmarking.campaigns.outage_probe` (since removed) — 19 arms over
 the field failure modes (whole-farm SCADA outage, whole-turbine logging outage, single-signal
 outage, ERA5 columns lost to a download or mapping error, ERA5 holes), each in the two shapes that
 take different code paths: **absent** (the column is not in the frame) and **empty** (the column is
@@ -1362,7 +1362,7 @@ its target object` inside the stuck-sensor filter.
 
 ## CF13 — The reference screen works where it has data and references, and nowhere else: it needs a campaign of **150+ days** and it finds Hill of Towie's genuinely bad turbine (**T17, +4.7%**) on a 19-reference pool. Two constraints, both measured, decide when it may run at all
 
-*2026-09-04. R3, Phase B. Drivers: `benchmarking.campaigns.screen_calibration` (clean placebo
+*2026-09-04. R3, Phase B. Drivers (since removed): `benchmarking.campaigns.screen_calibration` (clean placebo
 pools, one screening pass at an infinite floor, so every deviation is the farm's own noise),
 `benchmarking.campaigns.reference_fixture` (injected changes) and
 `benchmarking.campaigns.screen_roadtest` (four real reference sets). The screen estimates each

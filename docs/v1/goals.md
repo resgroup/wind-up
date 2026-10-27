@@ -84,7 +84,7 @@ post-processing. *(Lower priority than G1–G4; high practical value.)*
 - Internal v1 planning notes — the v1 plan and goals.
 - `wind-up-ml-uplift-design-note.md` — the ML / treatment-effect (R-learner)
   methodology candidate and staged plan.
-- Example v0 uplift reports (Hill of Towie AeroUp/Pitch, Tallentire, Earlseat,
+- Example v0 uplift reports (Hill of Towie AeroUp/Pitch, two other sites,
   wake-steering) — basis for the report-generation gap analysis (G6).
 - Key open data: Hill of Towie SCADA (Zenodo 22662930) and
   `resgroup/hill-of-towie-open-source-analysis`.
