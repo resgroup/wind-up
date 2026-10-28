@@ -340,6 +340,96 @@ def bootstrap_ratio_uplift(
     )
 
 
+@dataclass(frozen=True)
+class RatioUncertainty:
+    """The uncertainty of one energy-ratio uplift from a circular block bootstrap of one period.
+
+    :param sigma: std of the resampled uplifts (``ddof=1``); NaN with fewer than two blocks or two
+        finite resamples
+    :param sigma_robust: ``(p84 - p16) / 2`` of the resampled uplifts
+    :param n_blocks: blocks drawn per resample (``ceil(period / block)``)
+    :param frac_resamples_finite: fraction of resamples with a finite uplift
+    :param resamples: the resampled uplifts themselves (NaN where a resample was degenerate)
+    """
+
+    sigma: float
+    sigma_robust: float
+    n_blocks: int
+    frac_resamples_finite: float
+    resamples: npt.NDArray[np.float64] = field(default_factory=lambda: np.empty(0), repr=False, compare=False)
+
+
+def bootstrap_energy_ratio(
+    *,
+    times: pd.DatetimeIndex,
+    actual: npt.NDArray[np.float64],
+    counterfactual: npt.NDArray[np.float64],
+    period_start: pd.Timestamp,
+    period_end: pd.Timestamp,
+    timebase: pd.Timedelta,
+    block_hours: float,
+    n_resamples: int,
+    seed: int,
+) -> RatioUncertainty:
+    """Bootstrap the 1-sigma uncertainty of ``sum(actual) / sum(counterfactual) - 1`` over one period.
+
+    Blocks tile wall-clock time from ``period_start`` and wrap past ``period_end``, so a gap in the
+    records is covered rather than closed up; each resample draws ``ceil(period / block)`` blocks
+    with replacement and re-forms the ratio. The arrays are parallel over the used records, in any
+    order. A resample whose counterfactual sum falls below a tenth of the whole period's is
+    degenerate and left out of the spread.
+
+    :param times: the used records' timestamps
+    :param actual: the subject turbine's power per used record
+    :param counterfactual: the counterfactual prediction per used record
+    :param period_start: the period's first timestamp
+    :param period_end: the period's last timestamp
+    :param timebase: analysis timebase; sets the candidate block-start grid
+    :param block_hours: block length; a block at or beyond the period leaves one block and no sigma
+    :param n_resamples: resamples to draw
+    :param seed: RNG seed
+    """
+    nan = float("nan")
+    n_records = len(times)
+    period_s = (period_end - period_start) / pd.Timedelta(seconds=1) + timebase.total_seconds()
+    if n_records == 0 or period_s <= 0 or n_resamples < _MIN_RESAMPLES_FOR_SPREAD:
+        return RatioUncertainty(sigma=nan, sigma_robust=nan, n_blocks=0, frac_resamples_finite=nan)
+    elapsed = np.asarray((times - period_start) / pd.Timedelta(seconds=1), dtype=float)
+    order = np.argsort(elapsed, kind="stable")
+    seconds = elapsed[order]
+    values = np.column_stack([np.asarray(actual, dtype=float)[order], np.asarray(counterfactual, dtype=float)[order]])
+    prefix = np.concatenate([np.zeros((1, 2)), np.cumsum(np.concatenate([values, values]), axis=0)])
+
+    doubled = np.concatenate([seconds, seconds + period_s])
+    block_s = min(float(block_hours) * 3600.0, period_s)
+    starts = np.arange(0.0, period_s, timebase.total_seconds())
+    lo_idx = np.searchsorted(doubled, starts, side="left")
+    hi_idx = np.searchsorted(doubled, starts + block_s, side="left")
+    n_blocks = math.ceil(period_s / block_s)
+    if n_blocks < _MIN_BLOCKS_FOR_SPREAD:
+        return RatioUncertainty(sigma=nan, sigma_robust=nan, n_blocks=n_blocks, frac_resamples_finite=nan)
+
+    rng = np.random.default_rng(seed)
+    totals = np.zeros((n_resamples, 2))
+    for lo in range(0, n_resamples, _RESAMPLE_CHUNK):
+        hi = min(lo + _RESAMPLE_CHUNK, n_resamples)
+        drawn = rng.integers(0, len(starts), size=(hi - lo, n_blocks))
+        totals[lo:hi] = (prefix[hi_idx[drawn]] - prefix[lo_idx[drawn]]).sum(axis=1)
+    floor = _MIN_REFERENCE_FRACTION * prefix[n_records, 1]
+    valid = totals[:, 1] >= floor
+    uplift = np.divide(totals[:, 0], totals[:, 1], out=np.full(n_resamples, np.nan), where=valid) - 1.0
+    finite = np.isfinite(uplift)
+    kept = uplift[finite]
+    usable = int(finite.sum()) >= _MIN_RESAMPLES_FOR_SPREAD
+    return RatioUncertainty(
+        sigma=float(kept.std(ddof=1)) if usable else nan,
+        sigma_robust=float(np.subtract(*np.percentile(kept, _SIGMA_PERCENTILES[::-1])) / 2.0) if usable else nan,
+        n_blocks=n_blocks,
+        frac_resamples_finite=float(finite.mean()),
+        resamples=uplift,
+    )
+
+
 def _bootstrap_weight(n_min: int) -> float:
     """Weight on the bootstrap for a cell with ``n_min`` records on its thinner side."""
     span = _BLEND_HI_RECORDS - _BLEND_LO_RECORDS

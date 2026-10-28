@@ -5,20 +5,11 @@ operationally meaningful signal), not a reference mean — even though own wind 
 *model feature* (it is post-treatment, design-note §3). Columns are labelled by their original
 source-native names.
 
-The three filter-stage figures are drawn for the test turbine and again for every reference, each
-from that turbine's own signals, since a reference with bad data spoils an estimate as surely as
-a bad test turbine. The test turbine's files keep their bare names; a reference's are prefixed
-``{ref}_``. "Kept" is the method's used timestamps for every turbine, so a reference's kept-only
-view shows exactly which of its rows fed the estimate.
-
-* :func:`plot_ops_curves` — a 2x3 figure (power curve; pitch/rpm vs power; pitch/rpm vs wind
-  speed) coloured kept vs removed, so it is both the operating-curve view and the filter check
-  (stage: filter).
-* :func:`plot_ops_curves_kept` — the same figure, used rows only (stage: filter).
-* :func:`plot_ops_curves_excluded` — the same figure coloured kept vs caller-excluded, each
-  turbine by its own ``exclude_row`` flag (stage: filter).
-* :func:`plot_curves_by_upgrade` — pitch/rpm/power vs wind speed split baseline vs upgraded, test
-  turbine only (stage: uplift inputs).
+* :func:`plot_ops_curves_excluded` — a 2x3 figure (power curve; pitch/rpm vs power; pitch/rpm vs wind
+  speed) coloured kept vs caller-excluded, for the test turbine and each power reference by its own
+  ``exclude_row`` flag; a reference's file is prefixed ``{ref}_`` (stage: valid records).
+* :func:`plot_curves_by_upgrade` — pitch/rpm/power vs wind speed split baseline vs upgraded
+  (stage: uplift inputs).
 * :func:`plot_reactive_vs_active` / :func:`plot_power_factor` — reactive-power behaviour, per
   turbine (stage: inputs).
 """
@@ -139,43 +130,16 @@ def _ops_curve_figure(
     return path
 
 
-def _used_figure_per_turbine(ctx: DiagnosticContext, *, segments: Segments, title: str, filename: str) -> list[Path]:
-    """Draw a filter-stage figure of the used-rows segmentation for the test turbine and each reference."""
-    paths = [
-        _ops_curve_figure(ctx, turbine=turbine, segments=segments, title=title, filename=filename, stage=stages.FILTER)
-        for turbine in (ctx.test_wtg, *ctx.references())
-    ]
-    return [p for p in paths if p is not None]
-
-
-def plot_ops_curves(ctx: DiagnosticContext) -> list[Path]:
-    """Draw the operating-curve figure coloured kept vs removed (the filter check), per turbine."""
-    used = np.asarray(ctx.used_ts, dtype=bool)
-    segments: Segments = [("kept", used, "C0"), ("removed", ~used, "C3")]
-    return _used_figure_per_turbine(
-        ctx, segments=segments, title="operating curves (kept vs removed by the row filter)", filename="ops_curves.png"
-    )
-
-
-def plot_ops_curves_kept(ctx: DiagnosticContext) -> list[Path]:
-    """Draw the operating-curve figure for the KEPT rows only (so removed points cannot mask them), per turbine."""
-    used = np.asarray(ctx.used_ts, dtype=bool)
-    segments: Segments = [("kept", used, "C0")]
-    return _used_figure_per_turbine(
-        ctx, segments=segments, title="operating curves (used rows only)", filename="ops_curves_kept_only.png"
-    )
-
-
 def plot_ops_curves_excluded(ctx: DiagnosticContext) -> list[Path]:
-    """Draw the operating-curve figure coloured kept vs caller-excluded (``ColumnSchema.exclude_row``), per turbine.
+    """Draw the operating-curve figure coloured kept vs caller-excluded (``exclude_row``), per turbine.
 
-    The same view as :func:`plot_ops_curves`, so a special operating mode reads as a band in
-    pitch/rpm. The test turbine is coloured by the run-wide ``excluded_ts`` mask, each reference
-    by its own flag; a turbine with nothing excluded gets no figure, so the list is empty when
+    A special operating mode reads as a band in pitch/rpm. The test turbine is coloured by the run-wide
+    ``excluded_ts`` mask, each reference by its own flag; a turbine with nothing excluded gets no
+    figure, so the list is empty when
     the method has no exclusion concept.
     """
     masks = [(ctx.test_wtg, ctx.excluded_mask())]
-    masks += [(ref, ctx.turbine_excluded_mask(ref)) for ref in ctx.references()]
+    masks += [(ref, ctx.turbine_excluded_mask(ref)) for ref in ctx.plotted_references()]
     paths: list[Path | None] = []
     for turbine, excluded in masks:
         if excluded is None:
@@ -188,7 +152,7 @@ def plot_ops_curves_excluded(ctx: DiagnosticContext) -> list[Path]:
                 segments=segments,
                 title=f"operating curves (kept vs excluded by the caller's flag; {excluded.sum()} rows excluded)",
                 filename="ops_curves_excluded.png",
-                stage=stages.FILTER,
+                stage=stages.VALID_RECORDS,
             )
         )
     return [p for p in paths if p is not None]
@@ -204,7 +168,7 @@ def plot_curves_by_upgrade(ctx: DiagnosticContext) -> Path | None:
         segments=segments,
         title="operating curves by upgrade state (used rows)",
         filename="ops_curves_by_upgrade.png",
-        stage=stages.UPLIFT_INPUTS,
+        stage=stages.VALID_RECORDS,
     )
 
 
@@ -227,7 +191,7 @@ def _reactive_panel_turbines(ctx: DiagnosticContext) -> list[tuple[str, float]]:
     power factors rather than alphabetically -- both extremes are kept, since an unusual reactive
     signature is what this plot is read for.
     """
-    factors = {t: _overall_power_factor(ctx, t) for t in [ctx.test_wtg, *ctx.references()]}
+    factors = {t: _overall_power_factor(ctx, t) for t in [ctx.test_wtg, *ctx.plotted_references()]}
     others = sorted((t for t in factors if t != ctx.test_wtg), key=lambda t: (np.isnan(factors[t]), factors[t]))
     slots = _MAX_REACTIVE_PANELS - 1
     if len(others) > slots:
@@ -239,8 +203,8 @@ def _reactive_panel_turbines(ctx: DiagnosticContext) -> list[tuple[str, float]]:
 def plot_reactive_vs_active(ctx: DiagnosticContext) -> Path | None:
     """Reactive vs active power by upgrade state, one panel per turbine. None if no reactive tag.
 
-    At most :data:`_MAX_REACTIVE_PANELS` panels: the test turbine and a spread of the others by
-    power factor, so a whole farm stays readable.
+    The test turbine and the plotted references, on shared axes. At most :data:`_MAX_REACTIVE_PANELS`
+    panels: beyond that, a spread of the references by power factor, so a whole farm stays readable.
     """
     if not ctx.has_column(ctx.columns.reactive_power):
         return None
@@ -248,7 +212,9 @@ def plot_reactive_vs_active(ctx: DiagnosticContext) -> Path | None:
     turbines = [t for t, _ in panels]
     ncols = min(3, len(turbines))
     nrows = int(np.ceil(len(turbines) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.5 * nrows), squeeze=False)
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(5 * ncols, 4.5 * nrows), squeeze=False, sharex=True, sharey=True, layout="constrained"
+    )
     flat = axes.flatten()
     for ax, (turbine, power_factor) in zip(flat, panels, strict=False):
         active = ctx.turbine_series(turbine, ctx.columns.active_power).to_numpy(dtype=float)
@@ -262,10 +228,14 @@ def plot_reactive_vs_active(ctx: DiagnosticContext) -> Path | None:
         ax.legend()
     for ax in flat[len(turbines) :]:
         ax.set_visible(False)
-    drawn, total = len(turbines), 1 + len(ctx.references())
-    shown = f"{drawn} of {total} turbines, spread by power factor" if drawn < total else "every turbine"
+    drawn, total = len(turbines), 1 + len(ctx.plotted_references())
+    shown = (
+        f"{drawn} of {total} turbines, spread by power factor"
+        if drawn < total
+        else "the test turbine and its references"
+    )
     fig.suptitle(f"reactive vs active power by upgrade state ({shown})")
-    path = ctx.stage_dir(stages.INPUTS) / "reactive_vs_active.png"
+    path = ctx.stage_dir(stages.CHANGES) / "reactive_vs_active.png"
     save_fig(fig, path)
     return path
 
@@ -276,7 +246,7 @@ def plot_power_factor(ctx: DiagnosticContext) -> Path | None:
         return None
     fig, ax = plt.subplots(figsize=(12, 6))
     shade_segments(ax, ctx)
-    for position, turbine in enumerate([ctx.test_wtg, *ctx.references()]):
+    for position, turbine in enumerate([ctx.test_wtg, *ctx.plotted_references()]):
         monthly = _monthly_power_factor(ctx, turbine)
         label = f"{turbine}{' (test)' if turbine == ctx.test_wtg else ''}"
         colour, dash = series_style(position)
@@ -295,15 +265,21 @@ def plot_power_factor(ctx: DiagnosticContext) -> Path | None:
     ax.set_title("power factor over time — |P| / sqrt(P^2 + Q^2)")
     apply_grid(ax)
     ax.legend(ncol=2, fontsize="small")
-    path = ctx.stage_dir(stages.INPUTS) / "power_factor.png"
+    path = ctx.stage_dir(stages.CHANGES) / "power_factor.png"
     save_fig(fig, path)
     return path
 
 
 def _monthly_power_factor(ctx: DiagnosticContext, turbine: str) -> pd.Series:
     """Monthly active-power-weighted mean power factor for one turbine."""
-    active = ctx.turbine_series(turbine, ctx.columns.active_power)
-    reactive = ctx.turbine_series(turbine, ctx.columns.reactive_power)
+    return monthly_power_factor(
+        ctx.turbine_series(turbine, ctx.columns.active_power),
+        ctx.turbine_series(turbine, ctx.columns.reactive_power),
+    )
+
+
+def monthly_power_factor(active: pd.Series, reactive: pd.Series) -> pd.Series:
+    """Monthly active-power-weighted mean power factor from time-indexed active and reactive power."""
     apparent = np.sqrt(active**2 + reactive**2)
     with np.errstate(divide="ignore", invalid="ignore"):
         pf = (active.abs() / apparent).where(apparent > 0)

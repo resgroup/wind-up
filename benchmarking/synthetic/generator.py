@@ -9,6 +9,7 @@ retained alongside so the true uplift can always be derived by comparison.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -19,7 +20,7 @@ from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams
 from benchmarking.synthetic.faults import apply_faults
 from benchmarking.synthetic.ground_truth import UpliftResult, true_farm_uplift, true_net_uplift, true_uplift
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
-from benchmarking.synthetic.upgrades import apply_upgrades
+from benchmarking.synthetic.upgrades import apply_upgrades, power_limit
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -61,6 +62,7 @@ class SyntheticDataset:
         mask: np.ndarray | None = None,
         by: str | None = None,
         bins: list | None = None,
+        condition_values: np.ndarray | None = None,
     ) -> UpliftResult:
         """Derive the true uplift by comparing synthetic to original.
 
@@ -69,7 +71,14 @@ class SyntheticDataset:
         if test_wtg is None:
             test_wtg = self.run_metadata["test_wtgs"][0]
         return true_uplift(
-            self.synthetic_df, self.original_df, test_wtg=test_wtg, mask=mask, by=by, bins=bins, columns=self.columns
+            self.synthetic_df,
+            self.original_df,
+            test_wtg=test_wtg,
+            mask=mask,
+            by=by,
+            bins=bins,
+            columns=self.columns,
+            condition_values=condition_values,
         )
 
     def true_net_uplift(self, *, upstream: str, downstream: str, mask: np.ndarray | None = None) -> float:
@@ -181,7 +190,7 @@ def generate_dataset(
     test_wtgs: list[str],
     upgrades: list,
     mode: Literal["prepost", "toggle"],
-    upgrade_timing: pd.Timestamp | ToggleSchedule,
+    upgrade_timing: pd.Timestamp | ToggleSchedule | Mapping[str, pd.Timestamp],
     faults: list | None = None,
     cp_params: CpParams = HOT_CP_MODEL,
     rated_power_kw: float = 2300.0,
@@ -194,7 +203,8 @@ def generate_dataset(
     :param test_wtgs: turbine name(s) to upgrade
     :param upgrades: upgrade callables applied to each test turbine's treated rows
     :param mode: ``"prepost"`` (changeover date) or ``"toggle"``
-    :param upgrade_timing: changeover timestamp (prepost) or toggle schedule
+    :param upgrade_timing: changeover timestamp (prepost), toggle schedule, or a changeover per
+        test turbine (prepost)
     :param faults: undeclared corruptions injected after the upgrades, into the synthetic frame
         only, leaving the ground truth derived against ``original_df`` unaffected. Most change a
         reading rather than power; one that changes power may only target a reference, which is
@@ -220,14 +230,29 @@ def generate_dataset(
         if callable(prepare):
             prepare(scada_df, columns=columns)
 
-    treated = _treated_mask(synthetic_df.index, mode=mode, upgrade_timing=upgrade_timing)
+    if isinstance(upgrade_timing, Mapping):
+        if mode != "prepost":
+            msg = "a per-turbine changeover map is prepost only"
+            raise TypeError(msg)
+        missing = sorted(set(test_wtgs) - set(upgrade_timing))
+        if missing:
+            msg = f"the changeover map has no changeover for test turbines {missing}"
+            raise ValueError(msg)
     for wtg in test_wtgs:
+        timing = upgrade_timing[wtg] if isinstance(upgrade_timing, Mapping) else upgrade_timing
         is_test = (synthetic_df[columns.turbine] == wtg).to_numpy()
-        mask = is_test & treated
+        mask = is_test & _treated_mask(synthetic_df.index, mode=mode, upgrade_timing=timing)
         if not mask.any():
             continue
         cp = CpCore(rated_power_kw=rated_power_kw, cp_params=cp_params)
-        modified = apply_upgrades(synthetic_df.loc[mask], upgrades, cp=cp, columns=columns)
+        limits = power_limit(synthetic_df.loc[is_test], columns=columns)
+        modified = apply_upgrades(
+            synthetic_df.loc[mask],
+            upgrades,
+            cp=cp,
+            columns=columns,
+            power_limit_kw=None if limits is None else limits[mask[is_test]],
+        )
         for col in modified_columns:
             synthetic_df.loc[mask, col] = modified[col].to_numpy()
 
@@ -240,7 +265,11 @@ def generate_dataset(
     run_metadata = {
         "test_wtgs": list(test_wtgs),
         "mode": mode,
-        "upgrade_timing": str(upgrade_timing),
+        "upgrade_timing": (
+            {w: str(t) for w, t in upgrade_timing.items()}
+            if isinstance(upgrade_timing, Mapping)
+            else str(upgrade_timing)
+        ),
         "upgrades": [u.description for u in upgrades],
         "faults": [f.description for f in faults],
         "rated_power_kw": rated_power_kw,

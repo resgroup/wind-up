@@ -1,14 +1,10 @@
-"""Model-fitting pieces for the power model: fold assignment and the outcome-model factory.
+"""Model-fitting pieces for the power model.
 
 :func:`time_block_folds` — contiguous-block, round-robin fold assignment for time-ordered rows.
-A shuffled split leaks autocorrelation (held-out rows sit minutes from training rows), so its
-residuals are optimistic; contiguous blocks confine the leakage to the block edges, which makes
-the held-out fit-quality diagnostic honest.
 
 :func:`make_outcome_model` — the L2 LightGBM regressor for the counterfactual power ``E[Y|X]``.
 
-:func:`model_safe_features` — positional column names for the fit, since LightGBM rejects JSON
-special characters and real source tags carry them.
+:func:`model_safe_features` — positional column names the LightGBM fit accepts.
 """
 
 from __future__ import annotations
@@ -54,15 +50,8 @@ def time_block_folds(n: int, *, n_folds: int = 5, n_blocks: int = 25) -> np.ndar
     return (block % n_folds).astype(int)
 
 
-# Common LightGBM hyperparameters; native NaN handling, seconds to train. Callers (and drivers)
-# override via keyword arguments.
-#
-# deterministic + force_row_wise make a fit reproducible. Without them LightGBM picks row-wise or
-# col-wise histograms by timing the machine, so the same estimate moved with the load on the box
-# and with the number of threads: measured on a 2.2M-row campaign, the two strategies differ by
-# 0.001 pp and thread count by 0.005 pp, while these settings hold six decimal places across 1, 4
-# and 12 threads. Training is 20-50% slower. force_row_wise rather than col: this data is many
-# rows and few features, and it is what the auto-choice picks on an idle machine.
+# Common LightGBM hyperparameters; callers override via keyword arguments. deterministic and
+# force_row_wise make a fit reproducible across machines and thread counts.
 _COMMON: dict[str, Any] = {
     "n_estimators": 600,
     "learning_rate": 0.03,

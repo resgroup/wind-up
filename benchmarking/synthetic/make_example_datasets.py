@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -16,6 +15,7 @@ import pandas as pd
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+from benchmarking import env
 from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, load_hot_scada
 from benchmarking.synthetic.upgrades import (
@@ -47,12 +47,9 @@ DEFAULT_TEST_WTG = "T01"
 def default_output_root() -> Path:
     """Return the root directory example datasets are written under.
 
-    Overridable via the ``WIND_UP_BENCHMARKING_OUTPUT_DIR`` environment variable;
-    defaults to ``~/temp/wind-up-benchmarking/synthetic``.
+    ``synthetic`` under :func:`benchmarking.env.output_root`.
     """
-    return Path(
-        os.getenv("WIND_UP_BENCHMARKING_OUTPUT_DIR", Path.home() / "temp" / "wind-up-benchmarking" / "synthetic")
-    )
+    return env.output_root() / "synthetic"
 
 
 def example_profiles() -> dict[str, list]:

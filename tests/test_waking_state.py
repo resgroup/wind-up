@@ -119,6 +119,26 @@ def test_get_iec_upwind_turbines(
     assert upwind_wtgs == expected
 
 
+def test_get_iec_upwind_turbines_follows_the_config_not_an_earlier_one(
+    test_homer_with_t00_config: WindUpConfig, test_homer_config: WindUpConfig
+) -> None:
+    """Two analyses in one process with different turbine sets must each see their own upwind turbines.
+
+    The upwind list is cached per position; the cache has to tell the configs apart, or the second
+    analysis is handed turbines it has no data for (a KeyError in ``add_waking_scen``).
+    """
+    with_t00 = test_homer_with_t00_config
+    without_t00 = test_homer_config
+    latlongs = [(with_t00.asset.wtgs[1].latitude, with_t00.asset.wtgs[1].longitude)]
+    assert get_iec_upwind_turbines(latlongs=latlongs, wind_direction=70, cfg=with_t00, object_name="HMR_T02") == [
+        "HMR_T00"
+    ]
+    assert get_iec_upwind_turbines(latlongs=latlongs, wind_direction=70, cfg=without_t00, object_name="HMR_T02") == []
+    assert get_iec_upwind_turbines(latlongs=latlongs, wind_direction=70, cfg=with_t00, object_name="HMR_T02") == [
+        "HMR_T00"
+    ]
+
+
 def test_add_waking_scen(test_homer_with_t00_config: WindUpConfig) -> None:
     cfg = test_homer_with_t00_config
     test_name = "HMR_T01"

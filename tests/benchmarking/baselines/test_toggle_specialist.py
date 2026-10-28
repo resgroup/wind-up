@@ -24,14 +24,12 @@ from benchmarking.baselines.toggle_specialist import (
     _daily_segment_ratio,
     _expected_per_day,
     _infer_timebase,
-    gap_to_other_segment,
-    pair_within,
     restrict_to_campaign,
 )
 from benchmarking.harness.conditions import condition_bins
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.toggle import build_toggle_df, resolve_toggle
+from benchmarking.harness.toggle import build_toggle_df, gap_to_other_segment, pair_within, resolve_toggle
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
 
 # Deliberately non-v0 column names: the method is source-agnostic, so the active-power column

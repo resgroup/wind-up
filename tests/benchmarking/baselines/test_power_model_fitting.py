@@ -6,7 +6,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.power_model.fitting import make_outcome_model, model_safe_features, time_block_folds
+from benchmarking.baselines.power_model.fitting import (
+    make_outcome_model,
+    model_safe_features,
+    time_block_folds,
+)
 
 
 class TestTimeBlockFolds:

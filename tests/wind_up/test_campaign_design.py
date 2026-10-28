@@ -5,7 +5,9 @@ import pandas as pd
 import pytest
 
 from tests.wind_up.layouts import grid_layout, line_layout, offset, scatter_layout, spaced_points
-from wind_up.campaign_design import COMPLIANCE_COLUMNS, check_design, design_campaign
+from wind_up.campaign_design import COMPLIANCE_COLUMNS, _Site, _Wake, _wake_terms, check_design, design_campaign
+from wind_up.layout import Layout
+from wind_up.wake_reach import kept_wind_share, uniform_rose
 
 # An east-west line with every gap different, so no two distances tie. 100 m rotors, so the gaps
 # are 3, 4, 5, 6, 7 and 8.5 diameters. T6 has only two turbines within 20 diameters.
@@ -416,3 +418,146 @@ def test_the_nearest_reference_limit_survives_rounding() -> None:
     for seed in range(30):
         design = design_campaign(layout, seed=seed)
         assert len(design.test_turbines) == design.max_test_turbines == 1
+
+
+# --- the wake reach ---------------------------------------------------------------------------
+
+# Eight turbines on an east-west line, 3 D apart: T0 is the upwind end in a westerly.
+ROW = line_layout([i * 300.0 for i in range(8)])
+
+
+def westerly(share: float = 1.0) -> np.ndarray:
+    """A rose with ``share`` of the wind from due west and the rest spread evenly."""
+    rose = np.full(360, (1.0 - share) / 360)
+    rose[270] += share
+    return rose
+
+
+def test_a_reach_above_zero_needs_a_rose() -> None:
+    with pytest.raises(ValueError, match="needs a wind rose"):
+        design_campaign(ROW, expected_uplift=0.05)
+
+
+def test_the_reach_comes_from_the_uplift_or_is_given() -> None:
+    design = design_campaign(ROW, expected_uplift=0.03, wind_rose=uniform_rose(), min_kept_wind_share=0.0)
+    assert design.wake_reach_d == pytest.approx(8.0)
+    offshore = design_campaign(
+        ROW, expected_uplift=0.03, offshore=True, wind_rose=uniform_rose(), min_kept_wind_share=0.0
+    )
+    assert offshore.wake_reach_d == pytest.approx(16.0)
+    given = design_campaign(
+        ROW, expected_uplift=0.03, wake_reach_d=2.0, wind_rose=uniform_rose(), min_kept_wind_share=0.0
+    )
+    assert given.wake_reach_d == 2.0
+    assert design_campaign(ROW).wake_reach_d == 0.0
+
+
+def test_rule_five_fails_a_test_turbine_upwind_of_its_references() -> None:
+    # At 20 D every candidate of T0 is downwind and within reach, so demotion cannot help it.
+    upwind = check_design(ROW, test_turbines=["T0"], wake_reach_d=20.0, wind_rose=westerly())
+    assert not upwind.compliant
+    assert upwind.problems == (
+        "T0 keeps 0% of the wind clear of changed turbines upwind of it or its references, under the minimum 50%",
+    )
+    assert upwind.table["kept_wind_share"].iloc[0] == pytest.approx(0.0)
+    assert upwind.table["lost_own_references"].iloc[0] == pytest.approx(1.0)
+    downwind = check_design(ROW, test_turbines=["T7"], wake_reach_d=20.0, wind_rose=westerly())
+    assert downwind.compliant, downwind.problems
+    assert downwind.table["kept_wind_share"].iloc[0] == pytest.approx(1.0)
+
+
+def test_the_objective_picks_a_turbine_downwind_of_its_references() -> None:
+    # T3 to T7 each have three references to the west; the upwind end has none.
+    design = design_campaign(ROW, n_test=1, wake_reach_d=20.0, wind_rose=westerly(0.6), min_kept_wind_share=0.0)
+    assert design.test_turbines[0] in {"T3", "T4", "T5", "T6", "T7"}
+    assert design.compliance.table["kept_wind_share"].iloc[0] == pytest.approx(
+        max(design.lone_kept_wind_share.values())
+    )
+    assert design.lone_kept_wind_share["T0"] < design.lone_kept_wind_share["T7"]
+
+
+def test_two_test_turbines_are_not_put_in_line() -> None:
+    # Two rows 15 D apart; in a westerly a test turbine waked by another one loses wind.
+    points = [(x * 300.0, y) for y in (0.0, 1500.0) for x in range(6)]
+    layout = scatter_layout(points)
+    rows = {f"T{i}": i // 6 for i in range(12)}
+    design = design_campaign(layout, n_test=2, wake_reach_d=12.0, wind_rose=westerly(), min_kept_wind_share=0.0)
+    assert {rows[t] for t in design.test_turbines} == {0, 1}
+    assert design.compliance.summary["mean_kept_wind_share"] == pytest.approx(1.0)
+
+
+def test_a_listed_priority_still_wins() -> None:
+    design = design_campaign(
+        ROW, n_test=1, test_priority=["T0"], wake_reach_d=20.0, wind_rose=westerly(0.6), min_kept_wind_share=0.0
+    )
+    assert design.test_turbines == ("T0",)
+
+
+def test_a_listed_turbine_under_the_minimum_is_skipped_with_the_reason() -> None:
+    design = design_campaign(ROW, n_test=1, test_priority=["T0"], wake_reach_d=20.0, wind_rose=westerly())
+    t0 = next(o for o in design.candidates if o.name == "T0")
+    assert t0.outcome == "skipped"
+    assert t0.reason == "it would keep about 0% of the wind clear of changed turbines, under the minimum 50%"
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_the_mean_kept_wind_share_is_the_exact_union(seed: int) -> None:
+    rng = np.random.default_rng(300 + seed)
+    layout = scatter_layout(spaced_points(rng, count=10, extent_m=1500))
+    rose = rng.dirichlet(np.ones(360))
+    design = design_campaign(layout, expected_uplift=0.05, wind_rose=rose, min_kept_wind_share=0.0, seed=seed)
+    table = design.compliance.table
+    frame = Layout.from_frame(layout)
+    exact = 0.0
+    for _, row in table.iterrows():
+        refs = [row[f"reference_{k}"] for k in (1, 2, 3)]
+        others = [t for t in design.test_turbines if t != row["test_turbine"]]
+        share, _ = kept_wind_share(
+            frame, test=row["test_turbine"], references=refs, other_tests=others, reach_d=12.0, rose=rose
+        )
+        assert row["kept_wind_share"] == pytest.approx(share)
+        exact += share
+    assert design.compliance.summary["mean_kept_wind_share"] == pytest.approx(exact / len(table))
+
+
+def test_a_candidate_the_test_turbine_wakes_is_demoted_from_its_references() -> None:
+    # T3 is mid-row: in a westerly it wakes T4 (east), so the references come from the west first.
+    report = check_design(ROW, test_turbines=["T3"], wake_reach_d=12.0, wind_rose=westerly(), min_kept_wind_share=0.0)
+    assert list(report.table[["reference_1", "reference_2", "reference_3"]].iloc[0]) == ["T2", "T1", "T0"]
+    assert list(report.wake_losses["waked"]) == ["T2", "T1", "T0"]
+    assert report.wake_losses["rose_share"].sum() == 0.0
+
+
+@pytest.mark.parametrize("limit_d", [3.5, 6.5, 20.0])
+def test_a_site_at_a_tighter_limit_carries_the_wake_terms_of_its_own_pools(limit_d: float) -> None:
+    rng = np.random.default_rng(7)
+    layout = scatter_layout(spaced_points(rng, count=10, extent_m=1500))
+    wake = _Wake.resolve(
+        expected_uplift=0.05,
+        wake_reach_d=None,
+        wind_rose=rng.dirichlet(np.ones(360)),
+        offshore=False,
+        min_kept_wind_share=0.0,
+        demotion_share=0.5,
+        rose_label="given",
+    )
+    site = _Site.build(
+        layout,
+        wind_farm=None,
+        reference_only=(),
+        excluded=(),
+        reference_pool_size=4,
+        max_reference_distance_d=20.0,
+        front_row_min_clear_deg=90.0,
+        wake=wake,
+    )
+    tight = site.at_limit(limit_d)
+    lone, pair_loss = _wake_terms(
+        Layout.from_frame(layout),
+        pools={i: tight.pool(i) for i in site.available},
+        available=site.available,
+        candidates=site.candidates,
+        wake=wake,
+    )
+    assert tight.lone == lone
+    assert tight.pair_loss == pair_loss

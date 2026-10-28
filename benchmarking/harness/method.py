@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from benchmarking.synthetic import ToggleSchedule
+    from wind_up.analysis_warnings import AnalysisWarning
 
 
 @dataclass
@@ -95,7 +96,8 @@ class MethodOutput:
 
     :param p50_overall: overall P50 uplift (energy-ratio fraction)
     :param p50_by_condition: optional per-condition estimates (columns ``condition``,
-        ``condition_bin``, ``p50_uplift``); ``condition`` ∈ {"ws","ti","power"}; ``None`` when the
+        ``condition_bin``, ``p50_uplift``); ``condition`` is one of
+        :data:`~benchmarking.harness.conditions.CONDITIONS`; ``None`` when the
         method produces only an overall number. May also carry a ``sigma_uplift`` column, the
         per-bin counterpart of ``sigma_overall``.
     :param sigma_overall: optional 1-sigma on ``p50_overall``, a symmetric delta in energy-ratio
@@ -111,8 +113,10 @@ class MethodOutput:
         consumer compute a per-bin quantity the method does not itself report -- a mean pitch, say
         -- over exactly the rows and bins the uplift used, instead of re-deriving the filtering and
         binning and hoping the two agree. Deliberately row-level rather than pre-aggregated, so it
-        serves consumers whose desired aggregate is not known here. The harness never interprets
-        it.
+        serves consumers whose desired aggregate is not known here. A method may instead, or as
+        well, give each record's value on a condition in a
+        :func:`~benchmarking.harness.conditions.label_column` column, indexed by time; the harness
+        then bins the per-bin truth by those labels.
     :param reference_uplifts: optional per-reference frame (``turbine``, ``uplift``,
         ``actual_energy``, ``n_records``, ``screened``) carrying what the campaign's own analysis
         says each candidate reference did. A healthy campaign reads near 0% once these are combined
@@ -124,6 +128,8 @@ class MethodOutput:
         of a method's row-selection stages (``n_kept``, ``kept_fraction``, ``stage_kept_fraction``),
         so a consumer can see how much data each stage removed and whether it treated the segments
         evenly. The harness never interprets it.
+    :param warnings: the analysis warnings the estimate raised, each with its severity, for the
+        run's warnings register
     """
 
     p50_overall: float
@@ -134,6 +140,7 @@ class MethodOutput:
     reference_uplifts: pd.DataFrame | None = None
     screen_passes: pd.DataFrame | None = None
     selection_accounting: pd.DataFrame | None = None
+    warnings: tuple[AnalysisWarning, ...] = ()
 
 
 @runtime_checkable

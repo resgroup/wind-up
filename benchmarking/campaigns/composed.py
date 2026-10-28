@@ -16,27 +16,39 @@ next to the real ``wind_up`` package.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
 import yaml
 
-from benchmarking.baselines.power_model import CURATED_ERA5_EXCLUDE, TUNED_MODEL_PARAMS, PowerModelMethod
-from benchmarking.campaigns.loader import load_declaration
+from benchmarking import env
+from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
+from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
+from benchmarking.campaigns.declaration import layout_coords, layout_rotor_diameters
+from benchmarking.campaigns.loader import centroid, era5_window, load_declaration
+from benchmarking.campaigns.plans import with_wake_ranking
+from benchmarking.campaigns.preparation import prepare_data
 from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
-from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label
-from benchmarking.harness.northing import era5_direction
+from benchmarking.diagnostics import stages
+from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label, infer_timebase
+from benchmarking.env import output_root
+from benchmarking.harness.reanalysis import normalise_timestamps
+from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
+from wind_up.analysis_warnings import summary
 from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from benchmarking.campaigns.declaration import CampaignSpec
     from benchmarking.campaigns.loader import Declaration
     from benchmarking.campaigns.run import CampaignReport
     from benchmarking.harness import Method
     from benchmarking.synthetic import ColumnSchema
+    from wind_up.analysis_period import PlanSettings
+    from wind_up.analysis_warnings import AnalysisWarning
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +71,52 @@ _RESOLVED_HEADER = """\
 LOG_FILENAME = "run.log"
 _LOG_HANDLER_NAME = "campaign_run_log"
 
-OUTPUT_DIR_ENV = "WIND_UP_BENCHMARKING_OUTPUT_DIR"
+
+# The run's output is laid out by the parts of docs/v1/method.md: data preparation for every turbine,
+# the campaign's choices and headline per test turbine, one folder per measured turbine, and the
+# results across turbines. Inside each, a folder is named for the method step it shows.
+DATA_PREPARATION_DIRNAME = "A_data_preparation"
+CAMPAIGN_DIRNAME = "B_campaign"
+MEASUREMENT_DIRNAME = "C_turbine_measurement"
+FARM_DIRNAME = "D_farm"
+README_FILENAME = "README.md"
+
+_README_TITLE = "# Campaign run output"
+_README = f"""\
+Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
+
+- `{RESOLVED_FILENAME}`: the campaign as wind-up understood it.
+- `{LOG_FILENAME}`: the run's log.
+- `{DATA_PREPARATION_DIRNAME}/`: part A, every turbine over every record provided.
+  - `{stages.CHANGES}/`: step 1, operating relationships, coverage and power factor.
+  - `{stages.OPERATING_STATES}/`: step 2, the operating-state labels and hours per state.
+  - `{stages.REANALYSIS}/`: step 3, the reanalysis time-shift check, ERA5 against the site wind speed,
+    and what the reanalysis covers.
+  - `{stages.NORTHING}/`: step 4, the northing corrections over the whole record, each turbine's records
+    used and not used for northing coloured by operating state, and the possible yaw-alignment changes
+    with the apparent-Cp shift at each.
+  - `{stages.WAKING}/`: step 5, each turbine's records considered waking, part waking and not waking,
+    coloured by operating state; the hours in each waking scenario; where each turbine's direction came
+    from and how far its own is from its neighbours'; and the turbines upwind of each turbine by direction.
+  - `{stages.FEATURES}/`: step 6, the solar elevation over the whole record with its units, and
+    the share of each turbine's records in each waking scenario.
+- `{CAMPAIGN_DIRNAME}/`: part B, the campaign for each test turbine. `per_turbine.csv` is its headline
+  uplift (step 10).
+  - `{stages.PERIODS}/`: step 7, each test turbine's before and after periods, or why it is not analysed,
+    and its timeline over every turbine's data, works and exclusions.
+  - `{stages.CANDIDATES}/`: step 8, every other turbine ranked by distance for each test turbine, with
+    its role (power reference, reserve or waking only), the reason, and any warning of an undeclared
+    change inside the periods.
+  - `{stages.SCREEN}/`: step 9, each candidate reference estimated as if it were a test turbine.
+  - `{stages.UPLIFT_DISTRIBUTIONS}/`: step 15, the conditional uplift collected across test turbines.
+- `{MEASUREMENT_DIRNAME}/<turbine>/`: part C, one folder per measured turbine, over its span and with
+  its power references. Its results are in CSVs (`record_losses.csv` is the hours lost to each rule of
+  step 11 in each period); its plots are under `plots/`, one folder per step.
+  `plots/{stages.VALID_RECORDS}/` has the records used and not used for uplift, coloured by state.
+- `{MEASUREMENT_DIRNAME}/<reference>_reference_for_<turbine>/`: when reference plots are asked for, the same
+  for each power reference measured as if it were a test turbine (step 9), once per test turbine it serves.
+- `{FARM_DIRNAME}/`: part D, the results across turbines: the farm uplift (step 16) and the uplift plots.
+"""
 
 
 def wind_up_method(
@@ -70,6 +127,8 @@ def wind_up_method(
     era5_hourly_df: pd.DataFrame | None,
     screen_cache: dict | None = None,
     era5_label: str = ERA5_UNLOCATED,
+    run_subdir: bool = True,
+    reference_plots_dir: Path | None = None,
 ) -> Method:
     """Build ``wind-up``'s estimator for one campaign.
 
@@ -79,32 +138,35 @@ def wind_up_method(
     :param spec: the campaign being run; supplies the turbine rating
     :param columns: the source-native schema the SCADA is keyed by
     :param out_dir: where the method writes its own diagnostics
-    :param era5_hourly_df: reanalysis; without it the per-condition estimates are not reported
+    :param era5_hourly_df: reanalysis, hourly or already aligned to the SCADA periods
     :param screen_cache: one dict shared across the campaign's turbines, so the reference screen
         runs once rather than once per test turbine
     :param era5_label: how reanalysis is named in this run's output; the campaign passes the point
         it fetched from
+    :param run_subdir: write into a named, timestamped folder under ``out_dir``, as a study comparing
+        many runs wants; a campaign gives each test turbine its own ``out_dir`` and passes ``False``
+    :param reference_plots_dir: where each reference measurement writes its own plots; ``None`` writes none
     """
     return PowerModelMethod(
         name=WIND_UP,
         columns=columns,
         baseline_rated_power_kw=spec.rated_power_kw,
         era5_hourly_df=era5_hourly_df,
-        conditions=PowerModelMethod.conditions if era5_hourly_df is not None else (),
-        availability_feature=False,
-        era5_exclude=CURATED_ERA5_EXCLUDE,
+        site_location=centroid(layout_coords(spec.layout)),
+        rotor_diameters_m=layout_rotor_diameters(spec.layout),
         model_params=dict(TUNED_MODEL_PARAMS),
         out_dir=out_dir,
         save_plots=True,
         screen_cache=screen_cache,
         era5_label=era5_label,
+        run_subdir=run_subdir,
+        reference_plots_dir=reference_plots_dir,
     )
 
 
 def default_out_dir(name: str) -> Path:
     """Return the directory a run of ``name`` writes to when none is given."""
-    root = Path(os.getenv(OUTPUT_DIR_ENV, Path.home() / "temp" / "wind-up-benchmarking"))
-    return root / name
+    return output_root() / name
 
 
 def log_to_file(out_dir: Path) -> Path:
@@ -130,7 +192,14 @@ def log_to_file(out_dir: Path) -> Path:
 
 
 def run_declaration(
-    path: str | Path, *, out_dir: Path | None = None, era5_hourly_df: pd.DataFrame | None = None
+    path: str | Path,
+    *,
+    out_dir: Path | None = None,
+    era5_hourly_df: pd.DataFrame | None = None,
+    plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
+    data_preparation_dir: Path | None = None,
+    data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
+    reference_plots: bool = False,
 ) -> CampaignReport:
     """Run the campaign declared at ``path`` and write its report.
 
@@ -138,6 +207,12 @@ def run_declaration(
     :param out_dir: where to write; defaults to :func:`default_out_dir` of the campaign's name
     :param era5_hourly_df: reanalysis to use instead of self-serving it from the farm centroid,
         for a caller that already holds it
+    :param plan_settings: how a planned campaign's spans and power references are chosen
+    :param data_screen: how each plan's power references are screened on their data; ``None`` skips it
+    :param reference_plots: also write the plots of each reference measurement, in
+        ``C_turbine_measurement/<reference>_reference_for_<test turbine>/``
+    :param data_preparation_dir: where part A's tables and plots go (steps 1 to 6), in a folder per step;
+        defaults to ``A_data_preparation`` in ``out_dir``
     :return: the truth-free campaign report, which is also written under ``out_dir``
     """
     declaration = load_declaration(path)
@@ -146,6 +221,8 @@ def run_declaration(
     log_path = log_to_file(out_dir)
     resolved = yaml.safe_dump(declaration.resolved(), sort_keys=False, default_flow_style=False)
     (out_dir / RESOLVED_FILENAME).write_text(_RESOLVED_HEADER + resolved)
+    preparation = data_preparation_dir.resolve() if data_preparation_dir is not None else None
+    write_readme(out_dir, data_preparation_dir=preparation)
     logger.info(
         "Running campaign %r declared in %s\n  writing to %s\n  logging to %s",
         declaration.name,
@@ -155,39 +232,104 @@ def run_declaration(
     )
 
     scada_df = pd.read_parquet(declaration.scada_path)
-    reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration)
+    timebase = infer_timebase(pd.DatetimeIndex(scada_df.index.unique()).sort_values())
+    scada_df = normalise_timestamps(scada_df, timestamps=declaration.timestamps, timebase=timebase)
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
+    reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration, index=index)
+    prepared = prepare_data(
+        scada_df,
+        spec=declaration.spec,
+        columns=declaration.columns,
+        era5_hourly_df=reanalysis,
+        operating_state=declaration.operating_state,
+        cell_selection=declaration.cell_selection,
+        out_dir=preparation if preparation is not None else out_dir / DATA_PREPARATION_DIRNAME,
+    )
+    # The whole park's north tables over the whole record, applied as declared to what each method sees.
+    spec = prepared.with_north_offsets(declaration.spec)
     # One screen verdict for the campaign: every test turbine is judged against the same references.
     screen_cache: dict = {}
 
     report = estimate_campaign(
-        declaration.spec,
-        scada_df,
+        spec,
+        prepared.scada_df,
         build_methods=lambda wtg: [
             wind_up_method(
-                declaration.spec,
+                spec,
                 columns=declaration.columns,
-                out_dir=out_dir / wtg / WIND_UP,
-                era5_hourly_df=reanalysis,
+                out_dir=out_dir / MEASUREMENT_DIRNAME / wtg,
+                era5_hourly_df=prepared.aligned_era5,
                 screen_cache=screen_cache,
                 era5_label=era5_source_label(*declaration.centroid),
+                run_subdir=False,
+                reference_plots_dir=out_dir / MEASUREMENT_DIRNAME if reference_plots else None,
             )
         ],
         columns=declaration.columns,
-        era5_wd=era5_direction(reanalysis, index),
-        northing_out_dir=out_dir / "northing",
+        plan_settings=with_wake_ranking(
+            plan_settings,
+            spec=spec,
+            era5_df=prepared.aligned_era5,
+            source=era5_source_label(*declaration.centroid),
+        ),
+        data_screen=data_screen,
+        possible_changes=prepared.possible_changes_by_turbine(),
     )
-    write_report(report, out_dir=out_dir)
+    write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME, farm_dir=out_dir / FARM_DIRNAME)
+    write_readme(out_dir, data_preparation_dir=preparation, warnings=report.warnings)
     logger.info("Wrote the %r report to %s", declaration.name, out_dir)
     return report
 
 
-def _fetch_era5(declaration: Declaration) -> pd.DataFrame:
-    """Fetch reanalysis for the farm centroid over the declaration's whole-year window.
+def write_readme(
+    out_dir: Path, *, data_preparation_dir: Path | None = None, warnings: Sequence[AnalysisWarning] | None = None
+) -> Path:
+    """Write the run's README under ``out_dir``: the title, the analysis warnings when given, then the layout.
+
+    ``data_preparation_dir`` names part A's folder when it is not ``A_data_preparation`` in ``out_dir``.
+    """
+    parts = [_README_TITLE, ""]
+    if warnings is not None:
+        parts += [f"## {summary(warnings)}".replace("\n", "\n\n", 1), ""]
+    layout = _README
+    if data_preparation_dir is not None:
+        layout = layout.replace(f"`{DATA_PREPARATION_DIRNAME}/`", f"`{data_preparation_dir}/`", 1)
+    parts.append(layout)
+    path = out_dir / README_FILENAME
+    path.write_text("\n".join(parts))
+    return path
+
+
+def reanalysis_window(index: pd.DatetimeIndex) -> tuple[str, str]:
+    """Return the reanalysis window: the whole SCADA record, rounded out to whole calendar years.
+
+    The window runs to 1 January after the last year, so the final hour of the record has an hour
+    after it to interpolate towards.
+    """
+    start, end = era5_window(index.min(), index.max() + pd.Timedelta(nanoseconds=1))
+    return start, (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _fetch_era5(declaration: Declaration, *, index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Fetch reanalysis for the farm centroid over the whole SCADA record, from a sea cell when offshore.
 
     The fetch itself needs the optional ``era5`` dependency group and network on a cache miss.
     """
     lat, lon = declaration.centroid
-    start_date, end_date = declaration.era5_window
-    logger.info("Fetching reanalysis for (%.4f, %.4f) over %s..%s", lat, lon, start_date, end_date)
-    return get_era5_hourly_df(lat=lat, lon=lon, start_date=start_date, end_date=end_date)
+    start_date, end_date = reanalysis_window(index)
+    logger.info(
+        "Fetching reanalysis for (%.4f, %.4f) over %s..%s, %s cell",
+        lat,
+        lon,
+        start_date,
+        end_date,
+        declaration.cell_selection,
+    )
+    return get_era5_hourly_df(
+        lat=lat,
+        lon=lon,
+        start_date=start_date,
+        end_date=end_date,
+        cell_selection=declaration.cell_selection,
+        cache_dir=env.cache_dir(),
+    )

@@ -97,12 +97,14 @@ class TestTheCampaignDesign:
         design_dir = self._root(tmp_path) / "analyst" / "design"
         assert sorted(p.name for p in design_dir.iterdir()) == [
             "compliance.csv",
+            "coverage_map.png",
             "design_map.png",
             "design_map_latlon.png",
             "front_row_map.png",
             "roles.yaml",
             "summary.yaml",
             "turbines.csv",
+            "wake_losses.csv",
         ]
 
     def test_it_names_the_front_row_but_not_the_priority(self, tmp_path: Path) -> None:

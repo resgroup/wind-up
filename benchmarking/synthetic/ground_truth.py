@@ -24,8 +24,14 @@ if TYPE_CHECKING:
     from benchmarking.synthetic.schema import ColumnSchema
 
 
-def _condition_series(rows: pd.DataFrame, by: str, columns: ColumnSchema) -> npt.NDArray[np.float64]:
-    """Resolve a treatment-invariant condition signal from the original rows."""
+# Aligned ERA5 100 m wind speed, when the original rows carry it.
+ERA5_WIND_SPEED_COL = "wind_speed_100m"
+
+
+def _condition_series(rows: pd.DataFrame, by: str, columns: ColumnSchema) -> npt.NDArray[np.float64] | None:
+    """Resolve a treatment-invariant condition signal from the original rows; None when they lack it."""
+    if by == "era5_ws":
+        return rows[ERA5_WIND_SPEED_COL].to_numpy(dtype=float) if ERA5_WIND_SPEED_COL in rows.columns else None
     if by == "ti":
         ws = rows[columns.wind_speed].to_numpy(dtype=float)
         sd = rows[columns.wind_speed_sd].to_numpy(dtype=float)
@@ -57,6 +63,7 @@ def true_uplift(
     by: str | None = None,
     bins: npt.ArrayLike | None = None,
     columns: ColumnSchema = HOT_COLUMNS,
+    condition_values: npt.ArrayLike | None = None,
 ) -> UpliftResult:
     """Compute the true uplift of the test turbine, synthetic vs original.
 
@@ -69,6 +76,8 @@ def true_uplift(
         (``"ws"``, ``"ti"`` or an original column name)
     :param bins: bin edges for the ``by`` condition
     :param columns: the source-native column schema the frames are keyed by
+    :param condition_values: each test turbine record's value on ``by``, in time order, used instead
+        of resolving ``by`` from the original rows; a NaN value is in no bin
     :return: the overall energy-ratio uplift, and a per-condition table when ``by`` is set
     """
     if by is not None and bins is None:
@@ -90,9 +99,14 @@ def true_uplift(
     overall = synthetic_power[effective].sum() / denom - 1.0 if denom else float("nan")
 
     by_condition = None
-    if by is not None:
+    condition = (
+        np.asarray(condition_values, dtype=float)
+        if condition_values is not None
+        else (_condition_series(original_wtg, by, columns) if by is not None else None)
+    )
+    if condition is not None:
         by_condition = _uplift_by_condition(
-            condition=_condition_series(original_wtg, by, columns)[effective],
+            condition=condition[effective],
             synthetic_power=synthetic_power[effective],
             original_power=original_power[effective],
             bins=bins,

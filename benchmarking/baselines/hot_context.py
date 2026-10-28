@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from benchmarking import env
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata
 from wind_up_v0.era5 import get_era5_hourly_df
 from wind_up_v0.reanalysis_data import ReanalysisDataset
@@ -39,7 +40,9 @@ def get_hot_reanalysis_datasets() -> list[ReanalysisDataset]:
     return [
         ReanalysisDataset(
             id=f"ERA5_{HOT_LAT:.2f}_{HOT_LON:.2f}",
-            data=get_era5_hourly_df(lat=HOT_LAT, lon=HOT_LON, start_date=HOT_ERA5_START, end_date=HOT_ERA5_END),
+            data=get_era5_hourly_df(
+                lat=HOT_LAT, lon=HOT_LON, start_date=HOT_ERA5_START, end_date=HOT_ERA5_END, cache_dir=env.cache_dir()
+            ),
         )
     ]
 

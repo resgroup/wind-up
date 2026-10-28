@@ -22,9 +22,7 @@ from benchmarking.diagnostics.coverage import exclusion_bucket, plot_excluded_fr
 from benchmarking.diagnostics.curves import (
     _overall_power_factor,
     _reactive_panel_turbines,
-    plot_ops_curves,
     plot_ops_curves_excluded,
-    plot_ops_curves_kept,
 )
 from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.northing import plot_northed_error, plot_northing_error
@@ -169,14 +167,13 @@ class TestExcludedRowPlots:
 
 
 class TestReferenceOpsCurves:
-    """Each reference gets the three operating-curve filter figures too, drawn from its own signals.
+    """Each power reference gets the excluded-rows operating-curve figure too, drawn from its own signals.
 
     A reference with bad data corrupts a toggle estimate as surely as a bad test turbine, and the
-    test turbine's figures cannot show it. "Kept" for a reference is the method's used timestamps,
-    so the kept-only view shows exactly which of its rows fed the estimate.
+    test turbine's figure cannot show it.
     """
 
-    _REF_FIGURES = ("ops_curves.png", "ops_curves_excluded.png", "ops_curves_kept_only.png")
+    _REF_FIGURES = ("ops_curves_excluded.png",)
 
     @staticmethod
     def _flagged_context(tmp_path: Path, *, flagged: dict[str, int]) -> DiagnosticContext:
@@ -192,13 +189,13 @@ class TestReferenceOpsCurves:
         return dataclasses.replace(ctx, scada_df=scada, excluded_ts=union)
 
     @pytest.mark.slow
-    def test_the_three_figures_are_written_per_reference(self, tmp_path: Path) -> None:
+    def test_the_figure_is_written_per_reference(self, tmp_path: Path) -> None:
         ctx = self._flagged_context(tmp_path, flagged={"T1": 5, "T2": 7, "T3": 11})
         written = {p.name: p for p in write_common_diagnostics(ctx)}
         for ref in ("T2", "T3"):
             for figure in self._REF_FIGURES:
                 assert f"{ref}_{figure}" in written
-                assert written[f"{ref}_{figure}"].parent.name == "2_filter"
+                assert written[f"{ref}_{figure}"].parent.name == "11_valid_records"
 
     @pytest.mark.slow
     def test_the_test_turbine_filenames_are_unchanged(self, tmp_path: Path) -> None:
@@ -228,17 +225,12 @@ class TestReferenceOpsCurves:
         assert plot_ops_curves_excluded(ctx) == []
 
     def test_a_reference_without_wind_speed_draws_nothing_for_itself(self, tmp_path: Path) -> None:
-        ctx = _context(tmp_path)
+        ctx = self._flagged_context(tmp_path, flagged={"T1": 5, "T2": 7, "T3": 11})
         scada = ctx.scada_df.copy()
         scada.loc[scada["turbine"] == "T3", "ws"] = np.nan
         ctx = dataclasses.replace(ctx, scada_df=scada)
-        names = {p.name for p in [*plot_ops_curves(ctx), *plot_ops_curves_kept(ctx)]}
-        assert {
-            "ops_curves.png",
-            "T2_ops_curves.png",
-            "ops_curves_kept_only.png",
-            "T2_ops_curves_kept_only.png",
-        } <= names
+        names = {p.name for p in plot_ops_curves_excluded(ctx)}
+        assert {"ops_curves_excluded.png", "T2_ops_curves_excluded.png"} <= names
         assert not {n for n in names if n.startswith("T3_")}
 
 
@@ -252,8 +244,6 @@ def test_common_diagnostics_writes_expected_plots(tmp_path: Path) -> None:
         "input_data_coverage.png",
         "filter_coverage.png",
         "condition_histograms.png",
-        "ops_curves.png",
-        "ops_curves_kept_only.png",
         "ops_curves_by_upgrade.png",
         "reactive_vs_active.png",
         "power_factor.png",
@@ -279,7 +269,7 @@ def test_optional_signals_skip_gracefully(tmp_path: Path) -> None:
     assert "reactive_vs_active.png" not in names
     assert "northing_error.png" not in names
     # the core curves still render.
-    assert "ops_curves.png" in names
+    assert "ops_curves_by_upgrade.png" in names
 
 
 def test_write_run_config_yaml(tmp_path: Path) -> None:
@@ -363,16 +353,16 @@ class TestTheNorthedErrorTimeline:
         scada[ctx.columns.northed("nacelle_position")] = (scada["nacelle"] - 7.0) % 360.0
         return dataclasses.replace(ctx, scada_df=scada)
 
-    def test_it_lands_in_the_feature_engineering_stage(self, tmp_path: Path) -> None:
+    def test_it_lands_in_the_northing_step(self, tmp_path: Path) -> None:
         path = plot_northed_error(self._context_with_northed(tmp_path))
         assert path is not None
-        assert path.parent.name == "3_feature_eng"
+        assert path.parent.name == "04_northing"
         assert path.name == "northed_error.png"
 
-    def test_the_raw_one_stays_in_inputs(self, tmp_path: Path) -> None:
+    def test_the_raw_one_lands_beside_it(self, tmp_path: Path) -> None:
         path = plot_northing_error(self._context_with_northed(tmp_path))
         assert path is not None
-        assert path.parent.name == "1_inputs"
+        assert path.parent.name == "04_northing"
 
     def test_it_is_skipped_when_the_northing_step_has_not_run(self, tmp_path: Path) -> None:
         # a method run outside a campaign has the raw column only

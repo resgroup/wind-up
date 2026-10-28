@@ -214,3 +214,62 @@ def test_save_writes_roundtrippable_files(tmp_path: Path) -> None:
     metadata = json.loads((tmp_path / "run_metadata.json").read_text())
     assert "ground_truth" in metadata
     assert metadata["ground_truth"]["T01"]["overall"] == pytest.approx(0.0999, rel=1e-3)
+
+
+def test_each_turbine_is_injected_from_its_own_changeover() -> None:
+    wf_df = _wf_df()
+    timing = {"T01": pd.Timestamp("2020-01-01 06:00", tz="UTC"), "T02": pd.Timestamp("2020-01-01 18:00", tz="UTC")}
+    dataset = generate_dataset(
+        scada_df=wf_df,
+        test_wtgs=["T01", "T02"],
+        upgrades=[ConstantCpChange(delta=0.10)],
+        mode="prepost",
+        upgrade_timing=timing,
+    )
+    synthetic = dataset.synthetic_df
+    for wtg, changeover in timing.items():
+        power = synthetic.loc[synthetic[HOT_COLUMNS.turbine] == wtg, HOT_COLUMNS.active_power]
+        assert np.allclose(power[power.index < changeover].to_numpy(), 1000.0)
+        assert np.all(power[power.index >= changeover].to_numpy() > 1000.0)
+    assert dataset.run_metadata["upgrade_timing"] == {w: str(t) for w, t in timing.items()}
+
+
+def test_a_changeover_map_must_cover_every_test_turbine() -> None:
+    with pytest.raises(ValueError, match="T02"):
+        generate_dataset(
+            scada_df=_wf_df(),
+            test_wtgs=["T01", "T02"],
+            upgrades=[],
+            mode="prepost",
+            upgrade_timing={"T01": pd.Timestamp("2020-01-01 06:00", tz="UTC")},
+        )
+
+
+def test_a_changeover_map_is_prepost_only() -> None:
+    with pytest.raises(TypeError, match="prepost"):
+        generate_dataset(
+            scada_df=_wf_df(),
+            test_wtgs=["T01"],
+            upgrades=[],
+            mode="toggle",
+            upgrade_timing={"T01": pd.Timestamp("2020-01-01 06:00", tz="UTC")},
+        )
+
+
+def test_the_first_treated_record_takes_its_start_setpoint_from_the_record_before() -> None:
+    wf_df = _wf_df(power=1700.0)
+    changeover = wf_df.index.unique()[144]
+    free, dropped = (
+        generate_dataset(
+            scada_df=wf_df.assign(**{HOT_COLUMNS.power_setpoint: np.where(wf_df.index >= changeover, drop, 2300.0)}),
+            test_wtgs=["T01"],
+            upgrades=[ConstantCpChange(delta=0.10)],
+            mode="prepost",
+            upgrade_timing=changeover,
+        ).synthetic_df
+        for drop in (2300.0, 1993.0)
+    )
+    first = (free[HOT_COLUMNS.turbine] == "T01") & (free.index == changeover)
+    second = (free[HOT_COLUMNS.turbine] == "T01") & (free.index == changeover + pd.Timedelta(minutes=10))
+    assert dropped.loc[first, HOT_COLUMNS.active_power].item() == free.loc[first, HOT_COLUMNS.active_power].item()
+    assert dropped.loc[second, HOT_COLUMNS.active_power].item() < free.loc[second, HOT_COLUMNS.active_power].item()

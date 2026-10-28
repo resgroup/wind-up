@@ -13,12 +13,17 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from benchmarking.campaigns.data_screen import write_data_screen
 from benchmarking.campaigns.runner import per_turbine_table
 from benchmarking.campaigns.uplift_plots import write_uplift_plots
+from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import infer_timebase
 from benchmarking.harness import CONDITIONS, condition_bins, conditional_truth_vs_estimate, plot_conditional_uplift
+from benchmarking.harness.conditions import ORIGINAL_ROW_CONDITIONS, record_labels
 from benchmarking.harness.plots import conditional_estimates
 from benchmarking.synthetic import treated_mask
+from wind_up.analysis_period_plots import plot_analysis_timeline
+from wind_up.analysis_warnings import summary, warnings_frame
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -30,22 +35,42 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def write_report(report: CampaignReport, *, out_dir: Path) -> Path:
+def write_report(report: CampaignReport, *, out_dir: Path, farm_dir: Path | None = None) -> Path:
     """Write the analyst-facing campaign report under ``out_dir`` and return it.
 
-    Writes ``per_turbine.csv``, ``farm_uplift.csv``, ``farm_uplift_detail.csv`` and
-    ``reference_stability.csv`` -- each candidate reference estimated as if it were a test
-    turbine, which a healthy campaign reads near 0%. Each method's uplift plots go under a folder
-    of its name. A method reporting per-condition estimates also gets ``conditional.csv`` and one
-    plot per condition under ``conditional/``.
+    Writes ``per_turbine.csv`` and ``analysis_warnings.csv`` (the run's warnings ranked by severity,
+    whose summary is also logged) at the root and, in a folder per method step, ``periods.csv`` (each
+    upgraded turbine's before and after periods, or the reason none could be chosen) with an
+    ``analysis_timeline_<turbine>.png`` per upgraded turbine, ``candidates.csv`` (every other
+    turbine's rank, role and reason for each upgraded turbine, with any warning against it), the data
+    screen's ``reference_data.csv`` and ``reference_hours.csv`` with five plots per upgraded turbine,
+    ``reference_stability.csv`` (each candidate reference estimated as if it were a test turbine,
+    which a healthy campaign reads near 0%) and, for a method reporting per-condition estimates,
+    ``conditional.csv`` with one plot per condition.
+
+    The results across turbines -- ``farm_uplift.csv``, ``farm_uplift_detail.csv`` and each
+    method's uplift plots under a folder of its name -- go under ``farm_dir``, by default ``out_dir``.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    farm = farm_dir if farm_dir is not None else out_dir
+    farm.mkdir(parents=True, exist_ok=True)
+    _write_periods(report, out_dir=out_dir / stages.PERIODS)
+    _write_candidates(report, out_dir=out_dir / stages.CANDIDATES)
     report.per_turbine.to_csv(out_dir / "per_turbine.csv", index=False)
-    report.farm.to_csv(out_dir / "farm_uplift.csv", index=False)
-    report.reference_stability.to_csv(out_dir / "reference_stability.csv", index=False)
-    _write_detail(report.farm_uplifts, out_dir=out_dir)
+    warnings_frame(report.warnings).to_csv(out_dir / "analysis_warnings.csv", index=False)
+    report.farm.to_csv(farm / "farm_uplift.csv", index=False)
+    (out_dir / stages.SCREEN).mkdir(exist_ok=True)
+    write_data_screen(
+        report.data_screens,
+        layout=report.spec.layout,
+        scada_df=report.scada_df,
+        turbine_col=report.spec.turbine_col,
+        out_dir=out_dir / stages.SCREEN,
+    )
+    report.reference_stability.to_csv(out_dir / stages.SCREEN / "reference_stability.csv", index=False)
+    _write_detail(report.farm_uplifts, out_dir=farm)
     write_uplift_plots(
-        out_dir,
+        farm,
         per_turbine=report.per_turbine,
         stability=report.reference_stability,
         rated_power_kw=report.spec.rated_power_kw,
@@ -62,32 +87,135 @@ def write_report(report: CampaignReport, *, out_dir: Path) -> Path:
         report.reference_stability,
         timebase=infer_timebase(pd.DatetimeIndex(report.scada_df.index.unique()).sort_values()),
     )
+    logger.log(logging.WARNING if report.warnings else logging.INFO, "%s", summary(report.warnings))
 
     if not report.conditional.empty:
-        report.conditional.to_csv(out_dir / "conditional.csv", index=False)
-        _write_estimate_plots(report, out_dir=out_dir / "conditional")
+        distributions = out_dir / stages.UPLIFT_DISTRIBUTIONS
+        distributions.mkdir(exist_ok=True)
+        report.conditional.to_csv(distributions / "conditional.csv", index=False)
+        _write_estimate_plots(report, out_dir=distributions)
     return out_dir
 
 
-def write_campaign_report(result: CampaignResult, dataset: SyntheticDataset, *, out_dir: Path) -> Path:
+def write_campaign_report(
+    result: CampaignResult, dataset: SyntheticDataset, *, out_dir: Path, farm_dir: Path | None = None
+) -> Path:
     """Write the benchmark report under ``out_dir`` and return it.
 
-    The analyst report plus what truth adds: ``per_turbine.csv`` and ``farm_uplift.csv`` gain
+    The analyst report of :func:`write_report`, the results across turbines under ``farm_dir`` (by
+    default ``out_dir``), plus what truth adds: ``per_turbine.csv`` and ``farm_uplift.csv`` gain
     their truth and signed-error columns, ``scores.csv`` carries the tidy harness rows, and each
     conditional plot gains its true-uplift series.
     """
-    write_report(result.report, out_dir=out_dir)
+    farm = farm_dir if farm_dir is not None else out_dir
+    write_report(result.report, out_dir=out_dir, farm_dir=farm)
     per_turbine = per_turbine_table(result)
     per_turbine.to_csv(out_dir / "per_turbine.csv", index=False)
-    result.farm.to_csv(out_dir / "farm_uplift.csv", index=False)
+    result.farm.to_csv(farm / "farm_uplift.csv", index=False)
     result.scores.to_csv(out_dir / "scores.csv", index=False)
 
     label = result.spec.change_label()
     logger.info("Per-turbine uplift vs truth for %s:\n%s", label, per_turbine.to_string(index=False))
     logger.info("Farm uplift vs truth for %s:\n%s", label, result.farm.to_string(index=False))
 
-    _write_conditional_plots(result, dataset, out_dir=out_dir / "conditional")
+    _write_conditional_plots(result, dataset, out_dir=out_dir / stages.UPLIFT_DISTRIBUTIONS)
     return out_dir
+
+
+PERIOD_COLUMNS = (
+    "test_wtg",
+    "analysed",
+    "before_start",
+    "before_end",
+    "after_start",
+    "after_end",
+    "before_days",
+    "after_days",
+    "declared",
+    "pool_rule_met",
+    "pool_rule_reason",
+    "warning",
+    "reason",
+)
+CANDIDATE_COLUMNS = ("test_wtg", "turbine", "rank", "distance_d", "role", "reason", "warning")
+
+
+def periods_table(report: CampaignReport) -> pd.DataFrame:
+    """One row per upgraded turbine: its before and after periods, or why it is not analysed."""
+    timeline = report.timeline
+    rows: list[dict[str, object]] = []
+    for turbine in sorted({*timeline.plans, *timeline.unplanned}):
+        plan = timeline.plans.get(turbine)
+        if plan is None:
+            rows.append({"test_wtg": turbine, "analysed": False, "reason": timeline.unplanned[turbine]})
+            continue
+        rows.append(
+            {
+                "test_wtg": turbine,
+                "analysed": True,
+                "before_start": plan.before[0],
+                "before_end": plan.before[1],
+                "after_start": plan.after[0],
+                "after_end": plan.after[1],
+                "before_days": round(plan.pre / pd.Timedelta(days=1), 2),
+                "after_days": round(plan.post / pd.Timedelta(days=1), 2),
+                "declared": plan.declared,
+                "pool_rule_met": plan.pool_rule_met,
+                "pool_rule_reason": plan.pool_rule_reason,
+                "warning": timeline.warnings.get(turbine, {}).get(turbine, ""),
+                "reason": "",
+            }
+        )
+    return pd.DataFrame(rows, columns=list(PERIOD_COLUMNS))
+
+
+def candidates_table(report: CampaignReport) -> pd.DataFrame:
+    """One row per other turbine for each analysed turbine, nearest first, with its role and any warning."""
+    timeline = report.timeline
+    tables = []
+    for turbine, plan in sorted(timeline.plans.items()):
+        table = plan.table()
+        table.insert(0, "test_wtg", turbine)
+        table.insert(2, "rank", range(1, len(table) + 1))
+        table["warning"] = [timeline.warnings.get(turbine, {}).get(other, "") for other in table["turbine"]]
+        tables.append(table)
+    if not tables:
+        return pd.DataFrame(columns=list(CANDIDATE_COLUMNS))
+    return pd.concat(tables, ignore_index=True)[list(CANDIDATE_COLUMNS)]
+
+
+def _write_periods(report: CampaignReport, *, out_dir: Path) -> None:
+    """Write each upgraded turbine's periods and draw its timeline, planned or not."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    periods = periods_table(report)
+    periods.to_csv(out_dir / "periods.csv", index=False)
+    if report.unplanned:
+        logger.warning("Not analysed, as no span could be planned for them: %s", ", ".join(sorted(report.unplanned)))
+    logger.info("Before and after periods:\n%s", periods.drop(columns=["reason"]).to_string(index=False))
+    timeline = report.timeline
+    for turbine in sorted({*report.plans, *report.unplanned}):
+        fig = plot_analysis_timeline(
+            turbine,
+            layout=report.spec.layout,
+            works=timeline.works,
+            exclusions=report.spec.exclusions,
+            extents=timeline.extents,
+            plan=report.plans.get(turbine),
+            reason=report.unplanned.get(turbine, ""),
+            out_dir=out_dir,
+        )
+        plt.close(fig)
+
+
+def _write_candidates(report: CampaignReport, *, out_dir: Path) -> None:
+    """Write the ranked candidates of each analysed turbine, and log them."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    candidates = candidates_table(report)
+    candidates.to_csv(out_dir / "candidates.csv", index=False)
+    for turbine, table in candidates.groupby("test_wtg", sort=True):
+        logger.info(
+            "Candidate references for %s:\n%s", turbine, table.drop(columns=["test_wtg"]).to_string(index=False)
+        )
 
 
 def _write_detail(farm_uplifts: dict, *, out_dir: Path) -> None:
@@ -109,7 +237,15 @@ def _log_guards(farm_uplifts: dict) -> None:
 
 
 # Uplift columns are reported as percentages, named for what they are rather than for the estimator.
-_PERCENT_COLUMNS = {"estimate": "measured uplift [%]", "uplift": "measured uplift [%]", "uplift_spread": "spread [%]"}
+_PERCENT_COLUMNS = {
+    "estimate": "measured uplift [%]",
+    "uplift": "measured uplift [%]",
+    "uplift_spread": "spread [%]",
+    "sigma": "sigma [%]",
+    "reference_uplift_before_screen": "reference uplift before screen [%]",
+    "reference_uplift_after_screen": "reference uplift after screen [%]",
+    "reference_uplift_spread": "reference spread [%]",
+}
 # actual_energy is a sum of mean power, not energy; the log converts it and says which it is.
 _ENERGY_COLUMN = "actual_energy"
 _ENERGY_SHOWN = "treated energy [MWh]"
@@ -208,16 +344,18 @@ def _write_conditional_plots(result: CampaignResult, dataset: SyntheticDataset, 
         reported = set(output.p50_by_condition["condition"].astype(str))
         rows = dataset.synthetic_df[dataset.synthetic_df[spec.turbine_col] == wtg]
         mask = treated_mask(pd.DatetimeIndex(rows.index), spec.timing_for(wtg))
-        truth_by_condition = {
-            condition: dataset.true_uplift(
+        truth_by_condition = {}
+        for condition in [c for c in CONDITIONS if c in reported]:
+            values = record_labels(output.labeled_rows, condition=condition, index=pd.DatetimeIndex(rows.index))
+            if values is None and condition not in ORIGINAL_ROW_CONDITIONS:
+                continue
+            truth_by_condition[condition] = dataset.true_uplift(
                 test_wtg=wtg,
                 mask=mask,
                 by=condition,
                 bins=condition_bins(condition, rated_power_kw=spec.rated_power_kw),
+                condition_values=values,
             ).by_condition
-            for condition in CONDITIONS
-            if condition in reported
-        }
         clean = {c: frame for c, frame in truth_by_condition.items() if frame is not None}
         if not clean:
             continue

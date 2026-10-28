@@ -1,8 +1,8 @@
-"""Tests for the power-model curated, reference-only feature builder.
+"""Tests for the power-model feature builder (method step 6).
 
-Covers the reference feature pivot (active power + availability per reference, original tag names,
-NaN-preserving), the ERA5 all-columns passthrough with direction sin/cos, the outcome extraction,
-and the reference-only enforcement guard.
+Covers the reference feature pivot (active power per reference, original tag names, NaN-preserving),
+the waking scenario categoricals, the solar elevation, the outcome extraction and the
+reference-only guard.
 """
 
 from __future__ import annotations
@@ -11,14 +11,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.era5_sync import ERA5_WD, ERA5_WS
 from benchmarking.baselines.power_model.features import (
     QUALIFIER,
+    SOLAR_ELEVATION,
     build_reference_features,
     check_reference_only,
-    era5_feature_frame,
     extract_outcome,
+    solar_elevation_frame,
+    waking_scenario_features,
+    without_constant_scenarios,
 )
+from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
 _TURBINE = "TurbineName"
 _REFS = ("R1", "R2", "R3")
@@ -50,7 +53,7 @@ def _scada(idx: pd.DatetimeIndex) -> pd.DataFrame:
 
 
 class TestBuildReferenceFeatures:
-    def test_only_active_power_and_availability_per_reference(self) -> None:
+    def test_only_active_power_per_reference(self) -> None:
         idx = _index(12)
         feats = build_reference_features(
             _scada(idx),
@@ -58,12 +61,10 @@ class TestBuildReferenceFeatures:
             references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
         )
-        # three references x two value columns = six feature columns; none for T1; ws not included
-        assert len(feats.columns) == 6
-        assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
-        assert not any(c.startswith(_WS) for c in feats.columns)
+        # one column per reference; none for T1; ws and availability not included
+        assert list(feats.columns) == [f"{_POWER}{QUALIFIER}{r}" for r in _REFS]
+        assert not any(c.startswith((_WS, _AVAIL)) for c in feats.columns)
         assert feats.index.equals(idx)
 
     def test_keeps_original_tag_names(self) -> None:
@@ -74,10 +75,8 @@ class TestBuildReferenceFeatures:
             references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
         )
         assert f"{_POWER}{QUALIFIER}R1" in feats.columns
-        assert f"{_AVAIL}{QUALIFIER}R3" in feats.columns
 
     def test_preserves_nan_rows(self) -> None:
         idx = _index(12)
@@ -89,7 +88,6 @@ class TestBuildReferenceFeatures:
             references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
         )
         assert len(feats) == len(idx)
         assert np.isnan(feats.loc[idx[3], f"{_POWER}{QUALIFIER}R1"])
@@ -103,7 +101,6 @@ class TestBuildReferenceFeatures:
                 references=(),
                 turbine_col=_TURBINE,
                 active_power_col=_POWER,
-                availability_col=_AVAIL,
             )
 
     def test_a_turbine_outside_the_pool_contributes_nothing(self) -> None:
@@ -114,11 +111,10 @@ class TestBuildReferenceFeatures:
             references=("R1", "R2"),
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
         )
         # R3 is in the frame but not offered as a reference, so it is not one
         assert not any(c.endswith(f"{QUALIFIER}R3") for c in feats.columns)
-        assert len(feats.columns) == 4
+        assert len(feats.columns) == 2
 
     def test_extra_cols_add_per_reference_features(self) -> None:
         idx = _index(12)
@@ -130,27 +126,12 @@ class TestBuildReferenceFeatures:
             references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
             extra_cols=("wtc_ActPower_stddev",),
         )
-        # three references x three value columns; still nothing from the test turbine
-        assert len(feats.columns) == 9
+        # three references x two value columns; still nothing from the test turbine
+        assert len(feats.columns) == 6
         assert f"wtc_ActPower_stddev{QUALIFIER}R2" in feats.columns
         assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
-
-    def test_missing_availability_col_raises_even_when_not_featured(self) -> None:
-        idx = _index(12)
-        scada = _scada(idx).drop(columns=[_AVAIL])
-        with pytest.raises(ValueError, match="missing required reference-feature columns"):
-            build_reference_features(
-                scada,
-                test_wtg="T1",
-                references=_REFS,
-                turbine_col=_TURBINE,
-                active_power_col=_POWER,
-                availability_col=_AVAIL,
-                include_availability=False,
-            )
 
     def test_missing_extra_col_raises(self) -> None:
         idx = _index(12)
@@ -161,7 +142,6 @@ class TestBuildReferenceFeatures:
                 references=_REFS,
                 turbine_col=_TURBINE,
                 active_power_col=_POWER,
-                availability_col=_AVAIL,
                 extra_cols=("wtc_ActPower_stddev",),
             )
 
@@ -176,36 +156,59 @@ class TestBuildReferenceFeatures:
             references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
         )
         assert not any("NacWdSp" in c for c in feats.columns)
         assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
 
 
-class TestEra5FeatureFrame:
-    def test_passes_through_raw_drops_aliases_and_adds_direction_sin_cos(self) -> None:
-        idx = _index(6)
-        aligned = pd.DataFrame(
-            {
-                "wind_speed_100m": np.linspace(5, 10, 6),
-                "wind_direction_100m": np.linspace(0, 270, 6),
-                "temperature_2m": np.linspace(1, 6, 6),
-                ERA5_WS: np.linspace(5, 10, 6),
-                ERA5_WD: np.linspace(0, 270, 6),
-            },
-            index=idx,
+# Denver, CO, and sunrise and sunset there on 19 May 2025 (timeanddate.com, in UTC).
+_DENVER = {"latitude": 39.7392, "longitude": -104.9903}
+_DENVER_SUNRISE = pd.Timestamp("2025-05-19 11:42", tz="UTC")
+_DENVER_SUNSET = pd.Timestamp("2025-05-20 02:11", tz="UTC")
+_HILL_OF_TOWIE = {"latitude": 57.506, "longitude": -3.068}
+_TEN_MINUTES = pd.Timedelta(minutes=10)
+
+
+def _elevation(starts: list[pd.Timestamp], *, timebase: pd.Timedelta = _TEN_MINUTES, **site: float) -> np.ndarray:
+    index = pd.DatetimeIndex(starts)
+    return solar_elevation_frame(index, timebase=timebase, **site)[SOLAR_ELEVATION].to_numpy()
+
+
+class TestSolarElevationFrame:
+    def test_the_sun_is_on_the_horizon_at_sunrise_and_sunset(self) -> None:
+        # Each period starts five minutes before the event, so its middle is the event.
+        starts = [_DENVER_SUNRISE - _TEN_MINUTES / 2, _DENVER_SUNSET - _TEN_MINUTES / 2]
+        np.testing.assert_allclose(_elevation(starts, **_DENVER), [0.0, 0.0], atol=0.2)
+
+    def test_it_is_evaluated_at_the_middle_of_each_period(self) -> None:
+        hourly = _elevation([_DENVER_SUNRISE - pd.Timedelta(minutes=30)], timebase=pd.Timedelta(hours=1), **_DENVER)
+        instant = _elevation([_DENVER_SUNRISE], timebase=pd.Timedelta(0), **_DENVER)
+        assert hourly == pytest.approx(instant)
+        start = _elevation([_DENVER_SUNRISE - pd.Timedelta(minutes=30)], timebase=pd.Timedelta(0), **_DENVER)
+        assert abs(start[0] - instant[0]) > 1.0
+
+    def test_a_timestamp_in_another_zone_is_the_same_instant(self) -> None:
+        utc = _elevation([_DENVER_SUNRISE], **_DENVER)
+        local = _elevation([_DENVER_SUNRISE.tz_convert("America/Denver")], **_DENVER)
+        np.testing.assert_allclose(local, utc)
+
+    def test_the_index_is_kept(self) -> None:
+        index = _index(6)
+        out = solar_elevation_frame(index, timebase=_TEN_MINUTES, **_HILL_OF_TOWIE)
+        assert list(out.columns) == [SOLAR_ELEVATION]
+        assert out.index.equals(index)
+
+    def test_hill_of_towie_midsummer(self) -> None:
+        noon, midnight = _elevation(
+            [pd.Timestamp("2018-06-21 12:10", tz="UTC"), pd.Timestamp("2018-06-21 00:10", tz="UTC")],
+            **_HILL_OF_TOWIE,
         )
-        out = era5_feature_frame(aligned)
-        # aliases dropped; raw columns kept; direction gains sin/cos companions (raw degrees kept)
-        assert ERA5_WS not in out.columns
-        assert ERA5_WD not in out.columns
-        assert {"wind_speed_100m", "wind_direction_100m", "temperature_2m"} <= set(out.columns)
-        assert {"wind_direction_100m_sin", "wind_direction_100m_cos"} <= set(out.columns)
-        assert "wind_speed_100m_sin" not in out.columns
-        # sin/cos are consistent with the raw degrees
-        np.testing.assert_allclose(
-            out["wind_direction_100m_sin"].to_numpy(), np.sin(np.deg2rad(aligned["wind_direction_100m"].to_numpy()))
-        )
+        assert noon == pytest.approx(55.9, abs=0.5)
+        assert midnight < 0.0
+
+    def test_raises_on_timezone_naive_timestamps(self) -> None:
+        with pytest.raises(ValueError, match="timezone-aware"):
+            _elevation([pd.Timestamp("2025-05-19 11:42")], **_DENVER)
 
 
 class TestOutcomeAndGuard:
@@ -249,7 +252,6 @@ class TestReferenceDirectionFeature:
             references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
             direction_col=_NORTHED_DIR,
         )
         for ref in ("R1", "R2", "R3"):
@@ -268,7 +270,6 @@ class TestReferenceDirectionFeature:
             references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
             direction_col=_NORTHED_DIR,
         )
         expected = scada[scada[_TURBINE] == "R1"][_NORTHED_DIR].to_numpy(dtype=float)
@@ -283,7 +284,6 @@ class TestReferenceDirectionFeature:
             references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
             direction_col=_NORTHED_DIR,
         )
         assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
@@ -297,7 +297,6 @@ class TestReferenceDirectionFeature:
                 references=_REFS,
                 turbine_col=_TURBINE,
                 active_power_col=_POWER,
-                availability_col=_AVAIL,
                 direction_col=_NORTHED_DIR,
             )
 
@@ -309,7 +308,6 @@ class TestReferenceDirectionFeature:
             references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
             extra_cols=(_RAW_DIR,),
             direction_col=_NORTHED_DIR,
         )
@@ -325,226 +323,70 @@ class TestReferenceDirectionFeature:
             references=_REFS,
             turbine_col=_TURBINE,
             active_power_col=_POWER,
-            availability_col=_AVAIL,
         )
-        assert len(without.columns) == 6
+        assert len(without.columns) == 3
         assert not any("northed" in c for c in without.columns)
 
 
-_RATED = 2300.0
-_WAKING_THRESHOLD_KW = 0.05 * _RATED
-
-
-def _scada_spanning_the_waking_threshold(idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Long SCADA whose power straddles 5% of rated, so the waking boolean is not degenerate."""
+def _scada_with_scenarios(idx: pd.DatetimeIndex) -> pd.DataFrame:
+    """The long SCADA above with a waking scenario per record."""
     scada = _scada(idx)
-    ramp = np.linspace(0.0, 4 * _WAKING_THRESHOLD_KW, len(idx))
-    for name in ("T1", "R1", "R2", "R3"):
-        scada.loc[scada[_TURBINE] == name, _POWER] = ramp
-    scada[_RAW_DIR] = 90.0
-    scada[_NORTHED_DIR] = 120.0
+    labels = np.array(["normal", "R2 not waking", "unknown"])
+    scada[WAKING_SCENARIO_COL] = labels[np.arange(len(scada)) % len(labels)]
     return scada
 
 
-class TestPowerFreeReferences:
-    """A screened reference keeps its wake geometry but loses the channels a Cp change corrupts."""
-
-    def _features(self, idx: pd.DatetimeIndex, power_free: tuple[str, ...]) -> pd.DataFrame:
-        return build_reference_features(
-            _scada_spanning_the_waking_threshold(idx),
-            test_wtg="T1",
-            references=_REFS,
-            turbine_col=_TURBINE,
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
-            direction_col=_NORTHED_DIR,
-            include_availability=False,
-            power_free=power_free,
-            waking_threshold_kw=_WAKING_THRESHOLD_KW,
+class TestWakingScenarioFeatures:
+    def test_one_column_for_the_test_turbine_and_each_reference(self) -> None:
+        feats = waking_scenario_features(
+            _scada_with_scenarios(_index(12)), test_wtg="T1", references=("R2", "R1"), turbine_col=_TURBINE
         )
+        assert list(feats.columns) == [f"{WAKING_SCENARIO_COL}{QUALIFIER}{t}" for t in ("test", "R1", "R2")]
 
-    def test_a_power_free_reference_loses_its_power_column(self) -> None:
-        feats = self._features(_index(24), power_free=("R1",))
-        assert f"{_POWER}{QUALIFIER}R1" not in feats.columns
-
-    def test_the_other_references_keep_theirs(self) -> None:
-        feats = self._features(_index(24), power_free=("R1",))
-        for ref in ("R2", "R3"):
-            assert f"{_POWER}{QUALIFIER}{ref}" in feats.columns
-
-    def test_a_power_free_reference_loses_its_direction(self) -> None:
-        """Where it points can move with the change itself: a yaw realignment, or wake steering."""
-        feats = self._features(_index(24), power_free=("R1",))
-        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R1" not in feats.columns
-        assert f"{_NORTHED_DIR}_cos{QUALIFIER}R1" not in feats.columns
-
-    def test_a_reference_that_kept_its_power_still_keeps_its_direction(self) -> None:
-        feats = self._features(_index(24), power_free=("R1",))
-        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R2" in feats.columns
-
-    def test_a_power_free_reference_gains_a_waking_boolean(self) -> None:
-        feats = self._features(_index(24), power_free=("R1",))
-        assert f"waking_{_POWER}{QUALIFIER}R1" in feats.columns
-
-    def test_the_waking_boolean_is_true_above_the_threshold_and_false_below(self) -> None:
-        idx = _index(24)
-        feats = self._features(idx, power_free=("R1",))
-        power = _scada_spanning_the_waking_threshold(idx)
-        r1 = power[power[_TURBINE] == "R1"][_POWER].to_numpy()
-        waking = feats[f"waking_{_POWER}{QUALIFIER}R1"].to_numpy()
-        assert (waking == (r1 >= _WAKING_THRESHOLD_KW)).all()
-
-    def test_the_boolean_is_informative_not_degenerate_on_this_fixture(self) -> None:
-        feats = self._features(_index(24), power_free=("R1",))
-        waking = feats[f"waking_{_POWER}{QUALIFIER}R1"]
-        assert 0 < waking.sum() < len(waking)
-
-    def test_good_references_get_no_waking_column(self) -> None:
-        """The boolean replaces power where power was removed; it is not a new default feature."""
-        feats = self._features(_index(24), power_free=("R1",))
-        for ref in ("R2", "R3"):
-            assert f"waking_{_POWER}{QUALIFIER}{ref}" not in feats.columns
-
-    def test_no_power_free_references_leaves_the_matrix_untouched(self) -> None:
-        """The screen finding nothing must cost the feature matrix nothing."""
-        idx = _index(24)
-        unscreened = build_reference_features(
-            _scada_spanning_the_waking_threshold(idx),
-            test_wtg="T1",
-            references=_REFS,
-            turbine_col=_TURBINE,
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
-            direction_col=_NORTHED_DIR,
-            include_availability=False,
+    def test_columns_are_categoricals_sharing_one_dtype(self) -> None:
+        feats = waking_scenario_features(
+            _scada_with_scenarios(_index(12)), test_wtg="T1", references=_REFS, turbine_col=_TURBINE
         )
-        assert list(self._features(idx, power_free=()).columns) == list(unscreened.columns)
+        dtypes = {str(feats[c].dtype) for c in feats.columns}
+        assert dtypes == {"category"}
+        assert len({tuple(feats[c].cat.categories) for c in feats.columns}) == 1
 
-    def test_a_power_free_turbine_that_is_not_a_reference_raises(self) -> None:
-        with pytest.raises(ValueError, match="R9"):
-            self._features(_index(24), power_free=("R9",))
+    def test_values_are_each_turbines_own_scenario(self) -> None:
+        idx = _index(12)
+        scada = _scada_with_scenarios(idx)
+        feats = waking_scenario_features(scada, test_wtg="T1", references=_REFS, turbine_col=_TURBINE)
+        expected = scada[scada[_TURBINE] == "R2"][WAKING_SCENARIO_COL].to_numpy()
+        assert feats[f"{WAKING_SCENARIO_COL}{QUALIFIER}R2"].astype(str).to_numpy().tolist() == expected.tolist()
 
-    def test_the_test_turbine_still_contributes_nothing(self) -> None:
-        feats = self._features(_index(24), power_free=("R1",))
-        assert not any(c.endswith(f"{QUALIFIER}T1") for c in feats.columns)
+    def test_a_missing_record_is_nan(self) -> None:
+        idx = _index(12)
+        scada = _scada_with_scenarios(idx)
+        scada = scada[~((scada[_TURBINE] == "R1") & (scada.index == idx[4]))]
+        feats = waking_scenario_features(scada, test_wtg="T1", references=_REFS, turbine_col=_TURBINE)
+        assert pd.isna(feats.loc[idx[4], f"{WAKING_SCENARIO_COL}{QUALIFIER}R1"])
 
-
-class TestWakeOnlyTurbines:
-    """A changed turbine that is not a reference still wakes its neighbours, and says so without its power."""
-
-    def _features(self, **kwargs: object) -> pd.DataFrame:
-        call: dict = {
-            "test_wtg": "T1",
-            "references": ("R1", "R2"),
-            "turbine_col": _TURBINE,
-            "active_power_col": _POWER,
-            "availability_col": _AVAIL,
-            "direction_col": _NORTHED_DIR,
-            "waking_threshold_kw": _WAKING_THRESHOLD_KW,
-            "wake_only": ("R3",),
-            **kwargs,
-        }
-        return build_reference_features(_scada_spanning_the_waking_threshold(_index(24)), **call)
-
-    def test_contributes_no_power(self) -> None:
-        assert f"{_POWER}{QUALIFIER}R3" not in self._features().columns
-
-    def test_does_not_contribute_its_direction(self) -> None:
-        feats = self._features()
-        assert f"{_NORTHED_DIR}_sin{QUALIFIER}R3" not in feats.columns
-        assert f"{_NORTHED_DIR}_cos{QUALIFIER}R3" not in feats.columns
-
-    def test_contributes_its_waking_boolean(self) -> None:
-        assert f"waking_{_POWER}{QUALIFIER}R3" in self._features().columns
-
-    def test_does_not_contribute_its_availability(self) -> None:
-        assert f"{_AVAIL}{QUALIFIER}R3" not in self._features().columns
-
-    def test_contributes_exactly_what_a_power_free_reference_does(self) -> None:
-        as_reference = self._features(references=_REFS, power_free=("R3",), wake_only=())
-        pd.testing.assert_frame_equal(self._features(), as_reference)
-
-    def test_a_reference_cannot_also_be_wake_only(self) -> None:
-        with pytest.raises(ValueError, match="R2"):
-            self._features(wake_only=("R2", "R3"))
-
-    def test_the_test_turbine_cannot_be_wake_only(self) -> None:
-        with pytest.raises(ValueError, match="T1"):
-            self._features(wake_only=("T1",))
-
-    def test_needs_the_waking_threshold(self) -> None:
-        with pytest.raises(ValueError, match="waking_threshold_kw"):
-            self._features(waking_threshold_kw=None)
-
-
-class TestWakingDtype:
-    """The waking column has to survive reindexing onto the full index as a numeric feature."""
-
-    def _features_with_a_gap(self) -> pd.DataFrame:
-        idx = _index(24)
-        scada = _scada_spanning_the_waking_threshold(idx)
-        # R1 misses the last six timestamps, so joining its waking column leaves gaps.
-        drop = (scada[_TURBINE] == "R1") & (scada.index >= idx[-6])
-        return build_reference_features(
-            scada[~drop],
-            test_wtg="T1",
-            references=_REFS,
-            turbine_col=_TURBINE,
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
-            direction_col=_NORTHED_DIR,
-            include_availability=False,
-            power_free=("R1",),
-            waking_threshold_kw=_WAKING_THRESHOLD_KW,
+    def test_passes_the_reference_only_guard(self) -> None:
+        feats = waking_scenario_features(
+            _scada_with_scenarios(_index(12)), test_wtg="T1", references=_REFS, turbine_col=_TURBINE
         )
+        check_reference_only(feats.columns.tolist(), test_wtg="T1")
 
-    def test_the_waking_column_is_numeric_not_object(self) -> None:
-        """LightGBM rejects an object column, which is what bool + NaN collapses to."""
-        feats = self._features_with_a_gap()
-        assert feats[f"waking_{_POWER}{QUALIFIER}R1"].dtype.kind == "f"
-
-    def test_a_missing_record_is_nan_rather_than_asserted_not_waking(self) -> None:
-        """No record is no knowledge; NaN is preserved for LightGBM as the rest of the matrix is."""
-        feats = self._features_with_a_gap()
-        assert feats[f"waking_{_POWER}{QUALIFIER}R1"].isna().any()
-
-    def test_every_feature_column_is_numeric(self) -> None:
-        feats = self._features_with_a_gap()
-        bad = [c for c in feats.columns if feats[c].dtype.kind not in "fiub"]
-        assert bad == []
+    def test_raises_without_the_scenario_column(self) -> None:
+        with pytest.raises(ValueError, match=WAKING_SCENARIO_COL):
+            waking_scenario_features(_scada(_index(12)), test_wtg="T1", references=_REFS, turbine_col=_TURBINE)
 
 
-class TestPowerFreeIsWakingAlone:
-    """A power-free turbine contributes its waking boolean and no other channel."""
-
-    def _features(self, *, include_availability: bool) -> pd.DataFrame:
-        idx = _index(24)
-        return build_reference_features(
-            _scada_spanning_the_waking_threshold(idx),
-            test_wtg="T1",
-            references=_REFS,
-            turbine_col=_TURBINE,
-            active_power_col=_POWER,
-            availability_col=_AVAIL,
-            direction_col=_NORTHED_DIR,
-            include_availability=include_availability,
-            power_free=("R1",),
-            waking_threshold_kw=_WAKING_THRESHOLD_KW,
-        )
-
-    def test_a_power_free_reference_loses_availability_though_others_keep_it(self) -> None:
-        feats = self._features(include_availability=True)
-        assert f"{_AVAIL}{QUALIFIER}R1" not in feats.columns
-        assert f"{_AVAIL}{QUALIFIER}R2" in feats.columns
-
-    def test_waking_is_all_it_contributes(self) -> None:
-        feats = self._features(include_availability=True)
-        assert [c for c in feats.columns if c.endswith(f"{QUALIFIER}R1")] == [f"waking_{_POWER}{QUALIFIER}R1"]
-
-    def test_it_still_loses_its_power(self) -> None:
-        feats = self._features(include_availability=True)
-        assert f"{_POWER}{QUALIFIER}R1" not in feats.columns
-
-    def test_availability_stays_absent_when_it_is_not_a_feature(self) -> None:
-        feats = self._features(include_availability=False)
-        assert not any(c.startswith(_AVAIL) for c in feats.columns)
+def test_a_scenario_column_with_one_value_over_the_rows_is_left_out() -> None:
+    index = pd.date_range("2020-01-01", periods=4, freq="10min", tz="UTC")
+    dtype = pd.CategoricalDtype(["T03 not waking", "normal"])
+    features = pd.DataFrame(
+        {
+            f"{WAKING_SCENARIO_COL}{QUALIFIER}test": pd.Categorical(["normal"] * 3 + ["T03 not waking"], dtype=dtype),
+            f"{WAKING_SCENARIO_COL}{QUALIFIER}T02": pd.Categorical(["normal", "T03 not waking"] * 2, dtype=dtype),
+            f"power{QUALIFIER}T02": [1.0, 1.0, 1.0, 1.0],
+        },
+        index=index,
+    )
+    kept, constant = without_constant_scenarios(features, rows=np.array([True, True, True, False]))
+    assert constant == [f"{WAKING_SCENARIO_COL}{QUALIFIER}test"]
+    assert list(kept.columns) == [f"{WAKING_SCENARIO_COL}{QUALIFIER}T02", f"power{QUALIFIER}T02"]

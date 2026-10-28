@@ -7,16 +7,19 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 from matplotlib.colors import to_rgba
+from matplotlib.patches import Wedge
 
 from tests.wind_up.layouts import grid_layout, scatter_layout
-from wind_up.campaign_design import check_design, design_campaign, write_compliance, write_design
+from wind_up.campaign_design import WAKE_LOSS_COLUMNS, check_design, design_campaign, write_compliance, write_design
 from wind_up.campaign_design_plots import (
     FRONT_ROW_COLOUR,
     NOT_FRONT_ROW_COLOUR,
     REFERENCE_COLOUR,
     UNUSED_COLOUR,
+    plot_coverage_map,
     plot_design_map,
     plot_front_row_map,
 )
@@ -42,12 +45,14 @@ def test_write_design_writes_every_file(tmp_path: Path) -> None:
     write_design(_design(), out_dir=tmp_path)
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "compliance.csv",
+        "coverage_map.png",
         "design_map.png",
         "design_map_latlon.png",
         "front_row_map.png",
         "roles.yaml",
         "summary.yaml",
         "turbines.csv",
+        "wake_losses.csv",
     ]
 
 
@@ -97,7 +102,7 @@ def test_summary_yaml_carries_the_maximum_and_the_problems(tmp_path: Path) -> No
 def test_write_compliance_for_a_hand_picked_set(tmp_path: Path) -> None:
     report = check_design(grid_layout(rows=4, cols=4, spacing_m=300), test_turbines=["R1C1", "R2C2"])
     write_compliance(report, out_dir=tmp_path)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["compliance.csv", "summary.yaml"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["compliance.csv", "summary.yaml", "wake_losses.csv"]
     summary = yaml.safe_load((tmp_path / "summary.yaml").read_text())
     assert summary["compliant"] is False
     assert summary["problems"] == list(report.problems)
@@ -154,4 +159,47 @@ def test_design_map_draws_a_reference_only_turbine_by_its_outcome() -> None:
     (point,) = [c for c in ax.collections if np.allclose(c.get_offsets(), [[x[row], y[row]]])]
     np.testing.assert_allclose(point.get_facecolors()[0], to_rgba(REFERENCE_COLOUR if in_use else UNUSED_COLOUR))
     assert "reference-only" not in [t.get_text() for t in ax.get_legend().get_texts()]
+    plt.close(fig)
+
+
+def _wake_design() -> object:
+    rose = np.full(360, 0.4 / 360)
+    rose[270] += 0.6
+    return design_campaign(
+        _layout_with_a_neighbour(),
+        wind_farm="Home",
+        n_test=3,
+        wake_reach_d=12.0,
+        wind_rose=rose,
+        min_kept_wind_share=0.0,
+    )
+
+
+def test_wake_losses_csv_has_a_row_per_lost_sector(tmp_path: Path) -> None:
+    design = _wake_design()
+    write_design(design, out_dir=tmp_path)
+    written = pd.read_csv(tmp_path / "wake_losses.csv")
+    assert list(written.columns) == list(WAKE_LOSS_COLUMNS)
+    assert set(written["test_turbine"]) <= set(design.test_turbines)
+    assert len(written) == len(design.compliance.wake_losses) > 0
+    summary = yaml.safe_load((tmp_path / "summary.yaml").read_text())
+    assert summary["wake_reach_d"] == 12.0
+    assert summary["mean_kept_wind_share"] == pytest.approx(design.compliance.table["kept_wind_share"].mean())
+
+
+def test_the_metre_map_draws_a_wedge_per_lost_sector_and_the_rose() -> None:
+    design = _wake_design()
+    fig = plot_design_map(design)
+    wedges = [p for p in fig.axes[0].patches if isinstance(p, Wedge)]
+    assert len(wedges) == len(design.compliance.wake_losses.drop_duplicates(subset=["waked", "waker"]))
+    assert any(ax.name == "polar" for ax in fig.axes)
+    plt.close(fig)
+
+
+def test_the_coverage_map_colours_every_available_turbine_by_its_lone_kept_wind_share() -> None:
+    design = _wake_design()
+    fig = plot_coverage_map(design)
+    coloured = next(c for c in fig.axes[0].collections if c.get_array() is not None)
+    rated = [v for v in design.lone_kept_wind_share.values() if np.isfinite(v)]
+    assert sorted(np.asarray(coloured.get_array())) == pytest.approx(sorted(rated))
     plt.close(fig)

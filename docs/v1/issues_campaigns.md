@@ -101,7 +101,7 @@ and `docs/superpowers/specs/2026-08-28-v1-productization-release-design.md`
 Learned the hard way while landing R1, which changed a **shared** feature-engineering step and
 so moved every frozen artefact at once. Read this before accepting any benchmark change.
 
-- **There are four frozen baselines, not one.** `study_power_model_compare_baseline.json` plus
+- **There are four frozen baselines, not one** (scripts and baselines since removed). `study_power_model_compare_baseline.json` plus
   `study_toggle_methods_compare_baseline_{linux,portable,win32}.json`. A method-internal change
   usually touches one; a change to a shared step touches all of them, because every study driver
   inherits it.
@@ -139,7 +139,7 @@ so moved every frozen artefact at once. Read this before accepting any benchmark
 
 ## Suggested order
 
-`C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4 ✅] → W1a → C3 → C4 → R5 →
+`C0 ✅ → [W0 ✅ early] → C1 ✅ → C2 ✅ → [R1 ✅ R2 ✅ R3 ✅ R4 ✅] → W1a → C3 → C4 → [R5 R9] →
 C5 → R6 → C6 → C8 → C9 → W1b → R7 → W2`, with **W3 running continuously from W1a onward**
 rather than at one point in the line.
 
@@ -174,7 +174,9 @@ in C5 the treatment *is* a direction offset, so a systematic absolute error move
 signal being measured rather than adding noise around it. R5's two known gaps bite
 exactly there — Part B supplies the absolute anchor from wake nadirs that passes 1 and 2
 cannot, and Part A norths the small device counts a geometry-driven steering pair can
-come down to.
+come down to. **R9** travels with it: it is the same pass-4 machinery, and a
+shift that jumps by degrees when nothing geometric has changed is a worse problem in C5 than
+anywhere else.
 
 **R6** (abnormal behaviour) lands **after C5** because it needs the signal realism that
 issue's fixtures push toward, and because its detector must not be handed a dataset in
@@ -308,24 +310,38 @@ prepost split.
 **Re-verifies:** the shared northing step (R1) and the reference-validity screen (R3),
 now in-context on a realistic prepost campaign.
 
+### Status (2026-10-28)
+
+**Where C3 stands.** The method is written in [method.md](method.md) and built as steps 1 to 15 at their
+defaults, with the campaign runner and the prepost campaign matrix driving the same code; the decisions
+are recorded in method.md under "Decided so far" and in CF30 to CF34 (the earlier plan of 2026-10-07 is in
+the git history). Against the original "done when": the campaign is declared and run whole-farm;
+per-turbine and farm estimates track truth on the matrix's validation domain (run 9 at 55386ca, 4390
+cells, with the training-period swap: targets i to iv pass except season, which the matrix confounds with
+campaign; test sigma coverage 0.76, reference sigma coverage 0.44 fails); the report shows the periods,
+the references and how each was used. Still open before C3 closes: the reference sigma, the step 15 bins
+near cut-in and an accepted `big` baseline. R1 and R3 are re-verified in context by the matrix's northing
+step and reference screen on every cell.
+
 ---
 
-## C4 — TuneUp (controller), toggle, multi-turbine
+## C4 — TuneUp (controller), prepost, multi-turbine
 
 **Real counterpart:** `scripts/uplift_analysis_2025/tune_up.py`
 (`HoT_PitchTuneUp2024_{east,north,south}.yaml`) — the farm split into zones, each with
-its own test set and references.
+its own test set and references. The real TuneUp was **prepost**: nine turbines changed together on
+2024-03-14, analysed to the end of August 2024. It runs as the prepost matrix's second real campaign,
+`hot_tuneup` (C3).
 
-**Goal:** a realistic **toggle** campaign with ~9 upgraded turbines and a
+**Goal:** a realistic **prepost** campaign with ~9 upgraded turbines and a
 TI/stability-shaped effect, exercising multi-turbine toggle handling and the farm uplift
 at scale.
 
 **Scope**
 - `SyntheticCampaign` with a condition-dependent (stability/TI-shaped) Cp change on
-  ~9 turbines, a `ToggleSchedule` (~50-min period, per the real trial), ~10
-  references.
-- Multi-turbine toggle: per-turbine estimates across many upgraded turbines, the
-  campaign-only data split, and the energy-weighted farm uplift across them.
+  ~9 turbines sharing one changeover, ~10 references.
+- Multi-turbine prepost: per-turbine estimates across many upgraded turbines and the
+  energy-weighted farm uplift across them.
 - `toggle_specialist` and the other methods self-configure from the `CampaignSpec`.
 
 **Done when:** the campaign runs whole-farm; per-turbine + farm-uplift estimates track
@@ -552,6 +568,39 @@ benchmarks are re-recorded.
 
 ---
 
+## C10 — Campaign design that accounts for the changed-upwind data loss (done 2026-10-20, run 5)
+
+**Why:** in run 3 of the prepost matrix the largest loss of usable hours in every campaign is
+"changed upwind of reference", 36 to 65 % of the before period even for a lone test turbine with
+no rollout. The record-selection rule counts the test turbine as changed throughout, so a record
+is lost whenever the subject is upwind of any of its own nearest references, and with four
+references around it that is roughly half of all directions. Capping the trial at three test
+turbines (done 2026-10-16) only trims the second-order terms: other test turbines upwind of the
+subject, or of its references. The campaign design utility (`wind_up.campaign_design`, CF16)
+knows nothing of this: it places references by distance and the IEC front-row rule alone.
+
+**Scope:**
+- The design takes an **expected wake change** for the upgrade: large for wake steering, small
+  for a light TuneUp, something in between for a blade enhancement. It converts that into the
+  **maximum distance over which a changed turbine is considered upwind** in the IEC-style
+  equation (20 D, 10 D, 5 D or 0 D), so that an upgrade whose wake barely moves does not lose the
+  sector at all. This is the same quantity the declaration's `wake_unchanged` flag sets to
+  nothing today, made graded and explicit.
+- The design loads **historic ERA5** for the site so it knows the typical wind rose, and weighs
+  each lost sector by how often the wind blows from it.
+- It places test and reference turbines so that **test turbines do not knock out much data by
+  waking references**: their own references and the references of other test turbines. The
+  objective is usable hours per test turbine, not distance alone.
+- The matrix's rollout draws use the same design, so the synthetic campaigns stop paying the
+  cost real campaigns would be designed around.
+
+**Done when:** on run 3's campaigns the usable share of the before period rises materially
+(it is 13 to 40 % today) without the reference count or the reference distance limit changing,
+and the design's report shows, per test turbine, the hours expected to be lost to each
+changed-upwind sector.
+
+---
+
 # Robustness issues (R-series)
 
 Failure modes real SCADA throws at wind-up, synthesized with known ground truth so we
@@ -671,7 +720,7 @@ invariance (injecting sensor drift/steps barely moves `power_model`'s error).
 
 **Status:** ✅ Done (2026-09-07). A method-internal reference-validity screen landed in
 `power_model`, with `ReferenceCpChange` as the generator-side fault and three drivers
-(`screen_calibration`, `reference_fixture`, `screen_roadtest`) behind the numbers — see CF13 in
+(`screen_calibration`, `reference_fixture`, `screen_roadtest`; the first and last since removed) behind the numbers — see CF13 in
 [findings_campaigns.md](findings_campaigns.md). Each candidate reference is estimated as if it
 were a test turbine against the others, and a clear outlier from the pool median is made
 **power-free**: it keeps its direction features and gains a `waking` boolean, so its wake
@@ -732,7 +781,7 @@ channels / gaps.
 there. The heading above is wrong about where this failure mode lives.
 
 **Signal discovery was measured and deliberately not built.** The probe
-(`benchmarking.campaigns.outage_probe`) showed the absent/empty split *is* the fault line —
+(`benchmarking.campaigns.outage_probe`, since removed) showed the absent/empty split *is* the fault line —
 every NaN-shaped outage already returns a number, every absent-column one raises — so
 "discover and adapt" would have converted honest raises into silent estimates, the wrong
 direction. Missing data turned out to be absorbed within a 0.127 pp estimator-noise floor
@@ -809,6 +858,10 @@ where geometry gives too few usable pairs.
 **Gotcha to design around:** a turbine's own wake-affected rows are exactly the rows an uplift
 method wants to treat carefully, so pass 3 must not quietly change which rows downstream
 analysis considers valid. It outputs an offset, nothing else.
+
+**Note:** the shift itself now exists — `north_farm` runs it as pass 4 ([CF20](findings_campaigns.md),
+[how northing works](../northing.md)) — so what is left of Part B is the *absolute accuracy* goal,
+not the machinery. Its repeatability is a separate problem, tracked as [R9](#r9--wake-nadir-northing-refinement-the-pass-4-shift-jumps).
 
 ---
 
@@ -910,6 +963,105 @@ without the answer.
 **Prompted by** a human W3 dry run (2026-09-14): on real Hill of Towie SCADA the test turbine's
 reactive cloud is visibly unlike its neighbours' — roughly -2500 to +1500 kVAr against a tight
 -200 to -600 band — which is the kind of difference the campaign currently plots and then ignores.
+
+---
+
+## R8 — Too much baseline: a very long pre period should not be able to dominate the fit
+
+**Goal:** decide what a campaign should do when an analyst arrives with far more baseline than the
+campaign needs — ten years of pre data against a six-month campaign — and make the answer a
+measured one.
+
+**Why.** The campaign-proximity weighting used to be on by default precisely to stop a stale
+pre-campaign era dominating a short campaign's fit. Measuring what the weighting itself costs
+([CF22](findings_campaigns.md)) showed it is a prepost-only lever that tilts the baseline toward
+the changeover and, on a record that must read 0, moved the reading +0.154 pp, so it was turned off and later removed (007ebbc).
+That closes the bias but leaves the original failure mode unaddressed: nothing currently stops a
+ten-year baseline from swamping the recent data, or from bringing in an era whose turbines,
+controller or surroundings are no longer the ones being measured.
+
+**Scope (light, to be firmed up)**
+- **Fixture:** a placebo whose baseline is several times the campaign length, run at a range of
+  baseline lengths against the same campaign, so "how much pre data is too much" is a curve rather
+  than an opinion.
+- **The shape to try first:** full weight within a year of the changeover, so the pre period holds
+  every season at full weight, then a light decay beyond it. This is deliberately not the current
+  exponential-from-the-changeover shape, which starts decaying immediately.
+- **Also worth testing:** simply truncating the baseline, which an analyst can already do by
+  declaring a shorter analysis period, and which may be the honest answer.
+- **Success:** the estimate is stable as baseline length grows, and whatever rule is adopted is
+  neutral on a placebo whose pre and post periods are equivalent.
+
+---
+
+## R9 — Wake-nadir northing refinement: the pass-4 shift jumps
+
+**Status:** unscheduled; belongs **before C5** beside [R5](#r5--northing-refinement-small-n-devices-and-absolute-accuracy-from-wake-nadirs),
+for the same reason — everywhere else a direction error is a nuisance variable, but in C5 the
+treatment *is* a direction offset.
+
+**Goal:** the wake-nadir shift should move only when the wake geometry it reads has actually
+moved. Today it can jump by degrees in response to a change that should not reach it at all.
+
+**The observation.** In the prepost campaign matrix each campaign is run three times at injected
+upgrade magnitudes of −1, 0 and +1. The SCADA is identical apart from the upgraded turbines' power,
+so a discovered north offset should barely move. Pass 4 reads power — it locates each pair's wake
+nadir from a power ratio — so it does move, and not smoothly. Penmanshiel seed 0, K4, L3, `main`
+arm (degrees):
+
+| turbine | −1 | 0 | +1 |
+|---|---|---|---|
+| **T10** (test turbine) | −1.216 | −1.316 | **+11.069** |
+| T07 (power reference) | 6.848 | 6.259 | 6.220 |
+| T12 (test turbine) | 10.753 | 10.708 | 10.663 |
+
+and Kelmarsh seed 0, K4, L3: T06 reads 4.299 / 2.830 / 2.829.
+
+**Why this reads as instability rather than as the leak.** The leak
+([CF25](findings_campaigns.md) §1) is monotonic in the magnitude — a smooth channel through the
+waking booleans. These are **discrete jumps**: two of the three multipliers agree to a hundredth
+of a degree and the third is 0.6, 1.5 or 12.4 degrees away. That is the signature of a pair being
+accepted on one run and rejected on the other, or of a turbine losing its last resolvable pair and
+falling back to the circular median of its neighbours. `wind_up.wake_nadir` rejects a nadir that is
+unbracketed, not convex, too shallow or too thinly sampled, and combines a turbine's surviving
+pairs by their circular median — so a single pair crossing one of those thresholds moves the whole
+answer in a step.
+
+**Scale, and who it reaches.** Across the 40 discovered offsets of that run, the median move over
+the three multipliers is 0.054°. The large movers are all **test** turbines (median 0.128°, worst
+12.385°), whose own direction is never a model feature, so the headline does not see them directly.
+**Power references** move by at most **0.744°** (Kelmarsh T03), median 0.020°, and those *are* fed
+to the model as `sin`/`cos` under `direction_feature`. So the damage today is small; the mechanism
+is not.
+
+**Other instances.** The same signature appeared in the earlier `1f87f6f` small run (Kelmarsh T05
+discovered at 2.7° against 4.5° across multipliers). [CF21](findings_campaigns.md) is a different
+pass with the same moral — the discovered table turned out to be sensitive to something it should
+have been invariant to, and the fix was to iterate pass 2 to convergence.
+
+**Scope**
+- **A repeatability probe.** Re-run pass 4 on one record perturbed in ways that cannot change the
+  true geometry — scale one turbine's power, drop a month, shift the window — and record how far
+  each turbine's shift moves. A pass whose answer is this sensitive to its input needs a stated
+  stability, the way the changepoint search has a minimum step.
+- **Find which guard is flipping.** The per-pair diagnostics are already written
+  (`wake_nadir_pair_<upstream>_<downstream>.png`); extend them to record, per pair per run, whether
+  the nadir was accepted and which test rejected it.
+- **Make the combine robust rather than brittle.** Candidates: require a pair to clear its
+  thresholds by a margin before it counts; weight pairs by how well bracketed they are instead of
+  taking an unweighted circular median; require a minimum number of surviving pairs before a
+  turbine takes its own shift rather than its neighbours'.
+- **Consider excluding upgraded turbines' power from pass 4** on a campaign that declares them, the
+  same way the power model refuses an upgraded turbine's power as a feature. Pass 4 is the one
+  northing step that reads power, and an upgraded turbine's power is exactly the signal a campaign
+  knows not to trust.
+
+**Done when:** a stated stability for the shift under perturbations that cannot change the
+geometry; the flipping guard identified and the combine changed or justified; and the matrix's
+discovered offsets no longer move with the injected magnitude beyond that stated figure.
+
+**Not in scope:** finding changepoints from nadirs, and the absolute-accuracy goal of R5 Part B.
+This issue is about the existing pass being repeatable, not about making it more ambitious.
 
 ---
 

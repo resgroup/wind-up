@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import csv
 import logging
-import os
 import sys
 import time
 import traceback
@@ -38,6 +37,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from benchmarking import env
 from benchmarking.baselines.study_wake_nadir_golden import (
     greenbyte_inputs,
     hot_inputs,
@@ -64,7 +64,7 @@ MATCH_TOL_DAYS = 14  # a recovered changepoint counts as a published one within 
 
 def output_root() -> Path:
     """Directory the study writes its CSV and log under (``WIND_UP_BENCHMARKING_OUTPUT_DIR`` overrides)."""
-    root = Path(os.getenv("WIND_UP_BENCHMARKING_OUTPUT_DIR", Path.home() / "temp" / "wind-up-benchmarking"))
+    root = env.output_root()
     return root / "northing_degradation"
 
 

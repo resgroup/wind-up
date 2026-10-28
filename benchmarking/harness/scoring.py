@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from benchmarking.harness.campaign import campaign_windows, treated_activity_mask, window_row_mask
-from benchmarking.harness.conditions import condition_bins
+from benchmarking.harness.conditions import ORIGINAL_ROW_CONDITIONS, condition_bins, record_labels
 from benchmarking.harness.method import MethodInput
 from benchmarking.harness.replicates import build_replicates
 from benchmarking.synthetic import HOT_COLUMNS
@@ -196,7 +196,11 @@ def score_output(
         }
     ]
     if output.p50_by_condition is not None:
-        rows.extend(_conditional_rows(output.p50_by_condition, replicate, window, mask, base_fields))
+        rows.extend(
+            _conditional_rows(
+                output.p50_by_condition, replicate, window, mask, base_fields, labeled_rows=output.labeled_rows
+            )
+        )
     _merge_diagnostics(rows, output.uncertainty_diagnostics)
     return rows
 
@@ -300,8 +304,13 @@ def _conditional_rows(
     window: CampaignWindow,  # noqa: ARG001 (kept for symmetry / future use)
     mask: npt.NDArray[np.bool_],
     base_fields: dict[str, object],
+    *,
+    labeled_rows: pd.DataFrame | None = None,
 ) -> list[dict[str, object]]:
     """Join each method per-bin estimate to per-bin truth for every condition present.
+
+    When ``labeled_rows`` carries the condition's :func:`label_column`, the truth bins each test
+    turbine record by that label, so truth and estimate share the method's records and labels.
 
     A ``sigma_uplift`` column on ``by_condition`` is carried through as the row's ``sigma``; a
     method that reports per-bin P50s without per-bin uncertainty simply omits it and reads NaN.
@@ -312,7 +321,12 @@ def _conditional_rows(
     has_sigma = "sigma_uplift" in by_condition.columns
     for condition, est in by_condition.groupby("condition"):
         bins = condition_bins(str(condition), rated_power_kw=rated_power_kw)
-        truth_df = replicate.true_uplift(mask=mask, by=condition, bins=bins).by_condition
+        synthetic = replicate.synthetic_df
+        test_index = synthetic.loc[synthetic[replicate.dataset.columns.turbine] == replicate.test_wtg].index
+        values = record_labels(labeled_rows, condition=str(condition), index=test_index)
+        if values is None and condition not in ORIGINAL_ROW_CONDITIONS:
+            continue
+        truth_df = replicate.true_uplift(mask=mask, by=condition, bins=bins, condition_values=values).by_condition
         if truth_df is None:  # always set when by= is passed; guard for type narrowing
             continue  # pragma: no cover
         truth_series = truth_df.assign(condition_bin=truth_df["condition_bin"].astype(str)).set_index("condition_bin")[

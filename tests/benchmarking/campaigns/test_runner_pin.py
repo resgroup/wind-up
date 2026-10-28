@@ -21,10 +21,11 @@ from .test_declaration import CHANGEOVER, PERIOD, campaign, scada
 EXPECTED_ROWS = 21840
 # The pre and post mean power of an upgraded turbine, and the truth and estimate that follow.
 BASELINE_POWER_KW = 900.0
-UPGRADED_POWER_KW = 944.9809758474812
-TRUE_UPLIFT = 0.04997886205275681
-# ``HalfOfTruthMethod`` reports half of it, so the pin covers estimate and error separately.
+UPGRADED_POWER_KW = 944.8984872341189
+TRUE_UPLIFT = 0.04985110187237596
+# ``HalfOfTruthMethod`` reports half the mean power ratio, so the pin covers estimate and error separately.
 HALF = 0.5
+ESTIMATE = 0.0249436040189549
 EXACT = 1e-12
 
 
@@ -77,16 +78,16 @@ def test_the_scored_numbers_are_unchanged() -> None:
     result, _ = run()
     row = per_turbine_table(result).set_index("test_wtg").loc["T1"]
     assert float(row["truth"]) == pytest.approx(TRUE_UPLIFT, abs=EXACT)
-    assert float(row["estimate"]) == pytest.approx(HALF * TRUE_UPLIFT, abs=EXACT)
-    assert float(row["signed_error"]) == pytest.approx(-HALF * TRUE_UPLIFT, abs=EXACT)
+    assert float(row["estimate"]) == pytest.approx(ESTIMATE, abs=EXACT)
+    assert float(row["signed_error"]) == pytest.approx(ESTIMATE - TRUE_UPLIFT, abs=EXACT)
 
 
 def test_the_farm_numbers_are_unchanged() -> None:
     result, _ = run()
     row = result.farm.set_index("method").loc["half"]
     assert float(row["truth"]) == pytest.approx(TRUE_UPLIFT, abs=EXACT)
-    assert float(row["estimate"]) == pytest.approx(HALF * TRUE_UPLIFT, abs=EXACT)
-    assert float(row["signed_error"]) == pytest.approx(-HALF * TRUE_UPLIFT, abs=EXACT)
+    assert float(row["estimate"]) == pytest.approx(ESTIMATE, abs=EXACT)
+    assert float(row["signed_error"]) == pytest.approx(ESTIMATE - TRUE_UPLIFT, abs=EXACT)
     assert float(result.truth_farm_uplift) == pytest.approx(TRUE_UPLIFT, abs=EXACT)
 
 

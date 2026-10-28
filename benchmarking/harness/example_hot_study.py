@@ -25,12 +25,12 @@ cache directories via the ``main`` arguments or the ``WIND_UP_BENCHMARKING_*`` e
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from benchmarking import env
 from benchmarking.harness import (
     Method,
     MethodInput,
@@ -61,7 +61,7 @@ def default_output_root() -> Path:
     Overridable via the ``WIND_UP_BENCHMARKING_OUTPUT_DIR`` environment variable; defaults to
     ``~/temp/wind-up-benchmarking/harness``.
     """
-    root = Path(os.getenv("WIND_UP_BENCHMARKING_OUTPUT_DIR", Path.home() / "temp" / "wind-up-benchmarking"))
+    root = env.output_root()
     return root / "harness"
 
 

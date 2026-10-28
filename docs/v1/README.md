@@ -5,6 +5,8 @@ v1 is developed on the `v1` branch; feature PRs target `v1` rather than `main`.
 
 ## Contents
 
+- **[method.md](method.md)** — **the method**: its steps, defaults, validation targets, the
+  decisions taken with their evidence, and where it is valid. Read this first.
 - **[goals.md](goals.md)** — the north-star vision and goals for v1 (the "why").
 - **[roadmap.md](roadmap.md)** — workstreams (epics), phasing, and how the work is
   managed (the "what" and "in what order").
@@ -33,8 +35,8 @@ results from shorter campaigns* and *richer conditional information* about how a
 upgrade performs (in wakes vs free-stream, day vs night, by direction/stability).
 The first wave of work is **methodology-first**: build the public evaluation
 harness, wire the v0 method in as the baseline to beat, and develop the first new
-candidate method — judged on **P50 accuracy and precision only**. An uncertainty
-(P95) model is deferred until a winning P50 method is found.
+candidate method — judged on **P50 accuracy and precision only**. The method now ships a one-sigma
+uncertainty on every headline (method step 14); a P95 model is still to come.
 
 ## How this work is managed
 

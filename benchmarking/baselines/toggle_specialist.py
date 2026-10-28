@@ -89,7 +89,14 @@ from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import condition_bins, energy_ratio_by_bin, validate_conditions
 from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.toggle import ToggleRowSets, is_toggle, resolve_toggle, toggle_upgrade_start
+from benchmarking.harness.toggle import (
+    ToggleRowSets,
+    gap_to_other_segment,
+    is_toggle,
+    pair_within,
+    resolve_toggle,
+    toggle_upgrade_start,
+)
 from benchmarking.synthetic import ToggleSchedule
 
 if TYPE_CHECKING:
@@ -192,47 +199,6 @@ def permute_labels_within_blocks(
         up_p[rows] = upgraded[order]
         base_p[rows] = baseline[order]
     return up_p, base_p
-
-
-class PairedRows(NamedTuple):
-    """The rows of each segment that have a row of the other segment within the pairing gap."""
-
-    baseline: npt.NDArray[np.bool_]
-    upgraded: npt.NDArray[np.bool_]
-
-
-def pair_within(
-    index: pd.DatetimeIndex,
-    *,
-    baseline: npt.NDArray[np.bool_],
-    upgraded: npt.NDArray[np.bool_],
-    max_gap: pd.Timedelta,
-) -> PairedRows:
-    """Keep each flagged row only if the other segment has a flagged row within ``max_gap``, inclusive."""
-    gap = gap_to_other_segment(index, baseline=baseline, upgraded=upgraded)
-    within = gap <= max_gap.total_seconds()
-    return PairedRows(baseline=baseline & within, upgraded=upgraded & within)
-
-
-def gap_to_other_segment(
-    index: pd.DatetimeIndex, *, baseline: npt.NDArray[np.bool_], upgraded: npt.NDArray[np.bool_]
-) -> npt.NDArray[np.float64]:
-    """Seconds from each flagged row to the nearest flagged row of the other segment; NaN if unflagged."""
-    times = index.as_unit("ns").asi8
-    gap = np.full(len(index), np.nan)
-    gap[baseline] = _nearest_gap_s(times[baseline], others=times[upgraded])
-    gap[upgraded] = _nearest_gap_s(times[upgraded], others=times[baseline])
-    return gap
-
-
-def _nearest_gap_s(times: npt.NDArray[np.int64], *, others: npt.NDArray[np.int64]) -> npt.NDArray[np.float64]:
-    if not len(others):
-        return np.full(len(times), np.inf)
-    others = np.sort(others)
-    position = np.searchsorted(others, times)
-    after = others[np.minimum(position, len(others) - 1)]
-    before = others[np.maximum(position - 1, 0)]
-    return np.minimum(np.abs(after - times), np.abs(times - before)) / 1e9
 
 
 def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
@@ -1108,13 +1074,13 @@ class ToggleSpecialistMethod:
             )
             if est.per_bin is not None:
                 _save_per_bin_plot(
-                    run_dir / "plots" / stages.CONDITIONAL_UPLIFT / f"{mi.test_wtg}_per_bin_uplift.png",
+                    run_dir / "plots" / stages.UPLIFT_DISTRIBUTIONS / f"{mi.test_wtg}_per_bin_uplift.png",
                     per_bin=est.per_bin,
                     test=mi.test_wtg,
                     active_power_col=self.columns.active_power,
                 )
             _save_pairing_gap_plot(
-                run_dir / "plots" / stages.FILTER / f"{mi.test_wtg}_pairing_gap.png",
+                run_dir / "plots" / stages.VALID_RECORDS / f"{mi.test_wtg}_pairing_gap.png",
                 index=wide.index,
                 selection=est.selection,
                 rows=rows,
@@ -1528,7 +1494,7 @@ def _save_plots(
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    _save(fig, plots_dir / stages.UPLIFT_INPUTS / f"{test}_scatter.png")
+    _save(fig, plots_dir / stages.RELATE_REFERENCES / f"{test}_scatter.png")
 
     # 2) daily sum-based test/ref ratio, one series per segment, with each segment's scalar rho overlaid.
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -1546,7 +1512,7 @@ def _save_plots(
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    _save(fig, plots_dir / stages.UPLIFT_RESULTS / f"{test}_ratio_timeseries.png")
+    _save(fig, plots_dir / stages.UPLIFT / f"{test}_ratio_timeseries.png")
 
     # 3) daily used-data coverage as a fraction of the day's expected timestamps, one series per
     # segment, so each segment is seen to receive its share (under toggle, ~50% each post-upgrade).
@@ -1565,7 +1531,7 @@ def _save_plots(
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    _save(fig, plots_dir / stages.FILTER / f"{test}_coverage_timeseries.png")
+    _save(fig, plots_dir / stages.VALID_RECORDS / f"{test}_coverage_timeseries.png")
 
 
 def _save_pairing_gap_plot(

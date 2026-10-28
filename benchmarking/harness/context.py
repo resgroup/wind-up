@@ -8,17 +8,19 @@ than declaration fields.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
 
+from benchmarking.harness.record_selection import ChangedInterval
 from benchmarking.harness.toggle import is_toggle
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from benchmarking.harness.record_selection import ChangedTimes
     from benchmarking.synthetic import ToggleSchedule
 
 
@@ -41,12 +43,20 @@ class CampaignContext:
     :param valid_for_uplift: boolean, timestamps x the turbines this context screens (the test
         turbine and its candidate references, plus any other turbine the campaign declares, so a
         method co-analysing several is covered too) -- may this turbine's data at this timestamp
-        contribute to the uplift estimate? A ``False``
-        reference cell drops that reference for that row only, leaving the row usable; a
-        ``False`` test-turbine cell drops the row outright. Deliberately named for its purpose:
+        contribute to the uplift estimate? A ``False`` cell of the test turbine or of a power
+        reference drops the row; a ``False`` wake-contributor cell drops only that turbine's
+        record. Deliberately named for its purpose:
         a curtailed record is invalid for uplift while staying valid for a northing analysis.
         Its index **covers** the frame's timestamps rather than matching them, so narrowing the
         frame does not invalidate it; narrow with :meth:`valid_over`.
+    :param reserve_references: wake contributors that may replace a candidate reference a method
+        rules out, nearest first
+    :param changed_turbines: each changed turbine and the times it counts as changed, the test
+        turbine among them (see :func:`~benchmarking.harness.record_selection.changed_times`). A
+        record with a turbine upwind of the subject or a power reference while it counts as changed
+        is not used.
+    :param works: the test turbine's works window ``[start, end)``, between the before and after
+        periods. A measurement with another turbine as the subject uses no record inside it either.
     """
 
     test_wtg: str
@@ -56,15 +66,22 @@ class CampaignContext:
     wake_contributors: list[str]
     valid_for_uplift: pd.DataFrame
     coords: dict[str, tuple[float, float]] | None = None
+    reserve_references: list[str] = field(default_factory=list)
+    changed_turbines: ChangedTimes = field(default_factory=dict)
+    works: tuple[pd.Timestamp, pd.Timestamp] | None = None
 
     def __post_init__(self) -> None:
-        """Raise when a wake contributor is also the test turbine or a candidate reference."""
+        """Raise when a turbine holds two roles, or a reserve is not a wake contributor."""
         clash = sorted({self.test_wtg, *self.candidate_references} & set(self.wake_contributors))
         if clash:
             msg = (
                 f"wake contributors {clash} are also the test turbine {self.test_wtg!r} or a candidate reference "
                 f"{sorted(self.candidate_references)}; a turbine holds one role"
             )
+            raise ValueError(msg)
+        stray = sorted(set(self.reserve_references) - set(self.wake_contributors))
+        if stray:
+            msg = f"reserve references {stray} are not wake contributors; a reserve waits among them"
             raise ValueError(msg)
 
     @property
@@ -150,4 +167,5 @@ class CampaignContext:
             candidate_references=references,
             wake_contributors=[],
             valid_for_uplift=pd.DataFrame(data=True, index=index, columns=sorted({test_wtg, *references})),
+            changed_turbines={test_wtg: (ChangedInterval(None, None),)},
         )

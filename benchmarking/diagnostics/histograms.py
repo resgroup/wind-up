@@ -81,11 +81,11 @@ def _conditions(ctx: DiagnosticContext) -> list[tuple[str, np.ndarray, np.ndarra
 
 
 def _robust_bins(values: np.ndarray, *, bins: int = 30) -> np.ndarray | int:
-    """Bin edges over the 1st-99th percentile of the finite values, so outliers don't dominate."""
+    """Bin edges over every finite value."""
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return bins
-    lo, hi = np.percentile(finite, [1, 99])
+    lo, hi = float(finite.min()), float(finite.max())
     if hi <= lo:
         return bins
     return np.linspace(lo, hi, bins + 1)
@@ -118,7 +118,7 @@ def plot_condition_histograms(ctx: DiagnosticContext) -> Path:
     for ax in flat[len(conditions) :]:
         ax.set_visible(False)
     fig.suptitle(f"{ctx.test_wtg}: condition distributions on the USED (post-filter) data, baseline vs upgraded")
-    path = ctx.stage_dir(stages.UPLIFT_INPUTS) / "condition_histograms.png"
+    path = ctx.stage_dir(stages.VALID_RECORDS) / "condition_histograms.png"
     save_fig(fig, path)
     return path
 

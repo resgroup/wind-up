@@ -463,7 +463,7 @@ def _save_plots(
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    _save(fig, plots_dir / stages.UPLIFT_INPUTS / f"{test}_scatter.png")
+    _save(fig, plots_dir / stages.RELATE_REFERENCES / f"{test}_scatter.png")
 
     # 2) daily sum-based test/ref ratio, one series per segment, with each segment's scalar rho overlaid.
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -481,7 +481,7 @@ def _save_plots(
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    _save(fig, plots_dir / stages.UPLIFT_RESULTS / f"{test}_ratio_timeseries.png")
+    _save(fig, plots_dir / stages.UPLIFT / f"{test}_ratio_timeseries.png")
 
     # 3) daily used-data coverage as a fraction of the day's expected timestamps, one series per
     # segment, so each segment is seen to receive its share (under toggle, ~50% each post-upgrade).
@@ -500,7 +500,7 @@ def _save_plots(
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    _save(fig, plots_dir / stages.FILTER / f"{test}_coverage_timeseries.png")
+    _save(fig, plots_dir / stages.VALID_RECORDS / f"{test}_coverage_timeseries.png")
 
 
 def _save(fig: plt.Figure, path: Path) -> None:

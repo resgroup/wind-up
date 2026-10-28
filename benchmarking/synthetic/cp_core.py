@@ -102,28 +102,38 @@ def power_from_cp_change(
     *,
     cp_ratio: npt.ArrayLike,
     rated_power_kw: float,
+    power_limit_kw: npt.ArrayLike | None = None,
 ) -> npt.NDArray[np.float64]:
     """Apply a Cp ratio to baseline power, weighted by the region-2 fraction.
 
     Only the region-2 fraction of the period responds to the Cp change; the remainder
-    (near/at rated) is unchanged, and the result is clipped so it never exceeds the
-    larger of rated power and the original power. A Cp change is applied only to records
-    that are *producing and below pure rated*: non-producing records (zero or negative
-    power: idling, self-consumption, curtailment) and virtually-rated records (at or above
-    ``NEAR_RATED_POWER_FRACTION`` of rated) are left untouched.
+    (near/at the power limit) is unchanged, and the result is clipped so it never exceeds the
+    larger of the limit and the original power. A Cp change is applied only to records
+    that are *producing and below the pure limit*: non-producing records (zero or negative
+    power: idling, self-consumption, curtailment) and records at or above
+    ``NEAR_RATED_POWER_FRACTION`` of the limit are left untouched.
+
+    The limit is rated power, or each record's ``power_limit_kw`` where that is finite and below
+    rated. The region-2 fraction is then read at the power the record would have under a limit of
+    rated, its baseline plus the limit's distance below rated.
 
     :param baseline_power_kw: original mean active power (scalar or array)
     :param cp_ratio: ratio of new Cp to baseline Cp (e.g. 1.02 for +2%)
     :param rated_power_kw: rated power used for the upper clip
+    :param power_limit_kw: each record's power limit, such as its setpoint; NaN where unknown
     :return: modified mean active power
     """
     baseline = np.asarray(baseline_power_kw, dtype=float)
     ratio = np.asarray(cp_ratio, dtype=float)
-    fraction = region2_fraction(baseline)
+    limit = np.full_like(baseline, rated_power_kw)
+    if power_limit_kw is not None:
+        given = np.broadcast_to(np.asarray(power_limit_kw, dtype=float), baseline.shape)
+        limit = np.where(np.isfinite(given), np.minimum(given, rated_power_kw), rated_power_kw)
+    as_if_rated = baseline + (rated_power_kw - limit)
+    fraction = region2_fraction(as_if_rated)
     new_power = baseline * (1.0 + fraction * (ratio - 1.0))
-    upper_clip = np.maximum(baseline, rated_power_kw)
-    clipped = np.minimum(new_power, upper_clip)
-    modifiable = (baseline > 0.0) & (baseline < rated_power_kw * NEAR_RATED_POWER_FRACTION)
+    clipped = np.minimum(new_power, np.maximum(baseline, limit))
+    modifiable = (baseline > 0.0) & (as_if_rated < rated_power_kw * NEAR_RATED_POWER_FRACTION)
     return np.where(modifiable, clipped, baseline)
 
 
