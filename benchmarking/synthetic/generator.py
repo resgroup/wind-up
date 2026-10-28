@@ -20,7 +20,7 @@ from benchmarking.synthetic.cp_core import HOT_CP_MODEL, CpCore, CpParams
 from benchmarking.synthetic.faults import apply_faults
 from benchmarking.synthetic.ground_truth import UpliftResult, true_farm_uplift, true_net_uplift, true_uplift
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
-from benchmarking.synthetic.upgrades import apply_upgrades
+from benchmarking.synthetic.upgrades import apply_upgrades, power_limit
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -245,7 +245,14 @@ def generate_dataset(
         if not mask.any():
             continue
         cp = CpCore(rated_power_kw=rated_power_kw, cp_params=cp_params)
-        modified = apply_upgrades(synthetic_df.loc[mask], upgrades, cp=cp, columns=columns)
+        limits = power_limit(synthetic_df.loc[is_test], columns=columns)
+        modified = apply_upgrades(
+            synthetic_df.loc[mask],
+            upgrades,
+            cp=cp,
+            columns=columns,
+            power_limit_kw=None if limits is None else limits[mask[is_test]],
+        )
         for col in modified_columns:
             synthetic_df.loc[mask, col] = modified[col].to_numpy()
 

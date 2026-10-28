@@ -26,7 +26,6 @@ Outputs land under ``WIND_UP_BENCHMARKING_OUTPUT_DIR``/``reference_fixture``/``<
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -37,6 +36,7 @@ mpl.use("Agg")  # headless: the report writes plots without a display
 
 import pandas as pd
 
+from benchmarking import env
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.placebo import (
@@ -307,7 +307,7 @@ def run_fixture(
 
 def default_output_root() -> Path:
     """Return the directory this driver writes under (``WIND_UP_BENCHMARKING_OUTPUT_DIR`` overrides)."""
-    root = Path(os.getenv("WIND_UP_BENCHMARKING_OUTPUT_DIR", Path.home() / "temp" / "wind-up-benchmarking"))
+    root = env.output_root()
     return root / "reference_fixture"
 
 

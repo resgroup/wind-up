@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
+from benchmarking import env
 from benchmarking.baselines import hot_context
 from benchmarking.baselines.hot_context import ASSET_YAML, NORTHING_YAML, HotV0Context, build_hot_v0_context
 from wind_up_v0.yaml_loader import Loader, construct_include
@@ -59,6 +60,7 @@ class TestGetHotReanalysisDatasets:
             "lon": hot_context.HOT_LON,
             "start_date": hot_context.HOT_ERA5_START,
             "end_date": hot_context.HOT_ERA5_END,
+            "cache_dir": env.cache_dir(),
         }
 
 

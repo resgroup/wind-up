@@ -18,7 +18,6 @@ Outputs land under ``WIND_UP_BENCHMARKING_OUTPUT_DIR``/``northing_natural_probe`
 from __future__ import annotations
 
 import logging
-import os
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -29,6 +28,7 @@ mpl.use("Agg")
 
 import pandas as pd
 
+from benchmarking import env
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.campaigns.declaration import SyntheticCampaign, layout_from_coords
 from benchmarking.campaigns.methods import carried_forward_methods
@@ -60,7 +60,7 @@ CAMPAIGN_MONTHS = 12
 
 def default_output_root() -> Path:
     """Where probe runs are written."""
-    root = Path(os.getenv("WIND_UP_BENCHMARKING_OUTPUT_DIR", Path.home() / "temp" / "wind-up-benchmarking"))
+    root = env.output_root()
     return root / "northing_natural_probe"
 
 

@@ -16,13 +16,13 @@ next to the real ``wind_up`` package.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
 import yaml
 
+from benchmarking import env
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
 from benchmarking.campaigns.declaration import layout_coords, layout_rotor_diameters
@@ -33,6 +33,7 @@ from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label, infer_timebase
+from benchmarking.env import output_root
 from benchmarking.harness.reanalysis import normalise_timestamps
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.analysis_warnings import summary
@@ -70,7 +71,6 @@ _RESOLVED_HEADER = """\
 LOG_FILENAME = "run.log"
 _LOG_HANDLER_NAME = "campaign_run_log"
 
-OUTPUT_DIR_ENV = "WIND_UP_BENCHMARKING_OUTPUT_DIR"
 
 # The run's output is laid out by the parts of docs/v1/method.md: data preparation for every turbine,
 # the campaign's choices and headline per test turbine, one folder per measured turbine, and the
@@ -162,11 +162,6 @@ def wind_up_method(
         run_subdir=run_subdir,
         reference_plots_dir=reference_plots_dir,
     )
-
-
-def output_root() -> Path:
-    """Return the directory runs write under: ``WIND_UP_BENCHMARKING_OUTPUT_DIR``, or a default."""
-    return Path(os.getenv(OUTPUT_DIR_ENV, Path.home() / "temp" / "wind-up-benchmarking"))
 
 
 def default_out_dir(name: str) -> Path:
@@ -331,5 +326,10 @@ def _fetch_era5(declaration: Declaration, *, index: pd.DatetimeIndex) -> pd.Data
         declaration.cell_selection,
     )
     return get_era5_hourly_df(
-        lat=lat, lon=lon, start_date=start_date, end_date=end_date, cell_selection=declaration.cell_selection
+        lat=lat,
+        lon=lon,
+        start_date=start_date,
+        end_date=end_date,
+        cell_selection=declaration.cell_selection,
+        cache_dir=env.cache_dir(),
     )

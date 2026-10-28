@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,6 +38,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import TwoSlopeNorm
 
+from benchmarking import env
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.campaigns.loader import operating_state_config
 from benchmarking.campaigns.real import label_hot_operating_states
@@ -72,13 +72,13 @@ HOT_TAGS = {
 
 def default_output_root() -> Path:
     """Return the directory this driver writes plots under (``WIND_UP_BENCHMARKING_OUTPUT_DIR`` overrides)."""
-    root = Path(os.getenv("WIND_UP_BENCHMARKING_OUTPUT_DIR", Path.home() / "temp" / "wind-up-benchmarking"))
+    root = env.output_root()
     return root / "wake_nadir_golden"
 
 
 def _era5_reference(lat: float, lon: float, *, index: pd.DatetimeIndex, start: str, end: str) -> np.ndarray:
     """Fetch ERA5 for a site and carry its hourly wind direction onto ``index``."""
-    era5_df = get_era5_hourly_df(lat=lat, lon=lon, start_date=start, end_date=end)
+    era5_df = get_era5_hourly_df(lat=lat, lon=lon, start_date=start, end_date=end, cache_dir=env.cache_dir())
     return era5_direction(era5_df, index).to_numpy(dtype=float)
 
 

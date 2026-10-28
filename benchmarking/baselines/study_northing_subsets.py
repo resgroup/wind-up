@@ -22,15 +22,14 @@ the Hill of Towie SCADA downloaded. Later runs reuse the cache. Outputs land und
 from __future__ import annotations
 
 import logging
-import os
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import yaml
 
+from benchmarking import env
 from benchmarking.baselines.hot_context import NORTHING_YAML, build_hot_v0_context
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
@@ -39,6 +38,7 @@ from wind_up.northing import DEFAULT_NORTHING, north_farm, yaw_usable
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ REFERENCE_CASE = "all__full_2016_2024"
 
 def default_output_root() -> Path:
     """Return the directory this driver writes under (``WIND_UP_BENCHMARKING_OUTPUT_DIR`` overrides)."""
-    root = Path(os.getenv("WIND_UP_BENCHMARKING_OUTPUT_DIR", Path.home() / "temp" / "wind-up-benchmarking"))
+    root = env.output_root()
     return root / "northing_subsets"
 
 

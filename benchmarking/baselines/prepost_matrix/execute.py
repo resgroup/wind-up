@@ -17,6 +17,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import yaml
 
+from benchmarking import env
 from benchmarking.baselines.power_model.method import is_reading_column
 from benchmarking.baselines.prepost_matrix.cells import (
     REAL_SITES,
@@ -174,12 +175,14 @@ def _load_site_scada(site_key: str, site: RolloutSite) -> pd.DataFrame:
 def _site_reanalysis(site: RolloutSite) -> pd.DataFrame:
     lat, lon = centroid(dict(site.coords))
     start, end = era5_window(site.data_start, site.data_end)
-    return get_era5_hourly_df(lat=lat, lon=lon, start_date=start, end_date=end)
+    return get_era5_hourly_df(lat=lat, lon=lon, start_date=start, end_date=end, cache_dir=env.cache_dir())
 
 
 def _real_reanalysis(campaign: RealCampaign, *, site_centroid: tuple[float, float]) -> pd.DataFrame:
     start, end = era5_window(campaign.start, campaign.end)
-    return get_era5_hourly_df(lat=site_centroid[0], lon=site_centroid[1], start_date=start, end_date=end)
+    return get_era5_hourly_df(
+        lat=site_centroid[0], lon=site_centroid[1], start_date=start, end_date=end, cache_dir=env.cache_dir()
+    )
 
 
 def _read_scada(path: Path, *, start: pd.Timestamp | None = None, end: pd.Timestamp) -> pd.DataFrame:

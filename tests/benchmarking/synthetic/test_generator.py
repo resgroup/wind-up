@@ -254,3 +254,22 @@ def test_a_changeover_map_is_prepost_only() -> None:
             mode="toggle",
             upgrade_timing={"T01": pd.Timestamp("2020-01-01 06:00", tz="UTC")},
         )
+
+
+def test_the_first_treated_record_takes_its_start_setpoint_from_the_record_before() -> None:
+    wf_df = _wf_df(power=1700.0)
+    changeover = wf_df.index.unique()[144]
+    free, dropped = (
+        generate_dataset(
+            scada_df=wf_df.assign(**{HOT_COLUMNS.power_setpoint: np.where(wf_df.index >= changeover, drop, 2300.0)}),
+            test_wtgs=["T01"],
+            upgrades=[ConstantCpChange(delta=0.10)],
+            mode="prepost",
+            upgrade_timing=changeover,
+        ).synthetic_df
+        for drop in (2300.0, 1993.0)
+    )
+    first = (free[HOT_COLUMNS.turbine] == "T01") & (free.index == changeover)
+    second = (free[HOT_COLUMNS.turbine] == "T01") & (free.index == changeover + pd.Timedelta(minutes=10))
+    assert dropped.loc[first, HOT_COLUMNS.active_power].item() == free.loc[first, HOT_COLUMNS.active_power].item()
+    assert dropped.loc[second, HOT_COLUMNS.active_power].item() < free.loc[second, HOT_COLUMNS.active_power].item()

@@ -84,6 +84,7 @@ dev = [
     'requests-cache',
     'retry-requests',
     'lightgbm',
+    'pvlib',
     'scikit-learn',
     "pytest-xdist>=3.8.0",
     "pytest-cov>=7.1.0",

@@ -66,7 +66,6 @@ from benchmarking.baselines.prepost_matrix.study import (
     study_settings,
 )
 from benchmarking.baselines.prepost_matrix.validation import write_report
-from benchmarking.env import load_env
 
 MAX_WORKERS = 10
 
@@ -135,7 +134,6 @@ def main(argv: list[str] | None = None) -> None:
         workers = size.workers if args.workers is None else args.workers
         print(plan_study(size.settings, workers=workers, measured=args.measured).describe())  # noqa: T201
         return
-    load_env()
     if args.command == "download":
         download_sources(matrix_cells(SIZES[args.size].settings))
     elif args.command == "run":

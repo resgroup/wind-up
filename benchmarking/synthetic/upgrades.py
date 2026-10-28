@@ -603,7 +603,12 @@ def power_limit(rows: pd.DataFrame, *, columns: ColumnSchema) -> npt.NDArray[np.
 
 
 def apply_upgrades(
-    rows: pd.DataFrame, upgrades: list, *, cp: CpCore, columns: ColumnSchema = HOT_COLUMNS
+    rows: pd.DataFrame,
+    upgrades: list,
+    *,
+    cp: CpCore,
+    columns: ColumnSchema = HOT_COLUMNS,
+    power_limit_kw: npt.NDArray[np.float64] | None = None,
 ) -> pd.DataFrame:
     """Resolve and apply a list of upgrades to one test turbine's treated rows.
 
@@ -617,6 +622,8 @@ def apply_upgrades(
     :param upgrades: upgrade callables to resolve
     :param cp: the turbine's Cp core (rated power and Cp parameters)
     :param columns: the source-native column schema ``rows`` is keyed by
+    :param power_limit_kw: each row's power limit, from :func:`power_limit` on the turbine's whole record;
+        computed from ``rows`` alone when not given
     :return: a new frame with modified power, rpm and wind-speed columns
     """
     out = rows.copy()
@@ -641,7 +648,7 @@ def apply_upgrades(
         baseline_power,
         cp_ratio=cp_ratio,
         rated_power_kw=cp.rated_power_kw,
-        power_limit_kw=power_limit(rows, columns=columns),
+        power_limit_kw=power_limit_kw if power_limit_kw is not None else power_limit(rows, columns=columns),
     )
     if new_rated_power_kw is not None:
         new_power = apply_rated_change(

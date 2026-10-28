@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from benchmarking import env
 from benchmarking.campaigns.declaration import SyntheticCampaign, Window, layout_from_coords
 from benchmarking.campaigns.loader import centroid, era5_window
 from benchmarking.harness.wind_rose import era5_rose
@@ -173,7 +174,7 @@ def site_rose(site: RolloutSite) -> Rose:
     """
     lat, lon = centroid(dict(site.coords))
     start, end = era5_window(site.data_start, site.data_end)
-    era5 = get_era5_hourly_df(lat=lat, lon=lon, start_date=start, end_date=end)
+    era5 = get_era5_hourly_df(lat=lat, lon=lon, start_date=start, end_date=end, cache_dir=env.cache_dir())
     return era5_rose(era5, start=site.data_start, end=site.data_end)
 
 

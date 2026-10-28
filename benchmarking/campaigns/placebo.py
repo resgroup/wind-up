@@ -18,7 +18,6 @@ first run downloads and caches the Hill of Towie SCADA (Zenodo) and ERA5 (Open-M
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -29,6 +28,7 @@ mpl.use("Agg")  # headless: the report writes plots without a display
 import numpy as np
 import pandas as pd
 
+from benchmarking import env
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.campaigns.declaration import SyntheticCampaign, layout_from_coords
 from benchmarking.campaigns.methods import carried_forward_methods
@@ -95,7 +95,7 @@ def placebo_analysis_period(
 
 def default_output_root() -> Path:
     """Return the directory this driver writes under (``WIND_UP_BENCHMARKING_OUTPUT_DIR`` overrides)."""
-    root = Path(os.getenv("WIND_UP_BENCHMARKING_OUTPUT_DIR", Path.home() / "temp" / "wind-up-benchmarking"))
+    root = env.output_root()
     return root / "placebo"
 
 
