@@ -20,7 +20,9 @@ from benchmarking.diagnostics.coverage import (
 )
 from benchmarking.diagnostics.curves import (
     plot_curves_by_upgrade,
+    plot_ops_curves,
     plot_ops_curves_excluded,
+    plot_ops_curves_kept,
     plot_power_factor,
     plot_reactive_vs_active,
 )
@@ -47,6 +49,8 @@ _PLOTS: tuple[tuple[str, Callable[[DiagnosticContext], Path | list[Path] | None]
     (stages.VALID_RECORDS, plot_excluded_fraction),
     (stages.VALID_RECORDS, plot_condition_histograms),
     (stages.VALID_RECORDS, plot_run_uplift_validity),
+    (stages.VALID_RECORDS, plot_ops_curves),
+    (stages.VALID_RECORDS, plot_ops_curves_kept),
     (stages.VALID_RECORDS, plot_ops_curves_excluded),
     (stages.VALID_RECORDS, plot_curves_by_upgrade),
     (stages.CHANGES, plot_reactive_vs_active),
