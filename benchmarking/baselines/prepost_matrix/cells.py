@@ -199,33 +199,33 @@ SIZES: dict[str, StudySize] = {
     ),
 }
 
-# Median wall seconds of one cell per (site, K), measured on the HPC at 3742175 over 12 to 24 months of
-# data before the trial. Post length matters less than the pre-period, which dominates the data; the
-# exclusion arms run at K4 and cost about what main K4 does.
+# Mean wall seconds of one cell per (site, K), measured on the HPC at 55386ca (which also fitted the
+# reverse direction) over 3 to 24 months of data before the trial; K6 at 3742175. The exclusion arms run
+# at K4 and cost about what main K4 does.
 CELL_COST_S: dict[tuple[str, int], float] = {
-    ("hot", 3): 180.0,
-    ("hot", 4): 187.0,
+    ("hot", 3): 202.0,
+    ("hot", 4): 235.0,
     ("hot", 6): 394.0,
-    ("pen", 3): 108.0,
-    ("pen", 4): 102.0,
+    ("pen", 3): 113.0,
+    ("pen", 4): 151.0,
     ("pen", 6): 136.0,
-    ("kel", 3): 46.0,
-    ("kel", 4): 59.0,
+    ("kel", 3): 66.0,
+    ("kel", 4): 96.0,
     ("kel", 6): 64.0,
-    ("hot_t13", 3): 219.0,
-    ("hot_t13", 4): 242.0,
+    ("hot_t13", 3): 154.0,
+    ("hot_t13", 4): 174.0,
     ("hot_t13", 6): 266.0,
-    ("hot_tuneup", 3): 361.0,
-    ("hot_tuneup", 4): 414.0,
+    ("hot_tuneup", 3): 639.0,
+    ("hot_tuneup", 4): 765.0,
     ("hot_tuneup", 6): 525.0,
 }
 # The largest peak resident memory of one cell per site, in MB, measured alongside CELL_COST_S.
 PEAK_RSS_MB: dict[str, float] = {
-    "hot": 7800.0,
-    "pen": 4800.0,
-    "kel": 3600.0,
-    "hot_t13": 8600.0,
-    "hot_tuneup": 5600.0,
+    "hot": 9100.0,
+    "pen": 5500.0,
+    "kel": 4200.0,
+    "hot_t13": 7500.0,
+    "hot_tuneup": 5300.0,
 }
 
 

@@ -1,7 +1,7 @@
 """The prepost campaign matrix: shipped ``wind-up`` over the real HoT campaigns and many synthetic ones.
 
 Each cell is one full ``wind-up`` run on one (campaign, multiplier, K, pre length, post length). A study is run at
-a size: ``small``, a smoke test of every arm for a laptop, ``big``, sized to about 14 h on 10
+a size: ``small``, a smoke test of every arm for a laptop, ``big``, sized to about 18 h on 10
 workers of the HPC, or ``season``, the big matrix's in-domain campaigns in all four seasons. It is one
 resumable invocation, meant for tmux on a shared box::
 
