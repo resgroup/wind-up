@@ -32,6 +32,7 @@ from benchmarking.baselines.power_model.method import (
     _combine_uplift,
     _implied_shrinkage,
     _kept_shape_deviations,
+    _reading,
     _reference_input,
     combined_sigma,
     headline_detail,
@@ -2647,3 +2648,20 @@ class TestTrainingPeriod:
         self._method(screen_cache=cache, training_period="before").estimate(mi)
         self._method(screen_cache=cache, training_period="after").estimate(mi)
         assert len(cache) == 2
+
+
+def test_a_zero_sigma_is_read_as_zero() -> None:
+    assert _reading(MethodOutput(p50_overall=0.01, sigma_overall=0.0))["sigma"] == 0.0
+
+
+def test_the_run_config_records_the_headline_and_shape_settings() -> None:
+    params = _fundamentals_method()._config_params()  # noqa: SLF001
+    assert {
+        "headline_estimator",
+        "training_period",
+        "holdout_max_blocks",
+        "systematic_correlation",
+        "conditions",
+        "target_cp",
+        "shape_min_hours",
+    } <= set(params)

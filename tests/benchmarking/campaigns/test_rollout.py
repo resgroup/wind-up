@@ -354,3 +354,17 @@ def test_a_greenbyte_site_starts_at_the_farms_data_start(tmp_path: Path) -> None
     site = greenbyte_site(PENMANSHIEL, data_dir=tmp_path)
     assert site.data_start == PENMANSHIEL.data_start
     assert site.data_end == pd.Timestamp("2022-01-01", tz="UTC")
+
+
+def test_the_campaign_lists_the_sites_excluded_turbines() -> None:
+    site = hot_site()
+    campaign = rollout_campaign(draw_rollout(site, seed=0, full_rollout=False), multiplier=1.0, post_months=6)
+    assert campaign.excluded_turbines == sorted(site.excluded)
+    assert not set(campaign.excluded_turbines) & set(campaign.candidate_references)
+
+
+def test_a_works_row_with_a_blank_date_is_refused_by_name(tmp_path: Path) -> None:
+    path = tmp_path / "works.csv"
+    path.write_text("Turbine,First date of works,Last date of works\nT01,2019-03-01,\n")
+    with pytest.raises(ValueError, match="T01"):
+        read_works(path)

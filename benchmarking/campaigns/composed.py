@@ -202,7 +202,7 @@ def run_declaration(
     out_dir: Path | None = None,
     era5_hourly_df: pd.DataFrame | None = None,
     plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
-    input_plots_dir: Path | None = None,
+    data_preparation_dir: Path | None = None,
     data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
     reference_plots: bool = False,
 ) -> CampaignReport:
@@ -216,8 +216,8 @@ def run_declaration(
     :param data_screen: how each plan's power references are screened on their data; ``None`` skips it
     :param reference_plots: also write the plots of each reference measurement, in
         ``C_turbine_measurement/<reference>_reference_for_<test turbine>/``
-    :param input_plots_dir: where the plots of every turbine and every record go (steps 1 and 2, and
-        the northing and waking validity), in a folder per step; defaults to the run's data-preparation folder
+    :param data_preparation_dir: where part A's tables and plots go (steps 1 to 6), in a folder per step;
+        defaults to ``A_data_preparation`` in ``out_dir``
     :return: the truth-free campaign report, which is also written under ``out_dir``
     """
     declaration = load_declaration(path)
@@ -226,9 +226,8 @@ def run_declaration(
     log_path = log_to_file(out_dir)
     resolved = yaml.safe_dump(declaration.resolved(), sort_keys=False, default_flow_style=False)
     (out_dir / RESOLVED_FILENAME).write_text(_RESOLVED_HEADER + resolved)
-    write_readme(out_dir)
-    preparation = out_dir / DATA_PREPARATION_DIRNAME
-    input_plots = input_plots_dir if input_plots_dir is not None else preparation
+    preparation = data_preparation_dir.resolve() if data_preparation_dir is not None else None
+    write_readme(out_dir, data_preparation_dir=preparation)
     logger.info(
         "Running campaign %r declared in %s\n  writing to %s\n  logging to %s",
         declaration.name,
@@ -249,7 +248,7 @@ def run_declaration(
         era5_hourly_df=reanalysis,
         operating_state=declaration.operating_state,
         cell_selection=declaration.cell_selection,
-        out_dir=input_plots,
+        out_dir=preparation if preparation is not None else out_dir / DATA_PREPARATION_DIRNAME,
     )
     # The whole park's north tables over the whole record, applied as declared to what each method sees.
     spec = prepared.with_north_offsets(declaration.spec)
@@ -282,17 +281,25 @@ def run_declaration(
         possible_changes=prepared.possible_changes_by_turbine(),
     )
     write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME, farm_dir=out_dir / FARM_DIRNAME)
-    write_readme(out_dir, warnings=report.warnings)
+    write_readme(out_dir, data_preparation_dir=preparation, warnings=report.warnings)
     logger.info("Wrote the %r report to %s", declaration.name, out_dir)
     return report
 
 
-def write_readme(out_dir: Path, *, warnings: Sequence[AnalysisWarning] | None = None) -> Path:
-    """Write the run's README under ``out_dir``: the title, the analysis warnings when given, then the layout."""
+def write_readme(
+    out_dir: Path, *, data_preparation_dir: Path | None = None, warnings: Sequence[AnalysisWarning] | None = None
+) -> Path:
+    """Write the run's README under ``out_dir``: the title, the analysis warnings when given, then the layout.
+
+    ``data_preparation_dir`` names part A's folder when it is not ``A_data_preparation`` in ``out_dir``.
+    """
     parts = [_README_TITLE, ""]
     if warnings is not None:
         parts += [f"## {summary(warnings)}".replace("\n", "\n\n", 1), ""]
-    parts.append(_README)
+    layout = _README
+    if data_preparation_dir is not None:
+        layout = layout.replace(f"`{DATA_PREPARATION_DIRNAME}/`", f"`{data_preparation_dir}/`", 1)
+    parts.append(layout)
     path = out_dir / README_FILENAME
     path.write_text("\n".join(parts))
     return path

@@ -571,6 +571,7 @@ def rollout_campaign(
         upgraded_turbines=sorted(draw.trial),
         upgrade_timing=None,
         candidate_references=[t for t in site.coords if t not in draw.trial and t not in site.excluded],
+        excluded_turbines=sorted(site.excluded),
         upgrades=[] if multiplier == 0 else [aeroup_upgrade(multiplier)],
         layout=layout_from_coords(site.coords, rotor_diameter_m=site.rotor_diameter_m),
         north_offsets=None,

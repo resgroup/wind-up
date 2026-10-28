@@ -401,3 +401,16 @@ class TestDataStart:
     def test_it_falls_in_the_first_published_year(self, farm: object) -> None:
         assert farm.data_start.year == min(farm.years)
         assert farm.data_start == farm.data_start.normalize()
+
+
+def test_a_power_reduction_without_an_end_is_left_out() -> None:
+    status = _status_csv(
+        [
+            ("2019-01-01 00:00:00", "2019-01-01 06:00:00", 75, "Limited"),
+            ("2019-01-02 00:00:00", "-", 75, "Limited"),
+            ("2019-01-03 00:00:00", "", 75, "Limited"),
+        ]
+    )
+    events = greenbyte._power_reductions(status.encode(), turbine="T1")  # noqa: SLF001
+    assert len(events) == 1
+    assert events["Timestamp end"].notna().all()

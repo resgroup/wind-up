@@ -11,7 +11,7 @@ The features are the power references' active power and nacelle direction, the w
 and the sun's elevation at the site. ERA5 is not a feature; it feeds only the conditional step.
 
 It is v0-independent — ERA5 is supplied as a plain hourly DataFrame (the driver fetches it), so
-this package imports nothing from ``wind_up``.
+this package imports nothing from ``wind_up_v0``.
 """
 
 from __future__ import annotations
@@ -466,7 +466,10 @@ def empty_reference_uplifts() -> pd.DataFrame:
 
 def _reading(output: MethodOutput) -> dict[str, float]:
     """Return one measurement's uplift with its sigma and the block-length sweep, as columns."""
-    reading = {"uplift": float(output.p50_overall), "sigma": float(output.sigma_overall or float("nan"))}
+    reading = {
+        "uplift": float(output.p50_overall),
+        "sigma": float("nan") if output.sigma_overall is None else float(output.sigma_overall),
+    }
     if output.uncertainty_diagnostics is not None and not output.uncertainty_diagnostics.empty:
         row = output.uncertainty_diagnostics.iloc[0]
         reading.update({str(c): float(row[c]) for c in row.index if is_reading_column(c) and c != "sigma"})
@@ -2510,4 +2513,7 @@ class PowerModelMethod:
             "block_hours_sweep": list(self.block_hours_sweep),
             "n_resamples": self.n_resamples,
             "bootstrap_seed": self.bootstrap_seed,
+            "conditions": list(self.conditions),
+            "target_cp": self.target_cp,
+            "shape_min_hours": self.shape_min_hours,
         }

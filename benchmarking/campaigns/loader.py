@@ -261,6 +261,9 @@ def read_works(path: Path, *, offshore: bool = False) -> tuple[dict[str, list[Wi
     for row, (turbine, first_day, last_day) in enumerate(
         zip(frame["Turbine"].astype(str), frame[first], frame[last], strict=True)
     ):
+        if pd.isna(first_day) or pd.isna(last_day):
+            msg = f"the works table {path.name} gives {turbine} a blank first or last date"
+            raise ValueError(msg)
         start = _timestamp(pd.Timestamp(first_day).normalize())
         end = _timestamp(pd.Timestamp(last_day).normalize()) + pd.Timedelta(days=1)
         if end <= start:

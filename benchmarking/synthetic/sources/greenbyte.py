@@ -381,7 +381,7 @@ def _power_reductions(status_csv: bytes, *, turbine: str) -> pd.DataFrame:
     """Return the status log's events with a :data:`POWER_REDUCTION_CODES` code and an end, in UTC."""
     log = pd.read_csv(io.BytesIO(status_csv), skiprows=_HEADER_ROW, dtype=str)
     codes = pd.to_numeric(log[_STATUS_CODE], errors="coerce")
-    chosen = log[codes.isin(POWER_REDUCTION_CODES) & (log[_STATUS_END] != "-")]
+    chosen = log[codes.isin(POWER_REDUCTION_CODES) & log[_STATUS_END].notna() & (log[_STATUS_END] != "-")]
     return pd.DataFrame(
         {
             TURBINE: turbine,

@@ -226,13 +226,18 @@ class TestTheInputDataPlots:
         assert reanalysis == {"shift_check.png", "wind_speed_scatter.png", "reanalysis.csv"}
         assert (preparation / "04_northing" / "possible_yaw_changes.csv").exists()
 
-    def test_the_folder_can_be_named(self, declaration: Path, tmp_path: Path) -> None:
+    def test_the_data_preparation_folder_can_be_placed_elsewhere(self, declaration: Path, tmp_path: Path) -> None:
         with pytest.raises(_StopError):
             run_declaration(
-                declaration, out_dir=tmp_path / "out", era5_hourly_df=era5(), input_plots_dir=tmp_path / "mine"
+                declaration, out_dir=tmp_path / "out", era5_hourly_df=era5(), data_preparation_dir=tmp_path / "mine"
             )
         assert (tmp_path / "mine" / "01_changes" / "input_data_coverage.png").exists()
         assert (tmp_path / "mine" / "02_operating_states" / "operating_state_hours.csv").exists()
+        assert (tmp_path / "mine" / "04_northing" / "possible_yaw_changes.csv").exists()
+        assert not (tmp_path / "out" / DATA_PREPARATION_DIRNAME).exists()
+        readme = (tmp_path / "out" / "README.md").read_text()
+        assert str(tmp_path / "mine") in readme
+        assert f"`{DATA_PREPARATION_DIRNAME}/`" not in readme
 
 
 class TestTheRunFolders:

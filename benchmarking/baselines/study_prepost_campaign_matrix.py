@@ -68,6 +68,8 @@ from benchmarking.baselines.prepost_matrix.study import (
 from benchmarking.baselines.prepost_matrix.validation import write_report
 from benchmarking.env import load_env
 
+MAX_WORKERS = 10
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,6 +118,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _run_workers(workers: int) -> int:
+    """Return ``workers``, refusing more than :data:`MAX_WORKERS`."""
+    if workers > MAX_WORKERS:
+        msg = f"a run uses at most {MAX_WORKERS} workers; got {workers}"
+        raise ValueError(msg)
+    return workers
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run the command."""
     args = parse_args(argv)
@@ -130,11 +140,12 @@ def main(argv: list[str] | None = None) -> None:
         download_sources(matrix_cells(SIZES[args.size].settings))
     elif args.command == "run":
         size = SIZES[args.size]
+        workers = _run_workers(size.workers if args.workers is None else args.workers)
         run_study(
             size.settings,
             size=args.size,
             root=args.root,
-            workers=size.workers if args.workers is None else args.workers,
+            workers=workers,
             limit=args.limit,
             retry_failed=args.retry_failed,
         )

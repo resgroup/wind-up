@@ -36,3 +36,9 @@ def test_it_rejects_a_missing_declaration_argument() -> None:
 def test_reference_plots_are_off_unless_asked_for(tmp_path: Path) -> None:
     assert not parse_args(["run", str(tmp_path / "campaign.yaml")]).reference_plots
     assert parse_args(["run", str(tmp_path / "campaign.yaml"), "--reference-plots"]).reference_plots
+
+
+def test_the_data_preparation_folder_can_be_placed_elsewhere(tmp_path: Path) -> None:
+    args = parse_args(["run", str(tmp_path / "campaign.yaml"), "--data-preparation-dir", str(tmp_path / "prep")])
+    assert args.data_preparation_dir == tmp_path / "prep"
+    assert parse_args(["run", str(tmp_path / "campaign.yaml")]).data_preparation_dir is None
