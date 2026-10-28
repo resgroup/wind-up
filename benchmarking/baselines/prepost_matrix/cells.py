@@ -230,8 +230,18 @@ PEAK_RSS_MB: dict[str, float] = {
 
 
 def cell_cost_s(cell: Cell, costs: dict[tuple[str, int], float] = CELL_COST_S) -> float:
-    """Return the expected wall seconds of ``cell``."""
-    return costs[(cell.site, cell.k)]
+    """Return the expected wall seconds of ``cell``.
+
+    A K the table has no row for at the cell's site costs as the site's nearest K (the larger on a
+    tie); a site the table does not know costs as the table's dearest cell, so it is scheduled first.
+    """
+    if (cell.site, cell.k) in costs:
+        return costs[(cell.site, cell.k)]
+    at_site = {k: cost for (site, k), cost in costs.items() if site == cell.site}
+    if at_site:
+        nearest = min(at_site, key=lambda k: (abs(k - cell.k), -k))
+        return at_site[nearest]
+    return max(costs.values())
 
 
 def matrix_cells(settings: MatrixSettings) -> list[Cell]:

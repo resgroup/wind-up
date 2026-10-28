@@ -14,6 +14,7 @@ import pytest
 
 from benchmarking.baselines import study_prepost_campaign_matrix as driver
 from benchmarking.baselines.prepost_matrix.cells import (
+    CELL_COST_S,
     REAL_SITES,
     SIZES,
     Cell,
@@ -34,6 +35,7 @@ from benchmarking.baselines.prepost_matrix.execute import (
 )
 from benchmarking.baselines.prepost_matrix.metrics import (
     baseline_tables,
+    cell_frames,
     compare_tables,
     leak_check,
     line_fit,
@@ -1130,3 +1132,55 @@ def test_the_baseline_json_holds_one_table_row_per_line() -> None:
         "  ]",
         "}",
     ]
+
+
+def _season_records() -> list[dict[str, Any]]:
+    """One campaign run at two season shifts, each on its own exact line."""
+    records = []
+    for shift, scale in ((0, 0.9), (6, 1.1)):
+        for m in (1, 0, -1):
+            truth = 0.04 * m
+            records.append(
+                _record(
+                    "hot",
+                    0,
+                    m,
+                    season_shift=shift,
+                    turbines=[{"turbine": "T01", "estimate": scale * truth, "truth": truth}],
+                    farm={"estimate": scale * truth, "truth": truth},
+                    references=[{"test_wtg": "T01", "turbine": "T02", "uplift": 0.001 * shift, "screened": False}],
+                )
+            )
+    return records
+
+
+def test_the_season_shift_is_a_cell_key_of_every_frame() -> None:
+    frames = cell_frames(_season_records())
+    for name, frame in frames.items():
+        assert "season_shift" in frame.columns, name
+    assert sorted(frames["turbines"]["season_shift"].unique()) == [0, 6]
+
+
+def test_linearity_is_fitted_per_season_shift() -> None:
+    linearity = baseline_tables(_season_records())["linearity"].set_index("site")
+    assert linearity.loc["hot", "line_n"] == 2
+    assert linearity.loc["hot", "line_scale_mean"] == pytest.approx(1.0)
+    assert linearity.loc["hot", "line_scale_sd"] == pytest.approx(0.1)
+
+
+def test_a_reference_that_moves_across_season_shifts_only_is_not_a_leak() -> None:
+    leaks = leak_check(_season_records())
+    assert len(leaks) == 2  # one row per season shift, each read under three multipliers
+    assert (leaks["leak"] == 0).all()
+
+
+def test_a_cell_outside_the_cost_table_costs_as_its_sites_nearest_k_or_the_tables_worst() -> None:
+    def cell(site: str, k: int) -> Cell:
+        return Cell(
+            arm="main", site=site, seed_index=0, multiplier=1, k=k, pre_months=12, post_months=6, season_shift=0
+        )
+
+    assert cell_cost_s(cell("hot", 2)) == CELL_COST_S[("hot", 3)]
+    assert cell_cost_s(cell("hot", 5)) == CELL_COST_S[("hot", 6)]
+    assert cell_cost_s(cell("new_site", 4)) == max(CELL_COST_S.values())
+    assert matrix_cells(MatrixSettings(seeds={"hot": 1}, ks=(2,), post_months=(6,), real=()))
