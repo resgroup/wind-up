@@ -44,6 +44,7 @@ from benchmarking.baselines.prepost_matrix.plan import makespan_s, measured_cost
 from benchmarking.baselines.prepost_matrix.study import (
     CANDIDATE,
     accept_candidate,
+    baseline_json,
     baseline_path_for,
     cell_dir,
     detail_dir,
@@ -1112,3 +1113,20 @@ def test_the_matrix_runs_three_months_before_and_drops_totals_under_nine_months(
         (24, 9),
         (24, 12),
     }
+
+
+def test_the_baseline_json_holds_one_table_row_per_line() -> None:
+    doc = {"schema": "s", "matrix": {"a": [1, 2]}, "empty": [], "rows": [{"x": 1.5, "y": None}, {"x": 2, "y": "b"}]}
+    text = baseline_json(doc)
+    assert json.loads(text) == doc
+    assert text.splitlines() == [
+        "{",
+        '  "schema": "s",',
+        '  "matrix": {"a": [1, 2]},',
+        '  "empty": [],',
+        '  "rows": [',
+        '    {"x": 1.5, "y": null},',
+        '    {"x": 2, "y": "b"}',
+        "  ]",
+        "}",
+    ]

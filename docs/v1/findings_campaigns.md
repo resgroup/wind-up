@@ -345,7 +345,7 @@ really resolved. The case is re-recorded at 4.3 deg.
 
 ## CF28 — The whole-farm v0 probe: **the power model's references do not combine to zero (+0.40 pp on clean references) and v0's power-only path does (−0.03 pp over 336 pairs)**; v0's anemometer path is 0.7 pp low because every Hill of Towie turbine's own power curve dropped 2 to 6 % between the two winters; and subtracting a pool's own reference reading corrects a level, not a turbine (correlation 0.04)
 
-*2026-10-06 to 2026-10-07. `uv run python -m benchmarking.campaigns.v0_probe hot` at `0a887c9`
+*2026-10-06 to 2026-10-07. `uv run python -m benchmarking.campaigns.v0_probe hot` (since removed) at `0a887c9`
 (the v0 cache fix of [CF27](#cf27--the-level-probe-and-the-v0-probe-missing-power-reference-rows-are-the-largest-single-cause-of-the-placebo-level-one-bad-reference-is-the-next-and-v0-is-not-the-level-free-yardstick-c3-assumed--on-identical-five-turbine-pools-its-headline-path-reads-03-to-06-pp-the-reference-anemometer-its-power-only-path-sits-07-pp-below-the-power-model-pair-for-pair-with-the-same-ordering-and-the-aipw-correction-fails-as-a-diagnostic) §7),
 from scratch, in series: started 2026-10-06 16:47, finished 2026-10-07 08:04, **all 21 turbines,
 no failures**. Same design as CF27 (b): each Hill of Towie turbine with its 4 nearest neighbours
@@ -467,7 +467,7 @@ changeover 2018-09 (truth 0), the Penmanshiel cell seed 0 / m+0 / K4 / L12 / T14
 arms, and a Kelmarsh cell (seed 0, m+0, K4, L12, T06); each estimate's per-row actual,
 counterfactual and features dumped (`row_dump_dir`), then `level_probe analyse` and ad-hoc refits
 over the dumps. Round robins of the power model with one reference at a time followed on the same
-dumps. (b) `uv run python -m benchmarking.campaigns.v0_probe hot` at `88a5348`, 2026-10-02 on the
+dumps. (b) `uv run python -m benchmarking.campaigns.v0_probe hot` (since removed) at `88a5348`, 2026-10-02 on the
 HPC: each Hill of Towie turbine with its 4 nearest neighbours as the only candidates, 12 months of
 baseline into a 6-month campaign changing over 2018-09-01, nothing injected; the power model (screen
 off, per-reference readings on) and wind-up v0 (`V0BinnedMethod`: season-matched 6-month pre
@@ -764,7 +764,7 @@ single trial turbine. The pressure comes from real data gaps, which the replay l
 
 ## CF24 — Balance the two periods and **two thirds of the prepost placebo bias disappears**: a whole farm whose pre and post hold the same months record for record reads **+0.23 pp** against **+0.65 pp** for six contiguous arms — and every large per-turbine offset goes with it, T17 included (+4.4 → −0.34)
 
-*2026-09-16/17. `benchmarking/campaigns/disguise_probe.py`: two years of Hill of Towie
+*2026-09-16/17. `benchmarking/campaigns/disguise_probe.py` (since removed): two years of Hill of Towie
 (2017-09-01..2019-09-01) cut into alternating day blocks and read twice. The toggle leg takes the
 record as it stands with the odd blocks toggled on; the prepost leg takes it with every timestamp
 remapped, SCADA and reanalysis together, so the even blocks become a contiguous pre period and the
@@ -772,7 +772,7 @@ odd blocks a contiguous post period. Whole farm, T13 the test turbine and all 20
 against the rest, screen off, nothing injected, so all 21 readings have a truth of 0. Two whole
 years makes each half a whole year, and the disguise then deals each half the same number of records
 of every calendar month. Compared against six contiguous reference arms (12-month baseline into a
-6-month campaign, changeovers 2018-03 through 2018-09) from `shift_probe references`.*
+6-month campaign, changeovers 2018-03 through 2018-09) from `shift_probe references` (since removed).*
 
 | | farm mean | median | sd across turbines | worst turbine |
 |---|---|---|---|---|
@@ -850,7 +850,7 @@ contiguous blocks. Feature choice is not the lever; what the model is asked to e
 
 ## CF22 — The campaign-proximity **time-decay weighting is now off by default**: on a record whose pre and post periods are the same days interleaved — truth 0 — it moved the reading **+0.154 pp**, and with it off the disguised-prepost and toggle legs agree to the last digit
 
-*2026-09-16. `benchmarking/campaigns/disguise_probe.py` (rung 1 of the bottom-up ladder): one
+*2026-09-16. `benchmarking/campaigns/disguise_probe.py` (since removed; rung 1 of the bottom-up ladder): one
 window of Hill of Towie cut into alternating day blocks, read twice. The toggle leg takes the
 record as it stands with the odd blocks toggled on; the prepost leg takes it with every timestamp
 remapped, SCADA and reanalysis together, so the even blocks become a contiguous pre period and the

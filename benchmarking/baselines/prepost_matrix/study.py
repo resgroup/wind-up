@@ -79,6 +79,18 @@ Prefetch = Callable[[Path, list[Cell]], None]
 # --- the study directory -----------------------------------------------------------------------
 
 
+def baseline_json(doc: dict[str, Any]) -> str:
+    """Return ``doc`` as JSON with one top-level key per line and each row of a table on its own line."""
+    lines = []
+    for key, value in doc.items():
+        if isinstance(value, list) and value and all(isinstance(row, dict) for row in value):
+            rows = ",\n".join(f"    {json.dumps(row)}" for row in value)
+            lines.append(f"  {json.dumps(key)}: [\n{rows}\n  ]")
+        else:
+            lines.append(f"  {json.dumps(key)}: {json.dumps(value)}")
+    return "{\n" + ",\n".join(lines) + "\n}\n"
+
+
 def git_state() -> tuple[str, bool]:
     """Return HEAD's short commit and whether tracked files are modified; ``unknown`` outside git."""
     repo = Path(__file__).resolve().parent
@@ -453,7 +465,7 @@ def merge_study(study_dir: Path) -> dict[str, Any]:
         "complete": n_ok == len(cells),
         **{name: _records(table) for name, table in tables.items()},
     }
-    (study_dir / CANDIDATE).write_text(json.dumps(doc, indent=2) + "\n")
+    (study_dir / CANDIDATE).write_text(baseline_json(doc))
 
     leaks = leak_check(records)
     leaks.to_csv(study_dir / "leak_check.csv", index=False)
