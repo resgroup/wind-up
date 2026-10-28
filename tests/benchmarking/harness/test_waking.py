@@ -194,3 +194,24 @@ def test_outputs_are_written(tmp_path: Path) -> None:
     direction = pd.read_csv(tmp_path / DIRECTION_CSV, index_col="turbine")
     assert direction.loc["T02", "hours_own"] == 0.0
     assert direction.loc["T01", "median_abs_own_minus_neighbours_deg"] == pytest.approx(5.0)
+
+
+def test_directions_built_from_another_frame_are_refused() -> None:
+    layout = layout_from_coords(LINE, rotor_diameter_m=DIAMETER)
+    shorter = frame(
+        {
+            "T01": [(270.0, True, NOT_WAKING), (90.0, True, WAKING)],
+            "T02": [(270.0, True, PART_WAKING), (90.0, True, WAKING)],
+            "T03": [(275.0, True, WAKING), (95.0, True, WAKING)],
+        }
+    )
+    scada = frame(
+        {
+            "T01": [(270.0, True, NOT_WAKING), (90.0, True, WAKING), (100.0, True, WAKING)],
+            "T02": [(270.0, True, PART_WAKING), (90.0, True, WAKING), (100.0, True, WAKING)],
+            "T03": [(275.0, True, WAKING), (95.0, True, WAKING), (105.0, True, WAKING)],
+        }
+    )
+    directions = waking_directions(shorter, columns=COLS, layout=layout, test_turbines=["T02"])
+    with pytest.raises(ValueError, match="directions"):
+        add_waking_scenarios(scada, columns=COLS, layout=layout, test_turbines=["T02"], directions=directions)

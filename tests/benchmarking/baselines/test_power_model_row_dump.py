@@ -66,7 +66,8 @@ def test_the_dump_carries_every_documented_column(tmp_path: Path) -> None:
     rows = pd.read_parquet(tmp_path / "dump" / "T1" / "rows.parquet")
     sidecar = json.loads((tmp_path / "dump" / "T1" / "rows.json").read_text())
 
-    for col in ("timestamp", "actual_kw", "counterfactual_kw", "selected", "baseline", "upgraded", "reference_mean_ws"):
+    documented = ("timestamp", "actual_kw", "counterfactual_kw", "selected", "baseline", "upgraded", "predicted")
+    for col in (*documented, "reference_mean_ws"):
         assert col in rows.columns
     # features keep their original names
     assert f"{_POWER}{QUALIFIER}R1" in rows.columns
@@ -106,3 +107,27 @@ def test_the_screening_clone_does_not_dump(tmp_path: Path) -> None:
     clone = _method(row_dump_dir=tmp_path / "dump")._screening_clone()  # noqa: SLF001
     assert clone.row_dump_dir is None
     assert _method(row_dump_dir=tmp_path / "dump")._reference_clone().row_dump_dir == tmp_path / "dump"  # noqa: SLF001
+
+
+def test_under_the_training_period_swap_the_dump_keeps_the_campaigns_periods(tmp_path: Path) -> None:
+    mi = _mi()
+    out = _method(out_dir=tmp_path / "diag", row_dump_dir=tmp_path / "dump", training_period="after").estimate(mi)
+
+    rows = pd.read_parquet(tmp_path / "dump" / "T1" / "rows.parquet")
+    sidecar = json.loads((tmp_path / "dump" / "T1" / "rows.json").read_text())
+
+    before = (rows["timestamp"] < mi.context.timing).to_numpy()
+    assert (rows["baseline"].to_numpy() == (rows["selected"].to_numpy() & before)).all()
+    assert (rows["upgraded"].to_numpy() == (rows["selected"].to_numpy() & ~before)).all()
+    assert (rows["predicted"] == rows["baseline"]).all()
+    finite = np.isfinite(rows["counterfactual_kw"].to_numpy())
+    assert (finite == (rows["selected"] & rows["predicted"]).to_numpy()).all()
+
+    predicted = rows[rows["selected"] & rows["predicted"]]
+    assert sidecar["training_period"] == "after"
+    assert sidecar["sum_actual_kw"] == pytest.approx(predicted["actual_kw"].sum())
+    assert sidecar["sum_counterfactual_kw"] == pytest.approx(predicted["counterfactual_kw"].sum())
+    assert sidecar["sum_counterfactual_kw"] / sidecar["sum_actual_kw"] - 1 == pytest.approx(out.p50_overall)
+    assert sidecar["uplift"] == pytest.approx(out.p50_overall)
+    assert sidecar["n_baseline_rows"] == int((rows["selected"] & rows["baseline"]).sum())
+    assert sidecar["n_upgraded_rows"] == int((rows["selected"] & rows["upgraded"]).sum())

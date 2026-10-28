@@ -167,6 +167,14 @@ def add_waking_scenarios(
     turbine_col = out[columns.turbine].astype(str).to_numpy()
     row = found.index.get_indexer(pd.DatetimeIndex(out.index))
     col = pd.Index(found.turbines).get_indexer(turbine_col)
+    if (row < 0).any() or (col < 0).any():
+        missing_times = int(np.count_nonzero(row < 0))
+        missing_turbines = sorted(set(turbine_col[col < 0]))
+        msg = (
+            f"the directions do not cover scada_df: {missing_times} row(s) at timestamps and the turbines "
+            f"{missing_turbines} are not in them; build the directions from the same frame"
+        )
+        raise ValueError(msg)
     out[DIRECTION_COL] = direction[row, col]
     out[DIRECTION_SOURCE_COL] = found.source()[row, col]
     out[UPWIND_COL] = upwind[row, col]

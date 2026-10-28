@@ -8,6 +8,7 @@ import pytest
 
 from benchmarking.campaigns.run import NoTurbineMeasuredError, estimate_campaign, visible_mask, visible_scada
 from benchmarking.harness import MethodInput, MethodOutput
+from benchmarking.harness.method import MethodConfigurationError
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from wind_up.analysis_warnings import AnalysisWarning
 
@@ -471,3 +472,19 @@ class TestTheWarningsRegister:
         ranked_report = run([WarningMethod(), ScreeningMethod()])
         severities = [w.severity for w in ranked_report.warnings]
         assert severities == sorted(severities, key=["high", "medium", "low"].index)
+
+
+class MisconfiguredMethod(FixedMethod):
+    """Refuses every turbine the way the power model refuses a bad option combination."""
+
+    name = "fixed"
+
+    def estimate(self, mi: MethodInput) -> MethodOutput:
+        """Raise the method's configuration error."""
+        msg = f"{mi.test_wtg}: headline_estimator='reference_corrected' needs report_reference_uplifts=True"
+        raise MethodConfigurationError(msg)
+
+
+def test_a_methods_configuration_error_fails_the_campaign_instead_of_leaving_its_turbines_unmeasured() -> None:
+    with pytest.raises(MethodConfigurationError, match="report_reference_uplifts"):
+        run([MisconfiguredMethod()])
