@@ -5,9 +5,16 @@ operationally meaningful signal), not a reference mean — even though own wind 
 *model feature* (it is post-treatment, design-note §3). Columns are labelled by their original
 source-native names.
 
+* :func:`plot_ops_curves` — a 2x3 figure (power curve; pitch/rpm vs power; pitch/rpm vs wind speed)
+  coloured kept vs removed by the method's row filter, for the test turbine and each power reference,
+  so a reference whose bad rows fed the estimate shows (stage: valid records).
+* :func:`plot_ops_curves_kept` — the same figure, kept rows only (stage: valid records).
 * :func:`plot_ops_curves_excluded` — a 2x3 figure (power curve; pitch/rpm vs power; pitch/rpm vs wind
   speed) coloured kept vs caller-excluded, for the test turbine and each power reference by its own
   ``exclude_row`` flag; a reference's file is prefixed ``{ref}_`` (stage: valid records).
+
+The kept/removed pair is drawn only for a run without operating-state labels (a toggle run): a
+labelled run draws its used and unused records as the uplift-validity scatters instead.
 * :func:`plot_curves_by_upgrade` — pitch/rpm/power vs wind speed split baseline vs upgraded
   (stage: uplift inputs).
 * :func:`plot_reactive_vs_active` / :func:`plot_power_factor` — reactive-power behaviour, per
@@ -24,6 +31,7 @@ import numpy as np
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.style import apply_grid, save_fig, series_style
 from benchmarking.diagnostics.timeaxis import shade_segments
+from benchmarking.harness.operating_state import STATE_COL
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -128,6 +136,37 @@ def _ops_curve_figure(
     path = ctx.stage_dir(stage) / _prefixed(ctx, turbine, filename)
     save_fig(fig, path)
     return path
+
+
+def _used_figure_per_turbine(ctx: DiagnosticContext, *, segments: Segments, title: str, filename: str) -> list[Path]:
+    """Draw a used-rows figure for the test turbine and each plotted reference; none for a labelled run."""
+    if STATE_COL in ctx.scada_df.columns:
+        return []
+    paths = [
+        _ops_curve_figure(
+            ctx, turbine=turbine, segments=segments, title=title, filename=filename, stage=stages.VALID_RECORDS
+        )
+        for turbine in (ctx.test_wtg, *ctx.plotted_references())
+    ]
+    return [p for p in paths if p is not None]
+
+
+def plot_ops_curves(ctx: DiagnosticContext) -> list[Path]:
+    """Draw the operating-curve figure coloured kept vs removed by the row filter, per turbine."""
+    used = np.asarray(ctx.used_ts, dtype=bool)
+    segments: Segments = [("kept", used, "C0"), ("removed", ~used, "C3")]
+    return _used_figure_per_turbine(
+        ctx, segments=segments, title="operating curves (kept vs removed by the row filter)", filename="ops_curves.png"
+    )
+
+
+def plot_ops_curves_kept(ctx: DiagnosticContext) -> list[Path]:
+    """Draw the operating-curve figure for the kept rows only, so removed points cannot mask them, per turbine."""
+    used = np.asarray(ctx.used_ts, dtype=bool)
+    segments: Segments = [("kept", used, "C0")]
+    return _used_figure_per_turbine(
+        ctx, segments=segments, title="operating curves (used rows only)", filename="ops_curves_kept_only.png"
+    )
 
 
 def plot_ops_curves_excluded(ctx: DiagnosticContext) -> list[Path]:
