@@ -23,14 +23,12 @@ from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.baselines.power_model.features import QUALIFIER, SOLAR_ELEVATION
 from benchmarking.baselines.power_model.method import (
     _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS,
-    _TIME_DECAY_CAMPAIGN_MULTIPLE,
     CORRECTION_COLUMNS,
     HOLDOUT_COLUMNS,
     REVERSAL_COLUMNS,
     TRAINING_COLUMNS,
     _clip_predictions,
     _combine_uplift,
-    _implied_shrinkage,
     _kept_shape_deviations,
     _reading,
     _reference_input,
@@ -43,7 +41,9 @@ from benchmarking.baselines.power_model.method import (
     kept_reference_correction,
     reference_measurement_dirname,
     reference_overall_uplift,
+    sigma_column,
     training_period,
+    uncertainty_summary,
     under_training_floor,
 )
 from benchmarking.baselines.power_model.screening import ScreenResult
@@ -473,68 +473,7 @@ def _fundamentals_method(**overrides: object) -> PowerModelMethod:
 
 
 class TestModelFundamentals:
-    """The campaign-proximity weighting, off by default, and the toggle campaign mask."""
-
-    def test_time_decay_weights_recover_uplift(self) -> None:
-        mi, _ = _prepost_case()
-        out = _fundamentals_method(
-            model_params=_FAST_PARAMS, adaptive_time_decay=False, time_decay_half_life_days=30.0
-        ).estimate(mi)
-        assert out.p50_overall == pytest.approx(0.05, abs=0.02)
-
-    def test_time_decay_weight_values(self) -> None:
-        # the expert fixed-half-life path (adaptive_time_decay=False)
-        method = _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=10.0)
-        index = pd.date_range("2019-01-01", periods=5, freq="10D", tz="UTC")
-        # campaign interval [index[2], index[3]]: inside weighs 1, outside decays both ways
-        weights = method._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3])  # noqa: SLF001
-        np.testing.assert_allclose(weights, [0.25, 0.5, 1.0, 1.0, 0.5])
-        no_decay = _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=None)
-        assert no_decay._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3]) is None  # noqa: SLF001
-
-    def test_the_weighting_is_off_unless_asked_for(self) -> None:
-        method = _fundamentals_method()
-        assert method.adaptive_time_decay is False
-        assert method.time_decay_half_life_days is None
-        index = pd.date_range("2019-01-01", periods=5, freq="10D", tz="UTC")
-        assert method._time_decay_weights(index, campaign_start=index[2], campaign_end=index[3]) is None  # noqa: SLF001
-
-    def test_adaptive_time_decay_half_life_scales_with_campaign_duration(self) -> None:
-        # opted in: half_life = k * campaign_duration_days, in both modes
-        method = _fundamentals_method(adaptive_time_decay=True)
-        start = pd.Timestamp("2019-04-01", tz="UTC")
-        for duration_days in (30.0, 90.0, 365.0):
-            end = start + pd.Timedelta(days=duration_days)
-            hl = method._effective_half_life(campaign_start=start, campaign_end=end)  # noqa: SLF001
-            assert hl == pytest.approx(_TIME_DECAY_CAMPAIGN_MULTIPLE * duration_days)
-
-    def test_adaptive_time_decay_weight_values(self) -> None:
-        method = _fundamentals_method(adaptive_time_decay=True)
-        index = pd.date_range("2019-01-01", periods=5, freq="10D", tz="UTC")
-        start, end = index[2], index[3]  # 10-day campaign -> half_life = k * 10
-        hl = _TIME_DECAY_CAMPAIGN_MULTIPLE * 10.0
-        days_outside = np.array([20.0, 10.0, 0.0, 0.0, 10.0])  # distance to [index[2], index[3]]
-        expected = 0.5 ** (days_outside / hl)
-        weights = method._time_decay_weights(index, campaign_start=start, campaign_end=end)  # noqa: SLF001
-        np.testing.assert_allclose(weights, expected)
-
-    def test_effective_half_life_fixed_and_off(self) -> None:
-        start = pd.Timestamp("2019-04-01", tz="UTC")
-        end = start + pd.Timedelta(days=90)
-        fixed = _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=42.0)
-        assert fixed._effective_half_life(campaign_start=start, campaign_end=end) == 42.0  # noqa: SLF001
-        off = _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=None)
-        assert off._effective_half_life(campaign_start=start, campaign_end=end) is None  # noqa: SLF001
-
-    def test_adaptive_with_explicit_half_life_conflict_raises(self) -> None:
-        mi, _ = _prepost_case(n=200)
-        with pytest.raises(ValueError, match="adaptive_time_decay"):
-            _fundamentals_method(adaptive_time_decay=True, time_decay_half_life_days=90.0).estimate(mi)
-
-    def test_time_decay_half_life_must_be_positive(self) -> None:
-        mi, _ = _prepost_case(n=200)
-        with pytest.raises(ValueError, match="must be positive"):
-            _fundamentals_method(adaptive_time_decay=False, time_decay_half_life_days=0.0).estimate(mi)
+    """The toggle campaign mask."""
 
     def test_started_toggle_baselines_split_pre_campaign_from_off_blocks(self) -> None:
         # The old ``_campaign_mask`` folded into the shared ``resolve_toggle``: the strict
@@ -724,20 +663,14 @@ class TestPromotedDefaults:
         assert m._make_model().get_params()["min_child_samples"] == 123  # noqa: SLF001
 
 
-# The re-level is now the pinned-imputed ``relevel_conditional`` in power_model.conditional; its unit
-# coverage lives in test_power_model_conditional.py (TestRelevelConditionalPinned). Kept here only:
-# the direction-combine helpers, still in method.py.
-
-
 class TestCombineDirections:
-    def test_recovers_uplift_and_shrinkage_from_ratios(self) -> None:
+    def test_recovers_the_uplift_from_the_two_directions(self) -> None:
         # construct the two directions from a known uplift u and shrinkage s:
         #   1 + r_fwd = (1 + u) / s ;  1 + r_rev = 1 / (s (1 + u))
         u, s = 0.06, 0.85
         r_fwd = (1 + u) / s - 1
         r_rev = 1 / (s * (1 + u)) - 1
         assert _combine_uplift(np.array([r_fwd]), np.array([r_rev]))[0] == pytest.approx(u)
-        assert _implied_shrinkage(np.array([r_fwd]), np.array([r_rev]))[0] == pytest.approx(s)
 
     def test_nonpositive_ratio_gives_nan(self) -> None:
         # (1 + r) <= 0 on either side is unphysical -> NaN, not a complex/blown-up number
@@ -2665,3 +2598,38 @@ def test_the_run_config_records_the_headline_and_shape_settings() -> None:
         "target_cp",
         "shape_min_hours",
     } <= set(params)
+
+
+class TestUncertaintySummary:
+    SWEEP = pd.DataFrame(
+        {
+            "block_hours": [6.0, 24.0],
+            "sigma": [0.01, 0.02],
+            "sigma_robust": [0.011, 0.021],
+            "n_blocks": [400.0, 100.0],
+            "frac_resamples_finite": [1.0, 0.99],
+        }
+    )
+
+    def test_it_reads_the_chosen_length_and_every_length_of_the_sweep(self) -> None:
+        row = uncertainty_summary(self.SWEEP, block_hours=24.0)
+        assert row == {
+            "block_hours": 24.0,
+            "sigma": 0.02,
+            "sigma_robust": 0.021,
+            "n_blocks": 100.0,
+            "frac_resamples_finite": 0.99,
+            sigma_column(6.0): 0.01,
+            sigma_column(24.0): 0.02,
+        }
+
+    def test_a_length_outside_the_sweep_reads_nan(self) -> None:
+        row = uncertainty_summary(self.SWEEP, block_hours=48.0)
+        assert np.isnan(row["sigma"])
+        assert row[sigma_column(6.0)] == 0.01
+
+    def test_an_empty_sweep_reads_nan(self) -> None:
+        row = uncertainty_summary(self.SWEEP.iloc[:0], block_hours=24.0)
+        assert row["block_hours"] == 24.0
+        assert np.isnan(row["sigma"])
+        assert not any(key.startswith("sigma_block_") for key in row)

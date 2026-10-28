@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from tests.wind_up.layouts import grid_layout, line_layout, offset, scatter_layout, spaced_points
-from wind_up.campaign_design import COMPLIANCE_COLUMNS, check_design, design_campaign
+from wind_up.campaign_design import COMPLIANCE_COLUMNS, _Site, _Wake, _wake_terms, check_design, design_campaign
 from wind_up.layout import Layout
 from wind_up.wake_reach import kept_wind_share, uniform_rose
 
@@ -526,3 +526,38 @@ def test_a_candidate_the_test_turbine_wakes_is_demoted_from_its_references() -> 
     assert list(report.table[["reference_1", "reference_2", "reference_3"]].iloc[0]) == ["T2", "T1", "T0"]
     assert list(report.wake_losses["waked"]) == ["T2", "T1", "T0"]
     assert report.wake_losses["rose_share"].sum() == 0.0
+
+
+@pytest.mark.parametrize("limit_d", [3.5, 6.5, 20.0])
+def test_a_site_at_a_tighter_limit_carries_the_wake_terms_of_its_own_pools(limit_d: float) -> None:
+    rng = np.random.default_rng(7)
+    layout = scatter_layout(spaced_points(rng, count=10, extent_m=1500))
+    wake = _Wake.resolve(
+        expected_uplift=0.05,
+        wake_reach_d=None,
+        wind_rose=rng.dirichlet(np.ones(360)),
+        offshore=False,
+        min_kept_wind_share=0.0,
+        demotion_share=0.5,
+        rose_label="given",
+    )
+    site = _Site.build(
+        layout,
+        wind_farm=None,
+        reference_only=(),
+        excluded=(),
+        reference_pool_size=4,
+        max_reference_distance_d=20.0,
+        front_row_min_clear_deg=90.0,
+        wake=wake,
+    )
+    tight = site.at_limit(limit_d)
+    lone, pair_loss = _wake_terms(
+        Layout.from_frame(layout),
+        pools={i: tight.pool(i) for i in site.available},
+        available=site.available,
+        candidates=site.candidates,
+        wake=wake,
+    )
+    assert tight.lone == lone
+    assert tight.pair_loss == pair_loss

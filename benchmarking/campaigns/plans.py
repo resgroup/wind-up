@@ -179,7 +179,7 @@ def plans_for(
                 extents=own_extents,
                 candidates=candidates,
                 span=span,
-                forced=candidates if spec.references_declared and span is not None else (),
+                allow_works_overlap=candidates if spec.references_declared and span is not None else (),
                 settings=settings,
             )
         except ValueError as exc:

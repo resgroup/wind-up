@@ -356,7 +356,7 @@ def plot_run_operating_states(ctx: DiagnosticContext) -> list[Path]:
     return written
 
 
-def _view_title(turbine: str, view: ValidityView, rows: pd.DataFrame, *, role: str | None = None) -> str:
+def _view_title(turbine: str, *, view: ValidityView, rows: pd.DataFrame, role: str | None = None) -> str:
     index = pd.DatetimeIndex(rows.index)
     period = f"{index.min():%Y-%m-%d} to {index.max():%Y-%m-%d}"
     if role is None:
@@ -395,7 +395,7 @@ def write_validity_plots(
                 columns=columns,
                 timebase=timebase,
                 out_dir=out_dir,
-                title=_view_title(turbine, view, rows),
+                title=_view_title(turbine, view=view, rows=rows),
                 name=view.name,
                 subset=(rows[view.column] == view.value).to_numpy(),
             )
@@ -424,7 +424,7 @@ def plot_run_uplift_validity(ctx: DiagnosticContext) -> list[Path]:
                 columns=ctx.columns,
                 timebase=ctx.timebase,
                 out_dir=out_dir,
-                title=_view_title(turbine, view, rows, role=role),
+                title=_view_title(turbine, view=view, rows=rows, role=role),
                 name=view.name,
                 subset=(rows[view.column] == view.value).to_numpy(),
             )

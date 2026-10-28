@@ -17,7 +17,14 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 
 from wind_up.campaign_design_plots import save_design_maps
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL, WIND_FARM_COL, Layout, front_row
-from wind_up.wake_reach import DEFAULT_DEMOTION_SHARE, candidate_cost, kept_wind_share, reach_from_uplift, union_share
+from wind_up.wake_reach import (
+    DEFAULT_DEMOTION_SHARE,
+    REFERENCES_PER_TEST_TURBINE,
+    candidate_cost,
+    kept_wind_share,
+    reach_from_uplift,
+    union_share,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -26,7 +33,6 @@ if TYPE_CHECKING:
 
     from wind_up.wake_reach import LossSector, Rose
 
-REFERENCES_PER_TEST_TURBINE = 3
 DEFAULT_MIN_KEPT_WIND_SHARE = 0.5
 # How far below the best total kept wind share a design may fall and still count as optimal.
 OBJECTIVE_TOLERANCE = 1e-6
@@ -920,9 +926,19 @@ class _Site:
         return 0
 
     def at_limit(self, limit_d: float) -> _Site:
-        """Return this site with references limited to ``limit_d`` rotor diameters."""
+        """Return this site with references limited to ``limit_d`` rotor diameters, its wake terms on the new pools."""
         within = {i: [j for j in self.ranked[i] if self.distance_d[i, j] <= limit_d] for i in self.farm_rows}
-        return replace(self, within=within, max_reference_distance_d=limit_d, cuts=[])
+        site = replace(self, within=within, max_reference_distance_d=limit_d, cuts=[])
+        if all(site.pool(i) == self.pool(i) for i in self.available):
+            return site
+        lone, pair_loss = _wake_terms(
+            self.layout,
+            pools={i: site.pool(i) for i in self.available},
+            available=self.available,
+            candidates=self.candidates,
+            wake=self.wake,
+        )
+        return replace(site, lone=lone, pair_loss=pair_loss)
 
     def tightest_limit_d(self, *, n: int, fixed: list[int]) -> float:
         """Return the least reference-distance limit at which a design of ``n`` including ``fixed`` exists.

@@ -46,9 +46,9 @@ def test_lambda_star_is_nan_without_a_sigma() -> None:
 
 def test_lambda_uplift_runs_from_forward_to_full_reversal() -> None:
     forward, reverse = np.array([0.05]), np.array([-0.03])
-    assert lambda_uplift(forward, reverse, np.array([0.0]))[0] == pytest.approx(0.05)
+    assert lambda_uplift(forward, reverse, lam=np.array([0.0]))[0] == pytest.approx(0.05)
     full = np.sqrt(1.05 / 0.97) - 1
-    assert lambda_uplift(forward, reverse, np.array([1.0]))[0] == pytest.approx(full)
+    assert lambda_uplift(forward, reverse, lam=np.array([1.0]))[0] == pytest.approx(full)
 
 
 def test_season_is_meteorological() -> None:

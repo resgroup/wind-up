@@ -1,8 +1,4 @@
-"""The v0 probe: wind-up v0 and the power model side by side on the Hill of Towie placebo arm.
-
-CF26 and the level probe put the power model's placebo level at +0.1 to +1 pp on contiguous
-prepost periods, and the first like-for-like reading (T05, four nearest references) had v0 about
-1 pp below the power model on every pair. This probe runs that comparison for the whole farm.
+"""The v0 probe: wind-up v0 and the power model side by side on the Hill of Towie placebo arm, for the whole farm.
 
 Each test turbine gets its own small campaign: the turbine plus its ``n`` nearest neighbours as
 the only candidate references, on the whole-farm reference arm's window (12 months of baseline

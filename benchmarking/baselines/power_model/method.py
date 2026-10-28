@@ -3,9 +3,7 @@
 A single supervised **counterfactual power model**: learn the test turbine's normal power as a
 function of *reference-only* (upgrade-invariant) features over the baseline period, predict the
 counterfactual power over the upgraded period, and take the energy ratio
-``uplift = sum(actual) / sum(counterfactual) - 1`` over the upgraded rows. No propensity, no
-cross-fitting — fit on the baseline, predict on the disjoint upgraded window, so there is no
-in-sample leakage to correct for.
+``uplift = sum(actual) / sum(counterfactual) - 1`` over the upgraded rows.
 
 The features are the power references' active power and nacelle direction, the waking scenarios,
 and the sun's elevation at the site. ERA5 is not a feature; it feeds only the conditional step.
@@ -92,21 +90,11 @@ logger = logging.getLogger(__name__)
 _MIN_PERIOD_HOURS = 96.0
 _MIN_HOLDOUT_ROWS = 20  # below this, report the in-sample fit (no point splitting off a tiny valid set)
 # Time-blocked split shape for the baseline holdout diagnostic (``_holdout_fit`` takes fold 0 as the
-# held-out slice): 25 contiguous blocks round-robin over 5 folds, so each fold is ~20% of the rows
-# spread across the whole window (seasonally balanced) while staying contiguous at the block scale.
+# held-out slice): 25 contiguous blocks round-robin over 5 folds.
 _N_FOLDS = 5
 _N_BLOCKS = 25
-# Adaptive time-decay half-life = this multiple of the campaign's own duration (Issue 15): a
-# scale-free "trust pre-campaign data within ~k campaign-durations" rule that gives a short half-life
-# for a short campaign (drift protection) and a long one for a long campaign (use the plentiful recent
-# data), reproducing the earlier regime map with one mechanism-anchored constant. k=2 -> 1mo~60d, 12mo~730d.
-_TIME_DECAY_CAMPAIGN_MULTIPLE = 2.0
-_MIN_TIME_DECAY_DURATION_DAYS = 1.0  # floor the campaign duration so the half-life can't degenerate to 0
 
-# Capacity verdict: loosening min_child_samples 200 -> 50 materially
-# improves prepost spread/score (placebo ALL Δscore -0.62 pp) at neutral overall P50; 20 overshoots
-# into overfit. A power_model-specific tuning — the common params in ``make_outcome_model`` are
-# unchanged; drivers pass this instead.
+# The power model's overrides of ``make_outcome_model``'s common parameters.
 TUNED_MODEL_PARAMS: dict[str, Any] = {"min_child_samples": 50}
 
 # Method step 15: a predicted-power bin needs this many after-period hours to be measured.
@@ -174,21 +162,10 @@ _SUPPORTED_CONDITIONS: tuple[str, ...] = (PREDICTED_POWER, "freestream_ws", "dir
 _SUBSET_CONDITIONS: tuple[str, ...] = ("direction", "solar_elevation", "waked")
 
 
-# Reference-validity screen (R3). A reference whose own performance shifts across the campaign
-# boundary biases the counterfactual, so each candidate is estimated against the others and clear
-# outliers are made power-free. The floor is a deviation from the pool's median, in uplift
-# fraction, calibrated on clean placebo pools rather than chosen: those spread up to 1.19 pp with
-# nothing injected, so 2.5 pp leaves roughly a factor of two before a healthy reference is at risk.
-# Set high deliberately -- ruling out a good reference costs more than leaving a mild bad one in
-# (on the clean fixture a false positive moved the estimate 0.88 pp).
+# Reference-validity screen: each candidate is estimated against the others, and one further than
+# this from the pool's median, in uplift fraction, is made power-free.
 _DEFAULT_SCREEN_FLOOR = 0.025
-# A screening estimate is only as good as the campaign it is measured over, and the benchmark sweep
-# set this rather than a hand-picked calibration. At 90 days the sweep still produced false
-# positives on 3-month campaigns -- a reference read -2.9%, about 3.1 pp from its pool median, and
-# ruling it out made the benchmark *worse* (score +0.10 pp, spread +0.13 pp). The same three-
-# reference pool is clean at 6 and 12 months, where the screen runs and correctly finds nothing, so
-# the driver is campaign length rather than pool size. 150 days sits clear of both: a 3-month
-# campaign (~90 days of data) is not screened, a 6-month one (~182) is.
+# The screen runs only when a candidate holds at least this many days of upgraded data.
 _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS = 150.0
 
 
@@ -526,16 +503,6 @@ def _combine_uplift(r_fwd: np.ndarray, r_rev: np.ndarray) -> np.ndarray:
     return np.sqrt(frac, out=np.full_like(frac, np.nan), where=np.isfinite(frac)) - 1.0
 
 
-def _implied_shrinkage(r_fwd: np.ndarray, r_rev: np.ndarray) -> np.ndarray:
-    """Implied shrinkage ``s = 1/sqrt((1+r_fwd)(1+r_rev))`` — the bias the correction cancelled (diagnostic)."""
-    a = 1.0 + np.asarray(r_fwd, dtype=float)
-    b = 1.0 + np.asarray(r_rev, dtype=float)
-    valid = (a > 0) & (b > 0)
-    prod = np.multiply(a, b, out=np.full(np.broadcast(a, b).shape, np.nan), where=valid)
-    root = np.sqrt(prod, out=np.full_like(prod, np.nan), where=np.isfinite(prod))
-    return np.divide(1.0, root, out=np.full_like(root, np.nan), where=np.isfinite(root) & (root != 0))
-
-
 def _infer_timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
     """Infer the analysis timebase as the median spacing of the sorted unique timestamps."""
     unique = pd.DatetimeIndex(pd.unique(index)).sort_values()
@@ -602,10 +569,8 @@ class PowerModelMethod:
         feature), ``availability`` (drives the test-turbine downtime filter) and ``wind_speed`` (its
         reference mean feeds the stuck-filter calm exemption) roles; the remaining roles feed only
         the shared diagnostics.
-    :param baseline_rated_power_kw: **required** rated power of the turbine over the data the model is
-        fitted on — today every fit is on baseline rows, so this is the baseline rating. It caps the
-        clipped counterfactual predictions. (A future cross-predict direction that trains on upgraded
-        data would need the upgraded rating; that is out of scope here.)
+    :param baseline_rated_power_kw: **required** rated power of the turbine; it caps the clipped
+        counterfactual predictions
     :param era5_hourly_df: optional ERA5 (Open-Meteo columns), hourly or already aligned to the SCADA
         periods; used only by the conditional step, never as a model feature
     :param site_location: the site's ``(latitude, longitude)`` in degrees; when given the sun's elevation
@@ -626,8 +591,7 @@ class PowerModelMethod:
     :param seed: seed for the baseline holdout split and the LightGBM ``random_state`` (a caller-supplied
         ``random_state`` in ``model_params`` still wins)
     :param model_params: LightGBM overrides passed to the outcome model; merged **over** the tuned
-        default ``TUNED_MODEL_PARAMS`` (``min_child_samples=50``), so a bare method already carries
-        the accepted capacity and any key here wins
+        default ``TUNED_MODEL_PARAMS``; any key here wins
     :param timebase: analysis timebase; inferred from the data when ``None``
     :param conditions: the axes of the uplift distributions (method step 15): ``"predicted_power"``,
         the measured shape, and the axes it is cast to, ``"freestream_ws"`` (the power references'
@@ -656,16 +620,6 @@ class PowerModelMethod:
         ``columns.northed("nacelle_position")`` into the frame, and raises naming that column when
         it has not; the raw nacelle position is never used, northed or not. The test turbine's own
         direction stays barred (design-note §3): northing does not make a post-treatment signal safe.
-    :param adaptive_time_decay: set the campaign-proximity weights' half-life from the campaign's
-        own duration, ``_TIME_DECAY_CAMPAIGN_MULTIPLE * campaign_duration_days``. ``False``
-        (**default**) with ``time_decay_half_life_days`` left ``None`` means every training row
-        weighs the same, whenever it happened. When ``True``, ``time_decay_half_life_days`` must be
-        left ``None``.
-    :param time_decay_half_life_days: a *fixed* half-life for the campaign-proximity training
-        weights ``0.5 ** (days_outside_campaign / half_life)``, used only when
-        ``adaptive_time_decay=False``. Rows inside the campaign interval (for toggle, the
-        interleaved on and off rows) weigh 1; rows outside decay with their distance to it.
-        ``None`` (**default**) leaves the weighting off.
     :param reference_screen: when ``True`` (**default**), estimate each candidate reference as if it
         were a test turbine against the others, and make clear outliers **power-free**: they contribute
         no features. Needs at least 3 candidate references to form a majority; below that it is skipped.
@@ -759,8 +713,6 @@ class PowerModelMethod:
     bootstrap_seed: int = 0
     reference_stat_cols: tuple[str, ...] = ()
     direction_feature: bool = True
-    adaptive_time_decay: bool = False
-    time_decay_half_life_days: float | None = None
     reference_screen: bool = True
     screen_floor: float = _DEFAULT_SCREEN_FLOOR
     screen_min_campaign_days: float = _DEFAULT_SCREEN_MIN_CAMPAIGN_DAYS
@@ -876,13 +828,11 @@ class PowerModelMethod:
         )
 
         y_arr = y.to_numpy(dtype=float)
-        weights = self._time_decay_weights(index, campaign_start=upgrade_start, campaign_end=index.max())
         fit = self._fit_predict(
             features,
             y=y_arr,
             baseline_sel=training_sel,
             upgraded_sel=predicted_sel,
-            weights=weights,
         )
         sum_actual = float(fit["y_upgraded"].sum())
         sum_counter = float(fit["pred_upgraded"].sum())
@@ -1604,10 +1554,7 @@ class PowerModelMethod:
     ) -> np.ndarray:
         """Fit the outcome model(s) on ``train`` rows and return clipped predictions for ``predict`` rows.
 
-        No calibration and no time-decay weights here: the two-direction combine cancels the common
-        per-bin shrinkage by construction, and weighting the matched fits only churns sparse
-        extreme-condition bins (re-confirmed post-floor) — the corrections are spent on the
-        overall headline instead.
+        No calibration here.
         """
         models = self._fit_models(features.iloc[train], y[train])
         return _clip_predictions(
@@ -1631,38 +1578,6 @@ class PowerModelMethod:
         if self.era5_hourly_df is None:
             return None
         return interpolate_era5(self.era5_hourly_df, index=index, timebase=timebase)
-
-    def _effective_half_life(self, *, campaign_start: pd.Timestamp, campaign_end: pd.Timestamp) -> float | None:
-        """Return the time-decay half-life (days) for this campaign, or ``None`` when decay is off.
-
-        ``adaptive_time_decay`` (the default) sets it to ``_TIME_DECAY_CAMPAIGN_MULTIPLE`` times the
-        campaign's own duration (Issue 15); otherwise the fixed ``time_decay_half_life_days``
-        expert override is used verbatim.
-        """
-        if not self.adaptive_time_decay:
-            return self.time_decay_half_life_days
-        duration_days = max((campaign_end - campaign_start).total_seconds() / 86400.0, _MIN_TIME_DECAY_DURATION_DAYS)
-        return _TIME_DECAY_CAMPAIGN_MULTIPLE * duration_days
-
-    def _time_decay_weights(
-        self, index: pd.DatetimeIndex, *, campaign_start: pd.Timestamp, campaign_end: pd.Timestamp
-    ) -> np.ndarray | None:
-        """Exponential campaign-proximity sample weights over the analysis index (``None`` = knob off).
-
-        ``0.5 ** (days_outside_campaign / half_life)`` where the distance is to the campaign
-        *interval* ``[campaign_start, campaign_end]``: every row inside the campaign (for toggle,
-        the interleaved on **and** off rows) weighs exactly 1, and rows outside decay with their
-        distance to it — so distant history still informs the fit without dominating it. With
-        today's flows only pre-campaign rows exist outside the interval, but the definition is
-        two-sided on purpose. The half-life is the ``adaptive_time_decay`` campaign-proportional
-        value by default (:meth:`_effective_half_life`).
-        """
-        half_life = self._effective_half_life(campaign_start=campaign_start, campaign_end=campaign_end)
-        if half_life is None:
-            return None
-        seconds_outside = np.maximum((campaign_start - index).total_seconds(), (index - campaign_end).total_seconds())
-        days_outside = np.maximum(seconds_outside / 86400.0, 0.0)
-        return np.asarray(0.5 ** (days_outside / half_life), dtype=float)
 
     def _select_records(
         self,
@@ -1749,7 +1664,6 @@ class PowerModelMethod:
         y: np.ndarray,
         baseline_sel: np.ndarray,
         upgraded_sel: np.ndarray,
-        weights: np.ndarray | None = None,
     ) -> dict[str, Any]:
         """Fit on baseline, predict the upgraded counterfactual; also a held-out baseline fit metric.
 
@@ -1761,12 +1675,11 @@ class PowerModelMethod:
         y_base = y[baseline_sel]
         x_up = features.iloc[upgraded_sel]
         y_up = y[upgraded_sel]
-        w_base = weights[baseline_sel] if weights is not None else None
 
-        y_valid, pred_valid, valid_local = self._holdout_fit(x_base, y_base, w_base=w_base)
+        y_valid, pred_valid, valid_local = self._holdout_fit(x_base, y_base)
         baseline_valid_pos = np.flatnonzero(baseline_sel)[valid_local]
 
-        models = self._fit_models(x_base, y_base, weights=w_base)
+        models = self._fit_models(x_base, y_base)
         pred_up = _clip_predictions(
             self._predict_mean(models, x_up), y_train=y_base, rated_power_kw=self.baseline_rated_power_kw
         )
@@ -2293,27 +2206,12 @@ class PowerModelMethod:
                 "report_reference_uplifts=True. Turn the readings on, or pass headline_estimator='forward'."
             )
             raise ValueError(msg)
-        if self.time_decay_half_life_days is not None and self.time_decay_half_life_days <= 0:
-            msg = f"time_decay_half_life_days must be positive, got {self.time_decay_half_life_days}"
-            raise ValueError(msg)
-        if self.adaptive_time_decay and self.time_decay_half_life_days is not None:
-            msg = (
-                "adaptive_time_decay sets the half-life from the campaign duration; a fixed "
-                "time_decay_half_life_days is only used with adaptive_time_decay=False. Set "
-                "adaptive_time_decay=False to use the fixed override, or leave time_decay_half_life_days=None."
-            )
-            raise ValueError(msg)
         if not self.write_diagnostics and self.conditions:
             msg = (
                 "write_diagnostics=False needs conditions=(): the uplift distributions write their CSVs "
                 "into the run directory, so there is nowhere for them to go."
             )
             raise ValueError(msg)
-
-    @staticmethod
-    def _fit_kwargs(weights: np.ndarray | None) -> dict[str, Any]:
-        """Return the fit kwargs for the time-decay ``weights`` (empty when unweighted)."""
-        return {} if weights is None else {"sample_weight": weights}
 
     def _make_model(self, *, seed: int | None = None) -> Any:  # noqa: ANN401
         """One unfitted LightGBM outcome model with ``seed`` plumbed in.
@@ -2323,16 +2221,10 @@ class PowerModelMethod:
         s = self.seed if seed is None else seed
         return make_outcome_model(**{"random_state": s, **TUNED_MODEL_PARAMS, **self.model_params})
 
-    def _fit_models(
-        self, x_train: pd.DataFrame, y_train: np.ndarray, *, weights: np.ndarray | None = None
-    ) -> list[Any]:
-        """Fit the outcome model on one training set.
-
-        ``weights`` (the time-decay sample weights, aligned to the training rows) are passed to the
-        fit when given. Returns a single-element list so :meth:`_predict_mean` stays uniform.
-        """
+    def _fit_models(self, x_train: pd.DataFrame, y_train: np.ndarray) -> list[Any]:
+        """Fit the outcome model on one training set, as a single-element list for :meth:`_predict_mean`."""
         model = self._make_model(seed=self.seed)
-        model.fit(model_safe_features(x_train), y_train, **self._fit_kwargs(weights))
+        model.fit(model_safe_features(x_train), y_train)
         return [model]
 
     @staticmethod
@@ -2341,9 +2233,7 @@ class PowerModelMethod:
         safe = model_safe_features(x)
         return np.mean([np.asarray(m.predict(safe), dtype=float) for m in models], axis=0)
 
-    def _holdout_fit(
-        self, x_base: pd.DataFrame, y_base: np.ndarray, *, w_base: np.ndarray | None = None
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _holdout_fit(self, x_base: pd.DataFrame, y_base: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Train on a baseline train split, predict a held-out baseline slice (honest fit quality).
 
         The held-out slice is **time-blocked** (fold 0 of the shared split shape), not shuffled — a
@@ -2353,7 +2243,7 @@ class PowerModelMethod:
         """
         n = len(y_base)
         if n < _MIN_HOLDOUT_ROWS:
-            models = self._fit_models(x_base, y_base, weights=w_base)
+            models = self._fit_models(x_base, y_base)
             pred = _clip_predictions(
                 self._predict_mean(models, x_base),
                 y_train=y_base,
@@ -2361,9 +2251,7 @@ class PowerModelMethod:
             )
             return y_base, pred, np.arange(n)
         valid = time_block_folds(n, n_folds=_N_FOLDS, n_blocks=_N_BLOCKS) == 0
-        models = self._fit_models(
-            x_base.iloc[~valid], y_base[~valid], weights=w_base[~valid] if w_base is not None else None
-        )
+        models = self._fit_models(x_base.iloc[~valid], y_base[~valid])
         pred_valid = _clip_predictions(
             self._predict_mean(models, x_base.iloc[valid]),
             y_train=y_base[~valid],
@@ -2498,8 +2386,6 @@ class PowerModelMethod:
             "reference_stat_cols": list(self.reference_stat_cols),
             "direction_feature": self.direction_feature,
             "model_params": {**TUNED_MODEL_PARAMS, **self.model_params},
-            "adaptive_time_decay": self.adaptive_time_decay,
-            "time_decay_half_life_days": self.time_decay_half_life_days,
             "reference_screen": self.reference_screen,
             "screen_floor": self.screen_floor,
             "screen_min_campaign_days": self.screen_min_campaign_days,

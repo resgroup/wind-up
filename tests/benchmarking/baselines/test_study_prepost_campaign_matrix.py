@@ -81,17 +81,49 @@ SIZE = "test"
 
 
 def test_cell_ids_are_readable() -> None:
-    assert Cell("main", "pen", 7, 1, 4, 12, 6).cell_id == "pen_s07_m+1_K4_P12_L6"
-    assert Cell("main", "pen", 7, -1, 4, 6, 6).cell_id == "pen_s07_m-1_K4_P6_L6"
-    assert Cell("excl", "kel", 0, 0, 4, 24, 12).cell_id == "kel_s00_m+0_K4_P24_L12_excl"
-    assert Cell("real", "hot_t13", None, None, 4, 24, 6).cell_id == "hot_t13_K4_P24_L6"
-    assert Cell("real", "hot_tuneup", None, None, 4, None, None).cell_id == "hot_tuneup_K4_Pmax_Lmax"
+    assert (
+        Cell(arm="main", site="pen", seed_index=7, multiplier=1, k=4, pre_months=12, post_months=6).cell_id
+        == "pen_s07_m+1_K4_P12_L6"
+    )
+    assert (
+        Cell(arm="main", site="pen", seed_index=7, multiplier=-1, k=4, pre_months=6, post_months=6).cell_id
+        == "pen_s07_m-1_K4_P6_L6"
+    )
+    assert (
+        Cell(arm="excl", site="kel", seed_index=0, multiplier=0, k=4, pre_months=24, post_months=12).cell_id
+        == "kel_s00_m+0_K4_P24_L12_excl"
+    )
+    assert (
+        Cell(arm="real", site="hot_t13", seed_index=None, multiplier=None, k=4, pre_months=24, post_months=6).cell_id
+        == "hot_t13_K4_P24_L6"
+    )
+    assert (
+        Cell(
+            arm="real", site="hot_tuneup", seed_index=None, multiplier=None, k=4, pre_months=None, post_months=None
+        ).cell_id
+        == "hot_tuneup_K4_Pmax_Lmax"
+    )
 
 
 def test_a_season_shift_is_named_and_shift_0_keeps_the_id() -> None:
-    assert Cell("main", "pen", 7, 1, 4, 12, 6, season_shift=3).cell_id == "pen_s07_m+1_K4_P12_L6_S3"
-    assert Cell("small", "pen", 7, 1, 4, 12, 6, season_shift=9).cell_id == "pen_s07_m+1_K4_P12_L6_S9_1pc"
-    assert Cell("main", "pen", 7, 1, 4, 12, 6, season_shift=0).cell_id == "pen_s07_m+1_K4_P12_L6"
+    assert (
+        Cell(
+            arm="main", site="pen", seed_index=7, multiplier=1, k=4, pre_months=12, post_months=6, season_shift=3
+        ).cell_id
+        == "pen_s07_m+1_K4_P12_L6_S3"
+    )
+    assert (
+        Cell(
+            arm="small", site="pen", seed_index=7, multiplier=1, k=4, pre_months=12, post_months=6, season_shift=9
+        ).cell_id
+        == "pen_s07_m+1_K4_P12_L6_S9_1pc"
+    )
+    assert (
+        Cell(
+            arm="main", site="pen", seed_index=7, multiplier=1, k=4, pre_months=12, post_months=6, season_shift=0
+        ).cell_id
+        == "pen_s07_m+1_K4_P12_L6"
+    )
 
 
 def test_each_season_shift_runs_every_synthetic_cell_and_the_real_ones_once() -> None:
@@ -238,7 +270,11 @@ KEL_PAIR = MatrixSettings(
 def test_plan_projects_cpu_hours_wall_time_and_memory() -> None:
     plan = plan_study(KEL_PAIR, workers=2)
     assert plan.n_cells == {"kel": 2}
-    assert plan.cpu_hours == pytest.approx(2 * cell_cost_s(Cell("main", "kel", 0, 1, 4, 12, 1)) / 3600)
+    assert plan.cpu_hours == pytest.approx(
+        2
+        * cell_cost_s(Cell(arm="main", site="kel", seed_index=0, multiplier=1, k=4, pre_months=12, post_months=1))
+        / 3600
+    )
     assert plan.wall_hours == pytest.approx(plan.cpu_hours / 2)
     assert plan.peak_memory_gb > 0
 
@@ -291,7 +327,10 @@ def test_the_small_change_arm_runs_at_every_k_with_its_own_ids() -> None:
 
 
 def test_half_the_campaigns_roll_out_to_the_whole_farm() -> None:
-    assert [Cell("main", "hot", i, 1, 4, 12, 6).full_rollout for i in range(4)] == [True, False, True, False]
+    assert [
+        Cell(arm="main", site="hot", seed_index=i, multiplier=1, k=4, pre_months=12, post_months=6).full_rollout
+        for i in range(4)
+    ] == [True, False, True, False]
 
 
 def test_settings_round_trip_through_json() -> None:
@@ -399,8 +438,25 @@ def test_a_failed_cell_still_records_its_campaign_draw(tmp_path: Path) -> None:
 
 def test_a_shifted_cell_records_its_shift_and_the_shifted_works(tmp_path: Path) -> None:
     cell = matrix_cells(SMALL)[0]
-    shifted = Cell(cell.arm, cell.site, cell.seed_index, cell.multiplier, cell.k, 24, 12, season_shift=6)
-    base = Cell(cell.arm, cell.site, cell.seed_index, cell.multiplier, cell.k, 24, 12)
+    shifted = Cell(
+        arm=cell.arm,
+        site=cell.site,
+        seed_index=cell.seed_index,
+        multiplier=cell.multiplier,
+        k=cell.k,
+        pre_months=24,
+        post_months=12,
+        season_shift=6,
+    )
+    base = Cell(
+        arm=cell.arm,
+        site=cell.site,
+        seed_index=cell.seed_index,
+        multiplier=cell.multiplier,
+        k=cell.k,
+        pre_months=24,
+        post_months=12,
+    )
     draw, base_draw = describe_cell(shifted, settings=SMALL)["draw"], describe_cell(base, settings=SMALL)["draw"]
     assert draw["trial"] == base_draw["trial"]
     months = {
@@ -413,7 +469,13 @@ def test_a_shifted_cell_records_its_shift_and_the_shifted_works(tmp_path: Path) 
 
 
 def test_the_real_campaign_describes_no_draw_before_it_runs() -> None:
-    assert describe_cell(Cell("real", "hot_t13", None, None, 4, 12, 3), settings=SMALL) == {}
+    assert (
+        describe_cell(
+            Cell(arm="real", site="hot_t13", seed_index=None, multiplier=None, k=4, pre_months=12, post_months=3),
+            settings=SMALL,
+        )
+        == {}
+    )
 
 
 def test_the_cell_record_names_each_unplanned_turbine(tmp_path: Path) -> None:
@@ -803,7 +865,10 @@ def test_one_small_campaign_runs_end_to_end(tmp_path: Path) -> None:
 
 
 def test_the_period_selector_takes_the_cells_k_and_the_matrix_shortest_side() -> None:
-    chosen = plan_settings(Cell("main", "hot", 0, 1, 6, 12, 1), settings=MatrixSettings(min_side_days=10))
+    chosen = plan_settings(
+        Cell(arm="main", site="hot", seed_index=0, multiplier=1, k=6, pre_months=12, post_months=1),
+        settings=MatrixSettings(min_side_days=10),
+    )
     assert chosen.k == 6
     assert chosen.min_side == pd.Timedelta(days=10)
     assert chosen.pre_cap == PlanSettings().pre_cap

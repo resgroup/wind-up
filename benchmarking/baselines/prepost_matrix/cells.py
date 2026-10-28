@@ -102,7 +102,7 @@ class MatrixSettings:
         return cls(**data)  # type: ignore[arg-type]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Cell:
     """One run of the matrix.
 
@@ -240,12 +240,14 @@ def matrix_cells(settings: MatrixSettings) -> list[Cell]:
     for site in settings.real:
         real = REAL_SITES[site]
         cells.extend(
-            Cell("real", site, None, None, k, p, n)
+            Cell(arm="real", site=site, seed_index=None, multiplier=None, k=k, pre_months=p, post_months=n)
             for k in settings.ks
             for p in real_pre_months(site, settings)
             for n in real_post_months(site, settings)
             if _long_enough(
-                real.longest_pre_months if p is None else p, real.longest_post_months if n is None else n, settings
+                real.longest_pre_months if p is None else p,
+                real.longest_post_months if n is None else n,
+                settings=settings,
             )
         )
     for site, n_seeds in settings.seeds.items():
@@ -253,19 +255,51 @@ def matrix_cells(settings: MatrixSettings) -> list[Cell]:
             for multiplier, p, n, shift in itertools.product(
                 settings.multipliers, settings.pre_months, settings.post_months, settings.season_shifts
             ):
-                if not _long_enough(p, n, settings):
+                if not _long_enough(p, n, settings=settings):
                     continue
                 for k in settings.ks:
-                    cells.append(Cell("main", site, index, multiplier, k, p, n, shift))
-                    cells.extend(Cell(arm, site, index, multiplier, k, p, n, shift) for arm in settings.small_arms)  # type: ignore[arg-type]
+                    cells.append(
+                        Cell(
+                            arm="main",
+                            site=site,
+                            seed_index=index,
+                            multiplier=multiplier,
+                            k=k,
+                            pre_months=p,
+                            post_months=n,
+                            season_shift=shift,
+                        )
+                    )
+                    cells.extend(
+                        Cell(
+                            arm=arm,  # type: ignore[arg-type]
+                            site=site,
+                            seed_index=index,
+                            multiplier=multiplier,
+                            k=k,
+                            pre_months=p,
+                            post_months=n,
+                            season_shift=shift,
+                        )
+                        for arm in settings.small_arms
+                    )
                 cells.extend(
-                    Cell(arm, site, index, multiplier, settings.exclusion_k, p, n, shift)  # type: ignore[arg-type]
+                    Cell(
+                        arm=arm,  # type: ignore[arg-type]
+                        site=site,
+                        seed_index=index,
+                        multiplier=multiplier,
+                        k=settings.exclusion_k,
+                        pre_months=p,
+                        post_months=n,
+                        season_shift=shift,
+                    )
                     for arm in settings.exclusion_arms
                 )
     return sorted(cells, key=lambda c: (-cell_cost_s(c), c.cell_id))
 
 
-def _long_enough(pre_months: int, post_months: int, settings: MatrixSettings) -> bool:
+def _long_enough(pre_months: int, post_months: int, *, settings: MatrixSettings) -> bool:
     """Whether a cell's before and after lengths together reach ``min_total_months``."""
     return pre_months + post_months >= settings.min_total_months
 

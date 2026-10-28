@@ -13,6 +13,7 @@ import pytest
 from matplotlib.patches import Circle
 
 from benchmarking.campaigns.data_screen import (
+    TABLE_COLUMNS,
     DataScreenSettings,
     screen_plan,
     write_data_screen,
@@ -268,3 +269,13 @@ class TestTheMaps:
         assert f"{screen.plan.start:%Y-%m-%d}" in title
         assert f"{screen.plan.end:%Y-%m-%d}" in title
         plt.close(fig)
+
+
+def test_a_plan_without_candidates_screens_to_an_empty_table() -> None:
+    scada = _scada()
+    plan = dataclasses.replace(_plan(scada), power_references=(), reserves=())
+    frame = scada[(scada.index >= plan.start) & (scada.index < plan.end)]
+    screen = screen_plan(plan, frame, spec=staggered_spec(), columns=HOT_COLUMNS)
+    assert screen.table.empty
+    assert list(screen.table.columns) == list(TABLE_COLUMNS)
+    assert screen.plan.power_references == ()

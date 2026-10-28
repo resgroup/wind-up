@@ -165,9 +165,11 @@ def screen_plan(
                 "correlation": _correlation(power[test], power[candidate], used=used),
             }
         )
-    table = pd.DataFrame(rows)
-    table["median_hours_before"] = float(np.median(table["hours_before"]))
-    table["median_hours_after"] = float(np.median(table["hours_after"]))
+    table = pd.DataFrame(
+        rows, columns=["test_wtg", "candidate", "rank", "distance_d", "hours_before", "hours_after", "correlation"]
+    )
+    table["median_hours_before"] = float(table["hours_before"].median())
+    table["median_hours_after"] = float(table["hours_after"].median())
     table["median_correlation"] = (
         float(np.nanmedian(table["correlation"])) if table["correlation"].notna().any() else np.nan
     )

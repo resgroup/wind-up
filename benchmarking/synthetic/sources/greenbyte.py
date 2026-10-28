@@ -192,7 +192,7 @@ def ensure_greenbyte_data(
     years = list(farm.years if years is None else years)
     have_static = (directory / farm.static_file).is_file()
     metadata_cached = (directory / ZENODO_METADATA_FILENAME).is_file()
-    if not metadata_cached and have_static and all(_local_zips(farm, year, directory) for year in years):
+    if not metadata_cached and have_static and all(_local_zips(farm, year=year, directory=directory) for year in years):
         return
     remote = zenodo_record_files(farm.record, output_dir=directory)
     sizes = {f["key"]: int(f["size"]) for f in remote}
@@ -200,7 +200,9 @@ def ensure_greenbyte_data(
     for year in years:
         keys = [k for k in sizes if re.fullmatch(rf"{farm.name}_SCADA_{year}_.*\.zip", k)]
         complete = [
-            p for p in _local_zips(farm, year, directory) if p.stat().st_size == sizes.get(p.name, p.stat().st_size)
+            p
+            for p in _local_zips(farm, year=year, directory=directory)
+            if p.stat().st_size == sizes.get(p.name, p.stat().st_size)
         ]
         if len(complete) < len(keys):
             wanted.extend(k for k in keys if directory / k not in complete)
@@ -210,7 +212,7 @@ def ensure_greenbyte_data(
     download_zenodo_data(farm.record, output_dir=directory, filenames=wanted)
 
 
-def _local_zips(farm: GreenbyteFarm, year: int, directory: Path) -> list[Path]:
+def _local_zips(farm: GreenbyteFarm, *, year: int, directory: Path) -> list[Path]:
     return sorted(directory.glob(f"{farm.name}*SCADA*{year}*.zip"))
 
 

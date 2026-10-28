@@ -220,18 +220,18 @@ class TestADeclaredSpan:
 
     def test_a_declared_reference_is_forced_in_despite_its_works(self) -> None:
         works = {"T1": [(utc("2020-03-01"), utc("2020-03-05"))]}
-        p = plan(line(6), span=self.SPAN, works=works, forced=["T1"])
+        p = plan(line(6), span=self.SPAN, works=works, allow_works_overlap=["T1"])
         assert p.forced == ("T1",)
         assert p.power_references == ("T2", "T3", "T4", "T5", "T1")
 
     def test_forcing_a_reference_needs_its_data(self) -> None:
         extents = {f"T{i}": EXTENT for i in range(6)} | {"T1": (utc("2020-01-01"), EXTENT[1])}
-        p = plan(line(6), span=self.SPAN, extents=extents, forced=["T1"])
+        p = plan(line(6), span=self.SPAN, extents=extents, allow_works_overlap=["T1"])
         assert p.forced == ()
 
     def test_forcing_does_nothing_without_a_declared_span(self) -> None:
         works = {"T1": [(utc("2020-03-01"), utc("2020-03-05"))]}
-        assert plan(line(6), works=works, forced=["T1"]).forced == ()
+        assert plan(line(6), works=works, allow_works_overlap=["T1"]).forced == ()
 
 
 def test_intervals_duration_merges_overlaps_and_clips() -> None:

@@ -108,3 +108,14 @@ def test_possible_yaw_changes_compares_each_candidate_with_the_rest_of_the_recor
     assert row["cp_shift"] == pytest.approx(0.1, abs=0.005)
     assert row["cp_null_max"] < 0.02  # well below the step
     assert row["cp_ratio"] > 5  # the step stands out from the rest of the record
+
+
+def test_cp_scan_skips_bins_with_no_power_before() -> None:
+    change = pd.Timestamp("2023-01-01", tz="UTC")
+    index, power, ws = _turbine(change=change, factor=1.1)
+    power[(index < change) & (ws < 8.0)] = 0.0
+    usable = np.ones(len(index), dtype=bool)
+    shifts = apparent_cp_scan(
+        index, power=power, wind_speed=ws, usable=usable, timebase=TIMEBASE, at=pd.DatetimeIndex([change])
+    )
+    assert shifts.iloc[0] == pytest.approx(0.1, abs=0.005)

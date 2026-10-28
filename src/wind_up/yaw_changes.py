@@ -119,14 +119,18 @@ class _DailyCp:
         return int((t.floor("D") - self.day0) / pd.Timedelta(days=1))
 
     def shift(self, at: int, *, window_days: int, min_count: float) -> float:
-        """Median fractional change in binned apparent Cp from the window before day ``at`` to the one from it."""
+        """Median fractional change in binned apparent Cp from the window before day ``at`` to the one from it.
+
+        A bin counts when both windows hold ``min_count`` records and the window before has a nonzero mean.
+        """
         lo, mid, hi = max(at - window_days, 0), min(max(at, 0), self.n_days), min(at + window_days, self.n_days)
         pre_n = self.counts[mid] - self.counts[lo]
         post_n = self.counts[hi] - self.counts[mid]
-        shared = (pre_n >= min_count) & (post_n >= min_count)
+        pre_sum = self.sums[mid] - self.sums[lo]
+        shared = (pre_n >= min_count) & (post_n >= min_count) & (pre_sum != 0)
         if not shared.any():
             return float("nan")
-        pre = (self.sums[mid] - self.sums[lo])[shared] / pre_n[shared]
+        pre = pre_sum[shared] / pre_n[shared]
         post = (self.sums[hi] - self.sums[mid])[shared] / post_n[shared]
         return float(np.median((post - pre) / pre))
 
@@ -148,7 +152,7 @@ def apparent_cp_scan(
 
     A shift is the median over wind-speed bins of the fractional change in mean apparent Cp from the
     ``window`` before the date to the ``window`` from it. A bin counts when each side has at least
-    ``min_bin_hours`` of records; NaN when none does.
+    ``min_bin_hours`` of records and the side before has a nonzero mean; NaN when none does.
     """
     daily = _DailyCp(index, power=power, wind_speed=wind_speed, usable=usable, bin_edges=bin_edges)
     window_days = int(window / pd.Timedelta(days=1))

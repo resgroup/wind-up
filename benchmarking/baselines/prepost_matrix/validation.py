@@ -12,9 +12,8 @@ one-line verdict; :func:`write_report` saves the tables as CSV beside the study 
   campaign's season shifts, so it needs a matrix whose campaigns run in more than one season;
 - **iv** the sigma covers the error at the 68 % it claims, for the headline, the references and the
   bins, at every recorded block length;
-- **option 2** the headline and the forward reading against the full reversal (lambda 1) and against the computed
-  lambda of the reversal spec, here from the recorded fixed-model bootstrap sigmas, which leave out the
-  fitting error and so overstate the reverse direction's precision on short after periods;
+- **option 2** where the cells recorded the reverse direction, the headline and the forward reading against the
+  full reversal (lambda 1) and against the computed lambda from the recorded bootstrap sigmas;
 - **open questions** the error against the share of after-period hours the waking configuration rule
   removes (step 11 ii), and the reference readings against the data screen's measures (step 9).
 
@@ -76,8 +75,6 @@ _SHARE_REASONS = {
     "changed_upwind_of_reference": CHANGED_UPWIND_OF_REFERENCE,
     "changed_upwind_of_subject": CHANGED_UPWIND_OF_SUBJECT,
 }
-# Run 4 (b045d99), before the wake reach: the median usable share of before hours by site and K.
-RUN4_USABLE_BEFORE = "0.17 to 0.37"
 _SEASONS = {12: "DJF", 1: "DJF", 2: "DJF", 3: "MAM", 4: "MAM", 5: "MAM", 6: "JJA", 7: "JJA", 8: "JJA"}
 _PP = 100.0
 
@@ -116,7 +113,7 @@ def lambda_star(
     return np.clip(lam, 0.0, 1.0)
 
 
-def lambda_uplift(forward: np.ndarray | pd.Series, reverse: np.ndarray | pd.Series, lam: np.ndarray) -> np.ndarray:
+def lambda_uplift(forward: np.ndarray | pd.Series, reverse: np.ndarray | pd.Series, *, lam: np.ndarray) -> np.ndarray:
     """Return ``exp(f - lam * (f + g) / 2) - 1``, the uplift at ``lam`` between forward (0) and full reversal (1)."""
     f = np.log1p(np.asarray(forward, dtype=float))
     g = np.log1p(np.asarray(reverse, dtype=float))
@@ -268,7 +265,7 @@ def _with_estimators(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.assign(
         reversal=reversal_uplift(frame["uplift_forward"], frame["uplift_reverse"]),
         lambda_star=lam,
-        **{"lambda": lambda_uplift(frame["uplift_forward"], frame["uplift_reverse"], lam)},
+        **{"lambda": lambda_uplift(frame["uplift_forward"], frame["uplift_reverse"], lam=lam)},
     )
 
 
@@ -404,7 +401,7 @@ def _season_within_rows(synthetic: pd.DataFrame) -> list[dict[str, Any]]:
     return rows
 
 
-def _coverage(errors: np.ndarray, sigmas: np.ndarray, campaigns: np.ndarray) -> dict[str, float]:
+def _coverage(errors: np.ndarray, *, sigmas: np.ndarray, campaigns: np.ndarray) -> dict[str, float]:
     ok = np.isfinite(errors) & np.isfinite(sigmas) & (sigmas > 0)
     z = errors[ok] / sigmas[ok]
     within = (np.abs(z) <= 1.0).astype(float)
@@ -436,7 +433,7 @@ def component_sigmas(frame: pd.DataFrame) -> dict[str, np.ndarray]:
     return out
 
 
-def coverage_table(records: list[dict[str, Any]], turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
+def coverage_table(records: list[dict[str, Any]], *, turbines: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
     """Target iv: how often the error falls within one sigma, per quantity and recorded block length."""
     rows = []
     for quantity, frame in (("test", turbines[turbines["arm"] != "real"]), ("reference", references)):
@@ -446,11 +443,19 @@ def coverage_table(records: list[dict[str, Any]], turbines: pd.DataFrame, refere
             errors = _errors(frame, "headline").to_numpy(dtype=float)
             sigmas = frame[column].to_numpy(dtype=float)
             rows.append(
-                {"quantity": quantity, "block": column, **_coverage(errors, sigmas, frame["campaign"].to_numpy())}
+                {
+                    "quantity": quantity,
+                    "block": column,
+                    **_coverage(errors, sigmas=sigmas, campaigns=frame["campaign"].to_numpy()),
+                }
             )
         errors = _errors(frame, "headline").to_numpy(dtype=float)
         rows += [
-            {"quantity": quantity, "block": name, **_coverage(errors, sigmas, frame["campaign"].to_numpy())}
+            {
+                "quantity": quantity,
+                "block": name,
+                **_coverage(errors, sigmas=sigmas, campaigns=frame["campaign"].to_numpy()),
+            }
             for name, sigmas in component_sigmas(frame).items()
         ]
     bins = pd.DataFrame(
@@ -463,7 +468,9 @@ def coverage_table(records: list[dict[str, Any]], turbines: pd.DataFrame, refere
             {
                 "quantity": f"bins_{condition}",
                 "block": "sigma",
-                **_coverage(errors, group["sigma"].to_numpy(dtype=float), group["campaign"].to_numpy()),
+                **_coverage(
+                    errors, sigmas=group["sigma"].to_numpy(dtype=float), campaigns=group["campaign"].to_numpy()
+                ),
             }
         )
     return pd.DataFrame(rows)
@@ -510,7 +517,9 @@ def shape_table(records: list[dict[str, Any]]) -> pd.DataFrame:
                 "rmse": float(np.sqrt(np.nanmean(errors**2))),
                 "rmse_flat": float(np.sqrt(np.nanmean(group["flat_error"].to_numpy(dtype=float) ** 2))),
                 "coverage": _coverage(
-                    errors, pd.to_numeric(group["sigma"]).to_numpy(dtype=float), group["campaign"].to_numpy()
+                    errors,
+                    sigmas=pd.to_numeric(group["sigma"]).to_numpy(dtype=float),
+                    campaigns=group["campaign"].to_numpy(),
                 )["coverage"],
                 "n": bias["n"],
                 "campaigns": bias["campaigns"],
@@ -540,9 +549,13 @@ def period_coverage_table(turbines: pd.DataFrame, references: pd.DataFrame) -> p
                     "bias": bias["mean"],
                     "bias_se": bias["se"],
                     "rmse": float(np.sqrt(np.mean(finite**2))) if finite.size else np.nan,
-                    **_coverage(errors, group["sigma"].to_numpy(dtype=float), group["campaign"].to_numpy()),
+                    **_coverage(
+                        errors, sigmas=group["sigma"].to_numpy(dtype=float), campaigns=group["campaign"].to_numpy()
+                    ),
                     **{
-                        f"coverage_{name}": _coverage(errors, sigmas, group["campaign"].to_numpy())["coverage"]
+                        f"coverage_{name}": _coverage(errors, sigmas=sigmas, campaigns=group["campaign"].to_numpy())[
+                            "coverage"
+                        ]
                         for name, sigmas in component_sigmas(group).items()
                     },
                 }
@@ -701,7 +714,7 @@ def validation_tables(
         "i_references": references_table(domain, domain_turbines),
         "ii_linearity": linearity_table(domain_turbines),
         "iii_dependence": dependence_table(domain_turbines),
-        "iv_coverage": coverage_table(domain, domain_turbines, domain_references),
+        "iv_coverage": coverage_table(domain, turbines=domain_turbines, references=domain_references),
         "iv_coverage_by_period": period_coverage_table(turbines, references),
         "v_shape": shape_table(domain),
         "unmeasured": unmeasured_table([*records, *unmeasured]),
@@ -825,7 +838,7 @@ def describe(tables: dict[str, pd.DataFrame], *, n_cells: int, n_domain: int, n_
         )
     usable = tables["usable_share"]
     if not usable.empty:
-        lines += ["", f"## Usable hours (C10); run 4 median usable share of before hours {RUN4_USABLE_BEFORE}"]
+        lines += ["", "## Usable hours"]
         for row in usable[usable["pre_months"] == "all"].itertuples():
             lines.append(
                 f"- usable share of before hours: {row.arm} {row.site} {row.usable_before:.2f}, after "

@@ -18,9 +18,8 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from wind_up.campaign_design import REFERENCES_PER_TEST_TURBINE
 from wind_up.layout import NAME_COL, ROTOR_DIAMETER_COL, Layout
-from wind_up.wake_reach import DEFAULT_DEMOTION_SHARE, MAX_REACH_D, candidate_cost
+from wind_up.wake_reach import DEFAULT_DEMOTION_SHARE, MAX_REACH_D, REFERENCES_PER_TEST_TURBINE, candidate_cost
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -260,34 +259,36 @@ class _Timeline:
     def within(self, other: str) -> bool:
         return self.distances_d[other] <= self.settings.max_reference_distance_d
 
-    def overlapping_works(self, other: str, start: pd.Timestamp, end: pd.Timestamp) -> Window | None:
+    def overlapping_works(self, other: str, *, start: pd.Timestamp, end: pd.Timestamp) -> Window | None:
         return next(((w0, w1) for w0, w1 in self.works.get(other, []) if w0 < end and w1 > start), None)
 
-    def has_data(self, other: str, start: pd.Timestamp, end: pd.Timestamp) -> bool:
+    def has_data(self, other: str, *, start: pd.Timestamp, end: pd.Timestamp) -> bool:
         extent = self.extents.get(other)
         return extent is not None and extent[0] <= start and extent[1] >= end
 
-    def eligible(self, other: str, start: pd.Timestamp, end: pd.Timestamp) -> bool:
-        return self.has_data(other, start, end) and self.overlapping_works(other, start, end) is None
+    def eligible(self, other: str, *, start: pd.Timestamp, end: pd.Timestamp) -> bool:
+        return (
+            self.has_data(other, start=start, end=end) and self.overlapping_works(other, start=start, end=end) is None
+        )
 
-    def why_not(self, other: str, start: pd.Timestamp, end: pd.Timestamp) -> str:
+    def why_not(self, other: str, *, start: pd.Timestamp, end: pd.Timestamp) -> str:
         """Why ``other`` is not eligible over ``[start, end)``, or its distance when that is the reason."""
         if other not in self.ranked:
             return "not offered as a reference"
-        clash = self.overlapping_works(other, start, end)
+        clash = self.overlapping_works(other, start=start, end=end)
         if clash is not None:
             return f"works {_day(clash[0])}..{_day(clash[1] - pd.Timedelta(days=1))} overlap the span"
-        if not self.has_data(other, start, end):
+        if not self.has_data(other, start=start, end=end):
             return "no data over the whole span"
         return f"beyond {self.settings.max_reference_distance_d:g} D ({self.distances_d[other]:.1f} D)"
 
     def usable_eligible(self, start: pd.Timestamp, end: pd.Timestamp) -> list[str]:
         """Eligible candidates within the distance limit, best-ranked first."""
-        return [r for r in self.ranked if self.within(r) and self.eligible(r, start, end)]
+        return [r for r in self.ranked if self.within(r) and self.eligible(r, start=start, end=end)]
 
     def pool_met(self, start: pd.Timestamp, end: pd.Timestamp) -> bool:
         pool = self.ranked[: self.settings.pool_size]
-        good = [r for r in pool if self.within(r) and self.eligible(r, start, end)]
+        good = [r for r in pool if self.within(r) and self.eligible(r, start=start, end=end)]
         return bool(pool) and pool[0] in good and len(good) >= self.settings.pool_min_eligible
 
     def pool_reason(self, start: pd.Timestamp, end: pd.Timestamp) -> str:
@@ -299,9 +300,9 @@ class _Timeline:
             return "no candidate references"
         parts = []
         best = pool[0]
-        if not (self.within(best) and self.eligible(best, start, end)):
-            parts.append(f"best-ranked {best} is not eligible ({self.why_not(best, start, end)})")
-        good = [r for r in pool if self.within(r) and self.eligible(r, start, end)]
+        if not (self.within(best) and self.eligible(best, start=start, end=end)):
+            parts.append(f"best-ranked {best} is not eligible ({self.why_not(best, start=start, end=end)})")
+        good = [r for r in pool if self.within(r) and self.eligible(r, start=start, end=end)]
         if len(good) < self.settings.pool_min_eligible:
             names = f": {', '.join(good)}" if good else ""
             parts.append(
@@ -397,7 +398,7 @@ def plan_analysis(
     extents: Mapping[str, Window],
     candidates: Sequence[str],
     span: Window | None = None,
-    forced: Sequence[str] = (),
+    allow_works_overlap: Sequence[str] = (),
     settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
 ) -> AnalysisPlan:
     """Choose ``turbine``'s span and power references, or use the declared ``span``.
@@ -410,8 +411,8 @@ def plan_analysis(
     :param extents: each turbine's data extent, ``(first, end)`` with end exclusive
     :param candidates: the turbines that may be power references
     :param span: a declared span, used as given
-    :param forced: declared references to use as power references over a declared ``span`` even
-        when their works overlap it
+    :param allow_works_overlap: declared references to use as power references over a declared ``span``
+        even when their works overlap it; they are the plan's ``forced``
     :param settings: how spans and references are chosen
     :raises ValueError: when no span gives both sides ``settings.min_side`` with at least one power
         reference, or a declared span has no power reference
@@ -431,11 +432,11 @@ def plan_analysis(
     if span is not None:
         forced_in = tuple(
             r
-            for r in forced
+            for r in allow_works_overlap
             if r in timeline.distances_d
             and r not in option.references
-            and timeline.has_data(r, start, end)
-            and timeline.overlapping_works(r, start, end) is not None
+            and timeline.has_data(r, start=start, end=end)
+            and timeline.overlapping_works(r, start=start, end=end) is not None
         )
     references = (*option.references, *forced_in)
     if not references:
@@ -448,7 +449,7 @@ def plan_analysis(
         other: (
             f"reserve: beyond the best-ranked {settings.k}"
             if other in reserves
-            else timeline.why_not(other, start, end)
+            else timeline.why_not(other, start=start, end=end)
         )
         for other in timeline.distances_d
         if other not in references

@@ -25,6 +25,8 @@ Rose = npt.NDArray[np.float64]
 REACH_TABLE_D: tuple[tuple[float, float], ...] = ((0.0, 0.0), (0.01, 4.0), (0.03, 8.0), (0.05, 12.0), (0.10, 20.0))
 MAX_REACH_D = 20.0
 OFFSHORE_FACTOR = 2.0
+# How many references each test turbine needs.
+REFERENCES_PER_TEST_TURBINE = 3
 # A candidate reference the test turbine is upwind of for more than this share of the rose is demoted.
 DEFAULT_DEMOTION_SHARE = 0.20
 

@@ -389,8 +389,8 @@ def draw_rollout(
 ) -> RolloutDraw:
     """Draw a trial-then-rollout campaign on ``site``, as its tile ``tile``.
 
-    The trial is a compliant campaign design of one to three test turbines, never more than one
-    fewer than the site allows, none of ``site.excluded``: the design with the highest total kept
+    The trial is a compliant campaign design of one to three test turbines, at most one fewer than
+    the site allows (one when it allows only one), none of ``site.excluded``: the design with the highest total kept
     share for an upgrade expected to give ``expected_uplift`` under ``rose``, among the turbines not
     in ``tested``, or among all of them when those cannot make the trial.
     Its works start at the fractional part of ``tile * TILE_STEP`` along the days from 24 months
