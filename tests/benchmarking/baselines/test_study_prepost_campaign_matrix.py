@@ -828,7 +828,7 @@ def test_method_overrides_reach_the_matrix_method(tmp_path: Path) -> None:
     assert dumped.row_dump_dir == tmp_path / "dump"  # type: ignore[attr-defined]
     # the matrix's own overrides survive
     assert dumped.model_params["n_jobs"] == 1  # type: ignore[attr-defined]
-    assert dumped.record_reversal is True  # type: ignore[attr-defined]
+    assert dumped.save_plots is False  # type: ignore[attr-defined]
 
 
 def _sigma_records() -> list[dict[str, Any]]:
