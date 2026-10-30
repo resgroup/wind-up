@@ -1,8 +1,9 @@
 import pandas as pd
 
 from wind_up.constants import TIMESTAMP_COL
-from wind_up.interface import PrePostSplitter
+from wind_up.interface import PrePostSplitter, _preprocess_cache_key
 from wind_up.models import WindUpConfig
+from wind_up.reanalysis_data import ReanalysisDataset
 
 
 def _toggle_df(idx: pd.DatetimeIndex) -> pd.DataFrame:
@@ -54,3 +55,21 @@ def test_split_without_borrow_leaves_non_test_wtg_post_empty(test_marge_config: 
     _test_df, _pre_df, post_df = splitter.split(wtg_scada, test_wtg_name="MRG_T02")
     # Regression demo: this is the crashing case — no borrow, no post data.
     assert post_df.empty
+
+
+def test_preprocess_cache_key_changes_with_inputs(test_lsa_t13_config: WindUpConfig) -> None:
+    inputs = {
+        "cfg": test_lsa_t13_config,
+        "scada_df": pd.DataFrame({"ActivePowerMean": [1.0, 2.0]}),
+        "metadata_df": pd.DataFrame({"Name": ["LSA_T13"]}),
+        "reanalysis_datasets": [ReanalysisDataset(id="ERA5", data=pd.DataFrame({"100_m_hws_mean_mps": [5.0]}))],
+    }
+    key = _preprocess_cache_key(**inputs)
+    assert key == _preprocess_cache_key(**inputs)
+    new_cfg = test_lsa_t13_config.model_copy(update={"exclusion_periods_utc": []})
+    assert key != _preprocess_cache_key(**{**inputs, "cfg": new_cfg})
+    new_scada_df = pd.DataFrame({"ActivePowerMean": [1.0, 3.0]})
+    assert key != _preprocess_cache_key(**{**inputs, "scada_df": new_scada_df})
+    # turbine coordinates are copied into cfg from metadata_df after preprocessing
+    test_lsa_t13_config.asset.wtgs[0].latitude = 52.4
+    assert key == _preprocess_cache_key(**inputs)
