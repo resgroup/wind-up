@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from wind_up import __version__
 from wind_up.caching import with_pickle_cache
 from wind_up.constants import REANALYSIS_WD_COL
 from wind_up.northing import add_wf_yawdir, apply_northing_corrections
@@ -176,7 +178,13 @@ class AssessmentInputs:
         :param cache_dir: directory for caching
         :return: instance of AssessmentInputs
         """
-        func = preprocess if cache_dir is None else with_pickle_cache(cache_dir / "preprocess.pickle")(preprocess)
+        if cache_dir is None:
+            func = preprocess
+        else:
+            key = _preprocess_cache_key(
+                cfg=cfg, scada_df=scada_df, metadata_df=metadata_df, reanalysis_datasets=reanalysis_datasets
+            )
+            func = with_pickle_cache(cache_dir / "preprocess.pickle", key=key)(preprocess)
         wf_df, pc_per_ttype = func(
             cfg=cfg,
             plot_cfg=plot_cfg,
@@ -194,6 +202,23 @@ class AssessmentInputs:
             pre_post_splitter=pre_post_splitter,
             mast_or_lidar_datasets=mast_or_lidar_datasets,
         )
+
+
+def _preprocess_cache_key(
+    *,
+    cfg: WindUpConfig,
+    scada_df: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+    reanalysis_datasets: list[ReanalysisDataset],
+) -> str:
+    """Hash the inputs of `preprocess` so that a cached result is only used for the same inputs."""
+    # turbine coordinates are copied into cfg from metadata_df after preprocessing, so leave them out
+    cfg_json = cfg.model_dump_json(exclude={"asset": {"wtgs": {"__all__": {"latitude", "longitude"}}}})
+    h = hashlib.sha256(f"{__version__}{cfg_json}".encode())
+    for name, df in [("scada", scada_df), ("metadata", metadata_df)] + [(d.id, d.data) for d in reanalysis_datasets]:
+        h.update(f"{name}{list(df.columns)}".encode())
+        h.update(pd.util.hash_pandas_object(df).to_numpy().tobytes())
+    return h.hexdigest()
 
 
 def _get_filtered_wf_df_and_cfg_with_latlongs(
