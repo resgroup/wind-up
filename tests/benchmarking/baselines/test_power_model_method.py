@@ -2650,6 +2650,30 @@ class TestNoHoldoutWindow:
         assert np.isfinite(out.sigma_overall)
         expected = combined_sigma(row["sigma_sampling"], reference=row["sigma_reference"], holdout=0.0, correlation=0.5)
         assert out.sigma_overall == pytest.approx(expected)
+        (warning,) = [w for w in out.warnings if "held-out" in w.message]
+        assert (warning.severity, warning.step, warning.turbine) == ("medium", 14, "T1")
+        assert "left out of the headline sigma" in warning.message
+
+    def test_a_fitted_window_without_a_finite_pair_keeps_its_nan_sigma(self, caplog: pytest.LogCaptureFixture) -> None:
+        method = _screen_method(training_period="before")
+        fitted = {"sigma_holdout": float("nan"), "n_holdout_blocks": 1.0}
+        unfitted = {"sigma_holdout": float("nan"), "n_holdout_blocks": 0.0}
+        toggle = {"sigma_holdout": 0.0, "n_holdout_blocks": 0.0}
+        with caplog.at_level(logging.WARNING):
+            sigma, (warning,) = method._holdout_component(fitted, test_wtg="T1")  # noqa: SLF001
+            assert np.isnan(sigma)
+            assert (warning.severity, warning.step) == ("medium", 14)
+            assert "1 held-out window" in warning.message
+            assert "no finite" in warning.message
+            assert method._holdout_component(unfitted, test_wtg="T1")[0] == 0.0  # noqa: SLF001
+            assert method._holdout_component(toggle, test_wtg="T1") == (0.0, ())  # noqa: SLF001
+            assert method._holdout_component({}, test_wtg="T1") == (0.0, ())  # noqa: SLF001
+        assert [r.getMessage() for r in caplog.records] == [
+            f"{method.name} T1: 1 held-out window fit the training period but read no finite pair, so the holdout "
+            "sigma is NaN",
+            f"{method.name} T1: no held-out window of the predicted period's length fits the training period, "
+            "so the holdout sigma is left out of the headline sigma",
+        ]
 
 
 class TestConfigurationErrors:

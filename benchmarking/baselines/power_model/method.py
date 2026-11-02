@@ -679,7 +679,8 @@ class PowerModelMethod:
         ``<row_dump_dir>/<test_wtg>/rows.parquet`` with a ``rows.json`` sidecar, for the level probe.
         A reference reading of the reference-uplift report dumps under
         ``<row_dump_dir>/<test_wtg>/references/<reference>/``; the screening clone does not dump.
-        ``None`` (**default**) writes nothing
+        A toggle estimate's dump marks the strict off-blocks as ``baseline``, not the lenient
+        training rows its model fitted on. ``None`` (**default**) writes nothing
 
     The reference pool is the campaign's candidate references (the context's
     ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
@@ -898,7 +899,7 @@ class PowerModelMethod:
         holdout = self._holdout_sigma(
             mi, features=features, y=y_arr, training_sel=training_sel, predicted_sel=predicted_sel, index=index
         )
-        sigma_holdout = self._holdout_component(holdout, test_wtg=mi.test_wtg)
+        sigma_holdout, holdout_warnings = self._holdout_component(holdout, test_wtg=mi.test_wtg)
         sigma = combined_sigma(
             summary["sigma"],
             reference=correction.get("sigma_reference", 0.0),
@@ -988,7 +989,7 @@ class PowerModelMethod:
             reference_uplifts=reference_uplifts,
             screen_passes=screen.passes if screen is not None else None,
             labeled_rows=None if shape is None else shape.labels,
-            warnings=warnings,
+            warnings=(*warnings, *holdout_warnings),
         )
 
     def _exchanged(self, mi: MethodInput) -> bool:
@@ -1176,21 +1177,33 @@ class PowerModelMethod:
             },
         )
 
-    def _holdout_component(self, holdout: Mapping[str, float], *, test_wtg: str) -> float:
-        """Return the holdout sigma to join to the headline: 0 when no held-out window fit, with a warning.
+    def _holdout_component(
+        self, holdout: Mapping[str, float], *, test_wtg: str
+    ) -> tuple[float, tuple[AnalysisWarning, ...]]:
+        """Return the holdout sigma to join to the headline and the step 14 warning its absence raises.
 
-        The uncertainty row keeps the NaN and ``n_holdout_blocks`` of 0, so the omission is on record.
+        No held-out window fitting gives 0 and a medium warning; the uncertainty row keeps the NaN and
+        ``n_holdout_blocks`` of 0, so the omission is on record. A window that fit but read no finite
+        pair keeps the NaN sigma with a medium warning, since that uncertainty is unquantified rather
+        than absent. A finite sigma passes through without a warning.
         """
         sigma = float(holdout.get("sigma_holdout", 0.0))
         if np.isfinite(sigma):
-            return sigma
-        logger.warning(
-            "%s %s: no held-out window of the predicted period's length fits the training period, so the holdout "
-            "sigma is left out of the headline sigma",
-            self.name,
-            test_wtg,
-        )
-        return 0.0
+            return sigma, ()
+        n_blocks = int(holdout.get("n_holdout_blocks", 0.0))
+        if n_blocks > 0:
+            message = (
+                f"{n_blocks} held-out window{'s' if n_blocks > 1 else ''} fit the training period but read no "
+                "finite pair, so the holdout sigma is NaN"
+            )
+        else:
+            sigma = 0.0
+            message = (
+                "no held-out window of the predicted period's length fits the training period, so the holdout "
+                "sigma is left out of the headline sigma"
+            )
+        logger.warning("%s %s: %s", self.name, test_wtg, message)
+        return sigma, (AnalysisWarning(severity="medium", step=14, turbine=test_wtg, message=message),)
 
     def _holdout_sigma(
         self,
@@ -1735,8 +1748,12 @@ class PowerModelMethod:
 
         ``baseline`` and ``upgraded`` are the campaign's selected before and after rows whichever
         period trained; ``predicted`` marks the rows the counterfactual is written on, the after rows
-        unless ``swapped``. ``uplift`` is the headline: the dumped sums give ``actual / counterfactual - 1``,
-        or its inverse when ``swapped``.
+        unless ``swapped``. ``uplift`` is the forward counterfactual ratio read as upgraded over
+        baseline, before the reversal combination and the reference correction: the dumped sums give
+        ``actual / counterfactual - 1``, or its inverse when ``swapped``. Known limit: a toggle
+        estimate fits on the lenient training baseline (pre-campaign rows and off-blocks), but
+        ``baseline`` and ``n_baseline_rows`` carry the strict off-blocks only, so its fit cannot be
+        rebuilt from the dump; left as is while the toggle leg is due to change.
         """
         assert self.row_dump_dir is not None  # noqa: S101
         out_dir = Path(self.row_dump_dir) / mi.test_wtg

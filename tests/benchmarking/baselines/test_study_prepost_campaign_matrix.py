@@ -15,6 +15,7 @@ import pytest
 from benchmarking.baselines import study_prepost_campaign_matrix as driver
 from benchmarking.baselines.prepost_matrix.cells import (
     CELL_COST_S,
+    PEAK_RSS_MB,
     REAL_SITES,
     SIZES,
     Cell,
@@ -1184,3 +1185,13 @@ def test_a_cell_outside_the_cost_table_costs_as_its_sites_nearest_k_or_the_table
     assert cell_cost_s(cell("hot", 5)) == CELL_COST_S[("hot", 6)]
     assert cell_cost_s(cell("new_site", 4)) == max(CELL_COST_S.values())
     assert matrix_cells(MatrixSettings(seeds={"hot": 1}, ks=(2,), post_months=(6,), real=()))
+
+
+def test_the_plan_costs_a_site_outside_the_tables_as_the_dearest_known() -> None:
+    settings = MatrixSettings(
+        seeds={"new_site": 1}, multipliers=(1,), ks=(4,), pre_months=(12,), post_months=(6,), small_arms=(), real=()
+    )
+    plan = plan_study(settings, workers=1)
+    assert plan.n_cells == {"new_site": 2}
+    assert plan.cpu_hours == pytest.approx(2 * max(CELL_COST_S.values()) / 3600)
+    assert plan.peak_memory_gb == pytest.approx(max(PEAK_RSS_MB.values()) / 1024)

@@ -88,7 +88,7 @@ from benchmarking.baselines.block_bootstrap import (
 from benchmarking.baselines.filtering import NormalOperationFilter
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import condition_bins, energy_ratio_by_bin, validate_conditions
-from benchmarking.harness.method import MethodInput, MethodOutput
+from benchmarking.harness.method import MethodConfigurationError, MethodInput, MethodOutput
 from benchmarking.harness.toggle import (
     ToggleRowSets,
     gap_to_other_segment,
@@ -774,7 +774,7 @@ class ToggleSpecialistMethod:
                 f"{self.name}: pairing_max_gap {gap} must be a positive whole multiple of the timebase "
                 f"{timebase}; a shorter gap can never reach a row of the other segment."
             )
-            raise ValueError(msg)
+            raise MethodConfigurationError(msg)
 
     def _toggle_period(self, timebase: pd.Timedelta) -> pd.Timedelta:
         """Return ``toggle_period`` after checking it tiles the timebase grid."""
@@ -785,7 +785,7 @@ class ToggleSpecialistMethod:
                 f"{self.name}: toggle_period {block} must be a positive whole multiple of the timebase "
                 f"{timebase}; a period that does not tile the timebase grid cannot hold whole records."
             )
-            raise ValueError(msg)
+            raise MethodConfigurationError(msg)
         return block
 
     def _toggle_datum(self, mi: MethodInput, index: pd.DatetimeIndex) -> pd.Timestamp:
@@ -793,7 +793,7 @@ class ToggleSpecialistMethod:
         datum = pd.Timestamp(self.toggle_datum)
         if (datum.tz is None) != (index.tz is None):
             msg = f"{self.name}: toggle_datum {datum} and the data index must both be tz-aware or both naive"
-            raise ValueError(msg)
+            raise MethodConfigurationError(msg)
         timing = mi.upgrade_timing
         if isinstance(timing, ToggleSchedule) and len(index):
             first = timing.start if timing.start is not None else index.min()
@@ -802,7 +802,7 @@ class ToggleSpecialistMethod:
                     f"{self.name}: the ToggleSchedule tiles its cycles from {first}, which is not on the "
                     f"toggle_datum {datum} grid of {self.toggle_period}"
                 )
-                raise ValueError(msg)
+                raise MethodConfigurationError(msg)
         return datum
 
     def _bin_power(

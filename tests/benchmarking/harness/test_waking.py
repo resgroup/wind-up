@@ -213,5 +213,9 @@ def test_directions_built_from_another_frame_are_refused() -> None:
         }
     )
     directions = waking_directions(shorter, columns=COLS, layout=layout, test_turbines=["T02"])
-    with pytest.raises(ValueError, match="directions"):
+    with pytest.raises(ValueError, match=r"directions do not cover scada_df: 1 timestamp\(s\)") as e:
+        add_waking_scenarios(scada, columns=COLS, layout=layout, test_turbines=["T02"], directions=directions)
+    assert "turbine" not in str(e.value)
+    scada[COLS.turbine] = scada[COLS.turbine].replace({"T03": "T04"})
+    with pytest.raises(ValueError, match=r"the turbines \['T04'\]"):
         add_waking_scenarios(scada, columns=COLS, layout=layout, test_turbines=["T02"], directions=directions)

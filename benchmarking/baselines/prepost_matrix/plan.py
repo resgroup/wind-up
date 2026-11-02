@@ -63,7 +63,11 @@ def measured_costs(study_dir: Path) -> tuple[dict[tuple[str, int], float], dict[
 
 
 def plan_study(settings: MatrixSettings, *, workers: int, measured: Path | None = None) -> Plan:
-    """Project ``settings``' cost on ``workers`` workers, from ``measured``'s costs where it has them."""
+    """Project ``settings``' cost on ``workers`` workers, from ``measured``'s costs where it has them.
+
+    A site neither table knows costs as the dearest known cell (:func:`cell_cost_s`) and the largest
+    known peak RSS.
+    """
     costs, rss = dict(CELL_COST_S), dict(PEAK_RSS_MB)
     if measured is not None:
         found_costs, found_rss = measured_costs(measured)
@@ -71,7 +75,7 @@ def plan_study(settings: MatrixSettings, *, workers: int, measured: Path | None 
         rss |= found_rss
     cells = matrix_cells(settings)
     durations = sorted((cell_cost_s(c, costs) for c in cells), reverse=True)
-    peak_mb = max((rss[c.site] for c in cells), default=0.0)
+    peak_mb = max((rss.get(c.site, max(rss.values())) for c in cells), default=0.0)
     return Plan(
         n_cells=dict(Counter(c.site for c in cells)),
         workers=workers,
