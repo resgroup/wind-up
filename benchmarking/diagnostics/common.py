@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+import matplotlib.pyplot as plt
+
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.coverage import (
     plot_excluded_fraction,
@@ -77,10 +79,15 @@ def write_common_diagnostics(ctx: DiagnosticContext, *, skip_stages: frozenset[s
     for stage, plot in _PLOTS:
         if stage in skip_stages:
             continue
+        open_before = set(plt.get_fignums())
         try:
             path = plot(ctx)
         except Exception:
             logger.exception("diagnostic plot %s failed for %s", plot.__name__, ctx.test_wtg)
+            # A plot that raised never reached its save-and-close, so close what it opened: a long
+            # run carries on past many such failures and would otherwise keep every figure alive.
+            for number in set(plt.get_fignums()) - open_before:
+                plt.close(number)
             continue
         if isinstance(path, list):
             written.extend(path)

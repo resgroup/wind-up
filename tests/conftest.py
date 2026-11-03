@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib as mpl
 import pytest
@@ -11,6 +12,9 @@ from tests.test_data.hot.data_loader import WindUpComponents, construct_hot_wind
 from wind_up_v0.constants import PROJECTROOT_DIR
 from wind_up_v0.models import WindUpConfig
 from wind_up_v0.result_manager import result_manager
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 mpl.use("Agg")
 
@@ -30,6 +34,21 @@ def _empty_stored_warnings() -> None:
     recorded warning counts depend on what ran before.
     """
     result_manager.stored_warnings = []
+
+
+@pytest.fixture(autouse=True)
+def _close_figures() -> Iterator[None]:
+    """Close every pyplot figure a test leaves open.
+
+    pyplot keeps figures alive until closed, and its "more than 20 figures" RuntimeWarning is an
+    error under ``filterwarnings = error``. Tests that inspect a returned figure rarely close it, so
+    without this the plotting tests that happen to share an xdist worker with them fail, depending
+    on how files land on workers.
+    """
+    yield
+    import matplotlib.pyplot as plt  # noqa: PLC0415  (after mpl.use("Agg") above)
+
+    plt.close("all")
 
 
 def _set_legacy_datetimes(cfg: WindUpConfig) -> None:
