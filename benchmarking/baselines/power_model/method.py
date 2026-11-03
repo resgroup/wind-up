@@ -63,7 +63,7 @@ from benchmarking.harness.conditions import (
     label_column,
     validate_conditions,
 )
-from benchmarking.harness.method import MethodInput, MethodOutput
+from benchmarking.harness.method import MethodConfigurationError, MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
 from benchmarking.harness.reanalysis import interpolate_era5
 from benchmarking.harness.record_selection import (
@@ -270,8 +270,8 @@ def kept_reference_correction(reference_uplifts: pd.DataFrame | None) -> dict[st
     unjudged by the screen. ``reference_correction`` is ``exp(mean(ln(1 + u))) - 1`` over the kept
     readings and ``n_correction_references`` their number. ``sigma_reference_log`` is the standard
     deviation of ``ln(1 + u)`` over the root of their number, in quadrature with half the mean's size,
-    so a larger correction is less certain; NaN below two readings. The correction is NaN when none
-    is kept.
+    so a larger correction is less certain; one reading has no spread, so half its size alone. The
+    correction and its sigma are NaN when none is kept.
     """
     logs = np.array([], dtype=float)
     if reference_uplifts is not None and not reference_uplifts.empty:
@@ -285,8 +285,8 @@ def kept_reference_correction(reference_uplifts: pd.DataFrame | None) -> dict[st
     k = logs.size
     return {
         "reference_correction": float(np.expm1(logs.mean())) if k else float("nan"),
-        "sigma_reference_log": float(np.hypot(logs.std(ddof=1) / np.sqrt(k), logs.mean() / 2))
-        if k > 1
+        "sigma_reference_log": float(np.hypot(logs.std(ddof=1) / np.sqrt(k) if k > 1 else 0.0, logs.mean() / 2))
+        if k
         else float("nan"),
         "n_correction_references": float(k),
     }
@@ -679,7 +679,8 @@ class PowerModelMethod:
         ``<row_dump_dir>/<test_wtg>/rows.parquet`` with a ``rows.json`` sidecar, for the level probe.
         A reference reading of the reference-uplift report dumps under
         ``<row_dump_dir>/<test_wtg>/references/<reference>/``; the screening clone does not dump.
-        ``None`` (**default**) writes nothing
+        A toggle estimate's dump marks the strict off-blocks as ``baseline``, not the lenient
+        training rows its model fitted on. ``None`` (**default**) writes nothing
 
     The reference pool is the campaign's candidate references (the context's
     ``candidate_references``), not whichever turbines the frame holds; the screen makes some of
@@ -746,7 +747,7 @@ class PowerModelMethod:
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
         if self.training_period not in get_args(TrainingPeriod):
             msg = f"training_period must be one of {get_args(TrainingPeriod)}, not {self.training_period!r}"
-            raise ValueError(msg)
+            raise MethodConfigurationError(msg)
 
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
@@ -763,7 +764,7 @@ class PowerModelMethod:
                 f"the availability column {self.columns.availability!r} (columns.availability) is not in "
                 f"scada_df; the downtime filter is required for the power model and cannot be skipped."
             )
-            raise ValueError(msg)
+            raise MethodConfigurationError(msg)
         # Checked before the screen, whose gate reads the same normal-operation mask, so a missing
         # column is reported as the configuration error it is rather than as a bare KeyError.
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
@@ -859,10 +860,12 @@ class PowerModelMethod:
                 y=y_arr,
                 selected=selected,
                 reasons=reasons,
-                baseline_sel=training_sel,
-                upgraded_sel=predicted_sel,
+                baseline_sel=before_sel,
+                upgraded_sel=upgraded_sel,
+                predicted_sel=predicted_sel,
                 fit=fit,
                 uplift=uplift,
+                swapped=swapped,
             )
 
         # The reversal correction to the prepost headline. The forward ratio above is 1+r_fwd; the
@@ -896,10 +899,11 @@ class PowerModelMethod:
         holdout = self._holdout_sigma(
             mi, features=features, y=y_arr, training_sel=training_sel, predicted_sel=predicted_sel, index=index
         )
+        sigma_holdout, holdout_warnings = self._holdout_component(holdout, test_wtg=mi.test_wtg)
         sigma = combined_sigma(
             summary["sigma"],
             reference=correction.get("sigma_reference", 0.0),
-            holdout=holdout.get("sigma_holdout", 0.0),
+            holdout=sigma_holdout,
             correlation=self.systematic_correlation,
         )
 
@@ -958,7 +962,7 @@ class PowerModelMethod:
                 level_sigma=combined_sigma(
                     0.0,
                     reference=correction.get("sigma_reference", 0.0),
-                    holdout=holdout.get("sigma_holdout", 0.0),
+                    holdout=sigma_holdout,
                     correlation=self.systematic_correlation,
                 ),
                 reference_deviations=_kept_shape_deviations(reference_uplifts),
@@ -985,14 +989,14 @@ class PowerModelMethod:
             reference_uplifts=reference_uplifts,
             screen_passes=screen.passes if screen is not None else None,
             labeled_rows=None if shape is None else shape.labels,
-            warnings=warnings,
+            warnings=(*warnings, *holdout_warnings),
         )
 
     def _exchanged(self, mi: MethodInput) -> bool:
         """Whether the after period trains this estimate's model; refused for a toggle campaign."""
         if self.training_period == "after" and is_toggle(mi.upgrade_timing):
             msg = f"{mi.test_wtg}: a toggle estimate trains on its off records; training_period cannot be after"
-            raise ValueError(msg)
+            raise MethodConfigurationError(msg)
         return self.training_period == "after"
 
     def _resolve_training_period(self, mi: MethodInput) -> Literal["before", "after"]:
@@ -1172,6 +1176,34 @@ class PowerModelMethod:
                 "n_correction_references": kept["n_correction_references"],
             },
         )
+
+    def _holdout_component(
+        self, holdout: Mapping[str, float], *, test_wtg: str
+    ) -> tuple[float, tuple[AnalysisWarning, ...]]:
+        """Return the holdout sigma to join to the headline and the step 14 warning its absence raises.
+
+        No held-out window fitting gives 0 and a medium warning; the uncertainty row keeps the NaN and
+        ``n_holdout_blocks`` of 0, so the omission is on record. A window that fit but read no finite
+        pair keeps the NaN sigma with a medium warning, since that uncertainty is unquantified rather
+        than absent. A finite sigma passes through without a warning.
+        """
+        sigma = float(holdout.get("sigma_holdout", 0.0))
+        if np.isfinite(sigma):
+            return sigma, ()
+        n_blocks = int(holdout.get("n_holdout_blocks", 0.0))
+        if n_blocks > 0:
+            message = (
+                f"{n_blocks} held-out window{'s' if n_blocks > 1 else ''} fit the training period but read no "
+                "finite pair, so the holdout sigma is NaN"
+            )
+        else:
+            sigma = 0.0
+            message = (
+                "no held-out window of the predicted period's length fits the training period, so the holdout "
+                "sigma is left out of the headline sigma"
+            )
+        logger.warning("%s %s: %s", self.name, test_wtg, message)
+        return sigma, (AnalysisWarning(severity="medium", step=14, turbine=test_wtg, message=message),)
 
     def _holdout_sigma(
         self,
@@ -1707,18 +1739,27 @@ class PowerModelMethod:
         reasons: pd.Series,
         baseline_sel: np.ndarray,
         upgraded_sel: np.ndarray,
+        predicted_sel: np.ndarray,
         fit: dict[str, Any],
         uplift: float,
+        swapped: bool,
     ) -> None:
         """Write the per-row frame and its sidecar under ``row_dump_dir / test_wtg``.
 
-        ``uplift`` is the forward counterfactual ratio, the one the dumped sums reproduce.
+        ``baseline`` and ``upgraded`` are the campaign's selected before and after rows whichever
+        period trained; ``predicted`` marks the rows the counterfactual is written on, the after rows
+        unless ``swapped``. ``uplift`` is the forward counterfactual ratio read as upgraded over
+        baseline, before the reversal combination and the reference correction: the dumped sums give
+        ``actual / counterfactual - 1``, or its inverse when ``swapped``. Known limit: a toggle
+        estimate fits on the lenient training baseline (pre-campaign rows and off-blocks), but
+        ``baseline`` and ``n_baseline_rows`` carry the strict off-blocks only, so its fit cannot be
+        rebuilt from the dump; left as is while the toggle leg is due to change.
         """
         assert self.row_dump_dir is not None  # noqa: S101
         out_dir = Path(self.row_dump_dir) / mi.test_wtg
         out_dir.mkdir(parents=True, exist_ok=True)
         counterfactual = np.full(len(index), np.nan)
-        counterfactual[upgraded_sel] = fit["pred_upgraded"]
+        counterfactual[predicted_sel] = fit["pred_upgraded"]
         rows = pd.DataFrame(
             {
                 "timestamp": index,
@@ -1728,6 +1769,7 @@ class PowerModelMethod:
                 "loss_reason": reasons.astype(str).to_numpy(),
                 "baseline": np.asarray(baseline_sel, dtype=bool),
                 "upgraded": np.asarray(upgraded_sel, dtype=bool),
+                "predicted": np.asarray(predicted_sel, dtype=bool),
                 "reference_mean_ws": reference_mean_wind_speed(
                     scada, references=references, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
                 ).to_numpy(dtype=float),
@@ -1740,6 +1782,7 @@ class PowerModelMethod:
             "references": list(references),
             "power_free": list(power_free),
             "uplift": uplift,
+            "training_period": "after" if swapped else "before",
             "sum_actual_kw": float(fit["y_upgraded"].sum()),
             "sum_counterfactual_kw": float(fit["pred_upgraded"].sum()),
             "n_baseline_rows": int(np.count_nonzero(baseline_sel)),
@@ -2199,19 +2242,19 @@ class PowerModelMethod:
         """Fail loudly on config combinations that would silently misbehave."""
         if self.headline_estimator not in HEADLINE_ESTIMATORS:
             msg = f"headline_estimator must be one of {HEADLINE_ESTIMATORS}, got {self.headline_estimator!r}"
-            raise ValueError(msg)
+            raise MethodConfigurationError(msg)
         if self.headline_estimator == "reference_corrected" and not self.report_reference_uplifts:
             msg = (
                 "headline_estimator='reference_corrected' corrects by the references' own readings, so it needs "
                 "report_reference_uplifts=True. Turn the readings on, or pass headline_estimator='forward'."
             )
-            raise ValueError(msg)
+            raise MethodConfigurationError(msg)
         if not self.write_diagnostics and self.conditions:
             msg = (
                 "write_diagnostics=False needs conditions=(): the uplift distributions write their CSVs "
                 "into the run directory, so there is nowhere for them to go."
             )
-            raise ValueError(msg)
+            raise MethodConfigurationError(msg)
 
     def _make_model(self, *, seed: int | None = None) -> Any:  # noqa: ANN401
         """One unfitted LightGBM outcome model with ``seed`` plumbed in.

@@ -27,7 +27,7 @@ from benchmarking.campaigns.data_screen import (
     screen_plan,
 )
 from benchmarking.campaigns.plans import CampaignPlans, plans_for, treated_activity
-from benchmarking.harness import MethodInput
+from benchmarking.harness import MethodConfigurationError, MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
 from wind_up import TurbineUplift, farm_uplift
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
@@ -215,6 +215,22 @@ class NoTurbineMeasuredError(ValueError):
         )
 
 
+def _measure(method: Method, method_input: MethodInput) -> MethodOutput | str:
+    """Return the method's output, or why it could not measure the turbine.
+
+    A ``ValueError`` from the estimate is the turbine's own (too few usable hours, no reference) and
+    comes back as the reason; a :class:`MethodConfigurationError` is the method's configuration,
+    wrong for every turbine, and propagates to fail the campaign.
+    """
+    try:
+        return method.estimate(method_input)
+    except MethodConfigurationError:
+        raise
+    except ValueError as e:
+        logger.warning("%s: not measured by %s: %s", method_input.test_wtg, method.name, e)
+        return f"not measured by {method.name}: {e}"
+
+
 def estimate_campaign(
     spec: CampaignSpec,
     scada_df: pd.DataFrame,
@@ -301,11 +317,9 @@ def estimate_campaign(
                 campaign_context=context,
             )
             start = time.perf_counter()
-            try:
-                output = method.estimate(method_input)
-            except ValueError as e:
-                logger.warning("%s: not measured by %s: %s", wtg, method.name, e)
-                unmeasured[wtg] = f"not measured by {method.name}: {e}"
+            output = _measure(method, method_input)
+            if isinstance(output, str):
+                unmeasured[wtg] = output
                 break
             measured.append((method.name, output, time.perf_counter() - start))
         if wtg in unmeasured:

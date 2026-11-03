@@ -42,7 +42,7 @@ BIN_KEYS = [*GROUP_KEYS, "condition", "condition_bin"]
 TABLE_KEYS = {"groups": GROUP_KEYS, "linearity": LINE_KEYS, "real": REAL_KEYS, "bins": BIN_KEYS}
 # A value that moves by more than this between baselines is flagged: 0.1 pp on an uplift.
 MATERIAL = 0.001
-_CELL_KEYS = ["arm", "site", "seed_index", "k", "pre_months", "post_months", "multiplier"]
+_CELL_KEYS = ["arm", "site", "seed_index", "k", "pre_months", "post_months", "multiplier", "season_shift"]
 _MIN_LINE_POINTS = 2
 _REFERENCE_METRICS = ["ref_mean", "ref_median", "ref_sd", "ref_worst_abs", "ref_n"]
 _COMBINED_REFERENCES = ("reference_uplift_before_screen", "reference_uplift_after_screen", "reference_uplift_spread")
@@ -63,7 +63,7 @@ def cell_frames(records: Iterable[dict[str, Any]]) -> dict[str, pd.DataFrame]:
     for record in records:
         if record.get("status") != "ok":
             continue
-        keys = {**{k: record[k] for k in _CELL_KEYS}, "season_shift": record.get("season_shift", 0)}
+        keys = {k: record.get(k, 0) if k == "season_shift" else record[k] for k in _CELL_KEYS}
         turbines.extend({**keys, **row} for row in record["turbines"])
         farm.append({**keys, **record["farm"]})
         references.extend({**keys, **row} for row in record["references"])
@@ -266,8 +266,6 @@ def line_fit(truth: Sequence[float] | np.ndarray, estimate: Sequence[float] | np
 def _linearity(turbines: pd.DataFrame) -> pd.DataFrame:
     estimates = {"line": "estimate", **({"rev_line": "reversal"} if "reversal" in turbines.columns else {})}
     fits = []
-    if "season_shift" not in turbines.columns:
-        turbines = turbines.assign(season_shift=0)
     cell = ["arm", "site", "seed_index", "k", "pre_months", "post_months", "season_shift", "turbine"]
     for key, group in turbines.groupby(cell, dropna=False):
         fit: dict[str, Any] = dict(
@@ -353,12 +351,12 @@ def _first(frame: pd.DataFrame, column: str) -> float:
 def leak_check(records: Iterable[dict[str, Any]]) -> pd.DataFrame:
     """Return, per reference reading, how far it moves across one campaign's multipliers.
 
-    One row per (arm, site, seed index, K, P, L, test turbine, reference) read under more than one
+    One row per (arm, site, seed index, K, P, L, season shift, test turbine, reference) read under more than one
     multiplier, largest ``leak`` first. The upgrade should not move a reference's reading.
     """
     references = cell_frames(records)["references"]
     references = references[references["arm"] != "real"]
-    keys = ["arm", "site", "seed_index", "k", "pre_months", "post_months", "test_wtg", "turbine"]
+    keys = ["arm", "site", "seed_index", "k", "pre_months", "post_months", "season_shift", "test_wtg", "turbine"]
     grouped = references.groupby(keys)["uplift"]
     table = pd.DataFrame({"leak": grouped.max() - grouped.min(), "n_multipliers": grouped.count()}).reset_index()
     table = table[table["n_multipliers"] > 1].astype({"seed_index": "Int64"})

@@ -22,6 +22,14 @@ if TYPE_CHECKING:
     from wind_up.analysis_warnings import AnalysisWarning
 
 
+class MethodConfigurationError(ValueError):
+    """A method refused its own configuration: an option combination or a frame that lacks a required column.
+
+    Distinct from the ``ValueError`` a method raises when one turbine cannot be measured, which a
+    campaign records as unmeasured and continues past; a configuration error fails the campaign.
+    """
+
+
 @dataclass
 class MethodInput:
     """The windowed data a method sees for one campaign.

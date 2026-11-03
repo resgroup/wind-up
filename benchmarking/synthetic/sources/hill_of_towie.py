@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
@@ -38,7 +39,7 @@ from wind_up.layout import Layout
 from wind_up_v0.constants import DataColumns
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Sequence
+    from collections.abc import Callable, Collection, Sequence
 
     import requests
 
@@ -47,6 +48,7 @@ logger = logging.getLogger(__name__)
 TIMEBASE_S = 600
 HOT_V2_RECORD_ID = "22662930"
 ZENODO_METADATA_FILENAME = "zenodo_dataset_metadata.json"
+ZENODO_DOWNLOAD_LOCK_FILENAME = ".zenodo_download.lock"
 HOT_FIRST_WTG = 1
 HOT_LAST_WTG = 21
 _HOT_SERIAL_OFFSET = 2304509
@@ -70,6 +72,20 @@ _HTTP_SERVER_ERROR = 500
 
 class TruncatedDownloadError(Exception):
     """A streamed download ended before the file's full byte count arrived."""
+
+
+def _write_atomically(path: Path, write: Callable[[Path], object]) -> None:
+    """Write ``path`` via ``write(tmp)`` on a sibling temp file, then rename it into place.
+
+    Several pytest-xdist workers share one data directory, so a reader in one process must never
+    see a file another process is half way through writing: it sees the old file or the new one.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        write(tmp)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def zenodo_record_dir(record_id: str) -> Path:
@@ -113,8 +129,7 @@ def zenodo_record_files(
     ):
         r.raise_for_status()
         content = r.json()
-    with metadata_fpath.open("w") as f:
-        json.dump(content, f)
+    _write_atomically(metadata_fpath, lambda tmp: tmp.write_text(json.dumps(content)))
     logger.info("Saved metadata to %s", metadata_fpath)
     return content["files"]
 
@@ -131,36 +146,42 @@ def download_zenodo_data(
 
     output_dir = output_dir if output_dir is not None else get_data_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
-    remote_files = zenodo_record_files(record_id, output_dir=output_dir, cache_overwrite=cache_overwrite)
+    from filelock import FileLock  # noqa: PLC0415  (lazy, like requests)
 
-    # One Session for the whole download so its connection pool (and every socket) is
-    # closed deterministically on exit. A per-call ``requests.get`` closes its transient
-    # pool before the streamed response's socket is released back to it, leaking the
-    # socket until GC -- which trips ``filterwarnings = error`` via ResourceWarning.
-    with requests.Session() as session:
-        if filenames is None:
-            files_to_download: list[dict] = list(remote_files)
-        else:
-            files_to_download = list(_check_name_of_files_to_download(filenames, remote_files))
-        required_keys = {f["key"] for f in files_to_download}
-        # Auto-include any small file in the record (READMEs, deployment reports, ...).
-        for rf in remote_files:
-            if rf["size"] < SMALL_FILE_THRESHOLD_BYTES and rf["key"] not in required_keys:
-                files_to_download.append(rf)
+    # Held for the whole download: processes sharing ``output_dir`` (pytest-xdist workers on a cold
+    # cache) otherwise stream into the same file, and one's discard of an over-long file deletes
+    # it under another. A process that waited here finds the files whole and skips them.
+    with FileLock(output_dir / ZENODO_DOWNLOAD_LOCK_FILENAME):
+        remote_files = zenodo_record_files(record_id, output_dir=output_dir, cache_overwrite=cache_overwrite)
 
-        downloaded_files = 0
-        n_files_to_download = len(files_to_download)
-        for i_file, file_to_download in enumerate(files_to_download, start=1):
-            is_required = file_to_download["key"] in required_keys
-            downloaded_files += _download_one_file(
-                session,
-                file_to_download,
-                output_dir,
-                cache_overwrite=cache_overwrite,
-                is_required=is_required,
-                progress_prefix=f"[{i_file}/{n_files_to_download}]",
-            )
-    logger.info("Download finished: %s new files cached at %s", downloaded_files, output_dir)
+        # One Session for the whole download so its connection pool (and every socket) is
+        # closed deterministically on exit. A per-call ``requests.get`` closes its transient
+        # pool before the streamed response's socket is released back to it, leaking the
+        # socket until GC -- which trips ``filterwarnings = error`` via ResourceWarning.
+        with requests.Session() as session:
+            if filenames is None:
+                files_to_download: list[dict] = list(remote_files)
+            else:
+                files_to_download = list(_check_name_of_files_to_download(filenames, remote_files))
+            required_keys = {f["key"] for f in files_to_download}
+            # Auto-include any small file in the record (READMEs, deployment reports, ...).
+            for rf in remote_files:
+                if rf["size"] < SMALL_FILE_THRESHOLD_BYTES and rf["key"] not in required_keys:
+                    files_to_download.append(rf)
+
+            downloaded_files = 0
+            n_files_to_download = len(files_to_download)
+            for i_file, file_to_download in enumerate(files_to_download, start=1):
+                is_required = file_to_download["key"] in required_keys
+                downloaded_files += _download_one_file(
+                    session,
+                    file_to_download,
+                    output_dir,
+                    cache_overwrite=cache_overwrite,
+                    is_required=is_required,
+                    progress_prefix=f"[{i_file}/{n_files_to_download}]",
+                )
+        logger.info("Download finished: %s new files cached at %s", downloaded_files, output_dir)
 
 
 def _download_one_file(
@@ -683,7 +704,7 @@ def _load_unpacked_hot_10min(
             for serial in missing:
                 serial_df = unpacked.loc[:, unpacked.columns.get_level_values(0) == serial]
                 logger.info("Writing HoT cache: %s", paths[serial])
-                serial_df.to_parquet(paths[serial])
+                _write_atomically(paths[serial], serial_df.to_parquet)
         per_turbine = [pd.read_parquet(paths[serial]) for serial in serial_numbers]
         year_frames.append(pd.concat(per_turbine, axis=1))
     return pd.concat(year_frames, verify_integrity=True, sort=True)

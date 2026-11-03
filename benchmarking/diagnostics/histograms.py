@@ -81,13 +81,21 @@ def _conditions(ctx: DiagnosticContext) -> list[tuple[str, np.ndarray, np.ndarra
 
 
 def _robust_bins(values: np.ndarray, *, bins: int = 30) -> np.ndarray | int:
-    """Bin edges over every finite value."""
+    """Bin edges over every finite value.
+
+    A condition constant up to float noise (a TI of 0.1 give or take 1e-17, say) is binned as
+    constant, one unit either side as numpy does: edges spread over the noise collapse onto each
+    other, and the zero-width bins divide by zero when the histogram is normalised.
+    """
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return bins
     lo, hi = float(finite.min()), float(finite.max())
     if hi <= lo:
         return bins
+    if np.isclose(lo, hi, rtol=1e-9, atol=0.0):
+        centre = (lo + hi) / 2
+        return np.linspace(centre - 0.5, centre + 0.5, bins + 1)
     return np.linspace(lo, hi, bins + 1)
 
 

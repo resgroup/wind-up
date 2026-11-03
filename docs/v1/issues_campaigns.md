@@ -323,6 +323,26 @@ the references and how each was used. Still open before C3 closes: the reference
 near cut-in and an accepted `big` baseline. R1 and R3 are re-verified in context by the matrix's northing
 step and reference screen on every cell.
 
+**Post-merge sweep (2026-10-28, review of PR 143).** Fixed on `v1-c3-post-merge-fixes`, none moving
+a run 9 headline: one kept reference now gives a finite reference sigma (half its own size, the
+spread term alone needing two) instead of NaN; a training period too short for any held-out window
+keeps the holdout out of the headline sigma with a medium step 14 warning on the register, the row
+recording `n_holdout_blocks` 0, instead of a NaN sigma (a window that fits but reads no finite pair
+keeps the NaN, also warned); the power model's and the toggle specialist's configuration errors are
+`MethodConfigurationError` (a `ValueError`) and fail the campaign rather than counting every turbine
+unmeasured; `season_shift` is a cell key of the matrix frames, so the `season` size's line fits and
+leak check no longer pool shifts; the row dump keeps the campaign's `baseline` and `upgraded` under
+the training-period swap and adds `predicted` and `training_period` (its `uplift` is the forward
+ratio before the reversal and reference corrections; a toggle's `baseline` is the strict off-blocks,
+not the lenient training rows the fit used, documented rather than fixed while the toggle leg is due
+to change); a cell at a K outside the cost table costs as its site's nearest K, a site outside it as
+the dearest known; a declared span must bracket the works window; `add_waking_scenarios` refuses
+directions built from another frame before labelling anything. Left for a server run to judge, since
+each changes cost or behaviour on real data: the campaign screen cache never hits (its key carries
+the test turbine's own changed interval and the frame's extent, so `hot_tuneup` screens nine times);
+`training_period="auto"` runs the record selection twice; the ERA5 alignment's gap error could name
+the cache file to delete.
+
 ---
 
 ## C4 — TuneUp (controller), prepost, multi-turbine

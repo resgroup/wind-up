@@ -140,12 +140,28 @@ def add_waking_scenarios(
     :param layout: the farm layout; must name every SCADA turbine
     :param test_turbines: the campaign's test turbines, whose own direction is never used
     :param directions: :func:`waking_directions` of the same arguments, for a caller that already holds it
+    :raises ValueError: when ``directions`` were built from another frame, so they lack a timestamp or a
+        turbine of ``scada_df``
     """
     found = (
         directions
         if directions is not None
         else waking_directions(scada_df, columns=columns, layout=layout, test_turbines=test_turbines)
     )
+    turbine_col = scada_df[columns.turbine].astype(str).to_numpy()
+    row = found.index.get_indexer(pd.DatetimeIndex(scada_df.index))
+    col = pd.Index(found.turbines).get_indexer(turbine_col)
+    if (row < 0).any() or (col < 0).any():
+        missing = []
+        if (row < 0).any():
+            missing.append(f"{pd.DatetimeIndex(scada_df.index[row < 0]).nunique()} timestamp(s)")
+        if (col < 0).any():
+            missing.append(f"the turbines {sorted(set(turbine_col[col < 0]))}")
+        msg = (
+            f"the directions do not cover scada_df: {' and '.join(missing)} are not in them; build the "
+            "directions from the same frame"
+        )
+        raise ValueError(msg)
     names = [str(n) for n in layout.frame[NAME_COL]]
     states = _state_codes(scada_df, columns=columns, index=found.index, turbines=names)
     diameters = layout.frame[ROTOR_DIAMETER_COL].to_numpy(dtype=float)
@@ -164,9 +180,6 @@ def add_waking_scenarios(
         )
 
     out = scada_df.copy()
-    turbine_col = out[columns.turbine].astype(str).to_numpy()
-    row = found.index.get_indexer(pd.DatetimeIndex(out.index))
-    col = pd.Index(found.turbines).get_indexer(turbine_col)
     out[DIRECTION_COL] = direction[row, col]
     out[DIRECTION_SOURCE_COL] = found.source()[row, col]
     out[UPWIND_COL] = upwind[row, col]

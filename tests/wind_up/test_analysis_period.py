@@ -229,6 +229,12 @@ class TestADeclaredSpan:
         p = plan(line(6), span=self.SPAN, extents=extents, allow_works_overlap=["T1"])
         assert p.forced == ()
 
+    def test_it_must_bracket_the_works_window(self) -> None:
+        with pytest.raises(ValueError, match="does not bracket"):
+            plan(line(6), span=(utc("2020-02-01"), utc("2021-02-01")))
+        with pytest.raises(ValueError, match="does not bracket"):
+            plan(line(6), span=(utc("2019-01-01"), utc("2020-01-05")))
+
     def test_forcing_does_nothing_without_a_declared_span(self) -> None:
         works = {"T1": [(utc("2020-03-01"), utc("2020-03-05"))]}
         assert plan(line(6), works=works, allow_works_overlap=["T1"]).forced == ()

@@ -28,7 +28,7 @@ from benchmarking.harness.conditions import (
     energy_ratio_by_bin,
 )
 from benchmarking.harness.leaderboard import conditional_leaderboard, leaderboard
-from benchmarking.harness.method import Method, MethodInput, MethodOutput
+from benchmarking.harness.method import Method, MethodConfigurationError, MethodInput, MethodOutput
 from benchmarking.harness.metrics import ErrorSummary, summarize_errors
 from benchmarking.harness.plots import (
     conditional_truth_vs_estimate,
@@ -48,6 +48,7 @@ __all__ = [
     "CampaignWindow",
     "ErrorSummary",
     "Method",
+    "MethodConfigurationError",
     "MethodInput",
     "MethodOutput",
     "Replicate",

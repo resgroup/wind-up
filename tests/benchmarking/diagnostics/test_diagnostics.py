@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from benchmarking.diagnostics import write_common_diagnostics, write_run_config
+from benchmarking.diagnostics import common, stages, write_common_diagnostics, write_run_config
 from benchmarking.diagnostics.context import ERA5_WD_COL, ERA5_WS_COL, DiagnosticContext
 from benchmarking.diagnostics.coverage import exclusion_bucket, plot_excluded_fraction
 from benchmarking.diagnostics.curves import (
@@ -25,6 +25,7 @@ from benchmarking.diagnostics.curves import (
     plot_ops_curves_excluded,
 )
 from benchmarking.diagnostics.density import density_scatter
+from benchmarking.diagnostics.histograms import _robust_bins
 from benchmarking.diagnostics.northing import plot_northed_error, plot_northing_error
 from benchmarking.diagnostics.style import series_style
 from benchmarking.synthetic import ColumnSchema
@@ -382,3 +383,51 @@ class TestSeriesStyles:
     def test_every_colour_is_used_solid_before_any_dash(self) -> None:
         assert {dash for _, dash in (series_style(i) for i in range(10))} == {"-"}
         assert [series_style(i)[1] for i in (10, 20, 30)] == ["--", "-.", ":"]
+
+
+class TestAFailedPlotLeavesNoFigureOpen:
+    """The runner carries on past a plot that raises, so it must close the figure that plot opened.
+
+    Left open, each failed plot in a long benchmark (one diagnostics pass per reference) keeps a
+    figure alive, until matplotlib warns that more than 20 are open.
+    """
+
+    def test_the_half_drawn_figure_is_closed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _fails_half_way(_ctx: DiagnosticContext) -> None:
+            plt.subplots()
+            msg = "drawing failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(common, "_PLOTS", ((stages.CHANGES, _fails_half_way),))
+        plt.close("all")
+        assert write_common_diagnostics(_context(tmp_path)) == []
+        assert plt.get_fignums() == []
+
+    def test_figures_open_before_the_run_are_left_alone(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _fails(_ctx: DiagnosticContext) -> None:
+            msg = "drawing failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(common, "_PLOTS", ((stages.CHANGES, _fails),))
+        plt.close("all")
+        callers_fig, _ = plt.subplots()
+        write_common_diagnostics(_context(tmp_path))
+        assert plt.get_fignums() == [callers_fig.number]
+        plt.close("all")
+
+
+class TestConditionHistogramBins:
+    """A condition that is constant up to float noise still bins into finite-width bins."""
+
+    def test_float_noise_is_not_mistaken_for_a_spread(self) -> None:
+        values = np.array([0.1 - 4e-17, 0.1, 0.1 + 3e-17])  # e.g. a constant TI after a mean of ratios
+        bins = _robust_bins(values)
+        widths = np.diff(bins) if isinstance(bins, np.ndarray) else None
+        assert widths is not None
+        assert (widths > 0).all()
+        assert bins[0] <= values.min()
+        assert bins[-1] >= values.max()
+
+    def test_a_real_spread_still_spans_the_data(self) -> None:
+        bins = _robust_bins(np.array([1.0, 2.0, 3.0]), bins=4)
+        assert list(bins) == pytest.approx([1.0, 1.5, 2.0, 2.5, 3.0])

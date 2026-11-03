@@ -28,7 +28,7 @@ from benchmarking.baselines.toggle_specialist import (
 )
 from benchmarking.harness.conditions import condition_bins
 from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.method import MethodInput, MethodOutput
+from benchmarking.harness.method import MethodConfigurationError, MethodInput, MethodOutput
 from benchmarking.harness.toggle import build_toggle_df, gap_to_other_segment, pair_within, resolve_toggle
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
 
@@ -1331,7 +1331,7 @@ class TestPairingFilter:
     @pytest.mark.parametrize("gap", [pd.Timedelta(0), pd.Timedelta(minutes=5), pd.Timedelta(minutes=25)])
     def test_rejects_a_gap_that_is_not_a_positive_timebase_multiple(self, gap: pd.Timedelta) -> None:
         scada, schedule = _noisy_toggle_case(n=200)
-        with pytest.raises(ValueError, match="pairing_max_gap"):
+        with pytest.raises(MethodConfigurationError, match="pairing_max_gap"):
             _estimate(scada, schedule, pairing_max_gap=gap)
 
     def test_baseline_rows_far_from_any_used_upgraded_row_are_dropped(self) -> None:
@@ -1508,7 +1508,7 @@ class TestTogglePeriod:
 
     def test_a_block_off_the_timebase_grid_is_refused(self) -> None:
         scada, schedule = _block_case(n_blocks=10, ref_scale=np.ones(10))
-        with pytest.raises(ValueError, match="toggle_period"):
+        with pytest.raises(MethodConfigurationError, match="toggle_period"):
             _estimate(scada, schedule, toggle_period=pd.Timedelta(minutes=25))
 
 
@@ -1528,12 +1528,12 @@ class TestToggleDatum:
 
     def test_a_schedule_off_the_datum_grid_is_refused(self) -> None:
         scada, schedule = _block_case(n_blocks=10)
-        with pytest.raises(ValueError, match="toggle_datum"):
+        with pytest.raises(MethodConfigurationError, match="toggle_datum"):
             _estimate(scada, schedule, toggle_period=_BLOCK, toggle_datum=_DATUM + pd.Timedelta(minutes=10))
 
     def test_a_naive_datum_on_tz_aware_data_is_refused(self) -> None:
         scada, schedule = _block_case(n_blocks=10)
-        with pytest.raises(ValueError, match="tz-aware"):
+        with pytest.raises(MethodConfigurationError, match="tz-aware"):
             _estimate(scada, schedule, toggle_period=_BLOCK, toggle_datum=_DATUM.tz_localize(None))
 
 

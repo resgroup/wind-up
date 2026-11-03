@@ -50,7 +50,7 @@ from benchmarking.baselines.power_model.screening import ScreenResult
 from benchmarking.diagnostics import stages
 from benchmarking.harness.conditions import label_column
 from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.method import MethodInput, MethodOutput
+from benchmarking.harness.method import MethodConfigurationError, MethodInput, MethodOutput
 from benchmarking.harness.operating_state import VALID_UPLIFT_COL
 from benchmarking.harness.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE, ChangedInterval
 from benchmarking.harness.scoring import _merge_diagnostics
@@ -213,10 +213,11 @@ class TestKeptReferenceCorrection:
         large = kept_reference_correction(_kept_rows(uplift=[0.03, 0.04, 0.05]))
         assert large["sigma_reference_log"] > small["sigma_reference_log"]
 
-    def test_one_kept_reading_corrects_but_has_no_standard_error(self) -> None:
+    def test_one_kept_reading_corrects_with_half_its_own_size_as_the_sigma(self) -> None:
         out = kept_reference_correction(_kept_rows(uplift=[0.02]))
+        assert out["n_correction_references"] == 1
         assert out["reference_correction"] == pytest.approx(0.02)
-        assert np.isnan(out["sigma_reference_log"])
+        assert out["sigma_reference_log"] == pytest.approx(abs(np.log1p(0.02)) / 2)
 
     def test_no_kept_reading_gives_nan(self) -> None:
         out = kept_reference_correction(_kept_rows(uplift=[0.02], screened=[True]))
@@ -2633,3 +2634,54 @@ class TestUncertaintySummary:
         assert row["block_hours"] == 24.0
         assert np.isnan(row["sigma"])
         assert not any(key.startswith("sigma_block_") for key in row)
+
+
+class TestNoHoldoutWindow:
+    def test_a_training_period_too_short_for_a_window_keeps_a_finite_sigma(self) -> None:
+        n = 4000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        changeover = pd.Timestamp(idx[n // 4])  # a week before, three after: no held-out window fits
+        scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=0.0)
+        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+        out = _screen_method(training_period="before").estimate(mi)
+        row = out.uncertainty_diagnostics.iloc[0]
+        assert row["n_holdout_blocks"] == 0
+        assert np.isnan(row["sigma_holdout"])
+        assert np.isfinite(out.sigma_overall)
+        expected = combined_sigma(row["sigma_sampling"], reference=row["sigma_reference"], holdout=0.0, correlation=0.5)
+        assert out.sigma_overall == pytest.approx(expected)
+        (warning,) = [w for w in out.warnings if "held-out" in w.message]
+        assert (warning.severity, warning.step, warning.turbine) == ("medium", 14, "T1")
+        assert "left out of the headline sigma" in warning.message
+
+    def test_a_fitted_window_without_a_finite_pair_keeps_its_nan_sigma(self, caplog: pytest.LogCaptureFixture) -> None:
+        method = _screen_method(training_period="before")
+        fitted = {"sigma_holdout": float("nan"), "n_holdout_blocks": 1.0}
+        unfitted = {"sigma_holdout": float("nan"), "n_holdout_blocks": 0.0}
+        toggle = {"sigma_holdout": 0.0, "n_holdout_blocks": 0.0}
+        with caplog.at_level(logging.WARNING):
+            sigma, (warning,) = method._holdout_component(fitted, test_wtg="T1")  # noqa: SLF001
+            assert np.isnan(sigma)
+            assert (warning.severity, warning.step) == ("medium", 14)
+            assert "1 held-out window" in warning.message
+            assert "no finite" in warning.message
+            assert method._holdout_component(unfitted, test_wtg="T1")[0] == 0.0  # noqa: SLF001
+            assert method._holdout_component(toggle, test_wtg="T1") == (0.0, ())  # noqa: SLF001
+            assert method._holdout_component({}, test_wtg="T1") == (0.0, ())  # noqa: SLF001
+        assert [r.getMessage() for r in caplog.records] == [
+            f"{method.name} T1: 1 held-out window fit the training period but read no finite pair, so the holdout "
+            "sigma is NaN",
+            f"{method.name} T1: no held-out window of the predicted period's length fits the training period, "
+            "so the holdout sigma is left out of the headline sigma",
+        ]
+
+
+class TestConfigurationErrors:
+    def test_they_are_their_own_type_and_still_a_value_error(self) -> None:
+        assert issubclass(MethodConfigurationError, ValueError)
+        mi, _ = _screen_case(step=0.0)
+        method = _screen_method(headline_estimator="reference_corrected", report_reference_uplifts=False)
+        with pytest.raises(MethodConfigurationError, match="report_reference_uplifts"):
+            method.estimate(mi)
+        with pytest.raises(MethodConfigurationError, match="training_period"):
+            _screen_method(training_period="sideways")

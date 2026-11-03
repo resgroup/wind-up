@@ -410,12 +410,12 @@ def plan_analysis(
     :param exclusions: ``(turbine, start, end)``, turbine None for farm-wide, end exclusive
     :param extents: each turbine's data extent, ``(first, end)`` with end exclusive
     :param candidates: the turbines that may be power references
-    :param span: a declared span, used as given
+    :param span: a declared span, used as given; it must bracket the works window
     :param allow_works_overlap: declared references to use as power references over a declared ``span``
         even when their works overlap it; they are the plan's ``forced``
     :param settings: how spans and references are chosen
     :raises ValueError: when no span gives both sides ``settings.min_side`` with at least one power
-        reference, or a declared span has no power reference
+        reference, a declared span does not bracket the works window, or it has no power reference
     """
     timeline = _Timeline(
         layout,
@@ -426,6 +426,12 @@ def plan_analysis(
         candidates=candidates,
         settings=settings,
     )
+    if span is not None and not (span[0] < timeline.a and span[1] > timeline.b):
+        msg = (
+            f"{turbine}: the declared span {span[0]}..{span[1]} does not bracket the works window "
+            f"{timeline.a}..{timeline.b}; it must start before the works and end after them"
+        )
+        raise ValueError(msg)
     option = timeline.choose() if span is None else timeline.evaluate(*span)
     start, end = option.start, option.end
     forced_in: tuple[str, ...] = ()
