@@ -29,13 +29,14 @@ def with_pickle_cache(fp: Path, *, use_cache: bool = True, key: str | None = Non
 
     If `key` is given, it is saved next to the pickle file and the cache is only used if the saved key matches.
     """  # noqa: D401
-    key_fp = Path(fp).with_name(Path(fp).name + ".key")
+    fp = Path(fp)
+    key_fp = fp.with_suffix(fp.suffix + ".key")
 
     def wrap(func: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped_f(*a: Any, **kw: Any) -> Any:  # noqa
             fresh_cache = False
             key_changed = key is not None and (not key_fp.is_file() or key_fp.read_text() != key)
-            if not Path(fp).is_file() or not use_cache or Path(fp).stat().st_size == 0 or key_changed:
+            if not fp.is_file() or not use_cache or fp.stat().st_size == 0 or key_changed:
                 fp.parent.mkdir(parents=True, exist_ok=True)
                 key_fp.unlink(missing_ok=True)  # an interrupted write must not keep the old key
                 with Path.open(fp, "wb") as f:

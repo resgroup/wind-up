@@ -4,6 +4,7 @@ from wind_up.constants import TIMESTAMP_COL
 from wind_up.interface import PrePostSplitter, _preprocess_cache_key
 from wind_up.models import WindUpConfig
 from wind_up.reanalysis_data import ReanalysisDataset
+from wind_up.smart_data import add_smart_lat_long_to_cfg
 
 
 def _toggle_df(idx: pd.DatetimeIndex) -> pd.DataFrame:
@@ -58,10 +59,14 @@ def test_split_without_borrow_leaves_non_test_wtg_post_empty(test_marge_config: 
 
 
 def test_preprocess_cache_key_changes_with_inputs(test_lsa_t13_config: WindUpConfig) -> None:
+    wtg_names = [wtg.name for wtg in test_lsa_t13_config.asset.wtgs]
+    metadata_df = pd.DataFrame(
+        {"Name": wtg_names, "Latitude": [52.4 + i / 100 for i in range(len(wtg_names))], "Longitude": -0.9}
+    )
     inputs = {
         "cfg": test_lsa_t13_config,
         "scada_df": pd.DataFrame({"ActivePowerMean": [1.0, 2.0]}),
-        "metadata_df": pd.DataFrame({"Name": ["LSA_T13"]}),
+        "metadata_df": metadata_df,
         "reanalysis_datasets": [ReanalysisDataset(id="ERA5", data=pd.DataFrame({"100_m_hws_mean_mps": [5.0]}))],
     }
     key = _preprocess_cache_key(**inputs)
@@ -70,6 +75,25 @@ def test_preprocess_cache_key_changes_with_inputs(test_lsa_t13_config: WindUpCon
     assert key != _preprocess_cache_key(**{**inputs, "cfg": new_cfg})
     new_scada_df = pd.DataFrame({"ActivePowerMean": [1.0, 3.0]})
     assert key != _preprocess_cache_key(**{**inputs, "scada_df": new_scada_df})
-    # turbine coordinates are copied into cfg from metadata_df after preprocessing
-    test_lsa_t13_config.asset.wtgs[0].latitude = 52.4
+    # turbine coordinates are copied into cfg from metadata_df after preprocessing,
+    # also into test_wtgs and ref_wtgs, which share their Turbine instances with asset.wtgs
+    test_ref_wtgs = test_lsa_t13_config.test_wtgs + test_lsa_t13_config.ref_wtgs
+    coords_before = [(wtg.latitude, wtg.longitude) for wtg in test_ref_wtgs]
+    add_smart_lat_long_to_cfg(md=metadata_df, cfg=test_lsa_t13_config)
+    assert [(wtg.latitude, wtg.longitude) for wtg in test_ref_wtgs] != coords_before
     assert key == _preprocess_cache_key(**inputs)
+
+
+def test_preprocess_cache_key_changes_with_dtypes(test_lsa_t13_config: WindUpConfig) -> None:
+    idx = pd.date_range("2024-01-01", periods=2, freq="10min")
+    inputs = {
+        "cfg": test_lsa_t13_config,
+        "scada_df": pd.DataFrame({"ActivePowerMean": [1, 0]}, index=idx),
+        "metadata_df": pd.DataFrame({"Name": ["LSA_T13"]}),
+        "reanalysis_datasets": [],
+    }
+    key = _preprocess_cache_key(**inputs)
+    bool_scada_df = pd.DataFrame({"ActivePowerMean": [True, False]}, index=idx)
+    assert key != _preprocess_cache_key(**{**inputs, "scada_df": bool_scada_df})
+    utc_scada_df = pd.DataFrame({"ActivePowerMean": [1, 0]}, index=idx.tz_localize("UTC"))
+    assert key != _preprocess_cache_key(**{**inputs, "scada_df": utc_scada_df})

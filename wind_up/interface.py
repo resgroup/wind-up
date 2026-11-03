@@ -211,12 +211,20 @@ def _preprocess_cache_key(
     metadata_df: pd.DataFrame,
     reanalysis_datasets: list[ReanalysisDataset],
 ) -> str:
-    """Hash the inputs of `preprocess` so that a cached result is only used for the same inputs."""
-    # turbine coordinates are copied into cfg from metadata_df after preprocessing, so leave them out
-    cfg_json = cfg.model_dump_json(exclude={"asset": {"wtgs": {"__all__": {"latitude", "longitude"}}}})
+    """Hash the inputs of `preprocess` so that a cached result is only used for the same inputs.
+
+    The wind-up version is part of the key, but in an editable install it does not change with the code, so changes
+    to the preprocessing steps do not invalidate the cache there.
+    """
+    # turbine coordinates are copied into cfg from metadata_df after preprocessing, so leave them out;
+    # test_wtgs and ref_wtgs share their Turbine instances with asset.wtgs
+    coords = {"__all__": {"latitude", "longitude"}}
+    cfg_json = cfg.model_dump_json(exclude={"asset": {"wtgs": coords}, "test_wtgs": coords, "ref_wtgs": coords})
     h = hashlib.sha256(f"{__version__}{cfg_json}".encode())
     for name, df in [("scada", scada_df), ("metadata", metadata_df)] + [(d.id, d.data) for d in reanalysis_datasets]:
-        h.update(f"{name}{list(df.columns)}".encode())
+        # hash_pandas_object ignores dtypes, e.g. int vs bool values or a naive vs UTC index
+        index_dtypes = [str(lvl.dtype) for lvl in getattr(df.index, "levels", [df.index])]
+        h.update(f"{name}{list(df.columns)}{list(map(str, df.dtypes))}{index_dtypes}".encode())
         h.update(pd.util.hash_pandas_object(df).to_numpy().tobytes())
     return h.hexdigest()
 
