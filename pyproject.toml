@@ -90,6 +90,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "psutil>=7.2.2",
     "python-dotenv>=1.2.2",
+    "filelock>=4.1.0",
 ]
 
 [tool.setuptools.packages.find]

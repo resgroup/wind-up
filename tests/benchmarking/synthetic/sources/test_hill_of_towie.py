@@ -10,6 +10,7 @@ separately by a ``slow``-marked test that is excluded from the default offline s
 from __future__ import annotations
 
 import json
+import threading
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -17,10 +18,12 @@ import numpy as np
 import pandas as pd
 import pytest
 import requests
+from filelock import FileLock
 
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_ROTOR_DIAMETER_M,
+    ZENODO_DOWNLOAD_LOCK_FILENAME,
     download_zenodo_data,
     ensure_hot_data_files,
     hot_layout,
@@ -263,6 +266,41 @@ class TestZenodoDownloadRetries:
 
         # closed even though raise_for_status() failed, so the socket does not linger to GC
         response.__exit__.assert_called_once()
+
+
+def test_a_download_waits_for_one_already_running_in_another_process(tmp_path: Path) -> None:
+    """Concurrent downloaders into one directory take turns, and the second finds the file whole.
+
+    Regression guard for pytest-xdist workers sharing the default data directory on a cold cache:
+    unserialised, each worker streamed into the same zip, one worker's "too long, discard it"
+    branch deleted the file under another, and the run failed with FileNotFoundError.
+    """
+    (tmp_path / "zenodo_dataset_metadata.json").write_text(json.dumps({"files": [_BIG_FILE_ENTRY]}))
+    session = MagicMock()
+    session.get.side_effect = AssertionError("the file was already downloaded by the lock holder")
+    session.__enter__.return_value = session
+    session.__exit__.return_value = False
+    errors: list[BaseException] = []
+
+    def _second_downloader() -> None:
+        try:
+            download_zenodo_data(record_id="123", output_dir=tmp_path)
+        except BaseException as e:  # noqa: BLE001  (re-raised on the main thread below)
+            errors.append(e)
+
+    other_process_lock = FileLock(tmp_path / ZENODO_DOWNLOAD_LOCK_FILENAME)
+    with patch("requests.Session", return_value=session):
+        with other_process_lock:
+            waiter = threading.Thread(target=_second_downloader)
+            waiter.start()
+            waiter.join(timeout=0.5)
+            assert waiter.is_alive(), "the second downloader did not wait for the lock"
+            (tmp_path / "big.bin").write_bytes(b"0123456789")  # the holder finishes the file
+        waiter.join(timeout=10)
+
+    assert not waiter.is_alive()
+    assert errors == []
+    session.get.assert_not_called()
 
 
 class TestEnsureHotDataFiles:
