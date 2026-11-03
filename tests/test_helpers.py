@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from wind_up.caching import with_parquet_cache
+from wind_up.caching import with_parquet_cache, with_pickle_cache
 
 
 class TestWithParquetCache:
@@ -33,3 +33,48 @@ class TestWithParquetCache:
 
         _df = myfunc()
         pd.testing.assert_frame_equal(_df, sample_df)
+
+
+class TestWithPickleCache:
+    def test_reruns_the_func_if_key_changes(self, tmp_path: Path) -> None:
+        fp = tmp_path / "test.pickle"
+
+        @with_pickle_cache(fp=fp, key="a")
+        def first() -> int:
+            return 1
+
+        @with_pickle_cache(fp=fp, key="b")
+        def second() -> int:
+            return 2
+
+        assert first() == 1
+        assert second() == 2
+
+    def test_doesnt_run_the_func_if_key_is_unchanged(self, tmp_path: Path) -> None:
+        fp = tmp_path / "test.pickle"
+
+        @with_pickle_cache(fp=fp, key="a")
+        def first() -> int:
+            return 1
+
+        @with_pickle_cache(fp=fp, key="a")
+        def second() -> float:
+            return 1 / 0
+
+        assert first() == 1
+        assert second() == 1
+
+    def test_reruns_the_func_if_cache_has_no_key(self, tmp_path: Path) -> None:
+        fp = tmp_path / "test.pickle"
+
+        @with_pickle_cache(fp=fp)
+        def first() -> int:
+            return 1
+
+        @with_pickle_cache(fp=fp, key="a")
+        def second() -> int:
+            return 2
+
+        assert first() == 1
+        assert not list(tmp_path.glob("*.key"))
+        assert second() == 2

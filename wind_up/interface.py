@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from wind_up import __version__
 from wind_up.caching import with_pickle_cache
 from wind_up.constants import REANALYSIS_WD_COL
 from wind_up.northing import add_wf_yawdir, apply_northing_corrections
@@ -176,7 +178,13 @@ class AssessmentInputs:
         :param cache_dir: directory for caching
         :return: instance of AssessmentInputs
         """
-        func = preprocess if cache_dir is None else with_pickle_cache(cache_dir / "preprocess.pickle")(preprocess)
+        if cache_dir is None:
+            func = preprocess
+        else:
+            key = _preprocess_cache_key(
+                cfg=cfg, scada_df=scada_df, metadata_df=metadata_df, reanalysis_datasets=reanalysis_datasets
+            )
+            func = with_pickle_cache(cache_dir / "preprocess.pickle", key=key)(preprocess)
         wf_df, pc_per_ttype = func(
             cfg=cfg,
             plot_cfg=plot_cfg,
@@ -194,6 +202,31 @@ class AssessmentInputs:
             pre_post_splitter=pre_post_splitter,
             mast_or_lidar_datasets=mast_or_lidar_datasets,
         )
+
+
+def _preprocess_cache_key(
+    *,
+    cfg: WindUpConfig,
+    scada_df: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+    reanalysis_datasets: list[ReanalysisDataset],
+) -> str:
+    """Hash the inputs of `preprocess` so that a cached result is only used for the same inputs.
+
+    The wind-up version is part of the key, but in an editable install it does not change with the code, so changes
+    to the preprocessing steps do not invalidate the cache there.
+    """
+    # turbine coordinates are copied into cfg from metadata_df after preprocessing, so leave them out;
+    # test_wtgs and ref_wtgs share their Turbine instances with asset.wtgs
+    coords = {"__all__": {"latitude", "longitude"}}
+    cfg_json = cfg.model_dump_json(exclude={"asset": {"wtgs": coords}, "test_wtgs": coords, "ref_wtgs": coords})
+    h = hashlib.sha256(f"{__version__}{cfg_json}".encode())
+    for name, df in [("scada", scada_df), ("metadata", metadata_df)] + [(d.id, d.data) for d in reanalysis_datasets]:
+        # hash_pandas_object ignores dtypes, e.g. int vs bool values or a naive vs UTC index
+        index_dtypes = [str(lvl.dtype) for lvl in getattr(df.index, "levels", [df.index])]
+        h.update(f"{name}{list(df.columns)}{list(map(str, df.dtypes))}{index_dtypes}".encode())
+        h.update(pd.util.hash_pandas_object(df).to_numpy().tobytes())
+    return h.hexdigest()
 
 
 def _get_filtered_wf_df_and_cfg_with_latlongs(
