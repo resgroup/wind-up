@@ -71,6 +71,9 @@ class DiagnosticContext:
     :param power_references: the turbines the method predicts the test turbine's power from, for
         plots about the test turbine and its references only; ``None`` when the method does not say,
         in which case those plots take every other turbine (:meth:`references`)
+    :param reference_used_ts: optional "used" flag per unique timestamp for the references, where it
+        differs from ``used_ts`` (a method whose rows feed the test turbine's estimate without its
+        references, e.g. one leg that reads no reference); ``None`` when ``used_ts`` holds for them too
     """
 
     run_dir: Path
@@ -86,6 +89,7 @@ class DiagnosticContext:
     era5_label: str = ERA5_UNLOCATED
     excluded_ts: npt.NDArray[np.bool_] | None = None
     power_references: list[str] | None = None
+    reference_used_ts: npt.NDArray[np.bool_] | None = None
 
     @property
     def index(self) -> pd.DatetimeIndex:
@@ -131,6 +135,12 @@ class DiagnosticContext:
         flags = self.turbine_series(turbine, self.columns.exclude_row)
         mask = flags.fillna(0.0).to_numpy(dtype=float) != 0.0
         return mask if mask.any() else None
+
+    def used_mask(self, turbine: str) -> npt.NDArray[np.bool_]:
+        """Return the timestamps whose ``turbine`` rows the method used (``reference_used_ts`` for a reference)."""
+        if turbine == self.test_wtg or self.reference_used_ts is None:
+            return np.asarray(self.used_ts, dtype=bool)
+        return np.asarray(self.reference_used_ts, dtype=bool)
 
     def references(self) -> list[str]:
         """Sorted reference turbine names (every turbine present except the test turbine)."""

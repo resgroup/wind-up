@@ -1088,8 +1088,15 @@ class ToggleSpecialistMethod:
                 max_gap=self.pairing_max_gap,
                 test=mi.test_wtg,
             )
+            reference_leg = components.get(_REFERENCE_LEG)
             self._write_shared_diagnostics(
-                mi, run_dir=run_dir, wide=wide, used=est.used, timebase=timebase, turbines=[mi.test_wtg, *est.refs]
+                mi,
+                run_dir=run_dir,
+                wide=wide,
+                used=est.used,
+                reference_used=None if reference_leg is None else reference_leg.used,
+                timebase=timebase,
+                turbines=[mi.test_wtg, *est.refs],
             )
 
     def _write_shared_diagnostics(
@@ -1099,14 +1106,24 @@ class ToggleSpecialistMethod:
         run_dir: Path,
         wide: pd.DataFrame,
         used: np.ndarray,
+        reference_used: np.ndarray | None,
         timebase: pd.Timedelta,
         turbines: list[str],
     ) -> None:
-        """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
+        """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config.
+
+        ``used`` is the blend's rows (either leg's), the test turbine's view. The references are drawn
+        from ``reference_used``, the reference leg's own rows: the block leg reads no reference, so its
+        rows say nothing about a reference's data. Only the chosen subset (``turbines`` past the test
+        turbine) is drawn.
+        """
         # ``wide`` (a pivot) drops all-NaN timestamps, so align the masks to the full unique index
         # the DiagnosticContext uses (timestamps absent from ``wide`` are simply not used).
         index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
-        used = pd.Series(used, index=wide.index).reindex(index, fill_value=False).to_numpy()
+
+        def _aligned(mask: np.ndarray) -> npt.NDArray[np.bool_]:
+            return pd.Series(mask, index=wide.index).reindex(index, fill_value=False).to_numpy(dtype=bool)
+
         treated = resolve_toggle(mi.upgrade_timing, index).upgraded.astype(bool)
         ctx = DiagnosticContext(
             run_dir=run_dir,
@@ -1115,7 +1132,9 @@ class ToggleSpecialistMethod:
             columns=self.columns,
             scada_df=mi.scada_df,
             treated_ts=treated,
-            used_ts=used,
+            used_ts=_aligned(used),
+            reference_used_ts=None if reference_used is None else _aligned(reference_used),
+            power_references=turbines[1:],
             timebase=timebase,
             mode="toggle",
             era5_df=None,

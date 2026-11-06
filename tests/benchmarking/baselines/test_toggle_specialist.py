@@ -1778,3 +1778,50 @@ class TestPermutedLabels:
         )
         assert up_p.sum() == upgraded.sum()
         assert np.array_equal(up_p, ~base_p)
+
+
+class TestDiagnosticsShowTheReferenceLegRows:
+    """A reference's figures show the rows it fed, not the union of the legs: the block leg ignores references."""
+
+    @staticmethod
+    def _context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, scada: pd.DataFrame, schedule: ToggleSchedule):  # noqa: ANN205
+        captured = []
+        monkeypatch.setattr(toggle_specialist, "write_common_diagnostics", lambda ctx: captured.append(ctx) or [])
+        ToggleSpecialistMethod(
+            columns=_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM, out_dir=tmp_path, save_plots=True
+        ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
+        (ctx,) = captured
+        return ctx
+
+    def test_a_reference_down_row_is_not_drawn_as_used_by_it(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        scada, schedule = _noisy_toggle_case()
+        scada = scada[scada[_TURBINE_COL] != "R2"].copy()
+        is_r1 = (scada[_TURBINE_COL] == "R1").to_numpy()
+        down = is_r1 & (np.cumsum(is_r1) % 7 == 0)
+        scada.loc[down, _AVAIL_COL] = 0.0
+        down_ts = scada.index[down]
+
+        ctx = self._context(monkeypatch, tmp_path, scada, schedule)
+
+        assert ctx.plotted_references() == ["R1"]
+        at_down = ctx.index.isin(down_ts)
+        assert ctx.used_ts[at_down].any(), "the block leg uses these rows, so the union does too"
+        assert not ctx.used_mask("R1")[at_down].any()
+        np.testing.assert_array_equal(ctx.used_mask("T1"), ctx.used_ts)
+
+    def test_only_the_chosen_reference_subset_is_plotted(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        scada, schedule = _noisy_toggle_case()
+        scada = scada.copy()
+        is_r2 = (scada[_TURBINE_COL] == "R2").to_numpy()
+        rng = np.random.default_rng(1)
+        scada.loc[is_r2, _POWER_COL] *= rng.uniform(0.2, 1.8, int(is_r2.sum()))
+
+        ctx = self._context(monkeypatch, tmp_path, scada, schedule)
+
+        run_dir = next(p for p in tmp_path.iterdir() if p.is_dir())
+        subsets = pd.read_csv(next(run_dir.glob("reference_subsets_*.csv")))
+        chosen = subsets.loc[subsets["chosen"], "refs"].item().split(";")
+        assert chosen == ["R1"]
+        assert ctx.plotted_references() == chosen

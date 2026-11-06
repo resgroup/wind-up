@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from benchmarking.diagnostics import common, stages, write_common_diagnostics, write_run_config
+from benchmarking.diagnostics import common, curves, stages, write_common_diagnostics, write_run_config
 from benchmarking.diagnostics.context import ERA5_WD_COL, ERA5_WS_COL, DiagnosticContext
 from benchmarking.diagnostics.coverage import exclusion_bucket, plot_excluded_fraction
 from benchmarking.diagnostics.curves import (
@@ -34,6 +34,7 @@ from benchmarking.harness.operating_state import STATE_COL
 from benchmarking.synthetic import ColumnSchema
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 _FULL_COLUMNS = ColumnSchema(
@@ -250,6 +251,45 @@ class TestReferenceOpsCurves:
         ctx = dataclasses.replace(ctx, scada_df=ctx.scada_df.assign(**{STATE_COL: "normal"}))
         assert plot_ops_curves(ctx) == []
         assert plot_ops_curves_kept(ctx) == []
+
+
+class TestEachTurbineIsColouredByItsOwnUsedRows:
+    """A reference's kept/removed split comes from the reference leg's rows, not the test turbine's."""
+
+    @staticmethod
+    def _recorded(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path, plot: Callable[[DiagnosticContext], list[Path]]
+    ) -> tuple[dict[str, list[tuple[str, np.ndarray]]], np.ndarray, np.ndarray]:
+        test_used = np.arange(300) % 3 != 0
+        reference_used = np.arange(300) % 4 != 0
+        ctx = dataclasses.replace(
+            _context(tmp_path), used_ts=test_used, reference_used_ts=reference_used, power_references=["T2"]
+        )
+        drawn: dict[str, list[tuple[str, np.ndarray]]] = {}
+
+        def _record(_ctx: DiagnosticContext, *, turbine: str, segments: curves.Segments, **_: object) -> None:
+            drawn[turbine] = [(label, mask) for label, mask, _colour in segments]
+
+        monkeypatch.setattr(curves, "_ops_curve_figure", _record)
+        plot(ctx)
+        return drawn, test_used, reference_used
+
+    def test_kept_and_removed_follow_each_turbines_mask(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        drawn, test_used, reference_used = self._recorded(monkeypatch, tmp_path, plot_ops_curves)
+        assert set(drawn) == {"T1", "T2"}
+        for turbine, used in (("T1", test_used), ("T2", reference_used)):
+            (kept_label, kept), (removed_label, removed) = drawn[turbine]
+            assert (kept_label, removed_label) == ("kept", "removed")
+            np.testing.assert_array_equal(kept, used)
+            np.testing.assert_array_equal(removed, ~used)
+
+    def test_kept_only_follows_each_turbines_mask(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        drawn, test_used, reference_used = self._recorded(monkeypatch, tmp_path, plot_ops_curves_kept)
+        assert set(drawn) == {"T1", "T2"}
+        for turbine, used in (("T1", test_used), ("T2", reference_used)):
+            ((label, kept),) = drawn[turbine]
+            assert label == "kept"
+            np.testing.assert_array_equal(kept, used)
 
 
 @pytest.mark.slow

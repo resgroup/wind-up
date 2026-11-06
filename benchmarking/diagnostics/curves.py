@@ -34,8 +34,10 @@ from benchmarking.diagnostics.timeaxis import shade_segments
 from benchmarking.harness.operating_state import STATE_COL
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
+    import numpy.typing as npt
     import pandas as pd
 
     from benchmarking.diagnostics.context import DiagnosticContext
@@ -138,13 +140,23 @@ def _ops_curve_figure(
     return path
 
 
-def _used_figure_per_turbine(ctx: DiagnosticContext, *, segments: Segments, title: str, filename: str) -> list[Path]:
-    """Draw a used-rows figure for the test turbine and each plotted reference; none for a labelled run."""
+def _used_figure_per_turbine(
+    ctx: DiagnosticContext, *, segments: Callable[[npt.NDArray[np.bool_]], Segments], title: str, filename: str
+) -> list[Path]:
+    """Draw a used-rows figure for the test turbine and each plotted reference, each from its own used mask.
+
+    None for a labelled run.
+    """
     if STATE_COL in ctx.scada_df.columns:
         return []
     paths = [
         _ops_curve_figure(
-            ctx, turbine=turbine, segments=segments, title=title, filename=filename, stage=stages.VALID_RECORDS
+            ctx,
+            turbine=turbine,
+            segments=segments(ctx.used_mask(turbine)),
+            title=title,
+            filename=filename,
+            stage=stages.VALID_RECORDS,
         )
         for turbine in (ctx.test_wtg, *ctx.plotted_references())
     ]
@@ -153,19 +165,21 @@ def _used_figure_per_turbine(ctx: DiagnosticContext, *, segments: Segments, titl
 
 def plot_ops_curves(ctx: DiagnosticContext) -> list[Path]:
     """Draw the operating-curve figure coloured kept vs removed by the row filter, per turbine."""
-    used = np.asarray(ctx.used_ts, dtype=bool)
-    segments: Segments = [("kept", used, "C0"), ("removed", ~used, "C3")]
     return _used_figure_per_turbine(
-        ctx, segments=segments, title="operating curves (kept vs removed by the row filter)", filename="ops_curves.png"
+        ctx,
+        segments=lambda used: [("kept", used, "C0"), ("removed", ~used, "C3")],
+        title="operating curves (kept vs removed by the row filter)",
+        filename="ops_curves.png",
     )
 
 
 def plot_ops_curves_kept(ctx: DiagnosticContext) -> list[Path]:
     """Draw the operating-curve figure for the kept rows only, so removed points cannot mask them, per turbine."""
-    used = np.asarray(ctx.used_ts, dtype=bool)
-    segments: Segments = [("kept", used, "C0")]
     return _used_figure_per_turbine(
-        ctx, segments=segments, title="operating curves (used rows only)", filename="ops_curves_kept_only.png"
+        ctx,
+        segments=lambda used: [("kept", used, "C0")],
+        title="operating curves (used rows only)",
+        filename="ops_curves_kept_only.png",
     )
 
 

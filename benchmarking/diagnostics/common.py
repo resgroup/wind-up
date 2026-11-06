@@ -68,14 +68,22 @@ def write_common_diagnostics(ctx: DiagnosticContext, *, skip_stages: frozenset[s
     """Write every shared diagnostic plot for ``ctx``, except those of ``skip_stages``; return the paths written."""
     n = len(ctx.index)
     excluded_n = None if ctx.excluded_ts is None else len(ctx.excluded_ts)
-    if len(ctx.treated_ts) != n or len(ctx.used_ts) != n or excluded_n not in (None, n):
+    reference_used_n = None if ctx.reference_used_ts is None else len(ctx.reference_used_ts)
+    if (
+        len(ctx.treated_ts) != n
+        or len(ctx.used_ts) != n
+        or excluded_n not in (None, n)
+        or reference_used_n not in (None, n)
+    ):
         logger.error(
-            "diagnostic masks misaligned with the index (index=%d, treated=%d, used=%d, excluded=%s);"
+            "diagnostic masks misaligned with the index"
+            " (index=%d, treated=%d, used=%d, excluded=%s, reference used=%s);"
             " skipping diagnostics",
             n,
             len(ctx.treated_ts),
             len(ctx.used_ts),
             excluded_n,
+            reference_used_n,
         )
         return []
     ctx.plots_dir.mkdir(parents=True, exist_ok=True)
