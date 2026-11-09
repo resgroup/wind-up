@@ -784,7 +784,6 @@ def _results_per_test_ref_to_df(results_per_test_ref: list[pd.DataFrame]) -> pd.
         "test_warning_counts",
         "test_ref_warning_counts",
         "test_wtg",
-        "test_toggle_is_placebo",
         "test_pw_col",
         "ref",
         "ref_ws_col",
