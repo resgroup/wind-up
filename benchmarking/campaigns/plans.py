@@ -164,7 +164,7 @@ def plans_for(
     unplanned: dict[str, str] = {}
     warnings: dict[str, dict[str, str]] = {}
     for turbine in sorted(spec.upgraded_turbines):
-        span = spec.period_for(turbine)
+        span = _within_record(spec.period_for(turbine), extents=extents, turbine=turbine)
         others = other_works(spec, turbine)
         # The test turbine's own extent is cut so that neither period holds another of its changes.
         own_extents = dict(extents)
@@ -208,6 +208,31 @@ def plans_for(
         for other, warning in warnings[turbine].items():
             logger.warning("%s: %s: %s", turbine, other, warning)
     return CampaignPlans(plans=plans, unplanned=unplanned, works=works, extents=extents, warnings=warnings)
+
+
+def _within_record(span: Window | None, *, extents: Mapping[str, Window], turbine: str) -> Window | None:
+    """Return a declared span cut to the SCADA record, warning when it reached beyond it.
+
+    No turbine has data beyond the record, so a span reaching past it would leave every turbine
+    short of data over the whole span, and none a power reference.
+    """
+    if span is None or not extents:
+        return span
+    first = min(start for start, _ in extents.values())
+    last = max(end for _, end in extents.values())
+    cut = (max(span[0], first), min(span[1], last))
+    if cut != span:
+        logger.warning(
+            "%s: the declared span %s..%s reaches beyond the SCADA record %s..%s; it is cut to %s..%s",
+            turbine,
+            span[0],
+            span[1],
+            first,
+            last,
+            cut[0],
+            cut[1],
+        )
+    return cut
 
 
 def plan_warnings(plan: AnalysisPlan, *, possible_changes: Mapping[str, Sequence[pd.Timestamp]]) -> dict[str, str]:

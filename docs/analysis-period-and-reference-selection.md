@@ -11,7 +11,8 @@ only: every turbine's works windows, every turbine's data extent, the declared e
 and a few settings. It never reads power. It returns an `AnalysisPlan`: the span, the power
 references, the reserves, every other turbine's role with the reason, and whether the pool rule held.
 The campaign runner (`benchmarking/campaigns/plans.py`) calls it once per upgraded turbine for every
-campaign, with a declared span used as given, and writes each plan in the report's Part B folders
+campaign, with a declared span used as given once any part beyond the SCADA record is cut off
+(with a warning), and writes each plan in the report's Part B folders
 (`07_periods/periods.csv` with an `analysis_timeline_<turbine>.png` per turbine, and
 `08_candidates/candidates.csv`). The span's two sides are the before and after periods of method
 step 7: the before period runs from the span's start to the start of the test turbine's works, the

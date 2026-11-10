@@ -132,6 +132,18 @@ def test_a_declared_span_with_a_shared_changeover_is_used_as_given() -> None:
     assert plan.reserves
 
 
+def test_a_declared_span_past_the_scada_record_is_cut_to_it(caplog: pytest.LogCaptureFixture) -> None:
+    # SCADA labelled by period end and cut at a calendar boundary stops one timebase short of it
+    change = utc("2019-06-06")
+    span = (utc("2017-12-31"), DATA_END + pd.Timedelta(hours=1))
+    with caplog.at_level(logging.WARNING):
+        resolved = resolve(staggered_spec(upgrade_timing=change, works={}, analysis_period=span))
+    plan = resolved.plans["T0"]
+    assert (plan.start, plan.end) == (utc("2018-01-01"), DATA_END)
+    assert len(plan.power_references) == 4
+    assert "beyond the SCADA record" in caplog.text
+
+
 def test_a_possible_change_inside_the_periods_is_a_warning(caplog: pytest.LogCaptureFixture) -> None:
     plan = plans()["T0"]
     reference = plan.power_references[0]
