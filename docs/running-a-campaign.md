@@ -106,7 +106,9 @@ exclusions:                      # optional; end exclusive
   campaign](prepost-campaigns.md) describes the whole selection.
 - **To fix the span by hand**, `analysis_period` is declared, once for the campaign or per turbine
   (`analysis_period: {T13: {start: ..., end: ...}}`). Declared `references` are then used as power
-  references even when their works overlap that span, with a warning.
+  references even when their works overlap that span, with a warning. A declared span reaching
+  beyond the SCADA record is cut to it, with a warning: SCADA labelled by period end and cut at a
+  calendar boundary stops one record short of it.
 - **A shared `timing.changeover`** is every upgraded turbine's changeover. With a works table beside
   it, the table holds every turbine's other works, the upgraded turbines' included; no works window
   of an upgraded turbine may cover the changeover.
