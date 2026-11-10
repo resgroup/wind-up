@@ -118,6 +118,14 @@ bearing. A quadratic fit locates the wake's nadir, where the ratio is lowest. Ho
 turbine's residual error. A nadir that is unbracketed, not convex, too shallow or too thinly sampled
 is rejected.
 
+A pair counts only when its upstream turbine sees free stream on the bearing: no other turbine is
+upwind of it there, within its IEC 61400-12-1 disturbed sector (`wind_up.layout.upwind_mask`).
+When a third turbine wakes the upstream one, the ratio mixes the two wakes. Its dip is shallow and,
+unless the third turbine sits exactly on the same line, off-centre, so it reports a residual error
+where there is none. In a large array this mostly affects interior turbines. They then take their
+correction from their resolved neighbours, as below, which suits a shift meant to correct a
+farm-wide error.
+
 The figure shows one pair on Hill of Towie: T21 waking T19. Before the shift (red), T19's power and
 wind speed, relative to T21's, reach their nadir 6.2 degrees before T21's northed direction reaches the bearing
 between them. T21's shift of +6.2 degrees moves the nadir onto the bearing (blue).
@@ -125,8 +133,10 @@ between them. T21's shift of +6.2 degrees moves the nadir onto the bearing (blue
 ![T19's power and wind-speed ratio to T21, binned by T21's direction, before and after the wake-nadir shift](images/northing/wake_nadir_pair_T21_T19.png)
 
 A turbine's pairs are combined by their circular median, so a majority of consistent pairs
-outvotes one biased by terrain or wake deflection. A turbine with no resolvable pair takes the
-circular median of its nearest resolved turbines, or zero if there are none. The shift moves every
+outvotes one biased by terrain or wake deflection. A turbine needs two resolved pairs to take its
+own correction, because one marginal curve can be many degrees out; in a farm where no turbine
+resolves two, one is enough. A turbine short of that takes the circular median of its nearest
+resolved turbines, or zero if there are none. The shift moves every
 offset in the turbine's table and never changes which rows are valid or where the changepoints are.
 
 The map shows every Hill of Towie turbine's shift. Most are small and positive, with a median of
