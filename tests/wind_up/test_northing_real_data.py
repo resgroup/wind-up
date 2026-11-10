@@ -194,13 +194,14 @@ RECORDED_WORST_ERROR = {
 # Cases that cost a full-farm, full-window run each: CI only.
 RECORDED_WORST_ERROR_SLOW = {
     ("N=10", "early"): 2.0,
-    ("N=10", "late"): 1.8,
-    ("drop50%", "early"): 2.0,
-    ("drop50%", "late"): 5.6,
-    ("drop75%", "early"): 4.3,
-    ("drop75%", "late"): 7.8,
-    ("6mo_outage", "early"): 1.9,
-    ("6mo_outage", "late"): 1.0,
+    ("N=10", "late"): 1.4,
+    ("drop50%", "early"): 1.9,
+    ("drop50%", "late"): 5.5,
+    # 4.3 before the wake-nadir shift read only free-stream pairs.
+    ("drop75%", "early"): 7.4,
+    ("drop75%", "late"): 8.5,
+    ("6mo_outage", "early"): 2.0,
+    ("6mo_outage", "late"): 1.6,
 }
 
 

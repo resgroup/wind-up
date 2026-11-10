@@ -350,7 +350,7 @@ def test_a_waked_upstream_turbine_is_not_shifted_by_its_neighbours_wake() -> Non
 
     offsets = wake_nadir_offsets(layout, index=index, northed_direction=northed, power=power, usable=usable)
 
-    assert offsets == pytest.approx({"W": 0.0, "U": 0.0, "D": 0.0}, abs=0.5)
+    assert offsets == pytest.approx({"W": 0.0, "U": 0.0, "D": 0.0}, abs=0.2)
 
 
 def test_wake_pairs_skip_an_upstream_turbine_that_is_itself_waked_on_the_bearing() -> None:
