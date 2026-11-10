@@ -1,4 +1,3 @@
-import time
 from pathlib import Path
 
 import numpy as np
@@ -66,21 +65,13 @@ def test_get_distance_and_bearing(test_homer_config: WindUpConfig) -> None:
     expected_bearing = 245.02500888680734 - 180
     expected_distance = 270.894287973147
     get_distance_and_bearing.cache_clear()
-    start_time = time.perf_counter()
-    distance_m, bearing_deg = get_distance_and_bearing(lat1=t1lat, long1=t1long, lat2=t2lat, long2=t2long)
-    end_time = time.perf_counter()
-    run_time_pre_cache = end_time - start_time
-    assert distance_m == pytest.approx(expected_distance)
-    assert bearing_deg == pytest.approx(expected_bearing)
-    start_time = time.perf_counter()
     reps = 100
-    for _x in range(reps):
+    for _x in range(1 + reps):
         distance_m, bearing_deg = get_distance_and_bearing(lat1=t1lat, long1=t1long, lat2=t2lat, long2=t2long)
         assert distance_m == pytest.approx(expected_distance)
         assert bearing_deg == pytest.approx(expected_bearing)
-    end_time = time.perf_counter()
-    run_time_with_cache = (end_time - start_time) / reps
-    assert run_time_with_cache < run_time_pre_cache * 3 / 10
+    cache = get_distance_and_bearing.cache_info()
+    assert (cache.misses, cache.hits) == (1, reps)
 
 
 def test_calc_scen_name_from_wtgs_not_waking() -> None:
