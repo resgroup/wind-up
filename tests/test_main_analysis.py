@@ -7,7 +7,8 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from wind_up_v0.constants import TIMESTAMP_COL
-from wind_up_v0.main_analysis import _toggle_pairing_filter
+from wind_up_v0.main_analysis import _keep_only_ref_toggle_off, _toggle_pairing_filter
+from wind_up_v0.models import WindUpConfig
 
 
 def test_toggle_pairing_filter_method_none() -> None:
@@ -153,3 +154,27 @@ def test_toggle_pairing_filter_method_any_within_timedelta() -> None:
     )
     assert_frame_equal(filt_pre_df, exp_filt_pre_df)
     assert_frame_equal(filt_post_df, exp_filt_post_df)
+
+
+@pytest.mark.parametrize(
+    ("test_name", "ref_name", "expected"),
+    [
+        ("MRG_T01", "MRG_T06", True),  # a test wtg as reference: its upgraded rows are dropped
+        ("MRG_T01", "MRG_T04", True),  # a ref wtg with a real toggle signal is still filtered
+        ("MRG_T01", "MRG_T02", False),  # a placebo toggle changed nothing, so all rows are kept
+        ("MRG_T03", "MRG_T02", False),
+        ("MRG_T01", "MRG_T01", False),  # self-reference keeps everything
+    ],
+)
+def test_keep_only_ref_toggle_off_skips_placebo_wtgs(
+    test_marge_config: WindUpConfig, test_name: str, ref_name: str, *, expected: bool
+) -> None:
+    """A placebo-toggled reference must not lose its toggle_on rows when it serves as a reference."""
+    test_marge_config.toggle.toggle_file_per_turbine = True
+    test_marge_config.toggle.placebo_toggle_wtgs = ["MRG_T02", "MRG_T03"]
+    assert _keep_only_ref_toggle_off(cfg=test_marge_config, test_name=test_name, ref_name=ref_name) is expected
+
+
+def test_keep_only_ref_toggle_off_is_false_without_per_turbine_toggle(test_marge_config: WindUpConfig) -> None:
+    test_marge_config.toggle.toggle_file_per_turbine = False
+    assert not _keep_only_ref_toggle_off(cfg=test_marge_config, test_name="MRG_T01", ref_name="MRG_T06")

@@ -270,6 +270,38 @@ def test_borrow_toggle_from_wtg_rejects_non_test_wtg(test_marge_config: WindUpCo
         WindUpConfig.model_validate(raw)
 
 
+def test_placebo_toggle_wtgs_defaults_to_empty(test_marge_config: WindUpConfig) -> None:
+    assert test_marge_config.toggle is not None
+    assert test_marge_config.toggle.placebo_toggle_wtgs == []
+
+
+def test_placebo_toggle_wtgs_accepts_ref_wtgs(test_marge_config: WindUpConfig) -> None:
+    raw = test_marge_config.model_dump()
+    raw["toggle"]["placebo_toggle_wtgs"] = ["MRG_T02", "MRG_T03"]
+    cfg = WindUpConfig.model_validate(raw)
+    assert cfg.toggle.placebo_toggle_wtgs == ["MRG_T02", "MRG_T03"]
+
+
+@pytest.mark.parametrize(
+    ("placebo", "borrow", "match"),
+    [
+        (["MRG_T01"], None, "are test_wtgs"),  # a test wtg really toggled
+        (["MRG_T02", "MRG_T02"], None, "duplicates"),
+        (["MRG_MetMast_pri"], None, "must be in ref_wtgs"),
+        (["MRG_T02"], "MRG_T01", "at most one of"),
+    ],
+)
+def test_placebo_toggle_wtgs_rejects_invalid_lists(
+    test_marge_config: WindUpConfig, placebo: list[str], borrow: str | None, match: str
+) -> None:
+    """A placebo toggle must be declared only on reference turbines, and not mixed with borrowing."""
+    raw = test_marge_config.model_dump()
+    raw["toggle"]["placebo_toggle_wtgs"] = placebo
+    raw["toggle"]["borrow_toggle_from_wtg"] = borrow
+    with pytest.raises(ValidationError, match=match):
+        WindUpConfig.model_validate(raw)
+
+
 class TestPrePostValidation:
     @pytest.fixture
     def valid_dates(self) -> dict[str, dt.datetime]:

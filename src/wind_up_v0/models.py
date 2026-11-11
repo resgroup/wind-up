@@ -148,6 +148,13 @@ class Toggle(BaseModel):
         "robin), borrow this turbine's toggle signal so it gets a real pre/post split instead of "
         "an empty post period. Must name one of cfg.test_wtgs.",
     )
+    placebo_toggle_wtgs: list[str] = Field(
+        default_factory=list,
+        description="Reference turbines whose toggle signal was assigned by the analyst but never "
+        "applied: the turbine kept running unchanged. Each gets a pre/post split from its own signal "
+        "when analysed in the test role, and keeps all its data when used as a reference. Each must be "
+        "one of cfg.ref_wtgs and none of cfg.test_wtgs.",
+    )
 
 
 class PrePost(BaseModel):
@@ -401,6 +408,25 @@ class WindUpConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _check_placebo_toggle_wtgs(self: WindUpConfig) -> WindUpConfig:
+        if self.toggle is None or not self.toggle.placebo_toggle_wtgs:
+            return self
+        placebo = self.toggle.placebo_toggle_wtgs
+        if len(set(placebo)) != len(placebo):
+            msg = f"toggle.placebo_toggle_wtgs {placebo} has duplicates"
+            raise ValueError(msg)
+        if tested := sorted(set(placebo) & {x.name for x in self.test_wtgs}):
+            msg = f"toggle.placebo_toggle_wtgs {tested} are test_wtgs, which carry the real toggle"
+            raise ValueError(msg)
+        if not_refs := sorted(set(placebo) - {x.name for x in self.ref_wtgs}):
+            msg = f"toggle.placebo_toggle_wtgs {not_refs} must be in ref_wtgs"
+            raise ValueError(msg)
+        if self.toggle.borrow_toggle_from_wtg is not None:
+            msg = "set at most one of toggle.borrow_toggle_from_wtg and toggle.placebo_toggle_wtgs"
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
     def print_summary(self: WindUpConfig) -> WindUpConfig:
         """Print a summary of the WindUpConfig."""
         logger.info(f"loaded WindUpConfig assessment_name: {self.assessment_name}")
@@ -411,6 +437,8 @@ class WindUpConfig(BaseModel):
             logger.info(
                 f"toggle analysis period (UTC): {dt_rng_start} to {dt_rng_end}",
             )
+            if self.toggle.placebo_toggle_wtgs:
+                logger.info(f"placebo toggle (never applied) on: {self.toggle.placebo_toggle_wtgs}")
         elif self.prepost is not None:
             dt_rng_start = self.prepost.pre_first_dt_utc_start.strftime(dt_fmt)
             dt_rng_end = (self.prepost.pre_last_dt_utc_start + pd.Timedelta(seconds=self.timebase_s)).strftime(dt_fmt)

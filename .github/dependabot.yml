@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # One PR per month refreshing the whole uv.lock (direct and transitive, including majors).
+  # Security fixes arrive through this PR too; automated security-update PRs are disabled
+  # in the repo settings to keep the review load to a single PR.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    allow:
+      - dependency-type: "all"
+    groups:
+      python:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 1
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "quarterly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 1

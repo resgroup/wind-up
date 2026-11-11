@@ -172,6 +172,16 @@ def _filter_ref_df_for_wd_and_hod(ref_df: pd.DataFrame, ref_wd_col: str, cfg: Wi
     return ref_df
 
 
+def _keep_only_ref_toggle_off(*, cfg: WindUpConfig, test_name: str, ref_name: str) -> bool:
+    """Whether a reference turbine's toggle_on rows must be dropped before it is used as a reference.
+
+    Self-references, a single asset-wide toggle and placebo toggles (which changed nothing) keep all rows.
+    """
+    if cfg.toggle is None or not cfg.toggle.toggle_file_per_turbine or ref_name == test_name:
+        return False
+    return ref_name not in cfg.toggle.placebo_toggle_wtgs
+
+
 def _get_ref_df(
     *,
     ref_name: str,
@@ -466,11 +476,7 @@ def _calc_test_ref_results(
         "ref": ref_name,
     }
     ref_wd_col = "YawAngleMean"
-    keep_only_toggle_off = False
-    if cfg.toggle is not None:
-        # if ref is test then keep all data, not just toggle off
-        # if there is not a toggle file per turbine then keep all data
-        keep_only_toggle_off = cfg.toggle.toggle_file_per_turbine and (ref_name != test_name)
+    keep_only_toggle_off = _keep_only_ref_toggle_off(cfg=cfg, test_name=test_name, ref_name=ref_name)
     ref_df = _get_ref_df(
         ref_name=ref_name,
         wf_df=wf_df,
@@ -910,6 +916,7 @@ def run_wind_up_analysis(
         test_results = {
             "wind_up_version": wind_up_v0.__version__,
             "test_wtg": test_name,
+            "test_toggle_is_placebo": cfg.toggle is not None and test_name in cfg.toggle.placebo_toggle_wtgs,
             "test_pw_col": test_pw_col,
             "lt_wtg_hours_raw": lt_df_raw["observed_hours"].sum() if lt_df_raw is not None else 0,
             "lt_wtg_hours_filt": lt_df_filt["observed_hours"].sum() if lt_df_filt is not None else 0,
