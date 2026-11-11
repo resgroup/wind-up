@@ -120,7 +120,9 @@ def check_and_convert_scada_raw(
     scada_raw = scada_raw.loc[first_datetime_utc_start:last_datetime_utc_start]
 
     # verify there is only one row per turbine per timestamp
-    scada_raw.set_index([scada_raw.index, "TurbineName"], verify_integrity=True)
+    if scada_raw.set_index([scada_raw.index, "TurbineName"]).index.has_duplicates:
+        msg = "scada_raw has more than one row for a turbine and timestamp"
+        raise ValueError(msg)
 
     turbine_rows = scada_raw.groupby("TurbineName", observed=False)["TurbineName"].count().to_frame()
     max_rows_per_turbine = turbine_rows.max().iloc[0]
