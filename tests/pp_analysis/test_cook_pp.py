@@ -56,7 +56,7 @@ def _make_pp_raw_df(
             ws_sem_col: [0.2 / max(1, c) ** 0.5 for c in counts],
         }
     )
-    return df.set_index("bin_mid", drop=False, verify_integrity=True)
+    return df.set_index("bin_mid", drop=False)
 
 
 def _make_site_mean_pc_df(bin_mids: list[float] | None = None, rated_power: float = RATED_POWER) -> pd.DataFrame:

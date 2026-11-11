@@ -2797,7 +2797,7 @@ wheels = [
 
 [[package]]
 name = "res-wind-up"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "eval-type-backport" },
@@ -2880,7 +2880,7 @@ requires-dist = [
     { name = "matplotlib" },
     { name = "notebook", marker = "extra == 'examples'" },
     { name = "openmeteo-requests", marker = "extra == 'era5'" },
-    { name = "pandas", specifier = ">=2.0.0,<3.0.0" },
+    { name = "pandas", specifier = ">=2.0.0,<4.0.0" },
     { name = "pvlib", marker = "extra == 'ml'" },
     { name = "pyarrow" },
     { name = "pydantic", specifier = ">=2.0.0" },

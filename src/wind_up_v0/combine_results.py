@@ -240,26 +240,23 @@ def _calculate_total_uplift_of_turbine_group(combined_results_df: pd.DataFrame) 
             ).sum()
         )
 
-    group_results = pd.Series()
-    group_results["p50_uplift"] = _agg_uplift(_df[_CombinedResultsCols.p50_uplift], _df)
-    group_results["sigma_uncorr"] = _agg_sigma_uncorr(_df[_CombinedResultsCols.uncertainty_one_sigma], _df)
-    group_results["sigma_corr"] = _agg_uplift(_df[_CombinedResultsCols.uncertainty_one_sigma], _df)
-    group_results["wtg_count"] = _df[_CombinedResultsCols.p50_uplift].agg(len)
-    group_results["wtg_list"] = ", ".join(sorted(_df[_CombinedResultsCols.test_wtg]))
-    group_results[_CombinedResultsCols.uncertainty_one_sigma] = (
-        group_results["sigma_uncorr"] + group_results["sigma_corr"]
-    ) / 2
-
+    p50_uplift = _agg_uplift(_df[_CombinedResultsCols.p50_uplift], _df)
+    sigma_uncorr = _agg_sigma_uncorr(_df[_CombinedResultsCols.uncertainty_one_sigma], _df)
+    sigma_corr = _agg_uplift(_df[_CombinedResultsCols.uncertainty_one_sigma], _df)
+    sigma = (sigma_uncorr + sigma_corr) / 2
     confidence = 0.9
-    group_results[f"p{100 * (1 - ((1 - confidence) / 2)):.0f}_uplift"] = (
-        group_results["p50_uplift"]
-        + norm.ppf((1 - confidence) / 2) * group_results[_CombinedResultsCols.uncertainty_one_sigma]
+    return pd.Series(
+        {
+            "p50_uplift": p50_uplift,
+            "sigma_uncorr": sigma_uncorr,
+            "sigma_corr": sigma_corr,
+            "wtg_count": float(len(_df)),
+            "wtg_list": ", ".join(sorted(_df[_CombinedResultsCols.test_wtg])),
+            _CombinedResultsCols.uncertainty_one_sigma: sigma,
+            f"p{100 * (1 - ((1 - confidence) / 2)):.0f}_uplift": p50_uplift + norm.ppf((1 - confidence) / 2) * sigma,
+            f"p{100 * ((1 - confidence) / 2):.0f}_uplift": p50_uplift + norm.ppf(1 - (1 - confidence) / 2) * sigma,
+        }
     )
-    group_results[f"p{100 * ((1 - confidence) / 2):.0f}_uplift"] = (
-        group_results["p50_uplift"]
-        + norm.ppf(1 - (1 - confidence) / 2) * group_results[_CombinedResultsCols.uncertainty_one_sigma]
-    )
-    return group_results
 
 
 def calculate_total_uplift_of_test_and_ref_turbines(

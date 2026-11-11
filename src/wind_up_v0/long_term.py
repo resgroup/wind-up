@@ -66,7 +66,7 @@ def _calc_lt_df(
     lt_df["bin_right"] = [x.right for x in lt_df.index]
     lt_df["bin_closed_right"] = [x.closed_right for x in lt_df.index]
 
-    lt_df = lt_df.set_index("bin_mid", drop=False, verify_integrity=True)
+    lt_df = lt_df.set_index("bin_mid", drop=False)
     lt_df.index.name = f"{ws_col}_bin_mid"
 
     lt_df[f"{ws_col}_mean"] = lt_df[f"{ws_col}_mean"].fillna(lt_df["bin_mid"])

@@ -28,5 +28,6 @@ def test_calc_pc_and_rated_ws(test_homer_config: WindUpConfig) -> None:
         e_rated_ws_per_ttype = pickle.load(handle)
 
     for ttype in pc_per_ttype:
-        assert_frame_equal(pc_per_ttype[ttype], e_pc_per_ttype[ttype])
+        # the pickled expectation has object column labels; pandas 3 infers the str dtype
+        assert_frame_equal(pc_per_ttype[ttype], e_pc_per_ttype[ttype], check_column_type=False)
         assert rated_ws_per_ttype[ttype] == pytest.approx(e_rated_ws_per_ttype[ttype])
