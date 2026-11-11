@@ -11,7 +11,7 @@ import pytest
 from wind_up.circular_math import circ_diff
 from wind_up.layout import Layout
 from wind_up.northing import add_wake_nadir_shift, apply_north_table, north_farm
-from wind_up.wake_nadir import _aggregate, wake_nadir_offsets, wake_pair_curves, wake_pairs
+from wind_up.wake_nadir import _aggregate, _own_corrections, wake_nadir_offsets, wake_pair_curves, wake_pairs
 
 
 def _index(rows: int) -> pd.DatetimeIndex:
@@ -278,6 +278,96 @@ def test_wake_pair_curves_find_the_nadir_the_offsets_correct() -> None:
     assert curves.wind_speed_ratio is not None
     assert len(curves.offset_deg) == len(curves.power_ratio) == len(curves.wind_speed_ratio)
     assert float(curves.offset_deg[int(np.nanargmin(curves.power_ratio))]) == pytest.approx(residual, abs=1.0)
+
+
+_EARTH_RADIUS_M = 6_371_000.0
+
+
+def _place(latitude: float, longitude: float, *, bearing_deg: float, distance_m: float) -> tuple[float, float]:
+    north = np.cos(np.deg2rad(bearing_deg)) * distance_m
+    east = np.sin(np.deg2rad(bearing_deg)) * distance_m
+    return (
+        latitude + float(np.rad2deg(north / _EARTH_RADIUS_M)),
+        longitude + float(np.rad2deg(east / (_EARTH_RADIUS_M * np.cos(np.deg2rad(latitude))))),
+    )
+
+
+def _skewed_row_layout(skew_deg: float = 4.0) -> Layout:
+    """W wakes U and U wakes D, 7 diameters apart, the W-U line ``skew_deg`` off the U-D line.
+
+    D -> U is due west; U -> W is ``skew_deg`` north of west, as in a grid whose rows are not straight
+    or whose columns are not square to them.
+    """
+    spacing = 7 * 82.0
+    d = (55.0, 0.0)
+    u = _place(*d, bearing_deg=270.0, distance_m=spacing)
+    w = _place(*u, bearing_deg=270.0 + skew_deg, distance_m=spacing)
+    frame = pd.DataFrame(
+        {
+            "name": ["W", "U", "D"],
+            "latitude": [w[0], u[0], d[0]],
+            "longitude": [w[1], u[1], d[1]],
+            "rotor_diameter_m": [82.0, 82.0, 82.0],
+        }
+    )
+    return Layout.from_frame(frame)
+
+
+def _waked_farm(
+    layout: Layout, *, rows: int = 20000, seed: int = 0
+) -> tuple[pd.DatetimeIndex, dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Every turbine's power under a Gaussian wake from each neighbour within 10 diameters.
+
+    Directions are true for every turbine (no northing error at all), swept 30 deg either side of west.
+    """
+    rng = np.random.default_rng(seed)
+    true = 270.0 + rng.uniform(-30.0, 30.0, size=rows)
+    names = [str(n) for n in layout.frame["name"]]
+    power = {}
+    for name in names:
+        i = layout.index_of(name)
+        factor = np.ones(rows)
+        for other in names:
+            j = layout.index_of(other)
+            if other == name or layout.distance_m[i, j] > 10 * 82.0:
+                continue
+            factor *= 1.0 - 0.4 * np.exp(-0.5 * (circ_diff(true, layout.bearing_deg[i, j]) / 4.0) ** 2)
+        power[name] = 1000.0 * factor
+    northed = dict.fromkeys(names, true % 360.0)
+    usable = {name: np.ones(rows, dtype=bool) for name in names}
+    return _index(rows), northed, power, usable
+
+
+def test_a_waked_upstream_turbine_is_not_shifted_by_its_neighbours_wake() -> None:
+    """A pair reads its upstream turbine's error only when that turbine sees free stream on the bearing.
+
+    U wakes D on the D-U bearing, but W wakes U from a few degrees off it, so U's power dips beside the
+    bearing and the downstream-over-upstream ratio's nadir is pulled sideways. Every direction here is
+    true, so every correction must be about zero; reading the U -> D pair would shift U by degrees.
+    """
+    layout = _skewed_row_layout()
+    index, northed, power, usable = _waked_farm(layout)
+
+    offsets = wake_nadir_offsets(layout, index=index, northed_direction=northed, power=power, usable=usable)
+
+    assert offsets == pytest.approx({"W": 0.0, "U": 0.0, "D": 0.0}, abs=0.2)
+
+
+def test_wake_pairs_skip_an_upstream_turbine_that_is_itself_waked_on_the_bearing() -> None:
+    """U sits between W and D, so it is waked on both of its own pairs' bearings; only the end turbines' pairs count."""
+    layout = _skewed_row_layout()
+
+    assert wake_pairs(layout, devices=["W", "U", "D"]) == [("D", "U"), ("W", "U")]
+
+
+def test_a_turbine_with_one_resolved_pair_takes_its_neighbours_correction_when_others_have_two() -> None:
+    """One pair is one curve; a turbine resting on it alone takes its neighbours' answer instead."""
+    assert _own_corrections({"A": [1.0, 1.2], "B": [0.8, 1.4, 1.0], "Z": [13.0]}) == pytest.approx({"A": 1.1, "B": 1.0})
+
+
+def test_single_pairs_still_count_when_no_turbine_has_two() -> None:
+    """In a farm too small for any turbine to resolve two pairs, one pair each is all there is."""
+    assert _own_corrections({"A": [1.0], "B": [], "Z": [3.0]}) == pytest.approx({"A": 1.0, "Z": 3.0})
 
 
 def test_wake_pair_curves_are_none_without_enough_rows() -> None:

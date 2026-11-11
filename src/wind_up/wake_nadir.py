@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from wind_up.circular_math import circ_diff, circ_median
-from wind_up.layout import ROTOR_DIAMETER_COL
+from wind_up.layout import ROTOR_DIAMETER_COL, upwind_mask
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 # Rows a 1-degree bin needs to contribute.
 MIN_BIN_ROWS = 3
 _MIN_POPULATED_BINS = 8
+# Resolved pairs a turbine needs to take its own correction rather than its neighbours'.
+MIN_RESOLVED_PAIRS = 2
 
 
 def wake_nadir_offsets(
@@ -51,9 +53,9 @@ def wake_nadir_offsets(
     devices = sorted(northed_direction)
     masks = usable if usable is not None else {d: np.ones(len(index), dtype=bool) for d in devices}
 
-    resolved: dict[str, float] = {}
+    pair_corrections: dict[str, list[float]] = {}
     for upstream in devices:
-        pairs = [
+        pair_corrections[upstream] = [
             nadir
             for downstream in _downstream_of(layout, upstream=upstream, devices=devices, cutoff=cutoff_diameters)
             if (
@@ -72,14 +74,17 @@ def wake_nadir_offsets(
             )
             is not None
         ]
-        if pairs:
-            resolved[upstream] = _aggregate(pairs)
 
-    return _fill(layout, devices=devices, resolved=resolved)
+    return _fill(layout, devices=devices, resolved=_own_corrections(pair_corrections))
 
 
 def _downstream_of(layout: Layout, *, upstream: str, devices: list[str], cutoff: float) -> list[str]:
-    """Return the devices ``upstream`` can wake: those within ``cutoff`` diameters downstream."""
+    """Return the devices whose wake from ``upstream`` the shift reads.
+
+    A device counts when it is within ``cutoff`` diameters and ``upstream`` sees free stream on the
+    pair's bearing. When another turbine wakes ``upstream`` on that bearing, the downstream-over-upstream
+    ratio mixes the two wakes, and its nadir sits off the bearing even with no northing error.
+    """
     i_up = layout.index_of(upstream)
     out = []
     for downstream in devices:
@@ -87,8 +92,12 @@ def _downstream_of(layout: Layout, *, upstream: str, devices: list[str], cutoff:
             continue
         i_down = layout.index_of(downstream)
         diameter = float(layout.frame[ROTOR_DIAMETER_COL].iloc[i_down])
-        if layout.distance_m[i_down, i_up] <= cutoff * diameter:
-            out.append(downstream)
+        if layout.distance_m[i_down, i_up] > cutoff * diameter:
+            continue
+        bearing = float(layout.bearing_deg[i_down, i_up])
+        if upwind_mask(layout, target=i_up, wind_direction_deg=bearing).any():
+            continue
+        out.append(downstream)
     return out
 
 
@@ -336,6 +345,18 @@ def _convex_vertex(
     if vertex < centres.min() or vertex > centres.max():
         return None
     return vertex, a, b, c
+
+
+def _own_corrections(pair_corrections: Mapping[str, list[float]]) -> dict[str, float]:
+    """Return the turbines that take their own correction, each the aggregate of its resolved pairs.
+
+    A turbine needs ``MIN_RESOLVED_PAIRS`` resolved pairs, so one marginal curve cannot set it; the
+    rest take their neighbours' correction. In a farm where no turbine has that many, one is enough.
+    """
+    need = MIN_RESOLVED_PAIRS
+    if not any(len(pairs) >= need for pairs in pair_corrections.values()):
+        need = 1
+    return {turbine: _aggregate(pairs) for turbine, pairs in pair_corrections.items() if len(pairs) >= need}
 
 
 def _aggregate(pairs: list[float]) -> float:
