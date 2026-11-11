@@ -25,4 +25,5 @@ def test_ensure_utc(t: pd.Timestamp, exp: pd.Timestamp) -> None:
     if isinstance(t, pd.Timestamp):
         assert actual == exp
     else:
-        pd.testing.assert_index_equal(actual, exp)
+        # pandas 3 drops a daily freq on tz conversion (a calendar day is not 24 h in every zone)
+        pd.testing.assert_index_equal(pd.DatetimeIndex(actual, freq=None), pd.DatetimeIndex(exp, freq=None))

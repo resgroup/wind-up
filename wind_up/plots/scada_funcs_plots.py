@@ -242,13 +242,12 @@ def plot_toggle_ops_curves_one_ttype_or_wtg(
     plot_cfg: PlotConfig,
     sub_dir: str | None = None,
 ) -> None:
-    pd.set_option("future.no_silent_downcasting", True)  # noqa FBT003
     if "toggle_on" not in input_df.columns or "toggle_off" not in input_df.columns:
-        df_off = input_df[input_df["test_toggle_off"].fillna(value=False).infer_objects(copy=False)]
-        df_on = input_df[input_df["test_toggle_on"].fillna(value=False).infer_objects(copy=False)]
+        df_off = input_df[input_df["test_toggle_off"].eq(other=True)]
+        df_on = input_df[input_df["test_toggle_on"].eq(other=True)]
     else:
-        df_off = input_df[input_df["toggle_off"].fillna(value=False).infer_objects(copy=False)]
-        df_on = input_df[input_df["toggle_on"].fillna(value=False).infer_objects(copy=False)]
+        df_off = input_df[input_df["toggle_off"].eq(other=True)]
+        df_on = input_df[input_df["toggle_on"].eq(other=True)]
 
     plt.figure()
     plt.scatter(
@@ -334,13 +333,12 @@ def plot_toggle_active_vs_reactive_power(
             "Column '%s' not found, skipping reactive vs active power plot for %s", reactive_power_col, wtg_name
         )
         return None
-    pd.set_option("future.no_silent_downcasting", True)  # noqa FBT003
     if "toggle_on" not in input_df.columns or "toggle_off" not in input_df.columns:
-        df_off = input_df[input_df["test_toggle_off"].fillna(value=False).infer_objects(copy=False)]
-        df_on = input_df[input_df["test_toggle_on"].fillna(value=False).infer_objects(copy=False)]
+        df_off = input_df[input_df["test_toggle_off"].eq(other=True)]
+        df_on = input_df[input_df["test_toggle_on"].eq(other=True)]
     else:
-        df_off = input_df[input_df["toggle_off"].fillna(value=False).infer_objects(copy=False)]
-        df_on = input_df[input_df["toggle_on"].fillna(value=False).infer_objects(copy=False)]
+        df_off = input_df[input_df["toggle_off"].eq(other=True)]
+        df_on = input_df[input_df["toggle_on"].eq(other=True)]
 
     fig, ax = plt.subplots()
     _add_scatter_plot(

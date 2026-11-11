@@ -57,7 +57,7 @@ def _pp_raw_df(
             bin_right=lambda x: [i.right for i in x.index],
             bin_closed_right=lambda x: [i.closed_right for i in x.index],
         )
-        .set_index("bin_mid", drop=False, verify_integrity=True)
+        .set_index("bin_mid", drop=False)
         .rename_axis(f"{ws_col}_bin_mid", axis=0)
     )
 
@@ -229,7 +229,7 @@ def _pre_post_pp_analysis(
     pp_df["is_invalid_bin"] = (~pp_df["pre_valid"]) | (~pp_df["post_valid"])
     if lt_df is not None:
         pp_df = pp_df.merge(lt_df[["hours_per_year", "bin_mid"]], on="bin_mid", how="left")
-        pp_df = pp_df.set_index("bin_mid", drop=False, verify_integrity=True)
+        pp_df = pp_df.set_index("bin_mid", drop=False)
         pp_df.index.name = f"{ws_col}_bin_mid"
         pp_df["hours_for_mwh_calc"] = pp_df["hours_per_year"].fillna(0)
     else:
