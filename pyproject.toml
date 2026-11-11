@@ -56,7 +56,7 @@ dev = [
     'types-tqdm',
     'types-requests',
     'ruff',
-    'mypy<1.19',
+    'mypy<2.5',
     'requests',
     'pytest-env',
 ]
