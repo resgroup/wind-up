@@ -187,7 +187,9 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
     when = stamps[order]
     end = scada_long[HOT_POWER_SETPOINT_COL].to_numpy(dtype=float)[order]
     start = np.concatenate([[np.nan], end[:-1]])
-    follows = np.concatenate([[False], (wtg[1:] == wtg[:-1]) & (np.diff(when.as_unit("ns").asi8) == TIMEBASE_S * 10**9)])
+    follows = np.concatenate(
+        [[False], (wtg[1:] == wtg[:-1]) & (np.diff(when.as_unit("ns").asi8) == TIMEBASE_S * 10**9)]
+    )
     start[~follows] = np.nan
     wind_speed = scada_long[HOT_COLUMNS.wind_speed].to_numpy(dtype=float)[order]
     high_wind = wind_speed >= HOT_HIGH_WIND_DERATE_MS
