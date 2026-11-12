@@ -2406,13 +2406,16 @@ class PowerModelMethod:
         """
         full = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
         used = pd.Series(np.asarray(selected, dtype=bool), index=index).reindex(full, fill_value=False)
+        # On ``index``, as the estimator resolves it: a ToggleSchedule without a start takes its phase from there.
+        treated = pd.Series(resolve_toggle(mi.upgrade_timing, index).upgraded, index=index)
+        treated = treated.reindex(full, fill_value=False)
         ctx = DiagnosticContext(
             run_dir=run_dir,
             test_wtg=mi.test_wtg,
             turbine_col=mi.turbine_col,
             columns=self.columns,
             scada_df=mi.scada_df,
-            treated_ts=resolve_toggle(mi.upgrade_timing, full).upgraded.astype(bool),
+            treated_ts=treated.to_numpy(dtype=bool),
             used_ts=used.to_numpy(dtype=bool),
             timebase=timebase,
             mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
