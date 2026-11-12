@@ -90,6 +90,9 @@ def normalise_timestamps(
 ) -> pd.DataFrame:
     """Return ``scada_df`` indexed by period-start UTC.
 
+    Warns about records off the ``timebase`` grid (a logger restart stamping ``10:10:25``, say): every
+    later step assumes the grid, and such a record sits in no slot the other turbines share.
+
     :raises ValueError: if the index is timezone-naive or not in the declared time zone
     """
     index = scada_df.index
@@ -105,6 +108,14 @@ def normalise_timestamps(
     out = scada_df.copy()
     utc = index.tz_convert("UTC")
     out.index = utc - timebase if timestamps.convention == "end" else utc
+    off_grid = pd.DatetimeIndex(out.index)[out.index != out.index.floor(timebase)]
+    if len(off_grid):
+        logger.warning(
+            "%d SCADA records are off the %s grid (first: %s); drop or snap them before the run",
+            len(off_grid),
+            timebase,
+            ", ".join(str(t) for t in off_grid[:3]),
+        )
     return out
 
 

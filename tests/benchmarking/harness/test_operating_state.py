@@ -95,7 +95,7 @@ def test_just_inside_the_ranges_is_not_missing() -> None:
 
 
 def test_availability_counter_sets_downtime() -> None:
-    scada = frame(3, **{COLS.availability: [0.0, 0.5 * FULL, FULL]})
+    scada = frame(3, **{COLS.availability: [0.0, 0.5 * FULL, FULL], COLS.active_power: [-5.0, 1000.0, 1001.0]})
     assert states(scada) == [FULL_DOWNTIME, PARTIAL_DOWNTIME, NORMAL_OPERATION]
 
 
@@ -151,7 +151,7 @@ def test_site_labels_sit_between_downtime_and_normal() -> None:
         5,
         state=[CURTAILED, CURTAILED, CURTAILED, None, PARTIAL_DOWNTIME],
         **{
-            COLS.active_power: [np.nan, 1000.0, 1000.0, 1000.0, 1000.0],
+            COLS.active_power: [np.nan, -5.0, 1000.0, 1000.0, 1000.0],
             COLS.availability: [FULL, 0.0, FULL, FULL, FULL],
         },
     )
@@ -167,6 +167,16 @@ def test_a_caller_generic_label_is_kept_but_missing_wins() -> None:
     assert states(scada, SITE) == [PARTIAL_DOWNTIME, FULL_DOWNTIME, MISSING]
 
 
+def test_a_counter_at_zero_while_generating_is_missing() -> None:
+    """The counter reads zero but power says the turbine generates: one signal is wrong, so the record is missing.
+
+    Pins that such a record is neither full downtime (counted as waking nothing while at rated) nor trusted as
+    running (a stuck power channel looks the same); a counter at zero at about zero power stays full downtime.
+    """
+    scada = frame(3, **{COLS.availability: [0.0, 0.0, 0.0], COLS.active_power: [2000.0, 0.05 * RATED, -5.0]})
+    assert states(scada) == [MISSING, FULL_DOWNTIME, FULL_DOWNTIME]
+
+
 def test_a_caller_missing_label_is_missing() -> None:
     assert states(frame(1, state=[MISSING]), SITE) == [MISSING]
 
@@ -175,7 +185,7 @@ def test_validity_columns_follow_the_tables() -> None:
     scada = frame(
         4,
         state=[None, CURTAILED, None, None],
-        **{COLS.availability: [FULL, FULL, 0.0, 0.5 * FULL], COLS.active_power: [1000.0, 1000.0, 1000.0, 1000.0]},
+        **{COLS.availability: [FULL, FULL, 0.0, 0.5 * FULL], COLS.active_power: [1000.0, 1000.0, -5.0, 1000.0]},
     )
     labelled = label(scada, SITE)
     assert labelled[VALID_NORTHING_COL].tolist() == [True, True, False, False]
@@ -221,7 +231,12 @@ def test_generic_states_are_in_precedence_order() -> None:
 
 
 def test_hours_sum_to_the_record_count() -> None:
-    scada = pd.concat([frame(3, **{COLS.availability: [0.0, FULL, FULL]}), frame(5, turbine="T02")])
+    scada = pd.concat(
+        [
+            frame(3, **{COLS.availability: [0.0, FULL, FULL], COLS.active_power: [-5.0, 1000.0, 1001.0]}),
+            frame(5, turbine="T02"),
+        ]
+    )
     hours = state_hours(label(scada), columns=COLS, timebase=TIMEBASE)
     assert hours["hours"].sum() == pytest.approx(len(scada) * TIMEBASE / pd.Timedelta(hours=1))
     t01 = hours[hours["turbine"] == "T01"].set_index("operating_state")["hours"]
