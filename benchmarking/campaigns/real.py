@@ -226,7 +226,7 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
     labels[_iced(scada_long, order=order, follows=follows, unlabelled=pd.isna(labels))] = ICING
     result = np.empty(len(end), dtype=object)
     result[order] = labels
-    return pd.Series(result, index=scada_long.index, name=HOT_STATE_COL)
+    return pd.Series(result, index=scada_long.index, name=HOT_STATE_COL, dtype=object)
 
 
 def _iced(scada_long: pd.DataFrame, *, order: np.ndarray, follows: np.ndarray, unlabelled: np.ndarray) -> np.ndarray:
