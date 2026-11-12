@@ -96,7 +96,7 @@ class NorthingStep:
 
         synthetic_df = synthetic_df.copy()
         stepped = is_turbine & np.asarray(synthetic_df.index >= self.at)
-        values = synthetic_df[column].to_numpy(dtype=float)
+        values = synthetic_df[column].to_numpy(dtype=float, copy=True)
         values[stepped] = (values[stepped] + self.offset_deg) % 360.0
         synthetic_df[column] = values
         return synthetic_df

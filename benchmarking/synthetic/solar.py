@@ -25,7 +25,7 @@ def sin_solar_elevation(index: pd.DatetimeIndex, *, lat: float, lon: float) -> n
     idx = pd.DatetimeIndex(index)
     if idx.tz is not None:
         idx = idx.tz_convert("UTC")
-    day = idx.dayofyear.to_numpy(dtype=float)
+    day = idx.day_of_year.to_numpy(dtype=float)
     utc_hour = idx.hour.to_numpy(dtype=float) + idx.minute.to_numpy(dtype=float) / 60.0
     declination = np.radians(23.45 * np.sin(np.radians(360.0 * (284.0 + day) / 365.0)))
     hour_angle = np.radians(15.0 * (utc_hour + lon / 15.0 - 12.0))

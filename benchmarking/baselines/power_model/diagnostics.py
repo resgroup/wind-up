@@ -165,7 +165,7 @@ def results_row(data: DiagnosticData) -> pd.DataFrame:
                 "sum_counterfactual_mwh": data.sum_counterfactual_kw * timebase_hours / 1000.0,
                 "baseline_holdout_r2": r2,
                 "baseline_holdout_mae_kw": mae,
-                "time_calculated": pd.Timestamp.utcnow(),
+                "time_calculated": pd.Timestamp.now("UTC"),
             }
         ]
     )

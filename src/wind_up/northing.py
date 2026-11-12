@@ -345,7 +345,7 @@ def _refine(
     """
     refined = list(changepoints)
     # integer nanoseconds throughout, so tz-aware and tz-naive inputs compare alike
-    times = finite_times.asi8
+    times = finite_times.as_unit("ns").asi8
     for position, changepoint in enumerate(refined):
         previous = refined[position - 1] if position > 0 else start
         following = refined[position + 1] if position + 1 < len(refined) else end

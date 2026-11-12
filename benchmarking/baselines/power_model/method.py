@@ -244,7 +244,7 @@ def reference_overall_uplift(
         return float("nan")
     rows = reference_uplifts[np.isfinite(reference_uplifts["uplift"].to_numpy(dtype=float))]
     if after_screen:
-        out = rows["screened"].astype(bool).to_numpy()
+        out = rows["screened"].astype(bool).to_numpy(copy=True)
         if "unjudged" in rows.columns:
             out |= rows["unjudged"].astype(bool).to_numpy()
         rows = rows[~out]
@@ -276,7 +276,7 @@ def kept_reference_correction(reference_uplifts: pd.DataFrame | None) -> dict[st
     logs = np.array([], dtype=float)
     if reference_uplifts is not None and not reference_uplifts.empty:
         rows = reference_uplifts
-        out = rows["screened"].astype(bool).to_numpy()
+        out = rows["screened"].astype(bool).to_numpy(copy=True)
         if "unjudged" in rows.columns:
             out |= rows["unjudged"].astype(bool).to_numpy()
         uplift = rows["uplift"].to_numpy(dtype=float)[~out]
@@ -1630,7 +1630,7 @@ class PowerModelMethod:
         two periods over ``index``.
         """
         reasons = self._loss_reasons(mi, index=index, references=references, timebase=timebase)
-        usable = np.asarray(reasons == USABLE)
+        usable = np.array(reasons == USABLE)
         if WAKING_SCENARIO_COL in scada.columns and references:
             scenarios = waking_scenario_features(
                 scada, test_wtg=mi.test_wtg, references=references, turbine_col=mi.turbine_col
@@ -2321,7 +2321,7 @@ class PowerModelMethod:
         """Return the run name and timestamp a run's CSV names carry; both empty without a run folder."""
         if not self.run_subdir and self.out_dir is not None:
             return "", ""
-        return run_dir.name, pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        return run_dir.name, pd.Timestamp.now("UTC").strftime("%Y%m%d_%H%M%S_%f")
 
     def _write(
         self,

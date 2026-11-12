@@ -228,7 +228,7 @@ class NaiveRatioMethod:
         out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="naive_"))
         run_dir = out_root / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
-        ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        ts = pd.Timestamp.now("UTC").strftime("%Y%m%d_%H%M%S_%f")
 
         stats.to_csv(run_dir / f"{run_name}_data_stats_{ts}.csv", index=False)
 
@@ -247,7 +247,7 @@ class NaiveRatioMethod:
                     "uplift_frc": uplift,
                     "n_used_timestamps_baseline": used_base,
                     "n_used_timestamps_upgraded": used_up,
-                    "time_calculated": pd.Timestamp.utcnow(),
+                    "time_calculated": pd.Timestamp.now("UTC"),
                 }
             ]
         )
