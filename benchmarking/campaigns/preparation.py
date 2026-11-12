@@ -30,6 +30,7 @@ from benchmarking.diagnostics.operating_states import (
 from benchmarking.diagnostics.reanalysis import write_reanalysis_outputs
 from benchmarking.diagnostics.waking_scenarios import write_waking_outputs
 from benchmarking.diagnostics.yaw_changes import possible_yaw_change_report, write_possible_yaw_changes
+from benchmarking.harness.label_checks import LABEL_CHECKS_CSV, label_checks, warn_label_checks
 from benchmarking.harness.northing import (
     DEFAULT_NORTHING_ROLES,
     apply_north_tables,
@@ -113,6 +114,11 @@ def prepare_data(
     scada_df = label_operating_states(
         scada_df, columns=columns, config=config, timebase=timebase, rated_power_kw=spec.rated_power_kw
     )
+    checks = label_checks(scada_df, columns=columns, timebase=timebase, rated_power_kw=spec.rated_power_kw)
+    warn_label_checks(checks)
+    if out_dir is not None:
+        (out_dir / stages.OPERATING_STATES).mkdir(parents=True, exist_ok=True)
+        checks.to_csv(out_dir / stages.OPERATING_STATES / LABEL_CHECKS_CSV, index=False)
     changeovers = spec.changeovers()
     draw = out_dir is not None and plots
     if out_dir is not None and draw:

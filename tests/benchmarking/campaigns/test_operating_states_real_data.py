@@ -38,15 +38,24 @@ from benchmarking.campaigns.real import (
     NOISE_MODE,
     label_hot_operating_states,
 )
-from benchmarking.harness.operating_state import NORMAL_OPERATION, STATE_COL
+from benchmarking.harness.label_checks import PARKED_AS_NORMAL, WARN_HOURS, label_checks
+from benchmarking.harness.operating_state import (
+    NORMAL_OPERATION,
+    STATE_COL,
+    OperatingStateConfig,
+    label_operating_states,
+)
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_BM_START,
     HOT_COLUMNS,
     HOT_NOISE_SETPOINTS_KW,
     HOT_POWER_SETPOINT_COL,
+    HOT_RATED_POWER_KW,
     HOT_STOP_SETPOINT_KW,
     HOT_TURBINE_COL,
 )
+
+TIMEBASE = pd.Timedelta(minutes=10)
 
 
 def _fixture_available() -> bool:
@@ -124,3 +133,33 @@ def test_a_parked_rotor_is_never_normal_operation(labelled: pd.DataFrame) -> Non
     parked = labelled[HOT_COLUMNS.pitch] > HOT_OPERATING_STATE["parked_pitch_above_deg"]
     assert parked.any(), "no parked records in the fixture"
     assert not (labelled.loc[parked, STATE_COL] == NORMAL_OPERATION).any()
+
+
+def test_the_label_checks_stay_quiet_on_the_signed_off_labels(labelled: pd.DataFrame) -> None:
+    """No warning on labels the analysts signed off, so a warning on another site means something."""
+    checks = label_checks(labelled, columns=HOT_COLUMNS, timebase=TIMEBASE, rated_power_kw=HOT_RATED_POWER_KW)
+    loud = checks[checks["hours"] >= checks["check"].map(WARN_HOURS)]
+    assert loud.empty, f"label checks warn on the signed-off labels:\n{loud}"
+
+
+def test_a_parked_stop_the_counter_misses_is_warned_about() -> None:
+    """An eight-day parked stop whose availability counter reads available, with no parked-pitch rule.
+
+    The mislabel that moved a real campaign's headline by 4 pp: the stop is counted as normal operation,
+    and the parked-as-normal check must name the turbine and the stop.
+    """
+    scada = load_fixture()
+    start, end = pd.Timestamp("2018-12-10", tz="UTC"), pd.Timestamp("2018-12-18", tz="UTC")
+    stop = (scada[HOT_TURBINE_COL] == "T13") & (scada.index >= start) & (scada.index < end)
+    scada.loc[stop, [HOT_COLUMNS.active_power, HOT_COLUMNS.gen_rpm, HOT_COLUMNS.pitch]] = [-5.0, 0.0, 86.0]
+    scada.loc[stop, HOT_COLUMNS.availability] = TIMEBASE.total_seconds()
+    generic = label_operating_states(
+        scada, columns=HOT_COLUMNS, config=OperatingStateConfig(), timebase=TIMEBASE, rated_power_kw=HOT_RATED_POWER_KW
+    )
+    checks = label_checks(generic, columns=HOT_COLUMNS, timebase=TIMEBASE, rated_power_kw=HOT_RATED_POWER_KW)
+    t13 = checks[(checks["turbine"] == "T13") & (checks["check"] == PARKED_AS_NORMAL)]
+    assert len(t13) == 1
+    windy = (scada.loc[stop, HOT_COLUMNS.wind_speed] >= 5.0).sum() * TIMEBASE / pd.Timedelta(hours=1)
+    assert t13["hours"].iloc[0] >= windy >= WARN_HOURS[PARKED_AS_NORMAL]
+    assert start <= t13["longest_run_start"].iloc[0] < end
+    assert t13["median_pitch_deg"].iloc[0] > 80.0

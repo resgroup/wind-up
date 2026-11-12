@@ -5,11 +5,11 @@ normal operation. A caller adds site states through a label column and a table g
 validity; it may also write a generic state's name into that column. The first matching rule wins:
 
 1. missing: active power or the availability counter is not finite or out of range, the record is
-   stuck, or the caller labelled it missing;
-2. full downtime: the caller labelled it so, or the counter is at or below 0 and the caller did not
-   label it partial downtime;
-3. partial downtime: the caller labelled it so, or the counter is between 0 and a full period or the
-   rotor is parked, and the caller did not label it full downtime;
+   stuck, the counter reads zero while the turbine generates above :data:`COUNTER_CONTRADICTION_RATED`
+   of rated (one of the two is wrong, and which one is unknown), or the caller labelled it missing;
+2. full downtime: the counter is at or below 0, or the caller labelled it so;
+3. partial downtime: the counter is between 0 and a full period, the rotor is parked, or the caller
+   labelled it so;
 4. the caller's site label;
 5. normal operation.
 
@@ -49,6 +49,9 @@ WAKING_VALUES = (WAKING, PART_WAKING, NOT_WAKING, WAKING_MISSING)
 
 # Below this nacelle wind speed (m/s) an unchanged record is a calm, not stuck.
 CALM_WIND_SPEED = 1.5
+
+# A counter at or below zero beside power above this share of rated contradicts it: the record is missing.
+COUNTER_CONTRADICTION_RATED = 0.05
 
 # Out of range: active power outside (-1, 2) x rated, the counter outside (-0.05, 1.05) x a full period.
 _POWER_RANGE_RATED = (-1.0, 2.0)
@@ -164,6 +167,12 @@ def stuck_records(scada_df: pd.DataFrame, *, columns: ColumnSchema) -> pd.Series
     return pd.Series(stuck, index=scada_df.index)
 
 
+def counter_contradicts_power(*, power: np.ndarray, counter: np.ndarray, rated_power_kw: float) -> np.ndarray:
+    """Return True where the availability counter reads zero while power is above the contradiction share of rated."""
+    with np.errstate(invalid="ignore"):
+        return (counter <= 0) & (power > COUNTER_CONTRADICTION_RATED * rated_power_kw)
+
+
 def label_operating_states(
     scada_df: pd.DataFrame,
     *,
@@ -197,13 +206,13 @@ def label_operating_states(
         | (power >= power_hi)
         | (counter <= counter_lo)
         | (counter >= counter_hi)
+        | counter_contradicts_power(power=power, counter=counter, rated_power_kw=rated_power_kw)
         | stuck_records(scada_df, columns=columns).to_numpy()
         | (site == MISSING)
     )
-    caller_full, caller_partial = site == FULL_DOWNTIME, site == PARTIAL_DOWNTIME
-    full_downtime = ((counter <= 0) & ~caller_partial) | caller_full
+    full_downtime = (counter <= 0) | (site == FULL_DOWNTIME)
     partial_downtime = ((counter > 0) & (counter < full)) | _parked(scada_df, columns=columns, config=config)
-    partial_downtime |= caller_partial
+    partial_downtime |= site == PARTIAL_DOWNTIME
     has_site = pd.notna(site) & ~np.isin(site, list(GENERIC_STATES))
     state = np.select(
         [missing, full_downtime, partial_downtime, has_site],

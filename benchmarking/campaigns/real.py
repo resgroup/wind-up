@@ -164,8 +164,7 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
     Reads the power setpoint at the end of each record; the setpoint at its start is the turbine's
     previous record's end, NaN after a gap. A record takes, from either end and in this order:
 
-    1. a setpoint of 0: BM curtailment from the Balancing Mechanism start, partial downtime before it
-       unless the availability counter reads 0 (no label: the counter's full downtime);
+    1. a setpoint of 0: BM curtailment from the Balancing Mechanism start, partial downtime before it;
     2. no label: the start-up setpoint;
     3. high wind derate: wind speed at or above ``HOT_HIGH_WIND_DERATE_MS`` and a setpoint below rated
        that is not one of the turbine's noise setpoints;
@@ -223,10 +222,6 @@ def label_hot_site_states(scada_long: pd.DataFrame) -> pd.Series:
     stopped = either(lambda s: s == HOT_STOP_SETPOINT_KW)
     labels[stopped] = np.where(when[stopped] >= HOT_BM_START, BM_CURTAILMENT, PARTIAL_DOWNTIME)
     labels[_iced(scada_long, order=order, follows=follows, unlabelled=pd.isna(labels))] = ICING
-    # A stop the counter already reads as full downtime stays full downtime, as the counter decides.
-    counter = scada_long[HOT_COLUMNS.availability].to_numpy(dtype=float)[order]
-    with np.errstate(invalid="ignore"):
-        labels[(labels == PARTIAL_DOWNTIME) & (counter <= 0)] = None
     result = np.empty(len(end), dtype=object)
     result[order] = labels
     return pd.Series(result, index=scada_long.index, name=HOT_STATE_COL)
