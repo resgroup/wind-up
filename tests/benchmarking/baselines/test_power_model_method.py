@@ -916,6 +916,34 @@ class TestCampaignContext:
         )
         assert holed == pytest.approx(whole)
 
+    def test_plots_survive_a_timestamp_no_selected_turbine_may_use(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A timestamp the campaign's selection drops for every turbine leaves the masks one row short.
+
+        Pins that the shared diagnostics put the masks on the whole SCADA's index rather than skipping
+        every plot with "diagnostic masks misaligned" (seen on a real campaign: one off-grid record
+        inside an exclusion).
+        """
+        scada, changeover = self._fixture()
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        valid = context.valid_for_uplift.copy()
+        valid.iloc[0] = False
+        context = dataclasses.replace(context, valid_for_uplift=valid)
+        method = PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            conditions=(),
+            model_params=_FAST_PARAMS,
+            out_dir=tmp_path,
+            run_subdir=False,
+            save_plots=True,
+        )
+        with caplog.at_level(logging.ERROR):
+            method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context))
+        assert "misaligned" not in caplog.text
+        assert any((tmp_path / "plots" / stages.VALID_RECORDS).glob("*.png"))
+
     def test_a_changed_turbine_upwind_drops_the_row(self) -> None:
         scada, changeover = self._fixture()
         first = scada.index.unique()[:300]

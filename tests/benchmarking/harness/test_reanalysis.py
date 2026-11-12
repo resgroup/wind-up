@@ -208,6 +208,19 @@ class TestNormaliseTimestamps:
         with pytest.raises(ValueError, match="Europe/London"):
             normalise_timestamps(self.scada(index), timestamps=TimestampConvention(), timebase=TIMEBASE)
 
+    def test_an_off_grid_record_is_warned_about(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A record stamped between slots (a logger restart at 10:10:25) is named: every later step assumes the grid."""
+        index = scada_index(3).append(pd.DatetimeIndex([pd.Timestamp("2020-01-01 10:10:25", tz="UTC")]))
+        with caplog.at_level(logging.WARNING):
+            normalise_timestamps(self.scada(index), timestamps=TimestampConvention(), timebase=TIMEBASE)
+        assert "1 SCADA records are off the" in caplog.text
+        assert "10:10:25" in caplog.text
+
+    def test_records_on_the_grid_raise_no_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING):
+            normalise_timestamps(self.scada(scada_index(3)), timestamps=TimestampConvention(), timebase=TIMEBASE)
+        assert "off the" not in caplog.text
+
     def test_declared_zone_is_converted_to_utc(self) -> None:
         index = pd.date_range("2020-07-01 01:00", periods=3, freq=TIMEBASE, tz="Europe/London")
         out = normalise_timestamps(
