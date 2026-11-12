@@ -167,6 +167,20 @@ def test_a_caller_generic_label_is_kept_but_missing_wins() -> None:
     assert states(scada, SITE) == [PARTIAL_DOWNTIME, FULL_DOWNTIME, MISSING]
 
 
+def test_a_caller_downtime_label_beats_the_counter() -> None:
+    """A counter reading 0 while the turbine generates is a glitch the caller can correct to partial downtime.
+
+    Pins that the counter's full downtime does not override the caller's partial downtime (which would
+    count a turbine at rated as not waking), and that the caller's full downtime beats a partial counter.
+    """
+    scada = frame(
+        3,
+        state=[PARTIAL_DOWNTIME, FULL_DOWNTIME, None],
+        **{COLS.availability: [0.0, FULL / 2, 0.0]},
+    )
+    assert states(scada, SITE) == [PARTIAL_DOWNTIME, FULL_DOWNTIME, FULL_DOWNTIME]
+
+
 def test_a_caller_missing_label_is_missing() -> None:
     assert states(frame(1, state=[MISSING]), SITE) == [MISSING]
 

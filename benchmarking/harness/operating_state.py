@@ -6,9 +6,10 @@ validity; it may also write a generic state's name into that column. The first m
 
 1. missing: active power or the availability counter is not finite or out of range, the record is
    stuck, or the caller labelled it missing;
-2. full downtime: the counter is at or below 0, or the caller labelled it so;
-3. partial downtime: the counter is between 0 and a full period, the rotor is parked, or the caller
-   labelled it so;
+2. full downtime: the caller labelled it so, or the counter is at or below 0 and the caller did not
+   label it partial downtime;
+3. partial downtime: the caller labelled it so, or the counter is between 0 and a full period or the
+   rotor is parked, and the caller did not label it full downtime;
 4. the caller's site label;
 5. normal operation.
 
@@ -199,9 +200,10 @@ def label_operating_states(
         | stuck_records(scada_df, columns=columns).to_numpy()
         | (site == MISSING)
     )
-    full_downtime = (counter <= 0) | (site == FULL_DOWNTIME)
+    caller_full, caller_partial = site == FULL_DOWNTIME, site == PARTIAL_DOWNTIME
+    full_downtime = ((counter <= 0) & ~caller_partial) | caller_full
     partial_downtime = ((counter > 0) & (counter < full)) | _parked(scada_df, columns=columns, config=config)
-    partial_downtime |= site == PARTIAL_DOWNTIME
+    partial_downtime |= caller_partial
     has_site = pd.notna(site) & ~np.isin(site, list(GENERIC_STATES))
     state = np.select(
         [missing, full_downtime, partial_downtime, has_site],
