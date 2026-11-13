@@ -187,6 +187,9 @@ filterwarnings = [
     "ignore:Passing unrecognized arguments to super:DeprecationWarning",  # pycharm debugger issue
     "ignore:Passing a BlockManager to DataFrame is deprecated:DeprecationWarning",
     "ignore:invalid value encountered in cast:RuntimeWarning", # occurs with ubuntu, Python 3.9, pandas 2.3.2
+    # matplotlib 3.10 (held for the image baselines) casts NaT in dates.py with numpy's generic timedelta unit,
+    # which numpy 2.5 deprecates; matplotlib 3.11 no longer does
+    "ignore:The 'generic' unit for NumPy timedelta is deprecated:DeprecationWarning:matplotlib.dates",
 ]
 markers = [
     "slow: mark test as slow.",

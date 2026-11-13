@@ -301,7 +301,7 @@ def corrected_availability(scada: pd.DataFrame) -> pd.Series:
     published = scada[PUBLISHED_AVAILABILITY].astype(float)
     producing = scada[POWER].astype(float) > 0
     turbine = scada[TURBINE].astype(str)
-    stamps = pd.Series(pd.DatetimeIndex(scada.index).asi8, index=scada.index)
+    stamps = pd.Series(pd.DatetimeIndex(scada.index).as_unit("ns").asi8, index=scada.index)
     previous_producing = producing.groupby(turbine.to_numpy(), sort=False).shift(1, fill_value=False)
     previous_stamp = stamps.groupby(turbine.to_numpy(), sort=False).shift(1)
     follows = (stamps - previous_stamp) == TIMEBASE_S * 10**9
@@ -345,7 +345,7 @@ def _in_events(scada: pd.DataFrame, *, events: pd.DataFrame) -> np.ndarray:
     """Return True for each record of a turbine that overlaps one of that turbine's ``events``."""
     hit = np.zeros(len(scada), dtype=bool)
     turbine = scada[TURBINE].astype(str).to_numpy()
-    starts = pd.DatetimeIndex(scada.index).asi8
+    starts = pd.DatetimeIndex(scada.index).as_unit("ns").asi8
     period = TIMEBASE_S * 10**9
     for name, group in events.groupby(TURBINE):
         rows = np.flatnonzero(turbine == name)

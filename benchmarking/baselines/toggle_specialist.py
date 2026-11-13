@@ -1015,7 +1015,7 @@ class ToggleSpecialistMethod:
         )
         run_dir = out_root / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
-        ts = pd.Timestamp.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = pd.Timestamp.now("UTC").strftime("%Y%m%d_%H%M%S")
 
         stats.to_csv(run_dir / f"data_stats_{ts}.csv", index=False)
 
@@ -1042,7 +1042,7 @@ class ToggleSpecialistMethod:
                     "n_resamples": self.n_resamples,
                     "n_used_timestamps_baseline": used_base,
                     "n_used_timestamps_upgraded": used_up,
-                    "time_calculated": pd.Timestamp.utcnow(),
+                    "time_calculated": pd.Timestamp.now("UTC"),
                 }
             ]
         )

@@ -74,7 +74,7 @@ def _build_era5_df(response: object, fields: list[str]) -> pd.DataFrame:
                 end=pd.to_datetime(hourly_data.TimeEnd(), unit="s", utc=True),
                 freq=pd.Timedelta(seconds=hourly_data.Interval()),
                 inclusive="left",
-            )
+            ).as_unit("ns")
         }
         | {field: hourly_data.Variables(i).ValuesAsNumpy() for i, field in enumerate(fields)}
     ).set_index("timestamp")

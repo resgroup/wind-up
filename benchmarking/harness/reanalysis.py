@@ -139,8 +139,8 @@ def interpolate_era5(era5_hourly_df: pd.DataFrame, *, index: pd.DatetimeIndex, t
     if _is_aligned(era5_hourly_df, timebase=timebase):
         return _with_aliases(era5_hourly_df.drop(columns=[ERA5_WS, ERA5_WD], errors="ignore").reindex(index))
     era5 = _validated(era5_hourly_df)
-    hours = era5.index.asi8.astype(float)
-    centres = (index + timebase / 2).asi8.astype(float)
+    hours = pd.DatetimeIndex(era5.index).as_unit("ns").asi8.astype(float)
+    centres = (index + timebase / 2).as_unit("ns").asi8.astype(float)
     inside = (centres >= hours[0]) & (centres <= hours[-1])
     hour_ending = (index + timebase / 2).ceil("1h")
     out = pd.DataFrame(index=index)

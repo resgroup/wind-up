@@ -193,7 +193,7 @@ class V0BinnedMethod:
         tdf = combine_results(trdf, auto_choose_refs=False, plot_config=None)
         tdf.to_csv(
             cfg.out_dir
-            / f"{cfg.assessment_name}_combined_results_{pd.Timestamp.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+            / f"{cfg.assessment_name}_combined_results_{pd.Timestamp.now('UTC').strftime('%Y%m%d_%H%M%S')}.csv"
         )
         return {w: MethodOutput(p50_overall=_extract_p50(tdf, w)) for w in test_wtgs}
 

@@ -137,7 +137,7 @@ def _parked_as_normal(labelled: pd.DataFrame, *, columns: ColumnSchema, rated_po
 
 def _longest_run(when: pd.DatetimeIndex, *, timebase: pd.Timedelta) -> tuple[pd.Timestamp, int]:
     """Return the start and record count of the longest run of consecutive timestamps in sorted ``when``."""
-    breaks = np.flatnonzero(np.diff(when.asi8) != timebase.value) + 1
+    breaks = np.flatnonzero(np.diff(when.as_unit("ns").asi8) != timebase.as_unit("ns").value) + 1
     starts = np.concatenate([[0], breaks])
     lengths = np.diff(np.concatenate([starts, [len(when)]]))
     best = int(np.argmax(lengths))
