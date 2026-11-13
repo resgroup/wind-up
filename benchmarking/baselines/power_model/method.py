@@ -936,7 +936,7 @@ class PowerModelMethod:
                 self._write_shared_diagnostics(
                     mi,
                     run_dir=run_dir,
-                    t=t,
+                    index=index,
                     selected=selected,
                     timebase=timebase,
                     era5=era5,
@@ -2392,21 +2392,31 @@ class PowerModelMethod:
         mi: MethodInput,
         *,
         run_dir: Path,
-        t: np.ndarray,
+        index: pd.DatetimeIndex,
         selected: np.ndarray,
         timebase: pd.Timedelta,
         era5: pd.DataFrame | None,
         power_references: list[str] | None = None,
     ) -> None:
-        """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
+        """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config.
+
+        ``selected`` is on ``index``, the campaign's selection of the SCADA, which drops every timestamp
+        none of its turbines may use (an off-grid record inside an exclusion, say). The context draws
+        from the whole SCADA slice, so the masks are put on its index: those timestamps are not used.
+        """
+        full = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        used = pd.Series(np.asarray(selected, dtype=bool), index=index).reindex(full, fill_value=False)
+        # On ``index``, as the estimator resolves it: a ToggleSchedule without a start takes its phase from there.
+        treated = pd.Series(resolve_toggle(mi.upgrade_timing, index).upgraded, index=index)
+        treated = treated.reindex(full, fill_value=False)
         ctx = DiagnosticContext(
             run_dir=run_dir,
             test_wtg=mi.test_wtg,
             turbine_col=mi.turbine_col,
             columns=self.columns,
             scada_df=mi.scada_df,
-            treated_ts=t.astype(bool),
-            used_ts=np.asarray(selected, dtype=bool),
+            treated_ts=treated.to_numpy(dtype=bool),
+            used_ts=used.to_numpy(dtype=bool),
             timebase=timebase,
             mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
             era5_df=era5,

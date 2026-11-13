@@ -119,7 +119,9 @@ The states distinguished in this example are:
 - vi. **full downtime**: the availability counter is zero;
 - vii. **missing**: the active power or the availability counter is absent or out of range, or stuck
   (unchanged from the turbine's own previous record while the wind is not calm), which indicates
-  frozen telemetry. The calm test
+  frozen telemetry, or the counter reads zero while power is above 5 % of rated. One of those two
+  signals is then wrong and which one is unknown (a counter glitch and a stuck power channel look the
+  same), so the record is trusted for nothing. The calm test
   reads the nacelle anemometer: this is the one exception to the rule that the anemometer does not
   define a state, because no upgrade-invariant wind signal exists before step 3.
 
@@ -155,8 +157,36 @@ Ownership of the states is split:
 
 It is important to carefully inspect power against wind speed, and pitch angle and rotor speed against
 power and wind speed, for both the excluded and the retained data of every turbine, to confirm that the
-operational state classification matches expectations. Apart from the icing fallback, power is used
-here to check the labels, never to make them.
+operational state classification matches expectations. Apart from the icing fallback and the
+counter-power contradiction, power is used here to check the labels, never to make them.
+
+The results are very sensitive to the labels: on a real campaign one test turbine's eight-day parked
+stop, whose availability counter read available, counted as normal operation and moved the farm
+headline by 4 pp. Data preparation therefore checks the labels against what the turbines did and warns
+in the run log, per turbine, with the hours and the longest run (`02_operating_states/label_checks.csv`):
+
+- **parked as normal operation**: normal operation with the rotor at rest (under 5 % of the turbine's
+  own 99th-percentile rotor speed) and power about zero in nacelle wind of 5 m/s or more, 6 hours or
+  more. The counter reads available through stops it does not account for (licensing, grid or owner
+  stops); declare a parked-pitch threshold or label them;
+- **counter contradicts power**: the counter reads zero while the turbine generates, 1 hour or more.
+  These records are missing (above); many of them mean one of the two signals is unreliable.
+
+#### Writing site labels
+
+- Label what the generic rules cannot see: curtailment, noise modes, icing, derates, and stops the
+  availability counter reads as available. Leave a record unlabelled to let the generic rules decide.
+- Declare `parked_pitch_above_deg` (or `_below_`) for every pitch-regulated site; v0's normal range
+  for many turbines ends at 40 deg. Without it a parked rotor the counter calls available is normal
+  operation.
+- Generic rules win: missing, then full downtime, then partial downtime come before any site label,
+  and a generic name written in the label column only adds records to that state. Do not try to
+  correct the counter with a label; a record whose counter contradicts power is already missing.
+- A label is cause, not effect: read setpoints, flags, counters and temperature, not "power lower than
+  expected" (icing aside), or genuine low performance is labelled away.
+- Run the data preparation first (part A, `benchmarking.campaigns.preparation.prepare_data`), read the
+  label-check warnings and the `02_operating_states` plots per turbine, and fix the labels before
+  reading any uplift.
 
 ### 3. Add reanalysis data
 

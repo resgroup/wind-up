@@ -61,6 +61,8 @@ from benchmarking.synthetic import ColumnSchema, ToggleSchedule
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from benchmarking.diagnostics import DiagnosticContext
+
 
 _TURBINE = "TurbineName"
 _POWER = "wtc_ActPower_mean"
@@ -915,6 +917,74 @@ class TestCampaignContext:
             scada, test_wtg="T1", campaign_context=dataclasses.replace(context, valid_for_uplift=valid)
         )
         assert holed == pytest.approx(whole)
+
+    def test_plots_survive_a_timestamp_no_selected_turbine_may_use(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A timestamp the campaign's selection drops for every turbine leaves the masks one row short.
+
+        Pins that the shared diagnostics put the masks on the whole SCADA's index rather than skipping
+        every plot with "diagnostic masks misaligned" (seen on a real campaign: one off-grid record
+        inside an exclusion).
+        """
+        scada, changeover = self._fixture()
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        valid = context.valid_for_uplift.copy()
+        valid.iloc[0] = False
+        context = dataclasses.replace(context, valid_for_uplift=valid)
+        method = PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            conditions=(),
+            model_params=_FAST_PARAMS,
+            out_dir=tmp_path,
+            run_subdir=False,
+            save_plots=True,
+        )
+        with caplog.at_level(logging.ERROR):
+            method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context))
+        assert "misaligned" not in caplog.text
+        assert any((tmp_path / "plots" / stages.VALID_RECORDS).glob("*.png"))
+
+    def test_plots_keep_the_estimators_toggle_phase_when_the_first_timestamp_is_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ToggleSchedule without a start takes its phase from the first timestamp it is resolved on.
+
+        Pins that the shared diagnostics resolve treatment on the analysis index, as the estimator does,
+        and not on the whole SCADA's: with the first record dropped, the latter shifts the phase by one
+        record, so a record that is baseline in the estimate would be plotted as upgraded.
+        """
+        n = 2000
+        idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=4))
+        treated = np.asarray((((idx - idx.min()) // (schedule.period / 2)).astype(int) % 2) == 1)
+        scada = _toy_scada(n, uplift=0.05, treated=treated)
+        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=schedule, turbine_col=_TURBINE)
+        valid = context.valid_for_uplift.copy()
+        valid.iloc[0] = False
+        context = dataclasses.replace(context, valid_for_uplift=valid)
+        captured: list[DiagnosticContext] = []
+        monkeypatch.setattr(
+            "benchmarking.baselines.power_model.method.write_common_diagnostics",
+            lambda ctx, **_: captured.append(ctx),
+        )
+        method = PowerModelMethod(
+            columns=_COLUMNS,
+            baseline_rated_power_kw=2300.0,
+            conditions=(),
+            model_params=_FAST_PARAMS,
+            out_dir=tmp_path,
+            run_subdir=False,
+            save_plots=True,
+        )
+        method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context))
+
+        (ctx,) = captured
+        kept = idx[1:]
+        plotted = pd.Series(ctx.treated_ts, index=idx).reindex(kept).to_numpy()
+        np.testing.assert_array_equal(plotted, resolve_toggle(schedule, kept).upgraded)
+        assert not ctx.treated_ts[0]
 
     def test_a_changed_turbine_upwind_drops_the_row(self) -> None:
         scada, changeover = self._fixture()
