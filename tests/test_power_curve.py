@@ -5,8 +5,8 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.models import WindUpConfig
-from wind_up.scada_power_curve import calc_pc_and_rated_ws
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.scada_power_curve import calc_pc_and_rated_ws
 
 
 def test_calc_pc_and_rated_ws(test_homer_config: WindUpConfig) -> None:

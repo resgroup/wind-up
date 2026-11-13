@@ -1,0 +1,538 @@
+turbine,month,operating_state,valid_northing,waking_state,valid_uplift,hours
+T01,2018-08,full downtime,False,not waking,False,46.5
+T01,2018-08,missing,False,missing,False,6.333333333333333
+T01,2018-08,normal operation,True,waking,True,687.8333333333334
+T01,2018-08,partial downtime,False,part waking,False,3.3333333333333335
+T01,2018-09,full downtime,False,not waking,False,119.5
+T01,2018-09,missing,False,missing,False,9.5
+T01,2018-09,normal operation,True,waking,True,588.3333333333334
+T01,2018-09,partial downtime,False,part waking,False,2.6666666666666665
+T01,2018-10,full downtime,False,not waking,False,4.833333333333333
+T01,2018-10,missing,False,missing,False,4.0
+T01,2018-10,normal operation,True,waking,True,732.1666666666666
+T01,2018-10,partial downtime,False,part waking,False,3.0
+T01,2018-11,full downtime,False,not waking,False,0.6666666666666666
+T01,2018-11,normal operation,True,waking,True,717.1666666666666
+T01,2018-11,partial downtime,False,part waking,False,2.1666666666666665
+T01,2018-12,BM curtailment,True,part waking,False,0.3333333333333333
+T01,2018-12,full downtime,False,not waking,False,3.1666666666666665
+T01,2018-12,icing,False,part waking,False,0.5
+T01,2018-12,missing,False,missing,False,2.6666666666666665
+T01,2018-12,normal operation,True,waking,True,731.8333333333334
+T01,2018-12,partial downtime,False,part waking,False,5.5
+T01,2019-01,BM curtailment,True,part waking,False,0.3333333333333333
+T01,2019-01,full downtime,False,not waking,False,14.0
+T01,2019-01,icing,False,part waking,False,13.833333333333334
+T01,2019-01,normal operation,True,waking,True,711.5
+T01,2019-01,partial downtime,False,part waking,False,4.333333333333333
+T02,2018-08,full downtime,False,not waking,False,22.833333333333332
+T02,2018-08,missing,False,missing,False,31.166666666666668
+T02,2018-08,normal operation,True,waking,True,686.0
+T02,2018-08,partial downtime,False,part waking,False,4.0
+T02,2018-09,full downtime,False,not waking,False,22.833333333333332
+T02,2018-09,missing,False,missing,False,6.333333333333333
+T02,2018-09,normal operation,True,waking,True,687.6666666666666
+T02,2018-09,partial downtime,False,part waking,False,3.1666666666666665
+T02,2018-10,full downtime,False,not waking,False,19.0
+T02,2018-10,missing,False,missing,False,9.166666666666666
+T02,2018-10,normal operation,True,waking,True,712.8333333333334
+T02,2018-10,partial downtime,False,part waking,False,3.0
+T02,2018-11,BM curtailment,True,part waking,False,0.3333333333333333
+T02,2018-11,full downtime,False,not waking,False,16.833333333333332
+T02,2018-11,normal operation,True,waking,True,699.8333333333334
+T02,2018-11,partial downtime,False,part waking,False,3.0
+T02,2018-12,full downtime,False,not waking,False,9.0
+T02,2018-12,icing,False,part waking,False,2.1666666666666665
+T02,2018-12,missing,False,missing,False,4.666666666666667
+T02,2018-12,normal operation,True,waking,True,724.8333333333334
+T02,2018-12,partial downtime,False,part waking,False,3.3333333333333335
+T02,2019-01,full downtime,False,not waking,False,21.166666666666668
+T02,2019-01,icing,False,part waking,False,4.166666666666667
+T02,2019-01,normal operation,True,waking,True,715.3333333333334
+T02,2019-01,partial downtime,False,part waking,False,3.3333333333333335
+T03,2018-08,full downtime,False,not waking,False,18.166666666666668
+T03,2018-08,missing,False,missing,False,1.8333333333333333
+T03,2018-08,normal operation,True,waking,True,720.3333333333334
+T03,2018-08,partial downtime,False,part waking,False,3.6666666666666665
+T03,2018-09,full downtime,False,not waking,False,17.833333333333332
+T03,2018-09,missing,False,missing,False,4.333333333333333
+T03,2018-09,normal operation,True,waking,True,694.5
+T03,2018-09,partial downtime,False,part waking,False,3.3333333333333335
+T03,2018-10,full downtime,False,not waking,False,5.5
+T03,2018-10,missing,False,missing,False,4.0
+T03,2018-10,normal operation,True,waking,True,730.5
+T03,2018-10,partial downtime,False,part waking,False,4.0
+T03,2018-11,full downtime,False,not waking,False,5.666666666666667
+T03,2018-11,normal operation,True,waking,True,711.6666666666666
+T03,2018-11,partial downtime,False,part waking,False,2.6666666666666665
+T03,2018-12,full downtime,False,not waking,False,8.833333333333334
+T03,2018-12,missing,False,missing,False,2.5
+T03,2018-12,normal operation,True,waking,True,727.8333333333334
+T03,2018-12,partial downtime,False,part waking,False,4.833333333333333
+T03,2019-01,BM curtailment,True,part waking,False,0.3333333333333333
+T03,2019-01,full downtime,False,not waking,False,4.333333333333333
+T03,2019-01,icing,False,part waking,False,4.166666666666667
+T03,2019-01,missing,False,missing,False,0.16666666666666666
+T03,2019-01,normal operation,True,waking,True,730.8333333333334
+T03,2019-01,partial downtime,False,part waking,False,4.166666666666667
+T04,2018-08,full downtime,False,not waking,False,2.0
+T04,2018-08,missing,False,missing,False,0.16666666666666666
+T04,2018-08,normal operation,True,waking,True,739.5
+T04,2018-08,partial downtime,False,part waking,False,2.3333333333333335
+T04,2018-09,full downtime,False,not waking,False,3.1666666666666665
+T04,2018-09,missing,False,missing,False,3.6666666666666665
+T04,2018-09,normal operation,True,waking,True,709.1666666666666
+T04,2018-09,partial downtime,False,part waking,False,4.0
+T04,2018-10,full downtime,False,not waking,False,4.833333333333333
+T04,2018-10,missing,False,missing,False,4.0
+T04,2018-10,normal operation,True,waking,True,731.6666666666666
+T04,2018-10,partial downtime,False,part waking,False,3.5
+T04,2018-11,full downtime,False,not waking,False,1.6666666666666667
+T04,2018-11,normal operation,True,waking,True,716.0
+T04,2018-11,partial downtime,False,part waking,False,2.3333333333333335
+T04,2018-12,full downtime,False,not waking,False,15.0
+T04,2018-12,icing,False,part waking,False,1.1666666666666667
+T04,2018-12,missing,False,missing,False,2.6666666666666665
+T04,2018-12,normal operation,True,waking,True,722.0
+T04,2018-12,partial downtime,False,part waking,False,3.1666666666666665
+T04,2019-01,full downtime,False,not waking,False,17.333333333333332
+T04,2019-01,icing,False,part waking,False,3.6666666666666665
+T04,2019-01,normal operation,True,waking,True,717.5
+T04,2019-01,partial downtime,False,part waking,False,5.5
+T05,2018-08,full downtime,False,not waking,False,1.1666666666666667
+T05,2018-08,missing,False,missing,False,0.16666666666666666
+T05,2018-08,normal operation,True,waking,True,740.1666666666666
+T05,2018-08,partial downtime,False,part waking,False,2.5
+T05,2018-09,full downtime,False,not waking,False,40.0
+T05,2018-09,missing,False,missing,False,7.833333333333333
+T05,2018-09,normal operation,True,waking,True,669.1666666666666
+T05,2018-09,partial downtime,False,part waking,False,3.0
+T05,2018-10,full downtime,False,not waking,False,7.166666666666667
+T05,2018-10,missing,False,missing,False,4.0
+T05,2018-10,normal operation,True,waking,True,729.1666666666666
+T05,2018-10,partial downtime,False,part waking,False,3.6666666666666665
+T05,2018-11,full downtime,False,not waking,False,49.833333333333336
+T05,2018-11,missing,False,missing,False,1.6666666666666667
+T05,2018-11,normal operation,True,waking,True,665.5
+T05,2018-11,partial downtime,False,part waking,False,3.0
+T05,2018-12,full downtime,False,not waking,False,5.666666666666667
+T05,2018-12,icing,False,part waking,False,2.3333333333333335
+T05,2018-12,missing,False,missing,False,2.6666666666666665
+T05,2018-12,normal operation,True,waking,True,728.8333333333334
+T05,2018-12,partial downtime,False,part waking,False,4.5
+T05,2019-01,full downtime,False,not waking,False,10.666666666666666
+T05,2019-01,icing,False,part waking,False,2.6666666666666665
+T05,2019-01,normal operation,True,waking,True,727.1666666666666
+T05,2019-01,partial downtime,False,part waking,False,3.5
+T06,2018-08,full downtime,False,not waking,False,2.6666666666666665
+T06,2018-08,missing,False,missing,False,0.16666666666666666
+T06,2018-08,normal operation,True,waking,True,737.3333333333334
+T06,2018-08,partial downtime,False,part waking,False,3.8333333333333335
+T06,2018-09,full downtime,False,not waking,False,20.833333333333332
+T06,2018-09,missing,False,missing,False,9.333333333333334
+T06,2018-09,normal operation,True,waking,True,687.0
+T06,2018-09,partial downtime,False,part waking,False,2.8333333333333335
+T06,2018-10,full downtime,False,not waking,False,5.166666666666667
+T06,2018-10,missing,False,missing,False,4.0
+T06,2018-10,normal operation,True,waking,True,732.1666666666666
+T06,2018-10,partial downtime,False,part waking,False,2.6666666666666665
+T06,2018-11,full downtime,False,not waking,False,5.333333333333333
+T06,2018-11,normal operation,True,waking,True,711.1666666666666
+T06,2018-11,partial downtime,False,part waking,False,3.5
+T06,2018-12,full downtime,False,not waking,False,36.5
+T06,2018-12,missing,False,missing,False,2.8333333333333335
+T06,2018-12,normal operation,True,waking,True,697.5
+T06,2018-12,partial downtime,False,part waking,False,7.166666666666667
+T06,2019-01,BM curtailment,True,part waking,False,0.3333333333333333
+T06,2019-01,full downtime,False,not waking,False,46.0
+T06,2019-01,icing,False,part waking,False,3.1666666666666665
+T06,2019-01,missing,False,missing,False,1.1666666666666667
+T06,2019-01,normal operation,True,waking,True,684.3333333333334
+T06,2019-01,partial downtime,False,part waking,False,9.0
+T07,2018-08,full downtime,False,not waking,False,1.5
+T07,2018-08,missing,False,missing,False,0.16666666666666666
+T07,2018-08,normal operation,True,waking,True,740.0
+T07,2018-08,partial downtime,False,part waking,False,2.3333333333333335
+T07,2018-09,full downtime,False,not waking,False,63.5
+T07,2018-09,missing,False,missing,False,5.666666666666667
+T07,2018-09,normal operation,True,waking,True,645.3333333333334
+T07,2018-09,partial downtime,False,part waking,False,5.5
+T07,2018-10,full downtime,False,not waking,False,7.0
+T07,2018-10,missing,False,missing,False,4.0
+T07,2018-10,normal operation,True,waking,True,729.8333333333334
+T07,2018-10,partial downtime,False,part waking,False,3.1666666666666665
+T07,2018-11,full downtime,False,not waking,False,0.8333333333333334
+T07,2018-11,normal operation,True,waking,True,716.8333333333334
+T07,2018-11,partial downtime,False,part waking,False,2.3333333333333335
+T07,2018-12,full downtime,False,not waking,False,18.666666666666668
+T07,2018-12,icing,False,part waking,False,1.0
+T07,2018-12,missing,False,missing,False,2.6666666666666665
+T07,2018-12,normal operation,True,waking,True,715.8333333333334
+T07,2018-12,partial downtime,False,part waking,False,5.833333333333333
+T07,2019-01,full downtime,False,not waking,False,27.833333333333332
+T07,2019-01,icing,False,part waking,False,5.333333333333333
+T07,2019-01,missing,False,missing,False,1.8333333333333333
+T07,2019-01,normal operation,True,waking,True,703.8333333333334
+T07,2019-01,partial downtime,False,part waking,False,5.166666666666667
+T08,2018-08,full downtime,False,not waking,False,3.3333333333333335
+T08,2018-08,missing,False,missing,False,0.16666666666666666
+T08,2018-08,normal operation,True,waking,True,737.1666666666666
+T08,2018-08,partial downtime,False,part waking,False,3.3333333333333335
+T08,2018-09,full downtime,False,not waking,False,3.8333333333333335
+T08,2018-09,missing,False,missing,False,1.8333333333333333
+T08,2018-09,normal operation,True,waking,True,711.1666666666666
+T08,2018-09,partial downtime,False,part waking,False,3.1666666666666665
+T08,2018-10,full downtime,False,not waking,False,7.0
+T08,2018-10,missing,False,missing,False,4.0
+T08,2018-10,normal operation,True,waking,True,730.1666666666666
+T08,2018-10,partial downtime,False,part waking,False,2.8333333333333335
+T08,2018-11,full downtime,False,not waking,False,2.1666666666666665
+T08,2018-11,normal operation,True,waking,True,715.3333333333334
+T08,2018-11,partial downtime,False,part waking,False,2.5
+T08,2018-12,BM curtailment,True,part waking,False,0.3333333333333333
+T08,2018-12,full downtime,False,not waking,False,2.8333333333333335
+T08,2018-12,missing,False,missing,False,2.6666666666666665
+T08,2018-12,normal operation,True,waking,True,734.5
+T08,2018-12,partial downtime,False,part waking,False,3.6666666666666665
+T08,2019-01,full downtime,False,not waking,False,10.833333333333334
+T08,2019-01,icing,False,part waking,False,2.1666666666666665
+T08,2019-01,normal operation,True,waking,True,726.8333333333334
+T08,2019-01,partial downtime,False,part waking,False,4.166666666666667
+T09,2018-08,full downtime,False,not waking,False,23.666666666666668
+T09,2018-08,missing,False,missing,False,83.83333333333333
+T09,2018-08,normal operation,True,waking,True,633.0
+T09,2018-08,partial downtime,False,part waking,False,3.5
+T09,2018-09,full downtime,False,not waking,False,12.833333333333334
+T09,2018-09,missing,False,missing,False,1.8333333333333333
+T09,2018-09,normal operation,True,waking,True,699.8333333333334
+T09,2018-09,partial downtime,False,part waking,False,5.5
+T09,2018-10,full downtime,False,not waking,False,3.1666666666666665
+T09,2018-10,missing,False,missing,False,4.0
+T09,2018-10,normal operation,True,waking,True,732.8333333333334
+T09,2018-10,partial downtime,False,part waking,False,4.0
+T09,2018-11,full downtime,False,not waking,False,2.0
+T09,2018-11,normal operation,True,waking,True,715.0
+T09,2018-11,partial downtime,False,part waking,False,3.0
+T09,2018-12,full downtime,False,not waking,False,35.333333333333336
+T09,2018-12,icing,False,part waking,False,1.3333333333333333
+T09,2018-12,missing,False,missing,False,2.8333333333333335
+T09,2018-12,normal operation,True,waking,True,699.3333333333334
+T09,2018-12,partial downtime,False,part waking,False,5.166666666666667
+T09,2019-01,full downtime,False,not waking,False,4.0
+T09,2019-01,icing,False,part waking,False,5.166666666666667
+T09,2019-01,normal operation,True,waking,True,729.6666666666666
+T09,2019-01,partial downtime,False,part waking,False,5.166666666666667
+T10,2018-08,full downtime,False,not waking,False,4.0
+T10,2018-08,missing,False,missing,False,0.16666666666666666
+T10,2018-08,normal operation,True,waking,True,736.8333333333334
+T10,2018-08,partial downtime,False,part waking,False,3.0
+T10,2018-09,full downtime,False,not waking,False,5.333333333333333
+T10,2018-09,missing,False,missing,False,1.5
+T10,2018-09,normal operation,True,waking,True,710.5
+T10,2018-09,partial downtime,False,part waking,False,2.6666666666666665
+T10,2018-10,full downtime,False,not waking,False,3.8333333333333335
+T10,2018-10,missing,False,missing,False,4.666666666666667
+T10,2018-10,normal operation,True,waking,True,732.8333333333334
+T10,2018-10,partial downtime,False,part waking,False,2.6666666666666665
+T10,2018-11,full downtime,False,not waking,False,5.333333333333333
+T10,2018-11,normal operation,True,waking,True,712.5
+T10,2018-11,partial downtime,False,part waking,False,2.1666666666666665
+T10,2018-12,full downtime,False,not waking,False,3.0
+T10,2018-12,missing,False,missing,False,2.5
+T10,2018-12,normal operation,True,waking,True,736.3333333333334
+T10,2018-12,partial downtime,False,part waking,False,2.1666666666666665
+T10,2019-01,full downtime,False,not waking,False,6.666666666666667
+T10,2019-01,icing,False,part waking,False,2.0
+T10,2019-01,normal operation,True,waking,True,731.6666666666666
+T10,2019-01,partial downtime,False,part waking,False,3.6666666666666665
+T11,2018-08,full downtime,False,not waking,False,4.166666666666667
+T11,2018-08,missing,False,missing,False,0.16666666666666666
+T11,2018-08,normal operation,True,waking,True,737.0
+T11,2018-08,partial downtime,False,part waking,False,2.6666666666666665
+T11,2018-09,full downtime,False,not waking,False,10.5
+T11,2018-09,missing,False,missing,False,1.8333333333333333
+T11,2018-09,normal operation,True,waking,True,703.0
+T11,2018-09,partial downtime,False,part waking,False,4.666666666666667
+T11,2018-10,full downtime,False,not waking,False,5.166666666666667
+T11,2018-10,missing,False,missing,False,4.0
+T11,2018-10,normal operation,True,waking,True,732.1666666666666
+T11,2018-10,partial downtime,False,part waking,False,2.6666666666666665
+T11,2018-11,full downtime,False,not waking,False,2.3333333333333335
+T11,2018-11,normal operation,True,waking,True,715.3333333333334
+T11,2018-11,partial downtime,False,part waking,False,2.3333333333333335
+T11,2018-12,full downtime,False,not waking,False,195.66666666666666
+T11,2018-12,icing,False,part waking,False,1.3333333333333333
+T11,2018-12,missing,False,missing,False,126.0
+T11,2018-12,normal operation,True,waking,True,418.8333333333333
+T11,2018-12,partial downtime,False,part waking,False,2.1666666666666665
+T11,2019-01,full downtime,False,not waking,False,42.0
+T11,2019-01,icing,False,part waking,False,6.833333333333333
+T11,2019-01,missing,False,missing,False,3.0
+T11,2019-01,normal operation,True,waking,True,686.6666666666666
+T11,2019-01,partial downtime,False,part waking,False,5.5
+T12,2018-08,full downtime,False,not waking,False,1.0
+T12,2018-08,missing,False,missing,False,0.16666666666666666
+T12,2018-08,normal operation,True,waking,True,740.0
+T12,2018-08,partial downtime,False,part waking,False,2.8333333333333335
+T12,2018-09,full downtime,False,not waking,False,22.666666666666668
+T12,2018-09,normal operation,True,waking,True,693.1666666666666
+T12,2018-09,partial downtime,False,part waking,False,4.166666666666667
+T12,2018-10,full downtime,False,not waking,False,7.5
+T12,2018-10,missing,False,missing,False,3.1666666666666665
+T12,2018-10,normal operation,True,waking,True,730.0
+T12,2018-10,partial downtime,False,part waking,False,3.3333333333333335
+T12,2018-11,full downtime,False,not waking,False,1.0
+T12,2018-11,normal operation,True,waking,True,716.8333333333334
+T12,2018-11,partial downtime,False,part waking,False,2.1666666666666665
+T12,2018-12,BM curtailment,True,part waking,False,0.3333333333333333
+T12,2018-12,full downtime,False,not waking,False,5.833333333333333
+T12,2018-12,icing,False,part waking,False,0.6666666666666666
+T12,2018-12,missing,False,missing,False,1.6666666666666667
+T12,2018-12,normal operation,True,waking,True,729.1666666666666
+T12,2018-12,partial downtime,False,part waking,False,6.333333333333333
+T12,2019-01,full downtime,False,not waking,False,6.666666666666667
+T12,2019-01,icing,False,part waking,False,8.833333333333334
+T12,2019-01,normal operation,True,waking,True,724.8333333333334
+T12,2019-01,partial downtime,False,part waking,False,3.6666666666666665
+T13,2018-08,full downtime,False,not waking,False,58.0
+T13,2018-08,missing,False,missing,False,2.0
+T13,2018-08,normal operation,True,waking,True,680.5
+T13,2018-08,partial downtime,False,part waking,False,3.5
+T13,2018-09,full downtime,False,not waking,False,6.666666666666667
+T13,2018-09,missing,False,missing,False,1.5
+T13,2018-09,normal operation,True,waking,True,707.3333333333334
+T13,2018-09,partial downtime,False,part waking,False,4.5
+T13,2018-10,full downtime,False,not waking,False,6.333333333333333
+T13,2018-10,missing,False,missing,False,4.0
+T13,2018-10,normal operation,True,waking,True,730.6666666666666
+T13,2018-10,partial downtime,False,part waking,False,3.0
+T13,2018-11,full downtime,False,not waking,False,0.6666666666666666
+T13,2018-11,normal operation,True,waking,True,717.5
+T13,2018-11,partial downtime,False,part waking,False,1.8333333333333333
+T13,2018-12,full downtime,False,not waking,False,9.666666666666666
+T13,2018-12,icing,False,part waking,False,5.166666666666667
+T13,2018-12,missing,False,missing,False,2.5
+T13,2018-12,normal operation,True,waking,True,723.6666666666666
+T13,2018-12,partial downtime,False,part waking,False,3.0
+T13,2019-01,full downtime,False,not waking,False,9.5
+T13,2019-01,icing,False,part waking,False,9.666666666666666
+T13,2019-01,missing,False,missing,False,0.16666666666666666
+T13,2019-01,normal operation,True,waking,True,719.6666666666666
+T13,2019-01,partial downtime,False,part waking,False,5.0
+T14,2018-08,full downtime,False,not waking,False,27.666666666666668
+T14,2018-08,missing,False,missing,False,1.5
+T14,2018-08,normal operation,True,waking,True,711.3333333333334
+T14,2018-08,partial downtime,False,part waking,False,3.5
+T14,2018-09,full downtime,False,not waking,False,5.166666666666667
+T14,2018-09,missing,False,missing,False,1.5
+T14,2018-09,normal operation,True,waking,True,710.0
+T14,2018-09,partial downtime,False,part waking,False,3.3333333333333335
+T14,2018-10,full downtime,False,not waking,False,6.0
+T14,2018-10,missing,False,missing,False,4.0
+T14,2018-10,normal operation,True,waking,True,730.6666666666666
+T14,2018-10,partial downtime,False,part waking,False,3.3333333333333335
+T14,2018-11,full downtime,False,not waking,False,0.8333333333333334
+T14,2018-11,normal operation,True,waking,True,717.5
+T14,2018-11,partial downtime,False,part waking,False,1.6666666666666667
+T14,2018-12,full downtime,False,not waking,False,22.0
+T14,2018-12,icing,False,part waking,False,2.0
+T14,2018-12,missing,False,missing,False,210.83333333333334
+T14,2018-12,normal operation,True,waking,True,507.3333333333333
+T14,2018-12,partial downtime,False,part waking,False,1.8333333333333333
+T14,2019-01,full downtime,False,not waking,False,13.666666666666666
+T14,2019-01,icing,False,part waking,False,10.166666666666666
+T14,2019-01,missing,False,missing,False,0.16666666666666666
+T14,2019-01,normal operation,True,waking,True,715.8333333333334
+T14,2019-01,partial downtime,False,part waking,False,4.166666666666667
+T15,2018-08,full downtime,False,not waking,False,14.5
+T15,2018-08,missing,False,missing,False,1.3333333333333333
+T15,2018-08,normal operation,True,waking,True,725.0
+T15,2018-08,partial downtime,False,part waking,False,3.1666666666666665
+T15,2018-09,full downtime,False,not waking,False,3.6666666666666665
+T15,2018-09,missing,False,missing,False,8.166666666666666
+T15,2018-09,normal operation,True,waking,True,705.5
+T15,2018-09,partial downtime,False,part waking,False,2.6666666666666665
+T15,2018-10,full downtime,False,not waking,False,20.0
+T15,2018-10,missing,False,missing,False,4.0
+T15,2018-10,normal operation,True,waking,True,717.1666666666666
+T15,2018-10,partial downtime,False,part waking,False,2.8333333333333335
+T15,2018-11,BM curtailment,True,part waking,False,0.6666666666666666
+T15,2018-11,full downtime,False,not waking,False,2.1666666666666665
+T15,2018-11,normal operation,True,waking,True,715.3333333333334
+T15,2018-11,partial downtime,False,part waking,False,1.8333333333333333
+T15,2018-12,BM curtailment,True,part waking,False,0.6666666666666666
+T15,2018-12,full downtime,False,not waking,False,18.0
+T15,2018-12,icing,False,part waking,False,0.16666666666666666
+T15,2018-12,missing,False,missing,False,2.6666666666666665
+T15,2018-12,normal operation,True,waking,True,719.8333333333334
+T15,2018-12,partial downtime,False,part waking,False,2.6666666666666665
+T15,2019-01,icing,False,part waking,False,2.1666666666666665
+T15,2019-01,missing,False,missing,False,0.3333333333333333
+T15,2019-01,normal operation,True,waking,True,739.5
+T15,2019-01,partial downtime,False,part waking,False,2.0
+T16,2018-08,full downtime,False,not waking,False,1.8333333333333333
+T16,2018-08,missing,False,missing,False,0.16666666666666666
+T16,2018-08,noise mode,True,waking,False,619.6666666666666
+T16,2018-08,normal operation,True,waking,True,119.16666666666667
+T16,2018-08,partial downtime,False,part waking,False,3.1666666666666665
+T16,2018-09,full downtime,False,not waking,False,5.666666666666667
+T16,2018-09,missing,False,missing,False,3.5
+T16,2018-09,noise mode,True,waking,False,657.6666666666666
+T16,2018-09,normal operation,True,waking,True,49.833333333333336
+T16,2018-09,partial downtime,False,part waking,False,3.3333333333333335
+T16,2018-10,full downtime,False,not waking,False,7.833333333333333
+T16,2018-10,missing,False,missing,False,4.0
+T16,2018-10,noise mode,True,waking,False,645.0
+T16,2018-10,normal operation,True,waking,True,83.16666666666667
+T16,2018-10,partial downtime,False,part waking,False,4.0
+T16,2018-11,full downtime,False,not waking,False,5.5
+T16,2018-11,noise mode,True,waking,False,399.5
+T16,2018-11,normal operation,True,waking,True,312.8333333333333
+T16,2018-11,partial downtime,False,part waking,False,2.1666666666666665
+T16,2018-12,BM curtailment,True,part waking,False,1.0
+T16,2018-12,full downtime,False,not waking,False,4.666666666666667
+T16,2018-12,missing,False,missing,False,2.5
+T16,2018-12,noise mode,True,waking,False,668.8333333333334
+T16,2018-12,normal operation,True,waking,True,64.5
+T16,2018-12,partial downtime,False,part waking,False,2.5
+T16,2019-01,full downtime,False,not waking,False,12.166666666666666
+T16,2019-01,noise mode,True,waking,False,703.3333333333334
+T16,2019-01,normal operation,True,waking,True,25.333333333333332
+T16,2019-01,partial downtime,False,part waking,False,3.1666666666666665
+T17,2018-08,full downtime,False,not waking,False,9.5
+T17,2018-08,missing,False,missing,False,5.166666666666667
+T17,2018-08,noise mode,True,waking,False,340.6666666666667
+T17,2018-08,normal operation,True,waking,True,384.1666666666667
+T17,2018-08,partial downtime,False,part waking,False,4.5
+T17,2018-09,full downtime,False,not waking,False,16.333333333333332
+T17,2018-09,missing,False,missing,False,6.5
+T17,2018-09,noise mode,True,waking,False,308.6666666666667
+T17,2018-09,normal operation,True,waking,True,385.8333333333333
+T17,2018-09,partial downtime,False,part waking,False,2.6666666666666665
+T17,2018-10,full downtime,False,not waking,False,2.8333333333333335
+T17,2018-10,missing,False,missing,False,5.833333333333333
+T17,2018-10,noise mode,True,waking,False,316.6666666666667
+T17,2018-10,normal operation,True,waking,True,416.3333333333333
+T17,2018-10,partial downtime,False,part waking,False,2.3333333333333335
+T17,2018-11,full downtime,False,not waking,False,4.166666666666667
+T17,2018-11,noise mode,True,waking,False,356.0
+T17,2018-11,normal operation,True,waking,True,357.3333333333333
+T17,2018-11,partial downtime,False,part waking,False,2.5
+T17,2018-12,full downtime,False,not waking,False,12.0
+T17,2018-12,icing,False,part waking,False,2.5
+T17,2018-12,missing,False,missing,False,3.6666666666666665
+T17,2018-12,noise mode,True,waking,False,272.6666666666667
+T17,2018-12,normal operation,True,waking,True,450.1666666666667
+T17,2018-12,partial downtime,False,part waking,False,3.0
+T17,2019-01,BM curtailment,True,part waking,False,0.3333333333333333
+T17,2019-01,full downtime,False,not waking,False,13.5
+T17,2019-01,icing,False,part waking,False,8.166666666666666
+T17,2019-01,noise mode,True,waking,False,144.33333333333334
+T17,2019-01,normal operation,True,waking,True,574.5
+T17,2019-01,partial downtime,False,part waking,False,3.1666666666666665
+T18,2018-08,full downtime,False,not waking,False,2.1666666666666665
+T18,2018-08,missing,False,missing,False,0.16666666666666666
+T18,2018-08,normal operation,True,waking,True,737.6666666666666
+T18,2018-08,partial downtime,False,part waking,False,4.0
+T18,2018-09,full downtime,False,not waking,False,5.5
+T18,2018-09,missing,False,missing,False,21.0
+T18,2018-09,normal operation,True,waking,True,690.0
+T18,2018-09,partial downtime,False,part waking,False,3.5
+T18,2018-10,full downtime,False,not waking,False,4.166666666666667
+T18,2018-10,missing,False,missing,False,4.0
+T18,2018-10,normal operation,True,waking,True,733.1666666666666
+T18,2018-10,partial downtime,False,part waking,False,2.6666666666666665
+T18,2018-11,full downtime,False,not waking,False,2.1666666666666665
+T18,2018-11,normal operation,True,waking,True,715.8333333333334
+T18,2018-11,partial downtime,False,part waking,False,2.0
+T18,2018-12,BM curtailment,True,part waking,False,0.6666666666666666
+T18,2018-12,full downtime,False,not waking,False,19.333333333333332
+T18,2018-12,icing,False,part waking,False,1.1666666666666667
+T18,2018-12,missing,False,missing,False,2.6666666666666665
+T18,2018-12,normal operation,True,waking,True,717.3333333333334
+T18,2018-12,partial downtime,False,part waking,False,2.8333333333333335
+T18,2019-01,full downtime,False,not waking,False,26.833333333333332
+T18,2019-01,icing,False,part waking,False,3.0
+T18,2019-01,missing,False,missing,False,0.3333333333333333
+T18,2019-01,normal operation,True,waking,True,710.0
+T18,2019-01,partial downtime,False,part waking,False,3.8333333333333335
+T19,2018-08,full downtime,False,not waking,False,2.0
+T19,2018-08,missing,False,missing,False,0.16666666666666666
+T19,2018-08,noise mode,True,waking,False,56.333333333333336
+T19,2018-08,normal operation,True,waking,True,681.1666666666666
+T19,2018-08,partial downtime,False,part waking,False,4.333333333333333
+T19,2018-09,full downtime,False,not waking,False,3.8333333333333335
+T19,2018-09,missing,False,missing,False,4.833333333333333
+T19,2018-09,noise mode,True,waking,False,6.0
+T19,2018-09,normal operation,True,waking,True,701.3333333333334
+T19,2018-09,partial downtime,False,part waking,False,4.0
+T19,2018-10,full downtime,False,not waking,False,4.833333333333333
+T19,2018-10,missing,False,missing,False,4.0
+T19,2018-10,noise mode,True,waking,False,49.333333333333336
+T19,2018-10,normal operation,True,waking,True,680.3333333333334
+T19,2018-10,partial downtime,False,part waking,False,5.5
+T19,2018-11,BM curtailment,True,part waking,False,0.3333333333333333
+T19,2018-11,full downtime,False,not waking,False,1.5
+T19,2018-11,noise mode,True,waking,False,152.0
+T19,2018-11,normal operation,True,waking,True,562.6666666666666
+T19,2018-11,partial downtime,False,part waking,False,3.5
+T19,2018-12,full downtime,False,not waking,False,5.166666666666667
+T19,2018-12,icing,False,part waking,False,1.6666666666666667
+T19,2018-12,missing,False,missing,False,2.6666666666666665
+T19,2018-12,noise mode,True,waking,False,52.666666666666664
+T19,2018-12,normal operation,True,waking,True,677.0
+T19,2018-12,partial downtime,False,part waking,False,4.833333333333333
+T19,2019-01,full downtime,False,not waking,False,2.3333333333333335
+T19,2019-01,icing,False,part waking,False,5.166666666666667
+T19,2019-01,missing,False,missing,False,0.3333333333333333
+T19,2019-01,noise mode,True,waking,False,13.833333333333334
+T19,2019-01,normal operation,True,waking,True,718.3333333333334
+T19,2019-01,partial downtime,False,part waking,False,4.0
+T20,2018-08,full downtime,False,not waking,False,2.0
+T20,2018-08,missing,False,missing,False,0.16666666666666666
+T20,2018-08,normal operation,True,waking,True,738.8333333333334
+T20,2018-08,partial downtime,False,part waking,False,3.0
+T20,2018-09,full downtime,False,not waking,False,3.5
+T20,2018-09,missing,False,missing,False,5.5
+T20,2018-09,normal operation,True,waking,True,707.5
+T20,2018-09,partial downtime,False,part waking,False,3.5
+T20,2018-10,full downtime,False,not waking,False,3.5
+T20,2018-10,missing,False,missing,False,4.0
+T20,2018-10,normal operation,True,waking,True,733.8333333333334
+T20,2018-10,partial downtime,False,part waking,False,2.6666666666666665
+T20,2018-11,full downtime,False,not waking,False,6.833333333333333
+T20,2018-11,normal operation,True,waking,True,710.1666666666666
+T20,2018-11,partial downtime,False,part waking,False,3.0
+T20,2018-12,full downtime,False,not waking,False,4.666666666666667
+T20,2018-12,icing,False,part waking,False,0.8333333333333334
+T20,2018-12,missing,False,missing,False,20.666666666666668
+T20,2018-12,normal operation,True,waking,True,714.3333333333334
+T20,2018-12,partial downtime,False,part waking,False,3.5
+T20,2019-01,full downtime,False,not waking,False,11.5
+T20,2019-01,icing,False,part waking,False,5.833333333333333
+T20,2019-01,normal operation,True,waking,True,722.6666666666666
+T20,2019-01,partial downtime,False,part waking,False,4.0
+T21,2018-08,full downtime,False,not waking,False,1.5
+T21,2018-08,missing,False,missing,False,10.5
+T21,2018-08,normal operation,True,waking,True,728.0
+T21,2018-08,partial downtime,False,part waking,False,4.0
+T21,2018-09,full downtime,False,not waking,False,4.666666666666667
+T21,2018-09,missing,False,missing,False,4.833333333333333
+T21,2018-09,normal operation,True,waking,True,706.6666666666666
+T21,2018-09,partial downtime,False,part waking,False,3.8333333333333335
+T21,2018-10,full downtime,False,not waking,False,25.5
+T21,2018-10,missing,False,missing,False,35.833333333333336
+T21,2018-10,normal operation,True,waking,True,679.3333333333334
+T21,2018-10,partial downtime,False,part waking,False,3.3333333333333335
+T21,2018-11,full downtime,False,not waking,False,51.833333333333336
+T21,2018-11,normal operation,True,waking,True,664.6666666666666
+T21,2018-11,partial downtime,False,part waking,False,3.5
+T21,2018-12,full downtime,False,not waking,False,9.166666666666666
+T21,2018-12,icing,False,part waking,False,2.6666666666666665
+T21,2018-12,missing,False,missing,False,8.5
+T21,2018-12,normal operation,True,waking,True,719.1666666666666
+T21,2018-12,partial downtime,False,part waking,False,4.5
+T21,2019-01,full downtime,False,not waking,False,18.166666666666668
+T21,2019-01,icing,False,part waking,False,2.8333333333333335
+T21,2019-01,normal operation,True,waking,True,719.0
+T21,2019-01,partial downtime,False,part waking,False,4.0

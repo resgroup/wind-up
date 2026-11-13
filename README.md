@@ -14,8 +14,9 @@ energy-yield uplift. It is designed for wind-farm SCADA analysis where the
 signal of interest is small, operational data is messy, and a credible result
 needs more than a simple before/after power-curve plot.
 
-The package is published on PyPI as `res-wind-up` and imported in Python as
-`wind_up`.
+The package is published on PyPI as `res-wind-up`. Its analysis API is imported in
+Python as `wind_up_v0` (the `wind_up` import name is reserved for the in-progress v1
+rewrite).
 
 ## What it does
 
@@ -81,9 +82,9 @@ pip install "res-wind-up[examples]"
 Check that the package imports correctly:
 
 ```python
-import wind_up
+import wind_up_v0
 
-print(wind_up.__version__)
+print(wind_up_v0.__version__)
 ```
 
 ## First steps
@@ -101,10 +102,10 @@ start from the examples:
 A typical analysis has four stages:
 
 ```python
-from wind_up.interface import AssessmentInputs
-from wind_up.main_analysis import run_wind_up_analysis
-from wind_up.models import PlotConfig, WindUpConfig
-from wind_up.reanalysis_data import ReanalysisDataset
+from wind_up_v0.interface import AssessmentInputs
+from wind_up_v0.main_analysis import run_wind_up_analysis
+from wind_up_v0.models import PlotConfig, WindUpConfig
+from wind_up_v0.reanalysis_data import ReanalysisDataset
 
 # 1. Build a WindUpConfig describing the asset, test turbines,
 #    reference turbines, analysis dates, filters, and output folder.
@@ -158,7 +159,7 @@ output directory.
 > On import, `wind-up` selects the non-interactive matplotlib `Agg` backend
 > unless the `MPLBACKEND` environment variable is already set. This lets analyses
 > run headless (CI, SSH, batch servers) without an X server. Set `MPLBACKEND`
-> yourself before importing `wind_up` if you want an interactive backend.
+> yourself before importing `wind_up_v0` if you want an interactive backend.
 
 ## Analysis features
 
@@ -182,6 +183,12 @@ careful handling:
 This project uses `uv` for dependency management, `poethepoet` for task running,
 Ruff for formatting/linting, mypy for type checking, and pytest with coverage for
 tests.
+
+> [!IMPORTANT]
+> The test data (SCADA, reanalysis) is stored with [Git LFS](https://git-lfs.com/).
+> Install it **before cloning** — or, in an existing clone, run
+> `git lfs install && git lfs pull` once — otherwise those files check out as small
+> pointer stubs and the data-backed tests and example notebooks will fail.
 
 Create the development environment:
 

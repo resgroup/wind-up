@@ -7,10 +7,10 @@ import pytest
 
 from examples.smarteole_utils import SmartEoleExtractor
 from tests.conftest import CACHE_DIR, TEST_DATA_FLD
-from wind_up.interface import AssessmentInputs
-from wind_up.main_analysis import run_wind_up_analysis
-from wind_up.models import Asset, PlotConfig, Toggle, Turbine, WindUpConfig
-from wind_up.reanalysis_data import ReanalysisDataset
+from wind_up_v0.interface import AssessmentInputs
+from wind_up_v0.main_analysis import run_wind_up_analysis
+from wind_up_v0.models import Asset, PlotConfig, Toggle, Turbine, WindUpConfig
+from wind_up_v0.reanalysis_data import ReanalysisDataset
 
 SMARTEOLE_DATA_DIR = TEST_DATA_FLD / "smarteole"
 

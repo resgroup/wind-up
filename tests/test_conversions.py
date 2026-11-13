@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from wind_up.conversions import ensure_utc
+from wind_up_v0.conversions import ensure_utc
 
 SAMPLE_NAIVE = pd.date_range(pd.Timestamp("2000-01-01T00:00"), periods=2)
 SAMPLE_UTC = pd.date_range(pd.Timestamp("2000-01-01T00:00+00:00"), periods=2)

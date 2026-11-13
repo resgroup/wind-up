@@ -3,7 +3,7 @@ from pathlib import Path
 import toml
 
 import wind_up
-from wind_up.constants import PROJECTROOT_DIR
+from wind_up_v0.constants import PROJECTROOT_DIR
 
 
 def test_versions_match() -> None:

@@ -1,4 +1,3 @@
-import time
 from pathlib import Path
 
 import numpy as np
@@ -6,10 +5,10 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, TIMESTAMP_COL
-from wind_up.models import WindUpConfig
-from wind_up.scada_funcs import _scada_multi_index
-from wind_up.waking_state import (
+from wind_up_v0.constants import RAW_DOWNTIME_S_COL, RAW_POWER_COL, RAW_WINDSPEED_COL, TIMESTAMP_COL
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.scada_funcs import _scada_multi_index
+from wind_up_v0.waking_state import (
     add_waking_scen,
     add_waking_state,
     calc_bearing,
@@ -65,21 +64,14 @@ def test_get_distance_and_bearing(test_homer_config: WindUpConfig) -> None:
     t2long = cfg.asset.wtgs[1].longitude
     expected_bearing = 245.02500888680734 - 180
     expected_distance = 270.894287973147
-    start_time = time.perf_counter()
-    distance_m, bearing_deg = get_distance_and_bearing(lat1=t1lat, long1=t1long, lat2=t2lat, long2=t2long)
-    end_time = time.perf_counter()
-    run_time_pre_cache = end_time - start_time
-    assert distance_m == pytest.approx(expected_distance)
-    assert bearing_deg == pytest.approx(expected_bearing)
-    start_time = time.perf_counter()
+    get_distance_and_bearing.cache_clear()
     reps = 100
-    for _x in range(reps):
+    for _x in range(1 + reps):
         distance_m, bearing_deg = get_distance_and_bearing(lat1=t1lat, long1=t1long, lat2=t2lat, long2=t2long)
         assert distance_m == pytest.approx(expected_distance)
         assert bearing_deg == pytest.approx(expected_bearing)
-    end_time = time.perf_counter()
-    run_time_with_cache = (end_time - start_time) / reps
-    assert run_time_with_cache < run_time_pre_cache * 3 / 10
+    cache = get_distance_and_bearing.cache_info()
+    assert (cache.misses, cache.hits) == (1, reps)
 
 
 def test_calc_scen_name_from_wtgs_not_waking() -> None:
@@ -116,6 +108,26 @@ def test_get_iec_upwind_turbines(
         object_name=cfg.asset.wtgs[wtg_idx].name,
     )
     assert upwind_wtgs == expected
+
+
+def test_get_iec_upwind_turbines_follows_the_config_not_an_earlier_one(
+    test_homer_with_t00_config: WindUpConfig, test_homer_config: WindUpConfig
+) -> None:
+    """Two analyses in one process with different turbine sets must each see their own upwind turbines.
+
+    The upwind list is cached per position; the cache has to tell the configs apart, or the second
+    analysis is handed turbines it has no data for (a KeyError in ``add_waking_scen``).
+    """
+    with_t00 = test_homer_with_t00_config
+    without_t00 = test_homer_config
+    latlongs = [(with_t00.asset.wtgs[1].latitude, with_t00.asset.wtgs[1].longitude)]
+    assert get_iec_upwind_turbines(latlongs=latlongs, wind_direction=70, cfg=with_t00, object_name="HMR_T02") == [
+        "HMR_T00"
+    ]
+    assert get_iec_upwind_turbines(latlongs=latlongs, wind_direction=70, cfg=without_t00, object_name="HMR_T02") == []
+    assert get_iec_upwind_turbines(latlongs=latlongs, wind_direction=70, cfg=with_t00, object_name="HMR_T02") == [
+        "HMR_T00"
+    ]
 
 
 def test_add_waking_scen(test_homer_with_t00_config: WindUpConfig) -> None:

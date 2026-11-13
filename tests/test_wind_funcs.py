@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_series_equal
 
-from wind_up.wind_funcs import calc_cp
+from wind_up_v0.wind_funcs import calc_cp
 
 test_calc_cp_data = [
     (500, 8.2, 1.21, 62, 0.4964778),

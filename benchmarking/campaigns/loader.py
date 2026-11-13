@@ -1,0 +1,611 @@
+"""Read a campaign declaration: one YAML file of campaign facts, plus a turbines sidecar.
+
+Campaign facts only. Method configuration stays on the method, the deliberate break from v0's
+``WindUpConfig``, which mixes both into one file.
+"""
+
+from __future__ import annotations
+
+import math
+import numbers
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
+
+import pandas as pd
+import yaml
+
+from benchmarking.campaigns.declaration import CampaignSpec, layout_coords
+from benchmarking.harness.operating_state import OperatingStateConfig, StateValidity
+from benchmarking.harness.reanalysis import TimestampConvention
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from benchmarking.synthetic.sources.greenbyte import GREENBYTE_COLUMNS
+from wind_up.layout import Layout
+from wind_up.wake_reach import reach_from_uplift
+
+if TYPE_CHECKING:
+    from benchmarking.campaigns.declaration import Exclusion, Window
+    from benchmarking.synthetic import ColumnSchema
+
+# The schemas a declaration may name. Inline schema definition is not supported: a source's
+# column names belong to its adapter, not to a campaign.
+SCHEMAS: dict[str, ColumnSchema] = {"hill_of_towie": HOT_COLUMNS, "greenbyte": GREENBYTE_COLUMNS}
+
+# How a declaration names a farm-wide exclusion.
+ALL_TURBINES = "ALL"
+PER_TURBINE_PERIOD = "chosen per upgraded turbine"
+
+MODES = ("prepost", "toggle")
+
+# How a declaration writes a state's northing and uplift validity.
+VALID = "valid"
+NOT_VALID = "not valid"
+_VALIDITY = {VALID: True, NOT_VALID: False}
+_OPERATING_STATE_KEYS = ("label_column", "parked_pitch_above_deg", "parked_pitch_below_deg", "labels")
+_STATE_VALIDITY_KEYS = ("northing", "waking", "uplift")
+_TIMESTAMP_KEYS = ("convention", "time_zone")
+_SITE_KEYS = ("offshore",)
+_UPGRADE_KEYS = ("expected_uplift", "wake_reach_d")
+# The works table's optional per-row reach columns, matched by prefix.
+EXPECTED_UPLIFT_PREFIX = "Expected uplift"
+WAKE_REACH_PREFIX = "Wake reach"
+
+# The reanalysis centroid is rounded to this many decimals, and taken over the whole turbines
+# file rather than the declared roles, so every campaign on one site shares a cache entry and
+# changing the reference set does not move a model input.
+CENTROID_DECIMALS = 2
+
+
+class _RawTimestampLoader(yaml.SafeLoader):
+    """SafeLoader with the implicit timestamp resolver removed, so times arrive as strings.
+
+    What PyYAML makes of a timestamp varies by version -- a naive datetime, an aware one, or a
+    bare date. Taking the raw scalar and coercing it here makes the timezone rule this module's
+    own rather than the YAML library's.
+    """
+
+
+_RawTimestampLoader.yaml_implicit_resolvers = {
+    key: [(tag, regexp) for tag, regexp in resolvers if tag != "tag:yaml.org,2002:timestamp"]
+    for key, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+
+@dataclass(frozen=True)
+class Declaration:
+    """A campaign declared in YAML, resolved into what is needed to run it.
+
+    :param name: names the run's output subdirectory, so a declaration is self-identifying
+    :param spec: the public campaign facts, the only thing a method sees
+    :param columns: the source-native schema the SCADA is keyed by
+    :param scada_path: the SCADA parquet, resolved relative to the declaration
+    :param centroid: the site's ``(latitude, longitude)`` centroid over the whole turbines file,
+        rounded, which reanalysis is self-served from
+    :param operating_state: the site's operating-state labels and parked-pitch rule; generic states
+        only when none is declared
+    :param timestamps: the SCADA timestamp convention and time zone; period start, UTC by default
+    :param offshore: whether reanalysis is drawn from a sea grid cell rather than a land one
+    :param expected_uplift: the AEP uplift expected of the change, a fraction
+    """
+
+    name: str
+    spec: CampaignSpec
+    columns: ColumnSchema
+    scada_path: Path
+    centroid: tuple[float, float]
+    operating_state: OperatingStateConfig = field(default_factory=OperatingStateConfig)
+    timestamps: TimestampConvention = field(default_factory=TimestampConvention)
+    offshore: bool = False
+    expected_uplift: float | None = None
+
+    @property
+    def cell_selection(self) -> Literal["land", "sea"]:
+        """Return the Open-Meteo grid-cell selection for this site."""
+        return "sea" if self.offshore else "land"
+
+    def resolved(self) -> dict[str, Any]:
+        """Return the resolved campaign facts, for echoing into the run output.
+
+        Timestamps appear as the UTC values the declaration actually resolved to, so a
+        mis-declared timezone is visible rather than silent.
+        """
+        spec = self.spec
+        timing: dict[str, Any] = {"mode": spec.mode}
+        if isinstance(spec.upgrade_timing, ToggleSchedule):
+            timing["start"] = str(spec.upgrade_timing.start)
+            timing["period"] = str(spec.upgrade_timing.period)
+            timing["start_on"] = spec.upgrade_timing.start_on
+        elif spec.upgrade_timing is None:
+            timing["changeover"] = {t: str(spec.timing_for(t)) for t in spec.upgraded_turbines}
+        else:
+            timing["changeover"] = str(spec.upgrade_timing)
+        resolved: dict[str, Any] = {
+            "name": self.name,
+            "scada": str(self.scada_path),
+            "schema": {v: k for k, v in SCHEMAS.items()}.get(self.columns, "custom"),
+            "timestamps": {"convention": self.timestamps.convention, "time_zone": self.timestamps.time_zone},
+            "site": {"offshore": self.offshore},
+            "turbines": {
+                "upgraded": list(spec.upgraded_turbines),
+                "references": list(spec.candidate_references),
+                "excluded": list(spec.excluded_turbines),
+                "rated_power_kw": spec.rated_power_kw,
+            },
+            "timing": timing,
+            "analysis_period": _resolved_period(spec.analysis_period),
+            "northing": {
+                "discover": spec.north_offsets is None,
+                "table": [] if spec.north_offsets is None else [[w, str(t), o] for w, t, o in spec.north_offsets],
+            },
+            "reanalysis": {
+                "centroid": list(self.centroid),
+                "cell_selection": self.cell_selection,
+                "window": "the whole SCADA record, in whole calendar years",
+            },
+            "operating_state": _resolved_operating_state(self.operating_state),
+            "upgrade": {"expected_uplift": self.expected_uplift, "wake_reach_d": spec.wake_reach_d},
+        }
+        if spec.works:
+            resolved["works"] = {
+                t: [[str(s), str(e), spec.reach_of(t, (s, e))] for s, e in windows] for t, windows in spec.works.items()
+            }
+        if spec.exclusions:
+            resolved["exclusions"] = [
+                {"turbine": ALL_TURBINES if who is None else who, "start": str(s), "end": str(e)}
+                for who, s, e in spec.exclusions
+            ]
+        return resolved
+
+
+def load_declaration(path: str | Path) -> Declaration:
+    """Read the campaign declaration at ``path`` and resolve it.
+
+    Paths named in the declaration are resolved relative to the declaration's own directory, so a
+    campaign folder can be moved or copied whole.
+    """
+    path = Path(path)
+    with path.open() as stream:
+        raw = yaml.load(stream, Loader=_RawTimestampLoader)  # noqa: S506 - subclass of SafeLoader
+    root = path.parent
+
+    data = _section(raw, "data")
+    columns = _schema(str(data["schema"]))
+    scada_path = _resolve(root, str(data["scada"]), what="scada")
+    layout = _read_turbines(_resolve(root, str(data["turbines"]), what="turbines"))
+    coords = layout_coords(layout)
+
+    roles = _section(raw, "turbines")
+    upgraded = [str(w) for w in roles.get("upgraded", [])]
+    # Both default to the obvious campaign: nothing excluded, and every other turbine in the
+    # turbines file offered as a reference. Declaring either narrows it.
+    excluded = [str(w) for w in roles.get("excluded") or []]
+    declared_references = roles.get("references")
+    references = (
+        [str(w) for w in declared_references]
+        if declared_references
+        else [w for w in coords if w not in set(upgraded) | set(excluded)]
+    )
+    _check_roles(upgraded=upgraded, references=references, excluded=excluded, coords=coords)
+
+    if "wake_unchanged" in raw:
+        msg = (
+            "wake_unchanged is no longer declared: a change that leaves the wakes as they were declares "
+            "upgrade.wake_reach_d: 0"
+        )
+        raise ValueError(msg)
+    offshore = _offshore(raw.get("site"))
+    expected_uplift, wake_reach_d = _upgrade(raw.get("upgrade"), offshore=offshore)
+    works, works_reach_d = (
+        read_works(_resolve(root, str(data["works"]), what="works"), offshore=offshore)
+        if data.get("works")
+        else ({}, {})
+    )
+    _check_known(works, coords=coords, what="the works table")
+    exclusions = _exclusions(raw.get("exclusions") or [])
+    _check_known({w: None for w, _, _ in exclusions if w is not None}, coords=coords, what="the exclusions")
+    timing = _timing(_section(raw, "timing"), has_works=bool(works))
+    if isinstance(timing, pd.Timestamp):
+        _check_works_clear_of(timing, works={w: works.get(w, []) for w in upgraded})
+    period = _analysis_period(raw.get("analysis_period"), upgraded=upgraded)
+
+    spec = CampaignSpec(
+        upgraded_turbines=upgraded,
+        upgrade_timing=timing,
+        candidate_references=references,
+        excluded_turbines=excluded,
+        layout=layout,
+        north_offsets=_north_offsets(raw.get("northing")),
+        rated_power_kw=float(roles["rated_power_kw"]),
+        analysis_period=period,
+        turbine_col=columns.turbine,
+        works=works,
+        exclusions=exclusions,
+        references_declared=bool(declared_references),
+        wake_reach_d=wake_reach_d,
+        works_reach_d=works_reach_d,
+    )
+    return Declaration(
+        name=_path_component(str(raw["name"]), what="campaign name"),
+        spec=spec,
+        columns=columns,
+        scada_path=scada_path,
+        centroid=centroid(coords),
+        operating_state=operating_state_config(raw.get("operating_state")),
+        timestamps=_timestamps(data.get("timestamps")),
+        offshore=offshore,
+        expected_uplift=expected_uplift,
+    )
+
+
+def read_works(path: Path, *, offshore: bool = False) -> tuple[dict[str, list[Window]], dict[str, dict[Window, float]]]:
+    """Read a works table: ``Turbine`` plus the first ``First date...`` and ``Last date...`` columns.
+
+    Each row is one window of whole days, ``[first 00:00, last + 1 day 00:00)`` UTC. A turbine may
+    have several rows. Returns the windows, and per turbine the windows with a reach of their own:
+    from the optional ``Wake reach...`` column (rotor diameters), else from the optional
+    ``Expected uplift...`` column (a fraction) through the reach table.
+    """
+    frame = pd.read_csv(path)
+    uplift_col = next((c for c in frame.columns if str(c).startswith(EXPECTED_UPLIFT_PREFIX)), None)
+    reach_col = next((c for c in frame.columns if str(c).startswith(WAKE_REACH_PREFIX)), None)
+    first = next((c for c in frame.columns if str(c).startswith("First date")), None)
+    last = next((c for c in frame.columns if str(c).startswith("Last date")), None)
+    if "Turbine" not in frame.columns or first is None or last is None:
+        msg = (
+            f"the works table {path.name} needs a Turbine column and columns starting 'First date' and "
+            f"'Last date'; it has {list(frame.columns)}"
+        )
+        raise ValueError(msg)
+    works: dict[str, list[Window]] = {}
+    reaches: dict[str, dict[Window, float]] = {}
+    for row, (turbine, first_day, last_day) in enumerate(
+        zip(frame["Turbine"].astype(str), frame[first], frame[last], strict=True)
+    ):
+        if pd.isna(first_day) or pd.isna(last_day):
+            msg = f"the works table {path.name} gives {turbine} a blank first or last date"
+            raise ValueError(msg)
+        start = _timestamp(pd.Timestamp(first_day).normalize())
+        end = _timestamp(pd.Timestamp(last_day).normalize()) + pd.Timedelta(days=1)
+        if end <= start:
+            msg = f"the works table {path.name} gives {turbine} a last date before its first"
+            raise ValueError(msg)
+        works.setdefault(turbine, []).append((start, end))
+        reach = _row_reach(frame, row=row, uplift_col=uplift_col, reach_col=reach_col, offshore=offshore)
+        if reach is not None:
+            reaches.setdefault(turbine, {})[(start, end)] = reach
+    return {turbine: sorted(windows) for turbine, windows in works.items()}, reaches
+
+
+def _row_reach(frame: pd.DataFrame, *, row: int, uplift_col: object, reach_col: object, offshore: bool) -> float | None:
+    """Return a works table row's own reach, or None when it takes the campaign's."""
+    if reach_col is not None and pd.notna(frame[reach_col].iloc[row]):
+        return _reach(frame[reach_col].iloc[row], what=f"works table row {row + 1} {reach_col}")
+    if uplift_col is not None and pd.notna(frame[uplift_col].iloc[row]):
+        uplift = _number(frame[uplift_col].iloc[row], what=f"works table row {row + 1} {uplift_col}")
+        return reach_from_uplift(uplift, offshore=offshore)
+    return None
+
+
+def _upgrade(block: dict | None, *, offshore: bool) -> tuple[float, float]:
+    """Read the ``upgrade`` block: the expected uplift and the reach, the declared one or the table's."""
+    if block is None or "expected_uplift" not in block:
+        msg = (
+            "the declaration needs upgrade.expected_uplift: the AEP uplift expected of the change, a fraction "
+            "(e.g. 0.05), which sets how far its wake change reaches"
+        )
+        raise ValueError(msg)
+    stray = sorted(set(map(str, block)) - set(_UPGRADE_KEYS))
+    if stray:
+        msg = f"upgrade has unknown keys {stray}; known keys are {list(_UPGRADE_KEYS)}"
+        raise ValueError(msg)
+    expected_uplift = _number(block["expected_uplift"], what="upgrade.expected_uplift")
+    declared = block.get("wake_reach_d")
+    if declared is not None:
+        return expected_uplift, _reach(declared, what="upgrade.wake_reach_d")
+    return expected_uplift, reach_from_uplift(expected_uplift, offshore=offshore)
+
+
+def _number(value: object, *, what: str) -> float:
+    """Return a declared finite number, raising on anything else."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(value):
+        msg = f"{what} must be a finite number, not {value!r}"
+        raise ValueError(msg)
+    return float(value)
+
+
+def _reach(value: object, *, what: str) -> float:
+    """Return a declared reach in rotor diameters, raising unless it is a finite number at least 0."""
+    reach = _number(value, what=what)
+    if reach < 0:
+        msg = f"{what} must be at least 0 rotor diameters, not {reach}"
+        raise ValueError(msg)
+    return reach
+
+
+def _check_works_clear_of(changeover: pd.Timestamp, *, works: dict[str, list[Window]]) -> None:
+    """Raise naming the upgraded turbines with a works window over the shared changeover."""
+    over = sorted(w for w, windows in works.items() if any(s < changeover < e for s, e in windows))
+    if over:
+        msg = (
+            f"{over} have a works window over timing.changeover; with a shared changeover the works "
+            f"table holds a turbine's other works"
+        )
+        raise ValueError(msg)
+
+
+def _check_known(named: dict[str, Any], *, coords: dict[str, tuple[float, float]], what: str) -> None:
+    """Raise naming the turbines ``what`` names that the turbines file does not."""
+    unknown = sorted(set(named) - set(coords))
+    if unknown:
+        msg = f"{what} names {unknown}, which the turbines file has no row for"
+        raise ValueError(msg)
+
+
+def _exclusions(entries: list) -> list[Exclusion]:
+    """Read the declared exclusions; ``ALL`` is farm-wide."""
+    exclusions: list[Exclusion] = []
+    for entry in entries:
+        turbine = str(entry["turbine"])
+        start, end = _timestamp(entry["start"]), _timestamp(entry["end"])
+        if end <= start:
+            msg = f"the exclusion of {turbine} ends at {end}, not after its start {start}"
+            raise ValueError(msg)
+        exclusions.append((None if turbine == ALL_TURBINES else turbine, start, end))
+    return exclusions
+
+
+def _span(block: dict, *, what: str) -> Window:
+    """Read one ``{start, end}`` span, end exclusive."""
+    start, end = _timestamp(block["start"]), _timestamp(block["end"])
+    if end <= start:
+        msg = f"{what} end {end} is not after start {start}; the campaign would cover no records"
+        raise ValueError(msg)
+    return start, end
+
+
+def _analysis_period(block: dict | None, *, upgraded: list[str]) -> Window | dict[str, Window] | None:
+    """Read the optional analysis period: one span, a span per upgraded turbine, or none."""
+    if block is None:
+        return None
+    if set(block) == {"start", "end"}:
+        return _span(block, what="analysis_period")
+    stray = sorted(set(map(str, block)) - set(upgraded))
+    if stray:
+        msg = f"analysis_period names {stray}, which are not upgraded turbines; a per-turbine span is for those"
+        raise ValueError(msg)
+    return {str(t): _span(span, what=f"analysis_period of {t}") for t, span in block.items()}
+
+
+def _resolved_period(period: Window | dict[str, Window] | None) -> dict[str, Any] | str:
+    """Return the analysis period as the resolved echo shows it."""
+    if period is None:
+        return PER_TURBINE_PERIOD
+    if isinstance(period, dict):
+        return {t: {"start": str(s), "end": str(e)} for t, (s, e) in period.items()}
+    start, end = period
+    return {"start": str(start), "end": str(end)}
+
+
+def operating_state_config(block: dict | None) -> OperatingStateConfig:
+    """Read an operating-state block as a declaration writes it; none gives the generic states only."""
+    if block is None:
+        return OperatingStateConfig()
+    stray = sorted(set(map(str, block)) - set(_OPERATING_STATE_KEYS))
+    if stray:
+        msg = f"operating_state has unknown keys {stray}; known keys are {list(_OPERATING_STATE_KEYS)}"
+        raise ValueError(msg)
+    labels = {str(name): _state_validity(str(name), entry) for name, entry in (block.get("labels") or {}).items()}
+    label_column = block.get("label_column")
+    above, below = block.get("parked_pitch_above_deg"), block.get("parked_pitch_below_deg")
+    return OperatingStateConfig(
+        label_column=None if label_column is None else str(label_column),
+        labels=labels,
+        parked_pitch_above_deg=None if above is None else float(above),
+        parked_pitch_below_deg=None if below is None else float(below),
+    )
+
+
+def _timestamps(block: dict | None) -> TimestampConvention:
+    """Read the optional ``data.timestamps`` block; none gives period start, UTC."""
+    if block is None:
+        return TimestampConvention()
+    stray = sorted(set(map(str, block)) - set(_TIMESTAMP_KEYS))
+    if stray:
+        msg = f"data.timestamps has unknown keys {stray}; known keys are {list(_TIMESTAMP_KEYS)}"
+        raise ValueError(msg)
+    default = TimestampConvention()
+    return TimestampConvention(
+        convention=str(block.get("convention", default.convention)),  # type: ignore[arg-type]
+        time_zone=str(block.get("time_zone", default.time_zone)),
+    )
+
+
+def _offshore(block: dict | None) -> bool:
+    """Read the optional ``site`` block's offshore flag; onshore by default."""
+    if block is None:
+        return False
+    stray = sorted(set(map(str, block)) - set(_SITE_KEYS))
+    if stray:
+        msg = f"site has unknown keys {stray}; known keys are {list(_SITE_KEYS)}"
+        raise ValueError(msg)
+    offshore = block.get("offshore", False)
+    if not isinstance(offshore, bool):
+        msg = f"site.offshore must be true or false, not {offshore!r}"
+        raise ValueError(msg)  # noqa: TRY004 - a declaration error, reported like the others
+    return offshore
+
+
+def _state_validity(name: str, entry: dict) -> StateValidity:
+    """Read one label's ``{northing, waking, uplift}`` validity."""
+    if not isinstance(entry, dict) or set(entry) != set(_STATE_VALIDITY_KEYS):
+        msg = f"operating_state label {name!r} needs exactly the keys {list(_STATE_VALIDITY_KEYS)}, got {entry!r}"
+        raise ValueError(msg)
+    for key in ("northing", "uplift"):
+        if entry[key] not in _VALIDITY:
+            msg = f"operating_state label {name!r} has {key} {entry[key]!r}; use {VALID!r} or {NOT_VALID!r}"
+            raise ValueError(msg)
+    return StateValidity(
+        northing=_VALIDITY[entry["northing"]], waking=str(entry["waking"]), uplift=_VALIDITY[entry["uplift"]]
+    )
+
+
+def _resolved_operating_state(config: OperatingStateConfig) -> dict[str, Any]:
+    """Return the operating-state block as the resolved echo shows it."""
+    resolved: dict[str, Any] = {"label_column": config.label_column}
+    if config.parked_pitch_below_deg is not None:
+        resolved["parked_pitch_below_deg"] = config.parked_pitch_below_deg
+    else:
+        resolved["parked_pitch_above_deg"] = config.parked_pitch_above_deg
+    resolved["labels"] = {
+        name: {
+            "northing": VALID if v.northing else NOT_VALID,
+            "waking": v.waking,
+            "uplift": VALID if v.uplift else NOT_VALID,
+        }
+        for name, v in config.labels.items()
+    }
+    return resolved
+
+
+def _section(raw: dict, name: str) -> dict:
+    """Return a required top-level mapping of the declaration."""
+    if name not in raw:
+        msg = f"the declaration has no {name!r} section"
+        raise ValueError(msg)
+    return dict(raw[name])
+
+
+def _schema(name: str) -> ColumnSchema:
+    """Return the named column schema, or raise listing the names there are."""
+    if name not in SCHEMAS:
+        msg = f"unknown data.schema {name!r}; known schemas are {sorted(SCHEMAS)}"
+        raise ValueError(msg)
+    return SCHEMAS[name]
+
+
+def _resolve(root: Path, name: str, *, what: str) -> Path:
+    """Resolve a declared path against the declaration's directory, checking it exists."""
+    path = root / name
+    if not path.exists():
+        msg = f"the declaration's {what} file {name!r} is not at {path}"
+        raise FileNotFoundError(msg)
+    return path
+
+
+def _read_turbines(path: Path) -> Layout:
+    """Read the turbines sidecar -- name, latitude, longitude, rotor diameter -- into a layout.
+
+    The header may be cased any way. ``rotor_diameter_m`` is required.
+
+    Rows without a name are skipped, so a campaign-design layout can serve as the sidecar. A name
+    given more than once is rejected.
+    """
+    frame = pd.read_csv(path)
+    lookup = {str(c).strip().lower(): c for c in frame.columns}
+    missing = [c for c in ("name", "latitude", "longitude", "rotor_diameter_m") if c not in lookup]
+    if missing:
+        msg = f"the turbines file {path.name} has no {missing} column(s); it carries {list(frame.columns)}"
+        raise ValueError(msg)
+    named = frame[frame[lookup["name"]].notna() & (frame[lookup["name"]].astype(str).str.strip() != "")]
+    names = named[lookup["name"]].astype(str)
+    doubled = sorted(set(names[names.duplicated()]))
+    if doubled:
+        msg = f"the turbines file {path.name} names {doubled} more than once"
+        raise ValueError(msg)
+    for name in names:
+        _path_component(name, what=f"turbine name in {path.name}")
+    return Layout.from_frame(named.reset_index(drop=True))
+
+
+def _path_component(value: str, *, what: str) -> str:
+    """Check a name a run writes a directory for is one path component, and return it."""
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        msg = (
+            f"the {what} {value!r} names an output directory, so it cannot be empty, '.', '..', "
+            f"or carry a path separator"
+        )
+        raise ValueError(msg)
+    return value
+
+
+def _check_roles(
+    *, upgraded: list[str], references: list[str], excluded: list[str], coords: dict[str, tuple[float, float]]
+) -> None:
+    """Check every declared turbine has coordinates and holds exactly one role."""
+    if not upgraded:
+        msg = "the declaration lists no upgraded turbines, so there is nothing to estimate"
+        raise ValueError(msg)
+    declared = [*upgraded, *references, *excluded]
+    unknown = sorted({w for w in declared if w not in coords})
+    if unknown:
+        msg = f"the turbines file has no row for {unknown}, so they have no coordinates"
+        raise ValueError(msg)
+    doubled = sorted({w for w in declared if declared.count(w) > 1})
+    if doubled:
+        msg = f"{doubled} appear in more than one turbine role; each turbine holds exactly one"
+        raise ValueError(msg)
+
+
+def _timing(block: dict, *, has_works: bool) -> pd.Timestamp | ToggleSchedule | None:
+    """Build the campaign's timing from its tagged block; None when a works table gives it."""
+    mode = str(block.get("mode", ""))
+    if mode == "prepost":
+        changeover = block.get("changeover")
+        if changeover is None and not has_works:
+            msg = "a prepost declaration needs timing.changeover or a works table (data.works)"
+            raise ValueError(msg)
+        return None if changeover is None else _timestamp(changeover)
+    if mode == "toggle":
+        if block.get("start") is None:
+            # ToggleSchedule allows no start, taking the first timestamp as origin with no
+            # baseline. A declaration must say instead, or a declared baseline silently toggles.
+            msg = "a toggle declaration needs timing.start: when toggling began"
+            raise ValueError(msg)
+        period = pd.Timedelta(block["period"])
+        if period <= pd.Timedelta(0):
+            msg = f"timing.period must be positive, got {period}"
+            raise ValueError(msg)
+        return ToggleSchedule(
+            period=period,
+            start=_timestamp(block["start"]),
+            start_on=bool(block.get("start_on", False)),
+        )
+    msg = f"unknown timing.mode {mode!r}; known modes are {list(MODES)}"
+    raise ValueError(msg)
+
+
+def _north_offsets(block: dict | None) -> list[tuple[str, pd.Timestamp, float]] | None:
+    """Read the northing tri-state: discover, apply a declared table, or apply nothing."""
+    if block is None or block.get("discover", True):
+        return None
+    return [(str(w), _timestamp(t), float(o)) for w, t, o in block.get("table", [])]
+
+
+def _timestamp(value: object) -> pd.Timestamp:
+    """Coerce a declared time to UTC: tz-aware is converted, naive is read as UTC."""
+    stamp = pd.Timestamp(value)  # type: ignore[arg-type]
+    return stamp.tz_localize("UTC") if stamp.tz is None else stamp.tz_convert("UTC")
+
+
+def centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
+    """Return the site's mean latitude and longitude, rounded.
+
+    Taken over every turbine in the file, not the declared roles: reanalysis is a model input, so
+    a reference-set sensitivity run must not move it.
+    """
+    points = list(coords.values())
+    return (
+        round(sum(lat for lat, _ in points) / len(points), CENTROID_DECIMALS),
+        round(sum(lon for _, lon in points) / len(points), CENTROID_DECIMALS),
+    )
+
+
+def era5_window(start: pd.Timestamp, end: pd.Timestamp) -> tuple[str, str]:
+    """Return the reanalysis fetch window, rounded out to whole calendar years.
+
+    The reanalysis cache is keyed by its arguments, so exact analysis windows would re-download
+    for every campaign on the same site. ``end`` is exclusive, so the last year needed is the one
+    holding the final instant the campaign can read.
+    """
+    last = end - pd.Timedelta(nanoseconds=1)
+    return f"{start.year}-01-01", f"{last.year}-12-31"

@@ -1,0 +1,667 @@
+"""Tests for the campaign declaration: YAML plus a turbines sidecar into a CampaignSpec."""
+
+from __future__ import annotations
+
+import textwrap
+from typing import TYPE_CHECKING
+
+import pandas as pd
+import pytest
+
+from benchmarking.campaigns.loader import CENTROID_DECIMALS, era5_window, load_declaration
+from benchmarking.harness.operating_state import GENERIC_STATES, OperatingStateConfig, StateValidity
+from benchmarking.harness.reanalysis import TimestampConvention
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+TURBINES_CSV = """Name,Latitude,Longitude,rotor_diameter_m
+T01,57.40,-3.30,82
+T02,57.60,-3.20,82
+T03,57.50,-3.25,82
+T04,57.51,-3.25,82
+"""
+
+PREPOST = """
+name: demo
+
+data:
+  scada: scada.parquet
+  schema: hill_of_towie
+  turbines: turbines.csv
+
+turbines:
+  upgraded:   [T01]
+  references: [T02, T03]
+  excluded:   [T04]
+  rated_power_kw: 2050
+
+upgrade:
+  expected_uplift: 0.05
+
+timing:
+  mode: prepost
+  changeover: 2018-01-01T00:00:00Z
+
+analysis_period:
+  start: 2017-01-01T00:00:00Z
+  end:   2019-01-01T00:00:00Z
+"""
+
+
+def write_campaign(tmp_path: Path, yaml_text: str = PREPOST) -> Path:
+    """Write a campaign declaration plus the sidecar files it names, and return the YAML path."""
+    (tmp_path / "turbines.csv").write_text(TURBINES_CSV)
+    (tmp_path / "scada.parquet").write_bytes(b"")
+    path = tmp_path / "campaign.yaml"
+    path.write_text(textwrap.dedent(yaml_text))
+    return path
+
+
+def load(tmp_path: Path, yaml_text: str = PREPOST):  # noqa: ANN201
+    """Write and load a declaration in one step."""
+    return load_declaration(write_campaign(tmp_path, yaml_text))
+
+
+class TestTheCampaignFacts:
+    def test_the_name_is_carried(self, tmp_path: Path) -> None:
+        assert load(tmp_path).name == "demo"
+
+    def test_the_turbine_roles_are_carried(self, tmp_path: Path) -> None:
+        spec = load(tmp_path).spec
+        assert spec.upgraded_turbines == ["T01"]
+        assert spec.candidate_references == ["T02", "T03"]
+        assert spec.excluded_turbines == ["T04"]
+        assert spec.rated_power_kw == 2050.0
+
+    def test_the_coordinates_come_from_the_turbines_sidecar(self, tmp_path: Path) -> None:
+        spec = load(tmp_path).spec
+        assert spec.coords["T01"] == (57.40, -3.30)
+        assert set(spec.coords) == {"T01", "T02", "T03", "T04"}
+
+    def test_a_turbine_holding_no_role_keeps_its_coordinates(self, tmp_path: Path) -> None:
+        # it is a wake contributor, and the waking-layout diagnostic can only draw what it has
+        # coordinates for
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV + "T05,57.55,-3.22,82\n")
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        path = tmp_path / "campaign.yaml"
+        path.write_text(textwrap.dedent(PREPOST))
+        spec = load_declaration(path).spec
+        assert spec.coords["T05"] == (57.55, -3.22)
+        assert list(spec.layout.frame["rotor_diameter_m"]) == [82.0] * 5
+        assert "T05" not in spec.candidate_references
+
+    def test_the_named_schema_resolves_to_a_column_schema(self, tmp_path: Path) -> None:
+        declaration = load(tmp_path)
+        assert declaration.columns == HOT_COLUMNS
+        assert declaration.spec.turbine_col == HOT_COLUMNS.turbine
+
+    def test_the_scada_path_resolves_relative_to_the_declaration(self, tmp_path: Path) -> None:
+        assert load(tmp_path).scada_path == tmp_path / "scada.parquet"
+
+    def test_the_analysis_period_end_is_exclusive(self, tmp_path: Path) -> None:
+        start, end = load(tmp_path).spec.analysis_period
+        assert start == pd.Timestamp("2017-01-01", tz="UTC")
+        assert end == pd.Timestamp("2019-01-01", tz="UTC")
+
+
+class TestTheRolesThatCanBeLeftOut:
+    """Only `upgraded` is required: the obvious campaign should not have to be spelled out."""
+
+    def _without(self, *lines: str) -> str:
+        kept = [ln for ln in PREPOST.splitlines() if not any(ln.strip().startswith(name) for name in lines)]
+        return "\n".join(kept) + "\n"
+
+    def test_omitting_references_offers_every_other_turbine(self, tmp_path: Path) -> None:
+        spec = load(tmp_path, self._without("references:", "excluded:")).spec
+        assert spec.upgraded_turbines == ["T01"]
+        assert spec.candidate_references == ["T02", "T03", "T04"]
+        assert spec.excluded_turbines == []
+
+    def test_an_excluded_turbine_is_still_kept_out_of_the_default_pool(self, tmp_path: Path) -> None:
+        spec = load(tmp_path, self._without("references:")).spec
+        assert spec.candidate_references == ["T02", "T03"]
+        assert spec.excluded_turbines == ["T04"]
+
+    def test_declaring_references_narrows_the_pool(self, tmp_path: Path) -> None:
+        assert load(tmp_path).spec.candidate_references == ["T02", "T03"]
+
+
+class TestTiming:
+    def test_prepost_carries_the_changeover(self, tmp_path: Path) -> None:
+        spec = load(tmp_path).spec
+        assert spec.mode == "prepost"
+        assert spec.upgrade_timing == pd.Timestamp("2018-01-01", tz="UTC")
+
+    def test_toggle_builds_a_schedule(self, tmp_path: Path) -> None:
+        spec = load(
+            tmp_path,
+            PREPOST.replace(
+                "  mode: prepost\n  changeover: 2018-01-01T00:00:00Z",
+                "  mode: toggle\n  start: 2018-01-01T00:00:00Z\n  period: 100min",
+            ),
+        ).spec
+        assert spec.mode == "toggle"
+        assert spec.upgrade_timing == ToggleSchedule(
+            period=pd.Timedelta(minutes=100), start=pd.Timestamp("2018-01-01", tz="UTC")
+        )
+
+    def test_toggle_carries_start_on(self, tmp_path: Path) -> None:
+        spec = load(
+            tmp_path,
+            PREPOST.replace(
+                "  mode: prepost\n  changeover: 2018-01-01T00:00:00Z",
+                "  mode: toggle\n  start: 2018-01-01T00:00:00Z\n  period: 100min\n  start_on: true",
+            ),
+        ).spec
+        assert spec.upgrade_timing.start_on is True
+
+    def test_a_toggle_without_a_start_is_refused(self, tmp_path: Path) -> None:
+        # the schedule would otherwise take the first timestamp as origin, so a declared baseline
+        # would silently be toggling instead
+        with pytest.raises(ValueError, match=r"timing\.start"):
+            load(
+                tmp_path,
+                PREPOST.replace(
+                    "  mode: prepost\n  changeover: 2018-01-01T00:00:00Z", "  mode: toggle\n  period: 100min"
+                ),
+            )
+
+    @pytest.mark.parametrize("period", ["0min", "-100min"])
+    def test_a_period_that_is_not_positive_is_refused(self, tmp_path: Path, period: str) -> None:
+        # neither raises downstream: zero treats nothing at all and negative inverts the blocks
+        with pytest.raises(ValueError, match=r"timing\.period must be positive"):
+            load(
+                tmp_path,
+                PREPOST.replace(
+                    "  mode: prepost\n  changeover: 2018-01-01T00:00:00Z",
+                    f"  mode: toggle\n  start: 2018-01-01T00:00:00Z\n  period: {period}",
+                ),
+            )
+
+    def test_an_unknown_mode_names_the_modes_there_are(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match=r"prepost.*toggle|toggle.*prepost"):
+            load(tmp_path, PREPOST.replace("mode: prepost", "mode: sideways"))
+
+
+class TestTimezones:
+    def test_a_naive_timestamp_is_read_as_utc(self, tmp_path: Path) -> None:
+        spec = load(tmp_path, PREPOST.replace("changeover: 2018-01-01T00:00:00Z", "changeover: 2018-01-01")).spec
+        assert spec.upgrade_timing == pd.Timestamp("2018-01-01", tz="UTC")
+
+    def test_an_offset_timestamp_is_converted_to_utc(self, tmp_path: Path) -> None:
+        # +01:00 is one hour ahead, so midnight there is 23:00 UTC the day before
+        spec = load(
+            tmp_path, PREPOST.replace("changeover: 2018-01-01T00:00:00Z", "changeover: 2018-01-01T00:00:00+01:00")
+        ).spec
+        assert spec.upgrade_timing == pd.Timestamp("2017-12-31 23:00", tz="UTC")
+
+    def test_every_resolved_timestamp_is_tz_aware_utc(self, tmp_path: Path) -> None:
+        spec = load(tmp_path, PREPOST.replace("start: 2017-01-01T00:00:00Z", "start: 2017-01-01")).spec
+        for stamp in (*spec.analysis_period, spec.upgrade_timing):
+            assert str(stamp.tz) == "UTC"
+
+    def test_the_resolved_timestamps_are_echoed(self, tmp_path: Path) -> None:
+        # visible beats infallible: a mis-declared timezone should be readable in the output
+        resolved = load(
+            tmp_path, PREPOST.replace("changeover: 2018-01-01T00:00:00Z", "changeover: 2018-01-01")
+        ).resolved()
+        assert resolved["timing"]["changeover"] == "2018-01-01 00:00:00+00:00"
+        assert resolved["analysis_period"]["start"] == "2017-01-01 00:00:00+00:00"
+
+
+class TestNorthing:
+    def test_discover_is_the_default_when_northing_is_not_declared(self, tmp_path: Path) -> None:
+        assert load(tmp_path).spec.north_offsets is None
+
+    def test_discover_true_leaves_the_offsets_to_be_found(self, tmp_path: Path) -> None:
+        assert load(tmp_path, PREPOST + "\nnorthing:\n  discover: true\n").spec.north_offsets is None
+
+    def test_a_declared_table_is_applied_exactly(self, tmp_path: Path) -> None:
+        text = PREPOST + textwrap.dedent("""
+            northing:
+              discover: false
+              table:
+                - [T01, 2017-06-01T00:00:00Z, 4.5]
+            """)
+        assert load(tmp_path, text).spec.north_offsets == [("T01", pd.Timestamp("2017-06-01", tz="UTC"), 4.5)]
+
+    def test_discover_false_with_no_table_applies_nothing_and_discovers_nothing(self, tmp_path: Path) -> None:
+        assert load(tmp_path, PREPOST + "\nnorthing:\n  discover: false\n").spec.north_offsets == []
+
+
+class TestReanalysis:
+    def test_the_centroid_is_the_mean_of_the_whole_turbines_file(self, tmp_path: Path) -> None:
+        assert load(tmp_path).centroid == (57.50, -3.25)
+
+    def test_the_centroid_does_not_move_when_the_turbine_roles_change(self, tmp_path: Path) -> None:
+        # reanalysis is a model input, so a reference-set sensitivity run must not perturb it
+        dropped = PREPOST.replace("references: [T02, T03]", "references: [T02]").replace(
+            "excluded:   [T04]", "excluded:   []"
+        )
+        assert load(tmp_path, dropped).centroid == load(tmp_path).centroid
+
+    def test_the_centroid_is_rounded_so_a_site_keeps_one_cache_entry(self, tmp_path: Path) -> None:
+        moved = TURBINES_CSV.replace("57.40,-3.30", "57.404321,-3.301234")
+        (tmp_path / "turbines.csv").write_text(moved)
+        path = tmp_path / "campaign.yaml"
+        path.write_text(textwrap.dedent(PREPOST))
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        lat, lon = load_declaration(path).centroid
+        assert lat == round(lat, CENTROID_DECIMALS)
+        assert lon == round(lon, CENTROID_DECIMALS)
+
+    def test_the_fetch_window_is_rounded_out_to_whole_calendar_years(self) -> None:
+        assert era5_window(utc("2017-03-04"), utc("2018-05-06")) == ("2017-01-01", "2018-12-31")
+
+    def test_the_exclusive_end_does_not_pull_in_an_extra_year(self) -> None:
+        assert era5_window(utc("2017-03-04"), utc("2019-01-01"))[1] == "2018-12-31"
+
+    def test_onshore_with_period_start_utc_timestamps_by_default(self, tmp_path: Path) -> None:
+        declaration = load(tmp_path)
+        assert declaration.timestamps == TimestampConvention(convention="start", time_zone="UTC")
+        assert declaration.offshore is False
+
+    def test_the_timestamps_and_site_are_read(self, tmp_path: Path) -> None:
+        text = (
+            PREPOST.replace("data:\n", "data:\n  timestamps: {convention: end, time_zone: Europe/London}\n", 1)
+            + "site:\n  offshore: true\n"
+        )
+        declaration = load(tmp_path, text)
+        assert declaration.timestamps == TimestampConvention(convention="end", time_zone="Europe/London")
+        assert declaration.offshore is True
+
+    def test_the_resolved_echo_names_the_timestamps_and_cell(self, tmp_path: Path) -> None:
+        resolved = load(tmp_path, PREPOST + "site:\n  offshore: true\n").resolved()
+        assert resolved["timestamps"] == {"convention": "start", "time_zone": "UTC"}
+        assert resolved["site"] == {"offshore": True}
+        assert resolved["reanalysis"]["cell_selection"] == "sea"
+
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            ("data:\n", "data:\n  timestamps: {convention: middle}\n"),
+            ("data:\n", "data:\n  timestamps: {zone: UTC}\n"),
+        ],
+    )
+    def test_a_bad_timestamps_block_is_rejected(self, tmp_path: Path, old: str, new: str) -> None:
+        with pytest.raises(ValueError, match="timestamp"):
+            load(tmp_path, PREPOST.replace(old, new, 1))
+
+    def test_an_unknown_site_key_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="site"):
+            load(tmp_path, PREPOST + "site:\n  ofshore: true\n")
+
+
+class TestErrors:
+    def test_an_unknown_schema_name_lists_the_known_ones(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="hill_of_towie"):
+            load(tmp_path, PREPOST.replace("schema: hill_of_towie", "schema: greenbyte_maybe"))
+
+    def test_a_turbine_missing_from_the_sidecar_is_named(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T99"):
+            load(tmp_path, PREPOST.replace("upgraded:   [T01]", "upgraded:   [T01, T99]"))
+
+    def test_a_turbine_in_two_roles_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T01"):
+            load(tmp_path, PREPOST.replace("references: [T02, T03]", "references: [T01, T02]"))
+
+    def test_an_end_before_the_start_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="end"):
+            load(tmp_path, PREPOST.replace("end:   2019-01-01T00:00:00Z", "end:   2016-01-01T00:00:00Z"))
+
+    def test_a_missing_sidecar_file_is_named(self, tmp_path: Path) -> None:
+        path = write_campaign(tmp_path)
+        (tmp_path / "turbines.csv").unlink()
+        with pytest.raises(FileNotFoundError, match=r"turbines.csv"):
+            load_declaration(path)
+
+    def test_a_sidecar_without_rotor_diameters_is_refused_naming_the_column(self, tmp_path: Path) -> None:
+        # wake-nadir-shift's wake cutoff is measured in rotor diameters, so none may be assumed
+        path = write_campaign(tmp_path)
+        without = "".join(line.rsplit(",", 1)[0] + "\n" for line in TURBINES_CSV.splitlines())
+        (tmp_path / "turbines.csv").write_text(without)
+        with pytest.raises(ValueError, match="rotor_diameter_m"):
+            load_declaration(path)
+
+    def test_no_upgraded_turbines_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="upgraded"):
+            load(tmp_path, PREPOST.replace("upgraded:   [T01]", "upgraded:   []"))
+
+    def test_a_name_given_twice_in_the_sidecar_is_rejected(self, tmp_path: Path) -> None:
+        path = write_campaign(tmp_path)
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV + "T02,57.70,-3.10,82\n")
+        with pytest.raises(ValueError, match="T02"):
+            load_declaration(path)
+
+
+class TestACampaignDesignFeedsTheDeclaration:
+    def test_unnamed_rows_of_the_turbines_file_are_skipped(self, tmp_path: Path) -> None:
+        path = write_campaign(tmp_path)
+        (tmp_path / "turbines.csv").write_text(
+            "name,latitude,longitude,rotor_diameter_m,wind_farm\n"
+            "T01,57.40,-3.30,82,Home\nT02,57.60,-3.20,82,Home\nT03,57.50,-3.25,82,Home\n"
+            "T04,57.51,-3.25,82,Home\n,57.70,-3.10,90,\n"
+        )
+        declaration = load_declaration(path)
+        assert set(declaration.spec.coords) == {"T01", "T02", "T03", "T04"}
+        assert declaration.centroid == (57.50, -3.25)
+
+    def test_a_written_design_s_roles_and_layout_load(self, tmp_path: Path) -> None:
+        from tests.wind_up.layouts import grid_layout  # noqa: PLC0415
+        from wind_up.campaign_design import design_campaign, write_design  # noqa: PLC0415
+
+        layout = grid_layout(rows=3, cols=3, spacing_m=300).assign(wind_farm="Home")
+        design = design_campaign(layout)
+        write_design(design, out_dir=tmp_path / "design")
+        layout.to_csv(tmp_path / "turbines.csv", index=False)
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        roles = (tmp_path / "design" / "roles.yaml").read_text()
+        rest = textwrap.dedent(PREPOST)
+        rest = rest[: rest.index("turbines:\n  upgraded")] + rest[rest.index("upgrade:") :]
+        declaration_text = rest.replace("upgrade:", roles.rstrip() + "\n  rated_power_kw: 2300\n\nupgrade:", 1)
+        (tmp_path / "campaign.yaml").write_text(declaration_text)
+        spec = load_declaration(tmp_path / "campaign.yaml").spec
+        # roles() is what was written, and it sorts: a declaration should not carry the order the
+        # design's priority walk happened to pick them in
+        assert spec.upgraded_turbines == design.roles()["upgraded"] == sorted(design.test_turbines)
+        assert spec.candidate_references == design.roles()["references"]
+
+
+class TestNamesThatBecomeDirectories:
+    """The campaign name and the turbine names are used as output directory names."""
+
+    @pytest.mark.parametrize("name", ["demo/2026", "../demo", "/elsewhere/demo", "."])
+    def test_a_campaign_name_that_is_not_one_path_component_is_refused(self, tmp_path: Path, name: str) -> None:
+        with pytest.raises(ValueError, match=r"name"):
+            load(tmp_path, PREPOST.replace("name: demo", f"name: {name!r}"))
+
+    def test_a_turbine_name_that_is_not_one_path_component_is_refused(self, tmp_path: Path) -> None:
+        (tmp_path / "turbines.csv").write_text(TURBINES_CSV.replace("T02,", "../T02,"))
+        (tmp_path / "scada.parquet").write_bytes(b"")
+        path = tmp_path / "campaign.yaml"
+        path.write_text(textwrap.dedent(PREPOST.replace("references: [T02, T03]", "references: [T03]")))
+        with pytest.raises(ValueError, match=r"\.\./T02"):
+            load_declaration(path)
+
+
+WORKS_CSV = """Turbine,First date of AeroUp works,Last date of AeroUp works
+T01,2018-01-10,2018-01-12
+T02,2018-06-01,2018-06-01
+T02,2018-09-01,2018-09-03
+"""
+
+STAGGERED = """
+name: staggered
+
+data:
+  scada: scada.parquet
+  schema: hill_of_towie
+  turbines: turbines.csv
+  works: works.csv
+
+turbines:
+  upgraded: [T01]
+  rated_power_kw: 2050
+
+upgrade:
+  expected_uplift: 0.05
+
+timing:
+  mode: prepost
+
+exclusions:
+  - {turbine: ALL, start: 2018-03-01T00:00:00Z, end: 2018-03-02T00:00:00Z}
+  - {turbine: T03, start: 2018-04-01T00:00:00Z, end: 2018-04-05T00:00:00Z}
+"""
+
+
+def load_staggered(tmp_path: Path, yaml_text: str = STAGGERED, works: str = WORKS_CSV):  # noqa: ANN201
+    """Write a works table beside the declaration, then load it."""
+    (tmp_path / "works.csv").write_text(works)
+    return load(tmp_path, yaml_text)
+
+
+def utc(text: str) -> pd.Timestamp:
+    return pd.Timestamp(text, tz="UTC")
+
+
+class TestTheWorksTable:
+    def test_a_works_window_covers_whole_days(self, tmp_path: Path) -> None:
+        assert load_staggered(tmp_path).spec.works["T01"] == [(utc("2018-01-10"), utc("2018-01-13"))]
+
+    def test_a_turbine_may_have_several_windows(self, tmp_path: Path) -> None:
+        assert load_staggered(tmp_path).spec.works["T02"] == [
+            (utc("2018-06-01"), utc("2018-06-02")),
+            (utc("2018-09-01"), utc("2018-09-04")),
+        ]
+
+    def test_the_changeover_is_the_works_end(self, tmp_path: Path) -> None:
+        spec = load_staggered(tmp_path).spec
+        assert spec.upgrade_timing is None
+        assert spec.timing_for("T01") == utc("2018-01-13")
+
+    def test_the_date_columns_are_found_by_prefix(self, tmp_path: Path) -> None:
+        works = "Turbine,First date of works,Last date of works\nT01,2018-01-10,2018-01-12\n"
+        assert "T01" in load_staggered(tmp_path, works=works).spec.works
+
+    def test_a_table_without_the_columns_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="First date"):
+            load_staggered(tmp_path, works="Turbine,Start,End\nT01,2018-01-10,2018-01-12\n")
+
+    def test_an_analysed_turbine_with_two_windows_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T02"):
+            load_staggered(tmp_path, STAGGERED.replace("upgraded: [T01]", "upgraded: [T02]"))
+
+    def test_an_analysed_turbine_with_no_window_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T03"):
+            load_staggered(tmp_path, STAGGERED.replace("upgraded: [T01]", "upgraded: [T03]"))
+
+    def test_a_last_date_before_the_first_is_rejected(self, tmp_path: Path) -> None:
+        works = "Turbine,First date,Last date\nT01,2018-01-12,2018-01-10\n"
+        with pytest.raises(ValueError, match="T01"):
+            load_staggered(tmp_path, works=works)
+
+    def test_an_unknown_turbine_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T99"):
+            load_staggered(tmp_path, works=WORKS_CSV + "T99,2018-01-01,2018-01-02\n")
+
+    def test_a_changeover_with_a_works_table_is_shared_and_the_table_holds_other_works(self, tmp_path: Path) -> None:
+        text = STAGGERED.replace("upgraded: [T01]", "upgraded: [T01, T02]").replace(
+            "mode: prepost", "mode: prepost\n  changeover: 2018-12-01T00:00:00Z"
+        )
+        spec = load_staggered(tmp_path, text).spec
+        assert spec.timing_for("T01") == spec.timing_for("T02") == utc("2018-12-01")
+        assert len(spec.works["T02"]) == 2
+        assert spec.changeovers()["T02"] == [utc("2018-06-02"), utc("2018-09-04"), utc("2018-12-01")]
+
+    def test_the_old_wake_unchanged_flag_is_rejected_naming_its_replacement(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match=r"upgrade\.wake_reach_d: 0"):
+            load_staggered(tmp_path, STAGGERED + "\nwake_unchanged: true\n")
+
+    def test_a_row_takes_the_campaign_reach_by_default(self, tmp_path: Path) -> None:
+        spec = load_staggered(tmp_path).spec
+        assert spec.works_reach_d == {}
+        assert spec.reach_of("T02", spec.works["T02"][0]) == pytest.approx(12.0)
+
+    def test_a_row_reach_comes_from_its_expected_uplift_or_its_own_reach(self, tmp_path: Path) -> None:
+        works = (
+            "Turbine,First date,Last date,Expected uplift (fraction),Wake reach (D)\n"
+            "T01,2018-01-10,2018-01-12,,\n"
+            "T02,2018-06-01,2018-06-01,0.01,\n"
+            "T02,2018-09-01,2018-09-03,0.01,2\n"
+        )
+        spec = load_staggered(tmp_path, works=works).spec
+        assert spec.reach_of("T01", spec.works["T01"][0]) == pytest.approx(12.0)
+        assert spec.reach_of("T02", spec.works["T02"][0]) == pytest.approx(4.0)
+        assert spec.reach_of("T02", spec.works["T02"][1]) == pytest.approx(2.0)
+
+    def test_a_negative_row_reach_is_rejected(self, tmp_path: Path) -> None:
+        works = "Turbine,First date,Last date,Wake reach\nT01,2018-01-10,2018-01-12,-1\n"
+        with pytest.raises(ValueError, match="at least 0"):
+            load_staggered(tmp_path, works=works)
+
+    def test_a_works_window_over_the_shared_changeover_is_rejected(self, tmp_path: Path) -> None:
+        text = STAGGERED.replace("mode: prepost", "mode: prepost\n  changeover: 2018-01-11T00:00:00Z")
+        with pytest.raises(ValueError, match="T01"):
+            load_staggered(tmp_path, text)
+
+    def test_neither_a_changeover_nor_a_works_table_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="works"):
+            load(tmp_path, STAGGERED.replace("  works: works.csv\n", ""))
+
+
+class TestExclusionsAndPeriods:
+    def test_exclusions_are_read_with_all_as_farm_wide(self, tmp_path: Path) -> None:
+        assert load_staggered(tmp_path).spec.exclusions == [
+            (None, utc("2018-03-01"), utc("2018-03-02")),
+            ("T03", utc("2018-04-01"), utc("2018-04-05")),
+        ]
+
+    def test_an_exclusion_ending_before_it_starts_is_rejected(self, tmp_path: Path) -> None:
+        text = STAGGERED.replace("end: 2018-03-02T00:00:00Z", "end: 2018-02-01T00:00:00Z")
+        with pytest.raises(ValueError, match="exclusion"):
+            load_staggered(tmp_path, text)
+
+    def test_an_exclusion_of_an_unknown_turbine_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="T99"):
+            load_staggered(tmp_path, STAGGERED.replace("turbine: T03", "turbine: T99"))
+
+    def test_a_flat_changeover_may_carry_exclusions(self, tmp_path: Path) -> None:
+        text = PREPOST + "exclusions:\n  - {turbine: ALL, start: 2017-03-01T00:00:00Z, end: 2017-03-02T00:00:00Z}\n"
+        assert load(tmp_path, text).spec.exclusions == [(None, utc("2017-03-01"), utc("2017-03-02"))]
+
+    def test_an_omitted_period_is_chosen_later(self, tmp_path: Path) -> None:
+        declaration = load_staggered(tmp_path)
+        assert declaration.spec.analysis_period is None
+
+    def test_a_per_turbine_period_is_read(self, tmp_path: Path) -> None:
+        text = STAGGERED + "analysis_period:\n  T01: {start: 2017-06-01T00:00:00Z, end: 2018-06-01T00:00:00Z}\n"
+        declaration = load_staggered(tmp_path, text)
+        assert declaration.spec.period_for("T01") == (utc("2017-06-01"), utc("2018-06-01"))
+
+    def test_a_per_turbine_period_for_an_unanalysed_turbine_is_rejected(self, tmp_path: Path) -> None:
+        text = STAGGERED + "analysis_period:\n  T02: {start: 2017-06-01T00:00:00Z, end: 2018-06-01T00:00:00Z}\n"
+        with pytest.raises(ValueError, match="T02"):
+            load_staggered(tmp_path, text)
+
+    def test_declared_references_are_marked_declared(self, tmp_path: Path) -> None:
+        text = STAGGERED.replace("upgraded: [T01]", "upgraded: [T01]\n  references: [T02, T03]")
+        assert load_staggered(tmp_path, text).spec.references_declared
+        assert not load_staggered(tmp_path).spec.references_declared
+
+    def test_the_resolved_echo_shows_the_timeline(self, tmp_path: Path) -> None:
+        resolved = load_staggered(tmp_path).resolved()
+        assert resolved["timing"] == {"mode": "prepost", "changeover": {"T01": "2018-01-13 00:00:00+00:00"}}
+        assert resolved["analysis_period"] == "chosen per upgraded turbine"
+        assert resolved["exclusions"][0] == {
+            "turbine": "ALL",
+            "start": "2018-03-01 00:00:00+00:00",
+            "end": "2018-03-02 00:00:00+00:00",
+        }
+        assert resolved["works"]["T01"] == [["2018-01-10 00:00:00+00:00", "2018-01-13 00:00:00+00:00", 12.0]]
+        assert resolved["upgrade"] == {"expected_uplift": 0.05, "wake_reach_d": 12.0}
+
+
+class TestTheUpgrade:
+    def test_the_reach_comes_from_the_expected_uplift(self, tmp_path: Path) -> None:
+        declaration = load(tmp_path)
+        assert declaration.expected_uplift == 0.05
+        assert declaration.spec.wake_reach_d == pytest.approx(12.0)
+
+    def test_a_negative_uplift_reaches_by_its_magnitude(self, tmp_path: Path) -> None:
+        text = PREPOST.replace("expected_uplift: 0.05", "expected_uplift: -0.01")
+        assert load(tmp_path, text).spec.wake_reach_d == pytest.approx(4.0)
+
+    def test_offshore_doubles_the_reach(self, tmp_path: Path) -> None:
+        text = PREPOST.replace("expected_uplift: 0.05", "expected_uplift: 0.03") + "site:\n  offshore: true\n"
+        assert load(tmp_path, text).spec.wake_reach_d == pytest.approx(16.0)
+
+    def test_a_declared_reach_overrides_the_table(self, tmp_path: Path) -> None:
+        text = PREPOST.replace("expected_uplift: 0.05", "expected_uplift: 0.05\n  wake_reach_d: 0")
+        assert load(tmp_path, text).spec.wake_reach_d == 0.0
+
+    def test_an_expected_uplift_is_required(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match=r"upgrade\.expected_uplift"):
+            load(tmp_path, PREPOST.replace("upgrade:\n  expected_uplift: 0.05\n", ""))
+
+    @pytest.mark.parametrize("value", ["five", "true", ".nan"])
+    def test_an_expected_uplift_that_is_not_a_number_is_rejected(self, tmp_path: Path, value: str) -> None:
+        with pytest.raises(ValueError, match="finite number"):
+            load(tmp_path, PREPOST.replace("expected_uplift: 0.05", f"expected_uplift: {value}"))
+
+    def test_an_unknown_upgrade_key_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="unknown keys"):
+            load(tmp_path, PREPOST.replace("expected_uplift: 0.05", "expected_uplift: 0.05\n  wake: 3"))
+
+
+def test_the_greenbyte_schema_is_declarable(tmp_path: Path) -> None:
+    from benchmarking.synthetic.sources.greenbyte import GREENBYTE_COLUMNS  # noqa: PLC0415
+
+    assert load(tmp_path, PREPOST.replace("schema: hill_of_towie", "schema: greenbyte")).columns == GREENBYTE_COLUMNS
+
+
+def test_a_flat_declaration_loads_unchanged(tmp_path: Path) -> None:
+    declaration = load(tmp_path)
+    assert declaration.spec.works == {}
+    assert declaration.spec.exclusions == []
+    assert declaration.spec.period_for("T01") is not None
+    assert "works" not in declaration.resolved()
+
+
+OPERATING_STATE = """
+operating_state:
+  label_column: state
+  parked_pitch_above_deg: 45
+  labels:
+    noise mode:     {northing: valid, waking: waking,      uplift: not valid}
+    BM curtailment: {northing: valid, waking: part waking, uplift: not valid}
+"""
+
+
+def test_the_operating_state_block_is_parsed_and_echoed(tmp_path: Path) -> None:
+    declaration = load(tmp_path, PREPOST + OPERATING_STATE)
+    config = declaration.operating_state
+    assert config.label_column == "state"
+    assert config.parked_pitch_above_deg == 45
+    assert config.labels["noise mode"] == StateValidity(northing=True, waking="waking", uplift=False)
+    assert config.labels["BM curtailment"].waking == "part waking"
+    echoed = declaration.resolved()["operating_state"]
+    assert echoed["labels"]["noise mode"] == {"northing": "valid", "waking": "waking", "uplift": "not valid"}
+    assert echoed["parked_pitch_above_deg"] == 45
+
+
+def test_no_operating_state_block_gives_the_generic_states(tmp_path: Path) -> None:
+    config = load(tmp_path).operating_state
+    assert config == OperatingStateConfig()
+    assert set(config.validity()) == set(GENERIC_STATES)
+
+
+@pytest.mark.parametrize(
+    ("block", "match"),
+    [
+        ("operating_state:\n  colour: red\n", "unknown keys"),
+        (
+            "operating_state:\n  label_column: s\n  labels:\n    x: {northing: yes, waking: waking, uplift: valid}\n",
+            "northing",
+        ),
+        (
+            "operating_state:\n  label_column: s\n  labels:\n    x: {northing: valid, waking: often, uplift: valid}\n",
+            "waking",
+        ),
+        (
+            "operating_state:\n  label_column: s\n  labels:\n    x: {northing: valid, uplift: valid}\n",
+            "exactly the keys",
+        ),
+        (
+            "operating_state:\n  label_column: s\n  labels:\n"
+            "    missing: {northing: valid, waking: waking, uplift: valid}\n",
+            "generic",
+        ),
+        ("operating_state:\n  parked_pitch_above_deg: 45\n  parked_pitch_below_deg: -45\n", "pitch"),
+    ],
+)
+def test_bad_operating_state_blocks_raise(tmp_path: Path, block: str, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        load(tmp_path, PREPOST + block)
