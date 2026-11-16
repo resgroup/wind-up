@@ -151,7 +151,7 @@ def test_the_default_matrix_size() -> None:
     shapes = [(p, n) for p in settings.pre_months for n in settings.post_months if p + n >= settings.min_total_months]
     per_campaign = len(settings.multipliers) * len(shapes)
     t13 = len([(p, n) for p in [3, 6, 12, 24] for n in settings.post_months if p + n >= settings.min_total_months])
-    tuneup = len([(p, n) for p in [3, 6, 12, 13] for n in [1, 2, 3, 5] if p + n >= settings.min_total_months])
+    tuneup = len([(p, n) for p in [3, 6, 12, 24, 26] for n in [1, 2, 3, 5] if p + n >= settings.min_total_months])
     real = len(settings.ks) * (t13 + tuneup)
     arms = len(settings.ks) * (1 + len(settings.small_arms)) + len(settings.exclusion_arms)
     assert len(matrix_cells(settings)) == n_campaigns * per_campaign * arms + real
@@ -164,6 +164,10 @@ def test_tuneup_runs_the_post_lengths_its_data_holds_and_lmax() -> None:
         "hot_tuneup_K4_P12_L2",
         "hot_tuneup_K4_P12_L3",
         "hot_tuneup_K4_P12_Lmax",
+        "hot_tuneup_K4_P24_L1",
+        "hot_tuneup_K4_P24_L2",
+        "hot_tuneup_K4_P24_L3",
+        "hot_tuneup_K4_P24_Lmax",
         "hot_tuneup_K4_P6_L3",
         "hot_tuneup_K4_P6_Lmax",
         "hot_tuneup_K4_Pmax_L1",
@@ -176,7 +180,7 @@ def test_tuneup_runs_the_post_lengths_its_data_holds_and_lmax() -> None:
 def test_real_campaigns_run_the_pre_lengths_their_data_holds_then_pmax() -> None:
     settings = MatrixSettings()
     assert real_pre_months("hot_t13", settings) == [3, 6, 12, 24]
-    assert real_pre_months("hot_tuneup", settings) == [3, 6, 12, None]
+    assert real_pre_months("hot_tuneup", settings) == [3, 6, 12, 24, None]
     assert real_pre_months("hot_t13", MatrixSettings(pre_months=(12,))) == [12, None]
 
 
@@ -189,7 +193,7 @@ def test_each_real_site_holds_its_longest_pre_length() -> None:
         changeover = pd.Timestamp(timing)
         blocked = [
             pd.Timestamp(e["end"])
-            for e in campaign.declaration["exclusions"]
+            for e in campaign.declaration.get("exclusions", [])
             if e["turbine"] == "ALL" and pd.Timestamp(e["end"]) < changeover
         ]
         usable_from = max([campaign.start, *blocked])
@@ -232,7 +236,7 @@ def test_cells_run_most_expensive_first() -> None:
 
 def test_the_small_and_big_sizes() -> None:
     small, big = matrix_cells(SIZES["small"].settings), matrix_cells(SIZES["big"].settings)
-    assert (len(small), len(big)) == (40, 4390)
+    assert (len(small), len(big)) == (42, 4398)
     assert {c.arm for c in big} == {"main", "small", "real"}
     assert sum(c.arm == "main" for c in big) == sum(c.arm == "small" for c in big)
     assert "hot" not in {c.site for c in small}
@@ -286,10 +290,10 @@ def test_plan_projects_cpu_hours_wall_time_and_memory() -> None:
 def test_the_plan_command_prints_a_sizes_projection(capsys: pytest.CaptureFixture[str]) -> None:
     driver.main(["plan", "--size", "small"])
     out = capsys.readouterr().out
-    assert "40 cells" in out
+    assert "42 cells" in out
     assert "on 3 worker(s)" in out
     driver.main(["plan", "--size", "big", "--workers", "8"])
-    assert "4390 cells" in capsys.readouterr().out
+    assert "4398 cells" in capsys.readouterr().out
 
 
 def test_run_and_download_need_a_size() -> None:
