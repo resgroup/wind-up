@@ -10,6 +10,7 @@ import pandas as pd
 import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
 from benchmarking.campaigns.plans import changed_works, data_extents, extent_around_works, other_works, plans_for
+from benchmarking.harness.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
 from benchmarking.synthetic import HOT_COLUMNS
 from tests.benchmarking.campaigns.timeline_fixtures import DATA_END, hourly_scada, staggered_spec, utc
 from wind_up.analysis_period import PlanSettings
@@ -44,6 +45,15 @@ def test_extents_run_from_the_first_to_after_the_last_finite_power() -> None:
     extents = data_extents(scada, turbine_col=HOT_COLUMNS.turbine, power_col=HOT_COLUMNS.active_power)
     assert extents["T3"] == (utc("2019-01-01"), DATA_END)
     assert extents["T0"][0] == utc("2018-01-01")
+
+
+def test_a_record_labelled_missing_does_not_extend_an_extent() -> None:
+    scada = hourly_scada(["T0", "T3"])
+    scada[STATE_COL] = NORMAL_OPERATION
+    early = (scada[HOT_COLUMNS.turbine] == "T3") & (scada.index < utc("2019-01-01"))
+    scada.loc[early, STATE_COL] = MISSING
+    extents = data_extents(scada, turbine_col=HOT_COLUMNS.turbine, power_col=HOT_COLUMNS.active_power)
+    assert extents["T3"] == (utc("2019-01-01"), DATA_END)
 
 
 def test_every_upgraded_turbine_gets_a_plan() -> None:

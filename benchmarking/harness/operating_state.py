@@ -5,15 +5,17 @@ normal operation. A caller adds site states through a label column and a table g
 validity; it may also write a generic state's name into that column. The first matching rule wins:
 
 1. missing: active power or the availability counter is not finite or out of range, the record is
-   stuck, the counter reads zero while the turbine generates above :data:`COUNTER_CONTRADICTION_RATED`
-   of rated (one of the two is wrong, and which one is unknown), or the caller labelled it missing;
+   stuck (compared with the turbine's last record not missing for another reason), the counter reads
+   zero while the turbine generates above :data:`COUNTER_CONTRADICTION_RATED` of rated (one of the two
+   is wrong, and which one is unknown), or the caller labelled it missing;
 2. full downtime: the counter is at or below 0, or the caller labelled it so;
 3. partial downtime: the counter is between 0 and a full period, the rotor is parked, or the caller
    labelled it so;
 4. the caller's site label;
 5. normal operation.
 
-:func:`label_operating_states` adds the state and its validity columns to a long SCADA frame.
+:func:`fill_grid` gives every turbine a row at every timestamp, so a record labelled missing reads the same as
+one never provided. :func:`label_operating_states` adds the state and its validity columns to a long SCADA frame.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
+    import numpy.typing as npt
+
     from benchmarking.synthetic import ColumnSchema
 
 # Output columns.
@@ -133,6 +137,38 @@ class OperatingStateConfig:
         return {**GENERIC_STATES, **self.labels}
 
 
+def fill_grid(scada_df: pd.DataFrame, *, turbine_col: str, timebase: pd.Timedelta) -> pd.DataFrame:
+    """Return ``scada_df`` with a row for every turbine at every timestamp, ordered by timestamp then turbine.
+
+    The timestamps run from the first to the last, ``timebase`` apart, with any off the grid kept. The added rows
+    carry the turbine and NaN everywhere else.
+    """
+    if scada_df.empty:
+        return scada_df
+    index = pd.DatetimeIndex(scada_df.index)
+    grid = pd.date_range(index.min(), index.max(), freq=timebase).union(index.unique())
+    turbines = pd.unique(scada_df[turbine_col].to_numpy())
+    present = pd.MultiIndex.from_arrays([index, scada_df[turbine_col].to_numpy()])
+    absent = pd.MultiIndex.from_product([grid, turbines]).difference(present)
+    filled = scada_df
+    if len(absent):
+        rows = scada_df.iloc[:0].reindex(pd.RangeIndex(len(absent)))
+        rows[turbine_col] = absent.get_level_values(1)
+        rows.index = absent.get_level_values(0).rename(scada_df.index.name)
+        filled = pd.concat([scada_df, rows])
+    order = np.lexsort((filled[turbine_col].astype(str).to_numpy(), pd.DatetimeIndex(filled.index).asi8))
+    if (order == np.arange(len(filled))).all():
+        return filled
+    return filled.iloc[order]
+
+
+def not_missing(scada_df: pd.DataFrame) -> npt.NDArray[np.bool_]:
+    """Return True on each record not labelled missing; every record of a frame without the state column."""
+    if STATE_COL not in scada_df.columns:
+        return np.ones(len(scada_df), dtype=bool)
+    return scada_df[STATE_COL].to_numpy() != MISSING
+
+
 def signal_columns(scada_df: pd.DataFrame, *, columns: ColumnSchema) -> list[str]:
     """Return the measured-signal columns the schema names and ``scada_df`` carries."""
     names = (getattr(columns, role) for role in _SIGNAL_ROLES)
@@ -207,9 +243,11 @@ def label_operating_states(
         | (counter <= counter_lo)
         | (counter >= counter_hi)
         | counter_contradicts_power(power=power, counter=counter, rated_power_kw=rated_power_kw)
-        | stuck_records(scada_df, columns=columns).to_numpy()
         | (site == MISSING)
     )
+    signals = signal_columns(scada_df, columns=columns)
+    unmissing = scada_df.assign(**{c: scada_df[c].where(~missing) for c in signals})
+    missing |= stuck_records(unmissing, columns=columns).to_numpy()
     full_downtime = (counter <= 0) | (site == FULL_DOWNTIME)
     partial_downtime = ((counter > 0) & (counter < full)) | _parked(scada_df, columns=columns, config=config)
     partial_downtime |= site == PARTIAL_DOWNTIME

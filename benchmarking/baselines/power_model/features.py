@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import pvlib
 
+from benchmarking.harness.operating_state import not_missing
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
 if TYPE_CHECKING:
@@ -215,7 +216,8 @@ def reference_mean_wind_speed(
 ) -> pd.Series:
     """Mean wind speed across the reference pool on the unique index, for the diagnostics only.
 
-    This is **not** a model feature. Averaged over ``references`` only, so it stays upgrade-invariant.
+    This is **not** a model feature. Averaged over ``references`` only, so it stays upgrade-invariant. A record
+    labelled missing counts as absent.
     """
     index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
     refs = _checked_references(references)
@@ -223,7 +225,7 @@ def reference_mean_wind_speed(
         return pd.Series(np.nan, index=index)
     cols = []
     for r in refs:
-        rows = scada_df[scada_df[turbine_col] == r]
+        rows = scada_df[(scada_df[turbine_col] == r).to_numpy() & not_missing(scada_df)]
         series = pd.Series(rows[wind_speed_col].to_numpy(dtype=float), index=pd.DatetimeIndex(rows.index))
         cols.append(series[~series.index.duplicated()].reindex(index))
     return pd.concat(cols, axis=1).mean(axis=1)

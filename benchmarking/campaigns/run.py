@@ -29,6 +29,7 @@ from benchmarking.campaigns.data_screen import (
 from benchmarking.campaigns.plans import CampaignPlans, plans_for, treated_activity
 from benchmarking.harness import MethodConfigurationError, MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
+from benchmarking.harness.operating_state import not_missing
 from wind_up import TurbineUplift, farm_uplift
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.analysis_warnings import AnalysisWarning, ranked
@@ -490,8 +491,8 @@ def _stack(frames: list[pd.DataFrame], *, lead: Sequence[str]) -> pd.DataFrame:
 def _actual_energy(rows: pd.DataFrame, *, columns: ColumnSchema, mask: npt.NDArray[np.bool_]) -> tuple[float, int]:
     """Return the energy one turbine actually produced over its upgraded records.
 
-    Finite records only, with the record count that sum covers.
+    Finite records not labelled missing only, with the record count that sum covers.
     """
     power = rows[columns.active_power].to_numpy(dtype=float)
-    selected = mask & np.isfinite(power)
+    selected = mask & np.isfinite(power) & not_missing(rows)
     return float(power[selected].sum()), int(selected.sum())

@@ -118,12 +118,16 @@ The states distinguished in this example are:
   full period, or the rotor is parked (pitch beyond a threshold declared for the turbine type);
 - vi. **full downtime**: the availability counter is zero;
 - vii. **missing**: the active power or the availability counter is absent or out of range, or stuck
-  (unchanged from the turbine's own previous record while the wind is not calm), which indicates
-  frozen telemetry, or the counter reads zero while power is above 5 % of rated. One of those two
+  (unchanged from the turbine's own previous record not missing for another reason, while the wind is
+  not calm), which indicates frozen telemetry, or the counter reads zero while power is above 5 % of rated. One of those two
   signals is then wrong and which one is unknown (a counter glitch and a stuck power channel look the
   same), so the record is trusted for nothing. The calm test
   reads the nacelle anemometer: this is the one exception to the rule that the anemometer does not
   define a state, because no upgrade-invariant wind signal exists before step 3.
+
+Before labelling, every turbine is given a record at every timestamp of the record, the ones not
+provided with no signals, so they are missing. From here on a record labelled missing is treated
+exactly as a record that was never provided: no step reads its signals.
 
 Data records are flagged as valid or not for each step of the analysis separately, because an
 operating state can be valid for some purposes but not for others. The mapping in this example is:

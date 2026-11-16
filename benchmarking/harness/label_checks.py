@@ -5,9 +5,10 @@ still reports a confident number: on a real campaign, a test turbine's eight-day
 normal operation moved the farm headline by 4 pp. These checks read power, rotor speed and pitch -- to
 check the labels, never to make them -- and warn per turbine when a mislabel is large enough to matter:
 
-* :data:`PARKED_AS_NORMAL` -- normal operation with the rotor at rest and power about zero in wind that
-  would turn it. The availability counter can read available through a stop it does not account for
-  (a licensing, grid or owner stop); a parked-pitch threshold or a site label fixes it.
+* :data:`PARKED_AS_NORMAL` -- normal operation with the rotor at rest (against the rotor speed of the records
+  not labelled missing) and power about zero in wind that would turn it. The availability counter can read
+  available through a stop it does not account for (a licensing, grid or owner stop); a parked-pitch
+  threshold or a site label fixes it.
 * :data:`COUNTER_CONTRADICTS_POWER` -- the counter reads zero while the turbine generates. wind-up labels
   these records missing, since one of the two signals is wrong; many of them mean the counter, or the
   power signal, is unreliable on that turbine.
@@ -24,7 +25,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.operating_state import NORMAL_OPERATION, STATE_COL, counter_contradicts_power
+from benchmarking.harness.operating_state import (
+    NORMAL_OPERATION,
+    STATE_COL,
+    counter_contradicts_power,
+    not_missing,
+)
 
 if TYPE_CHECKING:
     from benchmarking.synthetic import ColumnSchema
@@ -125,7 +131,8 @@ def _parked_as_normal(labelled: pd.DataFrame, *, columns: ColumnSchema, rated_po
     """Return True on normal operation with the rotor at rest and power about zero in turning wind."""
     rpm = labelled[columns.gen_rpm].to_numpy(dtype=float)
     turbines = labelled[columns.turbine].astype(str)
-    running_rpm = labelled[columns.gen_rpm].groupby(turbines.to_numpy()).transform(lambda s: s.quantile(0.99))
+    provided = labelled[columns.gen_rpm].where(not_missing(labelled))
+    running_rpm = provided.groupby(turbines.to_numpy()).transform(lambda s: s.quantile(0.99))
     with np.errstate(invalid="ignore"):
         return (
             (labelled[STATE_COL].to_numpy() == NORMAL_OPERATION)

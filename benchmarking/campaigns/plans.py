@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from benchmarking.harness.operating_state import not_missing
 from benchmarking.harness.wind_rose import era5_rose, rose_label
 from benchmarking.synthetic import treated_mask
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, PlanSettings, plan_analysis
@@ -26,10 +27,10 @@ logger = logging.getLogger(__name__)
 
 
 def data_extents(scada_df: pd.DataFrame, *, turbine_col: str, power_col: str) -> dict[str, Window]:
-    """Each turbine's first finite power and the end of its last, one timebase after it."""
+    """Each turbine's first finite power not labelled missing and the end of its last, one timebase after it."""
     index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
     timebase = pd.Timedelta(np.median(np.diff(index.to_numpy()))) if len(index) > 1 else pd.Timedelta(minutes=10)
-    finite = scada_df[np.isfinite(scada_df[power_col].to_numpy(dtype=float))]
+    finite = scada_df[np.isfinite(scada_df[power_col].to_numpy(dtype=float)) & not_missing(scada_df)]
     grouped = pd.Series(finite.index, index=finite[turbine_col].astype(str).to_numpy()).groupby(level=0)
     return {
         str(t): (first, last + timebase)
