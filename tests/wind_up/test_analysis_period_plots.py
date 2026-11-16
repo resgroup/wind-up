@@ -41,11 +41,28 @@ def _inputs() -> dict:
     }
 
 
+def _valid() -> pd.DataFrame:
+    """Hourly validity: every turbine valid over its extent, outside the exclusions."""
+    inputs = _inputs()
+    index = pd.date_range(utc("2018-01-01"), utc("2021-01-01"), freq="1h", inclusive="left")
+    valid = pd.DataFrame(data=True, index=index, columns=names())
+    for who, start, end in inputs["exclusions"]:
+        inside = (index >= start) & (index < end)
+        for name in names() if who is None else [who]:
+            valid[name] &= ~inside
+    return valid
+
+
 class TestPlotAnalysisTimeline:
     def test_draws_and_saves_a_plan(self, tmp_path: Path) -> None:
         layout, inputs = _layout(), _inputs()
         plan = plan_analysis(
-            layout, turbine="T0", candidates=names(), settings=PlanSettings(min_side=1 * MONTH), **inputs
+            layout,
+            turbine="T0",
+            works=inputs["works"],
+            valid=_valid(),
+            candidates=names(),
+            settings=PlanSettings(min_side=1 * MONTH),
         )
         figure = plot_analysis_timeline("T0", layout=layout, plan=plan, out_dir=tmp_path, **inputs)
         try:

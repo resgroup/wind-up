@@ -25,6 +25,7 @@ from benchmarking.harness.record_selection import ChangedInterval
 from benchmarking.harness.waking import DIRECTION_COL, UPWIND_COL
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec, utc
+from wind_up.analysis_period import PlanSettings
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -53,9 +54,13 @@ def _scada() -> pd.DataFrame:
     )
 
 
+# Plans that keep a reference however little of the span it is valid over, so the screen is what judges it.
+ANY_SHARE = PlanSettings(reference_share=0.0)
+
+
 def _plan(scada: pd.DataFrame) -> AnalysisPlan:
-    """T0's plan: power references T1-T4, reserve T5."""
-    plan = plans_for(staggered_spec(), scada, columns=HOT_COLUMNS).plans["T0"]
+    """T0's plan: power references T1-T4, reserve T5, whatever share of the span each is valid over."""
+    plan = plans_for(staggered_spec(), scada, columns=HOT_COLUMNS, settings=ANY_SHARE).plans["T0"]
     assert plan.power_references == ("T1", "T2", "T3", "T4")
     assert plan.reserves == ("T5",)
     return plan

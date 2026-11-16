@@ -108,10 +108,14 @@ class TestAContextFromAPlan:
         _, _, context = self.build(scada=hourly_scada([*[f"T{i}" for i in range(7)], "T9"]))
         assert list(context.valid_for_uplift.columns) == [f"T{i}" for i in range(7)] + ["T9"]
 
-    def test_validity_comes_from_the_specs_usable_mask(self) -> None:
+    def test_validity_masks_works_and_leaves_exclusions_to_the_labels(self) -> None:
         _, _, context = self.build()
-        held = context.valid_for_uplift["T4"]
-        inside = (held.index >= pd.Timestamp("2019-02-01", tz="UTC")) & (
-            held.index < pd.Timestamp("2019-02-05", tz="UTC")
+        valid = context.valid_for_uplift
+        excluded = (valid.index >= pd.Timestamp("2019-02-01", tz="UTC")) & (
+            valid.index < pd.Timestamp("2019-02-05", tz="UTC")
         )
-        assert not held[inside].any()
+        assert valid.loc[excluded, "T4"].all()
+        works = (valid.index >= pd.Timestamp("2019-06-01", tz="UTC")) & (
+            valid.index < pd.Timestamp("2019-06-06", tz="UTC")
+        )
+        assert not valid.loc[works, "T0"].any()

@@ -24,14 +24,14 @@ from wind_up.layout import Layout
 from wind_up.wake_reach import reach_from_uplift
 
 if TYPE_CHECKING:
-    from benchmarking.campaigns.declaration import Exclusion, Window
+    from benchmarking.campaigns.declaration import Exclusion, LabelOverride, Window
     from benchmarking.synthetic import ColumnSchema
 
 # The schemas a declaration may name. Inline schema definition is not supported: a source's
 # column names belong to its adapter, not to a campaign.
 SCHEMAS: dict[str, ColumnSchema] = {"hill_of_towie": HOT_COLUMNS, "greenbyte": GREENBYTE_COLUMNS}
 
-# How a declaration names a farm-wide exclusion.
+# How a declaration names a farm-wide exclusion or label override.
 ALL_TURBINES = "ALL"
 PER_TURBINE_PERIOD = "chosen per upgraded turbine"
 
@@ -46,6 +46,8 @@ _STATE_VALIDITY_KEYS = ("northing", "waking", "uplift")
 _TIMESTAMP_KEYS = ("convention", "time_zone")
 _SITE_KEYS = ("offshore",)
 _UPGRADE_KEYS = ("expected_uplift", "wake_reach_d")
+_EXCLUSION_KEYS = ("turbine", "start", "end")
+_OVERRIDE_KEYS = ("turbine", "start", "end", "state")
 # The works table's optional per-row reach columns, matched by prefix.
 EXPECTED_UPLIFT_PREFIX = "Expected uplift"
 WAKE_REACH_PREFIX = "Wake reach"
@@ -154,6 +156,11 @@ class Declaration:
                 {"turbine": ALL_TURBINES if who is None else who, "start": str(s), "end": str(e)}
                 for who, s, e in spec.exclusions
             ]
+        if spec.label_overrides:
+            resolved["label_overrides"] = [
+                {"turbine": ALL_TURBINES if who is None else who, "start": str(s), "end": str(e), "state": state}
+                for who, s, e, state in spec.label_overrides
+            ]
         return resolved
 
 
@@ -203,6 +210,9 @@ def load_declaration(path: str | Path) -> Declaration:
     _check_known(works, coords=coords, what="the works table")
     exclusions = _exclusions(raw.get("exclusions") or [])
     _check_known({w: None for w, _, _ in exclusions if w is not None}, coords=coords, what="the exclusions")
+    operating_state = operating_state_config(raw.get("operating_state"))
+    overrides = _label_overrides(raw.get("label_overrides") or [], states=set(operating_state.validity()))
+    _check_known({w: None for w, *_ in overrides if w is not None}, coords=coords, what="the label overrides")
     timing = _timing(_section(raw, "timing"), has_works=bool(works))
     if isinstance(timing, pd.Timestamp):
         _check_works_clear_of(timing, works={w: works.get(w, []) for w in upgraded})
@@ -220,6 +230,7 @@ def load_declaration(path: str | Path) -> Declaration:
         turbine_col=columns.turbine,
         works=works,
         exclusions=exclusions,
+        label_overrides=overrides,
         references_declared=bool(declared_references),
         wake_reach_d=wake_reach_d,
         works_reach_d=works_reach_d,
@@ -230,7 +241,7 @@ def load_declaration(path: str | Path) -> Declaration:
         columns=columns,
         scada_path=scada_path,
         centroid=centroid(coords),
-        operating_state=operating_state_config(raw.get("operating_state")),
+        operating_state=operating_state,
         timestamps=_timestamps(data.get("timestamps")),
         offshore=offshore,
         expected_uplift=expected_uplift,
@@ -345,13 +356,56 @@ def _exclusions(entries: list) -> list[Exclusion]:
     """Read the declared exclusions; ``ALL`` is farm-wide."""
     exclusions: list[Exclusion] = []
     for entry in entries:
-        turbine = str(entry["turbine"])
-        start, end = _timestamp(entry["start"]), _timestamp(entry["end"])
-        if end <= start:
-            msg = f"the exclusion of {turbine} ends at {end}, not after its start {start}"
+        if not isinstance(entry, dict) or set(map(str, entry)) != set(_EXCLUSION_KEYS):
+            msg = (
+                f"an exclusion has exactly the keys {list(_EXCLUSION_KEYS)}, got {entry!r}; a period whose data "
+                f"is right but whose state the labels miss is declared under label_overrides"
+            )
             raise ValueError(msg)
-        exclusions.append((None if turbine == ALL_TURBINES else turbine, start, end))
+        turbine, start, end = _window_entry(entry, what="exclusion")
+        exclusions.append((turbine, start, end))
     return exclusions
+
+
+def _label_overrides(entries: list, *, states: set[str]) -> list[LabelOverride]:
+    """Read the declared label overrides; ``ALL`` is farm-wide.
+
+    Raises on a state ``states`` does not define, and on two overrides overlapping on one turbine.
+    """
+    overrides: list[LabelOverride] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(map(str, entry)) != set(_OVERRIDE_KEYS):
+            msg = f"a label override has exactly the keys {list(_OVERRIDE_KEYS)}, got {entry!r}"
+            raise ValueError(msg)
+        state = str(entry["state"])
+        if state not in states:
+            msg = (
+                f"the label override state {state!r} is not defined; use a generic state or a label declared "
+                f"under operating_state.labels: {sorted(states)}"
+            )
+            raise ValueError(msg)
+        turbine, start, end = _window_entry(entry, what="label override")
+        overrides.append((turbine, start, end, state))
+    for i, (who, start, end, _) in enumerate(overrides):
+        for other, other_start, other_end, _ in overrides[i + 1 :]:
+            if (who is None or other is None or who == other) and start < other_end and other_start < end:
+                names = ", ".join(ALL_TURBINES if w is None else w for w in dict.fromkeys([who, other]))
+                msg = (
+                    f"the label overrides of {names} overlap ({start}..{end} and {other_start}..{other_end}); "
+                    f"two overrides of one turbine may not cover the same record"
+                )
+                raise ValueError(msg)
+    return overrides
+
+
+def _window_entry(entry: dict, *, what: str) -> tuple[str | None, pd.Timestamp, pd.Timestamp]:
+    """Read a declared ``{turbine, start, end}`` window, end exclusive; ``ALL`` is farm-wide."""
+    turbine = str(entry["turbine"])
+    start, end = _timestamp(entry["start"]), _timestamp(entry["end"])
+    if end <= start:
+        msg = f"the {what} of {turbine} ends at {end}, not after its start {start}"
+        raise ValueError(msg)
+    return None if turbine == ALL_TURBINES else turbine, start, end
 
 
 def _span(block: dict, *, what: str) -> Window:

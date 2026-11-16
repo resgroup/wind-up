@@ -42,38 +42,31 @@ with a warning, where it reaches beyond the SCADA record), and otherwise the spa
 
 Each upgraded turbine gets its own span and its own reference set, because a staggered rollout
 means every turbine's usable window is different. The span and the power references are chosen
-together from the works windows, the data extents and the exclusions, never from anything measured:
-a candidate is eligible when it has data over the whole span and no works inside it, and the span
+together from the works windows and the records each turbine is valid for uplift over, never from anything
+measured: a candidate is eligible when it is valid for uplift over at least 50 % of the span and has no works
+inside it, and the span
 is the one that keeps the nearest candidates eligible with the longest sides. A turbine no viable
 span can be found for is reported under `unplanned` and left out of the farm headline. The rules,
 the ranking and the settings are in [how the analysis period is chosen](analysis-period-and-reference-selection.md).
 
-## Exclusions and held-back rows
+## Exclusions, label overrides and works windows
 
-Three different things remove a turbine's data, and wind-up distinguishes them:
+Three declarations change what a turbine's records are used for:
 
 | kind | effect | stays in the frame |
 |---|---|---|
 | the turbine's own **works window** | its data is never usable | no |
-| a **farm-wide** exclusion | nobody's data is usable | no |
-| the turbine's **own** exclusion | its data is not usable for uplift | **yes**, marked invalid |
+| an **exclusion**, the turbine's own or farm-wide | its records are labelled missing: the data is wrong | yes |
+| a **label override**, the turbine's own or farm-wide | its records take the named state, with that state's validity | yes |
 
-Exclusions apply to a toggle campaign in the same way; the method describes them under
-[step 1](v1/method.md#1-identify-changes-to-the-wind-farm) and [step 7](v1/method.md#7-choose-the-before-and-after-periods).
+Step 2 applies the exclusions and label overrides to the operating-state labels (an exclusion wins over an
+override); from then on every step reads the labels. Northing does not learn from an excluded record, the
+waking rules count the turbine as missing over it, and the uplift record selection drops it. They apply to
+a toggle campaign in the same way; the method describes them under
+[step 1](v1/method.md#1-identify-changes-to-the-wind-farm) and [step 2](v1/method.md#2-derive-operational-state-and-data-validity).
 
-The third is what `held_back_mask` picks out. Those rows stay in the frame so that the waking
-scenarios can still read *whether the turbine was running* over them, even though its power may not
-be trusted.
-They carry no north-calibrated direction, because the shared northing step runs on the usable rows
-only.
-
-Exclusions also shorten the sides: `pre` and `post` in a plan are calendar time **minus** the
-masked time inside them, which is why a plan's `pre_days` can be well short of the span it covers.
-
-### What a reference carries over its own exclusion
-
-Nothing: its power and direction are missing across the exclusion, and the record is not valid for
-uplift. Its waking state still reaches the other turbines' waking scenarios (method step 5).
+The sides of a plan, `pre` and `post`, are the test turbine's time valid for uplift in them, which is why a
+plan's `pre_days` can be well short of the span it covers.
 
 ## The parts of the core method that are prepost-only
 

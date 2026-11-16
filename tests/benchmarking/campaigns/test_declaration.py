@@ -274,34 +274,32 @@ class TestTheMasks:
         assert not mask[index < utc("2020-03-06")].any()
         assert mask[index >= utc("2020-03-06")].all()
 
-    def test_a_turbines_own_exclusion_is_masked_but_held_back(self) -> None:
+    def test_an_exclusion_is_left_to_the_labels(self) -> None:
+        index = hours("2020-02-01", "2020-02-04")
+        assert staggered().spec().usable_mask("T4", index).all()
+
+    def test_a_turbines_own_exclusion_is_its_excluded_mask(self) -> None:
         index = hours("2020-02-01", "2020-02-04")
         spec = staggered().spec()
         inside = index < utc("2020-02-03")
-        assert not spec.usable_mask("T4", index)[inside].any()
-        assert spec.held_back_mask("T4", index)[inside].all()
-        assert not spec.held_back_mask("T4", index)[~inside].any()
+        assert (spec.excluded_mask("T4", index) == inside).all()
+        assert not spec.excluded_mask("T3", index).any()
 
-    def test_another_turbines_exclusion_is_not_its_own(self) -> None:
-        index = hours("2020-02-01", "2020-02-04")
-        assert staggered().spec().usable_mask("T3", index).all()
-
-    def test_a_farm_wide_exclusion_masks_everyone_and_holds_nothing_back(self) -> None:
+    def test_a_farm_wide_exclusion_is_everyones(self) -> None:
         index = hours("2020-04-10", "2020-04-11")
         spec = staggered().spec()
         for wtg in ("T1", "T3", "T5"):
-            assert not spec.usable_mask(wtg, index).any()
-            assert not spec.held_back_mask(wtg, index).any()
+            assert spec.excluded_mask(wtg, index).all()
 
     def test_the_end_of_a_window_is_exclusive(self) -> None:
         index = pd.DatetimeIndex([utc("2020-02-03")])
-        assert staggered().spec().usable_mask("T4", index).all()
+        assert not staggered().spec().excluded_mask("T4", index).any()
 
     def test_a_flat_campaign_masks_nothing(self) -> None:
         index = hours("2020-01-01", "2020-07-01")
         spec = campaign().spec()
         assert spec.usable_mask("T1", index).all()
-        assert not spec.held_back_mask("T1", index).any()
+        assert not spec.excluded_mask("T1", index).any()
 
 
 def test_generate_injects_each_turbine_from_its_works_end() -> None:

@@ -9,10 +9,15 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.operating_state import not_missing
+from benchmarking.harness.operating_state import (
+    VALID_UPLIFT_COL,
+    OperatingStateConfig,
+    apply_declarations,
+    label_operating_states,
+)
 from benchmarking.harness.wind_rose import era5_rose, rose_label
 from benchmarking.synthetic import treated_mask
-from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, PlanSettings, plan_analysis
+from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, PlanSettings, plan_analysis, valid_extents
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -26,18 +31,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def data_extents(scada_df: pd.DataFrame, *, turbine_col: str, power_col: str) -> dict[str, Window]:
-    """Each turbine's first finite power not labelled missing and the end of its last, one timebase after it."""
-    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
-    timebase = pd.Timedelta(np.median(np.diff(index.to_numpy()))) if len(index) > 1 else pd.Timedelta(minutes=10)
-    finite = scada_df[np.isfinite(scada_df[power_col].to_numpy(dtype=float)) & not_missing(scada_df)]
-    grouped = pd.Series(finite.index, index=finite[turbine_col].astype(str).to_numpy()).groupby(level=0)
-    return {
-        str(t): (first, last + timebase)
-        for t, first, last in zip(grouped.min().index, grouped.min(), grouped.max(), strict=True)
-    }
-
-
 @dataclass(frozen=True)
 class CampaignPlans:
     """Each upgraded turbine's plan, and every turbine the selector could not plan with its reason.
@@ -45,7 +38,7 @@ class CampaignPlans:
     :param plans: upgraded turbine to its analysis plan
     :param unplanned: upgraded turbine to the selector's reason for giving up on it
     :param works: the works windows the plans were chosen from, the upgraded turbines' included
-    :param extents: each turbine's data extent the plans were chosen from
+    :param extents: each turbine's first to last record valid for uplift
     :param warnings: per upgraded turbine, the turbines with an indicator of an undeclared change
         inside its periods (itself included), each with the warning
     """
@@ -72,6 +65,40 @@ def with_wake_ranking(
         wake_reach_d=spec.wake_reach_d,
         rose=era5_rose(era5_df),
         rose_source=rose_label(era5_df, source=source),
+    )
+
+
+def uplift_validity(scada_df: pd.DataFrame, *, turbine_col: str) -> pd.DataFrame:
+    """Timestamps x turbines from a labelled long frame: True where the record is valid for uplift.
+
+    Every timestamp of the frame is a row; a turbine without a record there is False.
+    """
+    index = pd.DatetimeIndex(pd.unique(scada_df.index)).sort_values()
+    rows = scada_df[[turbine_col, VALID_UPLIFT_COL]]
+    rows = rows[~pd.MultiIndex.from_arrays([rows.index, rows[turbine_col].astype(str)]).duplicated()]
+    wide = rows.pivot_table(index=rows.index, columns=turbine_col, values=VALID_UPLIFT_COL, aggfunc="first")
+    return wide.reindex(index).fillna(value=False).astype(bool).rename(columns=str)
+
+
+def labelled_scada(spec: CampaignSpec, frame: pd.DataFrame, *, columns: ColumnSchema) -> pd.DataFrame:
+    """Return ``frame`` with the step 2 labels: as given when it has them, else the generic states.
+
+    A frame labelled here takes the campaign's label overrides and exclusions too.
+    """
+    if VALID_UPLIFT_COL in frame.columns:
+        return frame
+    index = pd.DatetimeIndex(frame.index.unique()).sort_values()
+    timebase = pd.Timedelta(np.median(np.diff(index.to_numpy()))) if len(index) > 1 else pd.Timedelta(minutes=10)
+    config = OperatingStateConfig()
+    labelled = label_operating_states(
+        frame, columns=columns, config=config, timebase=timebase, rated_power_kw=spec.rated_power_kw
+    )
+    return apply_declarations(
+        labelled,
+        turbine_col=spec.turbine_col,
+        config=config,
+        exclusions=spec.exclusions,
+        overrides=spec.label_overrides,
     )
 
 
@@ -145,13 +172,16 @@ def plans_for(
     their works overlap it.
 
     :param spec: the campaign's public facts
-    :param scada_df: long-format SCADA; data extents are read from its finite power
+    :param scada_df: long-format SCADA with the step 2 labels, or labelled here with the generic states; each
+        side's length and each reference's coverage are read from its records valid for uplift
     :param columns: the schema ``scada_df`` is keyed by
     :param settings: how spans and references are chosen
     :param possible_changes: each turbine's indicators of an undeclared change; one inside a plan's
         periods is reported as a warning against that turbine
     """
-    extents = data_extents(scada_df, turbine_col=spec.turbine_col, power_col=columns.active_power)
+    valid = uplift_validity(labelled_scada(spec, scada_df, columns=columns), turbine_col=spec.turbine_col)
+    extents = valid_extents(valid)
+    record = _record(valid)
     works = campaign_works(spec)
     excluded = set(spec.excluded_turbines)
     if spec.references_declared:
@@ -165,19 +195,20 @@ def plans_for(
     unplanned: dict[str, str] = {}
     warnings: dict[str, dict[str, str]] = {}
     for turbine in sorted(spec.upgraded_turbines):
-        span = _within_record(spec.period_for(turbine), extents=extents, turbine=turbine)
+        span = _within_record(spec.period_for(turbine), record=record, turbine=turbine)
         others = other_works(spec, turbine)
-        # The test turbine's own extent is cut so that neither period holds another of its changes.
-        own_extents = dict(extents)
+        # The test turbine's own records are cut so that neither period holds another of its changes.
+        own_valid = valid
         if others and turbine in extents:
-            own_extents[turbine] = extent_around_works(extents[turbine], upgrade=works[turbine][0], others=others)
+            first, last = extent_around_works(extents[turbine], upgrade=works[turbine][0], others=others)
+            own_valid = valid.copy()
+            own_valid[turbine] &= (valid.index >= first) & (valid.index < last)
         try:
             plan = plan_analysis(
                 spec.layout,
                 turbine=turbine,
                 works=works,
-                exclusions=spec.exclusions,
-                extents=own_extents,
+                valid=own_valid,
                 candidates=candidates,
                 span=span,
                 allow_works_overlap=candidates if spec.references_declared and span is not None else (),
@@ -211,16 +242,24 @@ def plans_for(
     return CampaignPlans(plans=plans, unplanned=unplanned, works=works, extents=extents, warnings=warnings)
 
 
-def _within_record(span: Window | None, *, extents: Mapping[str, Window], turbine: str) -> Window | None:
+def _record(valid: pd.DataFrame) -> Window | None:
+    """Return the SCADA record's first timestamp and the end of its last, one timebase after it."""
+    index = pd.DatetimeIndex(valid.index)
+    if index.empty:
+        return None
+    timebase = pd.Timedelta(np.median(np.diff(index.to_numpy()))) if len(index) > 1 else pd.Timedelta(minutes=10)
+    return index[0], index[-1] + timebase
+
+
+def _within_record(span: Window | None, *, record: Window | None, turbine: str) -> Window | None:
     """Return a declared span cut to the SCADA record, warning when it reached beyond it.
 
     No turbine has data beyond the record, so a span reaching past it would leave every turbine
     short of data over the whole span, and none a power reference.
     """
-    if span is None or not extents:
+    if span is None or record is None:
         return span
-    first = min(start for start, _ in extents.values())
-    last = max(end for _, end in extents.values())
+    first, last = record
     cut = (max(span[0], first), min(span[1], last))
     if cut != span:
         logger.warning(

@@ -14,6 +14,9 @@ validity; it may also write a generic state's name into that column. The first m
 4. the caller's site label;
 5. normal operation.
 
+A campaign's declarations then win over these rules: its label overrides first, then its exclusions, which
+label their records missing (:func:`apply_declarations`).
+
 :func:`fill_grid` gives every turbine a row at every timestamp, so a record labelled missing reads the same as
 one never provided. :func:`label_operating_states` adds the state and its validity columns to a long SCADA frame.
 """
@@ -27,6 +30,8 @@ import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import numpy.typing as npt
 
     from benchmarking.synthetic import ColumnSchema
@@ -258,10 +263,58 @@ def label_operating_states(
         default=NORMAL_OPERATION,
     ).astype(object)
 
+    return _with_states(scada_df.copy(), state=state, config=config)
+
+
+def apply_declarations(
+    labelled: pd.DataFrame,
+    *,
+    turbine_col: str,
+    config: OperatingStateConfig,
+    exclusions: Sequence[tuple[str | None, pd.Timestamp, pd.Timestamp]],
+    overrides: Sequence[tuple[str | None, pd.Timestamp, pd.Timestamp, str]],
+) -> pd.DataFrame:
+    """Return a copy of a labelled frame with a campaign's declarations applied over its labels.
+
+    Each label override's records take its state, then each exclusion's records are missing; the validity
+    columns follow. A window is ``(turbine, start, end)``, end exclusive, turbine None for every turbine.
+    Raises on an override state ``config`` does not define.
+    """
     validity = config.validity()
-    labelled = scada_df.copy()
+    unknown = sorted({state for *_, state in overrides} - set(validity))
+    if unknown:
+        msg = f"the label overrides name {unknown}, which are neither declared labels nor generic states"
+        raise ValueError(msg)
+    state = labelled[STATE_COL].to_numpy(dtype=object).copy()
+    for who, start, end, named in overrides:
+        state[declared_records(labelled, turbine_col=turbine_col, windows=[(who, start, end)])] = named
+    state[declared_records(labelled, turbine_col=turbine_col, windows=exclusions)] = MISSING
+    return _with_states(labelled.copy(), state=state, config=config)
+
+
+def declared_records(
+    scada_df: pd.DataFrame,
+    *,
+    turbine_col: str,
+    windows: Sequence[
+        tuple[str | None, pd.Timestamp, pd.Timestamp] | tuple[str | None, pd.Timestamp, pd.Timestamp, str]
+    ],
+) -> npt.NDArray[np.bool_]:
+    """Return True on each record inside a ``(turbine, start, end, ...)`` window of its turbine or of None."""
+    index = pd.DatetimeIndex(scada_df.index)
+    turbines = scada_df[turbine_col].astype(str).to_numpy()
+    inside = np.zeros(len(scada_df), dtype=bool)
+    for who, start, end, *_ in windows:
+        mine = np.asarray((index >= start) & (index < end))
+        inside |= mine if who is None else mine & (turbines == who)
+    return inside
+
+
+def _with_states(labelled: pd.DataFrame, *, state: np.ndarray, config: OperatingStateConfig) -> pd.DataFrame:
+    """Write ``state`` and its validity columns into ``labelled`` and return it."""
+    validity = config.validity()
     labelled[STATE_COL] = state
-    states = pd.Series(state, index=scada_df.index)
+    states = pd.Series(state, index=labelled.index)
     labelled[VALID_NORTHING_COL] = states.map({k: v.northing for k, v in validity.items()}).astype(bool)
     labelled[WAKING_STATE_COL] = states.map({k: v.waking for k, v in validity.items()})
     labelled[VALID_UPLIFT_COL] = states.map({k: v.uplift for k, v in validity.items()}).astype(bool)

@@ -152,7 +152,9 @@ class CampaignRunner:
             )
             synthetic = visible.synthetic_df
             test_index = pd.DatetimeIndex(synthetic.index[(synthetic[spec.turbine_col] == wtg).to_numpy()])
-            mask = truth_mask(replicate, window) & spec.usable_mask(wtg, test_index)
+            mask = (
+                truth_mask(replicate, window) & spec.usable_mask(wtg, test_index) & ~spec.excluded_mask(wtg, test_index)
+            )
             truth_masks[wtg] = mask
             truth = replicate.true_uplift(mask=mask).overall
             for (method_name, turbine), output in report.outputs.items():

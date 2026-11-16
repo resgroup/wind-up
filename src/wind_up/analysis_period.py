@@ -1,9 +1,10 @@
 """Choose each test turbine's analysis span and power references from the campaign timeline.
 
-A power reference must have data over the whole span and no works window inside it. A chosen span
-has at least ``min_references`` of them. Among the candidate spans, the pool rule comes first, then
-the shorter side, then post, then pre, then how many power references there are and how far the
-furthest is.
+Time is measured in records valid for uplift: a side's length is the test turbine's valid time on that
+side. A power reference must be valid for uplift over at least ``reference_share`` of the span's records
+and have no works window inside it. A chosen span has at least ``min_references`` of them. Among the
+candidate spans, the pool rule comes first, then the shorter side, then post, then pre, then how many power
+references there are and how far the furthest is.
 
 Candidates are ranked by distance, except that a candidate the test turbine is upwind of for more
 than ``demotion_share`` of the wind rose, within the wake effect reach, ranks behind every candidate
@@ -16,6 +17,7 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from wind_up.layout import NAME_COL, ROTOR_DIAMETER_COL, Layout
@@ -27,15 +29,10 @@ if TYPE_CHECKING:
     from wind_up.wake_reach import Rose
 
 Window = tuple[pd.Timestamp, pd.Timestamp]
-# (turbine, start, end), end exclusive; turbine None is farm-wide.
-Exclusion = tuple[str | None, pd.Timestamp, pd.Timestamp]
 
 MONTH = pd.Timedelta(days=365.25 / 12)
 
 TABLE_COLUMNS = ("turbine", "role", "distance_d", "cost_share", "reason")
-
-# Masked time can extend an edge into more masked time; a few steps settle any realistic timeline.
-_REACH_ITERATIONS = 20
 
 
 @dataclass(frozen=True)
@@ -46,6 +43,7 @@ class PlanSettings:
     :param pre_cap: the longest pre side sought
     :param side_cap: the longest short side, and the longest post side, sought
     :param min_side: the shortest side a chosen span may have
+    :param reference_share: the least share of a span's records a power reference must be valid for uplift over
     :param pool_size: how many nearest candidates the pool rule looks at
     :param pool_min_eligible: how many of those must be eligible and within the distance limit
     :param max_reference_distance_d: the furthest a power reference may be, in rotor diameters
@@ -60,6 +58,7 @@ class PlanSettings:
     pre_cap: pd.Timedelta = 24 * MONTH
     side_cap: pd.Timedelta = 12 * MONTH
     min_side: pd.Timedelta = 3 * MONTH
+    reference_share: float = 0.5
     pool_size: int = 4
     pool_min_eligible: int = REFERENCES_PER_TEST_TURBINE
     max_reference_distance_d: float = 20.0
@@ -81,8 +80,8 @@ class AnalysisPlan:
     :param start: the span's start
     :param end: the span's end, exclusive
     :param works: the test turbine's works window; no length for a shared changeover
-    :param pre: usable time before the works window
-    :param post: usable time after the works window
+    :param pre: the test turbine's time valid for uplift before the works window
+    :param post: the test turbine's time valid for uplift after the works window
     :param power_references: best-ranked first, then any forced in
     :param reserves: further eligible turbines within the distance limit, best-ranked first
     :param waking_only: every other turbine that is not a power reference, with the reason
@@ -183,17 +182,20 @@ def distances_in_diameters(layout: Layout, *, turbine: str) -> dict[str, float]:
     }
 
 
-def intervals_duration(windows: Sequence[Window], *, start: pd.Timestamp, end: pd.Timestamp) -> pd.Timedelta:
-    """Total length of the union of ``windows`` clipped to ``[start, end)``."""
-    clipped = sorted((max(s, start), min(e, end)) for s, e in windows if s < end and e > start)
-    total = pd.Timedelta(0)
-    cursor = start
-    for s, e in clipped:
-        begin = max(s, cursor)
-        if e > begin:
-            total += e - begin
-            cursor = e
-    return total
+def valid_extents(valid: pd.DataFrame) -> dict[str, Window]:
+    """Each turbine's first record valid for uplift and the end of its last, one timebase after it."""
+    timebase = _timebase(pd.DatetimeIndex(valid.index))
+    extents: dict[str, Window] = {}
+    for turbine in valid.columns:
+        rows = pd.DatetimeIndex(valid.index[valid[turbine].to_numpy(dtype=bool)])
+        if len(rows):
+            extents[str(turbine)] = (rows[0], rows[-1] + timebase)
+    return extents
+
+
+def _timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
+    """Return the median step of ``index``; ten minutes for fewer than two records."""
+    return pd.Timedelta(np.median(np.diff(index.to_numpy()))) if len(index) > 1 else pd.Timedelta(minutes=10)
 
 
 @dataclass(frozen=True)
@@ -218,8 +220,7 @@ class _Timeline:
         *,
         turbine: str,
         works: Mapping[str, Sequence[Window]],
-        exclusions: Sequence[Exclusion],
-        extents: Mapping[str, Window],
+        valid: pd.DataFrame,
         candidates: Sequence[str],
         settings: PlanSettings,
     ) -> None:
@@ -229,10 +230,16 @@ class _Timeline:
         self.layout = layout
         self.turbine = turbine
         self.works = works
-        self.extents = extents
         self.settings = settings
         self.a, self.b = works[turbine][0]
-        self.masked = [(s, e) for who, s, e in exclusions if who in (None, turbine)]
+        self.index = pd.DatetimeIndex(valid.index)
+        self.timebase = _timebase(self.index)
+        self.extents = valid_extents(valid)
+        if turbine not in self.extents:
+            msg = f"{turbine}: no record is valid for uplift"
+            raise ValueError(msg)
+        # Per turbine, the count of valid records before each position of the index.
+        self.counts = {str(t): np.concatenate([[0], np.cumsum(valid[t].to_numpy(dtype=bool))]) for t in valid.columns}
         self.distances_d = self.distances_from(turbine)
         offered = set(candidates) - {turbine}
         self.costs = self.wake_costs()
@@ -262,9 +269,24 @@ class _Timeline:
     def overlapping_works(self, other: str, *, start: pd.Timestamp, end: pd.Timestamp) -> Window | None:
         return next(((w0, w1) for w0, w1 in self.works.get(other, []) if w0 < end and w1 > start), None)
 
+    def position(self, stamp: pd.Timestamp) -> int:
+        return int(self.index.searchsorted(stamp, side="left"))
+
+    def valid_records(self, turbine: str, *, start: pd.Timestamp, end: pd.Timestamp) -> int:
+        counts = self.counts.get(turbine)
+        if counts is None or end <= start:
+            return 0
+        return int(counts[self.position(end)] - counts[self.position(start)])
+
+    def valid_time(self, turbine: str, *, start: pd.Timestamp, end: pd.Timestamp) -> pd.Timedelta:
+        return self.valid_records(turbine, start=start, end=end) * self.timebase
+
+    def valid_share(self, other: str, *, start: pd.Timestamp, end: pd.Timestamp) -> float:
+        records = self.position(end) - self.position(start)
+        return self.valid_records(other, start=start, end=end) / records if records > 0 else 0.0
+
     def has_data(self, other: str, *, start: pd.Timestamp, end: pd.Timestamp) -> bool:
-        extent = self.extents.get(other)
-        return extent is not None and extent[0] <= start and extent[1] >= end
+        return self.valid_share(other, start=start, end=end) >= self.settings.reference_share
 
     def eligible(self, other: str, *, start: pd.Timestamp, end: pd.Timestamp) -> bool:
         return (
@@ -279,7 +301,11 @@ class _Timeline:
         if clash is not None:
             return f"works {_day(clash[0])}..{_day(clash[1] - pd.Timedelta(days=1))} overlap the span"
         if not self.has_data(other, start=start, end=end):
-            return "no data over the whole span"
+            share = self.valid_share(other, start=start, end=end)
+            return (
+                f"valid for uplift over {share * 100:.0f} % of the span, under "
+                f"{self.settings.reference_share * 100:.0f} %"
+            )
         return f"beyond {self.settings.max_reference_distance_d:g} D ({self.distances_d[other]:.1f} D)"
 
     def usable_eligible(self, start: pd.Timestamp, end: pd.Timestamp) -> list[str]:
@@ -312,8 +338,8 @@ class _Timeline:
         return "; ".join(parts)
 
     def evaluate(self, start: pd.Timestamp, end: pd.Timestamp) -> _Option:
-        pre = (self.a - start) - intervals_duration(self.masked, start=start, end=self.a)
-        post = (end - self.b) - intervals_duration(self.masked, start=self.b, end=end)
+        pre = self.valid_time(self.turbine, start=start, end=self.a)
+        post = self.valid_time(self.turbine, start=self.b, end=end)
         references = tuple(self.usable_eligible(start, end)[: self.settings.k])
         worst = max((self.distances_d[r] for r in references), default=math.inf)
         return _Option(start, end, pre, post, references, self.pool_met(start, end), worst)
@@ -341,17 +367,20 @@ class _Timeline:
         )
 
     def reach(self, length: pd.Timedelta, *, before: bool) -> pd.Timestamp:
-        """Return the edge that gives ``length`` of usable time before the works window, or after it."""
-        edge = self.a - length if before else self.b + length
-        for _ in range(_REACH_ITERATIONS):
-            if before:
-                moved = self.a - length - intervals_duration(self.masked, start=edge, end=self.a)
-            else:
-                moved = self.b + length + intervals_duration(self.masked, start=self.b, end=edge)
-            if moved == edge:
-                break
-            edge = moved
-        return edge
+        """Return the nearest edge giving the test turbine ``length`` of valid time before the works window, or after.
+
+        The record's first or last edge when no edge gives that much.
+        """
+        counts = self.counts[self.turbine]
+        needed = math.ceil(length / self.timebase)
+        if before:
+            target = counts[self.position(self.a)] - needed
+            if target < 0:
+                return self.index[0]
+            return self.index[int(np.searchsorted(counts, target, side="right")) - 1]
+        target = counts[self.position(self.b)] + needed
+        at = int(np.searchsorted(counts, target, side="left"))
+        return self.index[at] if at < len(self.index) else self.index[-1] + self.timebase
 
     def key(self, option: _Option) -> tuple:
         cap = self.settings.side_cap
@@ -394,8 +423,7 @@ def plan_analysis(
     *,
     turbine: str,
     works: Mapping[str, Sequence[Window]],
-    exclusions: Sequence[Exclusion],
-    extents: Mapping[str, Window],
+    valid: pd.DataFrame,
     candidates: Sequence[str],
     span: Window | None = None,
     allow_works_overlap: Sequence[str] = (),
@@ -407,8 +435,8 @@ def plan_analysis(
     :param turbine: the test turbine
     :param works: works windows per turbine; the test turbine has exactly one, ``(c, c)`` for a
         shared changeover ``c``
-    :param exclusions: ``(turbine, start, end)``, turbine None for farm-wide, end exclusive
-    :param extents: each turbine's data extent, ``(first, end)`` with end exclusive
+    :param valid: timestamps x turbines, True where a record is valid for uplift, on every timestamp of the
+        record; a turbine with no column has no valid record
     :param candidates: the turbines that may be power references
     :param span: a declared span, used as given; it must bracket the works window
     :param allow_works_overlap: declared references to use as power references over a declared ``span``
@@ -421,8 +449,7 @@ def plan_analysis(
         layout,
         turbine=turbine,
         works=works,
-        exclusions=exclusions,
-        extents=extents,
+        valid=valid,
         candidates=candidates,
         settings=settings,
     )

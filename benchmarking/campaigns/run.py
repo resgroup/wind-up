@@ -26,7 +26,7 @@ from benchmarking.campaigns.data_screen import (
     reference_hours_table,
     screen_plan,
 )
-from benchmarking.campaigns.plans import CampaignPlans, plans_for, treated_activity
+from benchmarking.campaigns.plans import CampaignPlans, labelled_scada, plans_for, treated_activity
 from benchmarking.harness import MethodConfigurationError, MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
 from benchmarking.harness.operating_state import not_missing
@@ -139,31 +139,21 @@ class CampaignReport:
 
 
 def visible_mask(spec: CampaignSpec, frame: pd.DataFrame) -> npt.NDArray[np.bool_]:
-    """Rows of ``frame`` inside the declared period that are usable or held back.
+    """Rows of ``frame`` inside the declared period and outside their turbine's works windows.
 
-    Held-back rows are a turbine's own exclusions: kept in the frame, marked invalid for uplift.
+    Exclusions and label overrides keep their rows: step 2 writes them into the labels.
     """
-    usable, held = _row_masks(spec, frame)
-    return usable | held
-
-
-def _row_masks(spec: CampaignSpec, frame: pd.DataFrame) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_]]:
-    """Rows inside the declared period that are usable, and those held back."""
     bounds = spec.period_bounds()
-    in_period = (
+    usable = (
         np.ones(len(frame), dtype=bool)
         if bounds is None
         else np.asarray((frame.index >= bounds[0]) & (frame.index < bounds[1]))
     )
-    usable = in_period.copy()
-    held = np.zeros(len(frame), dtype=bool)
     turbines = frame[spec.turbine_col].to_numpy()
     for turbine in pd.unique(turbines):
         is_turbine = turbines == turbine
-        rows = pd.DatetimeIndex(frame.index[is_turbine])
-        usable[is_turbine] &= spec.usable_mask(str(turbine), rows)
-        held[is_turbine] = in_period[is_turbine] & spec.held_back_mask(str(turbine), rows)
-    return usable, held
+        usable[is_turbine] &= spec.usable_mask(str(turbine), pd.DatetimeIndex(frame.index[is_turbine]))
+    return usable
 
 
 def visible_scada(
@@ -181,17 +171,16 @@ def visible_scada(
 
     The shared northing step runs here, farm-wide and once, so every method downstream inherits
     the north-calibrated direction rather than each hand-rolling one. Discovery learns from the
-    usable rows only; held-back rows are corrected too.
+    rows its labels make valid for northing.
 
     :param era5_wd: reanalysis wind direction, the anchor the shared step discovers against.
         Required when ``spec.north_offsets`` is ``None``; a declared table needs none.
     :param out_dir: where the shared step writes its table and plots when it discovers corrections
     :param northing_plots: write the plots as well as the table
     """
-    usable, held = _row_masks(spec, frame)
-    visible = frame[usable | held]
+    visible = frame[visible_mask(spec, frame)]
     return north_scada(
-        frame[usable],
+        visible,
         columns=columns,
         north_offsets=spec.north_offsets,
         rated_power_kw=spec.rated_power_kw,
@@ -201,7 +190,6 @@ def visible_scada(
         settings=settings,
         out_dir=out_dir,
         plots=northing_plots,
-        apply_to=visible,
     )
 
 
@@ -255,7 +243,8 @@ def estimate_campaign(
     ``unplanned`` with the reason, and the campaign continues without it.
 
     :param spec: the public campaign facts; methods see nothing else
-    :param scada_df: long-format source-native SCADA covering the campaign
+    :param scada_df: long-format source-native SCADA covering the campaign, with the step 2 labels; a frame
+        without them is labelled with the generic states and the campaign's declarations
     :param build_methods: given an upgraded turbine's name, the methods to run for it
     :param columns: the source-native schema ``scada_df`` is keyed by
     :param era5_wd: reanalysis wind direction for the shared northing step
@@ -269,6 +258,7 @@ def estimate_campaign(
     :param data_screen: how each plan's power references and reserves are screened on their data;
         ``None`` uses the plans as chosen
     """
+    scada_df = labelled_scada(spec, scada_df, columns=columns)
     resolved = plans_for(spec, scada_df, columns=columns, settings=plan_settings, possible_changes=possible_changes)
     plans, unplanned = resolved.plans, resolved.unplanned
     if not plans:

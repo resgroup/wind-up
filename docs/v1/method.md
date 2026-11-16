@@ -76,14 +76,22 @@ indicators of an undeclared change:
   software.
 
 Each identified change informs how the operating-state labels (step 2), the analysis dates and
-turbines (steps 7 and 8) and the data exclusions are configured.
-Records inside an exclusion window are not used in the uplift calculation, but the turbine still
-contributes waking information in those records (step 5). An exclusion does not make a turbine changed:
-for example, a temporary de-rate for a component health issue leaves the turbine notionally the same
+turbines (steps 7 and 8) and the campaign's declarations are configured. Two declarations correct the
+labels over a window of time, for one turbine or all of them:
+
+- an **exclusion** says the data is wrong (a logger fault, frozen signals, a clock jump). Its records are
+  labelled missing;
+- a **label override** says the data is right but the turbine was not in the state its labels give (a
+  controller test, a curtailment the labels do not catch). Its records take the named state, which must
+  be one the site defines (step 2), with that state's validity.
+
+Step 2 applies them, and every later step reads the labels only. An excluded turbine therefore counts as
+missing in the waking rules (step 5), and an overridden one as its declared state. Neither makes a
+turbine changed: a temporary de-rate for a component health issue leaves the turbine notionally the same
 before and after it.
 
 The outcome of this step is plots the analyst can review to confirm the data is fit for purpose and
-to help define manual exclusions and the operating-state classification.
+to help define the declarations and the operating-state classification.
 
 ### 2. Derive operational state and data validity
 
@@ -128,6 +136,11 @@ The states distinguished in this example are:
 Before labelling, every turbine is given a record at every timestamp of the record, the ones not
 provided with no signals, so they are missing. From here on a record labelled missing is treated
 exactly as a record that was never provided: no step reads its signals.
+
+The campaign's declarations (step 1) are applied over these labels: first the label overrides, then
+the exclusions, so an exclusion wins over an override and both win over the labels. Two overrides of
+one turbine may not overlap. The label checks run on the result, so they flag only what no declaration
+explains.
 
 Data records are flagged as valid or not for each step of the analysis separately, because an
 operating state can be valid for some purposes but not for others. The mapping in this example is:
@@ -363,8 +376,10 @@ starts. Where turbines are upgraded one after another, each test turbine has its
 after periods.
 
 The periods are chosen so that enough nearby turbines stay eligible as references (step 8), from the
-campaign timeline alone: the works windows and data extents of every turbine and the declared
-exclusions, never anything measured. Longer periods are preferred, each up to a cap (24 months before
+campaign timeline and the labels alone: the works windows of every turbine and the records each one is
+valid for uplift over (step 2), never anything measured. A period's length is the test turbine's time
+valid for uplift in it, and a power reference must be valid for uplift over at least 50 % of the span by
+default. Longer periods are preferred, each up to a cap (24 months before
 and 12 months after by default), but neither period may include a known change to the test turbine
 (step 1), and a period is shortened where that keeps enough good references unchanged: a span that
 ends at a neighbour's upgrade and keeps four unchanged references nearby beats a longer one that leaves
@@ -421,7 +436,7 @@ only removes and replaces, it never re-ranks.
 
 **Pass 1: the data screen.** For each candidate, the record selection of step 11 is applied to the pair
 of the test turbine and that candidate alone. The filters that apply to each turbine on its own are
-used: validity (step 11 i), exclusions, waking scenario and changed turbines upwind (step 11 iii).
+used: validity (step 11 i), works windows, waking scenario and changed turbines upwind (step 11 iii).
 The filters that depend on the whole reference set, the waking configuration rules of step 11 ii,
 are not. From the records that survive, the usable hours in each period and the correlation of the
 candidate's power with the test turbine's over all usable records are computed. Correlation is
@@ -482,8 +497,8 @@ either. Nothing in Part C changes the reference set or the periods.
 ### 11. Select valid records and match conditions between the periods
 
 - i. **Validity.** A record is used only if the subject turbine and every power reference are valid for
-  the uplift calculation in that record (step 2) and none of them is inside an exclusion window
-  (step 1). Because the references are modelled together (step 12), the loss of data is the union of
+  the uplift calculation in that record (step 2, after the declarations) and none of them is inside one
+  of its own works windows. Because the references are modelled together (step 12), the loss of data is the union of
   the references' invalid data: a record in which any one reference is in downtime is lost for all of
   them. This puts pressure against using many references, and is one side of the trade-off of
   step 8. A measurement needs a minimum of usable data in each period (96 hours by default); below

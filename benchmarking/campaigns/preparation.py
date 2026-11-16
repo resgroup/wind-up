@@ -1,8 +1,9 @@
 """Part A of the method, data preparation (steps 1 to 6), done once per dataset.
 
-:func:`prepare_data` gives every turbine a record at every timestamp, labels the operating states, aligns
-the reanalysis, norths the whole farm over the whole record, finds the possible yaw-alignment changes, adds
-the waking columns and, when asked, writes the outputs of each step. The composed run and the benchmark
+:func:`prepare_data` gives every turbine a record at every timestamp, labels the operating states with the
+campaign's label overrides and exclusions applied, aligns the reanalysis, norths the whole farm over the whole
+record, finds the possible yaw-alignment changes, adds the waking columns and, when asked, writes the outputs
+of each step. The composed run and the benchmark
 studies share it, so a method is judged on the same prepared data wherever it runs.
 """
 
@@ -41,6 +42,8 @@ from benchmarking.harness.northing import (
 from benchmarking.harness.operating_state import (
     VALID_NORTHING_COL,
     OperatingStateConfig,
+    apply_declarations,
+    declared_records,
     fill_grid,
     label_operating_states,
 )
@@ -120,7 +123,19 @@ def prepare_data(
     scada_df = label_operating_states(
         scada_df, columns=columns, config=config, timebase=timebase, rated_power_kw=spec.rated_power_kw
     )
-    checks = label_checks(scada_df, columns=columns, timebase=timebase, rated_power_kw=spec.rated_power_kw)
+    scada_df = apply_declarations(
+        scada_df,
+        turbine_col=columns.turbine,
+        config=config,
+        exclusions=spec.exclusions,
+        overrides=spec.label_overrides,
+    )
+    declared = declared_records(
+        scada_df, turbine_col=columns.turbine, windows=[*spec.exclusions, *spec.label_overrides]
+    )
+    checks = label_checks(
+        scada_df, columns=columns, timebase=timebase, rated_power_kw=spec.rated_power_kw, declared=declared
+    )
     warn_label_checks(checks)
     if out_dir is not None:
         (out_dir / stages.OPERATING_STATES).mkdir(parents=True, exist_ok=True)
