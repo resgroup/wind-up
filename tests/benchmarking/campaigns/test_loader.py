@@ -437,6 +437,34 @@ class TestTheWorksTable:
             (utc("2018-09-01"), utc("2018-09-04")),
         ]
 
+    def test_a_time_of_day_is_an_exact_instant_end_exclusive(self, tmp_path: Path) -> None:
+        works = WORKS_CSV.replace("T01,2018-01-10,2018-01-12", "T01,2018-01-10T07:00:00Z,2018-01-10T18:00:00Z")
+        spec = load_staggered(tmp_path, works=works).spec
+        assert spec.works["T01"] == [(utc("2018-01-10 07:00"), utc("2018-01-10 18:00"))]
+        assert spec.timing_for("T01") == utc("2018-01-10 18:00")
+
+    def test_a_time_of_day_without_a_zone_is_utc_and_with_one_is_converted(self, tmp_path: Path) -> None:
+        works = WORKS_CSV.replace("T01,2018-01-10,2018-01-12", "T01,2018-01-10 07:00,2018-01-10T19:00:00+01:00")
+        assert load_staggered(tmp_path, works=works).spec.works["T01"] == [
+            (utc("2018-01-10 07:00"), utc("2018-01-10 18:00"))
+        ]
+
+    def test_a_date_and_a_time_of_day_may_be_mixed(self, tmp_path: Path) -> None:
+        works = WORKS_CSV.replace("T01,2018-01-10,2018-01-12", "T01,2018-01-10,2018-01-12T12:00:00Z")
+        assert load_staggered(tmp_path, works=works).spec.works["T01"] == [(utc("2018-01-10"), utc("2018-01-12 12:00"))]
+
+    def test_a_timed_window_ending_at_its_start_is_rejected(self, tmp_path: Path) -> None:
+        works = WORKS_CSV.replace("T01,2018-01-10,2018-01-12", "T01,2018-01-10T07:00:00Z,2018-01-10T07:00:00Z")
+        with pytest.raises(ValueError, match="T01"):
+            load_staggered(tmp_path, works=works)
+
+    def test_a_timed_window_ending_at_the_shared_changeover_is_not_over_it(self, tmp_path: Path) -> None:
+        text = STAGGERED.replace("mode: prepost", "mode: prepost\n  changeover: 2018-01-10T18:00:00Z")
+        works = WORKS_CSV.replace("T01,2018-01-10,2018-01-12", "T01,2018-01-10T07:00:00Z,2018-01-10T18:00:00Z")
+        spec = load_staggered(tmp_path, text, works=works).spec
+        assert spec.works_window("T01") == (utc("2018-01-10 18:00"), utc("2018-01-10 18:00"))
+        assert spec.works["T01"] == [(utc("2018-01-10 07:00"), utc("2018-01-10 18:00"))]
+
     def test_the_changeover_is_the_works_end(self, tmp_path: Path) -> None:
         spec = load_staggered(tmp_path).spec
         assert spec.upgrade_timing is None

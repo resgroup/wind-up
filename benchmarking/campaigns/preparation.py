@@ -157,14 +157,9 @@ def prepare_data(
             out_dir=out_dir / stages.OPERATING_STATES,
             changeovers=changeovers,
         )
-        used_for_northing = scada_df.assign(
-            **{VALID_NORTHING_COL: northing_rows(scada_df, columns=columns, rated_power_kw=spec.rated_power_kw)}
+        write_validity_plots(
+            scada_df, views=WAKING_VIEWS, columns=columns, timebase=timebase, out_dir=out_dir / stages.WAKING
         )
-        for frame, views, stage in (
-            (used_for_northing, NORTHING_VIEWS, stages.NORTHING),
-            (scada_df, WAKING_VIEWS, stages.WAKING),
-        ):
-            write_validity_plots(frame, views=views, columns=columns, timebase=timebase, out_dir=out_dir / stage)
 
     unchanged = [
         w for w in layout_coords(spec.layout) if w not in set(spec.upgraded_turbines) | set(spec.excluded_turbines)
@@ -178,6 +173,16 @@ def prepare_data(
             era5_hourly_df=era5_hourly_df,
             cell_selection=cell_selection,
             out_dir=out_dir / stages.REANALYSIS,
+        )
+        learned = northing_rows(
+            scada_df, columns=columns, rated_power_kw=spec.rated_power_kw, era5_wd=reanalysis.aligned[ERA5_WD_RAW]
+        )
+        write_validity_plots(
+            scada_df.assign(**{VALID_NORTHING_COL: learned}),
+            views=NORTHING_VIEWS,
+            columns=columns,
+            timebase=timebase,
+            out_dir=out_dir / stages.NORTHING,
         )
 
     tables = north_tables(

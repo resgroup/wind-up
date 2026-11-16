@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -19,6 +20,7 @@ from benchmarking.diagnostics.operating_states import (
     plot_run_uplift_validity,
     state_colours,
     state_order,
+    uplift_records,
     write_operating_state_plots,
     write_validity_plots,
 )
@@ -30,6 +32,7 @@ from benchmarking.harness.operating_state import (
     OperatingStateConfig,
     label_operating_states,
 )
+from benchmarking.harness.record_selection import SUBJECT_INVALID, UPWIND_UNKNOWN, USABLE
 from benchmarking.synthetic import ColumnSchema
 
 if TYPE_CHECKING:
@@ -201,6 +204,29 @@ def test_the_run_level_uplift_validity_covers_the_test_turbine_and_power_referen
         "uplift_used_T2.png",
     ]
     assert all(p.parent == tmp_path / "run" / "plots" / "11_valid_records" for p in written)
+
+
+def test_the_records_drawn_as_used_are_the_records_step_11_used(tmp_path: Path) -> None:
+    ctx = _run_context(tmp_path)
+    used = np.zeros(len(ctx.index), dtype=bool)
+    used[::3] = True
+    reasons = np.where(used, USABLE, SUBJECT_INVALID).astype(object)
+    reasons[1::3] = UPWIND_UNKNOWN
+    ctx = dataclasses.replace(ctx, used_ts=used, loss_reasons=reasons)
+    for turbine in ("T1", "T2"):
+        rows, drawn, why = uplift_records(ctx, turbine)
+        assert len(rows) == len(ctx.index)
+        assert drawn.sum() == used.sum()
+        assert why is not None
+        assert set(why[~drawn]) == {SUBJECT_INVALID, UPWIND_UNKNOWN}
+    assert len(plot_run_uplift_validity(ctx)) == 4
+
+
+def test_without_reasons_the_records_not_used_are_coloured_by_state(tmp_path: Path) -> None:
+    ctx = _run_context(tmp_path)
+    _, drawn, why = uplift_records(ctx, "T1")
+    assert drawn.all()
+    assert why is None
 
 
 def test_the_monthly_hours_mark_each_turbines_changeovers(tmp_path: Path) -> None:

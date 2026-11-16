@@ -156,18 +156,32 @@ def _usable_masks(
     return masks
 
 
-def northing_rows(scada_df: pd.DataFrame, *, columns: ColumnSchema, rated_power_kw: float) -> npt.NDArray[np.bool_]:
-    """Rows of a step-2 labelled frame that northing learns from, before the reanalysis is consulted.
+def northing_rows(
+    scada_df: pd.DataFrame, *, columns: ColumnSchema, rated_power_kw: float, era5_wd: pd.Series | None = None
+) -> npt.NDArray[np.bool_]:
+    """Rows of a step-2 labelled frame that northing learns from.
 
     Valid for northing and generating above the share of rated power :func:`~wind_up.northing.yaw_usable` asks.
+    With ``era5_wd``, also with a reanalysis direction and a finite nacelle position: the rows discovery uses.
     """
     power = scada_df[columns.active_power].to_numpy(dtype=float)
-    return scada_df[VALID_NORTHING_COL].fillna(value=False).to_numpy(dtype=bool) & yaw_usable(
-        power=power,
-        downtime_s=np.zeros(len(scada_df)),
-        reference_deg=np.zeros(len(scada_df)),
-        rated_power=rated_power_kw,
-        timebase_s=1.0,
+    reference = np.zeros(len(scada_df))
+    finite_direction = np.ones(len(scada_df), dtype=bool)
+    if era5_wd is not None:
+        reference = era5_wd[~era5_wd.index.duplicated()].reindex(scada_df.index).to_numpy(dtype=float)
+        if columns.nacelle_position in scada_df.columns:
+            finite_direction = np.isfinite(scada_df[columns.nacelle_position].to_numpy(dtype=float))
+    valid = scada_df[VALID_NORTHING_COL].fillna(value=False).to_numpy(dtype=bool)
+    return (
+        valid
+        & finite_direction
+        & yaw_usable(
+            power=power,
+            downtime_s=np.zeros(len(scada_df)),
+            reference_deg=reference,
+            rated_power=rated_power_kw,
+            timebase_s=1.0,
+        )
     )
 
 

@@ -60,8 +60,8 @@ def plot_analysis_timeline(
 ) -> Figure:
     """Draw ``turbine``'s analysis timeline and return the figure.
 
-    One row per turbine, the test turbine first and the rest nearest first: its data extent, its
-    works windows and its own exclusions. Farm-wide exclusions span every row. With a ``plan`` the
+    One row per turbine, the test turbine first and the rest nearest first: its first to last record valid
+    for uplift, its works windows and its own exclusions. Farm-wide exclusions span every row. With a ``plan`` the
     before and after periods are shaded and each row is labelled with its role; without one the
     title gives ``reason``.
 
@@ -158,7 +158,7 @@ def _title(turbine: str, *, plan: AnalysisPlan | None, reason: str) -> str:
 
 def _legend_handles(*, planned: bool) -> list[Patch]:
     handles = [
-        Patch(facecolor=_DATA_COLOUR, label="data"),
+        Patch(facecolor=_DATA_COLOUR, label="first to last record valid for uplift"),
         Patch(facecolor=_WORKS_COLOUR, label="works"),
         Patch(facecolor="none", edgecolor=_EXCLUSION_COLOUR, hatch="///", label="exclusion"),
     ]

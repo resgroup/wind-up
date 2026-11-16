@@ -53,6 +53,12 @@ logger = logging.getLogger(__name__)
 
 HOT_AEROUP_WORKS = "Hill_of_Towie_AeroUp_install_dates.csv"
 AEROUP_EXPECTED_UPLIFT = 0.05
+TUNEUP_EXPECTED_UPLIFT = 0.01
+# The TuneUp was deployed on the upgraded turbines during this working day; it ends at the changeover.
+TUNEUP_DEPLOYMENT = ("2024-03-14T07:00:00Z", "2024-03-14T18:00:00Z")
+
+# The works table a real campaign writes.
+WORKS_COLUMNS = ("Turbine", "Works", "First date of works", "Last date of works", EXPECTED_UPLIFT_PREFIX)
 
 # Hill of Towie's site operating states, written into the campaign's SCADA as HOT_STATE_COL.
 HOT_STATE_COL = "state"
@@ -71,8 +77,8 @@ HOT_OPERATING_STATE: dict[str, Any] = {
     },
 }
 
-# T13's AeroUp retrofit, with every other turbine's AeroUp works in the works table. The one
-# exclusion is the farm-wide curtailment period of tests/test_data/hot/HoT_AeroUp_T13.yaml.
+# T13's AeroUp retrofit, with every other turbine's AeroUp works in the works table. The farm's
+# curtailment from September 2022 is labelled record by record (BM curtailment), so it is not declared.
 HOT_AEROUP_T13: dict[str, Any] = {
     "name": "hot_aeroup_t13",
     "data": {
@@ -84,13 +90,13 @@ HOT_AEROUP_T13: dict[str, Any] = {
     "turbines": {"upgraded": ["T13"], "rated_power_kw": 2300.0},
     "timing": {"mode": "prepost"},
     "upgrade": {"expected_uplift": AEROUP_EXPECTED_UPLIFT},
-    "exclusions": [{"turbine": "ALL", "start": "2022-09-03T00:00:00Z", "end": "2023-02-12T00:00:00Z"}],
     "northing": {"discover": True},
     "operating_state": HOT_OPERATING_STATE,
 }
 
-# The 2024 pitch TuneUp on nine turbines, sharing one changeover. Every turbine's AeroUp works are in the
-# works table at the AeroUp's expected uplift; the second exclusion is the TuneUp deployment.
+# The 2024 pitch TuneUp on nine turbines, sharing one changeover at the end of its deployment. Every
+# turbine's AeroUp works are in the works table at the AeroUp's expected uplift, and each upgraded
+# turbine's deployment window at the TuneUp's.
 HOT_TUNEUP: dict[str, Any] = {
     "name": "hot_tuneup",
     "data": dict(HOT_AEROUP_T13["data"]),
@@ -99,11 +105,7 @@ HOT_TUNEUP: dict[str, Any] = {
         "rated_power_kw": 2300.0,
     },
     "timing": {"mode": "prepost", "changeover": "2024-03-14T18:00:00Z"},
-    "upgrade": {"expected_uplift": 0.01},
-    "exclusions": [
-        {"turbine": "ALL", "start": "2022-09-03T00:00:00Z", "end": "2023-02-12T00:00:00Z"},
-        {"turbine": "ALL", "start": "2024-03-14T07:00:00Z", "end": "2024-03-14T18:00:00Z"},
-    ],
+    "upgrade": {"expected_uplift": TUNEUP_EXPECTED_UPLIFT},
     "northing": {"discover": True},
     "operating_state": HOT_OPERATING_STATE,
 }
@@ -116,14 +118,17 @@ class RealCampaign:
     :param declaration: the contents of its ``campaign.yaml``
     :param start: the first SCADA record written
     :param end: the end of the SCADA written, exclusive
-    :param works_expected_uplift: the expected uplift written on every row of the works table, or None
-        for rows that take the campaign's upgrade
+    :param works_expected_uplift: the expected uplift written on every AeroUp row of the works table, or
+        None for rows that take the campaign's upgrade
+    :param deployment: ``(start, end)`` of a works window written for every upgraded turbine, at the
+        campaign's expected uplift; None for none
     """
 
     declaration: dict[str, Any]
     start: pd.Timestamp
     end: pd.Timestamp
     works_expected_uplift: float | None = None
+    deployment: tuple[str, str] | None = None
 
     @property
     def name(self) -> str:
@@ -139,6 +144,7 @@ HOT_TUNEUP_CAMPAIGN = RealCampaign(
     start=pd.Timestamp("2022-01-01", tz="UTC"),
     end=pd.Timestamp("2024-09-01", tz="UTC"),
     works_expected_uplift=AEROUP_EXPECTED_UPLIFT,
+    deployment=TUNEUP_DEPLOYMENT,
 )
 REAL_CAMPAIGNS: dict[str, RealCampaign] = {c.name: c for c in (HOT_AEROUP_T13_CAMPAIGN, HOT_TUNEUP_CAMPAIGN)}
 
@@ -259,6 +265,42 @@ def _iced(scada_long: pd.DataFrame, *, order: np.ndarray, follows: np.ndarray, u
     return low & (run_length >= HOT_ICING_MIN_RUN_RECORDS)
 
 
+def works_table(aeroup: pd.DataFrame, *, campaign: RealCampaign) -> pd.DataFrame:
+    """Return ``campaign``'s works table: the published AeroUp rows, then its deployment rows.
+
+    An AeroUp row carries ``works_expected_uplift`` when the campaign gives one and is blank otherwise;
+    a deployment row carries the campaign's expected uplift.
+
+    :param aeroup: the published AeroUp install dates: the turbine, then its first and last date
+    :param campaign: the campaign
+    """
+    turbine, first, last = aeroup.columns[:3]
+    uplift = campaign.works_expected_uplift
+    rows = [
+        {
+            "Turbine": t,
+            "Works": "AeroUp",
+            "First date of works": f,
+            "Last date of works": la,
+            EXPECTED_UPLIFT_PREFIX: uplift if uplift is not None else None,
+        }
+        for t, f, la in zip(aeroup[turbine], aeroup[first], aeroup[last], strict=True)
+    ]
+    if campaign.deployment is not None:
+        start, end = campaign.deployment
+        rows += [
+            {
+                "Turbine": t,
+                "Works": "deployment",
+                "First date of works": start,
+                "Last date of works": end,
+                EXPECTED_UPLIFT_PREFIX: campaign.declaration["upgrade"]["expected_uplift"],
+            }
+            for t in campaign.declaration["turbines"]["upgraded"]
+        ]
+    return pd.DataFrame(rows, columns=list(WORKS_COLUMNS))
+
+
 def write_real_campaign(
     out_dir: Path,
     *,
@@ -268,8 +310,7 @@ def write_real_campaign(
     """Write ``campaign``'s folder under ``out_dir`` and return its declaration.
 
     Writes ``campaign.yaml`` and, under ``data/``, every turbine's SCADA over the campaign's span with
-    its site operating-state labels, the turbines file and the published AeroUp works table, with
-    ``works_expected_uplift`` on every row when the campaign gives one.
+    its site operating-state labels, the turbines file and the works table (:func:`works_table`).
 
     :param out_dir: the campaign folder
     :param campaign: which campaign
@@ -290,10 +331,7 @@ def write_real_campaign(
         }
     ).to_csv(data / "turbines.csv", index=False)
     ensure_hot_data_files([HOT_AEROUP_WORKS], data_dir=data_dir)
-    works = pd.read_csv(data_dir / HOT_AEROUP_WORKS)
-    if campaign.works_expected_uplift is not None:
-        works[EXPECTED_UPLIFT_PREFIX] = campaign.works_expected_uplift
-    works.to_csv(data / "works.csv", index=False)
+    works_table(pd.read_csv(data_dir / HOT_AEROUP_WORKS), campaign=campaign).to_csv(data / "works.csv", index=False)
     path = out_dir / "campaign.yaml"
     path.write_text(yaml.safe_dump(campaign.declaration, sort_keys=False))
     logger.info("Wrote the Hill of Towie campaign %s to %s", campaign.name, out_dir)

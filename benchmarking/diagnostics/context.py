@@ -74,6 +74,8 @@ class DiagnosticContext:
     :param reference_used_ts: optional "used" flag per unique timestamp for the references, where it
         differs from ``used_ts`` (a method whose rows feed the test turbine's estimate without its
         references, e.g. one leg that reads no reference); ``None`` when ``used_ts`` holds for them too
+    :param loss_reasons: optional per-timestamp reason a record was not used, from
+        :mod:`benchmarking.harness.record_selection`; ``None`` when the method gives none
     """
 
     run_dir: Path
@@ -90,6 +92,7 @@ class DiagnosticContext:
     excluded_ts: npt.NDArray[np.bool_] | None = None
     power_references: list[str] | None = None
     reference_used_ts: npt.NDArray[np.bool_] | None = None
+    loss_reasons: npt.NDArray[np.object_] | None = None
 
     @property
     def index(self) -> pd.DatetimeIndex:

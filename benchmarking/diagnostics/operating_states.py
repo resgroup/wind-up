@@ -8,8 +8,8 @@ Power is drawn here to check the labels, never to make them.
 * :func:`plot_run_operating_states` -- the scatters for a run's test turbine and power references.
 * :func:`write_validity_plots` -- the scatters of each turbine's records split by their validity for
   northing (:data:`NORTHING_VIEWS`) or waking (:data:`WAKING_VIEWS`), still coloured by state.
-* :func:`plot_run_uplift_validity` -- the same split by validity for uplift (:data:`UPLIFT_VIEWS`) for
-  a run's test turbine and power references.
+* :func:`plot_run_uplift_validity` -- a run's test turbine's and power references' records used for uplift by
+  step 11, and those not used, coloured by why.
 """
 
 from __future__ import annotations
@@ -38,11 +38,11 @@ from benchmarking.harness.operating_state import (
     PARTIAL_DOWNTIME,
     STATE_COL,
     VALID_NORTHING_COL,
-    VALID_UPLIFT_COL,
     WAKING,
     WAKING_STATE_COL,
     state_hours,
 )
+from benchmarking.harness.record_selection import CATEGORIES
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -82,10 +82,6 @@ WAKING_VIEWS = (
     ValidityView("part_waking", "considered part waking", WAKING_STATE_COL, PART_WAKING),
     ValidityView("not_waking", "considered not waking", WAKING_STATE_COL, NOT_WAKING),
 )
-UPLIFT_VIEWS = (
-    ValidityView("uplift_used", "used for uplift", VALID_UPLIFT_COL, value=True),
-    ValidityView("uplift_not_used", "not used for uplift", VALID_UPLIFT_COL, value=False),
-)
 
 
 def state_order(states: Iterable[str]) -> list[str]:
@@ -113,6 +109,9 @@ def plot_operating_states(
     title: str | None = None,
     name: str = "operating_states",
     subset: np.ndarray | None = None,
+    colour_by: np.ndarray | None = None,
+    colour_order: Sequence[str] = (),
+    legend_title: str = "operating state",
 ) -> Path | None:
     """Write ``<name>_<turbine>.png``: each relationship of the step 1 pairs, coloured by state.
 
@@ -128,6 +127,9 @@ def plot_operating_states(
     :param title: the figure title; defaults to the turbine and the period covered
     :param name: the file's stem
     :param subset: which of ``rows`` to draw; the axes still span all of ``rows`` so subsets compare
+    :param colour_by: a category per row to colour by instead of the operating state, in ``colour_order``
+    :param colour_order: the categories ``colour_by`` may hold, in legend order
+    :param legend_title: the legend's title
     """
     if STATE_COL not in rows.columns or rows.empty:
         return None
@@ -135,9 +137,14 @@ def plot_operating_states(
     missing = [_missing_reason(rows, roles=roles, columns=columns) for roles in PAIRS]
     if all(missing):
         return None
-    states = rows[STATE_COL].astype(str)
-    order = state_order(states.unique())
-    colours = state_colours(order)
+    if colour_by is None:
+        states = rows[STATE_COL].astype(str)
+        order = state_order(states.unique())
+        colours = state_colours(order)
+    else:
+        states = pd.Series(np.asarray(colour_by, dtype=object), index=rows.index).astype(str)
+        order = [c for c in colour_order if c in set(states)]
+        colours = {c: f"C{i % 10}" for i, c in enumerate(colour_order)}
     drawn = np.ones(len(rows), dtype=bool) if subset is None else np.asarray(subset, dtype=bool)
     hours = states[drawn].value_counts() * (timebase / pd.Timedelta(hours=1))
 
@@ -173,7 +180,7 @@ def plot_operating_states(
         if s in hours.index
     ]
     if handles:
-        fig.legend(handles=handles, loc="outside lower center", ncol=min(len(handles), 4), title="operating state")
+        fig.legend(handles=handles, loc="outside lower center", ncol=min(len(handles), 4), title=legend_title)
     index = pd.DatetimeIndex(rows.index)
     title = title or f"{turbine}: operating states, {index.min():%Y-%m-%d} to {index.max():%Y-%m-%d}"
     fig.suptitle(title if handles else f"{title} (no records)", fontsize="large")
@@ -405,28 +412,55 @@ def write_validity_plots(
     return written
 
 
+def uplift_records(ctx: DiagnosticContext, turbine: str) -> tuple[pd.DataFrame, np.ndarray, np.ndarray | None]:
+    """Return ``turbine``'s rows over the span, which of them step 11 used, and why each was not used.
+
+    The reasons are ``None`` when the method gives none.
+    """
+    rows = ctx.scada_df[(ctx.scada_df[ctx.turbine_col] == turbine).to_numpy()]
+    stamps = pd.DatetimeIndex(rows.index)
+    used = pd.Series(ctx.used_mask(turbine), index=ctx.index).reindex(stamps, fill_value=False).to_numpy(dtype=bool)
+    if ctx.loss_reasons is None:
+        return rows, used, None
+    reasons = pd.Series(ctx.loss_reasons, index=ctx.index).reindex(stamps).to_numpy(dtype=object)
+    return rows, used, reasons
+
+
 def plot_run_uplift_validity(ctx: DiagnosticContext) -> list[Path]:
-    """Write the uplift-validity scatters for a run's test turbine and power references over the span."""
+    """Write the test turbine's and each power reference's records used for uplift by step 11, and those not used.
+
+    The records used are coloured by operating state; those not used by the reason step 11 dropped them,
+    when the method gives one.
+    """
     if STATE_COL not in ctx.scada_df.columns:
         return []
     references = ctx.plotted_references()
     out_dir = ctx.stage_dir(stages.VALID_RECORDS)
     written: list[Path] = []
     for turbine in [ctx.test_wtg, *sorted(r for r in references if r != ctx.test_wtg)]:
-        rows = ctx.scada_df[ctx.scada_df[ctx.turbine_col] == turbine]
+        rows, used, reasons = uplift_records(ctx, turbine)
         if rows.empty:
             continue
         role = "test turbine" if turbine == ctx.test_wtg else "power reference"
-        for view in UPLIFT_VIEWS:
+        index = pd.DatetimeIndex(rows.index)
+        period = f"{index.min():%Y-%m-%d} to {index.max():%Y-%m-%d}"
+        for name, subset, label in (
+            ("uplift_used", used, "used for uplift by step 11"),
+            ("uplift_not_used", ~used, "not used for uplift by step 11"),
+        ):
+            by_reason = name == "uplift_not_used" and reasons is not None
             path = plot_operating_states(
                 rows,
                 turbine=turbine,
                 columns=ctx.columns,
                 timebase=ctx.timebase,
                 out_dir=out_dir,
-                title=_view_title(turbine, view=view, rows=rows, role=role),
-                name=view.name,
-                subset=(rows[view.column] == view.value).to_numpy(),
+                title=f"{turbine} ({role}): {int(subset.sum()):,} records {label}, {period}",
+                name=name,
+                subset=subset,
+                colour_by=reasons if by_reason else None,
+                colour_order=CATEGORIES if by_reason else (),
+                legend_title="reason not used" if by_reason else "operating state",
             )
             if path is not None:
                 written.append(path)

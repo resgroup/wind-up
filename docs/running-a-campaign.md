@@ -75,14 +75,16 @@ exclusions:                      # optional; end exclusive; the data is wrong
   - {turbine: T04, start: 2021-02-01T00:00:00Z, end: 2021-02-05T00:00:00Z}
 
 label_overrides:                 # optional; end exclusive; the data is right, the labels miss the state
-  - {turbine: ALL, start: 2022-09-03T00:00:00Z, end: 2023-02-12T00:00:00Z, state: BM curtailment}
+  - {turbine: T07, start: 2021-05-10T08:00:00Z, end: 2021-05-12T16:00:00Z, state: partial downtime}
 
 # analysis_period omitted: wind-up chooses a span for each upgraded turbine
 ```
 
 - **The works table** has a `Turbine` column and the first columns whose names start `First date`
-  and `Last date` (the Zenodo Hill of Towie AeroUp table works as it is). Dates are whole days: a
-  window covers the first day through the end of the last. Any turbine may appear, analysed or not,
+  and `Last date` (the Zenodo Hill of Towie AeroUp table works as it is). A date alone is a whole day:
+  a window covers the first day through the end of the last. A date with a time of day
+  (`2024-03-14T07:00:00Z`; UTC when no zone is given) is that instant, the last one exclusive, for works
+  done within a day. Any turbine may appear, analysed or not,
   and a turbine may appear more than once. With no shared changeover, each upgraded turbine needs
   exactly one window, and its changeover is the end of that window. Its own works rows are never used.
   Two optional columns give a row its own wake reach, matched by prefix like the dates: `Expected

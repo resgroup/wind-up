@@ -21,7 +21,7 @@ after period from the end of the works to the span's end.
 
 The figure shows the plan for T13, the AeroUp trial turbine on Hill of Towie, over the 2019 to 2024
 record. Each row is a turbine, the test turbine first and the rest nearest first with their distance
-in rotor diameters (D): grey is data, red is works, hatching is an exclusion. The chosen span is
+in rotor diameters (D): grey runs from the first to the last record valid for uplift, red is works, hatching is an exclusion. The chosen span is
 shaded, blue for the before period and green for the after period.
 
 ![T13's analysis timeline on Hill of Towie](images/analysis-period/analysis_timeline_T13.png)
@@ -31,7 +31,7 @@ day the nearest turbine T14 started its own AeroUp works, because a span that ra
 as a power reference. T10 and T08, 16 D away, started their works earlier in August 2022 and so are
 waking only: ending the span before their works would have kept them eligible as reserves, at the
 cost of 26 days of after period, and the selector prefers the longer side. T07, 17 D away, is a
-reserve: eligible, within reach, but beyond the best-ranked four. The farm-wide exclusion from September 2022 to February 2023 falls after the span. The
+reserve: eligible, within reach, but beyond the best-ranked four. The
 figures on this page are drawn by `benchmarking/baselines/study_analysis_period_doc_plot.py`.
 
 ## What makes a turbine eligible as a power reference
@@ -173,7 +173,7 @@ labelled with the first reason that applies, in this order:
 
 | reason | the record is lost because |
 |---|---|
-| `excluded` | the test turbine or the candidate is inside one of its works windows |
+| `works window` | the test turbine or the candidate is inside one of its works windows |
 | `subject invalid` | the test turbine's record is not valid for uplift (step 2), or missing |
 | `reference invalid` | the candidate's record is not valid for uplift, or missing |
 | `changed upwind of subject` | a turbine is upwind of the test turbine (step 5) while it counts as changed |

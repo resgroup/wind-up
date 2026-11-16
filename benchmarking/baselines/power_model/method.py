@@ -72,7 +72,9 @@ from benchmarking.harness.operating_state import (
 )
 from benchmarking.harness.reanalysis import interpolate_era5
 from benchmarking.harness.record_selection import (
+    EXCLUDED,
     RARE_CONFIGURATION,
+    SUBJECT_INVALID,
     UNPAIRED,
     USABLE,
     loss_reasons,
@@ -943,6 +945,7 @@ class PowerModelMethod:
                     run_dir=run_dir,
                     index=index,
                     selected=selected,
+                    reasons=reasons,
                     timebase=timebase,
                     era5=era5,
                     power_references=[r for r in references if r not in power_free],
@@ -2402,15 +2405,22 @@ class PowerModelMethod:
         timebase: pd.Timedelta,
         era5: pd.DataFrame | None,
         power_references: list[str] | None = None,
+        reasons: pd.Series | None = None,
     ) -> None:
         """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config.
 
-        ``selected`` is on ``index``, the campaign's selection of the SCADA, which drops every timestamp
-        none of its turbines may use (an off-grid record inside an exclusion, say). The context draws
-        from the whole SCADA slice, so the masks are put on its index: those timestamps are not used.
+        ``selected`` and ``reasons`` are on ``index``, the campaign's selection of the SCADA, which drops every
+        timestamp none of its turbines may use (a works window of every turbine, say). The context draws from the
+        whole SCADA slice, so the masks are put on its index: those timestamps are not used, in a works window.
+        A usable record not selected has no finite power.
         """
         full = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
         used = pd.Series(np.asarray(selected, dtype=bool), index=index).reindex(full, fill_value=False)
+        why = None
+        if reasons is not None:
+            on_index = pd.Series(reasons.to_numpy(dtype=object), index=index)
+            on_index[(on_index == USABLE).to_numpy() & ~np.asarray(selected, dtype=bool)] = SUBJECT_INVALID
+            why = on_index.reindex(full).fillna(EXCLUDED).to_numpy(dtype=object)
         # On ``index``, as the estimator resolves it: a ToggleSchedule without a start takes its phase from there.
         treated = pd.Series(resolve_toggle(mi.upgrade_timing, index).upgraded, index=index)
         treated = treated.reindex(full, fill_value=False)
@@ -2427,6 +2437,7 @@ class PowerModelMethod:
             era5_df=era5,
             era5_label=self.era5_label,
             power_references=power_references,
+            loss_reasons=why,
         )
         write_common_diagnostics(ctx, skip_stages=frozenset() if self.repeat_shared_plots else _SHARED_STAGES)
         write_run_config(ctx, method_name=self.name, method_params=self._config_params())
