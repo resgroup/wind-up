@@ -258,6 +258,16 @@ class TestReanalysis:
     def test_the_exclusive_end_does_not_pull_in_an_extra_year(self) -> None:
         assert era5_window(utc("2017-03-04"), utc("2019-01-01"))[1] == "2018-12-31"
 
+    def test_a_record_running_to_the_present_ends_the_window_today(self) -> None:
+        """The archive rejects an end date after today, so a live campaign's fetch failed before any analysis."""
+        today = utc("2026-11-17 15:30")
+        assert era5_window(utc("2025-04-07"), utc("2026-11-17 15:00"), today=today) == ("2025-01-01", "2026-11-17")
+
+    def test_the_window_defaults_to_clamping_at_today_in_utc(self) -> None:
+        now = pd.Timestamp.now(tz="UTC")
+        end = era5_window(now - pd.Timedelta(days=30), now)[1]
+        assert end <= now.strftime("%Y-%m-%d")
+
     def test_onshore_with_period_start_utc_timestamps_by_default(self, tmp_path: Path) -> None:
         declaration = load(tmp_path)
         assert declaration.timestamps == TimestampConvention(convention="start", time_zone="UTC")

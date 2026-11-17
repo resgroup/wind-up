@@ -186,7 +186,9 @@ and should be checked for an offshore or coastal site.
 **Reanalysis is not declared.** wind-up fetches the weather reanalysis it needs by itself, from
 the centre of every turbine in `turbines.csv` — the whole site, not just the turbines this
 campaign names, so changing the roles never moves it — over the whole SCADA record. The first
-run for a site downloads it; later runs on that site reuse the cache.
+run for a site downloads it; later runs on that site reuse the cache. For SCADA running to the
+present, the fetch ends today: the archive is published a few days behind real time, so the run
+log warns that the last few days are not covered, and the cache is refetched on a later day.
 
 ## 2. Running a campaign
 

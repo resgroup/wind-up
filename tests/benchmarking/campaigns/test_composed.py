@@ -157,6 +157,22 @@ class TestTheReanalysisWindow:
         index = pd.date_range("2016-03-01", "2019-12-31 23:00", freq="1h", tz="UTC")
         assert reanalysis_window(index) == ("2016-01-01", "2020-01-01")
 
+    def test_a_record_running_to_the_present_ends_today_not_on_1_january(self) -> None:
+        """The archive rejects an end date after today, so the CLI could not run an ongoing campaign."""
+        from benchmarking.campaigns.composed import reanalysis_window  # noqa: PLC0415
+
+        index = pd.date_range("2025-04-07", "2026-11-17 12:00", freq="10min", tz="UTC")
+        assert reanalysis_window(index, today=pd.Timestamp("2026-11-17 13:00", tz="UTC")) == (
+            "2025-01-01",
+            "2026-11-17",
+        )
+
+    def test_a_record_ending_on_31_december_keeps_its_hour_after_when_that_is_past(self) -> None:
+        from benchmarking.campaigns.composed import reanalysis_window  # noqa: PLC0415
+
+        index = pd.date_range("2025-01-01", "2025-12-31 23:50", freq="10min", tz="UTC")
+        assert reanalysis_window(index, today=pd.Timestamp("2026-11-17", tz="UTC"))[1] == "2026-01-01"
+
 
 def _write_small_scada(path: Path) -> None:
     """Two months of hourly SCADA for the fixture's four turbines, every signal the plots read."""
