@@ -44,12 +44,14 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import matplotlib as mpl
 
 mpl.use("Agg")
 
+from benchmarking.baselines.power_model.method import HEADLINE_ESTIMATORS
 from benchmarking.baselines.prepost_matrix.cells import SIZES, matrix_cells
 from benchmarking.baselines.prepost_matrix.execute import download_sources, prefetch
 from benchmarking.baselines.prepost_matrix.plan import plan_study
@@ -98,6 +100,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--limit", type=int, default=None, help="run only the first N cells (a timing trial)")
     run.add_argument("--root", type=Path, default=None, help="where the study directory goes")
     run.add_argument("--retry-failed", action="store_true", help="run failed cells again too")
+    run.add_argument(
+        "--headline-estimator",
+        choices=HEADLINE_ESTIMATORS,
+        default=None,
+        help="the power model's headline estimator for every cell (default: the shipped one)",
+    )
     merge = sub.add_parser("merge", help="merge the finished cells into the candidate baseline")
     merge.add_argument("study_dir", type=Path)
     compare = sub.add_parser("compare", help="compare the candidate with the committed baseline")
@@ -140,7 +148,7 @@ def main(argv: list[str] | None = None) -> None:
         size = SIZES[args.size]
         workers = _run_workers(size.workers if args.workers is None else args.workers)
         run_study(
-            size.settings,
+            replace(size.settings, headline_estimator=args.headline_estimator),
             size=args.size,
             root=args.root,
             workers=workers,

@@ -73,6 +73,8 @@ class MatrixSettings:
     :param master_seed: every campaign draw is keyed on it
     :param season_shifts: months each synthetic campaign's works are moved by (see
         :meth:`~benchmarking.campaigns.rollout.RolloutDraw.shifted`), each a cell of its own
+    :param headline_estimator: the power model's ``headline_estimator`` for every cell; ``None`` for the
+        shipped default
     """
 
     seeds: dict[str, int] = field(default_factory=lambda: {"hot": 16, "pen": 12, "kel": 4})
@@ -88,6 +90,7 @@ class MatrixSettings:
     min_total_months: int = 9
     master_seed: int = 0
     season_shifts: tuple[int, ...] = (0,)
+    headline_estimator: str | None = None
 
     def to_json(self) -> dict[str, object]:
         """Return the settings as plain data, lists in place of tuples."""

@@ -213,6 +213,8 @@ def execute_cell(
         as a composed run
     """
     run = _execute_real if cell.arm == "real" else _execute_synthetic
+    if settings.headline_estimator is not None:
+        method_overrides = {"headline_estimator": settings.headline_estimator, **(method_overrides or {})}
     return run(
         cell,
         detail_dir=detail_dir,

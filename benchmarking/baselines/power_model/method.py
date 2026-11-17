@@ -29,6 +29,7 @@ from scipy.stats import t as student_t
 
 from benchmarking.baselines.block_bootstrap import bootstrap_energy_ratio
 from benchmarking.baselines.power_model import diagnostics as diag
+from benchmarking.baselines.power_model import rlearner
 from benchmarking.baselines.power_model.features import (
     SOLAR_ELEVATION,
     build_reference_features,
@@ -39,7 +40,12 @@ from benchmarking.baselines.power_model.features import (
     waking_scenario_features,
     without_constant_scenarios,
 )
-from benchmarking.baselines.power_model.fitting import make_outcome_model, model_safe_features, time_block_folds
+from benchmarking.baselines.power_model.fitting import (
+    make_outcome_model,
+    make_propensity_model,
+    model_safe_features,
+    time_block_folds,
+)
 from benchmarking.baselines.power_model.screening import (
     ScreenResult,
     screen_references,
@@ -147,6 +153,10 @@ TRAINING_COLUMNS: tuple[str, ...] = (
     "training_coverage",
     "training_usable_hours",
 )
+# What the R-learner headline adds to the uncertainty row: the forward reading of the before-trained
+# model on the same records, how well the propensity tells the periods apart (0.5 not at all) and the
+# share of the records' weight left once it has (1 when the periods overlap fully).
+RLEARNER_COLUMNS: tuple[str, ...] = ("forward_uplift", "propensity_auc", "propensity_overlap")
 _DEFAULT_HOLDOUT_MAX_BLOCKS = 12
 _DEFAULT_SYSTEMATIC_CORRELATION = 0.5
 TrainingPeriod = Literal["auto", "before", "after"]
@@ -159,7 +169,7 @@ _FLOOR_MONTHS = 9.0
 _FLOOR_COVERAGE = 0.5
 # How far under a month count a period's span may fall and still count, the works window it starts after.
 _MONTHS_TOLERANCE = 0.5
-HeadlineEstimator = Literal["forward", "reversal", "reference_corrected"]
+HeadlineEstimator = Literal["forward", "reversal", "reference_corrected", "rlearner"]
 HEADLINE_ESTIMATORS: tuple[str, ...] = get_args(HeadlineEstimator)
 
 # The condition axes this method reports, all upgrade-invariant: the test turbine's predicted power,
@@ -194,8 +204,8 @@ def is_reading_column(name: object) -> bool:
     """Whether ``name`` is a column a measurement's reading carries beside its uplift.
 
     These are ``sigma``, the block-length sweep ``sigma_block_<h>h``, :data:`REVERSAL_COLUMNS`,
-    :data:`CORRECTION_COLUMNS`, :data:`HOLDOUT_COLUMNS`, :data:`TRAINING_COLUMNS` and the
-    ``power_shape_<i>`` deviations.
+    :data:`CORRECTION_COLUMNS`, :data:`HOLDOUT_COLUMNS`, :data:`TRAINING_COLUMNS`,
+    :data:`RLEARNER_COLUMNS` and the ``power_shape_<i>`` deviations.
     """
     return (
         name == "sigma"
@@ -204,6 +214,7 @@ def is_reading_column(name: object) -> bool:
         or name in CORRECTION_COLUMNS
         or name in HOLDOUT_COLUMNS
         or name in TRAINING_COLUMNS
+        or name in RLEARNER_COLUMNS
     )
 
 
@@ -567,6 +578,40 @@ def _reference_input(
     return MethodInput(scada_df=mi.scada_df, test_wtg=target, campaign_context=sub_context)
 
 
+@dataclasses.dataclass(frozen=True)
+class _RLearnerFit:
+    """One subject's R-learner fit: the used records of both periods and what was fitted on them.
+
+    ``rows`` are positions over the analysis index, in time order; ``after``, ``m`` and ``e`` are per row:
+    whether it is in the after period, the cross-fitted expected power and the cross-fitted probability
+    of the after period. ``record`` carries the propensity's :data:`RLEARNER_COLUMNS`.
+    """
+
+    rows: np.ndarray
+    after: np.ndarray
+    m: np.ndarray
+    e: np.ndarray
+    fitted: rlearner.RLearnerEstimate
+    record: dict[str, float]
+
+
+@dataclasses.dataclass(frozen=True)
+class _Measured:
+    """What the headline starts from: the fit with the counterfactual it reads, and its sampling uncertainty.
+
+    ``uplift`` is ``sum_actual / sum_counter - 1`` read as upgraded over baseline; ``forward`` the forward
+    model's reading, the same number unless ``learner`` (the R-learner's fit) replaced the counterfactual.
+    """
+
+    fit: dict[str, Any]
+    sum_actual: float
+    sum_counter: float
+    uplift: float
+    forward: float
+    uncertainty: pd.DataFrame
+    learner: _RLearnerFit | None
+
+
 @dataclass
 class PowerModelMethod:
     """Pluggable counterfactual power-model uplift estimator (prepost and toggle).
@@ -647,7 +692,16 @@ class PowerModelMethod:
         when no reference is kept. ``"reversal"`` (the reversal correction) also fits the reverse
         direction (train the upgraded rows, predict the baseline rows) and reports
         ``sqrt((1+r_fwd)/(1+r_rev)) - 1``, so a shrinkage common to both directions cancels; it costs
-        one extra model fit per estimate. Toggle is always the forward ratio
+        one extra model fit per estimate. ``"rlearner"`` fits one model of the subject's power and one
+        of the period on the records of both periods, cross-fitted in contiguous time blocks, and takes
+        the uplift from the power residual against the period residual per bin of baseline power
+        (:mod:`~benchmarking.baselines.power_model.rlearner`). Neither period trains: both are treated
+        alike, the reference readings are R-learner readings too, and no reference correction is made.
+        Its sigma is a block bootstrap over both periods joined to ``sigma_holdout``, which is then
+        read from windows of each period against the rest of that period (``holdout_max_blocks``)
+        with no refit; the uncertainty row gains :data:`RLEARNER_COLUMNS`. ``training_period`` then
+        only says which period the :data:`TRAINING_COLUMNS` describe. Toggle is always the forward
+        ratio
     :param holdout_max_blocks: the most windows of the before period a prepost estimate holds out in
         turn (:func:`holdout_windows`), refitting the model on the rest and reading each window as if
         it were the after period. Their spread beyond their own sampling sigma (:func:`holdout_excess`)
@@ -762,7 +816,9 @@ class PowerModelMethod:
         if self.training_period == "auto":
             resolved = self._resolve_training_period(mi)
             return dataclasses.replace(self, training_period=resolved).estimate(mi)
-        swapped = self._exchanged(mi)
+        use_rlearner = self.headline_estimator == "rlearner" and not is_toggle(mi.upgrade_timing)
+        # The R-learner fits both periods, so neither is exchanged with the other.
+        swapped = self._exchanged(mi) and not use_rlearner
         # The campaign decides which turbines are references and which rows they may contribute;
         # everything below -- outcome, features, ERA5, diagnostics -- works from this selection.
         scada = mi.context.select(mi.scada_df)
@@ -827,7 +883,7 @@ class PowerModelMethod:
             index=index,
             timebase=timebase,
             selected=selected,
-            period=t if swapped else toggle_rows.training_baseline,
+            period=t if self.training_period == "after" else toggle_rows.training_baseline,
         )
         warnings = self._floor_warnings(mi, training=training)
         upgrade_start = toggle_upgrade_start(mi.upgrade_timing, index)
@@ -836,24 +892,19 @@ class PowerModelMethod:
         )
 
         y_arr = y.to_numpy(dtype=float)
-        fit = self._fit_predict(
-            features,
+        measured = self._measure(
+            mi,
+            features=features,
             y=y_arr,
-            baseline_sel=training_sel,
-            upgraded_sel=predicted_sel,
-        )
-        sum_actual = float(fit["y_upgraded"].sum())
-        sum_counter = float(fit["pred_upgraded"].sum())
-        uplift = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
-        uplift = float(invert_uplift(uplift)) if swapped else uplift
-        uncertainty = self._headline_uncertainty(
-            index[predicted_sel],
-            actual=fit["y_upgraded"],
-            counterfactual=fit["pred_upgraded"],
-            period_start=predicted_start,
-            period_end=predicted_end,
+            training_sel=training_sel,
+            predicted_sel=predicted_sel,
+            swapped=swapped,
+            rlearner_sels=(before_sel, upgraded_sel) if use_rlearner else None,
+            index=index,
             timebase=timebase,
+            predicted_bounds=(predicted_start, predicted_end),
         )
+        fit, uplift, uncertainty, learner = measured.fit, measured.uplift, measured.uncertainty, measured.learner
         summary = uncertainty_summary(uncertainty, block_hours=self.block_hours)
         if self.row_dump_dir is not None:
             self._write_row_dump(
@@ -885,7 +936,7 @@ class PowerModelMethod:
             y=y_arr,
             training_sel=training_sel,
             predicted_sel=predicted_sel,
-            forward=uplift,
+            forward=measured.forward,
             index=index,
             timebase=timebase,
             invert=swapped,
@@ -903,8 +954,12 @@ class PowerModelMethod:
         uplift, _, correction = self._reference_corrected(
             mi, forward=uplift, sigma_sampling=summary["sigma"], reference_uplifts=reference_uplifts
         )
-        holdout = self._holdout_sigma(
-            mi, features=features, y=y_arr, training_sel=training_sel, predicted_sel=predicted_sel, index=index
+        holdout = (
+            self._holdout_sigma(
+                mi, features=features, y=y_arr, training_sel=training_sel, predicted_sel=predicted_sel, index=index
+            )
+            if learner is None
+            else self._placebo_sigma(mi, learner=learner, y=y_arr, index=index, timebase=timebase)
         )
         sigma_holdout, holdout_warnings = self._holdout_component(holdout, test_wtg=mi.test_wtg)
         sigma = combined_sigma(
@@ -930,8 +985,8 @@ class PowerModelMethod:
                 features=features,
                 fit=fit,
                 uplift=uplift,
-                sum_actual=sum_actual,
-                sum_counter=sum_counter,
+                sum_actual=measured.sum_actual,
+                sum_counter=measured.sum_counter,
                 n_refs=n_refs,
                 constant_features=constant_scenarios,
                 losses=record_losses(
@@ -986,6 +1041,7 @@ class PowerModelMethod:
                         "condition": "overall",
                         "condition_bin": "overall",
                         **{k: v for k, v in summary.items() if k != "sigma"},
+                        **({} if learner is None else {"forward_uplift": measured.forward, **learner.record}),
                         **reversal,
                         **correction,
                         **holdout,
@@ -998,6 +1054,63 @@ class PowerModelMethod:
             screen_passes=screen.passes if screen is not None else None,
             labeled_rows=None if shape is None else shape.labels,
             warnings=(*warnings, *holdout_warnings),
+        )
+
+    def _measure(
+        self,
+        mi: MethodInput,
+        *,
+        features: pd.DataFrame,
+        y: np.ndarray,
+        training_sel: np.ndarray,
+        predicted_sel: np.ndarray,
+        swapped: bool,
+        rlearner_sels: tuple[np.ndarray, np.ndarray] | None,
+        index: pd.DatetimeIndex,
+        timebase: pd.Timedelta,
+        predicted_bounds: tuple[pd.Timestamp, pd.Timestamp],
+    ) -> _Measured:
+        """Fit the forward model and return the measurement the headline starts from.
+
+        ``rlearner_sels`` is the before and after selections of an R-learner estimate, ``None`` for a
+        forward one. The forward fit is made either way, for the diagnostics and as a recorded reading;
+        under the R-learner its counterfactual is replaced by the R-learner's, which the headline, its
+        sampling sigma and everything downstream then read.
+        """
+        fit = self._fit_predict(features, y=y, baseline_sel=training_sel, upgraded_sel=predicted_sel)
+        sum_actual = float(fit["y_upgraded"].sum())
+        sum_counter = float(fit["pred_upgraded"].sum())
+        forward = sum_actual / sum_counter - 1.0 if np.isfinite(sum_counter) and sum_counter != 0 else float("nan")
+        forward = float(invert_uplift(forward)) if swapped else forward
+        if rlearner_sels is None:
+            uncertainty = self._headline_uncertainty(
+                index[predicted_sel],
+                actual=fit["y_upgraded"],
+                counterfactual=fit["pred_upgraded"],
+                period_start=predicted_bounds[0],
+                period_end=predicted_bounds[1],
+                timebase=timebase,
+            )
+            return _Measured(
+                fit=fit,
+                sum_actual=sum_actual,
+                sum_counter=sum_counter,
+                uplift=forward,
+                forward=forward,
+                uncertainty=uncertainty,
+                learner=None,
+            )
+        learner = self._rlearner_fit(
+            mi, features=features, y=y, before_sel=rlearner_sels[0], upgraded_sel=rlearner_sels[1], index=index
+        )
+        return _Measured(
+            fit={**fit, "pred_upgraded": learner.fitted.counterfactual},
+            sum_actual=sum_actual,
+            sum_counter=float(learner.fitted.counterfactual.sum()),
+            uplift=learner.fitted.uplift,
+            forward=forward,
+            uncertainty=self._rlearner_uncertainty(learner, y=y, index=index),
+            learner=learner,
         )
 
     def _exchanged(self, mi: MethodInput) -> bool:
@@ -1296,6 +1409,156 @@ class PowerModelMethod:
             positions=np.concatenate(positions) if positions else np.array([], dtype=int),
             predictions=np.concatenate(predictions) if predictions else np.array([]),
         )
+
+    def _rlearner_fit(
+        self,
+        mi: MethodInput,
+        *,
+        features: pd.DataFrame,
+        y: np.ndarray,
+        before_sel: np.ndarray,
+        upgraded_sel: np.ndarray,
+        index: pd.DatetimeIndex,
+    ) -> _RLearnerFit:
+        """Cross-fit the power and period models on both periods' records and return the R-learner estimate.
+
+        The folds are contiguous 7-day blocks over the used records of both periods, dealt round-robin.
+        """
+        rows = np.flatnonzero(before_sel | upgraded_sel)
+        after = upgraded_sel[rows]
+        folds = rlearner.time_folds(index[rows])
+        m = rlearner.cross_fit(
+            folds,
+            fit_predict=lambda train, held: self._fit_direction(features, y, train=rows[train], predict=rows[held]),
+        )
+        e = rlearner.cross_fit(
+            folds,
+            fit_predict=lambda train, held: self._fit_propensity(
+                features, after=after[train], train=rows[train], predict=rows[held]
+            ),
+        )
+        timebase = self.timebase if self.timebase is not None else _infer_timebase(index)
+        fitted = rlearner.estimate(
+            y[rows],
+            m,
+            after,
+            e,
+            power_edges=condition_bins(PREDICTED_POWER, rated_power_kw=self.baseline_rated_power_kw),
+            rated_power_kw=self.baseline_rated_power_kw,
+            min_records=self.shape_min_hours / (timebase / pd.Timedelta(hours=1)),
+        )
+        record = {
+            "propensity_auc": rlearner.propensity_auc(after, e, folds=folds),
+            "propensity_overlap": rlearner.propensity_overlap(after, e),
+        }
+        logger.info(
+            "%s %s: R-learner %+.3f%% with %d of %d power bins measured (overall %+.3f%%); the propensity tells "
+            "the periods apart with AUC %.2f, overlap %.2f",
+            self.name,
+            mi.test_wtg,
+            100 * fitted.uplift,
+            int(np.count_nonzero(fitted.measured)),
+            len(fitted.measured),
+            100 * fitted.theta,
+            record["propensity_auc"],
+            record["propensity_overlap"],
+        )
+        return _RLearnerFit(rows=rows, after=after, m=m, e=e, fitted=fitted, record=record)
+
+    def _fit_propensity(
+        self, features: pd.DataFrame, *, after: np.ndarray, train: np.ndarray, predict: np.ndarray
+    ) -> np.ndarray:
+        """Fit the period classifier on ``train`` rows and return ``P(after)`` for ``predict`` rows.
+
+        ``after`` says which of the ``train`` rows are in the after period. Training rows of one period
+        only give that period's share, 0 or 1, for every row.
+        """
+        if after.min() == after.max():
+            return np.full(len(predict), float(after.mean()))
+        n_jobs = {"n_jobs": self.model_params["n_jobs"]} if "n_jobs" in self.model_params else {}
+        model = make_propensity_model(random_state=self.seed, **n_jobs)
+        model.fit(model_safe_features(features.iloc[train]), after.astype(int))
+        return np.asarray(model.predict_proba(model_safe_features(features.iloc[predict]))[:, 1], dtype=float)
+
+    def _rlearner_uncertainty(self, learner: _RLearnerFit, *, y: np.ndarray, index: pd.DatetimeIndex) -> pd.DataFrame:
+        """Bootstrap the R-learner headline's sigma at ``block_hours`` and every length of ``block_hours_sweep``.
+
+        One row per block length, with :data:`_UNCERTAINTY_COLUMNS`. The cross-fitted models are fixed;
+        the records of both periods are resampled together in circular wall-clock blocks.
+        """
+        rows = rlearner.bootstrap_sigmas(
+            index[learner.rows],
+            y=y[learner.rows],
+            m=learner.m,
+            after=learner.after,
+            e=learner.e,
+            fitted=learner.fitted,
+            block_hours=[float(self.block_hours), *(float(h) for h in self.block_hours_sweep)],
+            n_resamples=self.n_resamples,
+            seed=self.bootstrap_seed,
+        )
+        return pd.DataFrame(rows, columns=list(_UNCERTAINTY_COLUMNS)) if rows else empty_uncertainty()
+
+    def _placebo_sigma(
+        self,
+        mi: MethodInput,
+        *,
+        learner: _RLearnerFit,
+        y: np.ndarray,
+        index: pd.DatetimeIndex,
+        timebase: pd.Timedelta,
+    ) -> dict[str, float]:
+        """Return the :data:`HOLDOUT_COLUMNS` of an R-learner estimate, from windows inside each period.
+
+        Nothing changes inside a period, so a window of it read against the rest of it, as the after
+        period is read against the before period, is an error. Each period is cut into windows as long as
+        the other period, or half its own span when that is shorter (:func:`holdout_windows`), and each
+        window's reading is the ratio of its ``sum(y) / sum(m)`` to the rest of the period's, less one,
+        with ``m`` the cross-fitted power model. Their spread beyond their own sampling sigma
+        (:func:`holdout_excess`) is ``sigma_holdout``. No model is fitted. Empty when
+        ``holdout_max_blocks`` is 0.
+        """
+        if self.holdout_max_blocks <= 0:
+            return {}
+        hours_per_record = timebase / pd.Timedelta(hours=1)
+        times = index[learner.rows]
+        y_used = y[learner.rows]
+        readings: list[float] = []
+        sigmas: list[float] = []
+        for own in (~learner.after, learner.after):
+            own_pos, other_times = np.flatnonzero(own), times[~own]
+            own_times = times[own_pos]
+            windows = holdout_windows(
+                own_times,
+                after_length=other_times.max() - other_times.min() + timebase,
+                max_blocks=self.holdout_max_blocks,
+            )
+            if windows and (windows[0][1] - windows[0][0]) * 2 >= own_times.max() - own_times.min():
+                # two halves of a period read against each other are one reading, not two
+                windows = windows[:1]
+            for start, end in windows:
+                held = np.asarray((own_times > start) & (own_times <= end))
+                if min(np.count_nonzero(held), np.count_nonzero(~held)) * hours_per_record < _MIN_PERIOD_HOURS:
+                    continue
+                inside, rest = own_pos[held], own_pos[~held]
+                r_in, r_rest = _ratio(y_used[inside], learner.m[inside]), _ratio(y_used[rest], learner.m[rest])
+                readings.append((1.0 + r_in) / (1.0 + r_rest) - 1.0)
+                s_in, s_rest = (
+                    self._reverse_sigma(times[p], actual=y_used[p], counterfactual=learner.m[p], timebase=timebase)
+                    for p in (inside, rest)
+                )
+                sigmas.append(float(np.hypot(s_in, s_rest)))
+        logger.info(
+            "%s %s: %d windows inside the periods read %s",
+            self.name,
+            mi.test_wtg,
+            len(readings),
+            ", ".join(f"{100 * r:+.2f}%" for r in readings),
+        )
+        return {
+            "sigma_holdout": holdout_excess(np.array(readings), sampling_sigmas=np.array(sigmas)),
+            "n_holdout_blocks": float(len(readings)),
+        }
 
     def _reverse_direction(
         self,
@@ -2033,6 +2296,9 @@ class PowerModelMethod:
     def _pass_clone(self, suffix: str) -> PowerModelMethod:
         """Return a clone for estimating one reference: forward, no holdout or conditional step, no plots, no pass.
 
+        Under the R-learner headline a reference is read by the R-learner too, so that the references'
+        readings and the subject's stay the same kind of number.
+
         Both passes must be off, not just the screen. A clone that still reports reference uplifts
         runs the whole reference pass itself, and its clones run it again, so the work is
         combinatorial rather than linear. The clone keeps this method's resolved ``training_period``.
@@ -2041,7 +2307,7 @@ class PowerModelMethod:
             self,
             reference_screen=False,
             report_reference_uplifts=False,
-            headline_estimator="forward",
+            headline_estimator="rlearner" if self.headline_estimator == "rlearner" else "forward",
             holdout_max_blocks=0,
             conditions=(),
             save_plots=False,
