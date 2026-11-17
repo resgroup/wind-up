@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-EXCLUDED = "excluded"
+EXCLUDED = "works window"
 SUBJECT_INVALID = "subject invalid"
 REFERENCE_INVALID = "reference invalid"
 CHANGED_UPWIND_OF_SUBJECT = "changed upwind of subject"

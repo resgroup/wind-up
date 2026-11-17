@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import numbers
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -48,6 +49,9 @@ _SITE_KEYS = ("offshore",)
 _UPGRADE_KEYS = ("expected_uplift", "wake_reach_d")
 _EXCLUSION_KEYS = ("turbine", "start", "end")
 _OVERRIDE_KEYS = ("turbine", "start", "end", "state")
+# A works table date without a time of day.
+# A works table time with a time of day; any other spelling pandas reads is a date alone.
+_TIME_OF_DAY = re.compile(r"\d{1,2}:\d{2}")
 # The works table's optional per-row reach columns, matched by prefix.
 EXPECTED_UPLIFT_PREFIX = "Expected uplift"
 WAKE_REACH_PREFIX = "Wake reach"
@@ -251,12 +255,14 @@ def load_declaration(path: str | Path) -> Declaration:
 def read_works(path: Path, *, offshore: bool = False) -> tuple[dict[str, list[Window]], dict[str, dict[Window, float]]]:
     """Read a works table: ``Turbine`` plus the first ``First date...`` and ``Last date...`` columns.
 
-    Each row is one window of whole days, ``[first 00:00, last + 1 day 00:00)`` UTC. A turbine may
-    have several rows. Returns the windows, and per turbine the windows with a reach of their own:
-    from the optional ``Wake reach...`` column (rotor diameters), else from the optional
-    ``Expected uplift...`` column (a fraction) through the reach table.
+    Each row is one window. A date alone is a whole day: the window runs from the first date's 00:00 to
+    the day after the last date, UTC. A date with a time of day is that instant, the last one exclusive;
+    without a zone it is UTC. A turbine may have several rows. Returns the windows, and per turbine the
+    windows with a reach of their own: from the optional ``Wake reach...`` column (rotor diameters), else
+    from the optional ``Expected uplift...`` column (a fraction) through the reach table.
     """
-    frame = pd.read_csv(path)
+    header = pd.read_csv(path, nrows=0).columns
+    frame = pd.read_csv(path, dtype={c: str for c in header if str(c).startswith(("First date", "Last date"))})
     uplift_col = next((c for c in frame.columns if str(c).startswith(EXPECTED_UPLIFT_PREFIX)), None)
     reach_col = next((c for c in frame.columns if str(c).startswith(WAKE_REACH_PREFIX)), None)
     first = next((c for c in frame.columns if str(c).startswith("First date")), None)
@@ -275,16 +281,25 @@ def read_works(path: Path, *, offshore: bool = False) -> tuple[dict[str, list[Wi
         if pd.isna(first_day) or pd.isna(last_day):
             msg = f"the works table {path.name} gives {turbine} a blank first or last date"
             raise ValueError(msg)
-        start = _timestamp(pd.Timestamp(first_day).normalize())
-        end = _timestamp(pd.Timestamp(last_day).normalize()) + pd.Timedelta(days=1)
+        start = _works_time(first_day, end=False)
+        end = _works_time(last_day, end=True)
         if end <= start:
-            msg = f"the works table {path.name} gives {turbine} a last date before its first"
+            msg = f"the works table {path.name} gives {turbine} a window ending at or before its start"
             raise ValueError(msg)
         works.setdefault(turbine, []).append((start, end))
         reach = _row_reach(frame, row=row, uplift_col=uplift_col, reach_col=reach_col, offshore=offshore)
         if reach is not None:
             reaches.setdefault(turbine, {})[(start, end)] = reach
     return {turbine: sorted(windows) for turbine, windows in works.items()}, reaches
+
+
+def _works_time(value: str, *, end: bool) -> pd.Timestamp:
+    """Return a works table time in UTC: a date alone is its 00:00, or the next day's for an ``end``."""
+    text = str(value).strip()
+    if not _TIME_OF_DAY.search(text):
+        day = _timestamp(pd.Timestamp(text))
+        return day + pd.Timedelta(days=1) if end else day
+    return _timestamp(text)
 
 
 def _row_reach(frame: pd.DataFrame, *, row: int, uplift_col: object, reach_col: object, offshore: bool) -> float | None:

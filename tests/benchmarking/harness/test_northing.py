@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -10,7 +11,7 @@ import pytest
 
 from benchmarking.harness import northing as harness_northing
 from benchmarking.harness import replicates as harness_replicates
-from benchmarking.harness.northing import ERA5_WD_COL, era5_direction, north_scada, northing_rows
+from benchmarking.harness.northing import ERA5_WD_COL, _usable_masks, era5_direction, north_scada, northing_rows
 from benchmarking.harness.operating_state import VALID_NORTHING_COL
 from benchmarking.harness.replicates import NorthingInputs, StudyConfig, iter_replicates
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
@@ -272,6 +273,40 @@ class TestStepTwoValidity:
             }
         )
         assert list(northing_rows(frame, columns=_COLUMNS, rated_power_kw=_RATED)) == [True, False, False]
+
+    def test_with_the_reanalysis_and_no_nacelle_position_no_row_is_learned_from(self) -> None:
+        index = _index(days=2)
+        scada, site_wd = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
+        scada[VALID_NORTHING_COL] = True
+        era5 = pd.Series(site_wd, index=index)
+        without = scada.drop(columns=[_COLUMNS.nacelle_position])
+        assert not northing_rows(without, columns=_COLUMNS, rated_power_kw=_RATED, era5_wd=era5).any()
+        no_role = dataclasses.replace(_COLUMNS, nacelle_position=None)
+        assert not northing_rows(scada, columns=no_role, rated_power_kw=_RATED, era5_wd=era5).any()
+
+    def test_with_the_reanalysis_northing_rows_are_the_rows_discovery_learns_from(self) -> None:
+        index = _index(days=10)
+        scada, site_wd = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
+        rng = np.random.default_rng(3)
+        scada[VALID_NORTHING_COL] = rng.random(len(scada)) > 0.2
+        scada.loc[rng.random(len(scada)) < 0.05, _COLUMNS.active_power] = 10.0
+        scada.loc[rng.random(len(scada)) < 0.05, _COLUMNS.nacelle_position] = np.nan
+        era5 = pd.Series(site_wd, index=index)
+        era5.iloc[:100] = np.nan
+        rows = northing_rows(scada, columns=_COLUMNS, rated_power_kw=_RATED, era5_wd=era5)
+        usable = _usable_masks(
+            scada,
+            columns=_COLUMNS,
+            turbines=list(_TURBINES),
+            index=index,
+            reference_deg=era5.to_numpy(),
+            rated_power_kw=_RATED,
+            timebase_s=600.0,
+        )
+        for turbine in _TURBINES:
+            mine = (scada[_COLUMNS.turbine] == turbine).to_numpy()
+            direction = scada.loc[mine, _COLUMNS.nacelle_position].to_numpy(dtype=float)
+            np.testing.assert_array_equal(rows[mine], usable[turbine] & np.isfinite(direction))
 
 
 class TestEra5Direction:

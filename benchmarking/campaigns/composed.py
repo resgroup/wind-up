@@ -93,7 +93,7 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
   - `{stages.REANALYSIS}/`: step 3, the reanalysis time-shift check, ERA5 against the site wind speed,
     and what the reanalysis covers.
   - `{stages.NORTHING}/`: step 4, the northing corrections over the whole record, each turbine's records
-    used and not used for northing coloured by operating state, and the possible yaw-alignment changes
+    northing learned from and those it did not, coloured by operating state, and the possible yaw-alignment changes
     with the apparent-Cp shift at each.
   - `{stages.WAKING}/`: step 5, each turbine's records considered waking, part waking and not waking,
     coloured by operating state; the hours in each waking scenario; where each turbine's direction came
@@ -112,7 +112,8 @@ Laid out by the parts and steps of wind-up's method (docs/v1/method.md).
 - `{MEASUREMENT_DIRNAME}/<turbine>/`: part C, one folder per measured turbine, over its span and with
   its power references. Its results are in CSVs (`record_losses.csv` is the hours lost to each rule of
   step 11 in each period); its plots are under `plots/`, one folder per step.
-  `plots/{stages.VALID_RECORDS}/` has the records used and not used for uplift, coloured by state.
+  `plots/{stages.VALID_RECORDS}/` has the records step 11 used for uplift, coloured by state, and those it did
+  not use, coloured by why.
 - `{MEASUREMENT_DIRNAME}/<reference>_reference_for_<turbine>/`: when reference plots are asked for, the same
   for each power reference measured as if it were a test turbine (step 9), once per test turbine it serves.
 - `{FARM_DIRNAME}/`: part D, the results across turbines: the farm uplift (step 16) and the uplift plots.

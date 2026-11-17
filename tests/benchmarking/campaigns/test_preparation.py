@@ -10,12 +10,13 @@ import pandas as pd
 import pytest
 
 from benchmarking.campaigns.loader import Declaration, load_declaration
-from benchmarking.campaigns.preparation import PreparedData, prepare_data
+from benchmarking.campaigns.preparation import PreparedData, northing_learning_set, prepare_data
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.yaw_changes import POSSIBLE_YAW_CHANGES_CSV, REPORT_COLUMNS
 from benchmarking.harness.label_checks import LABEL_CHECKS_CSV
 from benchmarking.harness.northing import NORTH_TABLE_YAML
 from benchmarking.harness.operating_state import FULL_DOWNTIME, NOT_WAKING, STATE_COL, STATE_COLUMNS, WAKING_STATE_COL
+from benchmarking.harness.reanalysis import ERA5_WD_RAW
 from benchmarking.harness.waking import UPWIND_COL, WAKING_COLUMNS, WAKING_SCENARIO_COL
 from benchmarking.synthetic import HOT_COLUMNS
 
@@ -140,6 +141,17 @@ class TestTheDeclarations:
     def prepare(self, declaration: Declaration, scada: pd.DataFrame, **declared: object) -> PreparedData:
         spec = dataclasses.replace(declaration.spec, **declared)
         return prepare_data(scada, spec=spec, columns=declaration.columns, era5_hourly_df=era5())
+
+    def test_with_declared_corrections_no_record_is_learned_from(self, declaration: Declaration) -> None:
+        prepared = prepare_data(
+            small_scada(), spec=declaration.spec, columns=declaration.columns, era5_hourly_df=era5()
+        )
+        era5_wd = prepared.aligned_era5[ERA5_WD_RAW]
+        frame = prepared.scada_df
+        assert northing_learning_set(frame, spec=declaration.spec, columns=declaration.columns, era5_wd=era5_wd).any()
+        for offsets in ([], [("T01", pd.Timestamp("2017-01-01", tz="UTC"), 5.0)]):
+            spec = dataclasses.replace(declaration.spec, north_offsets=offsets)
+            assert not northing_learning_set(frame, spec=spec, columns=declaration.columns, era5_wd=era5_wd).any()
 
     def test_excluded_records_do_not_move_the_learned_north_offsets(self, declaration: Declaration) -> None:
         start, end = self.WINDOW

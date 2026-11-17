@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -9,7 +10,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from benchmarking.campaigns.loader import load_declaration
+from benchmarking.campaigns.loader import EXPECTED_UPLIFT_PREFIX, load_declaration
 from benchmarking.campaigns.plans import plans_for
 from benchmarking.campaigns.real import (
     BM_CURTAILMENT,
@@ -22,7 +23,9 @@ from benchmarking.campaigns.real import (
     ICING,
     NOISE_MODE,
     REAL_CAMPAIGNS,
+    WORKS_COLUMNS,
     label_hot_site_states,
+    works_table,
     write_real_campaign,
 )
 from benchmarking.harness.operating_state import PARTIAL_DOWNTIME
@@ -58,14 +61,17 @@ def test_the_t13_declaration_loads(tmp_path: Path) -> None:
     assert spec.timing_for("T13") == pd.Timestamp("2021-09-30", tz="UTC")
     assert spec.wake_reach_d == pytest.approx(12.0)
     assert spec.analysis_period is None
-    assert spec.exclusions == [(None, pd.Timestamp("2022-09-03", tz="UTC"), pd.Timestamp("2023-02-12", tz="UTC"))]
+    # the curtailment from September 2022 is labelled record by record, so nothing is declared over it
+    assert spec.exclusions == []
+    assert spec.label_overrides == []
 
 
 def test_the_tuneup_declaration_loads(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
     (data / "scada.parquet").write_bytes(b"")
-    (data / "works.csv").write_text(WORKS + "T02,2022-07-18,2022-07-28\n")
+    aeroup = pd.read_csv(io.StringIO(WORKS + "T02,2022-07-18,2022-07-28\n"))
+    works_table(aeroup, campaign=HOT_TUNEUP_CAMPAIGN).to_csv(data / "works.csv", index=False)
     names = sorted({*HOT_TUNEUP["turbines"]["upgraded"], "T14"})
     (data / "turbines.csv").write_text(
         "name,latitude,longitude,rotor_diameter_m\n"
@@ -79,7 +85,33 @@ def test_the_tuneup_declaration_loads(tmp_path: Path) -> None:
     assert spec.candidate_references == ["T14"]
     assert spec.changeovers()["T13"] == [pd.Timestamp("2021-09-30", tz="UTC"), changeover]
     assert spec.wake_reach_d == pytest.approx(4.0)
-    assert spec.reach_of("T02", (pd.Timestamp("2022-07-18", tz="UTC"), pd.Timestamp("2022-07-29", tz="UTC"))) == 4.0
+    # an AeroUp row reaches as far as the AeroUp's expected uplift does
+    assert spec.reach_of("T02", (pd.Timestamp("2022-07-18", tz="UTC"), pd.Timestamp("2022-07-29", tz="UTC"))) == 12.0
+    assert spec.exclusions == []
+    deployment = (pd.Timestamp("2024-03-14 07:00", tz="UTC"), changeover)
+    for turbine in spec.upgraded_turbines:
+        assert deployment in spec.works[turbine]
+        assert spec.reach_of(turbine, deployment) == pytest.approx(spec.wake_reach_d)
+    assert "T14" not in spec.works or deployment not in spec.works["T14"]
+
+
+def test_the_works_table_holds_the_aeroup_rows_then_the_deployment() -> None:
+    aeroup = pd.read_csv(io.StringIO(WORKS))
+    table = works_table(aeroup, campaign=HOT_TUNEUP_CAMPAIGN)
+    assert list(table.columns) == list(WORKS_COLUMNS)
+    assert table["Works"].tolist() == ["AeroUp"] * 2 + ["deployment"] * 9
+    assert table.loc[table["Works"] == "AeroUp", EXPECTED_UPLIFT_PREFIX].tolist() == [0.05, 0.05]
+    deployment = table[table["Works"] == "deployment"]
+    assert set(deployment["Turbine"]) == set(HOT_TUNEUP["turbines"]["upgraded"])
+    assert set(deployment["First date of works"]) == {"2024-03-14T07:00:00Z"}
+    assert set(deployment["Last date of works"]) == {"2024-03-14T18:00:00Z"}
+    assert set(deployment[EXPECTED_UPLIFT_PREFIX]) == {0.01}
+
+
+def test_the_t13_works_table_is_the_aeroup_rows_at_the_campaigns_reach() -> None:
+    table = works_table(pd.read_csv(io.StringIO(WORKS)), campaign=HOT_AEROUP_T13_CAMPAIGN)
+    assert table["Works"].tolist() == ["AeroUp", "AeroUp"]
+    assert table[EXPECTED_UPLIFT_PREFIX].isna().all()
 
 
 def test_the_real_campaigns_end_their_scada_where_declared() -> None:

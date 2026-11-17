@@ -1,8 +1,7 @@
 """Draw the ``docs/analysis-period-and-reference-selection.md`` figures on Hill of Towie: the period timeline.
 
 Every turbine's works come from the Zenodo AeroUp install-dates table, and each turbine's records valid
-for uplift from the SCADA over ``WINDOW``, labelled with the Hill of Towie states and the real T13
-declaration's exclusions (:data:`~benchmarking.campaigns.real.HOT_AEROUP_T13`). Each turbine with works is
+for uplift from the SCADA over ``WINDOW``, labelled with the Hill of Towie states. Each turbine with works is
 then planned as the test turbine, with every other turbine a candidate, under the default settings:
 
 * ``analysis_timeline_T13.png`` -- the 2021 trial turbine, whose span the selector chooses;
@@ -21,10 +20,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from benchmarking.campaigns.loader import operating_state_config, read_works
+from benchmarking.campaigns.loader import read_works
 from benchmarking.campaigns.plans import uplift_validity
-from benchmarking.campaigns.real import HOT_AEROUP_T13, HOT_OPERATING_STATE, label_hot_operating_states
-from benchmarking.harness.operating_state import apply_declarations, fill_grid
+from benchmarking.campaigns.real import label_hot_operating_states
+from benchmarking.harness.operating_state import fill_grid
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import (
     ensure_hot_data_files,
@@ -61,18 +60,6 @@ def hot_layout() -> Layout:
     )
 
 
-def hot_exclusions() -> list[tuple[str | None, pd.Timestamp, pd.Timestamp]]:
-    """Return the real T13 declaration's exclusions, farm-wide ones as ``None``."""
-    return [
-        (
-            None if row["turbine"] == "ALL" else str(row["turbine"]),
-            pd.Timestamp(row["start"]),
-            pd.Timestamp(row["end"]),
-        )
-        for row in HOT_AEROUP_T13["exclusions"]
-    ]
-
-
 def main(*, out_dir: Path = DOCS_IMAGES_DIR) -> dict[str, AnalysisPlan | str]:
     """Plan every turbine with works as the test turbine, draw the two doc figures, and return each plan or reason."""
     layout = hot_layout()
@@ -86,16 +73,8 @@ def main(*, out_dir: Path = DOCS_IMAGES_DIR) -> dict[str, AnalysisPlan | str]:
         wtg_names=turbines,
         data_dir=data_dir,
     )
-    exclusions = hot_exclusions()
     scada = fill_grid(scada, turbine_col=HOT_COLUMNS.turbine, timebase=pd.Timedelta(minutes=10))
-    labelled = apply_declarations(
-        label_hot_operating_states(scada),
-        turbine_col=HOT_COLUMNS.turbine,
-        config=operating_state_config(HOT_OPERATING_STATE),
-        exclusions=exclusions,
-        overrides=[],
-    )
-    valid = uplift_validity(labelled, turbine_col=HOT_COLUMNS.turbine)
+    valid = uplift_validity(label_hot_operating_states(scada), turbine_col=HOT_COLUMNS.turbine)
     extents = valid_extents(valid)
 
     outcomes: dict[str, AnalysisPlan | str] = {}
@@ -131,7 +110,7 @@ def main(*, out_dir: Path = DOCS_IMAGES_DIR) -> dict[str, AnalysisPlan | str]:
             turbine,
             layout=layout,
             works=works,
-            exclusions=exclusions,
+            exclusions=[],
             extents=extents,
             plan=outcome if isinstance(outcome, AnalysisPlan) else None,
             reason=outcome if isinstance(outcome, str) else "",

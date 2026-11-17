@@ -42,7 +42,7 @@ class RealSite:
 
 REAL_SITES: dict[str, RealSite] = {
     "hot_t13": RealSite("hot_aeroup_t13", longest_pre_months=24, longest_post_months=15),
-    "hot_tuneup": RealSite("hot_tuneup", longest_pre_months=13, longest_post_months=5, lmax=True),
+    "hot_tuneup": RealSite("hot_tuneup", longest_pre_months=26, longest_post_months=5, lmax=True),
 }
 # The arms whose references are given synthetic exclusions.
 EXCLUSION_ARMS: tuple[str, ...] = ("excl",)
