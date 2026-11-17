@@ -26,6 +26,7 @@ from benchmarking.baselines.naive_ratio import (
 )
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodInput, MethodOutput
+from benchmarking.harness.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
 
 # Deliberately non-v0 column names: the method is source-agnostic, so the active-power column
@@ -201,6 +202,19 @@ class TestCompleteCase:
             MethodInput(scada_df=after_df, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
         )
         assert after.p50_overall == pytest.approx(before.p50_overall)
+
+    def test_records_labelled_missing_are_excluded(self) -> None:
+        idx = _index(20)
+        upgrade = idx[10]
+        scada = _recovery_scada(idx, treated=np.asarray(idx >= upgrade), uplift=0.05)
+        labelled = scada.assign(**{STATE_COL: NORMAL_OPERATION})
+        missing = labelled.index.isin([idx[3], idx[12]]) & labelled[_TURBINE_COL].isin(["T1", "R1"])
+        labelled.loc[missing, _POWER_COL] = 1e6
+        labelled.loc[missing, STATE_COL] = MISSING
+        out = NaiveRatioMethod(columns=_COLUMNS).estimate(
+            MethodInput(scada_df=labelled, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
+        )
+        assert out.p50_overall == pytest.approx(0.05)
 
 
 class TestTimebaseInvariance:
