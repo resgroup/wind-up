@@ -152,7 +152,7 @@ def fill_grid(scada_df: pd.DataFrame, *, turbine_col: str, timebase: pd.Timedelt
     absent = pd.MultiIndex.from_product([grid, turbines]).difference(present)
     filled = scada_df
     if len(absent):
-        rows = scada_df.iloc[:0].reindex(pd.RangeIndex(len(absent)))
+        rows = scada_df.iloc[:0].reset_index(drop=True).reindex(pd.RangeIndex(len(absent)))
         rows[turbine_col] = absent.get_level_values(1)
         rows.index = absent.get_level_values(0).rename(scada_df.index.name)
         filled = pd.concat([scada_df, rows])
