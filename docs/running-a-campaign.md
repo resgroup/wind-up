@@ -96,8 +96,9 @@ label_overrides:                 # optional; end exclusive; the data is right, t
 - **Label overrides** are periods whose data is right but whose operating state the labels miss (a
   controller test, a curtailment), for one turbine or `ALL`. Their records take `state`, which must be a
   generic state (`missing`, `full downtime`, `partial downtime`, `normal operation`) or a label declared
-  under `operating_state.labels`, with its northing, waking and uplift validity. Two overrides of one
-  turbine may not overlap; an exclusion may overlap an override, and wins.
+  under `operating_state.labels`, with its northing, waking and uplift validity. A record the labels
+  give as missing stays missing. Two overrides of one turbine may not overlap; an exclusion may overlap an
+  override, and wins.
 - **The span.** For each upgraded turbine wind-up picks the start and end of its analysis, and its
   **power references**: the best-ranked 4 turbines valid for uplift over at least 50 % of the span and
   with no works inside it, within 20 rotor diameters. Turbines are ranked by distance, except that one the test turbine is

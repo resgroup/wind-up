@@ -291,6 +291,18 @@ class TestTheReferenceShare:
         p = plan(line(6), span=span, exclusions=exclusions, settings=PlanSettings(reference_share=0.95))
         assert "T1" not in p.power_references
 
+    def test_the_span_starts_where_a_reference_with_a_long_gap_reaches_the_share(self) -> None:
+        # over the whole record T3 is valid for 16 of 37 months; from about 2018-08-01 it is valid over half
+        record = (utc("2018-01-01"), utc("2021-02-01"))
+        gap = (utc("2018-02-01"), utc("2019-11-01"))
+        valid = validity(dict.fromkeys(["T0", "T1", "T2", "T3"], record), exclusions=[("T3", *gap)], record=record)
+        p = plan(line(4), valid=valid)
+        assert p.power_references == ("T1", "T2", "T3")
+        assert p.end == record[1]
+        assert utc("2018-07-25") < p.start < utc("2018-08-05")
+        assert valid.loc[p.start : p.end - pd.Timedelta(hours=1), "T3"].mean() >= 0.5
+        assert valid.loc[p.start - pd.Timedelta(hours=1) : p.end - pd.Timedelta(hours=1), "T3"].mean() < 0.5
+
     def test_a_side_is_the_test_turbines_valid_time(self) -> None:
         span = (TEST_WORKS[0] - 12 * MONTH, TEST_WORKS[1] + 12 * MONTH)
         exclusions = [("T0", span[0], span[0] + pd.Timedelta(days=30))]
