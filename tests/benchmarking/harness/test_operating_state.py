@@ -282,6 +282,12 @@ class TestFillGrid:
         labelled = label(filled)
         assert labelled.loc[labelled[COLS.turbine] == "T02", STATE_COL].tolist() == [NORMAL_OPERATION, MISSING, MISSING]
 
+    def test_a_frame_whose_index_has_been_looked_up_is_filled(self) -> None:
+        scada = pd.concat([frame(3, turbine="T01"), frame(3, turbine="T02").iloc[[0]]])
+        assert not scada.index.is_unique
+        filled = fill_grid(scada, turbine_col=COLS.turbine, timebase=TIMEBASE)
+        assert len(filled) == 6
+
     def test_a_full_grid_keeps_its_values(self) -> None:
         scada = frame(3)
         pd.testing.assert_frame_equal(fill_grid(scada, turbine_col=COLS.turbine, timebase=TIMEBASE), scada)
