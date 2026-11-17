@@ -50,7 +50,8 @@ _UPGRADE_KEYS = ("expected_uplift", "wake_reach_d")
 _EXCLUSION_KEYS = ("turbine", "start", "end")
 _OVERRIDE_KEYS = ("turbine", "start", "end", "state")
 # A works table date without a time of day.
-_DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}")
+# A works table time with a time of day; any other spelling pandas reads is a date alone.
+_TIME_OF_DAY = re.compile(r"\d{1,2}:\d{2}")
 # The works table's optional per-row reach columns, matched by prefix.
 EXPECTED_UPLIFT_PREFIX = "Expected uplift"
 WAKE_REACH_PREFIX = "Wake reach"
@@ -295,7 +296,7 @@ def read_works(path: Path, *, offshore: bool = False) -> tuple[dict[str, list[Wi
 def _works_time(value: str, *, end: bool) -> pd.Timestamp:
     """Return a works table time in UTC: a date alone is its 00:00, or the next day's for an ``end``."""
     text = str(value).strip()
-    if _DATE_ONLY.fullmatch(text):
+    if not _TIME_OF_DAY.search(text):
         day = _timestamp(pd.Timestamp(text))
         return day + pd.Timedelta(days=1) if end else day
     return _timestamp(text)

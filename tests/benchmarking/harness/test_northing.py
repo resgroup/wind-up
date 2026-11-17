@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -272,6 +273,16 @@ class TestStepTwoValidity:
             }
         )
         assert list(northing_rows(frame, columns=_COLUMNS, rated_power_kw=_RATED)) == [True, False, False]
+
+    def test_with_the_reanalysis_and_no_nacelle_position_no_row_is_learned_from(self) -> None:
+        index = _index(days=2)
+        scada, site_wd = _scada(index, {t: [(_START, 0.0)] for t in _TURBINES})
+        scada[VALID_NORTHING_COL] = True
+        era5 = pd.Series(site_wd, index=index)
+        without = scada.drop(columns=[_COLUMNS.nacelle_position])
+        assert not northing_rows(without, columns=_COLUMNS, rated_power_kw=_RATED, era5_wd=era5).any()
+        no_role = dataclasses.replace(_COLUMNS, nacelle_position=None)
+        assert not northing_rows(scada, columns=no_role, rated_power_kw=_RATED, era5_wd=era5).any()
 
     def test_with_the_reanalysis_northing_rows_are_the_rows_discovery_learns_from(self) -> None:
         index = _index(days=10)

@@ -448,6 +448,11 @@ class TestTheWorksTable:
             (utc("2018-09-01"), utc("2018-09-04")),
         ]
 
+    @pytest.mark.parametrize(("first", "last"), [("2018/01/10", "2018/01/12"), ("2018-1-10", "2018-1-12")])
+    def test_a_date_spelled_another_way_still_covers_whole_days(self, tmp_path: Path, first: str, last: str) -> None:
+        works = WORKS_CSV.replace("T01,2018-01-10,2018-01-12", f"T01,{first},{last}")
+        assert load_staggered(tmp_path, works=works).spec.works["T01"] == [(utc("2018-01-10"), utc("2018-01-13"))]
+
     def test_a_time_of_day_is_an_exact_instant_end_exclusive(self, tmp_path: Path) -> None:
         works = WORKS_CSV.replace("T01,2018-01-10,2018-01-12", "T01,2018-01-10T07:00:00Z,2018-01-10T18:00:00Z")
         spec = load_staggered(tmp_path, works=works).spec
