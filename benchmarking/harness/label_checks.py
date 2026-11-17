@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.operating_state import (
+from wind_up.operating_state import (
     NORMAL_OPERATION,
     STATE_COL,
     counter_contradicts_power,

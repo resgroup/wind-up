@@ -12,11 +12,11 @@ import pytest
 from benchmarking.harness import northing as harness_northing
 from benchmarking.harness import replicates as harness_replicates
 from benchmarking.harness.northing import ERA5_WD_COL, _usable_masks, era5_direction, north_scada, northing_rows
-from benchmarking.harness.operating_state import VALID_NORTHING_COL
 from benchmarking.harness.replicates import NorthingInputs, StudyConfig, iter_replicates
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.circular_math import circ_diff
 from wind_up.layout import Layout
+from wind_up.operating_state import VALID_NORTHING_COL
 
 if TYPE_CHECKING:
     from pathlib import Path

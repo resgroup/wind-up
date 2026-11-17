@@ -11,10 +11,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.conditions import CONDITION_BINS, condition_bins, energy_ratio_by_bin
-from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, treated_mask
 from benchmarking.synthetic.sources.hill_of_towie import HOT_RATED_POWER_KW
+from wind_up.conditions import CONDITION_BINS, condition_bins, energy_ratio_by_bin
+from wind_up.method import MethodInput, MethodOutput
 
 
 def oracle_overall_uplift(mi: MethodInput, original_df: pd.DataFrame) -> float:

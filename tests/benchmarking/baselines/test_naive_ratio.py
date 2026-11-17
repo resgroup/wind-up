@@ -24,10 +24,10 @@ from benchmarking.baselines.naive_ratio import (
     _expected_per_day,
     _infer_timebase,
 )
-from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
+from wind_up.campaign_context import CampaignContext
+from wind_up.method import MethodInput, MethodOutput
+from wind_up.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
 
 # Deliberately non-v0 column names: the method is source-agnostic, so the active-power column
 # is configured and the turbine column comes from the seam. Using names that are nothing like
@@ -92,13 +92,13 @@ class TestInferTimebase:
         assert _infer_timebase(doubled) == pd.Timedelta(minutes=10)
 
 
-def test_naive_ratio_shares_no_wind_up_code() -> None:
-    """The naive method is an independent, source-native baseline: it must not import wind_up or wind_up_v0."""
+def test_naive_ratio_shares_no_v0_code() -> None:
+    """The naive method is an independent, source-native baseline: it must not import wind_up_v0."""
     tree = ast.parse(Path(naive_ratio.__file__).read_text())
     modules = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
     modules |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
-    offenders = {m for m in modules if m.split(".", 1)[0] in {"wind_up", "wind_up_v0"}}
-    assert not offenders, f"naive_ratio must not depend on wind_up or wind_up_v0, found imports: {offenders}"
+    offenders = {m for m in modules if m.split(".", 1)[0] == "wind_up_v0"}
+    assert not offenders, f"naive_ratio must not depend on wind_up_v0, found imports: {offenders}"
 
 
 class TestRecovery:

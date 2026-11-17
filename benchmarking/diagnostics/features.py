@@ -22,8 +22,8 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.power_model.features import SITE_FEATURE_UNITS
-from benchmarking.diagnostics.style import apply_grid, save_fig
-from benchmarking.harness.waking import WAKING_SCENARIO_COL
+from wind_up.diagnostics.style import apply_grid, save_fig
+from wind_up.waking import WAKING_SCENARIO_COL
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

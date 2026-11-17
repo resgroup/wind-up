@@ -18,7 +18,6 @@ import pandas as pd
 import yaml
 
 from benchmarking.campaigns.loader import EXPECTED_UPLIFT_PREFIX, operating_state_config
-from benchmarking.harness.operating_state import PARTIAL_DOWNTIME, label_operating_states
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_ACTIVE_POWER_MAX_COL,
     HOT_AMBIENT_TEMP_COL,
@@ -45,6 +44,7 @@ from benchmarking.synthetic.sources.hill_of_towie import (
     get_data_dir,
     load_hot_scada,
 )
+from wind_up.operating_state import PARTIAL_DOWNTIME, label_operating_states
 
 if TYPE_CHECKING:
     from collections.abc import Callable

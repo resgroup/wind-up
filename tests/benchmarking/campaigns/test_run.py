@@ -8,8 +8,10 @@ import pytest
 
 from benchmarking.campaigns.run import NoTurbineMeasuredError, estimate_campaign, visible_mask, visible_scada
 from benchmarking.harness import MethodInput, MethodOutput
-from benchmarking.harness.method import MethodConfigurationError
-from benchmarking.harness.operating_state import (
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from wind_up.analysis_warnings import AnalysisWarning
+from wind_up.method import MethodConfigurationError
+from wind_up.operating_state import (
     MISSING,
     STATE_COL,
     VALID_NORTHING_COL,
@@ -17,8 +19,6 @@ from benchmarking.harness.operating_state import (
     WAKING_MISSING,
     WAKING_STATE_COL,
 )
-from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
-from wind_up.analysis_warnings import AnalysisWarning
 
 from .test_data_screen import ANY_SHARE
 from .test_declaration import CHANGEOVER, PERIOD, campaign, scada

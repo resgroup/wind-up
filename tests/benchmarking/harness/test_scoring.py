@@ -7,11 +7,11 @@ import pandas as pd
 import pytest
 
 from benchmarking.harness.campaign import campaign_windows
-from benchmarking.harness.conditions import label_column
-from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.replicates import StudyConfig, build_replicates
 from benchmarking.harness.scoring import _merge_diagnostics, score_one, score_output, score_study, truth_mask
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
+from wind_up.conditions import label_column
+from wind_up.method import MethodInput, MethodOutput
 from wind_up_v0.constants import TIMESTAMP_COL
 
 from .stubs import BiasedMethod, ConditionalOracleMethod, OracleMethod, RecordingMethod, UncertainMethod

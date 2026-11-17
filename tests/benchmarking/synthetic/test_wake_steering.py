@@ -14,7 +14,6 @@ import pandas as pd
 import pytest
 
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
-from benchmarking.harness.method import MethodInput
 from benchmarking.synthetic import (
     HOT_COLUMNS,
     ToggleSchedule,
@@ -30,6 +29,7 @@ from benchmarking.synthetic import (
 from benchmarking.synthetic.cp_core import CpCore
 from benchmarking.synthetic.upgrades import UpgradeEffect
 from wind_up.geodesy import distance_and_bearing
+from wind_up.method import MethodInput
 from wind_up_v0.constants import TIMESTAMP_COL
 
 if TYPE_CHECKING:

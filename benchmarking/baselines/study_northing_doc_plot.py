@@ -28,8 +28,8 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.study_wake_nadir_golden import hot_inputs
-from benchmarking.diagnostics.style import apply_grid, save_fig, series_style
 from wind_up.circular_math import circ_diff, circ_median
+from wind_up.diagnostics.style import apply_grid, save_fig, series_style
 from wind_up.northing import DEFAULT_NORTHING, add_wake_nadir_shift, apply_north_table, estimate_north_table, north_farm
 from wind_up.northing_plots import plot_wake_nadir_farm, plot_wake_nadir_pair
 from wind_up.wake_nadir import wake_pair_curves

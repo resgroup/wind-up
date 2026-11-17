@@ -36,9 +36,9 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.toggle import build_toggle_df, is_toggle, toggle_upgrade_start
 from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format
+from wind_up.method import MethodInput, MethodOutput
+from wind_up.toggle import build_toggle_df, is_toggle, toggle_upgrade_start
 from wind_up_v0.combine_results import combine_results
 from wind_up_v0.interface import AssessmentInputs
 from wind_up_v0.main_analysis import run_wind_up_analysis

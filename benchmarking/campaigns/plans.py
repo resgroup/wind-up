@@ -9,15 +9,15 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.operating_state import (
+from benchmarking.harness.wind_rose import era5_rose, rose_label
+from benchmarking.synthetic import treated_mask
+from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, PlanSettings, plan_analysis, valid_extents
+from wind_up.operating_state import (
     VALID_UPLIFT_COL,
     OperatingStateConfig,
     apply_declarations,
     label_operating_states,
 )
-from benchmarking.harness.wind_rose import era5_rose, rose_label
-from benchmarking.synthetic import treated_mask
-from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, PlanSettings, plan_analysis, valid_extents
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -25,8 +25,8 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from benchmarking.campaigns.declaration import CampaignSpec, Window
-    from benchmarking.harness.record_selection import WorksWindow
     from benchmarking.synthetic import ColumnSchema, ToggleSchedule
+    from wind_up.record_selection import WorksWindow
 
 logger = logging.getLogger(__name__)
 

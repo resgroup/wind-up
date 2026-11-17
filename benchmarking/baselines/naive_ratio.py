@@ -38,11 +38,11 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
-from benchmarking.baselines.filtering import NormalOperationFilter, blank_missing
-from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
-from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.toggle import ToggleRowSets, is_toggle, resolve_toggle, toggle_upgrade_start
 from benchmarking.synthetic import ToggleSchedule
+from wind_up.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
+from wind_up.filtering import NormalOperationFilter, blank_missing
+from wind_up.method import MethodInput, MethodOutput
+from wind_up.toggle import ToggleRowSets, is_toggle, resolve_toggle, toggle_upgrade_start
 
 if TYPE_CHECKING:
     import numpy.typing as npt

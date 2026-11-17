@@ -29,11 +29,11 @@ from benchmarking.campaigns.data_screen import (
 from benchmarking.campaigns.plans import CampaignPlans, labelled_scada, plans_for, treated_activity
 from benchmarking.harness import MethodConfigurationError, MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
-from benchmarking.harness.operating_state import not_missing
 from wind_up import TurbineUplift, farm_uplift
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.analysis_warnings import AnalysisWarning, ranked
 from wind_up.northing import DEFAULT_NORTHING
+from wind_up.operating_state import not_missing
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence

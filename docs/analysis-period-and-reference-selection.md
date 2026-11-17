@@ -173,7 +173,7 @@ that each one's records can support the measurement. It runs once per test turbi
 any method sees the plan, so the measurement screen of pass 2 starts from the references it keeps.
 
 **Records.** Each candidate is paired with the test turbine alone, and the pair's records go through the
-record selection of method step 11 (`benchmarking/harness/record_selection.py`). Each lost record is
+record selection of method step 11 (`src/wind_up/record_selection.py`). Each lost record is
 labelled with the first reason that applies, in this order:
 
 | reason | the record is lost because |

@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
 
-from benchmarking.harness.method import MethodOutput
 from benchmarking.harness.plots import conditional_estimates, plot_campaign_curves, plot_conditional_uplift
+from wind_up.method import MethodOutput
 
 if TYPE_CHECKING:
     from pathlib import Path

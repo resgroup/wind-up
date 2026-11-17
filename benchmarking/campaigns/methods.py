@@ -6,11 +6,11 @@ from typing import TYPE_CHECKING
 
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
-from benchmarking.baselines.toggle_specialist import ToggleSpecialistMethod
 from benchmarking.campaigns.declaration import layout_coords, layout_rotor_diameters
 from benchmarking.campaigns.loader import centroid
-from benchmarking.diagnostics.context import ERA5_UNLOCATED
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from wind_up.diagnostics.context import ERA5_UNLOCATED
+from wind_up.methods.toggle_energy_ratio import ToggleEnergyRatioMethod
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,7 +38,7 @@ def carried_forward_methods(
 ) -> list[Method]:
     """Build the methods applicable to ``spec``, each writing into its own subfolder of ``out_dir``.
 
-    ``toggle_specialist`` accepts only toggle campaigns and is left out of a prepost one. The power
+    ``toggle_energy_ratio`` accepts only toggle campaigns and is left out of a prepost one. The power
     model reports per-condition estimates only when ``era5_hourly_df`` is given, since its
     conditional step matches on ERA5 weather columns.
 
@@ -71,12 +71,12 @@ def carried_forward_methods(
     if spec.mode == "toggle":
         assert isinstance(spec.upgrade_timing, ToggleSchedule)  # noqa: S101 - what ``mode == "toggle"`` means
         methods.append(
-            ToggleSpecialistMethod(
+            ToggleEnergyRatioMethod(
                 columns=HOT_COLUMNS,
                 toggle_period=spec.upgrade_timing.period,
                 # a declared campaign's schedule tiles its cycles from its start
                 toggle_datum=spec.upgrade_timing.start,
-                out_dir=out_dir / "toggle_specialist",
+                out_dir=out_dir / "toggle_energy_ratio",
                 save_plots=True,
                 conditions=("power",),
                 rated_power_kw=spec.rated_power_kw,

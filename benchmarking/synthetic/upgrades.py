@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from benchmarking.synthetic.cp_core import CpCore
-    from benchmarking.synthetic.schema import ColumnSchema
+    from wind_up.schema import ColumnSchema
 
 
 @dataclass

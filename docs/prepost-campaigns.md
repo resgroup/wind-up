@@ -13,7 +13,7 @@ prepost-specific mechanism below exists to narrow that gap.
 
 ## The contrast
 
-`resolve_toggle` (`benchmarking/harness/toggle.py`) turns the turbine's timing into three row sets.
+`resolve_toggle` (`src/wind_up/toggle.py`) turns the turbine's timing into three row sets.
 For prepost, where the timing is a single timestamp:
 
 - **upgraded** — `index >= changeover`

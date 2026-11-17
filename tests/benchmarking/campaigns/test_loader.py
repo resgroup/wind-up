@@ -9,9 +9,9 @@ import pandas as pd
 import pytest
 
 from benchmarking.campaigns.loader import CENTROID_DECIMALS, era5_window, load_declaration
-from benchmarking.harness.operating_state import GENERIC_STATES, OperatingStateConfig, StateValidity
 from benchmarking.harness.reanalysis import TimestampConvention
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from wind_up.operating_state import GENERIC_STATES, OperatingStateConfig, StateValidity
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -10,10 +10,10 @@ import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
 from benchmarking.campaigns.context import context_for_plan
 from benchmarking.campaigns.plans import plans_for
-from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.record_selection import ChangedInterval
 from benchmarking.synthetic import HOT_COLUMNS
 from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec, utc
+from wind_up.campaign_context import CampaignContext
+from wind_up.record_selection import ChangedInterval
 
 
 def test_the_context_carries_only_the_documented_answers() -> None:

@@ -11,9 +11,9 @@ import pytest
 
 from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.baselines.power_model.features import QUALIFIER
-from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.method import MethodInput
 from tests.benchmarking.baselines.test_power_model_method import _COLUMNS, _FAST_PARAMS, _POWER, _TURBINE, _toy_scada
+from wind_up.campaign_context import CampaignContext
+from wind_up.method import MethodInput
 
 if TYPE_CHECKING:
     from pathlib import Path

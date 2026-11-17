@@ -34,8 +34,8 @@ from zipfile import ZipFile
 import pandas as pd
 
 from benchmarking import env
-from benchmarking.synthetic.schema import ColumnSchema
 from wind_up.layout import Layout
+from wind_up.schema import ColumnSchema
 from wind_up_v0.constants import DataColumns
 
 if TYPE_CHECKING:

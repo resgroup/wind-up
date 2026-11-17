@@ -25,12 +25,12 @@ def _names(spec: CampaignSpec, out_dir: Path) -> list[str]:
     return [m.name for m in carried_forward_methods(spec, out_dir=out_dir, include_power_model=False)]
 
 
-def test_prepost_skips_the_toggle_specialist(tmp_path: Path) -> None:
-    assert "toggle_specialist" not in _names(campaign().spec(), tmp_path)
+def test_prepost_skips_the_toggle_energy_ratio(tmp_path: Path) -> None:
+    assert "toggle_energy_ratio" not in _names(campaign().spec(), tmp_path)
 
 
-def test_toggle_includes_the_toggle_specialist(tmp_path: Path) -> None:
-    assert "toggle_specialist" in _names(campaign(upgrade_timing=TOGGLE).spec(), tmp_path)
+def test_toggle_includes_the_toggle_energy_ratio(tmp_path: Path) -> None:
+    assert "toggle_energy_ratio" in _names(campaign(upgrade_timing=TOGGLE).spec(), tmp_path)
 
 
 def test_naive_ratio_runs_in_both_modes(tmp_path: Path) -> None:

@@ -20,12 +20,12 @@ from benchmarking.campaigns.data_screen import (
 )
 from benchmarking.campaigns.data_screen_plots import plot_correlation_map, plot_reference_map
 from benchmarking.campaigns.plans import plans_for
-from benchmarking.harness.operating_state import VALID_UPLIFT_COL
-from benchmarking.harness.record_selection import ChangedInterval
-from benchmarking.harness.waking import DIRECTION_COL, UPWIND_COL
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec, utc
 from wind_up.analysis_period import PlanSettings
+from wind_up.operating_state import VALID_UPLIFT_COL
+from wind_up.record_selection import ChangedInterval
+from wind_up.waking import DIRECTION_COL, UPWIND_COL
 
 if TYPE_CHECKING:
     from pathlib import Path

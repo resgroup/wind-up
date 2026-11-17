@@ -28,7 +28,6 @@ from benchmarking.campaigns.real import (
     works_table,
     write_real_campaign,
 )
-from benchmarking.harness.operating_state import PARTIAL_DOWNTIME
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_ACTIVE_POWER_MAX_COL,
     HOT_AMBIENT_TEMP_COL,
@@ -38,6 +37,7 @@ from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_TURBINE_COL,
 )
 from wind_up.analysis_period import MONTH
+from wind_up.operating_state import PARTIAL_DOWNTIME
 
 if TYPE_CHECKING:
     from pathlib import Path

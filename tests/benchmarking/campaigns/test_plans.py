@@ -10,10 +10,10 @@ import pandas as pd
 import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
 from benchmarking.campaigns.plans import changed_works, extent_around_works, other_works, plans_for, uplift_validity
-from benchmarking.harness.operating_state import MISSING, NORMAL_OPERATION, STATE_COL, VALID_UPLIFT_COL
 from benchmarking.synthetic import HOT_COLUMNS
 from tests.benchmarking.campaigns.timeline_fixtures import DATA_END, hourly_scada, staggered_spec, utc
 from wind_up.analysis_period import PlanSettings, valid_extents
+from wind_up.operating_state import MISSING, NORMAL_OPERATION, STATE_COL, VALID_UPLIFT_COL
 from wind_up.wake_reach import MAX_REACH_D
 
 

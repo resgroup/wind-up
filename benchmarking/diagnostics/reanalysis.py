@@ -11,8 +11,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from benchmarking.diagnostics.style import apply_grid, save_fig
 from benchmarking.harness.reanalysis import ERA5_WS_RAW, SHIFT_RAISE, SHIFT_WARN, minutes
+from wind_up.diagnostics.style import apply_grid, save_fig
 
 if TYPE_CHECKING:
     from pathlib import Path

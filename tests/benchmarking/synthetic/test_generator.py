@@ -10,14 +10,9 @@ import pandas as pd
 import pytest
 
 from benchmarking.synthetic import HOT_COLUMNS
-from benchmarking.synthetic.generator import (
-    SyntheticDataset,
-    ToggleSchedule,
-    _treated_mask,
-    generate_dataset,
-    treated_mask,
-)
+from benchmarking.synthetic.generator import SyntheticDataset, generate_dataset
 from benchmarking.synthetic.upgrades import ConstantCpChange
+from wind_up.toggle import ToggleSchedule, treated_mask, treated_mask_in_mode
 from wind_up_v0.constants import TIMESTAMP_COL
 
 if TYPE_CHECKING:
@@ -133,7 +128,7 @@ def test_toggle_start_leaves_pre_start_rows_untreated() -> None:
     assert np.all(on_block.to_numpy() > 1000.0)
 
 
-def test_public_treated_mask_infers_mode_from_timing_type() -> None:
+def test_publictreated_mask_in_mode_infers_mode_from_timing_type() -> None:
     """treated_mask infers prepost vs toggle from the upgrade_timing type."""
     wf_df = _wf_df(turbines=("T01",), periods=288)
     index = wf_df.index
@@ -148,16 +143,16 @@ def test_public_treated_mask_infers_mode_from_timing_type() -> None:
     assert toggle_mask[np.asarray(index >= changeover)].any()  # some on-rows after start
 
 
-def test_treated_mask_rejects_mode_timing_mismatch() -> None:
+def testtreated_mask_in_mode_rejects_mode_timing_mismatch() -> None:
     """A mode that disagrees with the upgrade_timing type fails fast with a clear TypeError."""
     index = _wf_df(turbines=("T01",), periods=48).index
     changeover = index[len(index) // 2]
     schedule = ToggleSchedule(period=pd.Timedelta(hours=12), start=changeover)
 
     with pytest.raises(TypeError, match="prepost mode needs a changeover Timestamp"):
-        _treated_mask(index, mode="prepost", upgrade_timing=schedule)
+        treated_mask_in_mode(index, mode="prepost", upgrade_timing=schedule)
     with pytest.raises(TypeError, match="toggle mode needs a ToggleSchedule"):
-        _treated_mask(index, mode="toggle", upgrade_timing=changeover)
+        treated_mask_in_mode(index, mode="toggle", upgrade_timing=changeover)
 
 
 def test_run_metadata_records_recipe() -> None:

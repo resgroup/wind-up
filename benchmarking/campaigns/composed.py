@@ -31,12 +31,12 @@ from benchmarking.campaigns.plans import with_wake_ranking
 from benchmarking.campaigns.preparation import prepare_data
 from benchmarking.campaigns.report import write_report
 from benchmarking.campaigns.run import estimate_campaign
-from benchmarking.diagnostics import stages
-from benchmarking.diagnostics.context import ERA5_UNLOCATED, era5_source_label, infer_timebase
 from benchmarking.env import output_root
 from benchmarking.harness.reanalysis import normalise_timestamps
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.analysis_warnings import summary
+from wind_up.diagnostics import stages
+from wind_up.diagnostics.context import ERA5_UNLOCATED, era5_source_label, infer_timebase
 from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:

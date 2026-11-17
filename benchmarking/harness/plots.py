@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from matplotlib.figure import Figure
 
-    from benchmarking.harness.method import MethodOutput
+    from wind_up.method import MethodOutput
 
 # Uplift quantities are stored as fractions; plot them as percentage points.
 _FRACTION_TO_PP = 100.0

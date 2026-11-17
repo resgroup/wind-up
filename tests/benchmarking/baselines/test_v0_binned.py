@@ -14,11 +14,11 @@ import pytest
 from benchmarking.baselines import v0_binned
 from benchmarking.baselines.hot_context import HotV0Context
 from benchmarking.baselines.v0_binned import V0BinnedMethod, _extract_p50, _subset_turbines
-from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.toggle import build_toggle_df
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
 from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format
+from wind_up.campaign_context import CampaignContext
+from wind_up.method import MethodInput, MethodOutput
+from wind_up.toggle import build_toggle_df
 
 # The harness hands v0 source-native SCADA, so the fixtures carry the source-native tag names and
 # the full field set the v0 on-ramp (``long_to_wind_up_format``) needs (pitch blades, yaw, the

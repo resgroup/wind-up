@@ -24,14 +24,6 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.campaigns.real import label_hot_operating_states
-from benchmarking.harness.operating_state import (
-    FULL_DOWNTIME,
-    NORMAL_OPERATION,
-    STATE_COL,
-    VALID_NORTHING_COL,
-    VALID_UPLIFT_COL,
-    WAKING_STATE_COL,
-)
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_ACTIVE_POWER_MAX_COL,
     HOT_COLUMNS,
@@ -39,6 +31,14 @@ from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_TURBINE_COL,
     TIMEBASE_S,
     load_hot_scada,
+)
+from wind_up.operating_state import (
+    FULL_DOWNTIME,
+    NORMAL_OPERATION,
+    STATE_COL,
+    VALID_NORTHING_COL,
+    VALID_UPLIFT_COL,
+    WAKING_STATE_COL,
 )
 
 REPO = Path(__file__).resolve().parents[2]

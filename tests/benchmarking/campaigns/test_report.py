@@ -105,7 +105,7 @@ def test_no_conditional_plots_when_no_method_reports_conditions(tmp_path: Path) 
 
 
 class PowerOnlyMethod:
-    """Reports a per-condition breakdown on the power axis only, as toggle_specialist does."""
+    """Reports a per-condition breakdown on the power axis only, as toggle_energy_ratio does."""
 
     name = "power_only"
 

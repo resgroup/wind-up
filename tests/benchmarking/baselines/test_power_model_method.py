@@ -47,21 +47,21 @@ from benchmarking.baselines.power_model.method import (
     under_training_floor,
 )
 from benchmarking.baselines.power_model.screening import ScreenResult
-from benchmarking.diagnostics import stages
-from benchmarking.harness.conditions import label_column
-from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.method import MethodConfigurationError, MethodInput, MethodOutput
-from benchmarking.harness.operating_state import VALID_UPLIFT_COL
-from benchmarking.harness.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE, ChangedInterval
 from benchmarking.harness.scoring import _merge_diagnostics
-from benchmarking.harness.toggle import resolve_toggle
-from benchmarking.harness.waking import DIRECTION_COL, NONE, UPWIND_COL, WAKING_SCENARIO_COL
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
+from wind_up.campaign_context import CampaignContext
+from wind_up.conditions import label_column
+from wind_up.diagnostics import stages
+from wind_up.method import MethodConfigurationError, MethodInput, MethodOutput
+from wind_up.operating_state import VALID_UPLIFT_COL
+from wind_up.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE, ChangedInterval
+from wind_up.toggle import resolve_toggle
+from wind_up.waking import DIRECTION_COL, NONE, UPWIND_COL, WAKING_SCENARIO_COL
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from benchmarking.diagnostics import DiagnosticContext
+    from wind_up.diagnostics import DiagnosticContext
 
 
 _TURBINE = "TurbineName"

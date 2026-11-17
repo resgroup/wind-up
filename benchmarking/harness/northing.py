@@ -21,9 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from benchmarking.diagnostics.context import infer_timebase
-from benchmarking.harness.operating_state import VALID_NORTHING_COL
 from benchmarking.harness.reanalysis import ERA5_WS_RAW, interpolate_era5
+from wind_up.diagnostics.context import infer_timebase
 from wind_up.northing import (
     DEFAULT_NORTHING,
     NORTH_OFFSET_COL,
@@ -36,6 +35,7 @@ from wind_up.northing import (
     yaw_usable,
 )
 from wind_up.northing_plots import plot_northing, plot_northing_farm, plot_wake_nadir_farm, plot_wake_nadir_pair
+from wind_up.operating_state import VALID_NORTHING_COL
 from wind_up.wake_nadir import wake_pair_curves, wake_pairs
 
 if TYPE_CHECKING:
@@ -222,7 +222,7 @@ def north_scada(
     requested role, so a turbine's channels stay mutually consistent. The originals are untouched.
 
     :param scada_df: long-format SCADA, timestamps indexed, turbines in ``columns.turbine``. Rows
-        valid for northing are read from :data:`~benchmarking.harness.operating_state.VALID_NORTHING_COL`
+        valid for northing are read from :data:`~wind_up.operating_state.VALID_NORTHING_COL`
         when the frame carries it.
     :param columns: the source-native schema naming the turbine and direction role(s)
     :param north_offsets: ``None`` to discover the corrections, or the exact table to apply

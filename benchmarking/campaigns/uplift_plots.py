@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from benchmarking.diagnostics.style import apply_grid, save_fig
+from wind_up.diagnostics.style import apply_grid, save_fig
 from wind_up.farm import TurbineUplift, farm_uplift
 
 if TYPE_CHECKING:

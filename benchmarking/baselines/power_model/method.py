@@ -27,7 +27,6 @@ import pandas as pd
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
-from benchmarking.baselines.block_bootstrap import bootstrap_energy_ratio
 from benchmarking.baselines.power_model import diagnostics as diag
 from benchmarking.baselines.power_model.features import (
     SOLAR_ELEVATION,
@@ -55,23 +54,26 @@ from benchmarking.baselines.power_model.shape import (
     reference_wind_speed_drift,
     uplift_shape,
 )
-from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
-from benchmarking.diagnostics.context import ERA5_UNLOCATED
-from benchmarking.harness.conditions import (
+from benchmarking.harness.reanalysis import interpolate_era5
+from wind_up.analysis_warnings import AnalysisWarning
+from wind_up.block_bootstrap import bootstrap_energy_ratio
+from wind_up.conditions import (
     CONDITION_BINS,
     condition_bins,
     label_column,
     validate_conditions,
 )
-from benchmarking.harness.method import MethodConfigurationError, MethodInput, MethodOutput
-from benchmarking.harness.operating_state import (
+from wind_up.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
+from wind_up.diagnostics.context import ERA5_UNLOCATED
+from wind_up.farm import TurbineUplift, farm_uplift
+from wind_up.method import MethodConfigurationError, MethodInput, MethodOutput
+from wind_up.operating_state import (
     VALID_UPLIFT_COL,
     OperatingStateConfig,
     label_operating_states,
     not_missing,
 )
-from benchmarking.harness.reanalysis import interpolate_era5
-from benchmarking.harness.record_selection import (
+from wind_up.record_selection import (
     EXCLUDED,
     RARE_CONFIGURATION,
     SUBJECT_INVALID,
@@ -81,10 +83,8 @@ from benchmarking.harness.record_selection import (
     rare_configurations,
     record_losses,
 )
-from benchmarking.harness.toggle import is_toggle, pair_within, resolve_toggle, toggle_cycle, toggle_upgrade_start
-from benchmarking.harness.waking import DIRECTION_COL, NONE, UNKNOWN, UPWIND_COL, WAKING_SCENARIO_COL
-from wind_up.analysis_warnings import AnalysisWarning
-from wind_up.farm import TurbineUplift, farm_uplift
+from wind_up.toggle import is_toggle, pair_within, resolve_toggle, toggle_cycle, toggle_upgrade_start
+from wind_up.waking import DIRECTION_COL, NONE, UNKNOWN, UPWIND_COL, WAKING_SCENARIO_COL
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

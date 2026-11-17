@@ -13,8 +13,8 @@ import pytest
 
 from benchmarking.campaigns import CampaignRunner, per_turbine_table
 from benchmarking.harness import MethodInput, MethodOutput
-from benchmarking.harness.operating_state import STATE_COLUMNS
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
+from wind_up.operating_state import STATE_COLUMNS
 
 from .test_declaration import CHANGEOVER, PERIOD, campaign, scada
 

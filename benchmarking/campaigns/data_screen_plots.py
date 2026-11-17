@@ -11,11 +11,11 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
 
 from benchmarking.campaigns.data_screen import DROPPED, KEPT, SPARE
-from benchmarking.diagnostics.style import apply_grid, save_fig
-from benchmarking.harness.record_selection import PAIR_CATEGORIES, USABLE
-from benchmarking.harness.waking import DIRECTION_COL
+from wind_up.diagnostics.style import apply_grid, save_fig
 from wind_up.geodesy import local_east_north
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL
+from wind_up.record_selection import PAIR_CATEGORIES, USABLE
+from wind_up.waking import DIRECTION_COL
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -28,8 +28,8 @@ if TYPE_CHECKING:
     from matplotlib.transforms import Transform
 
     from benchmarking.campaigns.data_screen import DataScreen
-    from benchmarking.harness.record_selection import ChangedInterval
     from wind_up.layout import Layout
+    from wind_up.record_selection import ChangedInterval
 
 VERDICT_COLOURS = {KEPT: "C2", SPARE: "C0", DROPPED: "C3"}
 REASON_COLOURS = dict(zip(PAIR_CATEGORIES, ("C7", "C1", "C4", "C3", "C6", "C8", "C9", "C5", "C2"), strict=True))

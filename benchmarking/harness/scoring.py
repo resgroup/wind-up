@@ -28,10 +28,10 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from benchmarking.harness.campaign import campaign_windows, treated_activity_mask, window_row_mask
-from benchmarking.harness.conditions import ORIGINAL_ROW_CONDITIONS, condition_bins, record_labels
-from benchmarking.harness.method import MethodInput
 from benchmarking.harness.replicates import build_replicates
 from benchmarking.synthetic import HOT_COLUMNS
+from wind_up.conditions import ORIGINAL_ROW_CONDITIONS, condition_bins, record_labels
+from wind_up.method import MethodInput
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -40,10 +40,10 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from benchmarking.harness.campaign import CampaignWindow
-    from benchmarking.harness.context import CampaignContext
-    from benchmarking.harness.method import Method, MethodOutput
     from benchmarking.harness.replicates import NorthingInputs, Replicate, StudyConfig
     from benchmarking.synthetic import ColumnSchema
+    from wind_up.campaign_context import CampaignContext
+    from wind_up.method import Method, MethodOutput
 
 # The columns a method's ``uncertainty_diagnostics`` keys on, and therefore does not contribute.
 _DIAGNOSTIC_KEYS = ("condition", "condition_bin")

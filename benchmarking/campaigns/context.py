@@ -1,7 +1,7 @@
 """Derive the method-facing campaign context from a campaign declaration.
 
 The one place a :class:`~benchmarking.campaigns.declaration.CampaignSpec` is turned into the
-:class:`~benchmarking.harness.context.CampaignContext` methods see, and so the one place to audit
+:class:`~wind_up.campaign_context.CampaignContext` methods see, and so the one place to audit
 that no ground truth reaches a method.
 """
 
@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from benchmarking.campaigns.plans import changed_works
-from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.record_selection import changed_times
+from wind_up.campaign_context import CampaignContext
+from wind_up.record_selection import changed_times
 
 if TYPE_CHECKING:
     from benchmarking.campaigns.declaration import CampaignSpec

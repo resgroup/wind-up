@@ -15,7 +15,7 @@ from benchmarking.synthetic.faults import (
     SensorGainDrift,
     SensorGainStep,
 )
-from benchmarking.synthetic.generator import SyntheticDataset, ToggleSchedule, generate_dataset, treated_mask
+from benchmarking.synthetic.generator import SyntheticDataset, generate_dataset
 from benchmarking.synthetic.geometry import WakePair, derive_wake_steering_pairs, wrap180
 from benchmarking.synthetic.ground_truth import UpliftResult, true_farm_uplift, true_net_uplift, true_uplift
 from benchmarking.synthetic.plots import (
@@ -24,7 +24,6 @@ from benchmarking.synthetic.plots import (
     plot_wake_steering_heatmaps,
     plot_wake_steering_stability,
 )
-from benchmarking.synthetic.schema import ColumnSchema
 from benchmarking.synthetic.solar import diurnal_factor, sin_solar_elevation
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_ACTIVE_POWER_STAT_COLS,
@@ -45,6 +44,8 @@ from benchmarking.synthetic.upgrades import (
     apply_upgrades,
     north_calibrated_direction,
 )
+from wind_up.schema import ColumnSchema
+from wind_up.toggle import ToggleSchedule, treated_mask
 
 __all__ = [
     "HOT_ACTIVE_POWER_STAT_COLS",

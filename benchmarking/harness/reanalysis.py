@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.operating_state import VALID_NORTHING_COL
+from wind_up.operating_state import VALID_NORTHING_COL
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
