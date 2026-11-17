@@ -64,7 +64,12 @@ from benchmarking.harness.conditions import (
     validate_conditions,
 )
 from benchmarking.harness.method import MethodConfigurationError, MethodInput, MethodOutput
-from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
+from benchmarking.harness.operating_state import (
+    VALID_UPLIFT_COL,
+    OperatingStateConfig,
+    label_operating_states,
+    not_missing,
+)
 from benchmarking.harness.reanalysis import interpolate_era5
 from benchmarking.harness.record_selection import (
     RARE_CONFIGURATION,
@@ -1972,15 +1977,15 @@ class PowerModelMethod:
         }
 
     def _upgraded_energy(self, mi: MethodInput, *, turbine: str) -> tuple[float, int]:
-        """Energy a turbine produced over the campaign's upgraded rows, and how many records it covers."""
+        """Energy a turbine produced over the upgraded rows not labelled missing, and how many records it covers."""
         scada = mi.context.select(mi.scada_df)
         rows = scada[scada[mi.turbine_col] == turbine]
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         upgraded = pd.Series(resolve_toggle(mi.upgrade_timing, index).upgraded, index=index)
-        power = rows[self.columns.active_power]
-        selected = power[upgraded.reindex(pd.DatetimeIndex(rows.index)).fillna(value=False).to_numpy()]
-        finite = selected[np.isfinite(selected)]
-        return float(finite.sum()), int(finite.size)
+        power = rows[self.columns.active_power].to_numpy(dtype=float)
+        in_campaign = upgraded.reindex(pd.DatetimeIndex(rows.index)).fillna(value=False).to_numpy(dtype=bool)
+        selected = in_campaign & np.isfinite(power) & not_missing(rows)
+        return float(power[selected].sum()), int(selected.sum())
 
     def _upgraded_days(self, mi: MethodInput, *, turbines: Sequence[str]) -> dict[str, float]:
         """Upgraded days of *fittable* data each of ``turbines`` has.

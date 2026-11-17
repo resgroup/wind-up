@@ -1,9 +1,9 @@
 """Part A of the method, data preparation (steps 1 to 6), done once per dataset.
 
-:func:`prepare_data` labels the operating states, aligns the reanalysis, norths the whole farm over the
-whole record, finds the possible yaw-alignment changes, adds the waking columns and, when asked, writes
-the outputs of each step. The composed run and the benchmark studies share it, so a method is judged on
-the same prepared data wherever it runs.
+:func:`prepare_data` gives every turbine a record at every timestamp, labels the operating states, aligns
+the reanalysis, norths the whole farm over the whole record, finds the possible yaw-alignment changes, adds
+the waking columns and, when asked, writes the outputs of each step. The composed run and the benchmark
+studies share it, so a method is judged on the same prepared data wherever it runs.
 """
 
 from __future__ import annotations
@@ -38,7 +38,12 @@ from benchmarking.harness.northing import (
     north_tables,
     northing_rows,
 )
-from benchmarking.harness.operating_state import VALID_NORTHING_COL, OperatingStateConfig, label_operating_states
+from benchmarking.harness.operating_state import (
+    VALID_NORTHING_COL,
+    OperatingStateConfig,
+    fill_grid,
+    label_operating_states,
+)
 from benchmarking.harness.reanalysis import ERA5_WD_RAW, prepare_reanalysis
 from benchmarking.harness.waking import WAKING_COLUMNS, add_waking_scenarios, waking_directions
 
@@ -57,8 +62,8 @@ logger = logging.getLogger(__name__)
 class PreparedData:
     """What Part A produced.
 
-    :param scada_df: every record provided, with the operating-state columns of step 2 and the waking
-        columns of step 5
+    :param scada_df: every turbine at every timestamp of the record, a row not provided filled with NaN, with
+        the operating-state columns of step 2 and the waking columns of step 5
     :param reanalysis: the aligned reanalysis of step 3 and its checks
     :param north_tables: each turbine's north table of step 4, over the whole record
     :param possible_changes: the possible yaw-alignment changes of step 4
@@ -111,6 +116,7 @@ def prepare_data(
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
     timebase = infer_timebase(index)
     config = operating_state if operating_state is not None else OperatingStateConfig()
+    scada_df = fill_grid(scada_df, turbine_col=columns.turbine, timebase=timebase)
     scada_df = label_operating_states(
         scada_df, columns=columns, config=config, timebase=timebase, rated_power_kw=spec.rated_power_kw
     )

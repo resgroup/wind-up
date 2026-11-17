@@ -18,6 +18,7 @@ from benchmarking.harness.operating_state import (
     WAKING_STATE_COL,
     OperatingStateConfig,
     StateValidity,
+    fill_grid,
     label_operating_states,
     state_hours,
     stuck_records,
@@ -126,6 +127,15 @@ def test_stuck_reads_each_turbines_own_previous_record() -> None:
 def test_a_turbines_first_record_is_never_stuck() -> None:
     scada = frame(2)
     assert not stuck_records(scada, columns=COLS).iloc[0]
+
+
+def test_stuck_compares_with_the_last_record_not_missing_for_another_reason() -> None:
+    # a missing record reads as if it had no row: the record after it is compared with the one before it
+    scada = frame(3)
+    scada.iloc[2] = scada.iloc[0]
+    scada.iloc[1, scada.columns.get_loc(COLS.active_power)] = 3 * RATED
+    assert states(scada) == [NORMAL_OPERATION, MISSING, MISSING]
+    assert states(scada.iloc[[0, 2]]) == [NORMAL_OPERATION, MISSING]
 
 
 @pytest.mark.parametrize(
@@ -242,3 +252,40 @@ def test_hours_sum_to_the_record_count() -> None:
     t01 = hours[hours["turbine"] == "T01"].set_index("operating_state")["hours"]
     assert t01[FULL_DOWNTIME] == pytest.approx(1 / 6)
     assert t01[NORMAL_OPERATION] == pytest.approx(2 / 6)
+
+
+class TestFillGrid:
+    def test_every_turbine_gets_a_row_at_every_timestamp(self) -> None:
+        scada = pd.concat([frame(4, turbine="T01"), frame(4, turbine="T02").iloc[[1, 2]]])
+        filled = fill_grid(scada, turbine_col=COLS.turbine, timebase=TIMEBASE)
+        assert len(filled) == 8
+        t02 = filled[filled[COLS.turbine] == "T02"]
+        assert t02.index.equals(frame(4).index)
+        assert t02[COLS.active_power].isna().tolist() == [True, False, False, True]
+
+    def test_a_timestamp_no_turbine_reported_is_filled(self) -> None:
+        scada = frame(4).iloc[[0, 3]]
+        filled = fill_grid(scada, turbine_col=COLS.turbine, timebase=TIMEBASE)
+        assert filled.index.equals(frame(4).index)
+
+    def test_rows_are_ordered_by_timestamp_then_turbine(self) -> None:
+        scada = pd.concat([frame(2, turbine="T02"), frame(2, turbine="T01")])
+        filled = fill_grid(scada, turbine_col=COLS.turbine, timebase=TIMEBASE)
+        assert filled[COLS.turbine].tolist() == ["T01", "T02", "T01", "T02"]
+        assert filled.index.is_monotonic_increasing
+
+    def test_the_filled_rows_are_labelled_missing(self) -> None:
+        scada = pd.concat([frame(3, turbine="T01"), frame(3, turbine="T02").iloc[[0]]])
+        filled = fill_grid(scada, turbine_col=COLS.turbine, timebase=TIMEBASE)
+        labelled = label(filled)
+        assert labelled.loc[labelled[COLS.turbine] == "T02", STATE_COL].tolist() == [NORMAL_OPERATION, MISSING, MISSING]
+
+    def test_a_frame_whose_index_has_been_looked_up_is_filled(self) -> None:
+        scada = pd.concat([frame(3, turbine="T01"), frame(3, turbine="T02").iloc[[0]]])
+        assert not scada.index.is_unique
+        filled = fill_grid(scada, turbine_col=COLS.turbine, timebase=TIMEBASE)
+        assert len(filled) == 6
+
+    def test_a_full_grid_keeps_its_values(self) -> None:
+        scada = frame(3)
+        pd.testing.assert_frame_equal(fill_grid(scada, turbine_col=COLS.turbine, timebase=TIMEBASE), scada)

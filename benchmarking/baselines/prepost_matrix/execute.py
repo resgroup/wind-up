@@ -63,7 +63,7 @@ from benchmarking.campaigns.runner import CampaignRunner, per_turbine_table
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.context import era5_source_label
 from benchmarking.harness.northing import NORTH_TABLE_YAML
-from benchmarking.harness.operating_state import OperatingStateConfig
+from benchmarking.harness.operating_state import OperatingStateConfig, fill_grid
 from benchmarking.harness.reanalysis import normalise_timestamps
 from benchmarking.synthetic.sources.greenbyte import (
     GREENBYTE_OPERATING_STATE,
@@ -376,7 +376,7 @@ def _execute_synthetic(
     visible = replace(
         dataset,
         synthetic_df=prepared.data.scada_df,
-        original_df=dataset.original_df,
+        original_df=fill_grid(dataset.original_df, turbine_col=site.columns.turbine, timebase=prepared.data.timebase),
     )
     result = CampaignRunner(
         prepared.spec,

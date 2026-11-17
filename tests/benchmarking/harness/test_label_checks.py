@@ -75,6 +75,16 @@ def test_calm_rest_is_not_flagged() -> None:
     assert (checks_of(scada)["check"] != PARKED_AS_NORMAL).all()
 
 
+def test_the_running_rotor_speed_reads_only_records_not_missing() -> None:
+    scada = running(200)
+    scada[COLS.gen_rpm] = 15.0
+    scada.iloc[100:160, scada.columns.get_loc(COLS.active_power)] = -5.0
+    scada.iloc[100:160, scada.columns.get_loc(COLS.gen_rpm)] = 1.0
+    scada.iloc[:10, scada.columns.get_loc(COLS.active_power)] = np.nan
+    scada.iloc[:10, scada.columns.get_loc(COLS.gen_rpm)] = 1000.0
+    assert (checks_of(scada)["check"] != PARKED_AS_NORMAL).all()
+
+
 def test_the_counter_contradicting_power_is_counted() -> None:
     scada = running(50)
     scada.iloc[10:22, scada.columns.get_loc(COLS.availability)] = 0.0

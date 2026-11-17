@@ -17,10 +17,12 @@ from benchmarking.baselines.power_model.features import (
     build_reference_features,
     check_reference_only,
     extract_outcome,
+    reference_mean_wind_speed,
     solar_elevation_frame,
     waking_scenario_features,
     without_constant_scenarios,
 )
+from benchmarking.harness.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
 from benchmarking.harness.waking import WAKING_SCENARIO_COL
 
 _TURBINE = "TurbineName"
@@ -219,6 +221,14 @@ class TestOutcomeAndGuard:
         assert y.index.equals(idx)
         expected = scada[scada[_TURBINE] == "T1"][_POWER].to_numpy()
         np.testing.assert_allclose(y.to_numpy(), expected)
+
+    def test_the_reference_mean_wind_speed_reads_a_missing_record_as_absent(self) -> None:
+        scada = _scada(_index(4)).assign(**{STATE_COL: NORMAL_OPERATION})
+        r1_first = (scada[_TURBINE] == "R1").to_numpy() & (scada.index == scada.index[0])
+        scada.loc[r1_first, STATE_COL] = MISSING
+        mean = reference_mean_wind_speed(scada, references=["R1", "R2"], turbine_col=_TURBINE, wind_speed_col=_WS)
+        r2 = scada.loc[scada[_TURBINE] == "R2", _WS].to_numpy()
+        assert mean.iloc[0] == pytest.approx(r2[0])
 
     def test_guard_rejects_test_turbine_feature(self) -> None:
         with pytest.raises(ValueError, match="reference-only rule violated"):
