@@ -138,8 +138,8 @@ provided with no signals, so they are missing. From here on a record labelled mi
 exactly as a record that was never provided: no step reads its signals.
 
 The campaign's declarations (step 1) are applied over these labels: first the label overrides, then
-the exclusions, so an exclusion wins over an override and both win over the labels. Two overrides of
-one turbine may not overlap. The label checks run on the result, so they flag only what no declaration
+the exclusions, so an exclusion wins over an override and both win over the labels, except that a
+record labelled missing stays missing under an override. Two overrides of one turbine may not overlap. The label checks run on the result, so they flag only what no declaration
 explains.
 
 Data records are flagged as valid or not for each step of the analysis separately, because an

@@ -64,7 +64,7 @@ for a demoted one, the reason, e.g. `demoted: the test turbine is upwind of it 2
 
 ## How a span is chosen
 
-The search is exact over a finite set of candidate edges, so there is no optimiser to get stuck.
+The search runs over a finite set of candidate edges, so there is no optimiser to get stuck.
 The candidate **starts** are:
 
 - the test turbine's own first record valid for uplift;
@@ -72,10 +72,15 @@ The candidate **starts** are:
 - the edge that yields `pre_cap` of the test turbine's time valid for uplift (`reach`);
 - every other candidate's works window **end**, where that ends before the test turbine's works;
 - every candidate's own **first valid record**, so the selector can give up some before period to reach a
-  reference whose data begins late.
+  reference whose data begins late;
+- for each candidate within the distance limit and each candidate end, the starts at which the candidate
+  becomes or stops being valid over `reference_share` of the span, so a reference with a long gap can be
+  reached by giving up the before period the gap would cost it.
 
 The candidate **ends** mirror these, with `side_cap` (12 months) in place of `pre_cap`, works
-window **starts**, and candidates' last valid records.
+window **starts**, and candidates' last valid records. Only starts and ends that leave the test turbine
+`min_side` of valid time are searched for the share's crossings. The crossings are found against the other
+edges, one candidate at a time.
 
 Every start × end combination is evaluated. A span is **viable** when both periods are at least
 `min_side` (3 months by default) of the test turbine's time valid for uplift, and it has at least

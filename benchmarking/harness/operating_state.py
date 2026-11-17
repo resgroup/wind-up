@@ -14,8 +14,8 @@ validity; it may also write a generic state's name into that column. The first m
 4. the caller's site label;
 5. normal operation.
 
-A campaign's declarations then win over these rules: its label overrides first, then its exclusions, which
-label their records missing (:func:`apply_declarations`).
+A campaign's declarations then win over these rules: its label overrides first, on the records not labelled
+missing, then its exclusions, which label their records missing (:func:`apply_declarations`).
 
 :func:`fill_grid` gives every turbine a row at every timestamp, so a record labelled missing reads the same as
 one never provided. :func:`label_operating_states` adds the state and its validity columns to a long SCADA frame.
@@ -276,9 +276,9 @@ def apply_declarations(
 ) -> pd.DataFrame:
     """Return a copy of a labelled frame with a campaign's declarations applied over its labels.
 
-    Each label override's records take its state, then each exclusion's records are missing; the validity
-    columns follow. A window is ``(turbine, start, end)``, end exclusive, turbine None for every turbine.
-    Raises on an override state ``config`` does not define.
+    Each label override's records not labelled missing take its state, then each exclusion's records are
+    missing; the validity columns follow. A window is ``(turbine, start, end)``, end exclusive, turbine None
+    for every turbine. Raises on an override state ``config`` does not define.
     """
     validity = config.validity()
     unknown = sorted({state for *_, state in overrides} - set(validity))
@@ -286,8 +286,9 @@ def apply_declarations(
         msg = f"the label overrides name {unknown}, which are neither declared labels nor generic states"
         raise ValueError(msg)
     state = labelled[STATE_COL].to_numpy(dtype=object).copy()
+    present = state != MISSING
     for who, start, end, named in overrides:
-        state[declared_records(labelled, turbine_col=turbine_col, windows=[(who, start, end)])] = named
+        state[declared_records(labelled, turbine_col=turbine_col, windows=[(who, start, end)]) & present] = named
     state[declared_records(labelled, turbine_col=turbine_col, windows=exclusions)] = MISSING
     return _with_states(labelled.copy(), state=state, config=config)
 

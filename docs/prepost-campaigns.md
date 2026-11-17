@@ -57,7 +57,7 @@ Three declarations change what a turbine's records are used for:
 |---|---|---|
 | the turbine's own **works window** | its data is never usable | no |
 | an **exclusion**, the turbine's own or farm-wide | its records are labelled missing: the data is wrong | yes |
-| a **label override**, the turbine's own or farm-wide | its records take the named state, with that state's validity | yes |
+| a **label override**, the turbine's own or farm-wide | its records take the named state, with that state's validity; a missing record stays missing | yes |
 
 Step 2 applies the exclusions and label overrides to the operating-state labels (an exclusion wins over an
 override); from then on every step reads the labels. Northing does not learn from an excluded record, the
