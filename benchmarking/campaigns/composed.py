@@ -26,7 +26,7 @@ from benchmarking import env
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
 from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
 from benchmarking.campaigns.declaration import layout_coords, layout_rotor_diameters
-from benchmarking.campaigns.loader import centroid, era5_window, load_declaration
+from benchmarking.campaigns.loader import centroid, clamp_to_today, era5_window, load_declaration
 from benchmarking.campaigns.plans import with_wake_ranking
 from benchmarking.campaigns.preparation import prepare_data
 from benchmarking.campaigns.report import write_report
@@ -301,14 +301,17 @@ def write_readme(
     return path
 
 
-def reanalysis_window(index: pd.DatetimeIndex) -> tuple[str, str]:
+def reanalysis_window(index: pd.DatetimeIndex, *, today: pd.Timestamp | None = None) -> tuple[str, str]:
     """Return the reanalysis window: the whole SCADA record, rounded out to whole calendar years.
 
     The window runs to 1 January after the last year, so the final hour of the record has an hour
-    after it to interpolate towards.
+    after it to interpolate towards, but never past today: for a record running to the present it
+    ends today, and the SCADA the archive does not yet cover is reported as uncovered in step 3.
+
+    :param today: the date to clamp to, defaulting to today in UTC
     """
-    start, end = era5_window(index.min(), index.max() + pd.Timedelta(nanoseconds=1))
-    return start, (pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    start, end = era5_window(index.min(), index.max() + pd.Timedelta(nanoseconds=1), today=today)
+    return start, clamp_to_today((pd.Timestamp(end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d"), today=today)
 
 
 def _fetch_era5(declaration: Declaration, *, index: pd.DatetimeIndex) -> pd.DataFrame:

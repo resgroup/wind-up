@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+      # Also on v1, so the Zenodo data cache is saved under refs/heads/v1: a pull_request run can
+      # only restore caches from its own ref, its base branch and the default branch, never from
+      # another PR's ref.
+      - v1
+  # Lets the data cache be warmed on a branch by hand (Actions tab -> Run workflow).
+  workflow_dispatch:
   pull_request:
     branches:
       - main
@@ -71,8 +77,13 @@ jobs:
     # keeps that off the wire, and carries the unpacked per-turbine parquets with it. Keyed on the
     # record id, so publishing a new datapack misses rather than serving the old data;
     # restore-keys lets a partially-populated cache seed the next run.
+    #
+    # Only branch runs (push / workflow_dispatch) save the cache; pull requests restore only. A
+    # PR-saved copy is visible to that PR alone, and at ~10 GB each, per-PR copies would evict the
+    # shared branch cache from the repo's cache quota.
     - name: 'Restore the Zenodo data cache'
-      uses: actions/cache@v4
+      id: zenodo-cache
+      uses: actions/cache/restore@v4
       with:
         # The loader's own default location, left outside the workspace so a multi-GB cache is
         # not walked by pytest collection, ruff or mypy.
@@ -87,6 +98,14 @@ jobs:
         PYTEST_XDIST_AUTO_NUM_WORKERS: "4"
       run: |
         uv run poe test
+    - name: 'Save the Zenodo data cache'
+      # Runs only after a passing test step (the default success() gate), so a half-finished
+      # download is never frozen under the exact key, which later runs would hit and never re-save.
+      if: github.event_name != 'pull_request' && steps.zenodo-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/temp/wind-up-benchmarking/data
+        key: ${{ steps.zenodo-cache.outputs.cache-primary-key }}
 
   # Single stable check name for the branch ruleset, independent of the job matrices.
   lint-and-test:

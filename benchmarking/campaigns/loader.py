@@ -668,12 +668,26 @@ def centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
     )
 
 
-def era5_window(start: pd.Timestamp, end: pd.Timestamp) -> tuple[str, str]:
-    """Return the reanalysis fetch window, rounded out to whole calendar years.
+def era5_window(start: pd.Timestamp, end: pd.Timestamp, *, today: pd.Timestamp | None = None) -> tuple[str, str]:
+    """Return the reanalysis fetch window, rounded out to whole calendar years and ending no later than today.
 
     The reanalysis cache is keyed by its arguments, so exact analysis windows would re-download
     for every campaign on the same site. ``end`` is exclusive, so the last year needed is the one
-    holding the final instant the campaign can read.
+    holding the final instant the campaign can read. The end is clamped by :func:`clamp_to_today`.
+
+    :param today: the date to clamp to, defaulting to today in UTC
     """
     last = end - pd.Timedelta(nanoseconds=1)
-    return f"{start.year}-01-01", f"{last.year}-12-31"
+    return f"{start.year}-01-01", clamp_to_today(f"{last.year}-12-31", today=today)
+
+
+def clamp_to_today(date: str, *, today: pd.Timestamp | None = None) -> str:
+    """Return ``date`` (``YYYY-MM-DD``), or today in UTC if that is earlier.
+
+    The reanalysis archive refuses an end date after today, so a campaign whose SCADA runs to the
+    present fetches to today; the archive's last few days are not yet published and come back empty.
+
+    :param today: the date to clamp to, defaulting to today in UTC
+    """
+    latest = (pd.Timestamp.now(tz="UTC") if today is None else today).strftime("%Y-%m-%d")
+    return min(date, latest)
