@@ -21,6 +21,8 @@ power, never "power lower than expected" — that would drop genuine low-uplift 
 estimate. This is row selection, not a feature rule, so using the test turbine's own operational
 signals here does not violate the upgrade-invariant feature rule. References are deliberately not
 filtered (the naive ratio keeps complete-case refs; the power model learns their operating modes).
+
+:func:`blank_missing` makes a record labelled missing read as absent, for methods that pivot raw power.
 """
 
 from __future__ import annotations
@@ -28,12 +30,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from benchmarking.harness.operating_state import stuck_records
+from benchmarking.harness.operating_state import not_missing, stuck_records
 
 if TYPE_CHECKING:
     import pandas as pd
 
     from benchmarking.synthetic import ColumnSchema
+
+
+def blank_missing(scada_df: pd.DataFrame, *, active_power_col: str) -> pd.DataFrame:
+    """Return ``scada_df`` with the active power of every record labelled missing set to NaN."""
+    missing = ~not_missing(scada_df)
+    if not missing.any():
+        return scada_df
+    blanked = scada_df.copy()
+    blanked.loc[missing, active_power_col] = float("nan")
+    return blanked
 
 
 @dataclass

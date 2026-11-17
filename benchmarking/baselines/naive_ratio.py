@@ -38,7 +38,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
-from benchmarking.baselines.filtering import NormalOperationFilter
+from benchmarking.baselines.filtering import NormalOperationFilter, blank_missing
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.toggle import ToggleRowSets, is_toggle, resolve_toggle, toggle_upgrade_start
@@ -120,6 +120,7 @@ class NaiveRatioMethod:
     def estimate(self, mi: MethodInput) -> MethodOutput:
         """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
         mi = restrict_to_campaign(mi, toggle_campaign_only=self.toggle_campaign_only)
+        mi = replace(mi, scada_df=blank_missing(mi.scada_df, active_power_col=self.columns.active_power))
         wide = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.active_power)
         test = mi.test_wtg
         refs = mi.context.references_among(wide.columns)

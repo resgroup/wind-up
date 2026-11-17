@@ -85,7 +85,7 @@ from benchmarking.baselines.block_bootstrap import (
     bootstrap_ratio_uplift,
     combine_estimates,
 )
-from benchmarking.baselines.filtering import NormalOperationFilter
+from benchmarking.baselines.filtering import NormalOperationFilter, blank_missing
 from benchmarking.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from benchmarking.harness.conditions import condition_bins, energy_ratio_by_bin, validate_conditions
 from benchmarking.harness.method import MethodConfigurationError, MethodInput, MethodOutput
@@ -350,6 +350,7 @@ class ToggleSpecialistMethod:
             raise ValueError(msg)
 
         mi = restrict_to_campaign(mi)
+        mi = replace(mi, scada_df=blank_missing(mi.scada_df, active_power_col=self.columns.active_power))
         wide_all = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.active_power)
         test = mi.test_wtg
         timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
