@@ -264,9 +264,10 @@ class TestReanalysis:
         assert era5_window(utc("2025-04-07"), utc("2026-11-17 15:00"), today=today) == ("2025-01-01", "2026-11-17")
 
     def test_the_window_defaults_to_clamping_at_today_in_utc(self) -> None:
-        now = pd.Timestamp.now(tz="UTC")
-        end = era5_window(now - pd.Timedelta(days=30), now)[1]
-        assert end <= now.strftime("%Y-%m-%d")
+        before = pd.Timestamp.now(tz="UTC")
+        end = era5_window(before - pd.Timedelta(days=30), before)[1]
+        after = pd.Timestamp.now(tz="UTC")
+        assert before.strftime("%Y-%m-%d") <= end <= after.strftime("%Y-%m-%d")
 
     def test_onshore_with_period_start_utc_timestamps_by_default(self, tmp_path: Path) -> None:
         declaration = load(tmp_path)
