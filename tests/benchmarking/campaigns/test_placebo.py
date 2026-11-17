@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -49,14 +50,18 @@ class ZeroMethod:
 
 
 def fixture_scada(mode: str) -> pd.DataFrame:
-    """A tiny stand-in for the Hill of Towie download: flat hourly power over ``mode``'s period."""
+    """A tiny stand-in for the Hill of Towie download: near-flat hourly power over ``mode``'s period.
+
+    The power varies a little so no record is stuck.
+    """
     index = pd.date_range(*placebo_analysis_period(mode), freq="1h", tz="UTC", inclusive="left")
+    wobble = (np.arange(len(index)) % 7).astype(float)
     return pd.concat(
         [
             pd.DataFrame(
                 {
                     HOT_COLUMNS.turbine: wtg,
-                    HOT_COLUMNS.active_power: 900.0,
+                    HOT_COLUMNS.active_power: 900.0 + wobble,
                     HOT_COLUMNS.active_power_min: 850.0,
                     HOT_COLUMNS.wind_speed: 8.0,
                     HOT_COLUMNS.wind_speed_sd: 0.8,

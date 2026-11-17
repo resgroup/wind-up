@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from tests.wind_up.layouts import line_layout, scatter_layout
-from wind_up.analysis_period import MONTH, AnalysisPlan, PlanSettings, intervals_duration, plan_analysis
+from wind_up.analysis_period import MONTH, AnalysisPlan, PlanSettings, plan_analysis
 from wind_up.layout import Layout
 
 ROTOR_D = 100.0
@@ -26,14 +26,38 @@ EXTENT = (utc("2017-01-01"), utc("2022-01-01"))
 TEST_WORKS = (utc("2020-01-01"), utc("2020-01-08"))
 
 
-def plan(layout: Layout, *, works: dict | None = None, **overrides: object) -> AnalysisPlan:
-    """Plan T0, worked over ``TEST_WORKS``, with every other turbine a candidate and data over ``EXTENT``."""
+def validity(
+    extents: dict[str, tuple[pd.Timestamp, pd.Timestamp]],
+    *,
+    exclusions: list | None = None,
+    record: tuple[pd.Timestamp, pd.Timestamp] = EXTENT,
+) -> pd.DataFrame:
+    """Hourly validity over ``record``: each turbine valid in its extent, outside its own or farm-wide exclusions."""
+    index = pd.date_range(*record, freq="1h", inclusive="left")
+    valid = pd.DataFrame(
+        {name: (index >= first) & (index < end) for name, (first, end) in extents.items()}, index=index
+    )
+    for who, start, end in exclusions or []:
+        inside = (index >= start) & (index < end)
+        for name in valid.columns if who is None else [who]:
+            valid[name] &= ~inside
+    return valid
+
+
+def plan(
+    layout: Layout,
+    *,
+    works: dict | None = None,
+    extents: dict | None = None,
+    exclusions: list | None = None,
+    **overrides: object,
+) -> AnalysisPlan:
+    """Plan T0, worked over ``TEST_WORKS``, with every other turbine a candidate and valid over ``EXTENT``."""
     names = [str(n) for n in layout.frame["name"]]
     fields: dict[str, object] = {
         "turbine": "T0",
         "works": {"T0": [TEST_WORKS], **(works or {})},
-        "exclusions": [],
-        "extents": dict.fromkeys(names, EXTENT),
+        "valid": validity(extents if extents is not None else dict.fromkeys(names, EXTENT), exclusions=exclusions),
         "candidates": [n for n in names if n != "T0"],
     }
     fields.update(overrides)
@@ -107,7 +131,7 @@ class TestEligibility:
         extents = {f"T{i}": EXTENT for i in range(6)} | {"T3": (utc("2020-06-01"), EXTENT[1])}
         p = plan(line(6), extents=extents)
         assert "T3" not in p.power_references
-        assert p.waking_only["T3"] == "no data over the whole span"
+        assert p.waking_only["T3"] == "valid for uplift over 20 % of the span, under 50 %"
 
     def test_another_analysed_turbine_changed_inside_the_span_is_ineligible(self) -> None:
         works = {"T1": [(utc("2020-04-01"), utc("2020-04-03"))]}
@@ -181,23 +205,31 @@ class TestFallback:
         # only T1 and T2 have data from T0's first record; waiting for T3..T5 buys the references
         late = (utc("2019-06-01"), EXTENT[1])
         extents = {f"T{i}": EXTENT for i in range(3)} | {f"T{i}": late for i in range(3, 6)}
-        p = plan(line(6), extents=extents)
+        p = plan(line(6), extents=extents, settings=self.WHOLE_SPAN)
         assert p.start == late[0]
         assert p.power_references == ("T1", "T2", "T3", "T4")
         assert p.pool_rule_met
 
+    WHOLE_SPAN = PlanSettings(reference_share=1.0)
+
     def test_a_reference_ending_inside_the_post_ends_the_span_when_it_is_needed(self) -> None:
         extents = {f"T{i}": EXTENT for i in range(4)} | {"T3": (EXTENT[0], utc("2020-06-01"))}
-        p = plan(line(4), extents=extents)
+        p = plan(line(4), extents=extents, settings=self.WHOLE_SPAN)
         assert p.end == utc("2020-06-01")
         assert p.power_references == ("T1", "T2", "T3")
 
     def test_a_reference_ending_inside_the_post_does_not_shorten_it_when_others_suffice(self) -> None:
         extents = {f"T{i}": EXTENT for i in range(6)} | {"T3": (EXTENT[0], utc("2020-06-01"))}
-        p = plan(line(6), extents=extents)
+        p = plan(line(6), extents=extents, settings=self.WHOLE_SPAN)
         assert p.end == TEST_WORKS[1] + 12 * MONTH
         assert p.power_references == ("T1", "T2", "T4", "T5")
-        assert p.waking_only["T3"] == "no data over the whole span"
+        assert p.waking_only["T3"] == "valid for uplift over 80 % of the span, under 100 %"
+
+    def test_a_reference_valid_over_enough_of_the_span_is_kept(self) -> None:
+        extents = {f"T{i}": EXTENT for i in range(6)} | {"T3": (EXTENT[0], utc("2020-06-01"))}
+        p = plan(line(6), extents=extents)
+        assert p.end == TEST_WORKS[1] + 12 * MONTH
+        assert p.power_references == ("T1", "T2", "T3", "T4")
 
     def test_a_short_minimum_side_is_reported_in_days(self) -> None:
         extents = {f"T{i}": EXTENT for i in range(4)} | {"T3": (utc("2021-06-01"), EXTENT[1])}
@@ -240,9 +272,43 @@ class TestADeclaredSpan:
         assert plan(line(6), works=works, allow_works_overlap=["T1"]).forced == ()
 
 
-def test_intervals_duration_merges_overlaps_and_clips() -> None:
-    windows = [(utc("2020-01-01"), utc("2020-01-05")), (utc("2020-01-03"), utc("2020-01-10"))]
-    assert intervals_duration(windows, start=utc("2020-01-02"), end=utc("2020-01-08")) == pd.Timedelta(days=6)
+class TestTheReferenceShare:
+    """A power reference is judged on the share of the span's records it is valid for uplift over."""
+
+    def test_a_reference_just_over_the_share_is_eligible_and_just_under_is_not(self) -> None:
+        span = (TEST_WORKS[0] - 12 * MONTH, TEST_WORKS[1] + 12 * MONTH)
+        hours = (span[1] - span[0]) / pd.Timedelta(hours=1)
+        for share, eligible in ((0.51, True), (0.49, False)):
+            gap = pd.Timedelta(hours=round(hours * (1 - share)))
+            exclusions = [("T1", span[0], span[0] + gap)]
+            p = plan(line(6), span=span, exclusions=exclusions)
+            assert ("T1" in p.power_references) is eligible
+
+    def test_the_share_is_a_setting(self) -> None:
+        span = (TEST_WORKS[0] - 12 * MONTH, TEST_WORKS[1] + 12 * MONTH)
+        exclusions = [("T1", span[0], span[0] + 3 * MONTH)]
+        assert "T1" in plan(line(6), span=span, exclusions=exclusions).power_references
+        p = plan(line(6), span=span, exclusions=exclusions, settings=PlanSettings(reference_share=0.95))
+        assert "T1" not in p.power_references
+
+    def test_the_span_starts_where_a_reference_with_a_long_gap_reaches_the_share(self) -> None:
+        # over the whole record T3 is valid for 16 of 37 months; from about 2018-08-01 it is valid over half
+        record = (utc("2018-01-01"), utc("2021-02-01"))
+        gap = (utc("2018-02-01"), utc("2019-11-01"))
+        valid = validity(dict.fromkeys(["T0", "T1", "T2", "T3"], record), exclusions=[("T3", *gap)], record=record)
+        p = plan(line(4), valid=valid)
+        assert p.power_references == ("T1", "T2", "T3")
+        assert p.end == record[1]
+        assert utc("2018-07-25") < p.start < utc("2018-08-05")
+        assert valid.loc[p.start : p.end - pd.Timedelta(hours=1), "T3"].mean() >= 0.5
+        assert valid.loc[p.start - pd.Timedelta(hours=1) : p.end - pd.Timedelta(hours=1), "T3"].mean() < 0.5
+
+    def test_a_side_is_the_test_turbines_valid_time(self) -> None:
+        span = (TEST_WORKS[0] - 12 * MONTH, TEST_WORKS[1] + 12 * MONTH)
+        exclusions = [("T0", span[0], span[0] + pd.Timedelta(days=30))]
+        p = plan(line(6), span=span, exclusions=exclusions)
+        assert p.pre == 12 * MONTH - pd.Timedelta(days=30)
+        assert p.post == 12 * MONTH
 
 
 def test_the_plan_table_lists_every_other_turbine_once() -> None:

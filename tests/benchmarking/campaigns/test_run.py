@@ -9,9 +9,18 @@ import pytest
 from benchmarking.campaigns.run import NoTurbineMeasuredError, estimate_campaign, visible_mask, visible_scada
 from benchmarking.harness import MethodInput, MethodOutput
 from benchmarking.harness.method import MethodConfigurationError
+from benchmarking.harness.operating_state import (
+    MISSING,
+    STATE_COL,
+    VALID_NORTHING_COL,
+    VALID_UPLIFT_COL,
+    WAKING_MISSING,
+    WAKING_STATE_COL,
+)
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from wind_up.analysis_warnings import AnalysisWarning
 
+from .test_data_screen import ANY_SHARE
 from .test_declaration import CHANGEOVER, PERIOD, campaign, scada
 
 # Every column any truth-free output is forbidden to carry.
@@ -275,7 +284,7 @@ class TestAPlannedCampaign:
             assert seen.context.candidate_references == list(plan.power_references)
             assert seen.context.timing == plan.works[1]
 
-    def test_held_back_rows_reach_the_method_marked_invalid_and_northed(self) -> None:
+    def test_excluded_rows_reach_the_method_labelled_missing_and_northed(self) -> None:
         _, _, method = self.planned()
         seen = method.seen["T0"]
         rows = seen.scada_df[seen.scada_df[HOT_COLUMNS.turbine] == "T4"]
@@ -283,10 +292,12 @@ class TestAPlannedCampaign:
             rows.index < pd.Timestamp("2019-02-05", tz="UTC")
         )
         assert inside.sum() == 4 * 24
+        assert (rows.loc[inside, STATE_COL] == MISSING).all()
+        assert (rows.loc[inside, WAKING_STATE_COL] == WAKING_MISSING).all()
+        assert not rows.loc[inside, VALID_UPLIFT_COL].any()
         assert rows.loc[inside, HOT_COLUMNS.northed("nacelle_position")].notna().all()
-        assert not seen.context.valid_over(pd.DatetimeIndex(rows.index[inside]))["T4"].any()
 
-    def test_the_northing_step_does_not_see_held_back_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_the_northing_step_learns_nothing_from_excluded_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import benchmarking.campaigns.run as run_module  # noqa: PLC0415
 
         captured: list[pd.DataFrame] = []
@@ -299,9 +310,8 @@ class TestAPlannedCampaign:
         monkeypatch.setattr(run_module, "north_scada", spy)
         self.planned()
         t4 = captured[0][captured[0][HOT_COLUMNS.turbine] == "T4"]
-        assert not (
-            (t4.index >= pd.Timestamp("2019-02-01", tz="UTC")) & (t4.index < pd.Timestamp("2019-02-05", tz="UTC"))
-        ).any()
+        inside = (t4.index >= pd.Timestamp("2019-02-01", tz="UTC")) & (t4.index < pd.Timestamp("2019-02-05", tz="UTC"))
+        assert not t4.loc[inside, VALID_NORTHING_COL].any()
 
     def test_the_test_turbines_works_rows_are_dropped(self) -> None:
         _, report, _ = self.planned()
@@ -325,6 +335,7 @@ class TestTheDataScreen:
             _invalid(_scada(), "T2", before="2019-04-01"),
             build_methods=lambda _wtg: [method],
             columns=HOT_COLUMNS,
+            plan_settings=ANY_SHARE,
         )
         return report, method
 
@@ -356,6 +367,7 @@ class TestTheDataScreen:
             _invalid(_scada(), "T2", before="2019-04-01"),
             build_methods=lambda _wtg: [method],
             columns=HOT_COLUMNS,
+            plan_settings=ANY_SHARE,
             data_screen=None,
         )
         assert method.seen["T0"].context.candidate_references == ["T1", "T2", "T3", "T4"]

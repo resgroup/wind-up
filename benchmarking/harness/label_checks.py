@@ -33,6 +33,8 @@ from benchmarking.harness.operating_state import (
 )
 
 if TYPE_CHECKING:
+    import numpy.typing as npt
+
     from benchmarking.synthetic import ColumnSchema
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,12 @@ _COLUMNS = ("turbine", "check", "hours", "first", "last", "longest_run_start", "
 
 
 def label_checks(
-    labelled: pd.DataFrame, *, columns: ColumnSchema, timebase: pd.Timedelta, rated_power_kw: float
+    labelled: pd.DataFrame,
+    *,
+    columns: ColumnSchema,
+    timebase: pd.Timedelta,
+    rated_power_kw: float,
+    declared: npt.NDArray[np.bool_] | None = None,
 ) -> pd.DataFrame:
     """Return the hours of each suspect label per turbine, with when it happened.
 
@@ -61,6 +68,7 @@ def label_checks(
     :param columns: the schema ``labelled`` is keyed by
     :param timebase: the records' period
     :param rated_power_kw: rated power
+    :param declared: True on the records a campaign declaration labels, which no check flags
     :return: one row per turbine and check with any records, columns ``_COLUMNS``
     """
     power = labelled[columns.active_power].to_numpy(dtype=float)
@@ -73,6 +81,8 @@ def label_checks(
     }
     if columns.gen_rpm in labelled.columns and columns.wind_speed in labelled.columns:
         flags[PARKED_AS_NORMAL] = _parked_as_normal(labelled, columns=columns, rated_power_kw=rated_power_kw)
+    if declared is not None:
+        flags = {check: flag & ~declared for check, flag in flags.items()}
     rows = []
     turbines = labelled[columns.turbine].astype(str).to_numpy()
     stamps = pd.DatetimeIndex(labelled.index)

@@ -7,8 +7,9 @@ test turbine is unchanged over a short after period and changed over a long one.
 rollout every test turbine faces this trade-off differently.
 
 `wind_up.analysis_period.plan_analysis` makes the choice for one test turbine, from declared facts
-only: every turbine's works windows, every turbine's data extent, the declared exclusions, the layout,
-and a few settings. It never reads power. It returns an `AnalysisPlan`: the span, the power
+only: every turbine's works windows, the records each turbine is valid for uplift over (the step 2 labels,
+with the campaign's exclusions and label overrides applied), the layout, and a few settings. It never reads
+power. It returns an `AnalysisPlan`: the span, the power
 references, the reserves, every other turbine's role with the reason, and whether the pool rule held.
 The campaign runner (`benchmarking/campaigns/plans.py`) calls it once per upgraded turbine for every
 campaign, with a declared span used as given once any part beyond the SCADA record is cut off
@@ -38,8 +39,8 @@ figures on this page are drawn by `benchmarking/baselines/study_analysis_period_
 Over a candidate span `[start, end)`, another turbine is an eligible power reference when all three
 hold:
 
-1. **it has data over the whole span**: its data extent is its first finite active power to its
-   last, plus one timebase;
+1. **it is valid for uplift over enough of the span**: at least `reference_share` (50 %) of the span's
+   records (step 2 labels, after the campaign's exclusions and label overrides);
 2. **no works window of its own overlaps the span**: a turbine changed entirely before the span
    starts or entirely after it ends is fine; one changed during it is not;
 3. **it is within 20 rotor diameters** (`max_reference_distance_d`) of the test turbine.
@@ -63,23 +64,28 @@ for a demoted one, the reason, e.g. `demoted: the test turbine is upwind of it 2
 
 ## How a span is chosen
 
-The search is exact over a finite set of candidate edges, so there is no optimiser to get stuck.
+The search runs over a finite set of candidate edges, so there is no optimiser to get stuck.
 The candidate **starts** are:
 
-- the test turbine's own first data;
+- the test turbine's own first record valid for uplift;
 - the longest before period sought, `works start − pre_cap` (24 months);
-- the edge that yields `pre_cap` of *usable* time once exclusions are subtracted (`reach`, which
-  iterates because masked time can push an edge back into more masked time);
+- the edge that yields `pre_cap` of the test turbine's time valid for uplift (`reach`);
 - every other candidate's works window **end**, where that ends before the test turbine's works;
-- every candidate's own **data start**, so the selector can give up some before period to reach a
-  reference whose data begins late.
+- every candidate's own **first valid record**, so the selector can give up some before period to reach a
+  reference whose data begins late;
+- for each candidate within the distance limit and each candidate end, the starts at which the candidate
+  becomes or stops being valid over `reference_share` of the span, so a reference with a long gap can be
+  reached by giving up the before period the gap would cost it.
 
 The candidate **ends** mirror these, with `side_cap` (12 months) in place of `pre_cap`, works
-window **starts**, and candidates' data ends.
+window **starts**, and candidates' last valid records. Only starts and ends that leave the test turbine
+`min_side` of valid time are searched for the share's crossings. The crossings are found against the other
+edges, one candidate at a time.
 
 Every start × end combination is evaluated. A span is **viable** when both periods are at least
-`min_side` (3 months by default) of usable time *after subtracting exclusions*, and it has at least
-`min_references` (3) eligible power references.
+`min_side` (3 months by default) of the test turbine's time valid for uplift, and it has at least
+`min_references` (3) eligible power references. A candidate is eligible when it is valid for uplift over at
+least `reference_share` (50 %) of the span's records and has no works window inside it.
 
 The viable spans are then ranked, in this order:
 
@@ -138,8 +144,7 @@ period; the off and on records inside the latter are what the method compares.
 
 ## Settings
 
-`PlanSettings` holds the knobs. Every length is usable time: calendar time minus the test turbine's
-exclusions.
+`PlanSettings` holds the knobs. Every length is the test turbine's time valid for uplift.
 
 | setting | default | meaning |
 |---|---|---|
@@ -147,6 +152,7 @@ exclusions.
 | `pre_cap` | 24 months | the longest before period sought |
 | `side_cap` | 12 months | the longest short period, and the longest after period, sought |
 | `min_side` | 3 months | the shortest period a chosen span may have |
+| `reference_share` | 0.5 | the least share of the span's records a power reference must be valid for uplift over |
 | `pool_size` | 4 | how many best-ranked candidates the pool rule looks at |
 | `pool_min_eligible` | 3 | how many of those must be eligible and within the distance limit |
 | `max_reference_distance_d` | 20 | the furthest a power reference may be, in rotor diameters |
@@ -172,7 +178,7 @@ labelled with the first reason that applies, in this order:
 
 | reason | the record is lost because |
 |---|---|
-| `excluded` | the test turbine or the candidate is inside a declared exclusion or a works window |
+| `excluded` | the test turbine or the candidate is inside one of its works windows |
 | `subject invalid` | the test turbine's record is not valid for uplift (step 2), or missing |
 | `reference invalid` | the candidate's record is not valid for uplift, or missing |
 | `changed upwind of subject` | a turbine is upwind of the test turbine (step 5) while it counts as changed |

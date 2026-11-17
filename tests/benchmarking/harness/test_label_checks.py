@@ -85,6 +85,17 @@ def test_the_running_rotor_speed_reads_only_records_not_missing() -> None:
     assert (checks_of(scada)["check"] != PARKED_AS_NORMAL).all()
 
 
+def test_a_declared_record_is_not_flagged() -> None:
+    scada = parked_stop(running(200), slice(100, 160))
+    scada.iloc[10:22, scada.columns.get_loc(COLS.availability)] = 0.0
+    labelled = label_operating_states(
+        scada, columns=COLS, config=OperatingStateConfig(), timebase=TIMEBASE, rated_power_kw=RATED
+    )
+    declared = np.zeros(len(scada), dtype=bool)
+    declared[10:22] = declared[100:160] = True
+    assert label_checks(labelled, columns=COLS, timebase=TIMEBASE, rated_power_kw=RATED, declared=declared).empty
+
+
 def test_the_counter_contradicting_power_is_counted() -> None:
     scada = running(50)
     scada.iloc[10:22, scada.columns.get_loc(COLS.availability)] = 0.0

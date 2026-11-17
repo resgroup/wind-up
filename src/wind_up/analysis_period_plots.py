@@ -17,8 +17,11 @@ if TYPE_CHECKING:
 
     from matplotlib.figure import Figure
 
-    from wind_up.analysis_period import AnalysisPlan, Exclusion, Window
+    from wind_up.analysis_period import AnalysisPlan, Window
     from wind_up.layout import Layout
+
+# (turbine, start, end), end exclusive; turbine None is farm-wide.
+Exclusion = tuple[str | None, pd.Timestamp, pd.Timestamp]
 
 _ROLE_COLOURS = {
     "candidate": "dimgray",
@@ -66,7 +69,7 @@ def plot_analysis_timeline(
     :param layout: every turbine, rotor diameters included
     :param works: works windows per turbine
     :param exclusions: ``(turbine, start, end)``, turbine None for farm-wide
-    :param extents: each turbine's data extent
+    :param extents: each turbine's first to last record valid for uplift
     :param plan: the chosen plan, or None when none could be chosen
     :param reason: why no plan could be chosen
     :param out_dir: when given, the figure is saved as ``analysis_timeline_<turbine>.png``

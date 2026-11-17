@@ -9,11 +9,11 @@ import numpy as np
 import pandas as pd
 import pytest  # noqa: TC002 - caplog fixtures are runtime types
 
-from benchmarking.campaigns.plans import changed_works, data_extents, extent_around_works, other_works, plans_for
-from benchmarking.harness.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
+from benchmarking.campaigns.plans import changed_works, extent_around_works, other_works, plans_for, uplift_validity
+from benchmarking.harness.operating_state import MISSING, NORMAL_OPERATION, STATE_COL, VALID_UPLIFT_COL
 from benchmarking.synthetic import HOT_COLUMNS
 from tests.benchmarking.campaigns.timeline_fixtures import DATA_END, hourly_scada, staggered_spec, utc
-from wind_up.analysis_period import PlanSettings
+from wind_up.analysis_period import PlanSettings, valid_extents
 from wind_up.wake_reach import MAX_REACH_D
 
 
@@ -38,22 +38,26 @@ def without_pre(scada: pd.DataFrame, turbine: str) -> pd.DataFrame:
     return scada
 
 
-def test_extents_run_from_the_first_to_after_the_last_finite_power() -> None:
+def test_the_validity_is_every_timestamp_by_every_turbine() -> None:
     scada = hourly_scada(["T0", "T3"])
-    late = (scada[HOT_COLUMNS.turbine] == "T3") & (scada.index < utc("2019-01-01"))
-    scada.loc[late, HOT_COLUMNS.active_power] = np.nan
-    extents = data_extents(scada, turbine_col=HOT_COLUMNS.turbine, power_col=HOT_COLUMNS.active_power)
-    assert extents["T3"] == (utc("2019-01-01"), DATA_END)
-    assert extents["T0"][0] == utc("2018-01-01")
+    scada[VALID_UPLIFT_COL] = True
+    early = (scada[HOT_COLUMNS.turbine] == "T3") & (scada.index < utc("2019-01-01"))
+    scada.loc[early, VALID_UPLIFT_COL] = False
+    valid = uplift_validity(scada.drop(index=scada.index[0]), turbine_col=HOT_COLUMNS.turbine)
+    assert list(valid.columns) == ["T0", "T3"]
+    assert not valid["T3"][valid.index < utc("2019-01-01")].any()
+    assert valid["T3"][valid.index >= utc("2019-01-01")].all()
 
 
 def test_a_record_labelled_missing_does_not_extend_an_extent() -> None:
     scada = hourly_scada(["T0", "T3"])
     scada[STATE_COL] = NORMAL_OPERATION
+    scada[VALID_UPLIFT_COL] = True
     early = (scada[HOT_COLUMNS.turbine] == "T3") & (scada.index < utc("2019-01-01"))
-    scada.loc[early, STATE_COL] = MISSING
-    extents = data_extents(scada, turbine_col=HOT_COLUMNS.turbine, power_col=HOT_COLUMNS.active_power)
+    scada.loc[early, [STATE_COL, VALID_UPLIFT_COL]] = [MISSING, False]
+    extents = valid_extents(uplift_validity(scada, turbine_col=HOT_COLUMNS.turbine))
     assert extents["T3"] == (utc("2019-01-01"), DATA_END)
+    assert extents["T0"][0] == utc("2018-01-01")
 
 
 def test_every_upgraded_turbine_gets_a_plan() -> None:

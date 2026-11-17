@@ -18,6 +18,8 @@ from benchmarking.harness.operating_state import (
     WAKING_STATE_COL,
     OperatingStateConfig,
     StateValidity,
+    apply_declarations,
+    declared_records,
     fill_grid,
     label_operating_states,
     state_hours,
@@ -289,3 +291,77 @@ class TestFillGrid:
     def test_a_full_grid_keeps_its_values(self) -> None:
         scada = frame(3)
         pd.testing.assert_frame_equal(fill_grid(scada, turbine_col=COLS.turbine, timebase=TIMEBASE), scada)
+
+
+class TestDeclarations:
+    """Label overrides, then exclusions, applied over the automatic labels; ends exclusive."""
+
+    def scada(self) -> pd.DataFrame:
+        return pd.concat([frame(6, turbine="T01"), frame(6, turbine="T02")]).sort_index(kind="stable")
+
+    def apply(self, *, exclusions: list | None = None, overrides: list | None = None) -> pd.DataFrame:
+        return apply_declarations(
+            label(self.scada()),
+            turbine_col=COLS.turbine,
+            config=SITE,
+            exclusions=exclusions or [],
+            overrides=overrides or [],
+        )
+
+    def states_of(self, labelled: pd.DataFrame, turbine: str) -> list[str]:
+        return labelled.loc[labelled[COLS.turbine] == turbine, STATE_COL].tolist()
+
+    def test_an_override_labels_its_turbines_records_end_exclusive(self) -> None:
+        start = frame(6).index
+        labelled = self.apply(overrides=[("T01", start[1], start[3], CURTAILED)])
+        assert self.states_of(labelled, "T01") == [NORMAL_OPERATION, CURTAILED, CURTAILED, *[NORMAL_OPERATION] * 3]
+        assert self.states_of(labelled, "T02") == [NORMAL_OPERATION] * 6
+
+    def test_its_validity_follows_the_state(self) -> None:
+        start = frame(6).index
+        labelled = self.apply(overrides=[("T01", start[1], start[2], CURTAILED)])
+        row = labelled[(labelled[COLS.turbine] == "T01")].iloc[1]
+        assert row[VALID_NORTHING_COL]
+        assert row[WAKING_STATE_COL] == "part waking"
+        assert not row[VALID_UPLIFT_COL]
+
+    def test_an_exclusion_labels_its_records_missing_and_wins_over_an_override(self) -> None:
+        start = frame(6).index
+        labelled = self.apply(
+            overrides=[(None, start[0], start[4], FULL_DOWNTIME)], exclusions=[("T02", start[1], start[2])]
+        )
+        assert self.states_of(labelled, "T01")[:5] == [FULL_DOWNTIME] * 4 + [NORMAL_OPERATION]
+        assert self.states_of(labelled, "T02")[:3] == [FULL_DOWNTIME, MISSING, FULL_DOWNTIME]
+        missing = labelled[labelled[STATE_COL] == MISSING].iloc[0]
+        assert missing[WAKING_STATE_COL] == "missing"
+        assert not missing[VALID_NORTHING_COL]
+
+    def test_an_override_leaves_a_missing_record_missing(self) -> None:
+        power = [1000.0, np.nan, 1002.0]
+        scada = frame(3, **{COLS.active_power: power})
+        labelled = apply_declarations(
+            label(scada),
+            turbine_col=COLS.turbine,
+            config=SITE,
+            exclusions=[],
+            overrides=[("T01", scada.index[0], scada.index[-1] + TIMEBASE, NORMAL_OPERATION)],
+        )
+        assert labelled[STATE_COL].tolist() == [NORMAL_OPERATION, MISSING, NORMAL_OPERATION]
+        assert labelled[VALID_UPLIFT_COL].tolist() == [True, False, True]
+
+    def test_a_farm_wide_exclusion_covers_every_turbine(self) -> None:
+        start = frame(6).index
+        labelled = self.apply(exclusions=[(None, start[5], start[5] + TIMEBASE)])
+        assert labelled.loc[labelled.index == start[5], STATE_COL].tolist() == [MISSING, MISSING]
+
+    def test_an_undefined_override_state_raises(self) -> None:
+        start = frame(6).index
+        with pytest.raises(ValueError, match="icing"):
+            self.apply(overrides=[("T01", start[0], start[1], "icing")])
+
+    def test_declared_records_marks_every_window(self) -> None:
+        scada = self.scada()
+        start = frame(6).index
+        windows = [("T02", start[0], start[2]), (None, start[5], start[5] + TIMEBASE)]
+        marked = declared_records(scada, turbine_col=COLS.turbine, windows=windows)
+        assert int(marked.sum()) == 4

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -12,9 +13,10 @@ from benchmarking.campaigns.loader import Declaration, load_declaration
 from benchmarking.campaigns.preparation import PreparedData, prepare_data
 from benchmarking.diagnostics import stages
 from benchmarking.diagnostics.yaw_changes import POSSIBLE_YAW_CHANGES_CSV, REPORT_COLUMNS
+from benchmarking.harness.label_checks import LABEL_CHECKS_CSV
 from benchmarking.harness.northing import NORTH_TABLE_YAML
-from benchmarking.harness.operating_state import STATE_COLUMNS
-from benchmarking.harness.waking import WAKING_COLUMNS
+from benchmarking.harness.operating_state import FULL_DOWNTIME, NOT_WAKING, STATE_COL, STATE_COLUMNS, WAKING_STATE_COL
+from benchmarking.harness.waking import UPWIND_COL, WAKING_COLUMNS, WAKING_SCENARIO_COL
 from benchmarking.synthetic import HOT_COLUMNS
 
 from .test_composed import era5
@@ -128,3 +130,48 @@ class TestWhatIsWritten:
             stages.FEATURES,
         ):
             assert list((out / stage).glob("**/*.png")), stage
+
+
+class TestTheDeclarations:
+    """Step 2 applies the label overrides and exclusions; every later step reads the labels."""
+
+    WINDOW = (pd.Timestamp("2017-01-10", tz="UTC"), pd.Timestamp("2017-01-24", tz="UTC"))
+
+    def prepare(self, declaration: Declaration, scada: pd.DataFrame, **declared: object) -> PreparedData:
+        spec = dataclasses.replace(declaration.spec, **declared)
+        return prepare_data(scada, spec=spec, columns=declaration.columns, era5_hourly_df=era5())
+
+    def test_excluded_records_do_not_move_the_learned_north_offsets(self, declaration: Declaration) -> None:
+        start, end = self.WINDOW
+        corrupted = small_scada()
+        inside = (corrupted[HOT_COLUMNS.turbine] == "T02") & (corrupted.index >= start) & (corrupted.index < end)
+        corrupted.loc[inside, HOT_COLUMNS.nacelle_position] = (
+            corrupted.loc[inside, HOT_COLUMNS.nacelle_position] + 60.0
+        ) % 360.0
+        exclusions = [("T02", start, end)]
+        clean = self.prepare(declaration, small_scada(), exclusions=exclusions)
+        dirty = self.prepare(declaration, corrupted, exclusions=exclusions)
+        for turbine, table in clean.north_tables.items():
+            pd.testing.assert_frame_equal(table, dirty.north_tables[turbine])
+
+    def test_an_override_to_a_state_not_waking_is_not_counted_as_waking(self, declaration: Declaration) -> None:
+        start, end = self.WINDOW
+        prepared = self.prepare(declaration, small_scada(), label_overrides=[("T03", start, end, FULL_DOWNTIME)])
+        frame = prepared.scada_df
+        inside = (frame.index >= start) & (frame.index < end)
+        t03 = frame[inside & (frame[HOT_COLUMNS.turbine] == "T03").to_numpy()]
+        assert (t03[STATE_COL] == FULL_DOWNTIME).all()
+        assert (t03[WAKING_STATE_COL] == NOT_WAKING).all()
+        downwind = frame[inside & frame[UPWIND_COL].astype(str).str.contains("T03").to_numpy()]
+        assert len(downwind)
+        assert downwind[WAKING_SCENARIO_COL].str.contains("T03 not waking").all()
+
+    def test_label_checks_skip_declared_records(self, declaration: Declaration, tmp_path: Path) -> None:
+        start, end = self.WINDOW
+        scada = small_scada()
+        inside = (scada[HOT_COLUMNS.turbine] == "T02") & (scada.index >= start) & (scada.index < end)
+        scada.loc[inside, HOT_COLUMNS.availability] = 0.0
+        spec = dataclasses.replace(declaration.spec, exclusions=[("T02", start, end)])
+        out = tmp_path / "A"
+        prepare_data(scada, spec=spec, columns=declaration.columns, era5_hourly_df=era5(), out_dir=out, plots=False)
+        assert pd.read_csv(out / stages.OPERATING_STATES / LABEL_CHECKS_CSV).empty

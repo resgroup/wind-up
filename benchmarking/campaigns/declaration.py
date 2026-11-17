@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 Window = tuple[pd.Timestamp, pd.Timestamp]
 # (turbine, start, end), end exclusive; turbine None is farm-wide.
 Exclusion = tuple[str | None, pd.Timestamp, pd.Timestamp]
+# (turbine, start, end, state), end exclusive; turbine None is farm-wide.
+LabelOverride = tuple[str | None, pd.Timestamp, pd.Timestamp, str]
 
 
 def in_windows(index: pd.DatetimeIndex, windows: Iterable[Window]) -> npt.NDArray[np.bool_]:
@@ -94,8 +96,10 @@ class CampaignSpec:
         exclusive; a span per upgraded turbine; or ``None`` for wind-up to choose each one's span
     :param turbine_col: the turbine-identifier column of the SCADA frame
     :param works: works windows per turbine, any turbine, analysed or not
-    :param exclusions: ``(turbine, start, end)`` periods whose data is not used; turbine ``None``
-        is farm-wide
+    :param exclusions: ``(turbine, start, end)`` periods whose data is wrong; step 2 labels their records
+        missing. Turbine ``None`` is farm-wide.
+    :param label_overrides: ``(turbine, start, end, state)`` periods whose records step 2 labels ``state``;
+        turbine ``None`` is farm-wide. An exclusion wins over an override.
     :param references_declared: ``candidate_references`` was declared rather than defaulted, so a
         declared span may force them in as power references
     :param wake_reach_d: how far, in the changed turbine's rotor diameters, the upgrade's wake change
@@ -115,6 +119,7 @@ class CampaignSpec:
     turbine_col: str = HOT_COLUMNS.turbine
     works: dict[str, list[Window]] = field(default_factory=dict)
     exclusions: list[Exclusion] = field(default_factory=list)
+    label_overrides: list[LabelOverride] = field(default_factory=list)
     references_declared: bool = False
     wake_reach_d: float = MAX_REACH_D
     works_reach_d: dict[str, dict[Window, float]] = field(default_factory=dict)
@@ -202,22 +207,15 @@ class CampaignSpec:
         return self.analysis_period
 
     def usable_mask(self, turbine: str, index: pd.DatetimeIndex) -> npt.NDArray[np.bool_]:
-        """Boolean mask over ``index`` of the records ``turbine``'s data may be used over.
+        """Boolean mask over ``index`` of the records outside ``turbine``'s own works windows.
 
-        Masks the turbine's own works windows, its own exclusions and farm-wide exclusions.
+        Exclusions and label overrides are not here: step 2 writes them into the operating-state labels.
         """
-        own = [(start, end) for who, start, end in self.exclusions if who in (None, turbine)]
-        return ~in_windows(index, [*self.works.get(turbine, []), *own])
+        return ~in_windows(index, self.works.get(turbine, []))
 
-    def held_back_mask(self, turbine: str, index: pd.DatetimeIndex) -> npt.NDArray[np.bool_]:
-        """Return the records unusable only because of ``turbine``'s own exclusions.
-
-        They stay in the frame, marked invalid, so a method may read the turbine's operating state
-        over them.
-        """
-        own = in_windows(index, [(start, end) for who, start, end in self.exclusions if who == turbine])
-        farm_wide = [(start, end) for who, start, end in self.exclusions if who is None]
-        return own & ~in_windows(index, [*self.works.get(turbine, []), *farm_wide])
+    def excluded_mask(self, turbine: str, index: pd.DatetimeIndex) -> npt.NDArray[np.bool_]:
+        """Boolean mask over ``index`` of the records inside ``turbine``'s own or a farm-wide exclusion."""
+        return in_windows(index, [(start, end) for who, start, end in self.exclusions if who in (None, turbine)])
 
     def change_label(self) -> str:
         """How report and plot titles refer to what is being assessed."""
@@ -249,6 +247,7 @@ class SyntheticCampaign:
     :param seed: recorded in the generated dataset's run metadata
     :param works: works windows per turbine (see :class:`CampaignSpec`)
     :param exclusions: excluded periods (see :class:`CampaignSpec`)
+    :param label_overrides: periods labelled a declared state (see :class:`CampaignSpec`)
     :param other_upgraded: turbines the upgrades are injected into but that are not analysed, each
         changed at the end of its works window, or at the shared changeover
     :param wake_reach_d: the declared reach of the upgrade's wake change (see :class:`CampaignSpec`)
@@ -268,6 +267,7 @@ class SyntheticCampaign:
     seed: int = 0
     works: dict[str, list[Window]] = field(default_factory=dict)
     exclusions: list[Exclusion] = field(default_factory=list)
+    label_overrides: list[LabelOverride] = field(default_factory=list)
     other_upgraded: list[str] = field(default_factory=list)
     wake_reach_d: float = MAX_REACH_D
 
@@ -293,6 +293,7 @@ class SyntheticCampaign:
             turbine_col=self.columns.turbine,
             works={t: list(w) for t, w in self.works.items()},
             exclusions=list(self.exclusions),
+            label_overrides=list(self.label_overrides),
             wake_reach_d=self.wake_reach_d,
         )
 

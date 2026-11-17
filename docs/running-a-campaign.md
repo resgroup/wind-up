@@ -71,9 +71,11 @@ upgrade:
 timing:
   mode: prepost                  # no changeover: each turbine's is the end of its works
 
-exclusions:                      # optional; end exclusive
-  - {turbine: ALL, start: 2022-09-03T00:00:00Z, end: 2023-02-12T00:00:00Z}
+exclusions:                      # optional; end exclusive; the data is wrong
   - {turbine: T04, start: 2021-02-01T00:00:00Z, end: 2021-02-05T00:00:00Z}
+
+label_overrides:                 # optional; end exclusive; the data is right, the labels miss the state
+  - {turbine: ALL, start: 2022-09-03T00:00:00Z, end: 2023-02-12T00:00:00Z, state: BM curtailment}
 
 # analysis_period omitted: wind-up chooses a span for each upgraded turbine
 ```
@@ -86,15 +88,21 @@ exclusions:                      # optional; end exclusive
   Two optional columns give a row its own wake reach, matched by prefix like the dates: `Expected
   uplift` (a fraction, turned into a reach as below) and `Wake reach` (rotor diameters), which wins.
   A row with neither takes the campaign's `upgrade` reach.
-- **Exclusions** are periods whose data is not used, for one turbine or `ALL`. A turbine's *own*
-  exclusion leaves its rows in the analysis marked unusable, so the model can still tell whether
-  it was running and making a wake over them; a farm-wide exclusion removes the records outright.
+- **Exclusions** are periods whose data is wrong (a logger fault, frozen signals, a clock jump), for one
+  turbine or `ALL`. Their records are labelled missing, as if never provided: no step uses them, and the
+  turbine counts as missing in the waking rules.
+- **Label overrides** are periods whose data is right but whose operating state the labels miss (a
+  controller test, a curtailment), for one turbine or `ALL`. Their records take `state`, which must be a
+  generic state (`missing`, `full downtime`, `partial downtime`, `normal operation`) or a label declared
+  under `operating_state.labels`, with its northing, waking and uplift validity. A record the labels
+  give as missing stays missing. Two overrides of one turbine may not overlap; an exclusion may overlap an
+  override, and wins.
 - **The span.** For each upgraded turbine wind-up picks the start and end of its analysis, and its
-  **power references**: the best-ranked 4 turbines with data over the whole span and no works inside
-  it, within 20 rotor diameters. Turbines are ranked by distance, except that one the test turbine is
+  **power references**: the best-ranked 4 turbines valid for uplift over at least 50 % of the span and
+  with no works inside it, within 20 rotor diameters. Turbines are ranked by distance, except that one the test turbine is
   upwind of for more than 20 % of the site's wind, within the wake reach, ranks behind every one it
   is not. A turbine changed entirely before or after the span is fine. A
-  chosen span gives both sides at least 3 months of usable time and has at least 3 power
+  chosen span gives both sides at least 3 months of the test turbine's time valid for uplift and has at least 3 power
   references; when none does, the turbine is not analysed — it is listed under `unplanned` with
   the reason and left out of the farm headline, and the other turbines still run. Among the spans
   that qualify it prefers, in order: the nearest turbine and at least 3 of the 4 nearest

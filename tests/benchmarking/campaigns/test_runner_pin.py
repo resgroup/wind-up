@@ -13,6 +13,7 @@ import pytest
 
 from benchmarking.campaigns import CampaignRunner, per_turbine_table
 from benchmarking.harness import MethodInput, MethodOutput
+from benchmarking.harness.operating_state import STATE_COLUMNS
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 
 from .test_declaration import CHANGEOVER, PERIOD, campaign, scada
@@ -55,11 +56,11 @@ def run() -> tuple[object, HalfOfTruthMethod]:
     return result, method
 
 
-def test_the_frame_handed_to_a_method_is_unchanged() -> None:
+def test_the_frame_handed_to_a_method_is_unchanged_but_for_the_labels() -> None:
     _, method = run()
     frame = method.seen["T1"].scada_df
     assert len(frame) == EXPECTED_ROWS
-    assert list(frame.columns) == list(scada().columns)
+    assert list(frame.columns) == [*scada().columns, *STATE_COLUMNS]
     assert sorted(frame[HOT_COLUMNS.turbine].unique()) == ["T1", "T2", "T3", "T4", "T5"]
     assert frame.index.min() == PERIOD[0]
     assert frame.index.max() == PERIOD[1] - pd.Timedelta(hours=1)

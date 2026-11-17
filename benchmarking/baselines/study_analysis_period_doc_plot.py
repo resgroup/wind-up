@@ -1,9 +1,9 @@
 """Draw the ``docs/analysis-period-and-reference-selection.md`` figures on Hill of Towie: the period timeline.
 
-Every turbine's works come from the Zenodo AeroUp install-dates table, the data extents from the
-SCADA over ``WINDOW``, and the one farm-wide exclusion from the real T13 declaration
-(:data:`~benchmarking.campaigns.real.HOT_AEROUP_T13`). Each turbine with works is then planned as
-the test turbine, with every other turbine a candidate, under the default settings:
+Every turbine's works come from the Zenodo AeroUp install-dates table, and each turbine's records valid
+for uplift from the SCADA over ``WINDOW``, labelled with the Hill of Towie states and the real T13
+declaration's exclusions (:data:`~benchmarking.campaigns.real.HOT_AEROUP_T13`). Each turbine with works is
+then planned as the test turbine, with every other turbine a candidate, under the default settings:
 
 * ``analysis_timeline_T13.png`` -- the 2021 trial turbine, whose span the selector chooses;
 * ``analysis_timeline_<turbine>.png`` -- one turbine of the 2022 rollout, which it cannot plan.
@@ -21,9 +21,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from benchmarking.campaigns.loader import read_works
-from benchmarking.campaigns.plans import data_extents
-from benchmarking.campaigns.real import HOT_AEROUP_T13
+from benchmarking.campaigns.loader import operating_state_config, read_works
+from benchmarking.campaigns.plans import uplift_validity
+from benchmarking.campaigns.real import HOT_AEROUP_T13, HOT_OPERATING_STATE, label_hot_operating_states
+from benchmarking.harness.operating_state import apply_declarations, fill_grid
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import (
     ensure_hot_data_files,
@@ -31,7 +32,7 @@ from benchmarking.synthetic.sources.hill_of_towie import (
     load_hot_metadata,
     load_hot_scada,
 )
-from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, plan_analysis
+from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, plan_analysis, valid_extents
 from wind_up.analysis_period_plots import plot_analysis_timeline
 from wind_up.layout import Layout
 
@@ -63,7 +64,11 @@ def hot_layout() -> Layout:
 def hot_exclusions() -> list[tuple[str | None, pd.Timestamp, pd.Timestamp]]:
     """Return the real T13 declaration's exclusions, farm-wide ones as ``None``."""
     return [
-        (None if row["turbine"] == "ALL" else str(row["turbine"]), pd.Timestamp(row["start"]), pd.Timestamp(row["end"]))
+        (
+            None if row["turbine"] == "ALL" else str(row["turbine"]),
+            pd.Timestamp(row["start"]),
+            pd.Timestamp(row["end"]),
+        )
         for row in HOT_AEROUP_T13["exclusions"]
     ]
 
@@ -81,8 +86,17 @@ def main(*, out_dir: Path = DOCS_IMAGES_DIR) -> dict[str, AnalysisPlan | str]:
         wtg_names=turbines,
         data_dir=data_dir,
     )
-    extents = data_extents(scada, turbine_col=HOT_COLUMNS.turbine, power_col=HOT_COLUMNS.active_power)
     exclusions = hot_exclusions()
+    scada = fill_grid(scada, turbine_col=HOT_COLUMNS.turbine, timebase=pd.Timedelta(minutes=10))
+    labelled = apply_declarations(
+        label_hot_operating_states(scada),
+        turbine_col=HOT_COLUMNS.turbine,
+        config=operating_state_config(HOT_OPERATING_STATE),
+        exclusions=exclusions,
+        overrides=[],
+    )
+    valid = uplift_validity(labelled, turbine_col=HOT_COLUMNS.turbine)
+    extents = valid_extents(valid)
 
     outcomes: dict[str, AnalysisPlan | str] = {}
     for turbine in sorted(works):
@@ -91,8 +105,7 @@ def main(*, out_dir: Path = DOCS_IMAGES_DIR) -> dict[str, AnalysisPlan | str]:
                 layout,
                 turbine=turbine,
                 works=works,
-                exclusions=exclusions,
-                extents=extents,
+                valid=valid,
                 candidates=[t for t in turbines if t != turbine],
                 settings=DEFAULT_PLAN_SETTINGS,
             )
