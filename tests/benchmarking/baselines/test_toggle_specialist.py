@@ -29,6 +29,7 @@ from benchmarking.baselines.toggle_specialist import (
 from benchmarking.harness.conditions import condition_bins
 from benchmarking.harness.context import CampaignContext
 from benchmarking.harness.method import MethodConfigurationError, MethodInput, MethodOutput
+from benchmarking.harness.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
 from benchmarking.harness.toggle import build_toggle_df, gap_to_other_segment, pair_within, resolve_toggle
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
 
@@ -433,6 +434,18 @@ class TestDowntimeFilter:
         corrupted.loc[down, _AVAIL_COL] = 0.0
         out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM).estimate(
             MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+        )
+        assert out.p50_overall == pytest.approx(0.05)
+
+    def test_records_labelled_missing_are_excluded(self) -> None:
+        scada, schedule, _ = _toggle_case()
+        idx = scada.index.unique().sort_values()
+        labelled = scada.assign(**{STATE_COL: NORMAL_OPERATION})
+        missing = (labelled[_TURBINE_COL] == "T1") & labelled.index.isin([idx[3], idx[4]])
+        labelled.loc[missing, _POWER_COL] = 1e6
+        labelled.loc[missing, STATE_COL] = MISSING
+        out = ToggleSpecialistMethod(columns=_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM).estimate(
+            MethodInput(scada_df=labelled, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
         )
         assert out.p50_overall == pytest.approx(0.05)
 
