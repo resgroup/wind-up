@@ -167,6 +167,28 @@ def _add_uplift_cols_to_pp_df(
     return new_pp_df
 
 
+def _select_site_mean_pc(
+    *,
+    wtg: Turbine,
+    site_mean_pc_df: pd.DataFrame | None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None,
+) -> pd.DataFrame | None:
+    """Return the site mean power curve to gap-fill with for the turbine type of `wtg`."""
+    if site_mean_pc_per_ttype is None:
+        return site_mean_pc_df
+    if site_mean_pc_df is not None:
+        msg = "pass only one of site_mean_pc_df and site_mean_pc_per_ttype"
+        raise ValueError(msg)
+    ttype = wtg.turbine_type.turbine_type
+    if ttype not in site_mean_pc_per_ttype:
+        msg = (
+            f"site_mean_pc_per_ttype has no power curve for turbine type {ttype!r} "
+            f"(needed for {wtg.name}); available types: {sorted(site_mean_pc_per_ttype)}"
+        )
+        raise ValueError(msg)
+    return site_mean_pc_per_ttype[ttype]
+
+
 def _pre_post_pp_analysis(
     *,
     cfg: WindUpConfig,
@@ -196,8 +218,9 @@ def _pre_post_pp_analysis(
         pw_col = pw_col.replace("test", "ref")
     cutout_ws = wtg_for_turbine_type.turbine_type.cutout_ws_mps
     rated_power = wtg_for_turbine_type.turbine_type.rated_power_kw
-    if site_mean_pc_per_ttype is not None:
-        site_mean_pc_df = site_mean_pc_per_ttype[wtg_for_turbine_type.turbine_type.turbine_type]
+    site_mean_pc_df = _select_site_mean_pc(
+        wtg=wtg_for_turbine_type, site_mean_pc_df=site_mean_pc_df, site_mean_pc_per_ttype=site_mean_pc_per_ttype
+    )
 
     ws_bin_edges = np.arange(0, cutout_ws + cfg.ws_bin_width, cfg.ws_bin_width)
 
