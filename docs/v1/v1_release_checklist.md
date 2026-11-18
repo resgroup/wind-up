@@ -78,7 +78,8 @@ result) and `toggle_energy_ratio`. Each place the interface gets in the way is a
 
 ## Worked case: Hill of Towie Dynamic Yaw, collective control (2026-11-18)
 
-Reference runs of the original scripts with released `res-wind-up` 0.7.0 on Zenodo record
+Reference runs of the original scripts with `res-wind-up` 0.4.10 (the version that repo's
+lock file gave; being repeated with released 0.7.1) on Zenodo record
 22662930: wake steering +1.32 %, sigma 0.54 % (as published); collective control +0.53 %,
 sigma 0.46 % (published +0.56 %, 0.47 %; accepted as close enough). The collective control
 inputs were then run through the v1 seam.
