@@ -348,8 +348,9 @@ class ToggleEnergyRatioMethod:
 
         Each subject is measured from the first record any subject compares to the end of the
         analysis's period: its on and off records against the analysis's candidate references,
-        leaving out the records of any turbine inside a declared exclusion. The record labels are
-        computed once per call. The group's campaign uplift weights the
+        leaving out the records of any turbine inside a declared exclusion. A subject's records that
+        the analysis's labels leave out keep their toggle state and are filtered like a caller's
+        excluded row. The record labels are computed once per call. The group's campaign uplift weights the
         subjects by the energy they produced with the upgrade on. No AEP uplift is reported.
         """
         if isinstance(facts, MethodInput):
@@ -386,8 +387,10 @@ class ToggleEnergyRatioMethod:
     ) -> AnalysisOutput:
         """Measure every subject of one analysis over the records it compares, and combine them."""
         upgrade = facts.upgrade(analysis.upgrade)
-        sides = facts.comparison_sides(analysis, record_labels=labels)
-        compared = pd.DatetimeIndex(labels.index[np.isin(sides.to_numpy(), [ON, OFF])])
+        sides = facts.comparison_sides(replace(analysis, include_labels=(), exclude_labels=()), record_labels=labels)
+        stated_side = np.isin(sides.to_numpy(), [ON, OFF])
+        withheld = stated_side & ~np.isin(facts.comparison_sides(analysis, record_labels=labels).to_numpy(), [ON, OFF])
+        compared = pd.DatetimeIndex(labels.index[stated_side])
         first_record = pd.DatetimeIndex(facts.records.index).min()
         start = compared.min() if len(compared) else first_record
         end = analysis.period[1]
@@ -399,8 +402,12 @@ class ToggleEnergyRatioMethod:
         present = [t for t in facts.turbine_names if t in set(records[turbine_col].astype(str))]
         valid = valid.reindex(index=index, columns=present).fillna(value=True).astype(bool)
         references = [t for t in facts.references_of(analysis) if t in present]
+        columns = facts.columns
+        if withheld.any():
+            records = _with_withheld(records, labels=labels, withheld=withheld, turbine_col=turbine_col)
+            columns = replace(columns, exclude_row=_WITHHELD_COL)
         stated = {
-            "columns": facts.columns,
+            "columns": columns,
             "timebase": facts.timebase,
             "toggle_period": upgrade.cycle,
             "toggle_datum": upgrade.datum(first_record=first_record),
@@ -1766,6 +1773,19 @@ def _save(fig: plt.Figure, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=150)
     plt.close(fig)
+
+
+# The record column marking a subject's records the analysis's labels leave out.
+_WITHHELD_COL = "_left out by the analysis labels"
+
+
+def _with_withheld(
+    records: pd.DataFrame, *, labels: pd.DataFrame, withheld: npt.NDArray[np.bool_], turbine_col: str
+) -> pd.DataFrame:
+    """Return ``records`` with :data:`_WITHHELD_COL`: True on each record the analysis's labels leave out."""
+    keys = pd.MultiIndex.from_arrays([labels.index[withheld], labels[turbine_col].to_numpy()[withheld]])
+    mine = pd.MultiIndex.from_arrays([records.index, records[turbine_col].to_numpy()])
+    return records.assign(**{_WITHHELD_COL: mine.isin(keys)})
 
 
 # The method step a measurement and its combination belong to, for the warnings register.

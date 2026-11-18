@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import pandas as pd
@@ -10,6 +11,7 @@ import pytest
 from wind_up.analysis import CAMPAIGN, PER_TURBINE_COLUMNS, AnalysisSpec
 from wind_up.campaign_context import CampaignContext
 from wind_up.facts import Upgrade, WindFarmFacts
+from wind_up.labels import Label
 from wind_up.method import MethodConfigurationError, MethodInput, MethodOutput
 from wind_up.methods.toggle_energy_ratio import ToggleEnergyRatioMethod
 
@@ -218,3 +220,24 @@ def test_the_facts_need_the_power_and_availability_roles() -> None:
     )
     with pytest.raises(ValueError, match="availability"):
         _new(without, AnalysisSpec(name="x", upgrade="control"))
+
+
+def test_records_left_out_by_a_label_are_filtered_like_excluded_rows() -> None:
+    scada, schedule = _noisy_toggle_case()
+    left_out = (scada.index >= pd.Timestamp("2020-01-03", tz="UTC")) & (
+        scada.index < pd.Timestamp("2020-01-05", tz="UTC")
+    )
+    flagged = scada.assign(flag=left_out & (scada[_TURBINE_COL] == "T1").to_numpy())
+    old = ToggleEnergyRatioMethod(
+        columns=dataclasses.replace(_COLUMNS, exclude_row="flag"),
+        toggle_period=_CYCLE,
+        toggle_datum=_DATUM,
+        conditions=("power",),
+        rated_power_kw=_RATED_KW,
+    ).estimate(MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
+    facts = _facts(scada.assign(flag=left_out), labels=[Label(name="flag", column="flag")])
+    (out,) = _new(facts, AnalysisSpec(name="x", upgrade="control", exclude_labels=["flag"]))
+    assert out.campaign_uplift == old.p50_overall
+    assert out.campaign_sigma == old.sigma_overall
+    (kept,) = _new(facts, AnalysisSpec(name="x", upgrade="control", include_labels=["flag"]))
+    assert kept.per_turbine["hours_on"].iloc[0] < out.per_turbine["hours_on"].iloc[0]
