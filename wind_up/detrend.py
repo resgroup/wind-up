@@ -104,8 +104,9 @@ def _remove_bad_detrend_results(
     ref_long: float,
     cfg: WindUpConfig,
 ) -> pd.DataFrame:
+    valid_df = wsratio_v_dir_scen.dropna(subset="ws_rom")
     try:
-        none_offline_df = wsratio_v_dir_scen.dropna(subset="ws_rom").loc["none offline"]
+        none_offline_df = valid_df.loc["none offline"]
     except KeyError:
         result_manager.warning("cannot remove_bad_detrend_results, no 'none offline' rows with ws_rom defined")
         return wsratio_v_dir_scen
@@ -115,6 +116,12 @@ def _remove_bad_detrend_results(
     except StopIteration as exc:
         msg = f"{test_name} not found in cfg.asset.wtgs"
         raise ValueError(msg) from exc
+
+    # the other scenarios with ws_rom defined at each direction, and their ws_rom, in row order
+    ws_rom_by_scen_and_wd: dict[float, dict[str, float]] = {}
+    for (scen, wd), ws_rom in zip(valid_df.index, valid_df["ws_rom"].to_numpy(), strict=True):
+        if scen != "none offline":
+            ws_rom_by_scen_and_wd.setdefault(wd, {}).setdefault(scen, ws_rom)
 
     remove_count = 0
     for wd in none_offline_df.index.unique():
@@ -134,14 +141,7 @@ def _remove_bad_detrend_results(
         else:
             ref_upwind_wtgs = []
 
-        scens_to_check = [
-            x
-            for x in wsratio_v_dir_scen.dropna(subset="ws_rom")
-            .loc[pd.IndexSlice[:, wd], :]
-            .index.unique(level="waking_scenario")
-            if x != "none offline"
-        ]
-        for scen in scens_to_check:
+        for scen, scen_ws_rom in ws_rom_by_scen_and_wd.get(wd, {}).items():
             upwind_wtgs_offline = list_wtgs_offline_in_scen(scen)
             test_upwind_wtgs_offline = sorted(set(test_upwind_wtgs) & set(upwind_wtgs_offline))
             ref_upwind_wtgs_offline = sorted(set(ref_upwind_wtgs) & set(upwind_wtgs_offline))
@@ -149,7 +149,6 @@ def _remove_bad_detrend_results(
                 len(test_upwind_wtgs_offline) == 0 or len(ref_upwind_wtgs_offline) == 0
             ):
                 sign = 1 if len(ref_upwind_wtgs_offline) == 0 else -1
-                scen_ws_rom = wsratio_v_dir_scen.loc[pd.IndexSlice[scen, wd], "ws_rom"]
                 none_offline_ws_rom = none_offline_df.loc[wd, "ws_rom"]
                 abs_tol = 1e-6
                 if sign * scen_ws_rom < (sign * none_offline_ws_rom - abs_tol):
