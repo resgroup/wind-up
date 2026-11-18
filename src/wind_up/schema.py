@@ -30,8 +30,9 @@ class ColumnSchema:
     :param wind_speed_sd: nacelle wind-speed standard deviation (turbulence intensity input)
     :param gen_rpm: mean generator rpm
     :param availability: a "ready to operate" counter (e.g. seconds available in the period).
-        **Required**: the methods use it for downtime filtering, which must never be silently
-        skipped, so every source must supply it.
+        Without it the operating states cannot label downtime.
+
+    Only ``turbine`` and ``active_power`` are required. A method checks the roles it reads.
     :param active_power_min: the per-reference active-power **minimum** companion column.
         Optional on the schema, but ``PowerModelMethod`` **requires** it — each reference's
         power minimum is a standard model feature, not a per-driver opt-in — and validates its
@@ -65,10 +66,10 @@ class ColumnSchema:
 
     turbine: str
     active_power: str
-    wind_speed: str
-    wind_speed_sd: str
-    gen_rpm: str
-    availability: str
+    wind_speed: str | None = None
+    wind_speed_sd: str | None = None
+    gen_rpm: str | None = None
+    availability: str | None = None
     active_power_min: str | None = None
     pitch: str | None = None
     reactive_power: str | None = None
@@ -86,6 +87,11 @@ class ColumnSchema:
         """
         self.require_roles([role])
         return f"northed_{getattr(self, role)}"
+
+    def name_of(self, role: str) -> str:
+        """Return the column named for ``role``. Raises ``ValueError`` if the role is unset."""
+        self.require_roles([role])
+        return str(getattr(self, role))
 
     def require_roles(self, roles: Iterable[str]) -> None:
         """Raise ``ValueError`` if any named role is unset or blank (``None``, empty, or whitespace).

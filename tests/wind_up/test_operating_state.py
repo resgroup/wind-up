@@ -33,8 +33,8 @@ TIMEBASE = pd.Timedelta(minutes=10)
 FULL = TIMEBASE.total_seconds()
 CURTAILED = "curtailed"
 SITE = OperatingStateConfig(
-    label_column="state",
-    labels={CURTAILED: StateValidity(northing=True, waking="part waking", uplift=False)},
+    site_state_column="state",
+    site_states={CURTAILED: StateValidity(northing=True, waking="part waking", uplift=False)},
 )
 
 
@@ -229,11 +229,11 @@ def test_a_named_label_column_that_is_absent_raises() -> None:
 def test_the_config_rejects_generic_names_and_two_pitch_rules() -> None:
     validity = StateValidity(northing=True, waking="waking", uplift=True)
     with pytest.raises(ValueError, match="normal operation"):
-        OperatingStateConfig(label_column="state", labels={NORMAL_OPERATION: validity})
+        OperatingStateConfig(site_state_column="state", site_states={NORMAL_OPERATION: validity})
     with pytest.raises(ValueError, match="pitch"):
         OperatingStateConfig(parked_pitch_above_deg=45.0, parked_pitch_below_deg=-45.0)
-    with pytest.raises(ValueError, match="label_column"):
-        OperatingStateConfig(labels={"x": validity})
+    with pytest.raises(ValueError, match="site_state_column"):
+        OperatingStateConfig(site_states={"x": validity})
     with pytest.raises(ValueError, match="waking"):
         StateValidity(northing=True, waking="sometimes", uplift=True)
 

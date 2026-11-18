@@ -510,7 +510,7 @@ def test_a_greenbyte_site_reads_the_labels_its_loader_wrote(site: str) -> None:
     labelled, config = site_operating_state(site, frame)
     assert labelled is frame
     assert config == operating_state_config(GREENBYTE_OPERATING_STATE)
-    assert config.label_column == GREENBYTE_STATE_COL
+    assert config.site_state_column == GREENBYTE_STATE_COL
 
 
 def test_a_study_is_named_by_commit_and_size_beside_its_detail_directory(tmp_path: Path) -> None:

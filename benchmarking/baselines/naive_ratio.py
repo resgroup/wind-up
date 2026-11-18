@@ -192,9 +192,9 @@ class NaiveRatioMethod:
         complete = wide[turbines].notna().all(axis=1)
 
         full = timebase.total_seconds()
-        avail = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.availability).reindex(
-            index=wide.index, columns=turbines
-        )
+        avail = _wide_column(
+            mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.name_of("availability")
+        ).reindex(index=wide.index, columns=turbines)
         all_available = (avail >= full).all(axis=1)
 
         test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]

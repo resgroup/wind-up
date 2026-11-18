@@ -324,7 +324,7 @@ def north_tables(
     if layout is not None:
         power = _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.active_power)
         wind_speed = (
-            _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.wind_speed)
+            _directions(scada_df, columns=columns, turbines=turbines, index=index, col=columns.name_of("wind_speed"))
             if columns.wind_speed in scada_df.columns
             else None
         )

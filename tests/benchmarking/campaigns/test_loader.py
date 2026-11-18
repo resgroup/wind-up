@@ -762,10 +762,10 @@ operating_state:
 def test_the_operating_state_block_is_parsed_and_echoed(tmp_path: Path) -> None:
     declaration = load(tmp_path, PREPOST + OPERATING_STATE)
     config = declaration.operating_state
-    assert config.label_column == "state"
+    assert config.site_state_column == "state"
     assert config.parked_pitch_above_deg == 45
-    assert config.labels["noise mode"] == StateValidity(northing=True, waking="waking", uplift=False)
-    assert config.labels["BM curtailment"].waking == "part waking"
+    assert config.site_states["noise mode"] == StateValidity(northing=True, waking="waking", uplift=False)
+    assert config.site_states["BM curtailment"].waking == "part waking"
     echoed = declaration.resolved()["operating_state"]
     assert echoed["labels"]["noise mode"] == {"northing": "valid", "waking": "waking", "uplift": "not valid"}
     assert echoed["parked_pitch_above_deg"] == 45

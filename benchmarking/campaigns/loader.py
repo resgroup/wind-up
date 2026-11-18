@@ -467,8 +467,8 @@ def operating_state_config(block: dict | None) -> OperatingStateConfig:
     label_column = block.get("label_column")
     above, below = block.get("parked_pitch_above_deg"), block.get("parked_pitch_below_deg")
     return OperatingStateConfig(
-        label_column=None if label_column is None else str(label_column),
-        labels=labels,
+        site_state_column=None if label_column is None else str(label_column),
+        site_states=labels,
         parked_pitch_above_deg=None if above is None else float(above),
         parked_pitch_below_deg=None if below is None else float(below),
     )
@@ -520,7 +520,7 @@ def _state_validity(name: str, entry: dict) -> StateValidity:
 
 def _resolved_operating_state(config: OperatingStateConfig) -> dict[str, Any]:
     """Return the operating-state block as the resolved echo shows it."""
-    resolved: dict[str, Any] = {"label_column": config.label_column}
+    resolved: dict[str, Any] = {"label_column": config.site_state_column}
     if config.parked_pitch_below_deg is not None:
         resolved["parked_pitch_below_deg"] = config.parked_pitch_below_deg
     else:
@@ -531,7 +531,7 @@ def _resolved_operating_state(config: OperatingStateConfig) -> dict[str, Any]:
             "waking": v.waking,
             "uplift": VALID if v.uplift else NOT_VALID,
         }
-        for name, v in config.labels.items()
+        for name, v in config.site_states.items()
     }
     return resolved
 

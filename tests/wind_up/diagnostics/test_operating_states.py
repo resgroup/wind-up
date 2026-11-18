@@ -82,7 +82,7 @@ def _farm(turbines: list[str], *, days: int = 70) -> pd.DataFrame:
 
 def _labelled(scada: pd.DataFrame, *, columns: ColumnSchema = COLUMNS) -> pd.DataFrame:
     config = OperatingStateConfig(
-        label_column="state", labels={"curtailed": OperatingStateConfig().validity()[PARTIAL_DOWNTIME]}
+        site_state_column="state", site_states={"curtailed": OperatingStateConfig().validity()[PARTIAL_DOWNTIME]}
     )
     return label_operating_states(scada, columns=columns, config=config, timebase=TIMEBASE, rated_power_kw=2300.0)
 

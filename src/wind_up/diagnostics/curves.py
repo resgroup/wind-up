@@ -112,7 +112,7 @@ def _ops_curve_figure(
         return None
     cols = ctx.columns
     power = ctx.turbine_series(turbine, cols.active_power).to_numpy(dtype=float)
-    ws_label, power_label = _sig_label(cols.wind_speed, turbine), _sig_label(cols.active_power, turbine)
+    ws_label, power_label = _sig_label(cols.name_of("wind_speed"), turbine), _sig_label(cols.active_power, turbine)
 
     fig = plt.figure(figsize=(18, 9))
     grid = fig.add_gridspec(2, 3)

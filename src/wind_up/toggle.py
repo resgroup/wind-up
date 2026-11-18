@@ -204,7 +204,7 @@ def _reindex_flag(toggle_df: pd.DataFrame, column: str, index: pd.DatetimeIndex)
     return toggle_df[column].reindex(index, fill_value=False).to_numpy(dtype=bool)
 
 
-def _validate_toggle_df(toggle_df: pd.DataFrame) -> None:
+def validate_toggle_df(toggle_df: pd.DataFrame) -> None:
     """Validate a ``toggle_df`` before it is reindexed onto an analysis index, with clear errors.
 
     A frame (downstream-supplied or built here) must carry both flag columns and hold one row per
@@ -237,7 +237,7 @@ def resolve_toggle(
         return ToggleRowSets(upgraded=upgraded, campaign_baseline=baseline, training_baseline=baseline)
 
     toggle_df = build_toggle_df(index, upgrade_timing) if isinstance(upgrade_timing, ToggleSchedule) else upgrade_timing
-    _validate_toggle_df(toggle_df)
+    validate_toggle_df(toggle_df)
 
     upgraded = _reindex_flag(toggle_df, "toggle_on", index)
     campaign_baseline = _reindex_flag(toggle_df, "toggle_off", index)

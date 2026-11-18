@@ -271,11 +271,11 @@ def test_the_t13_declaration_carries_the_site_states(tmp_path: Path) -> None:
     )
     (tmp_path / "campaign.yaml").write_text(yaml.safe_dump(HOT_AEROUP_T13))
     config = load_declaration(tmp_path / "campaign.yaml").operating_state
-    assert config.label_column == HOT_STATE_COL
+    assert config.site_state_column == HOT_STATE_COL
     assert config.parked_pitch_above_deg == 45
-    assert set(config.labels) == {NOISE_MODE, BM_CURTAILMENT, HIGH_WIND_DERATE, ICING}
-    assert not config.labels[NOISE_MODE].uplift
-    assert config.labels[BM_CURTAILMENT].waking == "part waking"
+    assert set(config.site_states) == {NOISE_MODE, BM_CURTAILMENT, HIGH_WIND_DERATE, ICING}
+    assert not config.site_states[NOISE_MODE].uplift
+    assert config.site_states[BM_CURTAILMENT].waking == "part waking"
     for label in (HIGH_WIND_DERATE, ICING):
-        assert not config.labels[label].uplift
-        assert config.labels[label].waking == "part waking"
+        assert not config.site_states[label].uplift
+        assert config.site_states[label].waking == "part waking"

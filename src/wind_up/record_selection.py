@@ -115,7 +115,7 @@ def changed_times(
     """
     c0, c1 = changeover
     changed: ChangedTimes = {}
-    reaches = _reaches(layout, waker=test_wtg, reach_d=test_reach_d)
+    reaches = turbines_within_reach(layout, waker=test_wtg, reach_d=test_reach_d)
     if reaches is None or reaches:
         changed[test_wtg] = (ChangedInterval(None, None, reaches),)
     for turbine, windows in works.items():
@@ -125,7 +125,7 @@ def changed_times(
         for w0, w1, reach_d in windows:
             if not (w0 < end and (w1 > start or w0 == w1 >= start)):
                 continue
-            reaches = _reaches(layout, waker=turbine, reach_d=reach_d)
+            reaches = turbines_within_reach(layout, waker=turbine, reach_d=reach_d)
             if reaches is not None and not reaches:
                 continue
             if w0 - c1 >= near:
@@ -139,7 +139,7 @@ def changed_times(
     return changed
 
 
-def _reaches(layout: Layout | None, *, waker: str, reach_d: float) -> frozenset[str] | None:
+def turbines_within_reach(layout: Layout | None, *, waker: str, reach_d: float) -> frozenset[str] | None:
     """Return the turbines within ``reach_d`` of ``waker`` in its rotor diameters, ``None`` for every turbine."""
     if reach_d >= MAX_REACH_D:
         return None

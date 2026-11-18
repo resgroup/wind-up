@@ -1507,7 +1507,10 @@ class PowerModelMethod:
         if diameter is None or not power_references:
             return None, {}
         ws = reference_mean_wind_speed(
-            scada, references=power_references, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
+            scada,
+            references=power_references,
+            turbine_col=mi.turbine_col,
+            wind_speed_col=self.columns.name_of("wind_speed"),
         ).reindex(index)
         ws_arr = ws.to_numpy(dtype=float)
         factor = freestream_scale(
@@ -1544,7 +1547,7 @@ class PowerModelMethod:
         wide = pd.DataFrame(
             {
                 r: reference_mean_wind_speed(
-                    scada, references=[r], turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
+                    scada, references=[r], turbine_col=mi.turbine_col, wind_speed_col=self.columns.name_of("wind_speed")
                 ).reindex(index)
                 for r in power_references
             }
@@ -1779,7 +1782,10 @@ class PowerModelMethod:
                 "upgraded": np.asarray(upgraded_sel, dtype=bool),
                 "predicted": np.asarray(predicted_sel, dtype=bool),
                 "reference_mean_ws": reference_mean_wind_speed(
-                    scada, references=references, turbine_col=mi.turbine_col, wind_speed_col=self.columns.wind_speed
+                    scada,
+                    references=references,
+                    turbine_col=mi.turbine_col,
+                    wind_speed_col=self.columns.name_of("wind_speed"),
                 ).to_numpy(dtype=float),
             }
         )

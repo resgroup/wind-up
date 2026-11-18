@@ -113,25 +113,25 @@ GENERIC_STATES: dict[str, StateValidity] = {
 class OperatingStateConfig:
     """A site's operating-state declaration.
 
-    :param label_column: the column holding the caller's per-record label; NaN is no label
-    :param labels: the validity of each site label; generic state names are reserved
+    :param site_state_column: the column holding the caller's per-record site state; NaN is none
+    :param site_states: the validity of each site state; generic state names are reserved
     :param parked_pitch_above_deg: pitch above this is a parked rotor
     :param parked_pitch_below_deg: pitch below this is a parked rotor; at most one of the two is set
     """
 
-    label_column: str | None = None
-    labels: dict[str, StateValidity] = field(default_factory=dict)
+    site_state_column: str | None = None
+    site_states: dict[str, StateValidity] = field(default_factory=dict)
     parked_pitch_above_deg: float | None = None
     parked_pitch_below_deg: float | None = None
 
     def __post_init__(self) -> None:
-        """Reject generic names in ``labels``, labels without a column, and two parked-pitch rules."""
-        generic = sorted(set(self.labels) & set(GENERIC_STATES))
+        """Reject generic names in ``site_states``, site states without a column, and two parked-pitch rules."""
+        generic = sorted(set(self.site_states) & set(GENERIC_STATES))
         if generic:
-            msg = f"the operating-state labels may not redefine the generic states {generic}"
+            msg = f"the site states may not redefine the generic states {generic}"
             raise ValueError(msg)
-        if self.labels and self.label_column is None:
-            msg = "operating-state labels need a label_column to read them from"
+        if self.site_states and self.site_state_column is None:
+            msg = "site states need a site_state_column to read them from"
             raise ValueError(msg)
         if self.parked_pitch_above_deg is not None and self.parked_pitch_below_deg is not None:
             msg = "set at most one of parked_pitch_above_deg and parked_pitch_below_deg"
@@ -139,7 +139,7 @@ class OperatingStateConfig:
 
     def validity(self) -> dict[str, StateValidity]:
         """Return every state's validity: the generic states, then the site labels."""
-        return {**GENERIC_STATES, **self.labels}
+        return {**GENERIC_STATES, **self.site_states}
 
 
 def fill_grid(scada_df: pd.DataFrame, *, turbine_col: str, timebase: pd.Timedelta) -> pd.DataFrame:
@@ -229,14 +229,19 @@ def label_operating_states(
     column holds a label that is neither a site label nor a generic state.
 
     :param scada_df: long-format SCADA of one or more turbines, indexed by timestamp
-    :param columns: the schema ``scada_df`` is keyed by
-    :param config: the site's labels and parked-pitch rule
+    :param columns: the schema ``scada_df`` is keyed by; without an ``availability`` role every record
+        reads as a full period, so no downtime is labelled from the counter
+    :param config: the site's states and parked-pitch rule
     :param timebase: the records' period; a full period of the availability counter is its seconds
     :param rated_power_kw: rated power, which bounds the in-range active power
     """
     full = timebase.total_seconds()
     power = scada_df[columns.active_power].to_numpy(dtype=float)
-    counter = scada_df[columns.availability].to_numpy(dtype=float)
+    counter = (
+        np.full(len(scada_df), full)
+        if columns.availability is None
+        else scada_df[columns.availability].to_numpy(dtype=float)
+    )
     site = _site_labels(scada_df, config=config)
     power_lo, power_hi = (f * rated_power_kw for f in _POWER_RANGE_RATED)
     counter_lo, counter_hi = (f * full for f in _COUNTER_RANGE_FULL)
@@ -331,18 +336,18 @@ def state_hours(labelled: pd.DataFrame, *, columns: ColumnSchema, timebase: pd.T
 
 def _site_labels(scada_df: pd.DataFrame, *, config: OperatingStateConfig) -> np.ndarray:
     """Return the caller's labels as an object array, None where there is none; raise on an unknown label."""
-    if config.label_column is None:
+    if config.site_state_column is None:
         return np.full(len(scada_df), None, dtype=object)
-    if config.label_column not in scada_df.columns:
-        msg = f"the operating-state label column {config.label_column!r} is not in the SCADA"
+    if config.site_state_column not in scada_df.columns:
+        msg = f"the operating-state label column {config.site_state_column!r} is not in the SCADA"
         raise ValueError(msg)
-    raw = scada_df[config.label_column]
+    raw = scada_df[config.site_state_column]
     labels = raw.astype(object).where(raw.notna(), None).to_numpy()
     unknown = sorted({str(v) for v in labels if v is not None} - set(config.validity()))
     if unknown:
         msg = (
-            f"the operating-state label column {config.label_column!r} holds {unknown}, which are neither "
-            f"declared labels {sorted(config.labels)} nor generic states {list(GENERIC_STATES)}"
+            f"the operating-state label column {config.site_state_column!r} holds {unknown}, which are neither "
+            f"declared labels {sorted(config.site_states)} nor generic states {list(GENERIC_STATES)}"
         )
         raise ValueError(msg)
     return labels

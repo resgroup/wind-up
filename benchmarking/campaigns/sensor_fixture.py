@@ -73,7 +73,7 @@ FAULT_TARGETS = (FIXTURE_TEST_WTG, FAULT_REFERENCE)
 GAINS = (1.5, 0.5)
 
 # The reference anemometry the exposed arm carries as features, which the default never does.
-EXPOSED_STAT_COLS = (HOT_COLUMNS.wind_speed, HOT_COLUMNS.wind_speed_sd)
+EXPOSED_STAT_COLS = (HOT_COLUMNS.name_of("wind_speed"), HOT_COLUMNS.name_of("wind_speed_sd"))
 
 # Movement in the headline at or above this many percentage points counts as material.
 MATERIAL_PP = 0.25

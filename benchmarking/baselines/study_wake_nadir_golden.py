@@ -196,7 +196,7 @@ def greenbyte_inputs(
         "direction": by_turbine(nacelle_position),
         "usable": {t: (v == 1.0) & np.isfinite(reference) for t, v in rows.items()},
         "power": by_turbine(columns.active_power),
-        "wind_speed": by_turbine(columns.wind_speed),
+        "wind_speed": by_turbine(columns.name_of("wind_speed")),
     }
 
 
