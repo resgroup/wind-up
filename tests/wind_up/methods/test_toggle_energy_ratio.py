@@ -402,9 +402,13 @@ class TestPrepostRejected:
 class TestDowntimeFilter:
     """Downtime filtering is required and applies to the test turbine and every reference."""
 
-    def test_columns_is_required(self) -> None:
-        with pytest.raises(TypeError):
-            ToggleEnergyRatioMethod()  # type: ignore[call-arg]
+    def test_columns_is_required_to_estimate_a_method_input(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        method = ToggleEnergyRatioMethod(toggle_period=_CYCLE, toggle_datum=_DATUM)
+        with pytest.raises(MethodConfigurationError, match="columns"):
+            method.estimate(
+                MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+            )
 
     @pytest.mark.parametrize("blank", ["", "   "])
     def test_blank_availability_role_raises(self, blank: str) -> None:
@@ -1510,9 +1514,13 @@ class TestPowerBand:
 class TestTogglePeriod:
     """``toggle_period`` is the caller's statement of one toggle cycle: required, never inferred."""
 
-    def test_it_is_required(self) -> None:
-        with pytest.raises(TypeError, match="toggle_period"):
-            ToggleEnergyRatioMethod(columns=_COLUMNS)  # type: ignore[call-arg]
+    def test_it_is_required_to_estimate_a_method_input(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        method = ToggleEnergyRatioMethod(columns=_COLUMNS, toggle_datum=_DATUM)
+        with pytest.raises(MethodConfigurationError, match="toggle_period"):
+            method.estimate(
+                MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+            )
 
     def test_it_is_independent_of_the_pairing_gap(self) -> None:
         scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
@@ -1528,9 +1536,13 @@ class TestTogglePeriod:
 class TestToggleDatum:
     """``toggle_datum`` is the caller's statement of the cycle grid: required, never taken from the data."""
 
-    def test_it_is_required(self) -> None:
-        with pytest.raises(TypeError, match="toggle_datum"):
-            ToggleEnergyRatioMethod(columns=_COLUMNS, toggle_period=_CYCLE)  # type: ignore[call-arg]
+    def test_it_is_required_to_estimate_a_method_input(self) -> None:
+        scada, schedule = _noisy_toggle_case()
+        method = ToggleEnergyRatioMethod(columns=_COLUMNS, toggle_period=_CYCLE)
+        with pytest.raises(MethodConfigurationError, match="toggle_datum"):
+            method.estimate(
+                MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
+            )
 
     def test_cycles_stay_on_the_datum_grid_when_the_first_record_is_missing(self) -> None:
         """Tiling from the first record present would put every cycle across two power levels."""
