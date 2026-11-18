@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import math
 from typing import TYPE_CHECKING
@@ -20,6 +21,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@functools.lru_cache(maxsize=16)
+def _bins_dtype(bin_edges: tuple[float, ...]) -> pd.CategoricalDtype:
+    return pd.cut(np.array(bin_edges), bins=np.array(bin_edges), retbins=False).dtype
+
+
+def _cut(values: np.ndarray, *, bin_edges: np.ndarray) -> pd.Categorical:
+    """Bin `values` as `pd.cut(values, bins=bin_edges)` does."""
+    dtype = _bins_dtype(tuple(bin_edges.tolist()))
+    bin_after = np.searchsorted(bin_edges, values, side="left")
+    codes = np.where((bin_after == 0) | (bin_after == len(bin_edges)), -1, bin_after - 1)
+    return pd.Categorical.from_codes(codes, dtype=dtype)
+
+
 def _pp_raw_df(
     pre_or_post_df: pd.DataFrame,
     pre_or_post: str,
@@ -29,14 +43,13 @@ def _pp_raw_df(
     pw_col: str,
     timebase_s: int,
 ) -> pd.DataFrame:
-    grouped = (
-        pre_or_post_df.loc[:, [pw_col, ws_col]]
-        .dropna()
-        .groupby(
-            by=pd.cut(pre_or_post_df[ws_col], bins=ws_bin_edges, retbins=False),
-            observed=False,
-        )
-    )
+    data = pre_or_post_df.loc[:, [pw_col, ws_col]].dropna()
+    if pre_or_post_df.index.is_unique:
+        # the bins of the rows kept are the same as those found by aligning the bins of all rows to them
+        ws_bins = _cut(data[ws_col].to_numpy(), bin_edges=ws_bin_edges)
+    else:
+        ws_bins = pd.cut(pre_or_post_df[ws_col], bins=ws_bin_edges, retbins=False)
+    grouped = data.groupby(by=ws_bins, observed=False)
     count = grouped.size()
     mean_df = grouped.mean()
     std_df = grouped.std().fillna(0)
@@ -65,6 +78,44 @@ def _calc_rated_ws(*, pp_df: pd.DataFrame, pw_col: str, rated_power: float) -> f
     return pp_df.loc[pp_df[pw_col] >= rated_power * 0.995, "bin_mid"].min() + 1
 
 
+def _ffill_bfill(values: np.ndarray) -> np.ndarray:
+    """Fill missing values with the previous value, then those still missing with the next value."""
+    positions = np.arange(len(values))
+    is_valid = ~np.isnan(values)
+    filled = values[np.maximum.accumulate(np.where(is_valid, positions, 0))]
+    is_valid = ~np.isnan(filled)
+    next_valid = np.minimum.accumulate(np.where(is_valid, positions, len(values) - 1)[::-1])[::-1]
+    return filled[next_valid]
+
+
+def _interpolate_forward(values: np.ndarray) -> np.ndarray:
+    """Fill missing values linearly by position, as `pd.Series.interpolate()` does, leaving leading gaps missing."""
+    is_valid = ~np.isnan(values)
+    if is_valid.all() or not is_valid.any():
+        return values
+    positions = np.arange(len(values))
+    filled = values.copy()
+    filled[~is_valid] = np.interp(positions[~is_valid], positions[is_valid], values[is_valid])
+    filled[: np.argmax(is_valid)] = np.nan
+    return filled
+
+
+def _clip_lower(values: np.ndarray, lower: float) -> np.ndarray:
+    return np.where(np.isnan(values) | (values >= lower), values, lower)
+
+
+def _clip_upper(values: np.ndarray, upper: float) -> np.ndarray:
+    return np.where(np.isnan(values) | (values <= upper), values, upper)
+
+
+def _clip_lower_and_upper(values: np.ndarray, *, lower: float, upper: np.ndarray) -> np.ndarray:
+    """Clip as `pd.Series.clip` does with a scalar lower bound and an array upper bound, missing meaning no bound."""
+    clipped = _clip_lower(values, lower)
+    if np.isnan(upper).all():
+        return clipped
+    return np.where((values <= np.where(np.isnan(upper), np.inf, upper)) | np.isnan(clipped), clipped, upper)
+
+
 def _cook_pp(
     pp_df: pd.DataFrame,
     *,
@@ -74,8 +125,6 @@ def _cook_pp(
     clip_to_rated: bool,
     site_mean_pc_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    pp_df = pp_df.copy()
-
     valid_col = f"{pre_or_post}_valid"
     raw_pw_col = f"pw_mean_{pre_or_post}_raw"
     raw_hours_col = f"hours_{pre_or_post}_raw"
@@ -86,66 +135,73 @@ def _cook_pp(
     pw_at_mid_col = f"pw_at_mid_{pre_or_post}"
     pw_sem_at_mid_col = f"pw_sem_at_mid_{pre_or_post}"
 
-    pp_df[raw_pw_col] = pp_df[pw_col]
-    pp_df[raw_hours_col] = pp_df[hours_col]
+    raw_pw = pp_df[pw_col].to_numpy(dtype=float)
+    raw_hours = pp_df[hours_col].to_numpy(dtype=float)
+    bin_mid = pp_df["bin_mid"].to_numpy()
 
     # IEC minimum would be 1 hrs_per_mps but using 3 b/c typically higher noise with turbine side-by-side
     hrs_per_mps = 3
-    pp_df[valid_col] = pp_df[f"hours_{pre_or_post}"] > (ws_bin_width * hrs_per_mps)
-    pp_df.loc[~pp_df[valid_col], [pw_col, hours_col, ws_col, pw_sem_col]] = np.nan
-
-    # the remaining steps work on columns taken out of pp_df, which are put back at the end
-    bin_mid = pp_df["bin_mid"]
-    valid = pp_df[valid_col]
-    pw = pp_df[pw_col]
-    hours = pp_df[hours_col].fillna(0)
-    ws = pp_df[ws_col].fillna(bin_mid)
+    valid = raw_hours > (ws_bin_width * hrs_per_mps)
+    pw = np.where(valid, raw_pw, np.nan)
+    hours = np.where(valid, raw_hours, 0)
+    ws = np.where(valid, pp_df[ws_col].to_numpy(dtype=float), np.nan)
+    ws = np.where(np.isnan(ws), bin_mid, ws)
+    pw_sem = np.where(valid, pp_df[pw_sem_col].to_numpy(dtype=float), np.nan)
 
     # data which would have been at rated can be gap filled
-    rated_ws = _calc_rated_ws(pp_df=pp_df, pw_col=raw_pw_col, rated_power=rated_power)
+    bin_mids_at_rated = bin_mid[raw_pw >= rated_power * 0.995]
+    rated_ws = bin_mids_at_rated.min() + 1 if len(bin_mids_at_rated) > 0 else np.nan
     empty_rated_bins_fill_value = rated_power
     if not clip_to_rated:
         with contextlib.suppress(IndexError):
-            empty_rated_bins_fill_value = pw.loc[(bin_mid >= rated_ws) & ~pw.isna()].iloc[-1]
-    pw = pw.mask((bin_mid >= rated_ws) & pw.isna(), empty_rated_bins_fill_value)
+            empty_rated_bins_fill_value = pw[(bin_mid >= rated_ws) & ~np.isnan(pw)][-1]
+    pw = np.where((bin_mid >= rated_ws) & np.isnan(pw), empty_rated_bins_fill_value, pw)
 
     # For bins with insufficient data, fill power with site mean power curve if provided
     if site_mean_pc_df is not None:
-        pw = pw.where(valid, np.interp(bin_mid, site_mean_pc_df["bin_mid"], site_mean_pc_df["pw_clipped"]))
+        pw = np.where(valid, pw, np.interp(bin_mid, site_mean_pc_df["bin_mid"], site_mean_pc_df["pw_clipped"]))
 
     # Clip power below zero and above rated if requested
-    pw = pw.clip(lower=0)
+    pw = _clip_lower(pw, 0)
     if clip_to_rated:
-        pw = pw.clip(upper=rated_power)
+        pw = _clip_upper(pw, rated_power)
 
-    pw_sem = pp_df[pw_sem_col].ffill().bfill()
+    pw_sem = _ffill_bfill(pw_sem)
 
     # missing data at low wind speed can be filled with 0
-    missing_at_low_ws = pp_df.index.isin(pp_df.index[pw.isna().cummin()])
-    pw = pw.mask(missing_at_low_ws, 0)
-    pw_sem = pw_sem.mask(missing_at_low_ws, 0)
+    missing_at_low_ws = np.logical_and.accumulate(np.isnan(pw))
+    if not pp_df.index.is_unique:
+        missing_at_low_ws = pp_df.index.isin(pp_df.index[missing_at_low_ws])
+    pw = np.where(missing_at_low_ws, 0, pw)
+    pw_sem = np.where(missing_at_low_ws, 0, pw_sem)
 
     # revisit in future, an alternative is filling in with SCADA power curve
-    pw = pw.interpolate()
+    pw = _interpolate_forward(pw)
 
     # interpolate power and ci to bin mid
-    pw_at_mid = pd.Series(np.interp(bin_mid, ws, pw), index=pp_df.index).clip(lower=0)
+    pw_at_mid = _clip_lower(np.interp(bin_mid, ws, pw), 0)
     if clip_to_rated:
-        pw_at_mid = pw_at_mid.clip(upper=rated_power)
-    pw_sem_at_mid = (pw_sem / pw * pw_at_mid).fillna(0).clip(lower=0, upper=pw_sem)
+        pw_at_mid = _clip_upper(pw_at_mid, rated_power)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pw_sem_at_mid = pw_sem / pw * pw_at_mid
+    pw_sem_at_mid = np.where(np.isnan(pw_sem_at_mid), 0, pw_sem_at_mid)
+    pw_sem_at_mid = _clip_lower_and_upper(pw_sem_at_mid, lower=0, upper=pw_sem)
 
-    pp_df = pp_df.assign(
-        **{
-            pw_col: pw,
-            hours_col: hours,
-            ws_col: ws,
-            pw_sem_col: pw_sem,
-            pw_at_mid_col: pw_at_mid,
-            pw_sem_at_mid_col: pw_sem_at_mid,
-        }
-    )
+    new_cols = {
+        raw_pw_col: raw_pw,
+        raw_hours_col: raw_hours,
+        valid_col: valid,
+        pw_col: pw,
+        hours_col: hours,
+        ws_col: ws,
+        pw_sem_col: pw_sem,
+        pw_at_mid_col: pw_at_mid,
+        pw_sem_at_mid_col: pw_sem_at_mid,
+    }
+    cols = {col: new_cols.get(col, pp_df[col].array) for col in pp_df.columns} | new_cols
+    pp_df = pd.DataFrame(cols, index=pp_df.index)
 
-    if pp_df[[col for col in pp_df.columns if col != raw_pw_col]].isna().any().any():
+    if any(pd.isna(values).any() for col, values in cols.items() if col != raw_pw_col):
         msg = "pp_df has missing values"
         result_manager.warning(msg)
 

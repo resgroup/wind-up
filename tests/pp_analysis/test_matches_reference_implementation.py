@@ -11,7 +11,7 @@ from pandas.testing import assert_frame_equal
 
 from tests.conftest import TEST_DATA_FLD
 from tests.pp_analysis.test_cook_pp import _make_pp_raw_df, _make_site_mean_pc_df
-from wind_up.pp_analysis import _calc_rated_ws, _cook_pp, _pp_raw_df
+from wind_up.pp_analysis import _calc_rated_ws, _cook_pp, _cut, _pp_raw_df
 from wind_up.result_manager import result_manager
 
 WS_COL = "ref_ws_detrended"
@@ -248,3 +248,52 @@ def test_cook_pp_matches_reference_for_hand_built_bins(
         _assert_identical(actual, expected)
         assert result_manager.stored_warnings == expected_warnings
     result_manager.stored_warnings = []
+
+
+@pytest.mark.parametrize("power_name", HAND_BUILT_POWER)
+def test_cook_pp_matches_reference_with_a_repeated_bin(power_name: str) -> None:
+    pp_raw_df = _make_pp_raw_df(BIN_MIDS, HAND_BUILT_POWER[power_name], HAND_BUILT_HOURS["low wind invalid"])
+    pp_raw_df.index = pd.Index([*BIN_MIDS[:-1], BIN_MIDS[0]], name=pp_raw_df.index.name)
+    cook_kwargs = {"pre_or_post": "pre", "ws_bin_width": 1.0, "rated_power": 1300.0, "clip_to_rated": True}
+
+    result_manager.stored_warnings = []
+    expected = _reference_cook_pp(pp_raw_df, **cook_kwargs)
+    expected_warnings = result_manager.stored_warnings
+    result_manager.stored_warnings = []
+    actual = _cook_pp(pp_raw_df, **cook_kwargs)
+
+    _assert_identical(actual, expected)
+    assert result_manager.stored_warnings == expected_warnings
+    result_manager.stored_warnings = []
+
+
+def test_pp_raw_df_matches_reference_with_repeated_timestamps() -> None:
+    df = TIME_SERIES_FRAMES["all"].dropna().iloc[:3000]
+    df = pd.concat([df, df.iloc[:500]])
+    raw_kwargs = {"ws_col": WS_COL, "ws_bin_edges": np.arange(0, 26, 1.0), "pw_col": PW_COL, "timebase_s": 600}
+
+    _assert_identical(_pp_raw_df(df, "pre", **raw_kwargs), _reference_pp_raw_df(df, "pre", **raw_kwargs))
+
+    df_with_gaps = df.assign(**{WS_COL: df[WS_COL].where(df[WS_COL] > 3)})
+    with pytest.raises(ValueError, match="cannot reindex on an axis with duplicate labels"):
+        _reference_pp_raw_df(df_with_gaps, "pre", **raw_kwargs)
+    with pytest.raises(ValueError, match="cannot reindex on an axis with duplicate labels"):
+        _pp_raw_df(df_with_gaps, "pre", **raw_kwargs)
+
+
+@pytest.mark.parametrize("frame_name", TIME_SERIES_FRAMES)
+@pytest.mark.parametrize(("ws_bin_edges", "timebase_s"), BIN_EDGES_AND_TIMEBASE)
+def test_cut_matches_pandas(frame_name: str, ws_bin_edges: np.ndarray, timebase_s: int) -> None:  # noqa: ARG001
+    values = TIME_SERIES_FRAMES[frame_name][WS_COL].dropna().to_numpy()
+    values = np.concatenate([values, ws_bin_edges, ws_bin_edges + 1e-12, ws_bin_edges - 1e-12, [-1.0, 1e9]])
+
+    actual = _cut(values, bin_edges=ws_bin_edges)
+
+    expected = pd.cut(values, bins=ws_bin_edges)
+    assert actual.dtype == expected.dtype
+    np.testing.assert_array_equal(actual.codes, expected.codes)
+
+
+def test_cut_rejects_bin_edges_as_pandas_does() -> None:
+    with pytest.raises(ValueError, match="bins must increase monotonically"):
+        _cut(np.array([1.0, 2.0]), bin_edges=np.array([0.0, 2.0, 1.0]))
