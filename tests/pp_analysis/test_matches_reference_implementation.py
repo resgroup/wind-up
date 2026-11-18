@@ -147,6 +147,8 @@ def _time_series_frames() -> dict[str, pd.DataFrame]:
     frames["one row"] = df.dropna().iloc[:1]
     frames["no wind speed"] = df.assign(**{WS_COL: np.nan})
     frames["beyond last bin"] = df.assign(**{WS_COL: df[WS_COL] * 3})
+    frames["integer power"] = df.dropna().assign(**{PW_COL: df[PW_COL].dropna().round().astype(np.int64)})
+    frames["float32 wind speed"] = df.astype({WS_COL: np.float32})
     return frames
 
 
@@ -217,14 +219,18 @@ HAND_BUILT_POWER = {
 @pytest.mark.parametrize("power_name", HAND_BUILT_POWER)
 @pytest.mark.parametrize("pre_or_post", ["pre", "post"])
 @pytest.mark.parametrize("integer_bin_mids", [True, False])
+@pytest.mark.parametrize("float_wind_speeds", [True, False])
 def test_cook_pp_matches_reference_for_hand_built_bins(
     hours_name: str,
     power_name: str,
     pre_or_post: str,
     integer_bin_mids: bool,  # noqa: FBT001
+    float_wind_speeds: bool,  # noqa: FBT001
 ) -> None:
     bin_mids = BIN_MIDS if integer_bin_mids else [m - 0.5 for m in BIN_MIDS]
     pp_raw_df = _make_pp_raw_df(bin_mids, HAND_BUILT_POWER[power_name], HAND_BUILT_HOURS[hours_name], pre_or_post)
+    if float_wind_speeds:
+        pp_raw_df = pp_raw_df.astype({f"ws_mean_{pre_or_post}": np.float64})
 
     for rated_power, clip_to_rated, site_mean_pc_df in [
         (1300.0, True, None),
@@ -253,6 +259,7 @@ def test_cook_pp_matches_reference_for_hand_built_bins(
 @pytest.mark.parametrize("power_name", HAND_BUILT_POWER)
 def test_cook_pp_matches_reference_with_a_repeated_bin(power_name: str) -> None:
     pp_raw_df = _make_pp_raw_df(BIN_MIDS, HAND_BUILT_POWER[power_name], HAND_BUILT_HOURS["low wind invalid"])
+    pp_raw_df = pp_raw_df.astype({"ws_mean_pre": np.float64})
     pp_raw_df.index = pd.Index([*BIN_MIDS[:-1], BIN_MIDS[0]], name=pp_raw_df.index.name)
     cook_kwargs = {"pre_or_post": "pre", "ws_bin_width": 1.0, "rated_power": 1300.0, "clip_to_rated": True}
 
