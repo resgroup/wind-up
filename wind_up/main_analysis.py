@@ -35,7 +35,9 @@ from wind_up.plots.yaw_direction_plots import plot_yaw_direction_pre_post
 from wind_up.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
 from wind_up.result_manager import result_manager
 from wind_up.waking_state import (
-    add_waking_scen,
+    WfWakingState,
+    add_waking_scen_from_wf_waking_state,
+    calc_wf_waking_state,
     get_distance_and_bearing,
     get_iec_upwind_turbines,
     lat_long_is_valid,
@@ -453,6 +455,7 @@ def _calc_test_ref_results(
     post_df: pd.DataFrame,
     long_term_df: pd.DataFrame | None,
     wf_df: pd.DataFrame,
+    wf_waking_state: WfWakingState,
     test_wtg: Turbine,
     ref_name: str,
     test_pw_col: str,
@@ -552,12 +555,12 @@ def _calc_test_ref_results(
             f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
             f"rows from detrend_df where test_toggle_off was not True after the first toggle on time",
         )
-    detrend_df = add_waking_scen(
+    detrend_df = add_waking_scen_from_wf_waking_state(
         test_name=test_name,
         ref_name=ref_name,
         test_ref_df=detrend_df,
         cfg=cfg,
-        wf_df=wf_df,
+        wf_waking_state=wf_waking_state,
         ref_wd_col=ref_wd_col,
         ref_lat=ref_lat,
         ref_long=ref_long,
@@ -618,22 +621,22 @@ def _calc_test_ref_results(
         sub_dir=f"{test_name}/{ref_name}",
     )
 
-    pre_df = add_waking_scen(
+    pre_df = add_waking_scen_from_wf_waking_state(
         test_ref_df=pre_df,
         test_name=test_name,
         ref_name=ref_name,
         cfg=cfg,
-        wf_df=wf_df,
+        wf_waking_state=wf_waking_state,
         ref_wd_col=ref_wd_col,
         ref_lat=ref_lat,
         ref_long=ref_long,
     )
-    post_df = add_waking_scen(
+    post_df = add_waking_scen_from_wf_waking_state(
         test_ref_df=post_df,
         test_name=test_name,
         ref_name=ref_name,
         cfg=cfg,
-        wf_df=wf_df,
+        wf_waking_state=wf_waking_state,
         ref_wd_col=ref_wd_col,
         ref_lat=ref_lat,
         ref_long=ref_long,
@@ -831,6 +834,8 @@ def run_wind_up_analysis(
     if len(cfg.ref_wtgs) > 1:
         wtgs_to_test.extend([x for x in cfg.ref_wtgs if x not in cfg.test_wtgs])
 
+    wf_waking_state = calc_wf_waking_state(wf_df)
+
     results_per_test_ref = []
     logger.info(f"test turbines: {[x.name for x in cfg.test_wtgs]}")
     logger.info(f"ref list: {ref_name_list}")
@@ -940,6 +945,7 @@ def run_wind_up_analysis(
                 post_df=post_df,
                 long_term_df=lt_df_filt,
                 wf_df=wf_df,
+                wf_waking_state=wf_waking_state,
                 toggle_df=inputs.pre_post_splitter.toggle_df,
                 test_wtg=test_wtg,
                 ref_name=ref_name,
