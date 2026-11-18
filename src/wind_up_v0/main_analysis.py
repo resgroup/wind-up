@@ -457,7 +457,7 @@ def _calc_test_ref_results(
     ref_name: str,
     test_pw_col: str,
     test_ws_col: str,
-    scada_pc: pd.DataFrame,
+    pc_per_ttype: dict[str, pd.DataFrame],
     cfg: WindUpConfig,
     plot_cfg: PlotConfig,
     random_seed: int,
@@ -465,6 +465,7 @@ def _calc_test_ref_results(
     mast_or_lidar_datasets: list[MastOrLiDARDataset] | None = None,
 ) -> dict:
     test_name = test_wtg.name
+    scada_pc = pc_per_ttype[test_wtg.turbine_type.turbine_type]
     (plot_cfg.plots_dir / test_name / ref_name).mkdir(exist_ok=True, parents=True)
     ref_pw_col = "pw_clipped"
     if test_name == ref_name:
@@ -733,7 +734,7 @@ def _calc_test_ref_results(
         plot_cfg=plot_cfg,
         test_df=test_df,
         random_seed=random_seed,
-        site_mean_pc_df=scada_pc if cfg.gapfill_uplift_curve_using_site_mean_power_curve else None,
+        site_mean_pc_per_ttype=pc_per_ttype if cfg.gapfill_uplift_curve_using_site_mean_power_curve else None,
     )
 
     if cfg.write_pp_df_parquets:
@@ -930,7 +931,6 @@ def run_wind_up_analysis(
         }
         result_manager.stored_warnings = []
 
-        scada_pc = pc_per_ttype[test_wtg.turbine_type.turbine_type]
         for ref_name_counter, ref_name in enumerate(ref_name_list):
             loop_counter = test_wtg_counter * len(ref_name_list) + ref_name_counter
             logger.info(f"analysing {test_name} {ref_name}, loop_counter={loop_counter}")
@@ -945,7 +945,7 @@ def run_wind_up_analysis(
                 ref_name=ref_name,
                 test_pw_col=test_pw_col,
                 test_ws_col=test_ws_col,
-                scada_pc=scada_pc,
+                pc_per_ttype=pc_per_ttype,
                 cfg=cfg,
                 plot_cfg=plot_cfg,
                 random_seed=random_seed,

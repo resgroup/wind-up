@@ -167,6 +167,28 @@ def _add_uplift_cols_to_pp_df(
     return new_pp_df
 
 
+def _select_site_mean_pc(
+    *,
+    wtg: Turbine,
+    site_mean_pc_df: pd.DataFrame | None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None,
+) -> pd.DataFrame | None:
+    """Return the site mean power curve to gap-fill with for the turbine type of `wtg`."""
+    if site_mean_pc_per_ttype is None:
+        return site_mean_pc_df
+    if site_mean_pc_df is not None:
+        msg = "pass only one of site_mean_pc_df and site_mean_pc_per_ttype"
+        raise ValueError(msg)
+    ttype = wtg.turbine_type.turbine_type
+    if ttype not in site_mean_pc_per_ttype:
+        msg = (
+            f"site_mean_pc_per_ttype has no power curve for turbine type {ttype!r} "
+            f"(needed for {wtg.name}); available types: {sorted(site_mean_pc_per_ttype)}"
+        )
+        raise ValueError(msg)
+    return site_mean_pc_per_ttype[ttype]
+
+
 def _pre_post_pp_analysis(
     *,
     cfg: WindUpConfig,
@@ -183,6 +205,7 @@ def _pre_post_pp_analysis(
     test_df: pd.DataFrame | None = None,
     reverse: bool = False,
     site_mean_pc_df: pd.DataFrame | None = None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[dict, pd.DataFrame]:
     wtg_for_turbine_type = test_wtg
     test_name = test_wtg.name
@@ -195,6 +218,9 @@ def _pre_post_pp_analysis(
         pw_col = pw_col.replace("test", "ref")
     cutout_ws = wtg_for_turbine_type.turbine_type.cutout_ws_mps
     rated_power = wtg_for_turbine_type.turbine_type.rated_power_kw
+    site_mean_pc_df = _select_site_mean_pc(
+        wtg=wtg_for_turbine_type, site_mean_pc_df=site_mean_pc_df, site_mean_pc_per_ttype=site_mean_pc_per_ttype
+    )
 
     ws_bin_edges = np.arange(0, cutout_ws + cfg.ws_bin_width, cfg.ws_bin_width)
 
@@ -357,6 +383,7 @@ def _calc_power_only_and_reversed_uplifts(
     wd_col: str,
     confidence_level: float = 0.9,
     site_mean_pc_df: pd.DataFrame | None = None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[float, float]:
     # calculate power only forward result
     pre_power_only = pre_df.copy()
@@ -380,6 +407,7 @@ def _calc_power_only_and_reversed_uplifts(
         plot_cfg=None,
         confidence_level=confidence_level,
         site_mean_pc_df=site_mean_pc_df,
+        site_mean_pc_per_ttype=site_mean_pc_per_ttype,
     )
 
     # need to predict the reference wind speed using the test wind speed for reverse analysis
@@ -403,6 +431,7 @@ def _calc_power_only_and_reversed_uplifts(
         confidence_level=confidence_level,
         reverse=True,
         site_mean_pc_df=site_mean_pc_df,
+        site_mean_pc_per_ttype=site_mean_pc_per_ttype,
     )
 
     poweronly_uplift_frc = power_only_results["uplift_frc"]
@@ -425,6 +454,7 @@ def _pre_post_pp_analysis_with_reversal(
     confidence_level: float = 0.9,
     test_df: pd.DataFrame | None = None,
     site_mean_pc_df: pd.DataFrame | None = None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[dict, pd.DataFrame]:
     pp_results, pp_df = _pre_post_pp_analysis(
         cfg=cfg,
@@ -440,6 +470,7 @@ def _pre_post_pp_analysis_with_reversal(
         confidence_level=confidence_level,
         test_df=test_df,
         site_mean_pc_df=site_mean_pc_df,
+        site_mean_pc_per_ttype=site_mean_pc_per_ttype,
     )
 
     if test_wtg.name == ref_name:
@@ -458,6 +489,7 @@ def _pre_post_pp_analysis_with_reversal(
             wd_col=wd_col,
             confidence_level=confidence_level,
             site_mean_pc_df=site_mean_pc_df,
+            site_mean_pc_per_ttype=site_mean_pc_per_ttype,
         )
         reversal_error = reversed_uplift_frc - poweronly_uplift_frc
     if plot_cfg is not None:
@@ -501,6 +533,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     confidence_level: float = 0.9,
     test_df: pd.DataFrame | None = None,
     site_mean_pc_df: pd.DataFrame | None = None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[dict, pd.DataFrame]:
     """Perform pre-post analysis with reversal and block bootstrapping uncertainty analysis.
 
@@ -517,7 +550,9 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     :param random_seed: random seed for reproducibility
     :param confidence_level: confidence level
     :param test_df: test data DataFrame
-    :param site_mean_pc_df: df containing site mean power curve, used for filling invalid bins above rated wind speed
+    :param site_mean_pc_df: single site mean power curve for filling invalid bins if per-type curves are not supplied
+    :param site_mean_pc_per_ttype: curves for filling invalid bins by turbine type. Reversal uses the reference
+        turbine type when available and the test turbine type for non-turbine references.
     :return: tuple of results dictionary and DataFrame
     """
     pp_results, pp_df = _pre_post_pp_analysis_with_reversal(
@@ -533,6 +568,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         plot_cfg=plot_cfg,
         test_df=test_df,
         site_mean_pc_df=site_mean_pc_df,
+        site_mean_pc_per_ttype=site_mean_pc_per_ttype,
     )
 
     pre_df_dropna = pre_df.dropna(subset=[ws_col, pw_col, wd_col])
@@ -581,6 +617,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
                 wd_col=wd_col,
                 plot_cfg=None,
                 site_mean_pc_df=site_mean_pc_df,
+                site_mean_pc_per_ttype=site_mean_pc_per_ttype,
             )
             bootstrapped_uplifts[n] = sample_results["uplift_frc"]
         except RuntimeError:
