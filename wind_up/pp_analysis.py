@@ -531,14 +531,22 @@ def _random_rows_in_index_order(df: pd.DataFrame, *, size: int | np.integer, rng
         return df.loc[rng.choice(df.index, size=size, replace=False)].sort_index()
     ilocs = rng.choice(len(df), size=size, replace=False)
     if df.index.is_monotonic_increasing:
-        return df.iloc[np.sort(ilocs)]
+        is_drawn = np.zeros(len(df), dtype=bool)
+        is_drawn[ilocs] = True
+        return df.iloc[np.flatnonzero(is_drawn)]
     return df.iloc[ilocs[df.index.take(ilocs).argsort()]]
 
 
-def _rows_in_index_order(df: pd.DataFrame, ilocs: np.ndarray, *, index_is_unique: bool) -> pd.DataFrame:
-    """Take rows of `df`, which is ordered by index, by position and order them by index."""
+def _blocks_in_index_order(
+    df: pd.DataFrame, blocks: np.ndarray, *, block_size: int, index_is_unique: bool
+) -> pd.DataFrame:
+    """Take `blocks` of `block_size` consecutive rows of `df`, which is ordered by index, and order them by index."""
     if index_is_unique:
-        return df.iloc[np.sort(ilocs)]
+        unique_blocks, repeats = np.unique(blocks, return_counts=True)
+        ilocs = (block_size * unique_blocks[:, None] + np.arange(block_size)[None, :]).flatten()
+        # a row of a block drawn more than once is repeated in place, as sorting the positions would do
+        return df.iloc[np.repeat(ilocs, np.repeat(repeats, block_size))]
+    ilocs = (block_size * blocks[:, None] + np.arange(block_size)[None, :]).flatten()
     return df.iloc[ilocs].sort_index()
 
 
@@ -559,16 +567,13 @@ def _block_bootstrap_sample(
 
     blocks = rng.choice(num_blocks, size=num_blocks, replace=True)
 
-    pre_sample_ilocs = (block_size_pre * blocks[:, None] + np.arange(block_size_pre)[None, :]).flatten()
-    post_sample_ilocs = (block_size_post * blocks[:, None] + np.arange(block_size_post)[None, :]).flatten()
-    return (
-        _rows_in_index_order(pre_df_trim, pre_sample_ilocs, index_is_unique=pre_df.index.is_unique).reset_index(
-            drop=True
-        ),
-        _rows_in_index_order(post_df_trim, post_sample_ilocs, index_is_unique=post_df.index.is_unique).reset_index(
-            drop=True
-        ),
+    pre_sample = _blocks_in_index_order(
+        pre_df_trim, blocks, block_size=block_size_pre, index_is_unique=pre_df.index.is_unique
     )
+    post_sample = _blocks_in_index_order(
+        post_df_trim, blocks, block_size=block_size_post, index_is_unique=post_df.index.is_unique
+    )
+    return pre_sample.reset_index(drop=True), post_sample.reset_index(drop=True)
 
 
 def pre_post_pp_analysis_with_reversal_and_bootstrapping(
