@@ -346,14 +346,28 @@ class ToggleEnergyRatioMethod:
     ) -> list[AnalysisOutput] | MethodOutput:
         """Answer each analysis of a toggle upgrade in ``facts``, one output per analysis, in order.
 
-        Each subject is measured on its own records within the toggle's span and the analysis's
-        period: its on and off records against the analysis's candidate references, leaving out the
-        records of any turbine inside a declared exclusion. The group's campaign uplift weights the
+        Each subject is measured from the first record any subject compares to the end of the
+        analysis's period: its on and off records against the analysis's candidate references,
+        leaving out the records of any turbine inside a declared exclusion. The record labels are
+        computed once per call. The group's campaign uplift weights the
         subjects by the energy they produced with the upgrade on. No AEP uplift is reported.
         """
         if isinstance(facts, MethodInput):
             return self._estimate_one(facts)
-        return [self._answer(facts, analysis) for analysis in analyses]
+        for analysis in analyses:
+            facts.check(analysis)
+            upgrade = facts.upgrade(analysis.upgrade)
+            if upgrade.mode != "toggle":
+                msg = f"{self.name} measures toggle tests only; upgrade {upgrade.name!r} is permanent"
+                raise MethodConfigurationError(msg)
+        facts.columns.require_roles(("active_power", "availability"))
+        labels = facts.record_labels()
+        turbine_col = facts.columns.turbine
+        excluded = declared_records(labels, turbine_col=turbine_col, windows=facts.exclusions)
+        valid = pd.DataFrame(
+            {turbine_col: labels[turbine_col].to_numpy(), "valid": ~excluded}, index=labels.index
+        ).pivot_table(index=labels.index, columns=turbine_col, values="valid", aggfunc="first")
+        return [self._answer(facts, analysis, labels=labels, valid=valid) for analysis in analyses]
 
     @property
     def _schema(self) -> ColumnSchema:
@@ -367,18 +381,15 @@ class ToggleEnergyRatioMethod:
         assert self.toggle_period is not None  # noqa: S101 - checked by the caller of every measurement
         return self.toggle_period
 
-    def _answer(self, facts: WindFarmFacts, analysis: AnalysisSpec) -> AnalysisOutput:
-        """Measure every subject of one analysis and combine them."""
-        facts.check(analysis)
+    def _answer(
+        self, facts: WindFarmFacts, analysis: AnalysisSpec, *, labels: pd.DataFrame, valid: pd.DataFrame
+    ) -> AnalysisOutput:
+        """Measure every subject of one analysis over the records it compares, and combine them."""
         upgrade = facts.upgrade(analysis.upgrade)
-        if upgrade.mode != "toggle":
-            msg = f"{self.name} measures toggle tests only; upgrade {upgrade.name!r} is permanent"
-            raise MethodConfigurationError(msg)
-        facts.columns.require_roles(("active_power", "availability"))
-        labels = facts.record_labels()
         sides = facts.comparison_sides(analysis, record_labels=labels)
+        compared = pd.DatetimeIndex(labels.index[np.isin(sides.to_numpy(), [ON, OFF])])
         first_record = pd.DatetimeIndex(facts.records.index).min()
-        start = max(t for t in (upgrade.signal_span()[0], analysis.period[0], first_record) if t is not None)
+        start = compared.min() if len(compared) else first_record
         end = analysis.period[1]
         records = facts.records[np.asarray(facts.records.index >= start)]
         if end is not None:
@@ -386,14 +397,7 @@ class ToggleEnergyRatioMethod:
         turbine_col = facts.columns.turbine
         index = pd.DatetimeIndex(pd.unique(records.index)).sort_values()
         present = [t for t in facts.turbine_names if t in set(records[turbine_col].astype(str))]
-        excluded = declared_records(labels, turbine_col=turbine_col, windows=facts.exclusions)
-        valid = (
-            pd.DataFrame({turbine_col: labels[turbine_col].to_numpy(), "valid": ~excluded}, index=labels.index)
-            .pivot_table(index=labels.index, columns=turbine_col, values="valid", aggfunc="first")
-            .reindex(index=index, columns=present)
-            .fillna(value=True)
-            .astype(bool)
-        )
+        valid = valid.reindex(index=index, columns=present).fillna(value=True).astype(bool)
         references = [t for t in facts.references_of(analysis) if t in present]
         stated = {
             "columns": facts.columns,
