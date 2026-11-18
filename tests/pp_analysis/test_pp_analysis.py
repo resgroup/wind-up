@@ -1,3 +1,6 @@
+import math
+
+import numpy as np
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
@@ -5,6 +8,8 @@ from pandas.testing import assert_frame_equal
 from tests.conftest import TEST_DATA_FLD
 from wind_up.models import WindUpConfig
 from wind_up.pp_analysis import (
+    _block_bootstrap_sample,
+    _bootstrap_columns,
     _pre_post_pp_analysis_with_reversal,
     pre_post_pp_analysis_with_reversal_and_bootstrapping,
 )
@@ -136,3 +141,97 @@ def test_site_mean_gap_fill_names_missing_turbine_type(test_lsa_t13_config: Wind
         pre_post_pp_analysis_with_reversal_and_bootstrapping(
             **inputs, site_mean_pc_per_ttype={"other_type": TEST_CURVE}
         )
+
+
+def _label_based_block_bootstrap_sample(
+    pre_df: pd.DataFrame, post_df: pd.DataFrame, *, rng: np.random.Generator
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Draw a block bootstrap sample by index label, as wind-up 0.7.1 did."""
+    num_blocks = rng.choice([9, 10, 11])
+    block_size_pre = math.floor(len(pre_df) / num_blocks)
+    block_size_post = math.floor(len(post_df) / num_blocks)
+    pre_rows_to_keep = rng.choice(pre_df.index, size=num_blocks * block_size_pre, replace=False)
+    post_rows_to_keep = rng.choice(post_df.index, size=num_blocks * block_size_post, replace=False)
+    pre_df_trim = pre_df.loc[pre_rows_to_keep].sort_index()
+    post_df_trim = post_df.loc[post_rows_to_keep].sort_index()
+    blocks = rng.choice(num_blocks, size=num_blocks, replace=True)
+    pre_sample_ilocs = (block_size_pre * blocks[:, None] + np.arange(block_size_pre)[None, :]).flatten()
+    post_sample_ilocs = (block_size_post * blocks[:, None] + np.arange(block_size_post)[None, :]).flatten()
+    return (
+        pre_df_trim.iloc[pre_sample_ilocs].sort_index().reset_index(),
+        post_df_trim.iloc[post_sample_ilocs].sort_index().reset_index(),
+    )
+
+
+def _bootstrap_test_frame(*, rows: int, seed: int, index_kind: str) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    index = pd.date_range("2020-01-01", periods=rows, freq="10min", tz="UTC", name="TimeStamp_StartFormat")
+    df = pd.DataFrame({"ws": rng.uniform(0, 25, rows), "pw": rng.uniform(0, 2000, rows)}, index=index)
+    if index_kind == "shuffled":
+        return df.iloc[rng.permutation(rows)]
+    if index_kind == "duplicated":
+        return pd.concat([df, df.iloc[: rows // 7]]).sort_index()
+    return df
+
+
+@pytest.mark.parametrize("index_kind", ["sorted", "shuffled", "duplicated"])
+@pytest.mark.parametrize(("pre_rows", "post_rows"), [(15000, 9000), (997, 1203), (10, 30), (5, 0)])
+def test_block_bootstrap_sample_matches_label_based_sampling(index_kind: str, pre_rows: int, post_rows: int) -> None:
+    pre_df = _bootstrap_test_frame(rows=pre_rows, seed=1, index_kind=index_kind)
+    post_df = _bootstrap_test_frame(rows=post_rows, seed=2, index_kind=index_kind)
+    rng = np.random.default_rng(seed=3)
+    expected_rng = np.random.default_rng(seed=3)
+
+    for _ in range(5):
+        actual_pre, actual_post = _block_bootstrap_sample(pre_df, post_df, rng=rng)
+        expected_pre, expected_post = _label_based_block_bootstrap_sample(pre_df, post_df, rng=expected_rng)
+
+        assert_frame_equal(actual_pre[["ws", "pw"]], expected_pre[["ws", "pw"]], check_exact=True)
+        assert_frame_equal(actual_post[["ws", "pw"]], expected_post[["ws", "pw"]], check_exact=True)
+    assert rng.bit_generator.state == expected_rng.bit_generator.state
+
+
+def test_bootstrap_columns() -> None:
+    assert _bootstrap_columns(test_name="T1", ref_name="T2", ws_col="ref_ws_detrended", pw_col="test_pw_clipped") == [
+        "ref_ws_detrended",
+        "test_pw_clipped",
+        "ref_ws_est_from_power_only",
+        "test_ws_est_from_power_only",
+        "ws_rom",
+        "ref_pw_clipped",
+    ]
+    assert _bootstrap_columns(test_name="T1", ref_name="T1", ws_col="ref_ws_detrended", pw_col="test_pw_clipped") == [
+        "ref_ws_detrended",
+        "test_pw_clipped",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("ref_name", "expected_bootstrap_unc", "expected_p95"),
+    [
+        ("LSA_T12", 0.0034729424641318754, 0.03359308313774399),
+        ("LSA_T13", 0.0032152424480777573, 0.03994779238394744),
+    ],
+)
+def test_bootstrapping_results_are_unchanged(
+    test_lsa_t13_config: WindUpConfig, ref_name: str, expected_bootstrap_unc: float, expected_p95: float
+) -> None:
+    cfg = test_lsa_t13_config
+    cfg.bootstrap_runs_override = 8
+
+    pp_results, _ = pre_post_pp_analysis_with_reversal_and_bootstrapping(
+        cfg=cfg,
+        test_wtg=next(x for x in cfg.asset.wtgs if x.name == "LSA_T13"),
+        ref_name=ref_name,
+        lt_df=pd.read_parquet(TEST_DATA_FLD / "LSA_T13_lt_wtg_df_filt.parquet"),
+        pre_df=pd.read_parquet(TEST_DATA_FLD / "LSA_T13_LSA_T12_pre_df.parquet"),
+        post_df=pd.read_parquet(TEST_DATA_FLD / "LSA_T13_LSA_T12_post_df.parquet"),
+        ws_col="ref_ws_detrended",
+        pw_col="test_pw_clipped",
+        wd_col="ref_YawAngleMean",
+        plot_cfg=None,
+        random_seed=0,
+    )
+
+    assert pp_results["unc_one_sigma_bootstrap_frc"] == pytest.approx(expected_bootstrap_unc, rel=1e-9)
+    assert pp_results["uplift_p95_frc"] == pytest.approx(expected_p95, rel=1e-9)

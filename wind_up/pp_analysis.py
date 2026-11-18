@@ -517,6 +517,60 @@ def _pre_post_pp_analysis_with_reversal(
     return pp_results, pp_df
 
 
+def _bootstrap_columns(*, test_name: str, ref_name: str, ws_col: str, pw_col: str) -> list[str]:
+    """List the columns of the pre and post data which the analysis of a bootstrap sample reads."""
+    cols = [ws_col, pw_col]
+    if test_name != ref_name:
+        cols += ["ref_ws_est_from_power_only", "test_ws_est_from_power_only", "ws_rom", pw_col.replace("test", "ref")]
+    return list(dict.fromkeys(cols))
+
+
+def _random_rows_in_index_order(df: pd.DataFrame, *, size: int | np.integer, rng: np.random.Generator) -> pd.DataFrame:
+    """Draw `size` rows of `df` without replacement and order them by index."""
+    if not df.index.is_unique:
+        return df.loc[rng.choice(df.index, size=size, replace=False)].sort_index()
+    ilocs = rng.choice(len(df), size=size, replace=False)
+    if df.index.is_monotonic_increasing:
+        return df.iloc[np.sort(ilocs)]
+    return df.iloc[ilocs[df.index.take(ilocs).argsort()]]
+
+
+def _rows_in_index_order(df: pd.DataFrame, ilocs: np.ndarray, *, index_is_unique: bool) -> pd.DataFrame:
+    """Take rows of `df`, which is ordered by index, by position and order them by index."""
+    if index_is_unique:
+        return df.iloc[np.sort(ilocs)]
+    return df.iloc[ilocs].sort_index()
+
+
+def _block_bootstrap_sample(
+    pre_df: pd.DataFrame, post_df: pd.DataFrame, *, rng: np.random.Generator
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Draw one block bootstrap sample of the pre and post data.
+
+    Each frame is randomly trimmed to a whole number of equal blocks, then the same blocks are drawn with replacement
+    from both. The samples are ordered by the original index and returned with a new index.
+    """
+    num_blocks = rng.choice([9, 10, 11])
+    block_size_pre = math.floor(len(pre_df) / num_blocks)
+    block_size_post = math.floor(len(post_df) / num_blocks)
+    # randomly remove rows to make the dataframes the perfect length
+    pre_df_trim = _random_rows_in_index_order(pre_df, size=num_blocks * block_size_pre, rng=rng)
+    post_df_trim = _random_rows_in_index_order(post_df, size=num_blocks * block_size_post, rng=rng)
+
+    blocks = rng.choice(num_blocks, size=num_blocks, replace=True)
+
+    pre_sample_ilocs = (block_size_pre * blocks[:, None] + np.arange(block_size_pre)[None, :]).flatten()
+    post_sample_ilocs = (block_size_post * blocks[:, None] + np.arange(block_size_post)[None, :]).flatten()
+    return (
+        _rows_in_index_order(pre_df_trim, pre_sample_ilocs, index_is_unique=pre_df.index.is_unique).reset_index(
+            drop=True
+        ),
+        _rows_in_index_order(post_df_trim, post_sample_ilocs, index_is_unique=post_df.index.is_unique).reset_index(
+            drop=True
+        ),
+    )
+
+
 def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     *,
     cfg: WindUpConfig,
@@ -571,8 +625,9 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         site_mean_pc_per_ttype=site_mean_pc_per_ttype,
     )
 
-    pre_df_dropna = pre_df.dropna(subset=[ws_col, pw_col, wd_col])
-    post_df_dropna = post_df.dropna(subset=[ws_col, pw_col, wd_col])
+    bootstrap_cols = _bootstrap_columns(test_name=test_wtg.name, ref_name=ref_name, ws_col=ws_col, pw_col=pw_col)
+    pre_df_dropna = pre_df.dropna(subset=[ws_col, pw_col, wd_col])[bootstrap_cols]
+    post_df_dropna = post_df.dropna(subset=[ws_col, pw_col, wd_col])[bootstrap_cols]
 
     n_samples = (
         cfg.bootstrap_runs_override
@@ -585,24 +640,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     bootstrapped_uplifts[:] = np.nan
     rng = np.random.default_rng(seed=random_seed)
     for n in tqdm(range(n_samples)):
-        num_blocks = rng.choice([9, 10, 11])
-        block_size_pre = math.floor(len(pre_df_dropna) / num_blocks)
-        block_size_post = math.floor(len(post_df_dropna) / num_blocks)
-        # randomly remove rows to make the dataframes the perfect length
-        pre_target_len = num_blocks * block_size_pre
-        post_target_len = num_blocks * block_size_post
-        pre_rows_to_keep = rng.choice(pre_df_dropna.index, size=pre_target_len, replace=False)
-        post_rows_to_keep = rng.choice(post_df_dropna.index, size=post_target_len, replace=False)
-        pre_df_trim = pre_df_dropna.loc[pre_rows_to_keep].sort_index()
-        post_df_trim = post_df_dropna.loc[post_rows_to_keep].sort_index()
-
-        blocks = rng.choice(num_blocks, size=num_blocks, replace=True)
-
-        pre_sample_ilocs = (block_size_pre * blocks[:, None] + np.arange(block_size_pre)[None, :]).flatten()
-        pre_df_ = pre_df_trim.iloc[pre_sample_ilocs].sort_index()
-
-        post_sample_ilocs = (block_size_post * blocks[:, None] + np.arange(block_size_post)[None, :]).flatten()
-        post_df_ = post_df_trim.iloc[post_sample_ilocs].sort_index()
+        pre_df_, post_df_ = _block_bootstrap_sample(pre_df_dropna, post_df_dropna, rng=rng)
 
         try:
             sample_results, _ = _pre_post_pp_analysis_with_reversal(
@@ -610,8 +648,8 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
                 test_wtg=test_wtg,
                 ref_name=ref_name,
                 lt_df=lt_df,
-                pre_df=pre_df_.reset_index(),
-                post_df=post_df_.reset_index(),
+                pre_df=pre_df_,
+                post_df=post_df_,
                 ws_col=ws_col,
                 pw_col=pw_col,
                 wd_col=wd_col,
