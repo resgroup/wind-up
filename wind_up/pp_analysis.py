@@ -29,36 +29,35 @@ def _pp_raw_df(
     pw_col: str,
     timebase_s: int,
 ) -> pd.DataFrame:
-    return (
+    grouped = (
         pre_or_post_df.loc[:, [pw_col, ws_col]]
         .dropna()
         .groupby(
             by=pd.cut(pre_or_post_df[ws_col], bins=ws_bin_edges, retbins=False),
             observed=False,
         )
-        .agg(
-            count=pd.NamedAgg(column=pw_col, aggfunc=len),
-            ws_mean=pd.NamedAgg(column=ws_col, aggfunc="mean"),
-            ws_std=pd.NamedAgg(column=ws_col, aggfunc="std"),
-            pw_mean=pd.NamedAgg(column=pw_col, aggfunc="mean"),
-            pw_std=pd.NamedAgg(column=pw_col, aggfunc="std"),
-        )
-        .assign(
-            ws_std=lambda x: x["ws_std"].fillna(0),
-            pw_std=lambda x: x["pw_std"].fillna(0),
-            hours=lambda x: x["count"] * timebase_s / 3600,
-            ws_sem=lambda x: x["ws_std"] / np.sqrt(x["count"].clip(lower=1)),
-            pw_sem=lambda x: x["pw_std"] / np.sqrt(x["count"].clip(lower=1)),
-        )
-        .pipe(lambda d: d.set_axis(d.columns.map(lambda x: f"{x}_{pre_or_post}"), axis="columns"))
-        .assign(
-            bin_left=lambda x: [i.left for i in x.index],
-            bin_mid=lambda x: [i.mid for i in x.index],
-            bin_right=lambda x: [i.right for i in x.index],
-            bin_closed_right=lambda x: [i.closed_right for i in x.index],
-        )
-        .set_index("bin_mid", drop=False)
-        .rename_axis(f"{ws_col}_bin_mid", axis=0)
+    )
+    count = grouped.size()
+    mean_df = grouped.mean()
+    std_df = grouped.std().fillna(0)
+    sqrt_count = np.sqrt(count.clip(lower=1))
+    bins = pd.IntervalIndex(count.index)
+    return pd.DataFrame(
+        {
+            f"count_{pre_or_post}": count.to_numpy(),
+            f"ws_mean_{pre_or_post}": mean_df[ws_col].to_numpy(),
+            f"ws_std_{pre_or_post}": std_df[ws_col].to_numpy(),
+            f"pw_mean_{pre_or_post}": mean_df[pw_col].to_numpy(),
+            f"pw_std_{pre_or_post}": std_df[pw_col].to_numpy(),
+            f"hours_{pre_or_post}": (count * timebase_s / 3600).to_numpy(),
+            f"ws_sem_{pre_or_post}": (std_df[ws_col] / sqrt_count).to_numpy(),
+            f"pw_sem_{pre_or_post}": (std_df[pw_col] / sqrt_count).to_numpy(),
+            "bin_left": bins.left,
+            "bin_mid": bins.mid,
+            "bin_right": bins.right,
+            "bin_closed_right": bins.closed_right,
+        },
+        index=pd.Index(bins.mid, name=f"{ws_col}_bin_mid"),
     )
 
 
@@ -94,46 +93,57 @@ def _cook_pp(
     hrs_per_mps = 3
     pp_df[valid_col] = pp_df[f"hours_{pre_or_post}"] > (ws_bin_width * hrs_per_mps)
     pp_df.loc[~pp_df[valid_col], [pw_col, hours_col, ws_col, pw_sem_col]] = np.nan
-    pp_df[hours_col] = pp_df[hours_col].fillna(0)
-    pp_df[ws_col] = pp_df[ws_col].fillna(pp_df["bin_mid"])
+
+    # the remaining steps work on columns taken out of pp_df, which are put back at the end
+    bin_mid = pp_df["bin_mid"]
+    valid = pp_df[valid_col]
+    pw = pp_df[pw_col]
+    hours = pp_df[hours_col].fillna(0)
+    ws = pp_df[ws_col].fillna(bin_mid)
 
     # data which would have been at rated can be gap filled
     rated_ws = _calc_rated_ws(pp_df=pp_df, pw_col=raw_pw_col, rated_power=rated_power)
     empty_rated_bins_fill_value = rated_power
     if not clip_to_rated:
         with contextlib.suppress(IndexError):
-            empty_rated_bins_fill_value = pp_df.loc[
-                (pp_df["bin_mid"] >= rated_ws) & ~pp_df[pw_col].isna(), pw_col
-            ].iloc[-1]
-    pp_df.loc[(pp_df["bin_mid"] >= rated_ws) & pp_df[pw_col].isna(), pw_col] = empty_rated_bins_fill_value
+            empty_rated_bins_fill_value = pw.loc[(bin_mid >= rated_ws) & ~pw.isna()].iloc[-1]
+    pw = pw.mask((bin_mid >= rated_ws) & pw.isna(), empty_rated_bins_fill_value)
 
     # For bins with insufficient data, fill power with site mean power curve if provided
     if site_mean_pc_df is not None:
-        pp_df.loc[~pp_df[valid_col], pw_col] = np.interp(
-            pp_df.loc[~pp_df[valid_col], "bin_mid"], site_mean_pc_df["bin_mid"], site_mean_pc_df["pw_clipped"]
-        )
+        pw = pw.where(valid, np.interp(bin_mid, site_mean_pc_df["bin_mid"], site_mean_pc_df["pw_clipped"]))
 
     # Clip power below zero and above rated if requested
-    pp_df[pw_col] = pp_df[pw_col].clip(lower=0)
+    pw = pw.clip(lower=0)
     if clip_to_rated:
-        pp_df[pw_col] = pp_df[pw_col].clip(upper=rated_power)
+        pw = pw.clip(upper=rated_power)
 
-    pp_df[pw_sem_col] = pp_df[pw_sem_col].ffill().bfill()
+    pw_sem = pp_df[pw_sem_col].ffill().bfill()
 
     # missing data at low wind speed can be filled with 0
-    pp_df.loc[pp_df.index[pp_df[pw_col].isna().cummin()], [pw_col, pw_sem_col]] = 0
+    missing_at_low_ws = pp_df.index.isin(pp_df.index[pw.isna().cummin()])
+    pw = pw.mask(missing_at_low_ws, 0)
+    pw_sem = pw_sem.mask(missing_at_low_ws, 0)
 
     # revisit in future, an alternative is filling in with SCADA power curve
-    pp_df[pw_col] = pp_df[pw_col].interpolate()
+    pw = pw.interpolate()
 
     # interpolate power and ci to bin mid
-    pp_df[pw_at_mid_col] = np.interp(pp_df["bin_mid"], pp_df[ws_col], pp_df[pw_col])
-    pp_df[pw_at_mid_col] = pp_df[pw_at_mid_col].clip(lower=0)
+    pw_at_mid = pd.Series(np.interp(bin_mid, ws, pw), index=pp_df.index).clip(lower=0)
     if clip_to_rated:
-        pp_df[pw_at_mid_col] = pp_df[pw_at_mid_col].clip(upper=rated_power)
-    pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_col] / pp_df[pw_col] * pp_df[pw_at_mid_col]
-    pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_at_mid_col].fillna(0)
-    pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_at_mid_col].clip(lower=0, upper=pp_df[pw_sem_col])
+        pw_at_mid = pw_at_mid.clip(upper=rated_power)
+    pw_sem_at_mid = (pw_sem / pw * pw_at_mid).fillna(0).clip(lower=0, upper=pw_sem)
+
+    pp_df = pp_df.assign(
+        **{
+            pw_col: pw,
+            hours_col: hours,
+            ws_col: ws,
+            pw_sem_col: pw_sem,
+            pw_at_mid_col: pw_at_mid,
+            pw_sem_at_mid_col: pw_sem_at_mid,
+        }
+    )
 
     if pp_df[[col for col in pp_df.columns if col != raw_pw_col]].isna().any().any():
         msg = "pp_df has missing values"
