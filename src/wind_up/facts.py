@@ -41,7 +41,7 @@ from wind_up.operating_state import (
     signal_columns,
 )
 from wind_up.record_selection import NEAR_CHANGEOVER, ChangedInterval, changed_times, turbines_within_reach
-from wind_up.toggle import ToggleSchedule, is_toggle, toggle_cycle, treated_mask, validate_toggle_df
+from wind_up.toggle import ToggleSchedule, is_toggle, treated_mask, validate_toggle_df
 from wind_up.wake_reach import MAX_REACH_D, reach_from_uplift
 
 if TYPE_CHECKING:
@@ -89,7 +89,7 @@ class Upgrade:
     :param upgrade_state_overrides: ``(turbine or None, start, end, state)``: the upgrade state of a
         turbine, or of every turbine, over ``[start, end)`` where the timing does not describe it
     :param toggle_cycle: toggle only: one on and off cycle of the controller. A toggle schedule's period
-        when omitted; for a toggle frame, inferred from the frame's runs when omitted, and checked
+        when omitted; for a toggle frame, the median gap between its on runs when omitted, and checked
         against them when given.
     :param toggle_datum: toggle only: any boundary of the controller's cycle grid. A toggle schedule's
         start when omitted, else the first record of a toggle frame in the on or off state.
@@ -184,9 +184,7 @@ class Upgrade:
         if self.toggle_cycle <= NO_TIME:
             msg = f"upgrade {self.name!r}: toggle_cycle must be positive, got {self.toggle_cycle}"
             raise ValueError(msg)
-        timing: ToggleSchedule | pd.DataFrame = self.timing  # type: ignore[assignment]
-        index = pd.DatetimeIndex(timing.index) if isinstance(timing, pd.DataFrame) else pd.DatetimeIndex([])
-        stated = toggle_cycle(timing, index)
+        stated = self._timing_cycle()
         if stated != self.toggle_cycle:
             msg = (
                 f"upgrade {self.name!r}: toggle_cycle {self.toggle_cycle} disagrees with the toggle timing, "
@@ -196,15 +194,29 @@ class Upgrade:
 
     @property
     def cycle(self) -> pd.Timedelta:
-        """Return a toggle's cycle: declared, a schedule's period, or inferred from a frame's runs."""
+        """Return a toggle's cycle: declared, a schedule's period, or a frame's median gap between on runs."""
         if self.mode != "toggle":
             msg = f"upgrade {self.name!r} is not a toggle"
             raise ValueError(msg)
         if self.toggle_cycle is not None:
             return self.toggle_cycle
-        timing: ToggleSchedule | pd.DataFrame = self.timing  # type: ignore[assignment]
-        index = pd.DatetimeIndex(timing.index) if isinstance(timing, pd.DataFrame) else pd.DatetimeIndex([])
-        return toggle_cycle(timing, index)
+        return self._timing_cycle()
+
+    def _timing_cycle(self) -> pd.Timedelta:
+        """Return the cycle the timing states: a schedule's period, or a frame's median gap between on runs.
+
+        An on run starts at an on record whose previous record is not on, so records in neither state
+        between the runs, settling among them, do not shorten the cycle.
+        """
+        if isinstance(self.timing, ToggleSchedule):
+            return self.timing.period
+        frame: pd.DataFrame = self.timing  # type: ignore[assignment]
+        on = frame["toggle_on"].to_numpy(dtype=bool)
+        starts = pd.DatetimeIndex(frame.index)[on & ~np.concatenate(([False], on[:-1]))]
+        if len(starts) < 2:  # noqa: PLR2004
+            msg = f"upgrade {self.name!r}: the toggle frame has fewer than two on runs, so it states no cycle"
+            raise ValueError(msg)
+        return pd.Timedelta(pd.Series(starts).diff().median())
 
     def datum(self, *, first_record: pd.Timestamp) -> pd.Timestamp:
         """Return a boundary of a toggle's cycle grid: declared, else where the toggle starts.

@@ -809,3 +809,17 @@ def test_a_permanent_upgrade_has_no_cycle() -> None:
         permanent(toggle_cycle=pd.Timedelta(hours=1))
     with pytest.raises(ValueError, match="not a toggle"):
         _ = permanent().cycle
+
+
+def test_settling_gaps_in_a_frame_do_not_shorten_its_cycle() -> None:
+    frame = toggle_frame(block=3, first=6)
+    starts = frame["toggle_on"] & ~frame["toggle_on"].shift(fill_value=False)
+    frame.loc[starts, ["toggle_on", "toggle_off"]] = False
+    upgrade = Upgrade(name="control", turbines=["T1"], timing=frame, toggle_cycle=pd.Timedelta(hours=1))
+    assert upgrade.cycle == pd.Timedelta(hours=1)
+
+
+def test_a_frame_with_fewer_than_two_on_runs_states_no_cycle() -> None:
+    frame = toggle_frame(block=40, first=6)
+    with pytest.raises(ValueError, match="fewer than two on runs"):
+        _ = Upgrade(name="control", turbines=["T1"], timing=frame).cycle
