@@ -389,7 +389,13 @@ class ToggleEnergyRatioMethod:
         upgrade = facts.upgrade(analysis.upgrade)
         sides = facts.comparison_sides(replace(analysis, include_labels=(), exclude_labels=()), record_labels=labels)
         stated_side = np.isin(sides.to_numpy(), [ON, OFF])
-        withheld = stated_side & ~np.isin(facts.comparison_sides(analysis, record_labels=labels).to_numpy(), [ON, OFF])
+        subject_rows = labels[facts.columns.turbine].isin(facts.subjects_of(analysis)).to_numpy()
+        kept = np.ones(len(labels), dtype=bool)
+        for name in analysis.include_labels:
+            kept &= labels[name].to_numpy(dtype=bool)
+        for name in analysis.exclude_labels:
+            kept &= ~labels[name].to_numpy(dtype=bool)
+        withheld = subject_rows & ~kept
         compared = pd.DatetimeIndex(labels.index[stated_side])
         first_record = pd.DatetimeIndex(facts.records.index).min()
         start = compared.min() if len(compared) else first_record
