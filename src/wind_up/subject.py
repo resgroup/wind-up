@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from wind_up.record_selection import ChangedTimes
 
 # The method step a measurement and its combination belong to, for the warnings register.
+CANDIDATES_STEP = 8
 MEASURE_STEP = 10
 COMBINE_STEP = 16
 
@@ -412,6 +413,17 @@ def _stacked(frames: Mapping[str, pd.DataFrame | None], *, key: str = "turbine")
     return stacked[[key, *[c for c in stacked.columns if c != key]]]
 
 
+def unused_measurement_warnings(
+    facts: WindFarmFacts, analysis: AnalysisSpec, *, name: str
+) -> tuple[AnalysisWarning, ...]:
+    """Return a medium warning when ``analysis`` names non-turbine references, which ``name`` cannot use."""
+    unused = facts.measurement_references(analysis)
+    if not unused:
+        return ()
+    message = f"{name} compares turbines' power, so it leaves out the non-turbine reference(s) {unused}"
+    return (AnalysisWarning(severity="medium", step=CANDIDATES_STEP, turbine="all", message=message),)
+
+
 def answer_analyses(
     facts: WindFarmFacts,
     analyses: Sequence[AnalysisSpec],
@@ -454,7 +466,8 @@ def answer_analyses(
                 raise
             except ValueError as error:
                 measured[subject] = str(error)
-        outputs.append(group_output(analysis, facts=facts, measurements=measured, name=name, warnings=facts.warnings()))
+        warnings = (*facts.warnings(), *unused_measurement_warnings(facts, analysis, name=name))
+        outputs.append(group_output(analysis, facts=facts, measurements=measured, name=name, warnings=warnings))
     return outputs
 
 

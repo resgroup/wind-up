@@ -376,6 +376,18 @@ def test_a_non_turbine_measurement_cannot_carry_a_turbines_name() -> None:
         facts(non_turbine_measurements=[mast])
 
 
+def test_a_reference_may_be_a_measurement_and_a_subject_may_not() -> None:
+    lidar = NonTurbineMeasurement(name="LiDAR", latitude=57.5, longitude=-3.0, records=pd.DataFrame())
+    given = facts(non_turbine_measurements=[lidar])
+    analysis = AnalysisSpec(name="a", upgrade="blades", references=["T2", "LiDAR"])
+    given.check(analysis)
+    assert given.measurement_names == ["LiDAR"]
+    assert given.measurement_references(analysis) == ["LiDAR"]
+    assert given.turbine_references(analysis) == ["T2"]
+    with pytest.raises(ValueError, match="LiDAR"):
+        given.check(AnalysisSpec(name="a", upgrade="blades", subjects=["LiDAR"]))
+
+
 # ---- WindFarmFacts: lookups ---------------------------------------------------------------------
 
 

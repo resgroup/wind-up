@@ -88,7 +88,15 @@ from wind_up.filtering import blank_missing
 from wind_up.labels import OFF, ON
 from wind_up.method import MethodConfigurationError
 from wind_up.operating_state import VALID_UPLIFT_COL
-from wind_up.subject import BASELINE, UPGRADED, SubjectMeasurement, SubjectRecords, group_output, subject_records
+from wind_up.subject import (
+    BASELINE,
+    UPGRADED,
+    SubjectMeasurement,
+    SubjectRecords,
+    group_output,
+    subject_records,
+    unused_measurement_warnings,
+)
 from wind_up.toggle import (
     ToggleRowSets,
     ToggleSchedule,
@@ -451,7 +459,8 @@ class ToggleEnergyRatioMethod:
                 if isinstance(error, MethodConfigurationError):
                     raise
                 measured[subject] = str(error)
-        return group_output(analysis, facts=facts, measurements=measured, name=self.name, warnings=facts.warnings())
+        warnings = (*facts.warnings(), *unused_measurement_warnings(facts, analysis, name=self.name))
+        return group_output(analysis, facts=facts, measurements=measured, name=self.name, warnings=warnings)
 
     def _estimate_one(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Estimate the test turbine's P50 uplift for one toggle campaign and write diagnostics."""

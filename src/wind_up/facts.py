@@ -537,6 +537,19 @@ class WindFarmFacts:
         return [str(n) for n in self.turbines[NAME_COL]]
 
     @property
+    def measurement_names(self) -> list[str]:
+        """Return every non-turbine measurement's name, in declaration order."""
+        return [m.name for m in self.non_turbine_measurements]
+
+    def measurement_references(self, analysis: AnalysisSpec) -> list[str]:
+        """Return the non-turbine measurements ``analysis`` names as references, in its order."""
+        return [r for r in analysis.references or () if r in self.measurement_names]
+
+    def turbine_references(self, analysis: AnalysisSpec) -> list[str]:
+        """Return the analysis's candidate references that are turbines, in its order."""
+        return [r for r in self.references_of(analysis) if r not in self.measurement_names]
+
+    @property
     def layout(self) -> Layout:
         """Return the farm layout. Raises when the turbine table has no rotor diameter."""
         if ROTOR_DIAMETER_COL not in self.turbines.columns:
@@ -636,10 +649,13 @@ class WindFarmFacts:
         return pd.Series(np.where(compared, state, NEITHER), index=record_labels.index, name=SIDE_COL)
 
     def check(self, analysis: AnalysisSpec) -> None:
-        """Raise when ``analysis`` names an upgrade, a turbine or a label the facts do not hold."""
+        """Raise when ``analysis`` names an upgrade, a turbine, a measurement or a label the facts do not hold.
+
+        A subject is a turbine; a reference is a turbine or a non-turbine measurement.
+        """
         upgrade = self.upgrade(analysis.upgrade)
         known = set(self.turbine_names)
-        named = [*(analysis.subjects or ()), *(analysis.references or ())]
+        named = [*(analysis.subjects or ()), *(r for r in analysis.references or () if r not in self.measurement_names)]
         unknown = sorted(set(named) - known)
         if unknown:
             msg = f"analysis {analysis.name!r} names {unknown}, which the turbine table does not hold"
@@ -665,8 +681,9 @@ class WindFarmFacts:
     def references_of(self, analysis: AnalysisSpec) -> list[str]:
         """Return the analysis's candidate references: those it names, or every turbine unchanged over its period.
 
-        A turbine is unchanged when, over the period, its state under every upgrade is one constant
-        state of on or off. A turbine upgraded before the period starts is unchanged.
+        Those it names may include non-turbine measurements. A turbine is unchanged when, over the
+        period, its state under every upgrade is one constant state of on or off. A turbine upgraded
+        before the period starts is unchanged.
         """
         if analysis.references is not None:
             return list(analysis.references)

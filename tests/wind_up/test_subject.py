@@ -12,6 +12,7 @@ import pytest
 from benchmarking.synthetic import ToggleSchedule
 from tests.wind_up import facts_fixtures as ff
 from wind_up.analysis import AnalysisOutput, AnalysisSpec
+from wind_up.facts import NonTurbineMeasurement
 from wind_up.labels import Label
 from wind_up.method import MethodConfigurationError
 from wind_up.operating_state import (
@@ -388,6 +389,13 @@ class TestAnsweringAnalyses:
         assert isinstance(measured, SubjectMeasurement)
         assert np.isnan(measured.p50_overall)
         assert measured.sigma_overall == 0.01
+
+    def test_a_measurement_reference_is_left_out_with_a_warning(self) -> None:
+        lidar = NonTurbineMeasurement(name="LiDAR", latitude=57.5, longitude=-3.0, records=pd.DataFrame())
+        facts = _subject_facts(upgrades=[ff.permanent(turbines=("T1", "T2"))], non_turbine_measurements=[lidar])
+        analysis = AnalysisSpec(name="a", upgrade="blades", subjects=["T1"], references=["T3", "LiDAR"])
+        (out,) = answer_analyses(facts, [analysis], name="fixed", measure=_Fixed(0.03).measure)
+        assert any(w.severity == "medium" and "LiDAR" in w.message for w in out.warnings)
 
     def test_a_turbine_not_a_subject_raises(self) -> None:
         out = self._answer(_Fixed(0.03), AnalysisSpec(name="a", upgrade="blades", subjects=["T1"]))

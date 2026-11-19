@@ -67,8 +67,9 @@ reference drifts" is a judgement the reference screen makes and the analyst may 
       `columns` as its own options; all four are facts and move to the input. Do this before
       `1.0.0a1`, since it changes the constructor an alpha user calls.
 - [ ] The same pass over `binned_power_curve` and `counterfactual_power` when they move.
-- [ ] `binned_power_curve` takes v0's own options as its method options, so any v0 analysis can
-      be expressed; it currently exposes five and hard-codes the rest.
+- [x] `binned_power_curve` takes v0's own options as its method options, so any v0 analysis can
+      be expressed. Now `options` (any `WindUpConfig` field the facts and the analysis do not set)
+      and `turbine_type` (the type's filter ranges); a field the facts set is refused.
 - [ ] Every method documents the facts it requires and the facts it ignores.
 
 The Hill of Towie Dynamic Yaw campaign is the worked case for this
@@ -112,7 +113,9 @@ What the interface could not express, each found by doing it:
       applies it or says it cannot.
 - [x] **Toggle cycle and datum were stated on the method.** Now `Upgrade.toggle_cycle` and
       `toggle_datum`, checked against the frame's own cycle when both are given.
-- [ ] **A declared reference the method cannot use is dropped silently.** The LiDAR has no power,
+- [x] **A declared reference the method cannot use is dropped silently.** Now an analysis may name
+      a non-turbine measurement as a reference; a method that compares turbines gives a medium
+      warning, `v0_binned` uses it. The LiDAR has no power,
       so the script left it out. This is the "declared fact the method cannot use" case: the
       method should receive it and put a line in the warnings register.
 - [x] **A farm result has no sigma.** `wind_up.combine` gives the range between independent and
@@ -131,13 +134,17 @@ What the interface could not express, each found by doing it:
 A prototype of `binned_power_curve` outside `src` (v0's run behind `MethodInput` and
 `CampaignContext`) needed these passed around the seam:
 
-- [ ] turbine type data: rotor diameter, rated power, hub height, cut-in and cut-out;
-- [ ] turbine positions and the timestamp convention (`metadata_df`);
-- [ ] reanalysis data;
-- [ ] non-turbine reference data (the LiDAR) and its name as a reference;
-- [ ] the campaign window and the settling time, as above;
-- [ ] a northing table, since v0 applies its own (v1 would hand it northed directions);
-- [ ] several subjects in one run, and a result per subject-reference pair, which
+- [x] turbine type data: rotor diameter and rated power from the turbine table, the type's
+      filter ranges and cut-out as `turbine_type`;
+- [x] turbine positions and the timestamp convention (`metadata_df`): built from the turbine
+      table, timestamps UTC at the start of each period;
+- [x] reanalysis data: `WindFarmFacts.reanalysis`;
+- [x] non-turbine reference data (the LiDAR) and its name as a reference:
+      `non_turbine_measurements` and the analysis's references;
+- [x] the campaign window and the settling time, as above;
+- [x] a northing table, since v0 applies its own: `WindFarmFacts.north_offsets`;
+- [x] several subjects in one run, and a result per subject-reference pair (now
+      `AnalysisOutput.per_reference`), which
       `MethodOutput` has no field for.
 
 The declared exclusions did pass through the seam, as `valid_for_uplift` over the whole record,
@@ -149,7 +156,9 @@ subject-reference results:
 | v0's own exclusion periods | 64 of 64, to rounding | 0 |
 | `valid_for_uplift`, rows dropped before v0 | 55 of 64 | 0.51 pp (T12 against T13, 375 h on against 459) |
 
-- [ ] **`valid_for_uplift` flattens two different facts.** v0 blanks an excluded record for the
+- [x] **`valid_for_uplift` flattens two different facts.** Now the records reach every method as
+      measured, with their labels; `v0_binned` passes exclusions as v0's own exclusion periods and
+      label-driven exclusions through v0's `exclude_row`. v0 blanks an excluded record for the
       uplift but still reads its raw power to decide whether that turbine is waking others. A
       record dropped before the method leaves the wake state unknown, and the records of
       turbines downwind of it are lost. An excluded record whose data is right (a turbine on the

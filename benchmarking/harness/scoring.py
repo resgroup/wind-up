@@ -36,7 +36,7 @@ from wind_up.facts import Upgrade, WindFarmFacts
 from wind_up.subject import measurement_of
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     import numpy as np
     import numpy.typing as npt
@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from benchmarking.harness.campaign import CampaignWindow
     from benchmarking.harness.replicates import NorthingInputs, Replicate, StudyConfig
     from benchmarking.synthetic import ColumnSchema
+    from wind_up.facts import NorthOffset, Reanalysis
     from wind_up.method import Method
     from wind_up.subject import SubjectMeasurement
 
@@ -82,6 +83,8 @@ def score_study(
     study: StudyConfig,
     profile_name: str = "profile",
     turbines: pd.DataFrame,
+    reanalysis: Sequence[Reanalysis] = (),
+    north_offsets: Sequence[NorthOffset] = (),
     columns: ColumnSchema = HOT_COLUMNS,
     northing: NorthingInputs | None = None,
     on_method_complete: Callable[[str, pd.DataFrame], None] | None = None,
@@ -95,6 +98,8 @@ def score_study(
 
     :param turbines: the turbine table of the facts each method is given (see
         :class:`~wind_up.facts.WindFarmFacts`)
+    :param reanalysis: the site's reanalysis nodes, which the facts carry
+    :param north_offsets: the site's declared northing, which the facts carry for the turbines they hold
     :param columns: the source-native column schema ``base_scada`` is keyed by
     :param northing: supplying it runs the shared northing step on each replicate, so methods
         reading a northed direction find one. See :func:`iter_replicates`.
@@ -125,6 +130,8 @@ def score_study(
                     truth=truth,
                     mask=mask,
                     turbines=turbines,
+                    reanalysis=reanalysis,
+                    north_offsets=north_offsets,
                     profile_name=profile_name,
                 )
             )
@@ -142,6 +149,8 @@ def score_one(
     truth: float,
     mask: npt.NDArray[np.bool_],
     turbines: pd.DataFrame,
+    reanalysis: Sequence[Reanalysis] = (),
+    north_offsets: Sequence[NorthOffset] = (),
     profile_name: str = "profile",
 ) -> list[dict[str, object]]:
     """Run one method over one ``(replicate, window)`` instance and return its tidy result rows.
@@ -157,8 +166,12 @@ def score_one(
     candidate reference. A test turbine it cannot measure raises ``ValueError`` with its reason.
 
     :param turbines: the turbine table of the facts the method is given
+    :param reanalysis: the site's reanalysis nodes
+    :param north_offsets: the site's declared northing
     """
-    facts, analysis = instance_facts(replicate, window, turbines=turbines)
+    facts, analysis = instance_facts(
+        replicate, window, turbines=turbines, reanalysis=reanalysis, north_offsets=north_offsets
+    )
     start = time.perf_counter()
     (output,) = method.estimate(facts, [analysis])
     wall_time_s = time.perf_counter() - start
@@ -290,7 +303,12 @@ def _materialise_instances(
 
 
 def instance_facts(
-    replicate: Replicate, window: CampaignWindow, *, turbines: pd.DataFrame
+    replicate: Replicate,
+    window: CampaignWindow,
+    *,
+    turbines: pd.DataFrame,
+    reanalysis: Sequence[Reanalysis] = (),
+    north_offsets: Sequence[NorthOffset] = (),
 ) -> tuple[WindFarmFacts, AnalysisSpec]:
     """Return the facts of one instance and the analysis of its test turbine.
 
@@ -298,6 +316,8 @@ def instance_facts(
     is the only one upgraded, and every other turbine is a candidate reference.
 
     :param turbines: the turbine table, holding at least every subset turbine
+    :param reanalysis: the site's reanalysis nodes
+    :param north_offsets: the site's declared northing; the offsets of turbines outside the subset are left out
     """
     synthetic = replicate.synthetic_df
     columns = replicate.dataset.columns
@@ -312,6 +332,8 @@ def instance_facts(
         timebase=pd.Timedelta(index.to_series().diff().median()) if len(index) > 1 else pd.Timedelta(minutes=10),
         turbines=table,
         upgrades=[upgrade],
+        north_offsets=[o for o in north_offsets if o[0] in present],
+        reanalysis=reanalysis,
     )
     return facts, AnalysisSpec(name=replicate.test_wtg, upgrade=upgrade.name, report="campaign")
 
