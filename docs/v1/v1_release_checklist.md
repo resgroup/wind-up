@@ -41,7 +41,9 @@ An analysis is described in three layers, and the interface keeps them apart.
    method-agnostic terms: layout, rated power, which column means what, instruments that are
    not turbines (a mast or LiDAR: where it is, what it measures), which turbines changed and
    when, the toggle signal and its cycle, the controller's settling time after a toggle change,
-   exclusion periods, northing corrections, a wake steering lookup table.
+   exclusion periods, northing corrections. When a controller acts only in some conditions (a wake
+   steering controller steering in some wind directions), the analyst says where with their own
+   labels: not every controller has a lookup table to declare, so it is not a fact of its own.
 2. **Question.** What is being measured over which records: the effect, the subject turbines,
    and the subset of records (a direction sector, the records another question did not use).
    One campaign and one set of facts can carry several questions.
@@ -58,15 +60,17 @@ Each method decides whether it has enough information:
 Reference choice splits the same way: "this turbine was not controlled" is a fact, "this
 reference drifts" is a judgement the reference screen makes and the analyst may override.
 
-- [ ] The facts and the declaration carry every fact in the list above. `WindFarmFacts` does, and
-      the declaration now carries several upgrades, the analyst's labels, the settling time and
+- [x] The facts and the declaration carry every fact in the list above. `WindFarmFacts` does, and
+      the declaration carries several upgrades, the analyst's labels, the settling time and
       non-turbine measurements (`upgrades`, `labels`, `settling_time`, `non_turbine_measurements`);
-      the toggle cycle and datum come from a toggle timing. Still missing: the steering lookup table.
+      the toggle cycle and datum come from a toggle timing. A wake steering lookup table is not a
+      fact (decided 2026-11-19): a controller need not have one, so where it steers is the analyst's
+      labels, built with `wind_up.labels.direction_sector` or by hand.
 - [x] A type for the question, between the declaration and the method input: `AnalysisSpec`, and
       `analyses` in the declaration. A record subset is an analysis's include and exclude labels.
-- [ ] `ToggleEnergyRatioMethod` takes `toggle_period`, `toggle_datum`, `rated_power_kw` and
-      `columns` as its own options; all four are facts and move to the input. Do this before
-      `1.0.0a1`, since it changes the constructor an alpha user calls.
+- [x] `ToggleEnergyRatioMethod` takes `toggle_period`, `toggle_datum`, `rated_power_kw` and
+      `columns` as its own options; all four are facts and move to the input. Done: its constructor
+      holds its own options only, and the facts give the rest.
 - [ ] The same pass over `binned_power_curve` and `counterfactual_power` when they move.
 - [x] `binned_power_curve` takes v0's own options as its method options, so any v0 analysis can
       be expressed. Now `options` (any `WindUpConfig` field the facts and the analysis do not set)
@@ -223,10 +227,10 @@ What the interface could not express:
       `report`. The original
       turns v0's long-term distribution off for steering, since a sector result cannot be
       extrapolated to a year by the method.
-- [ ] **Secondary measures confirmed.** The original reports the change in yaw activity beside
+- [x] **Secondary measures confirmed.** The original reports the change in yaw activity beside
       the uplift. Yaw activity per hour came straight from `labeled_rows`
-      (steering turbines +9 to +32 %; v0's pairs +12 to +47 %), so that split works, provided
-      `labeled_rows` keeps the input's other columns.
+      (steering turbines +9 to +32 %; v0's pairs +12 to +47 %), so that split works:
+      `labeled_rows` keeps the input's other columns, which a `toggle_energy_ratio` test pins.
 
 ## Method names (decided 2026-11-17)
 

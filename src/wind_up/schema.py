@@ -51,17 +51,6 @@ class ColumnSchema:
     :param ambient_temp: ambient temperature
     :param power_setpoint: the power setpoint at the end of each record; the synthetic upgrades taper
         and cap their power change at the higher of a record's start and end setpoints
-    :param exclude_row: names a caller-supplied **boolean** column marking rows to drop from row
-        selection (e.g. special operating modes the treatment cannot affect). Optional and off by
-        default; when set, a method that honours it excludes the flagged timestamps alongside the
-        downtime filter. Which turbines' flags count is the method's: the toggle energy ratio method counts
-        the test turbine's and its references' (a flagged reference row counts the way a reference
-        outage does). Must be all-``False`` where unknown (never NaN) so an expanded time index
-        never turns a gap into an exclusion; a method honouring the role raises on NaN.
-    :param exclude_block: names a caller-supplied **boolean** column like ``exclude_row``, but a
-        flagged row removes the whole fixed-length block (one toggle cycle) around it, for every
-        turbine, rather than its own timestamp alone. For a selection that must stay symmetric
-        between toggle states (both lose the same conditions). Same never-NaN contract.
     """
 
     turbine: str
@@ -76,8 +65,6 @@ class ColumnSchema:
     nacelle_position: str | None = None
     ambient_temp: str | None = None
     power_setpoint: str | None = None
-    exclude_row: str | None = None
-    exclude_block: str | None = None
 
     def northed(self, role: str) -> str:
         """Return the derived north-calibrated column name for ``role``, e.g. ``northed_YawAngleMean``.

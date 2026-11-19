@@ -68,6 +68,7 @@ def _run(
     toggle_datum: pd.Timestamp = _DATUM,
     timebase: pd.Timedelta | None = None,
     rated_power_kw: float | None = None,
+    left_out_column: str | None = None,
     **options: object,
 ) -> SubjectMeasurement:
     """Measure ``test`` on ``scada``, every other turbine a reference and every record valid."""
@@ -80,6 +81,7 @@ def _run(
         toggle_datum=toggle_datum,
         timebase=timebase,
         rated_power_kw=rated_power_kw,
+        left_out_column=left_out_column,
     )
 
 
@@ -866,7 +868,12 @@ class TestLabeledRows:
         assert out.labeled_rows is not None
 
         method = ToggleEnergyRatioMethod(conditions=("power",))._bound(  # noqa: SLF001
-            columns=_COLUMNS, toggle_cycle=_CYCLE, toggle_datum=_DATUM, timebase=None, rated_power_kw=_RATED_KW
+            columns=_COLUMNS,
+            toggle_cycle=_CYCLE,
+            toggle_datum=_DATUM,
+            timebase=None,
+            rated_power_kw=_RATED_KW,
+            left_out_column=None,
         )
         mi = SubjectRecords.from_frame(
             counter_states(scada, columns=_COLUMNS), subject="T1", timing=schedule, turbine_col=_TURBINE_COL
@@ -1004,10 +1011,9 @@ class TestReversalSymmetry:
         assert set(fwd.index) == set(rev.index)
 
 
-# --- caller-supplied row exclusion (ColumnSchema.exclude_row) -----------------------------------
+# --- records left out (left_out_column) --------------------------------------------------------
 
 _EXCLUDE_COL = "special_mode"
-_EXCLUDE_COLUMNS = replace(_COLUMNS, exclude_row=_EXCLUDE_COL)
 
 
 def _flag(scada: pd.DataFrame, *, turbine: str, every: int, value: object = True) -> pd.DataFrame:
@@ -1021,13 +1027,13 @@ def _flag(scada: pd.DataFrame, *, turbine: str, every: int, value: object = True
     return out
 
 
-class TestExcludeRow:
-    """``columns.exclude_row`` drops caller-flagged **test** turbine rows from the estimate."""
+class TestLeftOutRecords:
+    """``left_out_column`` drops the marked **test** turbine rows from the estimate."""
 
     def test_flagged_test_rows_are_not_used(self) -> None:
         scada, schedule = _noisy_toggle_case()
         flagged = _flag(scada, turbine="T1", every=5)
-        out = _run(flagged, schedule, columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM)
+        out = _run(flagged, schedule, left_out_column=_EXCLUDE_COL, toggle_period=_CYCLE, toggle_datum=_DATUM)
         assert out.labeled_rows is not None
         excluded = out.labeled_rows[_EXCLUDE_COL].to_numpy(dtype=bool)
         assert excluded.any()
@@ -1042,7 +1048,7 @@ class TestExcludeRow:
         corrupted.loc[spoiled, _POWER_COL] *= 0.5
 
         naive = _run(corrupted, schedule)
-        filtered = _run(corrupted, schedule, columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM)
+        filtered = _run(corrupted, schedule, left_out_column=_EXCLUDE_COL, toggle_period=_CYCLE, toggle_datum=_DATUM)
         assert filtered.p50_overall == pytest.approx(0.05, abs=1e-9)
         assert abs(naive.p50_overall - 0.05) > abs(filtered.p50_overall - 0.05)
 
@@ -1058,7 +1064,7 @@ class TestExcludeRow:
             flagged[_EXCLUDE_COL].to_numpy() | _flag(scada, turbine="R2", every=3)[_EXCLUDE_COL].to_numpy()
         )
         out = _run(
-            flagged, schedule, columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM, out_dir=tmp_path
+            flagged, schedule, left_out_column=_EXCLUDE_COL, toggle_period=_CYCLE, toggle_datum=_DATUM, out_dir=tmp_path
         )
         assert out.labeled_rows is not None
         is_ref = (flagged[_TURBINE_COL] != "T1").to_numpy()
@@ -1067,17 +1073,17 @@ class TestExcludeRow:
         assert used.loc[flagged_ts].all()
         kept = _read_only_csv(tmp_path, "selection").set_index(["component", "stage", "segment"])["n_kept"]
         for segment in ("baseline", "upgraded"):
-            assert kept[("sum", "exclude_row", segment)] < kept[("sum", "filters", segment)]
-            assert kept[("block_mean", "exclude_row", segment)] == kept[("block_mean", "filters", segment)]
+            assert kept[("sum", "left_out", segment)] < kept[("sum", "filters", segment)]
+            assert kept[("block_mean", "left_out", segment)] == kept[("block_mean", "filters", segment)]
 
     def test_nan_in_the_exclude_column_is_rejected(self) -> None:
         """NaN is not "excluded": the schema contract says the column is never NaN, so say so loudly."""
         scada, schedule = _noisy_toggle_case()
         flagged = _flag(scada, turbine="T1", every=7, value=np.nan)
         with pytest.raises(ValueError, match=_EXCLUDE_COL):
-            _run(flagged, schedule, columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM)
+            _run(flagged, schedule, left_out_column=_EXCLUDE_COL, toggle_period=_CYCLE, toggle_datum=_DATUM)
 
-    def test_unset_role_excludes_nothing(self) -> None:
+    def test_no_column_leaves_nothing_out(self) -> None:
         scada, schedule = _noisy_toggle_case()
         flagged = _flag(scada, turbine="T1", every=5)
         out = _run(flagged, schedule)
@@ -1085,10 +1091,10 @@ class TestExcludeRow:
         excluded = out.labeled_rows[_EXCLUDE_COL].to_numpy(dtype=bool)
         assert out.labeled_rows.loc[excluded, "used"].to_numpy().any()
 
-    def test_absent_column_excludes_nothing(self) -> None:
+    def test_an_absent_column_leaves_nothing_out(self) -> None:
         """The role names a column the frame does not carry: skip, do not raise."""
         scada, schedule = _noisy_toggle_case()
-        out = _run(scada, schedule, columns=_EXCLUDE_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM)
+        out = _run(scada, schedule, left_out_column=_EXCLUDE_COL, toggle_period=_CYCLE, toggle_datum=_DATUM)
         assert out.labeled_rows is not None
         assert out.labeled_rows["used"].to_numpy().any()
 
@@ -1104,7 +1110,7 @@ class TestExcludeRow:
         _run(
             flagged,
             schedule,
-            columns=_EXCLUDE_COLUMNS,
+            left_out_column=_EXCLUDE_COL,
             toggle_period=_CYCLE,
             toggle_datum=_DATUM,
             out_dir=tmp_path,
@@ -1278,7 +1284,7 @@ class TestPairingFilter:
     def _run(scada: pd.DataFrame, schedule: ToggleSchedule, **kwargs: object) -> SubjectMeasurement:
         kwargs.setdefault("toggle_period", _CYCLE)
         kwargs.setdefault("toggle_datum", _DATUM)
-        return _run(scada, schedule, columns=_EXCLUDE_COLUMNS, **kwargs)
+        return _run(scada, schedule, left_out_column=_EXCLUDE_COL, **kwargs)
 
     @pytest.mark.parametrize("gap", [pd.Timedelta(0), pd.Timedelta(minutes=5), pd.Timedelta(minutes=25)])
     def test_rejects_a_gap_that_is_not_a_positive_timebase_multiple(self, gap: pd.Timedelta) -> None:
@@ -1309,17 +1315,17 @@ class TestPairingFilter:
         assert out.selection_accounting is not None
         kept = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
         n_block = len(block) // 2
-        assert kept["exclude_row", "upgraded"] == kept["filters", "upgraded"] - n_block
-        assert kept["exclude_row", "baseline"] == kept["filters", "baseline"]
-        assert kept["pairing", "baseline"] < kept["exclude_row", "baseline"]
-        assert kept["pairing", "upgraded"] <= kept["exclude_row", "upgraded"]
+        assert kept["left_out", "upgraded"] == kept["filters", "upgraded"] - n_block
+        assert kept["left_out", "baseline"] == kept["filters", "baseline"]
+        assert kept["pairing", "baseline"] < kept["left_out", "baseline"]
+        assert kept["pairing", "upgraded"] <= kept["left_out", "upgraded"]
 
     def test_accounting_is_reported_without_pairing(self) -> None:
         scada, schedule = _noisy_toggle_case(n=200)
         out = _estimate(scada, schedule)
         assert out.selection_accounting is not None
         kept = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
-        assert kept["pairing", "baseline"] == kept["exclude_row", "baseline"]
+        assert kept["pairing", "baseline"] == kept["left_out", "baseline"]
 
 
 @pytest.mark.parametrize("gap", [None, pd.Timedelta(minutes=20)], ids=["no-pairing", "pairing"])
@@ -1522,7 +1528,7 @@ class TestBlockLeg:
         scada, schedule = _noisy_toggle_case(n=200)
         out = _estimate(scada, schedule, pairing_max_gap=pd.Timedelta(minutes=20))
         kept = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
-        stages = ["segment", "filters", "exclude_row", "pairing", "block"]
+        stages = ["segment", "filters", "left_out", "pairing", "block"]
         assert list(out.selection_accounting["stage"].unique()) == stages
         assert kept["block", "baseline"] == kept["pairing", "baseline"]
 
@@ -1587,62 +1593,6 @@ class TestBlend:
         # The weights were judged on the permuted sigmas, which are not the reported ones.
         assert results["decision_sigma_frc_sum"] != results["uplift_sigma_frc_sum"]
         assert results["decision_sigma_frc_block_mean"] != results["uplift_sigma_frc_block_mean"]
-
-
-_BLOCK_COL = "cycle_bad"
-_BLOCK_COLUMNS = replace(_COLUMNS, exclude_block=_BLOCK_COL)
-
-
-def _flag_block(scada: pd.DataFrame, *, turbine: str, at: pd.Timestamp) -> pd.DataFrame:
-    """Return a copy of ``scada`` with an all-False ``exclude_block`` column set on one ``turbine`` row."""
-    out = scada.copy()
-    out[_BLOCK_COL] = False
-    out.loc[((out[_TURBINE_COL] == turbine) & (out.index == at)).to_numpy(), _BLOCK_COL] = True
-    return out
-
-
-class TestExcludeBlock:
-    """``columns.exclude_block``: a flagged row removes its whole toggle cycle, in both legs."""
-
-    @staticmethod
-    def _run(scada: pd.DataFrame, schedule: ToggleSchedule, **kwargs: object) -> SubjectMeasurement:
-        kwargs.setdefault("toggle_datum", _DATUM)
-        return _run(scada, schedule, columns=_BLOCK_COLUMNS, **kwargs)
-
-    def test_a_flagged_test_row_removes_its_whole_block(self) -> None:
-        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
-        idx = pd.DatetimeIndex(pd.unique(scada.index))
-        block_5 = idx[20:24]
-        out = self._run(_flag_block(scada, turbine="T1", at=block_5[1]), schedule, toggle_period=_BLOCK)
-        assert out.labeled_rows is not None
-        used = out.labeled_rows["used"].astype(bool)
-        assert not used.loc[block_5].any()
-        assert used.drop(block_5).all()
-        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
-        acc = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
-        for segment in ("baseline", "upgraded"):
-            assert acc.loc[("block", segment)] == acc.loc[("pairing", segment)] - 2
-
-    def test_a_flagged_reference_row_removes_the_block_from_the_reference_leg(self) -> None:
-        """The block leg uses no references, so it keeps the block and the headline ``used`` stays."""
-        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
-        idx = pd.DatetimeIndex(pd.unique(scada.index))
-        block_7 = idx[28:32]
-        out = self._run(_flag_block(scada, turbine="R1", at=block_7[3]), schedule, toggle_period=_BLOCK)
-        assert out.labeled_rows is not None
-        assert out.labeled_rows["used"].astype(bool).all()
-        acc = out.selection_accounting.set_index(["stage", "segment"])["n_kept"]
-        for segment in ("baseline", "upgraded"):
-            assert acc.loc[("block", segment)] == acc.loc[("pairing", segment)] - 2
-        assert out.p50_overall == pytest.approx(0.04, abs=1e-9)
-
-    def test_no_flags_change_nothing(self) -> None:
-        scada, schedule = _block_case(uplift=0.04, ref_scale=np.full(120, 0.5))
-        scada[_BLOCK_COL] = False
-        with_role = self._run(scada, schedule, toggle_period=_BLOCK)
-        without = _estimate(scada.drop(columns=_BLOCK_COL), schedule, toggle_period=_BLOCK)
-        assert with_role.p50_overall == pytest.approx(without.p50_overall)
-        assert with_role.sigma_overall == pytest.approx(without.sigma_overall)
 
 
 class TestReferenceSubsets:

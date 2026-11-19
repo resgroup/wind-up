@@ -66,8 +66,9 @@ class DiagnosticContext:
         :data:`ERA5_WD_COL`)
     :param era5_label: how reanalysis is named in plots and logs; :func:`era5_source_label` of the
         point it was drawn from, so a reader can tell which series a run actually used
-    :param excluded_ts: optional per-timestamp ``ColumnSchema.exclude_row`` mask (``None`` for a
-        method with no exclusion concept). Separate from ``used_ts``, which also folds in downtime.
+    :param excluded_ts: optional per-timestamp mask of the records the method left out (``None`` for a
+        method with no such concept). Separate from ``used_ts``, which also folds in downtime.
+    :param excluded_column: the boolean column of ``scada_df`` marking each turbine's records left out
     :param power_references: the turbines the method predicts the test turbine's power from, for
         plots about the test turbine and its references only; ``None`` when the method does not say,
         in which case those plots take every other turbine (:meth:`references`)
@@ -90,6 +91,7 @@ class DiagnosticContext:
     era5_df: pd.DataFrame | None = None
     era5_label: str = ERA5_UNLOCATED
     excluded_ts: npt.NDArray[np.bool_] | None = None
+    excluded_column: str | None = None
     power_references: list[str] | None = None
     reference_used_ts: npt.NDArray[np.bool_] | None = None
     loss_reasons: npt.NDArray[np.object_] | None = None
@@ -128,14 +130,14 @@ class DiagnosticContext:
         return mask if mask.any() else None
 
     def turbine_excluded_mask(self, turbine: str) -> npt.NDArray[np.bool_] | None:
-        """One turbine's own ``ColumnSchema.exclude_row`` flags as a bool mask on the unique index.
+        """One turbine's own records left out (``excluded_column``) as a bool mask on the unique index.
 
-        ``None`` when the method has no exclusion concept (``excluded_ts`` unset), the flag column
-        is absent, or the turbine flagged nothing. Rows the turbine lacks count as not excluded.
+        ``None`` when the method has no such concept (``excluded_ts`` unset), the column is absent, or
+        the turbine has nothing left out. Rows the turbine lacks count as not left out.
         """
-        if self.excluded_ts is None or not self.has_column(self.columns.exclude_row):
+        if self.excluded_ts is None or not self.has_column(self.excluded_column):
             return None
-        flags = self.turbine_series(turbine, self.columns.exclude_row)
+        flags = self.turbine_series(turbine, self.excluded_column)
         mask = flags.fillna(0.0).to_numpy(dtype=float) != 0.0
         return mask if mask.any() else None
 

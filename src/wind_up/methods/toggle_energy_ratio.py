@@ -11,10 +11,7 @@ the labels are used solely for row selection.
 An optional **pairing filter** (``pairing_max_gap``) then drops any used row with no used row of the
 other segment nearby, so a filter that removes one segment's rows in some conditions also removes the
 other segment's rows from those conditions. Rows kept per segment after each selection stage are
-reported as ``SubjectMeasurement.selection_accounting`` and written to a selection CSV. A caller may also
-flag rows through ``columns.exclude_block``: such a row removes its whole toggle cycle, so both
-states lose the same conditions — a symmetric alternative to ``exclude_row`` for a selection that
-would otherwise thin one state's rows in particular conditions.
+reported as ``SubjectMeasurement.selection_accounting`` and written to a selection CSV.
 
 **Two legs, blended.** The test power is compared against two references, each estimated on
 its own row selection, and the two estimates are blended by minimum-variance weights, headline and
@@ -313,6 +310,7 @@ class ToggleEnergyRatioMethod:
     _given_datum: pd.Timestamp | None = field(default=None, init=False, repr=False)
     _timebase: pd.Timedelta | None = field(default=None, init=False, repr=False)
     _rated_power_kw: float | None = field(default=None, init=False, repr=False)
+    _left_out_column: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Validate ``conditions``, ``bin_power`` and ``power_band``."""
@@ -355,6 +353,7 @@ class ToggleEnergyRatioMethod:
         toggle_datum: pd.Timestamp,
         timebase: pd.Timedelta | None = None,
         rated_power_kw: float | None = None,
+        left_out_column: str | None = None,
     ) -> SubjectMeasurement:
         """Measure one subject's uplift over its on and off records and write its diagnostics.
 
@@ -363,10 +362,12 @@ class ToggleEnergyRatioMethod:
         :param records: the subject's records, carrying the record labels' operating states
         :param columns: the records' column roles; ``active_power`` is required
         :param toggle_cycle: one toggle cycle, a positive whole multiple of the timebase: the block
-            length of the block leg, the label permutation and ``columns.exclude_block``
+            length of the block leg and the label permutation
         :param toggle_datum: any boundary of the toggle-cycle grid; a ``ToggleSchedule`` must start on it
         :param timebase: the records' timebase; inferred from them when ``None``
         :param rated_power_kw: the subject's rating, required when ``"power"`` is in ``conditions``
+        :param left_out_column: a boolean column of the records, never NaN, marking records left out of
+            the comparison; a marked reference record leaves its timestamp out of the reference leg
         """
         columns.require_roles(("active_power",))
         if VALID_UPLIFT_COL not in records.records.columns:
@@ -381,6 +382,7 @@ class ToggleEnergyRatioMethod:
             toggle_datum=toggle_datum,
             timebase=timebase,
             rated_power_kw=rated_power_kw,
+            left_out_column=left_out_column,
         )
         return bound._estimate_one(records)  # noqa: SLF001 - its own class
 
@@ -392,6 +394,7 @@ class ToggleEnergyRatioMethod:
         toggle_datum: pd.Timestamp,
         timebase: pd.Timedelta | None,
         rated_power_kw: float | None,
+        left_out_column: str | None,
     ) -> ToggleEnergyRatioMethod:
         """Return a copy holding the facts one measurement reads."""
         bound = copy.copy(self)
@@ -400,6 +403,7 @@ class ToggleEnergyRatioMethod:
         bound._given_datum = toggle_datum  # noqa: SLF001 - its own class
         bound._timebase = timebase  # noqa: SLF001 - its own class
         bound._rated_power_kw = rated_power_kw  # noqa: SLF001 - its own class
+        bound._left_out_column = left_out_column  # noqa: SLF001 - its own class
         return bound
 
     @property
@@ -441,15 +445,16 @@ class ToggleEnergyRatioMethod:
                 index=pd.DatetimeIndex(side.index),
             ).reindex(index, fill_value=False)
             frame = records.records
-            columns = facts.columns
+            left_out = None
             if withheld.any():
                 frame = _with_withheld(frame, labels=labels, withheld=withheld, turbine_col=turbine_col)
-                columns = replace(columns, exclude_row=_WITHHELD_COL)
+                left_out = _WITHHELD_COL
             records = replace(records, records=frame, timing=timing)
             try:
                 measured[subject] = self.measure(
                     records,
-                    columns=columns,
+                    columns=facts.columns,
+                    left_out_column=left_out,
                     toggle_cycle=upgrade.cycle,
                     toggle_datum=upgrade.datum(first_record=first_record),
                     timebase=facts.timebase,
@@ -993,9 +998,8 @@ class ToggleEnergyRatioMethod:
     ) -> _Selection:
         """Return the used-row mask after each selection stage, each a bool Series on ``wide.index``.
 
-        ``ids`` are the toggle-cycle ids (``None`` when there are no campaign rows to tile). The
-        ``block`` stage drops every row of a block that carries a ``columns.exclude_block`` flag on
-        any of the turbines (both legs) or, when ``both_states`` (the block leg), lacks either state.
+        ``ids`` are the toggle-cycle ids (``None`` when there are no campaign rows to tile). When
+        ``both_states`` (the block leg), the ``block`` stage drops every row of a block lacking either state.
         """
         turbines = [test, *refs]
         filtered = self._filtered_mask(mi, wide=wide, test=test, refs=refs)
@@ -1011,15 +1015,6 @@ class ToggleEnergyRatioMethod:
             )
             kept = kept & (~in_segment | paired.baseline | paired.upgraded)
         paired_series = pd.Series(kept, index=wide.index)
-        block_flag = self._excluded(mi, turbines=turbines, index=wide.index, role="exclude_block").to_numpy()
-        if block_flag.any():
-            if ids is None:
-                msg = (
-                    f"{self.name}: columns.exclude_block {self._schema.exclude_block!r} carries flags but there is "
-                    f"no campaign row to tile into blocks."
-                )
-                raise ValueError(msg)
-            kept = kept & ~np.isin(ids, np.unique(ids[block_flag]))
         if ids is not None and both_states:
             both = blocks_with_both_states(ids, baseline=kept & rows.campaign_baseline, upgraded=kept & rows.upgraded)
             kept = kept & (~in_segment | both)
@@ -1041,7 +1036,7 @@ class ToggleEnergyRatioMethod:
         stages_masks = (
             ("segment", None),
             ("filters", selection.filtered),
-            ("exclude_row", selection.not_excluded),
+            ("left_out", selection.not_excluded),
             ("pairing", selection.paired),
             ("block", selection.blocked),
             *(() if power_band is None else (("power_band", pd.Series(power_band, index=selection.blocked.index)),)),
@@ -1077,19 +1072,14 @@ class ToggleEnergyRatioMethod:
             keep &= wide[turbine].notna()
         return keep
 
-    def _excluded(
-        self, mi: SubjectRecords, *, turbines: list[str], index: pd.DatetimeIndex, role: str = "exclude_row"
-    ) -> pd.Series:
-        """Boolean mask on *index*: timestamps at which any of ``turbines`` carries a caller-set ``role`` flag.
+    def _excluded(self, mi: SubjectRecords, *, turbines: list[str], index: pd.DatetimeIndex) -> pd.Series:
+        """Boolean mask on *index*: timestamps at which any of ``turbines`` has a record left out.
 
-        Reads the ``columns.<role>`` column (``exclude_row`` or ``exclude_block``) of each listed
-        turbine's rows (the test turbine and the references the mode uses), so a flagged reference
-        row counts the way a reference outage does. Absent column or unset role -> nothing flagged.
-        Reindex fills missing timestamps with ``False`` so an expanded index never becomes an
-        exclusion. NaN raises rather than coercing: ``astype(bool)`` reads a missing flag as ``True``
-        and drops the row, the opposite of the safe default.
+        Reads the left-out column of each listed turbine's rows (the test turbine and the references
+        the mode uses), so a marked reference row counts the way a reference outage does. No column
+        given or present: nothing is left out. A timestamp a turbine lacks is not left out. NaN raises.
         """
-        col: str | None = getattr(self._columns, role)
+        col = self._left_out_column
         excluded = pd.Series(data=False, index=index, dtype=bool)
         if not col or col not in mi.records.columns:
             return excluded
@@ -1097,7 +1087,7 @@ class ToggleEnergyRatioMethod:
             flags = mi.records.loc[mi.records[mi.turbine_col] == turbine, col]
             if flags.isna().any():
                 msg = (
-                    f"{role} column {col!r} has {int(flags.isna().sum())} NaN value(s) for turbine "
+                    f"the left-out column {col!r} has {int(flags.isna().sum())} NaN value(s) for turbine "
                     f"{turbine!r}; it must be boolean with no missing values (fill unknown rows with False explicitly)"
                 )
                 raise ValueError(msg)
@@ -1249,8 +1239,9 @@ class ToggleEnergyRatioMethod:
             timebase=timebase,
             mode="toggle",
             era5_df=None,
-            # the exclusion alone, so the plots show what the flag removed that downtime did not
+            # the records left out alone, so the plots show what they removed that downtime did not
             excluded_ts=self._excluded(mi, turbines=turbines, index=index).to_numpy(),
+            excluded_column=self._left_out_column,
         )
         write_common_diagnostics(ctx)
         params = {
@@ -1261,7 +1252,6 @@ class ToggleEnergyRatioMethod:
             "toggle_datum": str(self._given_datum),
             "bin_power": self.bin_power,
             "power_band": None if self.power_band is None else list(self.power_band),
-            "exclude_block_col": self._schema.exclude_block,
         }
         write_run_config(ctx, method_name=self.name, method_params=params)
 

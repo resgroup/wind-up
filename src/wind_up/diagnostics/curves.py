@@ -10,8 +10,8 @@ source-native names.
   so a reference whose bad rows fed the estimate shows (stage: valid records).
 * :func:`plot_ops_curves_kept` — the same figure, kept rows only (stage: valid records).
 * :func:`plot_ops_curves_excluded` — a 2x3 figure (power curve; pitch/rpm vs power; pitch/rpm vs wind
-  speed) coloured kept vs caller-excluded, for the test turbine and each power reference by its own
-  ``exclude_row`` flag; a reference's file is prefixed ``{ref}_`` (stage: valid records).
+  speed) coloured kept vs left out, for the test turbine and each power reference by its own records
+  left out; a reference's file is prefixed ``{ref}_`` (stage: valid records).
 
 The kept/removed pair is drawn only for a run without operating-state labels (a toggle run): a
 labelled run draws its used and unused records as the uplift-validity scatters instead.
@@ -184,12 +184,11 @@ def plot_ops_curves_kept(ctx: DiagnosticContext) -> list[Path]:
 
 
 def plot_ops_curves_excluded(ctx: DiagnosticContext) -> list[Path]:
-    """Draw the operating-curve figure coloured kept vs caller-excluded (``exclude_row``), per turbine.
+    """Draw the operating-curve figure coloured kept vs left out by the method, per turbine.
 
     A special operating mode reads as a band in pitch/rpm. The test turbine is coloured by the run-wide
-    ``excluded_ts`` mask, each reference by its own flag; a turbine with nothing excluded gets no
-    figure, so the list is empty when
-    the method has no exclusion concept.
+    ``excluded_ts`` mask, each reference by its own records left out; a turbine with nothing left out
+    gets no figure, so the list is empty when the method leaves nothing out.
     """
     masks = [(ctx.test_wtg, ctx.excluded_mask())]
     masks += [(ref, ctx.turbine_excluded_mask(ref)) for ref in ctx.plotted_references()]
@@ -203,7 +202,7 @@ def plot_ops_curves_excluded(ctx: DiagnosticContext) -> list[Path]:
                 ctx,
                 turbine=turbine,
                 segments=segments,
-                title=f"operating curves (kept vs excluded by the caller's flag; {excluded.sum()} rows excluded)",
+                title=f"operating curves (kept vs left out; {excluded.sum()} rows left out)",
                 filename="ops_curves_excluded.png",
                 stage=stages.VALID_RECORDS,
             )

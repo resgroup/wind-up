@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import math
 from typing import TYPE_CHECKING
 
@@ -56,6 +55,7 @@ def _old(
     test: str = "T1",
     references: list[str] | None = None,
     columns: ColumnSchema = _COLUMNS,
+    left_out_column: str | None = None,
     **context: object,
 ) -> SubjectMeasurement:
     """The subject measured on its own records, every other turbine a reference and every record valid by default."""
@@ -72,7 +72,12 @@ def _old(
         valid_for_uplift=context.get("valid_for_uplift", base.valid_for_uplift),  # type: ignore[arg-type]
     )
     return ToggleEnergyRatioMethod(conditions=("power",)).measure(
-        records, columns=columns, toggle_cycle=_CYCLE, toggle_datum=_DATUM, rated_power_kw=_RATED_KW
+        records,
+        columns=columns,
+        toggle_cycle=_CYCLE,
+        toggle_datum=_DATUM,
+        rated_power_kw=_RATED_KW,
+        left_out_column=left_out_column,
     )
 
 
@@ -238,7 +243,7 @@ def test_records_left_out_by_a_label_are_filtered_like_excluded_rows() -> None:
         scada.index < pd.Timestamp("2020-01-05", tz="UTC")
     )
     flagged = scada.assign(flag=left_out & (scada[_TURBINE_COL] == "T1").to_numpy())
-    old = _old(flagged, columns=dataclasses.replace(_COLUMNS, exclude_row="flag"))
+    old = _old(flagged, left_out_column="flag")
     facts = _facts(scada.assign(flag=left_out), labels=[Label(name="flag", column="flag")])
     (out,) = _new(facts, AnalysisSpec(name="x", upgrade="control", exclude_labels=["flag"]))
     assert out.campaign_uplift == old.p50_overall

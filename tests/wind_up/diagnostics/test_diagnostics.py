@@ -183,16 +183,15 @@ class TestReferenceOpsCurves:
 
     @staticmethod
     def _flagged_context(tmp_path: Path, *, flagged: dict[str, int]) -> DiagnosticContext:
-        """A context whose ``exclude_row`` flag is set every ``flagged[turbine]`` rows; other turbines all False."""
-        columns = dataclasses.replace(_FULL_COLUMNS, exclude_row="excl")
-        ctx = _context(tmp_path, columns=columns)
+        """A context whose left-out column is set every ``flagged[turbine]`` rows; other turbines all False."""
+        ctx = _context(tmp_path, columns=_FULL_COLUMNS)
         scada = ctx.scada_df.copy()
         scada["excl"] = False
         for turbine, every in flagged.items():
             rows = scada["turbine"] == turbine
             scada.loc[rows, "excl"] = _excluded_mask(int(rows.sum()), every=every)
         union = scada.groupby(level=0)["excl"].any().reindex(ctx.index).to_numpy(dtype=bool)
-        return dataclasses.replace(ctx, scada_df=scada, excluded_ts=union)
+        return dataclasses.replace(ctx, scada_df=scada, excluded_ts=union, excluded_column="excl")
 
     @pytest.mark.slow
     def test_the_three_figures_are_written_per_reference(self, tmp_path: Path) -> None:
