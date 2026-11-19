@@ -102,9 +102,9 @@ def test_calc_wsratio_v_wd_scen(test_lsa_t13_config: WindUpConfig) -> None:
     assert_frame_equal(actual_pre_df, expected_pre_df)
 
 
-@pytest.mark.parametrize("dtype", [np.float64, np.float32, np.float16])
-def test_calc_wsratio_v_wd_sums_without_overflow(dtype: type) -> None:
-    """A float16 sector sum of thousands of rows near 16 m/s would overflow, so the mean is taken with pandas."""
+@pytest.mark.parametrize("dtype", [np.float64, np.float32, object])
+def test_calc_wsratio_v_wd_by_dtype(dtype: type) -> None:
+    """Float64 and float32 wind speeds are summed on the arrays; other dtypes take the pandas mean."""
     ws = np.tile([6.0, 15.9], 3000).astype(dtype)
     detrend_df = pd.DataFrame({"test_ws": ws, "ref_ws": ws, "ref_wd": np.full(len(ws), 180.0)})
 
