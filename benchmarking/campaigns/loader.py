@@ -20,7 +20,7 @@ from benchmarking.campaigns.declaration import CampaignSpec, layout_coords
 from benchmarking.harness.reanalysis import TimestampConvention
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from benchmarking.synthetic.sources.greenbyte import GREENBYTE_COLUMNS
-from wind_up.layout import Layout
+from wind_up.layout import Layout, centroid
 from wind_up.operating_state import OperatingStateConfig, StateValidity
 from wind_up.wake_reach import reach_from_uplift
 
@@ -59,7 +59,6 @@ WAKE_REACH_PREFIX = "Wake reach"
 # The reanalysis centroid is rounded to this many decimals, and taken over the whole turbines
 # file rather than the declared roles, so every campaign on one site shares a cache entry and
 # changing the reference set does not move a model input.
-CENTROID_DECIMALS = 2
 
 
 class _RawTimestampLoader(yaml.SafeLoader):
@@ -654,19 +653,6 @@ def _timestamp(value: object) -> pd.Timestamp:
     """Coerce a declared time to UTC: tz-aware is converted, naive is read as UTC."""
     stamp = pd.Timestamp(value)  # type: ignore[arg-type]
     return stamp.tz_localize("UTC") if stamp.tz is None else stamp.tz_convert("UTC")
-
-
-def centroid(coords: dict[str, tuple[float, float]]) -> tuple[float, float]:
-    """Return the site's mean latitude and longitude, rounded.
-
-    Taken over every turbine in the file, not the declared roles: reanalysis is a model input, so
-    a reference-set sensitivity run must not move it.
-    """
-    points = list(coords.values())
-    return (
-        round(sum(lat for lat, _ in points) / len(points), CENTROID_DECIMALS),
-        round(sum(lon for _, lon in points) / len(points), CENTROID_DECIMALS),
-    )
 
 
 def era5_window(start: pd.Timestamp, end: pd.Timestamp, *, today: pd.Timestamp | None = None) -> tuple[str, str]:

@@ -1,7 +1,7 @@
 """The v0 binned power-curve method behind the harness ``Method`` seam.
 
-``V0BinnedMethod`` adapts a thin harness ``MethodInput`` to a full, faithful wind_up
-pre/post power-performance run and returns its P50 uplift. For each campaign it renders a
+``V0BinnedMethod`` answers each analysis with one full, faithful wind_up pre/post
+power-performance run over its subjects and returns each subject's P50 uplift. For each campaign it renders a
 per-campaign YAML and loads it with :meth:`WindUpConfig.from_yaml` (the standard way v0
 assessments are configured), then runs the real ``run_wind_up_analysis`` + ``combine_results``.
 
@@ -37,7 +37,8 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format
-from wind_up.method import MethodInput, MethodOutput
+from wind_up.method import MethodConfigurationError
+from wind_up.subject import SubjectMeasurement, SubjectRecords, group_output, subject_records
 from wind_up.toggle import build_toggle_df, is_toggle, toggle_upgrade_start
 from wind_up_v0.combine_results import combine_results
 from wind_up_v0.interface import AssessmentInputs
@@ -48,6 +49,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from benchmarking.baselines.hot_context import HotV0Context
+    from wind_up.analysis import AnalysisOutput, AnalysisSpec
+    from wind_up.facts import WindFarmFacts
 
 _CAMPAIGN_YAML_TEMPLATE = """\
 assessment_name: {assessment_name}
@@ -157,19 +160,40 @@ class V0BinnedMethod:
     pairing_filter_timedelta_seconds: int = 3000
     toggle_change_settling_filter_seconds: int = 0
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
-        """Run a faithful v0 power-performance analysis (prepost or toggle) and return its P50 uplift."""
-        return self.estimate_multi(mi, test_wtgs=[mi.test_wtg])[mi.test_wtg]
+    def estimate(self, facts: WindFarmFacts, analyses: Sequence[AnalysisSpec]) -> list[AnalysisOutput]:
+        """Answer each analysis with one v0 run over its subjects, against its candidate references.
 
-    def estimate_multi(self, mi: MethodInput, *, test_wtgs: Sequence[str]) -> dict[str, MethodOutput]:
-        """Analyse several turbines in a **single** wind_up run and return a P50 output for each.
+        A run that fails for want of data leaves every subject of the analysis unmeasured.
+        """
+        outputs = []
+        for analysis in analyses:
+            facts.check(analysis)
+            if analysis.include_labels or analysis.exclude_labels:
+                msg = f"{self.name} does not read labels; analysis {analysis.name!r} names some"
+                raise MethodConfigurationError(msg)
+            subjects = facts.subjects_of(analysis)
+            start, end = analysis.period
+            span = (pd.DatetimeIndex(facts.records.index).min() if start is None else start, end)
+            records = subject_records(facts, analysis, subject=subjects[0], span=span)
+            measured: dict[str, SubjectMeasurement | str]
+            try:
+                measured = dict(self.estimate_multi(records, test_wtgs=subjects))
+            except MethodConfigurationError:
+                raise
+            except ValueError as error:
+                measured = dict.fromkeys(subjects, str(error))
+            outputs.append(group_output(analysis, facts=facts, measurements=measured, name=self.name))
+        return outputs
+
+    def estimate_multi(self, mi: SubjectRecords, *, test_wtgs: Sequence[str]) -> dict[str, SubjectMeasurement]:
+        """Analyse several turbines in a single wind_up run and return a P50 measurement for each.
 
         All of ``test_wtgs`` are the run's test turbines (so none is used as a reference for another)
         and, with ``filter_all_test_wtgs_together``, they share one filtered timestamp set -- the
-        recommended setup for a wake-steering pair. ``estimate`` is the single-turbine case.
+        recommended setup for a wake-steering pair.
         """
         cfg = self._build_config(mi, test_wtgs=list(test_wtgs))
-        selected = mi.context.select(mi.scada_df, also=test_wtgs)
+        selected = mi.select(also=test_wtgs)
         plot_cfg = PlotConfig(show_plots=False, save_plots=self.save_plots, plots_dir=cfg.out_dir / "plots")
         from_cfg_kwargs: dict = {
             "cfg": cfg,
@@ -182,8 +206,8 @@ class V0BinnedMethod:
             "reanalysis_datasets": self.context.reanalysis_datasets,
             "cache_dir": None,
         }
-        timing = mi.context.timing
-        if mi.context.mode == "toggle":
+        timing = mi.timing
+        if mi.mode == "toggle":
             # A ToggleSchedule is turned into the canonical toggle_df; an explicit toggle_df passes through.
             from_cfg_kwargs["toggle_df"] = (
                 timing if isinstance(timing, pd.DataFrame) else build_toggle_df(selected.index, timing)
@@ -195,26 +219,26 @@ class V0BinnedMethod:
             cfg.out_dir
             / f"{cfg.assessment_name}_combined_results_{pd.Timestamp.now('UTC').strftime('%Y%m%d_%H%M%S')}.csv"
         )
-        return {w: MethodOutput(p50_overall=_extract_p50(tdf, w)) for w in test_wtgs}
+        return {w: SubjectMeasurement(p50_overall=_extract_p50(tdf, w)) for w in test_wtgs}
 
-    def _build_config(self, mi: MethodInput, *, test_wtgs: Sequence[str] | None = None) -> WindUpConfig:
+    def _build_config(self, mi: SubjectRecords, *, test_wtgs: Sequence[str] | None = None) -> WindUpConfig:
         """Render and load the WindUpConfig, with the asset filtered to the subset.
 
-        ``test_wtgs`` defaults to ``[mi.test_wtg]``; pass several to co-analyse them in one run.
+        ``test_wtgs`` defaults to ``[mi.subject]``; pass several to co-analyse them in one run.
         """
-        test_names = [mi.test_wtg] if test_wtgs is None else list(test_wtgs)
-        subset = _subset_turbines(mi.scada_df, mi.turbine_col)
+        test_names = [mi.subject] if test_wtgs is None else list(test_wtgs)
+        subset = _subset_turbines(mi.records, mi.turbine_col)
         test_set = set(test_names)
-        refs = [t for t in mi.context.references_among(subset) if t not in test_set]
+        refs = [t for t in mi.references_among(subset) if t not in test_set]
         if not refs:
             msg = (
                 f"no reference turbines available for test_wtg(s) {test_names}: scada_df contains only "
                 f"{subset}. The v0 binned method needs at least one reference turbine."
             )
             raise ValueError(msg)
-        toggle_mode = is_toggle(mi.upgrade_timing)
-        upgrade = toggle_upgrade_start(mi.upgrade_timing, mi.scada_df.index)
-        analysis_last = pd.Timestamp(mi.scada_df.index.max())
+        toggle_mode = is_toggle(mi.timing)
+        upgrade = toggle_upgrade_start(mi.timing, mi.records.index)
+        analysis_last = pd.Timestamp(mi.records.index.max())
         assessment_name = f"v0_{'_'.join(test_names)}_{upgrade:%Y%m%d}_{analysis_last:%Y%m%d}"
 
         scratch = Path(self.scratch_dir) if self.scratch_dir is not None else Path(tempfile.mkdtemp(prefix="v0_"))

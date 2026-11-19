@@ -93,16 +93,10 @@ def _methods_for(
     *,
     spec: CampaignSpec,
     out_dir: Path,
-    era5_hourly_df: pd.DataFrame | None,
     include_power_model: bool,
 ) -> list[Method]:
     """Build one turbine's methods into its own subfolder."""
-    return carried_forward_methods(
-        spec,
-        out_dir=out_dir / wtg,
-        era5_hourly_df=era5_hourly_df,
-        include_power_model=include_power_model,
-    )
+    return carried_forward_methods(spec, out_dir=out_dir / wtg, include_power_model=include_power_model)
 
 
 def run_probe(*, out_root: str | Path | None = None, include_power_model: bool = True) -> pd.DataFrame:
@@ -138,10 +132,10 @@ def run_probe(*, out_root: str | Path | None = None, include_power_model: bool =
                     _methods_for,
                     spec=spec,
                     out_dir=run_dir / f"{set_name}_{arm}",
-                    era5_hourly_df=era5_df if include_power_model else None,
                     include_power_model=include_power_model,
                 ),
                 era5_wd=era5_direction(era5_df, index),
+                era5_hourly_df=era5_df if include_power_model else None,
             )
             result = runner.run()
             rows.extend(

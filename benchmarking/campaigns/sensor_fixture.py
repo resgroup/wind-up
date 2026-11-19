@@ -179,11 +179,11 @@ def run_cell(
         build_methods=lambda wtg: carried_forward_methods(
             spec,
             out_dir=out_dir / wtg,
-            era5_hourly_df=era5_df if include_power_model else None,
             include_power_model=include_power_model,
             reference_stat_cols=EXPOSED_STAT_COLS if arm.exposed else (),
         ),
         era5_wd=era5_direction(era5_df, index),
+        era5_hourly_df=era5_df if include_power_model else None,
     )
     return runner.run()
 

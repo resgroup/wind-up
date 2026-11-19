@@ -71,17 +71,9 @@ def run(timing: object) -> tuple[dict, dict]:
     spec = declared.spec()
 
     def build(_wtg: str) -> list:
-        methods: list = [NaiveRatioMethod(columns=HOT_COLUMNS)]
+        methods: list = [NaiveRatioMethod()]
         if spec.mode == "toggle":
-            methods.append(
-                ToggleEnergyRatioMethod(
-                    columns=HOT_COLUMNS,
-                    toggle_period=TOGGLE_PERIOD,
-                    toggle_datum=CHANGEOVER,
-                    conditions=("power",),
-                    rated_power_kw=spec.rated_power_kw,
-                )
-            )
+            methods.append(ToggleEnergyRatioMethod(conditions=("power",)))
         return methods
 
     result = CampaignRunner(spec, dataset, build_methods=build).run()

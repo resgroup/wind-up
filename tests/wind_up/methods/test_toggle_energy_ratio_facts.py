@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from typing import TYPE_CHECKING
 
 import pandas as pd
 import pytest
 
 from wind_up.analysis import CAMPAIGN, PER_TURBINE_COLUMNS, AnalysisSpec
-from wind_up.campaign_context import CampaignContext
 from wind_up.facts import Upgrade, WindFarmFacts
 from wind_up.labels import Label
-from wind_up.method import MethodConfigurationError, MethodInput, MethodOutput
+from wind_up.method import MethodConfigurationError
 from wind_up.methods.toggle_energy_ratio import ToggleEnergyRatioMethod
+from wind_up.subject import SubjectMeasurement, SubjectRecords
+
+if TYPE_CHECKING:
+    from wind_up.schema import ColumnSchema
 
 from .test_toggle_energy_ratio import _COLUMNS, _CYCLE, _DATUM, _RATED_KW, _TURBINE_COL, _noisy_toggle_case
 
@@ -45,28 +49,29 @@ def _facts(scada: pd.DataFrame, *, subjects: tuple[str, ...] = ("T1",), **fields
 
 
 def _old(
-    scada: pd.DataFrame, *, test: str = "T1", references: list[str] | None = None, **context: object
-) -> MethodOutput:
+    scada: pd.DataFrame,
+    *,
+    test: str = "T1",
+    references: list[str] | None = None,
+    columns: ColumnSchema = _COLUMNS,
+    **context: object,
+) -> SubjectMeasurement:
+    """The subject measured on its own records, every other turbine a reference and every record valid by default."""
     _, schedule = _noisy_toggle_case()
-    method = ToggleEnergyRatioMethod(
-        columns=_COLUMNS, toggle_period=_CYCLE, toggle_datum=_DATUM, conditions=("power",), rated_power_kw=_RATED_KW
-    )
-    if references is None and not context:
-        return method.estimate(
-            MethodInput(scada_df=scada, test_wtg=test, upgrade_timing=schedule, turbine_col=_TURBINE_COL)
-        )  # type: ignore[return-value]
-    base = CampaignContext.from_frame(scada, test_wtg=test, timing=schedule, turbine_col=_TURBINE_COL)
+    base = SubjectRecords.from_frame(scada, subject=test, timing=schedule, turbine_col=_TURBINE_COL)
     refs = base.candidate_references if references is None else references
-    valid = context.get("valid_for_uplift", base.valid_for_uplift)
-    built = CampaignContext(
-        test_wtg=test,
+    records = SubjectRecords(
+        records=scada,
+        subject=test,
         timing=schedule,
         turbine_col=_TURBINE_COL,
         candidate_references=refs,
         wake_contributors=[t for t in base.valid_for_uplift.columns if t != test and t not in refs],
-        valid_for_uplift=valid,  # type: ignore[arg-type]
+        valid_for_uplift=context.get("valid_for_uplift", base.valid_for_uplift),  # type: ignore[arg-type]
     )
-    return method.estimate(MethodInput(scada_df=scada, test_wtg=test, campaign_context=built))  # type: ignore[return-value]
+    return ToggleEnergyRatioMethod(conditions=("power",)).measure(
+        records, columns=columns, toggle_cycle=_CYCLE, toggle_datum=_DATUM, rated_power_kw=_RATED_KW
+    )
 
 
 def _new(facts: WindFarmFacts, *analyses: AnalysisSpec) -> list:
@@ -223,18 +228,12 @@ def test_the_facts_need_the_power_and_availability_roles() -> None:
 
 
 def test_records_left_out_by_a_label_are_filtered_like_excluded_rows() -> None:
-    scada, schedule = _noisy_toggle_case()
+    scada, _ = _noisy_toggle_case()
     left_out = (scada.index >= pd.Timestamp("2020-01-03", tz="UTC")) & (
         scada.index < pd.Timestamp("2020-01-05", tz="UTC")
     )
     flagged = scada.assign(flag=left_out & (scada[_TURBINE_COL] == "T1").to_numpy())
-    old = ToggleEnergyRatioMethod(
-        columns=dataclasses.replace(_COLUMNS, exclude_row="flag"),
-        toggle_period=_CYCLE,
-        toggle_datum=_DATUM,
-        conditions=("power",),
-        rated_power_kw=_RATED_KW,
-    ).estimate(MethodInput(scada_df=flagged, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
+    old = _old(flagged, columns=dataclasses.replace(_COLUMNS, exclude_row="flag"))
     facts = _facts(scada.assign(flag=left_out), labels=[Label(name="flag", column="flag")])
     (out,) = _new(facts, AnalysisSpec(name="x", upgrade="control", exclude_labels=["flag"]))
     assert out.campaign_uplift == old.p50_overall

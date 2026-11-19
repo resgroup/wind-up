@@ -86,9 +86,10 @@ if TYPE_CHECKING:
     from benchmarking.campaigns.preparation import PreparedData
     from benchmarking.campaigns.rollout import RolloutDraw, RolloutSite
     from benchmarking.campaigns.run import CampaignReport
-    from benchmarking.harness import Method, MethodOutput
+    from benchmarking.harness import Method
     from benchmarking.synthetic import ColumnSchema
     from wind_up.analysis_period import AnalysisPlan
+    from wind_up.subject import SubjectMeasurement
 
 logger = logging.getLogger(__name__)
 
@@ -327,10 +328,7 @@ def _prepare(
     def build_methods(wtg: str) -> list[Method]:
         return [
             _matrix_method(
-                spec,
-                columns=columns,
                 out_dir=measurements / wtg,
-                era5=data.aligned_era5,
                 screen_cache=screen_cache,
                 era5_label=label,
                 method_overrides=overrides,
@@ -390,6 +388,7 @@ def _execute_synthetic(
             source=era5_source_label(*centroid(dict(site.coords))),
         ),
         possible_changes=prepared.data.possible_changes_by_turbine(),
+        era5_hourly_df=prepared.data.aligned_era5,
     ).run()
     if plots:
         write_campaign_report(result, visible, out_dir=cell_dir / CAMPAIGN_DIRNAME, farm_dir=cell_dir / FARM_DIRNAME)
@@ -456,6 +455,7 @@ def _execute_real(
             source=era5_source_label(*declaration.centroid),
         ),
         possible_changes=prepared.data.possible_changes_by_turbine(),
+        era5_hourly_df=prepared.data.aligned_era5,
     )
     if plots:
         write_report(report, out_dir=cell_dir / CAMPAIGN_DIRNAME, farm_dir=cell_dir / FARM_DIRNAME)
@@ -505,11 +505,8 @@ def plan_settings(cell: Cell, *, settings: MatrixSettings) -> PlanSettings:
 
 
 def _matrix_method(
-    spec: CampaignSpec,
     *,
-    columns: ColumnSchema,
     out_dir: Path,
-    era5: pd.DataFrame,
     screen_cache: dict,
     era5_label: str,
     method_overrides: Mapping[str, Any] | None = None,
@@ -518,9 +515,7 @@ def _matrix_method(
 
     ``method_overrides`` is applied last, so a probe's field wins over the matrix's own.
     """
-    method = wind_up_method(
-        spec, columns=columns, out_dir=out_dir, era5_hourly_df=era5, screen_cache=screen_cache, era5_label=era5_label
-    )
+    method = wind_up_method(out_dir=out_dir, screen_cache=screen_cache, era5_label=era5_label)
     overrides: dict[str, Any] = {
         "save_plots": False,
         "model_params": {**method.model_params, "n_jobs": 1},  # type: ignore[attr-defined]
@@ -620,7 +615,7 @@ def scored_bins(scores: pd.DataFrame) -> list[dict[str, Any]]:
     ]
 
 
-def reported_bins(outputs: Mapping[tuple[str, str], MethodOutput]) -> list[dict[str, Any]]:
+def reported_bins(outputs: Mapping[tuple[str, str], SubjectMeasurement]) -> list[dict[str, Any]]:
     """Return ``wind-up``'s per-bin rows from its outputs, with no truth."""
     rows: list[dict[str, Any]] = []
     for (method, wtg), output in sorted(outputs.items()):
@@ -642,7 +637,7 @@ def reported_bins(outputs: Mapping[tuple[str, str], MethodOutput]) -> list[dict[
     return rows
 
 
-def sigmas(output: MethodOutput) -> dict[str, float]:
+def sigmas(output: SubjectMeasurement) -> dict[str, float]:
     """Return a measurement's ``sigma``, its ``sigma_block_<h>h`` sweep and its reverse-direction reading.
 
     NaN where it reports none.

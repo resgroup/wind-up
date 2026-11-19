@@ -5,7 +5,7 @@ instances **once**, and scores every method against that identical list. Two fai
 properties follow structurally:
 
 1. **Across methods** — instances are built before any method runs, so every method sees the
-   exact same ``MethodInput``s; only the estimate differs.
+   exact same facts and analyses; only the estimate differs.
 2. **Across campaign lengths** — all lengths of one replicate share its
    ``(turbine, baseline_start, treatment_start)`` and differ only in ``activity_end``, so
    shorter windows are leading prefixes of longer ones (a property of ``campaign_windows``).
@@ -30,8 +30,10 @@ import pandas as pd
 from benchmarking.harness.campaign import campaign_windows, treated_activity_mask, window_row_mask
 from benchmarking.harness.replicates import build_replicates
 from benchmarking.synthetic import HOT_COLUMNS
+from wind_up.analysis import AnalysisSpec
 from wind_up.conditions import ORIGINAL_ROW_CONDITIONS, condition_bins, record_labels
-from wind_up.method import MethodInput
+from wind_up.facts import Upgrade, WindFarmFacts
+from wind_up.subject import measurement_of
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -42,8 +44,8 @@ if TYPE_CHECKING:
     from benchmarking.harness.campaign import CampaignWindow
     from benchmarking.harness.replicates import NorthingInputs, Replicate, StudyConfig
     from benchmarking.synthetic import ColumnSchema
-    from wind_up.campaign_context import CampaignContext
-    from wind_up.method import Method, MethodOutput
+    from wind_up.method import Method
+    from wind_up.subject import SubjectMeasurement
 
 # The columns a method's ``uncertainty_diagnostics`` keys on, and therefore does not contribute.
 _DIAGNOSTIC_KEYS = ("condition", "condition_bin")
@@ -79,6 +81,7 @@ def score_study(
     methods: list[Method],
     study: StudyConfig,
     profile_name: str = "profile",
+    turbines: pd.DataFrame,
     columns: ColumnSchema = HOT_COLUMNS,
     northing: NorthingInputs | None = None,
     on_method_complete: Callable[[str, pd.DataFrame], None] | None = None,
@@ -90,6 +93,8 @@ def score_study(
     carries the window it was tested over — ``treatment_start`` (the upgrade start),
     ``baseline_start`` and ``activity_end`` — so a result is self-describing.
 
+    :param turbines: the turbine table of the facts each method is given (see
+        :class:`~wind_up.facts.WindFarmFacts`)
     :param columns: the source-native column schema ``base_scada`` is keyed by
     :param northing: supplying it runs the shared northing step on each replicate, so methods
         reading a northed direction find one. See :func:`iter_replicates`.
@@ -113,7 +118,15 @@ def score_study(
         method_rows: list[dict[str, object]] = []
         for (replicate, window), truth, mask in zip(instances, truths, truth_masks, strict=True):
             method_rows.extend(
-                score_one(method, replicate=replicate, window=window, truth=truth, mask=mask, profile_name=profile_name)
+                score_one(
+                    method,
+                    replicate=replicate,
+                    window=window,
+                    truth=truth,
+                    mask=mask,
+                    turbines=turbines,
+                    profile_name=profile_name,
+                )
             )
         if on_method_complete is not None:
             on_method_complete(method.name, pd.DataFrame(method_rows))
@@ -128,8 +141,8 @@ def score_one(
     window: CampaignWindow,
     truth: float,
     mask: npt.NDArray[np.bool_],
+    turbines: pd.DataFrame,
     profile_name: str = "profile",
-    context: CampaignContext | None = None,
 ) -> list[dict[str, object]]:
     """Run one method over one ``(replicate, window)`` instance and return its tidy result rows.
 
@@ -139,13 +152,21 @@ def score_one(
     ``truth`` and ``mask`` are passed in because they depend only on ``(replicate, window)``;
     deriving them here would multiply that cost by ``len(methods)``. Build them with
     :func:`truth_mask` and ``replicate.true_uplift(mask=...)``.
+
+    The method answers one analysis of the test turbine over the window, every other turbine a
+    candidate reference. A test turbine it cannot measure raises ``ValueError`` with its reason.
+
+    :param turbines: the turbine table of the facts the method is given
     """
-    method_input = _method_input(replicate, window, context=context)
+    facts, analysis = instance_facts(replicate, window, turbines=turbines)
     start = time.perf_counter()
-    output = method.estimate(method_input)
+    (output,) = method.estimate(facts, [analysis])
     wall_time_s = time.perf_counter() - start
+    measurement = measurement_of(output, replicate.test_wtg)
+    if isinstance(measurement, str):
+        raise ValueError(measurement)  # noqa: TRY004 - the test turbine could not be measured
     return score_output(
-        output,
+        measurement,
         method_name=method.name,
         replicate=replicate,
         window=window,
@@ -157,7 +178,7 @@ def score_one(
 
 
 def score_output(
-    output: MethodOutput,
+    output: SubjectMeasurement,
     *,
     method_name: str,
     replicate: Replicate,
@@ -268,23 +289,31 @@ def _materialise_instances(
     return instances
 
 
-def _method_input(
-    replicate: Replicate, window: CampaignWindow, *, context: CampaignContext | None = None
-) -> MethodInput:
-    """Return the method-facing rows: all subset turbines within ``[baseline_start, activity_end)``.
+def instance_facts(
+    replicate: Replicate, window: CampaignWindow, *, turbines: pd.DataFrame
+) -> tuple[WindFarmFacts, AnalysisSpec]:
+    """Return the facts of one instance and the analysis of its test turbine.
 
-    ``context`` is a campaign-derived context covering at least these rows; without one the input
-    falls back to the frame's own implicit contract.
+    The records are every subset turbine's within ``[baseline_start, activity_end)``; the test turbine
+    is the only one upgraded, and every other turbine is a candidate reference.
+
+    :param turbines: the turbine table, holding at least every subset turbine
     """
     synthetic = replicate.synthetic_df
-    row_mask = window_row_mask(synthetic.index, window)
-    return MethodInput(
-        scada_df=synthetic.loc[row_mask],
-        test_wtg=replicate.test_wtg,
-        upgrade_timing=replicate.upgrade_timing,
-        turbine_col=replicate.dataset.columns.turbine,
-        campaign_context=context,
+    columns = replicate.dataset.columns
+    records = synthetic.loc[window_row_mask(synthetic.index, window)]
+    present = set(records[columns.turbine].astype(str))
+    table = turbines[turbines["name"].astype(str).isin(present)].reset_index(drop=True)
+    index = pd.DatetimeIndex(records.index.unique()).sort_values()
+    upgrade = Upgrade(name="upgrade", turbines=[replicate.test_wtg], timing=replicate.upgrade_timing)
+    facts = WindFarmFacts(
+        records=records,
+        columns=columns,
+        timebase=pd.Timedelta(index.to_series().diff().median()) if len(index) > 1 else pd.Timedelta(minutes=10),
+        turbines=table,
+        upgrades=[upgrade],
     )
+    return facts, AnalysisSpec(name=replicate.test_wtg, upgrade=upgrade.name, report="campaign")
 
 
 def truth_mask(replicate: Replicate, window: CampaignWindow) -> npt.NDArray[np.bool_]:

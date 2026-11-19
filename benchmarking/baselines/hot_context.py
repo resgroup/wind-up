@@ -1,7 +1,7 @@
 """Shared Hill of Towie source-context for v0-style assessment methods.
 
 ``build_hot_v0_context`` assembles the source-specific inputs a wind_up assessment needs but
-the harness's thin ``MethodInput`` does not carry: per-turbine metadata (lat/long), ERA5
+the harness's facts do not yet carry: per-turbine metadata (lat/long), ERA5
 reanalysis, and the paths to the vendored asset and northing-corrections YAMLs. It is loaded
 once and reused across every campaign a method scores.
 

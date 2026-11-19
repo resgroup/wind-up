@@ -302,12 +302,12 @@ def run_placebo(
         build_methods=lambda wtg: carried_forward_methods(
             spec,
             out_dir=run_dir / wtg,
-            era5_hourly_df=era5 if include_power_model else None,
             include_power_model=include_power_model,
             screen_cache=screen_cache,
             era5_label=era5_source_label(HOT_LAT, HOT_LON),
         ),
         era5_wd=era5_direction(era5, index),
+        era5_hourly_df=era5 if include_power_model else None,
         northing_out_dir=run_dir / "northing",
     )
     result = runner.run()

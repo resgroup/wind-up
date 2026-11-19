@@ -53,7 +53,7 @@ ORIGINAL_ROW_CONDITIONS: tuple[str, ...] = ("ws", "ti", "power")
 
 
 def label_column(condition: str) -> str:
-    """Return the ``MethodOutput.labeled_rows`` column holding each record's value on ``condition``."""
+    """Return the ``labeled_rows`` of a measurement column holding each record's value on ``condition``."""
     return f"label_{condition}"
 
 

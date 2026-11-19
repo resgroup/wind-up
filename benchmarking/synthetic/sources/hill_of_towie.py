@@ -869,6 +869,23 @@ def hot_coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
     return {name: HOT_COORDINATES[name] for name in turbines}
 
 
+def hot_turbines(turbines: Sequence[str], *, rotor_diameters: bool = True) -> pd.DataFrame:
+    """Return the turbine table of ``turbines`` as :class:`~wind_up.facts.WindFarmFacts` takes it.
+
+    :param rotor_diameters: include each rotor's diameter, :data:`HOT_ROTOR_DIAMETER_M`
+    """
+    coords = hot_coords(turbines)
+    table = pd.DataFrame(
+        {
+            "name": list(coords),
+            "latitude": [lat for lat, _ in coords.values()],
+            "longitude": [lon for _, lon in coords.values()],
+            "rated_power_kw": HOT_RATED_POWER_KW,
+        }
+    )
+    return table.assign(rotor_diameter_m=HOT_ROTOR_DIAMETER_M) if rotor_diameters else table
+
+
 def hot_layout(metadata_df: pd.DataFrame) -> Layout:
     """Return the farm :class:`~wind_up.layout.Layout` of ``metadata_df`` (as :func:`load_hot_metadata` gives).
 

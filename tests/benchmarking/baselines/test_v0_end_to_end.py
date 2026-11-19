@@ -23,7 +23,7 @@ from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.harness import StudyConfig, score_study
 from benchmarking.harness.example_hot_study import OracleMethod
 from benchmarking.synthetic import ConstantCpChange
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_turbines, load_hot_scada
 
 
 @pytest.mark.slow
@@ -49,6 +49,7 @@ def test_v0_recovers_constant_cp_uplift(tmp_path) -> None:  # noqa: ANN001
 
     results = score_study(
         scada_df,
+        turbines=hot_turbines(study.turbine_subset, rotor_diameters=False),
         profile=[ConstantCpChange(delta=0.05)],
         methods=[V0BinnedMethod(context, scratch_dir=tmp_path), OracleMethod(scada_df)],
         study=study,

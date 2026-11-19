@@ -57,7 +57,7 @@ class DiagnosticContext:
     :param test_wtg: the test turbine name
     :param turbine_col: the long frame's turbine-identifier column
     :param columns: the source-native column schema (diagnostic roles may be ``None``)
-    :param scada_df: the ``MethodInput`` SCADA slice (long format, all subset turbines)
+    :param scada_df: the subject's records (long format, all subset turbines)
     :param treated_ts: treatment flag (0/1) per unique timestamp, in sorted-index order
     :param used_ts: "used by the method" flag per unique timestamp (the test turbine's kept rows)
     :param timebase: the analysis timebase

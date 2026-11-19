@@ -18,8 +18,8 @@ import pytest
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.harness import StudyConfig, score_study
 from benchmarking.harness.example_hot_study import OracleMethod
-from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
+from benchmarking.synthetic import ConstantCpChange
+from benchmarking.synthetic.sources.hill_of_towie import hot_turbines, load_hot_scada
 
 
 @pytest.mark.slow
@@ -43,12 +43,10 @@ def test_naive_recovers_toggle_uplift(tmp_path) -> None:  # noqa: ANN001
 
     results = score_study(
         scada_df,
+        turbines=hot_turbines(study.turbine_subset, rotor_diameters=False),
         profile=[ConstantCpChange(delta=0.05)],
         methods=[
-            NaiveRatioMethod(
-                columns=HOT_COLUMNS,
-                out_dir=tmp_path / "naive_runs",
-            ),
+            NaiveRatioMethod(out_dir=tmp_path / "naive_runs"),
             OracleMethod(scada_df),
         ],
         study=study,

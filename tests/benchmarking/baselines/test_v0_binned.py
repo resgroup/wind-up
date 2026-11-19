@@ -8,6 +8,8 @@ A real end-to-end run lives in the ``slow`` integration test.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pandas as pd
 import pytest
 
@@ -15,9 +17,12 @@ from benchmarking.baselines import v0_binned
 from benchmarking.baselines.hot_context import HotV0Context
 from benchmarking.baselines.v0_binned import V0BinnedMethod, _extract_p50, _subset_turbines
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule, treated_mask
-from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format
-from wind_up.campaign_context import CampaignContext
-from wind_up.method import MethodInput, MethodOutput
+from benchmarking.synthetic.sources.hill_of_towie import hot_turbines, long_to_wind_up_format
+from wind_up.analysis import AnalysisSpec
+from wind_up.facts import Upgrade, WindFarmFacts
+from wind_up.labels import Label
+from wind_up.method import MethodConfigurationError
+from wind_up.subject import SubjectMeasurement, SubjectRecords, measurement_of
 from wind_up.toggle import build_toggle_df
 
 # The harness hands v0 source-native SCADA, so the fixtures carry the source-native tag names and
@@ -61,9 +66,17 @@ def _context() -> HotV0Context:
 UPGRADE = pd.Timestamp("2018-01-01", tz="UTC")
 
 
-def _method_input(turbines: list[str], test_wtg: str) -> MethodInput:
+def _records(scada: pd.DataFrame, test_wtg: str, timing: pd.Timestamp | ToggleSchedule) -> SubjectRecords:
+    return SubjectRecords.from_frame(scada, subject=test_wtg, timing=timing, turbine_col=HOT_COLUMNS.turbine)
+
+
+def _method_input(turbines: list[str], test_wtg: str) -> SubjectRecords:
     scada = _make_scada(turbines, start=UPGRADE - pd.DateOffset(years=1), end=UPGRADE + pd.DateOffset(months=6))
-    return MethodInput(scada_df=scada, test_wtg=test_wtg, upgrade_timing=UPGRADE)
+    return _records(scada, test_wtg, UPGRADE)
+
+
+def _measure(method: V0BinnedMethod, mi: SubjectRecords) -> SubjectMeasurement:
+    return method.estimate_multi(mi, test_wtgs=[mi.subject])[mi.subject]
 
 
 class TestSubsetTurbines:
@@ -85,7 +98,7 @@ class TestBuildConfig:
         cfg = method._build_config(mi)  # noqa: SLF001
         assert cfg.prepost is not None
         assert pd.Timestamp(cfg.prepost.post_first_dt_utc_start) == UPGRADE
-        assert pd.Timestamp(cfg.prepost.post_last_dt_utc_start) == pd.Timestamp(mi.scada_df.index.max())
+        assert pd.Timestamp(cfg.prepost.post_last_dt_utc_start) == pd.Timestamp(mi.records.index.max())
         assert pd.Timestamp(cfg.upgrade_first_dt_utc_start) == UPGRADE
         assert cfg.use_lt_distribution is False
         assert cfg.optimize_northing_corrections is False
@@ -150,7 +163,7 @@ class TestBuildConfigToggle:
             ["T01", "T02", "T03", "T04"], start=UPGRADE - pd.DateOffset(years=1), end=UPGRADE + pd.DateOffset(months=6)
         )
         schedule = ToggleSchedule(period=pd.Timedelta(days=2), start=UPGRADE)
-        cfg = method._build_config(MethodInput(scada_df=scada, test_wtg="T01", upgrade_timing=schedule))  # noqa: SLF001
+        cfg = method._build_config(_records(scada, "T01", schedule))  # noqa: SLF001
         assert cfg.toggle is not None
         assert cfg.prepost is None
         assert cfg.toggle.detrend_data_selection == "use_toggle_off_data"
@@ -170,7 +183,7 @@ class TestBuildConfigToggle:
             ["T01", "T02", "T03", "T04"], start=UPGRADE - pd.DateOffset(years=1), end=UPGRADE + pd.DateOffset(months=6)
         )
         schedule = ToggleSchedule(period=pd.Timedelta(days=2), start=UPGRADE)
-        cfg = method._build_config(MethodInput(scada_df=scada, test_wtg="T01", upgrade_timing=schedule))  # noqa: SLF001
+        cfg = method._build_config(_records(scada, "T01", schedule))  # noqa: SLF001
         assert cfg.toggle.pairing_filter_method == "any_within_timedelta"
         assert cfg.toggle.pairing_filter_timedelta_seconds == 3000
         assert cfg.toggle.toggle_change_settling_filter_seconds == 300
@@ -184,7 +197,7 @@ class TestEstimateToggle:
             ["T01", "T02", "T03"], start=UPGRADE - pd.DateOffset(months=6), end=UPGRADE + pd.DateOffset(months=6)
         )
         schedule = ToggleSchedule(period=pd.Timedelta(days=2), start=UPGRADE)
-        out = method.estimate(MethodInput(scada_df=scada, test_wtg="T01", upgrade_timing=schedule))
+        out = _measure(method, _records(scada, "T01", schedule))
 
         assert out.p50_overall == pytest.approx(0.042)
         toggle_df = captured["from_cfg_kwargs"]["toggle_df"]
@@ -239,9 +252,9 @@ class TestEstimateWiring:
         captured = _stub_pipeline(monkeypatch)
 
         method = V0BinnedMethod(_context(), scratch_dir=tmp_path)
-        out = method.estimate(_method_input(["T01", "T02", "T03", "T04"], "T01"))
+        out = _measure(method, _method_input(["T01", "T02", "T03", "T04"], "T01"))
 
-        assert isinstance(out, MethodOutput)
+        assert isinstance(out, SubjectMeasurement)
         assert out.p50_overall == pytest.approx(0.042)
         assert out.p50_by_condition is None
         assert captured["run_inputs"] == "inputs-sentinel"
@@ -250,20 +263,20 @@ class TestEstimateWiring:
         # the source-native scada is converted to wind-up format on the way into the pipeline,
         # and the metadata/reanalysis from the context are handed through unchanged
         kwargs = captured["from_cfg_kwargs"]
-        expected_scada = long_to_wind_up_format(_method_input(["T01", "T02", "T03", "T04"], "T01").scada_df)
+        expected_scada = long_to_wind_up_format(_method_input(["T01", "T02", "T03", "T04"], "T01").records)
         assert kwargs["scada_df"].equals(expected_scada)
         assert kwargs["reanalysis_datasets"] == []
 
     def test_save_plots_defaults_off(self, tmp_path, monkeypatch) -> None:  # noqa: ANN001
         captured = _stub_pipeline(monkeypatch)
         method = V0BinnedMethod(_context(), scratch_dir=tmp_path)
-        method.estimate(_method_input(["T01", "T02", "T03", "T04"], "T01"))
+        _measure(method, _method_input(["T01", "T02", "T03", "T04"], "T01"))
         assert captured["from_cfg_kwargs"]["plot_cfg"].save_plots is False
 
     def test_save_plots_on_writes_under_out_dir(self, tmp_path, monkeypatch) -> None:  # noqa: ANN001
         captured = _stub_pipeline(monkeypatch)
         method = V0BinnedMethod(_context(), scratch_dir=tmp_path, save_plots=True)
-        method.estimate(_method_input(["T01", "T02", "T03", "T04"], "T01"))
+        _measure(method, _method_input(["T01", "T02", "T03", "T04"], "T01"))
         plot_cfg = captured["from_cfg_kwargs"]["plot_cfg"]
         assert plot_cfg.save_plots is True
         assert plot_cfg.plots_dir.parent == tmp_path / "v0_T01_20180101_20180701"
@@ -304,13 +317,53 @@ class TestEstimateMulti:
         assert calls["from_cfg"] == 1  # both turbines analysed in a single wind_up run
 
 
-class TestCampaignContextRefs:
+class TestReferencesFromTheRecords:
     def test_config_references_come_from_the_campaign(self, tmp_path) -> None:  # noqa: ANN001
         method = V0BinnedMethod(_context(), scratch_dir=tmp_path)
         scada = _dense_scada(
             ["T01", "T02", "T03", "T04"], start=UPGRADE - pd.DateOffset(years=1), end=UPGRADE + pd.DateOffset(months=6)
         )
-        campaign = CampaignContext.from_frame(scada, test_wtg="T01", timing=UPGRADE, turbine_col=HOT_COLUMNS.turbine)
-        object.__setattr__(campaign, "candidate_references", ["T02", "T03"])
-        cfg = method._build_config(MethodInput(scada_df=scada, test_wtg="T01", campaign_context=campaign))  # noqa: SLF001
+        campaign = dataclasses.replace(
+            _records(scada, "T01", UPGRADE), candidate_references=["T02", "T03"], wake_contributors=["T04"]
+        )
+        cfg = method._build_config(campaign)  # noqa: SLF001
         assert sorted(w.name for w in cfg.ref_wtgs) == ["T02", "T03"]
+
+
+class TestAnsweringAnalyses:
+    @staticmethod
+    def _facts() -> WindFarmFacts:
+        scada = _dense_scada(
+            ["T01", "T02", "T03", "T04"], start=UPGRADE - pd.DateOffset(months=6), end=UPGRADE + pd.DateOffset(months=6)
+        )
+        return WindFarmFacts(
+            records=scada,
+            columns=HOT_COLUMNS,
+            timebase=pd.Timedelta(days=1),
+            turbines=hot_turbines(["T01", "T02", "T03", "T04"]),
+            upgrades=[Upgrade(name="u", turbines=["T01", "T04"], timing=UPGRADE)],
+        )
+
+    def test_one_run_answers_every_subject(self, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+        captured = _stub_pipeline(monkeypatch)
+        (out,) = V0BinnedMethod(_context(), scratch_dir=tmp_path).estimate(
+            self._facts(), [AnalysisSpec(name="a", upgrade="u", subjects=["T01"], report="campaign")]
+        )
+        assert out.campaign_uplift == pytest.approx(0.042)
+        assert captured["combine_kwargs"]["auto_choose_refs"] is False
+
+    def test_a_run_that_fails_leaves_every_subject_unmeasured(self, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+        _stub_pipeline(monkeypatch)
+        analysis = AnalysisSpec(name="a", upgrade="u", references=[], report="campaign")
+        (out,) = V0BinnedMethod(_context(), scratch_dir=tmp_path).estimate(self._facts(), [analysis])
+        assert measurement_of(out, "T01") == measurement_of(out, "T04")
+        assert "no reference turbines" in str(measurement_of(out, "T01"))
+
+    def test_labels_are_refused(self, tmp_path) -> None:  # noqa: ANN001
+        facts = self._facts()
+        facts = dataclasses.replace(
+            facts, records=facts.records.assign(flag=False), labels=[Label(name="x", column="flag")]
+        )
+        analysis = AnalysisSpec(name="a", upgrade="u", include_labels=["x"])
+        with pytest.raises(MethodConfigurationError, match="labels"):
+            V0BinnedMethod(_context(), scratch_dir=tmp_path).estimate(facts, [analysis])

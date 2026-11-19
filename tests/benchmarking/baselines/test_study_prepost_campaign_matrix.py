@@ -68,11 +68,9 @@ from benchmarking.campaigns.loader import operating_state_config
 from benchmarking.campaigns.real import REAL_CAMPAIGNS
 from benchmarking.campaigns.run import NoTurbineMeasuredError
 from benchmarking.harness.northing import NORTH_TABLE_YAML
-from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.greenbyte import GREENBYTE_OPERATING_STATE, GREENBYTE_STATE_COL
 from wind_up.analysis_period import PlanSettings
 from wind_up.diagnostics import stages
-from wind_up.layout import Layout
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -886,18 +884,10 @@ def test_the_period_selector_takes_the_cells_k_and_the_matrix_shortest_side() ->
 
 
 def test_method_overrides_reach_the_matrix_method(tmp_path: Path) -> None:
-    layout = Layout.from_frame(
-        pd.DataFrame({"name": ["T01"], "latitude": [57.5], "longitude": [-3.1], "rotor_diameter_m": [82.0]})
-    )
-    spec = SimpleNamespace(rated_power_kw=2300.0, layout=layout)
-    common = {"columns": HOT_COLUMNS, "out_dir": tmp_path, "era5": None, "screen_cache": {}, "era5_label": "x"}
-    plain = _matrix_method(spec, **common)  # type: ignore[arg-type]
+    common = {"out_dir": tmp_path, "screen_cache": {}, "era5_label": "x"}
+    plain = _matrix_method(**common)  # type: ignore[arg-type]
     assert plain.row_dump_dir is None  # type: ignore[attr-defined]
-    dumped = _matrix_method(
-        spec,  # type: ignore[arg-type]
-        method_overrides={"row_dump_dir": tmp_path / "dump"},
-        **common,
-    )
+    dumped = _matrix_method(method_overrides={"row_dump_dir": tmp_path / "dump"}, **common)  # type: ignore[arg-type]
     assert dumped.row_dump_dir == tmp_path / "dump"  # type: ignore[attr-defined]
     # the matrix's own overrides survive
     assert dumped.model_params["n_jobs"] == 1  # type: ignore[attr-defined]

@@ -7,6 +7,7 @@ layers truth, scoring and truth-vs-estimate plots on top; see
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import time
 from dataclasses import dataclass, field, replace
@@ -16,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.power_model.method import headline_detail, reference_overall_uplift
-from benchmarking.campaigns.context import context_for_plan
+from benchmarking.campaigns.context import campaign_facts, plan_analysis
 from benchmarking.campaigns.data_screen import (
     DEFAULT_DATA_SCREEN,
     DROPPED,
@@ -27,13 +28,13 @@ from benchmarking.campaigns.data_screen import (
     screen_plan,
 )
 from benchmarking.campaigns.plans import CampaignPlans, labelled_scada, plans_for, treated_activity
-from benchmarking.harness import MethodConfigurationError, MethodInput
 from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
 from wind_up import TurbineUplift, farm_uplift
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.analysis_warnings import AnalysisWarning, ranked
 from wind_up.northing import DEFAULT_NORTHING
 from wind_up.operating_state import not_missing
+from wind_up.subject import measurement_of
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -42,11 +43,14 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from benchmarking.campaigns.declaration import CampaignSpec
-    from benchmarking.harness import Method, MethodOutput
+    from benchmarking.harness import Method
     from benchmarking.synthetic import ColumnSchema
     from wind_up import FarmUplift
+    from wind_up.analysis import AnalysisSpec
     from wind_up.analysis_period import AnalysisPlan, PlanSettings
+    from wind_up.facts import WindFarmFacts
     from wind_up.northing import NorthingSettings
+    from wind_up.subject import SubjectMeasurement
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +100,7 @@ class CampaignReport:
     :param reference_stability: each method's per-reference self-uplift, the campaign's own
         analysis turned on the turbines it used as references. A healthy campaign reads near 0%.
     :param conditional: each method's per-condition estimates, empty when none reports any
-    :param outputs: each ``(method, turbine)``'s raw :class:`~benchmarking.harness.MethodOutput`
+    :param outputs: each ``(method, turbine)``'s raw :class:`~wind_up.subject.SubjectMeasurement`
     :param wall_time_s: how long each ``(method, turbine)`` estimate took
     :param timeline: each upgraded turbine's analysis plan, or the reason none could be chosen,
         with the works and data extents they were chosen from and the warnings against them
@@ -111,7 +115,7 @@ class CampaignReport:
     farm_uplifts: dict[str, FarmUplift]
     reference_stability: pd.DataFrame
     conditional: pd.DataFrame
-    outputs: dict[tuple[str, str], MethodOutput]
+    outputs: dict[tuple[str, str], SubjectMeasurement]
     wall_time_s: dict[tuple[str, str], float]
     timeline: CampaignPlans = field(default_factory=CampaignPlans)
     data_screens: dict[str, DataScreen] = field(default_factory=dict)
@@ -204,20 +208,28 @@ class NoTurbineMeasuredError(ValueError):
         )
 
 
-def _measure(method: Method, method_input: MethodInput) -> MethodOutput | str:
-    """Return the method's output, or why it could not measure the turbine.
+def _measure(
+    method: Method, *, facts: WindFarmFacts, analysis: AnalysisSpec, n_references: int
+) -> SubjectMeasurement | str:
+    """Return the method's measurement of the analysis's one subject, or why it could not measure it.
 
-    A ``ValueError`` from the estimate is the turbine's own (too few usable hours, no reference) and
-    comes back as the reason; a :class:`MethodConfigurationError` is the method's configuration,
-    wrong for every turbine, and propagates to fail the campaign.
+    The first ``n_references`` of the analysis's references are the plan's power references and the
+    rest its reserves: a method with an ``n_references`` option is given them all and takes the first
+    ``n_references`` as its pool; any other is given the power references alone. A
+    :class:`~wind_up.method.MethodConfigurationError` is the method's configuration, wrong for every
+    turbine, and propagates to fail the campaign.
     """
-    try:
-        return method.estimate(method_input)
-    except MethodConfigurationError:
-        raise
-    except ValueError as e:
-        logger.warning("%s: not measured by %s: %s", method_input.test_wtg, method.name, e)
-        return f"not measured by {method.name}: {e}"
+    if dataclasses.is_dataclass(method) and hasattr(method, "n_references"):
+        method = dataclasses.replace(method, n_references=n_references)  # type: ignore[type-var]
+    else:
+        analysis = dataclasses.replace(analysis, references=list(analysis.references or ())[:n_references])
+    (output,) = method.estimate(facts, [analysis])
+    (subject,) = analysis.subjects or ()
+    measurement = measurement_of(output, subject)
+    if isinstance(measurement, str):
+        logger.warning("%s: not measured by %s: %s", subject, method.name, measurement)
+        return f"not measured by {method.name}: {measurement}"
+    return measurement
 
 
 def estimate_campaign(
@@ -234,6 +246,7 @@ def estimate_campaign(
     plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
     possible_changes: Mapping[str, Sequence[pd.Timestamp]] | None = None,
     data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
+    era5_hourly_df: pd.DataFrame | None = None,
 ) -> CampaignReport:
     """Estimate every applicable method on every upgraded turbine and aggregate to one headline.
 
@@ -258,6 +271,8 @@ def estimate_campaign(
         against the plans they fall inside
     :param data_screen: how each plan's power references and reserves are screened on their data;
         ``None`` uses the plans as chosen
+    :param era5_hourly_df: reanalysis at the farm's centroid, hourly or aligned to the records, which
+        the facts carry
     """
     scada_df = labelled_scada(spec, scada_df, columns=columns)
     resolved = plans_for(spec, scada_df, columns=columns, settings=plan_settings, possible_changes=possible_changes)
@@ -277,7 +292,8 @@ def estimate_campaign(
         northing_plots=northing_plots,
     )
 
-    outputs: dict[tuple[str, str], MethodOutput] = {}
+    facts = campaign_facts(spec, visible, columns=columns, era5_hourly_df=era5_hourly_df)
+    outputs: dict[tuple[str, str], SubjectMeasurement] = {}
     wall_time_s: dict[tuple[str, str], float] = {}
     estimates: dict[str, list[TurbineUplift]] = {}
     per_turbine_rows: list[dict[str, object]] = []
@@ -293,23 +309,18 @@ def estimate_campaign(
         frame = visible[(visible.index >= plan.start) & (visible.index < plan.end)]
         if data_screen is not None:
             screens[wtg] = screen_plan(plan, frame, spec=spec, columns=columns, settings=data_screen)
-        context = context_for_plan(spec, screens[wtg].plan if wtg in screens else plan, scada_df=frame)
+        screened = screens[wtg].plan if wtg in screens else plan
+        analysis = plan_analysis(spec, screened)
         rows = frame[frame[spec.turbine_col] == wtg]
         row_index = pd.DatetimeIndex(rows.index)
         treated = treated_activity(row_index, timing=timing, window=plan.after)
         treated &= spec.usable_mask(wtg, row_index)
         energy, n_records = _actual_energy(rows, columns=columns, mask=treated)
 
-        measured: list[tuple[str, MethodOutput, float]] = []
+        measured: list[tuple[str, SubjectMeasurement, float]] = []
         for method in build_methods(wtg):
-            method_input = MethodInput(
-                scada_df=frame,
-                test_wtg=wtg,
-                turbine_col=spec.turbine_col,
-                campaign_context=context,
-            )
             start = time.perf_counter()
-            output = _measure(method, method_input)
+            output = _measure(method, facts=facts, analysis=analysis, n_references=len(screened.power_references))
             if isinstance(output, str):
                 unmeasured[wtg] = output
                 break
@@ -376,7 +387,7 @@ def estimate_campaign(
 
 def analysis_warnings(
     *,
-    outputs: Mapping[tuple[str, str], MethodOutput],
+    outputs: Mapping[tuple[str, str], SubjectMeasurement],
     screens: Mapping[str, DataScreen],
     timeline: CampaignPlans,
     possible_changes: Mapping[str, Sequence[pd.Timestamp]],

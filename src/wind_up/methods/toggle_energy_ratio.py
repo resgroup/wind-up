@@ -15,7 +15,7 @@ data source's own column names and has no wind_up dependency.
 An optional **pairing filter** (``pairing_max_gap``) then drops any used row with no used row of the
 other segment nearby, so a filter that removes one segment's rows in some conditions also removes the
 other segment's rows from those conditions. Rows kept per segment after each selection stage are
-reported as ``MethodOutput.selection_accounting`` and written to a selection CSV. A caller may also
+reported as ``SubjectMeasurement.selection_accounting`` and written to a selection CSV. A caller may also
 flag rows through ``columns.exclude_block``: such a row removes its whole toggle cycle, so both
 states lose the same conditions — a symmetric alternative to ``exclude_row`` for a selection that
 would otherwise thin one state's rows in particular conditions.
@@ -67,9 +67,10 @@ a true baseline. Either way a row's own state cannot move it between bins.
 
 from __future__ import annotations
 
+import copy
 import logging
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -79,22 +80,19 @@ import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
 
-from wind_up.analysis import AEP, CAMPAIGN, PER_TURBINE_COLUMNS, AnalysisOutput, AnalysisSpec
-from wind_up.analysis_warnings import AnalysisWarning
 from wind_up.block_bootstrap import (
     BootstrapResult,
     CombinedEstimate,
     bootstrap_ratio_uplift,
     combine_estimates,
 )
-from wind_up.campaign_context import CampaignContext
 from wind_up.conditions import condition_bins, energy_ratio_by_bin, validate_conditions
 from wind_up.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
-from wind_up.farm import TurbineUplift, farm_uplift
 from wind_up.filtering import NormalOperationFilter, blank_missing
 from wind_up.labels import OFF, ON
-from wind_up.method import MethodConfigurationError, MethodInput, MethodOutput
+from wind_up.method import MethodConfigurationError
 from wind_up.operating_state import declared_records
+from wind_up.subject import BASELINE, UPGRADED, SubjectMeasurement, SubjectRecords, group_output, subject_records
 from wind_up.toggle import (
     ToggleRowSets,
     ToggleSchedule,
@@ -110,6 +108,7 @@ if TYPE_CHECKING:
 
     import numpy.typing as npt
 
+    from wind_up.analysis import AnalysisOutput, AnalysisSpec
     from wind_up.facts import WindFarmFacts
     from wind_up.schema import ColumnSchema
 
@@ -118,10 +117,10 @@ _MIN_POINTS_FOR_TIMEBASE = 2
 # The cell name (and the ``(condition, condition_bin)`` key) of the headline uplift.
 _OVERALL = "overall"
 
-# ``MethodOutput.labeled_rows`` segment labels. "excluded" = claimed by neither side (e.g.
+# ``SubjectMeasurement.labeled_rows`` segment labels. "excluded" = claimed by neither side (e.g.
 # pre-campaign), which is distinct from a row in a segment that failed the filters (``used`` False).
-_BASELINE = "baseline"
-_UPGRADED = "upgraded"
+_BASELINE = BASELINE
+_UPGRADED = UPGRADED
 _EXCLUDED = "excluded"
 # Circular-block length for the uncertainty bootstrap, in hours. Must hold several on/off toggle
 # cycles, so raise it for a campaign with a slow toggle period.
@@ -251,7 +250,7 @@ def _wide_column(scada_df: pd.DataFrame, *, turbine_col: str, value_col: str) ->
     )
 
 
-def restrict_to_campaign(mi: MethodInput) -> MethodInput:
+def restrict_to_campaign(mi: SubjectRecords) -> SubjectRecords:
     """Drop pre-campaign rows so the on/off comparison shares a distribution.
 
     The harness window can also carry a pre-campaign baseline, whose distribution differs from the
@@ -259,10 +258,10 @@ def restrict_to_campaign(mi: MethodInput) -> MethodInput:
     records at/after the toggle start, leaving only the interleaved on/off blocks. A no-op when the
     schedule has no explicit start (e.g. an already-campaign-only ``toggle_df``).
     """
-    timing = mi.upgrade_timing
+    timing = mi.timing
     if not (isinstance(timing, ToggleSchedule) and timing.start is not None):
         return mi
-    return replace(mi, scada_df=mi.scada_df.loc[mi.scada_df.index >= timing.start])
+    return replace(mi, records=mi.records.loc[mi.records.index >= timing.start])
 
 
 @dataclass
@@ -272,59 +271,47 @@ class ToggleEnergyRatioMethod:
     Accepts only toggle campaigns; ``estimate`` raises on a prepost changeover. Always fits on the
     interleaved campaign on/off blocks, so on and off share a wind distribution.
 
-    :param columns: **required** source-native column schema. Reads the ``active_power`` role (the
-        only signal in the ``rho`` computation) and the ``availability`` role (the required downtime
-        filter, applied to the test turbine and every reference); other roles feed diagnostics only.
+    Reads the ``active_power`` and ``availability`` column roles; other roles feed diagnostics only.
+    The toggle cycle and its datum are the upgrade's, and the timebase and each subject's rating are the
+    facts'.
+
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param save_plots: also write the diagnostic plots under ``<run>/plots``
-    :param timebase: analysis timebase; inferred from the data when ``None``
     :param conditions: condition axes to report a per-bin uplift over. Only ``"power"`` is supported
         (see :meth:`_conditional_frame`); defaults to reporting none.
-    :param rated_power_kw: the test turbine's rated power, **required** when ``"power"`` is in
-        ``conditions``, since the power bin edges scale with the rating.
     :param block_hours: circular-block length for the uncertainty bootstrap. Must hold several on/off
-        toggle cycles and stay a small fraction of the campaign; **raise it for a slow toggle
-        period**, for which :data:`DEFAULT_BLOCK_HOURS` may span only a cycle or two.
+        toggle cycles and stay a small fraction of the campaign; raise it for a slow toggle cycle,
+        for which :data:`DEFAULT_BLOCK_HOURS` may span only a cycle or two.
     :param n_resamples: bootstrap resamples; block sums are precomputed, so this can be generous.
     :param bootstrap_seed: RNG seed for the bootstrap, so a reported sigma is reproducible.
     :param pairing_max_gap: when set, a used row of one segment is kept only if the other segment has
         a used row within this gap, inclusive (a gap of exactly ``pairing_max_gap`` is kept). Must be
         a positive whole multiple of the timebase; ``None`` disables pairing.
-    :param toggle_period: **required** one toggle cycle (the campaign's own on + off duration): the
-        block length for the block leg, the label permutation and ``columns.exclude_block``. A
-        positive whole multiple of the timebase. It is the caller's to state, not inferred, and it
-        is independent of ``pairing_max_gap``.
-    :param toggle_datum: **required** any boundary of the toggle-cycle grid (the controller's own
-        cycle datum, not when the campaign happened to begin); the cycles of the block leg, the label
-        permutation and ``columns.exclude_block`` are tiled from it. A ``ToggleSchedule`` tiles its
-        cycles from its first timestamp, which must lie on this grid.
     :param bin_power: the per-row power the bins and ``power_band`` read (see the module docstring):
         ``"baseline"`` (default) or ``"both_states"``.
     :param power_band: when set, ``(lo, hi]`` in kW: each leg keeps only the used rows whose bin
         power lies in it, and estimates its uplift over those. ``None`` keeps every used row.
     """
 
-    columns: ColumnSchema | None = None
-    toggle_period: pd.Timedelta | None = None
-    toggle_datum: pd.Timestamp | None = None
     name: str = "toggle_energy_ratio"
     out_dir: Path | None = None
     save_plots: bool = False
-    timebase: pd.Timedelta | None = None
     conditions: tuple[str, ...] = ()
-    rated_power_kw: float | None = None
     block_hours: float = DEFAULT_BLOCK_HOURS
     n_resamples: int = 1000
     bootstrap_seed: int = 0
     pairing_max_gap: pd.Timedelta | None = None
     bin_power: Literal["baseline", "both_states"] = "baseline"
     power_band: tuple[float, float] | None = None
+    _columns: ColumnSchema | None = field(default=None, init=False, repr=False)
+    _given_cycle: pd.Timedelta | None = field(default=None, init=False, repr=False)
+    _given_datum: pd.Timestamp | None = field(default=None, init=False, repr=False)
+    _timebase: pd.Timedelta | None = field(default=None, init=False, repr=False)
+    _rated_power_kw: float | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Validate the column roles, ``conditions``, ``bin_power`` and ``power_band``."""
-        if self.columns is not None:
-            self.columns.require_roles(("active_power", "availability"))
+        """Validate ``conditions``, ``bin_power`` and ``power_band``."""
         validate_conditions(self.conditions, supported=_SUPPORTED_CONDITIONS, method_name=self.name)
         if self.bin_power not in _BIN_POWERS:
             msg = f"{self.name}: bin_power must be one of {_BIN_POWERS}, got {self.bin_power!r}"
@@ -334,16 +321,8 @@ class ToggleEnergyRatioMethod:
             if not (np.isfinite(lo) and np.isfinite(hi) and lo < hi):
                 msg = f"{self.name}: power_band must be finite (lo, hi] with lo < hi, got {self.power_band}"
                 raise ValueError(msg)
-        if "power" in self.conditions and self.rated_power_kw is None and self.columns is not None:
-            msg = (
-                f"{self.name}: rated_power_kw is required when 'power' is in conditions — the power bin "
-                f"edges are fractions of the turbine's rating."
-            )
-            raise ValueError(msg)
 
-    def estimate(
-        self, facts: WindFarmFacts | MethodInput, analyses: Sequence[AnalysisSpec] = ()
-    ) -> list[AnalysisOutput] | MethodOutput:
+    def estimate(self, facts: WindFarmFacts, analyses: Sequence[AnalysisSpec]) -> list[AnalysisOutput]:
         """Answer each analysis of a toggle upgrade in ``facts``, one output per analysis, in order.
 
         Each subject is measured from the first record any subject compares to the end of the
@@ -353,8 +332,6 @@ class ToggleEnergyRatioMethod:
         excluded row. The record labels are computed once per call. The group's campaign uplift weights the
         subjects by the energy they produced with the upgrade on. No AEP uplift is reported.
         """
-        if isinstance(facts, MethodInput):
-            return self._estimate_one(facts)
         for analysis in analyses:
             facts.check(analysis)
             upgrade = facts.upgrade(analysis.upgrade)
@@ -368,19 +345,73 @@ class ToggleEnergyRatioMethod:
         valid = pd.DataFrame(
             {turbine_col: labels[turbine_col].to_numpy(), "valid": ~excluded}, index=labels.index
         ).pivot_table(index=labels.index, columns=turbine_col, values="valid", aggfunc="first")
+        valid = valid.fillna(value=True).astype(bool)
         return [self._answer(facts, analysis, labels=labels, valid=valid) for analysis in analyses]
+
+    def measure(
+        self,
+        records: SubjectRecords,
+        *,
+        columns: ColumnSchema,
+        toggle_cycle: pd.Timedelta,
+        toggle_datum: pd.Timestamp,
+        timebase: pd.Timedelta | None = None,
+        rated_power_kw: float | None = None,
+    ) -> SubjectMeasurement:
+        """Measure one subject's uplift over its on and off records and write its diagnostics.
+
+        The step :meth:`estimate` takes for each subject of an analysis.
+
+        :param records: the subject's records and what it may know about them
+        :param columns: the records' column roles; ``active_power`` and ``availability`` are required
+        :param toggle_cycle: one toggle cycle, a positive whole multiple of the timebase: the block
+            length of the block leg, the label permutation and ``columns.exclude_block``
+        :param toggle_datum: any boundary of the toggle-cycle grid; a ``ToggleSchedule`` must start on it
+        :param timebase: the records' timebase; inferred from them when ``None``
+        :param rated_power_kw: the subject's rating, required when ``"power"`` is in ``conditions``
+        """
+        columns.require_roles(("active_power", "availability"))
+        if "power" in self.conditions and rated_power_kw is None:
+            msg = f"{self.name}: rated_power_kw is required when 'power' is in conditions; the bin edges scale with it"
+            raise MethodConfigurationError(msg)
+        bound = self._bound(
+            columns=columns,
+            toggle_cycle=toggle_cycle,
+            toggle_datum=toggle_datum,
+            timebase=timebase,
+            rated_power_kw=rated_power_kw,
+        )
+        return bound._estimate_one(records)  # noqa: SLF001 - its own class
+
+    def _bound(
+        self,
+        *,
+        columns: ColumnSchema,
+        toggle_cycle: pd.Timedelta,
+        toggle_datum: pd.Timestamp,
+        timebase: pd.Timedelta | None,
+        rated_power_kw: float | None,
+    ) -> ToggleEnergyRatioMethod:
+        """Return a copy holding the facts one measurement reads."""
+        bound = copy.copy(self)
+        bound._columns = columns  # noqa: SLF001 - its own class
+        bound._given_cycle = toggle_cycle  # noqa: SLF001 - its own class
+        bound._given_datum = toggle_datum  # noqa: SLF001 - its own class
+        bound._timebase = timebase  # noqa: SLF001 - its own class
+        bound._rated_power_kw = rated_power_kw  # noqa: SLF001 - its own class
+        return bound
 
     @property
     def _schema(self) -> ColumnSchema:
-        """Return the column schema; set by the time a measurement runs."""
-        assert self.columns is not None  # noqa: S101 - checked by the caller of every measurement
-        return self.columns
+        """Return the column schema; set by :meth:`measure`."""
+        assert self._columns is not None  # noqa: S101 - set by measure
+        return self._columns
 
     @property
     def _cycle(self) -> pd.Timedelta:
-        """Return the toggle cycle; set by the time a measurement runs."""
-        assert self.toggle_period is not None  # noqa: S101 - checked by the caller of every measurement
-        return self.toggle_period
+        """Return the toggle cycle; set by :meth:`measure`."""
+        assert self._given_cycle is not None  # noqa: S101 - set by measure
+        return self._given_cycle
 
     def _answer(
         self, facts: WindFarmFacts, analysis: AnalysisSpec, *, labels: pd.DataFrame, valid: pd.DataFrame
@@ -389,7 +420,8 @@ class ToggleEnergyRatioMethod:
         upgrade = facts.upgrade(analysis.upgrade)
         sides = facts.comparison_sides(replace(analysis, include_labels=(), exclude_labels=()), record_labels=labels)
         stated_side = np.isin(sides.to_numpy(), [ON, OFF])
-        subject_rows = labels[facts.columns.turbine].isin(facts.subjects_of(analysis)).to_numpy()
+        turbine_col = facts.columns.turbine
+        subject_rows = labels[turbine_col].isin(facts.subjects_of(analysis)).to_numpy()
         kept = np.ones(len(labels), dtype=bool)
         for name in analysis.include_labels:
             kept &= labels[name].to_numpy(dtype=bool)
@@ -398,82 +430,48 @@ class ToggleEnergyRatioMethod:
         withheld = subject_rows & ~kept
         compared = pd.DatetimeIndex(labels.index[stated_side])
         first_record = pd.DatetimeIndex(facts.records.index).min()
-        start = compared.min() if len(compared) else first_record
-        end = analysis.period[1]
-        records = facts.records[np.asarray(facts.records.index >= start)]
-        if end is not None:
-            records = records[np.asarray(records.index < end)]
-        turbine_col = facts.columns.turbine
-        index = pd.DatetimeIndex(pd.unique(records.index)).sort_values()
-        present = [t for t in facts.turbine_names if t in set(records[turbine_col].astype(str))]
-        valid = valid.reindex(index=index, columns=present).fillna(value=True).astype(bool)
-        references = [t for t in facts.references_of(analysis) if t in present]
-        columns = facts.columns
-        if withheld.any():
-            records = _with_withheld(records, labels=labels, withheld=withheld, turbine_col=turbine_col)
-            columns = replace(columns, exclude_row=_WITHHELD_COL)
-        stated = {
-            "columns": columns,
-            "timebase": facts.timebase,
-            "toggle_period": upgrade.cycle,
-            "toggle_datum": upgrade.datum(first_record=first_record),
-        }
-        rows: list[dict[str, object]] = []
-        outputs: dict[str, MethodOutput] = {}
-        weights: list[TurbineUplift] = []
-        warnings: list[AnalysisWarning] = list(facts.warnings())
+        span = (compared.min() if len(compared) else first_record, analysis.period[1])
+        measured: dict[str, SubjectMeasurement | str] = {}
         for subject in facts.subjects_of(analysis):
             mine = (labels[turbine_col] == subject).to_numpy()
             side = sides[mine]
+            records = subject_records(facts, analysis, subject=subject, span=span, valid_for_uplift=valid)
+            index = pd.DatetimeIndex(records.records.index.unique()).sort_values()
             timing = pd.DataFrame(
                 {"toggle_on": (side == ON).to_numpy(), "toggle_off": (side == OFF).to_numpy()},
                 index=pd.DatetimeIndex(side.index),
             ).reindex(index, fill_value=False)
-            context = CampaignContext(
-                test_wtg=subject,
-                timing=timing,
-                turbine_col=turbine_col,
-                candidate_references=[r for r in references if r != subject],
-                wake_contributors=[t for t in present if t != subject and t not in references],
-                valid_for_uplift=valid,
-            )
-            subject_method = replace(self, **stated, rated_power_kw=facts.rated_power_kw(subject))
+            frame = records.records
+            columns = facts.columns
+            if withheld.any():
+                frame = _with_withheld(frame, labels=labels, withheld=withheld, turbine_col=turbine_col)
+                columns = replace(columns, exclude_row=_WITHHELD_COL)
+            records = replace(records, records=frame, timing=timing)
             try:
-                out = subject_method._estimate_one(  # noqa: SLF001
-                    MethodInput(scada_df=records, test_wtg=subject, campaign_context=context)
+                measured[subject] = self.measure(
+                    records,
+                    columns=columns,
+                    toggle_cycle=upgrade.cycle,
+                    toggle_datum=upgrade.datum(first_record=first_record),
+                    timebase=facts.timebase,
+                    rated_power_kw=facts.rated_power_kw(subject),
                 )
             except ValueError as error:
                 if isinstance(error, MethodConfigurationError):
                     raise
-                warnings.append(AnalysisWarning(severity="high", step=10, turbine=subject, message=str(error)))
-                rows.append(_unmeasured_row(subject))
-                continue
-            outputs[subject] = out
-            rows.append(_measured_row(subject, out=out, power_col=facts.columns.active_power, timebase=facts.timebase))
-            weights.append(
-                TurbineUplift(
-                    turbine=subject,
-                    uplift=float(rows[-1]["campaign_uplift"]),  # type: ignore[arg-type]
-                    actual_energy=float(rows[-1]["actual_energy"]),  # type: ignore[arg-type]
-                    n_records=round(float(rows[-1]["hours_on"]) * pd.Timedelta(hours=1) / facts.timebase),  # type: ignore[arg-type]
-                    rated_power_kw=facts.rated_power_kw(subject),
-                )
-            )
-        return _group_output(analysis, rows=rows, weights=weights, outputs=outputs, warnings=warnings, name=self.name)
+                measured[subject] = str(error)
+        return group_output(analysis, facts=facts, measurements=measured, name=self.name, warnings=facts.warnings())
 
-    def _estimate_one(self, mi: MethodInput) -> MethodOutput:
+    def _estimate_one(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Estimate the test turbine's P50 uplift for one toggle campaign and write diagnostics."""
-        if self.columns is None or self.toggle_period is None or self.toggle_datum is None:
-            msg = f"{self.name}: columns, toggle_period and toggle_datum are needed to estimate a MethodInput"
-            raise MethodConfigurationError(msg)
-        if not is_toggle(mi.upgrade_timing):
+        if not is_toggle(mi.timing):
             msg = (
                 f"ToggleEnergyRatioMethod only supports toggle campaigns, but upgrade_timing is a "
-                f"{type(mi.upgrade_timing).__name__} (a prepost changeover). Pass a toggle schedule "
+                f"{type(mi.timing).__name__} (a prepost changeover). Pass a toggle schedule "
                 f"or toggle_df; this method has no prepost baseline to compare against."
             )
             raise ValueError(msg)
-        if self._schema.availability not in mi.scada_df.columns:
+        if self._schema.availability not in mi.records.columns:
             msg = (
                 f"the availability column {self._schema.availability!r} (columns.availability) is not in "
                 f"scada_df; the downtime filter is required for the toggle energy ratio method and cannot be skipped."
@@ -481,18 +479,18 @@ class ToggleEnergyRatioMethod:
             raise ValueError(msg)
 
         mi = restrict_to_campaign(mi)
-        mi = replace(mi, scada_df=blank_missing(mi.scada_df, active_power_col=self._schema.active_power))
-        wide_all = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self._schema.active_power)
-        test = mi.test_wtg
-        timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
+        mi = replace(mi, records=blank_missing(mi.records, active_power_col=self._schema.active_power))
+        wide_all = _wide_column(mi.records, turbine_col=mi.turbine_col, value_col=self._schema.active_power)
+        test = mi.subject
+        timebase = self._timebase if self._timebase is not None else _infer_timebase(mi.records.index)
         self._check_pairing_gap(timebase)
-        rows = resolve_toggle(mi.upgrade_timing, wide_all.index)
+        rows = resolve_toggle(mi.timing, wide_all.index)
         block = self._toggle_period(timebase)
         datum = self._toggle_datum(mi, wide_all.index)
 
         components: dict[str, _Estimate] = {}
         subsets: pd.DataFrame | None = None
-        n_refs_available = len(mi.context.references_among(wide_all.columns))
+        n_refs_available = len(mi.references_among(wide_all.columns))
         if n_refs_available:
             components[_REFERENCE_LEG], subsets = self._choose_references(
                 mi, wide_all=wide_all, test=test, timebase=timebase, block=block, datum=datum, rows=rows
@@ -550,7 +548,7 @@ class ToggleEnergyRatioMethod:
             subsets=subsets,
             n_refs_available=n_refs_available,
         )
-        return MethodOutput(
+        return SubjectMeasurement(
             p50_overall=float(est.uplift),
             p50_by_condition=est.per_bin,
             sigma_overall=est.sigma_overall,
@@ -561,7 +559,7 @@ class ToggleEnergyRatioMethod:
 
     def _component(
         self,
-        mi: MethodInput,
+        mi: SubjectRecords,
         *,
         mode: str,
         wide_all: pd.DataFrame,
@@ -587,7 +585,7 @@ class ToggleEnergyRatioMethod:
         # Narrow to the mode's turbines and blank the cells the campaign says may not contribute, so
         # the estimate and every diagnostic see one consistent selection.
         ref_set = set(refs)
-        wide = mi.context.mask_invalid(wide_all[[c for c in wide_all.columns if c == test or c in ref_set]])
+        wide = mi.mask_invalid(wide_all[[c for c in wide_all.columns if c == test or c in ref_set]])
 
         baseline = rows.campaign_baseline
         test_pw = wide[test].to_numpy(dtype=float)
@@ -697,7 +695,7 @@ class ToggleEnergyRatioMethod:
 
     def _choose_references(
         self,
-        mi: MethodInput,
+        mi: SubjectRecords,
         *,
         wide_all: pd.DataFrame,
         test: str,
@@ -713,7 +711,7 @@ class ToggleEnergyRatioMethod:
         to the earlier in enumeration (the context's reference order). No finite sigma anywhere ->
         the full set. The second value lists every subset's result with the winner marked.
         """
-        refs_all = mi.context.references_among(wide_all.columns)
+        refs_all = mi.references_among(wide_all.columns)
         if len(refs_all) > _MAX_REFS_FOR_SUBSETS:
             msg = (
                 f"{self.name}: {len(refs_all)} references would need {2 ** len(refs_all) - 1} subset estimates; "
@@ -768,7 +766,7 @@ class ToggleEnergyRatioMethod:
 
     def _labeled_rows(
         self,
-        mi: MethodInput,
+        mi: SubjectRecords,
         *,
         wide: pd.DataFrame,
         test: str,
@@ -781,7 +779,7 @@ class ToggleEnergyRatioMethod:
         Labels are reindexed from the arrays the uplift and bootstrap used, not recomputed, so an
         aggregation of this frame lands on the same rows and bins the estimate did.
         """
-        labeled = mi.scada_df[mi.scada_df[mi.turbine_col] == test].copy()
+        labeled = mi.records[mi.records[mi.turbine_col] == test].copy()
 
         def _on_test_rows(values: npt.NDArray[np.generic]) -> npt.NDArray[np.generic]:
             return pd.Series(values, index=wide.index).reindex(labeled.index).to_numpy()
@@ -795,8 +793,8 @@ class ToggleEnergyRatioMethod:
         # cannot sit in one bin here and another there. Outside the outer edges pd.cut gives NaN,
         # which is carried through as "this row belongs to no bin" rather than clipped to an edge.
         if "power" in self.conditions and np.isfinite(label).any():
-            assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
-            bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
+            assert self._rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
+            bins = condition_bins("power", rated_power_kw=self._rated_power_kw)
             labeled["power_bin"] = _on_test_rows(np.asarray(pd.cut(label, bins=bins)))
         return labeled
 
@@ -815,8 +813,8 @@ class ToggleEnergyRatioMethod:
         membership: dict[str, npt.NDArray[np.bool_]] = {_OVERALL: np.ones(len(used_idx), dtype=bool)}
         if "power" not in self.conditions or not np.isfinite(label[used_idx]).any():
             return membership
-        assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
-        bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
+        assert self._rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
+        bins = condition_bins("power", rated_power_kw=self._rated_power_kw)
         assigned = pd.cut(label[used_idx], bins=bins)
         for category in assigned.categories:
             membership[str(category)] = np.asarray(assigned == category)
@@ -881,8 +879,8 @@ class ToggleEnergyRatioMethod:
 
         Sparse bins report NaN with ``n_records = 0`` rather than being imputed.
         """
-        assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
-        bins = condition_bins("power", rated_power_kw=self.rated_power_kw)
+        assert self._rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
+        bins = condition_bins("power", rated_power_kw=self._rated_power_kw)
         counterfactual = _per_bin_counterfactual(
             label=label, test_pw=test_pw, ref_total=ref_total, baseline=baseline, bins=bins
         )
@@ -894,8 +892,8 @@ class ToggleEnergyRatioMethod:
         """Return the power bin edges when the method reports per bin; None otherwise."""
         if "power" not in self.conditions:
             return None
-        assert self.rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
-        return condition_bins("power", rated_power_kw=self.rated_power_kw)
+        assert self._rated_power_kw is not None  # noqa: S101 - guaranteed by __post_init__
+        return condition_bins("power", rated_power_kw=self._rated_power_kw)
 
     def _check_pairing_gap(self, timebase: pd.Timedelta) -> None:
         gap = self.pairing_max_gap
@@ -920,13 +918,13 @@ class ToggleEnergyRatioMethod:
             raise MethodConfigurationError(msg)
         return block
 
-    def _toggle_datum(self, mi: MethodInput, index: pd.DatetimeIndex) -> pd.Timestamp:
+    def _toggle_datum(self, mi: SubjectRecords, index: pd.DatetimeIndex) -> pd.Timestamp:
         """Return ``toggle_datum`` after checking it is comparable with ``index`` and fits a ``ToggleSchedule``."""
-        datum = pd.Timestamp(self.toggle_datum)
+        datum = pd.Timestamp(self._given_datum)
         if (datum.tz is None) != (index.tz is None):
             msg = f"{self.name}: toggle_datum {datum} and the data index must both be tz-aware or both naive"
             raise MethodConfigurationError(msg)
-        timing = mi.upgrade_timing
+        timing = mi.timing
         if isinstance(timing, ToggleSchedule) and len(index):
             first = timing.start if timing.start is not None else index.min()
             if (pd.Timestamp(first) - datum) % self._cycle != pd.Timedelta(0):
@@ -990,7 +988,7 @@ class ToggleEnergyRatioMethod:
 
     def _selection(
         self,
-        mi: MethodInput,
+        mi: SubjectRecords,
         *,
         wide: pd.DataFrame,
         test: str,
@@ -1074,7 +1072,7 @@ class ToggleEnergyRatioMethod:
         return pd.DataFrame(records)
 
     def _filtered_mask(
-        self, mi: MethodInput, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
+        self, mi: SubjectRecords, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
     ) -> pd.Series:
         """Timestamps at which the test turbine and every reference pass the same normal-operation filter.
 
@@ -1092,14 +1090,14 @@ class ToggleEnergyRatioMethod:
         )
         keep = pd.Series(data=True, index=wide.index, dtype=bool)
         for turbine in (test, *refs):
-            rows = mi.scada_df[mi.scada_df[mi.turbine_col] == turbine]
+            rows = mi.records[mi.records[mi.turbine_col] == turbine]
             keep &= normal.keep_mask(rows, timebase=timebase).reindex(wide.index, fill_value=False)
             # ``wide`` is the masked pivot: a cell the campaign context blanked must not count either.
             keep &= wide[turbine].notna()
         return keep
 
     def _excluded(
-        self, mi: MethodInput, *, turbines: list[str], index: pd.DatetimeIndex, role: str = "exclude_row"
+        self, mi: SubjectRecords, *, turbines: list[str], index: pd.DatetimeIndex, role: str = "exclude_row"
     ) -> pd.Series:
         """Boolean mask on *index*: timestamps at which any of ``turbines`` carries a caller-set ``role`` flag.
 
@@ -1110,12 +1108,12 @@ class ToggleEnergyRatioMethod:
         exclusion. NaN raises rather than coercing: ``astype(bool)`` reads a missing flag as ``True``
         and drops the row, the opposite of the safe default.
         """
-        col: str | None = getattr(self.columns, role)
+        col: str | None = getattr(self._columns, role)
         excluded = pd.Series(data=False, index=index, dtype=bool)
-        if not col or col not in mi.scada_df.columns:
+        if not col or col not in mi.records.columns:
             return excluded
         for turbine in turbines:
-            flags = mi.scada_df.loc[mi.scada_df[mi.turbine_col] == turbine, col]
+            flags = mi.records.loc[mi.records[mi.turbine_col] == turbine, col]
             if flags.isna().any():
                 msg = (
                     f"{role} column {col!r} has {int(flags.isna().sum())} NaN value(s) for turbine "
@@ -1127,7 +1125,7 @@ class ToggleEnergyRatioMethod:
 
     def _write_outputs(
         self,
-        mi: MethodInput,
+        mi: SubjectRecords,
         *,
         wide: pd.DataFrame,
         stats: pd.DataFrame,
@@ -1139,9 +1137,9 @@ class ToggleEnergyRatioMethod:
         n_refs_available: int | None = None,
     ) -> None:
         """Write the data-stats, results, per-bin, uncertainty, selection and reference-subsets CSVs and the plots."""
-        upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
+        upgrade_start = toggle_upgrade_start(mi.timing, wide.index)
         last_dt = wide.index.max()
-        run_name = f"toggle_energy_ratio_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{last_dt:%Y%m%d}"
+        run_name = f"toggle_energy_ratio_{mi.subject}_{upgrade_start:%Y%m%d}_{last_dt:%Y%m%d}"
         out_root = (
             Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="toggle_energy_ratio_"))
         )
@@ -1156,7 +1154,7 @@ class ToggleEnergyRatioMethod:
         results = pd.DataFrame(
             [
                 {
-                    "test_wtg": mi.test_wtg,
+                    "test_wtg": mi.subject,
                     "mode": "toggle",
                     "n_turbines": wide.shape[1],
                     "n_refs": len(est.refs),
@@ -1197,7 +1195,7 @@ class ToggleEnergyRatioMethod:
                 run_dir / "plots",
                 wide=wide,
                 mi=mi,
-                test=mi.test_wtg,
+                test=mi.subject,
                 used=shown.used,
                 ref_total=shown.ref_total,
                 reference_mode=shown.mode,
@@ -1206,19 +1204,19 @@ class ToggleEnergyRatioMethod:
             )
             if est.per_bin is not None:
                 _save_per_bin_plot(
-                    run_dir / "plots" / stages.UPLIFT_DISTRIBUTIONS / f"{mi.test_wtg}_per_bin_uplift.png",
+                    run_dir / "plots" / stages.UPLIFT_DISTRIBUTIONS / f"{mi.subject}_per_bin_uplift.png",
                     per_bin=est.per_bin,
-                    test=mi.test_wtg,
+                    test=mi.subject,
                     active_power_col=self._schema.active_power,
                 )
             _save_pairing_gap_plot(
-                run_dir / "plots" / stages.VALID_RECORDS / f"{mi.test_wtg}_pairing_gap.png",
+                run_dir / "plots" / stages.VALID_RECORDS / f"{mi.subject}_pairing_gap.png",
                 index=wide.index,
                 selection=est.selection,
                 rows=rows,
                 timebase=timebase,
                 max_gap=self.pairing_max_gap,
-                test=mi.test_wtg,
+                test=mi.subject,
             )
             reference_leg = components.get(_REFERENCE_LEG)
             self._write_shared_diagnostics(
@@ -1228,12 +1226,12 @@ class ToggleEnergyRatioMethod:
                 used=est.used,
                 reference_used=None if reference_leg is None else reference_leg.used,
                 timebase=timebase,
-                turbines=[mi.test_wtg, *est.refs],
+                turbines=[mi.subject, *est.refs],
             )
 
     def _write_shared_diagnostics(
         self,
-        mi: MethodInput,
+        mi: SubjectRecords,
         *,
         run_dir: Path,
         wide: pd.DataFrame,
@@ -1251,18 +1249,18 @@ class ToggleEnergyRatioMethod:
         """
         # ``wide`` (a pivot) drops all-NaN timestamps, so align the masks to the full unique index
         # the DiagnosticContext uses (timestamps absent from ``wide`` are simply not used).
-        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        index = pd.DatetimeIndex(pd.unique(mi.records.index)).sort_values()
 
         def _aligned(mask: np.ndarray) -> npt.NDArray[np.bool_]:
             return pd.Series(mask, index=wide.index).reindex(index, fill_value=False).to_numpy(dtype=bool)
 
-        treated = resolve_toggle(mi.upgrade_timing, index).upgraded.astype(bool)
+        treated = resolve_toggle(mi.timing, index).upgraded.astype(bool)
         ctx = DiagnosticContext(
             run_dir=run_dir,
-            test_wtg=mi.test_wtg,
+            test_wtg=mi.subject,
             turbine_col=mi.turbine_col,
             columns=self._schema,
-            scada_df=mi.scada_df,
+            scada_df=mi.records,
             treated_ts=treated,
             used_ts=_aligned(used),
             reference_used_ts=None if reference_used is None else _aligned(reference_used),
@@ -1279,7 +1277,7 @@ class ToggleEnergyRatioMethod:
             "availability_col": self._schema.availability,
             "pairing_max_gap": None if self.pairing_max_gap is None else str(self.pairing_max_gap),
             "toggle_period": str(self._cycle),
-            "toggle_datum": str(self.toggle_datum),
+            "toggle_datum": str(self._given_datum),
             "bin_power": self.bin_power,
             "power_band": None if self.power_band is None else list(self.power_band),
             "exclude_block_col": self._schema.exclude_block,
@@ -1491,7 +1489,7 @@ def _overall_weight(est: _Estimate, components: dict[str, _Estimate]) -> float:
 
 
 def _segment_stats(
-    mi: MethodInput,
+    mi: SubjectRecords,
     *,
     wide: pd.DataFrame,
     used: npt.NDArray[np.bool_],
@@ -1501,15 +1499,15 @@ def _segment_stats(
     active_power_col: str,
 ) -> pd.DataFrame:
     """Build the per-segment (all/baseline/upgraded) diagnostics table."""
-    test = mi.test_wtg
+    test = mi.subject
     test_pw = wide[test].to_numpy(dtype=float)
     n_turbines = wide.shape[1]
     timebase_hours = timebase / pd.Timedelta(hours=1)
 
-    row_rows = resolve_toggle(mi.upgrade_timing, mi.scada_df.index)
-    row_power = mi.scada_df[active_power_col].to_numpy(dtype=float)
+    row_rows = resolve_toggle(mi.timing, mi.records.index)
+    row_power = mi.records[active_power_col].to_numpy(dtype=float)
     # Only the turbines the estimate used (the test and its chosen references) count as rows.
-    in_wide = mi.scada_df[mi.turbine_col].isin(wide.columns).to_numpy()
+    in_wide = mi.records[mi.turbine_col].isin(wide.columns).to_numpy()
 
     ts_baseline = toggle_rows.campaign_baseline
     row_baseline = row_rows.campaign_baseline & in_wide
@@ -1606,7 +1604,7 @@ def _save_plots(
     plots_dir: Path,
     *,
     wide: pd.DataFrame,
-    mi: MethodInput,
+    mi: SubjectRecords,
     test: str,
     used: np.ndarray,
     ref_total: npt.NDArray[np.float64],
@@ -1621,11 +1619,11 @@ def _save_plots(
     The baseline is the strict campaign off-blocks the estimate used, so the plots never disagree
     with the headline.
     """
-    toggle_rows = resolve_toggle(mi.upgrade_timing, wide.index)
+    toggle_rows = resolve_toggle(mi.timing, wide.index)
     baseline_mask = toggle_rows.campaign_baseline
     test_pw = wide[test].to_numpy(dtype=float)
     ref_label = f"{reference_mode} reference {active_power_col}"
-    upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
+    upgrade_start = toggle_upgrade_start(mi.timing, wide.index)
     segments = (
         ("baseline", used & baseline_mask, "C0"),
         ("upgraded", used & toggle_rows.upgraded, "C1"),
@@ -1792,83 +1790,3 @@ def _with_withheld(
     keys = pd.MultiIndex.from_arrays([labels.index[withheld], labels[turbine_col].to_numpy()[withheld]])
     mine = pd.MultiIndex.from_arrays([records.index, records[turbine_col].to_numpy()])
     return records.assign(**{_WITHHELD_COL: mine.isin(keys)})
-
-
-# The method step a measurement and its combination belong to, for the warnings register.
-_MEASURE_STEP = 10
-_COMBINE_STEP = 16
-
-
-def _unmeasured_row(subject: str) -> dict[str, object]:
-    """Return a per-turbine row of NaN for a subject that could not be measured."""
-    return {"turbine": subject, **{c: np.nan for c in PER_TURBINE_COLUMNS if c != "turbine"}}
-
-
-def _measured_row(subject: str, *, out: MethodOutput, power_col: str, timebase: pd.Timedelta) -> dict[str, object]:
-    """Return a measured subject's per-turbine row."""
-    rows = out.labeled_rows
-    used = rows["used"].fillna(value=False).astype(bool) if rows is not None else pd.Series(dtype=bool)
-    segment = rows["segment"] if rows is not None else pd.Series(dtype=object)
-    hours = timebase / pd.Timedelta(hours=1)
-    upgraded = used & (segment == _UPGRADED)
-    return {
-        "turbine": subject,
-        "aep_uplift": np.nan,
-        "aep_sigma": np.nan,
-        "campaign_uplift": float(out.p50_overall),
-        "campaign_sigma": np.nan if out.sigma_overall is None else float(out.sigma_overall),
-        "actual_energy": float(rows.loc[upgraded, power_col].sum()) if rows is not None else np.nan,
-        "hours_on": float(upgraded.sum() * hours),
-        "hours_off": float((used & (segment == _BASELINE)).sum() * hours),
-    }
-
-
-def _stacked(frames: Mapping[str, pd.DataFrame | None]) -> pd.DataFrame | None:
-    """Return the subjects' frames one under another with a leading ``turbine`` column; None when there are none."""
-    present = {k: v for k, v in frames.items() if v is not None}
-    if not present:
-        return None
-    return pd.concat([frame.assign(turbine=subject) for subject, frame in present.items()]).pipe(
-        lambda f: f[["turbine", *[c for c in f.columns if c != "turbine"]]]
-    )
-
-
-def _group_output(
-    analysis: AnalysisSpec,
-    *,
-    rows: list[dict[str, object]],
-    weights: Sequence[TurbineUplift],
-    outputs: Mapping[str, MethodOutput],
-    warnings: list[AnalysisWarning],
-    name: str,
-) -> AnalysisOutput:
-    """Return the analysis's output from its subjects' measurements."""
-    per_turbine = pd.DataFrame(rows, columns=list(PER_TURBINE_COLUMNS))
-    measured = per_turbine[np.isfinite(per_turbine["campaign_uplift"].to_numpy(dtype=float))]
-    uplift, sigma = np.nan, np.nan
-    if len(measured) == 1:
-        uplift = float(measured["campaign_uplift"].iloc[0])
-        sigma = float(measured["campaign_sigma"].iloc[0])
-    elif len(measured) > 1:
-        uplift = farm_uplift(weights).uplift
-        message = f"{name} gives no sigma for a group of subjects; each subject's sigma is in per_turbine"
-        warnings.append(AnalysisWarning(severity="low", step=_COMBINE_STEP, turbine="all", message=message))
-    if measured.empty:
-        message = f"{name} measured none of the subjects {list(per_turbine['turbine'])}"
-        warnings.append(AnalysisWarning(severity="high", step=_MEASURE_STEP, turbine="all", message=message))
-    if AEP in analysis.report:
-        message = f"{name} gives no AEP uplift: it has no long-term step"
-        warnings.append(AnalysisWarning(severity="medium", step=_COMBINE_STEP, turbine="all", message=message))
-    if CAMPAIGN not in analysis.report:
-        uplift, sigma = np.nan, np.nan
-    return AnalysisOutput(
-        analysis=analysis,
-        campaign_uplift=uplift,
-        campaign_sigma=sigma,
-        per_turbine=per_turbine,
-        by_condition=_stacked({k: o.p50_by_condition for k, o in outputs.items()}),
-        labeled_rows=_stacked({k: o.labeled_rows for k, o in outputs.items()}),
-        selection_accounting=_stacked({k: o.selection_accounting for k, o in outputs.items()}),
-        uncertainty_diagnostics=_stacked({k: o.uncertainty_diagnostics for k, o in outputs.items()}),
-        warnings=(*warnings, *(w for o in outputs.values() for w in o.warnings)),
-    )

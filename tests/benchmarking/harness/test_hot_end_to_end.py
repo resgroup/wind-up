@@ -15,7 +15,7 @@ import pytest
 
 from benchmarking.harness import StudyConfig, leaderboard, plot_campaign_curves, score_study
 from benchmarking.synthetic import ConstantCpChange
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_turbines, load_hot_scada
 
 from .stubs import BiasedMethod, OracleMethod
 
@@ -44,7 +44,12 @@ def test_constant_cp_study_on_real_hot_data(tmp_path: Path) -> None:
     methods = [OracleMethod(scada_df), BiasedMethod(scada_df, offset=0.02)]
 
     results = score_study(
-        scada_df, profile=[ConstantCpChange(delta=0.05)], methods=methods, study=study, profile_name="constant_cp_5pct"
+        scada_df,
+        turbines=hot_turbines(study.turbine_subset, rotor_diameters=False),
+        profile=[ConstantCpChange(delta=0.05)],
+        methods=methods,
+        study=study,
+        profile_name="constant_cp_5pct",
     )
     summary = leaderboard(results)
 

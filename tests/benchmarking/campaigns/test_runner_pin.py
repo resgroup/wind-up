@@ -12,10 +12,11 @@ import pandas as pd
 import pytest
 
 from benchmarking.campaigns import CampaignRunner, per_turbine_table
-from benchmarking.harness import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
 from wind_up.operating_state import STATE_COLUMNS
+from wind_up.subject import SubjectMeasurement, SubjectRecords
 
+from .per_subject import PerSubject
 from .test_declaration import CHANGEOVER, PERIOD, campaign, scada
 
 # Five turbines over 4368 hourly records; excluded T5 stays for its wake.
@@ -30,21 +31,21 @@ ESTIMATE = 0.0249436040189549
 EXACT = 1e-12
 
 
-class HalfOfTruthMethod:
+class HalfOfTruthMethod(PerSubject):
     """Reads half the mean power ratio it is handed, so its estimate tracks the frame it is given."""
 
     name = "half"
 
     def __init__(self) -> None:
-        self.seen: dict[str, MethodInput] = {}
+        self.seen: dict[str, SubjectRecords] = {}
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Record the input and report half the test turbine's post/pre mean power ratio less one."""
-        self.seen[mi.test_wtg] = mi
-        rows = mi.scada_df[mi.scada_df[mi.turbine_col] == mi.test_wtg][HOT_COLUMNS.active_power]
+        self.seen[mi.subject] = mi
+        rows = mi.records[mi.records[mi.turbine_col] == mi.subject][HOT_COLUMNS.active_power]
         post = float(rows[rows.index >= CHANGEOVER].mean())
         pre = float(rows[rows.index < CHANGEOVER].mean())
-        return MethodOutput(p50_overall=HALF * (post / pre - 1.0))
+        return SubjectMeasurement(p50_overall=HALF * (post / pre - 1.0))
 
 
 def run() -> tuple[object, HalfOfTruthMethod]:
@@ -58,18 +59,18 @@ def run() -> tuple[object, HalfOfTruthMethod]:
 
 def test_the_frame_handed_to_a_method_is_unchanged_but_for_the_labels() -> None:
     _, method = run()
-    frame = method.seen["T1"].scada_df
+    frame = method.seen["T1"].records
     assert len(frame) == EXPECTED_ROWS
     assert list(frame.columns) == [*scada().columns, *STATE_COLUMNS]
     assert sorted(frame[HOT_COLUMNS.turbine].unique()) == ["T1", "T2", "T3", "T4", "T5"]
     assert frame.index.min() == PERIOD[0]
     assert frame.index.max() == PERIOD[1] - pd.Timedelta(hours=1)
-    pd.testing.assert_frame_equal(frame, method.seen["T2"].scada_df)
+    pd.testing.assert_frame_equal(frame, method.seen["T2"].records)
 
 
 def test_the_injected_upgrade_reaches_the_frame_the_method_reads() -> None:
     _, method = run()
-    frame = method.seen["T1"].scada_df
+    frame = method.seen["T1"].records
     power = frame[frame[HOT_COLUMNS.turbine] == "T1"][HOT_COLUMNS.active_power]
     assert float(power[power.index < CHANGEOVER].mean()) == pytest.approx(BASELINE_POWER_KW, abs=EXACT)
     assert float(power[power.index >= CHANGEOVER].mean()) == pytest.approx(UPGRADED_POWER_KW, abs=EXACT)
@@ -94,5 +95,5 @@ def test_the_farm_numbers_are_unchanged() -> None:
 
 def test_each_estimate_keeps_every_non_reference_turbine_for_its_wake() -> None:
     _, method = run()
-    assert method.seen["T1"].context.wake_contributors == ["T2", "T5"]
-    assert method.seen["T2"].context.wake_contributors == ["T1", "T5"]
+    assert method.seen["T1"].wake_contributors == ["T2", "T5"]
+    assert method.seen["T2"].wake_contributors == ["T1", "T5"]

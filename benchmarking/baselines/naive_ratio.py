@@ -28,8 +28,9 @@ the stats CSV as ``rho = used_test_mwh / used_ref_total_mwh`` per segment.
 
 from __future__ import annotations
 
+import copy
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,13 +42,17 @@ from matplotlib.ticker import PercentFormatter
 from benchmarking.synthetic import ToggleSchedule
 from wind_up.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
 from wind_up.filtering import NormalOperationFilter, blank_missing
-from wind_up.method import MethodInput, MethodOutput
+from wind_up.subject import SubjectMeasurement, SubjectRecords, answer_analyses
 from wind_up.toggle import ToggleRowSets, is_toggle, resolve_toggle, toggle_upgrade_start
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import numpy.typing as npt
 
     from benchmarking.synthetic import ColumnSchema
+    from wind_up.analysis import AnalysisOutput, AnalysisSpec
+    from wind_up.facts import WindFarmFacts
 
 _SEGMENTS = ("all", "baseline", "upgraded")
 _MIN_POINTS_FOR_TIMEBASE = 2
@@ -73,7 +78,7 @@ def _wide_column(scada_df: pd.DataFrame, *, turbine_col: str, value_col: str) ->
     )
 
 
-def restrict_to_campaign(mi: MethodInput, *, toggle_campaign_only: bool) -> MethodInput:
+def restrict_to_campaign(mi: SubjectRecords, *, toggle_campaign_only: bool) -> SubjectRecords:
     """Drop pre-campaign rows for a toggle campaign so the on/off comparison shares a distribution.
 
     For toggle, the harness window also carries the pre-campaign baseline, whose distribution
@@ -82,48 +87,71 @@ def restrict_to_campaign(mi: MethodInput, *, toggle_campaign_only: bool) -> Meth
     start, leaving only the interleaved on/off blocks. No-op for prepost (its baseline *is* the
     pre-campaign data) and when the flag is off.
     """
-    timing = mi.upgrade_timing
+    timing = mi.timing
     if not (toggle_campaign_only and isinstance(timing, ToggleSchedule) and timing.start is not None):
         return mi
-    return replace(mi, scada_df=mi.scada_df.loc[mi.scada_df.index >= timing.start])
+    return replace(mi, records=mi.records.loc[mi.records.index >= timing.start])
 
 
 @dataclass
 class NaiveRatioMethod:
     """Pluggable naive energy-ratio baseline (prepost and toggle).
 
-    :param columns: **required** source-native column schema — the single source of the method's
-        column names. It reads the ``active_power`` role (the only signal in the ``rho`` computation;
-        the turbine identifier comes from the seam, ``MethodInput``) and the ``availability`` role
-        (the required downtime filter, applied to the test turbine and every reference; rows below a
-        full period of availability are dropped, so downtime filtering can never be silently skipped).
-        The remaining roles feed only the diagnostics, never the ``rho`` computation.
+    Reads the ``active_power`` role, the only signal in ``rho``, and the ``availability`` role, the
+    required downtime filter on the test turbine and every reference; the other roles feed only the
+    diagnostics.
+
     :param name: method name shown in the leaderboard
     :param out_dir: where per-run folders are written; a temp dir when ``None``
     :param save_plots: also write the diagnostic plots under ``<run>/plots``
-    :param timebase: analysis timebase; inferred from the data when ``None``
     :param toggle_campaign_only: for a toggle campaign, fit only on the interleaved on/off blocks
         (drop the pre-campaign baseline) so on and off share a wind distribution; no-op for prepost
     """
 
-    columns: ColumnSchema
     name: str = "naive_ratio"
     out_dir: Path | None = None
     save_plots: bool = False
-    timebase: pd.Timedelta | None = None
     toggle_campaign_only: bool = True
+    _columns: ColumnSchema | None = field(default=None, init=False, repr=False)
+    _timebase: pd.Timedelta | None = field(default=None, init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        """Validate ``columns`` names every role this method reads."""
-        self.columns.require_roles(("active_power", "availability"))
+    def estimate(self, facts: WindFarmFacts, analyses: Sequence[AnalysisSpec]) -> list[AnalysisOutput]:
+        """Answer each analysis by measuring each subject over the analysis's period against its references."""
+        return answer_analyses(
+            facts,
+            analyses,
+            name=self.name,
+            measure=lambda records: self.measure(records, columns=facts.columns, timebase=facts.timebase),
+        )
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
-        """Estimate the test turbine's P50 uplift for one campaign and write diagnostics."""
+    def measure(
+        self, records: SubjectRecords, *, columns: ColumnSchema, timebase: pd.Timedelta | None = None
+    ) -> SubjectMeasurement:
+        """Measure one subject's uplift and write its diagnostics.
+
+        :param records: the subject's records and what it may know about them
+        :param columns: the records' column roles; ``active_power`` and ``availability`` are required
+        :param timebase: the records' timebase; inferred from them when ``None``
+        """
+        columns.require_roles(("active_power", "availability"))
+        bound = copy.copy(self)
+        bound._columns = columns  # noqa: SLF001 - its own class
+        bound._timebase = timebase  # noqa: SLF001 - its own class
+        return bound._estimate_one(records)  # noqa: SLF001 - its own class
+
+    @property
+    def _schema(self) -> ColumnSchema:
+        """Return the column schema; set by :meth:`measure`."""
+        assert self._columns is not None  # noqa: S101 - set by measure
+        return self._columns
+
+    def _estimate_one(self, mi: SubjectRecords) -> SubjectMeasurement:
+        """Estimate the subject's uplift and write diagnostics."""
         mi = restrict_to_campaign(mi, toggle_campaign_only=self.toggle_campaign_only)
-        mi = replace(mi, scada_df=blank_missing(mi.scada_df, active_power_col=self.columns.active_power))
-        wide = _wide_column(mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.active_power)
-        test = mi.test_wtg
-        refs = mi.context.references_among(wide.columns)
+        mi = replace(mi, records=blank_missing(mi.records, active_power_col=self._schema.active_power))
+        wide = _wide_column(mi.records, turbine_col=mi.turbine_col, value_col=self._schema.active_power)
+        test = mi.subject
+        refs = mi.references_among(wide.columns)
         if not refs:
             msg = (
                 f"no reference turbines available for test_wtg {test!r}: scada_df contains only "
@@ -133,17 +161,17 @@ class NaiveRatioMethod:
         # Narrow to the campaign's turbines and blank the cells it says may not contribute, so the
         # estimate and every diagnostic below see one consistent selection.
         ref_set = set(refs)
-        wide = mi.context.mask_invalid(wide[[c for c in wide.columns if c == test or c in ref_set]])
+        wide = mi.mask_invalid(wide[[c for c in wide.columns if c == test or c in ref_set]])
 
-        if self.columns.availability not in mi.scada_df.columns:
+        if self._schema.availability not in mi.records.columns:
             msg = (
-                f"the availability column {self.columns.availability!r} (columns.availability) is not in "
+                f"the availability column {self._schema.availability!r} (columns.availability) is not in "
                 f"scada_df; the downtime filter is required for the naive method and cannot be skipped."
             )
             raise ValueError(msg)
 
-        timebase = self.timebase if self.timebase is not None else _infer_timebase(mi.scada_df.index)
-        rows = resolve_toggle(mi.upgrade_timing, wide.index)
+        timebase = self._timebase if self._timebase is not None else _infer_timebase(mi.records.index)
+        rows = resolve_toggle(mi.timing, wide.index)
         baseline = rows.campaign_baseline if self.toggle_campaign_only else rows.training_baseline
         test_pw = wide[test].to_numpy(dtype=float)
         ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
@@ -162,7 +190,7 @@ class NaiveRatioMethod:
             toggle_campaign_only=self.toggle_campaign_only,
             refs=refs,
             timebase=timebase,
-            active_power_col=self.columns.active_power,
+            active_power_col=self._schema.active_power,
         )
         self._write_outputs(
             mi,
@@ -175,10 +203,10 @@ class NaiveRatioMethod:
             n_refs=len(refs),
             timebase=timebase,
         )
-        return MethodOutput(p50_overall=float(uplift))
+        return SubjectMeasurement(p50_overall=float(uplift))
 
     def _used_mask(
-        self, mi: MethodInput, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
+        self, mi: SubjectRecords, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
     ) -> pd.Series:
         """Complete-case timestamps that also pass downtime filtering on the test turbine and every reference.
 
@@ -193,15 +221,15 @@ class NaiveRatioMethod:
 
         full = timebase.total_seconds()
         avail = _wide_column(
-            mi.scada_df, turbine_col=mi.turbine_col, value_col=self.columns.name_of("availability")
+            mi.records, turbine_col=mi.turbine_col, value_col=self._schema.name_of("availability")
         ).reindex(index=wide.index, columns=turbines)
         all_available = (avail >= full).all(axis=1)
 
-        test_rows = mi.scada_df[mi.scada_df[mi.turbine_col] == test]
+        test_rows = mi.records[mi.records[mi.turbine_col] == test]
         test_keep = (
             NormalOperationFilter(
-                active_power_col=self.columns.active_power,
-                availability_col=self.columns.availability,
+                active_power_col=self._schema.active_power,
+                availability_col=self._schema.availability,
                 apply_stuck_filter=False,
             )
             .keep_mask(test_rows, timebase=timebase)
@@ -211,7 +239,7 @@ class NaiveRatioMethod:
 
     def _write_outputs(
         self,
-        mi: MethodInput,
+        mi: SubjectRecords,
         *,
         wide: pd.DataFrame,
         stats: pd.DataFrame,
@@ -223,9 +251,9 @@ class NaiveRatioMethod:
         timebase: pd.Timedelta,
     ) -> None:
         """Write the data-stats CSV, the headline results CSV and (optionally) the plots."""
-        upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
+        upgrade_start = toggle_upgrade_start(mi.timing, wide.index)
         last_dt = wide.index.max()
-        run_name = f"naive_{mi.test_wtg}_{upgrade_start:%Y%m%d}_{last_dt:%Y%m%d}"
+        run_name = f"naive_{mi.subject}_{upgrade_start:%Y%m%d}_{last_dt:%Y%m%d}"
         out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="naive_"))
         run_dir = out_root / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -233,13 +261,13 @@ class NaiveRatioMethod:
 
         stats.to_csv(run_dir / f"{run_name}_data_stats_{ts}.csv", index=False)
 
-        mode = "toggle" if is_toggle(mi.upgrade_timing) else "prepost"
+        mode = "toggle" if is_toggle(mi.timing) else "prepost"
         used_base = int(stats.loc[stats["segment"] == "baseline", "n_used_timestamps"].iloc[0])
         used_up = int(stats.loc[stats["segment"] == "upgraded", "n_used_timestamps"].iloc[0])
         results = pd.DataFrame(
             [
                 {
-                    "test_wtg": mi.test_wtg,
+                    "test_wtg": mi.subject,
                     "mode": mode,
                     "n_turbines": wide.shape[1],
                     "n_refs": n_refs,
@@ -259,41 +287,41 @@ class NaiveRatioMethod:
                 run_dir / "plots",
                 wide=wide,
                 mi=mi,
-                test=mi.test_wtg,
+                test=mi.subject,
                 used=used,
                 timebase=timebase,
-                active_power_col=self.columns.active_power,
+                active_power_col=self._schema.active_power,
                 toggle_campaign_only=self.toggle_campaign_only,
             )
             self._write_shared_diagnostics(mi, run_dir=run_dir, wide=wide, timebase=timebase)
 
     def _write_shared_diagnostics(
-        self, mi: MethodInput, *, run_dir: Path, wide: pd.DataFrame, timebase: pd.Timedelta
+        self, mi: SubjectRecords, *, run_dir: Path, wide: pd.DataFrame, timebase: pd.Timedelta
     ) -> None:
         """Emit the shared cross-method diagnostics (coverage/curves/histograms) and the run config."""
         # ``wide`` (a pivot) drops all-NaN timestamps, so align the masks to the full unique index
         # the DiagnosticContext uses (timestamps absent from ``wide`` are simply not used).
-        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
-        test, refs = mi.test_wtg, [c for c in wide.columns if c != mi.test_wtg]
+        index = pd.DatetimeIndex(pd.unique(mi.records.index)).sort_values()
+        test, refs = mi.subject, [c for c in wide.columns if c != mi.subject]
         used_series = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
         used = used_series.reindex(index, fill_value=False).to_numpy()
-        treated = resolve_toggle(mi.upgrade_timing, index).upgraded.astype(bool)
+        treated = resolve_toggle(mi.timing, index).upgraded.astype(bool)
         ctx = DiagnosticContext(
             run_dir=run_dir,
-            test_wtg=mi.test_wtg,
+            test_wtg=mi.subject,
             turbine_col=mi.turbine_col,
-            columns=self.columns,
-            scada_df=mi.scada_df,
+            columns=self._schema,
+            scada_df=mi.records,
             treated_ts=treated,
             used_ts=used,
             timebase=timebase,
-            mode="toggle" if is_toggle(mi.upgrade_timing) else "prepost",
+            mode="toggle" if is_toggle(mi.timing) else "prepost",
             era5_df=None,
         )
         write_common_diagnostics(ctx)
         params = {
-            "active_power_col": self.columns.active_power,
-            "availability_col": self.columns.availability,
+            "active_power_col": self._schema.active_power,
+            "availability_col": self._schema.availability,
             "toggle_campaign_only": self.toggle_campaign_only,
         }
         write_run_config(ctx, method_name=self.name, method_params=params)
@@ -310,7 +338,7 @@ def _rho(test_pw: npt.NDArray[np.float64], ref_total: npt.NDArray[np.float64], m
 
 
 def _segment_stats(
-    mi: MethodInput,
+    mi: SubjectRecords,
     *,
     wide: pd.DataFrame,
     used: npt.NDArray[np.bool_],
@@ -321,19 +349,19 @@ def _segment_stats(
     active_power_col: str,
 ) -> pd.DataFrame:
     """Build the per-segment (all/baseline/upgraded) diagnostics table."""
-    test = mi.test_wtg
+    test = mi.subject
     test_pw = wide[test].to_numpy(dtype=float)
     ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
     n_turbines = wide.shape[1]
     timebase_hours = timebase / pd.Timedelta(hours=1)
 
-    row_rows = resolve_toggle(mi.upgrade_timing, mi.scada_df.index)
-    row_power = mi.scada_df[active_power_col].to_numpy(dtype=float)
+    row_rows = resolve_toggle(mi.timing, mi.records.index)
+    row_power = mi.records[active_power_col].to_numpy(dtype=float)
 
     ts_baseline = toggle_rows.campaign_baseline if toggle_campaign_only else toggle_rows.training_baseline
     row_baseline = row_rows.campaign_baseline if toggle_campaign_only else row_rows.training_baseline
     ts_masks = {"all": np.ones(len(wide), dtype=bool), "baseline": ts_baseline, "upgraded": toggle_rows.upgraded}
-    row_masks = {"all": np.ones(len(mi.scada_df), dtype=bool), "baseline": row_baseline, "upgraded": row_rows.upgraded}
+    row_masks = {"all": np.ones(len(mi.records), dtype=bool), "baseline": row_baseline, "upgraded": row_rows.upgraded}
 
     rows = []
     for segment in _SEGMENTS:
@@ -425,7 +453,7 @@ def _save_plots(
     plots_dir: Path,
     *,
     wide: pd.DataFrame,
-    mi: MethodInput,
+    mi: SubjectRecords,
     test: str,
     used: np.ndarray,
     timebase: pd.Timedelta,
@@ -440,11 +468,11 @@ def _save_plots(
     the lenient pre-campaign U off baseline when not), so the plots never disagree with the headline.
     """
     refs = [c for c in wide.columns if c != test]
-    toggle_rows = resolve_toggle(mi.upgrade_timing, wide.index)
+    toggle_rows = resolve_toggle(mi.timing, wide.index)
     baseline_mask = toggle_rows.campaign_baseline if toggle_campaign_only else toggle_rows.training_baseline
     test_pw = wide[test].to_numpy(dtype=float)
     ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
-    upgrade_start = toggle_upgrade_start(mi.upgrade_timing, wide.index)
+    upgrade_start = toggle_upgrade_start(mi.timing, wide.index)
     segments = (
         ("baseline", used & baseline_mask, "C0"),
         ("upgraded", used & toggle_rows.upgraded, "C1"),
