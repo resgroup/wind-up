@@ -808,6 +808,17 @@ def _results_per_test_ref_to_df(results_per_test_ref: list[pd.DataFrame]) -> pd.
     ]
 
 
+def _show_input_data_timeline(inputs: AssessmentInputs) -> None:
+    _fig = plot_input_data_timeline(
+        assessment_inputs=inputs,
+        save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None,
+        show_plots=inputs.plot_cfg.show_plots,
+    )
+    if inputs.plot_cfg.show_plots:
+        plt.show()
+    plt.close(_fig)
+
+
 def run_wind_up_analysis(
     inputs: AssessmentInputs,
     random_seed: int = RANDOM_SEED,
@@ -817,12 +828,7 @@ def run_wind_up_analysis(
     result_manager.stored_warnings = []
 
     if not inputs.plot_cfg.plots_unused:
-        _fig = plot_input_data_timeline(
-            assessment_inputs=inputs,
-            save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None,
-            show_plots=inputs.plot_cfg.show_plots,
-        )
-        plt.close(_fig)
+        _show_input_data_timeline(inputs)
     else:
         _validate_input_data_within_exclusions(inputs)
 
