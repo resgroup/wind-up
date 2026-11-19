@@ -170,7 +170,7 @@ def check_wtg_northing(
     return max_northing_error
 
 
-def _circ_median_and_count(grouped: pd.api.typing.SeriesGroupBy) -> pd.DataFrame:
+def _circ_median_and_count(grouped: pd.core.groupby.SeriesGroupBy) -> pd.DataFrame:
     """Calculate the circular median and the count of each group of angles.
 
     Gives the same result as `grouped.agg` with `circ_median` and count as the aggregations.
@@ -178,12 +178,12 @@ def _circ_median_and_count(grouped: pd.api.typing.SeriesGroupBy) -> pd.DataFrame
     :param grouped: angles in degrees without missing values, grouped
     :return: columns "wf_yawdir" and "num_turbines", indexed by group
     """
-    if len(grouped.obj) == 0:
+    if len(grouped.obj) == 0 or grouped.obj.dtype != np.float64:
         return grouped.agg(wf_yawdir=circ_median, num_turbines=lambda x: x.count())
     group_sizes = grouped.size()
     counts = group_sizes.to_numpy()
     order = np.argsort(grouped.ngroup().to_numpy(), kind="stable")
-    sorted_angles = np.mod(grouped.obj.to_numpy(dtype=float)[order], 360)
+    sorted_angles = np.mod(grouped.obj.to_numpy()[order], 360)
     starts = np.cumsum(counts) - counts
     medians = np.full(len(counts), np.nan)
     # groups with the same count are stacked into one array, so each row is reduced as a one dimensional array
