@@ -394,6 +394,19 @@ def _select_site_mean_pc(
     return site_mean_pc_per_ttype[ttype]
 
 
+def _bin_t_values(pp_df: pd.DataFrame, *, p_high: float, timebase_s: int) -> np.ndarray:
+    return t.ppf(
+        p_high,
+        np.minimum(pp_df["hours_pre"].clip(lower=2), pp_df["hours_post"].clip(lower=2)) * 3600 / timebase_s - 1,
+    )
+
+
+def _check_plot_cfg_needs_uplift_cols(*, plot_cfg: PlotConfig | None, add_uplift_cols: bool) -> None:
+    if not add_uplift_cols and plot_cfg is not None:
+        msg = "plot_cfg must be None when add_uplift_cols is False"
+        raise ValueError(msg)
+
+
 def _pre_post_pp_analysis(
     *,
     cfg: WindUpConfig,
@@ -411,7 +424,14 @@ def _pre_post_pp_analysis(
     reverse: bool = False,
     site_mean_pc_df: pd.DataFrame | None = None,
     site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None = None,
+    add_uplift_cols: bool = True,
 ) -> tuple[dict, pd.DataFrame]:
+    """Calculate the pre-post power curve uplift of the test turbine.
+
+    Set `add_uplift_cols` False to leave the uplift and relative Cp columns out of the returned frame, e.g. when only
+    the results dictionary is used; `plot_cfg` must then be None.
+    """
+    _check_plot_cfg_needs_uplift_cols(plot_cfg=plot_cfg, add_uplift_cols=add_uplift_cols)
     wtg_for_turbine_type = test_wtg
     test_name = test_wtg.name
     if reverse:
@@ -519,13 +539,11 @@ def _pre_post_pp_analysis(
         norm.cdf(1),
         valid_count - 1,
     )
-    t_values = t.ppf(
-        p_high,
-        np.minimum(pp_df["hours_pre"].clip(lower=2), pp_df["hours_post"].clip(lower=2)) * 3600 / cfg.timebase_s - 1,
-    )
     unc_one_sigma_mwh = uplift_se_mwh * t_value_one_sigma
 
-    pp_df = _add_uplift_cols_to_pp_df(pp_df, p_low=p_low, p_high=p_high, t_values=t_values)
+    if add_uplift_cols:
+        t_values = _bin_t_values(pp_df, p_high=p_high, timebase_s=cfg.timebase_s)
+        pp_df = _add_uplift_cols_to_pp_df(pp_df, p_low=p_low, p_high=p_high, t_values=t_values)
 
     pp_valid_hours_pre = pp_df["hours_pre"].sum()
     pp_valid_hours_post = pp_df["hours_post"].sum()
@@ -613,6 +631,7 @@ def _calc_power_only_and_reversed_uplifts(
         confidence_level=confidence_level,
         site_mean_pc_df=site_mean_pc_df,
         site_mean_pc_per_ttype=site_mean_pc_per_ttype,
+        add_uplift_cols=False,
     )
 
     # need to predict the reference wind speed using the test wind speed for reverse analysis
@@ -637,6 +656,7 @@ def _calc_power_only_and_reversed_uplifts(
         reverse=True,
         site_mean_pc_df=site_mean_pc_df,
         site_mean_pc_per_ttype=site_mean_pc_per_ttype,
+        add_uplift_cols=False,
     )
 
     poweronly_uplift_frc = power_only_results["uplift_frc"]
@@ -660,6 +680,7 @@ def _pre_post_pp_analysis_with_reversal(
     test_df: pd.DataFrame | None = None,
     site_mean_pc_df: pd.DataFrame | None = None,
     site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None = None,
+    add_uplift_cols: bool = True,
 ) -> tuple[dict, pd.DataFrame]:
     pp_results, pp_df = _pre_post_pp_analysis(
         cfg=cfg,
@@ -676,6 +697,7 @@ def _pre_post_pp_analysis_with_reversal(
         test_df=test_df,
         site_mean_pc_df=site_mean_pc_df,
         site_mean_pc_per_ttype=site_mean_pc_per_ttype,
+        add_uplift_cols=add_uplift_cols,
     )
 
     if test_wtg.name == ref_name:
@@ -866,6 +888,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
                 plot_cfg=None,
                 site_mean_pc_df=site_mean_pc_df,
                 site_mean_pc_per_ttype=site_mean_pc_per_ttype,
+                add_uplift_cols=False,
             )
             bootstrapped_uplifts[n] = sample_results["uplift_frc"]
         except RuntimeError:
