@@ -29,6 +29,11 @@ class PlotConfig(BaseModel):
     skip_per_turbine_plots: bool = Field(default=False, description="If True skip per turbine plots")
     plots_dir: Path = Field(description="Directory to save plots to")
 
+    @property
+    def plots_unused(self) -> bool:
+        """True when plots are neither shown nor saved."""
+        return not (self.show_plots or self.save_plots)
+
 
 class TurbineType(BaseModel):
     """Turbine type model."""
