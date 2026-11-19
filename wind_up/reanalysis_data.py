@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from wind_up.constants import (
@@ -57,6 +58,29 @@ def _reanalysis_upsample(reanalysis_raw_df: pd.DataFrame, *, timebase_s: int) ->
     return reanalysis_df
 
 
+def _corr_with_shifted_reanalysis(ws_df: pd.DataFrame, reanalysis_ws: pd.Series, *, shifts: list[int]) -> list[float]:
+    """Correlate the single column of `ws_df` with `reanalysis_ws` shifted by each number of rows in `shifts`."""
+    ws = ws_df.iloc[:, 0]
+    if ws_df.shape[1] != 1 or not all(
+        x.is_unique and x.is_monotonic_increasing for x in (ws_df.index, reanalysis_ws.index)
+    ):
+        return [float(ws_df.corrwith(reanalysis_ws.shift(s)).squeeze()) for s in shifts]
+
+    # every shift pairs the same timestamps, so they are paired once and the shift is applied by row position
+    _, ws_paired = reanalysis_ws.align(ws, join="inner")
+    reanalysis_rows = reanalysis_ws.index.get_indexer(ws_paired.index)
+    reanalysis_values = reanalysis_ws.to_numpy(dtype=float, na_value=np.nan)
+    ws_paired = pd.Series(ws_paired.to_numpy(dtype=float, na_value=np.nan))
+    corrs = []
+    for s in shifts:
+        shifted_rows = reanalysis_rows - s
+        in_range = (shifted_rows >= 0) & (shifted_rows < len(reanalysis_values))
+        shifted_values = np.full(len(shifted_rows), np.nan)
+        shifted_values[in_range] = reanalysis_values[shifted_rows[in_range]]
+        corrs.append(float(pd.Series(shifted_values).corr(ws_paired)))
+    return corrs
+
+
 def _find_best_shift_and_corr(
     *,
     wf_ws_df: pd.DataFrame,
@@ -70,13 +94,10 @@ def _find_best_shift_and_corr(
     ws_filt_df = wf_ws_df["WindSpeedMean"][wf_ws_df["WindSpeedMean"] >= wf_ws_lower_limit].to_frame()
     best_s = -99
     best_corr = -99.0
-    shifts = []
-    corrs = []
     rows_per_hour = 3600 / timebase_s
-    for s in range(round(-24 * rows_per_hour), round(24 * rows_per_hour), math.ceil(rows_per_hour / 6)):
-        this_corr = float(ws_filt_df.corrwith(reanalysis_df[REANALYSIS_WS_COL].shift(s)).squeeze())
-        shifts.append(s)
-        corrs.append(this_corr)
+    shifts = list(range(round(-24 * rows_per_hour), round(24 * rows_per_hour), math.ceil(rows_per_hour / 6)))
+    corrs = _corr_with_shifted_reanalysis(ws_filt_df, reanalysis_df[REANALYSIS_WS_COL], shifts=shifts)
+    for s, this_corr in zip(shifts, corrs, strict=True):
         if this_corr > best_corr:
             best_corr = this_corr
             best_s = s
@@ -99,6 +120,62 @@ def _find_best_shift_and_corr(
     return best_corr, best_s
 
 
+def _wind_speed_by_timestamp_and_turbine(wf_df: pd.DataFrame) -> tuple[pd.Index, np.ndarray] | None:
+    """Arrange the wind speed of `wf_df` with a row per timestamp and a column per turbine.
+
+    :return: the timestamps and the wind speed array, or None unless `wf_df` is sorted by turbine and has the same
+        sorted timestamps, none missing, for every turbine
+    """
+    index = wf_df.index
+    if (
+        not isinstance(index, pd.MultiIndex)
+        or index.nlevels != 2  # noqa: PLR2004
+        or index.names[1] != TIMESTAMP_COL
+        or len(wf_df) == 0
+        or wf_df["WindSpeedMean"].dtype != np.float64
+    ):
+        return None
+    turbine_codes, timestamp_codes = (np.asarray(x) for x in index.codes)
+    num_timestamps = int((turbine_codes == turbine_codes[0]).sum())
+    if len(wf_df) % num_timestamps != 0:
+        return None
+    turbine_codes = turbine_codes.reshape(-1, num_timestamps)
+    timestamp_codes = timestamp_codes.reshape(-1, num_timestamps)
+    if (
+        (turbine_codes != turbine_codes[:, [0]]).any()
+        or len(np.unique(turbine_codes[:, 0])) != len(turbine_codes)
+        or (timestamp_codes != timestamp_codes[0]).any()
+        or (timestamp_codes[0] < 0).any()
+    ):
+        return None
+    timestamps = index.levels[1].take(timestamp_codes[0])
+    if not (timestamps.is_unique and timestamps.is_monotonic_increasing):
+        return None
+    wind_speed = wf_df["WindSpeedMean"].to_numpy().reshape(-1, num_timestamps)
+    if isinstance(timestamps, pd.DatetimeIndex):
+        timestamps = pd.DatetimeIndex(timestamps, freq=None)
+    return timestamps.rename(TIMESTAMP_COL), np.array(wind_speed.T, order="C")
+
+
+def _calc_wf_mean_wind_speed_and_data_coverage(wf_df: pd.DataFrame, *, num_turbines: int) -> pd.DataFrame:
+    """Calculate the mean wind speed of the turbines and the fraction of turbines with a wind speed, by timestamp."""
+    by_timestamp_and_turbine = _wind_speed_by_timestamp_and_turbine(wf_df)
+    if by_timestamp_and_turbine is None:
+        return wf_df.groupby(TIMESTAMP_COL).agg(
+            WindSpeedMean=pd.NamedAgg(column="WindSpeedMean", aggfunc=lambda x: x.mean()),
+            data_coverage=pd.NamedAgg(column="WindSpeedMean", aggfunc=lambda x: x.count() / num_turbines),
+        )
+    timestamps, wind_speed = by_timestamp_and_turbine
+    is_missing = np.isnan(wind_speed)
+    count = (~is_missing).sum(axis=1)
+    # missing values count as zero in the sum of each row
+    wind_speed[is_missing] = 0
+    wind_speed_sum = wind_speed.sum(axis=1)
+    wind_speed_mean = np.full(len(timestamps), np.nan)
+    np.divide(wind_speed_sum, count, out=wind_speed_mean, where=count > 0)
+    return pd.DataFrame({"WindSpeedMean": wind_speed_mean, "data_coverage": count / num_turbines}, index=timestamps)
+
+
 def _calc_wf_mean_wind_speed_df(
     wf_df: pd.DataFrame,
     *,
@@ -112,10 +189,7 @@ def _calc_wf_mean_wind_speed_df(
     :param allowed_data_coverage_width: allowed data coverage width
     :return: wind farm mean wind speed and data coverage
     """
-    wf_ws_df = wf_df.groupby(TIMESTAMP_COL).agg(
-        WindSpeedMean=pd.NamedAgg(column="WindSpeedMean", aggfunc=lambda x: x.mean()),
-        data_coverage=pd.NamedAgg(column="WindSpeedMean", aggfunc=lambda x: x.count() / num_turbines),
-    )
+    wf_ws_df = _calc_wf_mean_wind_speed_and_data_coverage(wf_df, num_turbines=num_turbines)
     median_data_coverage = wf_ws_df["data_coverage"].median()
     wf_ws_df = wf_ws_df[(wf_ws_df["data_coverage"] - median_data_coverage).abs() < allowed_data_coverage_width / 2]
     return wf_ws_df.dropna()

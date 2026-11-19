@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
@@ -5,6 +6,7 @@ from pandas.testing import assert_frame_equal
 from tests.conftest import TEST_DATA_FLD
 from wind_up.models import WindUpConfig
 from wind_up.pp_analysis import (
+    _block_bootstrap_sample,
     _pre_post_pp_analysis_with_reversal,
     pre_post_pp_analysis_with_reversal_and_bootstrapping,
 )
@@ -136,3 +138,61 @@ def test_site_mean_gap_fill_names_missing_turbine_type(test_lsa_t13_config: Wind
         pre_post_pp_analysis_with_reversal_and_bootstrapping(
             **inputs, site_mean_pc_per_ttype={"other_type": TEST_CURVE}
         )
+
+
+EXPECTED_POST_WS = [103, 104, 105, 106, 107, 108, 110, 110, 110, 111, 111, 111, 112, 114, 115, 116, 117, 119, 122, 124]
+
+
+@pytest.mark.parametrize(
+    ("pre_order", "expected_pre_ws"),
+    [
+        (list(range(12)), [1, 2, 3, 4, 4, 4, 6, 7, 8, 11]),
+        ([5, 0, 11, 3, 8, 1, 10, 2, 7, 4, 9, 6], [2, 3, 5, 6, 6, 6, 7, 8, 9, 11]),
+        ([0, 1, 2, 2, 3, 4, 5, 6, 7, 7, 8, 9, 10, 11], [1, 2, 2, 3, 3, 3, 5, 7, 7, 9]),
+    ],
+    ids=["sorted", "shuffled", "repeated timestamps"],
+)
+def test_block_bootstrap_sample(pre_order: list[int], expected_pre_ws: list[float]) -> None:
+    pre_index = pd.date_range("2020-01-01", periods=12, freq="10min", tz="UTC")
+    pre_df = pd.DataFrame({"ws": np.arange(12.0)}, index=pre_index).iloc[pre_order]
+    post_df = pd.DataFrame(
+        {"ws": 100 + np.arange(25.0)}, index=pd.date_range("2021-01-01", periods=25, freq="10min", tz="UTC")
+    )
+    rng = np.random.default_rng(1)
+
+    pre_sample, post_sample = _block_bootstrap_sample(pre_df, post_df, rng=rng)
+
+    assert pre_sample["ws"].tolist() == expected_pre_ws
+    assert post_sample["ws"].tolist() == EXPECTED_POST_WS
+    assert rng.integers(1_000_000) == 613003  # the same random numbers are drawn as with wind-up 0.7.1
+
+
+@pytest.mark.parametrize(
+    ("ref_name", "expected_bootstrap_unc", "expected_p95"),
+    [
+        ("LSA_T12", 0.0034729424641318754, 0.03359308313774399),
+        ("LSA_T13", 0.0032152424480777573, 0.03994779238394744),
+    ],
+)
+def test_bootstrapping_results_are_unchanged(
+    test_lsa_t13_config: WindUpConfig, ref_name: str, expected_bootstrap_unc: float, expected_p95: float
+) -> None:
+    cfg = test_lsa_t13_config
+    cfg.bootstrap_runs_override = 8
+
+    pp_results, _ = pre_post_pp_analysis_with_reversal_and_bootstrapping(
+        cfg=cfg,
+        test_wtg=next(x for x in cfg.asset.wtgs if x.name == "LSA_T13"),
+        ref_name=ref_name,
+        lt_df=pd.read_parquet(TEST_DATA_FLD / "LSA_T13_lt_wtg_df_filt.parquet"),
+        pre_df=pd.read_parquet(TEST_DATA_FLD / "LSA_T13_LSA_T12_pre_df.parquet"),
+        post_df=pd.read_parquet(TEST_DATA_FLD / "LSA_T13_LSA_T12_post_df.parquet"),
+        ws_col="ref_ws_detrended",
+        pw_col="test_pw_clipped",
+        wd_col="ref_YawAngleMean",
+        plot_cfg=None,
+        random_seed=0,
+    )
+
+    assert pp_results["unc_one_sigma_bootstrap_frc"] == expected_bootstrap_unc
+    assert pp_results["uplift_p95_frc"] == expected_p95

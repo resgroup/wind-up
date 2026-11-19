@@ -98,6 +98,18 @@ def _plot_data_coverage(
     ax.plot(column_data.index, column_data, color=color, linewidth=1, **_label)  # type: ignore[arg-type]
 
 
+def _validate_input_data_within_exclusions(
+    assessment_inputs: AssessmentInputs,
+    *,
+    pwr_col: str = DataColumns.active_power_mean,
+    yaw_col: str = DataColumns.yaw_angle_mean,
+) -> None:
+    """Log a warning for each exclusion period of the configuration with data in the wind farm data."""
+    _wu_cfg = assessment_inputs.cfg
+    _validate_data_within_exclusions([*_wu_cfg.exclusion_periods_utc], assessment_inputs.wf_df[pwr_col])
+    _validate_data_within_exclusions([*_wu_cfg.yaw_data_exclusions_utc], assessment_inputs.wf_df[yaw_col])
+
+
 def plot_input_data_timeline(  # noqa: PLR0915
     assessment_inputs: AssessmentInputs,
     *,
@@ -127,8 +139,7 @@ def plot_input_data_timeline(  # noqa: PLR0915
     pwr_col = scada_data_column_for_power
     yaw_col = scada_data_column_for_yaw_angle
 
-    _validate_data_within_exclusions([*_wu_cfg.exclusion_periods_utc], _df[pwr_col])
-    _validate_data_within_exclusions([*_wu_cfg.yaw_data_exclusions_utc], _df[yaw_col])
+    _validate_input_data_within_exclusions(assessment_inputs, pwr_col=pwr_col, yaw_col=yaw_col)
 
     turbines = list(_df.index.get_level_values(DataColumns.turbine_name).unique())
     n_turbines = len(turbines)
