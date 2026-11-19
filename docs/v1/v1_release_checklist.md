@@ -93,28 +93,39 @@ The two agree within their uncertainty. `toggle_energy_ratio` ran with no change
 explicit toggle frame as the timing, the declared exclusions as `valid_for_uplift`, and the
 steering records through `ColumnSchema.exclude_row`.
 
+Through the v1 interface (stage 2, 2026-11-18), with one `WindFarmFacts` over the full record and
+nothing cut or blanked by hand, collective control reads +0.132333 % (the scripts above +0.132345 %,
+largest per-turbine difference 0.007 pp) and the mean over the four steers with at least 100 hours
+on +1.918 % (scripts +1.922 %, largest per-steer difference 0.02 pp). The remaining difference is
+the settling rule: the facts use v0's, which blanks records only after an on/off change, where the
+scripts also blanked the first record of the campaign; with the scripts' rule the two agree
+exactly.
+
 What the interface could not express, each found by doing it:
 
-- [ ] **The analysed campaign is shorter than the toggle signal.** The toggle frame has on and
+- [x] **The analysed campaign is shorter than the toggle signal.** Now an `upgrade_state_overrides`
+      entry setting every turbine to neither before 2026-01-07. The toggle frame has on and
       off records from 2025-11-05 but the analysis starts 2026-01-07. The script cut the data
       and the frame by hand; the campaign window is a fact and belongs on the input.
-- [ ] **Settling time has nowhere to go.** The script blanked the first record after each change
+- [x] **Settling time has nowhere to go.** Now `Upgrade.settling_time`. The script blanked the first record after each change
       in the toggle frame. It is a fact of the campaign (already listed above); a method then
       applies it or says it cannot.
-- [ ] **Toggle cycle and datum were stated on the method** although the toggle frame implies
-      them (already listed above). When both are given they should be checked against each other.
+- [x] **Toggle cycle and datum were stated on the method.** Now `Upgrade.toggle_cycle` and
+      `toggle_datum`, checked against the frame's own cycle when both are given.
 - [ ] **A declared reference the method cannot use is dropped silently.** The LiDAR has no power,
       so the script left it out. This is the "declared fact the method cannot use" case: the
       method should receive it and put a line in the warnings register.
-- [ ] **A farm result has no sigma.** `farm_uplift` returns the energy-weighted uplift and the
+- [x] **A farm result has no sigma.** `wind_up.combine` gives the range between independent and
+      fully correlated errors. `farm_uplift` returns the energy-weighted uplift and the
       spread across turbines. The turbines share references, so their errors are correlated and
       the farm sigma cannot be built from the per-turbine sigmas by the caller.
-- [ ] **`MethodOutput` does not carry the energy behind the estimate.** `farm_uplift` needs each
+- [x] **`MethodOutput` does not carry the energy behind the estimate.** `AnalysisOutput.per_turbine`
+      carries each subject's energy and hours on and off. `farm_uplift` needs each
       turbine's actual energy and record count; the script rebuilt them from `labeled_rows`.
-- [ ] **`ColumnSchema` demands roles the method never reads.** `wind_speed`, `wind_speed_sd` and
+- [x] **`ColumnSchema` demands roles the method never reads.** Those roles are optional. `wind_speed`, `wind_speed_sd` and
       `gen_rpm` are required to construct it; `toggle_energy_ratio` reads power and availability.
       Each method already checks the roles it needs, so the rest can be optional.
-- [ ] **One call per subject.** Thirteen `estimate` calls, each given the whole frame. Fine for
+- [x] **One call per subject.** One call answers analyses of groups of subjects. Thirteen `estimate` calls, each given the whole frame. Fine for
       this method; v0 analyses all subjects in one run (see below).
 
 A prototype of `binned_power_curve` outside `src` (v0's run behind `MethodInput` and
@@ -173,25 +184,30 @@ reproduces the original for the one steer checked (T11 to T14 against T13).
 
 What the interface could not express:
 
-- [ ] **The record subset of the question has nowhere to go.** The sector was passed to
+- [x] **The record subset of the question has nowhere to go.** An analysis includes or excludes
+      labels. The sector was passed to
       `toggle_energy_ratio` as an exclusion column written onto the data, and to v0 as a method
       option. It belongs to the question (the second layer), beside the subjects.
-- [ ] **A subset by direction needs a direction, and the seam does not carry one.** v0 takes the
+- [x] **A subset by direction needs a direction, and the seam does not carry one.** The analyst builds
+      a label with `wind_up.labels.direction_sector` from a direction that is not a subject's. v0 takes the
       sector on each reference's own northed direction, so the records selected differ by
       reference. For `toggle_energy_ratio` the script built a farm direction from the references'
       northed nacelle positions. Direction must not come from a subject: the upgrade changes it.
       The declaration should say which direction signal a subset is taken on.
-- [ ] **The subject of a question can be a group of turbines.** The net uplift of a pair, and
+- [x] **The subject of a question can be a group of turbines.** An analysis's subjects; `combine` for
+      the sigma. The net uplift of a pair, and
       its sigma, were built outside both methods: v0's `calc_net_uplift` for one, `farm_uplift`
       (no sigma) for the other. Same gap as the farm sigma above.
-- [ ] **Several questions, then one combined answer.** The mean over steers, the 100 hour floor
+- [x] **Several questions, then one combined answer.** `combine(outputs)`; the 100 hour floor stays
+      the analyst's. The mean over steers, the 100 hour floor
       and the combined sigma are all in the script. v1 needs a view on whether combining
       questions is the tool's job or the analyst's; either way each answer must carry what the
       combination needs (hours on and off, energy, sigma).
-- [ ] **A question with no records returns NaN and no warning.** The T14 to T12 sector (2 to 6
+- [x] **A question with no records returns NaN and no warning.** Now a high warning. The T14 to T12 sector (2 to 6
       degrees) had no usable records; `toggle_energy_ratio` returned NaN silently. It should be a
       line in the warnings register.
-- [ ] **A long-term correction is a method option that the question can rule out.** The original
+- [x] **A long-term correction is a method option that the question can rule out.** An analysis's
+      `report`. The original
       turns v0's long-term distribution off for steering, since a sector result cannot be
       extrapolated to a year by the method.
 - [ ] **Secondary measures confirmed.** The original reports the change in yaw activity beside
