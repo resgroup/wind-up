@@ -34,6 +34,48 @@ def _cut(values: np.ndarray, *, bin_edges: np.ndarray) -> pd.Categorical:
     return pd.Categorical.from_codes(codes, dtype=dtype)
 
 
+def _pp_raw_df_with_pandas(
+    pre_or_post_df: pd.DataFrame,
+    pre_or_post: str,
+    *,
+    ws_col: str,
+    ws_bin_edges: np.ndarray,
+    pw_col: str,
+    timebase_s: int,
+) -> pd.DataFrame:
+    return (
+        pre_or_post_df.loc[:, [pw_col, ws_col]]
+        .dropna()
+        .groupby(
+            by=pd.cut(pre_or_post_df[ws_col], bins=ws_bin_edges, retbins=False),
+            observed=False,
+        )
+        .agg(
+            count=pd.NamedAgg(column=pw_col, aggfunc=len),
+            ws_mean=pd.NamedAgg(column=ws_col, aggfunc="mean"),
+            ws_std=pd.NamedAgg(column=ws_col, aggfunc="std"),
+            pw_mean=pd.NamedAgg(column=pw_col, aggfunc="mean"),
+            pw_std=pd.NamedAgg(column=pw_col, aggfunc="std"),
+        )
+        .assign(
+            ws_std=lambda x: x["ws_std"].fillna(0),
+            pw_std=lambda x: x["pw_std"].fillna(0),
+            hours=lambda x: x["count"] * timebase_s / 3600,
+            ws_sem=lambda x: x["ws_std"] / np.sqrt(x["count"].clip(lower=1)),
+            pw_sem=lambda x: x["pw_std"] / np.sqrt(x["count"].clip(lower=1)),
+        )
+        .pipe(lambda d: d.set_axis(d.columns.map(lambda x: f"{x}_{pre_or_post}"), axis="columns"))
+        .assign(
+            bin_left=lambda x: [i.left for i in x.index],
+            bin_mid=lambda x: [i.mid for i in x.index],
+            bin_right=lambda x: [i.right for i in x.index],
+            bin_closed_right=lambda x: [i.closed_right for i in x.index],
+        )
+        .set_index("bin_mid", drop=False)
+        .rename_axis(f"{ws_col}_bin_mid", axis=0)
+    )
+
+
 def _pp_raw_df(
     pre_or_post_df: pd.DataFrame,
     pre_or_post: str,
@@ -43,20 +85,22 @@ def _pp_raw_df(
     pw_col: str,
     timebase_s: int,
 ) -> pd.DataFrame:
-    index_is_unique = pre_or_post_df.index.is_unique
-    if index_is_unique and all(pre_or_post_df[x].dtype == np.float64 for x in (pw_col, ws_col)):
-        pw = pre_or_post_df[pw_col].to_numpy()
-        ws = pre_or_post_df[ws_col].to_numpy()
-        is_kept = ~(np.isnan(pw) | np.isnan(ws))
-        data = pd.DataFrame({pw_col: pw[is_kept], ws_col: ws[is_kept]})
-    else:
-        data = pre_or_post_df.loc[:, [pw_col, ws_col]].dropna()
-    if index_is_unique:
-        # the bins of the rows kept are the same as those found by aligning the bins of all rows to them
-        ws_bins = _cut(data[ws_col].to_numpy(), bin_edges=ws_bin_edges)
-    else:
-        ws_bins = pd.cut(pre_or_post_df[ws_col], bins=ws_bin_edges, retbins=False)
-    grouped = data.groupby(by=ws_bins, observed=False)
+    """Bin `pw_col` by `ws_col`, on numpy arrays for float64 columns with a unique index, otherwise with pandas."""
+    if not (pre_or_post_df.index.is_unique and all(pre_or_post_df[x].dtype == np.float64 for x in (pw_col, ws_col))):
+        return _pp_raw_df_with_pandas(
+            pre_or_post_df,
+            pre_or_post,
+            ws_col=ws_col,
+            ws_bin_edges=ws_bin_edges,
+            pw_col=pw_col,
+            timebase_s=timebase_s,
+        )
+    pw = pre_or_post_df[pw_col].to_numpy()
+    ws = pre_or_post_df[ws_col].to_numpy()
+    is_kept = ~(np.isnan(pw) | np.isnan(ws))
+    data = pd.DataFrame({pw_col: pw[is_kept], ws_col: ws[is_kept]})
+    # only the rows kept are binned
+    grouped = data.groupby(by=_cut(data[ws_col].to_numpy(), bin_edges=ws_bin_edges), observed=False)
     count = grouped.size().to_numpy()
     mean_df = grouped.mean()
     std_df = grouped.std().fillna(0)
@@ -132,7 +176,6 @@ def _cook_pp_with_pandas(
     clip_to_rated: bool,
     site_mean_pc_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Cook `pp_df` as `_cook_pp` does, for columns of any data type."""
     pp_df = pp_df.copy()
 
     valid_col = f"{pre_or_post}_valid"
@@ -152,57 +195,46 @@ def _cook_pp_with_pandas(
     hrs_per_mps = 3
     pp_df[valid_col] = pp_df[f"hours_{pre_or_post}"] > (ws_bin_width * hrs_per_mps)
     pp_df.loc[~pp_df[valid_col], [pw_col, hours_col, ws_col, pw_sem_col]] = np.nan
-
-    # the remaining steps work on columns taken out of pp_df, which are put back at the end
-    bin_mid = pp_df["bin_mid"]
-    valid = pp_df[valid_col]
-    pw = pp_df[pw_col]
-    hours = pp_df[hours_col].fillna(0)
-    ws = pp_df[ws_col].fillna(bin_mid)
+    pp_df[hours_col] = pp_df[hours_col].fillna(0)
+    pp_df[ws_col] = pp_df[ws_col].fillna(pp_df["bin_mid"])
 
     # data which would have been at rated can be gap filled
     rated_ws = _calc_rated_ws(pp_df=pp_df, pw_col=raw_pw_col, rated_power=rated_power)
     empty_rated_bins_fill_value = rated_power
     if not clip_to_rated:
         with contextlib.suppress(IndexError):
-            empty_rated_bins_fill_value = pw.loc[(bin_mid >= rated_ws) & ~pw.isna()].iloc[-1]
-    pw = pw.mask((bin_mid >= rated_ws) & pw.isna(), empty_rated_bins_fill_value)
+            empty_rated_bins_fill_value = pp_df.loc[
+                (pp_df["bin_mid"] >= rated_ws) & ~pp_df[pw_col].isna(), pw_col
+            ].iloc[-1]
+    pp_df.loc[(pp_df["bin_mid"] >= rated_ws) & pp_df[pw_col].isna(), pw_col] = empty_rated_bins_fill_value
 
     # For bins with insufficient data, fill power with site mean power curve if provided
     if site_mean_pc_df is not None:
-        pw = pw.where(valid, np.interp(bin_mid, site_mean_pc_df["bin_mid"], site_mean_pc_df["pw_clipped"]))
+        pp_df.loc[~pp_df[valid_col], pw_col] = np.interp(
+            pp_df.loc[~pp_df[valid_col], "bin_mid"], site_mean_pc_df["bin_mid"], site_mean_pc_df["pw_clipped"]
+        )
 
     # Clip power below zero and above rated if requested
-    pw = pw.clip(lower=0)
+    pp_df[pw_col] = pp_df[pw_col].clip(lower=0)
     if clip_to_rated:
-        pw = pw.clip(upper=rated_power)
+        pp_df[pw_col] = pp_df[pw_col].clip(upper=rated_power)
 
-    pw_sem = pp_df[pw_sem_col].ffill().bfill()
+    pp_df[pw_sem_col] = pp_df[pw_sem_col].ffill().bfill()
 
     # missing data at low wind speed can be filled with 0
-    missing_at_low_ws = pp_df.index.isin(pp_df.index[pw.isna().cummin()])
-    pw = pw.mask(missing_at_low_ws, 0)
-    pw_sem = pw_sem.mask(missing_at_low_ws, 0)
+    pp_df.loc[pp_df.index[pp_df[pw_col].isna().cummin()], [pw_col, pw_sem_col]] = 0
 
     # revisit in future, an alternative is filling in with SCADA power curve
-    pw = pw.interpolate()
+    pp_df[pw_col] = pp_df[pw_col].interpolate()
 
     # interpolate power and ci to bin mid
-    pw_at_mid = pd.Series(np.interp(bin_mid, ws, pw), index=pp_df.index).clip(lower=0)
+    pp_df[pw_at_mid_col] = np.interp(pp_df["bin_mid"], pp_df[ws_col], pp_df[pw_col])
+    pp_df[pw_at_mid_col] = pp_df[pw_at_mid_col].clip(lower=0)
     if clip_to_rated:
-        pw_at_mid = pw_at_mid.clip(upper=rated_power)
-    pw_sem_at_mid = (pw_sem / pw * pw_at_mid).fillna(0).clip(lower=0, upper=pw_sem)
-
-    pp_df = pp_df.assign(
-        **{
-            pw_col: pw,
-            hours_col: hours,
-            ws_col: ws,
-            pw_sem_col: pw_sem,
-            pw_at_mid_col: pw_at_mid,
-            pw_sem_at_mid_col: pw_sem_at_mid,
-        }
-    )
+        pp_df[pw_at_mid_col] = pp_df[pw_at_mid_col].clip(upper=rated_power)
+    pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_col] / pp_df[pw_col] * pp_df[pw_at_mid_col]
+    pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_at_mid_col].fillna(0)
+    pp_df[pw_sem_at_mid_col] = pp_df[pw_sem_at_mid_col].clip(lower=0, upper=pp_df[pw_sem_col])
 
     if pp_df[[col for col in pp_df.columns if col != raw_pw_col]].isna().any().any():
         msg = "pp_df has missing values"
@@ -220,6 +252,7 @@ def _cook_pp(
     clip_to_rated: bool,
     site_mean_pc_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    """Cook `pp_df` on numpy arrays when its columns are float64 and its index unique, otherwise with pandas."""
     valid_col = f"{pre_or_post}_valid"
     raw_pw_col = f"pw_mean_{pre_or_post}_raw"
     raw_hours_col = f"hours_{pre_or_post}_raw"
@@ -231,7 +264,8 @@ def _cook_pp(
     pw_sem_at_mid_col = f"pw_sem_at_mid_{pre_or_post}"
 
     if not (
-        all(pp_df[x].dtype == np.float64 for x in (pw_col, hours_col, ws_col, pw_sem_col))
+        pp_df.index.is_unique
+        and all(pp_df[x].dtype == np.float64 for x in (pw_col, hours_col, ws_col, pw_sem_col))
         and pp_df["bin_mid"].dtype in {np.dtype(np.float64), np.dtype(np.int64)}
     ):
         return _cook_pp_with_pandas(
@@ -277,8 +311,6 @@ def _cook_pp(
 
     # missing data at low wind speed can be filled with 0
     missing_at_low_ws = np.logical_and.accumulate(np.isnan(pw))
-    if not pp_df.index.is_unique:
-        missing_at_low_ws = pp_df.index.isin(pp_df.index[missing_at_low_ws])
     pw = np.where(missing_at_low_ws, 0, pw)
     pw_sem = np.where(missing_at_low_ws, 0, pw_sem)
 
