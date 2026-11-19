@@ -316,7 +316,7 @@ class WfWakingState:
     :param waking_df: the waking state columns for each timestamp, with one column per state and turbine
     :param turbine_names: turbines with a column in each of `state_arrays`
     :param state_arrays: for each waking state column, the rows of `waking_df` by `turbine_names`. Empty if
-        `waking_df` is not entirely unique timestamps by unique turbines of booleans.
+        `waking_df` is not entirely unique timestamps by unique turbines of numpy booleans.
     """
 
     all_turbines_waking: pd.DataFrame
@@ -344,7 +344,7 @@ def calc_wf_waking_state(wf_df: pd.DataFrame) -> WfWakingState:
         waking_df.index.is_unique
         and turbine_names.is_unique
         and waking_df.columns.equals(expected_columns)
-        and all(pd.api.types.is_bool_dtype(x) for x in waking_df.dtypes)
+        and all(x == np.dtype(bool) for x in waking_df.dtypes)
     ):
         state_arrays = {col: waking_df[col].to_numpy(dtype=bool) for col in WAKING_STATE_COLS}
     return WfWakingState(
