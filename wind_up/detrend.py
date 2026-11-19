@@ -32,7 +32,7 @@ def _calc_wsratio_v_wd(
     timebase_s: int,
     dir_bin_width: float = 10.0,
 ) -> pd.DataFrame:
-    detrend_df = detrend_df.dropna(subset=[test_ws_col, ref_ws_col, ref_wd_col]).copy()
+    detrend_df = detrend_df.dropna(subset=[test_ws_col, ref_ws_col, ref_wd_col])
 
     # IEC says only use 4-16 m/s
     test_ws_ll = 4
@@ -42,25 +42,34 @@ def _calc_wsratio_v_wd(
     detrend_df = detrend_df[(detrend_df[test_ws_col] >= test_ws_ll) & (detrend_df[test_ws_col] < test_ws_ul)]
     detrend_df = detrend_df[(detrend_df[ref_ws_col] >= ref_ws_ll) & (detrend_df[ref_ws_col] < ref_ws_ul)]
 
+    test_ws = detrend_df[test_ws_col].to_numpy()
+    ref_ws = detrend_df[ref_ws_col].to_numpy()
+    # other dtypes take the pandas mean, which promotes them before summing
+    sum_with_numpy = all(x.dtype in (np.float64, np.float32) for x in (test_ws, ref_ws))
+    ref_wd = detrend_df[ref_wd_col].to_numpy()
     directions = []
     hours = []
     test_rf_ws_roms = []
     for d in list(range(0, 360, 1)):
-        detrend_df["circ_diff_to_d"] = circ_diff(detrend_df[ref_wd_col], d)
-        detrend_df["within_dir_bin"] = detrend_df["circ_diff_to_d"].abs() < dir_bin_width / 2
-        subsector_df = detrend_df[detrend_df["within_dir_bin"]].copy()
-        if len(subsector_df) > 0:
+        within_dir_bin = np.abs(circ_diff(ref_wd, d)) < dir_bin_width / 2
+        count = int(within_dir_bin.sum())
+        if count > 0:
             directions.append(d)
             rows_per_hour = 3600 / timebase_s
-            hours.append(len(subsector_df) / rows_per_hour)
+            hours.append(count / rows_per_hour)
+            subsector_test_ws = test_ws[within_dir_bin]
             # 61400-12-1 requires >=24h data, >=6h above 8m/s, >= below 8m/s
             min_count = min_hours * rows_per_hour
-            accept_sector = len(subsector_df) >= min_count
+            accept_sector = count >= min_count
             iec_ws_threshold = 8
-            accept_sector = accept_sector and ((subsector_df[test_ws_col] < iec_ws_threshold).sum() >= (min_count / 4))
-            accept_sector = accept_sector and ((subsector_df[test_ws_col] >= iec_ws_threshold).sum() >= (min_count / 4))
+            accept_sector = accept_sector and ((subsector_test_ws < iec_ws_threshold).sum() >= (min_count / 4))
+            accept_sector = accept_sector and ((subsector_test_ws >= iec_ws_threshold).sum() >= (min_count / 4))
             if accept_sector:
-                rom = subsector_df[test_ws_col].mean() / subsector_df[ref_ws_col].mean()
+                if sum_with_numpy:
+                    rom = (subsector_test_ws.sum() / count) / (ref_ws[within_dir_bin].sum() / count)
+                else:
+                    subsector_df = detrend_df[within_dir_bin]
+                    rom = subsector_df[test_ws_col].mean() / subsector_df[ref_ws_col].mean()
                 test_rf_ws_roms.append(rom)
             else:
                 test_rf_ws_roms.append(np.nan)

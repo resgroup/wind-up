@@ -1,10 +1,11 @@
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
+from wind_up.detrend import _calc_wsratio_v_wd, apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
 from wind_up.models import WindUpConfig
 from wind_up.smart_data import add_smart_lat_long_to_cfg
 
@@ -99,3 +100,21 @@ def test_calc_wsratio_v_wd_scen(test_lsa_t13_config: WindUpConfig) -> None:
     )
 
     assert_frame_equal(actual_pre_df, expected_pre_df)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32, object])
+def test_calc_wsratio_v_wd_by_dtype(dtype: type) -> None:
+    """Float64 and float32 wind speeds are summed on the arrays; other dtypes take the pandas mean."""
+    ws = np.tile([6.0, 15.9], 3000).astype(dtype)
+    detrend_df = pd.DataFrame({"test_ws": ws, "ref_ws": ws, "ref_wd": np.full(len(ws), 180.0)})
+
+    result = _calc_wsratio_v_wd(
+        detrend_df=detrend_df,
+        test_ws_col="test_ws",
+        ref_ws_col="ref_ws",
+        ref_wd_col="ref_wd",
+        min_hours=24,
+        timebase_s=600,
+    )
+
+    assert result.set_index("direction").loc[180, "ws_rom"] == 1.0
