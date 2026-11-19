@@ -141,14 +141,15 @@ def _wind_speed_by_timestamp_and_turbine(wf_df: pd.DataFrame) -> tuple[pd.Index,
         return None
     turbine_codes = turbine_codes.reshape(-1, num_timestamps)
     timestamp_codes = timestamp_codes.reshape(-1, num_timestamps)
-    timestamps = index.levels[1].take(timestamp_codes[0])
     if (
         (turbine_codes != turbine_codes[:, [0]]).any()
         or len(np.unique(turbine_codes[:, 0])) != len(turbine_codes)
         or (timestamp_codes != timestamp_codes[0]).any()
         or (timestamp_codes[0] < 0).any()
-        or not (timestamps.is_unique and timestamps.is_monotonic_increasing)
     ):
+        return None
+    timestamps = index.levels[1].take(timestamp_codes[0])
+    if not (timestamps.is_unique and timestamps.is_monotonic_increasing):
         return None
     wind_speed = wf_df["WindSpeedMean"].to_numpy().reshape(-1, num_timestamps)
     if isinstance(timestamps, pd.DatetimeIndex):

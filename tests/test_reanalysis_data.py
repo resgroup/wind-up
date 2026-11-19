@@ -97,6 +97,19 @@ def test_calc_wf_mean_wind_speed_and_data_coverage_drops_missing_timestamps() ->
     assert_frame_equal(actual, expected, check_exact=True)
 
 
+def test_calc_wf_mean_wind_speed_and_data_coverage_with_every_timestamp_missing() -> None:
+    timestamps = pd.DatetimeIndex([], tz="UTC")
+    index = pd.MultiIndex(
+        levels=[["T1", "T2"], timestamps], codes=[[0, 0, 1, 1], [-1, -1, -1, -1]], names=["TurbineName", TIMESTAMP_COL]
+    )
+    wf_df = pd.DataFrame({"WindSpeedMean": [5.0, 6.0, 7.0, 8.0]}, index=index)
+
+    actual = _calc_wf_mean_wind_speed_and_data_coverage(wf_df, num_turbines=2)
+
+    assert actual.empty
+    assert list(actual.columns) == ["WindSpeedMean", "data_coverage"]
+
+
 def test_corr_with_shifted_reanalysis_with_unsorted_wind_farm_data() -> None:
     rng = np.random.default_rng(0)
     reanalysis_ws = pd.Series(
