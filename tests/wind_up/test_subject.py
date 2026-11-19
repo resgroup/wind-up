@@ -14,7 +14,23 @@ from tests.wind_up import facts_fixtures as ff
 from wind_up.analysis import AnalysisOutput, AnalysisSpec
 from wind_up.labels import Label
 from wind_up.method import MethodConfigurationError
-from wind_up.subject import SubjectMeasurement, SubjectRecords, answer_analyses, measurement_of, subject_records
+from wind_up.operating_state import (
+    MISSING,
+    NORMAL_OPERATION,
+    STATE_COL,
+    STATE_COLUMNS,
+    VALID_NORTHING_COL,
+    VALID_UPLIFT_COL,
+    WAKING_STATE_COL,
+)
+from wind_up.subject import (
+    SubjectMeasurement,
+    SubjectRecords,
+    answer_analyses,
+    measurement_of,
+    subject_records,
+    with_states,
+)
 
 if TYPE_CHECKING:
     from wind_up.facts import WindFarmFacts
@@ -261,6 +277,41 @@ class TestSubjectRecordsFromTheFacts:
     def test_the_coordinates_come_from_the_turbine_table(self) -> None:
         assert set(self._records().coords or {}) == set(ff.NAMES)
 
+    def test_given_the_record_labels_each_record_carries_its_operating_state(self) -> None:
+        facts = _subject_facts()
+        labels = facts.record_labels()
+        records = self._records(record_labels=labels).records
+        assert set(STATE_COLUMNS) <= set(records.columns)
+        assert records[VALID_UPLIFT_COL].dtype == bool
+        assert (records[STATE_COL] == NORMAL_OPERATION).all()
+
+
+class TestWithStates:
+    @staticmethod
+    def _labels(records: pd.DataFrame) -> pd.DataFrame:
+        labels = records[[_TURBINE_COL]].assign(
+            **{STATE_COL: MISSING, VALID_NORTHING_COL: False, WAKING_STATE_COL: "missing", VALID_UPLIFT_COL: False}
+        )
+        labels.loc[labels[_TURBINE_COL] == "T2", [STATE_COL, VALID_UPLIFT_COL]] = [NORMAL_OPERATION, True]
+        return labels
+
+    def test_each_record_takes_its_own_turbines_label(self) -> None:
+        scada = _scada()
+        out = with_states(scada, record_labels=self._labels(scada), turbine_col=_TURBINE_COL)
+        assert out.loc[out[_TURBINE_COL] == "T2", VALID_UPLIFT_COL].all()
+        assert not out.loc[out[_TURBINE_COL] != "T2", VALID_UPLIFT_COL].any()
+
+    def test_columns_of_the_same_name_are_replaced(self) -> None:
+        scada = _scada().assign(**{STATE_COL: NORMAL_OPERATION, VALID_UPLIFT_COL: True})
+        out = with_states(scada, record_labels=self._labels(_scada()), turbine_col=_TURBINE_COL)
+        assert (out.loc[out[_TURBINE_COL] == "T1", STATE_COL] == MISSING).all()
+
+    def test_a_record_without_a_label_raises(self) -> None:
+        scada = _scada()
+        labels = self._labels(scada)
+        with pytest.raises(ValueError, match="no label"):
+            with_states(scada, record_labels=labels[labels[_TURBINE_COL] != "T3"], turbine_col=_TURBINE_COL)
+
 
 class _Fixed:
     name = "fixed"
@@ -287,6 +338,19 @@ class TestAnsweringAnalyses:
         facts = _subject_facts(upgrades=[ff.permanent(turbines=("T1", "T2"))])
         (out,) = answer_analyses(facts, [analysis], name=method.name, measure=method.measure)
         return out
+
+    def test_each_measurement_reads_labelled_records(self) -> None:
+        seen: list[SubjectRecords] = []
+        method = _Fixed(0.03)
+
+        def measure(records: SubjectRecords) -> SubjectMeasurement:
+            seen.append(records)
+            return method.measure(records)
+
+        facts = _subject_facts(upgrades=[ff.permanent(turbines=("T1", "T2"))])
+        answer_analyses(facts, [AnalysisSpec(name="a", upgrade="blades")], name="fixed", measure=measure)
+        assert len(seen) == 2
+        assert all(VALID_UPLIFT_COL in records.records.columns for records in seen)
 
     def test_one_subject_gives_its_uplift_and_sigma(self) -> None:
         out = self._answer(_Fixed(0.03), AnalysisSpec(name="a", upgrade="blades", subjects=["T1"], report="campaign"))

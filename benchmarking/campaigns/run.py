@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from wind_up.analysis_period import AnalysisPlan, PlanSettings
     from wind_up.facts import WindFarmFacts
     from wind_up.northing import NorthingSettings
+    from wind_up.operating_state import OperatingStateConfig
     from wind_up.subject import SubjectMeasurement
 
 logger = logging.getLogger(__name__)
@@ -247,6 +248,7 @@ def estimate_campaign(
     possible_changes: Mapping[str, Sequence[pd.Timestamp]] | None = None,
     data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
     era5_hourly_df: pd.DataFrame | None = None,
+    operating_state: OperatingStateConfig | None = None,
 ) -> CampaignReport:
     """Estimate every applicable method on every upgraded turbine and aggregate to one headline.
 
@@ -273,6 +275,8 @@ def estimate_campaign(
         ``None`` uses the plans as chosen
     :param era5_hourly_df: reanalysis at the farm's centroid, hourly or aligned to the records, which
         the facts carry
+    :param operating_state: the site's operating states, which ``scada_df``'s labels came from and the
+        facts carry; the generic states alone when ``None``
     """
     scada_df = labelled_scada(spec, scada_df, columns=columns)
     resolved = plans_for(spec, scada_df, columns=columns, settings=plan_settings, possible_changes=possible_changes)
@@ -292,7 +296,9 @@ def estimate_campaign(
         northing_plots=northing_plots,
     )
 
-    facts = campaign_facts(spec, visible, columns=columns, era5_hourly_df=era5_hourly_df)
+    facts = campaign_facts(
+        spec, visible, columns=columns, era5_hourly_df=era5_hourly_df, operating_states=operating_state
+    )
     outputs: dict[tuple[str, str], SubjectMeasurement] = {}
     wall_time_s: dict[tuple[str, str], float] = {}
     estimates: dict[str, list[TurbineUplift]] = {}

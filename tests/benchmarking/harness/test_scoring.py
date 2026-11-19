@@ -37,6 +37,7 @@ def _base_scada(turbines: tuple[str, ...] = ("T1", "T3", "T4", "T7")) -> pd.Data
                 HOT_COLUMNS.wind_speed: 8.0,
                 HOT_COLUMNS.wind_speed_sd: 0.8,
                 HOT_COLUMNS.gen_rpm: 1400.0,
+                HOT_COLUMNS.availability: 86400.0,
             },
             index=index,
         )

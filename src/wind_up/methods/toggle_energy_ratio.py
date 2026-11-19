@@ -4,13 +4,9 @@
 comparison is drawn entirely from the interleaved campaign blocks. It therefore accepts only
 toggle inputs and raises on a prepost changeover.
 
-**Used timestamps** require every turbine (test and references) to be available (an availability
-counter at a full period) and have finite power — a down turbine on either side of the ratio would
-otherwise bias it. The availability column is therefore **required**. Only the active-power column
-enters the ``rho`` *computation*; the availability column is used solely for row selection (cause,
-not effect), so the estimate still
-never conditions on the test turbine's post-treatment wind speed (design-note §3). It speaks the
-data source's own column names and has no wind_up dependency.
+Used timestamps require every turbine (test and references) to have finite power and a record valid
+for uplift by the facts' record labels. Only the active-power column enters the ``rho`` computation;
+the labels are used solely for row selection.
 
 An optional **pairing filter** (``pairing_max_gap``) then drops any used row with no used row of the
 other segment nearby, so a filter that removes one segment's rows in some conditions also removes the
@@ -88,10 +84,10 @@ from wind_up.block_bootstrap import (
 )
 from wind_up.conditions import condition_bins, energy_ratio_by_bin, validate_conditions
 from wind_up.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
-from wind_up.filtering import NormalOperationFilter, blank_missing
+from wind_up.filtering import blank_missing
 from wind_up.labels import OFF, ON
 from wind_up.method import MethodConfigurationError
-from wind_up.operating_state import declared_records
+from wind_up.operating_state import VALID_UPLIFT_COL
 from wind_up.subject import BASELINE, UPGRADED, SubjectMeasurement, SubjectRecords, group_output, subject_records
 from wind_up.toggle import (
     ToggleRowSets,
@@ -271,7 +267,7 @@ class ToggleEnergyRatioMethod:
     Accepts only toggle campaigns; ``estimate`` raises on a prepost changeover. Always fits on the
     interleaved campaign on/off blocks, so on and off share a wind distribution.
 
-    Reads the ``active_power`` and ``availability`` column roles; other roles feed diagnostics only.
+    Reads the ``active_power`` column role and the record labels; other roles feed diagnostics only.
     The toggle cycle and its datum are the upgrade's, and the timebase and each subject's rating are the
     facts'.
 
@@ -327,7 +323,7 @@ class ToggleEnergyRatioMethod:
 
         Each subject is measured from the first record any subject compares to the end of the
         analysis's period: its on and off records against the analysis's candidate references,
-        leaving out the records of any turbine inside a declared exclusion. A subject's records that
+        leaving out each timestamp where any of them has a record not valid for uplift. A subject's records that
         the analysis's labels leave out keep their toggle state and are filtered like a caller's
         excluded row. The record labels are computed once per call. The group's campaign uplift weights the
         subjects by the energy they produced with the upgrade on. No AEP uplift is reported.
@@ -338,15 +334,9 @@ class ToggleEnergyRatioMethod:
             if upgrade.mode != "toggle":
                 msg = f"{self.name} measures toggle tests only; upgrade {upgrade.name!r} is permanent"
                 raise MethodConfigurationError(msg)
-        facts.columns.require_roles(("active_power", "availability"))
+        facts.columns.require_roles(("active_power",))
         labels = facts.record_labels()
-        turbine_col = facts.columns.turbine
-        excluded = declared_records(labels, turbine_col=turbine_col, windows=facts.exclusions)
-        valid = pd.DataFrame(
-            {turbine_col: labels[turbine_col].to_numpy(), "valid": ~excluded}, index=labels.index
-        ).pivot_table(index=labels.index, columns=turbine_col, values="valid", aggfunc="first")
-        valid = valid.fillna(value=True).astype(bool)
-        return [self._answer(facts, analysis, labels=labels, valid=valid) for analysis in analyses]
+        return [self._answer(facts, analysis, labels=labels) for analysis in analyses]
 
     def measure(
         self,
@@ -362,15 +352,18 @@ class ToggleEnergyRatioMethod:
 
         The step :meth:`estimate` takes for each subject of an analysis.
 
-        :param records: the subject's records and what it may know about them
-        :param columns: the records' column roles; ``active_power`` and ``availability`` are required
+        :param records: the subject's records, carrying the record labels' operating states
+        :param columns: the records' column roles; ``active_power`` is required
         :param toggle_cycle: one toggle cycle, a positive whole multiple of the timebase: the block
             length of the block leg, the label permutation and ``columns.exclude_block``
         :param toggle_datum: any boundary of the toggle-cycle grid; a ``ToggleSchedule`` must start on it
         :param timebase: the records' timebase; inferred from them when ``None``
         :param rated_power_kw: the subject's rating, required when ``"power"`` is in ``conditions``
         """
-        columns.require_roles(("active_power", "availability"))
+        columns.require_roles(("active_power",))
+        if VALID_UPLIFT_COL not in records.records.columns:
+            msg = f"{self.name} reads the record labels; the records carry no {VALID_UPLIFT_COL!r} column"
+            raise MethodConfigurationError(msg)
         if "power" in self.conditions and rated_power_kw is None:
             msg = f"{self.name}: rated_power_kw is required when 'power' is in conditions; the bin edges scale with it"
             raise MethodConfigurationError(msg)
@@ -413,9 +406,7 @@ class ToggleEnergyRatioMethod:
         assert self._given_cycle is not None  # noqa: S101 - set by measure
         return self._given_cycle
 
-    def _answer(
-        self, facts: WindFarmFacts, analysis: AnalysisSpec, *, labels: pd.DataFrame, valid: pd.DataFrame
-    ) -> AnalysisOutput:
+    def _answer(self, facts: WindFarmFacts, analysis: AnalysisSpec, *, labels: pd.DataFrame) -> AnalysisOutput:
         """Measure every subject of one analysis over the records it compares, and combine them."""
         upgrade = facts.upgrade(analysis.upgrade)
         sides = facts.comparison_sides(replace(analysis, include_labels=(), exclude_labels=()), record_labels=labels)
@@ -435,7 +426,7 @@ class ToggleEnergyRatioMethod:
         for subject in facts.subjects_of(analysis):
             mine = (labels[turbine_col] == subject).to_numpy()
             side = sides[mine]
-            records = subject_records(facts, analysis, subject=subject, span=span, valid_for_uplift=valid)
+            records = subject_records(facts, analysis, subject=subject, span=span, record_labels=labels)
             index = pd.DatetimeIndex(records.records.index.unique()).sort_values()
             timing = pd.DataFrame(
                 {"toggle_on": (side == ON).to_numpy(), "toggle_off": (side == OFF).to_numpy()},
@@ -469,12 +460,6 @@ class ToggleEnergyRatioMethod:
                 f"ToggleEnergyRatioMethod only supports toggle campaigns, but upgrade_timing is a "
                 f"{type(mi.timing).__name__} (a prepost changeover). Pass a toggle schedule "
                 f"or toggle_df; this method has no prepost baseline to compare against."
-            )
-            raise ValueError(msg)
-        if self._schema.availability not in mi.records.columns:
-            msg = (
-                f"the availability column {self._schema.availability!r} (columns.availability) is not in "
-                f"scada_df; the downtime filter is required for the toggle energy ratio method and cannot be skipped."
             )
             raise ValueError(msg)
 
@@ -592,7 +577,7 @@ class ToggleEnergyRatioMethod:
         campaign = baseline | rows.upgraded
         ids = block_ids(wide.index, start=datum, block=block) if block is not None and campaign.any() else None
         selection = self._selection(
-            mi, wide=wide, test=test, refs=refs, timebase=timebase, rows=rows, ids=ids, both_states=mode == _BLOCK_LEG
+            mi, wide=wide, test=test, refs=refs, rows=rows, ids=ids, both_states=mode == _BLOCK_LEG
         )
         used = selection.blocked.to_numpy()
         ref_total = self._reference_total(mode=mode, wide=wide, refs=refs, test_pw=test_pw, used=used, ids=ids)
@@ -993,7 +978,6 @@ class ToggleEnergyRatioMethod:
         wide: pd.DataFrame,
         test: str,
         refs: list[str],
-        timebase: pd.Timedelta,
         rows: ToggleRowSets,
         ids: npt.NDArray[np.int64] | None = None,
         both_states: bool = True,
@@ -1005,7 +989,7 @@ class ToggleEnergyRatioMethod:
         any of the turbines (both legs) or, when ``both_states`` (the block leg), lacks either state.
         """
         turbines = [test, *refs]
-        filtered = self._filtered_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
+        filtered = self._filtered_mask(mi, wide=wide, test=test, refs=refs)
         not_excluded = filtered & ~self._excluded(mi, turbines=turbines, index=wide.index)
         in_segment = rows.campaign_baseline | rows.upgraded
         kept = not_excluded.to_numpy()
@@ -1071,28 +1055,16 @@ class ToggleEnergyRatioMethod:
                 previous = n_kept
         return pd.DataFrame(records)
 
-    def _filtered_mask(
-        self, mi: SubjectRecords, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
-    ) -> pd.Series:
-        """Timestamps at which the test turbine and every reference pass the same normal-operation filter.
+    def _filtered_mask(self, mi: SubjectRecords, *, wide: pd.DataFrame, test: str, refs: list[str]) -> pd.Series:
+        """Timestamps at which the test turbine and every reference have finite power and a record valid for uplift.
 
-        Returns a bool Series on ``wide.index``. One :class:`NormalOperationFilter` (the downtime +
-        finite-power logic the power model uses; the stuck filter is left off here as the ratio sums
-        raw power rather than fitting a model) is applied to each turbine's own rows, so a turbine
-        that is down or has no power on either side of the ratio excludes the timestamp. The same
-        filter on every turbine means any future change to it (e.g. the stuck filter) applies to
-        the references exactly as to the test turbine.
+        Returns a bool Series on ``wide.index``.
         """
-        normal = NormalOperationFilter(
-            active_power_col=self._schema.active_power,
-            availability_col=self._schema.availability,
-            apply_stuck_filter=False,
-        )
         keep = pd.Series(data=True, index=wide.index, dtype=bool)
         for turbine in (test, *refs):
             rows = mi.records[mi.records[mi.turbine_col] == turbine]
-            keep &= normal.keep_mask(rows, timebase=timebase).reindex(wide.index, fill_value=False)
-            # ``wide`` is the masked pivot: a cell the campaign context blanked must not count either.
+            valid = rows[VALID_UPLIFT_COL].astype(bool)
+            keep &= valid[~valid.index.duplicated()].reindex(wide.index, fill_value=False)
             keep &= wide[turbine].notna()
         return keep
 

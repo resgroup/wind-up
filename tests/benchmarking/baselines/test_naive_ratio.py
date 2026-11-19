@@ -25,7 +25,9 @@ from benchmarking.baselines.naive_ratio import (
     _infer_timebase,
 )
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
-from wind_up.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
+from tests.wind_up.record_states import counter_states
+from wind_up.method import MethodConfigurationError
+from wind_up.operating_state import MISSING, STATE_COL, VALID_UPLIFT_COL
 from wind_up.subject import SubjectMeasurement, SubjectRecords
 
 # Deliberately non-v0 column names: the method is source-agnostic, so the active-power column
@@ -36,7 +38,6 @@ _POWER_COL = "kw"
 _AVAIL_COL = "secs_avail"
 # Larger than any test timebase's full period, so the (now required) availability filter keeps
 # every row unless a test deliberately sets a lower value.
-_FULLY_AVAILABLE_SECS = 3600.0
 # The method reads active_power + availability from the schema; the other required roles are
 # unused by the naive ratio, so name them with placeholders.
 _COLUMNS = ColumnSchema(
@@ -59,7 +60,8 @@ def _run(
     **options: object,
 ) -> SubjectMeasurement:
     """Measure ``test`` on ``scada``, every other turbine a reference and every record valid."""
-    records = SubjectRecords.from_frame(scada, subject=test, timing=timing, turbine_col=_TURBINE_COL)
+    labelled = scada if VALID_UPLIFT_COL in scada.columns else counter_states(scada, columns=columns)
+    records = SubjectRecords.from_frame(labelled, subject=test, timing=timing, turbine_col=_TURBINE_COL)
     return NaiveRatioMethod(**options).measure(records, columns=columns, timebase=timebase)  # type: ignore[arg-type]
 
 
@@ -67,11 +69,16 @@ def _index(n: int, *, freq: str = "10min", start: str = "2020-01-01") -> pd.Date
     return pd.date_range(start=start, periods=n, freq=freq, tz="UTC", name="timestamp")
 
 
+def _full_period_secs(index: pd.DatetimeIndex) -> float:
+    """The availability counter of a fully available record at ``index``'s spacing."""
+    return pd.Timedelta(np.median(np.diff(index.to_numpy()))).total_seconds() if len(index) > 1 else 600.0
+
+
 def _scada(power_by_turbine: dict[str, np.ndarray], index: pd.DatetimeIndex) -> pd.DataFrame:
     """Long-format SCADA: one block of rows per turbine, sharing ``index`` (fully available)."""
     frames = [
         pd.DataFrame(
-            {_TURBINE_COL: name, _POWER_COL: np.asarray(vals, dtype=float), _AVAIL_COL: _FULLY_AVAILABLE_SECS},
+            {_TURBINE_COL: name, _POWER_COL: np.asarray(vals, dtype=float), _AVAIL_COL: _full_period_secs(index)},
             index=index,
         )
         for name, vals in power_by_turbine.items()
@@ -135,23 +142,20 @@ class TestRecovery:
 
 
 class TestDowntimeFilter:
-    """Downtime filtering is required and applies to the test turbine and every reference."""
+    """The record labels' validity for uplift applies to the test turbine and every reference."""
 
-    @pytest.mark.parametrize("blank", ["", "   "])
-    def test_blank_availability_role_raises(self, blank: str) -> None:
-        # A schema that leaves the availability role blank (empty or whitespace) would silently skip
-        # downtime filtering, so construction must reject it.
+    def test_records_without_labels_raise(self) -> None:
         idx = _index(20)
         scada = _recovery_scada(idx, treated=np.asarray(idx >= idx[10]))
-        with pytest.raises(ValueError, match="availability"):
-            _run(scada, idx[10], columns=replace(_COLUMNS, availability=blank))
+        records = SubjectRecords.from_frame(scada, subject="T1", timing=idx[10], turbine_col=_TURBINE_COL)
+        with pytest.raises(MethodConfigurationError, match="record labels"):
+            NaiveRatioMethod().measure(records, columns=_COLUMNS)
 
-    def test_missing_availability_column_raises(self) -> None:
+    def test_no_availability_role_is_needed(self) -> None:
         idx = _index(20)
         upgrade = idx[10]
         scada = _recovery_scada(idx, treated=np.asarray(idx >= upgrade), uplift=0.05).drop(columns=[_AVAIL_COL])
-        with pytest.raises(ValueError, match="availability"):
-            _run(scada, upgrade)
+        assert _run(scada, upgrade, columns=replace(_COLUMNS, availability=None)).p50_overall == pytest.approx(0.05)
 
     def test_down_reference_timestamps_are_excluded(self) -> None:
         idx = _index(20)
@@ -202,10 +206,11 @@ class TestCompleteCase:
         idx = _index(20)
         upgrade = idx[10]
         scada = _recovery_scada(idx, treated=np.asarray(idx >= upgrade), uplift=0.05)
-        labelled = scada.assign(**{STATE_COL: NORMAL_OPERATION})
+        labelled = counter_states(scada, columns=_COLUMNS)
         missing = labelled.index.isin([idx[3], idx[12]]) & labelled[_TURBINE_COL].isin(["T1", "R1"])
         labelled.loc[missing, _POWER_COL] = 1e6
         labelled.loc[missing, STATE_COL] = MISSING
+        labelled.loc[missing, VALID_UPLIFT_COL] = False
         out = _run(labelled, upgrade)
         assert out.p50_overall == pytest.approx(0.05)
 
@@ -454,7 +459,9 @@ class TestSubjectRecords:
 
     @staticmethod
     def _plain(scada: pd.DataFrame, upgrade: pd.Timestamp) -> SubjectRecords:
-        return SubjectRecords.from_frame(scada, subject="T1", timing=upgrade, turbine_col=_TURBINE_COL)
+        return SubjectRecords.from_frame(
+            counter_states(scada, columns=_COLUMNS), subject="T1", timing=upgrade, turbine_col=_TURBINE_COL
+        )
 
     def test_only_offered_references_are_used(self) -> None:
         scada, upgrade = self._scada_three()

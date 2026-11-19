@@ -389,6 +389,7 @@ def _execute_synthetic(
         ),
         possible_changes=prepared.data.possible_changes_by_turbine(),
         era5_hourly_df=prepared.data.aligned_era5,
+        operating_state=operating_state,
     ).run()
     if plots:
         write_campaign_report(result, visible, out_dir=cell_dir / CAMPAIGN_DIRNAME, farm_dir=cell_dir / FARM_DIRNAME)
@@ -456,6 +457,7 @@ def _execute_real(
         ),
         possible_changes=prepared.data.possible_changes_by_turbine(),
         era5_hourly_df=prepared.data.aligned_era5,
+        operating_state=declaration.operating_state,
     )
     if plots:
         write_report(report, out_dir=cell_dir / CAMPAIGN_DIRNAME, farm_dir=cell_dir / FARM_DIRNAME)

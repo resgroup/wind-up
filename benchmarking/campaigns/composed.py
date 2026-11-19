@@ -259,6 +259,7 @@ def run_declaration(
         data_screen=data_screen,
         possible_changes=prepared.possible_changes_by_turbine(),
         era5_hourly_df=prepared.aligned_era5,
+        operating_state=declaration.operating_state,
     )
     write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME, farm_dir=out_dir / FARM_DIRNAME)
     write_readme(out_dir, data_preparation_dir=preparation, warnings=report.warnings)

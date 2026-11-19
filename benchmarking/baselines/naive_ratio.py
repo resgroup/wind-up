@@ -10,13 +10,11 @@ over *used* timestamps and estimates uplift as the ratio-of-ratios
 pre/post covariate shift -- it applies no conditioning by design -- so it is the "what if you
 don't condition at all" leaderboard floor.
 
-**Used timestamps** require every turbine (test and references) to be available (an availability
-counter at a full period) and have finite power — a down turbine on either side of the ratio would
-otherwise bias it. The availability column is therefore **required** (the lack of downtime
-filtering was a real oversight). Only the active-power column enters the ``rho`` *computation*; the
-availability column is used solely for row selection (cause, not effect), so the estimate still
-never conditions on the test turbine's post-treatment wind speed (design-note §3). It speaks the
-data source's own column names and has no wind_up dependency.
+**Used timestamps** require every turbine (test and references) to have finite power and a record
+valid for uplift by the facts' record labels — a down turbine on either side of the ratio would
+otherwise bias it. Only the active-power column enters the ``rho`` *computation*; the labels are used
+solely for row selection (cause, not effect), so the estimate still never conditions on the test
+turbine's post-treatment wind speed (design-note §3).
 
 Each run writes a per-run folder ``naive_<test>_<upgradestart>_<lastdate>/`` (v0-style naming)
 under ``out_dir`` (a temp dir by default), holding a per-segment data-stats CSV, a headline
@@ -41,7 +39,9 @@ from matplotlib.ticker import PercentFormatter
 
 from benchmarking.synthetic import ToggleSchedule
 from wind_up.diagnostics import DiagnosticContext, stages, write_common_diagnostics, write_run_config
-from wind_up.filtering import NormalOperationFilter, blank_missing
+from wind_up.filtering import blank_missing
+from wind_up.method import MethodConfigurationError
+from wind_up.operating_state import VALID_UPLIFT_COL
 from wind_up.subject import SubjectMeasurement, SubjectRecords, answer_analyses
 from wind_up.toggle import ToggleRowSets, is_toggle, resolve_toggle, toggle_upgrade_start
 
@@ -97,8 +97,8 @@ def restrict_to_campaign(mi: SubjectRecords, *, toggle_campaign_only: bool) -> S
 class NaiveRatioMethod:
     """Pluggable naive energy-ratio baseline (prepost and toggle).
 
-    Reads the ``active_power`` role, the only signal in ``rho``, and the ``availability`` role, the
-    required downtime filter on the test turbine and every reference; the other roles feed only the
+    Reads the ``active_power`` role, the only signal in ``rho``, and each record's validity for uplift
+    from the record labels, on the test turbine and every reference; the other roles feed only the
     diagnostics.
 
     :param name: method name shown in the leaderboard
@@ -129,11 +129,14 @@ class NaiveRatioMethod:
     ) -> SubjectMeasurement:
         """Measure one subject's uplift and write its diagnostics.
 
-        :param records: the subject's records and what it may know about them
-        :param columns: the records' column roles; ``active_power`` and ``availability`` are required
+        :param records: the subject's records, carrying the record labels' operating states
+        :param columns: the records' column roles; ``active_power`` is required
         :param timebase: the records' timebase; inferred from them when ``None``
         """
-        columns.require_roles(("active_power", "availability"))
+        columns.require_roles(("active_power",))
+        if VALID_UPLIFT_COL not in records.records.columns:
+            msg = f"{self.name} reads the record labels; the records carry no {VALID_UPLIFT_COL!r} column"
+            raise MethodConfigurationError(msg)
         bound = copy.copy(self)
         bound._columns = columns  # noqa: SLF001 - its own class
         bound._timebase = timebase  # noqa: SLF001 - its own class
@@ -163,19 +166,12 @@ class NaiveRatioMethod:
         ref_set = set(refs)
         wide = mi.mask_invalid(wide[[c for c in wide.columns if c == test or c in ref_set]])
 
-        if self._schema.availability not in mi.records.columns:
-            msg = (
-                f"the availability column {self._schema.availability!r} (columns.availability) is not in "
-                f"scada_df; the downtime filter is required for the naive method and cannot be skipped."
-            )
-            raise ValueError(msg)
-
         timebase = self._timebase if self._timebase is not None else _infer_timebase(mi.records.index)
         rows = resolve_toggle(mi.timing, wide.index)
         baseline = rows.campaign_baseline if self.toggle_campaign_only else rows.training_baseline
         test_pw = wide[test].to_numpy(dtype=float)
         ref_total = wide[refs].sum(axis=1).to_numpy(dtype=float)
-        used = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase).to_numpy()
+        used = self._used_mask(mi, wide=wide, test=test, refs=refs).to_numpy()
 
         rho_base = _rho(test_pw, ref_total, used & baseline)
         rho_up = _rho(test_pw, ref_total, used & rows.upgraded)
@@ -205,37 +201,16 @@ class NaiveRatioMethod:
         )
         return SubjectMeasurement(p50_overall=float(uplift))
 
-    def _used_mask(
-        self, mi: SubjectRecords, *, wide: pd.DataFrame, test: str, refs: list[str], timebase: pd.Timedelta
-    ) -> pd.Series:
-        """Complete-case timestamps that also pass downtime filtering on the test turbine and every reference.
+    def _used_mask(self, mi: SubjectRecords, *, wide: pd.DataFrame, test: str, refs: list[str]) -> pd.Series:
+        """Timestamps at which the test turbine and every reference have finite power and a record valid for uplift.
 
-        Returns a bool Series on ``wide.index``. Every turbine (test and references) must be
-        available (counter >= a full period) and have finite power — a down turbine on either side
-        of the ratio is therefore excluded. The test turbine additionally goes through the shared
-        :class:`NormalOperationFilter` (the same downtime + finite-power logic the power model uses;
-        the stuck filter is left off here as the ratio sums raw power rather than fitting a model).
+        Returns a bool Series on ``wide.index``.
         """
         turbines = [test, *refs]
         complete = wide[turbines].notna().all(axis=1)
-
-        full = timebase.total_seconds()
-        avail = _wide_column(
-            mi.records, turbine_col=mi.turbine_col, value_col=self._schema.name_of("availability")
-        ).reindex(index=wide.index, columns=turbines)
-        all_available = (avail >= full).all(axis=1)
-
-        test_rows = mi.records[mi.records[mi.turbine_col] == test]
-        test_keep = (
-            NormalOperationFilter(
-                active_power_col=self._schema.active_power,
-                availability_col=self._schema.availability,
-                apply_stuck_filter=False,
-            )
-            .keep_mask(test_rows, timebase=timebase)
-            .reindex(wide.index, fill_value=False)
-        )
-        return complete & all_available & test_keep
+        valid = _wide_column(mi.records, turbine_col=mi.turbine_col, value_col=VALID_UPLIFT_COL)
+        valid = valid.reindex(index=wide.index, columns=turbines).fillna(value=False).astype(bool)
+        return complete & valid.all(axis=1)
 
     def _write_outputs(
         self,
@@ -303,7 +278,7 @@ class NaiveRatioMethod:
         # the DiagnosticContext uses (timestamps absent from ``wide`` are simply not used).
         index = pd.DatetimeIndex(pd.unique(mi.records.index)).sort_values()
         test, refs = mi.subject, [c for c in wide.columns if c != mi.subject]
-        used_series = self._used_mask(mi, wide=wide, test=test, refs=refs, timebase=timebase)
+        used_series = self._used_mask(mi, wide=wide, test=test, refs=refs)
         used = used_series.reindex(index, fill_value=False).to_numpy()
         treated = resolve_toggle(mi.timing, index).upgraded.astype(bool)
         ctx = DiagnosticContext(
@@ -462,8 +437,8 @@ def _save_plots(
 ) -> None:
     """Write the scatter, ratio-timeseries and used-coverage-timeseries diagnostic plots (by stage).
 
-    ``used`` is the method's real downtime-filtered mask (test + every reference passing the
-    availability/finite filter), so the scatter shows only the rows the estimate actually uses.
+    ``used`` is the method's real mask (test + every reference with finite power and valid for
+    uplift), so the scatter shows only the rows the estimate actually uses.
     ``toggle_campaign_only`` picks the same baseline the estimate used (strict off-blocks when set,
     the lenient pre-campaign U off baseline when not), so the plots never disagree with the headline.
     """

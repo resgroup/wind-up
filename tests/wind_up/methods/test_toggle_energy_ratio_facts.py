@@ -6,9 +6,11 @@ import dataclasses
 import math
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 import pytest
 
+from tests.wind_up.record_states import generic_states
 from wind_up.analysis import CAMPAIGN, PER_TURBINE_COLUMNS, AnalysisSpec
 from wind_up.facts import Upgrade, WindFarmFacts
 from wind_up.labels import Label
@@ -61,7 +63,7 @@ def _old(
     base = SubjectRecords.from_frame(scada, subject=test, timing=schedule, turbine_col=_TURBINE_COL)
     refs = base.candidate_references if references is None else references
     records = SubjectRecords(
-        records=scada,
+        records=generic_states(scada, columns=columns, rated_power_kw=_RATED_KW, timebase=pd.Timedelta(minutes=10)),
         subject=test,
         timing=schedule,
         turbine_col=_TURBINE_COL,
@@ -213,7 +215,7 @@ def test_a_permanent_upgrade_is_refused() -> None:
         _new(facts, AnalysisSpec(name="x", upgrade="blades"))
 
 
-def test_the_facts_need_the_power_and_availability_roles() -> None:
+def test_without_an_availability_role_the_analysis_is_answered_and_warns_of_unlabelled_downtime() -> None:
     scada, _ = _noisy_toggle_case()
     facts = _facts(scada)
     without = WindFarmFacts(
@@ -223,8 +225,11 @@ def test_the_facts_need_the_power_and_availability_roles() -> None:
         turbines=facts.turbines,
         upgrades=facts.upgrades,
     )
-    with pytest.raises(ValueError, match="availability"):
-        _new(without, AnalysisSpec(name="x", upgrade="control"))
+    (output,) = ToggleEnergyRatioMethod().estimate(
+        without, [AnalysisSpec(name="x", upgrade="control", subjects=["T1"])]
+    )
+    assert np.isfinite(output.campaign_uplift)
+    assert any("downtime could not be labelled" in w.message and w.severity == "medium" for w in output.warnings)
 
 
 def test_records_left_out_by_a_label_are_filtered_like_excluded_rows() -> None:

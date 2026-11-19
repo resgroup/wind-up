@@ -449,7 +449,7 @@ class WindFarmFacts:
         self._check_declarations()
 
     def _check_records(self) -> None:
-        """Reject records without a time index, a required column, or a label column that is not true or false."""
+        """Reject records without a time index, a required or named column, or a label not true or false."""
         if not isinstance(self.records.index, pd.DatetimeIndex):
             msg = "the records need a time index"
             raise TypeError(msg)
@@ -460,6 +460,7 @@ class WindFarmFacts:
         named = {
             "turbine": self.columns.turbine,
             "active_power": self.columns.active_power,
+            **({} if self.columns.availability is None else {"availability": self.columns.availability}),
             **{f"label {label.name!r}": label.column for label in self.labels},
         }
         absent = {what: column for what, column in named.items() if column not in self.records.columns}

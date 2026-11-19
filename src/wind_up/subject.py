@@ -18,6 +18,7 @@ from wind_up.analysis_warnings import AnalysisWarning
 from wind_up.farm import TurbineUplift, farm_uplift
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL
 from wind_up.method import MethodConfigurationError
+from wind_up.operating_state import STATE_COL, STATE_COLUMNS, VALID_NORTHING_COL, VALID_UPLIFT_COL
 from wind_up.record_selection import ChangedInterval
 from wind_up.toggle import ToggleSchedule, is_toggle
 
@@ -37,6 +38,8 @@ NOT_MEASURED = "not measured: "
 
 # The column naming the subject in a stacked frame whose ``turbine`` column names a reference.
 SUBJECT_COL = "subject"
+
+BOOLEAN_STATE_COLUMNS = (VALID_NORTHING_COL, VALID_UPLIFT_COL)
 
 # The segments of a measurement's labeled rows.
 BASELINE = "baseline"
@@ -205,6 +208,7 @@ def subject_records(
     timing: pd.Timestamp | ToggleSchedule | pd.DataFrame | None = None,
     valid_for_uplift: pd.DataFrame | None = None,
     n_references: int | None = None,
+    record_labels: pd.DataFrame | None = None,
 ) -> SubjectRecords:
     """Return what measuring ``subject`` for ``analysis`` over ``span`` reads from ``facts``.
 
@@ -219,12 +223,16 @@ def subject_records(
     :param valid_for_uplift: timestamps x turbines validity covering the span; by default each turbine's
         records are valid outside its own installation windows
     :param n_references: how many of the analysis's references are candidates
+    :param record_labels: the frame :meth:`~wind_up.facts.WindFarmFacts.record_labels` returned; each
+        record then carries its operating state and that state's uses, replacing any columns of those names
     """
     start, end = span
     records = facts.records[np.asarray(facts.records.index >= start)]
     if end is not None:
         records = records[np.asarray(records.index < end)]
     turbine_col = facts.columns.turbine
+    if record_labels is not None:
+        records = with_states(records, record_labels=record_labels, turbine_col=turbine_col)
     index = pd.DatetimeIndex(records.index.unique()).sort_values()
     held = {str(t) for t in records[turbine_col].unique()}
     present = [t for t in facts.turbine_names if t in held]
@@ -259,6 +267,23 @@ def subject_records(
         changed_turbines=facts.changed_turbines(analysis, subject=subject, span=(start, span_end)),
         works=None if upgrade.mode == "toggle" else upgrade.changeover(subject),
     )
+
+
+def with_states(records: pd.DataFrame, *, record_labels: pd.DataFrame, turbine_col: str) -> pd.DataFrame:
+    """Return long-format ``records`` with each record's operating state and its uses from ``record_labels``.
+
+    Columns of those names already in ``records`` are replaced. Raises when a record has no label.
+    """
+    keys = pd.MultiIndex.from_arrays([pd.DatetimeIndex(records.index), records[turbine_col].astype(str)])
+    labelled = record_labels.set_index(record_labels[turbine_col].astype(str), append=True)[list(STATE_COLUMNS)]
+    found = labelled.reindex(keys)
+    if found[STATE_COL].isna().any():
+        msg = f"{int(found[STATE_COL].isna().sum())} records have no label; the labels must cover every record"
+        raise ValueError(msg)
+    out = records.copy()
+    for column in STATE_COLUMNS:
+        out[column] = found[column].to_numpy(dtype=bool if column in BOOLEAN_STATE_COLUMNS else object)
+    return out
 
 
 def _installation_windows(facts: WindFarmFacts, turbine: str) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
@@ -397,6 +422,9 @@ def answer_analyses(
 ) -> list[AnalysisOutput]:
     """Answer each analysis by measuring each subject in turn over the analysis's period, in order.
 
+    Each record a subject's measurement reads carries its operating state and that state's uses
+    from the facts' record labels, computed once per call.
+
     A ``ValueError`` from ``measure`` leaves that subject unmeasured, with the error as the reason;
     a :class:`~wind_up.method.MethodConfigurationError` fails the call. Raises when an analysis
     names labels, which these methods do not read.
@@ -410,13 +438,16 @@ def answer_analyses(
         if analysis.include_labels or analysis.exclude_labels:
             msg = f"{name} does not read labels; analysis {analysis.name!r} names some"
             raise MethodConfigurationError(msg)
+    labels = facts.record_labels()
     outputs = []
     for analysis in analyses:
         start, end = analysis.period
         span = (pd.DatetimeIndex(facts.records.index).min() if start is None else start, end)
         measured: dict[str, SubjectMeasurement | str] = {}
         for subject in facts.subjects_of(analysis):
-            records = subject_records(facts, analysis, subject=subject, span=span, n_references=n_references)
+            records = subject_records(
+                facts, analysis, subject=subject, span=span, n_references=n_references, record_labels=labels
+            )
             try:
                 measured[subject] = measure(records)
             except MethodConfigurationError:

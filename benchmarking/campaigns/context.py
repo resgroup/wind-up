@@ -16,6 +16,7 @@ from benchmarking.campaigns.declaration import layout_coords
 from wind_up.analysis import CAMPAIGN, AnalysisSpec
 from wind_up.facts import Reanalysis, Upgrade, WindFarmFacts
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL, centroid
+from wind_up.operating_state import OperatingStateConfig
 from wind_up.toggle import ToggleSchedule
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ def campaign_facts(
     *,
     columns: ColumnSchema,
     era5_hourly_df: pd.DataFrame | None = None,
+    operating_states: OperatingStateConfig | None = None,
 ) -> WindFarmFacts:
     """Return the facts of a campaign over ``records``.
 
@@ -47,6 +49,8 @@ def campaign_facts(
     :param records: long-format records of every turbine in the layout, labelled and northed
     :param columns: the column roles of ``records``
     :param era5_hourly_df: reanalysis at the farm's centroid, hourly or aligned to the records
+    :param operating_states: the site's operating states, those ``records`` were labelled with; the
+        generic states alone when ``None``
     """
     frame = spec.layout.frame
     turbines = pd.DataFrame(
@@ -75,6 +79,7 @@ def campaign_facts(
         timebase=timebase,
         turbines=turbines,
         upgrades=_upgrades(spec),
+        operating_states=operating_states if operating_states is not None else OperatingStateConfig(),
         exclusions=list(spec.exclusions),
         operating_state_overrides=list(spec.label_overrides),
         north_offsets=list(spec.north_offsets or []),

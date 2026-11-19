@@ -49,10 +49,11 @@ from benchmarking.baselines.power_model.method import (
 from benchmarking.baselines.power_model.screening import ScreenResult
 from benchmarking.harness.scoring import _merge_diagnostics
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
+from tests.wind_up.record_states import generic_states
 from wind_up.conditions import label_column
 from wind_up.diagnostics import stages
 from wind_up.method import MethodConfigurationError
-from wind_up.operating_state import VALID_UPLIFT_COL
+from wind_up.operating_state import STATE_COLUMNS, VALID_UPLIFT_COL
 from wind_up.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE, ChangedInterval
 from wind_up.subject import SubjectMeasurement, SubjectRecords
 from wind_up.toggle import resolve_toggle
@@ -74,6 +75,7 @@ _POWER_MIN = "wtc_ActPower_min"
 _POWER_SD = "wtc_ActPower_stddev"
 _YAW = "wtc_NacelPos_mean"
 _NORTHED_YAW = f"northed_{_YAW}"
+_RATED_KW = 2300.0
 _COLUMNS = ColumnSchema(
     turbine=_TURBINE,
     active_power=_POWER,
@@ -120,6 +122,14 @@ class _Measuring:
         self.facts = facts
 
     def estimate(self, records: SubjectRecords) -> SubjectMeasurement:
+        if VALID_UPLIFT_COL not in records.records.columns:
+            labelled = generic_states(
+                records.records,
+                columns=self.facts["columns"],  # type: ignore[arg-type]
+                rated_power_kw=self.facts["rated_power_kw"],  # type: ignore[arg-type]
+                timebase=self.facts.get("timebase"),  # type: ignore[arg-type]
+            )
+            records = dataclasses.replace(records, records=labelled)
         return self.method.measure(records, **self.facts)  # type: ignore[arg-type]
 
     def __getattr__(self, name: str) -> object:
@@ -136,8 +146,15 @@ def _power_model(**kwargs: object) -> _Measuring:
 def _from_frame(
     scada: pd.DataFrame, *, test_wtg: str, timing: pd.Timestamp | ToggleSchedule | pd.DataFrame, turbine_col: str
 ) -> SubjectRecords:
-    """The subject's records with every other turbine a reference and every record valid."""
-    return SubjectRecords.from_frame(scada, subject=test_wtg, timing=timing, turbine_col=turbine_col)
+    """The subject's records, labelled with the generic states, with every other turbine a reference."""
+    return SubjectRecords.from_frame(_labelled(scada), subject=test_wtg, timing=timing, turbine_col=turbine_col)
+
+
+def _labelled(scada: pd.DataFrame) -> pd.DataFrame:
+    """``scada`` labelled afresh with the generic states at the tests' usual rating."""
+    return generic_states(
+        scada.drop(columns=list(STATE_COLUMNS), errors="ignore"), columns=_COLUMNS, rated_power_kw=_RATED_KW
+    )
 
 
 def _input(
@@ -150,7 +167,7 @@ def _input(
 ) -> SubjectRecords:
     """The records of ``test_wtg`` in ``scada_df``: as ``given`` says when given, else all valid."""
     if given is not None:
-        return dataclasses.replace(given, records=scada_df)
+        return dataclasses.replace(given, records=_labelled(scada_df))
     assert upgrade_timing is not None
     return _from_frame(scada_df, test_wtg=test_wtg, timing=upgrade_timing, turbine_col=turbine_col)
 
@@ -2212,23 +2229,26 @@ class TestValidUpliftRows:
 
     @staticmethod
     def _selected(scada: pd.DataFrame) -> np.ndarray:
-        mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=scada.index[3], turbine_col=_TURBINE)
+        if VALID_UPLIFT_COL in scada.columns:
+            mi = SubjectRecords.from_frame(scada, subject="T1", timing=scada.index[3], turbine_col=_TURBINE)
+        else:
+            mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=scada.index[3], turbine_col=_TURBINE)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         y = scada[scada[_TURBINE] == "T1"][_POWER]
         reasons = _fundamentals_method()._loss_reasons(  # noqa: SLF001
-            mi, index=index, references=["R1", "R2", "R3"], timebase=pd.Timedelta(minutes=10)
+            mi, index=index, references=["R1", "R2", "R3"]
         )
         return np.asarray(reasons == USABLE) & np.isfinite(y.to_numpy(dtype=float))
 
     def test_a_labelled_frame_keeps_only_valid_uplift_rows(self) -> None:
-        scada = _toy_scada(6, uplift=0.0, treated=np.zeros(6, dtype=bool))
+        scada = _labelled(_toy_scada(6, uplift=0.0, treated=np.zeros(6, dtype=bool)))
         scada[VALID_UPLIFT_COL] = True
         test = (scada[_TURBINE] == "T1").to_numpy()
         curtailed = test & (scada.index == scada.index[2])
         scada.loc[curtailed, VALID_UPLIFT_COL] = False
         assert self._selected(scada).tolist() == [True, True, False, True, True, True]
 
-    def test_an_unlabelled_frame_drops_out_of_range_records(self) -> None:
+    def test_the_generic_labels_drop_out_of_range_records(self) -> None:
         scada = _toy_scada(6, uplift=0.0, treated=np.zeros(6, dtype=bool))
         test = (scada[_TURBINE] == "T1").to_numpy()
         scada.loc[test & (scada.index == scada.index[4]), _POWER] = 5000.0

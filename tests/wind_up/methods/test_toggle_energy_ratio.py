@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
+from tests.wind_up.record_states import counter_states
 from wind_up.conditions import condition_bins
 from wind_up.method import MethodConfigurationError
 from wind_up.methods import toggle_energy_ratio
@@ -29,7 +30,7 @@ from wind_up.methods.toggle_energy_ratio import (
     _infer_timebase,
     restrict_to_campaign,
 )
-from wind_up.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
+from wind_up.operating_state import MISSING, STATE_COL, VALID_UPLIFT_COL
 from wind_up.subject import SubjectMeasurement, SubjectRecords
 from wind_up.toggle import build_toggle_df, gap_to_other_segment, pair_within, resolve_toggle
 
@@ -41,7 +42,6 @@ _POWER_COL = "kw"
 _AVAIL_COL = "secs_avail"
 # Larger than any test timebase's full period, so the (required) availability filter keeps
 # every row unless a test deliberately sets a lower value.
-_FULLY_AVAILABLE_SECS = 3600.0
 # One toggle cycle of the 20-minute ``ToggleSchedule`` most tests use (``toggle_period`` is required).
 _CYCLE = pd.Timedelta(minutes=20)
 # Every fixture's index starts here, on the cycle grid of every period the tests use.
@@ -71,7 +71,8 @@ def _run(
     **options: object,
 ) -> SubjectMeasurement:
     """Measure ``test`` on ``scada``, every other turbine a reference and every record valid."""
-    records = SubjectRecords.from_frame(scada, subject=test, timing=timing, turbine_col=_TURBINE_COL)
+    labelled = scada if VALID_UPLIFT_COL in scada.columns else counter_states(scada, columns=columns)
+    records = SubjectRecords.from_frame(labelled, subject=test, timing=timing, turbine_col=_TURBINE_COL)
     return ToggleEnergyRatioMethod(**options).measure(  # type: ignore[arg-type]
         records,
         columns=columns,
@@ -86,11 +87,16 @@ def _index(n: int, *, freq: str = "10min", start: str = "2020-01-01") -> pd.Date
     return pd.date_range(start=start, periods=n, freq=freq, tz="UTC", name="timestamp")
 
 
+def _full_period_secs(index: pd.DatetimeIndex) -> float:
+    """The availability counter of a fully available record at ``index``'s spacing."""
+    return pd.Timedelta(np.median(np.diff(index.to_numpy()))).total_seconds() if len(index) > 1 else 600.0
+
+
 def _scada(power_by_turbine: dict[str, np.ndarray], index: pd.DatetimeIndex) -> pd.DataFrame:
     """Long-format SCADA: one block of rows per turbine, sharing ``index`` (fully available)."""
     frames = [
         pd.DataFrame(
-            {_TURBINE_COL: name, _POWER_COL: np.asarray(vals, dtype=float), _AVAIL_COL: _FULLY_AVAILABLE_SECS},
+            {_TURBINE_COL: name, _POWER_COL: np.asarray(vals, dtype=float), _AVAIL_COL: _full_period_secs(index)},
             index=index,
         )
         for name, vals in power_by_turbine.items()
@@ -395,20 +401,18 @@ class TestPrepostRejected:
 
 
 class TestDowntimeFilter:
-    """Downtime filtering is required and applies to the test turbine and every reference."""
+    """The record labels' validity for uplift applies to the test turbine and every reference."""
 
-    @pytest.mark.parametrize("blank", ["", "   "])
-    def test_blank_availability_role_raises(self, blank: str) -> None:
-        # A schema that leaves the availability role blank (empty or whitespace) would silently skip
-        # downtime filtering, so construction must reject it.
-        with pytest.raises(ValueError, match="availability"):
-            _run(*_noisy_toggle_case(), columns=replace(_COLUMNS, availability=blank))
+    def test_records_without_labels_raise(self) -> None:
+        scada, schedule, _ = _toggle_case()
+        records = SubjectRecords.from_frame(scada, subject="T1", timing=schedule, turbine_col=_TURBINE_COL)
+        with pytest.raises(MethodConfigurationError, match="record labels"):
+            ToggleEnergyRatioMethod().measure(records, columns=_COLUMNS, toggle_cycle=_CYCLE, toggle_datum=_DATUM)
 
-    def test_missing_availability_column_raises(self) -> None:
+    def test_no_availability_role_is_needed(self) -> None:
         scada, schedule, _ = _toggle_case()
         scada = scada.drop(columns=[_AVAIL_COL])
-        with pytest.raises(ValueError, match="availability"):
-            _run(scada, schedule)
+        assert _run(scada, schedule, columns=replace(_COLUMNS, availability=None)).p50_overall == pytest.approx(0.05)
 
     def test_down_reference_timestamps_are_excluded(self) -> None:
         scada, schedule, _ = _toggle_case()
@@ -425,10 +429,11 @@ class TestDowntimeFilter:
     def test_records_labelled_missing_are_excluded(self) -> None:
         scada, schedule, _ = _toggle_case()
         idx = scada.index.unique().sort_values()
-        labelled = scada.assign(**{STATE_COL: NORMAL_OPERATION})
+        labelled = counter_states(scada, columns=_COLUMNS)
         missing = (labelled[_TURBINE_COL] == "T1") & labelled.index.isin([idx[3], idx[4]])
         labelled.loc[missing, _POWER_COL] = 1e6
         labelled.loc[missing, STATE_COL] = MISSING
+        labelled.loc[missing, VALID_UPLIFT_COL] = False
         out = _run(labelled, schedule)
         assert out.p50_overall == pytest.approx(0.05)
 
@@ -863,7 +868,9 @@ class TestLabeledRows:
         method = ToggleEnergyRatioMethod(conditions=("power",))._bound(  # noqa: SLF001
             columns=_COLUMNS, toggle_cycle=_CYCLE, toggle_datum=_DATUM, timebase=None, rated_power_kw=_RATED_KW
         )
-        mi = SubjectRecords.from_frame(scada, subject="T1", timing=schedule, turbine_col=_TURBINE_COL)
+        mi = SubjectRecords.from_frame(
+            counter_states(scada, columns=_COLUMNS), subject="T1", timing=schedule, turbine_col=_TURBINE_COL
+        )
         mi_restricted = restrict_to_campaign(mi)
         wide = toggle_energy_ratio._wide_column(  # noqa: SLF001
             mi_restricted.records, turbine_col=_TURBINE_COL, value_col=_POWER_COL
@@ -873,7 +880,6 @@ class TestLabeledRows:
             wide=wide,
             test="T1",
             refs=[c for c in wide.columns if c != "T1"],
-            timebase=pd.Timedelta(minutes=10),
             rows=resolve_toggle(mi_restricted.timing, wide.index),
         ).paired
         assert out.labeled_rows["used"].to_numpy().tolist() == expected.to_numpy().tolist()
@@ -1153,7 +1159,9 @@ class TestSubjectRecords:
 
     @staticmethod
     def _plain(scada: pd.DataFrame, schedule: ToggleSchedule) -> SubjectRecords:
-        return SubjectRecords.from_frame(scada, subject="T1", timing=schedule, turbine_col=_TURBINE_COL)
+        return SubjectRecords.from_frame(
+            counter_states(scada, columns=_COLUMNS), subject="T1", timing=schedule, turbine_col=_TURBINE_COL
+        )
 
     def test_only_offered_references_are_used(self) -> None:
         scada, schedule = self._fixture()

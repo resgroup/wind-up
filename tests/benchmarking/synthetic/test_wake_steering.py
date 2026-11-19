@@ -28,6 +28,7 @@ from benchmarking.synthetic import (
 )
 from benchmarking.synthetic.cp_core import CpCore
 from benchmarking.synthetic.upgrades import UpgradeEffect
+from tests.wind_up.record_states import counter_states
 from wind_up.geodesy import distance_and_bearing
 from wind_up.subject import SubjectRecords
 from wind_up_v0.constants import TIMESTAMP_COL
@@ -504,7 +505,12 @@ def test_end_to_end_ground_truth_naive_and_plot(tmp_path: Path) -> None:
     assert np.allclose(ref_syn.to_numpy(), ref_orig.to_numpy())
 
     result = NaiveRatioMethod().measure(
-        SubjectRecords.from_frame(dataset.synthetic_df, subject=DOWN, timing=schedule, turbine_col=HOT_COLUMNS.turbine),
+        SubjectRecords.from_frame(
+            counter_states(dataset.synthetic_df, columns=HOT_COLUMNS),
+            subject=DOWN,
+            timing=schedule,
+            turbine_col=HOT_COLUMNS.turbine,
+        ),
         columns=HOT_COLUMNS,
     )
     assert np.isfinite(result.p50_overall)

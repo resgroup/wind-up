@@ -301,6 +301,11 @@ def test_the_records_need_the_turbine_and_power_columns() -> None:
         facts(records().drop(columns=COLS.active_power))
 
 
+def test_the_records_need_the_availability_column_the_schema_names() -> None:
+    with pytest.raises(ValueError, match="availability"):
+        facts(records().drop(columns=COLS.availability))
+
+
 def test_a_label_needs_its_column_and_its_own_name() -> None:
     with pytest.raises(ValueError, match="in_sector"):
         facts(labels=[Label(name="in sector", column="in_sector")])

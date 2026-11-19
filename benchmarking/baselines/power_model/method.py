@@ -69,12 +69,7 @@ from wind_up.diagnostics.context import ERA5_UNLOCATED
 from wind_up.farm import TurbineUplift, farm_uplift
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL, centroid
 from wind_up.method import MethodConfigurationError
-from wind_up.operating_state import (
-    VALID_UPLIFT_COL,
-    OperatingStateConfig,
-    label_operating_states,
-    not_missing,
-)
+from wind_up.operating_state import VALID_UPLIFT_COL, not_missing
 from wind_up.record_selection import (
     EXCLUDED,
     RARE_CONFIGURATION,
@@ -586,12 +581,12 @@ class _MeasureFacts:
 class PowerModelMethod:
     """Pluggable counterfactual power-model uplift estimator (prepost and toggle).
 
-    Reads the ``active_power`` (the outcome and the reference power feature), ``availability`` (the
-    subject's downtime filter) and ``wind_speed`` (the references' mean feeds the stuck filter's calm
-    exemption) column roles, and ``nacelle_position`` with ``direction_feature``; the other roles feed
-    only the shared diagnostics. Each subject's rating caps its clipped counterfactual predictions. The
-    facts' first reanalysis, aligned to the records, feeds only the conditional step, never a model
-    feature. The turbines' rotor diameters give the free-stream wind speed.
+    Reads the ``active_power`` (the outcome and the reference power feature) and ``wind_speed`` column
+    roles, ``nacelle_position`` with ``direction_feature``, and each record's operating state and its
+    validity for uplift from the record labels; the other roles feed only the shared diagnostics.
+    Each subject's rating caps its clipped counterfactual predictions. The facts' first reanalysis,
+    aligned to the records, feeds only the conditional step, never a model feature. The turbines'
+    rotor diameters give the free-stream wind speed.
 
     :param n_references: how many of each analysis's candidate references, in its order, form a
         subject's pool; the rest wait as reserves for any the screen rules out. ``None`` takes them all
@@ -804,7 +799,7 @@ class PowerModelMethod:
     ) -> SubjectMeasurement:
         """Measure one subject's uplift and write its diagnostics.
 
-        :param records: the subject's records and what it may know about them
+        :param records: the subject's records, carrying the record labels' operating states
         :param columns: the records' column roles
         :param rated_power_kw: the subject's rating
         :param timebase: the records' timebase; inferred from them when ``None``
@@ -812,6 +807,9 @@ class PowerModelMethod:
         :param site_location: the site's ``(latitude, longitude)``; the sun's elevation there is a model feature
         :param rotor_diameters_m: rotor diameter per turbine
         """
+        if VALID_UPLIFT_COL not in records.records.columns:
+            msg = f"{self.name} reads the record labels; the records carry no {VALID_UPLIFT_COL!r} column"
+            raise MethodConfigurationError(msg)
         bound = self._bound(
             columns=columns,
             rated_power_kw=rated_power_kw,
@@ -833,7 +831,7 @@ class PowerModelMethod:
         rotor_diameters_m: Mapping[str, float] | None = None,
     ) -> PowerModelMethod:
         """Return a copy holding the facts one measurement reads, after checking the column roles."""
-        columns.require_roles(("active_power", "availability", "wind_speed"))
+        columns.require_roles(("active_power", "wind_speed"))
         if self.direction_feature:
             columns.require_roles(("nacelle_position",))
         bound = copy.copy(self)
@@ -869,14 +867,6 @@ class PowerModelMethod:
         # The campaign decides which turbines are references and which rows they may contribute;
         # everything below -- outcome, features, ERA5, diagnostics -- works from this selection.
         scada = mi.select()
-        if self._f.columns.availability not in scada.columns:
-            msg = (
-                f"the availability column {self._f.columns.availability!r} (columns.availability) is not in "
-                f"scada_df; the downtime filter is required for the power model and cannot be skipped."
-            )
-            raise MethodConfigurationError(msg)
-        # Checked before the screen, whose gate reads the same normal-operation mask, so a missing
-        # column is reported as the configuration error it is rather than as a bare KeyError.
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         timebase = self._f.timebase if self._f.timebase is not None else _infer_timebase(scada.index)
         references = self._candidate_references(scada, mi=mi)
@@ -1746,7 +1736,7 @@ class PowerModelMethod:
         step 11 iv. ``scada`` is the frame the campaign selected; ``before`` and ``after`` are the
         two periods over ``index``.
         """
-        reasons = self._loss_reasons(mi, index=index, references=references, timebase=timebase)
+        reasons = self._loss_reasons(mi, index=index, references=references)
         usable = np.array(reasons == USABLE)
         if WAKING_SCENARIO_COL in scada.columns and references:
             scenarios = waking_scenario_features(
@@ -1767,23 +1757,10 @@ class PowerModelMethod:
             reasons[unpaired] = UNPAIRED
         return reasons
 
-    def _loss_reasons(
-        self, mi: SubjectRecords, *, index: pd.DatetimeIndex, references: Sequence[str], timebase: pd.Timedelta
-    ) -> pd.Series:
-        """Return why each record of ``index`` is lost to the per-turbine rules, or usable.
-
-        Generic states are labelled first when the frame has no ``valid_uplift`` column.
-        """
+    def _loss_reasons(self, mi: SubjectRecords, *, index: pd.DatetimeIndex, references: Sequence[str]) -> pd.Series:
+        """Return why each record of ``index`` is lost to the per-turbine rules, or usable."""
         turbines = [mi.subject, *references]
         scada = mi.records[mi.records[mi.turbine_col].isin(turbines)]
-        if VALID_UPLIFT_COL not in scada.columns:
-            scada = label_operating_states(
-                scada,
-                columns=self._f.columns,
-                config=OperatingStateConfig(),
-                timebase=timebase,
-                rated_power_kw=self._f.rated_power_kw,
-            )
         return loss_reasons(
             scada,
             subject=mi.subject,
@@ -1793,18 +1770,6 @@ class PowerModelMethod:
             usable=mi.valid_over(index),
             index=index,
         )
-
-    def _valid_uplift(self, rows: pd.DataFrame, *, timebase: pd.Timedelta) -> pd.Series:
-        """Return the rows' ``valid_uplift`` column, labelling generic states first when the frame has none."""
-        if VALID_UPLIFT_COL not in rows.columns:
-            rows = label_operating_states(
-                rows,
-                columns=self._f.columns,
-                config=OperatingStateConfig(),
-                timebase=timebase,
-                rated_power_kw=self._f.rated_power_kw,
-            )
-        return rows[VALID_UPLIFT_COL].astype(bool)
 
     def _fit_predict(
         self,
@@ -2125,7 +2090,7 @@ class PowerModelMethod:
                 covered[wtg] = 0.0
                 continue
             in_campaign = upgraded.reindex(pd.DatetimeIndex(rows.index)).fillna(value=False).to_numpy()
-            normal = self._valid_uplift(rows, timebase=timebase).to_numpy()
+            normal = rows[VALID_UPLIFT_COL].astype(bool).to_numpy()
             finite = np.isfinite(rows[self._f.columns.active_power].to_numpy(dtype=float))
             covered[wtg] = float(np.count_nonzero(in_campaign & normal & finite)) * per_day
         return covered

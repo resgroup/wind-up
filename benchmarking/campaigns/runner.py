@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from wind_up import FarmUplift
     from wind_up.analysis_period import AnalysisPlan, PlanSettings
     from wind_up.northing import NorthingSettings
+    from wind_up.operating_state import OperatingStateConfig
     from wind_up.subject import SubjectMeasurement
 
 
@@ -92,6 +93,8 @@ class CampaignRunner:
         against the plans they fall inside
     :param data_screen: how each plan's power references are screened on their data; ``None`` skips it
     :param era5_hourly_df: reanalysis at the farm's centroid, hourly or aligned to the records
+    :param operating_state: the site's operating states, which the dataset's labels came from; the
+        generic states alone when ``None``
     """
 
     def __init__(
@@ -109,6 +112,7 @@ class CampaignRunner:
         possible_changes: Mapping[str, Sequence[pd.Timestamp]] | None = None,
         data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
         era5_hourly_df: pd.DataFrame | None = None,
+        operating_state: OperatingStateConfig | None = None,
     ) -> None:
         """Store the campaign, its data and the per-turbine method factory."""
         self._spec = spec
@@ -123,6 +127,7 @@ class CampaignRunner:
         self._possible_changes = possible_changes
         self._data_screen = data_screen
         self._era5_hourly_df = era5_hourly_df
+        self._operating_state = operating_state
 
     def run(self) -> CampaignResult:
         """Estimate the campaign on the truth-free core, then score what it produced against truth."""
@@ -141,6 +146,7 @@ class CampaignRunner:
             possible_changes=self._possible_changes,
             data_screen=self._data_screen,
             era5_hourly_df=self._era5_hourly_df,
+            operating_state=self._operating_state,
         )
         visible = self._visible_dataset(report)
 
