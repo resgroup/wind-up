@@ -331,9 +331,10 @@ def _pairs(subjects: list[str], references: list[str], *, uplift: float = 0.02) 
 class _Pipeline:
     """v0's pipeline replaced: records what it was given and returns fixed test-reference results."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, fails: bool = False) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, fails: bool = False, unmeasured: str = "") -> None:
         self.calls: list[dict] = []
         self.fails = fails
+        self.unmeasured = unmeasured
         monkeypatch.setattr(v0_binned.AssessmentInputs, "from_cfg", self.from_cfg)
         monkeypatch.setattr(v0_binned, "run_wind_up_analysis", self.run)
 
@@ -346,7 +347,12 @@ class _Pipeline:
             msg = "not enough data"
             raise ValueError(msg)
         cfg = inputs["cfg"]
-        return _pairs([t.name for t in cfg.test_wtgs], [t.name for t in cfg.ref_wtgs])
+        pairs = _pairs([t.name for t in cfg.test_wtgs], [t.name for t in cfg.ref_wtgs])
+        if self.unmeasured == "nan":
+            return pairs.assign(uplift_frc=np.nan, unc_one_sigma_frc=np.nan)
+        if self.unmeasured == "missing":
+            return pairs.drop(columns=["uplift_frc", "unc_one_sigma_frc"])
+        return pairs
 
 
 class TestAnsweringAnalyses:
@@ -388,6 +394,18 @@ class TestAnsweringAnalyses:
         assert np.isnan(out.campaign_uplift)
         assert out.per_reference is None
         assert any(w.severity == "high" and "not enough data" in w.message for w in out.warnings)
+
+    @pytest.mark.parametrize("unmeasured", ["nan", "missing"])
+    def test_a_run_v0_cannot_combine_keeps_its_test_reference_results(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unmeasured: str
+    ) -> None:
+        _Pipeline(monkeypatch, unmeasured=unmeasured)
+        (out,) = _method(tmp_path).estimate(ff.facts(), [_analysis()])
+        assert np.isnan(out.campaign_uplift)
+        assert out.per_reference is not None
+        assert list(out.per_reference["ref"]) == ["T2", "T3"]
+        assert np.isnan(out.per_turbine.iloc[0]["campaign_uplift"])
+        assert any(w.severity == "high" and "could not combine" in w.message for w in out.warnings)
 
     def test_the_records_reach_v0_without_label_columns_and_flagged(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

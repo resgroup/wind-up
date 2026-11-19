@@ -165,8 +165,11 @@ subject-reference results:
       wrong side of the test, a curtailment) still describes the wind farm; one whose data is
       wrong does not. A method needs to tell them apart, so the seam should carry both: the
       records as measured, and why each is not valid for uplift.
-- [ ] **`binned_power_curve` reproduces v0 exactly once the items above are on the input.** The
-      reproduction of the published collective control result is then a test that can be kept.
+- [x] **`binned_power_curve` reproduces v0 exactly once the items above are on the input.** Done
+      (2026-11-19, `v0_binned` through `estimate(facts, analyses)`, against PyPI 0.7.1 to 1e-9):
+      SMARTEOLE, Hill of Towie AeroUp T13, the 64 collective control pairs and every wake steering
+      run with a result (33 of 36; the other three fail inside v0 as in 0.7.1, with no reference
+      table). The Hill of Towie runs are kept as `benchmarking/baselines/reproduce_hot_v0.py`.
 
 ## Worked case: Hill of Towie Dynamic Yaw, wake steering (2026-11-18)
 

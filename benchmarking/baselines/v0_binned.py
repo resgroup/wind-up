@@ -195,7 +195,7 @@ class V0BinnedMethod:
         """Run v0 once per uplift the analysis reports, and give its results."""
         subjects = facts.subjects_of(analysis)
         warnings: list[AnalysisWarning] = list(facts.warnings())
-        runs: dict[str, tuple[pd.DataFrame, pd.DataFrame] | str] = {}
+        runs: dict[str, tuple[pd.DataFrame, pd.DataFrame | str] | str] = {}
         for report in (r for r in (AEP, CAMPAIGN) if r in analysis.report):
             runs[report] = self._run_or_reason(facts, analysis, use_lt_distribution=report == AEP)
         rows = {s: {"turbine": s, **{c: np.nan for c in PER_TURBINE_COLUMNS if c != "turbine"}} for s in subjects}
@@ -211,6 +211,13 @@ class V0BinnedMethod:
                 continue
             trdf, tdf = run
             per_reference.append(trdf.assign(report=report))
+            if isinstance(tdf, str):
+                for subject in subjects:
+                    message = f"{NOT_MEASURED}v0 could not combine the {report} uplift's test-reference results: {tdf}"
+                    warnings.append(
+                        AnalysisWarning(severity="high", step=MEASURE_STEP, turbine=subject, message=message)
+                    )
+                continue
             measured = tdf[tdf["test_wtg"].isin(subjects) & ~tdf["is_ref"]].set_index("test_wtg")
             for subject in subjects:
                 if subject in measured.index:
@@ -231,7 +238,7 @@ class V0BinnedMethod:
 
     def _run_or_reason(
         self, facts: WindFarmFacts, analysis: AnalysisSpec, *, use_lt_distribution: bool
-    ) -> tuple[pd.DataFrame, pd.DataFrame] | str:
+    ) -> tuple[pd.DataFrame, pd.DataFrame | str] | str:
         """Return :meth:`_run`'s results, or why v0 could not run for want of data."""
         try:
             return self._run(facts, analysis, use_lt_distribution=use_lt_distribution)
@@ -242,8 +249,11 @@ class V0BinnedMethod:
 
     def _run(
         self, facts: WindFarmFacts, analysis: AnalysisSpec, *, use_lt_distribution: bool
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Return v0's per test-reference results of one run and their combination per turbine."""
+    ) -> tuple[pd.DataFrame, pd.DataFrame | str]:
+        """Return v0's per test-reference results of one run and their combination per turbine.
+
+        The combination is the reason instead when v0 cannot combine the results.
+        """
         cfg = self._config(facts, analysis, use_lt_distribution=use_lt_distribution)
         upgrade = facts.upgrade(analysis.upgrade)
         records = self._records(facts, analysis, upgrade=upgrade, first=cfg.upgrade_first_dt_utc_start)
@@ -261,9 +271,12 @@ class V0BinnedMethod:
             ],
         )
         trdf = run_wind_up_analysis(inputs)
-        tdf = combine_results(
-            trdf, auto_choose_refs=self.auto_choose_refs, plot_config=plot_cfg if self.save_plots else None
-        )
+        try:
+            tdf = combine_results(
+                trdf, auto_choose_refs=self.auto_choose_refs, plot_config=plot_cfg if self.save_plots else None
+            )
+        except (ValueError, KeyError) as error:
+            return trdf, f"{type(error).__name__}: {error}"
         return trdf, tdf
 
     def _config(self, facts: WindFarmFacts, analysis: AnalysisSpec, *, use_lt_distribution: bool) -> WindUpConfig:
