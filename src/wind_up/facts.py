@@ -305,7 +305,7 @@ class Upgrade:
         windows are in neither state. The overrides are applied last.
         """
         index = pd.DatetimeIndex(index)
-        state = np.full(len(index), OFF, dtype=object)
+        state: npt.NDArray[np.object_] = np.full(len(index), OFF, dtype=object)
         if turbine in self.turbines:
             if self.mode == "toggle":
                 state = self._toggle_states(index)
