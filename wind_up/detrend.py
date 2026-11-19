@@ -44,6 +44,8 @@ def _calc_wsratio_v_wd(
 
     test_ws = detrend_df[test_ws_col].to_numpy()
     ref_ws = detrend_df[ref_ws_col].to_numpy()
+    # other dtypes take the pandas mean, which promotes them before summing
+    sum_with_numpy = all(x.dtype in (np.float64, np.float32) for x in (test_ws, ref_ws))
     ref_wd = detrend_df[ref_wd_col].to_numpy()
     directions = []
     hours = []
@@ -63,7 +65,11 @@ def _calc_wsratio_v_wd(
             accept_sector = accept_sector and ((subsector_test_ws < iec_ws_threshold).sum() >= (min_count / 4))
             accept_sector = accept_sector and ((subsector_test_ws >= iec_ws_threshold).sum() >= (min_count / 4))
             if accept_sector:
-                rom = (subsector_test_ws.sum() / count) / (ref_ws[within_dir_bin].sum() / count)
+                if sum_with_numpy:
+                    rom = (subsector_test_ws.sum() / count) / (ref_ws[within_dir_bin].sum() / count)
+                else:
+                    subsector_df = detrend_df[within_dir_bin]
+                    rom = subsector_df[test_ws_col].mean() / subsector_df[ref_ws_col].mean()
                 test_rf_ws_roms.append(rom)
             else:
                 test_rf_ws_roms.append(np.nan)
