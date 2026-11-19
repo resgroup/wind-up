@@ -18,6 +18,8 @@ def plot_rolling_windspeed_diff_one_wtg(
     plot_cfg: PlotConfig,
     sub_dir: str | None,
 ) -> None:
+    if plot_cfg.plots_unused:
+        return
     plt.figure()
     plt.plot(ser)
     plot_title = f"{wtg_name} rolling {ws_col} diff to reanalysis"

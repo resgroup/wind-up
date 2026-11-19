@@ -25,7 +25,7 @@ from wind_up_v0.long_term import calc_lt_dfs_raw_filt
 from wind_up_v0.northing import check_wtg_northing
 from wind_up_v0.plots.data_coverage_plots import plot_detrend_data_cov, plot_pre_post_data_cov
 from wind_up_v0.plots.detrend_plots import plot_apply_wsratio_v_wd_scen
-from wind_up_v0.plots.input_data import plot_input_data_timeline
+from wind_up_v0.plots.input_data import _validate_input_data_within_exclusions, plot_input_data_timeline
 from wind_up_v0.plots.scada_funcs_plots import (
     compare_active_and_reactive_power_pre_post,
     compare_ops_curves_pre_post,
@@ -35,7 +35,9 @@ from wind_up_v0.plots.yaw_direction_plots import plot_yaw_direction_pre_post
 from wind_up_v0.pp_analysis import pre_post_pp_analysis_with_reversal_and_bootstrapping
 from wind_up_v0.result_manager import result_manager
 from wind_up_v0.waking_state import (
-    add_waking_scen,
+    WfWakingState,
+    add_waking_scen_from_wf_waking_state,
+    calc_wf_waking_state,
     get_distance_and_bearing,
     get_iec_upwind_turbines,
     lat_long_is_valid,
@@ -453,6 +455,7 @@ def _calc_test_ref_results(
     post_df: pd.DataFrame,
     long_term_df: pd.DataFrame | None,
     wf_df: pd.DataFrame,
+    wf_waking_state: WfWakingState,
     test_wtg: Turbine,
     ref_name: str,
     test_pw_col: str,
@@ -552,12 +555,12 @@ def _calc_test_ref_results(
             f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
             f"rows from detrend_df where test_toggle_off was not True after the first toggle on time",
         )
-    detrend_df = add_waking_scen(
+    detrend_df = add_waking_scen_from_wf_waking_state(
         test_name=test_name,
         ref_name=ref_name,
         test_ref_df=detrend_df,
         cfg=cfg,
-        wf_df=wf_df,
+        wf_waking_state=wf_waking_state,
         ref_wd_col=ref_wd_col,
         ref_lat=ref_lat,
         ref_long=ref_long,
@@ -618,22 +621,22 @@ def _calc_test_ref_results(
         sub_dir=f"{test_name}/{ref_name}",
     )
 
-    pre_df = add_waking_scen(
+    pre_df = add_waking_scen_from_wf_waking_state(
         test_ref_df=pre_df,
         test_name=test_name,
         ref_name=ref_name,
         cfg=cfg,
-        wf_df=wf_df,
+        wf_waking_state=wf_waking_state,
         ref_wd_col=ref_wd_col,
         ref_lat=ref_lat,
         ref_long=ref_long,
     )
-    post_df = add_waking_scen(
+    post_df = add_waking_scen_from_wf_waking_state(
         test_ref_df=post_df,
         test_name=test_name,
         ref_name=ref_name,
         cfg=cfg,
-        wf_df=wf_df,
+        wf_waking_state=wf_waking_state,
         ref_wd_col=ref_wd_col,
         ref_lat=ref_lat,
         ref_long=ref_long,
@@ -813,12 +816,15 @@ def run_wind_up_analysis(
     preprocess_warning_counts = len(result_manager.stored_warnings)
     result_manager.stored_warnings = []
 
-    _fig = plot_input_data_timeline(
-        assessment_inputs=inputs,
-        save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None,
-        show_plots=inputs.plot_cfg.show_plots,
-    )
-    plt.close(_fig)
+    if not inputs.plot_cfg.plots_unused:
+        _fig = plot_input_data_timeline(
+            assessment_inputs=inputs,
+            save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None,
+            show_plots=inputs.plot_cfg.show_plots,
+        )
+        plt.close(_fig)
+    else:
+        _validate_input_data_within_exclusions(inputs)
 
     wf_df = inputs.wf_df
     pc_per_ttype = inputs.pc_per_ttype
@@ -830,6 +836,8 @@ def run_wind_up_analysis(
     wtgs_to_test = cfg.test_wtgs.copy()
     if len(cfg.ref_wtgs) > 1:
         wtgs_to_test.extend([x for x in cfg.ref_wtgs if x not in cfg.test_wtgs])
+
+    wf_waking_state = calc_wf_waking_state(wf_df)
 
     results_per_test_ref = []
     logger.info(f"test turbines: {[x.name for x in cfg.test_wtgs]}")
@@ -940,6 +948,7 @@ def run_wind_up_analysis(
                 post_df=post_df,
                 long_term_df=lt_df_filt,
                 wf_df=wf_df,
+                wf_waking_state=wf_waking_state,
                 toggle_df=inputs.pre_post_splitter.toggle_df,
                 test_wtg=test_wtg,
                 ref_name=ref_name,

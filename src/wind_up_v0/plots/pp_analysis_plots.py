@@ -202,6 +202,8 @@ def plot_pre_post_condition_histogram(
     if pre_df.empty or post_df.empty:
         _ref_and_test_str = f"ref: {ref_name}, test: {test_name}"
         logger.warning("%s - Cannot plot condition histogram as some required data is empty", _ref_and_test_str)
+    if plot_cfg.plots_unused:
+        return
     first_bin_start = first_bin_start or round(min(pre_df[col].min(), post_df[col].min()) - bin_width / 2)
     last_bin_end = last_bin_end or max(pre_df[col].max(), post_df[col].max())
     bins = list(
@@ -254,63 +256,64 @@ def plot_pre_post_conditions(
 ) -> None:
     rows_per_hour = 3600 / timebase_s
 
-    hod_width = 1
-    plt.figure()
-    plt.hist(
-        pre_df.index.hour,
-        weights=[1 / rows_per_hour] * len(pre_df.index.hour),
-        bins=list(np.arange(-hod_width / 2, 24 + hod_width / 2, hod_width)),
-        label="pre",
-    )
-    plt.hist(
-        post_df.index.hour,
-        weights=[1 / rows_per_hour] * len(post_df.index.hour),
-        bins=list(np.arange(-hod_width / 2, 24 + hod_width / 2, hod_width)),
-        alpha=0.5,
-        label="post",
-    )
-    plot_title = f"{test_name} {ref_name} hour of day coverage"
-    plt.title(plot_title)
-    plt.xticks(np.arange(0, 25, 4))
-    plt.ylabel("hours")
-    plt.xlabel("hour of day")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    if plot_cfg.show_plots:
-        plt.show()
-    if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
-    plt.close()
+    if not plot_cfg.plots_unused:
+        hod_width = 1
+        plt.figure()
+        plt.hist(
+            pre_df.index.hour,
+            weights=[1 / rows_per_hour] * len(pre_df.index.hour),
+            bins=list(np.arange(-hod_width / 2, 24 + hod_width / 2, hod_width)),
+            label="pre",
+        )
+        plt.hist(
+            post_df.index.hour,
+            weights=[1 / rows_per_hour] * len(post_df.index.hour),
+            bins=list(np.arange(-hod_width / 2, 24 + hod_width / 2, hod_width)),
+            alpha=0.5,
+            label="post",
+        )
+        plot_title = f"{test_name} {ref_name} hour of day coverage"
+        plt.title(plot_title)
+        plt.xticks(np.arange(0, 25, 4))
+        plt.ylabel("hours")
+        plt.xlabel("hour of day")
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        if plot_cfg.show_plots:
+            plt.show()
+        if plot_cfg.save_plots:
+            plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
+        plt.close()
 
-    moy_width = 1
-    plt.figure()
-    plt.hist(
-        pre_df.index.month,
-        weights=[1 / rows_per_hour] * len(pre_df.index.month),
-        bins=list(np.arange(0.5, 12 + moy_width, moy_width)),
-        label="pre",
-    )
-    plt.hist(
-        post_df.index.month,
-        weights=[1 / rows_per_hour] * len(post_df.index.month),
-        bins=list(np.arange(0.5, 12 + moy_width, moy_width)),
-        alpha=0.5,
-        label="post",
-    )
-    plot_title = f"{test_name} {ref_name} month of year coverage"
-    plt.title(plot_title)
-    plt.xticks(np.arange(1, 13, 1))
-    plt.ylabel("hours")
-    plt.xlabel("month of year")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    if plot_cfg.show_plots:
-        plt.show()
-    if plot_cfg.save_plots:
-        plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
-    plt.close()
+        moy_width = 1
+        plt.figure()
+        plt.hist(
+            pre_df.index.month,
+            weights=[1 / rows_per_hour] * len(pre_df.index.month),
+            bins=list(np.arange(0.5, 12 + moy_width, moy_width)),
+            label="pre",
+        )
+        plt.hist(
+            post_df.index.month,
+            weights=[1 / rows_per_hour] * len(post_df.index.month),
+            bins=list(np.arange(0.5, 12 + moy_width, moy_width)),
+            alpha=0.5,
+            label="post",
+        )
+        plot_title = f"{test_name} {ref_name} month of year coverage"
+        plt.title(plot_title)
+        plt.xticks(np.arange(1, 13, 1))
+        plt.ylabel("hours")
+        plt.xlabel("month of year")
+        plt.legend()
+        plt.grid()
+        plt.tight_layout()
+        if plot_cfg.show_plots:
+            plt.show()
+        if plot_cfg.save_plots:
+            plt.savefig(plot_cfg.plots_dir / test_name / ref_name / f"{plot_title}.png")
+        plt.close()
 
     wd_width = 30
     plot_pre_post_condition_histogram(
@@ -429,6 +432,8 @@ def plot_pre_post_pp_analysis(
         timebase_s=timebase_s,
         plot_cfg=plot_cfg,
     )
+    if plot_cfg.plots_unused:
+        return
 
     pp_df = pp_df.copy()
     p_low = (1 - confidence_level) / 2
@@ -511,6 +516,8 @@ def plot_pp_data_coverage(
     timebase_s: int,
     plot_cfg: PlotConfig,
 ) -> None:
+    if plot_cfg.plots_unused:
+        return
     rows_per_hour = 3600 / timebase_s
     ws_bin_edges = np.arange(0, test_df_pp_period["test_" + RAW_WINDSPEED_COL].max() + ws_bin_width, ws_bin_width)
     raw_df = test_df_pp_period.groupby(

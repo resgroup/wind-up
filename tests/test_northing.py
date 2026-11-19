@@ -2,11 +2,12 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pandas.testing import assert_frame_equal
 
 from wind_up_v0.circular_math import circ_median
-from wind_up_v0.constants import REANALYSIS_WD_COL
+from wind_up_v0.constants import REANALYSIS_WD_COL, TIMESTAMP_COL
 from wind_up_v0.models import WindUpConfig
-from wind_up_v0.northing import _calc_max_abs_north_errs, apply_northing_corrections
+from wind_up_v0.northing import _calc_max_abs_north_errs, _circ_median_and_count, apply_northing_corrections
 from wind_up_v0.scada_funcs import _scada_multi_index
 
 
@@ -47,3 +48,21 @@ def test_apply_northing_corrections(test_lsa_t13_config: WindUpConfig) -> None:
     assert abs_north_errs_after_northing["LSA_T12"] == pytest.approx(172.59341754958666)
     assert abs_north_errs_after_northing["LSA_T13"] == pytest.approx(10.894109266368332)
     assert abs_north_errs_after_northing["LSA_T14"] == pytest.approx(12.41110384502656)
+
+
+@pytest.mark.parametrize("dtype", ["float64", "float32"])
+def test_circ_median_and_count(dtype: str) -> None:
+    timestamps = pd.DatetimeIndex(
+        ["2020-01-01 00:10", "2020-01-01 00:00", "2020-01-01 00:10", "2020-01-01 00:00", "2020-01-01 00:00"],
+        tz="UTC",
+        name=TIMESTAMP_COL,
+    )
+    angles = pd.Series([90.0, 350.0, -270.0, 10.0, 5.0], index=timestamps, dtype=dtype)
+    grouped = angles.groupby(level=TIMESTAMP_COL)
+
+    actual = _circ_median_and_count(grouped)
+
+    assert actual["wf_yawdir"].to_numpy() == pytest.approx([5, 90], abs=1e-4)
+    assert actual["num_turbines"].tolist() == [3, 2]
+    expected = grouped.agg(wf_yawdir=circ_median, num_turbines=lambda x: x.count())
+    assert_frame_equal(actual, expected, check_exact=True)
