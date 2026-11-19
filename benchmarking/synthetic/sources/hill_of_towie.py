@@ -706,7 +706,7 @@ def _load_unpacked_hot_10min(
                 logger.info("Writing HoT cache: %s", paths[serial])
                 _write_atomically(paths[serial], serial_df.to_parquet)
         per_turbine = [pd.read_parquet(paths[serial]) for serial in serial_numbers]
-        year_frames.append(pd.concat(per_turbine, axis=1))
+        year_frames.append(pd.concat(per_turbine, axis=1, sort=True))
     return pd.concat(year_frames, verify_integrity=True, sort=True)
 
 
