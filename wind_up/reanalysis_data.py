@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import logging
 import math
 from dataclasses import dataclass
@@ -125,7 +124,7 @@ def _wind_speed_by_timestamp_and_turbine(wf_df: pd.DataFrame) -> tuple[pd.Index,
     """Arrange the wind speed of `wf_df` with a row per timestamp and a column per turbine.
 
     :return: the timestamps and the wind speed array, or None unless `wf_df` is sorted by turbine and has the same
-        sorted timestamps for every turbine
+        sorted timestamps, none missing, for every turbine
     """
     index = wf_df.index
     if (
@@ -147,6 +146,7 @@ def _wind_speed_by_timestamp_and_turbine(wf_df: pd.DataFrame) -> tuple[pd.Index,
         (turbine_codes != turbine_codes[:, [0]]).any()
         or len(np.unique(turbine_codes[:, 0])) != len(turbine_codes)
         or (timestamp_codes != timestamp_codes[0]).any()
+        or (timestamp_codes[0] < 0).any()
         or not (timestamps.is_unique and timestamps.is_monotonic_increasing)
     ):
         return None
@@ -158,10 +158,7 @@ def _wind_speed_by_timestamp_and_turbine(wf_df: pd.DataFrame) -> tuple[pd.Index,
 
 def _calc_wf_mean_wind_speed_and_data_coverage(wf_df: pd.DataFrame, *, num_turbines: int) -> pd.DataFrame:
     """Calculate the mean wind speed of the turbines and the fraction of turbines with a wind speed, by timestamp."""
-    pandas_sums_with_numpy = importlib.util.find_spec("bottleneck") is None or not pd.get_option(
-        "compute.use_bottleneck"
-    )
-    by_timestamp_and_turbine = _wind_speed_by_timestamp_and_turbine(wf_df) if pandas_sums_with_numpy else None
+    by_timestamp_and_turbine = _wind_speed_by_timestamp_and_turbine(wf_df)
     if by_timestamp_and_turbine is None:
         return wf_df.groupby(TIMESTAMP_COL).agg(
             WindSpeedMean=pd.NamedAgg(column="WindSpeedMean", aggfunc=lambda x: x.mean()),
