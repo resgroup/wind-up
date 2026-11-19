@@ -18,7 +18,7 @@ def plot_rolling_windspeed_diff_one_wtg(
     plot_cfg: PlotConfig,
     sub_dir: str | None,
 ) -> None:
-    if not (plot_cfg.show_plots or plot_cfg.save_plots):
+    if plot_cfg.plots_unused:
         return
     plt.figure()
     plt.plot(ser)

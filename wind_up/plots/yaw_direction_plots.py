@@ -185,7 +185,7 @@ def plot_yaw_direction_pre_post(
     plot_cfg: PlotConfig,
     toggle_name: str | None = None,
 ) -> None:
-    if not (plot_cfg.show_plots or plot_cfg.save_plots):
+    if plot_cfg.plots_unused:
         return
     test_wd_col = "test_YawAngleMean"
     plot_pre_df = pre_df.dropna(subset=[test_wd_col, ref_ws_col, ref_wd_col]).copy()

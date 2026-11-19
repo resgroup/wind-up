@@ -813,7 +813,7 @@ def run_wind_up_analysis(
     preprocess_warning_counts = len(result_manager.stored_warnings)
     result_manager.stored_warnings = []
 
-    if inputs.plot_cfg.show_plots or inputs.plot_cfg.save_plots:
+    if not inputs.plot_cfg.plots_unused:
         _fig = plot_input_data_timeline(
             assessment_inputs=inputs,
             save_to_folder=inputs.plot_cfg.plots_dir if inputs.plot_cfg.save_plots else None,

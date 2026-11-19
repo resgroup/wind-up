@@ -202,7 +202,7 @@ def plot_pre_post_condition_histogram(
     if pre_df.empty or post_df.empty:
         _ref_and_test_str = f"ref: {ref_name}, test: {test_name}"
         logger.warning("%s - Cannot plot condition histogram as some required data is empty", _ref_and_test_str)
-    if not (plot_cfg.show_plots or plot_cfg.save_plots):
+    if plot_cfg.plots_unused:
         return
     first_bin_start = first_bin_start or round(min(pre_df[col].min(), post_df[col].min()) - bin_width / 2)
     last_bin_end = last_bin_end or max(pre_df[col].max(), post_df[col].max())
@@ -256,7 +256,7 @@ def plot_pre_post_conditions(
 ) -> None:
     rows_per_hour = 3600 / timebase_s
 
-    if plot_cfg.show_plots or plot_cfg.save_plots:
+    if not plot_cfg.plots_unused:
         hod_width = 1
         plt.figure()
         plt.hist(
@@ -432,7 +432,7 @@ def plot_pre_post_pp_analysis(
         timebase_s=timebase_s,
         plot_cfg=plot_cfg,
     )
-    if not (plot_cfg.show_plots or plot_cfg.save_plots):
+    if plot_cfg.plots_unused:
         return
 
     pp_df = pp_df.copy()
@@ -516,7 +516,7 @@ def plot_pp_data_coverage(
     timebase_s: int,
     plot_cfg: PlotConfig,
 ) -> None:
-    if not (plot_cfg.show_plots or plot_cfg.save_plots):
+    if plot_cfg.plots_unused:
         return
     rows_per_hour = 3600 / timebase_s
     ws_bin_edges = np.arange(0, test_df_pp_period["test_" + RAW_WINDSPEED_COL].max() + ws_bin_width, ws_bin_width)
