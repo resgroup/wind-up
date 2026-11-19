@@ -336,6 +336,19 @@ class TestDeclarations:
         assert missing[WAKING_STATE_COL] == "missing"
         assert not missing[VALID_NORTHING_COL]
 
+    def test_an_override_leaves_a_missing_record_missing(self) -> None:
+        power = [1000.0, np.nan, 1002.0]
+        scada = frame(3, **{COLS.active_power: power})
+        labelled = apply_declarations(
+            label(scada),
+            turbine_col=COLS.turbine,
+            config=SITE,
+            exclusions=[],
+            overrides=[("T01", scada.index[0], scada.index[-1] + TIMEBASE, NORMAL_OPERATION)],
+        )
+        assert labelled[STATE_COL].tolist() == [NORMAL_OPERATION, MISSING, NORMAL_OPERATION]
+        assert labelled[VALID_UPLIFT_COL].tolist() == [True, False, True]
+
     def test_a_farm_wide_exclusion_covers_every_turbine(self) -> None:
         start = frame(6).index
         labelled = self.apply(exclusions=[(None, start[5], start[5] + TIMEBASE)])

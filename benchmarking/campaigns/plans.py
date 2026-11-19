@@ -83,7 +83,9 @@ def uplift_validity(scada_df: pd.DataFrame, *, turbine_col: str) -> pd.DataFrame
 def labelled_scada(spec: CampaignSpec, frame: pd.DataFrame, *, columns: ColumnSchema) -> pd.DataFrame:
     """Return ``frame`` with the step 2 labels: as given when it has them, else the generic states.
 
-    A frame labelled here takes the campaign's label overrides and exclusions too.
+    A frame that has the labels is used as given, so it must already carry the campaign's label overrides and
+    exclusions, as :func:`~benchmarking.campaigns.preparation.prepare_data` returns it. A frame labelled here
+    takes them too.
     """
     if VALID_UPLIFT_COL in frame.columns:
         return frame
@@ -172,8 +174,9 @@ def plans_for(
     their works overlap it.
 
     :param spec: the campaign's public facts
-    :param scada_df: long-format SCADA with the step 2 labels, or labelled here with the generic states; each
-        side's length and each reference's coverage are read from its records valid for uplift
+    :param scada_df: long-format SCADA with the step 2 labels and the campaign's declarations applied, or
+        labelled here with the generic states (see :func:`labelled_scada`); each side's length and each
+        reference's coverage are read from its records valid for uplift
     :param columns: the schema ``scada_df`` is keyed by
     :param settings: how spans and references are chosen
     :param possible_changes: each turbine's indicators of an undeclared change; one inside a plan's

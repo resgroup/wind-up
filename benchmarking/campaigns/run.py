@@ -243,8 +243,9 @@ def estimate_campaign(
     ``unplanned`` with the reason, and the campaign continues without it.
 
     :param spec: the public campaign facts; methods see nothing else
-    :param scada_df: long-format source-native SCADA covering the campaign, with the step 2 labels; a frame
-        without them is labelled with the generic states and the campaign's declarations
+    :param scada_df: long-format source-native SCADA covering the campaign, with the step 2 labels and the
+        campaign's declarations applied; a frame without the labels is labelled with the generic states and
+        the declarations
     :param build_methods: given an upgraded turbine's name, the methods to run for it
     :param columns: the source-native schema ``scada_df`` is keyed by
     :param era5_wd: reanalysis wind direction for the shared northing step

@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
+import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.power_model.features import solar_elevation_frame
@@ -53,6 +54,8 @@ from benchmarking.harness.waking import WAKING_COLUMNS, add_waking_scenarios, wa
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
+
+    import numpy.typing as npt
 
     from benchmarking.campaigns.declaration import CampaignSpec
     from benchmarking.harness.reanalysis import ReanalysisResult
@@ -174,9 +177,7 @@ def prepare_data(
             cell_selection=cell_selection,
             out_dir=out_dir / stages.REANALYSIS,
         )
-        learned = northing_rows(
-            scada_df, columns=columns, rated_power_kw=spec.rated_power_kw, era5_wd=reanalysis.aligned[ERA5_WD_RAW]
-        )
+        learned = northing_learning_set(scada_df, spec=spec, columns=columns, era5_wd=reanalysis.aligned[ERA5_WD_RAW])
         write_validity_plots(
             scada_df.assign(**{VALID_NORTHING_COL: learned}),
             views=NORTHING_VIEWS,
@@ -237,6 +238,18 @@ def prepare_data(
         possible_changes=possible_changes,
         timebase=timebase,
     )
+
+
+def northing_learning_set(
+    scada_df: pd.DataFrame, *, spec: CampaignSpec, columns: ColumnSchema, era5_wd: pd.Series
+) -> npt.NDArray[np.bool_]:
+    """Rows of a step-2 labelled frame that northing discovery learns from.
+
+    None when the campaign declares its corrections or turns discovery off.
+    """
+    if spec.north_offsets is not None:
+        return np.zeros(len(scada_df), dtype=bool)
+    return northing_rows(scada_df, columns=columns, rated_power_kw=spec.rated_power_kw, era5_wd=era5_wd)
 
 
 def _add_waking(

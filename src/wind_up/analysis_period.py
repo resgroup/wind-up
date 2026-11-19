@@ -193,6 +193,12 @@ def valid_extents(valid: pd.DataFrame) -> dict[str, Window]:
     return extents
 
 
+def _flips(positions: np.ndarray, qualifies: np.ndarray) -> list[int]:
+    """Return, at each change of ``qualifies``, the position on its qualifying side."""
+    changes = np.flatnonzero(qualifies[:-1] != qualifies[1:])
+    return [int(p) for p in np.where(qualifies[changes], positions[changes], positions[changes + 1])]
+
+
 def _timebase(index: pd.DatetimeIndex) -> pd.Timedelta:
     """Return the median step of ``index``; ten minutes for fewer than two records."""
     return pd.Timedelta(np.median(np.diff(index.to_numpy()))) if len(index) > 1 else pd.Timedelta(minutes=10)
@@ -345,7 +351,52 @@ class _Timeline:
         return _Option(start, end, pre, post, references, self.pool_met(start, end), worst)
 
     def edges(self) -> tuple[list[pd.Timestamp], list[pd.Timestamp]]:
-        """Return the candidate starts and ends the search is exact over."""
+        """Return the candidate starts and ends the search runs over.
+
+        Besides the caps, the works windows and the valid extents, these are the starts and ends at which a
+        candidate's valid share crosses ``reference_share`` against each of the other edges.
+        """
+        starts, ends = self.timeline_edges()
+        crossing_starts, crossing_ends = self.share_crossings(starts, ends)
+        return sorted({*starts, *crossing_starts}), sorted({*ends, *crossing_ends})
+
+    def share_crossings(
+        self, starts: Sequence[pd.Timestamp], ends: Sequence[pd.Timestamp]
+    ) -> tuple[list[pd.Timestamp], list[pd.Timestamp]]:
+        """Return the starts and ends where a candidate's valid share of the span crosses ``reference_share``.
+
+        Starts are found against each of ``ends`` and ends against each of ``starts``, for every candidate
+        within the distance limit, among the starts and ends leaving the test turbine ``min_side`` of valid time.
+        """
+        first, last = self.extents[self.turbine]
+        start_range = (self.position(first), self.position(self.reach(self.settings.min_side, before=True)))
+        end_range = (self.position(self.reach(self.settings.min_side, before=False)), self.position(last))
+        crossing_starts: set[pd.Timestamp] = set()
+        crossing_ends: set[pd.Timestamp] = set()
+        for other in self.ranked:
+            counts = self.counts.get(other)
+            if counts is None or not self.within(other):
+                continue
+            for end in ends:
+                at = self.position(end)
+                positions = np.arange(start_range[0], min(start_range[1], at - 1) + 1)
+                shares = (counts[at] - counts[positions]) / (at - positions)
+                crossing_starts.update(
+                    self.stamp(p) for p in _flips(positions, shares >= self.settings.reference_share)
+                )
+            for start in starts:
+                at = self.position(start)
+                positions = np.arange(max(end_range[0], at + 1), end_range[1] + 1)
+                shares = (counts[positions] - counts[at]) / (positions - at)
+                crossing_ends.update(self.stamp(p) for p in _flips(positions, shares >= self.settings.reference_share))
+        return sorted(crossing_starts), sorted(crossing_ends)
+
+    def stamp(self, position: int) -> pd.Timestamp:
+        """Return the timestamp at ``position`` of the index, one timebase after the last past its end."""
+        return self.index[position] if position < len(self.index) else self.index[-1] + self.timebase
+
+    def timeline_edges(self) -> tuple[list[pd.Timestamp], list[pd.Timestamp]]:
+        """Return the starts and ends set by the caps, the works windows and the valid extents."""
         first, last = self.extents[self.turbine]
         starts = {first, self.a - self.settings.pre_cap, self.reach(self.settings.pre_cap, before=True)}
         ends = {last, self.b + self.settings.side_cap, self.reach(self.settings.side_cap, before=False)}

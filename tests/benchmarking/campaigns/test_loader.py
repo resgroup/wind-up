@@ -258,6 +258,17 @@ class TestReanalysis:
     def test_the_exclusive_end_does_not_pull_in_an_extra_year(self) -> None:
         assert era5_window(utc("2017-03-04"), utc("2019-01-01"))[1] == "2018-12-31"
 
+    def test_a_record_running_to_the_present_ends_the_window_today(self) -> None:
+        """The archive rejects an end date after today, so a live campaign's fetch failed before any analysis."""
+        today = utc("2026-11-17 15:30")
+        assert era5_window(utc("2025-04-07"), utc("2026-11-17 15:00"), today=today) == ("2025-01-01", "2026-11-17")
+
+    def test_the_window_defaults_to_clamping_at_today_in_utc(self) -> None:
+        before = pd.Timestamp.now(tz="UTC")
+        end = era5_window(before - pd.Timedelta(days=30), before)[1]
+        after = pd.Timestamp.now(tz="UTC")
+        assert before.strftime("%Y-%m-%d") <= end <= after.strftime("%Y-%m-%d")
+
     def test_onshore_with_period_start_utc_timestamps_by_default(self, tmp_path: Path) -> None:
         declaration = load(tmp_path)
         assert declaration.timestamps == TimestampConvention(convention="start", time_zone="UTC")
@@ -436,6 +447,11 @@ class TestTheWorksTable:
             (utc("2018-06-01"), utc("2018-06-02")),
             (utc("2018-09-01"), utc("2018-09-04")),
         ]
+
+    @pytest.mark.parametrize(("first", "last"), [("2018/01/10", "2018/01/12"), ("2018-1-10", "2018-1-12")])
+    def test_a_date_spelled_another_way_still_covers_whole_days(self, tmp_path: Path, first: str, last: str) -> None:
+        works = WORKS_CSV.replace("T01,2018-01-10,2018-01-12", f"T01,{first},{last}")
+        assert load_staggered(tmp_path, works=works).spec.works["T01"] == [(utc("2018-01-10"), utc("2018-01-13"))]
 
     def test_a_time_of_day_is_an_exact_instant_end_exclusive(self, tmp_path: Path) -> None:
         works = WORKS_CSV.replace("T01,2018-01-10,2018-01-12", "T01,2018-01-10T07:00:00Z,2018-01-10T18:00:00Z")

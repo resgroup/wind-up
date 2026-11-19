@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import math
 from typing import TYPE_CHECKING
@@ -20,7 +21,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _pp_raw_df(
+@functools.lru_cache(maxsize=16)
+def _bins_dtype(bin_edges: tuple[float, ...]) -> pd.CategoricalDtype:
+    return pd.cut(np.array(bin_edges), bins=np.array(bin_edges), retbins=False).dtype
+
+
+def _cut(values: np.ndarray, *, bin_edges: np.ndarray) -> pd.Categorical:
+    """Bin `values` as `pd.cut(values, bins=bin_edges)` does."""
+    dtype = _bins_dtype(tuple(bin_edges.tolist()))
+    bin_after = np.searchsorted(bin_edges, values, side="left")
+    codes = np.where((bin_after == 0) | (bin_after == len(bin_edges)), -1, bin_after - 1)
+    return pd.Categorical.from_codes(codes, dtype=dtype)
+
+
+def _pp_raw_df_with_pandas(
     pre_or_post_df: pd.DataFrame,
     pre_or_post: str,
     *,
@@ -62,11 +76,98 @@ def _pp_raw_df(
     )
 
 
+def _pp_raw_df(
+    pre_or_post_df: pd.DataFrame,
+    pre_or_post: str,
+    *,
+    ws_col: str,
+    ws_bin_edges: np.ndarray,
+    pw_col: str,
+    timebase_s: int,
+) -> pd.DataFrame:
+    """Bin `pw_col` by `ws_col`, on numpy arrays for float64 columns with a unique index, otherwise with pandas."""
+    if not (pre_or_post_df.index.is_unique and all(pre_or_post_df[x].dtype == np.float64 for x in (pw_col, ws_col))):
+        return _pp_raw_df_with_pandas(
+            pre_or_post_df,
+            pre_or_post,
+            ws_col=ws_col,
+            ws_bin_edges=ws_bin_edges,
+            pw_col=pw_col,
+            timebase_s=timebase_s,
+        )
+    pw = pre_or_post_df[pw_col].to_numpy()
+    ws = pre_or_post_df[ws_col].to_numpy()
+    is_kept = ~(np.isnan(pw) | np.isnan(ws))
+    data = pd.DataFrame({pw_col: pw[is_kept], ws_col: ws[is_kept]})
+    # only the rows kept are binned
+    grouped = data.groupby(by=_cut(data[ws_col].to_numpy(), bin_edges=ws_bin_edges), observed=False)
+    count = grouped.size().to_numpy()
+    mean_df = grouped.mean()
+    std_df = grouped.std().fillna(0)
+    sqrt_count = np.sqrt(np.maximum(count, 1))
+    bins = _bins_dtype(tuple(ws_bin_edges.tolist())).categories
+    return pd.DataFrame(
+        {
+            f"count_{pre_or_post}": count,
+            f"ws_mean_{pre_or_post}": mean_df[ws_col].to_numpy(),
+            f"ws_std_{pre_or_post}": std_df[ws_col].to_numpy(),
+            f"pw_mean_{pre_or_post}": mean_df[pw_col].to_numpy(),
+            f"pw_std_{pre_or_post}": std_df[pw_col].to_numpy(),
+            f"hours_{pre_or_post}": count * timebase_s / 3600,
+            f"ws_sem_{pre_or_post}": std_df[ws_col].to_numpy() / sqrt_count,
+            f"pw_sem_{pre_or_post}": std_df[pw_col].to_numpy() / sqrt_count,
+            "bin_left": bins.left,
+            "bin_mid": bins.mid,
+            "bin_right": bins.right,
+            "bin_closed_right": bins.closed_right,
+        },
+        index=pd.Index(bins.mid, name=f"{ws_col}_bin_mid"),
+    )
+
+
 def _calc_rated_ws(*, pp_df: pd.DataFrame, pw_col: str, rated_power: float) -> float:
     return pp_df.loc[pp_df[pw_col] >= rated_power * 0.995, "bin_mid"].min() + 1
 
 
-def _cook_pp(
+def _ffill_bfill(values: np.ndarray) -> np.ndarray:
+    """Fill missing values with the previous value, then those still missing with the next value."""
+    positions = np.arange(len(values))
+    is_valid = ~np.isnan(values)
+    filled = values[np.maximum.accumulate(np.where(is_valid, positions, 0))]
+    is_valid = ~np.isnan(filled)
+    next_valid = np.minimum.accumulate(np.where(is_valid, positions, len(values) - 1)[::-1])[::-1]
+    return filled[next_valid]
+
+
+def _interpolate_forward(values: np.ndarray) -> np.ndarray:
+    """Fill missing values linearly by position, as `pd.Series.interpolate()` does, leaving leading gaps missing."""
+    is_valid = ~np.isnan(values)
+    if is_valid.all() or not is_valid.any():
+        return values
+    positions = np.arange(len(values))
+    filled = values.copy()
+    filled[~is_valid] = np.interp(positions[~is_valid], positions[is_valid], values[is_valid])
+    filled[: np.argmax(is_valid)] = np.nan
+    return filled
+
+
+def _clip_lower(values: np.ndarray, lower: float) -> np.ndarray:
+    return np.where(np.isnan(values) | (values >= lower), values, lower)
+
+
+def _clip_upper(values: np.ndarray, upper: float) -> np.ndarray:
+    return np.where(np.isnan(values) | (values <= upper), values, upper)
+
+
+def _clip_lower_and_upper(values: np.ndarray, *, lower: float, upper: np.ndarray) -> np.ndarray:
+    """Clip as `pd.Series.clip` does with a scalar lower bound and an array upper bound, missing meaning no bound."""
+    clipped = _clip_lower(values, lower)
+    if np.isnan(upper).all():
+        return clipped
+    return np.where((values <= np.where(np.isnan(upper), np.inf, upper)) | np.isnan(clipped), clipped, upper)
+
+
+def _cook_pp_with_pandas(
     pp_df: pd.DataFrame,
     *,
     pre_or_post: str,
@@ -142,6 +243,110 @@ def _cook_pp(
     return pp_df
 
 
+def _cook_pp(
+    pp_df: pd.DataFrame,
+    *,
+    pre_or_post: str,
+    ws_bin_width: float,
+    rated_power: float,
+    clip_to_rated: bool,
+    site_mean_pc_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Cook `pp_df` on numpy arrays when its columns are float64 and its index unique, otherwise with pandas."""
+    valid_col = f"{pre_or_post}_valid"
+    raw_pw_col = f"pw_mean_{pre_or_post}_raw"
+    raw_hours_col = f"hours_{pre_or_post}_raw"
+    pw_col = f"pw_mean_{pre_or_post}"
+    pw_sem_col = f"pw_sem_{pre_or_post}"
+    hours_col = f"hours_{pre_or_post}"
+    ws_col = f"ws_mean_{pre_or_post}"
+    pw_at_mid_col = f"pw_at_mid_{pre_or_post}"
+    pw_sem_at_mid_col = f"pw_sem_at_mid_{pre_or_post}"
+
+    if not (
+        pp_df.index.is_unique
+        and all(pp_df[x].dtype == np.float64 for x in (pw_col, hours_col, ws_col, pw_sem_col))
+        and pp_df["bin_mid"].dtype in {np.dtype(np.float64), np.dtype(np.int64)}
+    ):
+        return _cook_pp_with_pandas(
+            pp_df,
+            pre_or_post=pre_or_post,
+            ws_bin_width=ws_bin_width,
+            rated_power=rated_power,
+            clip_to_rated=clip_to_rated,
+            site_mean_pc_df=site_mean_pc_df,
+        )
+    raw_pw = pp_df[pw_col].to_numpy()
+    raw_hours = pp_df[hours_col].to_numpy()
+    bin_mid = pp_df["bin_mid"].to_numpy()
+
+    # IEC minimum would be 1 hrs_per_mps but using 3 b/c typically higher noise with turbine side-by-side
+    hrs_per_mps = 3
+    valid = raw_hours > (ws_bin_width * hrs_per_mps)
+    pw = np.where(valid, raw_pw, np.nan)
+    hours = np.where(valid, raw_hours, 0)
+    ws = np.where(valid, pp_df[ws_col].to_numpy(), np.nan)
+    ws = np.where(np.isnan(ws), bin_mid, ws)
+    pw_sem = np.where(valid, pp_df[pw_sem_col].to_numpy(), np.nan)
+
+    # data which would have been at rated can be gap filled
+    bin_mids_at_rated = bin_mid[raw_pw >= rated_power * 0.995]
+    rated_ws = bin_mids_at_rated.min() + 1 if len(bin_mids_at_rated) > 0 else np.nan
+    empty_rated_bins_fill_value = rated_power
+    if not clip_to_rated:
+        with contextlib.suppress(IndexError):
+            empty_rated_bins_fill_value = pw[(bin_mid >= rated_ws) & ~np.isnan(pw)][-1]
+    pw = np.where((bin_mid >= rated_ws) & np.isnan(pw), empty_rated_bins_fill_value, pw)
+
+    # For bins with insufficient data, fill power with site mean power curve if provided
+    if site_mean_pc_df is not None:
+        pw = np.where(valid, pw, np.interp(bin_mid, site_mean_pc_df["bin_mid"], site_mean_pc_df["pw_clipped"]))
+
+    # Clip power below zero and above rated if requested
+    pw = _clip_lower(pw, 0)
+    if clip_to_rated:
+        pw = _clip_upper(pw, rated_power)
+
+    pw_sem = _ffill_bfill(pw_sem)
+
+    # missing data at low wind speed can be filled with 0
+    missing_at_low_ws = np.logical_and.accumulate(np.isnan(pw))
+    pw = np.where(missing_at_low_ws, 0, pw)
+    pw_sem = np.where(missing_at_low_ws, 0, pw_sem)
+
+    # revisit in future, an alternative is filling in with SCADA power curve
+    pw = _interpolate_forward(pw)
+
+    # interpolate power and ci to bin mid
+    pw_at_mid = _clip_lower(np.interp(bin_mid, ws, pw), 0)
+    if clip_to_rated:
+        pw_at_mid = _clip_upper(pw_at_mid, rated_power)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pw_sem_at_mid = pw_sem / pw * pw_at_mid
+    pw_sem_at_mid = np.where(np.isnan(pw_sem_at_mid), 0, pw_sem_at_mid)
+    pw_sem_at_mid = _clip_lower_and_upper(pw_sem_at_mid, lower=0, upper=pw_sem)
+
+    new_cols = {
+        raw_pw_col: raw_pw,
+        raw_hours_col: raw_hours,
+        valid_col: valid,
+        pw_col: pw,
+        hours_col: hours,
+        ws_col: ws,
+        pw_sem_col: pw_sem,
+        pw_at_mid_col: pw_at_mid,
+        pw_sem_at_mid_col: pw_sem_at_mid,
+    }
+    cols = {col: new_cols.get(col, pp_df[col].array) for col in pp_df.columns} | new_cols
+    pp_df = pd.DataFrame(cols, index=pp_df.index)
+
+    if any(pd.isna(values).any() for col, values in cols.items() if col != raw_pw_col):
+        msg = "pp_df has missing values"
+        result_manager.warning(msg)
+
+    return pp_df
+
+
 def _add_uplift_cols_to_pp_df(
     pp_df: pd.DataFrame, *, p_low: float, p_high: float, t_values: np.ndarray
 ) -> pd.DataFrame:
@@ -167,6 +372,41 @@ def _add_uplift_cols_to_pp_df(
     return new_pp_df
 
 
+def _select_site_mean_pc(
+    *,
+    wtg: Turbine,
+    site_mean_pc_df: pd.DataFrame | None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None,
+) -> pd.DataFrame | None:
+    """Return the site mean power curve to gap-fill with for the turbine type of `wtg`."""
+    if site_mean_pc_per_ttype is None:
+        return site_mean_pc_df
+    if site_mean_pc_df is not None:
+        msg = "pass only one of site_mean_pc_df and site_mean_pc_per_ttype"
+        raise ValueError(msg)
+    ttype = wtg.turbine_type.turbine_type
+    if ttype not in site_mean_pc_per_ttype:
+        msg = (
+            f"site_mean_pc_per_ttype has no power curve for turbine type {ttype!r} "
+            f"(needed for {wtg.name}); available types: {sorted(site_mean_pc_per_ttype)}"
+        )
+        raise ValueError(msg)
+    return site_mean_pc_per_ttype[ttype]
+
+
+def _bin_t_values(pp_df: pd.DataFrame, *, p_high: float, timebase_s: int) -> np.ndarray:
+    return t.ppf(
+        p_high,
+        np.minimum(pp_df["hours_pre"].clip(lower=2), pp_df["hours_post"].clip(lower=2)) * 3600 / timebase_s - 1,
+    )
+
+
+def _check_plot_cfg_needs_uplift_cols(*, plot_cfg: PlotConfig | None, add_uplift_cols: bool) -> None:
+    if not add_uplift_cols and plot_cfg is not None:
+        msg = "plot_cfg must be None when add_uplift_cols is False"
+        raise ValueError(msg)
+
+
 def _pre_post_pp_analysis(
     *,
     cfg: WindUpConfig,
@@ -183,7 +423,15 @@ def _pre_post_pp_analysis(
     test_df: pd.DataFrame | None = None,
     reverse: bool = False,
     site_mean_pc_df: pd.DataFrame | None = None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None = None,
+    add_uplift_cols: bool = True,
 ) -> tuple[dict, pd.DataFrame]:
+    """Calculate the pre-post power curve uplift of the test turbine.
+
+    Set `add_uplift_cols` False to leave the uplift and relative Cp columns out of the returned frame, e.g. when only
+    the results dictionary is used; `plot_cfg` must then be None.
+    """
+    _check_plot_cfg_needs_uplift_cols(plot_cfg=plot_cfg, add_uplift_cols=add_uplift_cols)
     wtg_for_turbine_type = test_wtg
     test_name = test_wtg.name
     if reverse:
@@ -195,6 +443,9 @@ def _pre_post_pp_analysis(
         pw_col = pw_col.replace("test", "ref")
     cutout_ws = wtg_for_turbine_type.turbine_type.cutout_ws_mps
     rated_power = wtg_for_turbine_type.turbine_type.rated_power_kw
+    site_mean_pc_df = _select_site_mean_pc(
+        wtg=wtg_for_turbine_type, site_mean_pc_df=site_mean_pc_df, site_mean_pc_per_ttype=site_mean_pc_per_ttype
+    )
 
     ws_bin_edges = np.arange(0, cutout_ws + cfg.ws_bin_width, cfg.ws_bin_width)
 
@@ -288,13 +539,11 @@ def _pre_post_pp_analysis(
         norm.cdf(1),
         valid_count - 1,
     )
-    t_values = t.ppf(
-        p_high,
-        np.minimum(pp_df["hours_pre"].clip(lower=2), pp_df["hours_post"].clip(lower=2)) * 3600 / cfg.timebase_s - 1,
-    )
     unc_one_sigma_mwh = uplift_se_mwh * t_value_one_sigma
 
-    pp_df = _add_uplift_cols_to_pp_df(pp_df, p_low=p_low, p_high=p_high, t_values=t_values)
+    if add_uplift_cols:
+        t_values = _bin_t_values(pp_df, p_high=p_high, timebase_s=cfg.timebase_s)
+        pp_df = _add_uplift_cols_to_pp_df(pp_df, p_low=p_low, p_high=p_high, t_values=t_values)
 
     pp_valid_hours_pre = pp_df["hours_pre"].sum()
     pp_valid_hours_post = pp_df["hours_post"].sum()
@@ -357,6 +606,7 @@ def _calc_power_only_and_reversed_uplifts(
     wd_col: str,
     confidence_level: float = 0.9,
     site_mean_pc_df: pd.DataFrame | None = None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[float, float]:
     # calculate power only forward result
     pre_power_only = pre_df.copy()
@@ -380,6 +630,8 @@ def _calc_power_only_and_reversed_uplifts(
         plot_cfg=None,
         confidence_level=confidence_level,
         site_mean_pc_df=site_mean_pc_df,
+        site_mean_pc_per_ttype=site_mean_pc_per_ttype,
+        add_uplift_cols=False,
     )
 
     # need to predict the reference wind speed using the test wind speed for reverse analysis
@@ -403,6 +655,8 @@ def _calc_power_only_and_reversed_uplifts(
         confidence_level=confidence_level,
         reverse=True,
         site_mean_pc_df=site_mean_pc_df,
+        site_mean_pc_per_ttype=site_mean_pc_per_ttype,
+        add_uplift_cols=False,
     )
 
     poweronly_uplift_frc = power_only_results["uplift_frc"]
@@ -425,6 +679,8 @@ def _pre_post_pp_analysis_with_reversal(
     confidence_level: float = 0.9,
     test_df: pd.DataFrame | None = None,
     site_mean_pc_df: pd.DataFrame | None = None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None = None,
+    add_uplift_cols: bool = True,
 ) -> tuple[dict, pd.DataFrame]:
     pp_results, pp_df = _pre_post_pp_analysis(
         cfg=cfg,
@@ -440,6 +696,8 @@ def _pre_post_pp_analysis_with_reversal(
         confidence_level=confidence_level,
         test_df=test_df,
         site_mean_pc_df=site_mean_pc_df,
+        site_mean_pc_per_ttype=site_mean_pc_per_ttype,
+        add_uplift_cols=add_uplift_cols,
     )
 
     if test_wtg.name == ref_name:
@@ -458,6 +716,7 @@ def _pre_post_pp_analysis_with_reversal(
             wd_col=wd_col,
             confidence_level=confidence_level,
             site_mean_pc_df=site_mean_pc_df,
+            site_mean_pc_per_ttype=site_mean_pc_per_ttype,
         )
         reversal_error = reversed_uplift_frc - poweronly_uplift_frc
     if plot_cfg is not None:
@@ -485,6 +744,65 @@ def _pre_post_pp_analysis_with_reversal(
     return pp_results, pp_df
 
 
+def _bootstrap_columns(*, test_name: str, ref_name: str, ws_col: str, pw_col: str) -> list[str]:
+    """List the columns of the pre and post data which the analysis of a bootstrap sample reads."""
+    cols = [ws_col, pw_col]
+    if test_name != ref_name:
+        cols += ["ref_ws_est_from_power_only", "test_ws_est_from_power_only", "ws_rom", pw_col.replace("test", "ref")]
+    return list(dict.fromkeys(cols))
+
+
+def _random_rows_in_index_order(df: pd.DataFrame, *, size: int | np.integer, rng: np.random.Generator) -> pd.DataFrame:
+    """Draw `size` rows of `df` without replacement and order them by index."""
+    if not df.index.is_unique:
+        return df.loc[rng.choice(df.index, size=size, replace=False)].sort_index()
+    ilocs = rng.choice(len(df), size=size, replace=False)
+    if df.index.is_monotonic_increasing:
+        is_drawn = np.zeros(len(df), dtype=bool)
+        is_drawn[ilocs] = True
+        return df.iloc[np.flatnonzero(is_drawn)]
+    return df.iloc[ilocs[df.index.take(ilocs).argsort()]]
+
+
+def _blocks_in_index_order(
+    df: pd.DataFrame, blocks: np.ndarray, *, block_size: int, index_is_unique: bool
+) -> pd.DataFrame:
+    """Take `blocks` of `block_size` consecutive rows of `df`, which is ordered by index, and order them by index."""
+    if index_is_unique:
+        unique_blocks, repeats = np.unique(blocks, return_counts=True)
+        ilocs = (block_size * unique_blocks[:, None] + np.arange(block_size)[None, :]).flatten()
+        # a row of a block drawn more than once is repeated in place, as sorting the positions would do
+        return df.iloc[np.repeat(ilocs, np.repeat(repeats, block_size))]
+    ilocs = (block_size * blocks[:, None] + np.arange(block_size)[None, :]).flatten()
+    return df.iloc[ilocs].sort_index()
+
+
+def _block_bootstrap_sample(
+    pre_df: pd.DataFrame, post_df: pd.DataFrame, *, rng: np.random.Generator
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Draw one block bootstrap sample of the pre and post data.
+
+    Each frame is randomly trimmed to a whole number of equal blocks, then the same blocks are drawn with replacement
+    from both. The samples are ordered by the original index and returned with a new index.
+    """
+    num_blocks = rng.choice([9, 10, 11])
+    block_size_pre = math.floor(len(pre_df) / num_blocks)
+    block_size_post = math.floor(len(post_df) / num_blocks)
+    # randomly remove rows to make the dataframes the perfect length
+    pre_df_trim = _random_rows_in_index_order(pre_df, size=num_blocks * block_size_pre, rng=rng)
+    post_df_trim = _random_rows_in_index_order(post_df, size=num_blocks * block_size_post, rng=rng)
+
+    blocks = rng.choice(num_blocks, size=num_blocks, replace=True)
+
+    pre_sample = _blocks_in_index_order(
+        pre_df_trim, blocks, block_size=block_size_pre, index_is_unique=pre_df.index.is_unique
+    )
+    post_sample = _blocks_in_index_order(
+        post_df_trim, blocks, block_size=block_size_post, index_is_unique=post_df.index.is_unique
+    )
+    return pre_sample.reset_index(drop=True), post_sample.reset_index(drop=True)
+
+
 def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     *,
     cfg: WindUpConfig,
@@ -501,6 +819,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     confidence_level: float = 0.9,
     test_df: pd.DataFrame | None = None,
     site_mean_pc_df: pd.DataFrame | None = None,
+    site_mean_pc_per_ttype: dict[str, pd.DataFrame] | None = None,
 ) -> tuple[dict, pd.DataFrame]:
     """Perform pre-post analysis with reversal and block bootstrapping uncertainty analysis.
 
@@ -517,7 +836,9 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     :param random_seed: random seed for reproducibility
     :param confidence_level: confidence level
     :param test_df: test data DataFrame
-    :param site_mean_pc_df: df containing site mean power curve, used for filling invalid bins above rated wind speed
+    :param site_mean_pc_df: single site mean power curve for filling invalid bins if per-type curves are not supplied
+    :param site_mean_pc_per_ttype: curves for filling invalid bins by turbine type. Reversal uses the reference
+        turbine type when available and the test turbine type for non-turbine references.
     :return: tuple of results dictionary and DataFrame
     """
     pp_results, pp_df = _pre_post_pp_analysis_with_reversal(
@@ -533,10 +854,12 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         plot_cfg=plot_cfg,
         test_df=test_df,
         site_mean_pc_df=site_mean_pc_df,
+        site_mean_pc_per_ttype=site_mean_pc_per_ttype,
     )
 
-    pre_df_dropna = pre_df.dropna(subset=[ws_col, pw_col, wd_col])
-    post_df_dropna = post_df.dropna(subset=[ws_col, pw_col, wd_col])
+    bootstrap_cols = _bootstrap_columns(test_name=test_wtg.name, ref_name=ref_name, ws_col=ws_col, pw_col=pw_col)
+    pre_df_dropna = pre_df.dropna(subset=[ws_col, pw_col, wd_col])[bootstrap_cols]
+    post_df_dropna = post_df.dropna(subset=[ws_col, pw_col, wd_col])[bootstrap_cols]
 
     n_samples = (
         cfg.bootstrap_runs_override
@@ -549,24 +872,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
     bootstrapped_uplifts[:] = np.nan
     rng = np.random.default_rng(seed=random_seed)
     for n in tqdm(range(n_samples)):
-        num_blocks = rng.choice([9, 10, 11])
-        block_size_pre = math.floor(len(pre_df_dropna) / num_blocks)
-        block_size_post = math.floor(len(post_df_dropna) / num_blocks)
-        # randomly remove rows to make the dataframes the perfect length
-        pre_target_len = num_blocks * block_size_pre
-        post_target_len = num_blocks * block_size_post
-        pre_rows_to_keep = rng.choice(pre_df_dropna.index, size=pre_target_len, replace=False)
-        post_rows_to_keep = rng.choice(post_df_dropna.index, size=post_target_len, replace=False)
-        pre_df_trim = pre_df_dropna.loc[pre_rows_to_keep].sort_index()
-        post_df_trim = post_df_dropna.loc[post_rows_to_keep].sort_index()
-
-        blocks = rng.choice(num_blocks, size=num_blocks, replace=True)
-
-        pre_sample_ilocs = (block_size_pre * blocks[:, None] + np.arange(block_size_pre)[None, :]).flatten()
-        pre_df_ = pre_df_trim.iloc[pre_sample_ilocs].sort_index()
-
-        post_sample_ilocs = (block_size_post * blocks[:, None] + np.arange(block_size_post)[None, :]).flatten()
-        post_df_ = post_df_trim.iloc[post_sample_ilocs].sort_index()
+        pre_df_, post_df_ = _block_bootstrap_sample(pre_df_dropna, post_df_dropna, rng=rng)
 
         try:
             sample_results, _ = _pre_post_pp_analysis_with_reversal(
@@ -574,13 +880,15 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
                 test_wtg=test_wtg,
                 ref_name=ref_name,
                 lt_df=lt_df,
-                pre_df=pre_df_.reset_index(),
-                post_df=post_df_.reset_index(),
+                pre_df=pre_df_,
+                post_df=post_df_,
                 ws_col=ws_col,
                 pw_col=pw_col,
                 wd_col=wd_col,
                 plot_cfg=None,
                 site_mean_pc_df=site_mean_pc_df,
+                site_mean_pc_per_ttype=site_mean_pc_per_ttype,
+                add_uplift_cols=False,
             )
             bootstrapped_uplifts[n] = sample_results["uplift_frc"]
         except RuntimeError:

@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from wind_up.analysis_period import AnalysisPlan, Window
     from wind_up.layout import Layout
 
+# (turbine, start, end), end exclusive; turbine None is farm-wide.
+Exclusion = tuple[str | None, pd.Timestamp, pd.Timestamp]
+
 _ROLE_COLOURS = {
     "candidate": "dimgray",
     "test": "black",
@@ -37,9 +40,6 @@ _ROLE_WORDS = {
     "waking_only": "waking only",
 }
 _DATA_COLOUR = "0.85"
-# (turbine, start, end), end exclusive; turbine None is farm-wide.
-Exclusion = tuple[str | None, pd.Timestamp, pd.Timestamp]
-
 _WORKS_COLOUR = "C3"
 _EXCLUSION_COLOUR = "0.6"
 _BEFORE_COLOUR = "C0"

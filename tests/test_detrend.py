@@ -1,10 +1,17 @@
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up_v0.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
+from wind_up_v0.detrend import (
+    _calc_wsratio_v_wd,
+    _remove_bad_detrend_results,
+    apply_wsratio_v_wd_scen,
+    calc_wsratio_v_wd_scen,
+    check_applied_detrend,
+)
 from wind_up_v0.models import WindUpConfig
 from wind_up_v0.smart_data import add_smart_lat_long_to_cfg
 
@@ -100,3 +107,56 @@ def test_calc_wsratio_v_wd_scen(test_lsa_t13_config: WindUpConfig) -> None:
     )
 
     assert_frame_equal(actual_pre_df, expected_pre_df)
+
+
+def test_remove_bad_detrend_results(test_lsa_t13_config: WindUpConfig) -> None:
+    md_df = pd.read_csv(Path(__file__).parents[0] / "test_data/smart_data/Lisa Wind Farm/Lisa Wind Farm_md.csv")
+    cfg = add_smart_lat_long_to_cfg(md=md_df, cfg=test_lsa_t13_config)
+    ref_wtg = next(x for x in cfg.asset.wtgs if x.name == "LSA_T12")
+    # at 10 deg LSA_T07 is upwind of the test turbine only, LSA_T05 of the reference only and LSA_T08 of both
+    rows = [
+        ("none offline", 10, 1.0),
+        ("none offline", 20, 1.0),
+        ("none offline", 30, np.nan),
+        ("LSA_T07 offline", 10, 0.98),
+        ("LSA_T07 offline", 20, 1.02),
+        ("LSA_T07 offline", 30, 0.5),
+        ("LSA_T05 offline", 10, 1.02),
+        ("LSA_T05 offline", 20, 0.98),
+        ("LSA_T05 offline", 30, np.nan),
+        ("LSA_T08 offline", 10, 0.9),
+    ]
+    wsratio_v_dir_scen = pd.DataFrame(rows, columns=["waking_scenario", "direction", "ws_rom"]).set_index(
+        ["waking_scenario", "direction"]
+    )
+
+    actual = _remove_bad_detrend_results(
+        wsratio_v_dir_scen.copy(),
+        test_name="LSA_T13",
+        ref_name="LSA_T12",
+        ref_lat=ref_wtg.latitude,
+        ref_long=ref_wtg.longitude,
+        cfg=cfg,
+    )
+
+    expected = wsratio_v_dir_scen.copy()
+    expected.loc[[("LSA_T07 offline", 10), ("LSA_T05 offline", 10)], "ws_rom"] = np.nan
+    assert_frame_equal(actual, expected)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32, object])
+def test_calc_wsratio_v_wd_by_dtype(dtype: type) -> None:
+    """Float64 and float32 wind speeds are summed on the arrays; other dtypes take the pandas mean."""
+    ws = np.tile([6.0, 15.9], 3000).astype(dtype)
+    detrend_df = pd.DataFrame({"test_ws": ws, "ref_ws": ws, "ref_wd": np.full(len(ws), 180.0)})
+
+    result = _calc_wsratio_v_wd(
+        detrend_df=detrend_df,
+        test_ws_col="test_ws",
+        ref_ws_col="ref_ws",
+        ref_wd_col="ref_wd",
+        min_hours=24,
+        timebase_s=600,
+    )
+
+    assert result.set_index("direction").loc[180, "ws_rom"] == 1.0
