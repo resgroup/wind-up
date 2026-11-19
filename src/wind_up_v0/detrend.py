@@ -32,7 +32,7 @@ def _calc_wsratio_v_wd(
     timebase_s: int,
     dir_bin_width: float = 10.0,
 ) -> pd.DataFrame:
-    detrend_df = detrend_df.dropna(subset=[test_ws_col, ref_ws_col, ref_wd_col]).copy()
+    detrend_df = detrend_df.dropna(subset=[test_ws_col, ref_ws_col, ref_wd_col])
 
     # IEC says only use 4-16 m/s
     test_ws_ll = 4
@@ -42,25 +42,34 @@ def _calc_wsratio_v_wd(
     detrend_df = detrend_df[(detrend_df[test_ws_col] >= test_ws_ll) & (detrend_df[test_ws_col] < test_ws_ul)]
     detrend_df = detrend_df[(detrend_df[ref_ws_col] >= ref_ws_ll) & (detrend_df[ref_ws_col] < ref_ws_ul)]
 
+    test_ws = detrend_df[test_ws_col].to_numpy()
+    ref_ws = detrend_df[ref_ws_col].to_numpy()
+    # other dtypes take the pandas mean, which promotes them before summing
+    sum_with_numpy = all(x.dtype in (np.float64, np.float32) for x in (test_ws, ref_ws))
+    ref_wd = detrend_df[ref_wd_col].to_numpy()
     directions = []
     hours = []
     test_rf_ws_roms = []
     for d in list(range(0, 360, 1)):
-        detrend_df["circ_diff_to_d"] = circ_diff(detrend_df[ref_wd_col], d)
-        detrend_df["within_dir_bin"] = detrend_df["circ_diff_to_d"].abs() < dir_bin_width / 2
-        subsector_df = detrend_df[detrend_df["within_dir_bin"]].copy()
-        if len(subsector_df) > 0:
+        within_dir_bin = np.abs(circ_diff(ref_wd, d)) < dir_bin_width / 2
+        count = int(within_dir_bin.sum())
+        if count > 0:
             directions.append(d)
             rows_per_hour = 3600 / timebase_s
-            hours.append(len(subsector_df) / rows_per_hour)
+            hours.append(count / rows_per_hour)
+            subsector_test_ws = test_ws[within_dir_bin]
             # 61400-12-1 requires >=24h data, >=6h above 8m/s, >= below 8m/s
             min_count = min_hours * rows_per_hour
-            accept_sector = len(subsector_df) >= min_count
+            accept_sector = count >= min_count
             iec_ws_threshold = 8
-            accept_sector = accept_sector and ((subsector_df[test_ws_col] < iec_ws_threshold).sum() >= (min_count / 4))
-            accept_sector = accept_sector and ((subsector_df[test_ws_col] >= iec_ws_threshold).sum() >= (min_count / 4))
+            accept_sector = accept_sector and ((subsector_test_ws < iec_ws_threshold).sum() >= (min_count / 4))
+            accept_sector = accept_sector and ((subsector_test_ws >= iec_ws_threshold).sum() >= (min_count / 4))
             if accept_sector:
-                rom = subsector_df[test_ws_col].mean() / subsector_df[ref_ws_col].mean()
+                if sum_with_numpy:
+                    rom = (subsector_test_ws.sum() / count) / (ref_ws[within_dir_bin].sum() / count)
+                else:
+                    subsector_df = detrend_df[within_dir_bin]
+                    rom = subsector_df[test_ws_col].mean() / subsector_df[ref_ws_col].mean()
                 test_rf_ws_roms.append(rom)
             else:
                 test_rf_ws_roms.append(np.nan)
@@ -104,8 +113,9 @@ def _remove_bad_detrend_results(
     ref_long: float,
     cfg: WindUpConfig,
 ) -> pd.DataFrame:
+    valid_df = wsratio_v_dir_scen.dropna(subset="ws_rom")
     try:
-        none_offline_df = wsratio_v_dir_scen.dropna(subset="ws_rom").loc["none offline"]
+        none_offline_df = valid_df.loc["none offline"]
     except KeyError:
         result_manager.warning("cannot remove_bad_detrend_results, no 'none offline' rows with ws_rom defined")
         return wsratio_v_dir_scen
@@ -115,6 +125,12 @@ def _remove_bad_detrend_results(
     except StopIteration as exc:
         msg = f"{test_name} not found in cfg.asset.wtgs"
         raise ValueError(msg) from exc
+
+    # the other scenarios with ws_rom defined at each direction, and their ws_rom, in row order
+    ws_rom_by_scen_and_wd: dict[float, dict[str, float]] = {}
+    for (scen, wd), ws_rom in zip(valid_df.index, valid_df["ws_rom"].to_numpy(), strict=True):
+        if scen != "none offline":
+            ws_rom_by_scen_and_wd.setdefault(wd, {}).setdefault(scen, ws_rom)
 
     remove_count = 0
     for wd in none_offline_df.index.unique():
@@ -134,14 +150,7 @@ def _remove_bad_detrend_results(
         else:
             ref_upwind_wtgs = []
 
-        scens_to_check = [
-            x
-            for x in wsratio_v_dir_scen.dropna(subset="ws_rom")
-            .loc[pd.IndexSlice[:, wd], :]
-            .index.unique(level="waking_scenario")
-            if x != "none offline"
-        ]
-        for scen in scens_to_check:
+        for scen, scen_ws_rom in ws_rom_by_scen_and_wd.get(wd, {}).items():
             upwind_wtgs_offline = list_wtgs_offline_in_scen(scen)
             test_upwind_wtgs_offline = sorted(set(test_upwind_wtgs) & set(upwind_wtgs_offline))
             ref_upwind_wtgs_offline = sorted(set(ref_upwind_wtgs) & set(upwind_wtgs_offline))
@@ -149,7 +158,6 @@ def _remove_bad_detrend_results(
                 len(test_upwind_wtgs_offline) == 0 or len(ref_upwind_wtgs_offline) == 0
             ):
                 sign = 1 if len(ref_upwind_wtgs_offline) == 0 else -1
-                scen_ws_rom = wsratio_v_dir_scen.loc[pd.IndexSlice[scen, wd], "ws_rom"]
                 none_offline_ws_rom = none_offline_df.loc[wd, "ws_rom"]
                 abs_tol = 1e-6
                 if sign * scen_ws_rom < (sign * none_offline_ws_rom - abs_tol):

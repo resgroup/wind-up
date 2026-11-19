@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from scipy.stats import circmean
 
 from wind_up_v0.circular_math import circ_diff, circ_median, rolling_circ_median_approx
 from wind_up_v0.constants import (
@@ -173,6 +174,32 @@ def check_wtg_northing(
     return max_northing_error
 
 
+def _circ_median_and_count(grouped: pd.core.groupby.SeriesGroupBy) -> pd.DataFrame:
+    """Calculate the circular median and the count of each group of angles.
+
+    Gives the same result as `grouped.agg` with `circ_median` and count as the aggregations.
+
+    :param grouped: angles in degrees without missing values, grouped
+    :return: columns "wf_yawdir" and "num_turbines", indexed by group
+    """
+    if len(grouped.obj) == 0 or grouped.obj.dtype != np.float64:
+        return grouped.agg(wf_yawdir=circ_median, num_turbines=lambda x: x.count())
+    group_sizes = grouped.size()
+    counts = group_sizes.to_numpy()
+    order = np.argsort(grouped.ngroup().to_numpy(), kind="stable")
+    sorted_angles = np.mod(grouped.obj.to_numpy()[order], 360)
+    starts = np.cumsum(counts) - counts
+    medians = np.full(len(counts), np.nan)
+    # groups with the same count are stacked into one array, so each row is reduced as a one dimensional array
+    for count in np.unique(counts):
+        groups = np.flatnonzero(counts == count)
+        rows = sorted_angles[starts[groups, None] + np.arange(count)]
+        mean_angle = circmean(rows, high=360, low=0, axis=1)
+        centered_angles = np.mod(rows - mean_angle[:, None] + 180, 360)
+        medians[groups] = np.mod(np.median(centered_angles, axis=1) - 180 + mean_angle, 360)
+    return pd.DataFrame({"wf_yawdir": medians, "num_turbines": counts}, index=group_sizes.index)
+
+
 def _calc_wf_yawdir_df(
     wf_df: pd.DataFrame,
     *,
@@ -189,13 +216,7 @@ def _calc_wf_yawdir_df(
         timebase_s=cfg.timebase_s,
     )
     wf_df = wf_df.loc[wf_df["ok_for_yawdir"]].dropna(subset=[best_yaw_dir_col])
-    wf_yawdir_df = wf_df.groupby(TIMESTAMP_COL).agg(
-        wf_yawdir=pd.NamedAgg(
-            column=best_yaw_dir_col,
-            aggfunc=circ_median,
-        ),
-        num_turbines=pd.NamedAgg(column=best_yaw_dir_col, aggfunc=lambda x: x.count()),
-    )
+    wf_yawdir_df = _circ_median_and_count(wf_df.groupby(TIMESTAMP_COL)[best_yaw_dir_col])
     wf_yawdir_df = wf_yawdir_df[wf_yawdir_df["num_turbines"] >= min_num_turbines]
     return wf_yawdir_df.dropna()
 

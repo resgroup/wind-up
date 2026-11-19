@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import functools
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 from tabulate import tabulate
 
@@ -290,6 +292,104 @@ def list_wtgs_offline_in_scen(waking_scenario: str) -> list[str]:
     return [x for x in waking_scenario.split(" ") if x != "offline"]
 
 
+WAKING_STATE_COLS = ["waking", "not_waking", "unknown_waking"]
+
+
+@dataclass(frozen=True)
+class WfWakingState:
+    """Waking state of every turbine at every timestamp of the wind farm time series data.
+
+    Make one with `calc_wf_waking_state` and reuse it for every `add_waking_scen_from_wf_waking_state` call which
+    shares the wind farm time series data.
+
+    :param all_turbines_waking: for each timestamp, whether all turbines are waking
+    :param waking_df: the waking state columns for each timestamp, with one column per state and turbine
+    :param turbine_names: turbines with a column in each of `state_arrays`
+    :param state_arrays: for each waking state column, the rows of `waking_df` by `turbine_names`. Empty if
+        `waking_df` is not entirely unique timestamps by unique turbines of numpy booleans.
+    """
+
+    all_turbines_waking: pd.DataFrame
+    waking_df: pd.DataFrame
+    turbine_names: pd.Index
+    state_arrays: dict[str, np.ndarray]
+
+
+def calc_wf_waking_state(wf_df: pd.DataFrame) -> WfWakingState:
+    """Tabulate the waking state columns of `wf_df` by timestamp and turbine.
+
+    :param wf_df: wind farm time series data with columns "waking", "not_waking", and "unknown_waking"
+    :return: waking state of every turbine at every timestamp
+    """
+    waking_df = wf_df[WAKING_STATE_COLS].pivot_table(
+        index=TIMESTAMP_COL,
+        columns="TurbineName",
+        aggfunc="max",
+        observed=False,
+    )
+    turbine_names = waking_df.columns.get_level_values(-1).unique()
+    state_arrays = {}
+    expected_columns = pd.MultiIndex.from_product([sorted(WAKING_STATE_COLS), turbine_names])
+    if (
+        waking_df.index.is_unique
+        and turbine_names.is_unique
+        and waking_df.columns.equals(expected_columns)
+        and all(x == np.dtype(bool) for x in waking_df.dtypes)
+    ):
+        state_arrays = {col: waking_df[col].to_numpy(dtype=bool) for col in WAKING_STATE_COLS}
+    return WfWakingState(
+        all_turbines_waking=wf_df.groupby(TIMESTAMP_COL)["waking"].all().to_frame(name="all_turbines_waking"),
+        waking_df=waking_df,
+        turbine_names=turbine_names,
+        state_arrays=state_arrays,
+    )
+
+
+def _waking_scen_one_row(waking_df: pd.DataFrame, *, idx: pd.Timestamp, upwind_wtgs: list[str]) -> str:
+    if waking_df.loc[idx, "unknown_waking"].loc[upwind_wtgs].any():
+        return "unknown"
+    if waking_df.loc[idx, "waking"].loc[upwind_wtgs].all():
+        return "none offline"
+    not_waking_series = waking_df.loc[idx, "not_waking"].loc[upwind_wtgs]
+    return calc_scen_name_from_wtgs_not_waking(list(not_waking_series[not_waking_series].index))
+
+
+def _waking_scens(
+    wf_waking_state: WfWakingState, *, timestamps: pd.Index, waking_df_rows: np.ndarray, upwind_wtgs: list[str]
+) -> list[str]:
+    """Calculate the waking scenario at each of `timestamps` given the turbines which are upwind.
+
+    :param waking_df_rows: position of each of `timestamps` in the index of `wf_waking_state.waking_df`, -1 if absent
+    """
+    upwind_cols = wf_waking_state.turbine_names.get_indexer(upwind_wtgs)
+    if len(wf_waking_state.state_arrays) == 0 or (upwind_cols < 0).any() or (waking_df_rows < 0).any():
+        waking_df = wf_waking_state.waking_df
+        return [_waking_scen_one_row(waking_df, idx=idx, upwind_wtgs=upwind_wtgs) for idx in timestamps]
+
+    upwind_states = {
+        col: state_array[waking_df_rows][:, upwind_cols] for col, state_array in wf_waking_state.state_arrays.items()
+    }
+    any_unknown = upwind_states["unknown_waking"].any(axis=1)
+    all_waking = upwind_states["waking"].all(axis=1)
+    scens = np.where(any_unknown, "unknown", "none offline").astype(object)
+    some_offline = np.flatnonzero(~any_unknown & ~all_waking)
+    if len(some_offline) > 0:
+        not_waking_patterns, pattern_of_row = np.unique(
+            upwind_states["not_waking"][some_offline], axis=0, return_inverse=True
+        )
+        scen_of_pattern = np.array(
+            [
+                calc_scen_name_from_wtgs_not_waking(
+                    [wtg for wtg, is_not_waking in zip(upwind_wtgs, pattern, strict=True) if is_not_waking]
+                )
+                for pattern in not_waking_patterns
+            ],
+            dtype=object,
+        )
+        scens[some_offline] = scen_of_pattern[pattern_of_row.ravel()]
+    return list(scens)
+
+
 def add_waking_scen(
     *,
     test_name: str,
@@ -313,6 +413,43 @@ def add_waking_scen(
     :param ref_long: longitude of the reference
     :return: `test_ref_df` with a new column "waking_scenario" containing the calculated waking scenario
     """
+    return add_waking_scen_from_wf_waking_state(
+        test_name=test_name,
+        ref_name=ref_name,
+        test_ref_df=test_ref_df,
+        cfg=cfg,
+        wf_waking_state=calc_wf_waking_state(wf_df),
+        ref_wd_col=ref_wd_col,
+        ref_lat=ref_lat,
+        ref_long=ref_long,
+    )
+
+
+def add_waking_scen_from_wf_waking_state(
+    *,
+    test_name: str,
+    ref_name: str,
+    test_ref_df: pd.DataFrame,
+    cfg: WindUpConfig,
+    wf_waking_state: WfWakingState,
+    ref_wd_col: str,
+    ref_lat: float,
+    ref_long: float,
+) -> pd.DataFrame:
+    """Calculate a waking scenario for each row in `test_ref_df` based on the wind direction of the reference.
+
+    Gives the same result as `add_waking_scen` without tabulating the wind farm time series data on every call.
+
+    :param test_name: TurbineName of the test turbine
+    :param ref_name: Name of the reference
+    :param test_ref_df: time series data of test turbine and reference
+    :param cfg: wind up configuration
+    :param wf_waking_state: result of `calc_wf_waking_state` for the wind farm time series data
+    :param ref_wd_col: column name for wind direction of the reference in `test_ref_df`
+    :param ref_lat: latitude of the reference
+    :param ref_long: longitude of the reference
+    :return: `test_ref_df` with a new column "waking_scenario" containing the calculated waking scenario
+    """
     test_ref_df = test_ref_df.copy()
     test_ref_df["waking_scenario"] = "not calculated"
     try:
@@ -321,17 +458,18 @@ def add_waking_scen(
         msg = f"{test_name} not found in cfg.asset.wtgs"
         raise ValueError(msg) from exc
 
-    all_turbines_waking = wf_df.groupby(TIMESTAMP_COL)["waking"].all().to_frame(name="all_turbines_waking")
-    test_ref_df = test_ref_df.merge(all_turbines_waking, how="left", left_index=True, right_index=True)
+    test_ref_df = test_ref_df.merge(wf_waking_state.all_turbines_waking, how="left", left_index=True, right_index=True)
     test_ref_df.loc[test_ref_df["all_turbines_waking"], "waking_scenario"] = "none offline"
 
     test_ref_df["rounded_wd"] = test_ref_df[ref_wd_col].round(0).mod(360)
-    waking_df = wf_df[["waking", "not_waking", "unknown_waking"]].pivot_table(
-        index=TIMESTAMP_COL,
-        columns="TurbineName",
-        aggfunc="max",
-        observed=False,
-    )
+    waking_df = wf_waking_state.waking_df
+    # rows are set by position unless a timestamp is repeated, in which case they are set one timestamp at a time
+    set_rows_by_position = test_ref_df.index.is_unique and waking_df.index.is_unique
+    if set_rows_by_position:
+        rounded_wd = test_ref_df["rounded_wd"].to_numpy()
+        scens = test_ref_df["waking_scenario"].to_numpy(dtype=object)
+        not_calculated = scens == "not calculated"
+        waking_df_rows = waking_df.index.get_indexer(test_ref_df.index)
 
     for wd in sorted(test_ref_df["rounded_wd"].unique()):
         if wd >= 0:
@@ -351,21 +489,31 @@ def add_waking_scen(
             else:
                 ref_upwind_wtgs = []
             upwind_wtgs = sorted(set(test_upwind_wtgs + ref_upwind_wtgs))
-            if len(upwind_wtgs) == 0:
+            if set_rows_by_position:
+                if len(upwind_wtgs) == 0:
+                    scens[rounded_wd == wd] = "none offline"
+                else:
+                    rows = np.flatnonzero((rounded_wd == wd) & not_calculated)
+                    scens[rows] = _waking_scens(
+                        wf_waking_state,
+                        timestamps=test_ref_df.index[rows],
+                        waking_df_rows=waking_df_rows[rows],
+                        upwind_wtgs=upwind_wtgs,
+                    )
+            elif len(upwind_wtgs) == 0:
                 test_ref_df.loc[test_ref_df["rounded_wd"] == wd, "waking_scenario"] = "none offline"
             else:
                 for idx in test_ref_df[
                     (test_ref_df["rounded_wd"] == wd) & (test_ref_df["waking_scenario"] == "not calculated")
                 ].index:
-                    if waking_df.loc[idx, "unknown_waking"].loc[upwind_wtgs].any():
-                        test_ref_df.loc[idx, "waking_scenario"] = "unknown"
-                    elif waking_df.loc[idx, "waking"].loc[upwind_wtgs].all():
-                        test_ref_df.loc[idx, "waking_scenario"] = "none offline"
-                    else:
-                        not_waking_series = waking_df.loc[idx, "not_waking"].loc[upwind_wtgs]
-                        test_ref_df.loc[idx, "waking_scenario"] = calc_scen_name_from_wtgs_not_waking(
-                            list(not_waking_series[not_waking_series].index),
-                        )
+                    test_ref_df.loc[idx, "waking_scenario"] = _waking_scen_one_row(
+                        waking_df, idx=idx, upwind_wtgs=upwind_wtgs
+                    )
+
+    if set_rows_by_position:
+        test_ref_df["waking_scenario"] = pd.Series(
+            scens, index=test_ref_df.index, dtype=test_ref_df["waking_scenario"].dtype
+        )
 
     if (test_ref_df.dropna(subset=ref_wd_col)["waking_scenario"] == "not calculated").any():
         msg = "some rows with defined ref_wd_col have waking scenario = 'not calculated'"
