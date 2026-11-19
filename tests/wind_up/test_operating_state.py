@@ -294,7 +294,7 @@ class TestFillGrid:
 
 
 class TestDeclarations:
-    """Label overrides, then exclusions, applied over the automatic labels; ends exclusive."""
+    """Operating state overrides, then exclusions, applied over the automatic labels; ends exclusive."""
 
     def scada(self) -> pd.DataFrame:
         return pd.concat([frame(6, turbine="T01"), frame(6, turbine="T02")]).sort_index(kind="stable")

@@ -605,12 +605,18 @@ class TestExclusionsAndPeriods:
             "start": "2018-03-01 00:00:00+00:00",
             "end": "2018-03-02 00:00:00+00:00",
         }
-        assert resolved["works"]["T01"] == [["2018-01-10 00:00:00+00:00", "2018-01-13 00:00:00+00:00", 12.0]]
-        assert resolved["upgrade"] == {"expected_uplift": 0.05, "wake_reach_d": 12.0}
+        assert resolved["installation_windows"]["T01"] == [
+            ["2018-01-10 00:00:00+00:00", "2018-01-13 00:00:00+00:00", 12.0]
+        ]
+        assert resolved["upgrade"] == {
+            "expected_uplift": 0.05,
+            "wake_reach_d": 12.0,
+            "settling_time": "0 days 00:00:00",
+        }
 
 
 OVERRIDES = """
-label_overrides:
+operating_state_overrides:
   - {turbine: T02, start: 2017-03-01T00:00:00Z, end: 2017-03-08T00:00:00Z, state: partial downtime}
   - {turbine: ALL, start: 2017-05-01T00:00:00Z, end: 2017-05-02T00:00:00Z, state: full downtime}
 """
@@ -626,44 +632,49 @@ def override(turbine: str, start: str, end: str, state: str = "partial downtime"
     return f"  - {{turbine: {turbine}, start: {start}T00:00:00Z, end: {end}T00:00:00Z, state: {state}}}\n"
 
 
-class TestLabelOverrides:
+class TestOperatingStateOverrides:
     def test_overrides_are_read_with_all_as_farm_wide(self, tmp_path: Path) -> None:
-        assert load(tmp_path, PREPOST + OVERRIDES).spec.label_overrides == [
+        assert load(tmp_path, PREPOST + OVERRIDES).spec.operating_state_overrides == [
             ("T02", utc("2017-03-01"), utc("2017-03-08"), "partial downtime"),
             (None, utc("2017-05-01"), utc("2017-05-02"), "full downtime"),
         ]
 
     def test_none_declared_is_none(self, tmp_path: Path) -> None:
-        assert load(tmp_path).spec.label_overrides == []
+        assert load(tmp_path).spec.operating_state_overrides == []
 
     def test_a_site_label_may_be_named(self, tmp_path: Path) -> None:
-        text = PREPOST + SITE_LABEL + "label_overrides:\n" + override("T02", "2017-03-01", "2017-03-08", "curtailment")
-        assert load(tmp_path, text).spec.label_overrides[0][3] == "curtailment"
+        text = (
+            PREPOST
+            + SITE_LABEL
+            + "operating_state_overrides:\n"
+            + override("T02", "2017-03-01", "2017-03-08", "curtailment")
+        )
+        assert load(tmp_path, text).spec.operating_state_overrides[0][3] == "curtailment"
 
     def test_an_undefined_state_is_rejected(self, tmp_path: Path) -> None:
-        text = PREPOST + "label_overrides:\n" + override("T02", "2017-03-01", "2017-03-08", "curtailment")
+        text = PREPOST + "operating_state_overrides:\n" + override("T02", "2017-03-01", "2017-03-08", "curtailment")
         with pytest.raises(ValueError, match="curtailment"):
             load(tmp_path, text)
 
     def test_overlapping_overrides_of_one_turbine_are_rejected(self, tmp_path: Path) -> None:
         both = override("T02", "2017-03-01", "2017-03-08") + override("T02", "2017-03-07", "2017-03-09")
         with pytest.raises(ValueError, match="overlap"):
-            load(tmp_path, PREPOST + "label_overrides:\n" + both)
+            load(tmp_path, PREPOST + "operating_state_overrides:\n" + both)
 
     def test_a_farm_wide_override_overlapping_a_turbines_is_rejected(self, tmp_path: Path) -> None:
         both = override("T02", "2017-03-01", "2017-03-08") + override("ALL", "2017-03-07", "2017-03-09")
         with pytest.raises(ValueError, match="overlap"):
-            load(tmp_path, PREPOST + "label_overrides:\n" + both)
+            load(tmp_path, PREPOST + "operating_state_overrides:\n" + both)
 
     def test_overrides_end_exclusive_may_abut_or_cover_other_turbines(self, tmp_path: Path) -> None:
         text = (
             PREPOST
-            + "label_overrides:\n"
+            + "operating_state_overrides:\n"
             + override("T02", "2017-03-01", "2017-03-08")
             + override("T02", "2017-03-08", "2017-03-09")
             + override("T03", "2017-03-01", "2017-03-09")
         )
-        assert len(load(tmp_path, text).spec.label_overrides) == 3
+        assert len(load(tmp_path, text).spec.operating_state_overrides) == 3
 
     def test_an_exclusion_may_overlap_an_override(self, tmp_path: Path) -> None:
         text = (
@@ -675,7 +686,8 @@ class TestLabelOverrides:
 
     def test_an_override_without_a_state_or_with_an_unknown_key_is_rejected(self, tmp_path: Path) -> None:
         text = (
-            PREPOST + "label_overrides:\n  - {turbine: T02, start: 2017-03-01T00:00:00Z, end: 2017-03-08T00:00:00Z}\n"
+            PREPOST
+            + "operating_state_overrides:\n  - {turbine: T02, start: 2017-03-01T00:00:00Z, end: 2017-03-08T00:00:00Z}\n"
         )
         with pytest.raises(ValueError, match="state"):
             load(tmp_path, text)
@@ -685,18 +697,18 @@ class TestLabelOverrides:
             PREPOST
             + "exclusions:\n  - {turbine: T02, start: 2017-03-01T00:00:00Z, end: 2017-03-08T00:00:00Z, state: icing}\n"
         )
-        with pytest.raises(ValueError, match="label_overrides"):
+        with pytest.raises(ValueError, match="operating_state_overrides"):
             load(tmp_path, text)
 
     def test_an_override_of_an_unknown_turbine_or_ending_before_it_starts_is_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="T99"):
-            load(tmp_path, PREPOST + "label_overrides:\n" + override("T99", "2017-03-01", "2017-03-08"))
+            load(tmp_path, PREPOST + "operating_state_overrides:\n" + override("T99", "2017-03-01", "2017-03-08"))
         with pytest.raises(ValueError, match="override"):
-            load(tmp_path, PREPOST + "label_overrides:\n" + override("T02", "2017-03-08", "2017-03-01"))
+            load(tmp_path, PREPOST + "operating_state_overrides:\n" + override("T02", "2017-03-08", "2017-03-01"))
 
     def test_the_resolved_echo_shows_the_overrides(self, tmp_path: Path) -> None:
         resolved = load(tmp_path, PREPOST + OVERRIDES).resolved()
-        assert resolved["label_overrides"][1] == {
+        assert resolved["operating_state_overrides"][1] == {
             "turbine": "ALL",
             "start": "2017-05-01 00:00:00+00:00",
             "end": "2017-05-02 00:00:00+00:00",
@@ -747,7 +759,7 @@ def test_a_flat_declaration_loads_unchanged(tmp_path: Path) -> None:
     assert declaration.spec.works == {}
     assert declaration.spec.exclusions == []
     assert declaration.spec.period_for("T01") is not None
-    assert "works" not in declaration.resolved()
+    assert "installation_windows" not in declaration.resolved()
 
 
 OPERATING_STATE = """
@@ -768,7 +780,7 @@ def test_the_operating_state_block_is_parsed_and_echoed(tmp_path: Path) -> None:
     assert config.site_states["noise mode"] == StateValidity(northing=True, waking="waking", uplift=False)
     assert config.site_states["BM curtailment"].waking == "part waking"
     echoed = declaration.resolved()["operating_state"]
-    assert echoed["labels"]["noise mode"] == {"northing": "valid", "waking": "waking", "uplift": "not valid"}
+    assert echoed["site_states"]["noise mode"] == {"northing": "valid", "waking": "waking", "uplift": "not valid"}
     assert echoed["parked_pitch_above_deg"] == 45
 
 

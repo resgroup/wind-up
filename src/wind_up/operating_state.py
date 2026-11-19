@@ -14,7 +14,7 @@ validity; it may also write a generic state's name into that column. The first m
 4. the caller's site label;
 5. normal operation.
 
-A campaign's declarations then win over these rules: its label overrides first, on the records not labelled
+A campaign's declarations then win over these rules: its operating state overrides first, on the records not labelled
 missing, then its exclusions, which label their records missing (:func:`apply_declarations`).
 
 :func:`fill_grid` gives every turbine a row at every timestamp, so a record labelled missing reads the same as
@@ -281,14 +281,14 @@ def apply_declarations(
 ) -> pd.DataFrame:
     """Return a copy of a labelled frame with a campaign's declarations applied over its labels.
 
-    Each label override's records not labelled missing take its state, then each exclusion's records are
+    Each operating state override's records not labelled missing take its state, then each exclusion's records are
     missing; the validity columns follow. A window is ``(turbine, start, end)``, end exclusive, turbine None
     for every turbine. Raises on an override state ``config`` does not define.
     """
     validity = config.validity()
     unknown = sorted({state for *_, state in overrides} - set(validity))
     if unknown:
-        msg = f"the label overrides name {unknown}, which are neither declared labels nor generic states"
+        msg = f"the operating state overrides name {unknown}, which are neither declared labels nor generic states"
         raise ValueError(msg)
     state = labelled[STATE_COL].to_numpy(dtype=object).copy()
     present = state != MISSING

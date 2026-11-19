@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 
 import pandas as pd
-import pytest  # noqa: TC002 - caplog fixtures are runtime types
+import pytest
 
 from benchmarking.campaigns.context import UPGRADE, campaign_facts, plan_analysis, upgrade_of
 from benchmarking.campaigns.plans import plans_for
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from tests.benchmarking.campaigns.timeline_fixtures import hourly_scada, staggered_spec, utc
+from wind_up.facts import NonTurbineMeasurement
+from wind_up.labels import UPLIFT, Label
 from wind_up.record_selection import ChangedInterval
 from wind_up.subject import subject_records
 
@@ -62,6 +64,34 @@ class TestTheFacts:
             utc("2019-07-01"),
             utc("2019-07-01"),
         )
+
+    def test_a_toggle_schedules_settling_time_reaches_the_upgrade(self) -> None:
+        schedule = ToggleSchedule(period=pd.Timedelta(hours=2), start=utc("2019-01-01"))
+        spec = staggered_spec(
+            upgrade_timing=schedule,
+            works={},
+            analysis_period=(utc("2018-06-01"), utc("2020-01-01")),
+            settling_time=pd.Timedelta(minutes=10),
+        )
+        upgrade = campaign_facts(spec, hourly_scada(), columns=HOT_COLUMNS).upgrade(UPGRADE)
+        assert upgrade.settling_time == pd.Timedelta(minutes=10)
+
+    def test_a_prepost_campaign_takes_no_settling_time(self) -> None:
+        with pytest.raises(ValueError, match="settling time"):
+            staggered_spec(settling_time=pd.Timedelta(minutes=10))
+
+    def test_the_labels_and_measurements_are_carried(self) -> None:
+        frame = hourly_scada()
+        frame["curtailed"] = False
+        mast = NonTurbineMeasurement(
+            name="mast", latitude=57.5, longitude=-3.0, records=pd.DataFrame(index=frame.index.unique())
+        )
+        label = Label(name="curtailed", column="curtailed", withholds=frozenset({UPLIFT}))
+        facts = campaign_facts(
+            staggered_spec(), frame, columns=HOT_COLUMNS, labels=[label], non_turbine_measurements=[mast]
+        )
+        assert facts.labels == (label,)
+        assert facts.non_turbine_measurements == (mast,)
 
     def test_a_toggle_schedule_states_its_cycle(self) -> None:
         schedule = ToggleSchedule(period=pd.Timedelta(hours=2), start=utc("2019-01-01"))

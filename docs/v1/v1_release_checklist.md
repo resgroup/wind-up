@@ -58,11 +58,12 @@ Each method decides whether it has enough information:
 Reference choice splits the same way: "this turbine was not controlled" is a fact, "this
 reference drifts" is a judgement the reference screen makes and the analyst may override.
 
-- [ ] The declaration and `CampaignContext` carry every fact in the list above; today they lack
-      instruments that are not turbines, the settling time, the toggle cycle and datum, and the
-      steering lookup table.
-- [ ] A type for the question, between the declaration and the method input. Today a record
-      subset can only be expressed by editing the frame or by a method's own exclusion column.
+- [ ] The facts and the declaration carry every fact in the list above. `WindFarmFacts` does, and
+      the declaration now carries several upgrades, the analyst's labels, the settling time and
+      non-turbine measurements (`upgrades`, `labels`, `settling_time`, `non_turbine_measurements`);
+      the toggle cycle and datum come from a toggle timing. Still missing: the steering lookup table.
+- [x] A type for the question, between the declaration and the method input: `AnalysisSpec`, and
+      `analyses` in the declaration. A record subset is an analysis's include and exclude labels.
 - [ ] `ToggleEnergyRatioMethod` takes `toggle_period`, `toggle_datum`, `rated_power_kw` and
       `columns` as its own options; all four are facts and move to the input. Do this before
       `1.0.0a1`, since it changes the constructor an alpha user calls.

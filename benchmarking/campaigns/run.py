@@ -48,7 +48,8 @@ if TYPE_CHECKING:
     from wind_up import FarmUplift
     from wind_up.analysis import AnalysisSpec
     from wind_up.analysis_period import AnalysisPlan, PlanSettings
-    from wind_up.facts import WindFarmFacts
+    from wind_up.facts import NonTurbineMeasurement, WindFarmFacts
+    from wind_up.labels import Label
     from wind_up.northing import NorthingSettings
     from wind_up.operating_state import OperatingStateConfig
     from wind_up.subject import SubjectMeasurement
@@ -146,7 +147,7 @@ class CampaignReport:
 def visible_mask(spec: CampaignSpec, frame: pd.DataFrame) -> npt.NDArray[np.bool_]:
     """Rows of ``frame`` inside the declared period and outside their turbine's works windows.
 
-    Exclusions and label overrides keep their rows: step 2 writes them into the labels.
+    Exclusions and operating state overrides keep their rows: step 2 writes them into the labels.
     """
     bounds = spec.period_bounds()
     usable = (
@@ -249,6 +250,8 @@ def estimate_campaign(
     data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
     era5_hourly_df: pd.DataFrame | None = None,
     operating_state: OperatingStateConfig | None = None,
+    labels: Sequence[Label] = (),
+    non_turbine_measurements: Sequence[NonTurbineMeasurement] = (),
 ) -> CampaignReport:
     """Estimate every applicable method on every upgraded turbine and aggregate to one headline.
 
@@ -277,6 +280,8 @@ def estimate_campaign(
         the facts carry
     :param operating_state: the site's operating states, which ``scada_df``'s labels came from and the
         facts carry; the generic states alone when ``None``
+    :param labels: the analyst's labels, columns of ``scada_df``, which the facts carry
+    :param non_turbine_measurements: the masts and LiDARs the facts carry
     """
     scada_df = labelled_scada(spec, scada_df, columns=columns)
     resolved = plans_for(spec, scada_df, columns=columns, settings=plan_settings, possible_changes=possible_changes)
@@ -297,7 +302,13 @@ def estimate_campaign(
     )
 
     facts = campaign_facts(
-        spec, visible, columns=columns, era5_hourly_df=era5_hourly_df, operating_states=operating_state
+        spec,
+        visible,
+        columns=columns,
+        era5_hourly_df=era5_hourly_df,
+        operating_states=operating_state,
+        labels=labels,
+        non_turbine_measurements=non_turbine_measurements,
     )
     outputs: dict[tuple[str, str], SubjectMeasurement] = {}
     wall_time_s: dict[tuple[str, str], float] = {}

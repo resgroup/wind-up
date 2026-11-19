@@ -1,7 +1,7 @@
 """Part A of the method, data preparation (steps 1 to 6), done once per dataset.
 
 :func:`prepare_data` gives every turbine a record at every timestamp, labels the operating states with the
-campaign's label overrides and exclusions applied, aligns the reanalysis, norths the whole farm over the whole
+campaign's operating state overrides and exclusions applied, aligns the reanalysis, norths the whole farm over the whole
 record, finds the possible yaw-alignment changes, adds the waking columns and, when asked, writes the outputs
 of each step. The composed run and the benchmark
 studies share it, so a method is judged on the same prepared data wherever it runs.
@@ -41,8 +41,10 @@ from wind_up.diagnostics.operating_states import (
     write_validity_plots,
 )
 from wind_up.diagnostics.waking_scenarios import write_waking_outputs
+from wind_up.labels import NORTHING, UPLIFT
 from wind_up.operating_state import (
     VALID_NORTHING_COL,
+    VALID_UPLIFT_COL,
     OperatingStateConfig,
     apply_declarations,
     declared_records,
@@ -60,6 +62,7 @@ if TYPE_CHECKING:
     from benchmarking.campaigns.declaration import CampaignSpec
     from benchmarking.harness.reanalysis import ReanalysisResult
     from benchmarking.synthetic import ColumnSchema
+    from wind_up.labels import Label
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +109,7 @@ def prepare_data(
     cell_selection: Literal["land", "sea"] = "land",
     out_dir: Path | None = None,
     plots: bool = True,
+    labels: Sequence[Label] = (),
 ) -> PreparedData:
     """Run Part A on ``scada_df`` and return what it produced.
 
@@ -118,6 +122,8 @@ def prepare_data(
     :param cell_selection: the reanalysis grid cell asked for, named in the reanalysis summary
     :param out_dir: where each step's outputs go, in a folder per step; nothing is written when ``None``
     :param plots: write the plots as well as the tables
+    :param labels: the analyst's labels, columns of ``scada_df``; a record holding one is not valid for the
+        uses it withholds
     """
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
     timebase = infer_timebase(index)
@@ -131,10 +137,11 @@ def prepare_data(
         turbine_col=columns.turbine,
         config=config,
         exclusions=spec.exclusions,
-        overrides=spec.label_overrides,
+        overrides=spec.operating_state_overrides,
     )
+    scada_df = withhold_labels(scada_df, labels=labels)
     declared = declared_records(
-        scada_df, turbine_col=columns.turbine, windows=[*spec.exclusions, *spec.label_overrides]
+        scada_df, turbine_col=columns.turbine, windows=[*spec.exclusions, *spec.operating_state_overrides]
     )
     checks = label_checks(
         scada_df, columns=columns, timebase=timebase, rated_power_kw=spec.rated_power_kw, declared=declared
@@ -238,6 +245,23 @@ def prepare_data(
         possible_changes=possible_changes,
         timebase=timebase,
     )
+
+
+def withhold_labels(scada_df: pd.DataFrame, *, labels: Sequence[Label]) -> pd.DataFrame:
+    """Return ``scada_df`` with each record holding a label not valid for the uses that label withholds.
+
+    A record whose label column is not true, a filled record's NaN included, keeps its validity.
+    """
+    withholding = [label for label in labels if label.withholds]
+    if not withholding:
+        return scada_df
+    out = scada_df.copy()
+    for label in withholding:
+        held = out[label.column].eq(True).to_numpy(dtype=bool)  # noqa: FBT003
+        for use, column in ((UPLIFT, VALID_UPLIFT_COL), (NORTHING, VALID_NORTHING_COL)):
+            if use in label.withholds:
+                out[column] = out[column].to_numpy(dtype=bool) & ~held
+    return out
 
 
 def northing_learning_set(

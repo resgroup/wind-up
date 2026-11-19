@@ -83,7 +83,7 @@ def uplift_validity(scada_df: pd.DataFrame, *, turbine_col: str) -> pd.DataFrame
 def labelled_scada(spec: CampaignSpec, frame: pd.DataFrame, *, columns: ColumnSchema) -> pd.DataFrame:
     """Return ``frame`` with the step 2 labels: as given when it has them, else the generic states.
 
-    A frame that has the labels is used as given, so it must already carry the campaign's label overrides and
+    A frame that has the labels is used as given, so it must already carry the campaign's operating state overrides and
     exclusions, as :func:`~benchmarking.campaigns.preparation.prepare_data` returns it. A frame labelled here
     takes them too.
     """
@@ -100,7 +100,7 @@ def labelled_scada(spec: CampaignSpec, frame: pd.DataFrame, *, columns: ColumnSc
         turbine_col=spec.turbine_col,
         config=config,
         exclusions=spec.exclusions,
-        overrides=spec.label_overrides,
+        overrides=spec.operating_state_overrides,
     )
 
 

@@ -187,8 +187,9 @@ def run_declaration(
     data_preparation_dir: Path | None = None,
     data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
     reference_plots: bool = False,
+    analysis: str | None = None,
 ) -> CampaignReport:
-    """Run the campaign declared at ``path`` and write its report.
+    """Run one analysis of the campaign declared at ``path`` and write its report.
 
     :param path: the campaign declaration
     :param out_dir: where to write; defaults to :func:`default_out_dir` of the campaign's name
@@ -200,9 +201,11 @@ def run_declaration(
         ``C_turbine_measurement/<reference>_reference_for_<test turbine>/``
     :param data_preparation_dir: where part A's tables and plots go (steps 1 to 6), in a folder per step;
         defaults to ``A_data_preparation`` in ``out_dir``
+    :param analysis: the name of the analysis to run; required when the declaration has several
     :return: the truth-free campaign report, which is also written under ``out_dir``
     """
     declaration = load_declaration(path)
+    campaign = declaration.spec if analysis is None else declaration.spec_for(analysis)
     out_dir = (out_dir if out_dir is not None else default_out_dir(declaration.name)).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_to_file(out_dir)
@@ -211,8 +214,9 @@ def run_declaration(
     preparation = data_preparation_dir.resolve() if data_preparation_dir is not None else None
     write_readme(out_dir, data_preparation_dir=preparation)
     logger.info(
-        "Running campaign %r declared in %s\n  writing to %s\n  logging to %s",
+        "Running campaign %r%s declared in %s\n  writing to %s\n  logging to %s",
         declaration.name,
+        "" if analysis is None else f", analysis {analysis!r},",
         Path(path).resolve(),
         out_dir,
         log_path,
@@ -225,15 +229,16 @@ def run_declaration(
     reanalysis = era5_hourly_df if era5_hourly_df is not None else _fetch_era5(declaration, index=index)
     prepared = prepare_data(
         scada_df,
-        spec=declaration.spec,
+        spec=campaign,
         columns=declaration.columns,
         era5_hourly_df=reanalysis,
         operating_state=declaration.operating_state,
         cell_selection=declaration.cell_selection,
         out_dir=preparation if preparation is not None else out_dir / DATA_PREPARATION_DIRNAME,
+        labels=declaration.labels,
     )
     # The whole park's north tables over the whole record, applied as declared to what each method sees.
-    spec = prepared.with_north_offsets(declaration.spec)
+    spec = prepared.with_north_offsets(campaign)
     # One screen verdict for the campaign: every test turbine is judged against the same references.
     screen_cache: dict = {}
 
@@ -260,11 +265,47 @@ def run_declaration(
         possible_changes=prepared.possible_changes_by_turbine(),
         era5_hourly_df=prepared.aligned_era5,
         operating_state=declaration.operating_state,
+        labels=declaration.labels,
+        non_turbine_measurements=[m.load() for m in declaration.non_turbine_measurements],
     )
     write_report(report, out_dir=out_dir / CAMPAIGN_DIRNAME, farm_dir=out_dir / FARM_DIRNAME)
     write_readme(out_dir, data_preparation_dir=preparation, warnings=report.warnings)
     logger.info("Wrote the %r report to %s", declaration.name, out_dir)
     return report
+
+
+def run_analyses(
+    path: str | Path,
+    *,
+    out_dir: Path | None = None,
+    data_preparation_dir: Path | None = None,
+    reference_plots: bool = False,
+) -> dict[str, CampaignReport]:
+    """Run every analysis of the campaign declared at ``path``, in order, and write each one's report.
+
+    One analysis writes to ``out_dir`` as :func:`run_declaration` does; several write to a folder per
+    analysis under it, each with its own data preparation.
+
+    :param path: the campaign declaration
+    :param out_dir: where to write; defaults to :func:`default_out_dir` of the campaign's name
+    :param data_preparation_dir: where part A's tables and plots go when the declaration has one analysis
+    :param reference_plots: also write the plots of each reference measurement
+    :return: each analysis's report, by name
+    """
+    declaration = load_declaration(path)
+    base = out_dir if out_dir is not None else default_out_dir(declaration.name)
+    if len(declaration.analyses) == 1:
+        (only,) = declaration.analyses
+        report = run_declaration(
+            path, out_dir=base, data_preparation_dir=data_preparation_dir, reference_plots=reference_plots
+        )
+        return {only.name: report}
+    return {
+        analysis.name: run_declaration(
+            path, out_dir=base / analysis.name, reference_plots=reference_plots, analysis=analysis.name
+        )
+        for analysis in declaration.analyses
+    }
 
 
 def write_readme(

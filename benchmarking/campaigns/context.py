@@ -20,9 +20,13 @@ from wind_up.operating_state import OperatingStateConfig
 from wind_up.toggle import ToggleSchedule
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from benchmarking.campaigns.declaration import CampaignSpec
     from benchmarking.synthetic import ColumnSchema
     from wind_up.analysis_period import AnalysisPlan
+    from wind_up.facts import NonTurbineMeasurement
+    from wind_up.labels import Label
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +42,13 @@ def campaign_facts(
     columns: ColumnSchema,
     era5_hourly_df: pd.DataFrame | None = None,
     operating_states: OperatingStateConfig | None = None,
+    labels: Sequence[Label] = (),
+    non_turbine_measurements: Sequence[NonTurbineMeasurement] = (),
 ) -> WindFarmFacts:
     """Return the facts of a campaign over ``records``.
 
     The upgraded turbines receive one upgrade per wake reach among them; every other works window is
-    an upgrade of its own turbine, installed over that window. Exclusions and label overrides are
+    an upgrade of its own turbine, installed over that window. Exclusions and operating state overrides are
     declared as given; ``records`` already carries the labels they lead to. Records of a turbine the
     layout does not hold are left out, with a warning.
 
@@ -51,6 +57,8 @@ def campaign_facts(
     :param era5_hourly_df: reanalysis at the farm's centroid, hourly or aligned to the records
     :param operating_states: the site's operating states, those ``records`` were labelled with; the
         generic states alone when ``None``
+    :param labels: the analyst's labels, columns of ``records``
+    :param non_turbine_measurements: the masts and LiDARs
     """
     frame = spec.layout.frame
     turbines = pd.DataFrame(
@@ -81,8 +89,10 @@ def campaign_facts(
         upgrades=_upgrades(spec),
         operating_states=operating_states if operating_states is not None else OperatingStateConfig(),
         exclusions=list(spec.exclusions),
-        operating_state_overrides=list(spec.label_overrides),
+        operating_state_overrides=list(spec.operating_state_overrides),
+        labels=list(labels),
         north_offsets=list(spec.north_offsets or []),
+        non_turbine_measurements=list(non_turbine_measurements),
         reanalysis=reanalysis,
     )
 
@@ -135,6 +145,7 @@ def _upgrades(spec: CampaignSpec) -> list[Upgrade]:
                     timing=timing,
                     toggle_cycle=timing.period,
                     toggle_datum=timing.start,
+                    settling_time=spec.settling_time,
                     wake_reach_d=reach,
                 )
             )
