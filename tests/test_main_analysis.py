@@ -1,13 +1,21 @@
 import math
+from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pandas as pd
 import pytest
+from matplotlib import pyplot as plt
 from pandas.testing import assert_frame_equal
 
+from wind_up import main_analysis
 from wind_up.constants import TIMESTAMP_COL
-from wind_up.main_analysis import _keep_only_ref_toggle_off, _toggle_pairing_filter
-from wind_up.models import WindUpConfig
+from wind_up.main_analysis import _keep_only_ref_toggle_off, _show_input_data_timeline, _toggle_pairing_filter
+from wind_up.models import PlotConfig, WindUpConfig
+
+if TYPE_CHECKING:
+    from wind_up.interface import AssessmentInputs
 
 
 def test_toggle_pairing_filter_method_none() -> None:
@@ -145,3 +153,25 @@ def test_keep_only_ref_toggle_off_skips_placebo_wtgs(
 def test_keep_only_ref_toggle_off_is_false_without_per_turbine_toggle(test_marge_config: WindUpConfig) -> None:
     test_marge_config.toggle.toggle_file_per_turbine = False
     assert not _keep_only_ref_toggle_off(cfg=test_marge_config, test_name="MRG_T01", ref_name="MRG_T06")
+
+
+def test_show_input_data_timeline_shows_the_figure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fake_timeline(**_: object) -> plt.Figure:
+        fig = plt.figure()
+        fig.suptitle("Wind-Up Assessment Timeline")
+        return fig
+
+    shown_titles: list[str] = []
+
+    def fake_show() -> None:
+        shown_titles.extend(plt.figure(n).get_suptitle() for n in plt.get_fignums())
+
+    monkeypatch.setattr(main_analysis, "plot_input_data_timeline", fake_timeline)
+    monkeypatch.setattr(plt, "show", fake_show)
+    plt.close("all")
+    inputs = SimpleNamespace(plot_cfg=PlotConfig(show_plots=True, save_plots=False, plots_dir=tmp_path))
+
+    _show_input_data_timeline(cast("AssessmentInputs", inputs))
+
+    assert shown_titles == ["Wind-Up Assessment Timeline"]
+    assert plt.get_fignums() == []

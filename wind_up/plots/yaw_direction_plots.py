@@ -15,6 +15,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _hours_of_data(plot_df: pd.DataFrame, *, signal_name: str) -> pd.DataFrame:
+    """Hours of 10-minute `signal_name` data per wind speed and wind direction bin, NaN where there is none.
+
+    Wind speeds and directions without any data are left out.
+    """
+    hours = (
+        plot_df.pivot_table(
+            index="ws_bin_centre", columns="wd_bin_centre", values=signal_name, aggfunc="count", observed=False
+        )
+        / 6
+    )
+    return hours.where(hours > 0).dropna(how="all").dropna(axis=1, how="all")
+
+
 def plot_yaw_direction_pre_post_per_signal(
     signal_name: str,
     test_wd_col: str,
@@ -120,13 +134,7 @@ def plot_yaw_direction_pre_post_per_signal(
             plt.figure(figsize=(8, 8))
             plt.subplot(2, 1, 1)
             sns.heatmap(
-                plot_df.pivot_table(
-                    index="ws_bin_centre",
-                    columns="wd_bin_centre",
-                    values=signal_name,
-                    aggfunc=lambda x: x.count() / 6,
-                    observed=False,
-                ).iloc[::-1],
+                _hours_of_data(plot_df, signal_name=signal_name).iloc[::-1],
                 annot=True,
                 cmap="gray_r",
                 fmt=".1f",
