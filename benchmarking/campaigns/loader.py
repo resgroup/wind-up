@@ -29,7 +29,6 @@ from benchmarking.campaigns.declared import (
     check_roles,
     check_works_clear_of,
 )
-from benchmarking.harness.reanalysis import TimestampConvention
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from benchmarking.synthetic.sources.greenbyte import GREENBYTE_COLUMNS
 from wind_up.analysis import REPORTS
@@ -37,6 +36,7 @@ from wind_up.facts import NO_TIME
 from wind_up.labels import Label
 from wind_up.layout import Layout, centroid
 from wind_up.operating_state import OperatingStateConfig, StateValidity
+from wind_up.reanalysis import TimestampConvention
 from wind_up.wake_reach import MAX_REACH_D, reach_from_uplift
 
 if TYPE_CHECKING:

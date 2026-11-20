@@ -104,6 +104,17 @@ def test_every_turbine_is_drawn_with_the_hours(tmp_path: Path) -> None:
     assert "curtailed" in set(hours["operating_state"])
 
 
+def test_without_per_turbine_plots_every_turbine_shares_one_scatter(tmp_path: Path) -> None:
+    paths = write_operating_state_plots(
+        _labelled(_farm(["T1", "T2"])), columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path, per_turbine_plots=False
+    )
+    assert {p.name for p in paths} == {
+        "operating_states_all_turbines.png",
+        STATE_HOURS_CSV,
+        "operating_state_hours.png",
+    }
+
+
 def test_an_unlabelled_frame_gets_no_operating_state_plots(tmp_path: Path) -> None:
     assert write_operating_state_plots(_farm(["T1"]), columns=COLUMNS, timebase=TIMEBASE, out_dir=tmp_path) == []
 

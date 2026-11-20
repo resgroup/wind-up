@@ -7,7 +7,7 @@ aggregation of per-turbine uplift estimates.
 
 from importlib.metadata import version
 
-from wind_up.analysis import AnalysisOutput, AnalysisSpec, CombinedUplift, combine
+from wind_up.analysis import AnalysisOutput, AnalysisSpec, CombinedUplift, combine, combine_subjects
 from wind_up.facts import NonTurbineMeasurement, Reanalysis, Upgrade, WindFarmFacts
 from wind_up.farm import FarmUplift, TurbineUplift, farm_uplift
 from wind_up.labels import Label
@@ -29,5 +29,6 @@ __all__ = [
     "WindFarmFacts",
     "__version__",
     "combine",
+    "combine_subjects",
     "farm_uplift",
 ]

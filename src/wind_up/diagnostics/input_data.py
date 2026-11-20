@@ -17,7 +17,7 @@ import pandas as pd
 from wind_up.diagnostics.context import infer_timebase
 from wind_up.diagnostics.coverage import weekly_coverage
 from wind_up.diagnostics.curves import monthly_power_factor
-from wind_up.diagnostics.ops_relationships import plot_ops_relationships
+from wind_up.diagnostics.ops_relationships import ALL_TURBINES, plot_ops_relationships
 from wind_up.diagnostics.style import apply_grid, save_fig, series_style
 
 if TYPE_CHECKING:
@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_KEPT = " (power > 0, fully available)"
+
 
 def write_input_data_plots(
     scada_df: pd.DataFrame,
@@ -36,6 +38,7 @@ def write_input_data_plots(
     out_dir: Path,
     changeovers: Mapping[str, Sequence[pd.Timestamp]] | None = None,
     rated_power_kw: float | None = None,
+    per_turbine_plots: bool = True,
 ) -> list[Path]:
     """Write the farm-wide input-data plots for every turbine in ``scada_df`` and return their paths.
 
@@ -48,6 +51,8 @@ def write_input_data_plots(
     :param changeovers: each turbine's changeover dates, marked on its operating-relationships figure
     :param rated_power_kw: the turbines' rated power, for the capacity factor under the power factor; without it
         the monthly mean power is drawn instead
+    :param per_turbine_plots: one operating-relationships figure per turbine; when False, one figure of every
+        turbine's records together, ``ops_relationships_all_turbines.png``, without changeovers
     """
     changeovers = changeovers or {}
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -56,15 +61,21 @@ def write_input_data_plots(
     turbines = sorted(str(t) for t in pd.unique(scada_df[columns.turbine]))
     by_turbine = {t: scada_df[scada_df[columns.turbine].astype(str) == t] for t in turbines}
 
+    figures: dict[str, tuple[pd.DataFrame, Sequence[pd.Timestamp], str | None]] = (
+        {t: (rows, changeovers.get(t, ()), None) for t, rows in by_turbine.items()}
+        if per_turbine_plots
+        else {ALL_TURBINES: (scada_df, (), f"All turbines: operating relationships over time, {_period(index)}{_KEPT}")}
+    )
     written: list[Path] = []
-    for turbine, rows in by_turbine.items():
+    for turbine, (rows, marked, title) in figures.items():
         path = plot_ops_relationships(
             rows,
             turbine=turbine,
             columns=columns,
             timebase=timebase,
             out_dir=out_dir,
-            changeovers=changeovers.get(turbine, ()),
+            title=title,
+            changeovers=marked,
         )
         if path is not None:
             written.append(path)

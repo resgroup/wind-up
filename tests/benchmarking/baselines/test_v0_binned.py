@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import wind_up
 from benchmarking.baselines import v0_binned
 from benchmarking.baselines.v0_binned import EXCLUDE_ROW_COL, V0BinnedMethod, v0_records
 from tests.wind_up import facts_fixtures as ff
@@ -346,6 +347,7 @@ def _pairs(subjects: list[str], references: list[str], *, uplift: float = 0.02) 
             "unc_one_sigma_frc": 0.01,
             "pp_valid_hours_pre": 100.0 + i,
             "pp_valid_hours_post": 90.0 + i,
+            "mean_power_post": 1000.0,
         }
         for i, (s, r) in enumerate((s, r) for s in subjects for r in references)
     ]
@@ -392,6 +394,8 @@ class TestAnsweringAnalyses:
         assert list(out.per_reference["ref"]) == ["T2", "T3"]
         row = out.per_turbine.iloc[0]
         assert (row["hours_on"], row["hours_off"]) == (90.0, 100.0)
+        # the mean over its two pairs of 1000 kW times 90 and 91 h
+        assert row["actual_energy"] == pytest.approx(90_500.0)
 
     def test_a_group_gets_v0s_total_uplift(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _Pipeline(monkeypatch)
@@ -401,6 +405,27 @@ class TestAnsweringAnalyses:
         assert out.aep_uplift == pytest.approx(0.02)
         assert np.isfinite(out.aep_sigma)
         assert list(out.per_turbine["turbine"]) == ["T1", "T2"]
+
+    def test_a_group_asked_for_its_net_uplift_gets_it_and_no_sigma(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _Pipeline(monkeypatch)
+        facts = ff.facts(upgrades=[ff.permanent(turbines=("T1", "T2"))])
+        analysis = _analysis(subjects=["T1", "T2"], references=["T3", "T4"], report="aep", combination="net")
+        (out,) = _method(tmp_path, auto_choose_refs=False).estimate(facts, [analysis])
+        assert out.aep_uplift == pytest.approx(0.02)
+        assert out.aep_uplift == wind_up.combine_subjects(out).aep_uplift
+        assert np.isnan(out.aep_sigma)
+        assert any(w.severity == "low" and "no sigma for a group's net uplift" in w.message for w in out.warnings)
+
+    @pytest.mark.parametrize("per_turbine_plots", [True, False])
+    def test_per_turbine_plots_reach_v0(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, per_turbine_plots: bool
+    ) -> None:
+        pipeline = _Pipeline(monkeypatch)
+        method = _method(tmp_path, auto_choose_refs=False, per_turbine_plots=per_turbine_plots)
+        method.estimate(ff.facts(), [_analysis()])
+        assert pipeline.calls[0]["plot_cfg"].skip_per_turbine_plots is not per_turbine_plots
 
     def test_both_reports_take_two_runs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         pipeline = _Pipeline(monkeypatch)

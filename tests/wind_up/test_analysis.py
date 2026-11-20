@@ -8,7 +8,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wind_up.analysis import AEP, CAMPAIGN, REPORTS, AnalysisOutput, AnalysisSpec, combine
+from wind_up.analysis import (
+    AEP,
+    CAMPAIGN,
+    INVERSE_VARIANCE,
+    NET,
+    REPORTS,
+    AnalysisOutput,
+    AnalysisSpec,
+    combine,
+    combine_subjects,
+)
 from wind_up.analysis_warnings import AnalysisWarning
 
 from .facts_fixtures import at
@@ -20,6 +30,7 @@ def test_an_analysis_defaults_to_every_subject_an_open_period_and_both_uplifts()
     assert analysis.references is None
     assert analysis.period == (None, None)
     assert analysis.report == REPORTS
+    assert analysis.combination == INVERSE_VARIANCE
 
 
 def test_an_analysis_freezes_its_collections() -> None:
@@ -48,6 +59,12 @@ def test_named_subjects_are_at_least_one_each_named_once(subjects: list[str]) ->
 def test_the_report_is_one_or_both_uplifts(report: tuple[str, ...]) -> None:
     with pytest.raises(ValueError, match="report is one or both"):
         AnalysisSpec(name="x", upgrade="blades", report=report)
+
+
+def test_the_combination_is_inverse_variance_or_net() -> None:
+    assert AnalysisSpec(name="x", upgrade="blades", combination=NET).combination == NET
+    with pytest.raises(ValueError, match="combination is one of"):
+        AnalysisSpec(name="x", upgrade="blades", combination="mean")
 
 
 def test_a_period_ends_after_it_starts() -> None:
@@ -160,3 +177,50 @@ def test_combine_carries_the_outputs_warnings_and_says_its_sigma_is_a_range() ->
 def test_combine_needs_an_output() -> None:
     with pytest.raises(ValueError, match="at least one output"):
         combine([])
+
+
+def _group(per_turbine: pd.DataFrame | None, *, warnings: tuple[AnalysisWarning, ...] = ()) -> AnalysisOutput:
+    return AnalysisOutput(
+        analysis=AnalysisSpec(name="pair", upgrade="steering"), per_turbine=per_turbine, warnings=warnings
+    )
+
+
+def _subjects(**columns: list[float]) -> pd.DataFrame:
+    nan = [float("nan")] * 2
+    return pd.DataFrame(
+        {
+            "turbine": ["T1", "T2"],
+            "aep_uplift": columns.get("aep_uplift", nan),
+            "aep_sigma": columns.get("aep_sigma", nan),
+            "campaign_uplift": columns.get("campaign_uplift", nan),
+            "campaign_sigma": columns.get("campaign_sigma", nan),
+            "actual_energy": columns.get("actual_energy", nan),
+            "hours_on": [10.0, 10.0],
+            "hours_off": [10.0, 10.0],
+        }
+    )
+
+
+def test_combine_subjects_weights_each_subject_by_its_energy_without_the_upgrade() -> None:
+    raised = AnalysisWarning(severity="medium", step=9, turbine="T2", message="screened out")
+    per_turbine = _subjects(actual_energy=[110.0, 306.0], campaign_uplift=[0.10, 0.02], campaign_sigma=[0.02, 0.01])
+    combined = combine_subjects(_group(per_turbine, warnings=(raised,)))
+    assert combined.campaign_uplift == pytest.approx(416.0 / 400.0 - 1.0)
+    assert combined.campaign_sigma_correlated == pytest.approx(0.25 * 0.02 + 0.75 * 0.01)
+    assert combined.campaign_sigma_independent == pytest.approx(math.hypot(0.25 * 0.02, 0.75 * 0.01))
+    assert math.isnan(combined.aep_uplift)
+    assert combined.outputs["turbine"].tolist() == ["T1", "T2"]
+    assert combined.warnings[0] == raised
+    assert any("no combined aep uplift" in w.message for w in combined.warnings)
+    assert "subjects' errors" in combined.warnings[-1].message
+
+
+def test_combine_subjects_gives_no_uplift_when_a_subject_was_not_measured() -> None:
+    per_turbine = _subjects(actual_energy=[110.0, float("nan")], campaign_uplift=[0.10, float("nan")])
+    assert math.isnan(combine_subjects(_group(per_turbine)).campaign_uplift)
+
+
+@pytest.mark.parametrize("per_turbine", [None, _subjects().iloc[:0]])
+def test_combine_subjects_needs_a_per_turbine_table(per_turbine: pd.DataFrame | None) -> None:
+    with pytest.raises(ValueError, match="no per-turbine table"):
+        combine_subjects(_group(per_turbine))

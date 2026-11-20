@@ -67,10 +67,10 @@ from benchmarking.campaigns.composed import DATA_PREPARATION_DIRNAME
 from benchmarking.campaigns.loader import operating_state_config
 from benchmarking.campaigns.real import REAL_CAMPAIGNS
 from benchmarking.campaigns.run import NoTurbineMeasuredError
-from benchmarking.harness.northing import NORTH_TABLE_YAML
 from benchmarking.synthetic.sources.greenbyte import GREENBYTE_OPERATING_STATE, GREENBYTE_STATE_COL
 from wind_up.analysis_period import PlanSettings
 from wind_up.diagnostics import stages
+from wind_up.northing_step import NORTH_TABLE_YAML
 
 if TYPE_CHECKING:
     from pathlib import Path

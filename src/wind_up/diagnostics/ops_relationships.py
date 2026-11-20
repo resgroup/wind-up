@@ -60,6 +60,10 @@ _CMAP = LinearSegmentedColormap.from_list("blue_red", ["#2166ac", "#7b3294", "#d
 _CMAP_FLOOR = 0.0
 
 
+# The name in the file of a figure drawn from every turbine's records together.
+ALL_TURBINES = "all_turbines"
+
+
 def operating_mask(rows: pd.DataFrame, *, columns: ColumnSchema, timebase: pd.Timedelta) -> pd.Series:
     """Return True for producing (power > 0), fully available records; a missing counter is not available.
 

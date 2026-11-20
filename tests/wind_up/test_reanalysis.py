@@ -8,7 +8,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.harness.reanalysis import (
+from benchmarking.synthetic import HOT_COLUMNS
+from wind_up.operating_state import VALID_NORTHING_COL
+from wind_up.reanalysis import (
     TimestampConvention,
     check_shift,
     interpolate_era5,
@@ -16,8 +18,6 @@ from benchmarking.harness.reanalysis import (
     prepare_reanalysis,
     uncovered_spans,
 )
-from benchmarking.synthetic import HOT_COLUMNS
-from wind_up.operating_state import VALID_NORTHING_COL
 
 TIMEBASE = pd.Timedelta(minutes=10)
 

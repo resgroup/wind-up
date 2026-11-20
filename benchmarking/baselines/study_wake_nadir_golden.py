@@ -42,7 +42,6 @@ from benchmarking import env
 from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.campaigns.loader import operating_state_config
 from benchmarking.campaigns.real import label_hot_operating_states
-from benchmarking.harness.northing import era5_direction, northing_rows
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW
 from benchmarking.synthetic.sources import greenbyte
 from benchmarking.synthetic.sources.hill_of_towie import get_data_dir, load_hot_metadata, load_hot_scada
@@ -50,6 +49,7 @@ from wind_up.circular_math import circ_diff
 from wind_up.geodesy import local_east_north
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, Layout
 from wind_up.northing import north_farm, write_north_table_yaml
+from wind_up.northing_step import era5_direction, northing_rows
 from wind_up.operating_state import label_operating_states
 from wind_up_v0.era5 import get_era5_hourly_df
 

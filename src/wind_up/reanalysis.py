@@ -25,7 +25,7 @@ from wind_up.operating_state import VALID_NORTHING_COL
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from benchmarking.synthetic import ColumnSchema
+    from wind_up.schema import ColumnSchema
 
 logger = logging.getLogger(__name__)
 

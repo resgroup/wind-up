@@ -23,14 +23,6 @@ from benchmarking.diagnostics.features import write_feature_outputs
 from benchmarking.diagnostics.reanalysis import write_reanalysis_outputs
 from benchmarking.diagnostics.yaw_changes import possible_yaw_change_report, write_possible_yaw_changes
 from benchmarking.harness.label_checks import LABEL_CHECKS_CSV, label_checks, warn_label_checks
-from benchmarking.harness.northing import (
-    DEFAULT_NORTHING_ROLES,
-    apply_north_tables,
-    north_offsets_of,
-    north_tables,
-    northing_rows,
-)
-from benchmarking.harness.reanalysis import ERA5_WD_RAW, prepare_reanalysis
 from wind_up.diagnostics import stages
 from wind_up.diagnostics.context import infer_timebase
 from wind_up.diagnostics.input_data import write_input_data_plots
@@ -42,6 +34,13 @@ from wind_up.diagnostics.operating_states import (
 )
 from wind_up.diagnostics.waking_scenarios import write_waking_outputs
 from wind_up.labels import NORTHING, UPLIFT
+from wind_up.northing_step import (
+    DEFAULT_NORTHING_ROLES,
+    apply_north_tables,
+    north_offsets_of,
+    north_tables,
+    northing_rows,
+)
 from wind_up.operating_state import (
     VALID_NORTHING_COL,
     VALID_UPLIFT_COL,
@@ -51,6 +50,7 @@ from wind_up.operating_state import (
     fill_grid,
     label_operating_states,
 )
+from wind_up.reanalysis import ERA5_WD_RAW, prepare_reanalysis
 from wind_up.waking import WAKING_COLUMNS, add_waking_scenarios, waking_directions
 
 if TYPE_CHECKING:
@@ -60,9 +60,9 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from benchmarking.campaigns.declaration import CampaignSpec
-    from benchmarking.harness.reanalysis import ReanalysisResult
     from benchmarking.synthetic import ColumnSchema
     from wind_up.labels import Label
+    from wind_up.reanalysis import ReanalysisResult
 
 logger = logging.getLogger(__name__)
 

@@ -1,12 +1,12 @@
-"""The shared northing step: north-calibrate every turbine's direction, upstream of every method.
+"""Method step 4, northing: find and apply each turbine's north offsets.
 
-Runs on both paths that feed methods -- the campaign runner and the study replicates -- so every
-method inherits the correction rather than each hand-rolling one. The step writes
-``columns.northed(role)`` alongside the untouched original, so plots and diagnostics of the raw
-signal keep meaning what they say; whether it has run is written in the frame as the presence of
-that column, with no separate flag to disagree with it.
+* :func:`discover_north_offsets` -- discover the offsets from a :class:`~wind_up.facts.WindFarmFacts`'s
+  records valid for northing, against its reanalysis direction and the farm's own consensus.
+* :func:`northed_records` -- the facts' records with the declared offsets applied.
+* :func:`north_scada` -- the same on a bare frame: discover or apply, and write
+  ``columns.northed(role)`` beside each untouched original.
 
-``north_offsets`` decides which of two things happens:
+``north_offsets`` decides which of two things :func:`north_scada` and :func:`north_tables` do:
 
 * ``None`` -- discover the corrections from the data;
 * a list (possibly empty) -- apply exactly those, discovering nothing.
@@ -21,8 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.reanalysis import ERA5_WS_RAW, interpolate_era5
 from wind_up.diagnostics.context import infer_timebase
+from wind_up.layout import ROTOR_DIAMETER_COL
 from wind_up.northing import (
     DEFAULT_NORTHING,
     NORTH_OFFSET_COL,
@@ -36,16 +36,18 @@ from wind_up.northing import (
 )
 from wind_up.northing_plots import plot_northing, plot_northing_farm, plot_wake_nadir_farm, plot_wake_nadir_pair
 from wind_up.operating_state import VALID_NORTHING_COL
+from wind_up.reanalysis import ERA5_WS_RAW, interpolate_era5
 from wind_up.wake_nadir import wake_pair_curves, wake_pairs
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     import numpy.typing as npt
 
-    from benchmarking.synthetic import ColumnSchema
+    from wind_up.facts import NorthOffset, Reanalysis, WindFarmFacts
     from wind_up.layout import Layout
+    from wind_up.schema import ColumnSchema
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +72,8 @@ ERA5_WD_COL = "wind_direction_100m"
 def era5_direction(era5_df: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
     """Return the ERA5 hub-height wind direction on the SCADA periods of ``index`` (period-start UTC).
 
-    Interpolated through the wind vector, as :func:`~benchmarking.harness.reanalysis.interpolate_era5`.
-
-    Raises naming the column when the frame does not carry it: a partial reanalysis delivery is
-    reported as the missing column rather than as a bare KeyError.
+    Interpolated through the wind vector, as :func:`~wind_up.reanalysis.interpolate_era5`. Raises
+    naming the column when the frame does not carry it.
     """
     if ERA5_WD_COL not in era5_df.columns:
         msg = (
@@ -127,7 +127,7 @@ def _usable_masks(
     turbines: Sequence[str],
     index: pd.DatetimeIndex,
     reference_deg: np.ndarray,
-    rated_power_kw: float,
+    rated_power_kw: float | Mapping[str, float],
     timebase_s: float,
 ) -> dict[str, np.ndarray]:
     """Per-turbine rows usable for northing, positional on the shared ``index``."""
@@ -150,7 +150,7 @@ def _usable_masks(
             power=power,
             downtime_s=downtime_s,
             reference_deg=reference_deg,
-            rated_power=rated_power_kw,
+            rated_power=rated_power_kw if isinstance(rated_power_kw, float | int) else rated_power_kw[turbine],
             timebase_s=timebase_s,
         )
     return masks
@@ -207,13 +207,14 @@ def north_scada(
     *,
     columns: ColumnSchema,
     north_offsets: Sequence[tuple[str, pd.Timestamp, float]] | None,
-    rated_power_kw: float,
+    rated_power_kw: float | Mapping[str, float],
     layout: Layout | None,
     era5_wd: pd.Series | None = None,
     roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
     settings: NorthingSettings = DEFAULT_NORTHING,
     out_dir: Path | None = None,
     plots: bool = True,
+    per_turbine_plots: bool = True,
     apply_to: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Return ``scada_df`` with a north-calibrated companion column for each direction role.
@@ -226,7 +227,7 @@ def north_scada(
         when the frame carries it.
     :param columns: the source-native schema naming the turbine and direction role(s)
     :param north_offsets: ``None`` to discover the corrections, or the exact table to apply
-    :param rated_power_kw: turbine rating, for deciding which rows are usable for northing
+    :param rated_power_kw: turbine rating, or each turbine's, for deciding which rows are usable for northing
     :param layout: the farm layout, rotor diameters included, for the neighbour consensus and the
         wake-nadir shift. ``None`` norths against the whole-farm consensus and skips the wake-nadir
         shift. Only used when ``north_offsets`` is ``None``.
@@ -238,6 +239,7 @@ def north_scada(
         (:data:`NORTH_TABLE_YAML`), the farm overview, one plot per device and, with a layout, the
         wake-nadir shift map and a few before/after wake plots are written here
     :param plots: write the plots to ``out_dir`` as well as the discovered table
+    :param per_turbine_plots: with ``plots``, also write one plot per device
     :param apply_to: the frame to correct and return, when it differs from the frame learnt from
     :return: a copy of ``apply_to`` (default ``scada_df``) with ``columns.northed(role)`` added for each role
     """
@@ -262,6 +264,7 @@ def north_scada(
         settings=settings,
         out_dir=out_dir,
         plots=plots,
+        per_turbine_plots=per_turbine_plots,
     )
     return apply_north_tables(target, tables=tables, columns=columns, roles=present)
 
@@ -271,12 +274,13 @@ def north_tables(
     *,
     columns: ColumnSchema,
     north_offsets: Sequence[tuple[str, pd.Timestamp, float]] | None,
-    rated_power_kw: float,
+    rated_power_kw: float | Mapping[str, float],
     layout: Layout | None,
     era5_wd: pd.Series | None = None,
     settings: NorthingSettings = DEFAULT_NORTHING,
     out_dir: Path | None = None,
     plots: bool = True,
+    per_turbine_plots: bool = True,
 ) -> dict[str, pd.DataFrame]:
     """Return one north table per turbine of ``scada_df``: the declared ones, or those discovered.
 
@@ -355,6 +359,7 @@ def north_tables(
                 power=power,
                 wind_speed=wind_speed,
                 out_dir=out_dir,
+                per_turbine_plots=per_turbine_plots,
             )
     return tables
 
@@ -391,6 +396,96 @@ def apply_north_tables(
     return scada_df
 
 
+def discover_north_offsets(
+    facts: WindFarmFacts,
+    *,
+    reanalysis: str | None = None,
+    settings: NorthingSettings = DEFAULT_NORTHING,
+    out_dir: Path | None = None,
+    plots: bool = True,
+    per_turbine_plots: bool = True,
+) -> list[NorthOffset]:
+    """Return the north offsets discovered from ``facts``, as ``(turbine, from, offset in degrees)``.
+
+    Learns from the records :meth:`~wind_up.facts.WindFarmFacts.record_labels` marks valid for
+    northing, against the reanalysis node's :data:`ERA5_WD_COL` and the farm's own consensus. With a
+    ``rotor_diameter_m`` in the turbine table, the consensus is each turbine's nearest neighbours and
+    the wake-nadir shift runs. The facts' declared north offsets are not read. Declare the result as
+    the facts' ``north_offsets`` for every method to read the same table.
+
+    :param facts: the facts, with a ``nacelle_position`` role
+    :param reanalysis: the name of the reanalysis node to anchor to; may be left out when the facts hold one
+    :param settings: how the changepoint search is bounded
+    :param out_dir: when given, the table (:data:`NORTH_TABLE_YAML`) and the plots are written here
+    :param plots: write the plots as well as the table
+    :param per_turbine_plots: with ``plots``, also write one plot per turbine
+    """
+    facts.columns.require_roles(["nacelle_position"])
+    node = _reanalysis_node(facts, name=reanalysis)
+    records = _with_northing_validity(facts)
+    index = pd.DatetimeIndex(records.index.unique()).sort_values()
+    tables = north_tables(
+        records,
+        columns=facts.columns,
+        north_offsets=None,
+        rated_power_kw={turbine: facts.rated_power_kw(turbine) for turbine in facts.turbine_names},
+        layout=facts.layout if ROTOR_DIAMETER_COL in facts.turbines.columns else None,
+        era5_wd=era5_direction(node.records, index),
+        settings=settings,
+        out_dir=out_dir,
+        plots=plots,
+        per_turbine_plots=per_turbine_plots,
+    )
+    return north_offsets_of(tables)
+
+
+def northed_records(facts: WindFarmFacts, *, roles: Sequence[str] = DEFAULT_NORTHING_ROLES) -> pd.DataFrame:
+    """Return a copy of the facts' records with ``columns.northed(role)`` added for each role.
+
+    Applies the facts' declared ``north_offsets``; a turbine without one is not corrected.
+    """
+    facts.columns.require_roles(roles)
+    tables = north_tables(
+        facts.records,
+        columns=facts.columns,
+        north_offsets=facts.north_offsets,
+        rated_power_kw=0.0,
+        layout=None,
+    )
+    return apply_north_tables(facts.records, tables=tables, columns=facts.columns, roles=roles)
+
+
+def _reanalysis_node(facts: WindFarmFacts, *, name: str | None) -> Reanalysis:
+    """Return the facts' reanalysis node called ``name``, or their only node when ``name`` is None."""
+    nodes = {node.name: node for node in facts.reanalysis}
+    if name is None:
+        if len(nodes) != 1:
+            msg = (
+                f"northing anchors to one reanalysis node; name one of {sorted(nodes)}"
+                if nodes
+                else ("northing anchors to a reanalysis direction; the facts hold no reanalysis")
+            )
+            raise ValueError(msg)
+        return next(iter(nodes.values()))
+    if name not in nodes:
+        msg = f"the facts hold no reanalysis node called {name!r}; they hold {sorted(nodes)}"
+        raise ValueError(msg)
+    return nodes[name]
+
+
+def _with_northing_validity(facts: WindFarmFacts) -> pd.DataFrame:
+    """Return the facts' records with :data:`~wind_up.operating_state.VALID_NORTHING_COL` from their record labels."""
+    turbine_col = facts.columns.turbine
+    labels = facts.record_labels()
+    valid = pd.Series(
+        labels[VALID_NORTHING_COL].to_numpy(dtype=bool),
+        index=pd.MultiIndex.from_arrays([pd.DatetimeIndex(labels.index), labels[turbine_col].astype(str)]),
+    )
+    records = facts.records
+    keys = pd.MultiIndex.from_arrays([pd.DatetimeIndex(records.index), records[turbine_col].astype(str)])
+    return records.assign(**{VALID_NORTHING_COL: valid.reindex(keys).fillna(value=False).to_numpy(dtype=bool)})
+
+
 def _write_discovery_plots(
     index: pd.DatetimeIndex,
     *,
@@ -404,10 +499,17 @@ def _write_discovery_plots(
     power: dict[str, np.ndarray] | None,
     wind_speed: dict[str, np.ndarray] | None,
     out_dir: Path,
+    per_turbine_plots: bool,
 ) -> None:
-    """Write the discovery plots: per device, and with a layout the wake-nadir shift map and wake pairs."""
+    """Write the discovery plots: the farm, per device, and with a layout the wake-nadir shift map and wake pairs."""
     _write_northing_plots(
-        index, directions=directions, usable=usable, reference=reference, tables=after, out_dir=out_dir
+        index,
+        directions=directions,
+        usable=usable,
+        reference=reference,
+        tables=after,
+        out_dir=out_dir,
+        per_turbine_plots=per_turbine_plots,
     )
     if layout is None or not corrections or power is None:
         return
@@ -435,8 +537,9 @@ def _write_northing_plots(
     reference: np.ndarray,
     tables: dict[str, pd.DataFrame],
     out_dir: Path,
+    per_turbine_plots: bool = True,
 ) -> None:
-    """Write the farm overview and one plot per device, then close the figures."""
+    """Write the farm overview and, with ``per_turbine_plots``, one plot per device, then close the figures."""
     out_dir.mkdir(parents=True, exist_ok=True)
     figure = plot_northing_farm(
         index,
@@ -448,7 +551,7 @@ def _write_northing_plots(
         out_dir=out_dir,
     )
     plt.close(figure)
-    for device in sorted(directions):
+    for device in sorted(directions) if per_turbine_plots else ():
         figure = plot_northing(
             index,
             directions[device],

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import pandas as pd
 
-from wind_up.analysis import AEP, CAMPAIGN, PER_TURBINE_COLUMNS, AnalysisOutput
+from wind_up.analysis import AEP, CAMPAIGN, NET, PER_TURBINE_COLUMNS, AnalysisOutput
 from wind_up.analysis_warnings import AnalysisWarning
 from wind_up.farm import TurbineUplift, farm_uplift
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL
@@ -338,7 +338,8 @@ def group_output(
     """Return the analysis's output from each subject's measurement, or why it could not be measured.
 
     One measured subject gives the analysis its uplift and sigma. Several give the uplift of their
-    energy on the upgrade, leaving out any whose energy is unknown, and no sigma. A subject not
+    energy on the upgrade, leaving out any whose energy is unknown, and no sigma; asked for another
+    combination than ``net``, a medium warning says so. A subject not
     measured is a row of NaN and a high warning beginning :data:`NOT_MEASURED`. No AEP uplift is
     given; asking for one is a medium warning.
     """
@@ -378,6 +379,9 @@ def group_output(
         uplift = farm_uplift(weights).uplift if weights else np.nan
         message = f"{name} gives no sigma for a group of subjects; each subject's sigma is in per_turbine"
         found.append(AnalysisWarning(severity="low", step=COMBINE_STEP, turbine="all", message=message))
+        if analysis.combination != NET:
+            message = f"{name} gives a group's net uplift; it cannot combine by {analysis.combination!r}"
+            found.append(AnalysisWarning(severity="medium", step=COMBINE_STEP, turbine="all", message=message))
     else:
         message = f"{name} measured none of the subjects {list(per_turbine['turbine'])}"
         found.append(AnalysisWarning(severity="high", step=MEASURE_STEP, turbine="all", message=message))

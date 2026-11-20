@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.harness.reanalysis import ERA5_WD, ERA5_WD_RAW
 from benchmarking.harness.wind_rose import era5_rose, rose_label
+from wind_up.reanalysis import ERA5_WD, ERA5_WD_RAW
 
 INDEX = pd.date_range("2020-01-01", periods=4, freq="1h", tz="UTC")
 

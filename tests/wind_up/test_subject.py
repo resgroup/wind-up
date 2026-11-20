@@ -360,10 +360,15 @@ class TestAnsweringAnalyses:
         assert out.warnings == ()
 
     def test_a_group_gives_the_energy_weighted_uplift_and_no_sigma(self) -> None:
-        out = self._answer(_Fixed(0.03), AnalysisSpec(name="a", upgrade="blades", report="campaign"))
+        out = self._answer(_Fixed(0.03), AnalysisSpec(name="a", upgrade="blades", report="campaign", combination="net"))
         assert out.campaign_uplift == pytest.approx(0.03)
         assert np.isnan(out.campaign_sigma)
         assert [w.severity for w in out.warnings] == ["low"]
+
+    def test_a_group_asked_for_another_combination_says_it_gives_the_net_uplift(self) -> None:
+        out = self._answer(_Fixed(0.03), AnalysisSpec(name="a", upgrade="blades", report="campaign"))
+        assert out.campaign_uplift == pytest.approx(0.03)
+        assert any(w.severity == "medium" and "cannot combine by 'inverse_variance'" in w.message for w in out.warnings)
 
     def test_an_unmeasured_subject_is_nan_with_its_reason(self) -> None:
         out = self._answer(_Fixed(0.03, failing=("T1",)), AnalysisSpec(name="a", upgrade="blades", report="campaign"))

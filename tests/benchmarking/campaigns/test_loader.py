@@ -9,10 +9,10 @@ import pandas as pd
 import pytest
 
 from benchmarking.campaigns.loader import era5_window, load_declaration
-from benchmarking.harness.reanalysis import TimestampConvention
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 from wind_up.layout import CENTROID_DECIMALS
 from wind_up.operating_state import GENERIC_STATES, OperatingStateConfig, StateValidity
+from wind_up.reanalysis import TimestampConvention
 
 if TYPE_CHECKING:
     from pathlib import Path

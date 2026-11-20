@@ -46,9 +46,9 @@ from benchmarking.campaigns.placebo import (
     placebo_campaign,
 )
 from benchmarking.campaigns.runner import CampaignRunner
-from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_COLUMNS, SensorGainDrift, SensorGainStep
 from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
+from wind_up.northing_step import era5_direction
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

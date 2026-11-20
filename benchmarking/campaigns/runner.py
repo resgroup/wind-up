@@ -11,9 +11,9 @@ from benchmarking.baselines.power_model.method import CORRECTION_COLUMNS, HOLDOU
 from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
 from benchmarking.campaigns.run import CampaignReport, estimate_campaign, visible_mask
 from benchmarking.harness import CampaignWindow, Replicate, score_output, truth_mask
-from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.northing import DEFAULT_NORTHING
+from wind_up.northing_step import DEFAULT_NORTHING_ROLES
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence

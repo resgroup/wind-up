@@ -246,6 +246,15 @@ class TestTheFarmWidePlots:
         names = {p.name for p in paths}
         assert {"ops_relationships_T1.png", "ops_relationships_T2.png", "ops_relationships_T3.png"} <= names
 
+    def test_without_per_turbine_plots_every_turbine_shares_one_figure(self, tmp_path: Path) -> None:
+        paths = write_input_data_plots(
+            _farm(["T1", "T2", "T3"]), columns=COLUMNS, out_dir=tmp_path, per_turbine_plots=False
+        )
+        names = {p.name for p in paths}
+        assert "ops_relationships_all_turbines.png" in names
+        assert not {"ops_relationships_T1.png", "ops_relationships_T2.png", "ops_relationships_T3.png"} & names
+        assert "input_data_coverage.png" in names
+
     def test_power_factor_and_coverage_cover_the_farm(self, tmp_path: Path) -> None:
         paths = write_input_data_plots(_farm(["T1", "T2"]), columns=COLUMNS, out_dir=tmp_path)
         assert {"power_factor.png", "input_data_coverage.png"} <= {p.name for p in paths}

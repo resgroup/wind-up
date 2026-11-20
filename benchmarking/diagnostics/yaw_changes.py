@@ -15,8 +15,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.northing import northing_rows
 from wind_up.diagnostics.style import apply_grid, save_fig
+from wind_up.northing_step import northing_rows
 from wind_up.operating_state import VALID_UPLIFT_COL
 from wind_up.yaw_changes import CANDIDATE_COLUMNS, CP_WINDOW, possible_yaw_changes
 

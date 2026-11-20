@@ -13,11 +13,10 @@ from benchmarking.campaigns.loader import Declaration, load_declaration
 from benchmarking.campaigns.preparation import PreparedData, northing_learning_set, prepare_data, withhold_labels
 from benchmarking.diagnostics.yaw_changes import POSSIBLE_YAW_CHANGES_CSV, REPORT_COLUMNS
 from benchmarking.harness.label_checks import LABEL_CHECKS_CSV
-from benchmarking.harness.northing import NORTH_TABLE_YAML
-from benchmarking.harness.reanalysis import ERA5_WD_RAW
 from benchmarking.synthetic import HOT_COLUMNS
 from wind_up.diagnostics import stages
 from wind_up.labels import NORTHING, UPLIFT, Label
+from wind_up.northing_step import NORTH_TABLE_YAML
 from wind_up.operating_state import (
     FULL_DOWNTIME,
     NOT_WAKING,
@@ -27,6 +26,7 @@ from wind_up.operating_state import (
     VALID_UPLIFT_COL,
     WAKING_STATE_COL,
 )
+from wind_up.reanalysis import ERA5_WD_RAW
 from wind_up.waking import UPWIND_COL, WAKING_COLUMNS, WAKING_SCENARIO_COL
 
 from .test_composed import era5

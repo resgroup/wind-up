@@ -26,7 +26,7 @@ import pandas as pd
 from matplotlib.lines import Line2D
 
 from wind_up.diagnostics import stages
-from wind_up.diagnostics.ops_relationships import PAIRS
+from wind_up.diagnostics.ops_relationships import ALL_TURBINES, PAIRS
 from wind_up.diagnostics.style import apply_grid, save_fig
 from wind_up.operating_state import (
     FULL_DOWNTIME,
@@ -304,6 +304,7 @@ def write_operating_state_plots(
     timebase: pd.Timedelta,
     out_dir: Path,
     changeovers: Mapping[str, Sequence[pd.Timestamp]] | None = None,
+    per_turbine_plots: bool = True,
 ) -> list[Path]:
     """Write every turbine's operating-state scatters, the hours CSV and the monthly hours plot.
 
@@ -312,16 +313,30 @@ def write_operating_state_plots(
     :param timebase: the records' period
     :param out_dir: the folder written to
     :param changeovers: each turbine's changeover dates, marked on the monthly hours plot
+    :param per_turbine_plots: one scatter per turbine; when False, one scatter of every turbine's records
+        together, ``operating_states_all_turbines.png``
     :return: the files written; none when ``labelled`` carries no states
     """
     if STATE_COL not in labelled.columns:
         return []
     out_dir.mkdir(parents=True, exist_ok=True)
     turbine_names = labelled[columns.turbine].astype(str)
+    scattered = (
+        {t: labelled[(turbine_names == t).to_numpy()] for t in sorted(turbine_names.unique())}
+        if per_turbine_plots
+        else {ALL_TURBINES: labelled}
+    )
     written: list[Path] = []
-    for turbine in sorted(turbine_names.unique()):
-        rows = labelled[(turbine_names == turbine).to_numpy()]
-        path = plot_operating_states(rows, turbine=turbine, columns=columns, timebase=timebase, out_dir=out_dir)
+    for turbine, rows in scattered.items():
+        index = pd.DatetimeIndex(rows.index)
+        title = (
+            None
+            if per_turbine_plots
+            else f"All turbines: operating states, {index.min():%Y-%m-%d} to {index.max():%Y-%m-%d}"
+        )
+        path = plot_operating_states(
+            rows, turbine=turbine, columns=columns, timebase=timebase, out_dir=out_dir, title=title
+        )
         if path is not None:
             written.append(path)
     csv = out_dir / STATE_HOURS_CSV

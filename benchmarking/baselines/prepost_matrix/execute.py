@@ -60,8 +60,6 @@ from benchmarking.campaigns.rollout import (
 )
 from benchmarking.campaigns.run import estimate_campaign
 from benchmarking.campaigns.runner import CampaignRunner, per_turbine_table
-from benchmarking.harness.northing import NORTH_TABLE_YAML
-from benchmarking.harness.reanalysis import normalise_timestamps
 from benchmarking.synthetic.sources.greenbyte import (
     GREENBYTE_OPERATING_STATE,
     KELMARSH,
@@ -73,7 +71,9 @@ from benchmarking.synthetic.sources.hill_of_towie import HOT_COORDINATES, ensure
 from wind_up.analysis_period import PlanSettings
 from wind_up.diagnostics import stages
 from wind_up.diagnostics.context import era5_source_label
+from wind_up.northing_step import NORTH_TABLE_YAML
 from wind_up.operating_state import OperatingStateConfig, fill_grid
+from wind_up.reanalysis import normalise_timestamps
 from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:

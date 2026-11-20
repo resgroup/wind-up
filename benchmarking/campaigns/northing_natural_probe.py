@@ -34,9 +34,9 @@ from benchmarking.campaigns.declaration import SyntheticCampaign, layout_from_co
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.northing_fixture import BASELINE_MONTHS, CAMPAIGN_START, UPLIFT
 from benchmarking.campaigns.runner import CampaignRunner
-from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M
 from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
+from wind_up.northing_step import era5_direction
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

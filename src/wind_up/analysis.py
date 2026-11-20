@@ -2,7 +2,7 @@
 
 An :class:`AnalysisSpec` names an upgrade, the turbines to measure it on and the records to use.
 A method returns one :class:`AnalysisOutput` per analysis. :func:`combine` gives the energy-weighted
-uplift of several outputs.
+uplift of several outputs, :func:`combine_subjects` that of one output's subjects.
 """
 
 from __future__ import annotations
@@ -22,6 +22,9 @@ if TYPE_CHECKING:
 AEP = "aep"
 CAMPAIGN = "campaign"
 REPORTS = (AEP, CAMPAIGN)
+INVERSE_VARIANCE = "inverse_variance"
+NET = "net"
+COMBINATIONS = (INVERSE_VARIANCE, NET)
 
 # The step of the method that combines measurements, for the warnings register.
 COMBINE_STEP = 16
@@ -52,6 +55,10 @@ class AnalysisSpec:
     :param include_labels: only a subject's records holding all of these labels are compared
     :param exclude_labels: no subject's record holding any of these labels is compared
     :param report: the uplifts wanted, from :data:`REPORTS`
+    :param combination: how a group of subjects' uplifts combine into the analysis's, from
+        :data:`COMBINATIONS`: ``inverse_variance`` weights each subject's uplift by the inverse of its
+        variance, for one upgrade on turbines that do not interact; ``net`` is the uplift of the
+        subjects' energy together, for turbines that interact, such as a wake-steering pair
     """
 
     name: str
@@ -62,6 +69,7 @@ class AnalysisSpec:
     include_labels: Sequence[str] = ()
     exclude_labels: Sequence[str] = ()
     report: Sequence[str] = REPORTS
+    combination: str = INVERSE_VARIANCE
 
     def __post_init__(self) -> None:
         """Freeze the collections and reject an analysis that contradicts itself."""
@@ -79,6 +87,9 @@ class AnalysisSpec:
             raise ValueError(msg)
         if not self.report or set(self.report) - set(REPORTS) or len(set(self.report)) != len(self.report):
             msg = f"analysis {self.name!r} reports {list(self.report)}; report is one or both of {list(REPORTS)}"
+            raise ValueError(msg)
+        if self.combination not in COMBINATIONS:
+            msg = f"analysis {self.name!r} combines by {self.combination!r}; combination is one of {list(COMBINATIONS)}"
             raise ValueError(msg)
         start, end = self.period
         if start is not None and end is not None and end <= start:
@@ -142,9 +153,9 @@ class AnalysisOutput:
 
 @dataclass(frozen=True)
 class CombinedUplift:
-    """The energy-weighted uplift of several outputs.
+    """The energy-weighted uplift of several outputs, or of one output's subjects.
 
-    Each sigma is given twice: with the outputs' errors independent, and with them fully correlated.
+    Each sigma is given twice: with the errors independent, and with them fully correlated.
 
     :param aep_uplift: the combined AEP uplift; NaN unless every output has one
     :param aep_sigma_independent: its 1-sigma with independent errors
@@ -152,7 +163,8 @@ class CombinedUplift:
     :param campaign_uplift: the combined campaign uplift; NaN unless every output has one
     :param campaign_sigma_independent: its 1-sigma with independent errors
     :param campaign_sigma_correlated: its 1-sigma with fully correlated errors
-    :param outputs: one row per output: ``analysis``, ``actual_energy`` and its four figures
+    :param outputs: one row per output combined, ``analysis``, or per subject, ``turbine``; then
+        ``actual_energy`` and its four figures
     :param warnings: the outputs' own warnings, then those of the combination
     """
 
@@ -186,8 +198,26 @@ def combine(outputs: Sequence[AnalysisOutput]) -> CombinedUplift:
             "campaign_sigma": [o.campaign_sigma for o in outputs],
         }
     )
+    return _combined(table, warnings=[w for o in outputs for w in o.warnings], what="outputs")
+
+
+def combine_subjects(output: AnalysisOutput) -> CombinedUplift:
+    """Return the energy-weighted uplift of ``output``'s subjects on each basis they all report.
+
+    As :func:`combine`, over the rows of the output's per-turbine table: the net uplift of a group
+    measured together, with its sigma as a range.
+    """
+    if output.per_turbine is None or output.per_turbine.empty:
+        msg = f"analysis {output.analysis.name!r} has no per-turbine table to combine"
+        raise ValueError(msg)
+    columns = ["turbine", "actual_energy", "aep_uplift", "aep_sigma", "campaign_uplift", "campaign_sigma"]
+    table = output.per_turbine[columns].reset_index(drop=True)
+    return _combined(table, warnings=list(output.warnings), what="subjects")
+
+
+def _combined(table: pd.DataFrame, *, warnings: list[AnalysisWarning], what: str) -> CombinedUplift:
+    """Return the energy-weighted uplift of ``table``'s rows, adding the combination's warnings."""
     energy = table["actual_energy"].to_numpy(dtype=float)
-    warnings = [w for o in outputs for w in o.warnings]
     figures: dict[str, float] = {}
     for basis in REPORTS:
         uplift, independent, correlated = _weighted(
@@ -201,10 +231,12 @@ def combine(outputs: Sequence[AnalysisOutput]) -> CombinedUplift:
             f"{basis}_sigma_correlated": correlated,
         }
         if not math.isfinite(uplift):
-            message = f"no combined {basis} uplift: not every output has one with a positive energy behind it"
+            message = (
+                f"no combined {basis} uplift: not every one of the {what} has one with a positive energy behind it"
+            )
             warnings.append(AnalysisWarning(severity="medium", step=COMBINE_STEP, turbine="all", message=message))
     message = (
-        "the combined sigma is a range: the outputs' errors are taken as independent at one end and as fully "
+        f"the combined sigma is a range: the {what}' errors are taken as independent at one end and as fully "
         "correlated at the other"
     )
     warnings.append(AnalysisWarning(severity="low", step=COMBINE_STEP, turbine="all", message=message))

@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
-from wind_up.analysis import AEP, CAMPAIGN, PER_TURBINE_COLUMNS, AnalysisOutput
+from wind_up.analysis import AEP, CAMPAIGN, NET, PER_TURBINE_COLUMNS, AnalysisOutput, combine_subjects
 from wind_up.analysis_warnings import AnalysisWarning
 from wind_up.labels import NEITHER, OFF, ON, UPLIFT
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL
@@ -133,7 +133,9 @@ class V0BinnedMethod:
     when the records carry no ``ShutdownDuration`` column, the availability role. Reads every
     non-turbine measurement the analysis names as a reference through its ``wind_speed`` and
     ``wind_direction`` column roles, and every reanalysis node by its name. Gives the uplift the
-    analysis reports with v0's sigma; a group of subjects gets v0's total uplift of the group.
+    analysis reports with v0's sigma. A group of subjects gets v0's total uplift of the group, or, when
+    the analysis asks for the ``net`` combination, the net uplift of :func:`wind_up.combine_subjects`
+    and no sigma; that function gives the net uplift's sigma as a range.
 
     :param name: method name shown in the outputs
     :param options: fields of v0's ``WindUpConfig`` the facts and the analysis do not set, by name;
@@ -146,6 +148,8 @@ class V0BinnedMethod:
     :param to_v0_records: converts the facts' records to v0's columns; :func:`v0_records` when ``None``
     :param out_dir: where each run's folder is written, named for the analysis; a temp dir when ``None``
     :param save_plots: also write v0's plots
+    :param per_turbine_plots: with ``save_plots``, also write v0's preprocessing plots of each turbine
+        beside those of each turbine type
     :param cache_dir: v0's cache of prepared inputs; none when ``None``
     """
 
@@ -157,6 +161,7 @@ class V0BinnedMethod:
     to_v0_records: Callable[[pd.DataFrame], pd.DataFrame] | None = None
     out_dir: Path | None = None
     save_plots: bool = False
+    per_turbine_plots: bool = True
     cache_dir: Path | None = None
 
     def __post_init__(self) -> None:
@@ -201,6 +206,7 @@ class V0BinnedMethod:
         rows = {s: {"turbine": s, **{c: np.nan for c in PER_TURBINE_COLUMNS if c != "turbine"}} for s in subjects}
         output: dict[str, Any] = {"analysis": analysis}
         per_reference: list[pd.DataFrame] = []
+        combined: dict[str, pd.DataFrame] = {}
         for report, run in runs.items():
             if isinstance(run, str):
                 for subject in subjects:
@@ -226,15 +232,42 @@ class V0BinnedMethod:
                     pairs = trdf[trdf["test_wtg"] == subject]
                     rows[subject]["hours_on"] = float(pairs["pp_valid_hours_post"].min())
                     rows[subject]["hours_off"] = float(pairs["pp_valid_hours_pre"].min())
-            if len(subjects) == 1:
-                uplift, sigma = rows[subjects[0]][f"{report}_uplift"], rows[subjects[0]][f"{report}_sigma"]
-            else:
-                total = _calculate_total_uplift_of_turbine_group(tdf[tdf["test_wtg"].isin(subjects) & ~tdf["is_ref"]])
-                uplift, sigma = float(total["p50_uplift"]), float(total["sigma"])
-            output[f"{report}_uplift"], output[f"{report}_sigma"] = uplift, sigma
-        output["per_turbine"] = pd.DataFrame(list(rows.values()), columns=list(PER_TURBINE_COLUMNS))
+                    rows[subject]["actual_energy"] = _actual_energy(pairs)
+            combined[report] = measured
+        per_turbine = pd.DataFrame(list(rows.values()), columns=list(PER_TURBINE_COLUMNS))
+        output |= self._headline(analysis, per_turbine=per_turbine, combined=combined, warnings=warnings)
+        output["per_turbine"] = per_turbine
         output["per_reference"] = pd.concat(per_reference, ignore_index=True) if per_reference else None
         return AnalysisOutput(**output, warnings=tuple(warnings))
+
+    def _headline(
+        self,
+        analysis: AnalysisSpec,
+        *,
+        per_turbine: pd.DataFrame,
+        combined: Mapping[str, pd.DataFrame],
+        warnings: list[AnalysisWarning],
+    ) -> dict[str, float]:
+        """Return the analysis's uplift and sigma for each report v0 combined, from its subjects' results.
+
+        One subject gives its own. A group gives v0's total uplift of the group, or for a ``net``
+        combination the net uplift and no sigma, with a low warning added to ``warnings``.
+        """
+        if len(per_turbine) == 1 or (analysis.combination != NET and combined):
+            return {
+                f"{report}_{figure}": value
+                for report, measured in combined.items()
+                for figure, value in zip(("uplift", "sigma"), _group_total(measured), strict=True)
+            }
+        if not combined:
+            return {}
+        net = combine_subjects(AnalysisOutput(analysis=analysis, per_turbine=per_turbine))
+        message = (
+            f"{self.name} gives no sigma for a group's net uplift; each subject's sigma is in per_turbine, and "
+            "wind_up.combine_subjects gives the group's as a range"
+        )
+        warnings.append(AnalysisWarning(severity="low", step=COMBINE_STEP, turbine="all", message=message))
+        return {f"{report}_uplift": getattr(net, f"{report}_uplift") for report in combined}
 
     def _run_or_reason(
         self, facts: WindFarmFacts, analysis: AnalysisSpec, *, use_lt_distribution: bool
@@ -257,7 +290,12 @@ class V0BinnedMethod:
         cfg = self._config(facts, analysis, use_lt_distribution=use_lt_distribution)
         upgrade = facts.upgrade(analysis.upgrade)
         records = self._records(facts, analysis, upgrade=upgrade, first=cfg.upgrade_first_dt_utc_start)
-        plot_cfg = PlotConfig(show_plots=False, save_plots=self.save_plots, plots_dir=cfg.out_dir / "plots")
+        plot_cfg = PlotConfig(
+            show_plots=False,
+            save_plots=self.save_plots,
+            skip_per_turbine_plots=not self.per_turbine_plots,
+            plots_dir=cfg.out_dir / "plots",
+        )
         inputs = AssessmentInputs.from_cfg(
             cfg=cfg,
             plot_cfg=plot_cfg,
@@ -341,6 +379,23 @@ class V0BinnedMethod:
         if exclude.any():
             converted = converted.assign(**{EXCLUDE_ROW_COL: exclude.astype(int)})
         return converted.rename_axis(index=TIMESTAMP_COL)
+
+
+def _group_total(measured: pd.DataFrame) -> tuple[float, float]:
+    """Return v0's uplift and sigma of the measured subjects: one subject's own, or v0's total uplift of the group."""
+    if measured.empty:
+        return float("nan"), float("nan")
+    if len(measured) == 1:
+        return float(measured["p50_uplift"].iloc[0]), float(measured["sigma"].iloc[0])
+    total = _calculate_total_uplift_of_turbine_group(measured.reset_index())
+    return float(total["p50_uplift"]), float(total["sigma"])
+
+
+def _actual_energy(pairs: pd.DataFrame) -> float:
+    """Return a subject's energy with the upgrade on, in kWh: its pairs' mean power times valid hours, averaged."""
+    if "mean_power_post" not in pairs.columns:
+        return float("nan")
+    return float((pairs["mean_power_post"] * pairs["pp_valid_hours_post"]).mean())
 
 
 def _turbines(facts: WindFarmFacts, *, turbine_type: Mapping[str, Any]) -> list[Turbine]:

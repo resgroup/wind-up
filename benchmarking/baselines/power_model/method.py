@@ -55,7 +55,6 @@ from benchmarking.baselines.power_model.shape import (
     reference_wind_speed_drift,
     uplift_shape,
 )
-from benchmarking.harness.reanalysis import interpolate_era5
 from wind_up.analysis_warnings import AnalysisWarning
 from wind_up.block_bootstrap import bootstrap_energy_ratio
 from wind_up.conditions import (
@@ -70,6 +69,7 @@ from wind_up.farm import TurbineUplift, farm_uplift
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL, centroid
 from wind_up.method import MethodConfigurationError
 from wind_up.operating_state import VALID_UPLIFT_COL, not_missing
+from wind_up.reanalysis import interpolate_era5
 from wind_up.record_selection import (
     EXCLUDED,
     RARE_CONFIGURATION,

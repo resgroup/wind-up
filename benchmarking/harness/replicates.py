@@ -19,8 +19,8 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.harness.campaign import resolve_campaign_grid
-from benchmarking.harness.northing import north_scada
 from benchmarking.synthetic import HOT_COLUMNS, HOT_RATED_POWER_KW, ToggleSchedule, generate_dataset
+from wind_up.northing_step import north_scada
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

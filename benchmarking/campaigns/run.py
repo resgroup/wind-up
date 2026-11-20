@@ -28,11 +28,11 @@ from benchmarking.campaigns.data_screen import (
     screen_plan,
 )
 from benchmarking.campaigns.plans import CampaignPlans, labelled_scada, plans_for, treated_activity
-from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES, north_scada
 from wind_up import TurbineUplift, farm_uplift
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.analysis_warnings import AnalysisWarning, ranked
 from wind_up.northing import DEFAULT_NORTHING
+from wind_up.northing_step import DEFAULT_NORTHING_ROLES, north_scada
 from wind_up.operating_state import not_missing
 from wind_up.subject import measurement_of
 
