@@ -4,6 +4,8 @@
 
 :func:`make_outcome_model` — the L2 LightGBM regressor for the counterfactual power ``E[Y|X]``.
 
+:func:`make_propensity_model` — the LightGBM classifier for the R-learner's propensity ``P(after|X)``.
+
 :func:`model_safe_features` — positional column names the LightGBM fit accepts.
 """
 
@@ -15,7 +17,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     import pandas as pd
-    from lightgbm import LGBMRegressor
+    from lightgbm import LGBMClassifier, LGBMRegressor
 
 
 def model_safe_features(features: pd.DataFrame) -> pd.DataFrame:
@@ -79,3 +81,26 @@ def make_outcome_model(**overrides: Any) -> LGBMRegressor:  # noqa: ANN401
     """L2 outcome regressor for the counterfactual power ``E[Y|X]`` (the energy-relevant mean model)."""
     lgb = _import_lightgbm()
     return lgb.LGBMRegressor(objective="regression", **{**_COMMON, **overrides})
+
+
+# The propensity classifier is deliberately smaller than the outcome model: it only has to say how far
+# the features tell the two periods apart, and a classifier with room to memorise would call every
+# record certain and leave the R-learner no overlap.
+_PROPENSITY: dict[str, Any] = {
+    "n_estimators": 200,
+    "learning_rate": 0.03,
+    "num_leaves": 15,
+    "min_child_samples": 200,
+    "subsample": 0.8,
+    "subsample_freq": 1,
+    "colsample_bytree": 0.8,
+    "deterministic": True,
+    "force_row_wise": True,
+    "verbose": -1,
+}
+
+
+def make_propensity_model(**overrides: Any) -> LGBMClassifier:  # noqa: ANN401
+    """Classifier for the R-learner's propensity ``P(after | X)``."""
+    lgb = _import_lightgbm()
+    return lgb.LGBMClassifier(**{**_PROPENSITY, **overrides})
