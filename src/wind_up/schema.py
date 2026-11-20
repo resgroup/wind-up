@@ -1,15 +1,4 @@
-"""The column vocabulary the synthetic pipeline and harness speak.
-
-The benchmarking layer is deliberately independent of v0: the synthetic generator, the
-ground-truth comparison and the harness all operate on **source-native** SCADA column names
-(the real tag names a data source ships), never on v0's :class:`~wind_up.constants.DataColumns`
-aliases. A :class:`ColumnSchema` names the handful of semantic roles those components need, so
-the only place that knows a source's actual column names is the source adapter, which provides
-its own :class:`ColumnSchema` (e.g. ``HOT_COLUMNS`` for Hill of Towie).
-
-v0-specific aliasing is therefore not a pipeline concern at all: it lives entirely inside the
-v0 baseline (which converts the source-native frame to wind-up format on the way in).
-"""
+"""Which column of the analyst's records holds each signal wind-up reads."""
 
 from __future__ import annotations
 
@@ -22,33 +11,23 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class ColumnSchema:
-    """The source-native column names for the semantic roles the pipeline reads.
+    """The analyst's record column for each role wind-up reads; a role left None is a signal the records lack.
 
-    :param turbine: the turbine-identifier column of the long-format SCADA frame
-    :param active_power: mean active power
-    :param wind_speed: mean nacelle wind speed
-    :param wind_speed_sd: nacelle wind-speed standard deviation (turbulence intensity input)
-    :param gen_rpm: mean generator rpm
-    :param availability: a "ready to operate" counter (e.g. seconds available in the period).
-        Without it the operating states cannot label downtime.
+    Only ``turbine`` and ``active_power`` are required. A method checks the roles it reads with
+    :meth:`require_roles`.
 
-    Only ``turbine`` and ``active_power`` are required. A method checks the roles it reads.
-    :param active_power_min: the per-reference active-power **minimum** companion column.
-        Optional on the schema, but ``PowerModelMethod`` **requires** it — each reference's
-        power minimum is a standard model feature, not a per-driver opt-in — and validates its
-        presence on construction. Sources without it can still drive the lighter methods.
-
-    The remaining roles are **diagnostics-only**: they name extra signals the shared per-run
-    diagnostics plot, never estimation inputs. Each defaults to ``None`` so a source that lacks a
-    signal (or a caller that does not care) leaves it unset and the corresponding plots skip
-    gracefully. ``nacelle_position`` in particular is a wind-direction *proxy* for plotting and
-    must **not** become a model feature — it is post-treatment / not treatment-invariant
-    (design-note §3).
-
-    :param pitch: blade pitch angle (a representative single sensor is fine)
+    :param turbine: the turbine identifier column of the long-format records
+    :param active_power: mean active power, kW
+    :param wind_speed: mean nacelle wind speed, m/s
+    :param wind_speed_sd: nacelle wind speed standard deviation, m/s
+    :param gen_rpm: mean generator speed, rpm
+    :param availability: seconds of the record the turbine was ready to operate. Without it the
+        operating states cannot label downtime.
+    :param active_power_min: minimum active power in the record, kW
+    :param pitch: blade pitch angle, degrees; one blade is enough
     :param reactive_power: mean reactive power
-    :param nacelle_position: nacelle/yaw position (wind-direction proxy; diagnostics only)
-    :param ambient_temp: ambient temperature
+    :param nacelle_position: nacelle position, degrees; northing calibrates it to a wind direction
+    :param ambient_temp: ambient temperature, degrees C
     :param power_setpoint: the power setpoint at the end of each record; the synthetic upgrades taper
         and cap their power change at the higher of a record's start and end setpoints
     """
@@ -67,10 +46,9 @@ class ColumnSchema:
     power_setpoint: str | None = None
 
     def northed(self, role: str) -> str:
-        """Return the derived north-calibrated column name for ``role``, e.g. ``northed_YawAngleMean``.
+        """Return the name of the north-calibrated copy of ``role``'s column, e.g. ``northed_YawAngleMean``.
 
-        The shared northing step writes this column alongside the untouched original, so plots and
-        diagnostics of the raw signal keep meaning what they say. Raises if ``role`` is unset.
+        Northing writes it beside the original column. Raises ``ValueError`` if ``role`` is unset.
         """
         self.require_roles([role])
         return f"northed_{getattr(self, role)}"
@@ -81,13 +59,7 @@ class ColumnSchema:
         return str(getattr(self, role))
 
     def require_roles(self, roles: Iterable[str]) -> None:
-        """Raise ``ValueError`` if any named role is unset or blank (``None``, empty, or whitespace).
-
-        The estimation methods take their column names *only* from a ``ColumnSchema`` (rather than
-        separate per-column arguments that could disagree with it), so each validates on construction
-        that the schema actually names every role it reads. ``roles`` are field names — an unknown one
-        is a programming error and raises ``AttributeError`` (the call sites pass literal role names).
-        """
+        """Raise ``ValueError`` if any of ``roles`` is unset or blank; an unknown role raises ``AttributeError``."""
         missing = [role for role in roles if not (getattr(self, role) or "").strip()]
         if missing:
             msg = f"columns is missing required role(s) {missing}: {self}"

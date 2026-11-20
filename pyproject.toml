@@ -59,8 +59,6 @@ examples = [
     'notebook',
     'ipywidgets',
     'requests',
-    'ephem',
-    'flaml[automl]',
 ]
 
 # PEP 735 dependency groups. uv installs the `dev` group by default on `uv sync` (use
@@ -149,7 +147,6 @@ max-args = 17 # try to bring this down to 5
 "tests/test_smart_data.py" = ["DTZ001"]  # SMART functions use tz naive datetimes
 "**/__init__.py" = ["F401"]  # ignore unused imports in __init__.py
 "examples/**/*.py" = ["T20", "D"]
-"examples/**/kelmarsh_kaggle.py" = ["S101","PLR0915","PD013","N806"]
 "src/wind_up_v0/smart_data.py" = ["D"]  # RES specific data loading
 "src/wind_up_v0/plots/*.py" = ["D"]  # TODO: remove this
 "examples/*.ipynb" = ["D"]  # Jupyter notebooks
@@ -169,8 +166,6 @@ module = [
     "scipy.ndimage",
     "scipy.stats",
     "seaborn",
-    "ephem",
-    "flaml",
     "sklearn.*",
     "openmeteo_requests",
     "requests_cache",

@@ -157,6 +157,12 @@ class TestOperatingMask:
         rows = pd.DataFrame({"power": [100.0, 100.0], "avail": [600.0, np.nan]}, index=index)
         assert list(operating_mask(rows, columns=COLUMNS, timebase=TIMEBASE)) == [True, False]
 
+    def test_without_an_availability_column_producing_rows_are_kept(self) -> None:
+        index = pd.date_range("2020-01-01", periods=3, freq="10min", tz="UTC")
+        rows = pd.DataFrame({"power": [100.0, 0.0, np.nan]}, index=index)
+        columns = ColumnSchema(turbine="turbine", active_power="power")
+        assert list(operating_mask(rows, columns=columns, timebase=TIMEBASE)) == [True, False, False]
+
 
 class TestTheFigure:
     def test_it_is_written(self, tmp_path: Path) -> None:

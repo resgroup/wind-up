@@ -330,8 +330,9 @@ is frozen. Known items:
 ### R4. v0 analyses can be reproduced (scope per D1)
 
 - [ ] `wind_up_v0` ships in the wheel and its existing tests pass unchanged.
-- [ ] The v0 examples (SMARTEOLE notebook, WeDoWind, Kelmarsh) run against `wind_up_v0` with
-      only the import changed, and the README says so.
+- [ ] The examples use the v1 interface: the SMARTEOLE notebook is converted (2026-11-20; the v0
+      route stays covered by `tests/test_smarteole.py`), WeDoWind is to follow (issue #186) and the
+      Kelmarsh Kaggle example is dropped.
 - [ ] `wind_up_v0/constants.py` no longer depends on the repo's root folders (`config/`,
       `input_data/`, `cache/`); those folders are deleted.
 - [ ] If D1 = (b): the v0 binned method is selectable in a declaration (`method: v0_binned`) and

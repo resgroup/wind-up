@@ -61,9 +61,15 @@ _CMAP_FLOOR = 0.0
 
 
 def operating_mask(rows: pd.DataFrame, *, columns: ColumnSchema, timebase: pd.Timedelta) -> pd.Series:
-    """Return True for producing (power > 0), fully available records; a missing counter is not available."""
+    """Return True for producing (power > 0), fully available records; a missing counter is not available.
+
+    Without an availability column every producing record counts as available.
+    """
+    producing = rows[columns.active_power] > 0
+    if columns.availability is None:
+        return producing.fillna(value=False).astype(bool)
     available = rows[columns.availability] >= timebase.total_seconds()
-    return ((rows[columns.active_power] > 0) & available).fillna(value=False).astype(bool)
+    return (producing & available).fillna(value=False).astype(bool)
 
 
 def monthly_binned_means(

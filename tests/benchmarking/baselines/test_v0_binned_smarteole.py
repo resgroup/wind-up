@@ -35,14 +35,15 @@ NORTHING = {
     "SMV7": 4.605999999999972,
 }
 COLUMNS = ColumnSchema(
-    turbine="TurbineName",
-    active_power="ActivePowerMean",
-    wind_speed="WindSpeedMean",
-    wind_speed_sd="WindSpeedSD",
-    gen_rpm="GenRpmMean",
-    pitch="PitchAngleMean",
-    nacelle_position="YawAngleMean",
-    ambient_temp="AmbientTemp",
+    turbine="turbine",
+    active_power="active_power_avg",
+    wind_speed="wind_speed_avg",
+    wind_speed_sd="wind_speed_std",
+    gen_rpm="generator_speed_avg",
+    pitch="blade_1_pitch_angle_avg",
+    nacelle_position="nacelle_position_avg",
+    ambient_temp="temperature_avg",
+    availability="fully_available_s",
 )
 WD_FILTER_MARGIN = 3 + 7 * TIMEBASE.total_seconds() / 600
 
@@ -51,14 +52,14 @@ def smarteole_facts() -> tuple[WindFarmFacts, AnalysisSpec]:
     """Return the facts of the SMARTEOLE example and its analysis: SMV6 and SMV5 against SMV7."""
     extractor = SmartEoleExtractor(data_dir=SMARTEOLE_DIR, analysis_timebase_s=int(TIMEBASE.total_seconds()))
     scada = extractor.unpack_smarteole_scada()
+    scada["fully_available_s"] = TIMEBASE.total_seconds()  # as wind-up 0.7, which ignored the derate flag
     metadata = extractor.unpack_smarteole_metadata()
     toggle = extractor.unpack_smarteole_toggle_data()
-    scada.index = scada.index.tz_localize("UTC")
     scada = scada.merge(toggle["yaw_offset_command"], left_index=True, right_index=True, how="left")
-    scada["yaw_offset_command"] = scada["yaw_offset_command"].where(scada["TurbineName"] == "SMV6", 0)
+    scada["yaw_offset_command"] = scada["yaw_offset_command"].where(scada["turbine"] == "SMV6", 0)
     turbines = pd.DataFrame(
         {
-            "name": metadata["Name"],
+            "name": metadata["Turbine"],
             "latitude": metadata["Latitude"],
             "longitude": metadata["Longitude"],
             "rated_power_kw": 2050.0,

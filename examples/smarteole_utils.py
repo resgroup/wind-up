@@ -1,175 +1,126 @@
-"""
-Helper code bespoke to the SMARTEOLE dataset
-"""
+"""Read the SMARTEOLE open dataset into wind-up's long-format tables, keeping the dataset's own column names."""
 
 from __future__ import annotations
 
-import logging
 import zipfile
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
-from scipy.stats import circmean
-
-from wind_up_v0.caching import with_parquet_cache
-from wind_up_v0.constants import PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
-
-if TYPE_CHECKING:
-    FilePathOrBuffer = str | bytearray
 
 SCADA_FILE_PATH = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_SCADA_1minData.csv"
 METADATA_FILE_PATH = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_Coordinates_staticData.csv"
 TOGGLE_FILE_PATH = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_ControlLog_1minData.csv"
-CACHE_DIR = PROJECTROOT_DIR / "cache" / "smarteole_example_data"
-CACHE_DIR.mkdir(exist_ok=True, parents=True)
 
-MINIMUM_DATA_COUNT_COVERAGE = 0.5  # 50% of the data must be present
+TIMESTAMP = "timestamp"
+TURBINE = "turbine"
+AVAILABLE = "available_s"
+MINIMUM_DATA_COUNT_COVERAGE = 0.5  # a field is kept where at least half its samples are present
 
-logger = logging.getLogger(__name__)
+# the fields kept from the 1-minute SCADA, with how each is aggregated to the analysis timebase
+# and the count column that decides whether the aggregate is kept
+SCADA_FIELDS: dict[str, tuple[str, str]] = {
+    "active_power_avg": ("mean", "active_power_count"),
+    "active_power_std": ("mean", "active_power_count"),
+    "wind_speed_avg": ("mean", "wind_speed_count"),
+    "wind_speed_std": ("mean", "wind_speed_count"),
+    "nacelle_position_avg": ("circular_mean", "nacelle_position_count"),
+    "nacelle_position_min": ("min", "nacelle_position_count"),
+    "nacelle_position_max": ("max", "nacelle_position_count"),
+    "blade_1_pitch_angle_avg": ("mean", "blade_1_pitch_angle_count"),
+    "generator_speed_avg": ("mean", "generator_speed_count"),
+    "temperature_avg": ("mean", "temperature_count"),
+}
 
 
-def _circular_mean_deg(angles: pd.Series) -> float:
-    """Circular mean of angles in degrees, NaN for an empty window."""
-    return circmean(angles, low=0, high=360) if len(angles) > 0 else np.nan
+def _split_field(column: str) -> tuple[str, str]:
+    """Split a wide SCADA column such as ``active_power_6_avg`` into ``("SMV6", "active_power_avg")``."""
+    parts = column.split("_")
+    if len(parts[-1]) == 1:
+        return f"SMV{parts[-1]}", "_".join(parts[:-1])
+    return f"SMV{parts[-2]}", "_".join([*parts[:-2], parts[-1]])
 
 
 class SmartEoleExtractor:
-    def __init__(self, data_dir: Path, analysis_timebase_s: int = 600):
+    """Read the SMARTEOLE SCADA, turbine coordinates and wake steering control log at an analysis timebase.
+
+    Every table has a UTC ``timestamp`` index marking the start of each record.
+    """
+
+    def __init__(self, data_dir: Path, *, analysis_timebase_s: int = 600) -> None:
         self.data_dir = data_dir
         self.analysis_timebase_s = analysis_timebase_s
 
     @classmethod
-    def from_zip_file(cls, zipped_fpath: Path, analysis_timebase_s: int = 600) -> SmartEoleExtractor:
-        # unzip specific data files in the same folder as the zip file
+    def from_zip_file(cls, zipped_fpath: Path, *, analysis_timebase_s: int = 600) -> SmartEoleExtractor:
+        """Extract the three data files next to the zip file and read them from there."""
         output_dir = zipped_fpath.parent
         with zipfile.ZipFile(zipped_fpath) as zf:
             for fname in (SCADA_FILE_PATH, METADATA_FILE_PATH, TOGGLE_FILE_PATH):
-                with Path.open(output_dir / Path(fname).name, "wb") as f:
-                    f.write(zf.read(fname))
+                (output_dir / Path(fname).name).write_bytes(zf.read(fname))
         return cls(data_dir=output_dir, analysis_timebase_s=analysis_timebase_s)
 
-    @with_parquet_cache(CACHE_DIR / "smarteole_scada.parquet")
     def unpack_smarteole_scada(self) -> pd.DataFrame:
-        """Function that translates 1-minute SCADA data to x minute data in the wind-up expected format"""
+        """Return one row per turbine and record: ``turbine``, the fields of ``SCADA_FIELDS`` and ``available_s``.
 
-        def _separate_turbine_id_from_field(x: str) -> tuple[str, str]:
-            parts = x.split("_")
-            if len(parts[-1]) == 1:
-                wtg_id = parts[-1]
-                col_name = "_".join(parts[:-1])
-            else:
-                wtg_id = parts[-2]
-                col_name = "_".join(parts[:-2] + [parts[-1]])  # noqa: RUF005
-            return f"SMV{wtg_id}", col_name
-
-        def _make_turbine_id_a_column(df: pd.DataFrame) -> pd.DataFrame:
-            df.columns = pd.MultiIndex.from_tuples(
-                (_separate_turbine_id_from_field(i) for i in df.columns),
-                names=[DataColumns.turbine_name, "field"],
-            )
-            return df.stack(level=0, future_stack=True).reset_index(DataColumns.turbine_name)  # noqa: PD013
-
-        def _map_and_mask_cols(df: pd.DataFrame) -> pd.DataFrame:
-            x_minutes_count_lower_limit = self.analysis_timebase_s * MINIMUM_DATA_COUNT_COVERAGE
-            mask_active_power = df["active_power_count"] < x_minutes_count_lower_limit
-            mask_wind_speed = df["wind_speed_count"] < x_minutes_count_lower_limit
-            mask_pitch_angle = df["blade_1_pitch_angle_count"] < x_minutes_count_lower_limit
-            mask_gen_rpm = df["generator_speed_count"] < x_minutes_count_lower_limit
-            mask_temperature = df["temperature_count"] < x_minutes_count_lower_limit
-            mask_nacelle_position = df["nacelle_position_count"] < x_minutes_count_lower_limit
-            return df.assign(
-                **{
-                    DataColumns.active_power_mean: lambda d: d["active_power_avg"].mask(mask_active_power),
-                    DataColumns.active_power_sd: lambda d: d["active_power_std"].mask(mask_active_power),
-                    DataColumns.wind_speed_mean: lambda d: d["wind_speed_avg"].mask(mask_wind_speed),
-                    DataColumns.wind_speed_sd: lambda d: d["wind_speed_std"].mask(mask_wind_speed),
-                    DataColumns.yaw_angle_mean: lambda d: d["nacelle_position_avg"].mask(mask_nacelle_position),
-                    DataColumns.yaw_angle_min: lambda d: d["nacelle_position_min"].mask(mask_nacelle_position),
-                    DataColumns.yaw_angle_max: lambda d: d["nacelle_position_max"].mask(mask_nacelle_position),
-                    DataColumns.pitch_angle_mean: lambda d: d["blade_1_pitch_angle_avg"].mask(mask_pitch_angle),
-                    DataColumns.gen_rpm_mean: lambda d: d["generator_speed_avg"].mask(mask_gen_rpm),
-                    DataColumns.ambient_temp: lambda d: d["temperature_avg"].mask(mask_temperature),
-                    DataColumns.shutdown_duration: 0,
-                }
-            )
-
-        # unzipping the data in memory and only reading the relevant files
-        return (
-            pd.read_csv(self.data_dir / Path(SCADA_FILE_PATH).name, parse_dates=[0], index_col=0)
-            .pipe(_make_turbine_id_a_column)
-            .groupby(DataColumns.turbine_name)
-            .resample(f"{self.analysis_timebase_s}s")
-            .aggregate(
-                {
-                    "active_power_avg": "mean",
-                    "active_power_std": "mean",
-                    "active_power_count": "sum",
-                    "wind_speed_avg": "mean",
-                    "wind_speed_std": "mean",
-                    "wind_speed_count": "sum",
-                    "blade_1_pitch_angle_avg": "mean",  # no need for circular_mean because no wrap
-                    "blade_1_pitch_angle_count": "sum",
-                    "generator_speed_avg": "mean",
-                    "generator_speed_count": "sum",
-                    "temperature_avg": "mean",
-                    "temperature_count": "sum",
-                    "nacelle_position_avg": _circular_mean_deg,
-                    "nacelle_position_max": "max",
-                    "nacelle_position_min": "min",
-                    "nacelle_position_count": "sum",
-                }
-            )
-            .reset_index(DataColumns.turbine_name)
-            .pipe(_map_and_mask_cols)
-            .loc[:, DataColumns.all(exclude=(DataColumns.reactive_power_mean,))]
-            .rename_axis(TIMESTAMP_COL, axis=0)
-            .rename_axis(None, axis=1)
+        A field is NaN where fewer than half its 1-minute samples are present. ``available_s`` is the
+        record's length less 60 s for each minute the dataset flags as derated.
+        """
+        wide = pd.read_csv(self.data_dir / Path(SCADA_FILE_PATH).name, parse_dates=[0], index_col=0)
+        wide.columns = pd.MultiIndex.from_tuples((_split_field(c) for c in wide.columns), names=[TURBINE, "field"])
+        long = wide.stack(level=0, future_stack=True).reset_index(TURBINE)  # noqa: PD013
+        circular = [field for field, (how, _) in SCADA_FIELDS.items() if how == "circular_mean"]
+        for field in circular:
+            radians = np.deg2rad(long[field])
+            long[f"{field}_sin"], long[f"{field}_cos"] = np.sin(radians), np.cos(radians)
+            long[f"{field}_missing"] = long[field].isna()
+        counts = sorted({count for _, count in SCADA_FIELDS.values()})
+        aggregations = (
+            {field: how for field, (how, _) in SCADA_FIELDS.items() if how != "circular_mean"}
+            | {f"{field}_{part}": "mean" for field in circular for part in ("sin", "cos")}
+            | {f"{field}_missing": "sum" for field in circular}
+            | dict.fromkeys(counts, "sum")
+            | {"derate": "sum"}
         )
+        records = (
+            long.groupby(TURBINE).resample(f"{self.analysis_timebase_s}s").aggregate(aggregations).reset_index(TURBINE)
+        )
+        for field in circular:  # NaN if any sample in the record is missing
+            angle = np.rad2deg(np.arctan2(records[f"{field}_sin"], records[f"{field}_cos"])) % 360
+            records[field] = angle.mask(records[f"{field}_missing"] > 0)
+        minimum_count = self.analysis_timebase_s * MINIMUM_DATA_COUNT_COVERAGE
+        for field, (_, count) in SCADA_FIELDS.items():
+            records[field] = records[field].mask(records[count] < minimum_count)
+        records[AVAILABLE] = self.analysis_timebase_s - 60.0 * records["derate"]
+        records.index = records.index.tz_localize("UTC")
+        return records.loc[:, [TURBINE, *SCADA_FIELDS, AVAILABLE]].rename_axis(TIMESTAMP).rename_axis(None, axis=1)
 
-    @with_parquet_cache(CACHE_DIR / "smarteole_metadata.parquet")
     def unpack_smarteole_metadata(self) -> pd.DataFrame:
-        return (
-            pd.read_csv(self.data_dir / Path(METADATA_FILE_PATH).name, index_col=0)
-            .reset_index()
-            .rename(columns={"Turbine": "Name"})
-            .query("Name.str.startswith('SMV')")  # is a turbine
-            .loc[:, ["Name", "Latitude", "Longitude"]]
-            .assign(TimeZone="UTC", TimeSpanMinutes=self.analysis_timebase_s / 60, TimeFormat="Start")
-        )
+        """Return the turbines' ``Turbine``, ``Latitude`` and ``Longitude``."""
+        coordinates = pd.read_csv(self.data_dir / Path(METADATA_FILE_PATH).name)
+        turbines = coordinates[coordinates["Turbine"].str.startswith("SMV")]
+        return turbines.loc[:, ["Turbine", "Latitude", "Longitude"]].reset_index(drop=True)
 
-    @with_parquet_cache(CACHE_DIR / "smarteole_toggle.parquet")
     def unpack_smarteole_toggle_data(self) -> pd.DataFrame:
-        ten_minutes_count_lower_limit = self.analysis_timebase_s * MINIMUM_DATA_COUNT_COVERAGE
-        toggle_value_threshold: float = 0.95
+        """Return the wake steering toggle frame: ``toggle_on``, ``toggle_off`` and ``yaw_offset_command``.
 
-        raw_df = pd.read_csv(self.data_dir / Path(TOGGLE_FILE_PATH).name, parse_dates=[0], index_col=0)
-
-        required_in_cols = [
-            "control_log_offset_active_avg",
-            "control_log_offset_active_count",
-            "control_log_offset_avg",
-        ]
-        toggle_df = (
-            raw_df[required_in_cols]
-            .resample(f"{self.analysis_timebase_s}s")
-            .agg(
-                {
-                    "control_log_offset_active_avg": "mean",
-                    "control_log_offset_active_count": "sum",
-                    "control_log_offset_avg": "mean",
-                }
-            )
+        A record is on (off) when steering was active for at least 95 % (at most 5 %) of the
+        control log samples, and at least half the samples are present.
+        """
+        minimum_count = self.analysis_timebase_s * MINIMUM_DATA_COUNT_COVERAGE
+        toggle_value_threshold = 0.95
+        log = pd.read_csv(self.data_dir / Path(TOGGLE_FILE_PATH).name, parse_dates=[0], index_col=0)
+        toggle = log.resample(f"{self.analysis_timebase_s}s").agg(
+            {
+                "control_log_offset_active_avg": "mean",
+                "control_log_offset_active_count": "sum",
+                "control_log_offset_avg": "mean",
+            }
         )
-        toggle_df["toggle_on"] = (toggle_df["control_log_offset_active_avg"] >= toggle_value_threshold) & (
-            toggle_df["control_log_offset_active_count"] >= ten_minutes_count_lower_limit
-        )
-        toggle_df["toggle_off"] = (toggle_df["control_log_offset_active_avg"] <= (1 - toggle_value_threshold)) & (
-            toggle_df["control_log_offset_active_count"] >= ten_minutes_count_lower_limit
-        )
-        toggle_df["yaw_offset_command"] = toggle_df["control_log_offset_avg"]
-
-        toggle_df.index = toggle_df.index.tz_localize("UTC")
-        toggle_df.index.name = TIMESTAMP_COL
-        return toggle_df[["toggle_on", "toggle_off", "yaw_offset_command"]]
+        enough = toggle["control_log_offset_active_count"] >= minimum_count
+        active = toggle["control_log_offset_active_avg"]
+        toggle["toggle_on"] = (active >= toggle_value_threshold) & enough
+        toggle["toggle_off"] = (active <= (1 - toggle_value_threshold)) & enough
+        toggle["yaw_offset_command"] = toggle["control_log_offset_avg"]
+        toggle.index = toggle.index.tz_localize("UTC")
+        return toggle.loc[:, ["toggle_on", "toggle_off", "yaw_offset_command"]].rename_axis(TIMESTAMP)
