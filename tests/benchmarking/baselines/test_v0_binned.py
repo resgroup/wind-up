@@ -218,6 +218,30 @@ class TestToggleConfiguration:
         assert cfg.toggle.toggle_change_settling_filter_seconds == 600
         assert cfg.toggle.pairing_filter_method == "none"
 
+    def test_the_toggle_is_named_for_the_upgrade(self, tmp_path: Path) -> None:
+        analysis = _analysis(upgrade="control", references=["T3"])
+        cfg = _method(tmp_path, options=TOGGLE_OPTIONS)._config(_toggle_facts(), analysis, use_lt_distribution=False)  # noqa: SLF001
+        assert cfg.toggle is not None
+        assert cfg.toggle.name == "control"
+
+    def test_without_years_a_campaign_toggle_takes_its_periods_from_the_analysis(self, tmp_path: Path) -> None:
+        options = {"ws_bin_width": 1.0, "toggle": {"detrend_data_selection": "use_toggle_off_data"}}
+        analysis = _analysis(upgrade="control", references=["T3"])
+        cfg = _method(tmp_path, options=options)._config(_toggle_facts(), analysis, use_lt_distribution=False)  # noqa: SLF001
+        span = (cfg.analysis_first_dt_utc_start, cfg.analysis_last_dt_utc_start)
+        assert (cfg.lt_first_dt_utc_start, cfg.lt_last_dt_utc_start) == span
+        assert (cfg.detrend_first_dt_utc_start, cfg.detrend_last_dt_utc_start) == span
+
+    def test_without_years_an_aep_or_a_toggle_detrended_on_all_records_needs_them(self, tmp_path: Path) -> None:
+        analysis = _analysis(upgrade="control", references=["T3"])
+        off = {"ws_bin_width": 1.0, "toggle": {"detrend_data_selection": "use_toggle_off_data"}}
+        with pytest.raises(MethodConfigurationError, match="years_for_lt_distribution"):
+            _method(tmp_path, options=off)._config(_toggle_facts(), analysis, use_lt_distribution=True)  # noqa: SLF001
+        with pytest.raises(MethodConfigurationError, match="years_for_detrend"):
+            _method(tmp_path, options={"ws_bin_width": 1.0})._config(  # noqa: SLF001
+                _toggle_facts(), analysis, use_lt_distribution=False
+            )
+
     def test_detrending_on_off_records_runs_to_the_analysis_end(self, tmp_path: Path) -> None:
         options = {**TOGGLE_OPTIONS, "toggle": {"detrend_data_selection": "use_toggle_off_data"}}
         analysis = _analysis(upgrade="control", references=["T3"])

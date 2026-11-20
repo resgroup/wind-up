@@ -14,7 +14,7 @@ TOGGLE_FILE_PATH = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_ControlLog
 
 TIMESTAMP = "timestamp"
 TURBINE = "turbine"
-AVAILABLE = "available_s"
+NOT_DERATED = "not_derated_s"
 MINIMUM_DATA_COUNT_COVERAGE = 0.5  # a field is kept where at least half its samples are present
 
 # the fields kept from the 1-minute SCADA, with how each is aggregated to the analysis timebase
@@ -61,9 +61,9 @@ class SmartEoleExtractor:
         return cls(data_dir=output_dir, analysis_timebase_s=analysis_timebase_s)
 
     def unpack_smarteole_scada(self) -> pd.DataFrame:
-        """Return one row per turbine and record: ``turbine``, the fields of ``SCADA_FIELDS`` and ``available_s``.
+        """Return one row per turbine and record: ``turbine``, the fields of ``SCADA_FIELDS`` and ``not_derated_s``.
 
-        A field is NaN where fewer than half its 1-minute samples are present. ``available_s`` is the
+        A field is NaN where fewer than half its 1-minute samples are present. ``not_derated_s`` is the
         record's length less 60 s for each minute the dataset flags as derated.
         """
         wide = pd.read_csv(self.data_dir / Path(SCADA_FILE_PATH).name, parse_dates=[0], index_col=0)
@@ -91,9 +91,9 @@ class SmartEoleExtractor:
         minimum_count = self.analysis_timebase_s * MINIMUM_DATA_COUNT_COVERAGE
         for field, (_, count) in SCADA_FIELDS.items():
             records[field] = records[field].mask(records[count] < minimum_count)
-        records[AVAILABLE] = self.analysis_timebase_s - 60.0 * records["derate"]
+        records[NOT_DERATED] = self.analysis_timebase_s - 60.0 * records["derate"]
         records.index = records.index.tz_localize("UTC")
-        return records.loc[:, [TURBINE, *SCADA_FIELDS, AVAILABLE]].rename_axis(TIMESTAMP).rename_axis(None, axis=1)
+        return records.loc[:, [TURBINE, *SCADA_FIELDS, NOT_DERATED]].rename_axis(TIMESTAMP).rename_axis(None, axis=1)
 
     def unpack_smarteole_metadata(self) -> pd.DataFrame:
         """Return the turbines' ``Turbine``, ``Latitude`` and ``Longitude``."""

@@ -273,7 +273,9 @@ class V0BinnedMethod:
         trdf = run_wind_up_analysis(inputs)
         try:
             tdf = combine_results(
-                trdf, auto_choose_refs=self.auto_choose_refs, plot_config=plot_cfg if self.save_plots else None
+                trdf,
+                auto_choose_refs=self.auto_choose_refs,
+                plot_config=plot_cfg if self.save_plots else None,
             )
         except (ValueError, KeyError) as error:
             return trdf, f"{type(error).__name__}: {error}"
@@ -312,13 +314,13 @@ class V0BinnedMethod:
         }
         if upgrade.mode == "toggle":
             cfg["toggle"] = {
-                "name": "toggle",
+                "name": upgrade.name,
                 **self.options.get("toggle", {}),
                 "toggle_file_per_turbine": False,
                 "toggle_filename": "not_used",
                 "toggle_change_settling_filter_seconds": int(upgrade.settling_time.total_seconds()),
             }
-        _derive_dates(cfg, period_start=start)
+        _derive_dates(cfg, period_start=start, use_lt_distribution=use_lt_distribution)
         cfg["out_dir"].mkdir(parents=True, exist_ok=True)
         return WindUpConfig.model_validate(cfg)
 
@@ -489,7 +491,7 @@ def _in_window(index: pd.DatetimeIndex, start: pd.Timestamp, end: pd.Timestamp) 
     return np.asarray((index >= start) & (index < end))
 
 
-def _derive_dates(cfg: dict[str, Any], *, period_start: pd.Timestamp | None) -> None:
+def _derive_dates(cfg: dict[str, Any], *, period_start: pd.Timestamp | None, use_lt_distribution: bool) -> None:
     """Fill v0's dates not given, as v0's YAML loader works them out from its ``years_*`` fields.
 
     A toggle's analysis starts at its first upgraded timestamp. A permanent upgrade's pre period
@@ -498,14 +500,28 @@ def _derive_dates(cfg: dict[str, Any], *, period_start: pd.Timestamp | None) -> 
     raises. The long-term period ends a week before a toggle starts, or with the pre
     period, and lasts ``years_for_lt_distribution`` years; the detrend period ends with it, or with
     the analysis for a toggle detrended on its off records, and lasts ``years_for_detrend`` years.
+
+    A toggle without ``years_for_lt_distribution`` that gives no AEP uplift takes the analysis period as
+    its long-term period, and one detrended on its off records without ``years_for_detrend`` takes it as
+    its detrend period.
     """
+    toggle = cfg.get("toggle")
+    lt_is_analysis = toggle is not None and not use_lt_distribution and "years_for_lt_distribution" not in cfg
+    detrend_is_analysis = (
+        toggle is not None
+        and toggle.get("detrend_data_selection") == "use_toggle_off_data"
+        and "years_for_detrend" not in cfg
+    )
+    if lt_is_analysis:
+        cfg["years_for_lt_distribution"] = 0
+    if detrend_is_analysis:
+        cfg["years_for_detrend"] = 0
     absent = [k for k in REQUIRED_OPTIONS if k not in cfg]
     if absent:
         msg = f"v0 needs the option(s) {absent}"
         raise MethodConfigurationError(msg)
     upgrade_first = cfg["upgrade_first_dt_utc_start"]
     analysis_last = cfg["analysis_last_dt_utc_start"]
-    toggle = cfg.get("toggle")
     if toggle is not None:
         cfg.setdefault("analysis_first_dt_utc_start", upgrade_first)
         lt_last = upgrade_first - LT_WEEK_BEFORE_TOGGLE
@@ -533,6 +549,11 @@ def _derive_dates(cfg: dict[str, Any], *, period_start: pd.Timestamp | None) -> 
         prepost = cfg["prepost"] if isinstance(cfg["prepost"], PrePost) else PrePost.model_validate(cfg["prepost"])
         cfg.setdefault("analysis_first_dt_utc_start", prepost.pre_first_dt_utc_start)
         lt_last = prepost.pre_last_dt_utc_start
+    analysis_span = {"first_dt_utc_start": cfg["analysis_first_dt_utc_start"], "last_dt_utc_start": analysis_last}
+    for period, is_analysis in (("lt", lt_is_analysis), ("detrend", detrend_is_analysis)):
+        if is_analysis:
+            for end, when in analysis_span.items():
+                cfg.setdefault(f"{period}_{end}", when)
     cfg.setdefault("lt_last_dt_utc_start", lt_last)
     cfg.setdefault(
         "lt_first_dt_utc_start", cfg["lt_last_dt_utc_start"] - pd.DateOffset(years=cfg["years_for_lt_distribution"])
