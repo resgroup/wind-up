@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 
 import numpy as np
 import pandas as pd
@@ -304,6 +305,78 @@ def test_the_records_need_the_turbine_and_power_columns() -> None:
 def test_the_records_need_the_availability_column_the_schema_names() -> None:
     with pytest.raises(ValueError, match="availability"):
         facts(records().drop(columns=COLS.availability))
+
+
+def test_pitch_outside_a_full_turn_is_blanked_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    frame = records()
+    frame.iloc[[0, 5, 9], frame.columns.get_loc(COLS.pitch)] = [3.8e12, -360.5, 360.0]
+    given = frame.copy()
+    with caplog.at_level(logging.WARNING, logger="wind_up.facts"):
+        made = facts(frame)
+    pitch = made.records[COLS.pitch]
+    assert pitch.isna().sum() == 2
+    assert np.isnan(pitch.iloc[0])
+    assert np.isnan(pitch.iloc[5])
+    assert pitch.iloc[9] == 360.0
+    pd.testing.assert_frame_equal(frame, given)
+    assert "2 record(s)" in caplog.text
+    assert "pitch" in caplog.text
+    assert "values -360.5 to 3.8e+12 deg" in caplog.text
+
+
+def test_a_single_blanked_value_is_shown_in_the_warning(caplog: pytest.LogCaptureFixture) -> None:
+    frame = records()
+    frame.iloc[4, frame.columns.get_loc(COLS.pitch)] = 999.0
+    with caplog.at_level(logging.WARNING, logger="wind_up.facts"):
+        facts(frame)
+    assert "1 record(s)" in caplog.text
+    assert "value 999 deg" in caplog.text
+
+
+def test_pitch_within_a_full_turn_is_kept_without_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    frame = records()
+    with caplog.at_level(logging.WARNING, logger="wind_up.facts"):
+        made = facts(frame)
+    assert made.records is frame
+    assert not caplog.records
+
+
+def test_wind_speed_outside_its_range_is_blanked_and_its_bounds_are_kept() -> None:
+    frame = records()
+    frame.iloc[[0, 1, 2, 3], frame.columns.get_loc(COLS.wind_speed)] = [-0.1, 0.0, 200.0, 200.1]
+    wind_speed = facts(frame).records[COLS.wind_speed]
+    assert wind_speed.iloc[:4].isna().tolist() == [True, False, False, True]
+
+
+EXTRA_COLS = dataclasses.replace(
+    COLS, ambient_temp="temp", reactive_power="q", active_power_min="p_min", power_setpoint="setpoint"
+)
+
+
+def test_every_checked_role_is_blanked_outside_its_range(caplog: pytest.LogCaptureFixture) -> None:
+    frame = records().assign(temp=10.0, q=0.0, p_min=500.0, setpoint=1.0e9)
+    frame.iloc[0, frame.columns.get_loc("temp")] = -100.5
+    frame.iloc[1, frame.columns.get_loc("temp")] = 200.0
+    frame.iloc[2, frame.columns.get_loc("q")] = -2 * RATED - 1
+    frame.iloc[3, frame.columns.get_loc("p_min")] = 2 * RATED + 1
+    with caplog.at_level(logging.WARNING, logger="wind_up.facts"):
+        made = facts(frame, columns=EXTRA_COLS).records
+    assert made["temp"].isna().sum() == 1
+    assert np.isnan(made["temp"].iloc[0])
+    assert made["q"].isna().sum() == 1
+    assert made["p_min"].isna().sum() == 1
+    assert not made["setpoint"].isna().any()
+    for column in ("temp", "q", "p_min"):
+        assert repr(column) in caplog.text
+    assert "setpoint" not in caplog.text
+
+
+def test_a_range_in_rated_power_reads_each_turbines_own_rating() -> None:
+    frame = records().assign(q=1500.0)
+    made = facts(frame, columns=EXTRA_COLS, turbines=turbine_table(rated_power_kw=[500.0, RATED, RATED, RATED])).records
+    blanked = made.loc[made["q"].isna(), COLS.turbine]
+    assert set(blanked) == {"T1"}
+    assert len(blanked) == len(frame) // len(NAMES)
 
 
 def test_a_label_needs_its_column_and_its_own_name() -> None:

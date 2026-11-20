@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from examples.smarteole_utils import SmartEoleExtractor
+from examples.smarteole_utils import DERATED, SmartEoleExtractor
 from tests.conftest import CACHE_DIR, TEST_DATA_FLD
 from wind_up_v0.constants import TIMESTAMP_COL, DataColumns
 from wind_up_v0.interface import AssessmentInputs
@@ -31,7 +31,7 @@ V0_COLUMNS = {
 
 def _v0_scada(scada: pd.DataFrame) -> pd.DataFrame:
     """Return the extracted SCADA with v0's column names, no downtime and a naive UTC index."""
-    out = scada.rename(columns=V0_COLUMNS).assign(**{DataColumns.shutdown_duration: 0})
+    out = scada.drop(columns=DERATED).rename(columns=V0_COLUMNS).assign(**{DataColumns.shutdown_duration: 0})
     out.index = out.index.tz_localize(None)
     return out.rename_axis(TIMESTAMP_COL)
 

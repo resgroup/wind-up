@@ -19,6 +19,7 @@ from wind_up.analysis import AnalysisSpec
 from wind_up.facts import NonTurbineMeasurement, Reanalysis, Upgrade
 from wind_up.labels import Label
 from wind_up.method import MethodConfigurationError
+from wind_up.operating_state import OperatingStateConfig, StateValidity
 from wind_up.toggle import ToggleSchedule
 from wind_up_v0.constants import TIMESTAMP_COL, DataColumns
 from wind_up_v0.models import PrePost
@@ -299,6 +300,21 @@ class TestExcludedRecords:
         excluded = self._excluded(facts, _analysis())
         assert excluded.groupby(level=1).sum().to_dict() == {"T1": 0, "T2": 6, "T3": 0, "T4": 0}
 
+    def test_a_site_state_not_valid_for_uplift_excludes_its_records(self) -> None:
+        frame = ff.records()
+        derated = (frame.index >= ff.at(1)) & (frame.index < ff.at(2)) & (frame[ff.COLS.turbine] == "T3").to_numpy()
+        frame["state"] = np.where(derated, "derated", None)
+        frame.loc[(frame.index >= ff.at(4)) & (frame[ff.COLS.turbine] == "T4").to_numpy(), "state"] = "icing"
+        config = OperatingStateConfig(
+            site_state_column="state",
+            site_states={
+                "derated": StateValidity(northing=True, waking="part waking", uplift=False),
+                "icing": StateValidity(northing=True, waking="waking", uplift=True),
+            },
+        )
+        excluded = self._excluded(ff.facts(frame, operating_states=config), _analysis())
+        assert excluded.groupby(level=1).sum().to_dict() == {"T1": 0, "T2": 0, "T3": 6, "T4": 0}
+
     def test_an_analysis_label_excludes_subject_records_only(self) -> None:
         facts = ff.facts(self._labelled((1, 2)), labels=[Label(name="steered", column="flag")])
         excluded = self._excluded(facts, _analysis(exclude_labels=["steered"]))
@@ -467,6 +483,18 @@ class TestAnsweringAnalyses:
         assert "flag" not in scada.columns
         assert scada[EXCLUDE_ROW_COL].sum() == 6
         assert scada.index.name == TIMESTAMP_COL
+
+    def test_the_records_reach_v0_without_the_site_state_column(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pipeline = _Pipeline(monkeypatch)
+        frame = ff.records().assign(state=None)
+        config = OperatingStateConfig(
+            site_state_column="state",
+            site_states={"derated": StateValidity(northing=True, waking="part waking", uplift=False)},
+        )
+        _method(tmp_path).estimate(ff.facts(frame, operating_states=config), [_analysis()])
+        assert "state" not in pipeline.calls[0]["scada_df"].columns
 
     def test_nothing_excluded_adds_no_exclude_row(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         pipeline = _Pipeline(monkeypatch)

@@ -7,6 +7,7 @@ with its operating state, its state under each upgrade and the analyst's labels.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypeAlias
@@ -41,6 +42,7 @@ from wind_up.operating_state import (
     signal_columns,
 )
 from wind_up.record_selection import NEAR_CHANGEOVER, ChangedInterval, changed_times, turbines_within_reach
+from wind_up.schema import ROLE_RANGES, ROLE_RANGES_RATED, ROLE_UNITS
 from wind_up.toggle import ToggleSchedule, is_toggle, treated_mask, validate_toggle_df
 from wind_up.wake_reach import MAX_REACH_D, reach_from_uplift
 
@@ -52,6 +54,8 @@ if TYPE_CHECKING:
     from wind_up.analysis import AnalysisSpec
     from wind_up.record_selection import ChangedTimes, WorksWindow
     from wind_up.schema import ColumnSchema
+
+logger = logging.getLogger(__name__)
 
 RATED_POWER_COL = "rated_power_kw"
 HUB_HEIGHT_COL = "hub_height_m"
@@ -402,7 +406,8 @@ class WindFarmFacts:
     """What is true of a wind farm and what was done to it.
 
     :param records: long-format SCADA as measured, on a time index: every year supplied, nothing
-        dropped or blanked
+        dropped; a value outside its role's range (:data:`~wind_up.schema.ROLE_RANGES`,
+        :data:`~wind_up.schema.ROLE_RANGES_RATED`) is blanked with a warning
     :param columns: what the columns of ``records`` mean
     :param timebase: the records' period
     :param turbines: one row per turbine: ``name``, ``latitude``, ``longitude`` and
@@ -445,6 +450,8 @@ class WindFarmFacts:
             object.__setattr__(self, name, tuple(getattr(self, name)))
         self._check_records()
         self._check_turbines()
+        rated = dict(zip(self.turbine_names, self.turbines[RATED_POWER_COL].astype(float), strict=True))
+        object.__setattr__(self, "records", _blank_out_of_range(self.records, columns=self.columns, rated_kw=rated))
         self._check_upgrades()
         self._check_declarations()
 
@@ -790,6 +797,48 @@ class WindFarmFacts:
             timebase=self.timebase,
             rated_power_kw=rated_power_kw,
         )
+
+
+def _blank_out_of_range(records: pd.DataFrame, *, columns: ColumnSchema, rated_kw: dict[str, float]) -> pd.DataFrame:
+    """Return ``records`` with each role's values outside its inclusive range set to NaN, logging a warning per column.
+
+    Returns ``records`` itself when nothing is blanked, a copy otherwise.
+
+    :param rated_kw: each turbine's rated power, for the ranges in multiples of it
+    """
+    turbines = records[columns.turbine].astype(str)
+    blanked: dict[str, np.ndarray] = {}
+    for role, (low, high), rated in [
+        *((role, bounds, False) for role, bounds in ROLE_RANGES.items()),
+        *((role, bounds, True) for role, bounds in ROLE_RANGES_RATED.items()),
+    ]:
+        column = getattr(columns, role)
+        if column is None or column not in records.columns:
+            continue
+        values = records[column].to_numpy(dtype=float)
+        scale = turbines.map(rated_kw).to_numpy(dtype=float) if rated else 1.0
+        with np.errstate(invalid="ignore"):
+            outside = (values < low * scale) | (values > high * scale)
+        if not outside.any():
+            continue
+        counts = pd.Series(turbines.to_numpy()[outside]).value_counts().sort_index()
+        unit = ROLE_UNITS[role]
+        bad = values[outside]
+        found = f"value {bad[0]:g}" if len(bad) == 1 else f"values {bad.min():g} to {bad.max():g}"
+        logger.warning(
+            "blanked %s in %d record(s) of column %r, outside [%g, %g] %s; %s %s: %s",
+            role,
+            int(outside.sum()),
+            column,
+            low,
+            high,
+            f"x rated {unit}" if rated else unit,
+            found,
+            unit,
+            ", ".join(f"{name} {count}" for name, count in counts.items()),
+        )
+        blanked[column] = np.where(outside, np.nan, values)
+    return records.assign(**blanked) if blanked else records
 
 
 def _within(index: pd.DatetimeIndex, period: Period, *, end_inclusive: bool) -> npt.NDArray[np.bool_]:

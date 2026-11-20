@@ -367,10 +367,14 @@ class V0BinnedMethod:
     ) -> pd.DataFrame:
         """Return the facts' records in v0's columns, with ``exclude_row`` flagging what v0 must leave out.
 
-        The analyst's label columns are left out: v0 reads them through ``exclude_row`` alone.
+        The analyst's label columns and the site state column are left out: v0 reads them through
+        ``exclude_row`` alone.
         """
         exclude = _excluded_records(facts, analysis, upgrade=upgrade, first=first)
-        records = facts.records.drop(columns=[label.column for label in facts.labels])
+        dropped = [label.column for label in facts.labels]
+        if facts.operating_states.site_state_column is not None:
+            dropped.append(facts.operating_states.site_state_column)
+        records = facts.records.drop(columns=list(dict.fromkeys(dropped)))
         converted = (
             self.to_v0_records(records)
             if self.to_v0_records is not None
@@ -510,9 +514,9 @@ def _excluded_records(
 ) -> np.ndarray:
     """Return a mask over the facts' records of those v0 must leave out.
 
-    A record a label withholds from the uplift; one inside an operating state override; a subject's
-    record the analysis's labels leave out; and, from the first upgraded timestamp, a record of a
-    turbine an override puts in neither upgrade state.
+    A record a label withholds from the uplift; one whose site state is not valid for uplift; one
+    inside an operating state override; a subject's record the analysis's labels leave out; and,
+    from the first upgraded timestamp, a record of a turbine an override puts in neither upgrade state.
     """
     records = facts.records
     index = pd.DatetimeIndex(records.index)
@@ -521,6 +525,10 @@ def _excluded_records(
     for label in facts.labels:
         if UPLIFT in label.withholds:
             exclude |= records[label.column].to_numpy(dtype=bool)
+    config = facts.operating_states
+    if config.site_state_column is not None:
+        not_uplift = [name for name, validity in config.validity().items() if not validity.uplift]
+        exclude |= records[config.site_state_column].isin(not_uplift).to_numpy()
     for who, a, b, _ in facts.operating_state_overrides:
         exclude |= _in_window(index, a, b) & ((turbines == who) if who is not None else True)
     subject_rows = np.isin(turbines, facts.subjects_of(analysis))

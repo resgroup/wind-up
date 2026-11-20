@@ -9,12 +9,47 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 
+# The unit of each signal role.
+ROLE_UNITS: dict[str, str] = {
+    "active_power": "kW",
+    "wind_speed": "m/s",
+    "wind_speed_sd": "m/s",
+    "gen_rpm": "rpm",
+    "availability": "s",
+    "active_power_min": "kW",
+    "pitch": "deg",
+    "reactive_power": "kvar",
+    "nacelle_position": "deg",
+    "ambient_temp": "degC",
+    "power_setpoint": "kW",
+}
+
+# The inclusive range of each role's values, in its unit; a value outside it is blanked.
+ROLE_RANGES: dict[str, tuple[float, float]] = {
+    "wind_speed": (0.0, 200.0),
+    "wind_speed_sd": (0.0, 200.0),
+    "gen_rpm": (-100.0, 5000.0),
+    "pitch": (-360.0, 360.0),
+    "nacelle_position": (-720.0, 720.0),
+    "ambient_temp": (-100.0, 200.0),
+}
+
+# The inclusive range of each role's values as multiples of the turbine's rated power; a value outside it is blanked.
+ROLE_RANGES_RATED: dict[str, tuple[float, float]] = {
+    "active_power_min": (-1.0, 2.0),
+    "reactive_power": (-2.0, 2.0),
+}
+
+
 @dataclass(frozen=True)
 class ColumnSchema:
     """The analyst's record column for each role wind-up reads; a role left None is a signal the records lack.
 
     Only ``turbine`` and ``active_power`` are required. A method checks the roles it reads with
     :meth:`require_roles`.
+
+    Each signal is in the unit :data:`ROLE_UNITS` gives. Building the facts blanks a value outside its
+    role's range (:data:`ROLE_RANGES`, :data:`ROLE_RANGES_RATED`).
 
     :param turbine: the turbine identifier column of the long-format records
     :param active_power: mean active power, kW
@@ -25,8 +60,9 @@ class ColumnSchema:
         operating states cannot label downtime.
     :param active_power_min: minimum active power in the record, kW
     :param pitch: blade pitch angle, degrees; one blade is enough
-    :param reactive_power: mean reactive power
-    :param nacelle_position: nacelle position, degrees; northing calibrates it to a wind direction
+    :param reactive_power: mean reactive power, kvar
+    :param nacelle_position: nacelle position, degrees, cumulative or not; northing calibrates it to a
+        wind direction
     :param ambient_temp: ambient temperature, degrees C
     :param power_setpoint: the power setpoint at the end of each record; the synthetic upgrades taper
         and cap their power change at the higher of a record's start and end setpoints

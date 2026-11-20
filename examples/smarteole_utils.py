@@ -14,8 +14,15 @@ TOGGLE_FILE_PATH = "SMARTEOLE-WFC-open-dataset/SMARTEOLE_WakeSteering_ControlLog
 
 TIMESTAMP = "timestamp"
 TURBINE = "turbine"
-NOT_DERATED = "not_derated_s"
+ESTIMATED_AVAILABILITY = "estimated_availability"
+DERATED = "derated"
 MINIMUM_DATA_COUNT_COVERAGE = 0.5  # a field is kept where at least half its samples are present
+
+# A minute is stopped when the turbine draws power, its generator turns slowly and its blades are
+# feathered. Low-wind idling, pitched to about 45 degrees, is not stopped.
+STOPPED_POWER_KW = 0.0
+STOPPED_GENERATOR_RPM = 300.0
+STOPPED_PITCH_DEG = 60.0
 
 # the fields kept from the 1-minute SCADA, with how each is aggregated to the analysis timebase
 # and the count column that decides whether the aggregate is kept
@@ -41,6 +48,19 @@ def _split_field(column: str) -> tuple[str, str]:
     return f"SMV{parts[-2]}", "_".join([*parts[:-2], parts[-1]])
 
 
+def stopped_minutes(long: pd.DataFrame) -> pd.Series:
+    """Return whether each 1-minute record is stopped, NaN where power, generator speed or pitch is absent.
+
+    Stopped is power at or below :data:`STOPPED_POWER_KW`, generator speed below :data:`STOPPED_GENERATOR_RPM`
+    and pitch above :data:`STOPPED_PITCH_DEG`.
+    """
+    power = long["active_power_avg"]
+    speed = long["generator_speed_avg"]
+    pitch = long["blade_1_pitch_angle_avg"]
+    stopped = (power <= STOPPED_POWER_KW) & (speed < STOPPED_GENERATOR_RPM) & (pitch > STOPPED_PITCH_DEG)
+    return stopped.astype(object).where(power.notna() & speed.notna() & pitch.notna())
+
+
 class SmartEoleExtractor:
     """Read the SMARTEOLE SCADA, turbine coordinates and wake steering control log at an analysis timebase.
 
@@ -61,14 +81,18 @@ class SmartEoleExtractor:
         return cls(data_dir=output_dir, analysis_timebase_s=analysis_timebase_s)
 
     def unpack_smarteole_scada(self) -> pd.DataFrame:
-        """Return one row per turbine and record: ``turbine``, the fields of ``SCADA_FIELDS`` and ``not_derated_s``.
+        """Return one row per turbine and record: ``turbine``, the SCADA fields, the estimated availability, derated.
 
-        A field is NaN where fewer than half its 1-minute samples are present. ``not_derated_s`` is the
-        record's length less 60 s for each minute the dataset flags as derated.
+        A field is NaN where fewer than half its 1-minute samples are present. ``estimated_availability`` is
+        the record's length in seconds times the share of its minutes not stopped (:func:`stopped_minutes`),
+        NaN where fewer than half its minutes have power, generator speed and pitch. ``derated`` is
+        ``"derated"`` where the dataset flags any minute of the record as derated, NaN otherwise.
         """
         wide = pd.read_csv(self.data_dir / Path(SCADA_FILE_PATH).name, parse_dates=[0], index_col=0)
         wide.columns = pd.MultiIndex.from_tuples((_split_field(c) for c in wide.columns), names=[TURBINE, "field"])
         long = wide.stack(level=0, future_stack=True).reset_index(TURBINE)  # noqa: PD013
+        stopped = stopped_minutes(long)
+        long["stopped"], long["judged"] = stopped.eq(True), stopped.notna()  # noqa: FBT003
         circular = [field for field, (how, _) in SCADA_FIELDS.items() if how == "circular_mean"]
         for field in circular:
             radians = np.deg2rad(long[field])
@@ -80,7 +104,7 @@ class SmartEoleExtractor:
             | {f"{field}_{part}": "mean" for field in circular for part in ("sin", "cos")}
             | {f"{field}_missing": "sum" for field in circular}
             | dict.fromkeys(counts, "sum")
-            | {"derate": "sum"}
+            | dict.fromkeys(["derate", "stopped", "judged"], "sum")
         )
         records = (
             long.groupby(TURBINE).resample(f"{self.analysis_timebase_s}s").aggregate(aggregations).reset_index(TURBINE)
@@ -91,9 +115,13 @@ class SmartEoleExtractor:
         minimum_count = self.analysis_timebase_s * MINIMUM_DATA_COUNT_COVERAGE
         for field, (_, count) in SCADA_FIELDS.items():
             records[field] = records[field].mask(records[count] < minimum_count)
-        records[NOT_DERATED] = self.analysis_timebase_s - 60.0 * records["derate"]
+        share_running = 1 - records["stopped"] / records["judged"]
+        enough = records["judged"] * 60 >= minimum_count
+        records[ESTIMATED_AVAILABILITY] = (self.analysis_timebase_s * share_running).where(enough)
+        records[DERATED] = pd.Series(DERATED, index=records.index).where(records["derate"] > 0)
         records.index = records.index.tz_localize("UTC")
-        return records.loc[:, [TURBINE, *SCADA_FIELDS, NOT_DERATED]].rename_axis(TIMESTAMP).rename_axis(None, axis=1)
+        kept = [TURBINE, *SCADA_FIELDS, ESTIMATED_AVAILABILITY, DERATED]
+        return records.loc[:, kept].rename_axis(TIMESTAMP).rename_axis(None, axis=1)
 
     def unpack_smarteole_metadata(self) -> pd.DataFrame:
         """Return the turbines' ``Turbine``, ``Latitude`` and ``Longitude``."""

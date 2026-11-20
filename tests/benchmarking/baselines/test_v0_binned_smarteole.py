@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from benchmarking.baselines.v0_binned import V0BinnedMethod
-from examples.smarteole_utils import SmartEoleExtractor
+from examples.smarteole_utils import DERATED, SmartEoleExtractor
 from tests.conftest import TEST_DATA_FLD
 from tests.test_smarteole import _prep_results
 from wind_up.analysis import AnalysisSpec
@@ -51,7 +51,7 @@ WD_FILTER_MARGIN = 3 + 7 * TIMEBASE.total_seconds() / 600
 def smarteole_facts() -> tuple[WindFarmFacts, AnalysisSpec]:
     """Return the facts of the SMARTEOLE example and its analysis: SMV6 and SMV5 against SMV7."""
     extractor = SmartEoleExtractor(data_dir=SMARTEOLE_DIR, analysis_timebase_s=int(TIMEBASE.total_seconds()))
-    scada = extractor.unpack_smarteole_scada()
+    scada = extractor.unpack_smarteole_scada().drop(columns=DERATED)
     scada["fully_available_s"] = TIMEBASE.total_seconds()  # as wind-up 0.7, which ignored the derate flag
     metadata = extractor.unpack_smarteole_metadata()
     toggle = extractor.unpack_smarteole_toggle_data()
