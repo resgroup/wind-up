@@ -148,8 +148,8 @@ def format_and_print_results_table(
     return print_df
 
 
-def show_images(paths: Iterable[Path], *, max_width_px: int = 1000) -> None:
-    """Display each image file in ``paths`` in the notebook, in sorted order.
+def show_images(paths: Iterable[Path], *, written_order: bool = False, max_width_px: int = 1000) -> None:
+    """Display each image file in ``paths`` in the notebook, sorted by path, or by write time if ``written_order``.
 
     Each is at most ``max_width_px`` wide and reduced to 256 colours, to keep the notebook small.
     """
@@ -158,7 +158,8 @@ def show_images(paths: Iterable[Path], *, max_width_px: int = 1000) -> None:
     from IPython.display import Image, display  # noqa: PLC0415
     from PIL import Image as PILImage  # noqa: PLC0415
 
-    for path in sorted(paths):
+    ordered = sorted(paths, key=lambda p: (p.stat().st_mtime_ns, p)) if written_order else sorted(paths)
+    for path in ordered:
         with PILImage.open(path) as opened:
             image = opened.convert("RGB")
         if image.width > max_width_px:
