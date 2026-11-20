@@ -20,21 +20,21 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 
 from examples.helpers import setup_logger
-from wind_up.constants import (
+from wind_up_v0.constants import (
     REANALYSIS_WD_COL,
     REANALYSIS_WS_COL,
     TIMESTAMP_COL,
     WINDFARM_YAWDIR_COL,
     DataColumns,
 )
-from wind_up.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
-from wind_up.interface import AssessmentInputs
-from wind_up.models import PlotConfig, WindUpConfig
-from wind_up.northing import check_wtg_northing
-from wind_up.plots.data_coverage_plots import plot_detrend_data_cov
-from wind_up.reanalysis_data import ReanalysisDataset
-from wind_up.waking_state import add_waking_scen
-from wind_up.windspeed_drift import check_windspeed_drift
+from wind_up_v0.detrend import apply_wsratio_v_wd_scen, calc_wsratio_v_wd_scen, check_applied_detrend
+from wind_up_v0.interface import AssessmentInputs
+from wind_up_v0.models import PlotConfig, WindUpConfig
+from wind_up_v0.northing import check_wtg_northing
+from wind_up_v0.plots.data_coverage_plots import plot_detrend_data_cov
+from wind_up_v0.reanalysis_data import ReanalysisDataset
+from wind_up_v0.waking_state import add_waking_scen
+from wind_up_v0.windspeed_drift import check_windspeed_drift
 
 DATA_DIR = Path("kelmarsh_kaggle_data")
 OUTPUT_DIR = Path("kelmarsh_kaggle_output")

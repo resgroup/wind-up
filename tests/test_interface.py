@@ -1,10 +1,10 @@
 import pandas as pd
 
-from wind_up.constants import TIMESTAMP_COL
-from wind_up.interface import PrePostSplitter, _preprocess_cache_key
-from wind_up.models import WindUpConfig
-from wind_up.reanalysis_data import ReanalysisDataset
-from wind_up.smart_data import add_smart_lat_long_to_cfg
+from wind_up_v0.constants import TIMESTAMP_COL
+from wind_up_v0.interface import PrePostSplitter, _preprocess_cache_key
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.reanalysis_data import ReanalysisDataset
+from wind_up_v0.smart_data import add_smart_lat_long_to_cfg
 
 
 def _toggle_df(idx: pd.DatetimeIndex) -> pd.DataFrame:

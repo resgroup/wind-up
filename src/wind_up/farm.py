@@ -1,0 +1,111 @@
+"""Combine per-turbine uplift estimates into one farm result."""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+import pandas as pd
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+
+@dataclass(frozen=True)
+class TurbineUplift:
+    """One turbine's uplift estimate and the energy it actually produced behind it.
+
+    :param turbine: turbine name
+    :param uplift: the turbine's P50 uplift, as an energy-ratio fraction
+    :param actual_energy: the energy the turbine actually produced while the upgrade was in
+        effect — the sum of finite active power over the upgraded records
+    :param n_records: how many records that sum covers
+    :param rated_power_kw: the rating the capacity-factor cap uses; where the rating changed over
+        the campaign, pass the higher of the pre- and post-change values
+    """
+
+    turbine: str
+    uplift: float
+    actual_energy: float
+    n_records: int
+    rated_power_kw: float
+
+
+@dataclass(frozen=True)
+class FarmUplift:
+    """The farm result and the per-turbine detail behind it.
+
+    :param uplift: the farm result, ``(sum actual energy) / (sum counterfactual energy) - 1`` over
+        the used turbines; NaN when none are usable
+    :param turbines: one row per input turbine with ``turbine``, ``uplift``, ``actual_energy``,
+        ``n_records``, ``rated_power_kw``, ``counterfactual_energy``, ``used`` and ``guard``
+        (``""`` when no guard fired)
+    :param uplift_spread: the max-min of the used turbines' uplifts; NaN below two used turbines
+    """
+
+    uplift: float
+    turbines: pd.DataFrame
+    uplift_spread: float
+
+
+def farm_uplift(turbines: Sequence[TurbineUplift]) -> FarmUplift:
+    """Aggregate per-turbine uplifts into one energy-weighted farm result.
+
+    Each turbine's counterfactual energy is estimated as ``actual_energy / (1 + uplift)`` and
+    guarded: a turbine is dropped when its uplift is non-finite or ``<= -1``, when its actual
+    energy is non-finite or negative, when its rated power is not a positive finite number, or
+    when it has no records; a counterfactual implying a mean power above ``rated_power_kw`` is
+    clipped to that rating.
+    """
+    if not turbines:
+        msg = "farm_uplift needs at least one turbine"
+        raise ValueError(msg)
+
+    frame = pd.DataFrame([_evaluate(t) for t in turbines])
+    used = frame[frame["used"]]
+
+    counterfactual_total = float(used["counterfactual_energy"].sum())
+    actual_total = float(used["actual_energy"].sum())
+    uplift = actual_total / counterfactual_total - 1.0 if counterfactual_total else float("nan")
+
+    spreads = used["uplift"]
+    spread = float(spreads.max() - spreads.min()) if len(spreads) > 1 else float("nan")
+    return FarmUplift(uplift=uplift, turbines=frame, uplift_spread=spread)
+
+
+def _evaluate(turbine: TurbineUplift) -> dict[str, object]:
+    """Return one turbine's row: its counterfactual energy, whether it is used, and any guard."""
+    base: dict[str, object] = {
+        "turbine": turbine.turbine,
+        "uplift": turbine.uplift,
+        "actual_energy": turbine.actual_energy,
+        "n_records": turbine.n_records,
+        "rated_power_kw": turbine.rated_power_kw,
+    }
+    guard = _drop_reason(turbine)
+    if guard:
+        return {**base, "counterfactual_energy": float("nan"), "used": False, "guard": guard}
+
+    counterfactual = max(turbine.actual_energy / (1.0 + turbine.uplift), 0.0)
+    cap = turbine.rated_power_kw * turbine.n_records
+    if counterfactual > cap:
+        return {**base, "counterfactual_energy": cap, "used": True, "guard": "capacity_cap"}
+    return {**base, "counterfactual_energy": counterfactual, "used": True, "guard": ""}
+
+
+def _drop_reason(turbine: TurbineUplift) -> str:
+    """Name the guard that removes ``turbine`` from the weighting, or ``""`` to keep it.
+
+    Non-finite inputs are dropped explicitly rather than left to propagate: a NaN energy would
+    otherwise be skipped by the summation and vanish from the result with nothing reported.
+    """
+    checks = (
+        ("non_finite_uplift", not math.isfinite(turbine.uplift)),
+        ("non_finite_energy", not math.isfinite(turbine.actual_energy)),
+        ("invalid_rating", not math.isfinite(turbine.rated_power_kw) or turbine.rated_power_kw <= 0),
+        ("no_records", turbine.n_records <= 0),
+        ("negative_energy", turbine.actual_energy < 0),
+        ("negative_counterfactual", 1.0 + turbine.uplift <= 0),
+    )
+    return next((reason for reason, failed in checks if failed), "")

@@ -4,8 +4,8 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from tests.conftest import TEST_DATA_FLD
-from wind_up.models import WindUpConfig
-from wind_up.pp_analysis import (
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.pp_analysis import (
     _block_bootstrap_sample,
     _pre_post_pp_analysis_with_reversal,
     pre_post_pp_analysis_with_reversal_and_bootstrapping,

@@ -5,8 +5,8 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from tests.conftest import TEST_DATA_FLD
-from wind_up.models import PlotConfig, WindUpConfig
-from wind_up.pp_analysis import _pre_post_pp_analysis
+from wind_up_v0.models import PlotConfig, WindUpConfig
+from wind_up_v0.pp_analysis import _pre_post_pp_analysis
 
 
 def _lsa_t13_inputs(cfg: WindUpConfig) -> dict:

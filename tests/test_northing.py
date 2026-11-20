@@ -4,13 +4,14 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
-from wind_up.circular_math import circ_median
-from wind_up.constants import REANALYSIS_WD_COL, TIMESTAMP_COL
-from wind_up.models import WindUpConfig
-from wind_up.northing import _calc_max_abs_north_errs, _circ_median_and_count, apply_northing_corrections
-from wind_up.scada_funcs import _scada_multi_index
+from wind_up_v0.circular_math import circ_median
+from wind_up_v0.constants import REANALYSIS_WD_COL, TIMESTAMP_COL
+from wind_up_v0.models import WindUpConfig
+from wind_up_v0.northing import _calc_max_abs_north_errs, _circ_median_and_count, apply_northing_corrections
+from wind_up_v0.scada_funcs import _scada_multi_index
 
 
+@pytest.mark.slow
 def test_apply_northing_corrections(test_lsa_t13_config: WindUpConfig) -> None:
     cfg = test_lsa_t13_config
     test_df = pd.read_parquet(Path(__file__).parents[0] / "test_data/LSA_T13_test_df.parquet")
