@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import logging
 import zipfile
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 from scipy.stats import circmean
 
@@ -28,6 +28,11 @@ CACHE_DIR.mkdir(exist_ok=True, parents=True)
 MINIMUM_DATA_COUNT_COVERAGE = 0.5  # 50% of the data must be present
 
 logger = logging.getLogger(__name__)
+
+
+def _circular_mean_deg(angles: pd.Series) -> float:
+    """Circular mean of angles in degrees, NaN for an empty window."""
+    return circmean(angles, low=0, high=360) if len(angles) > 0 else np.nan
 
 
 class SmartEoleExtractor:
@@ -91,7 +96,6 @@ class SmartEoleExtractor:
             )
 
         # unzipping the data in memory and only reading the relevant files
-        circular_mean = partial(circmean, low=0, high=360)
         return (
             pd.read_csv(self.data_dir / Path(SCADA_FILE_PATH).name, parse_dates=[0], index_col=0)
             .pipe(_make_turbine_id_a_column)
@@ -111,7 +115,7 @@ class SmartEoleExtractor:
                     "generator_speed_count": "sum",
                     "temperature_avg": "mean",
                     "temperature_count": "sum",
-                    "nacelle_position_avg": circular_mean,
+                    "nacelle_position_avg": _circular_mean_deg,
                     "nacelle_position_max": "max",
                     "nacelle_position_min": "min",
                     "nacelle_position_count": "sum",
