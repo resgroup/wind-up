@@ -10,15 +10,24 @@ import pandas as pd
 import pytest
 
 from benchmarking.campaigns.loader import Declaration, load_declaration
-from benchmarking.campaigns.preparation import PreparedData, northing_learning_set, prepare_data
-from benchmarking.diagnostics import stages
+from benchmarking.campaigns.preparation import PreparedData, northing_learning_set, prepare_data, withhold_labels
 from benchmarking.diagnostics.yaw_changes import POSSIBLE_YAW_CHANGES_CSV, REPORT_COLUMNS
 from benchmarking.harness.label_checks import LABEL_CHECKS_CSV
-from benchmarking.harness.northing import NORTH_TABLE_YAML
-from benchmarking.harness.operating_state import FULL_DOWNTIME, NOT_WAKING, STATE_COL, STATE_COLUMNS, WAKING_STATE_COL
-from benchmarking.harness.reanalysis import ERA5_WD_RAW
-from benchmarking.harness.waking import UPWIND_COL, WAKING_COLUMNS, WAKING_SCENARIO_COL
 from benchmarking.synthetic import HOT_COLUMNS
+from wind_up.diagnostics import stages
+from wind_up.labels import NORTHING, UPLIFT, Label
+from wind_up.northing_step import NORTH_TABLE_YAML
+from wind_up.operating_state import (
+    FULL_DOWNTIME,
+    NOT_WAKING,
+    STATE_COL,
+    STATE_COLUMNS,
+    VALID_NORTHING_COL,
+    VALID_UPLIFT_COL,
+    WAKING_STATE_COL,
+)
+from wind_up.reanalysis import ERA5_WD_RAW
+from wind_up.waking import UPWIND_COL, WAKING_COLUMNS, WAKING_SCENARIO_COL
 
 from .test_composed import era5
 from .test_loader import write_campaign
@@ -134,7 +143,7 @@ class TestWhatIsWritten:
 
 
 class TestTheDeclarations:
-    """Step 2 applies the label overrides and exclusions; every later step reads the labels."""
+    """Step 2 applies the operating state overrides and exclusions; every later step reads the labels."""
 
     WINDOW = (pd.Timestamp("2017-01-10", tz="UTC"), pd.Timestamp("2017-01-24", tz="UTC"))
 
@@ -168,7 +177,9 @@ class TestTheDeclarations:
 
     def test_an_override_to_a_state_not_waking_is_not_counted_as_waking(self, declaration: Declaration) -> None:
         start, end = self.WINDOW
-        prepared = self.prepare(declaration, small_scada(), label_overrides=[("T03", start, end, FULL_DOWNTIME)])
+        prepared = self.prepare(
+            declaration, small_scada(), operating_state_overrides=[("T03", start, end, FULL_DOWNTIME)]
+        )
         frame = prepared.scada_df
         inside = (frame.index >= start) & (frame.index < end)
         t03 = frame[inside & (frame[HOT_COLUMNS.turbine] == "T03").to_numpy()]
@@ -187,3 +198,44 @@ class TestTheDeclarations:
         out = tmp_path / "A"
         prepare_data(scada, spec=spec, columns=declaration.columns, era5_hourly_df=era5(), out_dir=out, plots=False)
         assert pd.read_csv(out / stages.OPERATING_STATES / LABEL_CHECKS_CSV).empty
+
+
+class TestLabelsWithholdingUses:
+    def frame(self) -> pd.DataFrame:
+        index = pd.date_range("2017-01-01", periods=4, freq="1h", tz="UTC")
+        return pd.DataFrame(
+            {
+                VALID_UPLIFT_COL: [True, True, False, True],
+                VALID_NORTHING_COL: [True, True, True, True],
+                "curtailed": [True, False, True, np.nan],
+            },
+            index=index,
+        )
+
+    def test_a_record_holding_the_label_loses_the_uses_it_withholds(self) -> None:
+        out = withhold_labels(self.frame(), labels=[Label(name="c", column="curtailed", withholds=frozenset({UPLIFT}))])
+        assert out[VALID_UPLIFT_COL].tolist() == [False, True, False, True]
+        assert out[VALID_NORTHING_COL].tolist() == [True, True, True, True]
+
+    def test_a_label_withholding_northing_clears_it(self) -> None:
+        label = Label(name="c", column="curtailed", withholds=frozenset({NORTHING}))
+        assert withhold_labels(self.frame(), labels=[label])[VALID_NORTHING_COL].tolist() == [False, True, False, True]
+
+    def test_a_label_withholding_nothing_leaves_the_frame(self) -> None:
+        frame = self.frame()
+        assert withhold_labels(frame, labels=[Label(name="c", column="curtailed")]) is frame
+
+    def test_part_a_applies_them(self, declaration: Declaration) -> None:
+        scada = small_scada()
+        start, end = TestTheDeclarations.WINDOW
+        scada["curtailed"] = (
+            (scada[HOT_COLUMNS.turbine] == "T02").to_numpy() & (scada.index >= start) & (scada.index < end)
+        )
+        label = Label(name="curtailed", column="curtailed", withholds=frozenset({UPLIFT}))
+        prepared = prepare_data(
+            scada, spec=declaration.spec, columns=declaration.columns, era5_hourly_df=era5(), labels=[label]
+        )
+        frame = prepared.scada_df
+        held = frame["curtailed"].eq(True).to_numpy()  # noqa: FBT003
+        assert held.any()
+        assert not frame.loc[held, VALID_UPLIFT_COL].any()

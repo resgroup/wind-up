@@ -21,29 +21,14 @@ from benchmarking.synthetic.faults import apply_faults
 from benchmarking.synthetic.ground_truth import UpliftResult, true_farm_uplift, true_net_uplift, true_uplift
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COLUMNS
 from benchmarking.synthetic.upgrades import apply_upgrades, power_limit
+from wind_up.toggle import ToggleSchedule, treated_mask_in_mode
 
 if TYPE_CHECKING:
     import pandas as pd
 
-    from benchmarking.synthetic.schema import ColumnSchema
+    from wind_up.schema import ColumnSchema
 
 _GROUND_TRUTH_WS_BINS = list(np.arange(0.0, 26.0, 1.0))
-
-
-@dataclass(frozen=True)
-class ToggleSchedule:
-    """A simple regular toggle: the upgrade alternates on/off over each ``period``.
-
-    :param period: length of one full on/off cycle (half off, half on)
-    :param start_on: whether the first block is treated (on); default off (pre-like)
-    :param start: when toggling begins; rows before it are untreated baseline and it is
-        the toggle origin. ``None`` (default) keeps the data's first timestamp as origin
-        with no baseline.
-    """
-
-    period: pd.Timedelta
-    start_on: bool = False
-    start: pd.Timestamp | None = None
 
 
 @dataclass
@@ -125,48 +110,6 @@ class SyntheticDataset:
         return out_path
 
 
-def _treated_mask(
-    index: pd.DatetimeIndex,
-    *,
-    mode: Literal["prepost", "toggle"],
-    upgrade_timing: pd.Timestamp | ToggleSchedule,
-) -> np.ndarray:
-    """Boolean mask over ``index`` selecting the rows where the upgrade is active."""
-    if mode == "prepost":
-        if isinstance(upgrade_timing, ToggleSchedule):
-            msg = "prepost mode needs a changeover Timestamp, got a ToggleSchedule"
-            raise TypeError(msg)
-        return np.asarray(index >= upgrade_timing)
-    if mode == "toggle":
-        if not isinstance(upgrade_timing, ToggleSchedule):
-            msg = f"toggle mode needs a ToggleSchedule, got {type(upgrade_timing).__name__}"
-            raise TypeError(msg)
-        schedule = upgrade_timing
-        origin = schedule.start if schedule.start is not None else index.min()
-        # ``period`` is a full on/off cycle, so each on/off block is half a period.
-        block = (index - origin) // (schedule.period / 2)
-        on_parity = 0 if schedule.start_on else 1
-        treated = np.asarray((np.asarray(block) % 2) == on_parity)
-        if schedule.start is not None:
-            # Rows before toggling begins are untreated baseline (and their negative block
-            # index must not be allowed to alias onto an "on" parity).
-            treated &= np.asarray(index >= schedule.start)
-        return treated
-    msg = f"unknown mode {mode!r}"
-    raise ValueError(msg)
-
-
-def treated_mask(index: pd.DatetimeIndex, upgrade_timing: pd.Timestamp | ToggleSchedule) -> np.ndarray:
-    """Boolean mask of the rows an upgrade treats, with the mode inferred from ``upgrade_timing``.
-
-    A ``ToggleSchedule`` selects toggle mode; any other value (a changeover timestamp) selects
-    prepost mode. Shared by the generator, methods and the scoring truth path so they all agree
-    on which rows are treated.
-    """
-    mode: Literal["prepost", "toggle"] = "toggle" if isinstance(upgrade_timing, ToggleSchedule) else "prepost"
-    return _treated_mask(index, mode=mode, upgrade_timing=upgrade_timing)
-
-
 def _check_faults_spare_the_test_turbines(faults: list, *, test_wtgs: list[str]) -> None:
     """Raise if a power-changing fault targets a test turbine.
 
@@ -241,7 +184,7 @@ def generate_dataset(
     for wtg in test_wtgs:
         timing = upgrade_timing[wtg] if isinstance(upgrade_timing, Mapping) else upgrade_timing
         is_test = (synthetic_df[columns.turbine] == wtg).to_numpy()
-        mask = is_test & _treated_mask(synthetic_df.index, mode=mode, upgrade_timing=timing)
+        mask = is_test & treated_mask_in_mode(synthetic_df.index, mode=mode, upgrade_timing=timing)
         if not mask.any():
             continue
         cp = CpCore(rated_power_kw=rated_power_kw, cp_params=cp_params)

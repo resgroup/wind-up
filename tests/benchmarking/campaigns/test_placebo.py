@@ -23,10 +23,12 @@ from benchmarking.campaigns.placebo import (
     placebo_instance,
     placebo_layout,
 )
-from benchmarking.harness import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, SensorGainStep, ToggleSchedule
 from tests.conftest import TEST_DATA_FLD
 from wind_up.campaign_design import check_design, design_campaign
+from wind_up.subject import SubjectMeasurement, SubjectRecords
+
+from .per_subject import PerSubject
 
 TOLERANCE = 1e-9
 # A small slice of the farm, so the fixtures stay cheap; the production default is all 21 turbines.
@@ -39,14 +41,14 @@ HOT_COORDS = {str(r["Turbine Name"]): (float(r["Latitude"]), float(r["Longitude"
 TEST_PARTICIPANTS = ("T07", "T11", "T01", "T02", "T03")
 
 
-class ZeroMethod:
+class ZeroMethod(PerSubject):
     """Reports exactly zero uplift."""
 
     name = "zero"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:  # noqa: ARG002
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:  # noqa: ARG002
         """Return a zero P50."""
-        return MethodOutput(p50_overall=0.0)
+        return SubjectMeasurement(p50_overall=0.0)
 
 
 def fixture_scada(mode: str) -> pd.DataFrame:

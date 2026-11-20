@@ -81,7 +81,7 @@ labels over a window of time, for one turbine or all of them:
 
 - an **exclusion** says the data is wrong (a logger fault, frozen signals, a clock jump). Its records are
   labelled missing;
-- a **label override** says the data is right but the turbine was not in the state its labels give (a
+- a **operating state override** says the data is right but the turbine was not in the state its labels give (a
   controller test, a curtailment the labels do not catch). Its records take the named state, which must
   be one the site defines (step 2), with that state's validity.
 
@@ -137,7 +137,7 @@ Before labelling, every turbine is given a record at every timestamp of the reco
 provided with no signals, so they are missing. From here on a record labelled missing is treated
 exactly as a record that was never provided: no step reads its signals.
 
-The campaign's declarations (step 1) are applied over these labels: first the label overrides, then
+The campaign's declarations (step 1) are applied over these labels: first the operating state overrides, then
 the exclusions, so an exclusion wins over an override and both win over the labels, except that a
 record labelled missing stays missing under an override. Two overrides of one turbine may not overlap. The label checks run on the result, so they flag only what no declaration
 explains.

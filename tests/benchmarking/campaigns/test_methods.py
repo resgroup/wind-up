@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from benchmarking.baselines.power_model import PowerModelMethod
-from benchmarking.campaigns.declaration import layout_rotor_diameters
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
 
@@ -25,12 +24,12 @@ def _names(spec: CampaignSpec, out_dir: Path) -> list[str]:
     return [m.name for m in carried_forward_methods(spec, out_dir=out_dir, include_power_model=False)]
 
 
-def test_prepost_skips_the_toggle_specialist(tmp_path: Path) -> None:
-    assert "toggle_specialist" not in _names(campaign().spec(), tmp_path)
+def test_prepost_skips_the_toggle_energy_ratio(tmp_path: Path) -> None:
+    assert "toggle_energy_ratio" not in _names(campaign().spec(), tmp_path)
 
 
-def test_toggle_includes_the_toggle_specialist(tmp_path: Path) -> None:
-    assert "toggle_specialist" in _names(campaign(upgrade_timing=TOGGLE).spec(), tmp_path)
+def test_toggle_includes_the_toggle_energy_ratio(tmp_path: Path) -> None:
+    assert "toggle_energy_ratio" in _names(campaign(upgrade_timing=TOGGLE).spec(), tmp_path)
 
 
 def test_naive_ratio_runs_in_both_modes(tmp_path: Path) -> None:
@@ -43,12 +42,10 @@ def test_power_model_is_included_when_asked(tmp_path: Path) -> None:
     assert "power_model" in [m.name for m in methods]
 
 
-def test_power_model_reports_its_uplift_distributions_without_era5(tmp_path: Path) -> None:
-    spec = campaign().spec()
-    methods = carried_forward_methods(spec, out_dir=tmp_path, include_power_model=True)
+def test_power_model_reports_its_uplift_distributions(tmp_path: Path) -> None:
+    methods = carried_forward_methods(campaign().spec(), out_dir=tmp_path, include_power_model=True)
     power_model = next(m for m in methods if m.name == "power_model")
     assert power_model.conditions == PowerModelMethod.conditions
-    assert power_model.rotor_diameters_m == layout_rotor_diameters(spec.layout)
 
 
 def test_each_method_writes_into_its_own_subfolder(tmp_path: Path) -> None:

@@ -29,7 +29,7 @@ from benchmarking.baselines.power_model.method import REVERSAL_COLUMNS, is_readi
 from benchmarking.campaigns.data_screen import DROPPED
 from benchmarking.harness.calibration import calibration_summary
 from benchmarking.harness.metrics import summarize_errors
-from benchmarking.harness.record_selection import CHANGED_UPWIND_OF_REFERENCE, CHANGED_UPWIND_OF_SUBJECT
+from wind_up.record_selection import CHANGED_UPWIND_OF_REFERENCE, CHANGED_UPWIND_OF_SUBJECT
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence

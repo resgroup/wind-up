@@ -47,21 +47,22 @@ from benchmarking.baselines.power_model.method import (
     under_training_floor,
 )
 from benchmarking.baselines.power_model.screening import ScreenResult
-from benchmarking.diagnostics import stages
-from benchmarking.harness.conditions import label_column
-from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.method import MethodConfigurationError, MethodInput, MethodOutput
-from benchmarking.harness.operating_state import VALID_UPLIFT_COL
-from benchmarking.harness.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE, ChangedInterval
 from benchmarking.harness.scoring import _merge_diagnostics
-from benchmarking.harness.toggle import resolve_toggle
-from benchmarking.harness.waking import DIRECTION_COL, NONE, UPWIND_COL, WAKING_SCENARIO_COL
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule
+from tests.wind_up.record_states import generic_states
+from wind_up.conditions import label_column
+from wind_up.diagnostics import stages
+from wind_up.method import MethodConfigurationError
+from wind_up.operating_state import STATE_COLUMNS, VALID_UPLIFT_COL
+from wind_up.record_selection import EXCLUDED, RARE_CONFIGURATION, UNPAIRED, USABLE, ChangedInterval
+from wind_up.subject import SubjectMeasurement, SubjectRecords
+from wind_up.toggle import resolve_toggle
+from wind_up.waking import DIRECTION_COL, NONE, UPWIND_COL, WAKING_SCENARIO_COL
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from benchmarking.diagnostics import DiagnosticContext
+    from wind_up.diagnostics import DiagnosticContext
 
 
 _TURBINE = "TurbineName"
@@ -74,6 +75,7 @@ _POWER_MIN = "wtc_ActPower_min"
 _POWER_SD = "wtc_ActPower_stddev"
 _YAW = "wtc_NacelPos_mean"
 _NORTHED_YAW = f"northed_{_YAW}"
+_RATED_KW = 2300.0
 _COLUMNS = ColumnSchema(
     turbine=_TURBINE,
     active_power=_POWER,
@@ -97,6 +99,77 @@ _FAST_PARAMS = {
     "min_child_samples": 20,
     "n_jobs": 1,
 }
+
+
+_FACT_FIELDS = {
+    "columns": "columns",
+    "baseline_rated_power_kw": "rated_power_kw",
+    "timebase": "timebase",
+    "era5_hourly_df": "era5_hourly_df",
+    "site_location": "site_location",
+    "rotor_diameters_m": "rotor_diameters_m",
+}
+
+
+class _Measuring:
+    """A power model and the facts of the measurement it makes, read the way these tests read it.
+
+    ``estimate`` measures one subject; any other attribute is the method's, holding the facts.
+    """
+
+    def __init__(self, method: PowerModelMethod, facts: dict[str, object]) -> None:
+        self.method = method
+        self.facts = facts
+
+    def estimate(self, records: SubjectRecords) -> SubjectMeasurement:
+        if VALID_UPLIFT_COL not in records.records.columns:
+            labelled = generic_states(
+                records.records,
+                columns=self.facts["columns"],  # type: ignore[arg-type]
+                rated_power_kw=self.facts["rated_power_kw"],  # type: ignore[arg-type]
+                timebase=self.facts.get("timebase"),  # type: ignore[arg-type]
+            )
+            records = dataclasses.replace(records, records=labelled)
+        return self.method.measure(records, **self.facts)  # type: ignore[arg-type]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.method._bound(**self.facts), name)  # type: ignore[arg-type]  # noqa: SLF001
+
+
+def _power_model(**kwargs: object) -> _Measuring:
+    """Return a power model holding the facts named among ``kwargs``; the rest are its options."""
+    facts = {_FACT_FIELDS[k]: kwargs.pop(k) for k in list(kwargs) if k in _FACT_FIELDS}
+    facts.setdefault("columns", _COLUMNS)
+    return _Measuring(PowerModelMethod(**kwargs), facts)  # type: ignore[arg-type]
+
+
+def _from_frame(
+    scada: pd.DataFrame, *, test_wtg: str, timing: pd.Timestamp | ToggleSchedule | pd.DataFrame, turbine_col: str
+) -> SubjectRecords:
+    """The subject's records, labelled with the generic states, with every other turbine a reference."""
+    return SubjectRecords.from_frame(_labelled(scada), subject=test_wtg, timing=timing, turbine_col=turbine_col)
+
+
+def _labelled(scada: pd.DataFrame) -> pd.DataFrame:
+    """``scada`` labelled afresh with the generic states at the tests' usual rating."""
+    return generic_states(
+        scada.drop(columns=list(STATE_COLUMNS), errors="ignore"), columns=_COLUMNS, rated_power_kw=_RATED_KW
+    )
+
+
+def _input(
+    *,
+    scada_df: pd.DataFrame,
+    test_wtg: str,
+    upgrade_timing: pd.Timestamp | ToggleSchedule | pd.DataFrame | None = None,
+    turbine_col: str = _TURBINE,
+    given: SubjectRecords | None = None,
+) -> SubjectRecords:
+    """The records of ``test_wtg`` in ``scada_df``: as ``given`` says when given, else all valid."""
+    if given is not None:
+        return dataclasses.replace(given, records=_labelled(scada_df))
+    assert upgrade_timing is not None
+    return _from_frame(scada_df, test_wtg=test_wtg, timing=upgrade_timing, turbine_col=turbine_col)
 
 
 def _toy_scada(n: int, *, uplift: float, treated: np.ndarray, seed: int = 0, freq: str = "10min") -> pd.DataFrame:
@@ -231,14 +304,14 @@ class TestReferenceCorrectedHeadline:
     """The default prepost headline: the forward reading less its kept references' mean reading."""
 
     @staticmethod
-    def _pair(*, step: float = 0.03, **overrides: object) -> tuple[MethodOutput, MethodOutput]:
+    def _pair(*, step: float = 0.03, **overrides: object) -> tuple[SubjectMeasurement, SubjectMeasurement]:
         mi, _ = _screen_case(step=step)
         corrected = _screen_method(**overrides).estimate(mi)
         forward = _screen_method(headline_estimator="forward", **overrides).estimate(mi)
         return corrected, forward
 
     def test_is_the_default(self) -> None:
-        method = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
+        method = _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
         assert method.headline_estimator == "reference_corrected"
 
     def test_divides_the_forward_reading_by_the_kept_references_mean(self) -> None:
@@ -351,10 +424,10 @@ class TestHoldoutSigma:
         return _screen_method(**overrides)
 
     def test_holds_out_up_to_twelve_blocks_by_default(self) -> None:
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).holdout_max_blocks == 12
+        assert _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0).holdout_max_blocks == 12
 
     def test_takes_the_holdout_and_correction_errors_as_half_correlated_by_default(self) -> None:
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).systematic_correlation == 0.5
+        assert _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0).systematic_correlation == 0.5
 
     def test_uncorrelated_errors_join_in_quadrature(self) -> None:
         mi, _ = _screen_case(step=0.0)
@@ -412,13 +485,13 @@ class TestRecovery:
         changeover = idx[n // 2]
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             conditions=(),  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         out = method.estimate(mi)
         assert out.p50_overall == pytest.approx(0.05, abs=0.02)
 
@@ -428,13 +501,13 @@ class TestRecovery:
         schedule = ToggleSchedule(period=pd.Timedelta(hours=4))
         treated = np.asarray((((idx - idx.min()) // (schedule.period / 2)).astype(int) % 2) == 1)
         scada = _toy_scada(n, uplift=0.04, treated=treated)
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             conditions=(),  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
         out = method.estimate(mi)
         assert out.p50_overall == pytest.approx(0.04, abs=0.02)
 
@@ -444,24 +517,24 @@ class TestRecovery:
         changeover = idx[n // 2]
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.0, treated=treated)
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             conditions=(),  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         out = method.estimate(mi)
         assert out.p50_overall == pytest.approx(0.0, abs=0.02)
 
 
-def _prepost_case(n: int = 4000, *, uplift: float = 0.05) -> tuple[MethodInput, pd.Timestamp]:
-    """A toy prepost MethodInput with a known uplift, for the model-fundamentals config trials."""
+def _prepost_case(n: int = 4000, *, uplift: float = 0.05) -> tuple[SubjectRecords, pd.Timestamp]:
+    """A toy prepost SubjectRecords with a known uplift, for the model-fundamentals config trials."""
     idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
     changeover = idx[n // 2]
     treated = np.asarray(idx >= changeover)
     scada = _toy_scada(n, uplift=uplift, treated=treated)
-    mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+    mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
     return mi, changeover
 
 
@@ -472,7 +545,7 @@ def _fundamentals_method(**overrides: object) -> PowerModelMethod:
         "conditions": (),
         **overrides,
     }
-    return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
+    return _power_model(**kwargs)  # type: ignore[arg-type]
 
 
 class TestModelFundamentals:
@@ -507,7 +580,7 @@ class TestModelFundamentals:
             conditions=PowerModelMethod.conditions,
             era5_hourly_df=_toy_era5(idx),
         )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
         out = method.estimate(mi)
         assert out.p50_overall == pytest.approx(0.04, abs=0.02)
         assert out.p50_by_condition is not None
@@ -520,21 +593,19 @@ class TestReferenceOnly:
         changeover = idx[n // 2]
         treated = np.asarray(idx >= changeover)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             conditions=(),  # overall-only; the conditional path needs ERA5 (not supplied here)
             model_params=_FAST_PARAMS,
         )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         baseline = method.estimate(mi).p50_overall
 
         # Add a column that perfectly reveals the (post-treatment) test power on the test turbine.
         leaked = scada.copy()
         leaked["wtc_NacWdSp_mean"] = np.where(leaked[_TURBINE] == "T1", leaked[_POWER], np.nan)
-        mi_leak = MethodInput(
-            scada_df=leaked, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE
-        )
+        mi_leak = _input(scada_df=leaked, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         with_leak = method.estimate(mi_leak).p50_overall
         # the reference-only builder ignores test-turbine columns, so the estimate is unchanged
         assert with_leak == pytest.approx(baseline, abs=1e-9)
@@ -593,13 +664,11 @@ def _toy_era5(scada_idx: pd.DatetimeIndex, *, seed: int = 0) -> pd.DataFrame:
 class TestFeatureConfig:
     """The feature config: columns reach the model and estimates stay sound."""
 
-    def _prepost_mi(self, n: int = 4000, *, uplift: float = 0.05) -> MethodInput:
+    def _prepost_mi(self, n: int = 4000, *, uplift: float = 0.05) -> SubjectRecords:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         treated = np.asarray(idx >= idx[n // 2])
         scada = _toy_scada(n, uplift=uplift, treated=treated)
-        return MethodInput(
-            scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE
-        )
+        return _input(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
 
     def _fitted_feature_names(self, out_dir: Path) -> set[str]:
         files = sorted(out_dir.rglob("*_feature_importance_*.csv"))
@@ -608,7 +677,7 @@ class TestFeatureConfig:
 
     def test_reference_stat_cols_reach_model_and_recovery_holds(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             conditions=(),
@@ -624,10 +693,10 @@ class TestFeatureConfig:
 
     def test_era5_is_never_a_feature_and_the_located_site_adds_solar_elevation(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
-            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.scada_df.index)),
+            era5_hourly_df=_toy_era5(pd.DatetimeIndex(mi.records.index)),
             site_location=(57.506, -3.068),
             conditions=(),
             model_params=_FAST_PARAMS,
@@ -641,7 +710,7 @@ class TestFeatureConfig:
 
     def test_power_and_direction_are_all_a_reference_contributes(self, tmp_path: Path) -> None:
         mi = self._prepost_mi()
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(), model_params=_FAST_PARAMS, out_dir=tmp_path
         )
         out = method.estimate(mi)
@@ -654,11 +723,11 @@ class TestFeatureConfig:
 
 class TestPromotedDefaults:
     def test_effective_lgbm_params_include_tuned_min_child_samples(self) -> None:
-        m = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
+        m = _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
         assert m._make_model().get_params()["min_child_samples"] == 50  # noqa: SLF001
 
     def test_explicit_model_params_override_the_tuned_default(self) -> None:
-        m = PowerModelMethod(
+        m = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             model_params={"min_child_samples": 123},
@@ -740,13 +809,13 @@ def _with_part_a(scada: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _shape_case(*, uplift: float = 0.05, n: int = 6000, part_a: bool = True) -> MethodInput:
+def _shape_case(*, uplift: float = 0.05, n: int = 6000, part_a: bool = True) -> SubjectRecords:
     idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
     changeover = idx[n // 2]
     scada = _toy_scada(n, uplift=uplift, treated=np.asarray(idx >= changeover))
     if part_a:
         scada = _with_part_a(scada)
-    return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+    return _input(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
 
 
 def _shape_method(**overrides: object) -> PowerModelMethod:
@@ -759,7 +828,7 @@ def _shape_method(**overrides: object) -> PowerModelMethod:
         "n_resamples": 50,
         **overrides,
     }
-    return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
+    return _power_model(**kwargs)  # type: ignore[arg-type]
 
 
 class TestUpliftShape:
@@ -778,9 +847,9 @@ class TestUpliftShape:
     def test_the_subject_turbines_own_signals_and_reanalysis_are_not_axes(self) -> None:
         for axis in ("ws", "ti"):
             with pytest.raises(ValueError, match="does not support"):
-                PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(axis,))
+                _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(axis,))
         with pytest.raises(ValueError, match="unknown condition"):
-            PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=("era5_ws",))
+            _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=("era5_ws",))
 
     def test_conditions_choose_the_casts(self) -> None:
         out = _shape_method(conditions=("predicted_power", "direction")).estimate(_shape_case())
@@ -843,7 +912,7 @@ class TestUpliftShape:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = idx[n // 2]
         scada = _with_part_a(_shrinkage_scada(n, uplift=0.0, treated=np.asarray(idx >= changeover)))
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         method = _shape_method(baseline_rated_power_kw=3000.0, out_dir=tmp_path, run_subdir=False, save_plots=True)
         method.estimate(mi)
         plots = {p.name for p in (tmp_path / "plots").rglob("uplift_*.png")}
@@ -854,7 +923,7 @@ class TestUpliftShape:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = idx[n // 2]
         scada = _shrinkage_scada(n, uplift=0.0, treated=np.asarray(idx >= changeover))
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
+        mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(changeover), turbine_col=_TURBINE)
         out = _shape_method(baseline_rated_power_kw=6000.0).estimate(mi)
         power = out.p50_by_condition[out.p50_by_condition["condition"] == "predicted_power"]
         measured = power[np.isfinite(power["sigma_uplift"])]
@@ -863,7 +932,7 @@ class TestUpliftShape:
         assert (z.abs() < 3.0).all()
 
 
-class TestCampaignContext:
+class TestSubjectRecords:
     """The model takes reference membership and row validity from the campaign context."""
 
     @staticmethod
@@ -875,16 +944,16 @@ class TestCampaignContext:
 
     @staticmethod
     def _estimate(scada: pd.DataFrame, **kwargs: object) -> float:
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(), model_params=_FAST_PARAMS
         )
-        return method.estimate(MethodInput(scada_df=scada, **kwargs)).p50_overall
+        return method.estimate(_input(scada_df=scada, **kwargs)).p50_overall
 
     def test_only_offered_references_become_features(self) -> None:
         scada, changeover = self._fixture()
-        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        context = _from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
         object.__setattr__(context, "candidate_references", ["R1", "R2"])
-        offered = self._estimate(scada, test_wtg="T1", campaign_context=context)
+        offered = self._estimate(scada, test_wtg="T1", given=context)
 
         # Identical to R3 simply not being in the data.
         assert offered == pytest.approx(
@@ -895,11 +964,11 @@ class TestCampaignContext:
 
     def test_an_invalid_record_of_a_power_reference_drops_the_row(self) -> None:
         scada, changeover = self._fixture()
-        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        context = _from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
         valid = context.valid_for_uplift.copy()
         valid.loc[valid.index[:200], "R1"] = False
         object.__setattr__(context, "valid_for_uplift", valid)
-        with_holes = self._estimate(scada, test_wtg="T1", campaign_context=context)
+        with_holes = self._estimate(scada, test_wtg="T1", given=context)
 
         cut = scada[scada.index >= valid.index[200]]
         assert with_holes == pytest.approx(
@@ -908,14 +977,12 @@ class TestCampaignContext:
 
     def test_an_invalid_record_of_a_wake_contributor_keeps_the_row(self) -> None:
         scada, changeover = self._fixture()
-        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        context = _from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
         context = dataclasses.replace(context, candidate_references=["R1", "R2"], wake_contributors=["R3"])
-        whole = self._estimate(scada, test_wtg="T1", campaign_context=context)
+        whole = self._estimate(scada, test_wtg="T1", given=context)
         valid = context.valid_for_uplift.copy()
         valid.loc[valid.index[:200], "R3"] = False
-        holed = self._estimate(
-            scada, test_wtg="T1", campaign_context=dataclasses.replace(context, valid_for_uplift=valid)
-        )
+        holed = self._estimate(scada, test_wtg="T1", given=dataclasses.replace(context, valid_for_uplift=valid))
         assert holed == pytest.approx(whole)
 
     def test_plots_survive_a_timestamp_no_selected_turbine_may_use(
@@ -928,11 +995,11 @@ class TestCampaignContext:
         inside an exclusion).
         """
         scada, changeover = self._fixture()
-        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        context = _from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
         valid = context.valid_for_uplift.copy()
         valid.iloc[0] = False
         context = dataclasses.replace(context, valid_for_uplift=valid)
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             conditions=(),
@@ -942,7 +1009,7 @@ class TestCampaignContext:
             save_plots=True,
         )
         with caplog.at_level(logging.ERROR):
-            method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context))
+            method.estimate(_input(scada_df=scada, test_wtg="T1", given=context))
         assert "misaligned" not in caplog.text
         assert any((tmp_path / "plots" / stages.VALID_RECORDS).glob("*.png"))
 
@@ -960,7 +1027,7 @@ class TestCampaignContext:
         schedule = ToggleSchedule(period=pd.Timedelta(hours=4))
         treated = np.asarray((((idx - idx.min()) // (schedule.period / 2)).astype(int) % 2) == 1)
         scada = _toy_scada(n, uplift=0.05, treated=treated)
-        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=schedule, turbine_col=_TURBINE)
+        context = _from_frame(scada, test_wtg="T1", timing=schedule, turbine_col=_TURBINE)
         valid = context.valid_for_uplift.copy()
         valid.iloc[0] = False
         context = dataclasses.replace(context, valid_for_uplift=valid)
@@ -969,7 +1036,7 @@ class TestCampaignContext:
             "benchmarking.baselines.power_model.method.write_common_diagnostics",
             lambda ctx, **_: captured.append(ctx),
         )
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             conditions=(),
@@ -978,7 +1045,7 @@ class TestCampaignContext:
             run_subdir=False,
             save_plots=True,
         )
-        method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context))
+        method.estimate(_input(scada_df=scada, test_wtg="T1", given=context))
 
         (ctx,) = captured
         kept = idx[1:]
@@ -991,9 +1058,9 @@ class TestCampaignContext:
         first = scada.index.unique()[:300]
         upwind = np.where((scada[_TURBINE] == "R2") & scada.index.isin(first), "T1", "none")
         scada = scada.assign(**{UPWIND_COL: upwind})
-        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        context = _from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
         assert context.changed_turbines == {"T1": (ChangedInterval(None, None),)}
-        dropped = self._estimate(scada, test_wtg="T1", campaign_context=context)
+        dropped = self._estimate(scada, test_wtg="T1", given=context)
 
         cut = scada[~scada.index.isin(first)]
         assert dropped == pytest.approx(
@@ -1038,11 +1105,11 @@ def _with_a_fourth_reference(scada: pd.DataFrame, *, seed: int = 7) -> pd.DataFr
     return pd.concat([scada, r4])
 
 
-def _screen_case(*, step: float, n: int = 4000) -> tuple[MethodInput, pd.Timestamp]:
+def _screen_case(*, step: float, n: int = 4000) -> tuple[SubjectRecords, pd.Timestamp]:
     idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
     changeover = pd.Timestamp(idx[n // 2])
     scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=step)
-    mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+    mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
     return mi, changeover
 
 
@@ -1062,7 +1129,7 @@ def _screen_method(**overrides: object) -> PowerModelMethod:
         "model_params": _FAST_PARAMS,
         **overrides,
     }
-    return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
+    return _power_model(**kwargs)  # type: ignore[arg-type]
 
 
 class TestReferenceScreen:
@@ -1102,19 +1169,19 @@ class TestReferenceScreen:
         assert not [c for c in features.columns if c.endswith(" @ R1")]
 
     def test_the_screen_is_on_by_default(self) -> None:
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).reference_screen
+        assert _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0).reference_screen
 
 
 class TestScreeningContrast:
     """A reference never toggles, so screening it is always a prepost question."""
 
-    def _toggle_mi(self, n: int = 2000) -> MethodInput:
+    def _toggle_mi(self, n: int = 2000) -> SubjectRecords:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         start = pd.Timestamp(idx[n // 4])
         schedule = ToggleSchedule(period=pd.Timedelta(minutes=100), start=start)
         treated = np.asarray(resolve_toggle(schedule, pd.DatetimeIndex(idx)).upgraded)
         scada = _toy_scada(n, uplift=0.0, treated=treated)
-        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        return _input(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
 
     def test_a_prepost_campaign_screens_at_its_own_changeover(self) -> None:
         mi, changeover = _screen_case(step=0.0)
@@ -1128,14 +1195,14 @@ class TestScreeningContrast:
     def test_a_toggle_campaign_splits_inside_the_test_period(self) -> None:
         """The toggle test is the valuable data, so the split protects it rather than straddling it."""
         mi = self._toggle_mi()
-        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        index = pd.DatetimeIndex(pd.unique(mi.records.index)).sort_values()
         campaign_start = pd.Timestamp(index[len(index) // 4])
         timing = _screen_method().screening_timing(mi)
         assert campaign_start < timing < index.max()
 
     def test_the_toggle_split_halves_the_campaign_by_data_volume(self) -> None:
         mi = self._toggle_mi()
-        index = pd.DatetimeIndex(pd.unique(mi.scada_df.index)).sort_values()
+        index = pd.DatetimeIndex(pd.unique(mi.records.index)).sort_values()
         timing = _screen_method().screening_timing(mi)
         campaign = index[index >= pd.Timestamp(index[len(index) // 4])]
         before = int((campaign < timing).sum())
@@ -1276,11 +1343,11 @@ class TestReferencePlots:
 class TestADeadReference:
     """A power reference without valid records costs every row; its own uplift is reported as unknown."""
 
-    def _mi_with_a_dead_reference(self) -> tuple[MethodInput, pd.Timestamp]:
+    def _mi_with_a_dead_reference(self) -> tuple[SubjectRecords, pd.Timestamp]:
         mi, changeover = _screen_case(step=0.0)
-        scada = mi.scada_df.copy()
+        scada = mi.records.copy()
         scada.loc[scada[_TURBINE] == "R1", _POWER] = np.nan  # R1 never reports power
-        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE), changeover
+        return _input(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE), changeover
 
     def test_as_a_power_reference_it_leaves_nothing_to_fit(self) -> None:
         mi, _ = self._mi_with_a_dead_reference()
@@ -1299,12 +1366,12 @@ class TestADeadReference:
 class TestAShrunkenPoolIsAnnounced:
     """A candidate reference the campaign offers but the data does not carry is said out loud."""
 
-    def _case(self) -> tuple[PowerModelMethod, MethodInput]:
+    def _case(self) -> tuple[PowerModelMethod, SubjectRecords]:
         mi, changeover = _screen_case(step=0.0)
-        full = mi.scada_df
-        context = CampaignContext.from_frame(full, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        full = mi.records
+        context = _from_frame(full, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
         delivered = full[full[_TURBINE] != "R1"]  # R1 is offered, but never turned up
-        return _screen_method(), MethodInput(scada_df=delivered, test_wtg="T1", campaign_context=context)
+        return _screen_method(), _input(scada_df=delivered, test_wtg="T1", given=context)
 
     def test_the_absent_reference_is_named(self, caplog: pytest.LogCaptureFixture) -> None:
         method, mi = self._case()
@@ -1328,22 +1395,22 @@ class TestTheScreenGateJudgesThePoolThatExists:
 
     def test_an_absent_declared_reference_does_not_disable_the_screen(self) -> None:
         mi, changeover = _screen_case(step=0.0)
-        full = mi.scada_df
-        context = CampaignContext.from_frame(full, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        full = mi.records
+        context = _from_frame(full, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
         # R4 is offered by the campaign but never turned up; R1/R2/R3 did.
         context = dataclasses.replace(context, candidate_references=[*context.candidate_references, "R4"])
-        starved = MethodInput(scada_df=full, test_wtg="T1", campaign_context=context)
+        starved = _input(scada_df=full, test_wtg="T1", given=context)
         assert _screen_method(screen_min_campaign_days=5.0).screen_references(starved).screenable
 
 
 class TestScreenFailureNamesItsCause:
     """When no reference can be estimated, the raised error carries why, not just the verdict."""
 
-    def _mi_without_the_northed_direction(self) -> MethodInput:
+    def _mi_without_the_northed_direction(self) -> SubjectRecords:
         """Every reference becomes unestimatable for one reason: a column the features need is gone."""
         mi, changeover = _screen_case(step=0.0)
-        scada = mi.scada_df.drop(columns=[_NORTHED_YAW])
-        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+        scada = mi.records.drop(columns=[_NORTHED_YAW])
+        return _input(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
 
     def test_the_error_names_the_missing_column(self) -> None:
         """Without this the analyst is told the farm is broken when one column is absent."""
@@ -1363,11 +1430,11 @@ class TestScreenFailureNamesItsCause:
 class TestReferenceUpliftsSchema:
     """The reported frame keeps its documented columns even when it has no rows."""
 
-    def _single_reference_mi(self) -> MethodInput:
+    def _single_reference_mi(self) -> SubjectRecords:
         mi, changeover = _screen_case(step=0.0)
-        scada = mi.scada_df
+        scada = mi.records
         pair = scada[scada[_TURBINE].isin(["T1", "R1"])]
-        return MethodInput(scada_df=pair, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+        return _input(scada_df=pair, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
 
     def test_a_lone_reference_yields_an_empty_but_typed_frame(self) -> None:
         """One candidate reference leaves it no pool to be estimated against."""
@@ -1389,13 +1456,13 @@ class TestReferenceUpliftsSchema:
 class TestScreenIsPrepostOnly:
     """Toggle is not vulnerable to this failure mode, and the screen cannot see it there anyway."""
 
-    def _toggle_mi(self, n: int = 2000) -> MethodInput:
+    def _toggle_mi(self, n: int = 2000) -> SubjectRecords:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         start = pd.Timestamp(idx[n // 4])
         schedule = ToggleSchedule(period=pd.Timedelta(minutes=100), start=start)
         treated = np.asarray(resolve_toggle(schedule, pd.DatetimeIndex(idx)).upgraded)
         scada = _toy_scada(n, uplift=0.0, treated=treated)
-        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+        return _input(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
 
     def test_a_toggle_campaign_screens_nobody(self) -> None:
         result = _screen_method().screen_references(self._toggle_mi())
@@ -1417,7 +1484,7 @@ class TestScreenIsPrepostOnly:
 class TestScreenNeedsEnoughCampaign:
     """A short campaign makes screening estimates too noisy to tell a bad reference from a good one."""
 
-    def _prepost_days(self, days: float, *, baseline_days: int = 120) -> MethodInput:
+    def _prepost_days(self, days: float, *, baseline_days: int = 120) -> SubjectRecords:
         """A prepost case whose campaign holds exactly ``days`` of 10-minute records."""
         per_day = 144  # 10-minute records
         n = int(per_day * (baseline_days + days))
@@ -1425,7 +1492,7 @@ class TestScreenNeedsEnoughCampaign:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = pd.Timestamp(idx[per_day * baseline_days])
         scada = _with_a_fourth_reference(_scada_with_a_stepped_reference(n, changeover=changeover, step=0.08))
-        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+        return _input(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
 
     def _gated_method(self, **overrides: object) -> PowerModelMethod:
         """The screening method with the real minimum-campaign default, which is what is under test."""
@@ -1450,19 +1517,19 @@ class TestScreenNeedsEnoughCampaign:
         control = self._gated_method().screen_references(mi)
         assert set(control.passes["turbine"].astype(str)) == {"R1", "R2", "R3", "R4"}
 
-        scada = mi.scada_df.copy()
-        in_campaign = np.asarray(scada.index >= pd.Timestamp(mi.upgrade_timing))
+        scada = mi.records.copy()
+        in_campaign = np.asarray(scada.index >= pd.Timestamp(mi.timing))
         is_r1 = (scada[_TURBINE] == "R1").to_numpy()
         starved_rows = np.flatnonzero(is_r1 & in_campaign)[144 * 10 :]  # R1 keeps 10 available days
         scada.iloc[starved_rows, scada.columns.get_loc(_AVAIL)] = 0.0
-        starved = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=mi.upgrade_timing, turbine_col=_TURBINE)
+        starved = _input(scada_df=scada, test_wtg="T1", upgrade_timing=mi.timing, turbine_col=_TURBINE)
         result = self._gated_method().screen_references(starved)
         assert result.screenable
         assert set(result.passes["turbine"].astype(str)) == {"R2", "R3", "R4"}
 
     def test_the_default_excludes_a_three_month_campaign(self) -> None:
         """The benchmark sweep set this: at 90 days a 3-month campaign still false-positived."""
-        default = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_min_campaign_days
+        default = _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0).screen_min_campaign_days
         assert default > 92, "a 3-month campaign must not be screened"
         assert default < 180, "a 6-month campaign must still be screened"
 
@@ -1505,7 +1572,7 @@ class TestCloneRecursionGuards:
     """
 
     def _method(self) -> PowerModelMethod:
-        return PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=())
+        return _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=())
 
     def test_the_screening_clone_runs_neither_pass(self) -> None:
         clone = self._method()._screening_clone()  # noqa: SLF001 - the guard is the private clone
@@ -1533,12 +1600,12 @@ class TestPassClonesWriteNoDiagnostics:
     """
 
     def test_a_pass_clone_writes_nothing(self) -> None:
-        method = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=())
+        method = _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=())
         for clone in (method._screening_clone(), method._reference_clone()):  # noqa: SLF001 - the guard is the clone
             assert not clone.write_diagnostics
 
     def test_diagnostics_are_written_by_default(self) -> None:
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).write_diagnostics
+        assert _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0).write_diagnostics
 
     def test_screening_leaves_no_temp_directories(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # its own temp root, so a parallel worker's directories are not counted as this run's
@@ -1563,7 +1630,7 @@ class TestPassClonesWriteNoDiagnostics:
 def test_no_diagnostics_with_conditions_raises() -> None:
     """The uplift distributions write into the run directory, so they need one."""
     with pytest.raises(ValueError, match="write_diagnostics"):
-        PowerModelMethod(
+        _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             conditions=("predicted_power",),
@@ -1580,7 +1647,7 @@ class TestGateJudgesEachCandidateSeparately:
 
     def _mi_with_a_sparse_turbine(
         self, *, campaign_days: int, sparse_days: int, sparse: str = "R1", fourth_reference: bool = True
-    ) -> MethodInput:
+    ) -> SubjectRecords:
         per_day = 144
         baseline_days = 200
         n = per_day * (baseline_days + campaign_days)
@@ -1592,7 +1659,7 @@ class TestGateJudgesEachCandidateSeparately:
         # `sparse` has data for only the first `sparse_days` of the campaign.
         cutoff = changeover + pd.Timedelta(days=sparse_days)
         scada = scada[~((scada[_TURBINE] == sparse) & (scada.index >= cutoff))]
-        return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+        return _input(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
 
     @staticmethod
     def _screened_turbines(result: ScreenResult) -> set[str]:
@@ -1643,7 +1710,7 @@ class TestAnUnjudgedCandidateLosesItsPowerEverywhere:
     """
 
     @staticmethod
-    def _starved() -> MethodInput:
+    def _starved() -> SubjectRecords:
         return TestGateJudgesEachCandidateSeparately()._mi_with_a_sparse_turbine(  # noqa: SLF001 - the shared fixture
             campaign_days=200, sparse_days=10
         )
@@ -1714,7 +1781,7 @@ class TestTheReferenceReportRefitsAPartlyScreenedPool:
 _NEIGHBOUR_STEP = 0.10
 
 
-def _with_a_changed_neighbour(*, as_reference: bool = False, n: int = 4000) -> MethodInput:
+def _with_a_changed_neighbour(*, as_reference: bool = False, n: int = 4000) -> SubjectRecords:
     """T1 under test at +5% beside W1, another changed turbine whose power steps +10% at the changeover.
 
     W1 sees T1's own flow, so its power, were it a feature, would pass its own step off as T1's.
@@ -1728,15 +1795,16 @@ def _with_a_changed_neighbour(*, as_reference: bool = False, n: int = 4000) -> M
         w1[col] = w1[col] * np.where(treated, (1.0 + _NEIGHBOUR_STEP) / 1.05, 1.0)
     scada = pd.concat([scada, w1])
     references = ["R1", "R2", "R3", *(["W1"] if as_reference else [])]
-    context = CampaignContext(
-        test_wtg="T1",
+    context = SubjectRecords(
+        records=scada,
+        subject="T1",
         timing=changeover,
         turbine_col=_TURBINE,
         candidate_references=references,
         wake_contributors=[] if as_reference else ["W1"],
         valid_for_uplift=pd.DataFrame(data=True, index=idx, columns=["T1", "R1", "R2", "R3", "W1"]),
     )
-    return MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
+    return _input(scada_df=scada, test_wtg="T1", given=context)
 
 
 class TestReanalysisIsIdentified:
@@ -1747,7 +1815,7 @@ class TestReanalysisIsIdentified:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         treated = np.asarray(idx >= idx[n // 2])
         scada = _toy_scada(n, uplift=0.05, treated=treated)
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             site_location=(57.4979, -3.2513),
@@ -1755,37 +1823,38 @@ class TestReanalysisIsIdentified:
             model_params=_FAST_PARAMS,
             out_dir=tmp_path,
         )
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
+        mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=pd.Timestamp(idx[n // 2]), turbine_col=_TURBINE)
         method.estimate(mi)
         importance = pd.read_csv(sorted(tmp_path.rglob("*_feature_importance_*.csv"))[-1])
         assert SOLAR_ELEVATION in set(importance["feature"])
         assert any(f.endswith(" @ R1") for f in importance["feature"]), "turbine features keep their own source"
 
     def test_unlocated_reanalysis_is_still_named(self) -> None:
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).era5_label == "ERA5"
+        assert _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0).era5_label == "ERA5"
 
 
 class TestOrderDoesNotReachTheAnswer:
     """The model is not invariant to column order, so nothing that decides it may vary by accident."""
 
-    def _mi(self, references: list[str]) -> MethodInput:
+    def _mi(self, references: list[str]) -> SubjectRecords:
         n = 4000
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         treated = np.asarray(idx >= idx[n // 2])
         scada = _toy_scada(n, uplift=0.05, treated=treated)
-        context = CampaignContext(
-            test_wtg="T1",
+        context = SubjectRecords(
+            records=scada,
+            subject="T1",
             timing=pd.Timestamp(idx[n // 2]),
             turbine_col=_TURBINE,
             candidate_references=references,
             wake_contributors=[],
             valid_for_uplift=pd.DataFrame(data=True, index=idx, columns=["T1", "R1", "R2", "R3"]),
         )
-        return MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
+        return _input(scada_df=scada, test_wtg="T1", given=context)
 
     def test_the_declaration_order_of_the_references_does_not_change_the_estimate(self) -> None:
         # the same campaign, its references typed in two different orders
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(), model_params=_FAST_PARAMS
         )
         as_declared = method.estimate(self._mi(["R1", "R2", "R3"])).p50_overall
@@ -1797,13 +1866,13 @@ class TestOrderDoesNotReachTheAnswer:
         # whichever of them is under test, so only its order could ever have differed
         mi = _with_a_changed_neighbour()
         from_t1 = _reference_input(mi, target="R1", references=["R2", "R3"])
-        as_w1 = dataclasses.replace(mi.context, test_wtg="W1", wake_contributors=["T1"])
+        as_w1 = dataclasses.replace(mi, subject="W1", wake_contributors=["T1"])
         from_w1 = _reference_input(
-            MethodInput(scada_df=mi.scada_df, test_wtg="W1", campaign_context=as_w1),
+            _input(scada_df=mi.records, test_wtg="W1", given=as_w1),
             target="R1",
             references=["R2", "R3"],
         )
-        assert from_t1.context.wake_contributors == from_w1.context.wake_contributors == ["T1", "W1"]
+        assert from_t1.wake_contributors == from_w1.wake_contributors == ["T1", "W1"]
 
 
 class TestTheScreenRunsOncePerCampaign:
@@ -1823,11 +1892,11 @@ class TestTheScreenRunsOncePerCampaign:
         cache: dict = {}
         mi, _ = _screen_case(step=0.08)
         first = _screen_method(screen_cache=cache).screen_references(mi)
-        other = MethodInput(
-            scada_df=mi.scada_df,
-            test_wtg=mi.test_wtg,
-            campaign_context=dataclasses.replace(
-                mi.context,
+        other = _input(
+            scada_df=mi.records,
+            test_wtg=mi.subject,
+            given=dataclasses.replace(
+                mi,
                 changed_turbines={"T1": (ChangedInterval(None, None),), "R9": (ChangedInterval(None, None),)},
             ),
         )
@@ -1838,16 +1907,16 @@ class TestTheScreenRunsOncePerCampaign:
     def test_a_change_of_changed_times_alone_is_a_new_key(self) -> None:
         cache: dict = {}
         mi, _ = _screen_case(step=0.08)
-        late = mi.scada_df.index[-1]
+        late = mi.records.index[-1]
         keys = [
             {"T1": (ChangedInterval(None, None),), "R9": (ChangedInterval(None, None),)},
             {"T1": (ChangedInterval(None, None),), "R9": (ChangedInterval(late, None),)},
         ]
         for changed in keys:
-            other = MethodInput(
-                scada_df=mi.scada_df,
-                test_wtg=mi.test_wtg,
-                campaign_context=dataclasses.replace(mi.context, changed_turbines=changed),
+            other = _input(
+                scada_df=mi.records,
+                test_wtg=mi.subject,
+                given=dataclasses.replace(mi, changed_turbines=changed),
             )
             _screen_method(screen_cache=cache).screen_references(other)
         assert len(cache) == 2
@@ -1884,27 +1953,27 @@ class TestWakeContributors:
     def test_every_estimate_keeps_every_turbine(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Screening and reporting estimate each reference too, and every other turbine still wakes it."""
         contexts = _recorded_contexts(monkeypatch, _with_a_changed_neighbour())
-        assert {c.test_wtg for c in contexts} == {"T1", "R1", "R2", "R3"}
+        assert {c.subject for c in contexts} == {"T1", "R1", "R2", "R3"}
         for c in contexts:
-            assert {c.test_wtg, *c.candidate_references, *c.wake_contributors} == {"T1", "R1", "R2", "R3", "W1"}
+            assert {c.subject, *c.candidate_references, *c.wake_contributors} == {"T1", "R1", "R2", "R3", "W1"}
 
     def test_a_screened_reference_still_wakes_the_others(self, monkeypatch: pytest.MonkeyPatch) -> None:
         contexts = _recorded_contexts(monkeypatch, _screen_case(step=0.05)[0])
-        ruled_out = [c for c in contexts if c.test_wtg != "R1" and "R1" not in c.candidate_references]
+        ruled_out = [c for c in contexts if c.subject != "R1" and "R1" not in c.candidate_references]
         assert ruled_out, "the screen rules R1 out, so some estimate runs without it as a reference"
         assert all("R1" in c.wake_contributors for c in ruled_out)
 
 
-def _recorded_contexts(monkeypatch: pytest.MonkeyPatch, mi: MethodInput) -> list[CampaignContext]:
+def _recorded_contexts(monkeypatch: pytest.MonkeyPatch, mi: SubjectRecords) -> list[SubjectRecords]:
     """Run the screening method on ``mi`` and return the context of every estimate it made, its own first."""
-    contexts: list[CampaignContext] = []
-    estimate = PowerModelMethod.estimate
+    contexts: list[SubjectRecords] = []
+    estimate = PowerModelMethod._estimate_one  # noqa: SLF001 - the step every measurement takes
 
-    def recording(self: PowerModelMethod, mi: MethodInput) -> object:
-        contexts.append(mi.context)
+    def recording(self: PowerModelMethod, mi: SubjectRecords) -> object:
+        contexts.append(mi)
         return estimate(self, mi)
 
-    monkeypatch.setattr(PowerModelMethod, "estimate", recording)
+    monkeypatch.setattr(PowerModelMethod, "_estimate_one", recording)
     _screen_method().estimate(mi)
     return contexts
 
@@ -1929,7 +1998,7 @@ def _with_reference(scada: pd.DataFrame, name: str, *, seed: int) -> pd.DataFram
 
 def _planned_case(
     *, step: float, stepped: tuple[str, ...] = ("R1",), reserves: tuple[str, ...] = ("R5", "R6"), n: int = 4000
-) -> MethodInput:
+) -> SubjectRecords:
     """A pool R1..R4 with ``stepped`` references stepping at the changeover, and clean ``reserves`` waiting."""
     idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
     changeover = pd.Timestamp(idx[n // 2])
@@ -1940,14 +2009,14 @@ def _planned_case(
         rows = (scada[_TURBINE] == name) & (scada.index >= changeover)
         for col in (_POWER, _POWER_MIN, _POWER_MAX):
             scada.loc[rows, col] = scada.loc[rows, col] * (1.0 + step)
-    base = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+    base = _from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
     context = dataclasses.replace(
         base,
         candidate_references=["R1", "R2", "R3", "R4"],
         wake_contributors=list(reserves),
         reserve_references=list(reserves),
     )
-    return MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
+    return _input(scada_df=scada, test_wtg="T1", given=context)
 
 
 class TestTheScreenRefillsItsPool:
@@ -1955,10 +2024,10 @@ class TestTheScreenRefillsItsPool:
         mi = _planned_case(step=0.05)
         method = _screen_method()
         refilled, screen = method.refill_screened(mi, method.screen_references(mi))
-        assert refilled.context.candidate_references == ["R2", "R3", "R4", "R5"]
-        assert refilled.context.reserve_references == ["R6"]
-        assert "R1" in refilled.context.wake_contributors
-        assert "R5" not in refilled.context.wake_contributors
+        assert refilled.candidate_references == ["R2", "R3", "R4", "R5"]
+        assert refilled.reserve_references == ["R6"]
+        assert "R1" in refilled.wake_contributors
+        assert "R5" not in refilled.wake_contributors
         assert screen.screened == ("R1",)
 
     def test_the_refilled_pool_is_screened_again_and_every_round_is_recorded(self) -> None:
@@ -1973,7 +2042,7 @@ class TestTheScreenRefillsItsPool:
         method = _screen_method()
         with caplog.at_level(logging.WARNING):
             refilled, _ = method.refill_screened(mi, method.screen_references(mi))
-        assert refilled.context.candidate_references == ["R2", "R3", "R4"]
+        assert refilled.candidate_references == ["R2", "R3", "R4"]
         assert "reserves ran out" in caplog.text
 
     def test_the_estimate_runs_on_the_refilled_pool(self) -> None:
@@ -1985,16 +2054,16 @@ class TestTheScreenRefillsItsPool:
         assert np.isfinite(out.p50_overall)
 
     @staticmethod
-    def _short_r1(reserves: tuple[str, ...] = ("R5", "R6")) -> MethodInput:
+    def _short_r1(reserves: tuple[str, ...] = ("R5", "R6")) -> SubjectRecords:
         """The clean pool with R1 valid for uplift on only its first two days after the changeover."""
         mi = _planned_case(step=0.0, reserves=reserves)
-        valid = mi.context.valid_for_uplift.copy()
-        changeover = pd.Timestamp(mi.context.timing)  # type: ignore[arg-type]
+        valid = mi.valid_for_uplift.copy()
+        changeover = pd.Timestamp(mi.timing)  # type: ignore[arg-type]
         valid.loc[valid.index >= changeover + pd.Timedelta(days=2), "R1"] = False
-        return MethodInput(
-            scada_df=mi.scada_df,
+        return _input(
+            scada_df=mi.records,
             test_wtg="T1",
-            campaign_context=dataclasses.replace(mi.context, valid_for_uplift=valid),
+            given=dataclasses.replace(mi, valid_for_uplift=valid),
         )
 
     def test_a_reference_too_short_to_judge_is_replaced_by_the_nearest_reserve(self) -> None:
@@ -2003,8 +2072,8 @@ class TestTheScreenRefillsItsPool:
         screen = method.screen_references(mi)
         assert screen.unjudged == ("R1",)
         refilled, after = method.refill_screened(mi, screen)
-        assert refilled.context.candidate_references == ["R2", "R3", "R4", "R5"]
-        assert "R1" in refilled.context.wake_contributors
+        assert refilled.candidate_references == ["R2", "R3", "R4", "R5"]
+        assert "R1" in refilled.wake_contributors
         assert after.screened == ()
         assert after.unjudged == ("R1",)
 
@@ -2027,7 +2096,7 @@ class TestTheScreenRefillsItsPool:
         method = _screen_method()
         screen = method.screen_references(mi)
         refilled, after = method.refill_screened(mi, screen)
-        assert refilled.context == mi.context
+        assert refilled == mi
         assert after == screen
 
 
@@ -2037,8 +2106,8 @@ class TestTheScreenCacheKnowsTheSpan:
         cache: dict = {}
         method = _screen_method(screen_cache=cache)
         method.screen_references(mi)
-        later = mi.scada_df[mi.scada_df.index >= mi.scada_df.index.min() + pd.Timedelta(hours=6)]
-        method.screen_references(dataclasses.replace(mi, scada_df=later))
+        later = mi.records[mi.records.index >= mi.records.index.min() + pd.Timedelta(hours=6)]
+        method.screen_references(dataclasses.replace(mi, records=later))
         assert len(cache) == 2
 
 
@@ -2047,8 +2116,8 @@ class TestReferenceReadings:
         mi = _planned_case(step=0.0, reserves=("R5",))
         seen: dict[str, list[str]] = {}
 
-        def record(self: PowerModelMethod, clone: PowerModelMethod, sub_input: MethodInput) -> float:  # noqa: ARG001
-            seen[sub_input.test_wtg] = list(sub_input.context.candidate_references)
+        def record(self: PowerModelMethod, clone: PowerModelMethod, sub_input: SubjectRecords) -> float:  # noqa: ARG001
+            seen[sub_input.subject] = list(sub_input.candidate_references)
             return {"uplift": 0.0, "sigma": float("nan")}
 
         monkeypatch.setattr(PowerModelMethod, "_reference_uplift", record)
@@ -2062,24 +2131,22 @@ class TestReferenceReadings:
 
     def test_a_reading_uses_no_record_inside_the_test_turbines_works_window(self) -> None:
         mi = _planned_case(step=0.0, reserves=())
-        changeover = pd.Timestamp(mi.context.timing)  # type: ignore[arg-type]
+        changeover = pd.Timestamp(mi.timing)  # type: ignore[arg-type]
         works = (changeover - pd.Timedelta(days=2), changeover)
-        mi = MethodInput(
-            scada_df=mi.scada_df, test_wtg="T1", campaign_context=dataclasses.replace(mi.context, works=works)
-        )
-        valid = _reference_input(mi, target="R1", references=["R2", "R3", "R4"]).context.valid_for_uplift
+        mi = _input(scada_df=mi.records, test_wtg="T1", given=dataclasses.replace(mi, works=works))
+        valid = _reference_input(mi, target="R1", references=["R2", "R3", "R4"]).valid_for_uplift
         inside = (valid.index >= works[0]) & (valid.index < works[1])
         assert not valid.loc[inside, "R1"].any()
         assert valid.loc[~inside, "R1"].all()
         assert valid.loc[inside, "R2"].all()
-        assert mi.context.valid_for_uplift["R1"].all()
+        assert mi.valid_for_uplift["R1"].all()
 
     def test_the_test_turbine_is_a_wake_contributor_of_every_reading(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mi = _planned_case(step=0.0, reserves=())
         wakes: list[bool] = []
 
-        def record(self: PowerModelMethod, clone: PowerModelMethod, sub_input: MethodInput) -> float:  # noqa: ARG001
-            wakes.append("T1" in sub_input.context.wake_contributors)
+        def record(self: PowerModelMethod, clone: PowerModelMethod, sub_input: SubjectRecords) -> float:  # noqa: ARG001
+            wakes.append("T1" in sub_input.wake_contributors)
             return {"uplift": 0.0, "sigma": float("nan")}
 
         monkeypatch.setattr(PowerModelMethod, "_reference_uplift", record)
@@ -2088,14 +2155,14 @@ class TestReferenceReadings:
         assert all(wakes)
 
 
-def _held_back_case(*, days: int = 3) -> MethodInput:
+def _held_back_case(*, days: int = 3) -> SubjectRecords:
     """R1 held back (present but invalid) over its first ``days`` days."""
     mi = _planned_case(step=0.0, reserves=())
-    valid = mi.context.valid_for_uplift.copy()
+    valid = mi.valid_for_uplift.copy()
     held = valid.index < valid.index.min() + pd.Timedelta(days=days)
     valid.loc[held, "R1"] = False
-    context = dataclasses.replace(mi.context, valid_for_uplift=valid)
-    return MethodInput(scada_df=mi.scada_df, test_wtg="T1", campaign_context=context)
+    context = dataclasses.replace(mi, valid_for_uplift=valid)
+    return _input(scada_df=mi.records, test_wtg="T1", given=context)
 
 
 class TestAHeldBackReference:
@@ -2107,12 +2174,12 @@ class TestAHeldBackReference:
         assert features.loc[~held, f"{_POWER}{QUALIFIER}R1"].notna().all()
 
 
-def _with_scenarios(mi: MethodInput) -> MethodInput:
+def _with_scenarios(mi: SubjectRecords) -> SubjectRecords:
     """``mi`` with a waking scenario per record that depends on the time of day only."""
-    scada = mi.scada_df
+    scada = mi.records
     hours = pd.DatetimeIndex(scada.index).hour
     labels = np.where(hours < 6, "R2 not waking", "normal")
-    return dataclasses.replace(mi, scada_df=scada.assign(**{WAKING_SCENARIO_COL: labels}))
+    return dataclasses.replace(mi, records=scada.assign(**{WAKING_SCENARIO_COL: labels}))
 
 
 class TestWakingScenarioFeatures:
@@ -2162,23 +2229,26 @@ class TestValidUpliftRows:
 
     @staticmethod
     def _selected(scada: pd.DataFrame) -> np.ndarray:
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=scada.index[3], turbine_col=_TURBINE)
+        if VALID_UPLIFT_COL in scada.columns:
+            mi = SubjectRecords.from_frame(scada, subject="T1", timing=scada.index[3], turbine_col=_TURBINE)
+        else:
+            mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=scada.index[3], turbine_col=_TURBINE)
         index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
         y = scada[scada[_TURBINE] == "T1"][_POWER]
         reasons = _fundamentals_method()._loss_reasons(  # noqa: SLF001
-            mi, index=index, references=["R1", "R2", "R3"], timebase=pd.Timedelta(minutes=10)
+            mi, index=index, references=["R1", "R2", "R3"]
         )
         return np.asarray(reasons == USABLE) & np.isfinite(y.to_numpy(dtype=float))
 
     def test_a_labelled_frame_keeps_only_valid_uplift_rows(self) -> None:
-        scada = _toy_scada(6, uplift=0.0, treated=np.zeros(6, dtype=bool))
+        scada = _labelled(_toy_scada(6, uplift=0.0, treated=np.zeros(6, dtype=bool)))
         scada[VALID_UPLIFT_COL] = True
         test = (scada[_TURBINE] == "T1").to_numpy()
         curtailed = test & (scada.index == scada.index[2])
         scada.loc[curtailed, VALID_UPLIFT_COL] = False
         assert self._selected(scada).tolist() == [True, True, False, True, True, True]
 
-    def test_an_unlabelled_frame_drops_out_of_range_records(self) -> None:
+    def test_the_generic_labels_drop_out_of_range_records(self) -> None:
         scada = _toy_scada(6, uplift=0.0, treated=np.zeros(6, dtype=bool))
         test = (scada[_TURBINE] == "T1").to_numpy()
         scada.loc[test & (scada.index == scada.index[4]), _POWER] = 5000.0
@@ -2187,15 +2257,15 @@ class TestValidUpliftRows:
 
 def _context_estimate(scada: pd.DataFrame, *, changeover: pd.Timestamp, **overrides: object) -> float:
     """Estimate T1 from a campaign-free context over ``scada``, with the fast model."""
-    context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
-    method = PowerModelMethod(
+    context = _from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+    method = _power_model(
         columns=_COLUMNS,
         baseline_rated_power_kw=2300.0,
         conditions=(),
         model_params=_FAST_PARAMS,
         **overrides,  # type: ignore[arg-type]
     )
-    return method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)).p50_overall
+    return method.estimate(_input(scada_df=scada, test_wtg="T1", given=context)).p50_overall
 
 
 class TestRecordFloors:
@@ -2256,16 +2326,14 @@ class TestWakingConfiguration:
         scada, changeover = self._fixture()
         stamps = scada.index.unique()
         scada.loc[(scada[_TURBINE] == "R3") & scada.index.isin(stamps[:100]), WAKING_SCENARIO_COL] = "R1 not waking"
-        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        context = _from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
         context = dataclasses.replace(context, candidate_references=["R1", "R2"], wake_contributors=["R3"])
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS, baseline_rated_power_kw=2300.0, conditions=(), model_params=_FAST_PARAMS
         )
-        whole = method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)).p50_overall
+        whole = method.estimate(_input(scada_df=scada, test_wtg="T1", given=context)).p50_overall
         plain = scada.assign(**{WAKING_SCENARIO_COL: "normal"})
-        assert whole == pytest.approx(
-            method.estimate(MethodInput(scada_df=plain, test_wtg="T1", campaign_context=context)).p50_overall
-        )
+        assert whole == pytest.approx(method.estimate(_input(scada_df=plain, test_wtg="T1", given=context)).p50_overall)
 
     def test_the_dropped_rows_are_named_in_the_row_dump(self, tmp_path: Path) -> None:
         scada, changeover = self._fixture()
@@ -2290,7 +2358,7 @@ class TestTogglePairing:
 
     @staticmethod
     def _estimate(scada: pd.DataFrame, schedule: ToggleSchedule, **overrides: object) -> float:
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             conditions=(),
@@ -2298,7 +2366,7 @@ class TestTogglePairing:
             **overrides,  # type: ignore[arg-type]
         )
         return method.estimate(
-            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
+            _input(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE)
         ).p50_overall
 
     def test_on_records_a_cycle_from_any_off_record_are_dropped(self, tmp_path: Path) -> None:
@@ -2338,11 +2406,11 @@ class TestRecordLosses:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = pd.Timestamp(idx[n // 2])
         scada = _toy_scada(n, uplift=0.05, treated=np.asarray(idx >= changeover))
-        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
+        context = _from_frame(scada, test_wtg="T1", timing=changeover, turbine_col=_TURBINE)
         valid = context.valid_for_uplift.copy()
         valid.loc[valid.index[:60], "R1"] = False
         context = dataclasses.replace(context, valid_for_uplift=valid)
-        method = PowerModelMethod(
+        method = _power_model(
             columns=_COLUMNS,
             baseline_rated_power_kw=2300.0,
             conditions=(),
@@ -2350,7 +2418,7 @@ class TestRecordLosses:
             out_dir=tmp_path,
             run_subdir=False,
         )
-        method.estimate(MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context))
+        method.estimate(_input(scada_df=scada, test_wtg="T1", given=context))
         losses = pd.read_csv(tmp_path / "record_losses.csv").set_index("reason")
         assert losses.loc[EXCLUDED, "hours_before"] == pytest.approx(10.0)
         assert losses.loc[EXCLUDED, "hours_after"] == pytest.approx(0.0)
@@ -2358,7 +2426,7 @@ class TestRecordLosses:
         assert losses.loc[USABLE, "hours_after"] == pytest.approx(2000 / 6.0)
 
 
-def _uncertainty_case(n: int = 4000, *, toggle: bool = False) -> MethodInput:
+def _uncertainty_case(n: int = 4000, *, toggle: bool = False) -> SubjectRecords:
     """A toy prepost or toggle campaign with a 5 % uplift, for the uncertainty tests."""
     idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
     if toggle:
@@ -2369,14 +2437,14 @@ def _uncertainty_case(n: int = 4000, *, toggle: bool = False) -> MethodInput:
         timing = pd.Timestamp(idx[n // 2])
         treated = np.asarray(idx >= timing)
     scada = _toy_scada(n, uplift=0.05, treated=treated)
-    return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=timing, turbine_col=_TURBINE)  # type: ignore[arg-type]
+    return _input(scada_df=scada, test_wtg="T1", upgrade_timing=timing, turbine_col=_TURBINE)  # type: ignore[arg-type]
 
 
 class TestHeadlineUncertainty:
     """The cheap sigma: a circular block bootstrap of the after period's (actual, counterfactual) pairs."""
 
     @staticmethod
-    def _case(n: int = 4000, *, toggle: bool = False) -> MethodInput:
+    def _case(n: int = 4000, *, toggle: bool = False) -> SubjectRecords:
         return _uncertainty_case(n, toggle=toggle)
 
     @staticmethod
@@ -2461,7 +2529,7 @@ class TestRecordedReversal:
         return _fundamentals_method(**{"model_params": _FAST_PARAMS, "headline_estimator": "forward", **overrides})
 
     def test_is_off_by_default(self) -> None:
-        method = PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
+        method = _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0)
         assert method.record_reversal is False
         out = self._method().estimate(_uncertainty_case())
         assert not set(REVERSAL_COLUMNS) & set(out.uncertainty_diagnostics.columns)
@@ -2555,7 +2623,7 @@ class TestTrainingPeriodRule:
         assert under_training_floor(months=24.0, coverage=0.49)
 
 
-def _long_case(*, before_months: int, after_months: int, uplift: float = 0.05) -> MethodInput:
+def _long_case(*, before_months: int, after_months: int, uplift: float = 0.05) -> SubjectRecords:
     """An hourly toy prepost campaign with the given period lengths, in calendar months."""
     start = pd.Timestamp("2019-01-01", tz="UTC")
     changeover = start + pd.DateOffset(months=before_months)
@@ -2563,7 +2631,7 @@ def _long_case(*, before_months: int, after_months: int, uplift: float = 0.05) -
     n = int((end - start) / pd.Timedelta(hours=1))
     idx = pd.date_range(start, periods=n, freq="h", tz="UTC")
     scada = _toy_scada(n, uplift=uplift, treated=np.asarray(idx >= changeover), freq="h")
-    return MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+    return _input(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
 
 
 class TestTrainingPeriod:
@@ -2574,7 +2642,7 @@ class TestTrainingPeriod:
         return _screen_method(**{"holdout_max_blocks": 2, **overrides})
 
     def test_resolves_automatically_by_default_and_records_which_period_trained(self) -> None:
-        assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).training_period == "auto"
+        assert _power_model(columns=_COLUMNS, baseline_rated_power_kw=2300.0).training_period == "auto"
         assert all(is_reading_column(c) for c in TRAINING_COLUMNS)
         row = self._method().estimate(_screen_case(step=0.0)[0]).uncertainty_diagnostics.iloc[0]
         assert row["training_after"] == 0.0
@@ -2655,7 +2723,7 @@ class TestTrainingPeriod:
 
 
 def test_a_zero_sigma_is_read_as_zero() -> None:
-    assert _reading(MethodOutput(p50_overall=0.01, sigma_overall=0.0))["sigma"] == 0.0
+    assert _reading(SubjectMeasurement(p50_overall=0.01, sigma_overall=0.0))["sigma"] == 0.0
 
 
 def test_the_run_config_records_the_headline_and_shape_settings() -> None:
@@ -2712,7 +2780,7 @@ class TestNoHoldoutWindow:
         idx = pd.date_range("2019-01-01", periods=n, freq="10min", tz="UTC")
         changeover = pd.Timestamp(idx[n // 4])  # a week before, three after: no held-out window fits
         scada = _scada_with_a_stepped_reference(n, changeover=changeover, step=0.0)
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
+        mi = _input(scada_df=scada, test_wtg="T1", upgrade_timing=changeover, turbine_col=_TURBINE)
         out = _screen_method(training_period="before").estimate(mi)
         row = out.uncertainty_diagnostics.iloc[0]
         assert row["n_holdout_blocks"] == 0

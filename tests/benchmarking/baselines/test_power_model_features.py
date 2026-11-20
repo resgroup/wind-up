@@ -22,8 +22,8 @@ from benchmarking.baselines.power_model.features import (
     waking_scenario_features,
     without_constant_scenarios,
 )
-from benchmarking.harness.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
-from benchmarking.harness.waking import WAKING_SCENARIO_COL
+from wind_up.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
+from wind_up.waking import WAKING_SCENARIO_COL
 
 _TURBINE = "TurbineName"
 _REFS = ("R1", "R2", "R3")

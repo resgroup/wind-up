@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 import yaml
 
+from benchmarking.campaigns import composed
 from benchmarking.campaigns.composed import (
     _LOG_HANDLER_NAME,
     DATA_PREPARATION_DIRNAME,
@@ -25,6 +26,7 @@ from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.synthetic import HOT_COLUMNS
 
 from .test_loader import load, write_campaign
+from .test_loader_upgrades import load_upgrades
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -58,32 +60,21 @@ def _config(method: object) -> dict:
 
 class TestTheComposition:
     def test_it_is_named_wind_up(self, tmp_path: Path) -> None:
-        spec = load(tmp_path).spec
-        assert (
-            wind_up_method(spec, columns=HOT_COLUMNS, out_dir=tmp_path, era5_hourly_df=era5()).name
-            == WIND_UP
-            == "wind-up"
-        )
+        assert wind_up_method(out_dir=tmp_path).name == WIND_UP == "wind-up"
 
     def test_its_configuration_is_the_accepted_power_model_defaults(self, tmp_path: Path) -> None:
         # a default drifting on either side is caught here, since wind-up is that configuration
         spec = load(tmp_path).spec
-        reanalysis = era5()
-        composed = wind_up_method(spec, columns=HOT_COLUMNS, out_dir=tmp_path / "a", era5_hourly_df=reanalysis)
-        carried = next(
-            m
-            for m in carried_forward_methods(spec, out_dir=tmp_path / "b", era5_hourly_df=reanalysis)
-            if m.name == "power_model"
-        )
+        composed = wind_up_method(out_dir=tmp_path / "a")
+        carried = next(m for m in carried_forward_methods(spec, out_dir=tmp_path / "b") if m.name == "power_model")
         assert _config(composed) == _config(carried)
 
     def test_it_reports_per_condition_estimates(self, tmp_path: Path) -> None:
-        spec = load(tmp_path).spec
-        assert wind_up_method(spec, columns=HOT_COLUMNS, out_dir=tmp_path, era5_hourly_df=era5()).conditions
+        assert wind_up_method(out_dir=tmp_path).conditions
 
     def test_it_screens_its_references_and_reports_them(self, tmp_path: Path) -> None:
         # the R3 screen and the reference-stability table are part of what wind-up is
-        method = wind_up_method(load(tmp_path).spec, columns=HOT_COLUMNS, out_dir=tmp_path, era5_hourly_df=era5())
+        method = wind_up_method(out_dir=tmp_path)
         assert method.reference_screen
         assert method.report_reference_uplifts
 
@@ -287,7 +278,7 @@ class TestTheRunFolders:
         assert not method.run_subdir  # type: ignore[attr-defined]
 
     def test_studies_keep_a_named_folder_per_run(self, tmp_path: Path) -> None:
-        method = wind_up_method(load(tmp_path).spec, columns=HOT_COLUMNS, out_dir=tmp_path, era5_hourly_df=era5())
+        method = wind_up_method(out_dir=tmp_path)
         assert method.run_subdir
 
 
@@ -328,3 +319,45 @@ class TestTheReadmeWarnings:
         assert lines[4] == "- high (step 12) T01: trains on 6.0 months"
         assert lines[5] == "- low (step 4) T02: a candidate yaw alignment change"
         assert any(line.startswith("Laid out by the parts") for line in lines[6:])
+
+
+class TestEveryAnalysisIsRun:
+    """``run_analyses`` hands each analysis to ``run_declaration``; the runs themselves are tested above."""
+
+    def calls(self, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+        seen: list[dict] = []
+
+        def fake(path: Path, **kwargs: object) -> str:
+            seen.append({"path": path, **kwargs})
+            return f"report {len(seen)}"
+
+        monkeypatch.setattr(composed, "run_declaration", fake)
+        return seen
+
+    def test_one_analysis_runs_into_the_output_folder(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen = self.calls(monkeypatch)
+        path = write_campaign(tmp_path)
+        reports = composed.run_analyses(path, out_dir=tmp_path / "out", data_preparation_dir=tmp_path / "prep")
+        assert reports == {"demo": "report 1"}
+        assert seen == [
+            {
+                "path": path,
+                "out_dir": tmp_path / "out",
+                "data_preparation_dir": tmp_path / "prep",
+                "reference_plots": False,
+            }
+        ]
+
+    def test_several_analyses_run_into_a_folder_each(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen = self.calls(monkeypatch)
+        analyses = (
+            "analyses:\n  - {name: first, upgrade: TuneUp, subjects: [T01]}\n  - {name: second, upgrade: TuneUp}\n"
+        )
+        load_upgrades(tmp_path, analyses=analyses)
+        path = tmp_path / "campaign.yaml"
+        reports = composed.run_analyses(path, out_dir=tmp_path / "out")
+        assert list(reports) == ["first", "second"]
+        assert [(c["out_dir"], c["analysis"]) for c in seen] == [
+            (tmp_path / "out" / "first", "first"),
+            (tmp_path / "out" / "second", "second"),
+        ]

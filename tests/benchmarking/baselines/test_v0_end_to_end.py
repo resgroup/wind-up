@@ -1,7 +1,7 @@
 """End-to-end test: a real v0 run on a HoT-derived synthetic constant-Cp dataset.
 
 Downloads the Hill of Towie v2 SCADA (Zenodo) and ERA5 reanalysis (Open-Meteo), injects a
-known constant-Cp uplift, runs the full wind_up pre/post analysis through ``V0BinnedMethod``
+known constant-Cp uplift, runs the full wind_up pre/post analysis through ``v0_binned``
 behind the harness, and checks the recovered P50 lands near the injected truth. This is the
 sanity that the v0 stack (incl. the source-native -> wind-up-format on-ramp) composes end to end.
 
@@ -18,12 +18,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarking.baselines.hot_context import build_hot_v0_context
-from benchmarking.baselines.v0_binned import V0BinnedMethod
+from benchmarking.baselines.hot_context import build_hot_v0_context, hot_north_offsets, hot_reanalysis, hot_v0_method
 from benchmarking.harness import StudyConfig, score_study
 from benchmarking.harness.example_hot_study import OracleMethod
 from benchmarking.synthetic import ConstantCpChange
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_turbines, load_hot_scada
 
 
 @pytest.mark.slow
@@ -49,8 +48,11 @@ def test_v0_recovers_constant_cp_uplift(tmp_path) -> None:  # noqa: ANN001
 
     results = score_study(
         scada_df,
+        turbines=hot_turbines(study.turbine_subset),
+        reanalysis=hot_reanalysis(context),
+        north_offsets=hot_north_offsets(),
         profile=[ConstantCpChange(delta=0.05)],
-        methods=[V0BinnedMethod(context, scratch_dir=tmp_path), OracleMethod(scada_df)],
+        methods=[hot_v0_method(out_dir=tmp_path), OracleMethod(scada_df)],
         study=study,
         profile_name="constant_cp",
     )

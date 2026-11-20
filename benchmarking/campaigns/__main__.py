@@ -6,6 +6,7 @@
 
 ``--out`` defaults to ``WIND_UP_BENCHMARKING_OUTPUT_DIR``/``<the campaign's name>``. Part A's tables
 and plots (steps 1 to 6) go to the run's ``A_data_preparation`` folder, or ``--data-preparation-dir``.
+A declaration with several analyses runs each in turn, into a folder per analysis under ``--out``.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import matplotlib as mpl
 
 mpl.use("Agg")  # headless: the report writes plots without a display
 
-from benchmarking.campaigns.composed import run_declaration
+from benchmarking.campaigns.composed import run_analyses
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -32,7 +33,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--data-preparation-dir",
         type=Path,
         default=None,
-        help="where part A's tables and plots go (default: the run's A_data_preparation)",
+        help="part A's folder for a one-analysis declaration (default: the run's A_data_preparation)",
     )
     run.add_argument(
         "--reference-plots",
@@ -43,10 +44,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run the declared campaign."""
+    """Run every analysis of the declared campaign."""
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    run_declaration(
+    run_analyses(
         args.declaration,
         out_dir=args.out,
         data_preparation_dir=args.data_preparation_dir,

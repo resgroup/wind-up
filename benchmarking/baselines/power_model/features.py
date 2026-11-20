@@ -21,8 +21,8 @@ import numpy as np
 import pandas as pd
 import pvlib
 
-from benchmarking.harness.operating_state import not_missing
-from benchmarking.harness.waking import WAKING_SCENARIO_COL
+from wind_up.operating_state import not_missing
+from wind_up.waking import WAKING_SCENARIO_COL
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

@@ -13,7 +13,7 @@ prepost-specific mechanism below exists to narrow that gap.
 
 ## The contrast
 
-`resolve_toggle` (`benchmarking/harness/toggle.py`) turns the turbine's timing into three row sets.
+`resolve_toggle` (`src/wind_up/toggle.py`) turns the turbine's timing into three row sets.
 For prepost, where the timing is a single timestamp:
 
 - **upgraded** — `index >= changeover`
@@ -49,7 +49,7 @@ is the one that keeps the nearest candidates eligible with the longest sides. A 
 span can be found for is reported under `unplanned` and left out of the farm headline. The rules,
 the ranking and the settings are in [how the analysis period is chosen](analysis-period-and-reference-selection.md).
 
-## Exclusions, label overrides and works windows
+## Exclusions, operating state overrides and works windows
 
 Three declarations change what a turbine's records are used for:
 
@@ -57,9 +57,9 @@ Three declarations change what a turbine's records are used for:
 |---|---|---|
 | the turbine's own **works window** | its data is never usable | no |
 | an **exclusion**, the turbine's own or farm-wide | its records are labelled missing: the data is wrong | yes |
-| a **label override**, the turbine's own or farm-wide | its records take the named state, with that state's validity; a missing record stays missing | yes |
+| a **operating state override**, the turbine's own or farm-wide | its records take the named state, with that state's validity; a missing record stays missing | yes |
 
-Step 2 applies the exclusions and label overrides to the operating-state labels (an exclusion wins over an
+Step 2 applies the exclusions and operating state overrides to the operating-state labels (an exclusion wins over an
 override); from then on every step reads the labels. Northing does not learn from an excluded record, the
 waking rules count the turbine as missing over it, and the uplift record selection drops it. They apply to
 a toggle campaign in the same way; the method describes them under

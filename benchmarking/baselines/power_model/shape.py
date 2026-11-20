@@ -92,7 +92,7 @@ def block_weights(
     """Return how many times each record is drawn in each resample, shape ``(n_resamples, len(times))``.
 
     Circular blocks of ``block_hours`` tile wall-clock time from ``period_start`` and wrap past
-    ``period_end``, as :func:`~benchmarking.baselines.block_bootstrap.bootstrap_energy_ratio` draws them:
+    ``period_end``, as :func:`~wind_up.block_bootstrap.bootstrap_energy_ratio` draws them:
     each resample draws ``ceil(period / block)`` block starts with replacement. ``None`` when the period
     holds fewer than two blocks, or there are no records.
     """

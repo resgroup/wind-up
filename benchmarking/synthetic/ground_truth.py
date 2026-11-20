@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
     import numpy.typing as npt
 
-    from benchmarking.synthetic.schema import ColumnSchema
+    from wind_up.schema import ColumnSchema
 
 
 # Aligned ERA5 100 m wind speed, when the original rows carry it.

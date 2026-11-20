@@ -7,9 +7,10 @@ import pandas as pd
 import pytest
 
 from benchmarking.campaigns.run import NoTurbineMeasuredError, estimate_campaign, visible_mask, visible_scada
-from benchmarking.harness import MethodInput, MethodOutput
-from benchmarking.harness.method import MethodConfigurationError
-from benchmarking.harness.operating_state import (
+from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from wind_up.analysis_warnings import AnalysisWarning
+from wind_up.method import MethodConfigurationError
+from wind_up.operating_state import (
     MISSING,
     STATE_COL,
     VALID_NORTHING_COL,
@@ -17,9 +18,9 @@ from benchmarking.harness.operating_state import (
     WAKING_MISSING,
     WAKING_STATE_COL,
 )
-from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
-from wind_up.analysis_warnings import AnalysisWarning
+from wind_up.subject import SubjectMeasurement, SubjectRecords
 
+from .per_subject import PerSubject
 from .test_data_screen import ANY_SHARE
 from .test_declaration import CHANGEOVER, PERIOD, campaign, scada
 
@@ -33,30 +34,30 @@ def spec_and_frame() -> tuple[object, pd.DataFrame]:
     return campaign().spec(), scada()
 
 
-class FixedMethod:
+class FixedMethod(PerSubject):
     """Reports a fixed uplift, so the core's aggregation is checked against a known number."""
 
     name = "fixed"
 
     def __init__(self, uplift: float = 0.02) -> None:
         self.uplift = uplift
-        self.seen: dict[str, MethodInput] = {}
+        self.seen: dict[str, SubjectRecords] = {}
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Record the input and report the fixed uplift."""
-        self.seen[mi.test_wtg] = mi
-        return MethodOutput(p50_overall=self.uplift)
+        self.seen[mi.subject] = mi
+        return SubjectMeasurement(p50_overall=self.uplift)
 
 
-class ReferenceReportingMethod:
+class ReferenceReportingMethod(PerSubject):
     """Reports a per-reference self-uplift frame, as the power model does by default."""
 
     name = "with_refs"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Report zero overall, and one self-uplift row per candidate reference."""
-        references = mi.context.candidate_references
-        return MethodOutput(
+        references = mi.candidate_references
+        return SubjectMeasurement(
             p50_overall=0.0,
             reference_uplifts=pd.DataFrame(
                 {
@@ -70,17 +71,17 @@ class ReferenceReportingMethod:
         )
 
 
-class ConditionalMethod:
+class ConditionalMethod(PerSubject):
     """Reports a per-condition breakdown on the power axis."""
 
     name = "conditional"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:  # noqa: ARG002
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:  # noqa: ARG002
         """Report zero overall plus two power-bin estimates."""
         frame = pd.DataFrame(
             {"condition": "power", "condition_bin": ["(0.0, 0.5]", "(0.5, 1.0]"], "p50_uplift": [0.01, 0.03]}
         )
-        return MethodOutput(p50_overall=0.02, p50_by_condition=frame)
+        return SubjectMeasurement(p50_overall=0.02, p50_by_condition=frame)
 
 
 def run(methods: list) -> object:
@@ -121,7 +122,7 @@ def test_each_method_is_estimated_once_per_upgraded_turbine() -> None:
 def test_methods_see_only_the_analysis_period_and_the_usable_turbines() -> None:
     method = FixedMethod()
     run([method])
-    frame = method.seen["T1"].scada_df
+    frame = method.seen["T1"].records
     assert len(frame) == EXPECTED_ROWS
     assert sorted(frame[HOT_COLUMNS.turbine].unique()) == ["T1", "T2", "T3", "T4", "T5"]
     assert frame.index.min() >= PERIOD[0]
@@ -157,11 +158,11 @@ class TestCombinedReferenceUplift:
         assert row["reference_uplift_spread"] == pytest.approx(0.001)
 
     def test_a_screened_reference_counts_before_the_screen_only(self) -> None:
-        class Screening(ReferenceReportingMethod):
+        class Screening(ReferenceReportingMethod, PerSubject):
             name = "screening"
 
-            def estimate(self, mi: MethodInput) -> MethodOutput:
-                out = super().estimate(mi)
+            def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
+                out = super().measure(mi)
                 refs = out.reference_uplifts
                 refs.loc[refs["turbine"] == "T4", ["uplift", "screened"]] = [0.5, True]
                 return out
@@ -221,12 +222,12 @@ class FailingMethod(FixedMethod):
         super().__init__()
         self.failing = failing
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Raise for a failing turbine; report the fixed uplift otherwise."""
-        if mi.test_wtg in self.failing:
+        if mi.subject in self.failing:
             msg = "too few usable hours"
             raise ValueError(msg)
-        return super().estimate(mi)
+        return super().measure(mi)
 
 
 def test_a_turbine_that_cannot_be_measured_is_reported_and_the_campaign_continues() -> None:
@@ -279,15 +280,15 @@ class TestAPlannedCampaign:
         _, report, method = self.planned()
         for wtg in ("T0", "T6"):
             plan, seen = report.plans[wtg], method.seen[wtg]
-            assert seen.scada_df.index.min() >= plan.start
-            assert seen.scada_df.index.max() < plan.end
-            assert seen.context.candidate_references == list(plan.power_references)
-            assert seen.context.timing == plan.works[1]
+            assert seen.records.index.min() >= plan.start
+            assert seen.records.index.max() < plan.end
+            assert seen.candidate_references == list(plan.power_references)
+            assert seen.timing == plan.works[1]
 
     def test_excluded_rows_reach_the_method_labelled_missing_and_northed(self) -> None:
         _, _, method = self.planned()
         seen = method.seen["T0"]
-        rows = seen.scada_df[seen.scada_df[HOT_COLUMNS.turbine] == "T4"]
+        rows = seen.records[seen.records[HOT_COLUMNS.turbine] == "T4"]
         inside = (rows.index >= pd.Timestamp("2019-02-01", tz="UTC")) & (
             rows.index < pd.Timestamp("2019-02-05", tz="UTC")
         )
@@ -341,7 +342,7 @@ class TestTheDataScreen:
 
     def test_a_dropped_candidate_is_not_a_power_reference(self) -> None:
         _, method = self.screened()
-        context = method.seen["T0"].context
+        context = method.seen["T0"]
         assert context.candidate_references == ["T1", "T3", "T4", "T5"]
         assert "T2" in context.wake_contributors
         assert context.reserve_references == []
@@ -370,7 +371,7 @@ class TestTheDataScreen:
             plan_settings=ANY_SHARE,
             data_screen=None,
         )
-        assert method.seen["T0"].context.candidate_references == ["T1", "T2", "T3", "T4"]
+        assert method.seen["T0"].candidate_references == ["T1", "T2", "T3", "T4"]
         assert report.reference_data.empty
 
 
@@ -411,29 +412,29 @@ class TestAnUnplannableTurbine:
         assert run([FixedMethod()]).unplanned == {}
 
 
-class WarningMethod(FixedMethod):
+class WarningMethod(FixedMethod, PerSubject):
     """Reports a fixed uplift with a high-severity analysis warning against the test turbine."""
 
     name = "warning"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Report the fixed uplift and one warning of a training period under the floor."""
-        self.seen[mi.test_wtg] = mi
-        warning = AnalysisWarning(severity="high", step=12, turbine=mi.test_wtg, message="trains on 6.0 months")
-        return MethodOutput(p50_overall=self.uplift, warnings=(warning,))
+        self.seen[mi.subject] = mi
+        warning = AnalysisWarning(severity="high", step=12, turbine=mi.subject, message="trains on 6.0 months")
+        return SubjectMeasurement(p50_overall=self.uplift, warnings=(warning,))
 
 
-class ScreeningMethod(ReferenceReportingMethod):
+class ScreeningMethod(ReferenceReportingMethod, PerSubject):
     """Reports its references with the first one ruled out by the reference screen."""
 
     name = "screening"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Report zero overall, the first candidate reference screened out."""
-        output = super().estimate(mi)
+        output = super().measure(mi)
         assert output.reference_uplifts is not None
         screened = [i == 0 for i in range(len(output.reference_uplifts))]
-        return MethodOutput(p50_overall=0.0, reference_uplifts=output.reference_uplifts.assign(screened=screened))
+        return SubjectMeasurement(p50_overall=0.0, reference_uplifts=output.reference_uplifts.assign(screened=screened))
 
 
 class TestTheWarningsRegister:
@@ -486,14 +487,14 @@ class TestTheWarningsRegister:
         assert severities == sorted(severities, key=["high", "medium", "low"].index)
 
 
-class MisconfiguredMethod(FixedMethod):
+class MisconfiguredMethod(FixedMethod, PerSubject):
     """Refuses every turbine the way the power model refuses a bad option combination."""
 
     name = "fixed"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Raise the method's configuration error."""
-        msg = f"{mi.test_wtg}: headline_estimator='reference_corrected' needs report_reference_uplifts=True"
+        msg = f"{mi.subject}: headline_estimator='reference_corrected' needs report_reference_uplifts=True"
         raise MethodConfigurationError(msg)
 
 

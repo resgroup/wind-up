@@ -14,7 +14,6 @@ import pandas as pd
 import pytest
 
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
-from benchmarking.harness.method import MethodInput
 from benchmarking.synthetic import (
     HOT_COLUMNS,
     ToggleSchedule,
@@ -29,7 +28,9 @@ from benchmarking.synthetic import (
 )
 from benchmarking.synthetic.cp_core import CpCore
 from benchmarking.synthetic.upgrades import UpgradeEffect
+from tests.wind_up.record_states import counter_states
 from wind_up.geodesy import distance_and_bearing
+from wind_up.subject import SubjectRecords
 from wind_up_v0.constants import TIMESTAMP_COL
 
 if TYPE_CHECKING:
@@ -503,8 +504,14 @@ def test_end_to_end_ground_truth_naive_and_plot(tmp_path: Path) -> None:
     ref_orig = dataset.original_df[dataset.original_df[HOT_COLUMNS.turbine] == REF][HOT_COLUMNS.active_power]
     assert np.allclose(ref_syn.to_numpy(), ref_orig.to_numpy())
 
-    result = NaiveRatioMethod(columns=HOT_COLUMNS).estimate(
-        MethodInput(scada_df=dataset.synthetic_df, test_wtg=DOWN, upgrade_timing=schedule)
+    result = NaiveRatioMethod().measure(
+        SubjectRecords.from_frame(
+            counter_states(dataset.synthetic_df, columns=HOT_COLUMNS),
+            subject=DOWN,
+            timing=schedule,
+            turbine_col=HOT_COLUMNS.turbine,
+        ),
+        columns=HOT_COLUMNS,
     )
     assert np.isfinite(result.p50_overall)
 

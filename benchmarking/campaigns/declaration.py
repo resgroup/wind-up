@@ -28,7 +28,7 @@ Window = tuple[pd.Timestamp, pd.Timestamp]
 # (turbine, start, end), end exclusive; turbine None is farm-wide.
 Exclusion = tuple[str | None, pd.Timestamp, pd.Timestamp]
 # (turbine, start, end, state), end exclusive; turbine None is farm-wide.
-LabelOverride = tuple[str | None, pd.Timestamp, pd.Timestamp, str]
+StateOverride = tuple[str | None, pd.Timestamp, pd.Timestamp, str]
 
 
 def in_windows(index: pd.DatetimeIndex, windows: Iterable[Window]) -> npt.NDArray[np.bool_]:
@@ -98,7 +98,7 @@ class CampaignSpec:
     :param works: works windows per turbine, any turbine, analysed or not
     :param exclusions: ``(turbine, start, end)`` periods whose data is wrong; step 2 labels their records
         missing. Turbine ``None`` is farm-wide.
-    :param label_overrides: ``(turbine, start, end, state)`` periods whose records step 2 labels ``state``;
+    :param operating_state_overrides: ``(turbine, start, end, state)`` periods whose records step 2 labels ``state``;
         turbine ``None`` is farm-wide. An exclusion wins over an override.
     :param references_declared: ``candidate_references`` was declared rather than defaulted, so a
         declared span may force them in as power references
@@ -106,6 +106,7 @@ class CampaignSpec:
         reaches; a record with an upgraded turbine upwind of a turbine within it is dropped. 0 leaves
         the wakes as they were. The reach of every works window without its own.
     :param works_reach_d: per turbine, the works windows with a reach of their own
+    :param settling_time: toggle only: records starting within this long of a change are in neither state
     """
 
     upgraded_turbines: list[str]
@@ -119,16 +120,20 @@ class CampaignSpec:
     turbine_col: str = HOT_COLUMNS.turbine
     works: dict[str, list[Window]] = field(default_factory=dict)
     exclusions: list[Exclusion] = field(default_factory=list)
-    label_overrides: list[LabelOverride] = field(default_factory=list)
+    operating_state_overrides: list[StateOverride] = field(default_factory=list)
     references_declared: bool = False
     wake_reach_d: float = MAX_REACH_D
     works_reach_d: dict[str, dict[Window, float]] = field(default_factory=dict)
+    settling_time: pd.Timedelta = field(default_factory=lambda: pd.Timedelta(0))
 
     def __post_init__(self) -> None:
         """Raise when the timing does not give every upgraded turbine one changeover."""
         if isinstance(self.upgrade_timing, ToggleSchedule) and not isinstance(self.analysis_period, tuple):
             msg = "a toggle campaign needs one declared analysis_period (start, end)"
             raise ValueError(msg)  # noqa: TRY004 - a missing declaration, not a wrong argument type
+        if self.settling_time > pd.Timedelta(0) and not isinstance(self.upgrade_timing, ToggleSchedule):
+            msg = "a settling time is for a toggle campaign; a prepost campaign's changeover is its works window"
+            raise ValueError(msg)
         if self.upgrade_timing is None:
             wrong = sorted(t for t in self.upgraded_turbines if len(self.works.get(t, [])) != 1)
             if wrong:
@@ -209,7 +214,7 @@ class CampaignSpec:
     def usable_mask(self, turbine: str, index: pd.DatetimeIndex) -> npt.NDArray[np.bool_]:
         """Boolean mask over ``index`` of the records outside ``turbine``'s own works windows.
 
-        Exclusions and label overrides are not here: step 2 writes them into the operating-state labels.
+        Exclusions and operating state overrides are not here: step 2 writes them into the operating-state labels.
         """
         return ~in_windows(index, self.works.get(turbine, []))
 
@@ -247,7 +252,7 @@ class SyntheticCampaign:
     :param seed: recorded in the generated dataset's run metadata
     :param works: works windows per turbine (see :class:`CampaignSpec`)
     :param exclusions: excluded periods (see :class:`CampaignSpec`)
-    :param label_overrides: periods labelled a declared state (see :class:`CampaignSpec`)
+    :param operating_state_overrides: periods labelled a declared state (see :class:`CampaignSpec`)
     :param other_upgraded: turbines the upgrades are injected into but that are not analysed, each
         changed at the end of its works window, or at the shared changeover
     :param wake_reach_d: the declared reach of the upgrade's wake change (see :class:`CampaignSpec`)
@@ -267,7 +272,7 @@ class SyntheticCampaign:
     seed: int = 0
     works: dict[str, list[Window]] = field(default_factory=dict)
     exclusions: list[Exclusion] = field(default_factory=list)
-    label_overrides: list[LabelOverride] = field(default_factory=list)
+    operating_state_overrides: list[StateOverride] = field(default_factory=list)
     other_upgraded: list[str] = field(default_factory=list)
     wake_reach_d: float = MAX_REACH_D
 
@@ -293,7 +298,7 @@ class SyntheticCampaign:
             turbine_col=self.columns.turbine,
             works={t: list(w) for t, w in self.works.items()},
             exclusions=list(self.exclusions),
-            label_overrides=list(self.label_overrides),
+            operating_state_overrides=list(self.operating_state_overrides),
             wake_reach_d=self.wake_reach_d,
         )
 

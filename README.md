@@ -34,8 +34,7 @@ uplift assessments:
 - writes result tables and diagnostic plots for review
 
 The public examples cover several realistic analysis shapes, including
-SMARTEOLE toggle data, Kelmarsh turbine data, and WeDoWind challenge-style
-pre/post assessments.
+SMARTEOLE toggle data and WeDoWind challenge-style pre/post assessments.
 
 Further example useage can be seen in the [Hill of Towie open analysis repo](https://github.com/resgroup/hill-of-towie-open-source-analysis).
 
@@ -93,9 +92,7 @@ The fastest way to understand the expected data model and analysis flow is to
 start from the examples:
 
 - [`examples/smarteole_example.ipynb`](examples/smarteole_example.ipynb) -
-  a notebook walkthrough and the best place to start
-- [`examples/kelmarsh_kaggle.py`](examples/kelmarsh_kaggle.py) -
-  a script-oriented pre/post example using Kelmarsh data
+  a notebook walkthrough of the v1 interface (facts, analyses, methods) and the best place to start
 - [`examples/wedowind_example.py`](examples/wedowind_example.py) -
   WeDoWind pitch-angle and vortex-generator analyses
 

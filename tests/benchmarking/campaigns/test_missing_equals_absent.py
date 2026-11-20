@@ -25,10 +25,10 @@ from benchmarking.campaigns.loader import load_declaration, operating_state_conf
 from benchmarking.campaigns.plans import plans_for
 from benchmarking.campaigns.preparation import prepare_data
 from benchmarking.campaigns.real import HOT_OPERATING_STATE, HOT_STATE_COL, label_hot_site_states
-from benchmarking.harness.operating_state import MISSING, STATE_COL, OperatingStateConfig, label_operating_states
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COORDINATES, HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M
 from wind_up.analysis_period import MONTH, PlanSettings
+from wind_up.operating_state import MISSING, STATE_COL, OperatingStateConfig, label_operating_states
 
 from .test_declaration_end_to_end import ERA5_COLUMNS, ERA5_PATH, PA_PER_HPA, RATED_KW, _era5, _scada, _write_campaign
 from .test_operating_states_real_data import _fixture_available

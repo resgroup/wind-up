@@ -23,7 +23,6 @@ import pandas as pd
 from benchmarking.campaigns.loader import read_works
 from benchmarking.campaigns.plans import uplift_validity
 from benchmarking.campaigns.real import label_hot_operating_states
-from benchmarking.harness.operating_state import fill_grid
 from benchmarking.synthetic import HOT_COLUMNS
 from benchmarking.synthetic.sources.hill_of_towie import (
     ensure_hot_data_files,
@@ -34,6 +33,7 @@ from benchmarking.synthetic.sources.hill_of_towie import (
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, plan_analysis, valid_extents
 from wind_up.analysis_period_plots import plot_analysis_timeline
 from wind_up.layout import Layout
+from wind_up.operating_state import fill_grid
 
 logger = logging.getLogger("analysis_period_doc_plot")
 

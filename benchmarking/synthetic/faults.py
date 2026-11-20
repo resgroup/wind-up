@@ -26,7 +26,7 @@ from benchmarking.synthetic.upgrades import ConstantCpChange, apply_upgrades
 
 if TYPE_CHECKING:
     from benchmarking.synthetic.cp_core import CpCore
-    from benchmarking.synthetic.schema import ColumnSchema
+    from wind_up.schema import ColumnSchema
 
 
 @runtime_checkable
@@ -58,7 +58,7 @@ class NorthingStep:
     :param turbine: the turbine whose direction reading steps
     :param at: when the step happens; rows from here on carry the offset
     :param offset_deg: degrees added to the reading (wrapped to 0-360)
-    :param role: the :class:`~benchmarking.synthetic.schema.ColumnSchema` direction role to
+    :param role: the :class:`~wind_up.schema.ColumnSchema` direction role to
         corrupt; the nacelle position by default
     """
 
@@ -156,7 +156,7 @@ class SensorGainStep:
     :param turbine: the turbine whose readings step
     :param at: when the step happens; rows from here on carry the gain
     :param gain: the multiplier applied to each named channel (1.5 reads 50% high, 0.5 half)
-    :param roles: the :class:`~benchmarking.synthetic.schema.ColumnSchema` roles to scale; the
+    :param roles: the :class:`~wind_up.schema.ColumnSchema` roles to scale; the
         anemometer channels by default
     """
 
@@ -198,7 +198,7 @@ class SensorGainDrift:
 
     :param turbine: the turbine whose readings drift
     :param gain: the multiplier reached at the last timestamp of the record
-    :param roles: the :class:`~benchmarking.synthetic.schema.ColumnSchema` roles to scale; the
+    :param roles: the :class:`~wind_up.schema.ColumnSchema` roles to scale; the
         anemometer channels by default
     """
 

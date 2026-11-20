@@ -11,9 +11,9 @@ from benchmarking.baselines.power_model.method import CORRECTION_COLUMNS, HOLDOU
 from benchmarking.campaigns.data_screen import DEFAULT_DATA_SCREEN, DataScreenSettings
 from benchmarking.campaigns.run import CampaignReport, estimate_campaign, visible_mask
 from benchmarking.harness import CampaignWindow, Replicate, score_output, truth_mask
-from benchmarking.harness.northing import DEFAULT_NORTHING_ROLES
 from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.northing import DEFAULT_NORTHING
+from wind_up.northing_step import DEFAULT_NORTHING_ROLES
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -22,11 +22,13 @@ if TYPE_CHECKING:
     import numpy as np
 
     from benchmarking.campaigns.declaration import CampaignSpec
-    from benchmarking.harness import Method, MethodOutput
+    from benchmarking.harness import Method
     from benchmarking.synthetic import SyntheticDataset
     from wind_up import FarmUplift
     from wind_up.analysis_period import AnalysisPlan, PlanSettings
     from wind_up.northing import NorthingSettings
+    from wind_up.operating_state import OperatingStateConfig
+    from wind_up.subject import SubjectMeasurement
 
 
 # The farm table's columns, named here so a campaign with nothing to aggregate still returns a
@@ -54,7 +56,7 @@ class CampaignResult:
         ``n_guarded`` and the combined reference uplift before and after the screen
     :param farm_uplifts: each method's :class:`~wind_up.FarmUplift`, including per-turbine detail
     :param truth_farm_uplift: the exact pooled farm truth
-    :param outputs: each ``(method, turbine)``'s raw :class:`~benchmarking.harness.MethodOutput`
+    :param outputs: each ``(method, turbine)``'s raw :class:`~wind_up.subject.SubjectMeasurement`
     :param report: the truth-free :class:`~benchmarking.campaigns.run.CampaignReport` this run is
         built on -- the analyst-facing tables, carrying no truth
     """
@@ -64,7 +66,7 @@ class CampaignResult:
     farm: pd.DataFrame
     farm_uplifts: dict[str, FarmUplift]
     truth_farm_uplift: float
-    outputs: dict[tuple[str, str], MethodOutput]
+    outputs: dict[tuple[str, str], SubjectMeasurement]
     report: CampaignReport
 
     @property
@@ -90,6 +92,9 @@ class CampaignRunner:
     :param possible_changes: each turbine's indicators of an undeclared change, reported as warnings
         against the plans they fall inside
     :param data_screen: how each plan's power references are screened on their data; ``None`` skips it
+    :param era5_hourly_df: reanalysis at the farm's centroid, hourly or aligned to the records
+    :param operating_state: the site's operating states, which the dataset's labels came from; the
+        generic states alone when ``None``
     """
 
     def __init__(
@@ -106,6 +111,8 @@ class CampaignRunner:
         plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
         possible_changes: Mapping[str, Sequence[pd.Timestamp]] | None = None,
         data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
+        era5_hourly_df: pd.DataFrame | None = None,
+        operating_state: OperatingStateConfig | None = None,
     ) -> None:
         """Store the campaign, its data and the per-turbine method factory."""
         self._spec = spec
@@ -119,6 +126,8 @@ class CampaignRunner:
         self._plan_settings = plan_settings
         self._possible_changes = possible_changes
         self._data_screen = data_screen
+        self._era5_hourly_df = era5_hourly_df
+        self._operating_state = operating_state
 
     def run(self) -> CampaignResult:
         """Estimate the campaign on the truth-free core, then score what it produced against truth."""
@@ -136,6 +145,8 @@ class CampaignRunner:
             plan_settings=self._plan_settings,
             possible_changes=self._possible_changes,
             data_screen=self._data_screen,
+            era5_hourly_df=self._era5_hourly_df,
+            operating_state=self._operating_state,
         )
         visible = self._visible_dataset(report)
 

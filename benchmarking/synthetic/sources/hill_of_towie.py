@@ -34,8 +34,8 @@ from zipfile import ZipFile
 import pandas as pd
 
 from benchmarking import env
-from benchmarking.synthetic.schema import ColumnSchema
 from wind_up.layout import Layout
+from wind_up.schema import ColumnSchema
 from wind_up_v0.constants import DataColumns
 
 if TYPE_CHECKING:
@@ -706,7 +706,7 @@ def _load_unpacked_hot_10min(
                 logger.info("Writing HoT cache: %s", paths[serial])
                 _write_atomically(paths[serial], serial_df.to_parquet)
         per_turbine = [pd.read_parquet(paths[serial]) for serial in serial_numbers]
-        year_frames.append(pd.concat(per_turbine, axis=1))
+        year_frames.append(pd.concat(per_turbine, axis=1, sort=True))
     return pd.concat(year_frames, verify_integrity=True, sort=True)
 
 
@@ -867,6 +867,23 @@ def hot_coords(turbines: Sequence[str]) -> dict[str, tuple[float, float]]:
         msg = f"{unknown} are not Hill of Towie turbines; have {sorted(HOT_COORDINATES)}"
         raise ValueError(msg)
     return {name: HOT_COORDINATES[name] for name in turbines}
+
+
+def hot_turbines(turbines: Sequence[str], *, rotor_diameters: bool = True) -> pd.DataFrame:
+    """Return the turbine table of ``turbines`` as :class:`~wind_up.facts.WindFarmFacts` takes it.
+
+    :param rotor_diameters: include each rotor's diameter, :data:`HOT_ROTOR_DIAMETER_M`
+    """
+    coords = hot_coords(turbines)
+    table = pd.DataFrame(
+        {
+            "name": list(coords),
+            "latitude": [lat for lat, _ in coords.values()],
+            "longitude": [lon for _, lon in coords.values()],
+            "rated_power_kw": HOT_RATED_POWER_KW,
+        }
+    )
+    return table.assign(rotor_diameter_m=HOT_ROTOR_DIAMETER_M) if rotor_diameters else table
 
 
 def hot_layout(metadata_df: pd.DataFrame) -> Layout:

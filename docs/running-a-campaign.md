@@ -63,7 +63,7 @@ data:
   scada: data/scada.parquet
   schema: hill_of_towie
   turbines: data/turbines.csv
-  works: data/works.csv          # Turbine, First date of works, Last date of works
+  installation_windows: data/works.csv   # Turbine, First date of works, Last date of works
 
 upgrade:
   expected_uplift: 0.05
@@ -74,13 +74,13 @@ timing:
 exclusions:                      # optional; end exclusive; the data is wrong
   - {turbine: T04, start: 2021-02-01T00:00:00Z, end: 2021-02-05T00:00:00Z}
 
-label_overrides:                 # optional; end exclusive; the data is right, the labels miss the state
+operating_state_overrides:       # optional; end exclusive; the data is right, the labels miss the state
   - {turbine: T07, start: 2021-05-10T08:00:00Z, end: 2021-05-12T16:00:00Z, state: partial downtime}
 
 # analysis_period omitted: wind-up chooses a span for each upgraded turbine
 ```
 
-- **The works table** has a `Turbine` column and the first columns whose names start `First date`
+- **The installation windows table** (the works table) has a `Turbine` column and the first columns whose names start `First date`
   and `Last date` (the Zenodo Hill of Towie AeroUp table works as it is). A date alone is a whole day:
   a window covers the first day through the end of the last. A date with a time of day
   (`2024-03-14T07:00:00Z`; UTC when no zone is given) is that instant, the last one exclusive, for works
@@ -93,10 +93,10 @@ label_overrides:                 # optional; end exclusive; the data is right, t
 - **Exclusions** are periods whose data is wrong (a logger fault, frozen signals, a clock jump), for one
   turbine or `ALL`. Their records are labelled missing, as if never provided: no step uses them, and the
   turbine counts as missing in the waking rules.
-- **Label overrides** are periods whose data is right but whose operating state the labels miss (a
+- **Operating state overrides** are periods whose data is right but whose operating state the labels miss (a
   controller test, a curtailment), for one turbine or `ALL`. Their records take `state`, which must be a
   generic state (`missing`, `full downtime`, `partial downtime`, `normal operation`) or a label declared
-  under `operating_state.labels`, with its northing, waking and uplift validity. A record the labels
+  under `operating_state.site_states`, with its northing, waking and uplift validity. A record the labels
   give as missing stays missing. Two overrides of one turbine may not overlap; an exclusion may overlap an
   override, and wins.
 - **The span.** For each upgraded turbine wind-up picks the start and end of its analysis, and its
@@ -122,6 +122,65 @@ label_overrides:                 # optional; end exclusive; the data is right, t
 - **A shared `timing.changeover`** is every upgraded turbine's changeover. With a works table beside
   it, the table holds every turbine's other works, the upgraded turbines' included; no works window
   of an upgraded turbine may cover the changeover.
+
+### Several upgrades, and several analyses
+
+A turbine that has had more than one upgrade, or a campaign asking more than one question, lists
+its `upgrades` and its `analyses` instead of declaring `turbines.upgraded`, `turbines.references`,
+`timing`, `upgrade`, `analysis_period` and `data.installation_windows`, which are then refused. The
+single-upgrade form above is shorthand for one upgrade and one analysis. Hill of Towie's TuneUp,
+made on nine turbines in 2024 after the AeroUp on every turbine over its own works:
+
+```yaml
+turbines:
+  rated_power_kw: 2300.0         # excluded is still declared here; upgraded and references are not
+
+upgrades:
+  - name: AeroUp
+    installation_windows: data/works.csv   # its turbines are those the table names
+    expected_uplift: 0.05
+  - name: TuneUp
+    turbines: [T02, T03, T06, T08, T09, T13, T16, T20, T21]
+    timing: {mode: prepost, changeover: 2024-03-14T18:00:00Z}
+    installation_windows:        # a table file, or windows written out; end exclusive
+      - {turbine: T02, start: 2024-03-14T07:00:00Z, end: 2024-03-14T18:00:00Z}
+      # ... one per turbine
+    expected_uplift: 0.01
+
+analyses:
+  - name: TuneUp                 # names the analysis's output folder when there are several
+    upgrade: TuneUp
+    # subjects: [T13]            # optional; the default is the upgrade's turbines
+    # references: [T04, T05]     # optional; the default is every turbine neither measured nor excluded
+    # period: {start: ..., end: ...}   # optional, as analysis_period; per subject too
+    # report: [aep, campaign]    # optional; the default is both
+```
+
+- **An upgrade** has a `name`, its `turbines` (or installation windows naming them), and a `timing`
+  (`prepost` with a `changeover`, or `toggle` as below), installation windows, or both. With no timing,
+  each turbine's changeover is the end of its one window. `expected_uplift` or `wake_reach_d` sets its
+  reach, at most one of them; neither gives 20 D. A toggle upgrade may declare a `settling_time`
+  (e.g. `10min`): records starting within it after each change are in neither state.
+- **Every upgrade's installation windows are works** for every analysis, each at its own upgrade's
+  reach, so a turbine upgraded long before an analysis's span serves as its reference. An analysis whose
+  upgrade has no shared changeover cannot measure a turbine that has other installation windows too:
+  give that upgrade a `timing.changeover`.
+- **Each analysis runs on its own**, into `<out>/<analysis name>/` when there are several, each with its
+  own data preparation.
+
+**`labels`** are the analyst's own labels, each a true-or-false column of the SCADA:
+`{name: curtailed, column: curtailed, withholds: [uplift]}`. A record holding one is not valid for the
+uses it `withholds` (`uplift`, `northing`, both, or none). An analysis may name labels in
+`include_labels` and `exclude_labels`; the composed run does not read those and refuses to run such an
+analysis.
+
+**`non_turbine_measurements`** are masts and LiDARs: `{name, latitude, longitude, records, columns}`,
+where `records` is a parquet file on a time index and `columns` maps a role to its column. They are
+handed to the methods, which say whether they use them; the composed run does not.
+
+**Renamed keys.** `label_overrides` is now `operating_state_overrides`, `data.works` is
+`data.installation_windows`, and under `operating_state`, `label_column` and `labels` are
+`site_state_column` and `site_states`. The old names are still read; a declaration may not use both.
 
 ### The fields that need a decision
 
@@ -163,7 +222,8 @@ now refused). The reach also ranks the power references (see the span, above).
 - `prepost` — the change was made once, at `changeover`, and stayed. Everything before is
   baseline, everything after is treated.
 - `toggle` — the change was switched on and off in alternating blocks, so both states are sampled
-  in the same weather. Needs `start` and `period` (a full on/off cycle, e.g. `100min`).
+  in the same weather. Needs `start` and `period` (a full on/off cycle, e.g. `100min`);
+  `upgrade.settling_time` is optional.
 
 **`analysis_period`.** `end` is **exclusive**. For `prepost`, longer is better on both sides: the
 method ([step 7](v1/method.md#7-choose-the-before-and-after-periods)) seeks up to 24 months before and

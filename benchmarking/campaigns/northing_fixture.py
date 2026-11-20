@@ -37,7 +37,6 @@ from benchmarking.baselines.hot_context import build_hot_v0_context
 from benchmarking.campaigns.declaration import SyntheticCampaign, layout_from_coords
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.runner import CampaignRunner
-from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import (
     HOT_RATED_POWER_KW,
     HOT_ROTOR_DIAMETER_M,
@@ -46,6 +45,7 @@ from benchmarking.synthetic import (
     WindSpeedCpChange,
 )
 from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
+from wind_up.northing_step import era5_direction
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -157,10 +157,10 @@ def run_cell(
         build_methods=lambda wtg: carried_forward_methods(
             spec,
             out_dir=out_dir / wtg,
-            era5_hourly_df=era5_df if include_power_model else None,
             include_power_model=include_power_model,
         ),
         era5_wd=era5_direction(era5_df, index),
+        era5_hourly_df=era5_df if include_power_model else None,
     )
     return runner.run()
 

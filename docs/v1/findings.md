@@ -1691,7 +1691,7 @@ and a proper shear feature are later steps.
 ## F5 — power_model's condition-dependent uplift error is the counterfactual model's own conditional bias (shrinkage), not a §3 post-treatment-conditioning artefact
 
 *2026-07-01 — first result off the conditional-uplift instrument (per-(ws, TI)-bin scoring; see
-`benchmarking/harness/conditions.py`, `scoring.py`, `PowerModelMethod._conditional_uplift`).
+`src/wind_up/conditions.py`, `scoring.py`, `PowerModelMethod._conditional_uplift`).
 Diagnosed with a new per-segment residual diagnostic
 `benchmarking/baselines/power_model/diagnostics.py::_plot_residual_binned` (writes
 `residual_binned.png` and `residual_binned_pct.png` under `5_uplift_modelling/`), regenerated via

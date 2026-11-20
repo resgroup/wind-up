@@ -34,11 +34,11 @@ from benchmarking.campaigns.declaration import SyntheticCampaign, layout_from_co
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.report import write_campaign_report
 from benchmarking.campaigns.runner import CampaignRunner
-from benchmarking.diagnostics.context import era5_source_label
-from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_LAT, HOT_LON, HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M, ToggleSchedule
 from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
 from wind_up.campaign_design import design_campaign
+from wind_up.diagnostics.context import era5_source_label
+from wind_up.northing_step import era5_direction
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -302,12 +302,12 @@ def run_placebo(
         build_methods=lambda wtg: carried_forward_methods(
             spec,
             out_dir=run_dir / wtg,
-            era5_hourly_df=era5 if include_power_model else None,
             include_power_model=include_power_model,
             screen_cache=screen_cache,
             era5_label=era5_source_label(HOT_LAT, HOT_LON),
         ),
         era5_wd=era5_direction(era5, index),
+        era5_hourly_df=era5 if include_power_model else None,
         northing_out_dir=run_dir / "northing",
     )
     result = runner.run()

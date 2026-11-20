@@ -39,12 +39,6 @@ from benchmarking.campaigns.real import (
     label_hot_operating_states,
 )
 from benchmarking.harness.label_checks import PARKED_AS_NORMAL, WARN_HOURS, label_checks
-from benchmarking.harness.operating_state import (
-    NORMAL_OPERATION,
-    STATE_COL,
-    OperatingStateConfig,
-    label_operating_states,
-)
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_BM_START,
     HOT_COLUMNS,
@@ -53,6 +47,12 @@ from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_RATED_POWER_KW,
     HOT_STOP_SETPOINT_KW,
     HOT_TURBINE_COL,
+)
+from wind_up.operating_state import (
+    NORMAL_OPERATION,
+    STATE_COL,
+    OperatingStateConfig,
+    label_operating_states,
 )
 
 TIMEBASE = pd.Timedelta(minutes=10)

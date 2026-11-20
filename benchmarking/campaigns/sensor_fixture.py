@@ -46,9 +46,9 @@ from benchmarking.campaigns.placebo import (
     placebo_campaign,
 )
 from benchmarking.campaigns.runner import CampaignRunner
-from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_COLUMNS, SensorGainDrift, SensorGainStep
 from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
+from wind_up.northing_step import era5_direction
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -73,7 +73,7 @@ FAULT_TARGETS = (FIXTURE_TEST_WTG, FAULT_REFERENCE)
 GAINS = (1.5, 0.5)
 
 # The reference anemometry the exposed arm carries as features, which the default never does.
-EXPOSED_STAT_COLS = (HOT_COLUMNS.wind_speed, HOT_COLUMNS.wind_speed_sd)
+EXPOSED_STAT_COLS = (HOT_COLUMNS.name_of("wind_speed"), HOT_COLUMNS.name_of("wind_speed_sd"))
 
 # Movement in the headline at or above this many percentage points counts as material.
 MATERIAL_PP = 0.25
@@ -179,11 +179,11 @@ def run_cell(
         build_methods=lambda wtg: carried_forward_methods(
             spec,
             out_dir=out_dir / wtg,
-            era5_hourly_df=era5_df if include_power_model else None,
             include_power_model=include_power_model,
             reference_stat_cols=EXPOSED_STAT_COLS if arm.exposed else (),
         ),
         era5_wd=era5_direction(era5_df, index),
+        era5_hourly_df=era5_df if include_power_model else None,
     )
     return runner.run()
 

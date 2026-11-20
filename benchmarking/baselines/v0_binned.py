@@ -1,250 +1,630 @@
-"""The v0 binned power-curve method behind the harness ``Method`` seam.
+"""v0's binned power curve method behind the v1 interface.
 
-``V0BinnedMethod`` adapts a thin harness ``MethodInput`` to a full, faithful wind_up
-pre/post power-performance run and returns its P50 uplift. For each campaign it renders a
-per-campaign YAML and loads it with :meth:`WindUpConfig.from_yaml` (the standard way v0
-assessments are configured), then runs the real ``run_wind_up_analysis`` + ``combine_results``.
+``V0BinnedMethod`` answers each analysis with one v0 run (``run_wind_up_analysis``) over the
+analysis's subjects against its references, then combines each subject's test-reference results
+with v0's ``combine_results``. The run is configured from three places:
 
-Configuration is deliberately faithful: plots off, bootstrap untouched (its uncertainty is
-required by ``combine_results``), ``ignore_turbine_anemometer_data`` / ``clip_rated_power_pp``
-at v0 defaults. Two choices are specific to this benchmarking exercise:
+* the facts: the turbines and their positions, the non-turbine measurements, the reanalysis
+  nodes, the north offsets, the exclusions and installation windows, the upgrade's timing and
+  settling time, and the timebase;
+* the analysis: its subjects and references, its period and which uplift it reports (an AEP
+  uplift turns on v0's long-term distribution, a campaign uplift turns it off; both is two runs);
+* the method's own ``options``, any field of v0's ``WindUpConfig`` the facts and the analysis do
+  not set, and ``turbine_type``, the fields of v0's ``TurbineType`` beyond rotor diameter and
+  rated power.
 
-* ``use_lt_distribution: False`` — we study *campaign* uplift (the injected ground truth),
-  not long-term uplift.
-* ``combine_results(..., auto_choose_refs=False)`` — an analyst normally reviews/chooses refs.
-
-With ``years_offset_for_pre_period: 1`` and ``years_for_{lt_distribution,detrend}: 1``,
-``from_yaml`` derives a seasonally-matched pre period (the post window shifted back one year)
-and a one-year detrend window; the harness only provides ~12 months of pre data, so the pre
-and detrend windows are constrained accordingly — the campaign-length degradation the harness
-exists to measure.
-
-Both prepost and toggle inputs are supported. A ``ToggleSchedule`` selects wind_up's native
-toggle assessment: the config carries a ``toggle:`` block (``detrend_data_selection:
-use_toggle_off_data``, settling filter 0) instead of the prepost offset fields, and the on/off
-signal is supplied as a ``toggle_df`` built from the schedule (see ``_build_toggle_df``). For
-toggle, the power-performance split uses campaign data only (``analysis_first`` =
-``upgrade_first``), while pre-processing/detrend/long-term steps still use pre-campaign data.
+v0 keeps its own filters and waking rule and reads the records as measured. A record the facts
+withhold from the uplift by a label or an operating state override, or one an analysis's labels
+leave out of a subject, reaches v0 flagged in its ``exclude_row`` column, which v0 treats as it
+treats an excluded period.
 """
 
 from __future__ import annotations
 
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pandas as pd
 
-from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.toggle import build_toggle_df, is_toggle, toggle_upgrade_start
-from benchmarking.synthetic.sources.hill_of_towie import long_to_wind_up_format
-from wind_up_v0.combine_results import combine_results
+from wind_up.analysis import AEP, CAMPAIGN, NET, PER_TURBINE_COLUMNS, AnalysisOutput, combine_subjects
+from wind_up.analysis_warnings import AnalysisWarning
+from wind_up.labels import NEITHER, OFF, ON, UPLIFT
+from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL
+from wind_up.method import MethodConfigurationError
+from wind_up.subject import NOT_MEASURED
+from wind_up.toggle import ToggleSchedule, build_toggle_df
+from wind_up_v0.combine_results import _calculate_total_uplift_of_turbine_group, combine_results
+from wind_up_v0.constants import TIMESTAMP_COL, DataColumns
 from wind_up_v0.interface import AssessmentInputs
 from wind_up_v0.main_analysis import run_wind_up_analysis
-from wind_up_v0.models import PlotConfig, WindUpConfig
+from wind_up_v0.models import Asset, MastOrLidar, PlotConfig, PrePost, Turbine, TurbineType, WindUpConfig
+from wind_up_v0.reanalysis_data import MastOrLiDARDataset, ReanalysisDataset
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
-    from benchmarking.baselines.hot_context import HotV0Context
+    from wind_up.analysis import AnalysisSpec
+    from wind_up.facts import Upgrade, WindFarmFacts
+    from wind_up.schema import ColumnSchema
 
-_CAMPAIGN_YAML_TEMPLATE = """\
-assessment_name: {assessment_name}
-test_wtgs:
-{test_lines}
-ref_wtgs:
-{ref_lines}
-filter_all_test_wtgs_together: {filter_all}
-require_ref_wake_free: {require_ref_wake_free}
-upgrade_first_dt_utc_start: {upgrade}
-analysis_last_dt_utc_start: {analysis_last}
-years_offset_for_pre_period: 1
-years_for_lt_distribution: 1
-years_for_detrend: 1
-use_lt_distribution: false
-ws_bin_width: {ws_bin_width}
-reanalysis_method: {reanalysis_method}
-optimize_northing_corrections: false
-northing_corrections_utc: !include {northing_yaml}
-asset: !include {asset_yaml}
-"""
+# v0's configuration fields the facts and the analysis set.
+FACT_FIELDS = frozenset(
+    {
+        "assessment_name",
+        "timebase_s",
+        "out_dir",
+        "test_wtgs",
+        "ref_wtgs",
+        "non_wtg_ref_names",
+        "upgrade_first_dt_utc_start",
+        "analysis_last_dt_utc_start",
+        "asset",
+        "exclusion_periods_utc",
+        "northing_corrections_utc",
+        "use_lt_distribution",
+    }
+)
+# v0's toggle fields an option may set; the rest come from the facts.
+TOGGLE_OPTIONS = frozenset(
+    {"name", "detrend_data_selection", "pairing_filter_method", "pairing_filter_timedelta_seconds"}
+)
+# v0's turbine type fields the turbine table sets.
+TURBINE_TYPE_FACTS = frozenset({"rotor_diameter_m", "rated_power_kw"})
 
-# Toggle variant: wind_up's native toggle assessment. ``analysis_first`` is derived as the
-# toggle campaign start (``upgrade_first``), so the on/off power-performance split uses only
-# campaign data; long-term/detrend windows still reach back into pre-campaign data. The toggle
-# signal is supplied directly as a ``toggle_df`` (see ``_build_toggle_df``), so ``toggle_filename``
-# is a never-read placeholder. The settling filter is 0 because the synthetic toggle blocks are
-# short and have no real settling transient (the settling filter defaults to 0). The pairing filter
-# defaults off; the wake-steering driver turns it on for a realistic on/off-block pairing.
-_TOGGLE_YAML_TEMPLATE = """\
-assessment_name: {assessment_name}
-test_wtgs:
-{test_lines}
-ref_wtgs:
-{ref_lines}
-filter_all_test_wtgs_together: {filter_all}
-require_ref_wake_free: {require_ref_wake_free}
-upgrade_first_dt_utc_start: {upgrade}
-analysis_last_dt_utc_start: {analysis_last}
-years_for_lt_distribution: 1
-years_for_detrend: 1
-use_lt_distribution: false
-ws_bin_width: {ws_bin_width}
-reanalysis_method: {reanalysis_method}
-optimize_northing_corrections: false
-toggle:
-  toggle_file_per_turbine: false
-  toggle_filename: not_used.parquet
-  detrend_data_selection: use_toggle_off_data
-  pairing_filter_method: {pairing_filter_method}
-  pairing_filter_timedelta_seconds: {pairing_filter_timedelta_seconds}
-  toggle_change_settling_filter_seconds: {toggle_change_settling_filter_seconds}
-northing_corrections_utc: !include {northing_yaml}
-asset: !include {asset_yaml}
-"""
+# The column v0 reads to drop a record as it drops an excluded period.
+EXCLUDE_ROW_COL = "exclude_row"
 
+# A measurement's column roles v0 reads.
+WIND_SPEED_ROLE = "wind_speed"
+WIND_DIRECTION_ROLE = "wind_direction"
 
-def _subset_turbines(scada_df: pd.DataFrame, turbine_col: str) -> list[str]:
-    """Return the sorted unique turbine names present in ``scada_df``."""
-    return sorted(scada_df[turbine_col].unique().tolist())
+# v0's column for each role of the facts' column schema.
+V0_COLUMN_OF_ROLE = {
+    "active_power": DataColumns.active_power_mean,
+    "reactive_power": DataColumns.reactive_power_mean,
+    "wind_speed": DataColumns.wind_speed_mean,
+    "wind_speed_sd": DataColumns.wind_speed_sd,
+    "nacelle_position": DataColumns.yaw_angle_mean,
+    "pitch": DataColumns.pitch_angle_mean,
+    "gen_rpm": DataColumns.gen_rpm_mean,
+    "ambient_temp": DataColumns.ambient_temp,
+}
+
+# The step of the method each warning belongs to, for the warnings register.
+MEASURE_STEP = 10
+COMBINE_STEP = 16
+
+LT_WEEK_BEFORE_TOGGLE = pd.Timedelta(days=7)
+
+# v0's fields that have no default and are not facts.
+REQUIRED_OPTIONS = ("years_for_lt_distribution", "years_for_detrend", "ws_bin_width")
 
 
-def _extract_p50(tdf: pd.DataFrame, test_wtg: str) -> float:
-    """Return the combined P50 uplift fraction for the (non-reference) test turbine."""
-    row = tdf.loc[(tdf["test_wtg"] == test_wtg) & (~tdf["is_ref"])]
-    if len(row) != 1:
-        msg = f"expected exactly one non-ref combined result row for test_wtg {test_wtg!r}, found {len(row)}"
-        raise ValueError(msg)
-    return float(row["p50_uplift"].iloc[0])
+def v0_records(records: pd.DataFrame, *, columns: ColumnSchema, timebase: pd.Timedelta) -> pd.DataFrame:
+    """Return ``records`` with v0's column names, the turbine column ``TurbineName`` and a ``ShutdownDuration``.
+
+    Each role's column takes v0's name unless a column of that name is already there. Without a
+    ``ShutdownDuration`` column it is the period less the availability counter, a missing counter
+    reading as fully available. Raises without either.
+    """
+    renames = {columns.turbine: DataColumns.turbine_name}
+    for role, v0_name in V0_COLUMN_OF_ROLE.items():
+        column = getattr(columns, role)
+        if column is not None and column != v0_name and v0_name not in records.columns:
+            renames[column] = v0_name
+    out = records.rename(columns=renames)
+    if DataColumns.shutdown_duration not in out.columns:
+        if columns.availability is None:
+            msg = "v0 reads a ShutdownDuration column; the records have none and no availability role to derive it"
+            raise MethodConfigurationError(msg)
+        period = timebase.total_seconds()
+        out[DataColumns.shutdown_duration] = period - out[columns.availability].fillna(period)
+    return out.rename_axis(index=TIMESTAMP_COL)
 
 
 @dataclass
 class V0BinnedMethod:
-    """Pluggable v0 binned power-curve baseline.
+    """v0's binned power curve method, one v0 run per analysis.
 
-    :param context: the shared HoT source-context (metadata, reanalysis, vendored asset/northing)
-    :param name: method name shown in the leaderboard
-    :param ws_bin_width: power-curve wind-speed bin width in m/s
-    :param reanalysis_method: wind_up reanalysis-node selection method
-    :param scratch_dir: where per-campaign YAML + wind_up output go; a temp dir when ``None``
-    :param save_plots: if True, save wind_up's per-campaign plots under ``<out_dir>/plots`` (each
-        campaign has its own unique out dir); off by default since plots are slow and unused for
-        scoring, but useful for manually inspecting a run
-    :param filter_all_test_wtgs_together: pass through to wind_up's ``filter_all_test_wtgs_together``
-        (recommended for wake steering): when several turbines are analysed together via
-        :meth:`estimate_multi`, a timestamp filtered for one is filtered for all. A no-op for a
-        single test turbine.
-    :param require_ref_wake_free: pass through to wind_up's ``require_ref_wake_free`` (recommended for
-        wake steering): drop reference data where the reference has any upwind turbine, so a reference
-        sitting behind a steering turbine does not bias the comparison.
-    :param pairing_filter_method: toggle-only; wind_up's on/off block pairing method (``"none"`` by
-        default, e.g. ``"any_within_timedelta"`` for a realistic temporally-local pairing)
-    :param pairing_filter_timedelta_seconds: toggle-only; window for ``any_within_timedelta`` pairing
-    :param toggle_change_settling_filter_seconds: toggle-only; data dropped after each toggle change
-        (0 by default, since the synthetic toggle has no settling transient)
+    Requires the turbine table's ``rotor_diameter_m``, the records' turbine and power roles and,
+    when the records carry no ``ShutdownDuration`` column, the availability role. Reads every
+    non-turbine measurement the analysis names as a reference through its ``wind_speed`` and
+    ``wind_direction`` column roles, and every reanalysis node by its name. Gives the uplift the
+    analysis reports with v0's sigma. A group of subjects gets v0's total uplift of the group, or, when
+    the analysis asks for the ``net`` combination, the net uplift of :func:`wind_up.combine_subjects`
+    and no sigma; that function gives the net uplift's sigma as a range.
+
+    :param name: method name shown in the outputs
+    :param options: fields of v0's ``WindUpConfig`` the facts and the analysis do not set, by name;
+        ``toggle`` holds a mapping of v0's toggle fields among ``name``, ``detrend_data_selection``,
+        ``pairing_filter_method`` and ``pairing_filter_timedelta_seconds``. Dates v0 works out from
+        its ``years_*`` fields when not given, as its YAML loader does.
+    :param turbine_type: fields of v0's ``TurbineType`` beyond rotor diameter and rated power, given to every turbine
+    :param site_name: the wind farm's name in v0's outputs
+    :param auto_choose_refs: let ``combine_results`` keep only the references that agree best
+    :param to_v0_records: converts the facts' records to v0's columns; :func:`v0_records` when ``None``
+    :param out_dir: where each run's folder is written, named for the analysis; a temp dir when ``None``
+    :param save_plots: also write v0's plots
+    :param per_turbine_plots: with ``save_plots``, also write v0's preprocessing plots of each turbine
+        beside those of each turbine type
+    :param cache_dir: v0's cache of prepared inputs; none when ``None``
     """
 
-    context: HotV0Context
     name: str = "v0_binned"
-    ws_bin_width: float = 1.0
-    reanalysis_method: str = "node_with_best_ws_corr"
-    scratch_dir: Path | None = None
+    options: Mapping[str, Any] = field(default_factory=dict)
+    turbine_type: Mapping[str, Any] = field(default_factory=dict)
+    site_name: str = "wind farm"
+    auto_choose_refs: bool = True
+    to_v0_records: Callable[[pd.DataFrame], pd.DataFrame] | None = None
+    out_dir: Path | None = None
     save_plots: bool = False
-    filter_all_test_wtgs_together: bool = False
-    require_ref_wake_free: bool = False
-    pairing_filter_method: str = "none"
-    pairing_filter_timedelta_seconds: int = 3000
-    toggle_change_settling_filter_seconds: int = 0
+    per_turbine_plots: bool = True
+    cache_dir: Path | None = None
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
-        """Run a faithful v0 power-performance analysis (prepost or toggle) and return its P50 uplift."""
-        return self.estimate_multi(mi, test_wtgs=[mi.test_wtg])[mi.test_wtg]
+    def __post_init__(self) -> None:
+        """Reject options the facts or the analysis set, and fields v0 does not have."""
+        set_by_facts = sorted(set(self.options) & FACT_FIELDS)
+        if set_by_facts:
+            msg = f"{self.name}: options {set_by_facts} come from the facts and the analysis"
+            raise MethodConfigurationError(msg)
+        unknown = sorted(set(self.options) - set(WindUpConfig.model_fields))
+        if unknown:
+            msg = f"{self.name}: options {unknown} are not fields of v0's WindUpConfig"
+            raise MethodConfigurationError(msg)
+        toggle = sorted(set(self.options.get("toggle", {})) - TOGGLE_OPTIONS)
+        if toggle:
+            msg = f"{self.name}: toggle options {toggle} are not among {sorted(TOGGLE_OPTIONS)}"
+            raise MethodConfigurationError(msg)
+        turbine_type = sorted(set(self.turbine_type) - (set(TurbineType.model_fields) - TURBINE_TYPE_FACTS))
+        if turbine_type:
+            msg = f"{self.name}: turbine_type fields {turbine_type} are facts or not fields of v0's TurbineType"
+            raise MethodConfigurationError(msg)
 
-    def estimate_multi(self, mi: MethodInput, *, test_wtgs: Sequence[str]) -> dict[str, MethodOutput]:
-        """Analyse several turbines in a **single** wind_up run and return a P50 output for each.
+    def estimate(self, facts: WindFarmFacts, analyses: Sequence[AnalysisSpec]) -> list[AnalysisOutput]:
+        """Answer each analysis with v0's run over its subjects, against its references.
 
-        All of ``test_wtgs`` are the run's test turbines (so none is used as a reference for another)
-        and, with ``filter_all_test_wtgs_together``, they share one filtered timestamp set -- the
-        recommended setup for a wake-steering pair. ``estimate`` is the single-turbine case.
+        A run that fails for want of data leaves every subject of the analysis unmeasured.
         """
-        cfg = self._build_config(mi, test_wtgs=list(test_wtgs))
-        selected = mi.context.select(mi.scada_df, also=test_wtgs)
-        plot_cfg = PlotConfig(show_plots=False, save_plots=self.save_plots, plots_dir=cfg.out_dir / "plots")
-        from_cfg_kwargs: dict = {
-            "cfg": cfg,
-            "plot_cfg": plot_cfg,
-            # The harness hands us source-native SCADA; v0 needs wind-up format, so convert here
-            # (the v0 baseline is the only place that knows v0's column names). The conversion
-            # returns a fresh frame, so there is no in-place mutation of the harness's slice.
-            "scada_df": long_to_wind_up_format(selected),
-            "metadata_df": self.context.metadata_df,
-            "reanalysis_datasets": self.context.reanalysis_datasets,
-            "cache_dir": None,
-        }
-        timing = mi.context.timing
-        if mi.context.mode == "toggle":
-            # A ToggleSchedule is turned into the canonical toggle_df; an explicit toggle_df passes through.
-            from_cfg_kwargs["toggle_df"] = (
-                timing if isinstance(timing, pd.DataFrame) else build_toggle_df(selected.index, timing)
-            )
-        inputs = AssessmentInputs.from_cfg(**from_cfg_kwargs)
+        for analysis in analyses:
+            facts.check(analysis)
+        if ROTOR_DIAMETER_COL not in facts.turbines.columns:
+            msg = f"{self.name} needs the turbine table's {ROTOR_DIAMETER_COL!r}"
+            raise MethodConfigurationError(msg)
+        facts.columns.require_roles(["turbine", "active_power"])
+        return [self._answer(facts, analysis) for analysis in analyses]
+
+    def _answer(self, facts: WindFarmFacts, analysis: AnalysisSpec) -> AnalysisOutput:
+        """Run v0 once per uplift the analysis reports, and give its results."""
+        subjects = facts.subjects_of(analysis)
+        warnings: list[AnalysisWarning] = list(facts.warnings())
+        runs: dict[str, tuple[pd.DataFrame, pd.DataFrame | str] | str] = {}
+        for report in (r for r in (AEP, CAMPAIGN) if r in analysis.report):
+            runs[report] = self._run_or_reason(facts, analysis, use_lt_distribution=report == AEP)
+        rows = {s: {"turbine": s, **{c: np.nan for c in PER_TURBINE_COLUMNS if c != "turbine"}} for s in subjects}
+        output: dict[str, Any] = {"analysis": analysis}
+        per_reference: list[pd.DataFrame] = []
+        combined: dict[str, pd.DataFrame] = {}
+        for report, run in runs.items():
+            if isinstance(run, str):
+                for subject in subjects:
+                    message = f"{NOT_MEASURED}{self.name} could not run for the {report} uplift: {run}"
+                    warnings.append(
+                        AnalysisWarning(severity="high", step=MEASURE_STEP, turbine=subject, message=message)
+                    )
+                continue
+            trdf, tdf = run
+            per_reference.append(trdf.assign(report=report))
+            if isinstance(tdf, str):
+                for subject in subjects:
+                    message = f"{NOT_MEASURED}v0 could not combine the {report} uplift's test-reference results: {tdf}"
+                    warnings.append(
+                        AnalysisWarning(severity="high", step=MEASURE_STEP, turbine=subject, message=message)
+                    )
+                continue
+            measured = tdf[tdf["test_wtg"].isin(subjects) & ~tdf["is_ref"]].set_index("test_wtg")
+            for subject in subjects:
+                if subject in measured.index:
+                    rows[subject][f"{report}_uplift"] = float(measured.loc[subject, "p50_uplift"])
+                    rows[subject][f"{report}_sigma"] = float(measured.loc[subject, "sigma"])
+                    pairs = trdf[trdf["test_wtg"] == subject]
+                    rows[subject]["hours_on"] = float(pairs["pp_valid_hours_post"].min())
+                    rows[subject]["hours_off"] = float(pairs["pp_valid_hours_pre"].min())
+                    rows[subject]["actual_energy"] = _actual_energy(pairs)
+            combined[report] = measured
+        per_turbine = pd.DataFrame(list(rows.values()), columns=list(PER_TURBINE_COLUMNS))
+        output |= self._headline(analysis, per_turbine=per_turbine, combined=combined, warnings=warnings)
+        output["per_turbine"] = per_turbine
+        output["per_reference"] = pd.concat(per_reference, ignore_index=True) if per_reference else None
+        return AnalysisOutput(**output, warnings=tuple(warnings))
+
+    def _headline(
+        self,
+        analysis: AnalysisSpec,
+        *,
+        per_turbine: pd.DataFrame,
+        combined: Mapping[str, pd.DataFrame],
+        warnings: list[AnalysisWarning],
+    ) -> dict[str, float]:
+        """Return the analysis's uplift and sigma for each report v0 combined, from its subjects' results.
+
+        One subject gives its own. A group gives v0's total uplift of the group, or for a ``net``
+        combination the net uplift and no sigma, with a low warning added to ``warnings``.
+        """
+        if len(per_turbine) == 1 or (analysis.combination != NET and combined):
+            return {
+                f"{report}_{figure}": value
+                for report, measured in combined.items()
+                for figure, value in zip(("uplift", "sigma"), _group_total(measured), strict=True)
+            }
+        if not combined:
+            return {}
+        net = combine_subjects(AnalysisOutput(analysis=analysis, per_turbine=per_turbine))
+        message = (
+            f"{self.name} gives no sigma for a group's net uplift; each subject's sigma is in per_turbine, and "
+            "wind_up.combine_subjects gives the group's as a range"
+        )
+        warnings.append(AnalysisWarning(severity="low", step=COMBINE_STEP, turbine="all", message=message))
+        return {f"{report}_uplift": getattr(net, f"{report}_uplift") for report in combined}
+
+    def _run_or_reason(
+        self, facts: WindFarmFacts, analysis: AnalysisSpec, *, use_lt_distribution: bool
+    ) -> tuple[pd.DataFrame, pd.DataFrame | str] | str:
+        """Return :meth:`_run`'s results, or why v0 could not run for want of data."""
+        try:
+            return self._run(facts, analysis, use_lt_distribution=use_lt_distribution)
+        except MethodConfigurationError:
+            raise
+        except (ValueError, RuntimeError) as error:
+            return str(error)
+
+    def _run(
+        self, facts: WindFarmFacts, analysis: AnalysisSpec, *, use_lt_distribution: bool
+    ) -> tuple[pd.DataFrame, pd.DataFrame | str]:
+        """Return v0's per test-reference results of one run and their combination per turbine.
+
+        The combination is the reason instead when v0 cannot combine the results.
+        """
+        cfg = self._config(facts, analysis, use_lt_distribution=use_lt_distribution)
+        upgrade = facts.upgrade(analysis.upgrade)
+        records = self._records(facts, analysis, upgrade=upgrade, first=cfg.upgrade_first_dt_utc_start)
+        plot_cfg = PlotConfig(
+            show_plots=False,
+            save_plots=self.save_plots,
+            skip_per_turbine_plots=not self.per_turbine_plots,
+            plots_dir=cfg.out_dir / "plots",
+        )
+        inputs = AssessmentInputs.from_cfg(
+            cfg=cfg,
+            plot_cfg=plot_cfg,
+            scada_df=records,
+            metadata_df=_metadata(facts),
+            toggle_df=_toggle_frame(upgrade, index=pd.DatetimeIndex(records.index.unique()).sort_values()),
+            reanalysis_datasets=[ReanalysisDataset(id=r.name, data=r.records) for r in facts.reanalysis],
+            cache_dir=self.cache_dir,
+            mast_or_lidar_datasets=[
+                MastOrLiDARDataset(id=m.name, data=m.records) for m in facts.non_turbine_measurements
+            ],
+        )
         trdf = run_wind_up_analysis(inputs)
-        tdf = combine_results(trdf, auto_choose_refs=False, plot_config=None)
-        tdf.to_csv(
-            cfg.out_dir
-            / f"{cfg.assessment_name}_combined_results_{pd.Timestamp.now('UTC').strftime('%Y%m%d_%H%M%S')}.csv"
-        )
-        return {w: MethodOutput(p50_overall=_extract_p50(tdf, w)) for w in test_wtgs}
-
-    def _build_config(self, mi: MethodInput, *, test_wtgs: Sequence[str] | None = None) -> WindUpConfig:
-        """Render and load the WindUpConfig, with the asset filtered to the subset.
-
-        ``test_wtgs`` defaults to ``[mi.test_wtg]``; pass several to co-analyse them in one run.
-        """
-        test_names = [mi.test_wtg] if test_wtgs is None else list(test_wtgs)
-        subset = _subset_turbines(mi.scada_df, mi.turbine_col)
-        test_set = set(test_names)
-        refs = [t for t in mi.context.references_among(subset) if t not in test_set]
-        if not refs:
-            msg = (
-                f"no reference turbines available for test_wtg(s) {test_names}: scada_df contains only "
-                f"{subset}. The v0 binned method needs at least one reference turbine."
+        try:
+            tdf = combine_results(
+                trdf,
+                auto_choose_refs=self.auto_choose_refs,
+                plot_config=plot_cfg if self.save_plots else None,
             )
-            raise ValueError(msg)
-        toggle_mode = is_toggle(mi.upgrade_timing)
-        upgrade = toggle_upgrade_start(mi.upgrade_timing, mi.scada_df.index)
-        analysis_last = pd.Timestamp(mi.scada_df.index.max())
-        assessment_name = f"v0_{'_'.join(test_names)}_{upgrade:%Y%m%d}_{analysis_last:%Y%m%d}"
+        except (ValueError, KeyError) as error:
+            return trdf, f"{type(error).__name__}: {error}"
+        return trdf, tdf
 
-        scratch = Path(self.scratch_dir) if self.scratch_dir is not None else Path(tempfile.mkdtemp(prefix="v0_"))
-        scratch.mkdir(parents=True, exist_ok=True)
-        template = _TOGGLE_YAML_TEMPLATE if toggle_mode else _CAMPAIGN_YAML_TEMPLATE
-        yaml_text = template.format(
-            assessment_name=assessment_name,
-            test_lines="\n".join(f"  - {t}" for t in test_names),
-            ref_lines="\n".join(f"  - {r}" for r in refs),
-            filter_all=str(self.filter_all_test_wtgs_together).lower(),
-            require_ref_wake_free=str(self.require_ref_wake_free).lower(),
-            pairing_filter_method=self.pairing_filter_method,
-            pairing_filter_timedelta_seconds=self.pairing_filter_timedelta_seconds,
-            toggle_change_settling_filter_seconds=self.toggle_change_settling_filter_seconds,
-            upgrade=upgrade.strftime("%Y-%m-%d %H:%M:%S"),
-            analysis_last=analysis_last.strftime("%Y-%m-%d %H:%M:%S"),
-            ws_bin_width=self.ws_bin_width,
-            reanalysis_method=self.reanalysis_method,
-            northing_yaml=self.context.northing_yaml.as_posix(),
-            asset_yaml=self.context.asset_yaml.as_posix(),
+    def _config(self, facts: WindFarmFacts, analysis: AnalysisSpec, *, use_lt_distribution: bool) -> WindUpConfig:
+        """Return v0's configuration for one run of ``analysis``."""
+        upgrade = facts.upgrade(analysis.upgrade)
+        subjects = facts.subjects_of(analysis)
+        turbines = _turbines(facts, turbine_type=self.turbine_type)
+        by_name = {t.name: t for t in turbines}
+        references = [r for r in facts.turbine_references(analysis) if r not in subjects]
+        index = pd.DatetimeIndex(facts.records.index.unique()).sort_values()
+        timebase = facts.timebase
+        start, end = analysis.period
+        last = (end - timebase) if end is not None else index.max()
+        first = _upgrade_first(upgrade, subjects=subjects, index=index, start=start)
+        out_root = Path(self.out_dir) if self.out_dir is not None else Path(tempfile.mkdtemp(prefix="v0_"))
+        suffix = "" if len(analysis.report) == 1 else ("_aep" if use_lt_distribution else "_campaign")
+        cfg: dict[str, Any] = {
+            **{k: v for k, v in self.options.items() if k != "toggle"},
+            "assessment_name": analysis.name,
+            "timebase_s": int(timebase.total_seconds()),
+            "out_dir": out_root / f"{analysis.name}{suffix}",
+            "test_wtgs": [by_name[s] for s in subjects],
+            "ref_wtgs": [by_name[r] for r in references],
+            "non_wtg_ref_names": facts.measurement_references(analysis),
+            "upgrade_first_dt_utc_start": first,
+            "analysis_last_dt_utc_start": last,
+            "use_lt_distribution": use_lt_distribution,
+            "asset": Asset(name=self.site_name, wtgs=turbines, masts_and_lidars=_masts_and_lidars(facts)),
+            "exclusion_periods_utc": _exclusion_periods(facts),
+            "northing_corrections_utc": [
+                (t, pd.Timestamp(when), float(offset)) for t, when, offset in facts.north_offsets
+            ],
+        }
+        if upgrade.mode == "toggle":
+            cfg["toggle"] = {
+                "name": upgrade.name,
+                **self.options.get("toggle", {}),
+                "toggle_file_per_turbine": False,
+                "toggle_filename": "not_used",
+                "toggle_change_settling_filter_seconds": int(upgrade.settling_time.total_seconds()),
+            }
+        _derive_dates(cfg, period_start=start, use_lt_distribution=use_lt_distribution)
+        cfg["out_dir"].mkdir(parents=True, exist_ok=True)
+        return WindUpConfig.model_validate(cfg)
+
+    def _records(
+        self, facts: WindFarmFacts, analysis: AnalysisSpec, *, upgrade: Upgrade, first: pd.Timestamp
+    ) -> pd.DataFrame:
+        """Return the facts' records in v0's columns, with ``exclude_row`` flagging what v0 must leave out.
+
+        The analyst's label columns and the site state column are left out: v0 reads them through
+        ``exclude_row`` alone.
+        """
+        exclude = _excluded_records(facts, analysis, upgrade=upgrade, first=first)
+        dropped = [label.column for label in facts.labels]
+        if facts.operating_states.site_state_column is not None:
+            dropped.append(facts.operating_states.site_state_column)
+        records = facts.records.drop(columns=list(dict.fromkeys(dropped)))
+        converted = (
+            self.to_v0_records(records)
+            if self.to_v0_records is not None
+            else v0_records(records, columns=facts.columns, timebase=facts.timebase)
         )
-        yaml_path = scratch / f"{assessment_name}.yaml"
-        yaml_path.write_text(yaml_text)
+        if exclude.any():
+            converted = converted.assign(**{EXCLUDE_ROW_COL: exclude.astype(int)})
+        return converted.rename_axis(index=TIMESTAMP_COL)
 
-        cfg = WindUpConfig.from_yaml(yaml_path)
-        cfg.out_dir = scratch / assessment_name
-        cfg.out_dir.mkdir(parents=True, exist_ok=True)
-        # The asset YAML lists all 21 HoT turbines, but only the subset has SCADA here. Restrict
-        # it so wind farm coverage (e.g. reanalysis correlation) is computed over the right count.
-        cfg.asset.wtgs = [w for w in cfg.asset.wtgs if w.name in subset]
-        # similar subsetting logic for northing_corrections_utc
-        cfg.northing_corrections_utc = [n for n in cfg.northing_corrections_utc if n[0] in subset]
-        return cfg
+
+def _group_total(measured: pd.DataFrame) -> tuple[float, float]:
+    """Return v0's uplift and sigma of the measured subjects: one subject's own, or v0's total uplift of the group."""
+    if measured.empty:
+        return float("nan"), float("nan")
+    if len(measured) == 1:
+        return float(measured["p50_uplift"].iloc[0]), float(measured["sigma"].iloc[0])
+    total = _calculate_total_uplift_of_turbine_group(measured.reset_index())
+    return float(total["p50_uplift"]), float(total["sigma"])
+
+
+def _actual_energy(pairs: pd.DataFrame) -> float:
+    """Return a subject's energy with the upgrade on, in kWh: its pairs' mean power times valid hours, averaged."""
+    if "mean_power_post" not in pairs.columns:
+        return float("nan")
+    return float((pairs["mean_power_post"] * pairs["pp_valid_hours_post"]).mean())
+
+
+def _turbines(facts: WindFarmFacts, *, turbine_type: Mapping[str, Any]) -> list[Turbine]:
+    """Return v0's turbines from the turbine table, in its order."""
+    table = facts.turbines
+    type_fields = {"turbine_type": "turbine", **turbine_type}
+    absent = sorted(
+        name
+        for name, info in TurbineType.model_fields.items()
+        if info.is_required() and name not in type_fields and name not in TURBINE_TYPE_FACTS
+    )
+    if absent:
+        msg = f"v0 needs the turbine_type field(s) {absent}"
+        raise MethodConfigurationError(msg)
+    return [
+        Turbine(
+            name=str(row[NAME_COL]),
+            turbine_type=TurbineType(
+                rotor_diameter_m=float(row[ROTOR_DIAMETER_COL]),
+                rated_power_kw=float(row["rated_power_kw"]),
+                **type_fields,
+            ),
+            latitude=float(row[LATITUDE_COL]),
+            longitude=float(row[LONGITUDE_COL]),
+        )
+        for _, row in table.iterrows()
+    ]
+
+
+def _masts_and_lidars(facts: WindFarmFacts) -> list[MastOrLidar]:
+    """Return v0's masts and LiDARs from the non-turbine measurements. Raises when one lacks a role v0 reads."""
+    out = []
+    for m in facts.non_turbine_measurements:
+        absent = [role for role in (WIND_SPEED_ROLE, WIND_DIRECTION_ROLE) if role not in m.columns]
+        if absent:
+            msg = f"v0 reads the {absent} column role(s) of measurement {m.name!r}, which it does not declare"
+            raise MethodConfigurationError(msg)
+        out.append(
+            MastOrLidar(
+                name=m.name,
+                latitude=m.latitude,
+                longitude=m.longitude,
+                wind_speed_column=m.columns[WIND_SPEED_ROLE],
+                wind_direction_column=m.columns[WIND_DIRECTION_ROLE],
+            )
+        )
+    return out
+
+
+def _metadata(facts: WindFarmFacts) -> pd.DataFrame:
+    """Return v0's metadata: each turbine's position, timestamps in UTC at the start of each period."""
+    table = facts.turbines
+    return pd.DataFrame(
+        {
+            "Name": table[NAME_COL].astype(str).to_numpy(),
+            "Latitude": table[LATITUDE_COL].to_numpy(dtype=float),
+            "Longitude": table[LONGITUDE_COL].to_numpy(dtype=float),
+            "TimeZone": "UTC",
+            "TimeSpanMinutes": facts.timebase.total_seconds() / 60,
+            "TimeFormat": "Start",
+        }
+    )
+
+
+def _exclusion_periods(facts: WindFarmFacts) -> list[tuple[str, pd.Timestamp, pd.Timestamp]]:
+    """Return v0's exclusion periods: the facts' exclusions, then every installation window."""
+    periods = [("ALL" if who is None else who, pd.Timestamp(a), pd.Timestamp(b)) for who, a, b in facts.exclusions]
+    for upgrade in facts.upgrades:
+        for turbine, windows in upgrade.installation_windows.items():
+            periods.extend((turbine, a, b) for a, b in windows if b > a)
+    return periods
+
+
+def _upgrade_first(
+    upgrade: Upgrade, *, subjects: Sequence[str], index: pd.DatetimeIndex, start: pd.Timestamp | None
+) -> pd.Timestamp:
+    """Return v0's first upgraded timestamp: the end of a permanent changeover, or a toggle's first stated record.
+
+    A toggle's first record in the on or off state within the period and the signal's span, over
+    the subjects, before settling, which v0 applies itself. Raises
+    when the subjects of a permanent upgrade change over at different times.
+    """
+    if upgrade.mode != "toggle":
+        ends = {upgrade.changeover(s)[1] for s in subjects}
+        if len(ends) > 1:
+            msg = f"v0 runs one changeover; subjects {list(subjects)} change over at {sorted(ends)}"
+            raise MethodConfigurationError(msg)
+        return next(iter(ends))
+    signal_start = upgrade.signal_span()[0]
+    earliest = max(t for t in (start, signal_start, index.min()) if t is not None)
+    within = index[index >= earliest]
+    unsettled = replace(upgrade, settling_time=pd.Timedelta(0))
+    stated = [within[np.isin(unsettled.states(within, turbine=s), [ON, OFF])] for s in subjects]
+    firsts = [s.min() for s in stated if len(s)]
+    if not firsts:
+        msg = f"upgrade {upgrade.name!r} states no on or off record for {list(subjects)} within the period"
+        raise ValueError(msg)
+    return min(firsts)
+
+
+def _toggle_frame(upgrade: Upgrade, *, index: pd.DatetimeIndex) -> pd.DataFrame | None:
+    """Return the toggle frame v0 reads: the upgrade's own frame, or one built from its schedule."""
+    if upgrade.mode != "toggle":
+        return None
+    if isinstance(upgrade.timing, ToggleSchedule):
+        return build_toggle_df(index, upgrade.timing)
+    return upgrade.timing  # type: ignore[return-value]
+
+
+def _excluded_records(
+    facts: WindFarmFacts, analysis: AnalysisSpec, *, upgrade: Upgrade, first: pd.Timestamp
+) -> np.ndarray:
+    """Return a mask over the facts' records of those v0 must leave out.
+
+    A record a label withholds from the uplift; one whose site state is not valid for uplift; one
+    inside an operating state override; a subject's record the analysis's labels leave out; and,
+    from the first upgraded timestamp, a record of a turbine an override puts in neither upgrade state.
+    """
+    records = facts.records
+    index = pd.DatetimeIndex(records.index)
+    turbines = records[facts.columns.turbine].astype(str).to_numpy()
+    exclude = np.zeros(len(records), dtype=bool)
+    for label in facts.labels:
+        if UPLIFT in label.withholds:
+            exclude |= records[label.column].to_numpy(dtype=bool)
+    config = facts.operating_states
+    if config.site_state_column is not None:
+        not_uplift = [name for name, validity in config.validity().items() if not validity.uplift]
+        exclude |= records[config.site_state_column].isin(not_uplift).to_numpy()
+    for who, a, b, _ in facts.operating_state_overrides:
+        exclude |= _in_window(index, a, b) & ((turbines == who) if who is not None else True)
+    subject_rows = np.isin(turbines, facts.subjects_of(analysis))
+    labels = {label.name: label.column for label in facts.labels}
+    kept = np.ones(len(records), dtype=bool)
+    for name in analysis.include_labels:
+        kept &= records[labels[name]].to_numpy(dtype=bool)
+    for name in analysis.exclude_labels:
+        kept &= ~records[labels[name]].to_numpy(dtype=bool)
+    exclude |= subject_rows & ~kept
+    for override in facts.upgrades:
+        for who, a, b, state in override.upgrade_state_overrides:
+            if state == NEITHER and b > first:
+                exclude |= _in_window(index, max(a, first), b) & ((turbines == who) if who is not None else True)
+            elif state != NEITHER and override is upgrade:
+                msg = f"v0 cannot take the override of upgrade {upgrade.name!r} to {state!r}; it reads one timing"
+                raise MethodConfigurationError(msg)
+    return exclude
+
+
+def _in_window(index: pd.DatetimeIndex, start: pd.Timestamp, end: pd.Timestamp) -> np.ndarray:
+    """Return a mask over ``index`` of ``[start, end)``."""
+    return np.asarray((index >= start) & (index < end))
+
+
+def _derive_dates(cfg: dict[str, Any], *, period_start: pd.Timestamp | None, use_lt_distribution: bool) -> None:
+    """Fill v0's dates not given, as v0's YAML loader works them out from its ``years_*`` fields.
+
+    A toggle's analysis starts at its first upgraded timestamp. A permanent upgrade's pre period
+    ends ``years_offset_for_pre_period`` years before the analysis does, at latest a period before
+    the upgrade, and starts that many years before the upgrade; an analysis period starting later
+    raises. The long-term period ends a week before a toggle starts, or with the pre
+    period, and lasts ``years_for_lt_distribution`` years; the detrend period ends with it, or with
+    the analysis for a toggle detrended on its off records, and lasts ``years_for_detrend`` years.
+
+    A toggle without ``years_for_lt_distribution`` that gives no AEP uplift takes the analysis period as
+    its long-term period, and one detrended on its off records without ``years_for_detrend`` takes it as
+    its detrend period.
+    """
+    toggle = cfg.get("toggle")
+    lt_is_analysis = toggle is not None and not use_lt_distribution and "years_for_lt_distribution" not in cfg
+    detrend_is_analysis = (
+        toggle is not None
+        and toggle.get("detrend_data_selection") == "use_toggle_off_data"
+        and "years_for_detrend" not in cfg
+    )
+    if lt_is_analysis:
+        cfg["years_for_lt_distribution"] = 0
+    if detrend_is_analysis:
+        cfg["years_for_detrend"] = 0
+    absent = [k for k in REQUIRED_OPTIONS if k not in cfg]
+    if absent:
+        msg = f"v0 needs the option(s) {absent}"
+        raise MethodConfigurationError(msg)
+    upgrade_first = cfg["upgrade_first_dt_utc_start"]
+    analysis_last = cfg["analysis_last_dt_utc_start"]
+    if toggle is not None:
+        cfg.setdefault("analysis_first_dt_utc_start", upgrade_first)
+        lt_last = upgrade_first - LT_WEEK_BEFORE_TOGGLE
+    else:
+        if "prepost" not in cfg:
+            years = cfg.get("years_offset_for_pre_period")
+            if years is None:
+                msg = "v0 needs the option years_offset_for_pre_period, or prepost, for a permanent upgrade"
+                raise MethodConfigurationError(msg)
+            pre_last = analysis_last - pd.DateOffset(years=years)
+            pre_last = min(pre_last, upgrade_first - pd.Timedelta(seconds=cfg["timebase_s"]))
+            pre_first = upgrade_first - pd.DateOffset(years=years)
+            if period_start is not None and period_start > pre_first:
+                msg = (
+                    f"the analysis starts at {period_start}, after v0's pre period starts at {pre_first}; "
+                    "give the pre period as the option prepost"
+                )
+                raise MethodConfigurationError(msg)
+            cfg["prepost"] = PrePost(
+                pre_first_dt_utc_start=pre_first,
+                pre_last_dt_utc_start=pre_last,
+                post_first_dt_utc_start=upgrade_first,
+                post_last_dt_utc_start=analysis_last,
+            )
+        prepost = cfg["prepost"] if isinstance(cfg["prepost"], PrePost) else PrePost.model_validate(cfg["prepost"])
+        cfg.setdefault("analysis_first_dt_utc_start", prepost.pre_first_dt_utc_start)
+        lt_last = prepost.pre_last_dt_utc_start
+    analysis_span = {"first_dt_utc_start": cfg["analysis_first_dt_utc_start"], "last_dt_utc_start": analysis_last}
+    for period, is_analysis in (("lt", lt_is_analysis), ("detrend", detrend_is_analysis)):
+        if is_analysis:
+            for end, when in analysis_span.items():
+                cfg.setdefault(f"{period}_{end}", when)
+    cfg.setdefault("lt_last_dt_utc_start", lt_last)
+    cfg.setdefault(
+        "lt_first_dt_utc_start", cfg["lt_last_dt_utc_start"] - pd.DateOffset(years=cfg["years_for_lt_distribution"])
+    )
+    detrend_last = cfg["lt_last_dt_utc_start"]
+    if toggle is not None and toggle.get("detrend_data_selection") == "use_toggle_off_data":
+        detrend_last = analysis_last
+    cfg.setdefault("detrend_last_dt_utc_start", detrend_last)
+    cfg.setdefault(
+        "detrend_first_dt_utc_start", cfg["detrend_last_dt_utc_start"] - pd.DateOffset(years=cfg["years_for_detrend"])
+    )

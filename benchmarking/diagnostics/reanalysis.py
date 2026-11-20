@@ -11,13 +11,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from benchmarking.diagnostics.style import apply_grid, save_fig
-from benchmarking.harness.reanalysis import ERA5_WS_RAW, SHIFT_RAISE, SHIFT_WARN, minutes
+from wind_up.diagnostics.style import apply_grid, save_fig
+from wind_up.reanalysis import ERA5_WS_RAW, SHIFT_RAISE, SHIFT_WARN, minutes
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from benchmarking.harness.reanalysis import ReanalysisResult
+    from wind_up.reanalysis import ReanalysisResult
 
 _HOUR = pd.Timedelta(hours=1)
 _MAX_SCATTER_POINTS = 50_000

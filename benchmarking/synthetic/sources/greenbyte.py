@@ -35,13 +35,13 @@ from zipfile import ZipFile
 import numpy as np
 import pandas as pd
 
-from benchmarking.synthetic.schema import ColumnSchema
 from benchmarking.synthetic.sources.hill_of_towie import (
     ZENODO_METADATA_FILENAME,
     download_zenodo_data,
     zenodo_record_dir,
     zenodo_record_files,
 )
+from wind_up.schema import ColumnSchema
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

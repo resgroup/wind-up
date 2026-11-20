@@ -18,7 +18,6 @@ import pandas as pd
 import yaml
 
 from benchmarking.campaigns.loader import EXPECTED_UPLIFT_PREFIX, operating_state_config
-from benchmarking.harness.operating_state import PARTIAL_DOWNTIME, label_operating_states
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_ACTIVE_POWER_MAX_COL,
     HOT_AMBIENT_TEMP_COL,
@@ -45,6 +44,7 @@ from benchmarking.synthetic.sources.hill_of_towie import (
     get_data_dir,
     load_hot_scada,
 )
+from wind_up.operating_state import PARTIAL_DOWNTIME, label_operating_states
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -67,9 +67,9 @@ BM_CURTAILMENT = "BM curtailment"
 HIGH_WIND_DERATE = "high wind derate"
 ICING = "icing"
 HOT_OPERATING_STATE: dict[str, Any] = {
-    "label_column": HOT_STATE_COL,
+    "site_state_column": HOT_STATE_COL,
     "parked_pitch_above_deg": 45,
-    "labels": {
+    "site_states": {
         NOISE_MODE: {"northing": "valid", "waking": "waking", "uplift": "not valid"},
         BM_CURTAILMENT: {"northing": "valid", "waking": "part waking", "uplift": "not valid"},
         HIGH_WIND_DERATE: {"northing": "valid", "waking": "part waking", "uplift": "not valid"},
@@ -85,7 +85,7 @@ HOT_AEROUP_T13: dict[str, Any] = {
         "scada": "data/scada.parquet",
         "schema": "hill_of_towie",
         "turbines": "data/turbines.csv",
-        "works": "data/works.csv",
+        "installation_windows": "data/works.csv",
     },
     "turbines": {"upgraded": ["T13"], "rated_power_kw": 2300.0},
     "timing": {"mode": "prepost"},
@@ -106,6 +106,32 @@ HOT_TUNEUP: dict[str, Any] = {
     },
     "timing": {"mode": "prepost", "changeover": "2024-03-14T18:00:00Z"},
     "upgrade": {"expected_uplift": TUNEUP_EXPECTED_UPLIFT},
+    "northing": {"discover": True},
+    "operating_state": HOT_OPERATING_STATE,
+}
+
+
+TUNEUP_TURBINES = HOT_TUNEUP["turbines"]["upgraded"]
+
+# The same TuneUp declared as two upgrades: the AeroUp on every turbine over its own works, then the
+# TuneUp on the nine turbines. The turbines with only the AeroUp serve as the TuneUp's references.
+HOT_TUNEUP_UPGRADES: dict[str, Any] = {
+    "name": "hot_tuneup_upgrades",
+    "data": {k: v for k, v in HOT_AEROUP_T13["data"].items() if k != "installation_windows"},
+    "turbines": {"rated_power_kw": 2300.0},
+    "upgrades": [
+        {"name": "AeroUp", "installation_windows": "data/works.csv", "expected_uplift": AEROUP_EXPECTED_UPLIFT},
+        {
+            "name": "TuneUp",
+            "turbines": TUNEUP_TURBINES,
+            "timing": {"mode": "prepost", "changeover": TUNEUP_DEPLOYMENT[1]},
+            "installation_windows": [
+                {"turbine": t, "start": TUNEUP_DEPLOYMENT[0], "end": TUNEUP_DEPLOYMENT[1]} for t in TUNEUP_TURBINES
+            ],
+            "expected_uplift": TUNEUP_EXPECTED_UPLIFT,
+        },
+    ],
+    "analyses": [{"name": "TuneUp", "upgrade": "TuneUp"}],
     "northing": {"discover": True},
     "operating_state": HOT_OPERATING_STATE,
 }
@@ -146,7 +172,12 @@ HOT_TUNEUP_CAMPAIGN = RealCampaign(
     works_expected_uplift=AEROUP_EXPECTED_UPLIFT,
     deployment=TUNEUP_DEPLOYMENT,
 )
-REAL_CAMPAIGNS: dict[str, RealCampaign] = {c.name: c for c in (HOT_AEROUP_T13_CAMPAIGN, HOT_TUNEUP_CAMPAIGN)}
+HOT_TUNEUP_UPGRADES_CAMPAIGN = RealCampaign(
+    HOT_TUNEUP_UPGRADES, start=HOT_TUNEUP_CAMPAIGN.start, end=HOT_TUNEUP_CAMPAIGN.end
+)
+REAL_CAMPAIGNS: dict[str, RealCampaign] = {
+    c.name: c for c in (HOT_AEROUP_T13_CAMPAIGN, HOT_TUNEUP_CAMPAIGN, HOT_TUNEUP_UPGRADES_CAMPAIGN)
+}
 
 
 def label_hot_operating_states(scada_long: pd.DataFrame) -> pd.DataFrame:
@@ -310,7 +341,8 @@ def write_real_campaign(
     """Write ``campaign``'s folder under ``out_dir`` and return its declaration.
 
     Writes ``campaign.yaml`` and, under ``data/``, every turbine's SCADA over the campaign's span with
-    its site operating-state labels, the turbines file and the works table (:func:`works_table`).
+    its site operating states, the turbines file and the works table (:func:`works_table`), which a
+    declaration that lists its upgrades names as its AeroUp's installation windows.
 
     :param out_dir: the campaign folder
     :param campaign: which campaign
