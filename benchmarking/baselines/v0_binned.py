@@ -22,7 +22,7 @@ treats an excluded period.
 from __future__ import annotations
 
 import tempfile
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -479,8 +479,7 @@ def _upgrade_first(
     """Return v0's first upgraded timestamp: the end of a permanent changeover, or a toggle's first stated record.
 
     A toggle's first record in the on or off state within the period and the signal's span, over
-    the subjects, before settling, which v0 applies itself. Raises
-    when the subjects of a permanent upgrade change over at different times.
+    the subjects. Raises when the subjects of a permanent upgrade change over at different times.
     """
     if upgrade.mode != "toggle":
         ends = {upgrade.changeover(s)[1] for s in subjects}
@@ -491,8 +490,7 @@ def _upgrade_first(
     signal_start = upgrade.signal_span()[0]
     earliest = max(t for t in (start, signal_start, index.min()) if t is not None)
     within = index[index >= earliest]
-    unsettled = replace(upgrade, settling_time=pd.Timedelta(0))
-    stated = [within[np.isin(unsettled.states(within, turbine=s), [ON, OFF])] for s in subjects]
+    stated = [within[np.isin(upgrade.states(within, turbine=s), [ON, OFF])] for s in subjects]
     firsts = [s.min() for s in stated if len(s)]
     if not firsts:
         msg = f"upgrade {upgrade.name!r} states no on or off record for {list(subjects)} within the period"

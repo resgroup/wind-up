@@ -36,7 +36,7 @@ class DeclaredUpgrade:
     :param wake_reach_d: how far its wake change reaches, in rotor diameters
     :param window_reach_d: per turbine, the installation windows with a reach of their own
     :param expected_uplift: the uplift expected, a fraction, when declared
-    :param settling_time: toggle only: records starting within this long of a change are in neither state
+    :param settling_time: toggle only: records within this long after a change are not valid for uplift or northing
     """
 
     name: str

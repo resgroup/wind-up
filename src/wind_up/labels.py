@@ -35,6 +35,11 @@ def upgrade_state_column(upgrade: str) -> str:
     return f"upgrade_state: {upgrade}"
 
 
+def settling_reason(upgrade: str) -> str:
+    """Return the reason a record settling after a change of the upgrade called ``upgrade`` is not valid."""
+    return f"settling after a {upgrade} change"
+
+
 @dataclass(frozen=True)
 class Label:
     """An analyst's label: a named true or false on every record.

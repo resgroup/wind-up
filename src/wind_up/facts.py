@@ -27,6 +27,7 @@ from wind_up.labels import (
     UPLIFT,
     UPLIFT_REASON_COL,
     Label,
+    settling_reason,
     upgrade_state_column,
 )
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL, Layout
@@ -86,8 +87,8 @@ class Upgrade:
     :param timing: the upgrade date, a date per turbine, a toggle schedule, or a toggle frame with
         boolean ``toggle_on`` and ``toggle_off`` columns on a time index. ``None`` when every turbine
         has an installation window: the upgrade is then on from the end of its last window.
-    :param settling_time: toggle only. Records from each change between on and off until this long
-        after it are in neither state.
+    :param settling_time: toggle only. Records of the upgrade's turbines from each change between on
+        and off until this long after it keep their state and are not valid for uplift or northing.
     :param installation_windows: per turbine, the windows ``[start, end)`` when the upgrade was being
         fitted; their records are in neither state
     :param upgrade_state_overrides: ``(turbine or None, start, end, state)``: the upgrade state of a
@@ -210,7 +211,7 @@ class Upgrade:
         """Return the cycle the timing states: a schedule's period, or a frame's median gap between on runs.
 
         An on run starts at an on record whose previous record is not on, so records in neither state
-        between the runs, settling among them, do not shorten the cycle.
+        between the runs do not shorten the cycle.
         """
         if isinstance(self.timing, ToggleSchedule):
             return self.timing.period
@@ -305,8 +306,8 @@ class Upgrade:
 
         A turbine that did not receive the upgrade is off. A permanent upgrade is off before its
         date and on from it. A toggle is off before its signal starts, then follows the signal, and
-        is in neither state where the signal is in neither, missing, or settling. Installation
-        windows are in neither state. The overrides are applied last.
+        is in neither state where the signal is in neither or missing. Installation windows are in
+        neither state. The overrides are applied last.
         """
         index = pd.DatetimeIndex(index)
         state: npt.NDArray[np.object_] = np.full(len(index), OFF, dtype=object)
@@ -334,9 +335,6 @@ class Upgrade:
         off = frame["toggle_off"].to_numpy(dtype=bool)
         own = np.select([on, off], [ON, OFF], default=NEITHER).astype(object)
         times = pd.DatetimeIndex(frame.index)
-        if self.settling_time > NO_TIME:
-            changed = (on[1:] & off[:-1]) | (off[1:] & on[:-1])
-            own[_settling(times, changes=times[1:][changed], settling_time=self.settling_time)] = NEITHER
         state = pd.Series(own, index=times).reindex(index).to_numpy(dtype=object)
         state[pd.isna(state)] = NEITHER
         flagged = times[on | off]
@@ -346,14 +344,29 @@ class Upgrade:
 
     def _schedule_states(self, index: pd.DatetimeIndex, schedule: ToggleSchedule) -> npt.NDArray[np.object_]:
         """Return a periodic toggle's state at each timestamp of ``index``."""
-        state = np.where(treated_mask(index, schedule), ON, OFF).astype(object)
-        if self.settling_time > NO_TIME and len(index):
-            origin = schedule.start if schedule.start is not None else index.min()
-            half = schedule.period / 2
+        return np.where(treated_mask(index, schedule), ON, OFF).astype(object)
+
+    def settling(self, index: pd.DatetimeIndex, *, turbine: str) -> npt.NDArray[np.bool_]:
+        """Return True where ``turbine``'s record at ``index`` starts within the settling time after a toggle change.
+
+        A change is a switch between on and off: between adjacent records of a toggle frame, or each
+        half period of a schedule after its first. Always False for a turbine that did not receive the
+        upgrade, a permanent upgrade, or no settling time.
+        """
+        index = pd.DatetimeIndex(index)
+        if self.settling_time <= NO_TIME or turbine not in self.turbines or self.mode != "toggle" or not len(index):
+            return np.zeros(len(index), dtype=bool)
+        if isinstance(self.timing, ToggleSchedule):
+            origin = self.timing.start if self.timing.start is not None else index.min()
+            half = self.timing.period / 2
             since_origin = index - origin
-            settling = np.asarray((since_origin >= half) & ((since_origin % half) < self.settling_time))
-            state[settling] = NEITHER
-        return state
+            return np.asarray((since_origin >= half) & ((since_origin % half) < self.settling_time))
+        frame: pd.DataFrame = self.timing  # type: ignore[assignment]
+        on = frame["toggle_on"].to_numpy(dtype=bool)
+        off = frame["toggle_off"].to_numpy(dtype=bool)
+        times = pd.DatetimeIndex(frame.index)
+        changed = (on[1:] & off[:-1]) | (off[1:] & on[:-1])
+        return _settling(index, changes=times[1:][changed], settling_time=self.settling_time)
 
 
 def _settling(
@@ -590,7 +603,8 @@ class WindFarmFacts:
         missing. Columns: the turbine, the operating state and its three uses, the state under each
         upgrade (:func:`~wind_up.labels.upgrade_state_column`), each analyst label under its name,
         and why a record is not valid for uplift or for northing. A record is valid for a use when
-        its operating state allows it and no label on it withholds it.
+        its operating state allows it and no label on it withholds it; a record settling after a
+        toggle change is not valid for uplift or northing.
 
         Computed on each call; a caller that needs it more than once keeps the frame.
         """
@@ -617,11 +631,19 @@ class WindFarmFacts:
         held = {label.name: grid[label.column].eq(True).to_numpy(dtype=bool) for label in self.labels}  # noqa: FBT003
         for name, values in held.items():
             out[name] = values
+        settling: dict[str, npt.NDArray[np.bool_]] = {}
+        for upgrade in self.upgrades:
+            mask = np.zeros(len(out), dtype=bool)
+            for name, mine in members.items():
+                mask[mine] = upgrade.settling(index[mine], turbine=name)
+            if mask.any():
+                settling[settling_reason(upgrade.name)] = mask
         for use, valid_col, reason_col in (
             (UPLIFT, VALID_UPLIFT_COL, UPLIFT_REASON_COL),
             (NORTHING, VALID_NORTHING_COL, NORTHING_REASON_COL),
         ):
             withheld_by = {label.name: held[label.name] for label in self.labels if use in label.withholds}
+            withheld_by |= settling
             valid, reason = _validity(
                 state=out[STATE_COL].to_numpy(dtype=object),
                 state_valid=out[valid_col].to_numpy(dtype=bool),

@@ -20,6 +20,7 @@ from wind_up.labels import (
     UPLIFT,
     UPLIFT_REASON_COL,
     Label,
+    settling_reason,
     upgrade_state_column,
 )
 from wind_up.operating_state import (
@@ -241,20 +242,34 @@ def test_a_toggle_frame_that_never_states_on_or_off_is_in_neither_state() -> Non
     assert states(Upgrade(name="control", turbines=["T1"], timing=frame)) == [NEITHER] * 36
 
 
-def test_settling_puts_the_records_after_each_change_in_neither_state() -> None:
+def settling(upgrade: Upgrade, turbine: str = "T1", index: pd.DatetimeIndex = INDEX) -> list[bool]:
+    return [bool(v) for v in upgrade.settling(index, turbine=turbine)]
+
+
+def test_settling_marks_the_records_after_each_change_and_leaves_their_state() -> None:
     frame = toggle_frame(block=3, first=6)
     short = Upgrade(name="control", turbines=["T1"], timing=frame, settling_time=5 * MINUTES)
     longer = Upgrade(name="control", turbines=["T1"], timing=frame, settling_time=15 * MINUTES)
     # the first change is off to on at record 9; the start of the signal at record 6 is not a change
-    assert states(short)[6:15] == [OFF] * 3 + [NEITHER, ON, ON] + [NEITHER, OFF, OFF]
-    assert states(longer)[6:15] == [OFF] * 3 + [NEITHER, NEITHER, ON] + [NEITHER, NEITHER, OFF]
+    assert settling(short)[6:15] == [False] * 3 + [True, False, False] + [True, False, False]
+    assert settling(longer)[6:15] == [False] * 3 + [True, True, False] + [True, True, False]
+    assert states(longer)[6:15] == [OFF] * 3 + [ON] * 3 + [OFF] * 3
 
 
 def test_settling_follows_a_change_between_adjacent_records_only() -> None:
     frame = toggle_frame(block=3, first=6)
     frame.iloc[9] = False  # the first on record states neither, so on is reached from neither
     upgrade = Upgrade(name="control", turbines=["T1"], timing=frame, settling_time=5 * MINUTES)
-    assert states(upgrade)[6:13] == [OFF] * 3 + [NEITHER, ON, ON] + [NEITHER]
+    assert settling(upgrade)[6:13] == [False] * 3 + [False, False, False] + [True]
+    assert states(upgrade)[6:13] == [OFF] * 3 + [NEITHER, ON, ON] + [OFF]
+
+
+def test_settling_is_only_on_the_upgrades_turbines() -> None:
+    frame = toggle_frame(block=3, first=6)
+    upgrade = Upgrade(name="control", turbines=["T1"], timing=frame, settling_time=5 * MINUTES)
+    assert not any(settling(upgrade, "T2"))
+    assert not any(settling(Upgrade(name="control", turbines=["T1"], timing=frame)))
+    assert not any(settling(permanent()))
 
 
 def test_a_schedule_is_off_before_its_start_then_alternates() -> None:
@@ -266,14 +281,17 @@ def test_a_schedule_is_off_before_its_start_then_alternates() -> None:
 def test_settling_on_a_schedule_follows_each_change_after_the_first_block() -> None:
     schedule = ToggleSchedule(period=pd.Timedelta(hours=1), start=at(1))
     upgrade = Upgrade(name="control", turbines=["T1"], timing=schedule, settling_time=10 * MINUTES)
-    assert states(upgrade)[:18] == [OFF] * 9 + [NEITHER, ON, ON] + [NEITHER, OFF, OFF] + [NEITHER, ON, ON]
+    assert settling(upgrade)[:18] == [False] * 9 + [True, False, False] * 3
+    assert states(upgrade)[:18] == [OFF] * 9 + [ON] * 3 + [OFF] * 3 + [ON] * 3
 
 
 def test_a_schedule_without_a_start_alternates_from_the_first_timestamp() -> None:
     schedule = ToggleSchedule(period=pd.Timedelta(hours=1))
     upgrade = Upgrade(name="control", turbines=["T1"], timing=schedule, settling_time=10 * MINUTES)
-    assert states(upgrade)[:9] == [OFF] * 3 + [NEITHER, ON, ON] + [NEITHER, OFF, OFF]
+    assert states(upgrade)[:9] == [OFF] * 3 + [ON] * 3 + [OFF] * 3
+    assert settling(upgrade)[:9] == [False] * 3 + [True, False, False] * 2
     assert states(upgrade, index=INDEX[:0]) == []
+    assert settling(upgrade, index=INDEX[:0]) == []
 
 
 # ---- WindFarmFacts: declaration -----------------------------------------------------------------
@@ -558,6 +576,19 @@ def test_the_operating_states_are_those_of_the_step_two_functions() -> None:
     assert set(labels[STATE_COL]) == {MISSING, FULL_DOWNTIME, PARTIAL_DOWNTIME, NORMAL_OPERATION}
 
 
+def test_a_settling_record_keeps_its_upgrade_state_and_is_not_valid_for_uplift_or_northing() -> None:
+    control = Upgrade(name="control", turbines=["T1"], timing=toggle_frame(block=3, first=6), settling_time=5 * MINUTES)
+    labels = facts(upgrades=[control]).record_labels()
+    t1, t2 = of(labels, "T1"), of(labels, "T2")
+    assert t1[upgrade_state_column("control")].iloc[6:15].tolist() == [OFF] * 3 + [ON] * 3 + [OFF] * 3
+    assert t1[VALID_UPLIFT_COL].iloc[6:15].tolist() == [True] * 3 + [False, True, True] * 2
+    assert t1[UPLIFT_REASON_COL].iloc[9] == settling_reason("control")
+    assert t1[VALID_NORTHING_COL].iloc[6:15].tolist() == [True] * 3 + [False, True, True] * 2
+    assert t1[NORTHING_REASON_COL].iloc[12] == settling_reason("control")
+    assert t2[VALID_UPLIFT_COL].all()
+    assert t2[VALID_NORTHING_COL].all()
+
+
 def test_a_site_state_is_read_from_its_column() -> None:
     frame = records().assign(site=None)
     frame.loc[frame.index < at(1), "site"] = "noise mode"
@@ -679,7 +710,7 @@ def test_a_toggle_compares_only_the_records_within_its_signal() -> None:
     frame = toggle_frame(n=30, block=3, first=6)
     control = Upgrade(name="control", turbines=["T1", "T2"], timing=frame, settling_time=5 * MINUTES)
     got = sides(facts(upgrades=[control]), AnalysisSpec(name="control", upgrade="control"))
-    assert got[:15] == [NEITHER] * 6 + [OFF] * 3 + [NEITHER, ON, ON] + [NEITHER, OFF, OFF]
+    assert got[:15] == [NEITHER] * 6 + [OFF] * 3 + [ON] * 3 + [OFF] * 3
     assert got[29] in {ON, OFF}
     assert got[30:] == [NEITHER] * 6
 
@@ -771,6 +802,7 @@ def test_settling_changes_nothing_on_a_signal_that_never_changes() -> None:
     frame = toggle_frame(block=40, first=6)
     upgrade = Upgrade(name="control", turbines=["T1"], timing=frame, settling_time=5 * MINUTES)
     assert states(upgrade) == [OFF] * 36
+    assert not any(settling(upgrade))
 
 
 # ---- WindFarmFacts: changed turbines ------------------------------------------------------------
@@ -901,7 +933,7 @@ def test_a_permanent_upgrade_has_no_cycle() -> None:
         _ = permanent().cycle
 
 
-def test_settling_gaps_in_a_frame_do_not_shorten_its_cycle() -> None:
+def test_neither_gaps_at_the_start_of_each_on_run_do_not_shorten_its_cycle() -> None:
     frame = toggle_frame(block=3, first=6)
     starts = frame["toggle_on"] & ~frame["toggle_on"].shift(fill_value=False)
     frame.loc[starts, ["toggle_on", "toggle_off"]] = False

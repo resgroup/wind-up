@@ -106,7 +106,7 @@ class CampaignSpec:
         reaches; a record with an upgraded turbine upwind of a turbine within it is dropped. 0 leaves
         the wakes as they were. The reach of every works window without its own.
     :param works_reach_d: per turbine, the works windows with a reach of their own
-    :param settling_time: toggle only: records starting within this long of a change are in neither state
+    :param settling_time: toggle only: records within this long after a change are not valid for uplift or northing
     """
 
     upgraded_turbines: list[str]

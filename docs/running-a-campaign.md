@@ -160,7 +160,8 @@ analyses:
   (`prepost` with a `changeover`, or `toggle` as below), installation windows, or both. With no timing,
   each turbine's changeover is the end of its one window. `expected_uplift` or `wake_reach_d` sets its
   reach, at most one of them; neither gives 20 D. A toggle upgrade may declare a `settling_time`
-  (e.g. `10min`): records starting within it after each change are in neither state.
+  (e.g. `10min`): records starting within it after each change keep their on or off state and are
+  not valid for uplift or northing.
 - **Every upgrade's installation windows are works** for every analysis, each at its own upgrade's
   reach, so a turbine upgraded long before an analysis's span serves as its reference. An analysis whose
   upgrade has no shared changeover cannot measure a turbine that has other installation windows too:
