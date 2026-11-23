@@ -28,7 +28,7 @@ from wind_up.diagnostics.curves import (
     plot_ops_curves_kept,
 )
 from wind_up.diagnostics.density import density_scatter
-from wind_up.diagnostics.histograms import _robust_bins
+from wind_up.diagnostics.histograms import _robust_bins, _used_segments
 from wind_up.diagnostics.northing import plot_northed_error, plot_northing_error
 from wind_up.diagnostics.style import series_style
 from wind_up.operating_state import STATE_COL
@@ -490,3 +490,14 @@ class TestConditionHistogramBins:
     def test_a_real_spread_still_spans_the_data(self) -> None:
         bins = _robust_bins(np.array([1.0, 2.0, 3.0]), bins=4)
         assert list(bins) == pytest.approx([1.0, 1.5, 2.0, 2.5, 3.0])
+
+
+class TestConditionHistogramSegments:
+    """The condition histograms draw only the records the method used."""
+
+    def test_each_segment_is_the_used_records_of_its_state(self, tmp_path: Path) -> None:
+        ctx = _context(tmp_path)
+        baseline, upgraded = _used_segments(ctx)
+        np.testing.assert_array_equal(baseline, ctx.used_ts & ctx.baseline_ts)
+        np.testing.assert_array_equal(upgraded, ctx.used_ts & ctx.upgraded_ts)
+        assert not ctx.used_ts.all()

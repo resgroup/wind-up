@@ -130,10 +130,11 @@ class SmartEoleExtractor:
         return turbines.loc[:, ["Turbine", "Latitude", "Longitude"]].reset_index(drop=True)
 
     def unpack_smarteole_toggle_data(self) -> pd.DataFrame:
-        """Return the wake steering toggle frame: ``toggle_on``, ``toggle_off`` and ``yaw_offset_command``.
+        """Return the wake steering toggle frame: on, off, the yaw offset command and the active share.
 
         A record is on (off) when steering was active for at least 95 % (at most 5 %) of the
-        control log samples, and at least half the samples are present.
+        control log samples, and at least half the samples are present. ``active_share`` is the share
+        of the record's samples with steering active, missing when fewer than half are present.
         """
         minimum_count = self.analysis_timebase_s * MINIMUM_DATA_COUNT_COVERAGE
         toggle_value_threshold = 0.95
@@ -150,5 +151,6 @@ class SmartEoleExtractor:
         toggle["toggle_on"] = (active >= toggle_value_threshold) & enough
         toggle["toggle_off"] = (active <= (1 - toggle_value_threshold)) & enough
         toggle["yaw_offset_command"] = toggle["control_log_offset_avg"]
+        toggle["active_share"] = active.where(enough)
         toggle.index = toggle.index.tz_localize("UTC")
-        return toggle.loc[:, ["toggle_on", "toggle_off", "yaw_offset_command"]].rename_axis(TIMESTAMP)
+        return toggle.loc[:, ["toggle_on", "toggle_off", "yaw_offset_command", "active_share"]].rename_axis(TIMESTAMP)

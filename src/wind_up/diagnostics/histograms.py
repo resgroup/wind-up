@@ -99,11 +99,16 @@ def _robust_bins(values: np.ndarray, *, bins: int = 30) -> np.ndarray | int:
     return np.linspace(lo, hi, bins + 1)
 
 
+def _used_segments(ctx: DiagnosticContext) -> tuple[np.ndarray, np.ndarray]:
+    """Return the baseline and upgraded masks of the timestamps the method used."""
+    used = np.asarray(ctx.used_ts, dtype=bool)
+    return used & ctx.baseline_ts, used & ctx.upgraded_ts
+
+
 def plot_condition_histograms(ctx: DiagnosticContext) -> Path:
-    """Overlaid baseline-vs-upgraded histograms for each available condition."""
+    """Overlaid baseline-vs-upgraded histograms of each available condition, over the used records."""
     conditions = _conditions(ctx)
-    baseline = ctx.baseline_ts
-    upgraded = ctx.upgraded_ts
+    baseline, upgraded = _used_segments(ctx)
     ncols = 3
     nrows = int(np.ceil(len(conditions) / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows), squeeze=False)
