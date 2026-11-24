@@ -5,15 +5,8 @@ The analyses are those of the hill-of-towie-open-source-analysis repo: AeroUp on
 (``scripts/wfc_analysis_2026/uplift_cc.py`` and ``uplift_ws.py``). Their data is too large for CI, so
 they are checked by hand, in two steps on the machine the reference ran on:
 
-1. In that repo's environment (with ``res-wind-up`` and its own ``hot_open`` package), dump the
-   inputs its run read, from its own caches::
-
-       python -m benchmarking.baselines.reproduce_hot_v0 dump-t13 INPUTS
-       python -m benchmarking.baselines.reproduce_hot_v0 dump-dy INPUTS STEERING_OUTPUT
-
-   ``STEERING_OUTPUT`` is the reference steering run's output folder (``HOT_dynamic_yaw``): the
-   collective control run leaves out the records the steering runs used, read from its ``pp_df``
-   files, and its steer table is copied from there.
+1. In that repo's environment, dump the inputs its run read, from its own caches, with
+   ``dump_hot_v0_inputs`` (see that module).
 
 2. In wind-up's environment, run the same analyses through the v1 interface::
 
@@ -33,13 +26,13 @@ from __future__ import annotations
 import sys
 import traceback
 import warnings
-from functools import reduce
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import yaml
 
+from benchmarking.baselines.dump_hot_v0_inputs import STEER_TABLE, STEERING_USED_LABEL
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.synthetic.sources.hill_of_towie import hill_of_towie_fields
 from wind_up.analysis import AnalysisSpec
@@ -74,70 +67,11 @@ RATED_POWER_KW = 2300.0
 ROTOR_DIAMETER_M = 82.0
 ERA5_NODE = ("ERA5_57.50_-3.25", 57.5, -3.25)
 LIDARS = ("ZX300_2428", "ZTM_5060")
-STEERING_USED_LABEL = "used by the steering runs"
-STEER_TABLE = "wake_steer_meta.csv"
 
 
 def utc(value: object) -> pd.Timestamp:
     """Return ``value`` as a UTC timestamp."""
     return pd.Timestamp(value, tz="UTC")
-
-
-def dump_t13(out: Path) -> None:
-    """Dump the AeroUp T13 run's inputs: its SCADA, metadata and reanalysis."""
-    from hot_open.era5_helpers import get_hot_reanalysis_datasets  # type: ignore[import-not-found]  # noqa: PLC0415
-    from hot_open.unpack import (  # type: ignore[import-not-found]  # noqa: PLC0415
-        unpack_local_meta_data,
-        unpack_local_scada_data_v1,
-    )
-
-    out.mkdir(parents=True, exist_ok=True)
-    unpack_local_scada_data_v1().to_parquet(out / "scada_df.parquet")
-    unpack_local_meta_data().to_parquet(out / "metadata_df.parquet")
-    for ds in get_hot_reanalysis_datasets():
-        ds.data.to_parquet(out / f"reanalysis_{ds.id}.parquet")
-
-
-def dump_dy(out: Path, *, steering_output: Path) -> None:
-    """Dump the Dynamic Yaw runs' inputs, and the records the collective control run leaves out."""
-    sys.path.insert(0, "scripts/wfc_analysis_2026")
-    from hot_open.era5_helpers import get_hot_reanalysis_datasets  # noqa: PLC0415
-    from hot_open.lidar_helpers import load_hot_lidar_10min_data  # type: ignore[import-not-found]  # noqa: PLC0415
-    from hot_open.settings import get_data_dir  # type: ignore[import-not-found]  # noqa: PLC0415
-    from hot_open.unpack import unpack_local_meta_data  # noqa: PLC0415
-    from uplift_ws import hot_dy_scada_df, hot_dy_toggle_df  # type: ignore[import-not-found]  # noqa: PLC0415
-
-    out.mkdir(parents=True, exist_ok=True)
-    scada_df = hot_dy_scada_df()
-    scada_df.to_parquet(out / "scada_df.parquet")
-    config = yaml.safe_load(
-        Path("scripts/wfc_analysis_2026/wind_up_config/HOT_dynamic_yaw.yaml").read_text().replace("!include", "#")
-    )
-    tests = [t for t in config["test_wtgs"] if t != "T07"]
-    refs = [*config["ref_wtgs"], *config["non_wtg_ref_names"]]
-    used = pd.Series(data=False, index=range(len(scada_df)))
-    for run_dir in steering_output.glob("T[0-9]*_T[0-9]*_*"):
-        up, down = run_dir.stem.split("_")[:2]
-        ref = "_".join(run_dir.stem.split("_")[2:])
-        if up not in tests or down not in tests or ref not in refs:
-            continue
-        pp = run_dir / "pp_df"
-        paths = [pp / f"{wtg}_{ref}_{side}_df.parquet" for side in ("pre", "post") for wtg in (up, down)]
-        frames = [pd.read_parquet(p) for p in paths if p.exists()]
-        if frames:
-            index = reduce(lambda a, b: a.union(b), (f.index for f in frames))
-            used |= scada_df.index.isin(index) & scada_df["TurbineName"].isin([up, down]).to_numpy()
-    pd.DataFrame({STEERING_USED_LABEL: used.to_numpy()}).to_parquet(out / "steering_used.parquet")
-    hot_dy_toggle_df(scada_df).to_parquet(out / "toggle_df.parquet")
-    metadata = unpack_local_meta_data(data_dir=get_data_dir(), scada_index_name=scada_df.index.name)
-    metadata.to_parquet(out / "metadata_df.parquet")
-    for ds in load_hot_lidar_10min_data(
-        data_dir=get_data_dir() / "lidar_data", start_dt=scada_df.index.min(), end_dt_excl=scada_df.index.max()
-    ):
-        ds.data.to_parquet(out / f"lidar_{ds.id}.parquet")
-    for ds in get_hot_reanalysis_datasets():
-        ds.data.to_parquet(out / f"reanalysis_{ds.id}.parquet")
-    (out / STEER_TABLE).write_text((steering_output / STEER_TABLE).read_text())
 
 
 def _records(inputs: Path) -> pd.DataFrame:
@@ -363,11 +297,7 @@ def main(argv: list[str]) -> None:
     args = [a for a in argv if not a.startswith("--")]
     command, rest = args[0], args[1:]
     config_only = "--config-only" in flags
-    if command == "dump-t13":
-        dump_t13(Path(rest[0]))
-    elif command == "dump-dy":
-        dump_dy(Path(rest[0]), steering_output=Path(rest[1]))
-    elif command == "t13":
+    if command == "t13":
         t13(Path(rest[0]), hot_repo=Path(rest[1]), out=Path(rest[2]), config_only=config_only)
     elif command == "dy":
         which = set(rest[3:]) or {"cc", "ws"}
