@@ -9,8 +9,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from benchmarking.campaigns.context import campaign_facts
 from benchmarking.campaigns.loader import Declaration, load_declaration
-from benchmarking.campaigns.preparation import PreparedData, northing_learning_set, prepare_data, withhold_labels
+from benchmarking.campaigns.preparation import (
+    PreparedData,
+    northing_learning_set,
+    prepare_data,
+    withhold_labels,
+    withhold_settling,
+)
 from benchmarking.diagnostics.yaw_changes import POSSIBLE_YAW_CHANGES_CSV, REPORT_COLUMNS
 from benchmarking.harness.label_checks import LABEL_CHECKS_CSV
 from benchmarking.synthetic import HOT_COLUMNS
@@ -27,6 +34,7 @@ from wind_up.operating_state import (
     WAKING_STATE_COL,
 )
 from wind_up.reanalysis import ERA5_WD_RAW
+from wind_up.toggle import ToggleSchedule
 from wind_up.waking import UPWIND_COL, WAKING_COLUMNS, WAKING_SCENARIO_COL
 
 from .test_composed import era5
@@ -239,3 +247,59 @@ class TestLabelsWithholdingUses:
         held = frame["curtailed"].eq(True).to_numpy()  # noqa: FBT003
         assert held.any()
         assert not frame.loc[held, VALID_UPLIFT_COL].any()
+
+    def test_a_record_part_a_fills_in_holds_no_label(self, declaration: Declaration) -> None:
+        scada = small_scada()
+        scada["curtailed"] = False
+        gap = (scada[HOT_COLUMNS.turbine] == "T02").to_numpy() & (scada.index == scada.index[5])
+        scada = scada[~gap]
+        label = Label(name="curtailed", column="curtailed", withholds=frozenset({UPLIFT}))
+        prepared = prepare_data(
+            scada, spec=declaration.spec, columns=declaration.columns, era5_hourly_df=era5(), labels=[label]
+        )
+        frame = prepared.scada_df
+        assert len(frame) == len(scada) + 1
+        assert frame["curtailed"].isin([True, False]).all()
+        campaign_facts(declaration.spec, frame, columns=declaration.columns, labels=[label])
+
+    def test_a_supplied_missing_label_is_left_for_the_facts_to_reject(self, declaration: Declaration) -> None:
+        scada = small_scada()
+        scada["curtailed"] = np.where(np.arange(len(scada)) == 3, np.nan, 0.0)
+        label = Label(name="curtailed", column="curtailed")
+        prepared = prepare_data(
+            scada, spec=declaration.spec, columns=declaration.columns, era5_hourly_df=era5(), labels=[label]
+        )
+        assert prepared.scada_df["curtailed"].isna().sum() == 1
+
+
+class TestSettling:
+    START = pd.Timestamp("2017-01-01", tz="UTC")
+
+    def frame(self) -> pd.DataFrame:
+        index = pd.date_range(self.START, periods=6, freq="1h", tz="UTC")
+        return pd.DataFrame(
+            {
+                HOT_COLUMNS.turbine: ["T01"] * 6 + ["T02"] * 6,
+                VALID_UPLIFT_COL: True,
+                VALID_NORTHING_COL: True,
+            },
+            index=index.append(index),
+        )
+
+    def test_a_record_settling_after_a_toggle_change_is_not_valid(self, declaration: Declaration) -> None:
+        spec = dataclasses.replace(
+            declaration.spec,
+            upgraded_turbines=["T01"],
+            upgrade_timing=ToggleSchedule(period=pd.Timedelta(hours=4), start=self.START),
+            analysis_period=(self.START, self.START + pd.Timedelta(hours=6)),
+            works={},
+            settling_time=pd.Timedelta(minutes=30),
+        )
+        out = withhold_settling(self.frame(), spec=spec)
+        settled = [True, True, False, True, False, True]
+        assert out[VALID_UPLIFT_COL].tolist() == settled + [True] * 6
+        assert out[VALID_NORTHING_COL].tolist() == settled + [True] * 6
+
+    def test_without_a_settling_time_the_frame_is_left(self, declaration: Declaration) -> None:
+        frame = self.frame()
+        assert withhold_settling(frame, spec=declaration.spec) is frame

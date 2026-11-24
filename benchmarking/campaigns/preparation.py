@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.power_model.features import solar_elevation_frame
+from benchmarking.campaigns.context import campaign_upgrades
 from benchmarking.campaigns.declaration import layout_coords
 from benchmarking.campaigns.loader import centroid
 from benchmarking.diagnostics.features import write_feature_outputs
@@ -128,7 +129,9 @@ def prepare_data(
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
     timebase = infer_timebase(index)
     config = operating_state if operating_state is not None else OperatingStateConfig()
+    supplied = pd.MultiIndex.from_arrays([pd.DatetimeIndex(scada_df.index), scada_df[columns.turbine].to_numpy()])
     scada_df = fill_grid(scada_df, turbine_col=columns.turbine, timebase=timebase)
+    scada_df = _unlabel_filled(scada_df, supplied=supplied, turbine_col=columns.turbine, labels=labels)
     scada_df = label_operating_states(
         scada_df, columns=columns, config=config, timebase=timebase, rated_power_kw=spec.rated_power_kw
     )
@@ -140,6 +143,7 @@ def prepare_data(
         overrides=spec.operating_state_overrides,
     )
     scada_df = withhold_labels(scada_df, labels=labels)
+    scada_df = withhold_settling(scada_df, spec=spec)
     declared = declared_records(
         scada_df, turbine_col=columns.turbine, windows=[*spec.exclusions, *spec.operating_state_overrides]
     )
@@ -261,6 +265,39 @@ def withhold_labels(scada_df: pd.DataFrame, *, labels: Sequence[Label]) -> pd.Da
         for use, column in ((UPLIFT, VALID_UPLIFT_COL), (NORTHING, VALID_NORTHING_COL)):
             if use in label.withholds:
                 out[column] = out[column].to_numpy(dtype=bool) & ~held
+    return out
+
+
+def withhold_settling(scada_df: pd.DataFrame, *, spec: CampaignSpec) -> pd.DataFrame:
+    """Return ``scada_df`` with each record settling after a toggle change not valid for uplift or northing."""
+    index = pd.DatetimeIndex(scada_df.index)
+    turbines = scada_df[spec.turbine_col].astype(str).to_numpy()
+    settling = np.zeros(len(scada_df), dtype=bool)
+    for upgrade in campaign_upgrades(spec):
+        for name in upgrade.turbines:
+            mine = turbines == name
+            settling[mine] |= upgrade.settling(index[mine], turbine=name)
+    if not settling.any():
+        return scada_df
+    out = scada_df.copy()
+    for column in (VALID_UPLIFT_COL, VALID_NORTHING_COL):
+        out[column] = out[column].to_numpy(dtype=bool) & ~settling
+    return out
+
+
+def _unlabel_filled(
+    filled: pd.DataFrame, *, supplied: pd.MultiIndex, turbine_col: str, labels: Sequence[Label]
+) -> pd.DataFrame:
+    """Return ``filled`` with every label false on each record whose ``(timestamp, turbine)`` is not in ``supplied``."""
+    pairs = pd.MultiIndex.from_arrays([pd.DatetimeIndex(filled.index), filled[turbine_col].to_numpy()])
+    added = ~pairs.isin(supplied)
+    if not labels or not added.any():
+        return filled
+    out = filled.copy()
+    for column in dict.fromkeys(label.column for label in labels):
+        values = out[column].to_numpy(dtype=object).copy()
+        values[added] = False
+        out[column] = pd.Series(values).infer_objects().to_numpy()
     return out
 
 

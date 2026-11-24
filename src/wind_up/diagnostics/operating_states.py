@@ -321,13 +321,9 @@ def write_operating_state_plots(
         return []
     out_dir.mkdir(parents=True, exist_ok=True)
     turbine_names = labelled[columns.turbine].astype(str)
-    scattered = (
-        {t: labelled[(turbine_names == t).to_numpy()] for t in sorted(turbine_names.unique())}
-        if per_turbine_plots
-        else {ALL_TURBINES: labelled}
-    )
     written: list[Path] = []
-    for turbine, rows in scattered.items():
+    for turbine in sorted(turbine_names.unique()) if per_turbine_plots else [ALL_TURBINES]:
+        rows = labelled[(turbine_names == turbine).to_numpy()] if per_turbine_plots else labelled
         index = pd.DatetimeIndex(rows.index)
         title = (
             None

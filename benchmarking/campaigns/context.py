@@ -86,7 +86,7 @@ def campaign_facts(
         columns=columns,
         timebase=timebase,
         turbines=turbines,
-        upgrades=_upgrades(spec),
+        upgrades=campaign_upgrades(spec),
         operating_states=operating_states if operating_states is not None else OperatingStateConfig(),
         exclusions=list(spec.exclusions),
         operating_state_overrides=list(spec.operating_state_overrides),
@@ -127,7 +127,7 @@ def _reaches(spec: CampaignSpec) -> dict[str, float]:
     return {t: spec.reach_of(t, spec.works_window(t)) for t in spec.upgraded_turbines}
 
 
-def _upgrades(spec: CampaignSpec) -> list[Upgrade]:
+def campaign_upgrades(spec: CampaignSpec) -> list[Upgrade]:
     """Return the campaign's upgrades: the upgraded turbines', and one per other works window."""
     reaches = _reaches(spec)
     groups: dict[float, list[str]] = {}
