@@ -19,9 +19,9 @@ import pandas as pd
 
 from benchmarking.baselines.power_model.screening import MIN_POOL_TO_SCREEN
 from benchmarking.campaigns.plans import changed_works, treated_activity
-from benchmarking.diagnostics.context import infer_timebase
-from benchmarking.harness.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
-from benchmarking.harness.record_selection import PAIR_CATEGORIES, USABLE, changed_times, pair_reasons
+from wind_up.diagnostics.context import infer_timebase
+from wind_up.operating_state import VALID_UPLIFT_COL, OperatingStateConfig, label_operating_states
+from wind_up.record_selection import PAIR_CATEGORIES, USABLE, changed_times, pair_reasons
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -29,10 +29,10 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from benchmarking.campaigns.declaration import CampaignSpec
-    from benchmarking.harness.record_selection import ChangedTimes
     from benchmarking.synthetic import ColumnSchema
     from wind_up.analysis_period import AnalysisPlan
     from wind_up.layout import Layout
+    from wind_up.record_selection import ChangedTimes
 
 logger = logging.getLogger(__name__)
 

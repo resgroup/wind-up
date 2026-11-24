@@ -9,15 +9,15 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.operating_state import (
+from benchmarking.harness.wind_rose import era5_rose, rose_label
+from benchmarking.synthetic import treated_mask
+from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, PlanSettings, plan_analysis, valid_extents
+from wind_up.operating_state import (
     VALID_UPLIFT_COL,
     OperatingStateConfig,
     apply_declarations,
     label_operating_states,
 )
-from benchmarking.harness.wind_rose import era5_rose, rose_label
-from benchmarking.synthetic import treated_mask
-from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS, AnalysisPlan, PlanSettings, plan_analysis, valid_extents
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -25,8 +25,8 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from benchmarking.campaigns.declaration import CampaignSpec, Window
-    from benchmarking.harness.record_selection import WorksWindow
     from benchmarking.synthetic import ColumnSchema, ToggleSchedule
+    from wind_up.record_selection import WorksWindow
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ def uplift_validity(scada_df: pd.DataFrame, *, turbine_col: str) -> pd.DataFrame
 def labelled_scada(spec: CampaignSpec, frame: pd.DataFrame, *, columns: ColumnSchema) -> pd.DataFrame:
     """Return ``frame`` with the step 2 labels: as given when it has them, else the generic states.
 
-    A frame that has the labels is used as given, so it must already carry the campaign's label overrides and
+    A frame that has the labels is used as given, so it must already carry the campaign's operating state overrides and
     exclusions, as :func:`~benchmarking.campaigns.preparation.prepare_data` returns it. A frame labelled here
     takes them too.
     """
@@ -100,7 +100,7 @@ def labelled_scada(spec: CampaignSpec, frame: pd.DataFrame, *, columns: ColumnSc
         turbine_col=spec.turbine_col,
         config=config,
         exclusions=spec.exclusions,
-        overrides=spec.label_overrides,
+        overrides=spec.operating_state_overrides,
     )
 
 

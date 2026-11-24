@@ -9,9 +9,9 @@ import pandas as pd
 import pytest
 
 from benchmarking.diagnostics.yaw_changes import POSSIBLE_YAW_CHANGES_CSV, REPORT_COLUMNS, write_possible_yaw_changes
-from benchmarking.harness.operating_state import VALID_NORTHING_COL, VALID_UPLIFT_COL
 from benchmarking.synthetic import HOT_COLUMNS
 from wind_up.northing import NORTH_OFFSET_COL, TIMESTAMP_COL
+from wind_up.operating_state import VALID_NORTHING_COL, VALID_UPLIFT_COL
 
 if TYPE_CHECKING:
     from pathlib import Path

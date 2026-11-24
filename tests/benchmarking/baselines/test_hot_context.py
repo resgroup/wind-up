@@ -86,3 +86,27 @@ class TestBuildHotV0Context:
         assert ctx.asset_yaml == ASSET_YAML
         assert ctx.northing_yaml == NORTHING_YAML
         assert captured["data_dir"] == Path("/some/dir")
+
+
+class TestV0Facts:
+    def test_the_northing_table_becomes_north_offsets(self) -> None:
+        offsets = hot_context.hot_north_offsets()
+        assert offsets[0][0] == "T01"
+        assert offsets[0][1].tz is not None
+        assert isinstance(offsets[0][2], float)
+
+    def test_the_reanalysis_sits_at_the_sites_node(self) -> None:
+        context = HotV0Context(
+            metadata_df=pd.DataFrame(),
+            reanalysis_datasets=[hot_context.ReanalysisDataset(id="node", data=pd.DataFrame({"x": [1.0]}))],
+        )
+        (node,) = hot_context.hot_reanalysis(context)
+        assert (node.name, node.latitude, node.longitude) == ("node", hot_context.HOT_LAT, hot_context.HOT_LON)
+
+    def test_the_v0_method_reads_source_native_records_with_the_vendored_type(self) -> None:
+        method = hot_context.hot_v0_method(options={"ws_bin_width": 0.5}, save_plots=True)
+        assert method.options["ws_bin_width"] == 0.5
+        assert method.options["years_for_detrend"] == 1
+        assert method.turbine_type["normal_operation_pitch_range"] == (-10, 40)
+        assert method.to_v0_records is not None
+        assert method.save_plots

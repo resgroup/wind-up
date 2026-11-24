@@ -22,10 +22,10 @@ import pandas as pd
 from matplotlib.colors import Normalize
 
 from benchmarking.baselines.power_model.features import QUALIFIER, SITE_FEATURE_UNITS
-from benchmarking.diagnostics import stages
-from benchmarking.diagnostics.density import density_scatter
 from benchmarking.diagnostics.features import category_shares_figure
-from benchmarking.diagnostics.style import apply_grid, save_fig
+from wind_up.diagnostics import stages
+from wind_up.diagnostics.density import density_scatter
+from wind_up.diagnostics.style import apply_grid, save_fig
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence

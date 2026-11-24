@@ -34,9 +34,9 @@ from benchmarking.campaigns.declaration import SyntheticCampaign, layout_from_co
 from benchmarking.campaigns.methods import carried_forward_methods
 from benchmarking.campaigns.northing_fixture import BASELINE_MONTHS, CAMPAIGN_START, UPLIFT
 from benchmarking.campaigns.runner import CampaignRunner
-from benchmarking.harness.northing import era5_direction
 from benchmarking.synthetic import HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M
 from benchmarking.synthetic.sources.hill_of_towie import hot_coords, load_hot_scada
+from wind_up.northing_step import era5_direction
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -93,16 +93,10 @@ def _methods_for(
     *,
     spec: CampaignSpec,
     out_dir: Path,
-    era5_hourly_df: pd.DataFrame | None,
     include_power_model: bool,
 ) -> list[Method]:
     """Build one turbine's methods into its own subfolder."""
-    return carried_forward_methods(
-        spec,
-        out_dir=out_dir / wtg,
-        era5_hourly_df=era5_hourly_df,
-        include_power_model=include_power_model,
-    )
+    return carried_forward_methods(spec, out_dir=out_dir / wtg, include_power_model=include_power_model)
 
 
 def run_probe(*, out_root: str | Path | None = None, include_power_model: bool = True) -> pd.DataFrame:
@@ -138,10 +132,10 @@ def run_probe(*, out_root: str | Path | None = None, include_power_model: bool =
                     _methods_for,
                     spec=spec,
                     out_dir=run_dir / f"{set_name}_{arm}",
-                    era5_hourly_df=era5_df if include_power_model else None,
                     include_power_model=include_power_model,
                 ),
                 era5_wd=era5_direction(era5_df, index),
+                era5_hourly_df=era5_df if include_power_model else None,
             )
             result = runner.run()
             rows.extend(

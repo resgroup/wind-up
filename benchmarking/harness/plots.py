@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from matplotlib.figure import Figure
 
-    from benchmarking.harness.method import MethodOutput
+    from wind_up.subject import SubjectMeasurement
 
 # Uplift quantities are stored as fractions; plot them as percentage points.
 _FRACTION_TO_PP = 100.0
@@ -158,7 +158,7 @@ def plot_conditional_uplift(
     return fig
 
 
-def conditional_estimates(output: MethodOutput, *, method_name: str) -> pd.DataFrame:
+def conditional_estimates(output: SubjectMeasurement, *, method_name: str) -> pd.DataFrame:
     """Shape a method's p50_by_condition into a plot_conditional_uplift frame, with no truth."""
     if output.p50_by_condition is None:
         msg = "output.p50_by_condition must not be None"
@@ -175,7 +175,7 @@ def conditional_estimates(output: MethodOutput, *, method_name: str) -> pd.DataF
 
 
 def conditional_truth_vs_estimate(
-    output: MethodOutput, truth_by_condition: dict[str, pd.DataFrame], *, method_name: str
+    output: SubjectMeasurement, truth_by_condition: dict[str, pd.DataFrame], *, method_name: str
 ) -> pd.DataFrame:
     """Shape a method's p50_by_condition + per-condition truth into a plot_conditional_uplift frame."""
     if output.p50_by_condition is None:

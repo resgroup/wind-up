@@ -11,9 +11,16 @@ import pytest
 
 from benchmarking.baselines.power_model import PowerModelMethod
 from benchmarking.baselines.power_model.features import QUALIFIER
-from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.method import MethodInput
-from tests.benchmarking.baselines.test_power_model_method import _COLUMNS, _FAST_PARAMS, _POWER, _TURBINE, _toy_scada
+from tests.benchmarking.baselines.test_power_model_method import (
+    _COLUMNS,
+    _FAST_PARAMS,
+    _POWER,
+    _TURBINE,
+    _Measuring,
+    _power_model,
+    _toy_scada,
+)
+from wind_up.subject import SubjectRecords
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -22,22 +29,22 @@ _N = 4000
 _REFERENCES = ["R1", "R2", "R3"]
 
 
-def _mi() -> MethodInput:
+def _mi() -> SubjectRecords:
     idx = pd.date_range("2019-01-01", periods=_N, freq="10min", tz="UTC")
     changeover = pd.Timestamp(idx[_N // 2])
     scada = _toy_scada(_N, uplift=0.0, treated=np.asarray(idx >= changeover))
-    context = CampaignContext(
-        test_wtg="T1",
+    return SubjectRecords(
+        records=scada,
+        subject="T1",
         timing=changeover,
         turbine_col=_TURBINE,
         candidate_references=_REFERENCES,
         wake_contributors=[],
         valid_for_uplift=pd.DataFrame(data=True, index=idx, columns=["T1", *_REFERENCES]),
     )
-    return MethodInput(scada_df=scada, test_wtg="T1", campaign_context=context)
 
 
-def _method(**overrides: object) -> PowerModelMethod:
+def _method(**overrides: object) -> _Measuring:
     kwargs: dict[str, object] = {
         "columns": _COLUMNS,
         "baseline_rated_power_kw": 2300.0,
@@ -48,11 +55,11 @@ def _method(**overrides: object) -> PowerModelMethod:
         "model_params": _FAST_PARAMS,
         **overrides,
     }
-    return PowerModelMethod(**kwargs)  # type: ignore[arg-type]
+    return _power_model(**kwargs)
 
 
 def test_the_dump_is_off_by_default_and_changes_nothing(tmp_path: Path) -> None:
-    assert PowerModelMethod(columns=_COLUMNS, baseline_rated_power_kw=2300.0).row_dump_dir is None
+    assert PowerModelMethod().row_dump_dir is None
     off = _method(out_dir=tmp_path / "off").estimate(_mi()).p50_overall
     on = _method(out_dir=tmp_path / "on", row_dump_dir=tmp_path / "dump").estimate(_mi()).p50_overall
     assert off == on
@@ -71,7 +78,7 @@ def test_the_dump_carries_every_documented_column(tmp_path: Path) -> None:
         assert col in rows.columns
     # features keep their original names
     assert f"{_POWER}{QUALIFIER}R1" in rows.columns
-    assert len(rows) == mi.scada_df.index.nunique()
+    assert len(rows) == mi.records.index.nunique()
 
     finite = np.isfinite(rows["counterfactual_kw"].to_numpy())
     assert (finite == (rows["selected"] & rows["upgraded"]).to_numpy()).all()
@@ -116,7 +123,7 @@ def test_under_the_training_period_swap_the_dump_keeps_the_campaigns_periods(tmp
     rows = pd.read_parquet(tmp_path / "dump" / "T1" / "rows.parquet")
     sidecar = json.loads((tmp_path / "dump" / "T1" / "rows.json").read_text())
 
-    before = (rows["timestamp"] < mi.context.timing).to_numpy()
+    before = (rows["timestamp"] < mi.timing).to_numpy()
     assert (rows["baseline"].to_numpy() == (rows["selected"].to_numpy() & before)).all()
     assert (rows["upgraded"].to_numpy() == (rows["selected"].to_numpy() & ~before)).all()
     assert (rows["predicted"] == rows["baseline"]).all()

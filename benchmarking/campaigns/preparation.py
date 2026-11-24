@@ -1,7 +1,7 @@
 """Part A of the method, data preparation (steps 1 to 6), done once per dataset.
 
 :func:`prepare_data` gives every turbine a record at every timestamp, labels the operating states with the
-campaign's label overrides and exclusions applied, aligns the reanalysis, norths the whole farm over the whole
+campaign's operating state overrides and exclusions applied, aligns the reanalysis, norths the whole farm over the whole
 record, finds the possible yaw-alignment changes, adds the waking columns and, when asked, writes the outputs
 of each step. The composed run and the benchmark
 studies share it, so a method is judged on the same prepared data wherever it runs.
@@ -17,39 +17,42 @@ import numpy as np
 import pandas as pd
 
 from benchmarking.baselines.power_model.features import solar_elevation_frame
+from benchmarking.campaigns.context import campaign_upgrades
 from benchmarking.campaigns.declaration import layout_coords
 from benchmarking.campaigns.loader import centroid
-from benchmarking.diagnostics import stages
-from benchmarking.diagnostics.context import infer_timebase
 from benchmarking.diagnostics.features import write_feature_outputs
-from benchmarking.diagnostics.input_data import write_input_data_plots
-from benchmarking.diagnostics.operating_states import (
+from benchmarking.diagnostics.reanalysis import write_reanalysis_outputs
+from benchmarking.diagnostics.yaw_changes import possible_yaw_change_report, write_possible_yaw_changes
+from benchmarking.harness.label_checks import LABEL_CHECKS_CSV, label_checks, warn_label_checks
+from wind_up.diagnostics import stages
+from wind_up.diagnostics.context import infer_timebase
+from wind_up.diagnostics.input_data import write_input_data_plots
+from wind_up.diagnostics.operating_states import (
     NORTHING_VIEWS,
     WAKING_VIEWS,
     write_operating_state_plots,
     write_validity_plots,
 )
-from benchmarking.diagnostics.reanalysis import write_reanalysis_outputs
-from benchmarking.diagnostics.waking_scenarios import write_waking_outputs
-from benchmarking.diagnostics.yaw_changes import possible_yaw_change_report, write_possible_yaw_changes
-from benchmarking.harness.label_checks import LABEL_CHECKS_CSV, label_checks, warn_label_checks
-from benchmarking.harness.northing import (
+from wind_up.diagnostics.waking_scenarios import write_waking_outputs
+from wind_up.labels import NORTHING, UPLIFT
+from wind_up.northing_step import (
     DEFAULT_NORTHING_ROLES,
     apply_north_tables,
     north_offsets_of,
     north_tables,
     northing_rows,
 )
-from benchmarking.harness.operating_state import (
+from wind_up.operating_state import (
     VALID_NORTHING_COL,
+    VALID_UPLIFT_COL,
     OperatingStateConfig,
     apply_declarations,
     declared_records,
     fill_grid,
     label_operating_states,
 )
-from benchmarking.harness.reanalysis import ERA5_WD_RAW, prepare_reanalysis
-from benchmarking.harness.waking import WAKING_COLUMNS, add_waking_scenarios, waking_directions
+from wind_up.reanalysis import ERA5_WD_RAW, prepare_reanalysis
+from wind_up.waking import WAKING_COLUMNS, add_waking_scenarios, waking_directions
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -58,8 +61,9 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from benchmarking.campaigns.declaration import CampaignSpec
-    from benchmarking.harness.reanalysis import ReanalysisResult
     from benchmarking.synthetic import ColumnSchema
+    from wind_up.labels import Label
+    from wind_up.reanalysis import ReanalysisResult
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +110,7 @@ def prepare_data(
     cell_selection: Literal["land", "sea"] = "land",
     out_dir: Path | None = None,
     plots: bool = True,
+    labels: Sequence[Label] = (),
 ) -> PreparedData:
     """Run Part A on ``scada_df`` and return what it produced.
 
@@ -118,11 +123,15 @@ def prepare_data(
     :param cell_selection: the reanalysis grid cell asked for, named in the reanalysis summary
     :param out_dir: where each step's outputs go, in a folder per step; nothing is written when ``None``
     :param plots: write the plots as well as the tables
+    :param labels: the analyst's labels, columns of ``scada_df``; a record holding one is not valid for the
+        uses it withholds
     """
     index = pd.DatetimeIndex(scada_df.index.unique()).sort_values()
     timebase = infer_timebase(index)
     config = operating_state if operating_state is not None else OperatingStateConfig()
+    supplied = pd.MultiIndex.from_arrays([pd.DatetimeIndex(scada_df.index), scada_df[columns.turbine].to_numpy()])
     scada_df = fill_grid(scada_df, turbine_col=columns.turbine, timebase=timebase)
+    scada_df = _unlabel_filled(scada_df, supplied=supplied, turbine_col=columns.turbine, labels=labels)
     scada_df = label_operating_states(
         scada_df, columns=columns, config=config, timebase=timebase, rated_power_kw=spec.rated_power_kw
     )
@@ -131,10 +140,12 @@ def prepare_data(
         turbine_col=columns.turbine,
         config=config,
         exclusions=spec.exclusions,
-        overrides=spec.label_overrides,
+        overrides=spec.operating_state_overrides,
     )
+    scada_df = withhold_labels(scada_df, labels=labels)
+    scada_df = withhold_settling(scada_df, spec=spec)
     declared = declared_records(
-        scada_df, turbine_col=columns.turbine, windows=[*spec.exclusions, *spec.label_overrides]
+        scada_df, turbine_col=columns.turbine, windows=[*spec.exclusions, *spec.operating_state_overrides]
     )
     checks = label_checks(
         scada_df, columns=columns, timebase=timebase, rated_power_kw=spec.rated_power_kw, declared=declared
@@ -238,6 +249,56 @@ def prepare_data(
         possible_changes=possible_changes,
         timebase=timebase,
     )
+
+
+def withhold_labels(scada_df: pd.DataFrame, *, labels: Sequence[Label]) -> pd.DataFrame:
+    """Return ``scada_df`` with each record holding a label not valid for the uses that label withholds.
+
+    A record whose label column is not true, a filled record's NaN included, keeps its validity.
+    """
+    withholding = [label for label in labels if label.withholds]
+    if not withholding:
+        return scada_df
+    out = scada_df.copy()
+    for label in withholding:
+        held = out[label.column].eq(True).to_numpy(dtype=bool)  # noqa: FBT003
+        for use, column in ((UPLIFT, VALID_UPLIFT_COL), (NORTHING, VALID_NORTHING_COL)):
+            if use in label.withholds:
+                out[column] = out[column].to_numpy(dtype=bool) & ~held
+    return out
+
+
+def withhold_settling(scada_df: pd.DataFrame, *, spec: CampaignSpec) -> pd.DataFrame:
+    """Return ``scada_df`` with each record settling after a toggle change not valid for uplift or northing."""
+    index = pd.DatetimeIndex(scada_df.index)
+    turbines = scada_df[spec.turbine_col].astype(str).to_numpy()
+    settling = np.zeros(len(scada_df), dtype=bool)
+    for upgrade in campaign_upgrades(spec):
+        for name in upgrade.turbines:
+            mine = turbines == name
+            settling[mine] |= upgrade.settling(index[mine], turbine=name)
+    if not settling.any():
+        return scada_df
+    out = scada_df.copy()
+    for column in (VALID_UPLIFT_COL, VALID_NORTHING_COL):
+        out[column] = out[column].to_numpy(dtype=bool) & ~settling
+    return out
+
+
+def _unlabel_filled(
+    filled: pd.DataFrame, *, supplied: pd.MultiIndex, turbine_col: str, labels: Sequence[Label]
+) -> pd.DataFrame:
+    """Return ``filled`` with every label false on each record whose ``(timestamp, turbine)`` is not in ``supplied``."""
+    pairs = pd.MultiIndex.from_arrays([pd.DatetimeIndex(filled.index), filled[turbine_col].to_numpy()])
+    added = ~pairs.isin(supplied)
+    if not labels or not added.any():
+        return filled
+    out = filled.copy()
+    for column in dict.fromkeys(label.column for label in labels):
+        values = out[column].to_numpy(dtype=object).copy()
+        values[added] = False
+        out[column] = pd.Series(values).infer_objects().to_numpy()
+    return out
 
 
 def northing_learning_set(

@@ -7,26 +7,27 @@ import pandas as pd
 import pytest
 
 from benchmarking.campaigns import CampaignRunner, per_turbine_table, visible_mask
-from benchmarking.harness import MethodInput, MethodOutput
 from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from wind_up.subject import SubjectMeasurement, SubjectRecords
 
+from .per_subject import PerSubject
 from .test_declaration import CHANGEOVER, PERIOD, campaign, scada
 
 TOLERANCE = 1e-9
 TOGGLE = ToggleSchedule(period=pd.Timedelta(hours=8), start=CHANGEOVER)
 
 
-class ZeroMethod:
+class ZeroMethod(PerSubject):
     """Reports exactly zero uplift, whatever it is given."""
 
     name = "zero"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:  # noqa: ARG002
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:  # noqa: ARG002
         """Return a zero P50."""
-        return MethodOutput(p50_overall=0.0)
+        return SubjectMeasurement(p50_overall=0.0)
 
 
-class OffsetMethod:
+class OffsetMethod(PerSubject):
     """Reports a fixed non-zero uplift, so the farm headline is shown to follow the method."""
 
     name = "offset"
@@ -34,23 +35,23 @@ class OffsetMethod:
     def __init__(self, offset: float) -> None:
         self.offset = offset
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:  # noqa: ARG002
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:  # noqa: ARG002
         """Return the fixed offset as the P50."""
-        return MethodOutput(p50_overall=self.offset)
+        return SubjectMeasurement(p50_overall=self.offset)
 
 
-class RecordingMethod:
-    """Captures every MethodInput it is handed."""
+class RecordingMethod(PerSubject):
+    """Captures every SubjectRecords it is handed."""
 
     name = "recording"
 
     def __init__(self) -> None:
-        self.seen: list[MethodInput] = []
+        self.seen: list[SubjectRecords] = []
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Record the input and return a zero P50."""
         self.seen.append(mi)
-        return MethodOutput(p50_overall=0.0)
+        return SubjectMeasurement(p50_overall=0.0)
 
 
 def run(methods: list, *, upgrade_timing: object = CHANGEOVER):  # noqa: ANN201
@@ -95,30 +96,30 @@ def test_each_method_is_estimated_once_per_upgraded_turbine() -> None:
     recording = RecordingMethod()
     run([recording])
     assert len(recording.seen) == 2
-    assert {mi.test_wtg for mi in recording.seen} == {"T1", "T2"}
+    assert {mi.subject for mi in recording.seen} == {"T1", "T2"}
 
 
 def test_an_excluded_turbine_reaches_methods_for_its_wake_but_never_as_a_reference() -> None:
     recording = RecordingMethod()
     run([recording])
     for mi in recording.seen:
-        assert {"T1", "T2", "T3", "T4", "T5"} == set(mi.scada_df[HOT_COLUMNS.turbine])
-        assert "T5" not in mi.context.candidate_references
-        assert "T5" in mi.context.wake_contributors
+        assert {"T1", "T2", "T3", "T4", "T5"} == set(mi.records[HOT_COLUMNS.turbine])
+        assert "T5" not in mi.candidate_references
+        assert "T5" in mi.wake_contributors
 
 
 def test_methods_see_only_the_analysis_period() -> None:
     recording = RecordingMethod()
     run([recording])
     for mi in recording.seen:
-        assert mi.scada_df.index.min() >= PERIOD[0]
-        assert mi.scada_df.index.max() < PERIOD[1]
+        assert mi.records.index.min() >= PERIOD[0]
+        assert mi.records.index.max() < PERIOD[1]
 
 
 def test_outputs_are_kept_for_every_method_and_turbine() -> None:
     result = run([ZeroMethod()])
     assert set(result.outputs) == {("zero", "T1"), ("zero", "T2")}
-    assert all(isinstance(o, MethodOutput) for o in result.outputs.values())
+    assert all(isinstance(o, SubjectMeasurement) for o in result.outputs.values())
 
 
 def test_farm_table_reports_the_spread_and_guard_count() -> None:
@@ -156,14 +157,14 @@ def test_a_campaign_with_no_methods_still_returns_an_indexable_farm_table() -> N
     assert result.farm.empty
 
 
-class GuardedMethod:
+class GuardedMethod(PerSubject):
     """Reports a usable uplift for one turbine and a non-finite one for the other."""
 
     name = "guarded"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Return NaN for T1 so farm_uplift drops it, and 0 for everything else."""
-        return MethodOutput(p50_overall=float("nan") if mi.test_wtg == "T1" else 0.0)
+        return SubjectMeasurement(p50_overall=float("nan") if mi.subject == "T1" else 0.0)
 
 
 def test_a_dropped_turbine_is_excluded_from_that_methods_truth() -> None:
@@ -185,13 +186,13 @@ def test_the_campaign_truth_still_covers_every_upgraded_turbine() -> None:
     assert abs(result.truth_farm_uplift) < TOLERANCE
 
 
-class TestCampaignContext:
+class TestTheAnalysis:
     def test_the_method_sees_the_declared_references_not_every_turbine_present(self) -> None:
         # T2 is upgraded and in the frame, but the campaign does not offer it as a reference;
         # T5 is declared but excluded, so the runner never shows it.
         recorder = RecordingMethod()
         run([recorder])
-        contexts = {mi.test_wtg: mi.context for mi in recorder.seen}
+        contexts = {mi.subject: mi for mi in recorder.seen}
         assert contexts["T1"].candidate_references == ["T3", "T4"]
         assert contexts["T2"].candidate_references == ["T3", "T4"]
 
@@ -199,8 +200,8 @@ class TestCampaignContext:
         recorder = RecordingMethod()
         run([recorder])
         for mi in recorder.seen:
-            given = pd.DatetimeIndex(mi.scada_df.index.unique())
-            assert mi.context.valid_over(given).to_numpy().all()
+            given = pd.DatetimeIndex(mi.records.index.unique())
+            assert mi.valid_over(given).to_numpy().all()
 
 
 class TestAPlannedCampaign:

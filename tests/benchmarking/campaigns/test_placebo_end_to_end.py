@@ -129,7 +129,7 @@ def test_every_applicable_method_reported(mode: str, tmp_path: Path) -> None:
     expected = {m.name for m in carried_forward_methods(spec, out_dir=tmp_path, include_power_model=False)}
     result = run_placebo_fixture(mode, wind_noise_sd=0.0, out_dir=tmp_path)
     assert set(result.farm["method"]) == expected
-    assert ("toggle_specialist" in expected) == (mode == "toggle")
+    assert ("toggle_energy_ratio" in expected) == (mode == "toggle")
 
 
 def test_the_noisy_fixture_is_not_degenerate() -> None:

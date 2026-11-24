@@ -8,7 +8,7 @@ rollout every test turbine faces this trade-off differently.
 
 `wind_up.analysis_period.plan_analysis` makes the choice for one test turbine, from declared facts
 only: every turbine's works windows, the records each turbine is valid for uplift over (the step 2 labels,
-with the campaign's exclusions and label overrides applied), the layout, and a few settings. It never reads
+with the campaign's exclusions and operating state overrides applied), the layout, and a few settings. It never reads
 power. It returns an `AnalysisPlan`: the span, the power
 references, the reserves, every other turbine's role with the reason, and whether the pool rule held.
 The campaign runner (`benchmarking/campaigns/plans.py`) calls it once per upgraded turbine for every
@@ -40,7 +40,7 @@ Over a candidate span `[start, end)`, another turbine is an eligible power refer
 hold:
 
 1. **it is valid for uplift over enough of the span**: at least `reference_share` (50 %) of the span's
-   records (step 2 labels, after the campaign's exclusions and label overrides);
+   records (step 2 labels, after the campaign's exclusions and operating state overrides);
 2. **no works window of its own overlaps the span**: a turbine changed entirely before the span
    starts or entirely after it ends is fine; one changed during it is not;
 3. **it is within 20 rotor diameters** (`max_reference_distance_d`) of the test turbine.
@@ -173,7 +173,7 @@ that each one's records can support the measurement. It runs once per test turbi
 any method sees the plan, so the measurement screen of pass 2 starts from the references it keeps.
 
 **Records.** Each candidate is paired with the test turbine alone, and the pair's records go through the
-record selection of method step 11 (`benchmarking/harness/record_selection.py`). Each lost record is
+record selection of method step 11 (`src/wind_up/record_selection.py`). Each lost record is
 labelled with the first reason that applies, in this order:
 
 | reason | the record is lost because |

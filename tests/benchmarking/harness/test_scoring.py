@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from benchmarking.harness.campaign import campaign_windows
-from benchmarking.harness.conditions import label_column
-from benchmarking.harness.method import MethodInput, MethodOutput
 from benchmarking.harness.replicates import StudyConfig, build_replicates
 from benchmarking.harness.scoring import _merge_diagnostics, score_one, score_output, score_study, truth_mask
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange
+from wind_up.conditions import label_column
+from wind_up.subject import SubjectMeasurement, SubjectRecords, answer_analyses
 from wind_up_v0.constants import TIMESTAMP_COL
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from wind_up.analysis import AnalysisOutput, AnalysisSpec
+    from wind_up.facts import WindFarmFacts
 
 from .stubs import BiasedMethod, ConditionalOracleMethod, OracleMethod, RecordingMethod, UncertainMethod
 
@@ -29,6 +37,7 @@ def _base_scada(turbines: tuple[str, ...] = ("T1", "T3", "T4", "T7")) -> pd.Data
                 HOT_COLUMNS.wind_speed: 8.0,
                 HOT_COLUMNS.wind_speed_sd: 0.8,
                 HOT_COLUMNS.gen_rpm: 1400.0,
+                HOT_COLUMNS.availability: 86400.0,
             },
             index=index,
         )
@@ -37,6 +46,16 @@ def _base_scada(turbines: tuple[str, ...] = ("T1", "T3", "T4", "T7")) -> pd.Data
     wf_df = pd.concat(frames)
     wf_df.index.name = TIMESTAMP_COL
     return wf_df
+
+
+_TURBINES = pd.DataFrame(
+    {
+        "name": ["T1", "T3", "T4", "T7"],
+        "latitude": [57.50, 57.51, 57.52, 57.53],
+        "longitude": -3.07,
+        "rated_power_kw": 2300.0,
+    }
+)
 
 
 def _study(mode: str = "prepost", n_replicates: int = 4, seed: int = 0) -> StudyConfig:
@@ -55,7 +74,9 @@ def _study(mode: str = "prepost", n_replicates: int = 4, seed: int = 0) -> Study
 
 def test_results_have_one_row_per_method_replicate_and_campaign_length() -> None:
     base = _base_scada()
-    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=4))
+    results = score_study(
+        base, turbines=_TURBINES, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=4)
+    )
     # 4 replicates x 2 campaign lengths x 1 method
     assert len(results) == 4 * 2
     assert set(results["campaign_months"]) == {3, 6}
@@ -65,7 +86,9 @@ def test_results_have_one_row_per_method_replicate_and_campaign_length() -> None
 
 def test_results_record_wall_time_per_run() -> None:
     base = _base_scada()
-    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1))
+    results = score_study(
+        base, turbines=_TURBINES, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1)
+    )
     assert "wall_time_s" in results.columns
     assert results["wall_time_s"].notna().all()
     assert (results["wall_time_s"] >= 0).all()
@@ -73,7 +96,9 @@ def test_results_record_wall_time_per_run() -> None:
 
 def test_results_record_the_window_boundaries_per_replicate() -> None:
     base = _base_scada()
-    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1))
+    results = score_study(
+        base, turbines=_TURBINES, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1)
+    )
     for col in ("treatment_start", "baseline_start", "activity_end"):
         assert col in results.columns
         assert results[col].notna().all()
@@ -85,19 +110,21 @@ def test_results_record_the_window_boundaries_per_replicate() -> None:
 
 def test_oracle_method_has_near_zero_signed_error() -> None:
     base = _base_scada()
-    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study())
+    results = score_study(base, turbines=_TURBINES, profile=PROFILE, methods=[OracleMethod(base)], study=_study())
     assert np.allclose(results["signed_error"].to_numpy(), 0.0, atol=1e-9)
 
 
 def test_biased_method_signed_error_equals_offset() -> None:
     base = _base_scada()
-    results = score_study(base, profile=PROFILE, methods=[BiasedMethod(base, offset=0.02)], study=_study())
+    results = score_study(
+        base, turbines=_TURBINES, profile=PROFILE, methods=[BiasedMethod(base, offset=0.02)], study=_study()
+    )
     assert np.allclose(results["signed_error"].to_numpy(), 0.02, atol=1e-9)
 
 
 def test_truth_is_recomputed_per_campaign_length_not_shared() -> None:
     base = _base_scada()
-    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study())
+    results = score_study(base, turbines=_TURBINES, profile=PROFILE, methods=[OracleMethod(base)], study=_study())
     # constant power -> uplift is ~equal across lengths, but truth must be present per row
     assert results["truth"].notna().all()
     assert (results["truth"] > 0).all()  # +5% Cp raises region-2 power
@@ -106,7 +133,12 @@ def test_truth_is_recomputed_per_campaign_length_not_shared() -> None:
 def test_profile_name_is_recorded() -> None:
     base = _base_scada()
     results = score_study(
-        base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(), profile_name="constant_cp_5pct"
+        base,
+        turbines=_TURBINES,
+        profile=PROFILE,
+        methods=[OracleMethod(base)],
+        study=_study(),
+        profile_name="constant_cp_5pct",
     )
     assert set(results["profile"]) == {"constant_cp_5pct"}
 
@@ -115,29 +147,31 @@ def test_fairness_every_method_sees_identical_method_inputs() -> None:
     base = _base_scada()
     rec_a = RecordingMethod(name="a")
     rec_b = RecordingMethod(name="b")
-    score_study(base, profile=PROFILE, methods=[rec_a, rec_b], study=_study())
+    score_study(base, turbines=_TURBINES, profile=PROFILE, methods=[rec_a, rec_b], study=_study())
 
     assert len(rec_a.seen) == len(rec_b.seen) > 0
     for mi_a, mi_b in zip(rec_a.seen, rec_b.seen, strict=True):
-        assert mi_a.test_wtg == mi_b.test_wtg
-        assert mi_a.upgrade_timing == mi_b.upgrade_timing
-        pd.testing.assert_frame_equal(mi_a.scada_df, mi_b.scada_df)
+        assert mi_a.subject == mi_b.subject
+        assert mi_a.timing == mi_b.timing
+        pd.testing.assert_frame_equal(mi_a.records, mi_b.records)
 
 
 def test_fairness_shorter_campaign_input_is_a_prefix_of_the_longer() -> None:
     base = _base_scada()
     rec = RecordingMethod()
-    score_study(base, profile=PROFILE, methods=[rec], study=_study(n_replicates=1))
+    score_study(base, turbines=_TURBINES, profile=PROFILE, methods=[rec], study=_study(n_replicates=1))
     # one replicate, lengths [3, 6] in order
     short_mi, long_mi = rec.seen[0], rec.seen[1]
-    assert short_mi.scada_df.index.min() == long_mi.scada_df.index.min()  # same baseline start
-    assert short_mi.scada_df.index.max() <= long_mi.scada_df.index.max()  # shorter activity
-    assert len(short_mi.scada_df) < len(long_mi.scada_df)
+    assert short_mi.records.index.min() == long_mi.records.index.min()  # same baseline start
+    assert short_mi.records.index.max() <= long_mi.records.index.max()  # shorter activity
+    assert len(short_mi.records) < len(long_mi.records)
 
 
 def test_toggle_study_scores_without_error() -> None:
     base = _base_scada()
-    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(mode="toggle"))
+    results = score_study(
+        base, turbines=_TURBINES, profile=PROFILE, methods=[OracleMethod(base)], study=_study(mode="toggle")
+    )
     assert len(results) == 4 * 2
     assert np.allclose(results["signed_error"].to_numpy(), 0.0, atol=1e-9)
 
@@ -145,7 +179,11 @@ def test_toggle_study_scores_without_error() -> None:
 def test_two_methods_scored_side_by_side() -> None:
     base = _base_scada()
     results = score_study(
-        base, profile=PROFILE, methods=[OracleMethod(base), BiasedMethod(base, offset=0.01)], study=_study()
+        base,
+        turbines=_TURBINES,
+        profile=PROFILE,
+        methods=[OracleMethod(base), BiasedMethod(base, offset=0.01)],
+        study=_study(),
     )
     assert set(results["method"]) == {"oracle", "biased"}
     oracle_err = results[results["method"] == "oracle"]["signed_error"].to_numpy()
@@ -160,6 +198,7 @@ def test_on_method_complete_fires_per_method_with_only_that_methods_rows() -> No
     methods = [OracleMethod(base), BiasedMethod(base, offset=0.01)]
     results = score_study(
         base,
+        turbines=_TURBINES,
         profile=PROFILE,
         methods=methods,
         study=_study(),
@@ -178,9 +217,14 @@ def test_on_method_complete_fires_per_method_with_only_that_methods_rows() -> No
 def test_on_method_complete_is_optional() -> None:
     base = _base_scada()
     with_cb = score_study(
-        base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(), on_method_complete=lambda _n, _d: None
+        base,
+        turbines=_TURBINES,
+        profile=PROFILE,
+        methods=[OracleMethod(base)],
+        study=_study(),
+        on_method_complete=lambda _n, _d: None,
     )
-    without_cb = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study())
+    without_cb = score_study(base, turbines=_TURBINES, profile=PROFILE, methods=[OracleMethod(base)], study=_study())
     # wall_time_s is measured per run, so it differs between two runs; the callback must not change
     # anything else.
     drop = ["wall_time_s"]
@@ -189,7 +233,9 @@ def test_on_method_complete_is_optional() -> None:
 
 def test_conditional_rows_are_emitted_with_truth_and_near_zero_error() -> None:
     base = _base_scada()
-    results = score_study(base, profile=PROFILE, methods=[ConditionalOracleMethod(base)], study=_study(n_replicates=1))
+    results = score_study(
+        base, turbines=_TURBINES, profile=PROFILE, methods=[ConditionalOracleMethod(base)], study=_study(n_replicates=1)
+    )
     assert "condition_bin" in results.columns
     overall = results[results["condition"] == "overall"]
     assert (overall["condition_bin"] == "overall").all()
@@ -204,7 +250,9 @@ def test_conditional_rows_are_emitted_with_truth_and_near_zero_error() -> None:
 
 def test_overall_only_method_emits_no_conditional_rows() -> None:
     base = _base_scada()
-    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1))
+    results = score_study(
+        base, turbines=_TURBINES, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1)
+    )
     assert set(results["condition"]) == {"overall"}
 
 
@@ -213,7 +261,9 @@ def test_overall_only_method_emits_no_conditional_rows() -> None:
 
 def test_sigma_is_nan_for_a_method_that_reports_no_uncertainty() -> None:
     base = _base_scada()
-    results = score_study(base, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1))
+    results = score_study(
+        base, turbines=_TURBINES, profile=PROFILE, methods=[OracleMethod(base)], study=_study(n_replicates=1)
+    )
     assert "sigma" in results.columns
     assert results["sigma"].isna().all()
 
@@ -221,7 +271,11 @@ def test_sigma_is_nan_for_a_method_that_reports_no_uncertainty() -> None:
 def test_sigma_reaches_the_results_for_overall_and_per_bin_rows() -> None:
     base = _base_scada()
     results = score_study(
-        base, profile=PROFILE, methods=[UncertainMethod(base, sigma=0.03)], study=_study(n_replicates=1)
+        base,
+        turbines=_TURBINES,
+        profile=PROFILE,
+        methods=[UncertainMethod(base, sigma=0.03)],
+        study=_study(n_replicates=1),
     )
     overall = results[results["condition"] == "overall"]
     per_bin = results[results["condition"] != "overall"]
@@ -234,6 +288,7 @@ def test_uncertainty_diagnostics_are_carried_to_every_row() -> None:
     base = _base_scada()
     results = score_study(
         base,
+        turbines=_TURBINES,
         profile=PROFILE,
         methods=[UncertainMethod(base, diagnostic_columns={"n_blocks": 7.0, "frac_resamples_finite": 0.5})],
         study=_study(n_replicates=1),
@@ -248,6 +303,7 @@ def test_a_diagnostics_column_clashing_with_a_harness_column_raises() -> None:
     with pytest.raises(ValueError, match="clash with columns the harness owns"):
         score_study(
             base,
+            turbines=_TURBINES,
             profile=PROFILE,
             methods=[UncertainMethod(base, diagnostic_columns={"estimate": 0.0})],
             study=_study(n_replicates=1),
@@ -270,7 +326,7 @@ def test_score_one_reproduces_score_study_row_for_row() -> None:
     base = _base_scada()
     study = _study(n_replicates=2)
     method = UncertainMethod(base)
-    from_study = score_study(base, profile=PROFILE, methods=[method], study=study, profile_name="p")
+    from_study = score_study(base, turbines=_TURBINES, profile=PROFILE, methods=[method], study=study, profile_name="p")
 
     replicates = build_replicates(base, profile=PROFILE, study=study)
     rows: list[dict] = []
@@ -285,7 +341,17 @@ def test_score_one_reproduces_score_study_row_for_row() -> None:
         ):
             mask = truth_mask(replicate, window)
             truth = replicate.true_uplift(mask=mask).overall
-            rows.extend(score_one(method, replicate=replicate, window=window, truth=truth, mask=mask, profile_name="p"))
+            rows.extend(
+                score_one(
+                    method,
+                    replicate=replicate,
+                    window=window,
+                    truth=truth,
+                    mask=mask,
+                    turbines=_TURBINES,
+                    profile_name="p",
+                )
+            )
     from_one = pd.DataFrame(rows)
 
     drop = ["wall_time_s"]  # measured per call, so it differs between two runs
@@ -314,15 +380,19 @@ class ReplayMethod:
 
     name = "replay"
 
-    def __init__(self, output: MethodOutput) -> None:
+    def __init__(self, output: SubjectMeasurement) -> None:
         self.output = output
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:  # noqa: ARG002
+    def estimate(self, facts: WindFarmFacts, analyses: Sequence[AnalysisSpec]) -> list[AnalysisOutput]:
+        """Return the prepared output for each subject."""
+        return answer_analyses(facts, analyses, name=self.name, measure=self.measure)
+
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:  # noqa: ARG002
         """Return the prepared output."""
         return self.output
 
 
-def _prepared_output() -> MethodOutput:
+def _prepared_output() -> SubjectMeasurement:
     """An output exercising every row score_output builds: overall, per-condition and diagnostics."""
     by_condition = pd.DataFrame(
         {
@@ -333,7 +403,7 @@ def _prepared_output() -> MethodOutput:
         }
     )
     diagnostics = pd.DataFrame([{"condition": "overall", "condition_bin": "overall", "n_blocks": 7}])
-    return MethodOutput(
+    return SubjectMeasurement(
         p50_overall=0.02,
         p50_by_condition=by_condition,
         sigma_overall=0.005,
@@ -359,7 +429,13 @@ def test_score_output_reproduces_score_one_for_an_already_computed_output() -> N
     output = _prepared_output()
 
     from_one = score_one(
-        ReplayMethod(output), replicate=replicate, window=window, truth=truth, mask=mask, profile_name="p"
+        ReplayMethod(output),
+        replicate=replicate,
+        window=window,
+        truth=truth,
+        mask=mask,
+        turbines=_TURBINES,
+        profile_name="p",
     )
     from_output = score_output(
         output, method_name="replay", replicate=replicate, window=window, truth=truth, mask=mask, profile_name="p"
@@ -385,7 +461,7 @@ def test_score_output_records_the_wall_time_it_is_given() -> None:
     )[0]
     mask = truth_mask(replicate, window)
     rows = score_output(
-        MethodOutput(p50_overall=0.0),
+        SubjectMeasurement(p50_overall=0.0),
         method_name="m",
         replicate=replicate,
         window=window,
@@ -417,7 +493,7 @@ def test_truth_for_an_axis_is_computed_on_the_methods_own_labels() -> None:
     by_condition = pd.DataFrame(
         {"condition": "direction", "condition_bin": ["(60.0, 90.0]", "(90.0, 120.0]"], "p50_uplift": [0.01, 0.02]}
     )
-    output = MethodOutput(p50_overall=0.02, p50_by_condition=by_condition, labeled_rows=labels)
+    output = SubjectMeasurement(p50_overall=0.02, p50_by_condition=by_condition, labeled_rows=labels)
     rows = score_output(output, method_name="replay", replicate=replicate, window=window, truth=truth, mask=mask)
     by_bin = {r["condition_bin"]: r["truth"] for r in rows if r["condition"] == "direction"}
     assert by_bin["(60.0, 90.0]"] == pytest.approx(truth)

@@ -24,10 +24,11 @@ from benchmarking.baselines.naive_ratio import (
     _expected_per_day,
     _infer_timebase,
 )
-from benchmarking.harness.context import CampaignContext
-from benchmarking.harness.method import MethodInput, MethodOutput
-from benchmarking.harness.operating_state import MISSING, NORMAL_OPERATION, STATE_COL
 from benchmarking.synthetic import ColumnSchema, ToggleSchedule, treated_mask
+from tests.wind_up.record_states import counter_states
+from wind_up.method import MethodConfigurationError
+from wind_up.operating_state import MISSING, STATE_COL, VALID_UPLIFT_COL
+from wind_up.subject import SubjectMeasurement, SubjectRecords
 
 # Deliberately non-v0 column names: the method is source-agnostic, so the active-power column
 # is configured and the turbine column comes from the seam. Using names that are nothing like
@@ -37,7 +38,6 @@ _POWER_COL = "kw"
 _AVAIL_COL = "secs_avail"
 # Larger than any test timebase's full period, so the (now required) availability filter keeps
 # every row unless a test deliberately sets a lower value.
-_FULLY_AVAILABLE_SECS = 3600.0
 # The method reads active_power + availability from the schema; the other required roles are
 # unused by the naive ratio, so name them with placeholders.
 _COLUMNS = ColumnSchema(
@@ -50,15 +50,35 @@ _COLUMNS = ColumnSchema(
 )
 
 
+def _run(
+    scada: pd.DataFrame,
+    timing: pd.Timestamp | ToggleSchedule | pd.DataFrame,
+    *,
+    test: str = "T1",
+    columns: ColumnSchema = _COLUMNS,
+    timebase: pd.Timedelta | None = None,
+    **options: object,
+) -> SubjectMeasurement:
+    """Measure ``test`` on ``scada``, every other turbine a reference and every record valid."""
+    labelled = scada if VALID_UPLIFT_COL in scada.columns else counter_states(scada, columns=columns)
+    records = SubjectRecords.from_frame(labelled, subject=test, timing=timing, turbine_col=_TURBINE_COL)
+    return NaiveRatioMethod(**options).measure(records, columns=columns, timebase=timebase)  # type: ignore[arg-type]
+
+
 def _index(n: int, *, freq: str = "10min", start: str = "2020-01-01") -> pd.DatetimeIndex:
     return pd.date_range(start=start, periods=n, freq=freq, tz="UTC", name="timestamp")
+
+
+def _full_period_secs(index: pd.DatetimeIndex) -> float:
+    """The availability counter of a fully available record at ``index``'s spacing."""
+    return pd.Timedelta(np.median(np.diff(index.to_numpy()))).total_seconds() if len(index) > 1 else 600.0
 
 
 def _scada(power_by_turbine: dict[str, np.ndarray], index: pd.DatetimeIndex) -> pd.DataFrame:
     """Long-format SCADA: one block of rows per turbine, sharing ``index`` (fully available)."""
     frames = [
         pd.DataFrame(
-            {_TURBINE_COL: name, _POWER_COL: np.asarray(vals, dtype=float), _AVAIL_COL: _FULLY_AVAILABLE_SECS},
+            {_TURBINE_COL: name, _POWER_COL: np.asarray(vals, dtype=float), _AVAIL_COL: _full_period_secs(index)},
             index=index,
         )
         for name, vals in power_by_turbine.items()
@@ -92,13 +112,13 @@ class TestInferTimebase:
         assert _infer_timebase(doubled) == pd.Timedelta(minutes=10)
 
 
-def test_naive_ratio_shares_no_wind_up_code() -> None:
-    """The naive method is an independent, source-native baseline: it must not import wind_up or wind_up_v0."""
+def test_naive_ratio_shares_no_v0_code() -> None:
+    """The naive method is an independent, source-native baseline: it must not import wind_up_v0."""
     tree = ast.parse(Path(naive_ratio.__file__).read_text())
     modules = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
     modules |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
-    offenders = {m for m in modules if m.split(".", 1)[0] in {"wind_up", "wind_up_v0"}}
-    assert not offenders, f"naive_ratio must not depend on wind_up or wind_up_v0, found imports: {offenders}"
+    offenders = {m for m in modules if m.split(".", 1)[0] == "wind_up_v0"}
+    assert not offenders, f"naive_ratio must not depend on wind_up_v0, found imports: {offenders}"
 
 
 class TestRecovery:
@@ -107,10 +127,8 @@ class TestRecovery:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.07)
-        out = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
-        assert isinstance(out, MethodOutput)
+        out = _run(scada, upgrade)
+        assert isinstance(out, SubjectMeasurement)
         assert out.p50_overall == pytest.approx(0.07)
         assert out.p50_by_condition is None
 
@@ -119,34 +137,25 @@ class TestRecovery:
         schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=idx[0])
         treated = treated_mask(idx, schedule)
         scada = _recovery_scada(idx, treated=treated, uplift=0.03)
-        out = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
-        )
+        out = _run(scada, schedule)
         assert out.p50_overall == pytest.approx(0.03)
 
 
 class TestDowntimeFilter:
-    """Downtime filtering is required and applies to the test turbine and every reference."""
+    """The record labels' validity for uplift applies to the test turbine and every reference."""
 
-    def test_columns_is_required(self) -> None:
-        with pytest.raises(TypeError):
-            NaiveRatioMethod()  # type: ignore[call-arg]
+    def test_records_without_labels_raise(self) -> None:
+        idx = _index(20)
+        scada = _recovery_scada(idx, treated=np.asarray(idx >= idx[10]))
+        records = SubjectRecords.from_frame(scada, subject="T1", timing=idx[10], turbine_col=_TURBINE_COL)
+        with pytest.raises(MethodConfigurationError, match="record labels"):
+            NaiveRatioMethod().measure(records, columns=_COLUMNS)
 
-    @pytest.mark.parametrize("blank", ["", "   "])
-    def test_blank_availability_role_raises(self, blank: str) -> None:
-        # A schema that leaves the availability role blank (empty or whitespace) would silently skip
-        # downtime filtering, so construction must reject it.
-        with pytest.raises(ValueError, match="availability"):
-            NaiveRatioMethod(columns=replace(_COLUMNS, availability=blank))
-
-    def test_missing_availability_column_raises(self) -> None:
+    def test_no_availability_role_is_needed(self) -> None:
         idx = _index(20)
         upgrade = idx[10]
         scada = _recovery_scada(idx, treated=np.asarray(idx >= upgrade), uplift=0.05).drop(columns=[_AVAIL_COL])
-        with pytest.raises(ValueError, match="availability"):
-            NaiveRatioMethod(columns=_COLUMNS).estimate(
-                MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-            )
+        assert _run(scada, upgrade, columns=replace(_COLUMNS, availability=None)).p50_overall == pytest.approx(0.05)
 
     def test_down_reference_timestamps_are_excluded(self) -> None:
         idx = _index(20)
@@ -159,9 +168,7 @@ class TestDowntimeFilter:
         down = (corrupted[_TURBINE_COL] == "R1") & corrupted.index.isin([idx[3], idx[4]])
         corrupted.loc[down, _POWER_COL] = 1e6
         corrupted.loc[down, _AVAIL_COL] = 0.0
-        out = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
+        out = _run(corrupted, upgrade)
         assert out.p50_overall == pytest.approx(0.05)
 
 
@@ -171,18 +178,14 @@ class TestCompleteCase:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        clean = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
+        clean = _run(scada, upgrade)
 
         # NaN one reference at a used baseline timestamp: that timestamp must be excluded, but
         # since the ratio is identical at every row the estimate is unchanged.
         corrupted = scada.copy()
         mask = (corrupted[_TURBINE_COL] == "R1") & (corrupted.index == idx[3])
         corrupted.loc[mask, _POWER_COL] = np.nan
-        out = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=corrupted, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
+        out = _run(corrupted, upgrade)
         assert out.p50_overall == pytest.approx(clean.p50_overall)
 
     def test_nan_at_unused_timestamp_does_not_change_estimate(self) -> None:
@@ -193,27 +196,22 @@ class TestCompleteCase:
         # make idx[2] already unused (test NaN), then add a second NaN at the same timestamp
         base = scada.copy()
         base.loc[(base[_TURBINE_COL] == "T1") & (base.index == idx[2]), _POWER_COL] = np.nan
-        before = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=base, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
+        before = _run(base, upgrade)
         after_df = base.copy()
         after_df.loc[(after_df[_TURBINE_COL] == "R1") & (after_df.index == idx[2]), _POWER_COL] = np.nan
-        after = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=after_df, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
+        after = _run(after_df, upgrade)
         assert after.p50_overall == pytest.approx(before.p50_overall)
 
     def test_records_labelled_missing_are_excluded(self) -> None:
         idx = _index(20)
         upgrade = idx[10]
         scada = _recovery_scada(idx, treated=np.asarray(idx >= upgrade), uplift=0.05)
-        labelled = scada.assign(**{STATE_COL: NORMAL_OPERATION})
+        labelled = counter_states(scada, columns=_COLUMNS)
         missing = labelled.index.isin([idx[3], idx[12]]) & labelled[_TURBINE_COL].isin(["T1", "R1"])
         labelled.loc[missing, _POWER_COL] = 1e6
         labelled.loc[missing, STATE_COL] = MISSING
-        out = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=labelled, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
+        labelled.loc[missing, VALID_UPLIFT_COL] = False
+        out = _run(labelled, upgrade)
         assert out.p50_overall == pytest.approx(0.05)
 
 
@@ -228,11 +226,7 @@ class TestTimebaseInvariance:
             if treated10 is None:
                 treated10 = treated
             scada = _recovery_scada(idx, treated=treated, uplift=0.04)
-            results.append(
-                NaiveRatioMethod(columns=_COLUMNS)
-                .estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL))
-                .p50_overall
-            )
+            results.append(_run(scada, upgrade).p50_overall)
         assert results[0] == pytest.approx(results[1])
 
     def test_override_timebase_used_for_mwh(self, tmp_path) -> None:  # noqa: ANN001
@@ -240,12 +234,7 @@ class TestTimebaseInvariance:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        method = NaiveRatioMethod(
-            columns=_COLUMNS,
-            out_dir=tmp_path,
-            timebase=pd.Timedelta(minutes=30),
-        )
-        method.estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL))
+        _run(scada, upgrade, out_dir=tmp_path, timebase=pd.Timedelta(minutes=30))
         stats = _read_only_csv(tmp_path, "data_stats")
         all_row = stats[stats["segment"] == "all"].iloc[0]
         # MWh = sum(power_kw) * timebase_hours / 1000; check it used 0.5h not 1/6h
@@ -259,17 +248,13 @@ class TestActivePowerOnly:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        plain = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
+        plain = _run(scada, upgrade)
 
         with_extra = scada.copy()
         rng = np.random.default_rng(0)
         with_extra["ws"] = rng.normal(size=len(with_extra))
         with_extra["rpm"] = rng.normal(size=len(with_extra))
-        out = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=with_extra, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
+        out = _run(with_extra, upgrade)
         assert out.p50_overall == pytest.approx(plain.p50_overall)
 
 
@@ -279,9 +264,7 @@ class TestErrors:
         upgrade = idx[10]
         scada = _scada({"T1": np.ones(len(idx))}, idx)
         with pytest.raises(ValueError, match="reference"):
-            NaiveRatioMethod(columns=_COLUMNS).estimate(
-                MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-            )
+            _run(scada, upgrade)
 
     def test_no_used_baseline_returns_nan(self) -> None:
         idx = _index(20)
@@ -291,9 +274,7 @@ class TestErrors:
         # NaN the test turbine across the whole baseline -> no used baseline timestamps
         is_baseline_test = (scada[_TURBINE_COL] == "T1") & np.asarray(scada.index < upgrade)
         scada.loc[is_baseline_test, _POWER_COL] = np.nan
-        out = NaiveRatioMethod(columns=_COLUMNS).estimate(
-            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
+        out = _run(scada, upgrade)
         assert np.isnan(out.p50_overall)
 
 
@@ -371,10 +352,7 @@ class TestDiagnostics:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.06)
-        method = NaiveRatioMethod(columns=_COLUMNS, out_dir=tmp_path, save_plots=save_plots)
-        out = method.estimate(
-            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
+        out = _run(scada, upgrade, out_dir=tmp_path, save_plots=save_plots)
         return out, idx, upgrade
 
     def test_writes_both_csvs(self, tmp_path) -> None:  # noqa: ANN001
@@ -432,14 +410,8 @@ class TestToggleCampaignOnly:
 
     def test_campaign_only_excludes_precampaign_from_baseline(self, tmp_path) -> None:  # noqa: ANN001
         scada, schedule, start = self._toggle_scada()
-        NaiveRatioMethod(columns=_COLUMNS, out_dir=tmp_path / "on").estimate(
-            MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL)
-        )
-        NaiveRatioMethod(
-            columns=_COLUMNS,
-            out_dir=tmp_path / "off",
-            toggle_campaign_only=False,
-        ).estimate(MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=schedule, turbine_col=_TURBINE_COL))
+        _run(scada, schedule, out_dir=tmp_path / "on")
+        _run(scada, schedule, columns=_COLUMNS, out_dir=tmp_path / "off", toggle_campaign_only=False)
         base_on = _read_only_csv(tmp_path / "on", "data_stats").set_index("segment").loc["baseline"]
         base_off = _read_only_csv(tmp_path / "off", "data_stats").set_index("segment").loc["baseline"]
         # campaign-only drops the 100 pre-campaign rows from the baseline class
@@ -451,14 +423,13 @@ class TestToggleCampaignOnly:
         upgrade = idx[10]
         treated = np.asarray(idx >= upgrade)
         scada = _recovery_scada(idx, treated=treated, uplift=0.05)
-        mi = MethodInput(scada_df=scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        a = NaiveRatioMethod(columns=_COLUMNS).estimate(mi)
-        b = NaiveRatioMethod(columns=_COLUMNS, toggle_campaign_only=False).estimate(mi)
+        a = _run(scada, upgrade)
+        b = _run(scada, upgrade, toggle_campaign_only=False)
         assert a.p50_overall == pytest.approx(b.p50_overall)
 
 
-class TestCampaignContext:
-    """The method takes reference membership and row validity from the campaign context."""
+class TestSubjectRecords:
+    """The method takes reference membership and record validity from the subject's records."""
 
     @staticmethod
     def _scada_three() -> tuple[pd.DataFrame, pd.Timestamp]:
@@ -483,37 +454,36 @@ class TestCampaignContext:
         )
 
     @staticmethod
-    def _estimate(scada: pd.DataFrame, **kwargs: object) -> float:
-        return NaiveRatioMethod(columns=_COLUMNS).estimate(MethodInput(scada_df=scada, **kwargs)).p50_overall
+    def _estimate(records: SubjectRecords) -> float:
+        return NaiveRatioMethod().measure(records, columns=_COLUMNS).p50_overall
+
+    @staticmethod
+    def _plain(scada: pd.DataFrame, upgrade: pd.Timestamp) -> SubjectRecords:
+        return SubjectRecords.from_frame(
+            counter_states(scada, columns=_COLUMNS), subject="T1", timing=upgrade, turbine_col=_TURBINE_COL
+        )
 
     def test_only_offered_references_are_used(self) -> None:
         scada, upgrade = self._scada_three()
-        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=upgrade, turbine_col=_TURBINE_COL)
-        object.__setattr__(context, "candidate_references", ["T2"])
-        offered_t2_only = self._estimate(scada, test_wtg="T1", campaign_context=context)
+        offered = replace(self._plain(scada, upgrade), candidate_references=["T2"], wake_contributors=["T3"])
+        offered_t2_only = self._estimate(offered)
 
         # The same answer as simply not having T3 in the data at all...
-        without_t3 = self._estimate(
-            scada[scada[_TURBINE_COL] != "T3"], test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL
+        assert offered_t2_only == pytest.approx(
+            self._estimate(self._plain(scada[scada[_TURBINE_COL] != "T3"], upgrade))
         )
-        assert offered_t2_only == pytest.approx(without_t3)
         # ...and not the answer T3 would have given, so the fixture really does discriminate.
-        with_t3 = self._estimate(scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        assert offered_t2_only != pytest.approx(with_t3)
+        assert offered_t2_only != pytest.approx(self._estimate(self._plain(scada, upgrade)))
 
     def test_rows_a_reference_may_not_contribute_are_dropped(self) -> None:
         scada, upgrade = self._scada_three()
-        context = CampaignContext.from_frame(scada, test_wtg="T1", timing=upgrade, turbine_col=_TURBINE_COL)
-        valid = context.valid_for_uplift.copy()
+        plain = self._plain(scada, upgrade)
+        valid = plain.valid_for_uplift.copy()
         valid.loc[valid.index[:12], "T2"] = False
-        object.__setattr__(context, "valid_for_uplift", valid)
-        with_holes = self._estimate(scada, test_wtg="T1", campaign_context=context)
+        with_holes = self._estimate(replace(plain, valid_for_uplift=valid))
 
         # Those baseline rows leave the ratio, exactly as if T2's data were missing there.
         holed = scada.copy()
         holed.loc[(holed.index < valid.index[12]) & (holed[_TURBINE_COL] == "T2"), _POWER_COL] = np.nan
-        assert with_holes == pytest.approx(
-            self._estimate(holed, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        )
-        untouched = self._estimate(scada, test_wtg="T1", upgrade_timing=upgrade, turbine_col=_TURBINE_COL)
-        assert with_holes != pytest.approx(untouched)
+        assert with_holes == pytest.approx(self._estimate(self._plain(holed, upgrade)))
+        assert with_holes != pytest.approx(self._estimate(plain))

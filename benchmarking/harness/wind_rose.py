@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from benchmarking.harness.reanalysis import ERA5_WD, ERA5_WD_RAW
+from wind_up.reanalysis import ERA5_WD, ERA5_WD_RAW
 from wind_up.wake_reach import wind_rose
 
 if TYPE_CHECKING:

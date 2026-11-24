@@ -12,8 +12,8 @@ from benchmarking.harness.label_checks import (
     label_checks,
     warn_label_checks,
 )
-from benchmarking.harness.operating_state import OperatingStateConfig, label_operating_states
 from benchmarking.synthetic import HOT_COLUMNS as COLS
+from wind_up.operating_state import OperatingStateConfig, label_operating_states
 
 TIMEBASE = pd.Timedelta(minutes=10)
 RATED = 2000.0

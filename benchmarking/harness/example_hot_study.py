@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -33,15 +34,22 @@ import pandas as pd
 from benchmarking import env
 from benchmarking.harness import (
     Method,
-    MethodInput,
-    MethodOutput,
     StudyConfig,
+    SubjectMeasurement,
+    SubjectRecords,
     leaderboard,
     plot_campaign_curves,
     score_study,
 )
 from benchmarking.synthetic import HOT_COLUMNS, ConstantCpChange, treated_mask
-from benchmarking.synthetic.sources.hill_of_towie import load_hot_scada
+from benchmarking.synthetic.sources.hill_of_towie import hot_turbines, load_hot_scada
+from wind_up.subject import answer_analyses
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from wind_up.analysis import AnalysisOutput, AnalysisSpec
+    from wind_up.facts import WindFarmFacts
 
 logger = logging.getLogger(__name__)
 
@@ -65,20 +73,20 @@ def default_output_root() -> Path:
     return root / "harness"
 
 
-def _oracle_overall_uplift(mi: MethodInput, original_df: pd.DataFrame) -> float:
-    """Energy-ratio uplift over the treated test-turbine rows in ``mi``'s window.
+def _oracle_overall_uplift(mi: SubjectRecords, original_df: pd.DataFrame) -> float:
+    """Energy-ratio uplift over the subject's treated rows in its records.
 
     Compares the (upgraded) synthetic power against the original no-upgrade power over the
     exact same treated records, so it recovers the injected truth. The illustrative methods
     below wrap this to drive bias and spread.
     """
-    syn = mi.scada_df
-    test_rows = syn[syn[HOT_COLUMNS.turbine] == mi.test_wtg]
-    treated = treated_mask(test_rows.index, mi.upgrade_timing)
+    syn = mi.records
+    test_rows = syn[syn[HOT_COLUMNS.turbine] == mi.subject]
+    treated = treated_mask(test_rows.index, mi.timing)
     treated_rows = test_rows[treated]
 
     syn_power = treated_rows[HOT_COLUMNS.active_power].to_numpy(dtype=float)
-    orig_test = original_df[original_df[HOT_COLUMNS.turbine] == mi.test_wtg]
+    orig_test = original_df[original_df[HOT_COLUMNS.turbine] == mi.subject]
     orig_power = orig_test.loc[treated_rows.index, HOT_COLUMNS.active_power].to_numpy(dtype=float)
 
     finite = np.isfinite(syn_power) & np.isfinite(orig_power)
@@ -94,9 +102,13 @@ class OracleMethod:
         self._original = original_df
         self.name = name
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
-        """Return the injected truth as the P50 estimate."""
-        return MethodOutput(p50_overall=_oracle_overall_uplift(mi, self._original))
+    def estimate(self, facts: WindFarmFacts, analyses: Sequence[AnalysisSpec]) -> list[AnalysisOutput]:
+        """Return the injected truth for each subject."""
+        return answer_analyses(facts, analyses, name=self.name, measure=self.measure)
+
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
+        """Return the injected truth as the subject's uplift."""
+        return SubjectMeasurement(p50_overall=_oracle_overall_uplift(mi, self._original))
 
 
 class BiasedMethod:
@@ -108,9 +120,13 @@ class BiasedMethod:
         self._offset = offset
         self.name = name
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def estimate(self, facts: WindFarmFacts, analyses: Sequence[AnalysisSpec]) -> list[AnalysisOutput]:
+        """Return the injected truth plus the fixed offset for each subject."""
+        return answer_analyses(facts, analyses, name=self.name, measure=self.measure)
+
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Return the injected truth plus the fixed offset."""
-        return MethodOutput(p50_overall=_oracle_overall_uplift(mi, self._original) + self._offset)
+        return SubjectMeasurement(p50_overall=_oracle_overall_uplift(mi, self._original) + self._offset)
 
 
 class ShrinkingNoiseMethod:
@@ -129,17 +145,21 @@ class ShrinkingNoiseMethod:
         self._base_sigma = base_sigma
         self.name = name
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def estimate(self, facts: WindFarmFacts, analyses: Sequence[AnalysisSpec]) -> list[AnalysisOutput]:
+        """Return the truth plus a noise draw for each subject."""
+        return answer_analyses(facts, analyses, name=self.name, measure=self.measure)
+
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Return the truth plus a deterministic, campaign-length-shrinking noise draw."""
         truth = _oracle_overall_uplift(mi, self._original)
-        treatment_start = mi.upgrade_timing  # prepost: a Timestamp
-        post_days = max((mi.scada_df.index.max() - treatment_start).days, 1)
+        treatment_start = mi.timing  # prepost: a Timestamp
+        post_days = max((mi.records.index.max() - treatment_start).days, 1)
         months = post_days / 30.4
         sigma = self._base_sigma / np.sqrt(months)
-        wtg_term = sum(ord(c) for c in mi.test_wtg) * 1000 + round(months)
+        wtg_term = sum(ord(c) for c in mi.subject) * 1000 + round(months)
         seed = (int(pd.Timestamp(treatment_start).value) % (2**32)) ^ wtg_term
         rng = np.random.default_rng(seed)
-        return MethodOutput(p50_overall=truth + float(rng.normal(0.0, sigma)))
+        return SubjectMeasurement(p50_overall=truth + float(rng.normal(0.0, sigma)))
 
 
 def run_example_study(
@@ -199,7 +219,12 @@ def run_example_study(
         delta * 100,
     )
     results = score_study(
-        scada_df, profile=[ConstantCpChange(delta=delta)], methods=methods, study=study, profile_name=profile_name
+        scada_df,
+        profile=[ConstantCpChange(delta=delta)],
+        methods=methods,
+        study=study,
+        turbines=hot_turbines(study.turbine_subset),
+        profile_name=profile_name,
     )
     summary = leaderboard(results)
 

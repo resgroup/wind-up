@@ -777,7 +777,7 @@ beats the naive extrapolation baseline on condition-dependent profiles.
 > **Partly delivered ahead of this issue, for `toggle_specialist` only (2026-07-15).** A
 > toggle-first slice built the machinery this issue describes: the additive seam extension
 > (`MethodOutput.sigma_overall` / `uncertainty_diagnostics`), the circular block bootstrap
-> (`benchmarking/baselines/block_bootstrap.py`), harness calibration scoring
+> (`src/wind_up/block_bootstrap.py`), harness calibration scoring
 > (`benchmarking/harness/calibration.py`), and a 64-replicate coverage study
 > (`study_toggle_specialist_uncertainty.py`). `toggle_specialist` now reports a **non-optional**
 > 1σ on the headline and every power bin. **Read F28/F29 in `findings.md` before planning the

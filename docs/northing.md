@@ -134,9 +134,11 @@ between them. T21's shift of +6.2 degrees moves the nadir onto the bearing (blue
 
 A turbine's pairs are combined by their circular median, so a majority of consistent pairs
 outvotes one biased by terrain or wake deflection. A turbine needs two resolved pairs to take its
-own correction, because one marginal curve can be many degrees out; in a farm where no turbine
-resolves two, one is enough. A turbine short of that takes the circular median of its nearest
-resolved turbines, or zero if there are none. The shift moves every
+own correction, because one marginal curve can be many degrees out. A turbine short of that takes
+the circular median of its nearest resolved turbines. In a farm where no turbine resolves two,
+every turbine takes one shift, the circular median of every resolved pair, or zero if none
+resolves: the shift then corrects the farm's common error, the one it exists for, without moving
+turbines apart that changepoints-v-consensus found to agree. The shift moves every
 offset in the turbine's table and never changes which rows are valid or where the changepoints are.
 
 The map shows every Hill of Towie turbine's shift. Most are small and positive, with a median of

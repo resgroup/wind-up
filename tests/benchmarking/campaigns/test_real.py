@@ -20,6 +20,8 @@ from benchmarking.campaigns.real import (
     HOT_STATE_COL,
     HOT_TUNEUP,
     HOT_TUNEUP_CAMPAIGN,
+    HOT_TUNEUP_UPGRADES,
+    HOT_TUNEUP_UPGRADES_CAMPAIGN,
     ICING,
     NOISE_MODE,
     REAL_CAMPAIGNS,
@@ -28,7 +30,6 @@ from benchmarking.campaigns.real import (
     works_table,
     write_real_campaign,
 )
-from benchmarking.harness.operating_state import PARTIAL_DOWNTIME
 from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_ACTIVE_POWER_MAX_COL,
     HOT_AMBIENT_TEMP_COL,
@@ -38,6 +39,7 @@ from benchmarking.synthetic.sources.hill_of_towie import (
     HOT_TURBINE_COL,
 )
 from wind_up.analysis_period import MONTH
+from wind_up.operating_state import PARTIAL_DOWNTIME
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -63,7 +65,7 @@ def test_the_t13_declaration_loads(tmp_path: Path) -> None:
     assert spec.analysis_period is None
     # the curtailment from September 2022 is labelled record by record, so nothing is declared over it
     assert spec.exclusions == []
-    assert spec.label_overrides == []
+    assert spec.operating_state_overrides == []
 
 
 def test_the_tuneup_declaration_loads(tmp_path: Path) -> None:
@@ -95,6 +97,32 @@ def test_the_tuneup_declaration_loads(tmp_path: Path) -> None:
     assert "T14" not in spec.works or deployment not in spec.works["T14"]
 
 
+def test_the_tuneup_declared_as_two_upgrades_is_the_same_campaign(tmp_path: Path) -> None:
+    aeroup = pd.read_csv(io.StringIO(WORKS + "T02,2022-07-18,2022-07-28\n"))
+    names = sorted({*HOT_TUNEUP["turbines"]["upgraded"], "T14"})
+    specs = {}
+    for campaign in (HOT_TUNEUP_CAMPAIGN, HOT_TUNEUP_UPGRADES_CAMPAIGN):
+        folder = tmp_path / campaign.name
+        data = folder / "data"
+        data.mkdir(parents=True)
+        (data / "scada.parquet").write_bytes(b"")
+        works_table(aeroup, campaign=campaign).to_csv(data / "works.csv", index=False)
+        (data / "turbines.csv").write_text(
+            "name,latitude,longitude,rotor_diameter_m\n"
+            + "".join(f"{name},{57.5 + i / 100},-3.08,82\n" for i, name in enumerate(names))
+        )
+        (folder / "campaign.yaml").write_text(yaml.safe_dump(campaign.declaration))
+        specs[campaign.name] = load_declaration(folder / "campaign.yaml").spec
+    short, listed = specs["hot_tuneup"], specs["hot_tuneup_upgrades"]
+    for name in ("upgraded_turbines", "upgrade_timing", "candidate_references", "works", "wake_reach_d"):
+        assert getattr(listed, name) == getattr(short, name), name
+    for turbine, windows in short.works.items():
+        for window in windows:
+            assert listed.reach_of(turbine, window) == pytest.approx(short.reach_of(turbine, window))
+    assert listed.changeovers() == short.changeovers()
+    assert [u["name"] for u in HOT_TUNEUP_UPGRADES["upgrades"]] == ["AeroUp", "TuneUp"]
+
+
 def test_the_works_table_holds_the_aeroup_rows_then_the_deployment() -> None:
     aeroup = pd.read_csv(io.StringIO(WORKS))
     table = works_table(aeroup, campaign=HOT_TUNEUP_CAMPAIGN)
@@ -115,7 +143,7 @@ def test_the_t13_works_table_is_the_aeroup_rows_at_the_campaigns_reach() -> None
 
 
 def test_the_real_campaigns_end_their_scada_where_declared() -> None:
-    assert set(REAL_CAMPAIGNS) == {"hot_aeroup_t13", "hot_tuneup"}
+    assert set(REAL_CAMPAIGNS) == {"hot_aeroup_t13", "hot_tuneup", "hot_tuneup_upgrades"}
     assert HOT_TUNEUP_CAMPAIGN.end == pd.Timestamp("2024-09-01", tz="UTC")
     for campaign in REAL_CAMPAIGNS.values():
         assert campaign.start < campaign.end
@@ -271,11 +299,11 @@ def test_the_t13_declaration_carries_the_site_states(tmp_path: Path) -> None:
     )
     (tmp_path / "campaign.yaml").write_text(yaml.safe_dump(HOT_AEROUP_T13))
     config = load_declaration(tmp_path / "campaign.yaml").operating_state
-    assert config.label_column == HOT_STATE_COL
+    assert config.site_state_column == HOT_STATE_COL
     assert config.parked_pitch_above_deg == 45
-    assert set(config.labels) == {NOISE_MODE, BM_CURTAILMENT, HIGH_WIND_DERATE, ICING}
-    assert not config.labels[NOISE_MODE].uplift
-    assert config.labels[BM_CURTAILMENT].waking == "part waking"
+    assert set(config.site_states) == {NOISE_MODE, BM_CURTAILMENT, HIGH_WIND_DERATE, ICING}
+    assert not config.site_states[NOISE_MODE].uplift
+    assert config.site_states[BM_CURTAILMENT].waking == "part waking"
     for label in (HIGH_WIND_DERATE, ICING):
-        assert not config.labels[label].uplift
-        assert config.labels[label].waking == "part waking"
+        assert not config.site_states[label].uplift
+        assert config.site_states[label].waking == "part waking"

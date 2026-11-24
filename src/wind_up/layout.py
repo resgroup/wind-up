@@ -8,6 +8,7 @@ them with no upwind turbine in the way.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
@@ -16,11 +17,27 @@ import pandas as pd
 from wind_up.circular_math import circ_diff
 from wind_up.geodesy import geodesic_matrices
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 NAME_COL = "name"
 LATITUDE_COL = "latitude"
 LONGITUDE_COL = "longitude"
 ROTOR_DIAMETER_COL = "rotor_diameter_m"
 WIND_FARM_COL = "wind_farm"
+
+
+# The decimal places a site's centroid is rounded to.
+CENTROID_DECIMALS = 2
+
+
+def centroid(coords: Mapping[str, tuple[float, float]]) -> tuple[float, float]:
+    """Return the mean latitude and longitude of ``coords``, rounded to :data:`CENTROID_DECIMALS` places."""
+    points = list(coords.values())
+    return (
+        round(sum(lat for lat, _ in points) / len(points), CENTROID_DECIMALS),
+        round(sum(lon for _, lon in points) / len(points), CENTROID_DECIMALS),
+    )
 
 
 def iec_disturbed_sector_deg(distance_diameters: npt.ArrayLike) -> npt.NDArray[np.float64]:

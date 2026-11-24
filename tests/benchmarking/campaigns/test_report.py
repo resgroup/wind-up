@@ -15,10 +15,12 @@ import pytest
 
 from benchmarking.campaigns import CampaignRunner, write_campaign_report, write_report
 from benchmarking.campaigns.run import estimate_campaign
-from benchmarking.harness import CONDITIONS, MethodInput, MethodOutput, condition_bins
+from benchmarking.harness import CONDITIONS, condition_bins
 from benchmarking.synthetic import HOT_COLUMNS
 from wind_up.analysis_warnings import AnalysisWarning
+from wind_up.subject import SubjectMeasurement, SubjectRecords
 
+from .per_subject import PerSubject
 from .test_declaration import CHANGEOVER, campaign, scada
 
 if TYPE_CHECKING:
@@ -27,22 +29,22 @@ if TYPE_CHECKING:
     from benchmarking.campaigns.run import CampaignReport
 
 
-class ZeroMethod:
+class ZeroMethod(PerSubject):
     """Reports zero uplift overall and no per-condition breakdown."""
 
     name = "zero"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:  # noqa: ARG002
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:  # noqa: ARG002
         """Return a zero P50."""
-        return MethodOutput(p50_overall=0.0)
+        return SubjectMeasurement(p50_overall=0.0)
 
 
-class ConditionalZeroMethod:
+class ConditionalZeroMethod(PerSubject):
     """Reports zero uplift overall and in every condition bin."""
 
     name = "cond_zero"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:  # noqa: ARG002
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:  # noqa: ARG002
         """Return a zero P50 plus zero per-bin estimates on every condition axis."""
         frames = []
         for condition in CONDITIONS:
@@ -51,7 +53,7 @@ class ConditionalZeroMethod:
             frames.append(
                 pd.DataFrame({"condition": condition, "condition_bin": [str(b) for b in bins], "p50_uplift": 0.0})
             )
-        return MethodOutput(p50_overall=0.0, p50_by_condition=pd.concat(frames, ignore_index=True))
+        return SubjectMeasurement(p50_overall=0.0, p50_by_condition=pd.concat(frames, ignore_index=True))
 
 
 def _result(methods: list):  # noqa: ANN202
@@ -104,17 +106,17 @@ def test_no_conditional_plots_when_no_method_reports_conditions(tmp_path: Path) 
     assert not (tmp_path / "15_uplift_distributions").exists()
 
 
-class PowerOnlyMethod:
-    """Reports a per-condition breakdown on the power axis only, as toggle_specialist does."""
+class PowerOnlyMethod(PerSubject):
+    """Reports a per-condition breakdown on the power axis only, as toggle_energy_ratio does."""
 
     name = "power_only"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:  # noqa: ARG002
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:  # noqa: ARG002
         """Return zero overall and per-power-bin estimates, and nothing on ws or ti."""
         edges = condition_bins("power", rated_power_kw=2300.0)
         bins = pd.IntervalIndex.from_breaks(np.asarray(edges, dtype=float))
         frame = pd.DataFrame({"condition": "power", "condition_bin": [str(b) for b in bins], "p50_uplift": 0.0})
-        return MethodOutput(p50_overall=0.0, p50_by_condition=frame)
+        return SubjectMeasurement(p50_overall=0.0, p50_by_condition=frame)
 
 
 def test_only_the_conditions_a_method_reports_are_plotted(tmp_path: Path) -> None:
@@ -139,15 +141,15 @@ def test_conditional_plots_are_written_per_condition_and_turbine(tmp_path: Path)
 # --- the analyst report: the same run, written without the answer key --------------------------
 
 
-class ReferenceReportingMethod:
+class ReferenceReportingMethod(PerSubject):
     """Reports a per-reference self-uplift frame, as the power model does by default."""
 
     name = "with_refs"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Report zero overall, and one near-zero self-uplift row per candidate reference."""
-        references = mi.context.candidate_references
-        return MethodOutput(
+        references = mi.candidate_references
+        return SubjectMeasurement(
             p50_overall=0.0,
             reference_uplifts=pd.DataFrame(
                 {"turbine": references, "uplift": 0.001, "actual_energy": 1000.0, "n_records": 10, "screened": False}
@@ -306,15 +308,15 @@ class TestPeriodsAndCandidates:
         assert (tmp_path / "08_candidates" / "candidates.csv").exists()
 
 
-class WarningZeroMethod(ZeroMethod):
+class WarningZeroMethod(ZeroMethod, PerSubject):
     """Reports zero with a high-severity analysis warning against the test turbine."""
 
     name = "warning_zero"
 
-    def estimate(self, mi: MethodInput) -> MethodOutput:
+    def measure(self, mi: SubjectRecords) -> SubjectMeasurement:
         """Report zero and one warning of a training period under the floor."""
-        warning = AnalysisWarning(severity="high", step=12, turbine=mi.test_wtg, message="trains on 6.0 months")
-        return MethodOutput(p50_overall=0.0, warnings=(warning,))
+        warning = AnalysisWarning(severity="high", step=12, turbine=mi.subject, message="trains on 6.0 months")
+        return SubjectMeasurement(p50_overall=0.0, warnings=(warning,))
 
 
 def test_the_warnings_are_written_ranked_and_their_summary_logged(

@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
     from benchmarking.synthetic.generator import SyntheticDataset
-    from benchmarking.synthetic.schema import ColumnSchema
+    from wind_up.schema import ColumnSchema
 
 _BASELINE_STYLE = {"s": 6, "alpha": 0.4, "color": "tab:blue", "label": "baseline rows"}
 _TREATED_STYLE = {"s": 6, "alpha": 0.5, "color": "tab:red", "label": "treated rows"}

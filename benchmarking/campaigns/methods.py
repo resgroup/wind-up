@@ -6,16 +6,11 @@ from typing import TYPE_CHECKING
 
 from benchmarking.baselines.naive_ratio import NaiveRatioMethod
 from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
-from benchmarking.baselines.toggle_specialist import ToggleSpecialistMethod
-from benchmarking.campaigns.declaration import layout_coords, layout_rotor_diameters
-from benchmarking.campaigns.loader import centroid
-from benchmarking.diagnostics.context import ERA5_UNLOCATED
-from benchmarking.synthetic import HOT_COLUMNS, ToggleSchedule
+from wind_up.diagnostics.context import ERA5_UNLOCATED
+from wind_up.methods.toggle_energy_ratio import ToggleEnergyRatioMethod
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pandas as pd
 
     from benchmarking.baselines.power_model.method import HeadlineEstimator
     from benchmarking.campaigns.declaration import CampaignSpec
@@ -26,7 +21,6 @@ def carried_forward_methods(
     spec: CampaignSpec,
     *,
     out_dir: Path,
-    era5_hourly_df: pd.DataFrame | None = None,
     include_power_model: bool = True,
     reference_stat_cols: tuple[str, ...] = (),
     screen_cache: dict | None = None,
@@ -38,14 +32,10 @@ def carried_forward_methods(
 ) -> list[Method]:
     """Build the methods applicable to ``spec``, each writing into its own subfolder of ``out_dir``.
 
-    ``toggle_specialist`` accepts only toggle campaigns and is left out of a prepost one. The power
-    model reports per-condition estimates only when ``era5_hourly_df`` is given, since its
-    conditional step matches on ERA5 weather columns.
+    ``toggle_energy_ratio`` accepts only toggle campaigns and is left out of a prepost one.
 
     :param spec: the campaign being run
     :param out_dir: the turbine's output folder; each method gets a subfolder named after it
-    :param era5_hourly_df: reanalysis for the power model's conditional step; omit to report the overall
-        estimate only
     :param include_power_model: build the power model. It is the method under test, so this is
         off only to avoid the ``ml`` dependency group -- a campaign without it is not testing
         v1 wind-up
@@ -67,29 +57,14 @@ def carried_forward_methods(
     :param row_dump_dir: where the power model dumps each estimate's rows, for the level probe;
         ``None`` dumps nothing
     """
-    methods: list[Method] = [NaiveRatioMethod(columns=HOT_COLUMNS, out_dir=out_dir / "naive_ratio", save_plots=True)]
+    methods: list[Method] = [NaiveRatioMethod(out_dir=out_dir / "naive_ratio", save_plots=True)]
     if spec.mode == "toggle":
-        assert isinstance(spec.upgrade_timing, ToggleSchedule)  # noqa: S101 - what ``mode == "toggle"`` means
         methods.append(
-            ToggleSpecialistMethod(
-                columns=HOT_COLUMNS,
-                toggle_period=spec.upgrade_timing.period,
-                # a declared campaign's schedule tiles its cycles from its start
-                toggle_datum=spec.upgrade_timing.start,
-                out_dir=out_dir / "toggle_specialist",
-                save_plots=True,
-                conditions=("power",),
-                rated_power_kw=spec.rated_power_kw,
-            )
+            ToggleEnergyRatioMethod(out_dir=out_dir / "toggle_energy_ratio", save_plots=True, conditions=("power",))
         )
     if include_power_model:
         methods.append(
             PowerModelMethod(
-                columns=HOT_COLUMNS,
-                baseline_rated_power_kw=spec.rated_power_kw,
-                era5_hourly_df=era5_hourly_df,
-                site_location=centroid(layout_coords(spec.layout)),
-                rotor_diameters_m=layout_rotor_diameters(spec.layout),
                 reference_stat_cols=reference_stat_cols,
                 model_params=dict(TUNED_MODEL_PARAMS),
                 out_dir=out_dir / "power_model",

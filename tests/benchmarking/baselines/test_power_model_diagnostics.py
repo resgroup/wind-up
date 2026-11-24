@@ -23,7 +23,7 @@ from benchmarking.baselines.power_model.diagnostics import (
 )
 from benchmarking.baselines.power_model.shape import ShapeResult
 from benchmarking.diagnostics.features import category_shares_figure, site_feature_figure, write_feature_outputs
-from benchmarking.harness.waking import WAKING_SCENARIO_COL
+from wind_up.waking import WAKING_SCENARIO_COL
 
 
 def test_plot_uplift_shape_draws_each_axis_each_subsets_family_and_the_drift(tmp_path: Path) -> None:

@@ -5,14 +5,42 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from examples.smarteole_utils import SmartEoleExtractor
+from examples.smarteole_utils import DERATED, SmartEoleExtractor
 from tests.conftest import CACHE_DIR, TEST_DATA_FLD
+from wind_up_v0.constants import TIMESTAMP_COL, DataColumns
 from wind_up_v0.interface import AssessmentInputs
 from wind_up_v0.main_analysis import run_wind_up_analysis
 from wind_up_v0.models import Asset, PlotConfig, Toggle, Turbine, WindUpConfig
 from wind_up_v0.reanalysis_data import ReanalysisDataset
 
 SMARTEOLE_DATA_DIR = TEST_DATA_FLD / "smarteole"
+V0_COLUMNS = {
+    "turbine": DataColumns.turbine_name,
+    "active_power_avg": DataColumns.active_power_mean,
+    "active_power_std": DataColumns.active_power_sd,
+    "wind_speed_avg": DataColumns.wind_speed_mean,
+    "wind_speed_std": DataColumns.wind_speed_sd,
+    "nacelle_position_avg": DataColumns.yaw_angle_mean,
+    "nacelle_position_min": DataColumns.yaw_angle_min,
+    "nacelle_position_max": DataColumns.yaw_angle_max,
+    "blade_1_pitch_angle_avg": DataColumns.pitch_angle_mean,
+    "generator_speed_avg": DataColumns.gen_rpm_mean,
+    "temperature_avg": DataColumns.ambient_temp,
+}
+
+
+def _v0_scada(scada: pd.DataFrame) -> pd.DataFrame:
+    """Return the extracted SCADA with v0's column names, no downtime and a naive UTC index."""
+    out = scada.drop(columns=DERATED).rename(columns=V0_COLUMNS).assign(**{DataColumns.shutdown_duration: 0})
+    out.index = out.index.tz_localize(None)
+    return out.rename_axis(TIMESTAMP_COL)
+
+
+def _v0_metadata(metadata: pd.DataFrame, *, analysis_timebase_s: int) -> pd.DataFrame:
+    """Return the turbine coordinates in v0's metadata format."""
+    return metadata.rename(columns={"Turbine": "Name"}).assign(
+        TimeZone="UTC", TimeSpanMinutes=analysis_timebase_s / 60, TimeFormat="Start"
+    )
 
 
 def _define_wind_up_cfg(analysis_timebase_s: int, analysis_output_dir: Path) -> WindUpConfig:
@@ -100,8 +128,8 @@ def _create_config(tmp_path: Path) -> AssessmentInputs:
         data_dir=SMARTEOLE_DATA_DIR,
         analysis_timebase_s=analysis_timebase_s,
     )
-    scada_df = smarteole_extractor.unpack_smarteole_scada()
-    metadata_df = smarteole_extractor.unpack_smarteole_metadata()
+    scada_df = _v0_scada(smarteole_extractor.unpack_smarteole_scada())
+    metadata_df = _v0_metadata(smarteole_extractor.unpack_smarteole_metadata(), analysis_timebase_s=analysis_timebase_s)
     toggle_df = smarteole_extractor.unpack_smarteole_toggle_data()
 
     cache_subdir = tmp_path / f"timebase_{analysis_timebase_s}"
