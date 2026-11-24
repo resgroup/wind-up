@@ -75,7 +75,10 @@ def wake_nadir_offsets(
             is not None
         ]
 
-    return _fill(layout, devices=devices, resolved=_own_corrections(pair_corrections))
+    resolved = _own_corrections(pair_corrections)
+    if not resolved:
+        return dict.fromkeys(devices, _farm_correction(pair_corrections))
+    return _fill(layout, devices=devices, resolved=resolved)
 
 
 def _downstream_of(layout: Layout, *, upstream: str, devices: list[str], cutoff: float) -> list[str]:
@@ -351,12 +354,21 @@ def _own_corrections(pair_corrections: Mapping[str, list[float]]) -> dict[str, f
     """Return the turbines that take their own correction, each the aggregate of its resolved pairs.
 
     A turbine needs ``MIN_RESOLVED_PAIRS`` resolved pairs, so one marginal curve cannot set it; the
-    rest take their neighbours' correction. In a farm where no turbine has that many, one is enough.
+    rest take their neighbours' correction.
     """
-    need = MIN_RESOLVED_PAIRS
-    if not any(len(pairs) >= need for pairs in pair_corrections.values()):
-        need = 1
-    return {turbine: _aggregate(pairs) for turbine, pairs in pair_corrections.items() if len(pairs) >= need}
+    return {
+        turbine: _aggregate(pairs) for turbine, pairs in pair_corrections.items() if len(pairs) >= MIN_RESOLVED_PAIRS
+    }
+
+
+def _farm_correction(pair_corrections: Mapping[str, list[float]]) -> float:
+    """Return one correction for the whole farm: the aggregate of every resolved pair, zero when none is.
+
+    For a farm where no turbine resolves ``MIN_RESOLVED_PAIRS`` pairs. Shifting every turbine alike
+    keeps the agreement between turbines that changepoints-v-consensus found.
+    """
+    pooled = [correction for pairs in pair_corrections.values() for correction in pairs]
+    return _aggregate(pooled) if pooled else 0.0
 
 
 def _aggregate(pairs: list[float]) -> float:

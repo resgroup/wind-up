@@ -11,7 +11,14 @@ import pytest
 from wind_up.circular_math import circ_diff
 from wind_up.layout import Layout
 from wind_up.northing import add_wake_nadir_shift, apply_north_table, north_farm
-from wind_up.wake_nadir import _aggregate, _own_corrections, wake_nadir_offsets, wake_pair_curves, wake_pairs
+from wind_up.wake_nadir import (
+    _aggregate,
+    _farm_correction,
+    _own_corrections,
+    wake_nadir_offsets,
+    wake_pair_curves,
+    wake_pairs,
+)
 
 
 def _index(rows: int) -> pd.DatetimeIndex:
@@ -365,9 +372,51 @@ def test_a_turbine_with_one_resolved_pair_takes_its_neighbours_correction_when_o
     assert _own_corrections({"A": [1.0, 1.2], "B": [0.8, 1.4, 1.0], "Z": [13.0]}) == pytest.approx({"A": 1.1, "B": 1.0})
 
 
-def test_single_pairs_still_count_when_no_turbine_has_two() -> None:
-    """In a farm too small for any turbine to resolve two pairs, one pair each is all there is."""
-    assert _own_corrections({"A": [1.0], "B": [], "Z": [3.0]}) == pytest.approx({"A": 1.0, "Z": 3.0})
+def test_no_turbine_takes_its_own_correction_from_single_pairs() -> None:
+    """A single pair never sets a turbine's own correction, even when no turbine resolves two."""
+    assert _own_corrections({"A": [1.0], "B": [], "Z": [3.0]}) == {}
+
+
+def test_single_pairs_pool_into_one_farm_correction() -> None:
+    """With no turbine resolving two pairs, every resolved pair votes on one correction for the farm."""
+    assert _farm_correction({"A": [1.0], "B": [], "Z": [3.0], "Y": [2.5]}) == pytest.approx(2.5)
+    assert _farm_correction({"A": [], "B": []}) == 0.0
+
+
+def _two_pair_layout() -> Layout:
+    """Two separate pairs about 5.5 km apart, each upstream turbine due west of its downstream one."""
+    frame = pd.DataFrame(
+        {
+            "name": ["A", "B", "C", "D"],
+            "latitude": [55.0, 55.0, 55.05, 55.05],
+            "longitude": [-0.0064, 0.0, -0.0064, 0.0],
+            "rotor_diameter_m": [82.0, 82.0, 82.0, 82.0],
+        }
+    )
+    return Layout.from_frame(frame)
+
+
+def test_a_farm_of_single_pairs_shifts_every_turbine_alike() -> None:
+    """Two pairs resolving different residuals shift every turbine by one pooled correction.
+
+    One curve per turbine is too little to tell a turbine's own error from a pair's terrain or
+    deflection bias, so neither pair moves its turbine away from the rest of the farm.
+    """
+    layout = _two_pair_layout()
+    _, northed_ab, power_ab, ws_ab, usable_ab, _ = _waked_pair(_pair_layout(), residual_deg=6.0, seed=0)
+    index, northed_cd, power_cd, ws_cd, usable_cd, _ = _waked_pair(_pair_layout(), residual_deg=2.0, seed=1)
+    rename = {"A": "C", "B": "D"}
+    northed = {**northed_ab, **{rename[k]: v for k, v in northed_cd.items()}}
+    power = {**power_ab, **{rename[k]: v for k, v in power_cd.items()}}
+    wind_speed = {**ws_ab, **{rename[k]: v for k, v in ws_cd.items()}}
+    usable = {**usable_ab, **{rename[k]: v for k, v in usable_cd.items()}}
+
+    offsets = wake_nadir_offsets(
+        layout, index=index, northed_direction=northed, power=power, wind_speed=wind_speed, usable=usable
+    )
+
+    assert len(set(offsets.values())) == 1
+    assert circ_diff(offsets["A"], -4.0) == pytest.approx(0.0, abs=1.5)
 
 
 def test_wake_pair_curves_are_none_without_enough_rows() -> None:
