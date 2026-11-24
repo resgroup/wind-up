@@ -5,6 +5,7 @@ v0's own pipeline is stubbed; the slow SMARTEOLE test runs it for real.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -341,6 +342,13 @@ class TestV0Records:
         assert (out[DataColumns.shutdown_duration] == 150.0).all()
         assert out.index.name == TIMESTAMP_COL
         assert records.index.name is None
+
+    def test_the_nacelle_extremes_take_the_yaw_angle_names_v0_filters_on(self) -> None:
+        columns = dataclasses.replace(ff.COLS, nacelle_position_min="nac_min", nacelle_position_max="nac_max")
+        records = ff.records().assign(nac_min=1.0, nac_max=2.0, ShutdownDuration=0.0)
+        out = v0_records(records, columns=columns, timebase=ff.TIMEBASE)
+        assert (out[DataColumns.yaw_angle_min] == 1.0).all()
+        assert (out[DataColumns.yaw_angle_max] == 2.0).all()
 
     def test_a_column_already_named_for_v0_is_kept(self) -> None:
         records = ff.records().assign(ActivePowerMean=1.0, ShutdownDuration=0.0)

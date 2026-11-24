@@ -41,20 +41,29 @@ import pandas as pd
 import yaml
 
 from benchmarking.baselines.v0_binned import V0BinnedMethod
+from benchmarking.synthetic.sources.hill_of_towie import hill_of_towie_fields
 from wind_up.analysis import AnalysisSpec
 from wind_up.facts import NonTurbineMeasurement, Reanalysis, Upgrade, WindFarmFacts
 from wind_up.labels import Label
 from wind_up.schema import ColumnSchema
 
 TIMEBASE = pd.Timedelta(minutes=10)
+# The mean of the three blade pitch columns, the pitch the reference runs read.
+PITCH_MEAN_COL = "mean_wtc_PitcPosA_B_C"
+BLADE_PITCH_COLS = ("wtc_PitcPosA_mean", "wtc_PitcPosB_mean", "wtc_PitcPosC_mean")
+SOURCE_FIELD_OF_ALIAS = {f.alias: f.field_name for f in hill_of_towie_fields}
 COLUMNS = ColumnSchema(
     turbine="TurbineName",
-    active_power="ActivePowerMean",
-    wind_speed="WindSpeedMean",
-    wind_speed_sd="WindSpeedSD",
-    gen_rpm="GenRpmMean",
-    pitch="PitchAngleMean",
-    nacelle_position="YawAngleMean",
+    active_power="wtc_ActPower_mean",
+    wind_speed="wtc_AcWindSp_mean",
+    wind_speed_sd="wtc_AcWindSp_stddev",
+    gen_rpm="wtc_GenRpm_mean",
+    pitch=PITCH_MEAN_COL,
+    nacelle_position="wtc_NacelPos_mean",
+    nacelle_position_min="wtc_NacelPos_min",
+    nacelle_position_max="wtc_NacelPos_max",
+    reactive_power="wtc_ReactPwr_mean",
+    ambient_temp="wtc_AmbieTmp_mean",
 )
 TURBINE_TYPE = {
     "turbine_type": "SWT-2.3-82",
@@ -131,6 +140,18 @@ def dump_dy(out: Path, *, steering_output: Path) -> None:
     (out / STEER_TABLE).write_text((steering_output / STEER_TABLE).read_text())
 
 
+def _records(inputs: Path) -> pd.DataFrame:
+    """Return the dumped SCADA with the Hill of Towie source field names and the mean blade pitch.
+
+    The dump has the v0 names the Hill of Towie repo gives its fields; ``ShutdownDuration`` keeps the
+    name of the Hill of Towie file it comes from.
+    """
+    records = pd.read_parquet(inputs / "scada_df.parquet").drop(columns="PitchAngleMean")
+    records = records.rename(columns=SOURCE_FIELD_OF_ALIAS)
+    records[PITCH_MEAN_COL] = records[list(BLADE_PITCH_COLS)].mean(axis=1)
+    return records
+
+
 def _turbines(inputs: Path) -> pd.DataFrame:
     meta = pd.read_parquet(inputs / "metadata_df.parquet")
     return pd.DataFrame(
@@ -191,7 +212,7 @@ def t13(inputs: Path, *, hot_repo: Path, out: Path, config_only: bool) -> None:
     cfg = hot_repo / "scripts/uplift_analysis_2025/wind_up_config"
     raw = yaml.safe_load((cfg / "HoT_AeroUp_T13.yaml").read_text().replace("!include", "#"))
     facts = WindFarmFacts(
-        records=pd.read_parquet(inputs / "scada_df.parquet"),
+        records=_records(inputs),
         columns=COLUMNS,
         timebase=TIMEBASE,
         turbines=_turbines(inputs),
@@ -222,7 +243,12 @@ def t13(inputs: Path, *, hot_repo: Path, out: Path, config_only: bool) -> None:
             "optimize_northing_corrections",
         )
     }
-    method = V0BinnedMethod(options=options, turbine_type=TURBINE_TYPE, site_name="Hill of Towie", out_dir=out / "v0")
+    method = V0BinnedMethod(
+        options=options,
+        turbine_type=TURBINE_TYPE,
+        site_name="Hill of Towie",
+        out_dir=out / "v0",
+    )
     _run(method, facts, [analysis], out=out, config_only=config_only)
 
 
@@ -230,7 +256,7 @@ def dy(inputs: Path, *, hot_repo: Path, out: Path, which: set[str], config_only:
     """Run Dynamic Yaw: collective control of the controlled turbines, and each steer against each reference."""
     cfg = hot_repo / "scripts/wfc_analysis_2026/wind_up_config"
     raw = yaml.safe_load((cfg / "HOT_dynamic_yaw.yaml").read_text().replace("!include", "#"))
-    scada = pd.read_parquet(inputs / "scada_df.parquet")
+    scada = _records(inputs)
     scada[STEERING_USED_LABEL] = pd.read_parquet(inputs / "steering_used.parquet")[STEERING_USED_LABEL].to_numpy()
     toggle = pd.read_parquet(inputs / "toggle_df.parquet")
     lidars = []

@@ -55,6 +55,8 @@ def _diagnostic_columns(ctx: DiagnosticContext) -> dict[str, str | None]:
         "pitch": cols.pitch,
         "reactive_power": cols.reactive_power,
         "nacelle_position": cols.nacelle_position,
+        "nacelle_position_min": cols.nacelle_position_min,
+        "nacelle_position_max": cols.nacelle_position_max,
         "ambient_temp": cols.ambient_temp,
         "availability": cols.availability,
     }

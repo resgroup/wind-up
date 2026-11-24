@@ -20,6 +20,8 @@ ROLE_UNITS: dict[str, str] = {
     "pitch": "deg",
     "reactive_power": "kvar",
     "nacelle_position": "deg",
+    "nacelle_position_min": "deg",
+    "nacelle_position_max": "deg",
     "ambient_temp": "degC",
     "power_setpoint": "kW",
 }
@@ -31,6 +33,8 @@ ROLE_RANGES: dict[str, tuple[float, float]] = {
     "gen_rpm": (-100.0, 5000.0),
     "pitch": (-360.0, 360.0),
     "nacelle_position": (-720.0, 720.0),
+    "nacelle_position_min": (-720.0, 720.0),
+    "nacelle_position_max": (-720.0, 720.0),
     "ambient_temp": (-100.0, 200.0),
 }
 
@@ -63,6 +67,8 @@ class ColumnSchema:
     :param reactive_power: mean reactive power, kvar
     :param nacelle_position: nacelle position, degrees, cumulative or not; northing calibrates it to a
         wind direction
+    :param nacelle_position_min: minimum nacelle position in the record, degrees
+    :param nacelle_position_max: maximum nacelle position in the record, degrees
     :param ambient_temp: ambient temperature, degrees C
     :param power_setpoint: the power setpoint at the end of each record; the synthetic upgrades taper
         and cap their power change at the higher of a record's start and end setpoints
@@ -78,6 +84,8 @@ class ColumnSchema:
     pitch: str | None = None
     reactive_power: str | None = None
     nacelle_position: str | None = None
+    nacelle_position_min: str | None = None
+    nacelle_position_max: str | None = None
     ambient_temp: str | None = None
     power_setpoint: str | None = None
 

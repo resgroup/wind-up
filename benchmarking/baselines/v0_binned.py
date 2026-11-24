@@ -88,6 +88,8 @@ V0_COLUMN_OF_ROLE = {
     "wind_speed": DataColumns.wind_speed_mean,
     "wind_speed_sd": DataColumns.wind_speed_sd,
     "nacelle_position": DataColumns.yaw_angle_mean,
+    "nacelle_position_min": DataColumns.yaw_angle_min,
+    "nacelle_position_max": DataColumns.yaw_angle_max,
     "pitch": DataColumns.pitch_angle_mean,
     "gen_rpm": DataColumns.gen_rpm_mean,
     "ambient_temp": DataColumns.ambient_temp,
