@@ -153,6 +153,10 @@ class V0BinnedMethod:
     :param per_turbine_plots: with ``save_plots``, also write v0's preprocessing plots of each turbine
         beside those of each turbine type
     :param cache_dir: v0's cache of prepared inputs; none when ``None``
+    :param turbine_wind_measurement: a declared mast or LiDAR to supply missing turbine wind speed
+        and nacelle direction columns, matched by timestamp
+    :param default_pitch_deg: blade pitch to use if the turbine records have no pitch column
+    :param default_gen_rpm: generator speed to use if the turbine records have no generator speed column
     """
 
     name: str = "v0_binned"
@@ -165,6 +169,9 @@ class V0BinnedMethod:
     save_plots: bool = False
     per_turbine_plots: bool = True
     cache_dir: Path | None = None
+    turbine_wind_measurement: str | None = None
+    default_pitch_deg: float | None = None
+    default_gen_rpm: float | None = None
 
     def __post_init__(self) -> None:
         """Reject options the facts or the analysis set, and fields v0 does not have."""
@@ -382,9 +389,35 @@ class V0BinnedMethod:
             if self.to_v0_records is not None
             else v0_records(records, columns=facts.columns, timebase=facts.timebase)
         )
+        converted = self._with_turbine_signal_defaults(converted, facts)
         if exclude.any():
             converted = converted.assign(**{EXCLUDE_ROW_COL: exclude.astype(int)})
         return converted.rename_axis(index=TIMESTAMP_COL)
+
+    def _with_turbine_signal_defaults(self, records: pd.DataFrame, facts: WindFarmFacts) -> pd.DataFrame:
+        """Fill missing columns with the requested proxy wind signals and operating defaults."""
+        defaults = {
+            DataColumns.pitch_angle_mean: self.default_pitch_deg,
+            DataColumns.gen_rpm_mean: self.default_gen_rpm,
+        }
+        additions: dict[str, Any] = {
+            column: default for column, default in defaults.items() if default is not None and column not in records
+        }
+        if self.turbine_wind_measurement is not None:
+            measurement = next(
+                (m for m in facts.non_turbine_measurements if m.name == self.turbine_wind_measurement), None
+            )
+            if measurement is None:
+                msg = f"{self.name}: unknown turbine wind measurement {self.turbine_wind_measurement!r}"
+                raise MethodConfigurationError(msg)
+            wind = measurement.records.reindex(records.index)
+            for role, column in (
+                (WIND_SPEED_ROLE, DataColumns.wind_speed_mean),
+                (WIND_DIRECTION_ROLE, DataColumns.yaw_angle_mean),
+            ):
+                if column not in records:
+                    additions[column] = wind[measurement.columns[role]].to_numpy()
+        return records.assign(**additions) if additions else records
 
 
 def _group_total(measured: pd.DataFrame) -> tuple[float, float]:

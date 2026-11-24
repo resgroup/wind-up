@@ -35,7 +35,6 @@ from __future__ import annotations
 import logging
 import sys
 import zipfile
-from functools import partial
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -45,12 +44,13 @@ from matplotlib import pyplot as plt
 from pydantic import BaseModel, Field
 
 from wind_up import AnalysisSpec, Label, NonTurbineMeasurement, Reanalysis, Upgrade, WindFarmFacts
+from wind_up.labels import USES
 from wind_up.schema import ColumnSchema
-from wind_up_v0.constants import OUTPUT_DIR, PROJECTROOT_DIR, DataColumns
+from wind_up_v0.constants import OUTPUT_DIR, PROJECTROOT_DIR
 from wind_up_v0.wind_funcs import calc_cp
 
 sys.path.append(str(PROJECTROOT_DIR))
-from benchmarking.baselines.v0_binned import V0BinnedMethod, v0_records
+from benchmarking.baselines.v0_binned import V0BinnedMethod
 from examples.helpers import download_zenodo_data, format_and_print_results_table, setup_logger
 
 if TYPE_CHECKING:
@@ -73,7 +73,7 @@ WIND_DIRECTION = "D"
 UPGRADE_STATUS = "upgradestatus"
 COLUMNS = ColumnSchema(turbine="turbine", active_power="power_kw", availability="available_s")
 # This farm-wide exclusion applies to reference records as well as the subject.
-UNUSABLE_DIRECTION = Label(name="unusable wind direction", column="unusable_direction", withholds=frozenset({"uplift"}))
+UNUSABLE_DIRECTION = Label(name="unusable wind direction", column="unusable_direction", withholds=frozenset(USES))
 
 logger = logging.getLogger(__name__)
 
@@ -161,20 +161,6 @@ def make_turbine_records(raw: pd.DataFrame, config: WeDoWindAnalysisConf) -> pd.
             )
             for turbine, power_column in [(TEST_TURBINE, "y_test(normalized)"), (REF_TURBINE, "y_ctrl(normalized)")]
         ]
-    )
-
-
-def adapt_records_for_binned_method(records: pd.DataFrame, *, mast: NonTurbineMeasurement) -> pd.DataFrame:
-    # The legacy preprocessor needs turbine wind and operating columns. Add these
-    # proxies at its boundary. The facts retain the mast as a separate measurement.
-    wind = mast.records.reindex(records.index)
-    return v0_records(records, columns=COLUMNS, timebase=TIMEBASE).assign(
-        **{
-            DataColumns.wind_speed_mean: wind[mast.columns["wind_speed"]].to_numpy(),
-            DataColumns.yaw_angle_mean: wind[mast.columns["wind_direction"]].to_numpy(),
-            DataColumns.pitch_angle_mean: 0,
-            DataColumns.gen_rpm_mean: 1000,
-        }
     )
 
 
@@ -369,11 +355,11 @@ def main_wedowind_analysis(
         upgrade=upgrade.name,
         references=[REF_TURBINE],
         period=(history_start, post_last + TIMEBASE),
-        exclude_labels=[UNUSABLE_DIRECTION.name],
         report="aep",
     )
     method = V0BinnedMethod(
         options={
+            # The reference sector is applied after preprocessing the long-term wind distribution.
             "ref_wd_filter": analysis_conf.ref_wd_filter,
             "years_offset_for_pre_period": 1,
             "years_for_lt_distribution": 1,
@@ -391,7 +377,6 @@ def main_wedowind_analysis(
                 "post_first_dt_utc_start": post_first,
                 "post_last_dt_utc_start": post_last,
             },
-            "missing_scada_data_fields": [DataColumns.yaw_angle_min, DataColumns.yaw_angle_max],
             "optimize_northing_corrections": False,
             "clip_rated_power_pp": analysis_conf.clip_rated_power_pp,
             "use_rated_invalid_bins": analysis_conf.use_rated_invalid_bins,
@@ -405,7 +390,10 @@ def main_wedowind_analysis(
         },
         site_name="Mystery Wind Farm",
         auto_choose_refs=False,  # The analysis has a single declared reference.
-        to_v0_records=partial(adapt_records_for_binned_method, mast=mast),
+        # The dataset has no turbine wind, pitch or generator speed measurements.
+        turbine_wind_measurement=mast.name,
+        default_pitch_deg=0,
+        default_gen_rpm=1000,
         out_dir=analysis_output_dir,
         save_plots=save_plots,
         cache_dir=cache_dir / analysis_name,

@@ -406,6 +406,36 @@ class _Pipeline:
 
 
 class TestAnsweringAnalyses:
+    def test_mast_wind_and_operating_defaults_fill_missing_turbine_signals(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pipeline = _Pipeline(monkeypatch)
+        frame = ff.records().drop(columns=ff.COLS.wind_speed)
+        columns = dataclasses.replace(ff.COLS, wind_speed=None)
+        times = frame.index.unique()
+        mast = NonTurbineMeasurement(
+            name="mast",
+            latitude=57.5,
+            longitude=-3.0,
+            records=pd.DataFrame({"speed": np.arange(len(times)), "direction": 220.0}, index=times),
+            columns={"wind_speed": "speed", "wind_direction": "direction"},
+        )
+        facts = ff.facts(frame, columns=columns, non_turbine_measurements=[mast])
+        method = _method(tmp_path, turbine_wind_measurement="mast", default_pitch_deg=0, default_gen_rpm=1000)
+
+        method.estimate(facts, [_analysis()])
+
+        converted = pipeline.calls[0]["scada_df"]
+        np.testing.assert_array_equal(converted[DataColumns.wind_speed_mean], mast.records["speed"].loc[frame.index])
+        assert converted[DataColumns.yaw_angle_mean].eq(220).all()
+        assert converted[DataColumns.gen_rpm_mean].eq(1000).all()
+        np.testing.assert_array_equal(converted[DataColumns.pitch_angle_mean], frame[ff.COLS.pitch])
+
+    def test_configured_turbine_wind_measurement_must_be_declared(self, tmp_path: Path) -> None:
+        method = _method(tmp_path, turbine_wind_measurement="missing mast")
+        with pytest.raises(MethodConfigurationError, match="unknown turbine wind measurement 'missing mast'"):
+            method.estimate(ff.facts(), [_analysis()])
+
     def test_one_subject_gives_v0s_combined_uplift_and_sigma(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
