@@ -1,21 +1,39 @@
 """Tests for the `WeDoWind` example wind farm."""
 
+from __future__ import annotations
+
 import shutil
-from pathlib import Path
+import zipfile
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import pytest
 
-import wind_up_v0
+import wind_up
 from examples.helpers import setup_logger
-from examples.wedowind_example import main_wedowind_analysis
+from examples.wedowind_example import ZIP_FILENAME, main_wedowind_analysis
 from tests.conftest import TEST_DATA_FLD
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from wind_up import AnalysisOutput
+
+
+@pytest.fixture
+def wedowind_cache(tmp_path: Path) -> Path:
+    archive = TEST_DATA_FLD / "wedowind" / ZIP_FILENAME
+    if not zipfile.is_zipfile(archive):
+        pytest.skip("The WeDoWind fixture requires the Git LFS archive")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    shutil.copyfile(archive, cache / ZIP_FILENAME)
+    return cache
 
 
 @pytest.fixture
 def wedowind_expected_pitch_angle_results() -> pd.DataFrame:
-    shutil.rmtree(TEST_DATA_FLD / "wedowind/Pitch Angle", ignore_errors=True)
     return pd.DataFrame(
         [
             {
@@ -31,8 +49,8 @@ def wedowind_expected_pitch_angle_results() -> pd.DataFrame:
                 "uplift_p95_frc": 0.02049133783758799,
                 "uplift_p5_frc": 0.04045542319275596,
                 "pp_data_coverage": 0.07030065689742294,
-                "distance_m": 1727.532358659697,
-                "bearing_deg": 80.01879303945559,
+                "distance_m": 1726.267489569764,
+                "bearing_deg": 79.95852090721789,
                 "unc_one_sigma_noadj_frc": 0.004194965381090924,
                 "unc_one_sigma_lowerbound_frc": 0.0043787000647438,
                 "unc_one_sigma_bootstrap_frc": 0.006068651042272032,
@@ -60,7 +78,8 @@ def wedowind_expected_pitch_angle_results() -> pd.DataFrame:
                 "reversed_uplift_frc": 0.027407137307697532,
                 "reversal_error": -0.0087574001294876,
                 "test_toggle_is_placebo": False,
-                "lt_wtg_hours_raw": 3536.3333333333335,
+                # Direction-excluded rows are retained as labelled facts before filtering.
+                "lt_wtg_hours_raw": 4747.666666666668,
                 "lt_wtg_hours_filt": 3536.333333333333,
                 "test_max_ws_drift": np.nan,
                 "test_max_ws_drift_pp_period": np.nan,
@@ -75,7 +94,6 @@ def wedowind_expected_pitch_angle_results() -> pd.DataFrame:
 
 @pytest.fixture
 def wedowind_expected_vg_results() -> pd.DataFrame:
-    shutil.rmtree(TEST_DATA_FLD / "wedowind/Vortex Generator", ignore_errors=True)
     return pd.DataFrame(
         [
             {
@@ -91,8 +109,8 @@ def wedowind_expected_vg_results() -> pd.DataFrame:
                 "uplift_p95_frc": 0.014625188375301775,
                 "uplift_p5_frc": 0.03146845874813096,
                 "pp_data_coverage": 0.0736418776371308,
-                "distance_m": 1727.532358659697,
-                "bearing_deg": 80.01879303945559,
+                "distance_m": 1726.267489569764,
+                "bearing_deg": 79.95852090721789,
                 "unc_one_sigma_noadj_frc": 0.004255707445544146,
                 "unc_one_sigma_lowerbound_frc": 0.0020446262880886657,
                 "unc_one_sigma_bootstrap_frc": 0.005119990647449296,
@@ -120,7 +138,7 @@ def wedowind_expected_vg_results() -> pd.DataFrame:
                 "reversed_uplift_frc": 0.01680021123720865,
                 "reversal_error": 0.004089252576177331,
                 "test_toggle_is_placebo": False,
-                "lt_wtg_hours_raw": 3498.6666666666665,
+                "lt_wtg_hours_raw": 5792.499999999999,
                 "lt_wtg_hours_filt": 3498.6666666666665,
                 "test_max_ws_drift": np.nan,
                 "test_max_ws_drift_pp_period": np.nan,
@@ -133,45 +151,51 @@ def wedowind_expected_vg_results() -> pd.DataFrame:
     )
 
 
+def _assert_wedowind_output(output: AnalysisOutput, expected: pd.DataFrame, output_dir: Path) -> None:
+    assert output.aep_uplift == pytest.approx(expected["uplift_frc"].iloc[0])
+    assert output.aep_sigma == pytest.approx(expected["unc_one_sigma_frc"].iloc[0])
+    assert output.per_reference is not None
+    assert output.per_reference["report"].tolist() == ["aep"]
+    assert output.per_reference["wind_up_version"].iloc[0] == wind_up.__version__
+    assert output.analysis.include_labels == ("reference sector",)
+    pd.testing.assert_frame_equal(
+        output.per_reference.drop(columns=["time_calculated", "wind_up_version", "report"]), expected
+    )
+    saved = pd.read_csv(output_dir / output.analysis.name / "results_per_test_ref.csv")
+    pd.testing.assert_frame_equal(saved.drop(columns=["time_calculated", "wind_up_version"]), expected)
+
+
 @pytest.mark.slow
 @pytest.mark.filterwarnings("ignore")
-def test_wedowind_pitch_angle(wedowind_expected_pitch_angle_results: pd.DataFrame, tmp_path: Path) -> None:
+def test_wedowind_pitch_angle(
+    wedowind_expected_pitch_angle_results: pd.DataFrame, wedowind_cache: Path, tmp_path: Path
+) -> None:
     """Test the WeDoWind Pitch Angle example."""
-    cache_dir = TEST_DATA_FLD / "wedowind"
     setup_logger(tmp_path / "analysis.log")
     actual = main_wedowind_analysis(
         analysis_name="Pitch Angle",
         generate_custom_plots=False,
         save_plots=False,
-        cache_dir=cache_dir,
+        cache_dir=wedowind_cache,
         analysis_output_dir=tmp_path,
         bootstrap_runs_override=40,  # to speed up test
     )
-    assert actual["wind_up_version"].squeeze() == wind_up_v0.__version__
-    pd.testing.assert_frame_equal(
-        actual.drop(columns=["time_calculated", "wind_up_version"]), wedowind_expected_pitch_angle_results
-    )
-
-    shutil.rmtree(cache_dir / "Pitch Angle", ignore_errors=True)  # clean up cache
+    _assert_wedowind_output(actual, wedowind_expected_pitch_angle_results, tmp_path)
 
 
 @pytest.mark.slow
 @pytest.mark.filterwarnings("ignore")
-def test_wedowind_vortex_generators(wedowind_expected_vg_results: pd.DataFrame, tmp_path: Path) -> None:
+def test_wedowind_vortex_generators(
+    wedowind_expected_vg_results: pd.DataFrame, wedowind_cache: Path, tmp_path: Path
+) -> None:
     """Test the WeDoWind Vortex Generators example."""
-    cache_dir = TEST_DATA_FLD / "wedowind"
     setup_logger(tmp_path / "analysis.log")
     actual = main_wedowind_analysis(
         analysis_name="Vortex Generator",
         generate_custom_plots=False,
         save_plots=False,
-        cache_dir=cache_dir,
+        cache_dir=wedowind_cache,
         analysis_output_dir=tmp_path,
         bootstrap_runs_override=40,  # to speed up test
     )
-    assert actual["wind_up_version"].squeeze() == wind_up_v0.__version__
-    pd.testing.assert_frame_equal(
-        actual.drop(columns=["time_calculated", "wind_up_version"]), wedowind_expected_vg_results
-    )
-
-    shutil.rmtree(cache_dir / "Vortex Generator", ignore_errors=True)  # clean up
+    _assert_wedowind_output(actual, wedowind_expected_vg_results, tmp_path)
