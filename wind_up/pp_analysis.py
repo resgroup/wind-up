@@ -852,6 +852,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         pw_col=pw_col,
         wd_col=wd_col,
         plot_cfg=plot_cfg,
+        confidence_level=confidence_level,
         test_df=test_df,
         site_mean_pc_df=site_mean_pc_df,
         site_mean_pc_per_ttype=site_mean_pc_per_ttype,
@@ -886,6 +887,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
                 pw_col=pw_col,
                 wd_col=wd_col,
                 plot_cfg=None,
+                confidence_level=confidence_level,
                 site_mean_pc_df=site_mean_pc_df,
                 site_mean_pc_per_ttype=site_mean_pc_per_ttype,
                 add_uplift_cols=False,
@@ -924,13 +926,14 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
 
     p_low = (1 - confidence_level) / 2
     p_high = 1 - p_low
+    p_low_pct = f"{p_low * 100:.0f}"
+    p_high_pct = f"{p_high * 100:.0f}"
+    upper_key = f"uplift_p{p_low_pct}_frc"
+    lower_key = f"uplift_p{p_high_pct}_frc"
+    half_width = pp_results["unc_one_sigma_frc"] * norm.ppf((1 + confidence_level) / 2)
 
-    pp_results[f"uplift_p{p_low * 100:.0f}_frc"] = pp_results["uplift_frc"] + pp_results[
-        "unc_one_sigma_frc"
-    ] * norm.ppf((1 + confidence_level) / 2)
-    pp_results[f"uplift_p{p_high * 100:.0f}_frc"] = pp_results["uplift_frc"] - pp_results[
-        "unc_one_sigma_frc"
-    ] * norm.ppf((1 + confidence_level) / 2)
+    pp_results[upper_key] = pp_results["uplift_frc"] + half_width
+    pp_results[lower_key] = pp_results["uplift_frc"] - half_width
     if plot_cfg is not None:
         logger.info(f"\ncat A 1 sigma unc = {100 * pp_results['unc_one_sigma_noadj_frc']:.1f} %")
         if pp_results["unc_one_sigma_lowerbound_frc"] > 0.05 / 100:
@@ -942,7 +945,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         logger.info(f"final 1 sigma unc = {100 * pp_results['unc_one_sigma_frc']:.1f} %\n")
 
         logger.info(f"final uplift estimate = {100 * pp_results['uplift_frc']:.1f} %")
-        logger.info(f"final P95 uplift estimate = {100 * pp_results[f'uplift_p{p_high * 100:.0f}_frc']:.1f} %")
-        logger.info(f"final P5 uplift estimate = {100 * pp_results[f'uplift_p{p_low * 100:.0f}_frc']:.1f} %")
+        logger.info(f"final P{p_high_pct} uplift estimate = {100 * pp_results[lower_key]:.1f} %")
+        logger.info(f"final P{p_low_pct} uplift estimate = {100 * pp_results[upper_key]:.1f} %")
 
     return pp_results, pp_df
