@@ -21,6 +21,7 @@ from wind_up.analysis import (
 )
 from wind_up.analysis_warnings import AnalysisWarning
 from wind_up.toggle import ToggleSchedule
+from wind_up_v0.combine_results import _calculate_total_uplift_of_turbine_group
 
 from .facts_fixtures import at
 
@@ -248,3 +249,47 @@ def test_placebo_timing_is_frozen_and_checked() -> None:
         AnalysisSpec(name="a", upgrade="control", placebo_timing={"T3": at(1)})  # type: ignore[dict-item]
     with pytest.raises(ValueError, match="to its subjects"):
         AnalysisSpec(name="a", upgrade="control", subjects=["T3"], placebo_timing={"T3": schedule})
+
+
+def test_an_inverse_variance_combination_matches_v0s_group_total() -> None:
+    per_turbine = _subjects(campaign_uplift=[0.10, 0.02], campaign_sigma=[0.02, 0.01])
+    combined = combine_subjects(_group(per_turbine), combination=INVERSE_VARIANCE)
+    v0 = _calculate_total_uplift_of_turbine_group(
+        pd.DataFrame(
+            {"test_wtg": ["T1", "T2"], "p50_uplift": [0.10, 0.02], "sigma": [0.02, 0.01], "is_ref": [False, False]}
+        )
+    )
+    assert combined.combination == INVERSE_VARIANCE
+    assert combined.campaign_uplift == pytest.approx(v0["p50_uplift"])
+    assert combined.campaign_uplift == pytest.approx((0.10 / 0.02**2 + 0.02 / 0.01**2) / (1 / 0.02**2 + 1 / 0.01**2))
+    assert combined.campaign_sigma_independent == pytest.approx(v0["sigma_uncorr"])
+    assert combined.campaign_sigma_correlated == pytest.approx(v0["sigma_corr"])
+    assert combined.campaign_sigma == pytest.approx(v0["sigma"])
+    assert "mean of the sigmas" in combined.warnings[-1].message
+
+
+def test_an_inverse_variance_combination_of_outputs_needs_no_energy() -> None:
+    outputs = [
+        output("a", energy=None, campaign=0.03, campaign_sigma=0.01),
+        output("b", energy=None, campaign=0.01, campaign_sigma=0.01),
+    ]
+    combined = combine(outputs, combination=INVERSE_VARIANCE)
+    assert combined.campaign_uplift == pytest.approx(0.02)
+    assert combined.campaign_sigma == pytest.approx((0.01 / math.sqrt(2) + 0.01) / 2)
+    assert math.isnan(combine(outputs).campaign_uplift)
+
+
+def test_an_inverse_variance_combination_needs_every_sigma() -> None:
+    per_turbine = _subjects(campaign_uplift=[0.10, 0.02], campaign_sigma=[0.02, float("nan")])
+    combined = combine_subjects(_group(per_turbine), combination=INVERSE_VARIANCE)
+    assert math.isnan(combined.campaign_uplift)
+    assert any("positive sigma" in w.message for w in combined.warnings)
+
+
+def test_a_net_combination_gives_its_sigma_only_as_a_range() -> None:
+    per_turbine = _subjects(actual_energy=[110.0, 306.0], campaign_uplift=[0.10, 0.02], campaign_sigma=[0.02, 0.01])
+    combined = combine_subjects(_group(per_turbine))
+    assert combined.combination == NET
+    assert math.isnan(combined.campaign_sigma)
+    with pytest.raises(ValueError, match="combination is one of"):
+        combine_subjects(_group(per_turbine), combination="mean")

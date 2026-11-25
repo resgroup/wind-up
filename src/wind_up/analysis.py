@@ -1,8 +1,9 @@
 """What is asked of the facts, and what a method answers.
 
 An :class:`AnalysisSpec` names an upgrade, the turbines to measure it on and the records to use.
-A method returns one :class:`AnalysisOutput` per analysis. :func:`combine` gives the energy-weighted
-uplift of several outputs, :func:`combine_subjects` that of one output's subjects.
+A method returns one :class:`AnalysisOutput` per analysis. :func:`combine` gives the combined
+uplift of several outputs, :func:`combine_subjects` that of one output's subjects, either by energy
+or by inverse variance.
 """
 
 from __future__ import annotations
@@ -180,10 +181,12 @@ class AnalysisOutput:
 
 @dataclass(frozen=True)
 class CombinedUplift:
-    """The energy-weighted uplift of several outputs, or of one output's subjects.
+    """The combined uplift of several outputs, or of one output's subjects.
 
-    Each sigma is given twice: with the errors independent, and with them fully correlated.
+    Each sigma is given twice: with the errors independent, and with them fully correlated. An
+    ``inverse_variance`` combination also gives one sigma, the mean of the two.
 
+    :param combination: how the uplifts were combined, from :data:`COMBINATIONS`
     :param aep_uplift: the combined AEP uplift; NaN unless every output has one
     :param aep_sigma_independent: its 1-sigma with independent errors
     :param aep_sigma_correlated: its 1-sigma with fully correlated errors
@@ -195,6 +198,7 @@ class CombinedUplift:
     :param warnings: the outputs' own warnings, then those of the combination
     """
 
+    combination: str
     aep_uplift: float
     aep_sigma_independent: float
     aep_sigma_correlated: float
@@ -204,13 +208,31 @@ class CombinedUplift:
     outputs: pd.DataFrame
     warnings: tuple[AnalysisWarning, ...]
 
+    @property
+    def aep_sigma(self) -> float:
+        """Return the AEP uplift's 1-sigma of an ``inverse_variance`` combination; NaN for ``net``."""
+        return self._sigma(self.aep_sigma_independent, self.aep_sigma_correlated)
 
-def combine(outputs: Sequence[AnalysisOutput]) -> CombinedUplift:
-    """Return the energy-weighted uplift of ``outputs`` on each basis they all report.
+    @property
+    def campaign_sigma(self) -> float:
+        """Return the campaign uplift's 1-sigma of an ``inverse_variance`` combination; NaN for ``net``."""
+        return self._sigma(self.campaign_sigma_independent, self.campaign_sigma_correlated)
 
-    Each output's energy without the upgrade is its actual energy over one plus its uplift; the
-    combined uplift is the total actual energy over the total without the upgrade, less one. An
-    output needs a per-turbine table with ``actual_energy``.
+    def _sigma(self, independent: float, correlated: float) -> float:
+        """Return the mean of the two sigmas for an ``inverse_variance`` combination, else NaN."""
+        return (independent + correlated) / 2 if self.combination == INVERSE_VARIANCE else float("nan")
+
+
+def combine(outputs: Sequence[AnalysisOutput], *, combination: str = NET) -> CombinedUplift:
+    """Return the combined uplift of ``outputs`` on each basis they all report.
+
+    ``net`` weights by energy: each output's energy without the upgrade is its actual energy over
+    one plus its uplift, and the combined uplift is the total actual energy over the total without
+    the upgrade, less one; an output then needs a per-turbine table with ``actual_energy``.
+    ``inverse_variance`` weights each uplift by the inverse of its variance; every output then
+    needs a positive sigma.
+
+    :param combination: from :data:`COMBINATIONS`
     """
     if not outputs:
         msg = "combine needs at least one output"
@@ -225,14 +247,16 @@ def combine(outputs: Sequence[AnalysisOutput]) -> CombinedUplift:
             "campaign_sigma": [o.campaign_sigma for o in outputs],
         }
     )
-    return _combined(table, warnings=[w for o in outputs for w in o.warnings], what="outputs")
+    return _combined(table, warnings=[w for o in outputs for w in o.warnings], what="outputs", combination=combination)
 
 
-def combine_subjects(output: AnalysisOutput) -> CombinedUplift:
-    """Return the energy-weighted uplift of ``output``'s subjects on each basis they all report.
+def combine_subjects(output: AnalysisOutput, *, combination: str = NET) -> CombinedUplift:
+    """Return the combined uplift of ``output``'s subjects on each basis they all report.
 
     As :func:`combine`, over the subjects' rows of the output's per-turbine table, placebo rows left
-    out: the net uplift of a group measured together, with its sigma as a range.
+    out. ``net`` gives the net uplift of a group measured together.
+
+    :param combination: from :data:`COMBINATIONS`
     """
     rows = None if output.per_turbine is None else subjects_only(output.per_turbine)
     if rows is None or rows.empty:
@@ -240,7 +264,7 @@ def combine_subjects(output: AnalysisOutput) -> CombinedUplift:
         raise ValueError(msg)
     columns = ["turbine", "actual_energy", "aep_uplift", "aep_sigma", "campaign_uplift", "campaign_sigma"]
     table = rows[columns].reset_index(drop=True)
-    return _combined(table, warnings=list(output.warnings), what="subjects")
+    return _combined(table, warnings=list(output.warnings), what="subjects", combination=combination)
 
 
 def subjects_only(per_turbine: pd.DataFrame) -> pd.DataFrame:
@@ -250,32 +274,52 @@ def subjects_only(per_turbine: pd.DataFrame) -> pd.DataFrame:
     return per_turbine[~per_turbine["placebo"].fillna(value=False).astype(bool)]
 
 
-def _combined(table: pd.DataFrame, *, warnings: list[AnalysisWarning], what: str) -> CombinedUplift:
-    """Return the energy-weighted uplift of ``table``'s rows, adding the combination's warnings."""
+def _combined(table: pd.DataFrame, *, warnings: list[AnalysisWarning], what: str, combination: str) -> CombinedUplift:
+    """Return the combined uplift of ``table``'s rows, adding the combination's warnings."""
+    if combination not in COMBINATIONS:
+        msg = f"combination is one of {list(COMBINATIONS)}, got {combination!r}"
+        raise ValueError(msg)
     energy = table["actual_energy"].to_numpy(dtype=float)
     figures: dict[str, float] = {}
     for basis in REPORTS:
-        uplift, independent, correlated = _weighted(
-            energy=energy,
-            uplift=table[f"{basis}_uplift"].to_numpy(dtype=float),
-            sigma=table[f"{basis}_sigma"].to_numpy(dtype=float),
-        )
+        uplift_values = table[f"{basis}_uplift"].to_numpy(dtype=float)
+        sigma_values = table[f"{basis}_sigma"].to_numpy(dtype=float)
+        if combination == NET:
+            uplift, independent, correlated = _weighted(energy=energy, uplift=uplift_values, sigma=sigma_values)
+        else:
+            uplift, independent, correlated = _inverse_variance(uplift=uplift_values, sigma=sigma_values)
         figures |= {
             f"{basis}_uplift": uplift,
             f"{basis}_sigma_independent": independent,
             f"{basis}_sigma_correlated": correlated,
         }
         if not math.isfinite(uplift):
-            message = (
-                f"no combined {basis} uplift: not every one of the {what} has one with a positive energy behind it"
-            )
+            needs = "a positive energy behind it" if combination == NET else "a positive sigma"
+            message = f"no combined {basis} uplift: not every one of the {what} has one with {needs}"
             warnings.append(AnalysisWarning(severity="medium", step=COMBINE_STEP, turbine="all", message=message))
-    message = (
-        f"the combined sigma is a range: the {what}' errors are taken as independent at one end and as fully "
-        "correlated at the other"
-    )
+    if combination == NET:
+        message = (
+            f"the combined sigma is a range: the {what}' errors are taken as independent at one end and as fully "
+            "correlated at the other"
+        )
+    else:
+        message = (
+            f"the combined sigma is the mean of the sigmas with the {what}' errors independent and fully correlated"
+        )
     warnings.append(AnalysisWarning(severity="low", step=COMBINE_STEP, turbine="all", message=message))
-    return CombinedUplift(outputs=table, warnings=tuple(warnings), **figures)
+    return CombinedUplift(combination=combination, outputs=table, warnings=tuple(warnings), **figures)
+
+
+def _inverse_variance(*, uplift: np.ndarray, sigma: np.ndarray) -> tuple[float, float, float]:
+    """Return the inverse-variance-weighted uplift and its sigma with independent and with fully correlated errors."""
+    nan = float("nan")
+    with np.errstate(invalid="ignore"):
+        usable = np.isfinite(uplift) & np.isfinite(sigma) & (sigma > 0)
+    if not len(uplift) or not usable.all():
+        return nan, nan, nan
+    weights = 1.0 / np.square(sigma)
+    share = weights / weights.sum()
+    return float((share * uplift).sum()), float(np.sqrt(np.square(share * sigma).sum())), float((share * sigma).sum())
 
 
 def _weighted(*, energy: np.ndarray, uplift: np.ndarray, sigma: np.ndarray) -> tuple[float, float, float]:
