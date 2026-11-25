@@ -318,7 +318,11 @@ class V0BinnedMethod:
             plot_cfg=plot_cfg,
             scada_df=records,
             metadata_df=_metadata(facts),
-            toggle_df=_toggle_frame(upgrade, index=pd.DatetimeIndex(records.index.unique()).sort_values()),
+            toggle_df=_toggle_frame(
+                upgrade,
+                index=pd.DatetimeIndex(records.index.unique()).sort_values(),
+                turbines=facts.turbine_names,
+            ),
             reanalysis_datasets=[ReanalysisDataset(id=r.name, data=r.records) for r in facts.reanalysis],
             cache_dir=self.cache_dir,
             mast_or_lidar_datasets=[
@@ -374,7 +378,7 @@ class V0BinnedMethod:
             cfg["toggle"] = {
                 "name": upgrade.name,
                 **self.options.get("toggle", {}),
-                "toggle_file_per_turbine": False,
+                "toggle_file_per_turbine": upgrade.per_turbine,
                 "toggle_filename": "not_used",
                 "toggle_change_settling_filter_seconds": int(upgrade.settling_time.total_seconds()),
             }
@@ -530,8 +534,8 @@ def _upgrade_first(
 ) -> pd.Timestamp:
     """Return v0's first upgraded timestamp: the end of a permanent changeover, or a toggle's first stated record.
 
-    A toggle's first record in the on or off state within the period and the signal's span, over
-    the subjects. Raises when the subjects of a permanent upgrade change over at different times.
+    A toggle's first record in the on or off state within the period and each subject's own
+    signal span, over the subjects. Raises when the subjects of a permanent upgrade change over at different times.
     """
     if upgrade.mode != "toggle":
         ends = {upgrade.changeover(s)[1] for s in subjects}
@@ -539,21 +543,32 @@ def _upgrade_first(
             msg = f"v0 runs one changeover; subjects {list(subjects)} change over at {sorted(ends)}"
             raise MethodConfigurationError(msg)
         return next(iter(ends))
-    signal_start = upgrade.signal_span()[0]
-    earliest = max(t for t in (start, signal_start, index.min()) if t is not None)
-    within = index[index >= earliest]
-    stated = [within[np.isin(upgrade.states(within, turbine=s), [ON, OFF])] for s in subjects]
-    firsts = [s.min() for s in stated if len(s)]
+    firsts = []
+    for subject in subjects:
+        signal_start = upgrade.signal_span(turbine=subject)[0]
+        earliest = max(t for t in (start, signal_start, index.min()) if t is not None)
+        within = index[index >= earliest]
+        stated = within[np.isin(upgrade.states(within, turbine=subject), [ON, OFF])]
+        if len(stated):
+            firsts.append(stated.min())
     if not firsts:
         msg = f"upgrade {upgrade.name!r} states no on or off record for {list(subjects)} within the period"
         raise ValueError(msg)
     return min(firsts)
 
 
-def _toggle_frame(upgrade: Upgrade, *, index: pd.DatetimeIndex) -> pd.DataFrame | None:
-    """Return the toggle frame v0 reads: the upgrade's own frame, or one built from its schedule."""
+def _toggle_frame(upgrade: Upgrade, *, index: pd.DatetimeIndex, turbines: Sequence[str]) -> pd.DataFrame | None:
+    """Return the toggle frame v0 reads: the upgrade's own frame, or one built from its schedule.
+
+    With a frame per turbine, v0's frame is indexed by turbine and timestamp over ``turbines``: a
+    turbine the upgrade toggles has its own frame, and every other turbine is off over ``index``.
+    """
     if upgrade.mode != "toggle":
         return None
+    if upgrade.per_turbine:
+        never = pd.DataFrame({"toggle_on": False, "toggle_off": True}, index=index)
+        frames = {t: upgrade.toggle_timing(t) if t in upgrade.turbines else never for t in turbines}
+        return pd.concat(frames, names=[DataColumns.turbine_name, TIMESTAMP_COL])
     if isinstance(upgrade.timing, ToggleSchedule):
         return build_toggle_df(index, upgrade.timing)
     return upgrade.timing  # type: ignore[return-value]

@@ -271,10 +271,27 @@ class TestToggleConfiguration:
         schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=ff.START)
         upgrade = Upgrade(name="control", turbines=("T1",), timing=schedule)
         index = pd.date_range(ff.START, periods=6, freq=ff.TIMEBASE)
-        frame = v0_binned._toggle_frame(upgrade, index=index)  # noqa: SLF001
+        frame = v0_binned._toggle_frame(upgrade, index=index, turbines=ff.NAMES)  # noqa: SLF001
         assert frame is not None
         assert list(frame.columns[:2]) == ["toggle_on", "toggle_off"]
-        assert v0_binned._toggle_frame(ff.permanent(), index=index) is None  # noqa: SLF001
+        assert v0_binned._toggle_frame(ff.permanent(), index=index, turbines=ff.NAMES) is None  # noqa: SLF001
+
+    def test_frames_per_turbine_become_v0s_frame_per_turbine(self, tmp_path: Path) -> None:
+        late = ff.toggle_frame(first=12)
+        upgrade = Upgrade(name="control", turbines=("T1", "T2"), timing={"T1": ff.toggle_frame(), "T2": late})
+        facts = ff.facts(upgrades=[upgrade])
+        analysis = _analysis(upgrade="control", subjects=["T2"], references=["T3"])
+        cfg = _method(tmp_path, options=TOGGLE_OPTIONS)._config(facts, analysis, use_lt_distribution=False)  # noqa: SLF001
+        assert cfg.toggle is not None
+        assert cfg.toggle.toggle_file_per_turbine
+        assert cfg.upgrade_first_dt_utc_start == ff.at(2)
+        index = pd.date_range(ff.START, periods=36, freq=ff.TIMEBASE)
+        frame = v0_binned._toggle_frame(upgrade, index=index, turbines=ff.NAMES)  # noqa: SLF001
+        assert frame is not None
+        assert list(frame.index.get_level_values(0).unique()) == list(ff.NAMES)
+        pd.testing.assert_frame_equal(frame.loc["T2"], late, check_names=False)
+        assert frame.loc["T3", "toggle_off"].all()
+        assert not frame.loc["T3", "toggle_on"].any()
 
 
 class TestExcludedRecords:

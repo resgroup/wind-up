@@ -1011,5 +1011,74 @@ def test_neither_gaps_at_the_start_of_each_on_run_do_not_shorten_its_cycle() -> 
 
 def test_a_frame_with_fewer_than_two_on_runs_states_no_cycle() -> None:
     frame = toggle_frame(block=40, first=6)
-    with pytest.raises(ValueError, match="fewer than two on runs"):
+    with pytest.raises(ValueError, match="no toggle frame has two on runs"):
         _ = Upgrade(name="control", turbines=["T1"], timing=frame).cycle
+
+
+# ---- Upgrade: a toggle frame per turbine --------------------------------------------------------
+
+
+def per_turbine() -> Upgrade:
+    """T1 toggles from the first hour, T2 from the second with the order reversed."""
+    t2 = shuffled_frame("10" * 6).shift(6, fill_value=False)
+    return Upgrade(name="control", turbines=["T1", "T2"], timing={"T1": toggle_frame(first=6), "T2": t2})
+
+
+def test_each_turbine_follows_its_own_frame() -> None:
+    upgrade = per_turbine()
+    assert upgrade.mode == "toggle"
+    assert upgrade.per_turbine
+    assert states(upgrade, "T1")[6:12] == [OFF] * 3 + [ON] * 3
+    assert states(upgrade, "T2")[:6] == [OFF] * 6
+    assert states(upgrade, "T2")[6:12] == [ON] * 3 + [OFF] * 3
+    assert states(upgrade, "T3") == [OFF] * 36
+    assert upgrade.toggle_timing("T2") is upgrade.timing["T2"]  # type: ignore[index]
+
+
+def test_each_turbine_has_its_own_span_and_settling() -> None:
+    upgrade = dataclasses.replace(per_turbine(), settling_time=pd.Timedelta(minutes=10))
+    assert upgrade.signal_span(turbine="T1") == (at(1), INDEX[-1])
+    assert upgrade.signal_span(turbine="T2")[0] == at(1)
+    assert upgrade.signal_span() == (at(1), INDEX[-1])
+    assert list(np.flatnonzero(upgrade.settling(INDEX, turbine="T1")))[:2] == [9, 12]
+    assert list(np.flatnonzero(upgrade.settling(INDEX, turbine="T2")))[:2] == [9, 12]
+
+
+def test_frames_per_turbine_pool_their_cycle_and_check_each_frame() -> None:
+    upgrade = per_turbine()
+    assert upgrade.cycle == pd.Timedelta(hours=1)
+    assert upgrade.datum(first_record=at(0)) == EPOCH.tz_localize("UTC")
+    assert upgrade.warnings() == ()
+    late = shuffled_frame("10" * 6).shift(1, fill_value=False)
+    shifted = Upgrade(name="control", turbines=["T1", "T2"], timing={"T1": toggle_frame(), "T2": late})
+    (warning,) = shifted.warnings()
+    assert warning.turbine == "T2"
+
+
+@pytest.mark.parametrize(
+    ("timing", "match"),
+    [
+        ({"T1": toggle_frame()}, "not its turbines"),
+        ({"T1": toggle_frame(), "T2": toggle_frame(), "T3": toggle_frame()}, "not its turbines"),
+        ({"T1": toggle_frame(), "T2": at(1)}, "all dates or all toggle frames"),
+    ],
+)
+def test_frames_per_turbine_name_exactly_the_upgrades_turbines(timing: object, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        Upgrade(name="control", turbines=["T1", "T2"], timing=timing)  # type: ignore[arg-type]
+
+
+def test_a_turbine_the_upgrade_does_not_toggle_has_no_toggle_timing() -> None:
+    with pytest.raises(ValueError, match="does not toggle 'T3'"):
+        per_turbine().toggle_timing("T3")
+
+
+def test_each_subject_is_compared_within_its_own_span() -> None:
+    late = toggle_frame(first=6)
+    late.iloc[:12] = False
+    upgrade = Upgrade(name="control", turbines=["T1", "T2"], timing={"T1": toggle_frame(first=6), "T2": late})
+    made = facts(upgrades=[upgrade])
+    analysis = AnalysisSpec(name="a", upgrade="control", references=["T3", "T4"])
+    assert sides(made, analysis, "T1")[6:9] == [OFF] * 3
+    assert sides(made, analysis, "T2")[:12] == [NEITHER] * 12
+    assert sides(made, analysis, "T2")[12:15] == [OFF] * 3

@@ -243,7 +243,7 @@ def subject_records(
     reserves = [r for r in named[len(chosen) :] if r in held]
     upgrade = facts.upgrade(analysis.upgrade)
     if timing is None:
-        timing = upgrade.timing if upgrade.mode == "toggle" else upgrade.changeover(subject)[1]  # type: ignore[assignment]
+        timing = upgrade.toggle_timing(subject) if upgrade.mode == "toggle" else upgrade.changeover(subject)[1]
     if valid_for_uplift is None:
         valid_for_uplift = pd.DataFrame(
             {t: ~_inside(index, _installation_windows(facts, t)) for t in sorted(present)}, index=index, dtype=bool

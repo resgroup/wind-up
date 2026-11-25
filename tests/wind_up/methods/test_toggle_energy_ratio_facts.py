@@ -16,6 +16,7 @@ from wind_up.labels import Label
 from wind_up.method import MethodConfigurationError
 from wind_up.methods.toggle_energy_ratio import ToggleEnergyRatioMethod
 from wind_up.subject import SubjectMeasurement, SubjectRecords
+from wind_up.toggle import build_toggle_df
 
 if TYPE_CHECKING:
     from wind_up.schema import ColumnSchema
@@ -39,12 +40,12 @@ def _turbines(names: list[str]) -> pd.DataFrame:
 def _facts(scada: pd.DataFrame, *, subjects: tuple[str, ...] = ("T1",), **fields: object) -> WindFarmFacts:
     _, schedule = _noisy_toggle_case()
     names = list(pd.unique(scada[_TURBINE_COL]))
+    fields.setdefault("upgrades", [Upgrade(name="control", turbines=subjects, timing=schedule)])
     return WindFarmFacts(
         records=scada,
         columns=_COLUMNS,
         timebase=pd.Timedelta(minutes=10),
         turbines=_turbines(names),
-        upgrades=[Upgrade(name="control", turbines=subjects, timing=schedule)],
         **fields,  # type: ignore[arg-type]
     )
 
@@ -250,3 +251,23 @@ def test_records_left_out_by_a_label_are_filtered_like_excluded_rows() -> None:
     assert out.campaign_sigma == old.sigma_overall
     (kept,) = _new(facts, AnalysisSpec(name="x", upgrade="control", include_labels=["flag"]))
     assert kept.per_turbine["hours_on"].iloc[0] < out.per_turbine["hours_on"].iloc[0]
+
+
+def test_each_subject_is_measured_by_its_own_toggle_frame() -> None:
+    scada = _second_subject(_noisy_toggle_case()[0])
+    _, schedule = _noisy_toggle_case()
+    index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
+    own = build_toggle_df(index, schedule)
+    reversed_order = own.rename(columns={"toggle_on": "toggle_off", "toggle_off": "toggle_on"})
+    frames = {"T1": own, "T2": reversed_order}
+    upgrade = Upgrade(name="control", turbines=("T1", "T2"), timing=frames)
+    together = AnalysisSpec(name="both", upgrade="control", references=["R1", "R2"], combination="net")
+    (out,) = _new(_facts(scada, upgrades=[upgrade]), together)
+    rows = out.per_turbine.set_index("turbine")
+    for subject, frame in frames.items():
+        alone = Upgrade(name="control", turbines=(subject,), timing=frame)
+        analysis = AnalysisSpec(name=subject, upgrade="control", references=["R1", "R2"])
+        (single,) = _new(_facts(scada, upgrades=[alone]), analysis)
+        assert rows.loc[subject, "campaign_uplift"] == single.campaign_uplift
+    assert rows.loc["T1", "campaign_uplift"] > 0
+    assert rows.loc["T2", "campaign_uplift"] < 0
