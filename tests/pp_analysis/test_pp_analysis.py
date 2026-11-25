@@ -122,6 +122,31 @@ def test_custom_confidence_level_is_used_for_uplift_diagnostics(
     assert f"final P10 uplift estimate = {100 * results['uplift_p10_frc']:.1f} %" in caplog.text
 
 
+def test_confidence_level_with_fractional_percentiles_is_labelled_exactly(
+    test_lsa_t13_config: WindUpConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    inputs = _two_bin_gap_fill_inputs(test_lsa_t13_config, test_lsa_t13_config.ref_wtgs[0].name)
+    inputs["plot_cfg"] = PlotConfig(show_plots=False, save_plots=False, plots_dir=Path())
+
+    with caplog.at_level(logging.INFO, logger="wind_up.pp_analysis"):
+        results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
+            **inputs, confidence_level=0.95, site_mean_pc_df=TEST_CURVE
+        )
+
+    assert {"uplift_p2.5_kw", "uplift_p97.5_kw"} <= set(pp_df.columns)
+    assert results["uplift_p97.5_frc"] <= results["uplift_frc"] <= results["uplift_p2.5_frc"]
+    assert "final P97.5 uplift estimate" in caplog.text
+    assert "final P2.5 uplift estimate" in caplog.text
+
+
+@pytest.mark.parametrize("confidence_level", [0, 1])
+def test_invalid_confidence_level_is_rejected(test_lsa_t13_config: WindUpConfig, confidence_level: float) -> None:
+    inputs = _two_bin_gap_fill_inputs(test_lsa_t13_config, test_lsa_t13_config.ref_wtgs[0].name)
+
+    with pytest.raises(ValueError, match="confidence_level must be greater than 0 and less than 1"):
+        pre_post_pp_analysis_with_reversal_and_bootstrapping(**inputs, confidence_level=confidence_level)
+
+
 @pytest.mark.parametrize(
     ("reference", "reverse_gap_kw"),
     [("different_type", 1200.0), ("same_type", 600.0), ("non_turbine", 600.0)],

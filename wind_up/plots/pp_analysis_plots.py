@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from wind_up.confidence import percentile_labels
 from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
 from wind_up.result_manager import result_manager
 
@@ -360,26 +361,21 @@ def plot_pre_post_uplift_pct(
     plot_cfg: PlotConfig,
     confidence_level: float,
 ) -> None:
-    p_low = (1 - confidence_level) / 2
-    p_high = 1 - p_low
+    low_label, high_label = percentile_labels(confidence_level)
 
     plot_df = pp_df.copy()
     plot_df["uplift_pct"] = plot_df["uplift_kw"] / plot_df["pw_at_mid_expected"] * 100
-    plot_df[f"uplift_p{p_low * 100:.0f}_pct"] = (
-        plot_df[f"uplift_p{p_low * 100:.0f}_kw"] / plot_df["pw_at_mid_expected"] * 100
-    )
-    plot_df[f"uplift_p{p_high * 100:.0f}_pct"] = (
-        plot_df[f"uplift_p{p_high * 100:.0f}_kw"] / plot_df["pw_at_mid_expected"] * 100
-    )
+    plot_df[f"uplift_p{low_label}_pct"] = plot_df[f"uplift_p{low_label}_kw"] / plot_df["pw_at_mid_expected"] * 100
+    plot_df[f"uplift_p{high_label}_pct"] = plot_df[f"uplift_p{high_label}_kw"] / plot_df["pw_at_mid_expected"] * 100
 
     plot_df = plot_df.loc[plot_df["pw_at_mid_expected"] > 0.05 * plot_df["pw_at_mid_expected"].max()]
 
     plt.figure()
     plt.plot(plot_df["bin_mid"], plot_df["uplift_pct"], color="b", marker="s")
-    plt.plot(plot_df["bin_mid"], plot_df[f"uplift_p{p_low * 100:.0f}_pct"], color="r", ls="--")
-    plt.plot(plot_df["bin_mid"], plot_df[f"uplift_p{p_high * 100:.0f}_pct"], color="r", ls="--")
+    plt.plot(plot_df["bin_mid"], plot_df[f"uplift_p{low_label}_pct"], color="r", ls="--")
+    plt.plot(plot_df["bin_mid"], plot_df[f"uplift_p{high_label}_pct"], color="r", ls="--")
     plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} uplift [%] and {confidence_level * 100:.0f}% CI"
+    plot_title = f"test={test_name} ref={ref_name} uplift [%] and {confidence_level * 100:g}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [%]")
     plt.xlabel("bin centre [m/s]")
@@ -393,10 +389,10 @@ def plot_pre_post_uplift_pct(
     vs_pw_df = plot_df.groupby("pw_at_mid_expected").mean().reset_index()
     plt.figure()
     plt.plot(vs_pw_df["pw_at_mid_expected"], vs_pw_df["uplift_pct"], color="b", marker="s")
-    plt.plot(vs_pw_df["pw_at_mid_expected"], vs_pw_df[f"uplift_p{p_low * 100:.0f}_pct"], color="r", ls="--")
-    plt.plot(vs_pw_df["pw_at_mid_expected"], vs_pw_df[f"uplift_p{p_high * 100:.0f}_pct"], color="r", ls="--")
+    plt.plot(vs_pw_df["pw_at_mid_expected"], vs_pw_df[f"uplift_p{low_label}_pct"], color="r", ls="--")
+    plt.plot(vs_pw_df["pw_at_mid_expected"], vs_pw_df[f"uplift_p{high_label}_pct"], color="r", ls="--")
     plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} uplift [%] vs power and {confidence_level * 100:.0f}% CI"
+    plot_title = f"test={test_name} ref={ref_name} uplift [%] vs power and {confidence_level * 100:g}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [%]")
     plt.xlabel("power [kW]")
@@ -436,8 +432,7 @@ def plot_pre_post_pp_analysis(
         return
 
     pp_df = pp_df.copy()
-    p_low = (1 - confidence_level) / 2
-    p_high = 1 - p_low
+    low_label, high_label = percentile_labels(confidence_level)
 
     plot_pre_post_power_curves(
         test_name=test_name,
@@ -452,10 +447,10 @@ def plot_pre_post_pp_analysis(
 
     plt.figure()
     plt.plot(pp_df["bin_mid"], pp_df["uplift_kw"], color="b", marker="s")
-    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_p{p_low * 100:.0f}_kw"], color="r", ls="--")
-    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_p{p_high * 100:.0f}_kw"], color="r", ls="--")
+    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_p{low_label}_kw"], color="r", ls="--")
+    plt.plot(pp_df["bin_mid"], pp_df[f"uplift_p{high_label}_kw"], color="r", ls="--")
     plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} uplift [kW] and {confidence_level * 100:.0f}% CI"
+    plot_title = f"test={test_name} ref={ref_name} uplift [kW] and {confidence_level * 100:g}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [kW]")
     plt.xlabel("bin centre [m/s]")
@@ -483,18 +478,18 @@ def plot_pre_post_pp_analysis(
     )
     plt.plot(
         pp_df["bin_mid"],
-        pp_df[f"uplift_p{p_low * 100:.0f}_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
+        pp_df[f"uplift_p{low_label}_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
         color="r",
         ls="--",
     )
     plt.plot(
         pp_df["bin_mid"],
-        pp_df[f"uplift_p{p_high * 100:.0f}_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
+        pp_df[f"uplift_p{high_label}_kw"] * pp_df["hours_for_mwh_calc"].sum() * pp_df["f"] / 1000,
         color="r",
         ls="--",
     )
     plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} uplift [MWh] and {confidence_level * 100:.0f}% CI"
+    plot_title = f"test={test_name} ref={ref_name} uplift [MWh] and {confidence_level * 100:g}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [MWh]")
     plt.xlabel("bin centre [m/s]")
