@@ -12,8 +12,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wind_up_v0 import era5
-from wind_up_v0.era5 import _build_era5_df
+import wind_up_v0.era5
+from wind_up import era5
+from wind_up.era5 import _build_era5_df
 
 
 def _make_mock_response(n_hours: int = 3) -> MagicMock:
@@ -120,3 +121,7 @@ class TestCacheDir:
         sea = era5._era5_cache_path(**args, cache_dir=tmp_path, cell_selection="sea")  # noqa: SLF001
         assert land == default
         assert sea != default
+
+
+def test_v0_path_gives_the_same_fetch() -> None:
+    assert wind_up_v0.era5.get_era5_hourly_df is era5.get_era5_hourly_df

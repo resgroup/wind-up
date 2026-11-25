@@ -35,8 +35,8 @@ from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
 from wind_up.analysis_warnings import summary
 from wind_up.diagnostics import stages
 from wind_up.diagnostics.context import ERA5_UNLOCATED, era5_source_label, infer_timebase
+from wind_up.era5 import get_era5_hourly_df
 from wind_up.reanalysis import normalise_timestamps
-from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

@@ -40,8 +40,8 @@ from benchmarking.synthetic.sources.greenbyte import (
 )
 from benchmarking.synthetic.sources.hill_of_towie import HOT_COORDINATES, HOT_RATED_POWER_KW, HOT_ROTOR_DIAMETER_M
 from wind_up.campaign_design import design_campaign
+from wind_up.era5 import get_era5_hourly_df
 from wind_up.wake_reach import reach_from_uplift, uniform_rose
-from wind_up_v0.era5 import get_era5_hourly_df
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
