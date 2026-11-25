@@ -13,7 +13,7 @@ import pandas as pd
 from scipy.stats import norm, t
 from tqdm.auto import tqdm
 
-from wind_up.confidence import percentile_labels
+from wind_up.confidence import percent_label, percentile_labels, validate_confidence_level
 from wind_up.plots.pp_analysis_plots import plot_pp_data_coverage, plot_pre_post_pp_analysis
 from wind_up.result_manager import result_manager
 
@@ -841,7 +841,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         turbine type when available and the test turbine type for non-turbine references.
     :return: tuple of results dictionary and DataFrame
     """
-    percentile_labels(confidence_level)  # raises for an invalid confidence level
+    validate_confidence_level(confidence_level)
     pp_results, pp_df = _pre_post_pp_analysis_with_reversal(
         cfg=cfg,
         test_wtg=test_wtg,
@@ -911,7 +911,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
 
     if plot_cfg is not None:
         msg = (
-            f"block bootstrapping uncertainty analysis results (conf={100 * confidence_level:g}%):"
+            f"block bootstrapping uncertainty analysis results (conf={percent_label(confidence_level)}%):"
             f"\n  median = {100 * median:.1f} %"
             f"\n  lower = {100 * lower:.1f} %"
             f"\n  upper = {100 * upper:.1f} %"

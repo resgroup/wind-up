@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from wind_up.confidence import percentile_labels
+from wind_up.confidence import percent_label, percentile_labels
 from wind_up.constants import RAW_WINDSPEED_COL, SCATTER_ALPHA, SCATTER_MARKERSCALE, SCATTER_S, DataColumns
 from wind_up.result_manager import result_manager
 
@@ -375,7 +375,7 @@ def plot_pre_post_uplift_pct(
     plt.plot(plot_df["bin_mid"], plot_df[f"uplift_p{low_label}_pct"], color="r", ls="--")
     plt.plot(plot_df["bin_mid"], plot_df[f"uplift_p{high_label}_pct"], color="r", ls="--")
     plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} uplift [%] and {confidence_level * 100:g}% CI"
+    plot_title = f"test={test_name} ref={ref_name} uplift [%] and {percent_label(confidence_level)}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [%]")
     plt.xlabel("bin centre [m/s]")
@@ -392,7 +392,7 @@ def plot_pre_post_uplift_pct(
     plt.plot(vs_pw_df["pw_at_mid_expected"], vs_pw_df[f"uplift_p{low_label}_pct"], color="r", ls="--")
     plt.plot(vs_pw_df["pw_at_mid_expected"], vs_pw_df[f"uplift_p{high_label}_pct"], color="r", ls="--")
     plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} uplift [%] vs power and {confidence_level * 100:g}% CI"
+    plot_title = f"test={test_name} ref={ref_name} uplift [%] vs power and {percent_label(confidence_level)}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [%]")
     plt.xlabel("power [kW]")
@@ -450,7 +450,7 @@ def plot_pre_post_pp_analysis(
     plt.plot(pp_df["bin_mid"], pp_df[f"uplift_p{low_label}_kw"], color="r", ls="--")
     plt.plot(pp_df["bin_mid"], pp_df[f"uplift_p{high_label}_kw"], color="r", ls="--")
     plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} uplift [kW] and {confidence_level * 100:g}% CI"
+    plot_title = f"test={test_name} ref={ref_name} uplift [kW] and {percent_label(confidence_level)}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [kW]")
     plt.xlabel("bin centre [m/s]")
@@ -489,7 +489,7 @@ def plot_pre_post_pp_analysis(
         ls="--",
     )
     plt.grid()
-    plot_title = f"test={test_name} ref={ref_name} uplift [MWh] and {confidence_level * 100:g}% CI"
+    plot_title = f"test={test_name} ref={ref_name} uplift [MWh] and {percent_label(confidence_level)}% CI"
     plt.title(plot_title)
     plt.ylabel("uplift [MWh]")
     plt.xlabel("bin centre [m/s]")
