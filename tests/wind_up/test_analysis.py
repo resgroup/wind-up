@@ -287,9 +287,10 @@ def test_an_inverse_variance_combination_needs_every_sigma() -> None:
 
 
 def test_a_net_combination_gives_its_sigma_only_as_a_range() -> None:
-    per_turbine = _subjects(actual_energy=[110.0, 306.0], campaign_uplift=[0.10, 0.02], campaign_sigma=[0.02, 0.01])
+    per_turbine = _subjects(actual_energy=[110.0, 306.0], aep_uplift=[0.10, 0.02], aep_sigma=[0.02, 0.01])
     combined = combine_subjects(_group(per_turbine))
     assert combined.combination == NET
-    assert math.isnan(combined.campaign_sigma)
+    assert math.isnan(combined.aep_sigma)
+    assert combine_subjects(_group(per_turbine), combination=INVERSE_VARIANCE).aep_sigma > 0
     with pytest.raises(ValueError, match="combination is one of"):
         combine_subjects(_group(per_turbine), combination="mean")

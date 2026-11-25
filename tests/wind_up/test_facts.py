@@ -1133,3 +1133,11 @@ def test_a_placebo_must_be_a_reference_of_a_toggle_it_did_not_receive(
 ) -> None:
     with pytest.raises(ValueError, match=match):
         facts(upgrades=[upgrade]).check(analysis)
+
+
+def test_a_frame_without_a_cycle_or_without_switches_gives_no_warning() -> None:
+    assert Upgrade(name="control", turbines=["T1"], timing=toggle_frame(block=40, first=6)).warnings() == ()
+    stuck = toggle_frame()
+    stuck["toggle_on"], stuck["toggle_off"] = True, False
+    upgrade = Upgrade(name="control", turbines=["T1"], timing=stuck, toggle_cycle=pd.Timedelta(hours=1))
+    assert upgrade.warnings() == ()
