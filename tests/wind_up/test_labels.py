@@ -6,7 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wind_up.labels import NORTHING, UPLIFT, Label, direction_sector, upgrade_state_column
+from wind_up import labels
+from wind_up.labels import ALL_USES, NORTHING, UPLIFT, USES, Label, direction_sector, upgrade_state_column
 
 
 def test_a_label_withholds_nothing_by_default() -> None:
@@ -21,6 +22,21 @@ def test_a_label_takes_one_use_as_a_string_or_several_as_a_collection() -> None:
 def test_a_label_cannot_withhold_an_unknown_use() -> None:
     with pytest.raises(ValueError, match="waking"):
         Label(name="curtailed", column="c", withholds=frozenset({"waking"}))
+
+
+def test_a_label_withholding_all_uses_withholds_every_use() -> None:
+    assert Label(name="tower shadow", column="c", withholds=ALL_USES).withholds == set(USES)  # type: ignore[arg-type]
+    assert Label(name="tower shadow", column="c", withholds=[ALL_USES, UPLIFT]).withholds == set(USES)  # type: ignore[arg-type]
+
+
+def test_all_uses_covers_a_use_added_later(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(labels, "USES", (*USES, "waking"))
+    assert Label(name="tower shadow", column="c", withholds=ALL_USES).withholds == {*USES, "waking"}  # type: ignore[arg-type]
+
+
+def test_all_uses_does_not_hide_an_unknown_use() -> None:
+    with pytest.raises(ValueError, match="waking"):
+        Label(name="tower shadow", column="c", withholds=frozenset({ALL_USES, "waking"}))
 
 
 @pytest.mark.parametrize(("name", "column"), [("", "c"), ("n", " ")])

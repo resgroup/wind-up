@@ -21,6 +21,8 @@ UPGRADE_STATES = (ON, OFF, NEITHER)
 UPLIFT = "uplift"
 NORTHING = "northing"
 USES = (UPLIFT, NORTHING)
+# Withholding this withholds every use in USES, including any added later.
+ALL_USES = "all"
 
 # Record-label columns naming why a record is not valid for a use; empty where it is valid.
 UPLIFT_REASON_COL = "not_valid_uplift_because"
@@ -46,7 +48,8 @@ class Label:
 
     :param name: the label's name, as analyses and reports refer to it
     :param column: the boolean column of the records holding it; False where unknown, never NaN
-    :param withholds: the uses its records are withheld from, a subset of :data:`USES`
+    :param withholds: the uses its records are withheld from, a subset of :data:`USES`; :data:`ALL_USES`
+        withholds every use
     """
 
     name: str
@@ -54,15 +57,16 @@ class Label:
     withholds: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
-        """Reject an empty name or column and an unknown use."""
+        """Reject an empty name or column and an unknown use, and resolve :data:`ALL_USES` to :data:`USES`."""
         if not self.name.strip() or not self.column.strip():
             msg = f"a label needs a name and a column, got name {self.name!r} and column {self.column!r}"
             raise ValueError(msg)
-        object.__setattr__(self, "withholds", _uses(self.withholds))
-        unknown = sorted(self.withholds - set(USES))
+        withholds = _uses(self.withholds)
+        unknown = sorted(withholds - {*USES, ALL_USES})
         if unknown:
-            msg = f"label {self.name!r} withholds {unknown}; a label may withhold only {list(USES)}"
+            msg = f"label {self.name!r} withholds {unknown}; a label may withhold only {list(USES)} or {ALL_USES!r}"
             raise ValueError(msg)
+        object.__setattr__(self, "withholds", frozenset(USES) if ALL_USES in withholds else withholds)
 
 
 def direction_sector(direction: pd.Series, *, sector: tuple[float, float]) -> pd.Series:

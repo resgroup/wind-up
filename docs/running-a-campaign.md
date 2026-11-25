@@ -171,7 +171,8 @@ analyses:
 
 **`labels`** are the analyst's own labels, each a true-or-false column of the SCADA:
 `{name: curtailed, column: curtailed, withholds: [uplift]}`. A record holding one is not valid for the
-uses it `withholds` (`uplift`, `northing`, both, or none). An analysis may name labels in
+uses it `withholds` (`uplift`, `northing`, both, or none); `withholds: all` withholds every use, including
+any added later. An analysis may name labels in
 `include_labels` and `exclude_labels`; the composed run does not read those and refuses to run such an
 analysis.
 
