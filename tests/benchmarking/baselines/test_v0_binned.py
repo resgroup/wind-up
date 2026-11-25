@@ -357,7 +357,7 @@ class TestExcludedRecords:
         expected = pd.date_range(ff.at(1), ff.at(2), freq=ff.TIMEBASE, inclusive="left")
         assert sorted(exclusions) == ["T1", "T4"]
         for subject in ("T1", "T4"):
-            pd.testing.assert_index_equal(exclusions[subject], expected, check_names=False, check_freq=False)
+            assert exclusions[subject].equals(expected)
 
     def test_a_neither_override_excludes_from_the_first_upgraded_record(self) -> None:
         upgrade = ff.permanent(upgrade_state_overrides=[("T2", ff.at(2), ff.at(4), "neither")])
