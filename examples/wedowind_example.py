@@ -33,132 +33,59 @@
 from __future__ import annotations
 
 import logging
-import math
 import sys
 import zipfile
-from enum import Enum
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from geographiclib.geodesic import Geodesic
 from matplotlib import pyplot as plt
 from pydantic import BaseModel, Field
 
-from examples.helpers import format_and_print_results_table
-from wind_up_v0.constants import OUTPUT_DIR, PROJECTROOT_DIR, TIMESTAMP_COL, DataColumns
-from wind_up_v0.interface import AssessmentInputs
-from wind_up_v0.main_analysis import run_wind_up_analysis
-from wind_up_v0.models import Asset, PlotConfig, PrePost, Turbine, WindUpConfig
-from wind_up_v0.reanalysis_data import ReanalysisDataset
+from wind_up import AnalysisSpec, Label, NonTurbineMeasurement, Reanalysis, Upgrade, WindFarmFacts
+from wind_up.labels import ALL_USES
+from wind_up.schema import ColumnSchema
+from wind_up_v0.constants import OUTPUT_DIR, PROJECTROOT_DIR
 from wind_up_v0.wind_funcs import calc_cp
 
 sys.path.append(str(PROJECTROOT_DIR))
-from examples.helpers import download_zenodo_data, setup_logger
+from benchmarking.baselines.v0_binned import V0BinnedMethod
+from examples.helpers import download_zenodo_data, format_and_print_results_table, setup_logger
 
 if TYPE_CHECKING:
-    import datetime as dt
     from pathlib import Path
+
+    from wind_up import AnalysisOutput
 
 CACHE_DIR = PROJECTROOT_DIR / "cache" / "wedowind_example"
 ASSESSMENT_NAME = "wedowind_example"
 ANALYSIS_OUTPUT_DIR = OUTPUT_DIR / ASSESSMENT_NAME
 ZIP_FILENAME = "Turbine_Upgrade_Dataset.zip"
+TIMEBASE = pd.Timedelta(minutes=10)
+RATED_POWER_KW = 1500
+ROTOR_DIAMETER_M = 80
+SITE_ORIGIN = (40.0, -89.0)
+TEST_TURBINE = "Test"
+REF_TURBINE = "Ref"
+WIND_SPEED = "V"
+WIND_DIRECTION = "D"
+UPGRADE_STATUS = "upgradestatus"
+COLUMNS = ColumnSchema(turbine="turbine", active_power="power_kw", availability="available_s")
+# Records in an unusable direction are treated as missing data, for every turbine and every use.
+UNUSABLE_DIRECTION = Label(name="unusable wind direction", column="unusable_direction", withholds=ALL_USES)
+# The analysis compares only records in the reference sector; the others still count everywhere else,
+# including the long-term distribution.
+REFERENCE_SECTOR = Label(name="reference sector", column="reference_sector")
 
 logger = logging.getLogger(__name__)
-
-
-class WeDoWindScadaColumns(Enum):
-    Y_CTRL_NORM = "y_ctrl(normalized)"
-    Y_TEST_NORM = "y_test(normalized)"
-    UPGRADE_STATUS = "upgradestatus"
-    WIND_SPEED = "V"
-    WIND_DIRECTION = "D"
-
-
-class WeDoWindTurbineNames(Enum):
-    REF = "Ref"
-    TEST = "Test"
-
-
-class KeyDates(NamedTuple):
-    analysis_first_dt_utc_start: dt.datetime
-    upgrade_first_dt_utc_start: dt.datetime
-    analysis_last_dt_utc_start: dt.datetime
-    lt_first_dt_utc_start: dt.datetime
-    lt_last_dt_utc_start: dt.datetime
-    detrend_first_dt_utc_start: dt.datetime
-    detrend_last_dt_utc_start: dt.datetime
-    pre_first_dt_utc_start: dt.datetime
-    pre_last_dt_utc_start: dt.datetime
-    post_first_dt_utc_start: dt.datetime
-    post_last_dt_utc_start: dt.datetime
-
-
-class WeDoWindScadaUnpacker:
-    def __init__(self, scada_file_name: str, wedowind_zip_file_path: Path = CACHE_DIR / ZIP_FILENAME) -> None:
-        self.scada_file_name = scada_file_name
-        self.wedowind_zip_file_path = wedowind_zip_file_path
-        self.scada_df = None
-
-    def unpack(self, rated_power_kw: float) -> pd.DataFrame:
-        if self.scada_df is None:
-            raw_df = self._read_raw_df()
-            scada_df_test = self._construct_scada_df_test(scada_df_raw=raw_df)
-            scada_df_ref = self._construct_scada_df_ref(scada_df_raw=raw_df)
-            self.scada_df = self._format_scada_df(
-                scada_df=pd.concat([scada_df_test, scada_df_ref]), rated_power_kw=rated_power_kw
-            )
-        return self.scada_df
-
-    def _read_raw_df(self) -> pd.DataFrame:
-        with zipfile.ZipFile(self.wedowind_zip_file_path) as zf:
-            raw_df = pd.read_csv(zf.open(self.scada_file_name), parse_dates=[1], index_col=0).drop(
-                columns=["VcosD", "VsinD"]
-            )
-        raw_df.columns = raw_df.columns.str.replace(" ", "")
-        return raw_df
-
-    @staticmethod
-    def _format_scada_df(scada_df: pd.DataFrame, rated_power_kw: float) -> pd.DataFrame:
-        scada_df[DataColumns.active_power_mean] = scada_df["normalized_power"] * rated_power_kw
-        # map some mast data to the turbine for convenience
-        scada_df[DataColumns.wind_speed_mean] = scada_df[WeDoWindScadaColumns.WIND_SPEED.value]
-        scada_df[DataColumns.yaw_angle_mean] = scada_df[WeDoWindScadaColumns.WIND_DIRECTION.value]
-        # placeholder values for other required columns
-        scada_df[DataColumns.pitch_angle_mean] = 0
-        scada_df[DataColumns.gen_rpm_mean] = 1000
-        scada_df[DataColumns.shutdown_duration] = 0
-
-        scada_df = scada_df.set_index("time")
-        scada_df.index.name = TIMESTAMP_COL
-        # make index UTC
-        scada_df.index = scada_df.index.tz_localize("UTC")
-        return scada_df
-
-    @staticmethod
-    def _construct_scada_df_test(scada_df_raw: pd.DataFrame) -> pd.DataFrame:
-        return (
-            scada_df_raw.drop(columns=[WeDoWindScadaColumns.Y_CTRL_NORM.value])
-            .copy()
-            .assign(TurbineName=WeDoWindTurbineNames.TEST.value)
-            .rename(columns={WeDoWindScadaColumns.Y_TEST_NORM.value: "normalized_power"})
-        )
-
-    @staticmethod
-    def _construct_scada_df_ref(scada_df_raw: pd.DataFrame) -> pd.DataFrame:
-        return (
-            scada_df_raw.drop(columns=[WeDoWindScadaColumns.Y_TEST_NORM.value])
-            .copy()
-            .assign(TurbineName=WeDoWindTurbineNames.REF.value)
-            .rename(columns={WeDoWindScadaColumns.Y_CTRL_NORM.value: "normalized_power"})
-        )
 
 
 class WeDoWindAnalysisConf(BaseModel):
     scada_file_name: str = Field(description="e.g. 'Turbine Upgrade Dataset(Pitch Angle Pair).csv'")
     unusable_wd_ranges: list[tuple[int, int]] = Field(description="directions to exclude from entire analysis")
-    ref_wd_filter: list[int] = Field(
-        description="directions to include in power performance analysis", default=[0, 360]
+    reference_sector: tuple[int, int] = Field(
+        description="directions, inclusive, of the records compared in the uplift calculation", default=(0, 360)
     )
     clip_rated_power_pp: bool
     use_rated_invalid_bins: bool = Field(
@@ -173,86 +100,72 @@ def download_wedowind_data_from_zenodo(cache_dir: Path = CACHE_DIR) -> None:
         download_zenodo_data(record_id="5516556", output_dir=cache_dir, filenames={ZIP_FILENAME})
 
 
-def create_fake_wedowind_metadata_df() -> pd.DataFrame:
-    # coordinates below are based on Figure 5.6 of Data Science for Wind Energy (Yu Ding 2020)
+def read_wedowind_pair(path: Path, filename: str) -> pd.DataFrame:
+    with zipfile.ZipFile(path) as archive, archive.open(filename) as csv:
+        raw = pd.read_csv(csv, parse_dates=["time"], index_col="time")
+    raw.index = pd.to_datetime(raw.index, utc=True).rename("timestamp")
+    raw.columns = raw.columns.str.replace(" ", "")
+    return raw
+
+
+def create_illustrative_layout() -> pd.DataFrame:
+    # Offsets are based on Figure 5.6 of Data Science for Wind Energy (Yu Ding 2020).
+    # The site's identity and the actual turbine positions are unavailable.
     coords_df = pd.DataFrame(
         {
-            "Name": ["WT1", "WT2", "WT3", "WT4", "MAST1", "MAST2"],
-            "X": [500, 2200, 9836, 7571, 0, 9571],
-            "Y": [9136, 9436, 0, 2050, 9836, 50],
+            "name": [TEST_TURBINE, REF_TURBINE, "WT3", "WT4", "Mast", "MAST2"],
+            "east_m": [500, 2200, 9836, 7571, 0, 9571],
+            "north_m": [9136, 9436, 0, 2050, 9836, 50],
         }
-    )
-    assumed_wf_lat = 40
-    assumed_wf_lon = -89
-    m_per_deglat = 40_075_000 / 360
-    coords_df["Latitude"] = assumed_wf_lat + (coords_df["Y"] - coords_df["Y"].mean()) / m_per_deglat
-    coords_df["Longitude"] = assumed_wf_lon + (coords_df["X"] - coords_df["X"].mean()) / (
-        m_per_deglat * math.cos(assumed_wf_lat * math.pi / 180)
-    )
-    return coords_df.loc[:, ["Name", "Latitude", "Longitude"]].assign(
-        TimeZone="UTC", TimeSpanMinutes=10, TimeFormat="Start"
+    ).set_index("name")
+    offsets = (coords_df - coords_df.mean()).loc[[TEST_TURBINE, REF_TURBINE, "Mast"]]
+    points = [
+        Geodesic.WGS84.Direct(*SITE_ORIGIN, float(np.degrees(np.arctan2(east, north))), float(np.hypot(east, north)))
+        for east, north in offsets.itertuples(index=False, name=None)
+    ]
+    return pd.DataFrame(
+        [(point["lat2"], point["lon2"]) for point in points], columns=["latitude", "longitude"], index=offsets.index
     )
 
 
-def create_fake_wedowind_reanalysis_dataset(start_datetime: dt.datetime) -> ReanalysisDataset:
+def create_synthetic_reanalysis(start: pd.Timestamp) -> Reanalysis:
+    # The legacy method requires a reanalysis input. This seeded placeholder keeps the
+    # example reproducible without assigning real weather data to the unknown site.
     rng = np.random.default_rng(0)
     rows = 100
-    return ReanalysisDataset(
-        id="dummy_reanalysis_data",
-        data=pd.DataFrame(
+    return Reanalysis(
+        name="synthetic reanalysis placeholder",
+        latitude=SITE_ORIGIN[0],
+        longitude=SITE_ORIGIN[1],
+        records=pd.DataFrame(
             data={
                 "100_m_hws_mean_mps": rng.uniform(5, 10, rows),
                 "100_m_hwd_mean_deg-n_true": rng.uniform(0, 360, rows),
             },
-            index=pd.DatetimeIndex(pd.date_range(start=start_datetime, periods=rows, freq="h", tz="UTC")),
+            index=pd.date_range(start=start, periods=rows, freq="h"),
         ),
     )
 
 
-def establish_wedowind_key_dates(scada_df: pd.DataFrame) -> KeyDates:
-    """Extracts important dates from the SCADA data. These dates may then be used in the WindUpConfig.
-
-    Args:
-        scada_df:
-
-    Returns: tuple of dates that may be passed to the WindUpConfig
-
-    """
-    upgrade_first_dt_utc_start = scada_df[scada_df[WeDoWindScadaColumns.UPGRADE_STATUS.value] > 0].index.min()
-    analysis_last_dt_utc_start = scada_df[scada_df[WeDoWindScadaColumns.UPGRADE_STATUS.value] > 0].index.max()
-    lt_first_dt_utc_start = max(scada_df.index.min(), upgrade_first_dt_utc_start - pd.DateOffset(years=1))
-    lt_last_dt_utc_start = lt_first_dt_utc_start + pd.DateOffset(years=1) - pd.Timedelta(minutes=10)
-    detrend_first_dt_utc_start = lt_first_dt_utc_start
-    detrend_last_dt_utc_start = (
-        scada_df[scada_df[WeDoWindScadaColumns.UPGRADE_STATUS.value] > 0].index.min()
-        - pd.DateOffset(weeks=1)
-        - pd.Timedelta(minutes=10)
-    )
-    pre_first_dt_utc_start = lt_first_dt_utc_start
-    pre_last_dt_utc_start = (
-        pre_first_dt_utc_start
-        + (
-            scada_df[scada_df[WeDoWindScadaColumns.UPGRADE_STATUS.value] > 0].index.max()
-            - scada_df[scada_df[WeDoWindScadaColumns.UPGRADE_STATUS.value] > 0].index.min()
-        )
-        - pd.Timedelta(minutes=10)
-    )
-    post_first_dt_utc_start = scada_df[scada_df[WeDoWindScadaColumns.UPGRADE_STATUS.value] > 0].index.min()
-    post_last_dt_utc_start = scada_df[scada_df[WeDoWindScadaColumns.UPGRADE_STATUS.value] > 0].index.max()
-    analysis_first_dt_utc_start = min(pre_first_dt_utc_start, lt_first_dt_utc_start, detrend_first_dt_utc_start)
-
-    return KeyDates(
-        analysis_first_dt_utc_start=analysis_first_dt_utc_start,
-        upgrade_first_dt_utc_start=upgrade_first_dt_utc_start,
-        analysis_last_dt_utc_start=analysis_last_dt_utc_start,
-        lt_first_dt_utc_start=lt_first_dt_utc_start,
-        lt_last_dt_utc_start=lt_last_dt_utc_start,
-        detrend_first_dt_utc_start=detrend_first_dt_utc_start,
-        detrend_last_dt_utc_start=detrend_last_dt_utc_start,
-        pre_first_dt_utc_start=pre_first_dt_utc_start,
-        pre_last_dt_utc_start=pre_last_dt_utc_start,
-        post_first_dt_utc_start=post_first_dt_utc_start,
-        post_last_dt_utc_start=post_last_dt_utc_start,
+def make_turbine_records(raw: pd.DataFrame, config: WeDoWindAnalysisConf) -> pd.DataFrame:
+    unusable = pd.Series(data=False, index=raw.index)
+    for start, end in config.unusable_wd_ranges:
+        unusable |= raw[WIND_DIRECTION].between(start, end)
+    in_reference_sector = raw[WIND_DIRECTION].between(*config.reference_sector)
+    return pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "turbine": turbine,
+                    "power_kw": raw[power_column] * RATED_POWER_KW,
+                    "available_s": TIMEBASE.total_seconds(),
+                    UNUSABLE_DIRECTION.column: unusable,
+                    REFERENCE_SECTOR.column: in_reference_sector,
+                },
+                index=raw.index,
+            )
+            for turbine, power_column in [(TEST_TURBINE, "y_test(normalized)"), (REF_TURBINE, "y_ctrl(normalized)")]
+        ]
     )
 
 
@@ -271,12 +184,12 @@ def generate_custom_exploratory_plots(
     custom_plots_dir_root.mkdir(exist_ok=True, parents=True)
     custom_plots_dir_timeseries.mkdir(exist_ok=True)
 
-    for name, df in scada_df.groupby(DataColumns.turbine_name):
+    for name, df in scada_df.groupby("turbine"):
         for col in df.columns:
             plt.figure()
             plt.scatter(df.index, df[col], s=1)
             title = f"{name} {col}"
-            plt.xlabel(TIMESTAMP_COL)
+            plt.xlabel("timestamp (UTC)")
             plt.ylabel(col)
             plt.xticks(rotation=90)
             plt.grid()
@@ -291,15 +204,13 @@ def generate_custom_exploratory_plots(
     ]
 
     binned_by_turbine = {}
-    for name, df in region2_df.groupby(DataColumns.turbine_name):
-        if name == "Mast":
-            continue
+    for name, df in region2_df.groupby("turbine"):
         plt.figure()
         plt.scatter(
-            df[WeDoWindScadaColumns.WIND_DIRECTION.value],
+            df[WIND_DIRECTION],
             calc_cp(
                 power_kw=df["normalized_power"] * assumed_rated_power_kw,
-                ws_ms=df[WeDoWindScadaColumns.WIND_SPEED.value],
+                ws_ms=df[WIND_SPEED],
                 air_density_kgpm3=1.2,
                 rotor_diameter_m=rotor_diameter_m,
             ),
@@ -307,9 +218,9 @@ def generate_custom_exploratory_plots(
             alpha=0.7,
         )
         plt.ylim(0, 1.5)
-        title = f"{name} Cp vs {WeDoWindScadaColumns.WIND_DIRECTION.value}"
+        title = f"{name} Cp vs {WIND_DIRECTION}"
         plt.title(title)
-        plt.xlabel(WeDoWindScadaColumns.WIND_DIRECTION.value)
+        plt.xlabel(WIND_DIRECTION)
         plt.ylabel("Cp")
         plt.xticks(rotation=90)
         plt.grid()
@@ -318,27 +229,23 @@ def generate_custom_exploratory_plots(
         plt.close()
         # find mean normalized_power and V binned by D
         _df = df.copy()
-        _df[f"{WeDoWindScadaColumns.WIND_DIRECTION.value}_bin"] = pd.cut(
-            _df[WeDoWindScadaColumns.WIND_DIRECTION.value], bins=range(0, 361, 5)
-        )
-        binned = _df.groupby(f"{WeDoWindScadaColumns.WIND_DIRECTION.value}_bin", observed=False)[
-            [WeDoWindScadaColumns.WIND_DIRECTION.value, "normalized_power", "V"]
-        ].mean()
+        _df["direction_bin"] = pd.cut(_df[WIND_DIRECTION], bins=range(0, 361, 5))
+        binned = _df.groupby("direction_bin", observed=False)[[WIND_DIRECTION, "normalized_power", WIND_SPEED]].mean()
         binned_by_turbine[name] = binned
         plt.figure()
         plt.plot(
-            binned[WeDoWindScadaColumns.WIND_DIRECTION.value],
+            binned[WIND_DIRECTION],
             calc_cp(
                 power_kw=binned["normalized_power"] * assumed_rated_power_kw,
-                ws_ms=binned[WeDoWindScadaColumns.WIND_SPEED.value],
+                ws_ms=binned[WIND_SPEED],
                 air_density_kgpm3=1.2,
                 rotor_diameter_m=rotor_diameter_m,
             ),
             marker=".",
         )
-        title = f"{name} mean Cp vs {WeDoWindScadaColumns.WIND_DIRECTION.value}"
+        title = f"{name} mean Cp vs {WIND_DIRECTION}"
         plt.title(title)
-        plt.xlabel(WeDoWindScadaColumns.WIND_DIRECTION.value)
+        plt.xlabel(WIND_DIRECTION)
         plt.ylabel("Cp")
         plt.xticks(rotation=90)
         plt.grid()
@@ -349,10 +256,10 @@ def generate_custom_exploratory_plots(
     plt.figure()
     for name, binned in binned_by_turbine.items():
         plt.plot(
-            binned[WeDoWindScadaColumns.WIND_DIRECTION.value],
+            binned[WIND_DIRECTION],
             calc_cp(
                 power_kw=binned["normalized_power"] * assumed_rated_power_kw,
-                ws_ms=binned[WeDoWindScadaColumns.WIND_SPEED.value],
+                ws_ms=binned[WIND_SPEED],
                 air_density_kgpm3=1.2,
                 rotor_diameter_m=rotor_diameter_m,
             ),
@@ -360,9 +267,9 @@ def generate_custom_exploratory_plots(
             marker=".",
         )
     plt.ylim(0.2, 0.7)
-    title = f"mean Cp vs {WeDoWindScadaColumns.WIND_DIRECTION.value}"
+    title = f"mean Cp vs {WIND_DIRECTION}"
     plt.title(title)
-    plt.xlabel(WeDoWindScadaColumns.WIND_DIRECTION.value)
+    plt.xlabel(WIND_DIRECTION)
     plt.ylabel("Cp")
     plt.xticks(rotation=90)
     plt.grid()
@@ -378,14 +285,14 @@ ANALYSIS_SPECIFIC_CONFIG = {
     "Pitch Angle": WeDoWindAnalysisConf(
         scada_file_name="Turbine Upgrade Dataset(Pitch Angle Pair).csv",
         unusable_wd_ranges=[(70, 140), (150, 180)],  # determined by inspecting custom Cp vs D plots
-        ref_wd_filter=[160, 240],  # apparent wake free sector determined by inspecting detrending plots
+        reference_sector=(160, 240),  # apparent wake free sector determined by inspecting detrending plots
         clip_rated_power_pp=False,  # rated power is apparently higher after the upgrade
         use_rated_invalid_bins=True,  # use extrapolated rated power results
     ),
     "Vortex Generator": WeDoWindAnalysisConf(
         scada_file_name="Turbine Upgrade Dataset(VG Pair).csv",
         unusable_wd_ranges=[(25, 115), (240, 315)],  # determined by inspecting custom Cp vs D plots
-        ref_wd_filter=[115, 240],  # apparent wake free sector determined by inspecting detrending plots
+        reference_sector=(115, 240),  # apparent wake free sector determined by inspecting detrending plots
         clip_rated_power_pp=True,  # Vortex Generators are not expected to increase rated power
     ),
 }
@@ -399,133 +306,112 @@ def main_wedowind_analysis(
     cache_dir: Path = CACHE_DIR,
     analysis_output_dir: Path = ANALYSIS_OUTPUT_DIR,
     bootstrap_runs_override: int | None = None,
-) -> pd.DataFrame:
-    cache_assessment = cache_dir / analysis_name
-    for d in [cache_dir, analysis_output_dir, cache_assessment]:
-        d.mkdir(parents=True, exist_ok=True)
-
+) -> AnalysisOutput:
+    """Run a WeDoWind case through the v1 method interface and write its pairwise CSV."""
     if analysis_name not in ANALYSIS_SPECIFIC_CONFIG:
-        msg = f"analysis_name must be one of {list(ANALYSIS_SPECIFIC_CONFIG.keys())}"
+        msg = f"analysis_name must be one of {list(ANALYSIS_SPECIFIC_CONFIG)}"
         raise ValueError(msg)
-
     analysis_conf = ANALYSIS_SPECIFIC_CONFIG[analysis_name]
 
-    download_wedowind_data_from_zenodo(cache_dir=cache_dir)
-
-    # assumptions below are based on Table 5.1 of Data Science for Wind Energy (Yu Ding 2020)
-    assumed_rated_power_kw = 1500
-    assumed_rotor_diameter_m = 80
-    cutout_ws_mps = 20
-
-    logger.info("Unpacking turbine SCADA data")
-    scada_df = WeDoWindScadaUnpacker(
-        scada_file_name=str(analysis_conf.scada_file_name),
-        wedowind_zip_file_path=cache_dir / ZIP_FILENAME,
-    ).unpack(rated_power_kw=assumed_rated_power_kw)
-
-    metadata_df = create_fake_wedowind_metadata_df()
-
+    download_wedowind_data_from_zenodo(cache_dir)
+    raw = read_wedowind_pair(cache_dir / ZIP_FILENAME, analysis_conf.scada_file_name)
+    records = make_turbine_records(raw, analysis_conf)
     if generate_custom_plots:
+        plot_records = records[["turbine"]].assign(normalized_power=records["power_kw"] / RATED_POWER_KW)
         generate_custom_exploratory_plots(
-            scada_df=scada_df,
-            assumed_rated_power_kw=assumed_rated_power_kw,
-            rotor_diameter_m=assumed_rotor_diameter_m,
+            scada_df=plot_records.join(raw[[UPGRADE_STATUS, WIND_SPEED, WIND_DIRECTION, "rho", "S", "I"]]),
+            assumed_rated_power_kw=RATED_POWER_KW,
+            rotor_diameter_m=ROTOR_DIAMETER_M,
             out_dir=analysis_output_dir / analysis_name,
         )
 
-    # assume WT1 is Test and WT2 is Ref. Since we do not actually know which turbine is which we exclude all waked data.
-    metadata_df = metadata_df[metadata_df["Name"].isin(["WT1", "WT2"])]
-    metadata_df = metadata_df.replace(
-        {
-            "Name": {
-                "WT1": WeDoWindTurbineNames.TEST.value,
-                "WT2": WeDoWindTurbineNames.REF.value,
-                "MAST1": "Mast",
-            }
-        }
+    layout = create_illustrative_layout()
+    mast_columns = {WIND_SPEED: "wind_speed_mps", WIND_DIRECTION: "wind_direction_deg"}
+    mast = NonTurbineMeasurement(
+        name="Mast",
+        latitude=float(layout.loc["Mast", "latitude"]),
+        longitude=float(layout.loc["Mast", "longitude"]),
+        records=raw[list(mast_columns)].rename(columns=mast_columns),
+        columns={"wind_speed": mast_columns[WIND_SPEED], "wind_direction": mast_columns[WIND_DIRECTION]},
     )
-    # Construct wind-up Configurations
-    wtg_map = {
-        x: {
-            "name": x,
-            "turbine_type": {
-                "turbine_type": "unknown turbine type",
-                "rotor_diameter_m": assumed_rotor_diameter_m,
-                "rated_power_kw": assumed_rated_power_kw,
-                "cutout_ws_mps": cutout_ws_mps,
-                "normal_operation_pitch_range": (-10.0, 35.0),
-                "normal_operation_genrpm_range": (0, 2000.0),
-            },
-        }
-        for x in [WeDoWindTurbineNames.TEST.value, WeDoWindTurbineNames.REF.value]
-    }
+    upgraded = raw.index[raw[UPGRADE_STATUS] > 0]
+    post_first, post_last = upgraded.min(), upgraded.max()
+    history_start = max(raw.index.min(), post_first - pd.DateOffset(years=1))
+    upgrade = Upgrade(name=analysis_name, turbines=[TEST_TURBINE], timing=post_first)
 
-    key_dates = establish_wedowind_key_dates(scada_df=scada_df)
-
-    # Reanalysis data is required by WindUp but we do now know where this wind farm is
-    # therefore create a fake reanalysis object
-    reanalysis_dataset = create_fake_wedowind_reanalysis_dataset(start_datetime=key_dates.lt_first_dt_utc_start)
-
-    cfg = WindUpConfig(
-        assessment_name=analysis_name,
-        ref_wd_filter=analysis_conf.ref_wd_filter,
-        use_lt_distribution=True,
-        out_dir=analysis_output_dir / analysis_name,
-        test_wtgs=[Turbine.model_validate(wtg_map[x]) for x in [WeDoWindTurbineNames.TEST.value]],
-        ref_wtgs=[Turbine.model_validate(wtg_map[x]) for x in [WeDoWindTurbineNames.REF.value]],
-        years_offset_for_pre_period=1,
-        years_for_lt_distribution=1,
-        years_for_detrend=1,
-        ws_bin_width=1.0,
-        use_test_wtg_lt_distribution=True,
-        analysis_first_dt_utc_start=key_dates.analysis_first_dt_utc_start,
-        upgrade_first_dt_utc_start=key_dates.upgrade_first_dt_utc_start,
-        analysis_last_dt_utc_start=key_dates.analysis_last_dt_utc_start,
-        lt_first_dt_utc_start=key_dates.lt_first_dt_utc_start,
-        lt_last_dt_utc_start=key_dates.lt_last_dt_utc_start,
-        detrend_first_dt_utc_start=key_dates.detrend_first_dt_utc_start,
-        detrend_last_dt_utc_start=key_dates.detrend_last_dt_utc_start,
-        asset=Asset.model_validate({"name": "Mystery Wind Farm", "wtgs": list(wtg_map.values())}),
-        missing_scada_data_fields=[DataColumns.yaw_angle_min, DataColumns.yaw_angle_max],
-        prepost=PrePost.model_validate(
-            {
-                "pre_first_dt_utc_start": key_dates.pre_first_dt_utc_start,
-                "pre_last_dt_utc_start": key_dates.pre_last_dt_utc_start,
-                "post_first_dt_utc_start": key_dates.post_first_dt_utc_start,
-                "post_last_dt_utc_start": key_dates.post_last_dt_utc_start,
-            }
+    # Rated power and rotor diameter are based on Table 5.1 of Data Science for Wind Energy (Yu Ding 2020).
+    facts = WindFarmFacts(
+        records=records,
+        columns=COLUMNS,
+        timebase=TIMEBASE,
+        turbines=layout.loc[[TEST_TURBINE, REF_TURBINE]]
+        .reset_index()
+        .assign(
+            rated_power_kw=RATED_POWER_KW,
+            rotor_diameter_m=ROTOR_DIAMETER_M,
         ),
-        optimize_northing_corrections=False,
-        clip_rated_power_pp=analysis_conf.clip_rated_power_pp,
-        use_rated_invalid_bins=analysis_conf.use_rated_invalid_bins,
-        bootstrap_runs_override=bootstrap_runs_override,
+        upgrades=[upgrade],
+        labels=[UNUSABLE_DIRECTION, REFERENCE_SECTOR],
+        non_turbine_measurements=[mast],
+        reanalysis=[create_synthetic_reanalysis(history_start)],
+    )
+    analysis = AnalysisSpec(
+        name=analysis_name,
+        upgrade=upgrade.name,
+        references=[REF_TURBINE],
+        include_labels=[REFERENCE_SECTOR.name],
+        period=(history_start, post_last + TIMEBASE),
+        report="aep",
+    )
+    method = V0BinnedMethod(
+        options={
+            "years_offset_for_pre_period": 1,
+            "years_for_lt_distribution": 1,
+            "years_for_detrend": 1,
+            "ws_bin_width": 1.0,
+            "use_test_wtg_lt_distribution": True,
+            "lt_first_dt_utc_start": history_start,
+            "lt_last_dt_utc_start": history_start + pd.DateOffset(years=1) - TIMEBASE,
+            "detrend_first_dt_utc_start": history_start,
+            "detrend_last_dt_utc_start": post_first - pd.Timedelta(weeks=1) - TIMEBASE,
+            # Preserve the original inclusive pre/post bounds for the legacy estimator.
+            "prepost": {
+                "pre_first_dt_utc_start": history_start,
+                "pre_last_dt_utc_start": history_start + (post_last - post_first) - TIMEBASE,
+                "post_first_dt_utc_start": post_first,
+                "post_last_dt_utc_start": post_last,
+            },
+            "optimize_northing_corrections": False,
+            "clip_rated_power_pp": analysis_conf.clip_rated_power_pp,
+            "use_rated_invalid_bins": analysis_conf.use_rated_invalid_bins,
+            "bootstrap_runs_override": bootstrap_runs_override,
+        },
+        turbine_type={
+            "turbine_type": "unknown turbine type",
+            "cutout_ws_mps": 20,
+            "normal_operation_pitch_range": (-10.0, 35.0),
+            "normal_operation_genrpm_range": (0, 2000.0),
+        },
+        site_name="Mystery Wind Farm",
+        auto_choose_refs=False,  # The analysis has a single declared reference.
+        # The dataset has no turbine wind, pitch or generator speed measurements.
+        turbine_wind_measurement=mast.name,
+        default_pitch_deg=0,
+        default_gen_rpm=1000,
+        out_dir=analysis_output_dir,
+        save_plots=save_plots,
+        cache_dir=cache_dir / analysis_name,
     )
 
-    plot_cfg = PlotConfig(show_plots=False, save_plots=save_plots, plots_dir=cfg.out_dir / "plots")
-
-    wd_ranges_to_exclude = analysis_conf.unusable_wd_ranges
-    scada_df_for_assessment = scada_df.copy()
-    for wdr in wd_ranges_to_exclude:
-        logger.info("Filtering out wind directions between %s", wdr)
-        mask = (scada_df_for_assessment[DataColumns.yaw_angle_mean] >= wdr[0]) & (
-            scada_df_for_assessment[DataColumns.yaw_angle_mean] <= wdr[1]
-        )
-        scada_df_for_assessment = scada_df_for_assessment.loc[~mask, :]
-
-    assessment_inputs = AssessmentInputs.from_cfg(
-        cfg=cfg,
-        plot_cfg=plot_cfg,
-        scada_df=scada_df_for_assessment,
-        metadata_df=metadata_df,
-        reanalysis_datasets=[reanalysis_dataset],
-        cache_dir=cache_assessment,
-    )
-
-    # Run Analysis
-    results_per_test_ref_df = run_wind_up_analysis(assessment_inputs)
-    results_per_test_ref_df.to_csv(cfg.out_dir / "results_per_test_ref.csv", index=False)
-    _ = format_and_print_results_table(results_per_test_ref_df)
-    return results_per_test_ref_df
+    (output,) = method.estimate(facts, [analysis])
+    if output.per_reference is None:
+        messages = " | ".join(warning.message for warning in output.warnings)
+        msg = f"WeDoWind {analysis_name} produced no pairwise results: {messages}"
+        raise RuntimeError(msg)
+    pairs = output.per_reference.drop(columns="report")
+    pairs.to_csv(analysis_output_dir / analysis_name / "results_per_test_ref.csv", index=False)
+    format_and_print_results_table(pairs)
+    return output
 
 
 if __name__ == "__main__":

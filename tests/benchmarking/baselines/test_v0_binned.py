@@ -85,6 +85,10 @@ class TestOptions:
         with pytest.raises(MethodConfigurationError, match="turbine_type fields"):
             V0BinnedMethod(turbine_type={"rated_power_kw": 2000.0})
 
+    def test_an_unknown_analysis_label_stage_is_refused(self) -> None:
+        with pytest.raises(MethodConfigurationError, match="analysis_label_stage"):
+            V0BinnedMethod(analysis_label_stage="detrending")  # type: ignore[arg-type]
+
     def test_a_required_turbine_type_field_missing_is_named(self, tmp_path: Path) -> None:
         method = _method(tmp_path, turbine_type={})
         with pytest.raises(MethodConfigurationError, match="normal_operation_pitch_range"):
@@ -275,9 +279,11 @@ class TestToggleConfiguration:
 
 class TestExcludedRecords:
     @staticmethod
-    def _excluded(facts: WindFarmFacts, analysis: AnalysisSpec) -> pd.Series:
+    def _excluded(facts: WindFarmFacts, analysis: AnalysisSpec, *, analysis_labels: bool = False) -> pd.Series:
         upgrade = facts.upgrade(analysis.upgrade)
-        mask = v0_binned._excluded_records(facts, analysis, upgrade=upgrade, first=ff.at(3))  # noqa: SLF001
+        mask = v0_binned._excluded_records(  # noqa: SLF001
+            facts, analysis, upgrade=upgrade, first=ff.at(3), analysis_labels=analysis_labels
+        )
         return pd.Series(mask, index=pd.MultiIndex.from_arrays([facts.records.index, facts.records[ff.COLS.turbine]]))
 
     @staticmethod
@@ -316,12 +322,25 @@ class TestExcludedRecords:
         excluded = self._excluded(ff.facts(frame, operating_states=config), _analysis())
         assert excluded.groupby(level=1).sum().to_dict() == {"T1": 0, "T2": 0, "T3": 6, "T4": 0}
 
-    def test_an_analysis_label_excludes_subject_records_only(self) -> None:
+    def test_an_analysis_label_at_preprocessing_excludes_subject_records_only(self) -> None:
         facts = ff.facts(self._labelled((1, 2)), labels=[Label(name="steered", column="flag")])
-        excluded = self._excluded(facts, _analysis(exclude_labels=["steered"]))
+        excluded = self._excluded(facts, _analysis(exclude_labels=["steered"]), analysis_labels=True)
         assert excluded.groupby(level=1).sum().to_dict() == {"T1": 6, "T2": 0, "T3": 0, "T4": 0}
-        included = self._excluded(facts, _analysis(include_labels=["steered"]))
+        included = self._excluded(facts, _analysis(include_labels=["steered"]), analysis_labels=True)
         assert included.groupby(level=1).sum().to_dict() == {"T1": 30, "T2": 0, "T3": 0, "T4": 0}
+
+    def test_an_analysis_label_at_comparison_excludes_nothing(self) -> None:
+        facts = ff.facts(self._labelled((1, 2)), labels=[Label(name="steered", column="flag")])
+        assert not self._excluded(facts, _analysis(exclude_labels=["steered"])).any()
+
+    def test_comparison_exclusions_are_each_subjects_left_out_timestamps(self) -> None:
+        facts = ff.facts(self._labelled((1, 2)), labels=[Label(name="steered", column="flag")])
+        analysis = _analysis(subjects=["T1", "T4"], references=["T2"], exclude_labels=["steered"])
+        exclusions = v0_binned._comparison_exclusions(facts, analysis)  # noqa: SLF001
+        expected = pd.date_range(ff.at(1), ff.at(2), freq=ff.TIMEBASE, inclusive="left")
+        assert sorted(exclusions) == ["T1", "T4"]
+        for subject in ("T1", "T4"):
+            pd.testing.assert_index_equal(exclusions[subject], expected, check_names=False, check_freq=False)
 
     def test_a_neither_override_excludes_from_the_first_upgraded_record(self) -> None:
         upgrade = ff.permanent(upgrade_state_overrides=[("T2", ff.at(2), ff.at(4), "neither")])
@@ -406,6 +425,36 @@ class _Pipeline:
 
 
 class TestAnsweringAnalyses:
+    def test_mast_wind_and_operating_defaults_fill_missing_turbine_signals(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pipeline = _Pipeline(monkeypatch)
+        frame = ff.records().drop(columns=ff.COLS.wind_speed)
+        columns = dataclasses.replace(ff.COLS, wind_speed=None)
+        times = frame.index.unique()
+        mast = NonTurbineMeasurement(
+            name="mast",
+            latitude=57.5,
+            longitude=-3.0,
+            records=pd.DataFrame({"speed": np.arange(len(times)), "direction": 220.0}, index=times),
+            columns={"wind_speed": "speed", "wind_direction": "direction"},
+        )
+        facts = ff.facts(frame, columns=columns, non_turbine_measurements=[mast])
+        method = _method(tmp_path, turbine_wind_measurement="mast", default_pitch_deg=0, default_gen_rpm=1000)
+
+        method.estimate(facts, [_analysis()])
+
+        converted = pipeline.calls[0]["scada_df"]
+        np.testing.assert_array_equal(converted[DataColumns.wind_speed_mean], mast.records["speed"].loc[frame.index])
+        assert converted[DataColumns.yaw_angle_mean].eq(220).all()
+        assert converted[DataColumns.gen_rpm_mean].eq(1000).all()
+        np.testing.assert_array_equal(converted[DataColumns.pitch_angle_mean], frame[ff.COLS.pitch])
+
+    def test_configured_turbine_wind_measurement_must_be_declared(self, tmp_path: Path) -> None:
+        method = _method(tmp_path, turbine_wind_measurement="missing mast")
+        with pytest.raises(MethodConfigurationError, match="unknown turbine wind measurement 'missing mast'"):
+            method.estimate(ff.facts(), [_analysis()])
+
     def test_one_subject_gives_v0s_combined_uplift_and_sigma(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -480,17 +529,31 @@ class TestAnsweringAnalyses:
         assert np.isnan(out.per_turbine.iloc[0]["campaign_uplift"])
         assert any(w.severity == "high" and "could not combine" in w.message for w in out.warnings)
 
-    def test_the_records_reach_v0_without_label_columns_and_flagged(
+    def test_the_records_reach_v0_without_label_columns_and_analysis_labels_as_comparison_exclusions(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         pipeline = _Pipeline(monkeypatch)
         frame = ff.records().assign(flag=lambda f: (f.index >= ff.at(1)) & (f.index < ff.at(2)))
         facts = ff.facts(frame, labels=[Label(name="steered", column="flag")])
         _method(tmp_path).estimate(facts, [_analysis(exclude_labels=["steered"])])
-        scada = pipeline.calls[0]["scada_df"]
+        call = pipeline.calls[0]
+        scada = call["scada_df"]
         assert "flag" not in scada.columns
-        assert scada[EXCLUDE_ROW_COL].sum() == 6
+        assert EXCLUDE_ROW_COL not in scada.columns
         assert scada.index.name == TIMESTAMP_COL
+        assert {s: len(t) for s, t in call["comparison_exclusions"].items()} == {"T1": 6}
+
+    def test_analysis_labels_at_preprocessing_reach_v0_flagged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pipeline = _Pipeline(monkeypatch)
+        frame = ff.records().assign(flag=lambda f: (f.index >= ff.at(1)) & (f.index < ff.at(2)))
+        facts = ff.facts(frame, labels=[Label(name="steered", column="flag")])
+        method = _method(tmp_path, analysis_label_stage="preprocessing")
+        method.estimate(facts, [_analysis(exclude_labels=["steered"])])
+        call = pipeline.calls[0]
+        assert call["scada_df"][EXCLUDE_ROW_COL].sum() == 6
+        assert call["comparison_exclusions"] is None
 
     def test_the_records_reach_v0_without_the_site_state_column(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

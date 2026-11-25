@@ -153,6 +153,7 @@ class AssessmentInputs:
     plot_cfg: PlotConfig
     pre_post_splitter: PrePostSplitter
     mast_or_lidar_datasets: list[MastOrLiDARDataset] | None = None
+    comparison_exclusions: dict[str, pd.DatetimeIndex] | None = None
 
     @classmethod
     def from_cfg(
@@ -166,6 +167,7 @@ class AssessmentInputs:
         reanalysis_datasets: list[ReanalysisDataset],
         cache_dir: Path | None = None,
         mast_or_lidar_datasets: list[MastOrLiDARDataset] | None = None,
+        comparison_exclusions: dict[str, pd.DatetimeIndex] | None = None,
     ) -> AssessmentInputs:
         """Construct instance of AssessmentInputs from configuration objects and data.
 
@@ -176,6 +178,9 @@ class AssessmentInputs:
         :param toggle_df: wind farm toggle data
         :param reanalysis_datasets: reanalysis datasets
         :param cache_dir: directory for caching
+        :param mast_or_lidar_datasets: mast and LiDAR datasets
+        :param comparison_exclusions: per test turbine, the timestamps its test-reference comparisons leave out;
+            preprocessing and the long-term distribution still use them
         :return: instance of AssessmentInputs
         """
         if cache_dir is None:
@@ -201,6 +206,7 @@ class AssessmentInputs:
             plot_cfg=plot_cfg,
             pre_post_splitter=pre_post_splitter,
             mast_or_lidar_datasets=mast_or_lidar_datasets,
+            comparison_exclusions=comparison_exclusions,
         )
 
 

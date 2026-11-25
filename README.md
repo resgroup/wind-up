@@ -94,7 +94,8 @@ start from the examples:
 - [`examples/smarteole_example.ipynb`](examples/smarteole_example.ipynb) -
   a notebook walkthrough of the v1 interface (facts, analyses, methods) and the best place to start
 - [`examples/wedowind_example.py`](examples/wedowind_example.py) -
-  WeDoWind pitch-angle and vortex-generator analyses
+  WeDoWind pitch-angle and vortex-generator pre/post analyses using the v1
+  facts and analysis interface with the binned power curve method
 
 A typical analysis has four stages:
 

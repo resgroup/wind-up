@@ -174,6 +174,18 @@ def _filter_ref_df_for_wd_and_hod(ref_df: pd.DataFrame, ref_wd_col: str, cfg: Wi
     return ref_df
 
 
+def _drop_comparison_exclusions(ref_df: pd.DataFrame, *, excluded: pd.DatetimeIndex) -> pd.DataFrame:
+    rows_before = len(ref_df)
+    ref_df = ref_df[~ref_df.index.isin(excluded)]
+    rows_after = len(ref_df)
+    if rows_before > 0:
+        logger.info(
+            f"removed {rows_before - rows_after} [{100 * (rows_before - rows_after) / rows_before:.1f}%] "
+            f"rows from ref_df using comparison_exclusions",
+        )
+    return ref_df
+
+
 def _keep_only_ref_toggle_off(*, cfg: WindUpConfig, test_name: str, ref_name: str) -> bool:
     """Whether a reference turbine's toggle_on rows must be dropped before it is used as a reference.
 
@@ -197,6 +209,7 @@ def _get_ref_df(
     toggle_df: pd.DataFrame | None = None,
     keep_only_toggle_off: bool = True,
     mast_or_lidar_datasets: list[MastOrLiDARDataset] | None = None,
+    comparison_exclusions: pd.DatetimeIndex | None = None,
 ) -> pd.DataFrame:
     if ref_name in [x.name for x in cfg.asset.wtgs]:
         ref_df = wf_df.loc[ref_name].copy()
@@ -233,6 +246,8 @@ def _get_ref_df(
         ref_df = _add_fake_power_data(ref_df, ref_pw_col=ref_pw_col, ref_ws_col=ref_ws_col, scada_pc=scada_pc)
 
     ref_df = _filter_ref_df_for_wd_and_hod(ref_df, ref_wd_col=ref_wd_col, cfg=cfg)
+    if comparison_exclusions is not None:
+        ref_df = _drop_comparison_exclusions(ref_df, excluded=comparison_exclusions)
 
     if cfg.require_test_wake_free or cfg.require_ref_wake_free:
         ref_df = _filter_ref_df_for_wake_free(
@@ -466,6 +481,7 @@ def _calc_test_ref_results(
     random_seed: int,
     toggle_df: pd.DataFrame | None = None,
     mast_or_lidar_datasets: list[MastOrLiDARDataset] | None = None,
+    comparison_exclusions: pd.DatetimeIndex | None = None,
 ) -> dict:
     test_name = test_wtg.name
     scada_pc = pc_per_ttype[test_wtg.turbine_type.turbine_type]
@@ -493,6 +509,7 @@ def _calc_test_ref_results(
         toggle_df=toggle_df,
         keep_only_toggle_off=keep_only_toggle_off,
         mast_or_lidar_datasets=mast_or_lidar_datasets,
+        comparison_exclusions=comparison_exclusions,
     )
     if len(ref_df) == 0:
         result_manager.warning(f"ref_df is empty for {ref_name}")
@@ -965,6 +982,7 @@ def run_wind_up_analysis(
                 plot_cfg=plot_cfg,
                 random_seed=random_seed,
                 mast_or_lidar_datasets=inputs.mast_or_lidar_datasets,
+                comparison_exclusions=(inputs.comparison_exclusions or {}).get(test_name),
             )
             test_ref_results = test_ref_results | test_results
             logger.info(test_ref_results)
