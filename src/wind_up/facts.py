@@ -69,6 +69,10 @@ SIDE_COL = "side"
 LABELS_STEP = 2
 
 NO_TIME = pd.Timedelta(0)
+# The default boundary of a toggle frame's cycle grid.
+EPOCH = pd.Timestamp("1970-01-01")
+# The share of a toggle frame's switches that may fall off its half-cycle grid without a warning.
+OFF_GRID_SHARE = 0.01
 
 Window = tuple[pd.Timestamp, pd.Timestamp]
 Period = tuple[pd.Timestamp | None, pd.Timestamp | None]
@@ -93,11 +97,11 @@ class Upgrade:
         fitted; their records are in neither state
     :param upgrade_state_overrides: ``(turbine or None, start, end, state)``: the upgrade state of a
         turbine, or of every turbine, over ``[start, end)`` where the timing does not describe it
-    :param toggle_cycle: toggle only: one on and off cycle of the controller. A toggle schedule's period
-        when omitted; for a toggle frame, the median gap between its on runs when omitted, and checked
-        against them when given.
+    :param toggle_cycle: toggle only: one on and off cycle of the controller, an equal time in each
+        state. A toggle schedule's period, which it must equal when given; for a toggle frame, the
+        median gap between its on runs when omitted. See :meth:`warnings` for the frame's check.
     :param toggle_datum: toggle only: any boundary of the controller's cycle grid. A toggle schedule's
-        start when omitted, else the first record of a toggle frame in the on or off state.
+        start when omitted; for a toggle frame, the Unix epoch in the frame's time zone.
     :param expected_uplift: the uplift expected, a fraction, from which the reach of the upgrade's
         wake change follows; at most one of this and ``wake_reach_d``
     :param wake_reach_d: the reach of the upgrade's wake change, in rotor diameters
@@ -183,17 +187,16 @@ class Upgrade:
             raise ValueError(msg)
 
     def _check_cycle(self) -> None:
-        """Reject a cycle that is not positive, or that disagrees with the schedule or the frame's runs."""
+        """Reject a cycle that is not positive, or that disagrees with a schedule's period."""
         if self.toggle_cycle is None:
             return
         if self.toggle_cycle <= NO_TIME:
             msg = f"upgrade {self.name!r}: toggle_cycle must be positive, got {self.toggle_cycle}"
             raise ValueError(msg)
-        stated = self._timing_cycle()
-        if stated != self.toggle_cycle:
+        if isinstance(self.timing, ToggleSchedule) and self.timing.period != self.toggle_cycle:
             msg = (
-                f"upgrade {self.name!r}: toggle_cycle {self.toggle_cycle} disagrees with the toggle timing, "
-                f"whose cycle is {stated}"
+                f"upgrade {self.name!r}: toggle_cycle {self.toggle_cycle} disagrees with the toggle schedule, "
+                f"whose period is {self.timing.period}"
             )
             raise ValueError(msg)
 
@@ -215,23 +218,46 @@ class Upgrade:
         """
         if isinstance(self.timing, ToggleSchedule):
             return self.timing.period
-        frame: pd.DataFrame = self.timing  # type: ignore[assignment]
-        on = frame["toggle_on"].to_numpy(dtype=bool)
-        starts = pd.DatetimeIndex(frame.index)[on & ~np.concatenate(([False], on[:-1]))]
+        starts = _on_run_starts(self.timing)  # type: ignore[arg-type]
         if len(starts) < 2:  # noqa: PLR2004
             msg = f"upgrade {self.name!r}: the toggle frame has fewer than two on runs, so it states no cycle"
             raise ValueError(msg)
         return pd.Timedelta(pd.Series(starts).diff().median())
 
     def datum(self, *, first_record: pd.Timestamp) -> pd.Timestamp:
-        """Return a boundary of a toggle's cycle grid: declared, else where the toggle starts.
+        """Return a boundary of a toggle's cycle grid: declared, a schedule's start, or the Unix epoch for a frame.
 
         :param first_record: where a toggle schedule without a start begins
         """
         if self.toggle_datum is not None:
             return pd.Timestamp(self.toggle_datum)
+        if isinstance(self.timing, pd.DataFrame):
+            return EPOCH.tz_localize(pd.DatetimeIndex(self.timing.index).tz)
         start = self.signal_span()[0]
         return first_record if start is None else start
+
+    def warnings(self) -> tuple[AnalysisWarning, ...]:
+        """Return a medium warning when a toggle frame's switches do not fit its cycle and datum.
+
+        A switch is a change between on and off from one record of the frame to the next. More than
+        :data:`OFF_GRID_SHARE` of them away from the datum plus a whole number of half cycles is
+        the warning. A frame that states no cycle gives none.
+        """
+        if not isinstance(self.timing, pd.DataFrame):
+            return ()
+        switches = _switches(self.timing)
+        if not len(switches) or (self.toggle_cycle is None and len(_on_run_starts(self.timing)) < 2):  # noqa: PLR2004
+            return ()
+        half = self.cycle / 2
+        datum = self.datum(first_record=switches[0])
+        off_grid = int(((switches - datum) % half != NO_TIME).sum())
+        if off_grid <= OFF_GRID_SHARE * len(switches):
+            return ()
+        message = (
+            f"upgrade {self.name!r}: {off_grid} of {len(switches)} switches between on and off fall off the "
+            f"half-cycle grid of its {self.cycle} cycle from {datum}; declare toggle_cycle and toggle_datum"
+        )
+        return (AnalysisWarning(severity="medium", step=LABELS_STEP, turbine="all", message=message),)
 
     @property
     def mode(self) -> Literal["prepost", "toggle"]:
@@ -362,11 +388,21 @@ class Upgrade:
             since_origin = index - origin
             return np.asarray((since_origin >= half) & ((since_origin % half) < self.settling_time))
         frame: pd.DataFrame = self.timing  # type: ignore[assignment]
-        on = frame["toggle_on"].to_numpy(dtype=bool)
-        off = frame["toggle_off"].to_numpy(dtype=bool)
-        times = pd.DatetimeIndex(frame.index)
-        changed = (on[1:] & off[:-1]) | (off[1:] & on[:-1])
-        return _settling(index, changes=times[1:][changed], settling_time=self.settling_time)
+        return _settling(index, changes=_switches(frame), settling_time=self.settling_time)
+
+
+def _switches(frame: pd.DataFrame) -> pd.DatetimeIndex:
+    """Return the records of a toggle frame that switch between on and off from the record before."""
+    on = frame["toggle_on"].to_numpy(dtype=bool)
+    off = frame["toggle_off"].to_numpy(dtype=bool)
+    changed = (on[1:] & off[:-1]) | (off[1:] & on[:-1])
+    return pd.DatetimeIndex(frame.index)[1:][changed]
+
+
+def _on_run_starts(frame: pd.DataFrame) -> pd.DatetimeIndex:
+    """Return the first record of each run of on records of a toggle frame."""
+    on = frame["toggle_on"].to_numpy(dtype=bool)
+    return pd.DatetimeIndex(frame.index)[on & ~np.concatenate(([False], on[:-1]))]
 
 
 def _settling(
@@ -591,10 +627,11 @@ class WindFarmFacts:
 
     def warnings(self) -> tuple[AnalysisWarning, ...]:
         """Return what the facts cannot support, for the warnings register."""
+        found = tuple(w for upgrade in self.upgrades for w in upgrade.warnings())
         if self.columns.availability is not None:
-            return ()
+            return found
         message = "the records have no availability counter, so downtime could not be labelled"
-        return (AnalysisWarning(severity="medium", step=LABELS_STEP, turbine="all", message=message),)
+        return (*found, AnalysisWarning(severity="medium", step=LABELS_STEP, turbine="all", message=message))
 
     def record_labels(self) -> pd.DataFrame:
         """Return the labels of every turbine's record at every timestamp, ordered by timestamp then turbine.
