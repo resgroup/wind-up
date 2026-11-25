@@ -467,6 +467,11 @@ labels:
         with pytest.raises(ValueError, match=match):
             load_upgrades(tmp_path, analyses=analyses, extra=labels)
 
+    def test_a_label_may_withhold_all_uses(self, tmp_path: Path) -> None:
+        declaration = load_upgrades(tmp_path, extra="labels:\n  - {name: shadow, column: shadow, withholds: all}\n")
+        assert declaration.labels[0].withholds == {UPLIFT, NORTHING}
+        assert declaration.resolved()["labels"][0]["withholds"] == ["northing", "uplift"]
+
     def test_a_single_upgrade_declaration_takes_labels(self, tmp_path: Path) -> None:
         labels = load(tmp_path, SHORTHAND + "labels:\n  - {name: x, column: x, withholds: uplift}\n").labels
         assert [label.name for label in labels] == ["x"]
