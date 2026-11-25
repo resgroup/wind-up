@@ -21,7 +21,7 @@ UPGRADE_STATES = (ON, OFF, NEITHER)
 UPLIFT = "uplift"
 NORTHING = "northing"
 USES = (UPLIFT, NORTHING)
-# Withholding this withholds every use in USES, including any added later.
+# Expand this to the supported uses when a label is created.
 ALL_USES = "all"
 
 # Record-label columns naming why a record is not valid for a use; empty where it is valid.
@@ -48,13 +48,13 @@ class Label:
 
     :param name: the label's name, as analyses and reports refer to it
     :param column: the boolean column of the records holding it; False where unknown, never NaN
-    :param withholds: the uses its records are withheld from, a subset of :data:`USES`; :data:`ALL_USES`
-        withholds every use
+    :param withholds: a use or an iterable of uses to withhold its records from. :data:`ALL_USES`
+        expands to all supported uses. The attribute is stored as a frozen set.
     """
 
     name: str
     column: str
-    withholds: frozenset[str] = field(default_factory=frozenset)
+    withholds: Iterable[str] | str = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         """Reject an empty name or column and an unknown use, and resolve :data:`ALL_USES` to :data:`USES`."""

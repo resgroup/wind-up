@@ -15,8 +15,8 @@ def test_a_label_withholds_nothing_by_default() -> None:
 
 
 def test_a_label_takes_one_use_as_a_string_or_several_as_a_collection() -> None:
-    assert Label(name="curtailed", column="c", withholds=UPLIFT).withholds == {UPLIFT}  # type: ignore[arg-type]
-    assert Label(name="curtailed", column="c", withholds=[UPLIFT, NORTHING]).withholds == {UPLIFT, NORTHING}  # type: ignore[arg-type]
+    assert Label(name="curtailed", column="c", withholds=UPLIFT).withholds == {UPLIFT}
+    assert Label(name="curtailed", column="c", withholds=[UPLIFT, NORTHING]).withholds == {UPLIFT, NORTHING}
 
 
 def test_a_label_cannot_withhold_an_unknown_use() -> None:
@@ -25,13 +25,13 @@ def test_a_label_cannot_withhold_an_unknown_use() -> None:
 
 
 def test_a_label_withholding_all_uses_withholds_every_use() -> None:
-    assert Label(name="tower shadow", column="c", withholds=ALL_USES).withholds == set(USES)  # type: ignore[arg-type]
-    assert Label(name="tower shadow", column="c", withholds=[ALL_USES, UPLIFT]).withholds == set(USES)  # type: ignore[arg-type]
+    assert Label(name="tower shadow", column="c", withholds=ALL_USES).withholds == set(USES)
+    assert Label(name="tower shadow", column="c", withholds=[ALL_USES, UPLIFT]).withholds == set(USES)
 
 
 def test_all_uses_covers_a_use_added_later(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(labels, "USES", (*USES, "waking"))
-    assert Label(name="tower shadow", column="c", withholds=ALL_USES).withholds == {*USES, "waking"}  # type: ignore[arg-type]
+    assert Label(name="tower shadow", column="c", withholds=ALL_USES).withholds == {*USES, "waking"}
 
 
 def test_all_uses_does_not_hide_an_unknown_use() -> None:
