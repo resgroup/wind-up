@@ -8,16 +8,17 @@ uplift of several outputs, :func:`combine_subjects` that of one output's subject
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from wind_up.analysis_warnings import AnalysisWarning
+from wind_up.toggle import ToggleSchedule, validate_toggle_df
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 AEP = "aep"
 CAMPAIGN = "campaign"
@@ -38,6 +39,7 @@ PER_TURBINE_COLUMNS = (
     "actual_energy",
     "hours_on",
     "hours_off",
+    "placebo",
 )
 
 
@@ -59,6 +61,10 @@ class AnalysisSpec:
         :data:`COMBINATIONS`: ``inverse_variance`` weights each subject's uplift by the inverse of its
         variance, for one upgrade on turbines that do not interact; ``net`` is the uplift of the
         subjects' energy together, for turbines that interact, such as a wake-steering pair
+    :param placebo_timing: toggle upgrades only: per turbine that did not receive the upgrade, a
+        toggle schedule or frame it never applied. Each is measured as a subject against that
+        timing, the analysis's other references as its references, and stays a reference of the
+        subjects; its row is marked ``placebo`` and left out of the analysis's uplift.
     """
 
     name: str
@@ -70,6 +76,7 @@ class AnalysisSpec:
     exclude_labels: Sequence[str] = ()
     report: Sequence[str] = REPORTS
     combination: str = INVERSE_VARIANCE
+    placebo_timing: Mapping[str, ToggleSchedule | pd.DataFrame] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Freeze the collections and reject an analysis that contradicts itself."""
@@ -99,6 +106,26 @@ class AnalysisSpec:
         if both:
             msg = f"analysis {self.name!r} both includes and excludes the labels {both}"
             raise ValueError(msg)
+        self._check_placebo()
+
+    def _check_placebo(self) -> None:
+        """Freeze the placebo timing and reject one that is not a toggle or names a subject."""
+        placebo = {str(t): timing for t, timing in self.placebo_timing.items()}
+        object.__setattr__(self, "placebo_timing", placebo)
+        for turbine, timing in placebo.items():
+            if isinstance(timing, pd.DataFrame):
+                validate_toggle_df(timing)
+            elif not isinstance(timing, ToggleSchedule):
+                msg = f"analysis {self.name!r}: the placebo timing of {turbine!r} is not a toggle schedule or frame"
+                raise TypeError(msg)
+        subjects = sorted(set(placebo) & set(self.subjects or ()))
+        if subjects:
+            msg = f"analysis {self.name!r} gives placebo timing to its subjects {subjects}"
+            raise ValueError(msg)
+
+    def __hash__(self) -> int:
+        """Return a hash of the analysis's name and upgrade."""
+        return hash((self.name, self.upgrade))
 
 
 @dataclass
@@ -112,8 +139,8 @@ class AnalysisOutput:
     :param aep_sigma: its 1-sigma
     :param campaign_uplift: the subjects' uplift over the records compared, as a fraction
     :param campaign_sigma: its 1-sigma
-    :param per_turbine: one row per subject with :data:`PER_TURBINE_COLUMNS`; a subject that could
-        not be measured is a row of NaN
+    :param per_turbine: one row per subject, then per placebo turbine, with :data:`PER_TURBINE_COLUMNS`;
+        a turbine that could not be measured is a row of NaN beside its ``placebo`` flag
     :param per_reference: one row per subject and reference, from a method that works pairwise
     :param by_condition: per-condition estimates: ``condition``, ``condition_bin``, ``p50_uplift``
         and optionally ``sigma_uplift``
@@ -148,7 +175,7 @@ class AnalysisOutput:
         """Return the energy the subjects produced with the upgrade on; NaN without a per-turbine table."""
         if self.per_turbine is None or "actual_energy" not in self.per_turbine.columns:
             return float("nan")
-        return float(self.per_turbine["actual_energy"].sum(min_count=1))
+        return float(subjects_only(self.per_turbine)["actual_energy"].sum(min_count=1))
 
 
 @dataclass(frozen=True)
@@ -204,15 +231,23 @@ def combine(outputs: Sequence[AnalysisOutput]) -> CombinedUplift:
 def combine_subjects(output: AnalysisOutput) -> CombinedUplift:
     """Return the energy-weighted uplift of ``output``'s subjects on each basis they all report.
 
-    As :func:`combine`, over the rows of the output's per-turbine table: the net uplift of a group
-    measured together, with its sigma as a range.
+    As :func:`combine`, over the subjects' rows of the output's per-turbine table, placebo rows left
+    out: the net uplift of a group measured together, with its sigma as a range.
     """
-    if output.per_turbine is None or output.per_turbine.empty:
+    rows = None if output.per_turbine is None else subjects_only(output.per_turbine)
+    if rows is None or rows.empty:
         msg = f"analysis {output.analysis.name!r} has no per-turbine table to combine"
         raise ValueError(msg)
     columns = ["turbine", "actual_energy", "aep_uplift", "aep_sigma", "campaign_uplift", "campaign_sigma"]
-    table = output.per_turbine[columns].reset_index(drop=True)
+    table = rows[columns].reset_index(drop=True)
     return _combined(table, warnings=list(output.warnings), what="subjects")
+
+
+def subjects_only(per_turbine: pd.DataFrame) -> pd.DataFrame:
+    """Return the rows of a per-turbine table that are not placebo rows; every row without a ``placebo`` column."""
+    if "placebo" not in per_turbine.columns:
+        return per_turbine
+    return per_turbine[~per_turbine["placebo"].fillna(value=False).astype(bool)]
 
 
 def _combined(table: pd.DataFrame, *, warnings: list[AnalysisWarning], what: str) -> CombinedUplift:

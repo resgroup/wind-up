@@ -30,12 +30,20 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 import pandas as pd
 
-from wind_up.analysis import AEP, CAMPAIGN, NET, PER_TURBINE_COLUMNS, AnalysisOutput, combine_subjects
+from wind_up.analysis import (
+    AEP,
+    CAMPAIGN,
+    NET,
+    PER_TURBINE_COLUMNS,
+    AnalysisOutput,
+    combine_subjects,
+    subjects_only,
+)
 from wind_up.analysis_warnings import AnalysisWarning
 from wind_up.labels import NEITHER, OFF, ON, UPLIFT
 from wind_up.layout import LATITUDE_COL, LONGITUDE_COL, NAME_COL, ROTOR_DIAMETER_COL
 from wind_up.method import MethodConfigurationError
-from wind_up.subject import NOT_MEASURED
+from wind_up.subject import NOT_MEASURED, PLACEBO_NOT_MEASURED
 from wind_up.toggle import ToggleSchedule, build_toggle_df
 from wind_up_v0.combine_results import _calculate_total_uplift_of_turbine_group, combine_results
 from wind_up_v0.constants import TIMESTAMP_COL, DataColumns
@@ -214,13 +222,19 @@ class V0BinnedMethod:
         return [self._answer(facts, analysis) for analysis in analyses]
 
     def _answer(self, facts: WindFarmFacts, analysis: AnalysisSpec) -> AnalysisOutput:
-        """Run v0 once per uplift the analysis reports, and give its results."""
+        """Run v0 once per uplift the analysis reports, and give its results.
+
+        A placebo turbine's row is v0's result for it as a placebo test; one v0 did not test, which
+        it does only with more than one reference, is a medium warning.
+        """
         subjects = facts.subjects_of(analysis)
+        placebo = list(analysis.placebo_timing)
         warnings: list[AnalysisWarning] = list(facts.warnings())
         runs: dict[str, tuple[pd.DataFrame, pd.DataFrame | str] | str] = {}
         for report in (r for r in (AEP, CAMPAIGN) if r in analysis.report):
             runs[report] = self._run_or_reason(facts, analysis, use_lt_distribution=report == AEP)
-        rows = {s: {"turbine": s, **{c: np.nan for c in PER_TURBINE_COLUMNS if c != "turbine"}} for s in subjects}
+        empty = {c: np.nan for c in PER_TURBINE_COLUMNS if c not in ("turbine", "placebo")}
+        rows = {t: {"turbine": t, **empty, "placebo": t in placebo} for t in [*subjects, *placebo]}
         output: dict[str, Any] = {"analysis": analysis}
         per_reference: list[pd.DataFrame] = []
         combined: dict[str, pd.DataFrame] = {}
@@ -242,14 +256,22 @@ class V0BinnedMethod:
                     )
                 continue
             measured = tdf[tdf["test_wtg"].isin(subjects) & ~tdf["is_ref"]].set_index("test_wtg")
-            for subject in subjects:
-                if subject in measured.index:
-                    rows[subject][f"{report}_uplift"] = float(measured.loc[subject, "p50_uplift"])
-                    rows[subject][f"{report}_sigma"] = float(measured.loc[subject, "sigma"])
-                    pairs = trdf[trdf["test_wtg"] == subject]
-                    rows[subject]["hours_on"] = float(pairs["pp_valid_hours_post"].min())
-                    rows[subject]["hours_off"] = float(pairs["pp_valid_hours_pre"].min())
-                    rows[subject]["actual_energy"] = _actual_energy(pairs)
+            tested = tdf[tdf["test_wtg"].isin(placebo) & tdf["is_ref"]].set_index("test_wtg")
+            for turbine in [*subjects, *placebo]:
+                results = tested if turbine in placebo else measured
+                if turbine not in results.index:
+                    if turbine in placebo:
+                        message = f"{PLACEBO_NOT_MEASURED}v0 tested no placebo for the {report} uplift"
+                        warnings.append(
+                            AnalysisWarning(severity="medium", step=MEASURE_STEP, turbine=turbine, message=message)
+                        )
+                    continue
+                rows[turbine][f"{report}_uplift"] = float(results.loc[turbine, "p50_uplift"])
+                rows[turbine][f"{report}_sigma"] = float(results.loc[turbine, "sigma"])
+                pairs = trdf[trdf["test_wtg"] == turbine]
+                rows[turbine]["hours_on"] = float(pairs["pp_valid_hours_post"].min())
+                rows[turbine]["hours_off"] = float(pairs["pp_valid_hours_pre"].min())
+                rows[turbine]["actual_energy"] = _actual_energy(pairs)
             combined[report] = measured
         per_turbine = pd.DataFrame(list(rows.values()), columns=list(PER_TURBINE_COLUMNS))
         output |= self._headline(analysis, per_turbine=per_turbine, combined=combined, warnings=warnings)
@@ -270,7 +292,7 @@ class V0BinnedMethod:
         One subject gives its own. A group gives v0's total uplift of the group, or for a ``net``
         combination the net uplift and no sigma, with a low warning added to ``warnings``.
         """
-        if len(per_turbine) == 1 or (analysis.combination != NET and combined):
+        if len(subjects_only(per_turbine)) == 1 or (analysis.combination != NET and combined):
             return {
                 f"{report}_{figure}": value
                 for report, measured in combined.items()
@@ -322,6 +344,8 @@ class V0BinnedMethod:
                 upgrade,
                 index=pd.DatetimeIndex(records.index.unique()).sort_values(),
                 turbines=facts.turbine_names,
+                placebo=analysis.placebo_timing,
+                borrowed_from=facts.subjects_of(analysis)[0],
             ),
             reanalysis_datasets=[ReanalysisDataset(id=r.name, data=r.records) for r in facts.reanalysis],
             cache_dir=self.cache_dir,
@@ -378,7 +402,8 @@ class V0BinnedMethod:
             cfg["toggle"] = {
                 "name": upgrade.name,
                 **self.options.get("toggle", {}),
-                "toggle_file_per_turbine": upgrade.per_turbine,
+                "toggle_file_per_turbine": _per_turbine_toggle(upgrade, analysis=analysis),
+                "placebo_toggle_wtgs": _v0_placebo(upgrade, analysis=analysis, references=references),
                 "toggle_filename": "not_used",
                 "toggle_change_settling_filter_seconds": int(upgrade.settling_time.total_seconds()),
             }
@@ -557,21 +582,50 @@ def _upgrade_first(
     return min(firsts)
 
 
-def _toggle_frame(upgrade: Upgrade, *, index: pd.DatetimeIndex, turbines: Sequence[str]) -> pd.DataFrame | None:
+def _per_turbine_toggle(upgrade: Upgrade, *, analysis: AnalysisSpec) -> bool:
+    """Return whether v0 reads a toggle frame per turbine: for frames per turbine or a placebo."""
+    return upgrade.mode == "toggle" and (upgrade.per_turbine or bool(analysis.placebo_timing))
+
+
+def _v0_placebo(upgrade: Upgrade, *, analysis: AnalysisSpec, references: Sequence[str]) -> list[str]:
+    """Return v0's placebo turbines: with a toggle frame per turbine, every reference the upgrade does not toggle.
+
+    v0 keeps all of a placebo turbine's records as a reference, as it does every reference's with
+    one shared toggle frame.
+    """
+    if not _per_turbine_toggle(upgrade, analysis=analysis):
+        return []
+    return [r for r in references if r not in upgrade.turbines]
+
+
+def _toggle_frame(
+    upgrade: Upgrade,
+    *,
+    index: pd.DatetimeIndex,
+    turbines: Sequence[str],
+    placebo: Mapping[str, ToggleSchedule | pd.DataFrame] | None = None,
+    borrowed_from: str | None = None,
+) -> pd.DataFrame | None:
     """Return the toggle frame v0 reads: the upgrade's own frame, or one built from its schedule.
 
-    With a frame per turbine, v0's frame is indexed by turbine and timestamp over ``turbines``: a
-    turbine the upgrade toggles has its own frame, and every other turbine is off over ``index``.
+    With a frame per turbine or a placebo, v0's frame is indexed by turbine and timestamp over
+    ``turbines``: a turbine the upgrade toggles has its own timing, a placebo turbine its placebo
+    timing, and every other turbine the timing of ``borrowed_from``, a turbine the upgrade toggles,
+    as v0 tests a reference against a shared toggle.
     """
     if upgrade.mode != "toggle":
         return None
-    if upgrade.per_turbine:
-        never = pd.DataFrame({"toggle_on": False, "toggle_off": True}, index=index)
-        frames = {t: upgrade.toggle_timing(t) if t in upgrade.turbines else never for t in turbines}
-        return pd.concat(frames, names=[DataColumns.turbine_name, TIMESTAMP_COL])
-    if isinstance(upgrade.timing, ToggleSchedule):
-        return build_toggle_df(index, upgrade.timing)
-    return upgrade.timing  # type: ignore[return-value]
+    if not upgrade.per_turbine and not placebo:
+        return _as_frame(upgrade.timing, index=index)  # type: ignore[arg-type]
+    own = {t: upgrade.toggle_timing(t) for t in upgrade.turbines} | dict(placebo or {})
+    borrowed = upgrade.toggle_timing(borrowed_from or upgrade.turbines[0])
+    frames = {t: _as_frame(own.get(t, borrowed), index=index) for t in turbines}
+    return pd.concat(frames, names=[DataColumns.turbine_name, TIMESTAMP_COL])
+
+
+def _as_frame(timing: ToggleSchedule | pd.DataFrame, *, index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Return a toggle frame, or the frame a schedule gives over ``index``."""
+    return build_toggle_df(index, timing) if isinstance(timing, ToggleSchedule) else timing
 
 
 def _left_out_by_analysis(facts: WindFarmFacts, analysis: AnalysisSpec) -> np.ndarray:

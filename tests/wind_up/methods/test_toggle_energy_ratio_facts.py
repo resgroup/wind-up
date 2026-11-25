@@ -192,7 +192,7 @@ def test_a_subject_that_cannot_be_measured_is_a_row_of_nan_and_a_warning() -> No
     (out,) = _new(facts, AnalysisSpec(name="x", upgrade="control"))
     assert math.isnan(out.campaign_uplift)
     assert out.per_turbine["turbine"].tolist() == ["T1"]
-    assert out.per_turbine.drop(columns="turbine").isna().all(axis=None)
+    assert out.per_turbine.drop(columns=["turbine", "placebo"]).isna().all(axis=None)
     assert out.by_condition is None
     high = [w for w in out.warnings if w.severity == "high"]
     assert any("subset estimates" in w.message for w in high)
@@ -271,3 +271,24 @@ def test_each_subject_is_measured_by_its_own_toggle_frame() -> None:
         assert rows.loc[subject, "campaign_uplift"] == single.campaign_uplift
     assert rows.loc["T1", "campaign_uplift"] > 0
     assert rows.loc["T2", "campaign_uplift"] < 0
+
+
+def test_a_placebo_turbine_is_measured_against_its_timing_and_left_out_of_the_uplift() -> None:
+    scada, schedule = _noisy_toggle_case()
+    index = pd.DatetimeIndex(pd.unique(scada.index)).sort_values()
+    facts = _facts(scada)
+    plain = AnalysisSpec(name="control", upgrade="control", references=["R1", "R2"])
+    (without,) = _new(facts, plain)
+    placebo = AnalysisSpec(
+        name="control",
+        upgrade="control",
+        references=["R1", "R2"],
+        placebo_timing={"R1": build_toggle_df(index, schedule)},
+    )
+    (out,) = _new(facts, placebo)
+    rows = out.per_turbine.set_index("turbine")
+    assert list(rows.index) == ["T1", "R1"]
+    assert rows["placebo"].tolist() == [False, True]
+    assert out.campaign_uplift == without.campaign_uplift
+    assert rows.loc["T1", "campaign_uplift"] == without.campaign_uplift
+    assert rows.loc["R1", "campaign_uplift"] == pytest.approx(0.0, abs=1e-9)

@@ -757,7 +757,8 @@ class WindFarmFacts:
 
         A subject's record is on the side of its upgrade state when it lies within the analysis's
         period, within its own signal's span for a toggle, holds every include label and no exclude
-        label. Every other record is on neither side. Validity for uplift is not applied.
+        label. A placebo turbine's record is on the side its placebo timing gives, by the same rules.
+        Every other record is on neither side. Validity for uplift is not applied.
 
         :param record_labels: the frame :meth:`record_labels` returned
         """
@@ -772,12 +773,34 @@ class WindFarmFacts:
                 mine = (turbines == subject).to_numpy()
                 outside = ~_within(index, upgrade.signal_span(turbine=subject), end_inclusive=True)
                 compared[mine & outside] = False
+        state = record_labels[upgrade_state_column(upgrade.name)].to_numpy(dtype=object).copy()
+        for turbine in analysis.placebo_timing:
+            placebo = self.placebo_upgrade(analysis, turbine=turbine)
+            mine = (turbines == turbine).to_numpy()
+            compared[mine] = _within(index[mine], analysis.period, end_inclusive=False) & _within(
+                index[mine], placebo.signal_span(turbine=turbine), end_inclusive=True
+            )
+            state[mine] = placebo.states(index[mine], turbine=turbine)
         for name in analysis.include_labels:
             compared &= record_labels[name].to_numpy(dtype=bool)
         for name in analysis.exclude_labels:
             compared &= ~record_labels[name].to_numpy(dtype=bool)
-        state = record_labels[upgrade_state_column(upgrade.name)].to_numpy(dtype=object)
         return pd.Series(np.where(compared, state, NEITHER), index=record_labels.index, name=SIDE_COL)
+
+    def placebo_upgrade(self, analysis: AnalysisSpec, *, turbine: str) -> Upgrade:
+        """Return the toggle ``turbine`` never applied in ``analysis``, with its upgrade's settling, cycle and datum.
+
+        Its name is the upgrade's; its only turbine is ``turbine``.
+        """
+        upgrade = self.upgrade(analysis.upgrade)
+        return Upgrade(
+            name=upgrade.name,
+            turbines=[turbine],
+            timing=analysis.placebo_timing[turbine],
+            settling_time=upgrade.settling_time,
+            toggle_cycle=upgrade.cycle,
+            toggle_datum=upgrade.toggle_datum,
+        )
 
     def check(self, analysis: AnalysisSpec) -> None:
         """Raise when ``analysis`` names an upgrade, a turbine, a measurement or a label the facts do not hold.
@@ -803,6 +826,23 @@ class WindFarmFacts:
         stray = sorted({*analysis.include_labels, *analysis.exclude_labels} - labels)
         if stray:
             msg = f"analysis {analysis.name!r} names the labels {stray}; the facts hold {sorted(labels)}"
+            raise ValueError(msg)
+        if analysis.placebo_timing:
+            self._check_placebo(analysis, upgrade=upgrade)
+
+    def _check_placebo(self, analysis: AnalysisSpec, *, upgrade: Upgrade) -> None:
+        """Raise unless each placebo turbine is a reference of ``analysis`` that did not receive its toggle upgrade."""
+        if upgrade.mode != "toggle":
+            msg = f"analysis {analysis.name!r} gives placebo timing, which is for a toggle; {upgrade.name!r} is not one"
+            raise ValueError(msg)
+        placebos = set(analysis.placebo_timing)
+        received = sorted(placebos & set(upgrade.turbines))
+        if received:
+            msg = f"analysis {analysis.name!r} gives placebo timing to {received}, which received {upgrade.name!r}"
+            raise ValueError(msg)
+        missing = sorted(placebos - set(self.references_of(analysis)))
+        if missing:
+            msg = f"analysis {analysis.name!r} gives placebo timing to {missing}, which are not among its references"
             raise ValueError(msg)
 
     def subjects_of(self, analysis: AnalysisSpec) -> list[str]:
@@ -833,7 +873,8 @@ class WindFarmFacts:
     ) -> ChangedTimes:
         """Return the times each turbine counts as changed while ``subject`` is measured over ``span``.
 
-        The subject counts as changed throughout. Every other turbine's change windows under every
+        The subject counts as changed throughout; a placebo turbine's own change is its placebo
+        toggle's start. Every other turbine's change windows under every
         upgrade follow :func:`~wind_up.record_selection.changed_times` against the subject's own
         change under the analysis's upgrade; a turbine in neither state by an override counts as
         changed while it is. A change counts only upwind of the turbines within its upgrade's reach.
@@ -846,6 +887,8 @@ class WindFarmFacts:
         start, end = span
         first_record = pd.DatetimeIndex(self.records.index).min()
         upgrade = self.upgrade(analysis.upgrade)
+        if subject in analysis.placebo_timing:
+            upgrade = self.placebo_upgrade(analysis, turbine=subject)
         own = upgrade.change_windows(subject, first_record=first_record)
         if subject not in upgrade.turbines or not own:
             msg = f"{subject!r} did not receive {upgrade.name!r}, so it is not a subject of {analysis.name!r}"

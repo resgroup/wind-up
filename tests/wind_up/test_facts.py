@@ -1082,3 +1082,54 @@ def test_each_subject_is_compared_within_its_own_span() -> None:
     assert sides(made, analysis, "T1")[6:9] == [OFF] * 3
     assert sides(made, analysis, "T2")[:12] == [NEITHER] * 12
     assert sides(made, analysis, "T2")[12:15] == [OFF] * 3
+
+
+# ---- WindFarmFacts: placebo timing --------------------------------------------------------------
+
+
+def placebo_facts() -> WindFarmFacts:
+    return facts(upgrades=[Upgrade(name="control", turbines=["T1"], timing=toggle_frame())])
+
+
+def test_a_placebo_turbines_side_follows_its_placebo_timing() -> None:
+    made = placebo_facts()
+    reversed_order = toggle_frame().rename(columns={"toggle_on": "toggle_off", "toggle_off": "toggle_on"})
+    analysis = AnalysisSpec(name="a", upgrade="control", placebo_timing={"T3": reversed_order})
+    assert sides(made, analysis, "T1")[6:12] == [OFF] * 3 + [ON] * 3
+    assert sides(made, analysis, "T3")[:12] == [NEITHER] * 6 + [ON] * 3 + [OFF] * 3
+    assert sides(made, analysis, "T2") == [NEITHER] * 36
+    placebo = made.placebo_upgrade(analysis, turbine="T3")
+    assert placebo.turbines == ("T3",)
+    assert placebo.cycle == made.upgrade("control").cycle
+
+
+def test_a_placebo_turbine_counts_its_own_toggle_start_as_its_change() -> None:
+    made = placebo_facts()
+    analysis = AnalysisSpec(name="a", upgrade="control", placebo_timing={"T3": toggle_frame()})
+    changed = made.changed_turbines(analysis, subject="T3", span=(at(0), at(6)))
+    assert "T3" in changed
+
+
+@pytest.mark.parametrize(
+    ("upgrade", "analysis", "match"),
+    [
+        (permanent(), AnalysisSpec(name="a", upgrade="blades", placebo_timing={"T3": toggle_frame()}), "for a toggle"),
+        (
+            Upgrade(name="control", turbines=["T1"], timing=toggle_frame()),
+            AnalysisSpec(
+                name="a", upgrade="control", subjects=["T1"], references=["T2"], placebo_timing={"T3": toggle_frame()}
+            ),
+            "not among its references",
+        ),
+        (
+            Upgrade(name="control", turbines=["T1", "T3"], timing=toggle_frame()),
+            AnalysisSpec(name="a", upgrade="control", subjects=["T1"], placebo_timing={"T3": toggle_frame()}),
+            "which received 'control'",
+        ),
+    ],
+)
+def test_a_placebo_must_be_a_reference_of_a_toggle_it_did_not_receive(
+    upgrade: Upgrade, analysis: AnalysisSpec, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        facts(upgrades=[upgrade]).check(analysis)

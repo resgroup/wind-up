@@ -20,6 +20,7 @@ from wind_up.analysis import (
     combine_subjects,
 )
 from wind_up.analysis_warnings import AnalysisWarning
+from wind_up.toggle import ToggleSchedule
 
 from .facts_fixtures import at
 
@@ -224,3 +225,26 @@ def test_combine_subjects_gives_no_uplift_when_a_subject_was_not_measured() -> N
 def test_combine_subjects_needs_a_per_turbine_table(per_turbine: pd.DataFrame | None) -> None:
     with pytest.raises(ValueError, match="no per-turbine table"):
         combine_subjects(_group(per_turbine))
+
+
+def test_placebo_rows_are_left_out_of_the_subjects_combination_and_energy() -> None:
+    per_turbine = _subjects(actual_energy=[110.0, 306.0], campaign_uplift=[0.10, 0.02], campaign_sigma=[0.02, 0.01])
+    with_placebo = pd.concat(
+        [per_turbine.assign(placebo=False), per_turbine.iloc[:1].assign(turbine="T9", placebo=True)],
+        ignore_index=True,
+    )
+    combined = combine_subjects(_group(with_placebo))
+    assert combined.campaign_uplift == pytest.approx(416.0 / 400.0 - 1.0)
+    assert combined.outputs["turbine"].tolist() == ["T1", "T2"]
+    assert _group(with_placebo).actual_energy == pytest.approx(416.0)
+
+
+def test_placebo_timing_is_frozen_and_checked() -> None:
+    schedule = ToggleSchedule(period=pd.Timedelta(hours=1))
+    analysis = AnalysisSpec(name="a", upgrade="control", placebo_timing={"T3": schedule})
+    assert analysis.placebo_timing == {"T3": schedule}
+    assert hash(analysis) == hash(AnalysisSpec(name="a", upgrade="control"))
+    with pytest.raises(TypeError, match="not a toggle schedule or frame"):
+        AnalysisSpec(name="a", upgrade="control", placebo_timing={"T3": at(1)})  # type: ignore[dict-item]
+    with pytest.raises(ValueError, match="to its subjects"):
+        AnalysisSpec(name="a", upgrade="control", subjects=["T3"], placebo_timing={"T3": schedule})
