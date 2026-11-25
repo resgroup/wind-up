@@ -12,7 +12,12 @@ from pandas.testing import assert_frame_equal
 
 from wind_up_v0 import main_analysis
 from wind_up_v0.constants import TIMESTAMP_COL
-from wind_up_v0.main_analysis import _keep_only_ref_toggle_off, _show_input_data_timeline, _toggle_pairing_filter
+from wind_up_v0.main_analysis import (
+    _drop_comparison_exclusions,
+    _keep_only_ref_toggle_off,
+    _show_input_data_timeline,
+    _toggle_pairing_filter,
+)
 from wind_up_v0.models import PlotConfig, WindUpConfig
 
 if TYPE_CHECKING:
@@ -208,3 +213,10 @@ def test_show_input_data_timeline_shows_the_figure(monkeypatch: pytest.MonkeyPat
 
     assert shown_titles == ["Wind-Up Assessment Timeline"]
     assert plt.get_fignums() == []
+
+
+def test_drop_comparison_exclusions_drops_the_reference_rows_at_the_excluded_timestamps() -> None:
+    index = pd.date_range("2020-01-01", periods=4, freq="10min", tz="UTC")
+    ref_df = pd.DataFrame({"ref_pw": [1.0, 2.0, 3.0, 4.0]}, index=index)
+    kept = _drop_comparison_exclusions(ref_df, excluded=index[[1, 3]])
+    assert_frame_equal(kept, ref_df.iloc[[0, 2]])

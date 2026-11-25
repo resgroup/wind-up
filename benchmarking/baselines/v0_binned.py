@@ -14,9 +14,10 @@ with v0's ``combine_results``. The run is configured from three places:
   rated power.
 
 v0 keeps its own filters and waking rule and reads the records as measured. A record the facts
-withhold from the uplift by a label or an operating state override, or one an analysis's labels
-leave out of a subject, reaches v0 flagged in its ``exclude_row`` column, which v0 treats as it
-treats an excluded period.
+withhold from the uplift by a label or an operating state override reaches v0 flagged in its
+``exclude_row`` column, which v0 treats as it treats an excluded period. A subject's record an
+analysis's labels leave out reaches v0 as a comparison exclusion: v0 preprocesses it and counts it
+in the long-term distribution, and leaves it out of the subject's test-reference comparisons.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from __future__ import annotations
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -157,6 +158,9 @@ class V0BinnedMethod:
         and nacelle direction columns, matched by timestamp
     :param default_pitch_deg: blade pitch to use if the turbine records have no pitch column
     :param default_gen_rpm: generator speed to use if the turbine records have no generator speed column
+    :param analysis_label_stage: where v0 leaves out a subject's records the analysis's labels leave out:
+        ``comparison`` only from its test-reference comparisons, ``preprocessing`` from everything, as
+        an excluded period
     """
 
     name: str = "v0_binned"
@@ -172,9 +176,13 @@ class V0BinnedMethod:
     turbine_wind_measurement: str | None = None
     default_pitch_deg: float | None = None
     default_gen_rpm: float | None = None
+    analysis_label_stage: Literal["comparison", "preprocessing"] = "comparison"
 
     def __post_init__(self) -> None:
-        """Reject options the facts or the analysis set, and fields v0 does not have."""
+        """Reject options the facts or the analysis set, fields v0 does not have, and an unknown label stage."""
+        if self.analysis_label_stage not in ("comparison", "preprocessing"):
+            msg = f"{self.name}: analysis_label_stage must be 'comparison' or 'preprocessing'"
+            raise MethodConfigurationError(msg)
         set_by_facts = sorted(set(self.options) & FACT_FIELDS)
         if set_by_facts:
             msg = f"{self.name}: options {set_by_facts} come from the facts and the analysis"
@@ -316,6 +324,9 @@ class V0BinnedMethod:
             mast_or_lidar_datasets=[
                 MastOrLiDARDataset(id=m.name, data=m.records) for m in facts.non_turbine_measurements
             ],
+            comparison_exclusions=(
+                _comparison_exclusions(facts, analysis) if self.analysis_label_stage == "comparison" else None
+            ),
         )
         trdf = run_wind_up_analysis(inputs)
         try:
@@ -379,7 +390,13 @@ class V0BinnedMethod:
         The analyst's label columns and the site state column are left out: v0 reads them through
         ``exclude_row`` alone.
         """
-        exclude = _excluded_records(facts, analysis, upgrade=upgrade, first=first)
+        exclude = _excluded_records(
+            facts,
+            analysis,
+            upgrade=upgrade,
+            first=first,
+            analysis_labels=self.analysis_label_stage == "preprocessing",
+        )
         dropped = [label.column for label in facts.labels]
         if facts.operating_states.site_state_column is not None:
             dropped.append(facts.operating_states.site_state_column)
@@ -542,14 +559,37 @@ def _toggle_frame(upgrade: Upgrade, *, index: pd.DatetimeIndex) -> pd.DataFrame 
     return upgrade.timing  # type: ignore[return-value]
 
 
+def _left_out_by_analysis(facts: WindFarmFacts, analysis: AnalysisSpec) -> np.ndarray:
+    """Return a mask over the facts' records of the subjects' records the analysis's labels leave out."""
+    records = facts.records
+    turbines = records[facts.columns.turbine].astype(str).to_numpy()
+    labels = {label.name: label.column for label in facts.labels}
+    kept = np.ones(len(records), dtype=bool)
+    for name in analysis.include_labels:
+        kept &= records[labels[name]].to_numpy(dtype=bool)
+    for name in analysis.exclude_labels:
+        kept &= ~records[labels[name]].to_numpy(dtype=bool)
+    return np.isin(turbines, facts.subjects_of(analysis)) & ~kept
+
+
+def _comparison_exclusions(facts: WindFarmFacts, analysis: AnalysisSpec) -> dict[str, pd.DatetimeIndex]:
+    """Return, per subject, the timestamps of its records the analysis's labels leave out."""
+    records = facts.records
+    left_out = _left_out_by_analysis(facts, analysis)
+    turbines = records[facts.columns.turbine].astype(str).to_numpy()
+    index = pd.DatetimeIndex(records.index)
+    return {s: index[left_out & (turbines == s)] for s in facts.subjects_of(analysis)}
+
+
 def _excluded_records(
-    facts: WindFarmFacts, analysis: AnalysisSpec, *, upgrade: Upgrade, first: pd.Timestamp
+    facts: WindFarmFacts, analysis: AnalysisSpec, *, upgrade: Upgrade, first: pd.Timestamp, analysis_labels: bool
 ) -> np.ndarray:
     """Return a mask over the facts' records of those v0 must leave out.
 
     A record a label withholds from the uplift; one whose site state is not valid for uplift; one
-    inside an operating state override; a subject's record the analysis's labels leave out; and,
-    from the first upgraded timestamp, a record of a turbine an override puts in neither upgrade state.
+    inside an operating state override; with ``analysis_labels``, a subject's record the analysis's
+    labels leave out; and, from the first upgraded timestamp, a record of a turbine an override puts
+    in neither upgrade state.
     """
     records = facts.records
     index = pd.DatetimeIndex(records.index)
@@ -564,14 +604,8 @@ def _excluded_records(
         exclude |= records[config.site_state_column].isin(not_uplift).to_numpy()
     for who, a, b, _ in facts.operating_state_overrides:
         exclude |= _in_window(index, a, b) & ((turbines == who) if who is not None else True)
-    subject_rows = np.isin(turbines, facts.subjects_of(analysis))
-    labels = {label.name: label.column for label in facts.labels}
-    kept = np.ones(len(records), dtype=bool)
-    for name in analysis.include_labels:
-        kept &= records[labels[name]].to_numpy(dtype=bool)
-    for name in analysis.exclude_labels:
-        kept &= ~records[labels[name]].to_numpy(dtype=bool)
-    exclude |= subject_rows & ~kept
+    if analysis_labels:
+        exclude |= _left_out_by_analysis(facts, analysis)
     for override in facts.upgrades:
         for who, a, b, state in override.upgrade_state_overrides:
             if state == NEITHER and b > first:

@@ -157,7 +157,7 @@ def _assert_wedowind_output(output: AnalysisOutput, expected: pd.DataFrame, outp
     assert output.per_reference is not None
     assert output.per_reference["report"].tolist() == ["aep"]
     assert output.per_reference["wind_up_version"].iloc[0] == wind_up.__version__
-    assert not output.analysis.exclude_labels
+    assert output.analysis.include_labels == ("reference sector",)
     pd.testing.assert_frame_equal(
         output.per_reference.drop(columns=["time_calculated", "wind_up_version", "report"]), expected
     )

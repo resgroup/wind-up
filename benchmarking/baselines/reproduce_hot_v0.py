@@ -269,7 +269,9 @@ def dy(inputs: Path, *, hot_repo: Path, out: Path, which: set[str], config_only:
             period=(None, end),
             report="aep",
         )
-        _run(V0BinnedMethod(options=options, **common), facts, [cc], out=out, config_only=config_only)
+        # 0.7.1 dropped the steering records before preprocessing, so they leave the long-term distribution too.
+        method = V0BinnedMethod(options=options, analysis_label_stage="preprocessing", **common)
+        _run(method, facts, [cc], out=out, config_only=config_only)
     if "ws" in which:
         order = list(facts.turbine_names)
         for steer in steers.itertuples():

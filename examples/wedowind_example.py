@@ -44,7 +44,7 @@ from matplotlib import pyplot as plt
 from pydantic import BaseModel, Field
 
 from wind_up import AnalysisSpec, Label, NonTurbineMeasurement, Reanalysis, Upgrade, WindFarmFacts
-from wind_up.labels import USES
+from wind_up.labels import ALL_USES
 from wind_up.schema import ColumnSchema
 from wind_up_v0.constants import OUTPUT_DIR, PROJECTROOT_DIR
 from wind_up_v0.wind_funcs import calc_cp
@@ -72,8 +72,11 @@ WIND_SPEED = "V"
 WIND_DIRECTION = "D"
 UPGRADE_STATUS = "upgradestatus"
 COLUMNS = ColumnSchema(turbine="turbine", active_power="power_kw", availability="available_s")
-# This farm-wide exclusion applies to reference records as well as the subject.
-UNUSABLE_DIRECTION = Label(name="unusable wind direction", column="unusable_direction", withholds=frozenset(USES))
+# Records in an unusable direction are treated as missing data, for every turbine and every use.
+UNUSABLE_DIRECTION = Label(name="unusable wind direction", column="unusable_direction", withholds=ALL_USES)
+# The analysis compares only records in the reference sector; the others still count everywhere else,
+# including the long-term distribution.
+REFERENCE_SECTOR = Label(name="reference sector", column="reference_sector")
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +84,8 @@ logger = logging.getLogger(__name__)
 class WeDoWindAnalysisConf(BaseModel):
     scada_file_name: str = Field(description="e.g. 'Turbine Upgrade Dataset(Pitch Angle Pair).csv'")
     unusable_wd_ranges: list[tuple[int, int]] = Field(description="directions to exclude from entire analysis")
-    ref_wd_filter: list[int] = Field(
-        description="directions to include in power performance analysis", default=[0, 360]
+    reference_sector: tuple[int, int] = Field(
+        description="directions, inclusive, of the records compared in the uplift calculation", default=(0, 360)
     )
     clip_rated_power_pp: bool
     use_rated_invalid_bins: bool = Field(
@@ -148,6 +151,7 @@ def make_turbine_records(raw: pd.DataFrame, config: WeDoWindAnalysisConf) -> pd.
     unusable = pd.Series(data=False, index=raw.index)
     for start, end in config.unusable_wd_ranges:
         unusable |= raw[WIND_DIRECTION].between(start, end)
+    in_reference_sector = raw[WIND_DIRECTION].between(*config.reference_sector)
     return pd.concat(
         [
             pd.DataFrame(
@@ -156,6 +160,7 @@ def make_turbine_records(raw: pd.DataFrame, config: WeDoWindAnalysisConf) -> pd.
                     "power_kw": raw[power_column] * RATED_POWER_KW,
                     "available_s": TIMEBASE.total_seconds(),
                     UNUSABLE_DIRECTION.column: unusable,
+                    REFERENCE_SECTOR.column: in_reference_sector,
                 },
                 index=raw.index,
             )
@@ -280,14 +285,14 @@ ANALYSIS_SPECIFIC_CONFIG = {
     "Pitch Angle": WeDoWindAnalysisConf(
         scada_file_name="Turbine Upgrade Dataset(Pitch Angle Pair).csv",
         unusable_wd_ranges=[(70, 140), (150, 180)],  # determined by inspecting custom Cp vs D plots
-        ref_wd_filter=[160, 240],  # apparent wake free sector determined by inspecting detrending plots
+        reference_sector=(160, 240),  # apparent wake free sector determined by inspecting detrending plots
         clip_rated_power_pp=False,  # rated power is apparently higher after the upgrade
         use_rated_invalid_bins=True,  # use extrapolated rated power results
     ),
     "Vortex Generator": WeDoWindAnalysisConf(
         scada_file_name="Turbine Upgrade Dataset(VG Pair).csv",
         unusable_wd_ranges=[(25, 115), (240, 315)],  # determined by inspecting custom Cp vs D plots
-        ref_wd_filter=[115, 240],  # apparent wake free sector determined by inspecting detrending plots
+        reference_sector=(115, 240),  # apparent wake free sector determined by inspecting detrending plots
         clip_rated_power_pp=True,  # Vortex Generators are not expected to increase rated power
     ),
 }
@@ -346,7 +351,7 @@ def main_wedowind_analysis(
             rotor_diameter_m=ROTOR_DIAMETER_M,
         ),
         upgrades=[upgrade],
-        labels=[UNUSABLE_DIRECTION],
+        labels=[UNUSABLE_DIRECTION, REFERENCE_SECTOR],
         non_turbine_measurements=[mast],
         reanalysis=[create_synthetic_reanalysis(history_start)],
     )
@@ -354,13 +359,12 @@ def main_wedowind_analysis(
         name=analysis_name,
         upgrade=upgrade.name,
         references=[REF_TURBINE],
+        include_labels=[REFERENCE_SECTOR.name],
         period=(history_start, post_last + TIMEBASE),
         report="aep",
     )
     method = V0BinnedMethod(
         options={
-            # The reference sector is applied after preprocessing the long-term wind distribution.
-            "ref_wd_filter": analysis_conf.ref_wd_filter,
             "years_offset_for_pre_period": 1,
             "years_for_lt_distribution": 1,
             "years_for_detrend": 1,
