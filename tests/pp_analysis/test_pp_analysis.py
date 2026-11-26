@@ -1,10 +1,13 @@
+import logging
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 from pandas.testing import assert_frame_equal
 
 from tests.conftest import TEST_DATA_FLD
-from wind_up_v0.models import WindUpConfig
+from wind_up_v0.models import PlotConfig, WindUpConfig
 from wind_up_v0.pp_analysis import (
     _block_bootstrap_sample,
     _pre_post_pp_analysis_with_reversal,
@@ -91,6 +94,57 @@ def _two_bin_gap_fill_inputs(cfg: WindUpConfig, ref_name: str) -> dict:
 
 TEST_CURVE = pd.DataFrame({"bin_mid": [0.5, 5.5, 8.5], "pw_clipped": [0.0, 500.0, 600.0]})
 REF_CURVE = pd.DataFrame({"bin_mid": [0.5, 5.5, 8.5], "pw_clipped": [0.0, 570.0, 1200.0]})
+
+
+def test_custom_confidence_level_is_used_for_uplift_diagnostics(
+    test_lsa_t13_config: WindUpConfig, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    inputs = _two_bin_gap_fill_inputs(test_lsa_t13_config, test_lsa_t13_config.ref_wtgs[0].name)
+    ambient_temp = np.tile([9, 11], 24)
+    inputs["pre_df"] = inputs["pre_df"].assign(
+        ref_ws_detrended=5.75, test_pw_clipped=np.tile([490, 510], 24), ref_AmbientTemp=ambient_temp
+    )
+    inputs["post_df"] = inputs["post_df"].assign(ref_ws_detrended=5.75, ref_AmbientTemp=ambient_temp)
+    test_name, ref_name = inputs["test_wtg"].name, inputs["ref_name"]
+    plot_dir = tmp_path / test_name / ref_name
+    plot_dir.mkdir(parents=True)
+    inputs["plot_cfg"] = PlotConfig(show_plots=False, save_plots=True, plots_dir=tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="wind_up_v0.pp_analysis"):
+        results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
+            **inputs, confidence_level=0.8, site_mean_pc_df=TEST_CURVE
+        )
+
+    wind_bin = pp_df.loc[5.5]
+    assert wind_bin["uplift_p90_kw"] < wind_bin["uplift_kw"] < wind_bin["uplift_p10_kw"]
+    assert (plot_dir / f"test={test_name} ref={ref_name} uplift [kW] and 80% CI.png").is_file()
+    assert f"final P90 uplift estimate = {100 * results['uplift_p90_frc']:.1f} %" in caplog.text
+    assert f"final P10 uplift estimate = {100 * results['uplift_p10_frc']:.1f} %" in caplog.text
+
+
+def test_confidence_level_with_fractional_percentiles_is_labelled_exactly(
+    test_lsa_t13_config: WindUpConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    inputs = _two_bin_gap_fill_inputs(test_lsa_t13_config, test_lsa_t13_config.ref_wtgs[0].name)
+    inputs["plot_cfg"] = PlotConfig(show_plots=False, save_plots=False, plots_dir=Path())
+
+    with caplog.at_level(logging.INFO, logger="wind_up_v0.pp_analysis"):
+        results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
+            **inputs, confidence_level=0.95, site_mean_pc_df=TEST_CURVE
+        )
+
+    assert {"uplift_p2.5_kw", "uplift_p97.5_kw"} <= set(pp_df.columns)
+    assert results["uplift_p97.5_frc"] <= results["uplift_frc"] <= results["uplift_p2.5_frc"]
+    assert "final P97.5 uplift estimate" in caplog.text
+    assert "final P2.5 uplift estimate" in caplog.text
+
+
+@pytest.mark.parametrize("confidence_level", [0, 1])
+def test_invalid_confidence_level_is_rejected(test_lsa_t13_config: WindUpConfig, confidence_level: float) -> None:
+    inputs = _two_bin_gap_fill_inputs(test_lsa_t13_config, test_lsa_t13_config.ref_wtgs[0].name)
+
+    with pytest.raises(ValueError, match="confidence_level must be greater than 0 and less than 1"):
+        pre_post_pp_analysis_with_reversal_and_bootstrapping(**inputs, confidence_level=confidence_level)
 
 
 @pytest.mark.parametrize(

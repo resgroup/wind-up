@@ -13,6 +13,7 @@ import pandas as pd
 from scipy.stats import norm, t
 from tqdm.auto import tqdm
 
+from wind_up_v0.confidence import percent_label, percentile_labels, validate_confidence_level
 from wind_up_v0.plots.pp_analysis_plots import plot_pp_data_coverage, plot_pre_post_pp_analysis
 from wind_up_v0.result_manager import result_manager
 
@@ -347,15 +348,14 @@ def _cook_pp(
     return pp_df
 
 
-def _add_uplift_cols_to_pp_df(
-    pp_df: pd.DataFrame, *, p_low: float, p_high: float, t_values: np.ndarray
-) -> pd.DataFrame:
+def _add_uplift_cols_to_pp_df(pp_df: pd.DataFrame, *, confidence_level: float, t_values: np.ndarray) -> pd.DataFrame:
+    low_label, high_label = percentile_labels(confidence_level)
     new_pp_df = pp_df.copy()
     # calculations needed for uplift vs wind speed plot
     new_pp_df["uplift_kw"] = new_pp_df["pw_at_mid_post"] - new_pp_df["pw_at_mid_expected"]
     new_pp_df["uplift_kw_se"] = np.sqrt(new_pp_df["pw_sem_at_mid_post"] ** 2 + new_pp_df["pw_sem_at_mid_expected"] ** 2)
-    new_pp_df[f"uplift_p{p_low * 100:.0f}_kw"] = new_pp_df["uplift_kw"] + new_pp_df["uplift_kw_se"] * t_values
-    new_pp_df[f"uplift_p{p_high * 100:.0f}_kw"] = new_pp_df["uplift_kw"] - new_pp_df["uplift_kw_se"] * t_values
+    new_pp_df[f"uplift_p{low_label}_kw"] = new_pp_df["uplift_kw"] + new_pp_df["uplift_kw_se"] * t_values
+    new_pp_df[f"uplift_p{high_label}_kw"] = new_pp_df["uplift_kw"] - new_pp_df["uplift_kw_se"] * t_values
 
     # calculations needed for relative Cp plots
     new_pp_df["relative_cp_baseline"] = new_pp_df["pw_at_mid_expected"] / new_pp_df["bin_mid"] ** 3
@@ -543,7 +543,7 @@ def _pre_post_pp_analysis(
 
     if add_uplift_cols:
         t_values = _bin_t_values(pp_df, p_high=p_high, timebase_s=cfg.timebase_s)
-        pp_df = _add_uplift_cols_to_pp_df(pp_df, p_low=p_low, p_high=p_high, t_values=t_values)
+        pp_df = _add_uplift_cols_to_pp_df(pp_df, confidence_level=confidence_level, t_values=t_values)
 
     pp_valid_hours_pre = pp_df["hours_pre"].sum()
     pp_valid_hours_post = pp_df["hours_post"].sum()
@@ -841,6 +841,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         turbine type when available and the test turbine type for non-turbine references.
     :return: tuple of results dictionary and DataFrame
     """
+    validate_confidence_level(confidence_level)
     pp_results, pp_df = _pre_post_pp_analysis_with_reversal(
         cfg=cfg,
         test_wtg=test_wtg,
@@ -852,6 +853,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         pw_col=pw_col,
         wd_col=wd_col,
         plot_cfg=plot_cfg,
+        confidence_level=confidence_level,
         test_df=test_df,
         site_mean_pc_df=site_mean_pc_df,
         site_mean_pc_per_ttype=site_mean_pc_per_ttype,
@@ -886,6 +888,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
                 pw_col=pw_col,
                 wd_col=wd_col,
                 plot_cfg=None,
+                confidence_level=confidence_level,
                 site_mean_pc_df=site_mean_pc_df,
                 site_mean_pc_per_ttype=site_mean_pc_per_ttype,
                 add_uplift_cols=False,
@@ -908,7 +911,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
 
     if plot_cfg is not None:
         msg = (
-            f"block bootstrapping uncertainty analysis results (conf={100 * confidence_level:.0f}%):"
+            f"block bootstrapping uncertainty analysis results (conf={percent_label(confidence_level)}%):"
             f"\n  median = {100 * median:.1f} %"
             f"\n  lower = {100 * lower:.1f} %"
             f"\n  upper = {100 * upper:.1f} %"
@@ -922,15 +925,13 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         pp_results["unc_one_sigma_bootstrap_frc"],
     )
 
-    p_low = (1 - confidence_level) / 2
-    p_high = 1 - p_low
+    p_low_pct, p_high_pct = percentile_labels(confidence_level)
+    upper_key = f"uplift_p{p_low_pct}_frc"
+    lower_key = f"uplift_p{p_high_pct}_frc"
+    half_width = pp_results["unc_one_sigma_frc"] * norm.ppf((1 + confidence_level) / 2)
 
-    pp_results[f"uplift_p{p_low * 100:.0f}_frc"] = pp_results["uplift_frc"] + pp_results[
-        "unc_one_sigma_frc"
-    ] * norm.ppf((1 + confidence_level) / 2)
-    pp_results[f"uplift_p{p_high * 100:.0f}_frc"] = pp_results["uplift_frc"] - pp_results[
-        "unc_one_sigma_frc"
-    ] * norm.ppf((1 + confidence_level) / 2)
+    pp_results[upper_key] = pp_results["uplift_frc"] + half_width
+    pp_results[lower_key] = pp_results["uplift_frc"] - half_width
     if plot_cfg is not None:
         logger.info(f"\ncat A 1 sigma unc = {100 * pp_results['unc_one_sigma_noadj_frc']:.1f} %")
         if pp_results["unc_one_sigma_lowerbound_frc"] > 0.05 / 100:
@@ -942,7 +943,7 @@ def pre_post_pp_analysis_with_reversal_and_bootstrapping(
         logger.info(f"final 1 sigma unc = {100 * pp_results['unc_one_sigma_frc']:.1f} %\n")
 
         logger.info(f"final uplift estimate = {100 * pp_results['uplift_frc']:.1f} %")
-        logger.info(f"final P95 uplift estimate = {100 * pp_results[f'uplift_p{p_high * 100:.0f}_frc']:.1f} %")
-        logger.info(f"final P5 uplift estimate = {100 * pp_results[f'uplift_p{p_low * 100:.0f}_frc']:.1f} %")
+        logger.info(f"final P{p_high_pct} uplift estimate = {100 * pp_results[lower_key]:.1f} %")
+        logger.info(f"final P{p_low_pct} uplift estimate = {100 * pp_results[upper_key]:.1f} %")
 
     return pp_results, pp_df
