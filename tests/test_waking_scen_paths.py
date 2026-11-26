@@ -8,19 +8,19 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wind_up.constants import TIMESTAMP_COL
-from wind_up.waking_state import (
+from wind_up_v0.constants import TIMESTAMP_COL
+from wind_up_v0.waking_state import (
     add_waking_scen,
     add_waking_scen_from_wf_waking_state,
     calc_wf_waking_state,
-    distance_and_bearing_cache,
+    get_distance_and_bearing,
     upwind_wtgs_cache,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from wind_up.models import WindUpConfig
+    from wind_up_v0.models import WindUpConfig
 
 WAKING_COLS = ["waking", "not_waking", "unknown_waking"]
 
@@ -29,7 +29,7 @@ WAKING_COLS = ["waking", "not_waking", "unknown_waking"]
 def _empty_waking_caches() -> Iterator[None]:
     """Leave the distance, bearing and upwind turbine caches empty for later tests which time them."""
     yield
-    distance_and_bearing_cache.clear()
+    get_distance_and_bearing.cache_clear()
     upwind_wtgs_cache.clear()
 
 

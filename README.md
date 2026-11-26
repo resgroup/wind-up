@@ -14,8 +14,13 @@ energy-yield uplift. It is designed for wind-farm SCADA analysis where the
 signal of interest is small, operational data is messy, and a credible result
 needs more than a simple before/after power-curve plot.
 
-The package is published on PyPI as `res-wind-up` and imported in Python as
-`wind_up`.
+The package is published on PyPI as `res-wind-up`. It holds two Python packages:
+`wind_up` is the v1 interface, which is in progress, and `wind_up_v0` is the 0.x code,
+unchanged.
+
+> [!IMPORTANT]
+> Coming from wind-up 0.x? Almost every `wind_up.<module>` import becomes `wind_up_v0.<module>`.
+> See [migrating from 0.x](docs/migrating-from-0.x.md) for the rule and its three exceptions.
 
 ## What it does
 
@@ -33,8 +38,7 @@ uplift assessments:
 - writes result tables and diagnostic plots for review
 
 The public examples cover several realistic analysis shapes, including
-SMARTEOLE toggle data, Kelmarsh turbine data, and WeDoWind challenge-style
-pre/post assessments.
+SMARTEOLE toggle data and WeDoWind challenge-style pre/post assessments.
 
 Further example useage can be seen in the [Hill of Towie open analysis repo](https://github.com/resgroup/hill-of-towie-open-source-analysis).
 
@@ -86,25 +90,54 @@ import wind_up
 print(wind_up.__version__)
 ```
 
-## First steps
+## Ways to run an analysis
 
-The fastest way to understand the expected data model and analysis flow is to
-start from the examples:
+There are three, and a new analysis should start from the first.
 
-- [`examples/smarteole_example.ipynb`](examples/smarteole_example.ipynb) -
-  a notebook walkthrough and the best place to start
-- [`examples/kelmarsh_kaggle.py`](examples/kelmarsh_kaggle.py) -
-  a script-oriented pre/post example using Kelmarsh data
-- [`examples/wedowind_example.py`](examples/wedowind_example.py) -
-  WeDoWind pitch-angle and vortex-generator analyses
+| Entry point | What it is | Use it when |
+| --- | --- | --- |
+| **The Python facts API** (`wind_up`) | You describe the wind farm as `WindFarmFacts`, ask a question as an `AnalysisSpec` and pass both to a method: `method.estimate(facts, analyses)` | Starting a new analysis. You choose the method, can run several methods on the same facts, and work with the results in Python |
+| **The YAML campaign run** | One YAML file declares the campaign and one command runs every step of [the v1 method](docs/v1/method.md), from data checks and northing to a farm uplift with a report | You want the v1 power model method end to end without writing Python. It runs from a clone of this repository, not from the installed package |
+| **The 0.x interface** (`wind_up_v0`) | `WindUpConfig` and `run_wind_up_analysis`, as in wind-up 0.7 | Maintaining an existing 0.x analysis |
 
-A typical analysis has four stages:
+Where each is documented:
+
+- The facts API: [`examples/smarteole_example.ipynb`](examples/smarteole_example.ipynb) is a
+  walkthrough on open data and the best place to start, and
+  [the facts API reference](docs/facts-api.md) describes every object.
+  [`examples/wedowind_example.py`](examples/wedowind_example.py) runs pre/post analyses the same
+  way.
+- The YAML campaign run: [running a campaign](docs/running-a-campaign.md), and
+  [designing a campaign](docs/designing-a-campaign.md) for choosing the turbines to upgrade.
+- The 0.x interface: the sketch under [The 0.x interface](#the-0x-interface) below, and
+  [migrating from 0.x](docs/migrating-from-0.x.md).
+
+Which method each can use:
+
+| Method | Facts API | YAML campaign run |
+| --- | --- | --- |
+| Toggle energy ratio (`wind_up.methods.ToggleEnergyRatioMethod`) | yes | no |
+| Binned power curve, the 0.x method (`V0BinnedMethod`) | yes, from a clone | no |
+| Power model, the v1 method (`PowerModelMethod`) | yes, from a clone | yes; it is the only method the run uses |
+
+> [!NOTE]
+> The `benchmarking/` folder is the evaluation platform that v1 methods are developed and scored
+> on. It is not part of the product and will not be in the 1.0 package. Two methods and the YAML
+> campaign run still live there and move into `wind_up` before 1.0: until then
+> `V0BinnedMethod` is imported from `benchmarking.baselines.v0_binned`, `PowerModelMethod` from
+> `benchmarking.baselines.power_model`, and the campaign run is
+> `python -m benchmarking.campaigns run`. Code that imports from `benchmarking` will need its
+> imports changed at 1.0.
+
+## The 0.x interface
+
+A 0.x analysis has four stages:
 
 ```python
-from wind_up.interface import AssessmentInputs
-from wind_up.main_analysis import run_wind_up_analysis
-from wind_up.models import PlotConfig, WindUpConfig
-from wind_up.reanalysis_data import ReanalysisDataset
+from wind_up_v0.interface import AssessmentInputs
+from wind_up_v0.main_analysis import run_wind_up_analysis
+from wind_up_v0.models import PlotConfig, WindUpConfig
+from wind_up_v0.reanalysis_data import ReanalysisDataset
 
 # 1. Build a WindUpConfig describing the asset, test turbines,
 #    reference turbines, analysis dates, filters, and output folder.
@@ -132,7 +165,7 @@ results_per_test_ref_df = run_wind_up_analysis(assessment_inputs)
 results_per_test_ref_df.to_csv(cfg.out_dir / "results_per_test_ref.csv", index=False)
 ```
 
-For complete, executable versions of this pattern, use the example files above.
+For a complete, executable version of this pattern, see `tests/test_smarteole.py`.
 The configuration is intentionally explicit: wind-resource assessments are
 sensitive to turbine metadata, analysis periods, filters, and reference choices,
 so those assumptions should be visible in code.
@@ -158,7 +191,7 @@ output directory.
 > On import, `wind-up` selects the non-interactive matplotlib `Agg` backend
 > unless the `MPLBACKEND` environment variable is already set. This lets analyses
 > run headless (CI, SSH, batch servers) without an X server. Set `MPLBACKEND`
-> yourself before importing `wind_up` if you want an interactive backend.
+> yourself before importing `wind_up_v0` if you want an interactive backend.
 
 ## Analysis features
 
@@ -182,6 +215,12 @@ careful handling:
 This project uses `uv` for dependency management, `poethepoet` for task running,
 Ruff for formatting/linting, mypy for type checking, and pytest with coverage for
 tests.
+
+> [!IMPORTANT]
+> The test data (SCADA, reanalysis) is stored with [Git LFS](https://git-lfs.com/).
+> Install it **before cloning** — or, in an existing clone, run
+> `git lfs install && git lfs pull` once — otherwise those files check out as small
+> pointer stubs and the data-backed tests and example notebooks will fail.
 
 Create the development environment:
 

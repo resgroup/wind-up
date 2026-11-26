@@ -1,3 +1,4 @@
+import logging
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,13 +10,18 @@ import pytest
 from matplotlib import pyplot as plt
 from pandas.testing import assert_frame_equal
 
-from wind_up import main_analysis
-from wind_up.constants import TIMESTAMP_COL
-from wind_up.main_analysis import _keep_only_ref_toggle_off, _show_input_data_timeline, _toggle_pairing_filter
-from wind_up.models import PlotConfig, WindUpConfig
+from wind_up_v0 import main_analysis
+from wind_up_v0.constants import TIMESTAMP_COL
+from wind_up_v0.main_analysis import (
+    _drop_comparison_exclusions,
+    _keep_only_ref_toggle_off,
+    _show_input_data_timeline,
+    _toggle_pairing_filter,
+)
+from wind_up_v0.models import PlotConfig, WindUpConfig
 
 if TYPE_CHECKING:
-    from wind_up.interface import AssessmentInputs
+    from wind_up_v0.interface import AssessmentInputs
 
 
 def test_toggle_pairing_filter_method_none() -> None:
@@ -57,6 +63,38 @@ def test_toggle_pairing_filter_method_none() -> None:
     )
     assert_frame_equal(filt_pre_df, pre_df)
     assert_frame_equal(filt_post_df, post_df)
+
+
+def test_toggle_pairing_filter_method_none_reports_zero_removed(caplog: pytest.LogCaptureFixture) -> None:
+    # 'none' is a no-op, so it must report 0 rows removed even when the inputs contain NaN rows in the
+    # required columns. before/after are both measured on the dropna basis, so the count can never go
+    # negative (regression: it previously logged "removed -N [-M%]" because 'after' counted the raw
+    # frame incl. NaN rows while 'before' counted only the valid rows).
+    tstamps = pd.date_range(start="2021-01-01 00:00:00", tz="UTC", periods=9, freq="10min")
+    detrend_ws_col, test_pw_col, ref_wd_col = "ref_ws_detrended", "test_pw_clipped", "ref_YawAngleMean"
+    df = pd.DataFrame(
+        data={
+            detrend_ws_col: [5.1, 5.1, 5.1, 0.0, 0.0, 0.0, np.nan, 5.1, 5.1],
+            test_pw_col: [5.1, 5.1, np.nan, 0.0, 0.0, 0.0, 5.1, 5.1, 5.1],
+            ref_wd_col: [5.1, 5.1, 5.1, 0.0, 0.0, 0.0, 5.1, 5.1, np.nan],  # 3 distinct rows NaN in required cols
+        },
+        index=tstamps,
+    )
+    with caplog.at_level(logging.INFO, logger="wind_up_v0.main_analysis"):
+        _toggle_pairing_filter(
+            pre_df=df,
+            post_df=df,
+            pairing_filter_method="none",
+            pairing_filter_timedelta_seconds=0,
+            detrend_ws_col=detrend_ws_col,
+            test_pw_col=test_pw_col,
+            ref_wd_col=ref_wd_col,
+            timebase_s=600,
+        )
+    removed_msgs = [r.message for r in caplog.records if "pairing filter" in r.message]
+    assert len(removed_msgs) == 2  # one for pre_df, one for post_df
+    assert all("removed 0 " in m for m in removed_msgs), removed_msgs
+    assert not any("removed -" in m for m in removed_msgs), removed_msgs
 
 
 def test_toggle_pairing_filter_method_any_within_timedelta() -> None:
@@ -175,3 +213,10 @@ def test_show_input_data_timeline_shows_the_figure(monkeypatch: pytest.MonkeyPat
 
     assert shown_titles == ["Wind-Up Assessment Timeline"]
     assert plt.get_fignums() == []
+
+
+def test_drop_comparison_exclusions_drops_the_reference_rows_at_the_excluded_timestamps() -> None:
+    index = pd.date_range("2020-01-01", periods=4, freq="10min", tz="UTC")
+    ref_df = pd.DataFrame({"ref_pw": [1.0, 2.0, 3.0, 4.0]}, index=index)
+    kept = _drop_comparison_exclusions(ref_df, excluded=index[[1, 3]])
+    assert_frame_equal(kept, ref_df.iloc[[0, 2]])

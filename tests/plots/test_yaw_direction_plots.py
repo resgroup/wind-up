@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from wind_up.plots.yaw_direction_plots import _hours_of_data
+from wind_up_v0.plots.yaw_direction_plots import _hours_of_data
 
 
 def _binned(series: pd.Series, *, bin_width: float) -> pd.Series:

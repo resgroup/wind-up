@@ -1,0 +1,80 @@
+"""Which methods a campaign runs, and how each is configured."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from benchmarking.baselines.naive_ratio import NaiveRatioMethod
+from benchmarking.baselines.power_model import TUNED_MODEL_PARAMS, PowerModelMethod
+from wind_up.diagnostics.context import ERA5_UNLOCATED
+from wind_up.methods.toggle_energy_ratio import ToggleEnergyRatioMethod
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from benchmarking.baselines.power_model.method import HeadlineEstimator
+    from benchmarking.campaigns.declaration import CampaignSpec
+    from benchmarking.harness import Method
+
+
+def carried_forward_methods(
+    spec: CampaignSpec,
+    *,
+    out_dir: Path,
+    include_power_model: bool = True,
+    reference_stat_cols: tuple[str, ...] = (),
+    screen_cache: dict | None = None,
+    era5_label: str = ERA5_UNLOCATED,
+    reference_screen: bool = True,
+    report_reference_uplifts: bool = True,
+    headline_estimator: HeadlineEstimator = PowerModelMethod.headline_estimator,
+    row_dump_dir: Path | None = None,
+) -> list[Method]:
+    """Build the methods applicable to ``spec``, each writing into its own subfolder of ``out_dir``.
+
+    ``toggle_energy_ratio`` accepts only toggle campaigns and is left out of a prepost one.
+
+    :param spec: the campaign being run
+    :param out_dir: the turbine's output folder; each method gets a subfolder named after it
+    :param include_power_model: build the power model. It is the method under test, so this is
+        off only to avoid the ``ml`` dependency group -- a campaign without it is not testing
+        v1 wind-up
+    :param screen_cache: one dict shared by every turbine's method in a campaign, so the reference
+        screen runs once for the campaign rather than once per test turbine. ``None`` screens per
+        estimate.
+    :param era5_label: how reanalysis is named in output; :func:`era5_source_label` of where it
+        was fetched from.
+    :param reference_stat_cols: extra per-reference channels the power model carries as features.
+        Empty by default: reference anemometry is deliberately not a feature, and the R2 fixture
+        passes it in only to measure what that exclusion is worth.
+    :param reference_screen: run the power model's reference screen. Off holds the reference pool
+        identical across the arms of a study whose campaigns differ in length or coverage.
+    :param report_reference_uplifts: report each candidate reference's own uplift. It costs a model
+        fit per reference per test turbine, and the default reference-corrected headline needs it, so a
+        study that turns it off passes ``headline_estimator="forward"`` too.
+    :param headline_estimator: the power model's prepost headline; see
+        :class:`~benchmarking.baselines.power_model.PowerModelMethod`
+    :param row_dump_dir: where the power model dumps each estimate's rows, for the level probe;
+        ``None`` dumps nothing
+    """
+    methods: list[Method] = [NaiveRatioMethod(out_dir=out_dir / "naive_ratio", save_plots=True)]
+    if spec.mode == "toggle":
+        methods.append(
+            ToggleEnergyRatioMethod(out_dir=out_dir / "toggle_energy_ratio", save_plots=True, conditions=("power",))
+        )
+    if include_power_model:
+        methods.append(
+            PowerModelMethod(
+                reference_stat_cols=reference_stat_cols,
+                model_params=dict(TUNED_MODEL_PARAMS),
+                out_dir=out_dir / "power_model",
+                save_plots=True,
+                screen_cache=screen_cache,
+                era5_label=era5_label,
+                reference_screen=reference_screen,
+                report_reference_uplifts=report_reference_uplifts,
+                headline_estimator=headline_estimator,
+                row_dump_dir=row_dump_dir,
+            )
+        )
+    return methods

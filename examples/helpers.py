@@ -11,7 +11,7 @@ import requests
 from tabulate import tabulate
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Collection, Iterable
 
     import pandas as pd
 
@@ -146,3 +146,25 @@ def format_and_print_results_table(
     )
     print(results_table)
     return print_df
+
+
+def show_images(paths: Iterable[Path], *, written_order: bool = False, max_width_px: int = 1000) -> None:
+    """Display each image file in ``paths`` in the notebook, sorted by path, or by write time if ``written_order``.
+
+    Each is at most ``max_width_px`` wide and reduced to 256 colours, to keep the notebook small.
+    """
+    import io  # noqa: PLC0415
+
+    from IPython.display import Image, display  # noqa: PLC0415
+    from PIL import Image as PILImage  # noqa: PLC0415
+
+    ordered = sorted(paths, key=lambda p: (p.stat().st_mtime_ns, p)) if written_order else sorted(paths)
+    for path in ordered:
+        with PILImage.open(path) as opened:
+            image = opened.convert("RGB")
+        if image.width > max_width_px:
+            height = round(image.height * max_width_px / image.width)
+            image = image.resize((max_width_px, height), PILImage.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        image.quantize(colors=256, method=PILImage.Quantize.FASTOCTREE).save(buffer, format="PNG", optimize=True)
+        display(Image(data=buffer.getvalue()))

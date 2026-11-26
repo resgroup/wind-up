@@ -9,8 +9,8 @@ from pandas.testing import assert_frame_equal
 
 from tests.conftest import TEST_DATA_FLD
 from tests.pp_analysis.test_cook_pp import _make_pp_raw_df, _make_site_mean_pc_df
-from wind_up.pp_analysis import _cook_pp, _cook_pp_with_pandas, _cut, _pp_raw_df, _pp_raw_df_with_pandas
-from wind_up.result_manager import result_manager
+from wind_up_v0.pp_analysis import _cook_pp, _cook_pp_with_pandas, _cut, _pp_raw_df, _pp_raw_df_with_pandas
+from wind_up_v0.result_manager import result_manager
 
 WS_COL = "ref_ws_detrended"
 PW_COL = "test_pw_clipped"

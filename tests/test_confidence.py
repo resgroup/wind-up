@@ -1,6 +1,6 @@
 import pytest
 
-from wind_up.confidence import percent_label, percentile_labels, validate_confidence_level
+from wind_up_v0.confidence import percent_label, percentile_labels, validate_confidence_level
 
 
 @pytest.mark.parametrize(

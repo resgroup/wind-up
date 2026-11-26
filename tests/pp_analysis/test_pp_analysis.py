@@ -7,8 +7,8 @@ import pytest
 from pandas.testing import assert_frame_equal
 
 from tests.conftest import TEST_DATA_FLD
-from wind_up.models import PlotConfig, WindUpConfig
-from wind_up.pp_analysis import (
+from wind_up_v0.models import PlotConfig, WindUpConfig
+from wind_up_v0.pp_analysis import (
     _block_bootstrap_sample,
     _pre_post_pp_analysis_with_reversal,
     pre_post_pp_analysis_with_reversal_and_bootstrapping,
@@ -110,7 +110,7 @@ def test_custom_confidence_level_is_used_for_uplift_diagnostics(
     plot_dir.mkdir(parents=True)
     inputs["plot_cfg"] = PlotConfig(show_plots=False, save_plots=True, plots_dir=tmp_path)
 
-    with caplog.at_level(logging.INFO, logger="wind_up.pp_analysis"):
+    with caplog.at_level(logging.INFO, logger="wind_up_v0.pp_analysis"):
         results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
             **inputs, confidence_level=0.8, site_mean_pc_df=TEST_CURVE
         )
@@ -128,7 +128,7 @@ def test_confidence_level_with_fractional_percentiles_is_labelled_exactly(
     inputs = _two_bin_gap_fill_inputs(test_lsa_t13_config, test_lsa_t13_config.ref_wtgs[0].name)
     inputs["plot_cfg"] = PlotConfig(show_plots=False, save_plots=False, plots_dir=Path())
 
-    with caplog.at_level(logging.INFO, logger="wind_up.pp_analysis"):
+    with caplog.at_level(logging.INFO, logger="wind_up_v0.pp_analysis"):
         results, pp_df = pre_post_pp_analysis_with_reversal_and_bootstrapping(
             **inputs, confidence_level=0.95, site_mean_pc_df=TEST_CURVE
         )

@@ -1,0 +1,517 @@
+"""The truth-free campaign core: estimate a declared campaign from SCADA alone.
+
+Nothing here reads ground truth, so this is the path a real campaign runs on. The benchmark
+layers truth, scoring and truth-vs-estimate plots on top; see
+:mod:`benchmarking.campaigns.runner`.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+import time
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
+
+import numpy as np
+import pandas as pd
+
+from benchmarking.baselines.power_model.method import headline_detail, reference_overall_uplift
+from benchmarking.campaigns.context import campaign_facts, plan_analysis
+from benchmarking.campaigns.data_screen import (
+    DEFAULT_DATA_SCREEN,
+    DROPPED,
+    DataScreen,
+    DataScreenSettings,
+    reference_data_table,
+    reference_hours_table,
+    screen_plan,
+)
+from benchmarking.campaigns.plans import CampaignPlans, labelled_scada, plans_for, treated_activity
+from wind_up import TurbineUplift, farm_uplift
+from wind_up.analysis_period import DEFAULT_PLAN_SETTINGS
+from wind_up.analysis_warnings import AnalysisWarning, ranked
+from wind_up.northing import DEFAULT_NORTHING
+from wind_up.northing_step import DEFAULT_NORTHING_ROLES, north_scada
+from wind_up.operating_state import not_missing
+from wind_up.subject import measurement_of
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
+    from pathlib import Path
+
+    import numpy.typing as npt
+
+    from benchmarking.campaigns.declaration import CampaignSpec
+    from benchmarking.harness import Method
+    from benchmarking.synthetic import ColumnSchema
+    from wind_up import FarmUplift
+    from wind_up.analysis import AnalysisSpec
+    from wind_up.analysis_period import AnalysisPlan, PlanSettings
+    from wind_up.facts import NonTurbineMeasurement, WindFarmFacts
+    from wind_up.labels import Label
+    from wind_up.northing import NorthingSettings
+    from wind_up.operating_state import OperatingStateConfig
+    from wind_up.subject import SubjectMeasurement
+
+logger = logging.getLogger(__name__)
+
+# Each table's columns, named here so a campaign with nothing to report still returns a frame
+# consumers can index.
+_PER_TURBINE_COLUMNS = ("method", "test_wtg", "estimate", "sigma")
+_FARM_COLUMNS = (
+    "method",
+    "estimate",
+    "uplift_spread",
+    "n_guarded",
+    "reference_uplift_before_screen",
+    "reference_uplift_after_screen",
+    "reference_uplift_spread",
+)
+_REFERENCE_COLUMNS = (
+    "method",
+    "test_wtg",
+    "turbine",
+    "uplift",
+    "sigma",
+    "actual_energy",
+    "n_records",
+    "screened",
+    "unjudged",
+)
+_CONDITIONAL_COLUMNS = ("method", "test_wtg", "condition", "condition_bin", "p50_uplift")
+
+
+@dataclass
+class CampaignReport:
+    """Everything a truth-free campaign run produced.
+
+    :param spec: the campaign that was run
+    :param scada_df: the frame the methods were given -- every turbine, clipped to the analysis
+        period and north-calibrated by the shared northing step
+    :param per_turbine: one row per method and upgraded turbine -- ``method``, ``test_wtg``,
+        ``estimate`` and ``sigma`` (NaN for a method that reports no uncertainty), and the power
+        model's reference correction and sigma components where it reports them (``reference_correction``,
+        the kept references' mean uncorrected reading, ``sigma_sampling``, ``sigma_reference``,
+        ``sigma_holdout`` and the counts behind them)
+    :param farm: one row per method -- ``estimate``, ``uplift_spread``, ``n_guarded`` and the
+        combined reference uplift before and after the screen (``reference_uplift_before_screen``,
+        ``reference_uplift_after_screen``) with the spread of the references after it
+        (``reference_uplift_spread``)
+    :param farm_uplifts: each method's :class:`~wind_up.FarmUplift`, including per-turbine detail
+    :param reference_stability: each method's per-reference self-uplift, the campaign's own
+        analysis turned on the turbines it used as references. A healthy campaign reads near 0%.
+    :param conditional: each method's per-condition estimates, empty when none reports any
+    :param outputs: each ``(method, turbine)``'s raw :class:`~wind_up.subject.SubjectMeasurement`
+    :param wall_time_s: how long each ``(method, turbine)`` estimate took
+    :param timeline: each upgraded turbine's analysis plan, or the reason none could be chosen,
+        with the works and data extents they were chosen from and the warnings against them
+    :param data_screens: each analysed turbine's data screen, empty when the screen is off
+    :param warnings: every analysis warning the run raised, ranked by severity
+    """
+
+    spec: CampaignSpec
+    scada_df: pd.DataFrame
+    per_turbine: pd.DataFrame
+    farm: pd.DataFrame
+    farm_uplifts: dict[str, FarmUplift]
+    reference_stability: pd.DataFrame
+    conditional: pd.DataFrame
+    outputs: dict[tuple[str, str], SubjectMeasurement]
+    wall_time_s: dict[tuple[str, str], float]
+    timeline: CampaignPlans = field(default_factory=CampaignPlans)
+    data_screens: dict[str, DataScreen] = field(default_factory=dict)
+    warnings: tuple[AnalysisWarning, ...] = ()
+
+    @property
+    def plans(self) -> dict[str, AnalysisPlan]:
+        """Each analysed turbine's plan."""
+        return self.timeline.plans
+
+    @property
+    def reference_data(self) -> pd.DataFrame:
+        """Every analysed turbine's candidates with their usable hours, correlation and verdict."""
+        return reference_data_table(self.data_screens)
+
+    @property
+    def reference_hours(self) -> pd.DataFrame:
+        """Every analysed turbine's joint usable hours against the number of references."""
+        return reference_hours_table(self.data_screens)
+
+    @property
+    def unplanned(self) -> dict[str, str]:
+        """Each upgraded turbine no plan could be chosen for or no measurement made of, with the reason."""
+        return self.timeline.unplanned
+
+
+def visible_mask(spec: CampaignSpec, frame: pd.DataFrame) -> npt.NDArray[np.bool_]:
+    """Rows of ``frame`` inside the declared period and outside their turbine's works windows.
+
+    Exclusions and operating state overrides keep their rows: step 2 writes them into the labels.
+    """
+    bounds = spec.period_bounds()
+    usable = (
+        np.ones(len(frame), dtype=bool)
+        if bounds is None
+        else np.asarray((frame.index >= bounds[0]) & (frame.index < bounds[1]))
+    )
+    turbines = frame[spec.turbine_col].to_numpy()
+    for turbine in pd.unique(turbines):
+        is_turbine = turbines == turbine
+        usable[is_turbine] &= spec.usable_mask(str(turbine), pd.DatetimeIndex(frame.index[is_turbine]))
+    return usable
+
+
+def visible_scada(
+    spec: CampaignSpec,
+    frame: pd.DataFrame,
+    *,
+    columns: ColumnSchema,
+    era5_wd: pd.Series | None = None,
+    roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
+    settings: NorthingSettings = DEFAULT_NORTHING,
+    out_dir: Path | None = None,
+    northing_plots: bool = True,
+) -> pd.DataFrame:
+    """Return ``frame`` cut to what a method may see, north-calibrated.
+
+    The shared northing step runs here, farm-wide and once, so every method downstream inherits
+    the north-calibrated direction rather than each hand-rolling one. Discovery learns from the
+    rows its labels make valid for northing.
+
+    :param era5_wd: reanalysis wind direction, the anchor the shared step discovers against.
+        Required when ``spec.north_offsets`` is ``None``; a declared table needs none.
+    :param out_dir: where the shared step writes its table and plots when it discovers corrections
+    :param northing_plots: write the plots as well as the table
+    """
+    visible = frame[visible_mask(spec, frame)]
+    return north_scada(
+        visible,
+        columns=columns,
+        north_offsets=spec.north_offsets,
+        rated_power_kw=spec.rated_power_kw,
+        layout=spec.layout,
+        era5_wd=era5_wd,
+        roles=roles,
+        settings=settings,
+        out_dir=out_dir,
+        plots=northing_plots,
+    )
+
+
+class NoTurbineMeasuredError(ValueError):
+    """No upgraded turbine of a campaign could be measured; ``unmeasured`` gives each one's reason."""
+
+    def __init__(self, unmeasured: Mapping[str, str]) -> None:
+        """Keep each unmeasured turbine's reason and name them all in the message."""
+        self.unmeasured = dict(unmeasured)
+        super().__init__(
+            "no upgraded turbine could be measured: " + "; ".join(f"{t}: {r}" for t, r in unmeasured.items())
+        )
+
+
+def _measure(
+    method: Method, *, facts: WindFarmFacts, analysis: AnalysisSpec, n_references: int
+) -> SubjectMeasurement | str:
+    """Return the method's measurement of the analysis's one subject, or why it could not measure it.
+
+    The first ``n_references`` of the analysis's references are the plan's power references and the
+    rest its reserves: a method with an ``n_references`` option is given them all and takes the first
+    ``n_references`` as its pool; any other is given the power references alone. A
+    :class:`~wind_up.method.MethodConfigurationError` is the method's configuration, wrong for every
+    turbine, and propagates to fail the campaign.
+    """
+    if dataclasses.is_dataclass(method) and hasattr(method, "n_references"):
+        method = dataclasses.replace(method, n_references=n_references)  # type: ignore[type-var]
+    else:
+        analysis = dataclasses.replace(analysis, references=list(analysis.references or ())[:n_references])
+    (output,) = method.estimate(facts, [analysis])
+    (subject,) = analysis.subjects or ()
+    measurement = measurement_of(output, subject)
+    if isinstance(measurement, str):
+        logger.warning("%s: not measured by %s: %s", subject, method.name, measurement)
+        return f"not measured by {method.name}: {measurement}"
+    return measurement
+
+
+def estimate_campaign(
+    spec: CampaignSpec,
+    scada_df: pd.DataFrame,
+    *,
+    build_methods: Callable[[str], list[Method]],
+    columns: ColumnSchema,
+    era5_wd: pd.Series | None = None,
+    northing_roles: Sequence[str] = DEFAULT_NORTHING_ROLES,
+    northing_settings: NorthingSettings = DEFAULT_NORTHING,
+    northing_out_dir: Path | None = None,
+    northing_plots: bool = True,
+    plan_settings: PlanSettings = DEFAULT_PLAN_SETTINGS,
+    possible_changes: Mapping[str, Sequence[pd.Timestamp]] | None = None,
+    data_screen: DataScreenSettings | None = DEFAULT_DATA_SCREEN,
+    era5_hourly_df: pd.DataFrame | None = None,
+    operating_state: OperatingStateConfig | None = None,
+    labels: Sequence[Label] = (),
+    non_turbine_measurements: Sequence[NonTurbineMeasurement] = (),
+) -> CampaignReport:
+    """Estimate every applicable method on every upgraded turbine and aggregate to one headline.
+
+    Each upgraded turbine runs over its own span against its own power references, chosen from
+    the campaign timeline or used as declared.
+    A turbine a method cannot measure (its estimate raises ``ValueError``) is reported in
+    ``unplanned`` with the reason, and the campaign continues without it.
+
+    :param spec: the public campaign facts; methods see nothing else
+    :param scada_df: long-format source-native SCADA covering the campaign, with the step 2 labels and the
+        campaign's declarations applied; a frame without the labels is labelled with the generic states and
+        the declarations
+    :param build_methods: given an upgraded turbine's name, the methods to run for it
+    :param columns: the source-native schema ``scada_df`` is keyed by
+    :param era5_wd: reanalysis wind direction for the shared northing step
+    :param northing_roles: the direction roles the shared step corrects
+    :param northing_settings: how the shared step's changepoint search is bounded
+    :param northing_out_dir: where the shared step writes its table and plots when it discovers corrections
+    :param northing_plots: write the shared step's plots as well as its table
+    :param plan_settings: how each turbine's span and power references are chosen
+    :param possible_changes: each turbine's indicators of an undeclared change, reported as warnings
+        against the plans they fall inside
+    :param data_screen: how each plan's power references and reserves are screened on their data;
+        ``None`` uses the plans as chosen
+    :param era5_hourly_df: reanalysis at the farm's centroid, hourly or aligned to the records, which
+        the facts carry
+    :param operating_state: the site's operating states, which ``scada_df``'s labels came from and the
+        facts carry; the generic states alone when ``None``
+    :param labels: the analyst's labels, columns of ``scada_df``, which the facts carry
+    :param non_turbine_measurements: the masts and LiDARs the facts carry
+    """
+    scada_df = labelled_scada(spec, scada_df, columns=columns)
+    resolved = plans_for(spec, scada_df, columns=columns, settings=plan_settings, possible_changes=possible_changes)
+    plans, unplanned = resolved.plans, resolved.unplanned
+    if not plans:
+        reasons = "; ".join(unplanned[t] for t in sorted(unplanned))
+        msg = f"no upgraded turbine could be planned: {reasons}"
+        raise ValueError(msg)
+    visible = visible_scada(
+        spec,
+        scada_df,
+        columns=columns,
+        era5_wd=era5_wd,
+        roles=northing_roles,
+        settings=northing_settings,
+        out_dir=northing_out_dir,
+        northing_plots=northing_plots,
+    )
+
+    facts = campaign_facts(
+        spec,
+        visible,
+        columns=columns,
+        era5_hourly_df=era5_hourly_df,
+        operating_states=operating_state,
+        labels=labels,
+        non_turbine_measurements=non_turbine_measurements,
+    )
+    outputs: dict[tuple[str, str], SubjectMeasurement] = {}
+    wall_time_s: dict[tuple[str, str], float] = {}
+    estimates: dict[str, list[TurbineUplift]] = {}
+    per_turbine_rows: list[dict[str, object]] = []
+    reference_frames: list[pd.DataFrame] = []
+    conditional_frames: list[pd.DataFrame] = []
+    screens: dict[str, DataScreen] = {}
+    unmeasured: dict[str, str] = {}
+
+    # Sorted rather than in declaration order, so a glance at the log says how far through the
+    # campaign a run is, whatever order the turbines were declared in.
+    for wtg, plan in sorted(plans.items()):
+        timing = spec.timing_for(wtg)
+        frame = visible[(visible.index >= plan.start) & (visible.index < plan.end)]
+        if data_screen is not None:
+            screens[wtg] = screen_plan(plan, frame, spec=spec, columns=columns, settings=data_screen)
+        screened = screens[wtg].plan if wtg in screens else plan
+        analysis = plan_analysis(spec, screened)
+        rows = frame[frame[spec.turbine_col] == wtg]
+        row_index = pd.DatetimeIndex(rows.index)
+        treated = treated_activity(row_index, timing=timing, window=plan.after)
+        treated &= spec.usable_mask(wtg, row_index)
+        energy, n_records = _actual_energy(rows, columns=columns, mask=treated)
+
+        measured: list[tuple[str, SubjectMeasurement, float]] = []
+        for method in build_methods(wtg):
+            start = time.perf_counter()
+            output = _measure(method, facts=facts, analysis=analysis, n_references=len(screened.power_references))
+            if isinstance(output, str):
+                unmeasured[wtg] = output
+                break
+            measured.append((method.name, output, time.perf_counter() - start))
+        if wtg in unmeasured:
+            continue
+        for name, output, seconds in measured:
+            wall_time_s[name, wtg] = seconds
+            outputs[name, wtg] = output
+            per_turbine_rows.append(
+                {
+                    "method": name,
+                    "test_wtg": wtg,
+                    "estimate": output.p50_overall,
+                    "sigma": float("nan") if output.sigma_overall is None else float(output.sigma_overall),
+                    **headline_detail(output),
+                }
+            )
+            estimates.setdefault(name, []).append(
+                TurbineUplift(
+                    turbine=wtg,
+                    uplift=output.p50_overall,
+                    actual_energy=energy,
+                    n_records=n_records,
+                    rated_power_kw=spec.rated_power_kw,
+                )
+            )
+            if output.reference_uplifts is not None:
+                reference_frames.append(output.reference_uplifts.assign(method=name, test_wtg=wtg))
+            if output.p50_by_condition is not None:
+                conditional_frames.append(output.p50_by_condition.assign(method=name, test_wtg=wtg))
+
+    if unmeasured:
+        if len(unmeasured) == len(plans):
+            raise NoTurbineMeasuredError(unmeasured)
+        resolved = replace(
+            resolved,
+            plans={t: p for t, p in plans.items() if t not in unmeasured},
+            unplanned={**unplanned, **unmeasured},
+        )
+    farm_uplifts = {name: farm_uplift(rows) for name, rows in estimates.items()}
+    stability = _stack(reference_frames, lead=_REFERENCE_COLUMNS)
+    headlines = reference_headlines(stability, rated_power_kw=spec.rated_power_kw)
+    return CampaignReport(
+        spec=spec,
+        scada_df=visible,
+        per_turbine=pd.DataFrame(per_turbine_rows, columns=list(_PER_TURBINE_COLUMNS)),
+        farm=pd.DataFrame(
+            [_farm_row(name, result, references=headlines.get(name)) for name, result in farm_uplifts.items()],
+            columns=list(_FARM_COLUMNS),
+        ),
+        farm_uplifts=farm_uplifts,
+        reference_stability=stability,
+        conditional=_stack(conditional_frames, lead=_CONDITIONAL_COLUMNS),
+        outputs=outputs,
+        wall_time_s=wall_time_s,
+        timeline=resolved,
+        data_screens=screens,
+        warnings=analysis_warnings(
+            outputs=outputs, screens=screens, timeline=resolved, possible_changes=possible_changes or {}
+        ),
+    )
+
+
+def analysis_warnings(
+    *,
+    outputs: Mapping[tuple[str, str], SubjectMeasurement],
+    screens: Mapping[str, DataScreen],
+    timeline: CampaignPlans,
+    possible_changes: Mapping[str, Sequence[pd.Timestamp]],
+) -> tuple[AnalysisWarning, ...]:
+    """Return every analysis warning of a run, ranked by severity.
+
+    The methods' own warnings are kept as raised. A reference the reference screen ruled out or the data
+    screen dropped is a medium warning of step 9 against its test turbine; an indicator of an undeclared
+    change inside a plan's periods a medium warning of step 8; a candidate yaw-alignment change a low
+    warning of step 4 against that turbine.
+    """
+    found: list[AnalysisWarning] = []
+    several = len({name for name, _ in outputs}) > 1
+    for (name, wtg), output in outputs.items():
+        found.extend(output.warnings)
+        references = output.reference_uplifts
+        if references is None or "screened" not in references.columns:
+            continue
+        by = f" by {name}" if several else ""
+        found.extend(
+            AnalysisWarning("medium", 9, wtg, f"the reference screen ruled out {reference}{by}")
+            for reference in references.loc[references["screened"].astype(bool), "turbine"]
+        )
+    for wtg, screen in screens.items():
+        dropped = screen.table[screen.table["verdict"] == DROPPED]
+        found.extend(
+            AnalysisWarning("medium", 9, wtg, f"the data screen dropped {candidate}: {reason}")
+            for candidate, reason in zip(dropped["candidate"], dropped["reason"], strict=True)
+        )
+    for wtg, others in timeline.warnings.items():
+        found.extend(AnalysisWarning("medium", 8, wtg, f"{other}: {message}") for other, message in others.items())
+    for turbine, times in possible_changes.items():
+        found.extend(
+            AnalysisWarning("low", 4, turbine, f"a candidate yaw alignment change on {pd.Timestamp(t):%Y-%m-%d}")
+            for t in times
+        )
+    return tuple(ranked(found))
+
+
+def _farm_row(method: str, result: FarmUplift, *, references: tuple[float, float, float] | None) -> dict[str, object]:
+    """One method's farm headline row; ``references`` is from :func:`reference_headlines`."""
+    nan = float("nan")
+    before, after, spread = references if references is not None else (nan, nan, nan)
+    return {
+        "method": method,
+        "estimate": result.uplift,
+        "uplift_spread": result.uplift_spread,
+        "n_guarded": int((result.turbines["guard"] != "").sum()),
+        "reference_uplift_before_screen": before,
+        "reference_uplift_after_screen": after,
+        "reference_uplift_spread": spread,
+    }
+
+
+def reference_headlines(stability: pd.DataFrame, *, rated_power_kw: float) -> dict[str, tuple[float, float, float]]:
+    """Return each method's combined reference uplift before and after the screen, and the spread after it.
+
+    Each reference counts once per method, as the median of its readings across the test turbines;
+    it is screened or unjudged when any test turbine's screen says so. The spread is the largest
+    minus the smallest uplift of the references the screen kept, NaN below two (method step 16).
+    """
+    if stability.empty:
+        return {}
+    flags = {c: (c, "any") for c in ("screened", "unjudged") if c in stability.columns}
+    once = stability.groupby(["method", "turbine"], as_index=False).agg(
+        uplift=("uplift", "median"),
+        actual_energy=("actual_energy", "median"),
+        n_records=("n_records", "median"),
+        **flags,
+    )
+    return {
+        str(method): (
+            reference_overall_uplift(rows, rated_power_kw=rated_power_kw, after_screen=False),
+            reference_overall_uplift(rows, rated_power_kw=rated_power_kw, after_screen=True),
+            _spread(rows),
+        )
+        for method, rows in once.groupby("method")
+    }
+
+
+def _spread(once: pd.DataFrame) -> float:
+    """Return the largest minus the smallest finite uplift of the references the screen kept; NaN below two."""
+    kept = once[np.isfinite(once["uplift"].to_numpy(dtype=float))]
+    for column in ("screened", "unjudged"):
+        if column in kept.columns:
+            kept = kept[~kept[column].astype(bool)]
+    values = kept["uplift"].to_numpy(dtype=float)
+    return float(values.max() - values.min()) if len(values) > 1 else float("nan")
+
+
+def _stack(frames: list[pd.DataFrame], *, lead: Sequence[str]) -> pd.DataFrame:
+    """Concatenate per-method frames with ``lead`` first, or return an empty frame with ``lead``.
+
+    Columns a method adds beyond ``lead`` are kept, after them.
+    """
+    if not frames:
+        return pd.DataFrame(columns=list(lead))
+    stacked = pd.concat(frames, ignore_index=True)
+    ordered = [c for c in lead if c in stacked.columns]
+    return stacked[[*ordered, *[c for c in stacked.columns if c not in ordered]]]
+
+
+def _actual_energy(rows: pd.DataFrame, *, columns: ColumnSchema, mask: npt.NDArray[np.bool_]) -> tuple[float, int]:
+    """Return the energy one turbine actually produced over its upgraded records.
+
+    Finite records not labelled missing only, with the record count that sum covers.
+    """
+    power = rows[columns.active_power].to_numpy(dtype=float)
+    selected = mask & np.isfinite(power) & not_missing(rows)
+    return float(power[selected].sum()), int(selected.sum())

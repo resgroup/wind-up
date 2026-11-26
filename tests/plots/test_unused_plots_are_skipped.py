@@ -8,14 +8,14 @@ import pandas as pd
 import pytest
 
 from tests.conftest import TEST_DATA_FLD
-from wind_up.constants import DataColumns
-from wind_up.models import PlotConfig, WindUpConfig
-from wind_up.plots.input_data import _validate_input_data_within_exclusions
-from wind_up.plots.pp_analysis_plots import plot_pp_data_coverage, plot_pre_post_pp_analysis
-from wind_up.plots.windspeed_drift_plots import plot_rolling_windspeed_diff_one_wtg
-from wind_up.plots.yaw_direction_plots import plot_yaw_direction_pre_post
-from wind_up.pp_analysis import _pre_post_pp_analysis
-from wind_up.result_manager import result_manager
+from wind_up_v0.constants import DataColumns
+from wind_up_v0.models import PlotConfig, WindUpConfig
+from wind_up_v0.plots.input_data import _validate_input_data_within_exclusions
+from wind_up_v0.plots.pp_analysis_plots import plot_pp_data_coverage, plot_pre_post_pp_analysis
+from wind_up_v0.plots.windspeed_drift_plots import plot_rolling_windspeed_diff_one_wtg
+from wind_up_v0.plots.yaw_direction_plots import plot_yaw_direction_pre_post
+from wind_up_v0.pp_analysis import _pre_post_pp_analysis
+from wind_up_v0.result_manager import result_manager
 
 
 @pytest.fixture
