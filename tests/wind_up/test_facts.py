@@ -1119,7 +1119,7 @@ def test_a_placebo_turbine_counts_its_own_toggle_start_as_its_change() -> None:
             AnalysisSpec(
                 name="a", upgrade="control", subjects=["T1"], references=["T2"], placebo_timing={"T3": toggle_frame()}
             ),
-            "not among its references",
+            "not among its turbine references",
         ),
         (
             Upgrade(name="control", turbines=["T1", "T3"], timing=toggle_frame()),
@@ -1133,6 +1133,22 @@ def test_a_placebo_must_be_a_reference_of_a_toggle_it_did_not_receive(
 ) -> None:
     with pytest.raises(ValueError, match=match):
         facts(upgrades=[upgrade]).check(analysis)
+
+
+def test_a_placebo_cannot_be_a_non_turbine_measurement() -> None:
+    lidar = NonTurbineMeasurement(name="LiDAR", latitude=57.5, longitude=-3.0, records=pd.DataFrame())
+    given = facts(
+        upgrades=[Upgrade(name="control", turbines=["T1"], timing=toggle_frame())], non_turbine_measurements=[lidar]
+    )
+    analysis = AnalysisSpec(
+        name="a",
+        upgrade="control",
+        subjects=["T1"],
+        references=["T2", "LiDAR"],
+        placebo_timing={"LiDAR": toggle_frame()},
+    )
+    with pytest.raises(ValueError, match=r"\['LiDAR'\], which are not among its turbine references"):
+        given.check(analysis)
 
 
 def test_a_frame_without_a_cycle_or_without_switches_gives_no_warning() -> None:

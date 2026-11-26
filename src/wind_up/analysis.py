@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -112,7 +113,7 @@ class AnalysisSpec:
     def _check_placebo(self) -> None:
         """Freeze the placebo timing and reject one that is not a toggle or names a subject."""
         placebo = {str(t): timing for t, timing in self.placebo_timing.items()}
-        object.__setattr__(self, "placebo_timing", placebo)
+        object.__setattr__(self, "placebo_timing", MappingProxyType(placebo))
         for turbine, timing in placebo.items():
             if isinstance(timing, pd.DataFrame):
                 validate_toggle_df(timing)

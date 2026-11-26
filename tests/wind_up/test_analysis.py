@@ -244,6 +244,8 @@ def test_placebo_timing_is_frozen_and_checked() -> None:
     schedule = ToggleSchedule(period=pd.Timedelta(hours=1))
     analysis = AnalysisSpec(name="a", upgrade="control", placebo_timing={"T3": schedule})
     assert analysis.placebo_timing == {"T3": schedule}
+    with pytest.raises(TypeError):
+        analysis.placebo_timing["T4"] = schedule  # type: ignore[index]
     assert hash(analysis) == hash(AnalysisSpec(name="a", upgrade="control"))
     with pytest.raises(TypeError, match="not a toggle schedule or frame"):
         AnalysisSpec(name="a", upgrade="control", placebo_timing={"T3": at(1)})  # type: ignore[dict-item]

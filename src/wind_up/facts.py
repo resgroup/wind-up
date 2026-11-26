@@ -831,7 +831,7 @@ class WindFarmFacts:
             self._check_placebo(analysis, upgrade=upgrade)
 
     def _check_placebo(self, analysis: AnalysisSpec, *, upgrade: Upgrade) -> None:
-        """Raise unless each placebo turbine is a reference of ``analysis`` that did not receive its toggle upgrade."""
+        """Raise unless each placebo is a turbine reference of ``analysis`` that did not receive its toggle upgrade."""
         if upgrade.mode != "toggle":
             msg = f"analysis {analysis.name!r} gives placebo timing, which is for a toggle; {upgrade.name!r} is not one"
             raise ValueError(msg)
@@ -840,9 +840,12 @@ class WindFarmFacts:
         if received:
             msg = f"analysis {analysis.name!r} gives placebo timing to {received}, which received {upgrade.name!r}"
             raise ValueError(msg)
-        missing = sorted(placebos - set(self.references_of(analysis)))
+        missing = sorted(placebos - set(self.turbine_references(analysis)))
         if missing:
-            msg = f"analysis {analysis.name!r} gives placebo timing to {missing}, which are not among its references"
+            msg = (
+                f"analysis {analysis.name!r} gives placebo timing to {missing}, which are not among its turbine"
+                " references"
+            )
             raise ValueError(msg)
 
     def subjects_of(self, analysis: AnalysisSpec) -> list[str]:
