@@ -24,9 +24,12 @@ from wind_up.operating_state import OperatingStateConfig, StateValidity
 from wind_up.methods import ToggleEnergyRatioMethod
 ```
 
-Every object is a frozen dataclass that checks itself when it is built, so a declaration that
-contradicts itself fails at once with a message naming the upgrade, analysis or label. To change
-one field of an existing object use `dataclasses.replace`.
+The declarations (`WindFarmFacts`, `Upgrade`, `Label`, `AnalysisSpec`) are frozen dataclasses that
+check themselves when they are built, so a declaration that contradicts itself fails at once with a
+message naming the upgrade, analysis or label. To change one field of an existing declaration use
+`dataclasses.replace`. `ColumnSchema` is frozen too but is checked later: the facts require its
+turbine and active power roles, and each method the roles it reads. `AnalysisOutput` is an ordinary
+dataclass.
 
 Contents: [WindFarmFacts](#windfarmfacts) · [ColumnSchema](#columnschema) · [Upgrade](#upgrade) ·
 [Label](#label) · [Record labels](#record-labels) ·
@@ -174,7 +177,7 @@ An analyst's label is a named true or false on every record.
 |---|---|
 | `name` | The label's name, as analyses and reports refer to it |
 | `column` | The boolean column of the records holding it: False where unknown, never NaN |
-| `withholds` | The uses its records are withheld from: `"uplift"`, `"northing"`, an iterable of both, or `"all"`. None by default |
+| `withholds` | The uses that the label's records are withheld from: `"uplift"`, `"northing"`, an iterable of both, or `"all"`. By default no use is withheld. Stored as a frozen set |
 
 A label on its own changes nothing; it is a column the analyses can select by. It acts in two
 ways:
@@ -198,7 +201,7 @@ timestamp then turbine. A record never supplied reads as missing.
 
 | Column | Meaning |
 |---|---|
-| the turbine column | The turbine, under the name `columns.turbine` gives |
+| the turbine column | The turbine's name. The column has the same name as in the records (`columns.turbine`) |
 | `operating_state` | `missing`, `full downtime`, `partial downtime`, `normal operation`, or one of the site's own states |
 | `valid_northing`, `valid_uplift` | Whether the record is valid for each use |
 | `waking_state` | `waking`, `part waking`, `not waking` or `missing` |
@@ -336,10 +339,11 @@ toggle frame that does not fit its cycle. `output.warnings` holds those of one e
 
 ## A minimal run
 
-A toggle on one turbine of three, on made-up records, to show the shape of a run. `records` is
+A toggle on one turbine of three, on made-up records, to show the shape of a run. The records are
 long-format SCADA on a time index with `turbine`, `power_kw` and `ready_s` columns.
 
 ```python
+import numpy as np
 import pandas as pd
 
 from wind_up import AnalysisSpec, Upgrade, WindFarmFacts
@@ -348,6 +352,17 @@ from wind_up.schema import ColumnSchema
 from wind_up.toggle import ToggleSchedule
 
 timebase = pd.Timedelta(minutes=10)
+index = pd.date_range("2024-01-01", "2024-03-01", freq=timebase, tz="UTC", inclusive="left", name="timestamp")
+rng = np.random.default_rng(0)
+farm_power = 600 + 300 * np.sin(np.arange(len(index)) / 500) + rng.normal(0, 30, len(index))
+records = pd.concat(
+    [
+        pd.DataFrame(
+            {"turbine": name, "power_kw": farm_power + rng.normal(0, 20, len(index)), "ready_s": 600.0}, index=index
+        )
+        for name in ["T1", "T2", "T3"]
+    ]
+)
 turbines = pd.DataFrame(
     {
         "name": ["T1", "T2", "T3"],

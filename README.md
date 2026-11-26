@@ -19,8 +19,8 @@ The package is published on PyPI as `res-wind-up`. It holds two Python packages:
 unchanged.
 
 > [!IMPORTANT]
-> Coming from wind-up 0.x? Every `wind_up.<module>` import becomes `wind_up_v0.<module>`.
-> See [migrating from 0.x](docs/migrating-from-0.x.md).
+> Coming from wind-up 0.x? Almost every `wind_up.<module>` import becomes `wind_up_v0.<module>`.
+> See [migrating from 0.x](docs/migrating-from-0.x.md) for the rule and its three exceptions.
 
 ## What it does
 

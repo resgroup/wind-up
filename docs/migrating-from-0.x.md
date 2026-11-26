@@ -7,7 +7,9 @@ From 1.0 the `res-wind-up` distribution holds two packages:
 
 ## What breaks, and the fix
 
-**Every 0.x import path changes.** Replace `wind_up` with `wind_up_v0`:
+**Almost every 0.x import path changes.** Replace `wind_up` with `wind_up_v0`; the three modules
+that are exceptions are listed below. `wind_up_v0` holds every 0.x module, so replacing the name
+everywhere is always right:
 
 ```python
 # 0.x
