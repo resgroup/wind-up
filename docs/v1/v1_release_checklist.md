@@ -333,6 +333,8 @@ is frozen. Known items:
 - [ ] The examples use the v1 interface: the SMARTEOLE notebook is converted (2026-11-20; the v0
       route stays covered by `tests/test_smarteole.py`), WeDoWind is to follow (issue #186) and the
       Kelmarsh Kaggle example is dropped.
+- [x] Importing a 0.x path (`wind_up.models`, `wind_up.plots.detrend_plots`, a 0.x name of
+      `wind_up.northing`) raises an `ImportError` that names its `wind_up_v0` home (issue #195).
 - [ ] `wind_up_v0/constants.py` no longer depends on the repo's root folders (`config/`,
       `input_data/`, `cache/`); those folders are deleted.
 - [ ] If D1 = (b): the v0 binned method is selectable in a declaration (`method: v0_binned`) and
