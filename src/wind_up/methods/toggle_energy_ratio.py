@@ -90,6 +90,7 @@ from wind_up.subject import (
     UPGRADED,
     SubjectMeasurement,
     SubjectRecords,
+    first_asking_aep,
     group_output,
     subject_records,
     unused_measurement_warnings,
@@ -332,7 +333,8 @@ class ToggleEnergyRatioMethod:
         leaving out each timestamp where any of them has a record not valid for uplift. A subject's records that
         the analysis's labels leave out keep their toggle state and are filtered like a caller's
         excluded row. The record labels are computed once per call. The group's campaign uplift weights the
-        subjects by the energy they produced with the upgrade on. No AEP uplift is reported.
+        subjects by the energy they produced with the upgrade on. No AEP uplift is reported; the
+        first analysis asking for one carries the one warning of it.
         """
         for analysis in analyses:
             facts.check(analysis)
@@ -342,7 +344,11 @@ class ToggleEnergyRatioMethod:
                 raise MethodConfigurationError(msg)
         facts.columns.require_roles(("active_power",))
         labels = facts.record_labels()
-        return [self._answer(facts, analysis, labels=labels) for analysis in analyses]
+        warn_at = first_asking_aep(analyses)
+        return [
+            self._answer(facts, analysis, labels=labels, warn_no_aep=position == warn_at)
+            for position, analysis in enumerate(analyses)
+        ]
 
     def measure(
         self,
@@ -418,7 +424,9 @@ class ToggleEnergyRatioMethod:
         assert self._given_cycle is not None  # noqa: S101 - set by measure
         return self._given_cycle
 
-    def _answer(self, facts: WindFarmFacts, analysis: AnalysisSpec, *, labels: pd.DataFrame) -> AnalysisOutput:
+    def _answer(
+        self, facts: WindFarmFacts, analysis: AnalysisSpec, *, labels: pd.DataFrame, warn_no_aep: bool
+    ) -> AnalysisOutput:
         """Measure every subject and placebo turbine of one analysis over the records it compares, and combine them.
 
         A placebo turbine's records settling after a change of its placebo toggle are left out of its
@@ -489,6 +497,7 @@ class ToggleEnergyRatioMethod:
             name=self.name,
             warnings=warnings,
             placebo=list(analysis.placebo_timing),
+            warn_no_aep=warn_no_aep,
         )
 
     def _estimate_one(self, mi: SubjectRecords) -> SubjectMeasurement:

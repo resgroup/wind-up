@@ -46,10 +46,15 @@ def settling_reason(upgrade: str) -> str:
 class Label:
     """An analyst's label: a named true or false on every record.
 
+    A label that withholds a use withholds the records of every turbine holding it, references
+    included, in every analysis. To leave a label's records out of one analysis's subjects only,
+    name it in that analysis's ``exclude_labels`` instead.
+
     :param name: the label's name, as analyses and reports refer to it
     :param column: the boolean column of the records holding it; False where unknown, never NaN
     :param withholds: a use or an iterable of uses to withhold its records from. :data:`ALL_USES`
-        expands to all supported uses. The attribute is stored as a frozen set.
+        expands to all supported uses. The attribute is stored as a frozen set. A withheld record
+        keeps its waking state, so it still counts in other turbines' wake exposure.
     """
 
     name: str

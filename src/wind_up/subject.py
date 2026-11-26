@@ -338,6 +338,7 @@ def group_output(
     name: str,
     warnings: Sequence[AnalysisWarning] = (),
     placebo: Collection[str] = (),
+    warn_no_aep: bool = True,
 ) -> AnalysisOutput:
     """Return the analysis's output from each subject's measurement, or why it could not be measured.
 
@@ -345,10 +346,11 @@ def group_output(
     energy on the upgrade, leaving out any whose energy is unknown, and no sigma; asked for another
     combination than ``net``, a medium warning says so. A subject not
     measured is a row of NaN and a high warning beginning :data:`NOT_MEASURED`. No AEP uplift is
-    given; asking for one is a medium warning.
+    given; asking for one is a medium warning when ``warn_no_aep``.
 
     :param placebo: the turbines of ``measurements`` measured against a placebo toggle: their rows are
         marked ``placebo`` and left out of the analysis's uplift, and one not measured is a medium warning
+    :param warn_no_aep: warn when the analysis asks for an AEP uplift; see :func:`first_asking_aep`
     """
     found: list[AnalysisWarning] = list(warnings)
     rows: list[dict[str, object]] = []
@@ -398,8 +400,8 @@ def group_output(
     else:
         message = f"{name} measured none of the subjects {[t for t in measurements if t not in placebo]}"
         found.append(AnalysisWarning(severity="high", step=MEASURE_STEP, turbine="all", message=message))
-    if AEP in analysis.report:
-        message = f"{name} gives no AEP uplift: it has no long-term step"
+    if warn_no_aep and AEP in analysis.report:
+        message = f"{name} gives no AEP uplift in any analysis: it has no long-term step"
         found.append(AnalysisWarning(severity="medium", step=COMBINE_STEP, turbine="all", message=message))
     if CAMPAIGN not in analysis.report:
         uplift, sigma = np.nan, np.nan
@@ -429,6 +431,14 @@ def _stacked(frames: Mapping[str, pd.DataFrame | None], *, key: str = "turbine")
         return None
     stacked = pd.concat([frame.assign(**{key: subject}) for subject, frame in present.items()])
     return stacked[[key, *[c for c in stacked.columns if c != key]]]
+
+
+def first_asking_aep(analyses: Sequence[AnalysisSpec]) -> int | None:
+    """Return the position of the first analysis asking for an AEP uplift, None when none does.
+
+    A method with no long-term step warns of it once per call, on that analysis's output.
+    """
+    return next((i for i, analysis in enumerate(analyses) if AEP in analysis.report), None)
 
 
 def unused_measurement_warnings(
@@ -472,8 +482,9 @@ def answer_analyses(
             msg = f"{name} does not measure placebo turbines; analysis {analysis.name!r} gives placebo timing"
             raise MethodConfigurationError(msg)
     labels = facts.record_labels()
+    warn_at = first_asking_aep(analyses)
     outputs = []
-    for analysis in analyses:
+    for position, analysis in enumerate(analyses):
         start, end = analysis.period
         span = (pd.DatetimeIndex(facts.records.index).min() if start is None else start, end)
         measured: dict[str, SubjectMeasurement | str] = {}
@@ -488,7 +499,16 @@ def answer_analyses(
             except ValueError as error:
                 measured[subject] = str(error)
         warnings = (*facts.warnings(), *unused_measurement_warnings(facts, analysis, name=name))
-        outputs.append(group_output(analysis, facts=facts, measurements=measured, name=name, warnings=warnings))
+        outputs.append(
+            group_output(
+                analysis,
+                facts=facts,
+                measurements=measured,
+                name=name,
+                warnings=warnings,
+                warn_no_aep=position == warn_at,
+            )
+        )
     return outputs
 
 

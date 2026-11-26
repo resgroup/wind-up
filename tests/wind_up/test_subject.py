@@ -402,6 +402,17 @@ class TestAnsweringAnalyses:
         (out,) = answer_analyses(facts, [analysis], name="fixed", measure=_Fixed(0.03).measure)
         assert any(w.severity == "medium" and "LiDAR" in w.message for w in out.warnings)
 
+    def test_the_no_aep_uplift_warning_is_raised_once_per_call(self) -> None:
+        facts = _subject_facts(upgrades=[ff.permanent(turbines=("T1", "T2"))])
+        analyses = [
+            AnalysisSpec(name="a", upgrade="blades", subjects=["T1"], report="campaign"),
+            AnalysisSpec(name="b", upgrade="blades", subjects=["T1"]),
+            AnalysisSpec(name="c", upgrade="blades", subjects=["T2"]),
+        ]
+        outs = answer_analyses(facts, analyses, name="fixed", measure=_Fixed(0.03).measure)
+        warned = [sum("no AEP uplift" in w.message for w in out.warnings) for out in outs]
+        assert warned == [0, 1, 0]
+
     def test_a_turbine_not_a_subject_raises(self) -> None:
         out = self._answer(_Fixed(0.03), AnalysisSpec(name="a", upgrade="blades", subjects=["T1"]))
         with pytest.raises(KeyError, match="T3"):
