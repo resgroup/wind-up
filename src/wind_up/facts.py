@@ -69,13 +69,19 @@ SIDE_COL = "side"
 LABELS_STEP = 2
 
 NO_TIME = pd.Timedelta(0)
+# The default boundary of a toggle frame's cycle grid.
+EPOCH = pd.Timestamp("1970-01-01")
+# The share of a toggle frame's switches that may fall off its half-cycle grid without a warning.
+OFF_GRID_SHARE = 0.01
 
 Window = tuple[pd.Timestamp, pd.Timestamp]
 Period = tuple[pd.Timestamp | None, pd.Timestamp | None]
 Exclusion = tuple[str | None, pd.Timestamp, pd.Timestamp]
 StateOverride = tuple[str | None, pd.Timestamp, pd.Timestamp, str]
 NorthOffset = tuple[str, pd.Timestamp, float]
-Timing: TypeAlias = pd.Timestamp | Mapping[str, pd.Timestamp] | ToggleSchedule | pd.DataFrame
+Timing: TypeAlias = (
+    pd.Timestamp | Mapping[str, pd.Timestamp] | ToggleSchedule | pd.DataFrame | Mapping[str, pd.DataFrame]
+)
 
 
 @dataclass(frozen=True)
@@ -84,20 +90,21 @@ class Upgrade:
 
     :param name: the upgrade's name
     :param turbines: the turbines that received it
-    :param timing: the upgrade date, a date per turbine, a toggle schedule, or a toggle frame with
-        boolean ``toggle_on`` and ``toggle_off`` columns on a time index. ``None`` when every turbine
-        has an installation window: the upgrade is then on from the end of its last window.
+    :param timing: the upgrade date, a date per turbine, a toggle schedule, a toggle frame with
+        boolean ``toggle_on`` and ``toggle_off`` columns on a time index, or a toggle frame per
+        turbine. ``None`` when every turbine has an installation window: the upgrade is then on from
+        the end of its last window.
     :param settling_time: toggle only. Records of the upgrade's turbines from each change between on
         and off until this long after it keep their state and are not valid for uplift or northing.
     :param installation_windows: per turbine, the windows ``[start, end)`` when the upgrade was being
         fitted; their records are in neither state
     :param upgrade_state_overrides: ``(turbine or None, start, end, state)``: the upgrade state of a
         turbine, or of every turbine, over ``[start, end)`` where the timing does not describe it
-    :param toggle_cycle: toggle only: one on and off cycle of the controller. A toggle schedule's period
-        when omitted; for a toggle frame, the median gap between its on runs when omitted, and checked
-        against them when given.
+    :param toggle_cycle: toggle only: one on and off cycle of the controller, an equal time in each
+        state. A toggle schedule's period, which it must equal when given; for a toggle frame, the
+        median gap between its on runs when omitted. See :meth:`warnings` for the frame's check.
     :param toggle_datum: toggle only: any boundary of the controller's cycle grid. A toggle schedule's
-        start when omitted, else the first record of a toggle frame in the on or off state.
+        start when omitted; for a toggle frame, the Unix epoch in the frame's time zone.
     :param expected_uplift: the uplift expected, a fraction, from which the reach of the upgrade's
         wake change follows; at most one of this and ``wake_reach_d``
     :param wake_reach_d: the reach of the upgrade's wake change, in rotor diameters
@@ -161,6 +168,8 @@ class Upgrade:
 
     def _check_timing(self) -> None:
         """Reject a timing that leaves a turbine without a date, and settling outside a toggle."""
+        if isinstance(self.timing, Mapping) and any(isinstance(v, pd.DataFrame) for v in self.timing.values()):
+            self._check_frames()
         if isinstance(self.timing, pd.DataFrame):
             validate_toggle_df(self.timing)
         if self.settling_time < NO_TIME or (self.settling_time > NO_TIME and self.mode != "toggle"):
@@ -182,18 +191,54 @@ class Upgrade:
             msg = f"upgrade {self.name!r} gives no upgrade date or installation window for {undated}"
             raise ValueError(msg)
 
+    def _check_frames(self) -> None:
+        """Reject a toggle frame per turbine that leaves out or adds a turbine, or mixes in dates."""
+        frames: Mapping[str, object] = self.timing  # type: ignore[assignment]
+        if not all(isinstance(v, pd.DataFrame) for v in frames.values()):
+            msg = f"upgrade {self.name!r}: a timing per turbine is all dates or all toggle frames"
+            raise ValueError(msg)
+        named = {str(t): frame for t, frame in frames.items()}
+        if set(named) != set(self.turbines):
+            msg = (
+                f"upgrade {self.name!r} gives toggle frames for {sorted(named)}, not its turbines {list(self.turbines)}"
+            )
+            raise ValueError(msg)
+        for frame in named.values():
+            validate_toggle_df(frame)  # type: ignore[arg-type]
+        object.__setattr__(self, "timing", named)
+
+    @property
+    def per_turbine(self) -> bool:
+        """Return whether the upgrade is a toggle with a frame per turbine."""
+        timing = self.timing
+        return (
+            isinstance(timing, Mapping) and bool(timing) and all(isinstance(v, pd.DataFrame) for v in timing.values())
+        )
+
+    def toggle_timing(self, turbine: str) -> ToggleSchedule | pd.DataFrame:
+        """Return the schedule or frame ``turbine`` toggles by: its own frame, or the one the turbines share."""
+        if self.mode != "toggle" or turbine not in self.turbines:
+            msg = f"upgrade {self.name!r} does not toggle {turbine!r}"
+            raise ValueError(msg)
+        return self.timing[turbine] if self.per_turbine else self.timing  # type: ignore[index, return-value]
+
+    def _frames(self) -> dict[str, pd.DataFrame]:
+        """Return each toggle frame by the turbine it belongs to, ``"all"`` for one the turbines share."""
+        if self.per_turbine:
+            return dict(self.timing)  # type: ignore[arg-type]
+        return {"all": self.timing} if isinstance(self.timing, pd.DataFrame) else {}
+
     def _check_cycle(self) -> None:
-        """Reject a cycle that is not positive, or that disagrees with the schedule or the frame's runs."""
+        """Reject a cycle that is not positive, or that disagrees with a schedule's period."""
         if self.toggle_cycle is None:
             return
         if self.toggle_cycle <= NO_TIME:
             msg = f"upgrade {self.name!r}: toggle_cycle must be positive, got {self.toggle_cycle}"
             raise ValueError(msg)
-        stated = self._timing_cycle()
-        if stated != self.toggle_cycle:
+        if isinstance(self.timing, ToggleSchedule) and self.timing.period != self.toggle_cycle:
             msg = (
-                f"upgrade {self.name!r}: toggle_cycle {self.toggle_cycle} disagrees with the toggle timing, "
-                f"whose cycle is {stated}"
+                f"upgrade {self.name!r}: toggle_cycle {self.toggle_cycle} disagrees with the toggle schedule, "
+                f"whose period is {self.timing.period}"
             )
             raise ValueError(msg)
 
@@ -208,35 +253,68 @@ class Upgrade:
         return self._timing_cycle()
 
     def _timing_cycle(self) -> pd.Timedelta:
-        """Return the cycle the timing states: a schedule's period, or a frame's median gap between on runs.
+        """Return the cycle the timing states: a schedule's period, or the frames' median gap between on runs.
 
         An on run starts at an on record whose previous record is not on, so records in neither state
-        between the runs do not shorten the cycle.
+        between the runs do not shorten the cycle. Frames per turbine pool their gaps.
         """
         if isinstance(self.timing, ToggleSchedule):
             return self.timing.period
-        frame: pd.DataFrame = self.timing  # type: ignore[assignment]
-        on = frame["toggle_on"].to_numpy(dtype=bool)
-        starts = pd.DatetimeIndex(frame.index)[on & ~np.concatenate(([False], on[:-1]))]
-        if len(starts) < 2:  # noqa: PLR2004
-            msg = f"upgrade {self.name!r}: the toggle frame has fewer than two on runs, so it states no cycle"
+        gaps = [pd.Series(_on_run_starts(frame)).diff().dropna() for frame in self._frames().values()]
+        pooled = pd.concat(gaps) if gaps else pd.Series(dtype="timedelta64[ns]")
+        if pooled.empty:
+            msg = f"upgrade {self.name!r}: no toggle frame has two on runs, so the timing states no cycle"
             raise ValueError(msg)
-        return pd.Timedelta(pd.Series(starts).diff().median())
+        return pd.Timedelta(pooled.median())
 
     def datum(self, *, first_record: pd.Timestamp) -> pd.Timestamp:
-        """Return a boundary of a toggle's cycle grid: declared, else where the toggle starts.
+        """Return a boundary of a toggle's cycle grid: declared, a schedule's start, or the Unix epoch for a frame.
 
         :param first_record: where a toggle schedule without a start begins
         """
         if self.toggle_datum is not None:
             return pd.Timestamp(self.toggle_datum)
+        frames = self._frames()
+        if frames:
+            return EPOCH.tz_localize(pd.DatetimeIndex(next(iter(frames.values())).index).tz)
         start = self.signal_span()[0]
         return first_record if start is None else start
 
+    def warnings(self) -> tuple[AnalysisWarning, ...]:
+        """Return a medium warning for each toggle frame whose switches do not fit the cycle and datum.
+
+        A switch is a change between on and off from one record of a frame to the next. More than
+        :data:`OFF_GRID_SHARE` of them away from the datum plus a whole number of half cycles is
+        the warning, against the frame's turbine, or ``"all"`` for a frame the turbines share.
+        Timing that states no cycle gives none.
+        """
+        frames = self._frames()
+        if not frames:
+            return ()
+        try:
+            half = self.cycle / 2
+        except ValueError:
+            return ()
+        found = []
+        for turbine, frame in frames.items():
+            switches = _switches(frame)
+            if not len(switches):
+                continue
+            datum = self.datum(first_record=switches[0])
+            off_grid = int(((switches - datum) % half != NO_TIME).sum())
+            if off_grid <= OFF_GRID_SHARE * len(switches):
+                continue
+            message = (
+                f"upgrade {self.name!r}: {off_grid} of {len(switches)} switches between on and off fall off the "
+                f"half-cycle grid of its {self.cycle} cycle from {datum}; declare toggle_cycle and toggle_datum"
+            )
+            found.append(AnalysisWarning(severity="medium", step=LABELS_STEP, turbine=turbine, message=message))
+        return tuple(found)
+
     @property
     def mode(self) -> Literal["prepost", "toggle"]:
-        """Return ``"toggle"`` for a schedule or a toggle frame, ``"prepost"`` for a permanent upgrade."""
-        return "toggle" if is_toggle(self.timing) else "prepost"
+        """Return ``"toggle"`` for a schedule or toggle frames, ``"prepost"`` for a permanent upgrade."""
+        return "toggle" if self.per_turbine or is_toggle(self.timing) else "prepost"
 
     @property
     def reach_d(self) -> float | None:
@@ -274,7 +352,7 @@ class Upgrade:
         windows: list[Window] = []
         if turbine in self.turbines:
             if self.mode == "toggle":
-                start = self.signal_span()[0]
+                start = self.signal_span(turbine=turbine)[0]
                 start = first_record if start is None else start
                 windows.append((start, start))
             else:
@@ -291,15 +369,23 @@ class Upgrade:
             (a, b) for who, a, b, state in self.upgrade_state_overrides if who in (None, turbine) and state == NEITHER
         ]
 
-    def signal_span(self) -> Period:
-        """Return a toggle's span, from its first record in the on or off state to its last; None is open."""
+    def signal_span(self, *, turbine: str | None = None) -> Period:
+        """Return a toggle's span, from its first record in the on or off state to its last; None is open.
+
+        :param turbine: the span of this turbine's own frame; of every frame together when None
+        """
+        if self.mode != "toggle":
+            msg = f"upgrade {self.name!r} is not a toggle"
+            raise ValueError(msg)
         if isinstance(self.timing, ToggleSchedule):
             return self.timing.start, None
-        if isinstance(self.timing, pd.DataFrame):
-            flagged = self.timing.index[(self.timing["toggle_on"] | self.timing["toggle_off"]).to_numpy(dtype=bool)]
-            return (flagged.min(), flagged.max()) if len(flagged) else (None, None)
-        msg = f"upgrade {self.name!r} is not a toggle"
-        raise ValueError(msg)
+        frames = self._frames()
+        chosen = [frames[turbine]] if turbine is not None and self.per_turbine else list(frames.values())
+        flagged = [f.index[(f["toggle_on"] | f["toggle_off"]).to_numpy(dtype=bool)] for f in chosen]
+        flagged = [f for f in flagged if len(f)]
+        if not flagged:
+            return None, None
+        return min(f.min() for f in flagged), max(f.max() for f in flagged)
 
     def states(self, index: pd.DatetimeIndex, *, turbine: str) -> npt.NDArray[np.object_]:
         """Return ``turbine``'s upgrade state at each timestamp of ``index``.
@@ -313,7 +399,7 @@ class Upgrade:
         state: npt.NDArray[np.object_] = np.full(len(index), OFF, dtype=object)
         if turbine in self.turbines:
             if self.mode == "toggle":
-                state = self._toggle_states(index)
+                state = self._toggle_states(index, timing=self.toggle_timing(turbine))
             else:
                 first, last = self.changeover(turbine)
                 state[np.asarray(index >= last)] = ON
@@ -326,11 +412,13 @@ class Upgrade:
                 state[np.asarray((index >= start) & (index < end))] = named
         return state
 
-    def _toggle_states(self, index: pd.DatetimeIndex) -> npt.NDArray[np.object_]:
-        """Return the toggle's state at each timestamp of ``index``."""
-        if isinstance(self.timing, ToggleSchedule):
-            return self._schedule_states(index, self.timing)
-        frame: pd.DataFrame = self.timing  # type: ignore[assignment]
+    def _toggle_states(
+        self, index: pd.DatetimeIndex, *, timing: ToggleSchedule | pd.DataFrame
+    ) -> npt.NDArray[np.object_]:
+        """Return the state ``timing`` gives at each timestamp of ``index``."""
+        if isinstance(timing, ToggleSchedule):
+            return self._schedule_states(index, timing)
+        frame = timing
         on = frame["toggle_on"].to_numpy(dtype=bool)
         off = frame["toggle_off"].to_numpy(dtype=bool)
         own = np.select([on, off], [ON, OFF], default=NEITHER).astype(object)
@@ -356,17 +444,27 @@ class Upgrade:
         index = pd.DatetimeIndex(index)
         if self.settling_time <= NO_TIME or turbine not in self.turbines or self.mode != "toggle" or not len(index):
             return np.zeros(len(index), dtype=bool)
-        if isinstance(self.timing, ToggleSchedule):
-            origin = self.timing.start if self.timing.start is not None else index.min()
-            half = self.timing.period / 2
+        timing = self.toggle_timing(turbine)
+        if isinstance(timing, ToggleSchedule):
+            origin = timing.start if timing.start is not None else index.min()
+            half = timing.period / 2
             since_origin = index - origin
             return np.asarray((since_origin >= half) & ((since_origin % half) < self.settling_time))
-        frame: pd.DataFrame = self.timing  # type: ignore[assignment]
-        on = frame["toggle_on"].to_numpy(dtype=bool)
-        off = frame["toggle_off"].to_numpy(dtype=bool)
-        times = pd.DatetimeIndex(frame.index)
-        changed = (on[1:] & off[:-1]) | (off[1:] & on[:-1])
-        return _settling(index, changes=times[1:][changed], settling_time=self.settling_time)
+        return _settling(index, changes=_switches(timing), settling_time=self.settling_time)
+
+
+def _switches(frame: pd.DataFrame) -> pd.DatetimeIndex:
+    """Return the records of a toggle frame that switch between on and off from the record before."""
+    on = frame["toggle_on"].to_numpy(dtype=bool)
+    off = frame["toggle_off"].to_numpy(dtype=bool)
+    changed = (on[1:] & off[:-1]) | (off[1:] & on[:-1])
+    return pd.DatetimeIndex(frame.index)[1:][changed]
+
+
+def _on_run_starts(frame: pd.DataFrame) -> pd.DatetimeIndex:
+    """Return the first record of each run of on records of a toggle frame."""
+    on = frame["toggle_on"].to_numpy(dtype=bool)
+    return pd.DatetimeIndex(frame.index)[on & ~np.concatenate(([False], on[:-1]))]
 
 
 def _settling(
@@ -591,10 +689,11 @@ class WindFarmFacts:
 
     def warnings(self) -> tuple[AnalysisWarning, ...]:
         """Return what the facts cannot support, for the warnings register."""
+        found = tuple(w for upgrade in self.upgrades for w in upgrade.warnings())
         if self.columns.availability is not None:
-            return ()
+            return found
         message = "the records have no availability counter, so downtime could not be labelled"
-        return (AnalysisWarning(severity="medium", step=LABELS_STEP, turbine="all", message=message),)
+        return (*found, AnalysisWarning(severity="medium", step=LABELS_STEP, turbine="all", message=message))
 
     def record_labels(self) -> pd.DataFrame:
         """Return the labels of every turbine's record at every timestamp, ordered by timestamp then turbine.
@@ -657,8 +756,9 @@ class WindFarmFacts:
         """Return the side of ``analysis``'s comparison each record is on: on, off or neither.
 
         A subject's record is on the side of its upgrade state when it lies within the analysis's
-        period, within the signal's span for a toggle, holds every include label and no exclude
-        label. Every other record is on neither side. Validity for uplift is not applied.
+        period, within its own signal's span for a toggle, holds every include label and no exclude
+        label. A placebo turbine's record is on the side its placebo timing gives, by the same rules.
+        Every other record is on neither side. Validity for uplift is not applied.
 
         :param record_labels: the frame :meth:`record_labels` returned
         """
@@ -669,13 +769,38 @@ class WindFarmFacts:
         compared = turbines.isin(self.subjects_of(analysis)).to_numpy(dtype=bool).copy()
         compared &= _within(index, analysis.period, end_inclusive=False)
         if upgrade.mode == "toggle":
-            compared &= _within(index, upgrade.signal_span(), end_inclusive=True)
+            for subject in self.subjects_of(analysis):
+                mine = (turbines == subject).to_numpy()
+                outside = ~_within(index, upgrade.signal_span(turbine=subject), end_inclusive=True)
+                compared[mine & outside] = False
+        state = record_labels[upgrade_state_column(upgrade.name)].to_numpy(dtype=object).copy()
+        for turbine in analysis.placebo_timing:
+            placebo = self.placebo_upgrade(analysis, turbine=turbine)
+            mine = (turbines == turbine).to_numpy()
+            compared[mine] = _within(index[mine], analysis.period, end_inclusive=False) & _within(
+                index[mine], placebo.signal_span(turbine=turbine), end_inclusive=True
+            )
+            state[mine] = placebo.states(index[mine], turbine=turbine)
         for name in analysis.include_labels:
             compared &= record_labels[name].to_numpy(dtype=bool)
         for name in analysis.exclude_labels:
             compared &= ~record_labels[name].to_numpy(dtype=bool)
-        state = record_labels[upgrade_state_column(upgrade.name)].to_numpy(dtype=object)
         return pd.Series(np.where(compared, state, NEITHER), index=record_labels.index, name=SIDE_COL)
+
+    def placebo_upgrade(self, analysis: AnalysisSpec, *, turbine: str) -> Upgrade:
+        """Return the toggle ``turbine`` never applied in ``analysis``, with its upgrade's settling, cycle and datum.
+
+        Its name is the upgrade's; its only turbine is ``turbine``.
+        """
+        upgrade = self.upgrade(analysis.upgrade)
+        return Upgrade(
+            name=upgrade.name,
+            turbines=[turbine],
+            timing=analysis.placebo_timing[turbine],
+            settling_time=upgrade.settling_time,
+            toggle_cycle=upgrade.cycle,
+            toggle_datum=upgrade.toggle_datum,
+        )
 
     def check(self, analysis: AnalysisSpec) -> None:
         """Raise when ``analysis`` names an upgrade, a turbine, a measurement or a label the facts do not hold.
@@ -701,6 +826,26 @@ class WindFarmFacts:
         stray = sorted({*analysis.include_labels, *analysis.exclude_labels} - labels)
         if stray:
             msg = f"analysis {analysis.name!r} names the labels {stray}; the facts hold {sorted(labels)}"
+            raise ValueError(msg)
+        if analysis.placebo_timing:
+            self._check_placebo(analysis, upgrade=upgrade)
+
+    def _check_placebo(self, analysis: AnalysisSpec, *, upgrade: Upgrade) -> None:
+        """Raise unless each placebo is a turbine reference of ``analysis`` that did not receive its toggle upgrade."""
+        if upgrade.mode != "toggle":
+            msg = f"analysis {analysis.name!r} gives placebo timing, which is for a toggle; {upgrade.name!r} is not one"
+            raise ValueError(msg)
+        placebos = set(analysis.placebo_timing)
+        received = sorted(placebos & set(upgrade.turbines))
+        if received:
+            msg = f"analysis {analysis.name!r} gives placebo timing to {received}, which received {upgrade.name!r}"
+            raise ValueError(msg)
+        missing = sorted(placebos - set(self.turbine_references(analysis)))
+        if missing:
+            msg = (
+                f"analysis {analysis.name!r} gives placebo timing to {missing}, which are not among its turbine"
+                " references"
+            )
             raise ValueError(msg)
 
     def subjects_of(self, analysis: AnalysisSpec) -> list[str]:
@@ -731,7 +876,8 @@ class WindFarmFacts:
     ) -> ChangedTimes:
         """Return the times each turbine counts as changed while ``subject`` is measured over ``span``.
 
-        The subject counts as changed throughout. Every other turbine's change windows under every
+        The subject counts as changed throughout; a placebo turbine's own change is its placebo
+        toggle's start. Every other turbine's change windows under every
         upgrade follow :func:`~wind_up.record_selection.changed_times` against the subject's own
         change under the analysis's upgrade; a turbine in neither state by an override counts as
         changed while it is. A change counts only upwind of the turbines within its upgrade's reach.
@@ -744,6 +890,8 @@ class WindFarmFacts:
         start, end = span
         first_record = pd.DatetimeIndex(self.records.index).min()
         upgrade = self.upgrade(analysis.upgrade)
+        if subject in analysis.placebo_timing:
+            upgrade = self.placebo_upgrade(analysis, turbine=subject)
         own = upgrade.change_windows(subject, first_record=first_record)
         if subject not in upgrade.turbines or not own:
             msg = f"{subject!r} did not receive {upgrade.name!r}, so it is not a subject of {analysis.name!r}"

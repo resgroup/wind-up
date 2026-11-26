@@ -23,9 +23,10 @@ from wind_up.record_selection import ChangedInterval
 from wind_up.toggle import ToggleSchedule, is_toggle
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 
     from wind_up.analysis import AnalysisSpec
+    from wind_up.analysis_warnings import Severity
     from wind_up.facts import WindFarmFacts
     from wind_up.record_selection import ChangedTimes
 
@@ -36,6 +37,8 @@ COMBINE_STEP = 16
 
 # How the warning of a subject that could not be measured begins.
 NOT_MEASURED = "not measured: "
+# The start of the warning that a placebo turbine was not measured.
+PLACEBO_NOT_MEASURED = "placebo not measured: "
 
 # The column naming the subject in a stacked frame whose ``turbine`` column names a reference.
 SUBJECT_COL = "subject"
@@ -243,7 +246,7 @@ def subject_records(
     reserves = [r for r in named[len(chosen) :] if r in held]
     upgrade = facts.upgrade(analysis.upgrade)
     if timing is None:
-        timing = upgrade.timing if upgrade.mode == "toggle" else upgrade.changeover(subject)[1]  # type: ignore[assignment]
+        timing = upgrade.toggle_timing(subject) if upgrade.mode == "toggle" else upgrade.changeover(subject)[1]
     if valid_for_uplift is None:
         valid_for_uplift = pd.DataFrame(
             {t: ~_inside(index, _installation_windows(facts, t)) for t in sorted(present)}, index=index, dtype=bool
@@ -334,6 +337,7 @@ def group_output(
     measurements: Mapping[str, SubjectMeasurement | str],
     name: str,
     warnings: Sequence[AnalysisWarning] = (),
+    placebo: Collection[str] = (),
     warn_no_aep: bool = True,
 ) -> AnalysisOutput:
     """Return the analysis's output from each subject's measurement, or why it could not be measured.
@@ -344,6 +348,8 @@ def group_output(
     measured is a row of NaN and a high warning beginning :data:`NOT_MEASURED`. No AEP uplift is
     given; asking for one is a medium warning when ``warn_no_aep``.
 
+    :param placebo: the turbines of ``measurements`` measured against a placebo toggle: their rows are
+        marked ``placebo`` and left out of the analysis's uplift, and one not measured is a medium warning
     :param warn_no_aep: warn when the analysis asks for an AEP uplift; see :func:`first_asking_aep`
     """
     found: list[AnalysisWarning] = list(warnings)
@@ -351,16 +357,22 @@ def group_output(
     weights: list[TurbineUplift] = []
     measured: dict[str, SubjectMeasurement] = {}
     for subject, measurement in measurements.items():
+        is_placebo = subject in placebo
         if isinstance(measurement, str):
-            message = f"{NOT_MEASURED}{measurement}"
-            found.append(AnalysisWarning(severity="high", step=MEASURE_STEP, turbine=subject, message=message))
-            rows.append({"turbine": subject, **{c: np.nan for c in PER_TURBINE_COLUMNS if c != "turbine"}})
+            severity: Severity = "medium" if is_placebo else "high"
+            message = f"{PLACEBO_NOT_MEASURED if is_placebo else NOT_MEASURED}{measurement}"
+            found.append(AnalysisWarning(severity=severity, step=MEASURE_STEP, turbine=subject, message=message))
+            empty = {c: np.nan for c in PER_TURBINE_COLUMNS if c not in ("turbine", "placebo")}
+            rows.append({"turbine": subject, **empty, "placebo": is_placebo})
             continue
-        measured[subject] = measurement
         row = measured_row(
             subject, measurement=measurement, power_col=facts.columns.active_power, timebase=facts.timebase
         )
+        row["placebo"] = is_placebo
         rows.append(row)
+        if is_placebo:
+            continue
+        measured[subject] = measurement
         energy, hours_on = float(row["actual_energy"]), float(row["hours_on"])  # type: ignore[arg-type]
         if np.isfinite(energy) and np.isfinite(hours_on):
             weights.append(
@@ -386,25 +398,26 @@ def group_output(
             message = f"{name} gives a group's net uplift; it cannot combine by {analysis.combination!r}"
             found.append(AnalysisWarning(severity="medium", step=COMBINE_STEP, turbine="all", message=message))
     else:
-        message = f"{name} measured none of the subjects {list(per_turbine['turbine'])}"
+        message = f"{name} measured none of the subjects {[t for t in measurements if t not in placebo]}"
         found.append(AnalysisWarning(severity="high", step=MEASURE_STEP, turbine="all", message=message))
     if warn_no_aep and AEP in analysis.report:
         message = f"{name} gives no AEP uplift in any analysis: it has no long-term step"
         found.append(AnalysisWarning(severity="medium", step=COMBINE_STEP, turbine="all", message=message))
     if CAMPAIGN not in analysis.report:
         uplift, sigma = np.nan, np.nan
+    every = {k: m for k, m in measurements.items() if not isinstance(m, str)}
     return AnalysisOutput(
         analysis=analysis,
         campaign_uplift=uplift,
         campaign_sigma=sigma,
         per_turbine=per_turbine,
-        by_condition=_stacked({k: m.p50_by_condition for k, m in measured.items()}),
-        labeled_rows=_stacked({k: m.labeled_rows for k, m in measured.items()}),
-        reference_uplifts=_stacked({k: m.reference_uplifts for k, m in measured.items()}, key=SUBJECT_COL),
-        screen_passes=_stacked({k: m.screen_passes for k, m in measured.items()}, key=SUBJECT_COL),
-        selection_accounting=_stacked({k: m.selection_accounting for k, m in measured.items()}),
-        uncertainty_diagnostics=_stacked({k: m.uncertainty_diagnostics for k, m in measured.items()}),
-        warnings=(*found, *(w for m in measured.values() for w in m.warnings)),
+        by_condition=_stacked({k: m.p50_by_condition for k, m in every.items()}),
+        labeled_rows=_stacked({k: m.labeled_rows for k, m in every.items()}),
+        reference_uplifts=_stacked({k: m.reference_uplifts for k, m in every.items()}, key=SUBJECT_COL),
+        screen_passes=_stacked({k: m.screen_passes for k, m in every.items()}, key=SUBJECT_COL),
+        selection_accounting=_stacked({k: m.selection_accounting for k, m in every.items()}),
+        uncertainty_diagnostics=_stacked({k: m.uncertainty_diagnostics for k, m in every.items()}),
+        warnings=(*found, *(w for m in every.values() for w in m.warnings)),
     )
 
 
@@ -464,6 +477,9 @@ def answer_analyses(
         facts.check(analysis)
         if analysis.include_labels or analysis.exclude_labels:
             msg = f"{name} does not read labels; analysis {analysis.name!r} names some"
+            raise MethodConfigurationError(msg)
+        if analysis.placebo_timing:
+            msg = f"{name} does not measure placebo turbines; analysis {analysis.name!r} gives placebo timing"
             raise MethodConfigurationError(msg)
     labels = facts.record_labels()
     warn_at = first_asking_aep(analyses)

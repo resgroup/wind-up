@@ -12,7 +12,7 @@ import pytest
 from benchmarking.synthetic import ToggleSchedule
 from tests.wind_up import facts_fixtures as ff
 from wind_up.analysis import AnalysisOutput, AnalysisSpec
-from wind_up.facts import NonTurbineMeasurement
+from wind_up.facts import NonTurbineMeasurement, Upgrade
 from wind_up.labels import Label
 from wind_up.method import MethodConfigurationError
 from wind_up.operating_state import (
@@ -455,3 +455,11 @@ def test_select_skips_a_turbine_without_records() -> None:
     records_ = dataclasses.replace(_records(), candidate_references=["T2", "T3"])
     selected = records_.select(_scada(("T1", "T2")))
     assert sorted(selected[_TURBINE_COL].unique()) == ["T1", "T2"]
+
+
+def test_placebo_timing_is_refused_by_methods_that_do_not_measure_placebos() -> None:
+    upgrade = Upgrade(name="control", turbines=["T1"], timing=ff.toggle_frame())
+    facts = _subject_facts(upgrades=[upgrade])
+    analysis = AnalysisSpec(name="a", upgrade="control", subjects=["T1"], placebo_timing={"T3": ff.toggle_frame()})
+    with pytest.raises(MethodConfigurationError, match="placebo"):
+        answer_analyses(facts, [analysis], name="fixed", measure=_Fixed(0.0).measure)  # type: ignore[arg-type]

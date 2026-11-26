@@ -271,10 +271,27 @@ class TestToggleConfiguration:
         schedule = ToggleSchedule(period=pd.Timedelta(minutes=20), start=ff.START)
         upgrade = Upgrade(name="control", turbines=("T1",), timing=schedule)
         index = pd.date_range(ff.START, periods=6, freq=ff.TIMEBASE)
-        frame = v0_binned._toggle_frame(upgrade, index=index)  # noqa: SLF001
+        frame = v0_binned._toggle_frame(upgrade, index=index, turbines=ff.NAMES)  # noqa: SLF001
         assert frame is not None
         assert list(frame.columns[:2]) == ["toggle_on", "toggle_off"]
-        assert v0_binned._toggle_frame(ff.permanent(), index=index) is None  # noqa: SLF001
+        assert v0_binned._toggle_frame(ff.permanent(), index=index, turbines=ff.NAMES) is None  # noqa: SLF001
+
+    def test_frames_per_turbine_become_v0s_frame_per_turbine(self, tmp_path: Path) -> None:
+        late = ff.toggle_frame(first=12)
+        upgrade = Upgrade(name="control", turbines=("T1", "T2"), timing={"T1": ff.toggle_frame(), "T2": late})
+        facts = ff.facts(upgrades=[upgrade])
+        analysis = _analysis(upgrade="control", subjects=["T2"], references=["T3"])
+        cfg = _method(tmp_path, options=TOGGLE_OPTIONS)._config(facts, analysis, use_lt_distribution=False)  # noqa: SLF001
+        assert cfg.toggle is not None
+        assert cfg.toggle.toggle_file_per_turbine
+        assert cfg.toggle.placebo_toggle_wtgs == ["T3"]
+        assert cfg.upgrade_first_dt_utc_start == ff.at(2)
+        index = pd.date_range(ff.START, periods=36, freq=ff.TIMEBASE)
+        frame = v0_binned._toggle_frame(upgrade, index=index, turbines=ff.NAMES)  # noqa: SLF001
+        assert frame is not None
+        assert list(frame.index.get_level_values(0).unique()) == list(ff.NAMES)
+        pd.testing.assert_frame_equal(frame.loc["T2"], late, check_names=False)
+        pd.testing.assert_frame_equal(frame.loc["T3"], ff.toggle_frame(), check_names=False)
 
 
 class TestExcludedRecords:
@@ -611,3 +628,51 @@ def test_a_configuration_error_in_a_run_fails_the_call(tmp_path: Path) -> None:
     analysis = _analysis(subjects=["T1", "T2"], references=["T3"])
     with pytest.raises(MethodConfigurationError, match="one changeover"):
         _method(tmp_path).estimate(ff.facts(upgrades=[upgrade]), [analysis])
+
+
+class TestPlacebo:
+    def test_a_placebo_reaches_v0_as_a_placebo_toggle_with_its_own_frame(self, tmp_path: Path) -> None:
+        reversed_order = ff.toggle_frame().rename(columns={"toggle_on": "toggle_off", "toggle_off": "toggle_on"})
+        analysis = _analysis(upgrade="control", references=["T3", "T4"], placebo_timing={"T3": reversed_order})
+        facts = _toggle_facts()
+        cfg = _method(tmp_path, options=TOGGLE_OPTIONS)._config(facts, analysis, use_lt_distribution=False)  # noqa: SLF001
+        assert cfg.toggle is not None
+        assert cfg.toggle.placebo_toggle_wtgs == ["T3", "T4"]
+        assert cfg.toggle.toggle_file_per_turbine
+        index = pd.date_range(ff.START, periods=36, freq=ff.TIMEBASE)
+        frame = v0_binned._toggle_frame(  # noqa: SLF001
+            facts.upgrade("control"), index=index, turbines=ff.NAMES, placebo=analysis.placebo_timing
+        )
+        assert frame is not None
+        pd.testing.assert_frame_equal(frame.loc["T3"], reversed_order, check_names=False, check_like=True)
+        pd.testing.assert_frame_equal(frame.loc["T1"], ff.toggle_frame(), check_names=False)
+        pd.testing.assert_frame_equal(frame.loc["T4"], ff.toggle_frame(), check_names=False)
+
+    def test_a_placebo_row_is_v0s_placebo_test_and_left_out_of_the_uplift(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        trdf = pd.DataFrame(
+            {
+                "test_wtg": ["T1", "T1", "T3"],
+                "ref": ["T3", "T4", "T4"],
+                "pp_valid_hours_post": [10.0, 11.0, 12.0],
+                "pp_valid_hours_pre": [9.0, 9.5, 8.0],
+            }
+        )
+        tdf = pd.DataFrame(
+            {"test_wtg": ["T1", "T3"], "is_ref": [False, True], "p50_uplift": [0.03, 0.001], "sigma": [0.01, 0.02]}
+        )
+        monkeypatch.setattr(V0BinnedMethod, "_run", lambda *_a, **_k: (trdf, tdf))
+        monkeypatch.setattr(v0_binned, "_actual_energy", lambda _pairs: 100.0)
+        analysis = _analysis(
+            upgrade="control",
+            subjects=["T1"],
+            references=["T3", "T4"],
+            report="campaign",
+            placebo_timing={"T3": ff.toggle_frame()},
+        )
+        (out,) = _method(tmp_path, options=TOGGLE_OPTIONS).estimate(_toggle_facts(), [analysis])
+        rows = out.per_turbine.set_index("turbine")
+        assert rows["placebo"].tolist() == [False, True]
+        assert rows.loc["T3", "campaign_uplift"] == 0.001
+        assert out.campaign_uplift == 0.03

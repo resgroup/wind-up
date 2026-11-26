@@ -427,7 +427,11 @@ class ToggleEnergyRatioMethod:
     def _answer(
         self, facts: WindFarmFacts, analysis: AnalysisSpec, *, labels: pd.DataFrame, warn_no_aep: bool
     ) -> AnalysisOutput:
-        """Measure every subject of one analysis over the records it compares, and combine them."""
+        """Measure every subject and placebo turbine of one analysis over the records it compares, and combine them.
+
+        A placebo turbine's records settling after a change of its placebo toggle are left out of its
+        own measurement only.
+        """
         upgrade = facts.upgrade(analysis.upgrade)
         sides = facts.comparison_sides(replace(analysis, include_labels=(), exclude_labels=()), record_labels=labels)
         stated_side = np.isin(sides.to_numpy(), [ON, OFF])
@@ -443,10 +447,23 @@ class ToggleEnergyRatioMethod:
         first_record = pd.DatetimeIndex(facts.records.index).min()
         span = (compared.min() if len(compared) else first_record, analysis.period[1])
         measured: dict[str, SubjectMeasurement | str] = {}
-        for subject in facts.subjects_of(analysis):
+        for subject in [*facts.subjects_of(analysis), *analysis.placebo_timing]:
             mine = (labels[turbine_col] == subject).to_numpy()
             side = sides[mine]
-            records = subject_records(facts, analysis, subject=subject, span=span, record_labels=labels)
+            toggle = upgrade
+            left_out_rows = withheld
+            if subject in analysis.placebo_timing:
+                toggle = facts.placebo_upgrade(analysis, turbine=subject)
+                left_out_rows = mine & ~kept
+                left_out_rows[mine] |= toggle.settling(pd.DatetimeIndex(labels.index[mine]), turbine=subject)
+            records = subject_records(
+                facts,
+                analysis,
+                subject=subject,
+                span=span,
+                timing=toggle.toggle_timing(subject),
+                record_labels=labels,
+            )
             index = pd.DatetimeIndex(records.records.index.unique()).sort_values()
             timing = pd.DataFrame(
                 {"toggle_on": (side == ON).to_numpy(), "toggle_off": (side == OFF).to_numpy()},
@@ -454,8 +471,8 @@ class ToggleEnergyRatioMethod:
             ).reindex(index, fill_value=False)
             frame = records.records
             left_out = None
-            if withheld.any():
-                frame = _with_withheld(frame, labels=labels, withheld=withheld, turbine_col=turbine_col)
+            if left_out_rows.any():
+                frame = _with_withheld(frame, labels=labels, withheld=left_out_rows, turbine_col=turbine_col)
                 left_out = _WITHHELD_COL
             records = replace(records, records=frame, timing=timing)
             try:
@@ -463,8 +480,8 @@ class ToggleEnergyRatioMethod:
                     records,
                     columns=facts.columns,
                     left_out_column=left_out,
-                    toggle_cycle=upgrade.cycle,
-                    toggle_datum=upgrade.datum(first_record=first_record),
+                    toggle_cycle=toggle.cycle,
+                    toggle_datum=toggle.datum(first_record=first_record),
                     timebase=facts.timebase,
                     rated_power_kw=facts.rated_power_kw(subject),
                 )
@@ -479,6 +496,7 @@ class ToggleEnergyRatioMethod:
             measurements=measured,
             name=self.name,
             warnings=warnings,
+            placebo=list(analysis.placebo_timing),
             warn_no_aep=warn_no_aep,
         )
 

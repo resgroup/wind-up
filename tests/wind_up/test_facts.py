@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from wind_up.analysis import AnalysisSpec
-from wind_up.facts import SIDE_COL, NonTurbineMeasurement, Upgrade, WindFarmFacts
+from wind_up.facts import EPOCH, SIDE_COL, NonTurbineMeasurement, Upgrade, WindFarmFacts
 from wind_up.labels import (
     NEITHER,
     NORTHING,
@@ -897,10 +897,12 @@ def test_a_schedules_cycle_and_datum_are_its_period_and_start() -> None:
     assert open_ended.datum(first_record=at(0)) == at(0)
 
 
-def test_a_frames_cycle_is_inferred_from_its_runs_and_its_datum_is_its_first_stated_record() -> None:
+def test_a_frames_cycle_is_inferred_from_its_runs_and_its_datum_is_the_unix_epoch() -> None:
     upgrade = Upgrade(name="control", turbines=["T1"], timing=toggle_frame(block=3, first=6))
     assert upgrade.cycle == pd.Timedelta(hours=1)
-    assert upgrade.datum(first_record=at(0)) == at(1)
+    assert upgrade.datum(first_record=at(0)) == EPOCH.tz_localize("UTC")
+    naive = toggle_frame(block=3, first=6).tz_localize(None)
+    assert Upgrade(name="control", turbines=["T1"], timing=naive).datum(first_record=at(0)) == EPOCH
 
 
 def test_a_declared_cycle_and_datum_are_used_as_given() -> None:
@@ -915,10 +917,76 @@ def test_a_declared_cycle_and_datum_are_used_as_given() -> None:
     assert upgrade.datum(first_record=at(0)) == at(-0.5)
 
 
-@pytest.mark.parametrize("timing", [toggle_frame(block=3, first=6), ToggleSchedule(period=pd.Timedelta(hours=1))])
-def test_a_declared_cycle_that_disagrees_with_the_timing_raises(timing: object) -> None:
-    with pytest.raises(ValueError, match="disagrees with the toggle timing"):
-        Upgrade(name="control", turbines=["T1"], timing=timing, toggle_cycle=pd.Timedelta(hours=2))  # type: ignore[arg-type]
+def test_a_declared_cycle_that_disagrees_with_a_schedule_raises() -> None:
+    with pytest.raises(ValueError, match="disagrees with the toggle schedule"):
+        Upgrade(
+            name="control",
+            turbines=["T1"],
+            timing=ToggleSchedule(period=pd.Timedelta(hours=1)),
+            toggle_cycle=pd.Timedelta(hours=2),
+        )
+
+
+def shuffled_frame(orders: str) -> pd.DataFrame:
+    """A toggle frame of half-hour slots from ``START``: each character a slot, ``1`` on and ``0`` off."""
+    states = np.repeat([c == "1" for c in orders], 3)
+    index = pd.date_range(START, periods=len(states), freq=TIMEBASE, tz="UTC")
+    return pd.DataFrame({"toggle_on": states, "toggle_off": ~states}, index=index)
+
+
+def cycle_warnings(upgrade: Upgrade) -> list[str]:
+    return [w.message for w in upgrade.warnings()]
+
+
+def test_a_declared_cycle_wins_over_the_frames_runs() -> None:
+    frame = shuffled_frame("100110011001")
+    inferred = Upgrade(name="control", turbines=["T1"], timing=frame)
+    assert inferred.cycle == pd.Timedelta(hours=2)
+    declared = Upgrade(name="control", turbines=["T1"], timing=frame, toggle_cycle=pd.Timedelta(hours=1))
+    assert declared.cycle == pd.Timedelta(hours=1)
+    assert cycle_warnings(declared) == []
+
+
+def test_switches_on_the_half_cycle_grid_give_no_warning() -> None:
+    assert cycle_warnings(Upgrade(name="control", turbines=["T1"], timing=toggle_frame())) == []
+
+
+def test_a_stuck_signal_gives_no_warning() -> None:
+    frame = shuffled_frame("101111101010")
+    upgrade = Upgrade(name="control", turbines=["T1"], timing=frame, toggle_cycle=pd.Timedelta(hours=1))
+    assert cycle_warnings(upgrade) == []
+
+
+def test_a_cycle_or_datum_that_misses_the_switches_is_a_medium_warning() -> None:
+    frame = shuffled_frame("100110011001")
+    (inferred,) = Upgrade(name="control", turbines=["T1"], timing=frame).warnings()
+    assert inferred.severity == "medium"
+    assert "6 of 6 switches" in inferred.message
+    assert "half-cycle grid of its 0 days 02:00:00 cycle" in inferred.message
+    shifted = Upgrade(
+        name="control",
+        turbines=["T1"],
+        timing=toggle_frame(),
+        toggle_cycle=pd.Timedelta(hours=1),
+        toggle_datum=at(1 / 6),
+    )
+    assert any("declare toggle_cycle and toggle_datum" in m for m in cycle_warnings(shifted))
+
+
+def test_a_few_switches_off_the_grid_give_no_warning() -> None:
+    frame = shuffled_frame("10" * 120)
+    early = frame.index[2]
+    frame.loc[early, ["toggle_on", "toggle_off"]] = [False, True]
+    assert cycle_warnings(Upgrade(name="control", turbines=["T1"], timing=frame)) == []
+    for early in frame.index[[8, 14, 20]]:
+        frame.loc[early, ["toggle_on", "toggle_off"]] = [False, True]
+    assert len(cycle_warnings(Upgrade(name="control", turbines=["T1"], timing=frame))) == 1
+
+
+def test_the_facts_carry_each_upgrades_warnings() -> None:
+    upgrade = Upgrade(name="control", turbines=["T1"], timing=shuffled_frame("100110011001"))
+    found = facts(upgrades=[upgrade]).warnings()
+    assert any("switches between on and off" in w.message for w in found)
 
 
 def test_a_cycle_is_positive() -> None:
@@ -943,5 +1011,149 @@ def test_neither_gaps_at_the_start_of_each_on_run_do_not_shorten_its_cycle() -> 
 
 def test_a_frame_with_fewer_than_two_on_runs_states_no_cycle() -> None:
     frame = toggle_frame(block=40, first=6)
-    with pytest.raises(ValueError, match="fewer than two on runs"):
+    with pytest.raises(ValueError, match="no toggle frame has two on runs"):
         _ = Upgrade(name="control", turbines=["T1"], timing=frame).cycle
+
+
+# ---- Upgrade: a toggle frame per turbine --------------------------------------------------------
+
+
+def per_turbine() -> Upgrade:
+    """T1 toggles from the first hour, T2 from the second with the order reversed."""
+    t2 = shuffled_frame("10" * 6).shift(6, fill_value=False)
+    return Upgrade(name="control", turbines=["T1", "T2"], timing={"T1": toggle_frame(first=6), "T2": t2})
+
+
+def test_each_turbine_follows_its_own_frame() -> None:
+    upgrade = per_turbine()
+    assert upgrade.mode == "toggle"
+    assert upgrade.per_turbine
+    assert states(upgrade, "T1")[6:12] == [OFF] * 3 + [ON] * 3
+    assert states(upgrade, "T2")[:6] == [OFF] * 6
+    assert states(upgrade, "T2")[6:12] == [ON] * 3 + [OFF] * 3
+    assert states(upgrade, "T3") == [OFF] * 36
+    assert upgrade.toggle_timing("T2") is upgrade.timing["T2"]  # type: ignore[index]
+
+
+def test_each_turbine_has_its_own_span_and_settling() -> None:
+    upgrade = dataclasses.replace(per_turbine(), settling_time=pd.Timedelta(minutes=10))
+    assert upgrade.signal_span(turbine="T1") == (at(1), INDEX[-1])
+    assert upgrade.signal_span(turbine="T2")[0] == at(1)
+    assert upgrade.signal_span() == (at(1), INDEX[-1])
+    assert list(np.flatnonzero(upgrade.settling(INDEX, turbine="T1")))[:2] == [9, 12]
+    assert list(np.flatnonzero(upgrade.settling(INDEX, turbine="T2")))[:2] == [9, 12]
+
+
+def test_frames_per_turbine_pool_their_cycle_and_check_each_frame() -> None:
+    upgrade = per_turbine()
+    assert upgrade.cycle == pd.Timedelta(hours=1)
+    assert upgrade.datum(first_record=at(0)) == EPOCH.tz_localize("UTC")
+    assert upgrade.warnings() == ()
+    late = shuffled_frame("10" * 6).shift(1, fill_value=False)
+    shifted = Upgrade(name="control", turbines=["T1", "T2"], timing={"T1": toggle_frame(), "T2": late})
+    (warning,) = shifted.warnings()
+    assert warning.turbine == "T2"
+
+
+@pytest.mark.parametrize(
+    ("timing", "match"),
+    [
+        ({"T1": toggle_frame()}, "not its turbines"),
+        ({"T1": toggle_frame(), "T2": toggle_frame(), "T3": toggle_frame()}, "not its turbines"),
+        ({"T1": toggle_frame(), "T2": at(1)}, "all dates or all toggle frames"),
+    ],
+)
+def test_frames_per_turbine_name_exactly_the_upgrades_turbines(timing: object, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        Upgrade(name="control", turbines=["T1", "T2"], timing=timing)  # type: ignore[arg-type]
+
+
+def test_a_turbine_the_upgrade_does_not_toggle_has_no_toggle_timing() -> None:
+    with pytest.raises(ValueError, match="does not toggle 'T3'"):
+        per_turbine().toggle_timing("T3")
+
+
+def test_each_subject_is_compared_within_its_own_span() -> None:
+    late = toggle_frame(first=6)
+    late.iloc[:12] = False
+    upgrade = Upgrade(name="control", turbines=["T1", "T2"], timing={"T1": toggle_frame(first=6), "T2": late})
+    made = facts(upgrades=[upgrade])
+    analysis = AnalysisSpec(name="a", upgrade="control", references=["T3", "T4"])
+    assert sides(made, analysis, "T1")[6:9] == [OFF] * 3
+    assert sides(made, analysis, "T2")[:12] == [NEITHER] * 12
+    assert sides(made, analysis, "T2")[12:15] == [OFF] * 3
+
+
+# ---- WindFarmFacts: placebo timing --------------------------------------------------------------
+
+
+def placebo_facts() -> WindFarmFacts:
+    return facts(upgrades=[Upgrade(name="control", turbines=["T1"], timing=toggle_frame())])
+
+
+def test_a_placebo_turbines_side_follows_its_placebo_timing() -> None:
+    made = placebo_facts()
+    reversed_order = toggle_frame().rename(columns={"toggle_on": "toggle_off", "toggle_off": "toggle_on"})
+    analysis = AnalysisSpec(name="a", upgrade="control", placebo_timing={"T3": reversed_order})
+    assert sides(made, analysis, "T1")[6:12] == [OFF] * 3 + [ON] * 3
+    assert sides(made, analysis, "T3")[:12] == [NEITHER] * 6 + [ON] * 3 + [OFF] * 3
+    assert sides(made, analysis, "T2") == [NEITHER] * 36
+    placebo = made.placebo_upgrade(analysis, turbine="T3")
+    assert placebo.turbines == ("T3",)
+    assert placebo.cycle == made.upgrade("control").cycle
+
+
+def test_a_placebo_turbine_counts_its_own_toggle_start_as_its_change() -> None:
+    made = placebo_facts()
+    analysis = AnalysisSpec(name="a", upgrade="control", placebo_timing={"T3": toggle_frame()})
+    changed = made.changed_turbines(analysis, subject="T3", span=(at(0), at(6)))
+    assert "T3" in changed
+
+
+@pytest.mark.parametrize(
+    ("upgrade", "analysis", "match"),
+    [
+        (permanent(), AnalysisSpec(name="a", upgrade="blades", placebo_timing={"T3": toggle_frame()}), "for a toggle"),
+        (
+            Upgrade(name="control", turbines=["T1"], timing=toggle_frame()),
+            AnalysisSpec(
+                name="a", upgrade="control", subjects=["T1"], references=["T2"], placebo_timing={"T3": toggle_frame()}
+            ),
+            "not among its turbine references",
+        ),
+        (
+            Upgrade(name="control", turbines=["T1", "T3"], timing=toggle_frame()),
+            AnalysisSpec(name="a", upgrade="control", subjects=["T1"], placebo_timing={"T3": toggle_frame()}),
+            "which received 'control'",
+        ),
+    ],
+)
+def test_a_placebo_must_be_a_reference_of_a_toggle_it_did_not_receive(
+    upgrade: Upgrade, analysis: AnalysisSpec, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        facts(upgrades=[upgrade]).check(analysis)
+
+
+def test_a_placebo_cannot_be_a_non_turbine_measurement() -> None:
+    lidar = NonTurbineMeasurement(name="LiDAR", latitude=57.5, longitude=-3.0, records=pd.DataFrame())
+    given = facts(
+        upgrades=[Upgrade(name="control", turbines=["T1"], timing=toggle_frame())], non_turbine_measurements=[lidar]
+    )
+    analysis = AnalysisSpec(
+        name="a",
+        upgrade="control",
+        subjects=["T1"],
+        references=["T2", "LiDAR"],
+        placebo_timing={"LiDAR": toggle_frame()},
+    )
+    with pytest.raises(ValueError, match=r"\['LiDAR'\], which are not among its turbine references"):
+        given.check(analysis)
+
+
+def test_a_frame_without_a_cycle_or_without_switches_gives_no_warning() -> None:
+    assert Upgrade(name="control", turbines=["T1"], timing=toggle_frame(block=40, first=6)).warnings() == ()
+    stuck = toggle_frame()
+    stuck["toggle_on"], stuck["toggle_off"] = True, False
+    upgrade = Upgrade(name="control", turbines=["T1"], timing=stuck, toggle_cycle=pd.Timedelta(hours=1))
+    assert upgrade.warnings() == ()
