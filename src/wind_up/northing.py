@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from wind_up._v0_paths import moved_message
 from wind_up.circular_math import circ_diff, circ_median
 from wind_up.layout import NAME_COL
 from wind_up.wake_nadir import wake_nadir_offsets
@@ -35,6 +36,27 @@ if TYPE_CHECKING:
     from wind_up.layout import Layout
 
 logger = logging.getLogger(__name__)
+
+V0_NAMES = frozenset(
+    {
+        "RAW_YAWDIR_COL",
+        "REANALYSIS_WD_COL",
+        "WINDFARM_YAWDIR_COL",
+        "add_wf_yawdir",
+        "apply_northing_corrections",
+        "calc_northed_col_name",
+        "check_wtg_northing",
+    }
+)
+
+
+def __getattr__(name: str) -> object:
+    """Raise ImportError for a 0.x name of this module, naming its wind_up_v0 home."""
+    if name in V0_NAMES:
+        raise ImportError(moved_message(f"{__name__}.{name}", f"wind_up_v0.northing.{name}"), name=__name__)
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
 
 TIMESTAMP_COL = "timestamp"
 NORTH_OFFSET_COL = "north_offset"

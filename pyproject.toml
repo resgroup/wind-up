@@ -231,7 +231,7 @@ help = "Runs unit tests and show coverage"
 # keeping a file on one worker loads each of those once rather than once per worker.
 env = { PYTEST_XDIST_AUTO_NUM_WORKERS = { default = "4" } }
 sequence = [
-    { cmd = "pytest ./tests -n auto --dist loadfile --cov=wind_up --cov=wind_up_v0 --cov-report=" },
+    { cmd = "pytest ./tests -n auto --dist loadfile --durations=30 --cov=wind_up --cov=wind_up_v0 --cov-report=" },
     { cmd = "coverage report -m" },
 ]
 
