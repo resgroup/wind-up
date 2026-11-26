@@ -10,6 +10,17 @@ The second term is never observed, so wind-up estimates it from **reference turb
 on the same site that did *not* change — and reports the difference. A campaign is described in
 one YAML file and run from the command line.
 
+This is one of two ways to run wind-up v1. The campaign run uses one method, the v1 power model,
+and takes a campaign from its data checks to a farm uplift with a report. The other way is
+[the Python facts API](facts-api.md), where you build the facts and analyses in Python and pass them
+to the method of your choice: the toggle energy ratio, the binned power curve of wind-up 0.x, or
+the power model. Start a new analysis from the facts API unless you want exactly this run. A
+declaration here and the facts there describe the same things under the same names (upgrades,
+analyses, labels, exclusions, operating state overrides).
+
+The campaign run is not in the installed package yet: it runs from a clone of the repository, and
+`python -m benchmarking.campaigns run` becomes a `wind-up` command before 1.0.
+
 This page assumes the upgraded turbines are already chosen. To choose them, see
 [designing a campaign](designing-a-campaign.md). For what wind-up does with the data once it has
 it, see [the method](v1/method.md) and, for a campaign with a single

@@ -3,6 +3,13 @@
 This folder holds the planning material for the **v1** major upgrade of wind-up.
 v1 is developed on the `v1` branch; feature PRs target `v1` rather than `main`.
 
+**Looking for how to use wind-up?** The user documentation is one folder up:
+[the facts API](../facts-api.md), [running a campaign](../running-a-campaign.md),
+[designing a campaign](../designing-a-campaign.md), [northing](../northing.md) and
+[migrating from 0.x](../migrating-from-0.x.md). Of this folder only [method.md](method.md), the
+description of the v1 method, is written for users. Everything else here is the project's design
+history: goals, issue drafts and findings logs, kept as a record and not maintained as documentation.
+
 ## Contents
 
 - **[method.md](method.md)** — **the method**: its steps, defaults, validation targets, the
