@@ -183,6 +183,15 @@ def test_no_aep_uplift_is_given_and_a_warning_says_so_when_asked_for() -> None:
     assert math.isnan(aep.campaign_sigma)
 
 
+def test_the_no_aep_uplift_warning_is_raised_once_per_call() -> None:
+    scada = _second_subject(_noisy_toggle_case()[0])
+    facts = _facts(scada, subjects=("T1", "T2"))
+    first = AnalysisSpec(name="first", upgrade="control", subjects=["T1"], report=CAMPAIGN)
+    outs = _new(facts, first, *(AnalysisSpec(name=n, upgrade="control", subjects=[n]) for n in ("T1", "T2")))
+    warned = [sum("no AEP uplift" in w.message for w in out.warnings) for out in outs]
+    assert warned == [0, 1, 0]
+
+
 def test_a_subject_that_cannot_be_measured_is_a_row_of_nan_and_a_warning() -> None:
     scada, _ = _noisy_toggle_case()
     r1 = scada[scada[_TURBINE_COL] == "R1"]

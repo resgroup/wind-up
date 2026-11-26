@@ -111,7 +111,8 @@ def v0_records(records: pd.DataFrame, *, columns: ColumnSchema, timebase: pd.Tim
 
     Each role's column takes v0's name unless a column of that name is already there. Without a
     ``ShutdownDuration`` column it is the period less the availability counter, a missing counter
-    reading as fully available. Raises without either.
+    reading as fully available; a ``ShutdownDuration`` column already there is kept as given.
+    Raises without either.
     """
     renames = {columns.turbine: DataColumns.turbine_name}
     for role, v0_name in V0_COLUMN_OF_ROLE.items():
@@ -133,7 +134,9 @@ class V0BinnedMethod:
     """v0's binned power curve method, one v0 run per analysis.
 
     Requires the turbine table's ``rotor_diameter_m``, the records' turbine and power roles and,
-    when the records carry no ``ShutdownDuration`` column, the availability role. Reads every
+    when the records carry no ``ShutdownDuration`` column, the availability role, from which
+    :func:`v0_records` derives it; give the records a ``ShutdownDuration`` column to keep a downtime
+    definition of your own. Reads every
     non-turbine measurement the analysis names as a reference through its ``wind_speed`` and
     ``wind_direction`` column roles, and every reanalysis node by its name. Gives the uplift the
     analysis reports with v0's sigma. A group of subjects gets v0's total uplift of the group, or, when

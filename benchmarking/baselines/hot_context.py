@@ -18,8 +18,8 @@ import yaml
 from benchmarking import env
 from benchmarking.baselines.v0_binned import V0BinnedMethod
 from benchmarking.synthetic.sources.hill_of_towie import load_hot_metadata, long_to_wind_up_format
+from wind_up.era5 import get_era5_hourly_df
 from wind_up.facts import Reanalysis
-from wind_up_v0.era5 import get_era5_hourly_df
 from wind_up_v0.reanalysis_data import ReanalysisDataset
 
 if TYPE_CHECKING:

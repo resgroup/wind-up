@@ -53,7 +53,8 @@ class AnalysisSpec:
         it can. Given, no record outside ``[start, end)`` is compared; earlier records stay available
         as history.
     :param include_labels: only a subject's records holding all of these labels are compared
-    :param exclude_labels: no subject's record holding any of these labels is compared
+    :param exclude_labels: no subject's record holding any of these labels is compared; references
+        keep theirs. A label's ``withholds`` leaves its records out of every turbine's use instead.
     :param report: the uplifts wanted, from :data:`REPORTS`
     :param combination: how a group of subjects' uplifts combine into the analysis's, from
         :data:`COMBINATIONS`: ``inverse_variance`` weights each subject's uplift by the inverse of its
